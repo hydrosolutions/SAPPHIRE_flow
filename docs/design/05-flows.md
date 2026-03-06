@@ -1,0 +1,822 @@
+# Prefect Flows and Scheduling
+
+## Why Prefect
+
+- Task dependencies (ingest -> forecast) handled natively
+- Built-in retries with configurable backoff
+- Manual re-trigger via UI or API
+- Run history and observability via Prefect UI (:4200)
+- Clean Python-native API — hydrologists can read flow definitions
+- Self-hosted: one container, uses our PostgreSQL for metadata
+
+## Flows vs. services
+
+Flows are thin orchestration wrappers. Business logic lives in `services/`:
+- `services/alerting.py` — threshold checking, alert raising/resolving
+- `services/skill.py` — metric computation (NSE, CRPS, etc.)
+- `services/rating.py` — rating curve application (pure function)
+- `services/forecast_prep.py` — model input preparation, QC filtering
+
+This means `apply_rating_curve`, `compute_metrics`, and `prepare_model_inputs`
+are importable, testable functions with no Prefect or database dependency.
+Flows call them; tests call them directly.
+
+## Dependency injection
+
+Flows receive their dependencies (adapters, stores) as parameters. A top-level
+`main()` or Prefect deployment entry point constructs the concrete
+implementations and passes them in. This keeps flows testable with fakes — no
+database or external API needed for unit tests.
+
+## Flow overview
+
+```
+┌─────────────────┐     on success     ┌──────────────────┐
+│ ingest_weather   │───────────────────>│ run_forecasts    │
+│ (scheduled)      │                    │ (triggered)       │
+└─────────────────┘                    └──────────────────┘
+                                               │
+┌─────────────────┐     on success             │
+│ ingest_stations  │──────────────────────────>│
+│ (scheduled)      │                            │
+└─────────────────┘                            v
+                                       ┌──────────────────┐
+                                       │ post_process     │
+                                       │ (rating curves,  │
+                                       │  store results,  │
+                                       │  check alerts)   │
+                                       └───────┬──────────┘
+                                               │
+                                       ┌───────v──────────┐
+                                       │ check_flood_     │
+                                       │ alerts           │
+                                       │ (notify if       │
+                                       │  thresholds      │
+                                       │  exceeded)       │
+                                       └──────────────────┘
+
+                                       ┌──────────────────┐
+                                       │ compute_skill    │
+                                       │ (scheduled,      │
+                                       │  e.g. weekly)    │
+                                       └──────────────────┘
+
+                                       ┌──────────────────┐
+                                       │ generate_        │
+                                       │ bulletin         │
+                                       │ (manual trigger) │
+                                       └──────────────────┘
+```
+
+## Ingest flows
+
+### ingest_weather
+
+```python
+from prefect import flow, task
+
+@task(retries=3, retry_delay_seconds=[60, 300, 900])
+def fetch_weather_forecasts(adapter: WeatherDataSource, station_ids: list[str]):
+    ...
+
+@task(retries=3, retry_delay_seconds=[60, 300, 900])
+def fetch_weather_historical(adapter: WeatherDataSource, station_ids: list[str], start, end):
+    ...
+
+@flow(log_prints=True)
+def ingest_weather(
+    adapter: WeatherDataSource,
+    weather_store: WeatherStore,
+    obs_store: ObservationStore,
+    station_ids: list[str],
+):
+    forecasts = fetch_weather_forecasts(adapter, station_ids)
+    weather_store.upsert_weather_forecasts(forecasts)
+
+    gaps = obs_store.detect_gaps(station_ids, lookback_days=7)
+    if gaps:
+        historical = fetch_weather_historical(adapter, gaps)
+        obs_store.upsert_observations(historical)
+```
+
+### ingest_stations
+
+After observations are stored, the ingest flow runs automated QC and observation-based alert checking:
+
+```python
+@flow(log_prints=True)
+def ingest_stations(
+    adapter: StationDataSource,
+    store: ObservationStore,
+    alert_store: AlertStore,
+    qc_service: QualityCheckService,
+    station_ids: list[str],
+):
+    observations = fetch_station_observations(adapter, station_ids)
+    store.upsert_observations(observations)
+
+    # Fetch previous observations for rate-of-change QC
+    previous = store.get_previous_observations(
+        [(obs.station_code, obs.parameter) for obs in observations]
+    )
+
+    # Automated quality control
+    flagged = qc_service.check_observations(observations, previous_by_station=previous)
+    store.update_quality_flags(flagged)
+
+    # Observation-based flood alert checking
+    check_observation_alerts(observations, store, alert_store)
+```
+
+### ingest_flood_thresholds
+
+```python
+@flow(log_prints=True)
+def ingest_flood_thresholds(
+    adapter: StationDataSource,
+    store: AlertStore,
+    station_ids: list[str],
+):
+    """Fetch flood thresholds from hydromet API and store locally.
+
+    Run once during setup, then periodically (e.g. monthly) to catch updates.
+    """
+    thresholds = fetch_thresholds(adapter, station_ids)
+    store.upsert_thresholds(thresholds)
+```
+
+## Forecast flow
+
+One station's model failure must never block the other 499. Each station is
+wrapped in a try/except that falls back to the station's fallback model, then
+skips with a log entry if both fail.
+
+Concurrency is limited to 1 concurrent `run_forecasts` execution via Prefect's
+`concurrency` deployment setting (`concurrency_limit=1`). If a manual trigger
+arrives while a scheduled run is in progress, it is queued, not dropped.
+
+```python
+@flow(log_prints=True)
+def run_forecasts(
+    forecast_store: ForecastStore,
+    observation_store: ObservationStore,
+    weather_store: WeatherStore,
+    alert_store: AlertStore,
+    model_registry: ModelRegistry,
+    alert_config: AlertConfig,
+    station_configs: list[StationConfig],
+):
+    # Submit all stations concurrently — one station's failure never blocks others
+    futures = [
+        forecast_station.submit(
+            station, forecast_store, observation_store, weather_store,
+            alert_store, model_registry, alert_config,
+        )
+        for station in station_configs
+    ]
+    # Collect results, log summary
+    results = [f.result(raise_on_failure=False) for f in futures]
+    succeeded = sum(1 for r in results if r is not None)
+    logging.info("Forecast complete: %d/%d stations succeeded", succeeded, len(station_configs))
+
+
+@task(retries=1, retry_delay_seconds=30, timeout_seconds=120)
+# timeout_seconds=120: prevents a hung model from blocking the worker indefinitely.
+# Models are expected to complete within 10-30 seconds. 120s allows margin for
+# large ensembles and slow hardware.
+def forecast_station(
+    station: StationConfig,
+    forecast_store: ForecastStore,
+    observation_store: ObservationStore,
+    weather_store: WeatherStore,
+    alert_store: AlertStore,
+    model_registry: ModelRegistry,
+    alert_config: AlertConfig,
+) -> Forecast | None:
+    try:
+        model = model_registry.load(station.model_config)
+
+        # Check data availability against model requirements
+        inputs = prepare_model_inputs(station, observation_store, weather_store)
+        primary_obs = inputs.observations.get(inputs.parameter_id, [])
+        observation_span_hours = (
+            (primary_obs[-1][0] - primary_obs[0][0]).total_seconds() / 3600
+            if len(primary_obs) >= 2 else 0
+        )
+        if observation_span_hours < model.min_lookback_hours:
+            logging.warning(
+                "Insufficient data for %s (%.0f hrs available, %d required), trying fallback",
+                station.code, observation_span_hours, model.min_lookback_hours,
+            )
+            raise InsufficientDataError(station.code)
+
+        ensemble = model.predict(inputs)
+        validate_ensemble(ensemble, station.metadata)
+    except (InsufficientDataError, SanityCheckFailure, ModelLoadError, RuntimeError):
+        # Only catch expected failure modes. Unexpected exceptions (TypeError,
+        # AttributeError, etc.) propagate to Prefect for visibility and notification.
+        logging.exception("Primary model failed for %s, trying fallback", station.code)
+        try:
+            model = model_registry.load(station.fallback_config)
+            inputs = prepare_model_inputs(station, observation_store, weather_store)
+            ensemble = model.predict(inputs)
+            validate_ensemble(ensemble, station.metadata)
+        except (InsufficientDataError, SanityCheckFailure, ModelLoadError, RuntimeError):
+            logging.exception("Fallback also failed for %s, skipping", station.code)
+            return None
+
+    # v2.0 consideration: compute discharge at query time instead of baking in.
+    # See 04-models.md "Rating curves and discharge".
+    if station.has_rating_curve:
+        ensemble = apply_rating_curve(ensemble, forecast_store.get_active_rating_curve(station))
+
+    forecast = forecast_store.save_forecast(station, ensemble)
+    check_flood_alert(forecast, station, alert_store, alert_config)
+    return forecast
+```
+
+Parallel execution via Prefect's `.submit()` is the default — not an optimization
+for later. With 500 stations and models taking 2-5 seconds each, sequential
+execution would take 15-40 minutes. Concurrent task submission brings this to
+minutes.
+
+### Forecast input preparation
+
+`prepare_model_inputs` lives in `services/forecast_prep.py` (pure function,
+reads from `ObservationStore` and `WeatherStore`). It:
+
+- Filters out observations with `edit_type = excluded` in `observation_edits`
+- Uses corrected values where edits have been applied
+- Constructs `ModelInputs` with observations and weather forecasts keyed by parameter name
+- This ensures the forecaster's data quality decisions propagate to models
+
+## Flood alert flow
+
+Alerts are persisted in the `alert_events` table, not treated as ephemeral.
+This enables tracking alert lifecycle (raised, acknowledged, resolved).
+
+```python
+@task
+def check_flood_alert(forecast, station, store: AlertStore, alert_config: AlertConfig):
+    thresholds = store.get_thresholds(station.id, forecast.parameter_id)
+    if not thresholds:
+        return
+
+    for lead_time in forecast.lead_times:
+        member_values = get_member_values_at_lead(forecast, lead_time)
+
+        for threshold in thresholds:
+            exceedance_fraction = sum(
+                1 for v in member_values if v >= threshold.value
+            ) / len(member_values)
+
+            min_probability = alert_config.min_exceedance_probability(threshold.level)
+            # e.g. danger: 0.2 (20% of members), warning: 0.5, watch: 0.7
+            if exceedance_fraction >= min_probability:
+                store.raise_alert(station, forecast, lead_time, threshold,
+                                  exceedance_fraction=exceedance_fraction)
+
+    # Auto-resolve alerts from previous forecasts that are no longer exceeded
+    store.resolve_stale_alerts(station, forecast)
+
+    # Notify on new danger-level alerts
+    new_danger = store.get_unacknowledged_danger_alerts(station.id)
+    if new_danger:
+        send_notification(new_danger)
+```
+
+`AlertConfig` defines exceedance probability thresholds per alert level.
+Defaults (configurable per deployment in `config.toml`):
+
+```toml
+[alerts]
+# Minimum fraction of ensemble members exceeding threshold to trigger alert
+exceedance_probability_danger = 0.2    # 20% — conservative for life safety
+exceedance_probability_warning = 0.5   # 50% — majority of members
+exceedance_probability_watch = 0.7     # 70% — strong ensemble agreement
+```
+
+Lower probability thresholds mean more sensitive alerting (more false alarms,
+fewer missed events). The danger level is intentionally set low — for life
+safety decisions, even a 20% chance of exceeding danger warrants attention.
+These values should be calibrated during the testing phase using historical
+forecast performance.
+
+`raise_alert` is idempotent — uses `INSERT ... ON CONFLICT DO NOTHING` on
+`(station_id, parameter_id, forecast_id, level)` to prevent duplicate alerts
+on flow reruns.
+
+### Notification retry
+
+If `send_notification` fails (SMTP down, webhook unreachable), the alert is
+persisted but `notified_at` remains NULL. A periodic sweep task (every 5
+minutes) retries notification for all alerts where:
+- `notified_at IS NULL`
+- `raised_at` is within the last 24 hours
+- `level` is `danger` or `warning`
+
+After 3 failed retry attempts, the sweep logs a critical error and the
+operations summary reports "unnotified danger alerts." This ensures that a
+temporary notification outage does not cause a missed flood warning.
+
+**Circuit breaker**: Notification sinks use the same circuit breaker pattern as
+data adapters (see 03-adapters.md). After 5 consecutive failures, the sink stops
+attempting delivery for a configurable cooldown period (default 30 minutes). This
+prevents log noise and SMTP provider rate-limit bans during extended outages.
+The circuit state is included in the operations summary.
+
+### Observation-based alert checking
+
+Alerts can also fire when real-time observations exceed thresholds, not just forecasts:
+
+```python
+@task
+def check_observation_alerts(
+    observations: list[Observation],
+    store: ObservationStore,
+    alert_store: AlertStore,
+):
+    """Check latest observations against flood thresholds.
+
+    Uses the database as source of truth — not just the ingest batch.
+    The ingest batch determines which stations to check, but the actual
+    threshold comparison uses the latest stored observation.
+    """
+    # Determine which (station, parameter) pairs need checking
+    station_param_pairs = {(obs.station_code, obs.parameter) for obs in observations}
+
+    # Batch threshold lookup
+    thresholds_map = alert_store.get_thresholds_batch(station_param_pairs)
+
+    for station_id, parameter_id in station_param_pairs:
+        thresholds = thresholds_map.get((station_id, parameter_id), [])
+        if not thresholds:
+            continue
+
+        # Query the latest observation from DB — not from the ingest batch
+        latest = store.get_latest_observation(station_id, parameter_id)
+        if latest is None:
+            continue
+
+        exceeded = [t for t in thresholds if latest.value >= t.value]
+        if exceeded:
+            worst = max(exceeded, key=lambda t: t.value)
+            alert_store.raise_observation_alert(latest, worst)
+        else:
+            # Below all thresholds — resolve any active observation-based alerts
+            alert_store.resolve_observation_alerts(station_id, parameter_id)
+
+    new_danger = alert_store.get_unacknowledged_danger_alerts(source="observation")
+    if new_danger:
+        send_notification(new_danger)
+```
+
+`raise_observation_alert` uses `INSERT ... ON CONFLICT DO NOTHING` on
+`(station_id, parameter_id, source, level)` where `resolved_at IS NULL`,
+preventing duplicate alerts across ingest cycles. Notifications are only sent
+for alerts where `notified_at IS NULL`; the notification function sets
+`notified_at` after successful delivery.
+
+This task is called at the end of `ingest_stations` after observations are stored.
+
+### Alert correlation
+
+The same flood event at a station may trigger both a forecast-based alert and
+an observation-based alert. These have different `source` values and are stored
+as separate records. To avoid double-notification:
+
+- Before sending a notification, check whether a notification was already sent
+  for the same `(station_id, parameter_id, level)` within the last hour,
+  regardless of source.
+- The dashboard groups forecast and observation alerts for the same station
+  and time window into a single visual entry with both sources shown.
+
+Flood alert notifications are **mandatory** for danger-level alerts — not
+optional. Configure at least one notification channel (email or webhook) during
+deployment. Notifications use a pluggable `NotificationSink` Protocol, allowing
+email, Slack, SMS, or webhook without Prefect dependency.
+
+## Automated quality control
+
+QC runs automatically after each station ingest. The QC service is a pure
+function in `services/qc.py` — no database or framework dependencies.
+
+```python
+from sapphire_flow.services.qc import QualityCheckService
+
+class QualityCheckService:
+    def __init__(self, config: QCConfig):
+        self.config = config
+
+    def check_observations(
+        self,
+        observations: list[Observation],
+        previous_by_station: dict[tuple[str, str], Observation] | None = None,
+    ) -> list[tuple[Observation, int]]:
+        """Returns (observation, quality_flag) pairs for all observations.
+
+        `previous_by_station` maps (station_code, parameter) to the most recent
+        observation before this batch — needed for rate-of-change checks on the
+        first observation in the batch. Callers obtain this from the database.
+        """
+        previous_by_station = previous_by_station or {}
+
+        # Group by (station, parameter) and sort by time for consecutive checks
+        grouped: dict[tuple[str, str], list[Observation]] = {}
+        for obs in observations:
+            key = (obs.station_code, obs.parameter)
+            grouped.setdefault(key, []).append(obs)
+
+        flagged = []
+        for key, group in grouped.items():
+            group.sort(key=lambda o: o.timestamp)
+            prev = previous_by_station.get(key)
+
+            for obs in group:
+                flag = self._run_checks(obs, prev)
+                flagged.append((obs, flag))
+                prev = obs
+
+        return flagged
+
+    def _run_checks(self, obs: Observation, prev: Observation | None) -> int:
+        # Range check: is the value physically plausible?
+        bounds = self.config.get_bounds(obs.parameter)
+        if bounds and not (bounds.min <= obs.value <= bounds.max):
+            return 2  # failed range check
+
+        # Rate-of-change check: is the change per unit time too large?
+        if prev is not None and self._exceeds_rate_of_change(obs, prev):
+            return 3  # failed rate-of-change check
+
+        return 1  # passed all checks
+
+    def _exceeds_rate_of_change(self, obs: Observation, prev: Observation) -> int:
+        max_rate = self.config.get_max_rate(obs.parameter)
+        if max_rate is None:
+            return False
+        hours_elapsed = (obs.timestamp - prev.timestamp).total_seconds() / 3600
+        if hours_elapsed <= 0:
+            return False
+        rate = abs(obs.value - prev.value) / hours_elapsed
+        return rate > max_rate
+```
+
+### QC configuration
+
+Checks are configured per parameter in TOML:
+
+```toml
+[qc.precipitation]
+min = 0.0
+max = 300.0                   # mm/day — extreme but plausible
+max_rate_of_change_per_hour = 50.0  # mm/hr between consecutive readings
+
+[qc.water_level]
+min = -2.0                    # m below gauge zero
+max = 20.0                    # m — deployment-specific
+max_rate_of_change_per_hour = 0.5   # m/hr between consecutive readings
+
+[qc.temperature]
+min = -50.0
+max = 55.0                    # degC
+max_rate_of_change_per_hour = 5.0   # degC/hr between consecutive readings
+```
+
+Bounds are intentionally generous — the goal is to catch sensor malfunctions
+and transmission errors, not to enforce climatological norms. Forecasters
+review suspect observations on the dashboard and decide whether to exclude them.
+
+## Verification / skill computation flow
+
+```python
+@flow(log_prints=True)
+def compute_model_skill(
+    forecast_store: ForecastStore,
+    observation_store: ObservationStore,
+    skill_store: SkillStore,
+    station_configs: list[StationConfig],
+    lookback_days: int = 90,
+):
+    for station in station_configs:
+        forecasts = forecast_store.get_past_forecasts(station, lookback_days=lookback_days)
+        observations = observation_store.get_observations(
+            station.id, station.parameter_id,
+            start=datetime.now() - timedelta(days=lookback_days),
+            end=datetime.now(),
+        )
+
+        for model_id in station.model_ids:
+            model_forecasts = [f for f in forecasts if f.model_id == model_id]
+            metrics = compute_metrics(model_forecasts, observations)
+            # metrics: NSE, CRPS, reliability, bias, etc.
+            skill_store.save_skill_scores(station, model_id, metrics)
+```
+
+## Bulletin generation flow
+
+```python
+@flow(log_prints=True)
+def generate_bulletin(
+    forecast_store: ForecastStore,
+    bulletin_store: BulletinStore,
+    template_loader: TemplateLoader,
+    scope: Literal["country", "basin"],
+    basin_id: str | None = None,
+    template_id: str = "default",
+    forecast_ids: list[str] | None = None,
+):
+    template = template_loader.load(template_id)
+
+    if forecast_ids:
+        forecasts = forecast_store.get_forecasts_by_ids(forecast_ids)
+    elif scope == "basin" and basin_id:
+        forecasts = forecast_store.get_selected_forecasts_for_basin(basin_id)
+    else:
+        forecasts = forecast_store.get_all_selected_forecasts()
+
+    # Prepare data for ieasyreports
+    report_data = prepare_bulletin_data(forecasts)
+    output_path = render_bulletin(template, report_data)
+
+    # Store bulletin record
+    bulletin_store.save_bulletin(scope, basin_id, template_id, output_path, forecast_ids)
+
+    # Update forecast statuses to published
+    forecast_store.update_forecast_status(forecast_ids, status="published")
+
+    return output_path
+```
+
+**Idempotency**: `save_bulletin` and `update_forecast_status` are wrapped in a
+single database transaction — either both succeed or neither does. On retry,
+duplicate bulletin detection uses the combination of
+`(scope, basin_id, template_id, forecast_ids)` — if a bulletin with the same
+forecast set already exists, the flow returns the existing file path instead of
+regenerating.
+
+The `ieasyreports` library handles Excel template filling. Each hydromet
+can have multiple templates (e.g. daily forecast, pentadal summary,
+seasonal outlook). Templates are stored in the deployment's config directory.
+
+## Scheduling
+
+Prefect deployments define the schedule:
+
+```python
+from prefect.deployments import Deployment
+from prefect.server.schemas.schedules import CronSchedule
+
+# Run ingest every 3 hours
+ingest_weather_deployment = ingest_weather.to_deployment(
+    name="ingest-weather",
+    schedule=CronSchedule(cron="0 */3 * * *"),
+)
+
+# Run station ingest every hour
+ingest_stations_deployment = ingest_stations.to_deployment(
+    name="ingest-stations",
+    schedule=CronSchedule(cron="0 * * * *"),
+)
+
+# Compute model skill weekly (Sunday 02:00)
+compute_skill_deployment = compute_model_skill.to_deployment(
+    name="compute-skill",
+    schedule=CronSchedule(cron="0 2 * * 0"),
+)
+
+# Refresh flood thresholds monthly
+ingest_thresholds_deployment = ingest_flood_thresholds.to_deployment(
+    name="ingest-thresholds",
+    schedule=CronSchedule(cron="0 3 1 * *"),
+)
+
+# Forecasts and bulletins are triggered, not scheduled
+```
+
+### Scheduling and ECMWF forecast availability
+
+Weather ingest is scheduled around ECMWF forecast availability (every 6 hours:
+00, 06, 12, 18 UTC). Station ingest runs more frequently (hourly) since
+real-time gauging data arrives continuously.
+
+**Open question — event-mode forecasting**: During active flood events, hydromets
+may want higher-frequency forecast updates. ECMWF data limits forecast updates to
+6-hourly, but real-time rainfall observations could be used to refine forecasts
+between ECMWF cycles (e.g. simple updating/blending). This requires further research
+into nowcasting approaches and is not in v1.0 scope.
+
+## Late data and manual re-triggers
+
+### Scenario: data arrives late
+
+1. Scheduled ingest runs at 06:00, but station API has no new data
+2. Ingest flow completes with "no new data" status
+3. At 08:00, data becomes available
+4. **Option A**: Next scheduled ingest (09:00) picks it up, triggers forecast
+5. **Option B**: Forecaster sees stale data in dashboard, clicks "Re-run ingest"
+   -> Prefect API triggers a new ingest_stations run
+   -> On success, triggers run_forecasts
+
+### Manual re-trigger
+
+The Prefect UI (:4200) allows one-click re-triggering of any flow.
+Additionally, our REST API exposes:
+
+```
+POST /api/v1/flows/ingest/trigger
+POST /api/v1/flows/forecast/trigger
+POST /api/v1/flows/forecast/trigger?station=ABC-001    (single station)
+POST /api/v1/flows/forecast/trigger?basin=BASIN-01     (all stations in basin)
+```
+
+These call the Prefect API under the hood.
+
+### Automations
+
+Prefect automations can link flows:
+
+```python
+# When ingest_weather succeeds AND ingest_stations succeeds
+# within the same time window -> trigger run_forecasts
+```
+
+This replaces the dumb cron dependency problem: forecasts only run
+when fresh data is actually available.
+
+### Forecast catch-up
+
+A safety-net flow runs every 30 minutes and checks whether forecasts have been
+produced for the latest available weather data. If the latest weather ingest is
+newer than the latest forecast run, and no `run_forecasts` flow is currently
+in progress, a catch-up forecast is triggered. This handles:
+
+- Prefect automation misfires (server crash between ingest success and forecast trigger)
+- Manual ingest without subsequent forecast trigger
+- Any other gap in the ingest → forecast chain
+
+## Training flow (optional)
+
+```python
+@flow(log_prints=True)
+def train_model(
+    store: TrainingStore,
+    model_registry: ModelRegistry,
+    station_id: str,
+    model_type: str,
+):
+    training_data = store.prepare_training_data(station_id)
+    model = model_registry.create(model_type)
+    result = model.train(training_data)
+
+    # Validate before deployment: predict on held-out data and sanity check
+    validation_inputs = store.prepare_validation_inputs(station_id)
+    test_ensemble = model.predict(validation_inputs)
+    validate_ensemble(test_ensemble, station_metadata)
+
+    model_registry.save(model, station_id)
+    store.log_training_result(station_id, result)
+```
+
+Training is intentionally decoupled — it can run as a Prefect flow
+on the server, or as a standalone script on a workstation with GPU.
+
+## Historical data import flow
+
+Used during initial deployment to backfill historical observations from the
+hydromet's existing database or CSV files.
+
+```python
+@flow(log_prints=True)
+def import_historical_data(
+    source: StationDataSource | Path,
+    store: ObservationStore,
+    station_ids: list[str],
+    start: datetime,
+    end: datetime,
+    batch_days: int = 90,
+):
+    """Import historical observations in batches.
+
+    Accepts either a StationDataSource adapter (for API-based import)
+    or a Path to a CSV directory (for file-based import).
+    """
+    current = start
+    while current < end:
+        batch_end = min(current + timedelta(days=batch_days), end)
+
+        if isinstance(source, Path):
+            observations = load_csv_observations(source, station_ids, current, batch_end)
+        else:
+            observations = source.fetch_observations(station_ids, current, batch_end)
+
+        store.insert_observations_no_overwrite(observations)
+        logging.info("Imported %d observations for %s to %s", len(observations), current, batch_end)
+        current = batch_end
+
+    # Validate completeness
+    for station_id in station_ids:
+        gaps = store.detect_gaps([station_id], start=start, end=end)
+        if gaps:
+            logging.warning("Station %s has %d gaps after import", station_id, len(gaps))
+```
+
+**Resumability**: On restart after interruption, the import determines the
+resume point by querying `MAX(timestamp)` from observations for each station.
+The `start` parameter is advanced to `max(start, last_imported_timestamp)`,
+skipping already-imported batches. The `upsert_observations` call handles any
+overlap safely. Operators can also pass `--resume` to the CLI to resume from
+the last successful batch.
+
+Key design decisions:
+- **Batch processing**: Imports in configurable chunks (default 90 days) to avoid memory issues with 25 years of data
+- **Dual source**: Supports both API adapters and CSV files (common for historical data handoff)
+- **Gap detection**: Reports missing data after import so the operator knows what's incomplete
+- **Idempotent**: Uses the same `upsert_observations` as live ingest — safe to re-run
+- **Parallel operation safety**: Historical import uses `INSERT ... ON CONFLICT DO NOTHING` (not `DO UPDATE`) — existing operational data always takes precedence over historical backfill. This prevents a backfill from overwriting QC flags or corrections applied by operational ingest. The import calls `store.insert_observations_no_overwrite()`, a separate method from the operational `upsert_observations`.
+
+## Observability
+
+- **Prefect UI** (:4200): run history, logs, task-level status, flow diagrams
+- **Our dashboard**: forecast-specific views (which stations have fresh forecasts),
+  flood alert inbox, bulletin generation status
+- **Logs**: structured logging (JSON) from all flows, queryable
+- **Flow failure notifications** (mandatory): At least one notification channel
+  (email or webhook) must be configured. All flow failures trigger an immediate
+  notification. This is not optional for a flood warning system.
+- **Health endpoint**: `GET /api/v1/health` returns system status including
+  last successful ingest/forecast times, number of active alerts
+
+## Failure modes and recovery
+
+### Prefect server crash
+
+Prefect uses PostgreSQL-backed state. If the server container dies, in-progress
+flow runs are marked as "Crashed" on restart. Workers reconnect automatically.
+No manual intervention is needed for recovery — the next scheduled run proceeds
+normally.
+
+### Flow idempotency
+
+All flows are designed for safe re-execution:
+
+- **Ingest flows**: `INSERT ... ON CONFLICT DO UPDATE` makes re-ingesting the same
+  data a no-op for unchanged values and a correction for changed values.
+- **Forecast flow**: `save_forecast` uses `ON CONFLICT` on
+  `(station_id, parameter_id, issued_at, model_id, forecast_type)` — re-running
+  produces the same forecast row, not a duplicate. The `forecast_type` column
+  prevents conflicts when the same model produces both daily and subdaily
+  forecasts for the same station at the same time.
+- **Alert flow**: `raise_alert` and `raise_observation_alert` use `ON CONFLICT DO NOTHING`
+  on their natural keys — re-checking the same forecast/observation does not create
+  duplicate alerts.
+
+A crash between `save_forecast` and `check_flood_alert` is safe: on rerun,
+`save_forecast` is a no-op (conflict), and `check_flood_alert` creates the
+alert that was missed.
+
+### Worker crash
+
+Prefect marks the in-progress task as failed. The retry policy (1 retry, 30s
+delay) handles transient failures. Persistent failures trigger flow failure
+notifications.
+
+### Database unavailable
+
+All store operations fail immediately. Prefect retries handle brief outages
+(seconds). Extended outages cause flow failures, caught by mandatory failure
+notifications. The system resumes automatically when the database recovers —
+the next scheduled ingest catches up.
+
+### External API unavailable
+
+Handled by adapter resilience (see 03-adapters.md): retry with backoff,
+circuit breaker, cached fallback. Forecasts run with available data.
+
+### Stale alert resolution
+
+If a model fails repeatedly for a station, no new forecast is produced and
+existing alerts for that station are never resolved by `resolve_stale_alerts`.
+To prevent permanently stale alerts:
+
+- A periodic maintenance task (daily) scans for alerts where `raised_at` is
+  older than 2x the forecast horizon (e.g. 48 hours for a daily model) AND
+  no superseding forecast exists.
+- These alerts are flagged as `stale_unresolvable` in the dashboard and
+  surfaced in the operations summary with the reason ("no forecast produced
+  for 48+ hours").
+- Stale alerts are NOT auto-resolved — the flood could still be happening.
+  A forecaster must manually acknowledge or resolve them.
+
+### Offline station alert handling
+
+Observation-based alerts are resolved when a new observation falls below the
+threshold. If a station goes offline, no new observations arrive and the alert
+remains active indefinitely. To handle this:
+
+- The health endpoint reports stations whose last observation is older than
+  a configurable threshold (default: 2x the expected reporting interval).
+- Observation-based alerts for offline stations are flagged as
+  `station_offline` in the dashboard, not auto-resolved.
+- The operations summary includes a "stations offline with active alerts"
+  count for the morning briefing.
