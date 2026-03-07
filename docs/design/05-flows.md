@@ -1,3 +1,9 @@
+---
+status: DRAFT
+---
+
+> **DRAFT** — This design doc has not completed the review maturity gate. Do not treat as authoritative until `status: READY`.
+
 # Prefect Flows and Scheduling
 
 ## Why Prefect
@@ -76,28 +82,26 @@ database or external API needed for unit tests.
 from prefect import flow, task
 
 @task(retries=3, retry_delay_seconds=[60, 300, 900])
-def fetch_weather_forecasts(adapter: WeatherDataSource, station_ids: list[str]):
-    ...
-
-@task(retries=3, retry_delay_seconds=[60, 300, 900])
-def fetch_weather_historical(adapter: WeatherDataSource, station_ids: list[str], start, end):
+def fetch_weather_forecasts(adapter: WeatherForecastSource, station_ids: list[str]):
     ...
 
 @flow(log_prints=True)
 def ingest_weather(
-    adapter: WeatherDataSource,
+    forecast_adapter: WeatherForecastSource,
     weather_store: WeatherStore,
-    obs_store: ObservationStore,
     station_ids: list[str],
 ):
-    forecasts = fetch_weather_forecasts(adapter, station_ids)
+    forecasts = fetch_weather_forecasts(forecast_adapter, station_ids)
     weather_store.upsert_weather_forecasts(forecasts)
-
-    gaps = obs_store.detect_gaps(station_ids, lookback_days=7)
-    if gaps:
-        historical = fetch_weather_historical(adapter, gaps)
-        obs_store.upsert_observations(historical)
+    # Weather forecasts are permanently archived in weather_store
+    # (not just cached for 24h) — builds NWP hindcast archive for
+    # future bias correction. See 03-adapters.md "NWP forecast archiving".
 ```
+
+Weather station observations (SMN) are ingested via `ingest_stations` using a
+second `StationDataSource` adapter — the `meteoswiss_smn` adapter. This keeps
+the weather observation ingest on the same path as river gauge ingest (same
+Protocol, same QC, same store). See `ingest_stations` below.
 
 ### ingest_stations
 
@@ -133,7 +137,7 @@ def ingest_stations(
 ```python
 @flow(log_prints=True)
 def ingest_flood_thresholds(
-    adapter: StationDataSource,
+    adapter: ThresholdSource,
     store: AlertStore,
     station_ids: list[str],
 ):
@@ -141,7 +145,7 @@ def ingest_flood_thresholds(
 
     Run once during setup, then periodically (e.g. monthly) to catch updates.
     """
-    thresholds = fetch_thresholds(adapter, station_ids)
+    thresholds = adapter.fetch_flood_thresholds(station_ids)
     store.upsert_thresholds(thresholds)
 ```
 
@@ -162,6 +166,7 @@ def run_forecasts(
     observation_store: ObservationStore,
     weather_store: WeatherStore,
     alert_store: AlertStore,
+    rating_curve_store: RatingCurveStore,
     model_registry: ModelRegistry,
     alert_config: AlertConfig,
     station_configs: list[StationConfig],
@@ -170,7 +175,7 @@ def run_forecasts(
     futures = [
         forecast_station.submit(
             station, forecast_store, observation_store, weather_store,
-            alert_store, model_registry, alert_config,
+            alert_store, rating_curve_store, model_registry, alert_config,
         )
         for station in station_configs
     ]
@@ -190,6 +195,7 @@ def forecast_station(
     observation_store: ObservationStore,
     weather_store: WeatherStore,
     alert_store: AlertStore,
+    rating_curve_store: RatingCurveStore,
     model_registry: ModelRegistry,
     alert_config: AlertConfig,
 ) -> Forecast | None:
@@ -228,10 +234,10 @@ def forecast_station(
     # v2.0 consideration: compute discharge at query time instead of baking in.
     # See 04-models.md "Rating curves and discharge".
     if station.has_rating_curve:
-        ensemble = apply_rating_curve(ensemble, forecast_store.get_active_rating_curve(station))
+        ensemble = apply_rating_curve(ensemble, rating_curve_store.get_active_rating_curve(station))
 
     forecast = forecast_store.save_forecast(station, ensemble)
-    check_flood_alert(forecast, station, alert_store, alert_config)
+    check_flood_alert(forecast, ensemble, station, alert_store, alert_config)
     return forecast
 ```
 
@@ -257,20 +263,38 @@ This enables tracking alert lifecycle (raised, acknowledged, resolved).
 
 ```python
 @task
-def check_flood_alert(forecast, station, store: AlertStore, alert_config: AlertConfig):
-    thresholds = store.get_thresholds(station.id, forecast.parameter_id)
+def check_flood_alert(
+    forecast: Forecast,
+    ensemble: ForecastEnsemble,
+    station: StationConfig,
+    store: AlertStore,
+    alert_config: AlertConfig,
+):
+    thresholds = store.get_thresholds(station.code, station.parameter_id)
     if not thresholds:
         return
 
-    for lead_time in forecast.lead_times:
-        member_values = get_member_values_at_lead(forecast, lead_time)
+    # ensemble.members: list[list[tuple[int, float]]] — each member is
+    # a list of (lead_time_minutes, value) pairs.
+    lead_times = sorted({lt for member in ensemble.members for lt, _ in member})
+
+    for lead_time in lead_times:
+        member_values = [
+            value
+            for member in ensemble.members
+            for lt, value in member
+            if lt == lead_time
+        ]
+        if not member_values:
+            continue
 
         for threshold in thresholds:
             exceedance_fraction = sum(
                 1 for v in member_values if v >= threshold.value
             ) / len(member_values)
 
-            min_probability = alert_config.min_exceedance_probability(threshold.level)
+            flood_level = FloodLevel(threshold.level)  # parse str → enum
+            min_probability = alert_config.min_exceedance_probability(flood_level)
             # e.g. danger: 0.2 (20% of members), warning: 0.5, watch: 0.7
             if exceedance_fraction >= min_probability:
                 store.raise_alert(station, forecast, lead_time, threshold,
@@ -280,8 +304,10 @@ def check_flood_alert(forecast, station, store: AlertStore, alert_config: AlertC
     store.resolve_stale_alerts(station, forecast)
 
     # Notify on new danger-level alerts
-    new_danger = store.get_unacknowledged_danger_alerts(station.id)
+    new_danger = store.get_unacknowledged_danger_alerts(station.code)
     if new_danger:
+        # send_notification dispatches via the configured NotificationSink.
+        # Injected at flow construction time; see flows/alerts.py implementation.
         send_notification(new_danger)
 ```
 
@@ -366,7 +392,7 @@ def check_observation_alerts(
             # Below all thresholds — resolve any active observation-based alerts
             alert_store.resolve_observation_alerts(station_id, parameter_id)
 
-    new_danger = alert_store.get_unacknowledged_danger_alerts(source="observation")
+    new_danger = alert_store.get_unacknowledged_danger_alerts(source=AlertSource.OBSERVATION)
     if new_danger:
         send_notification(new_danger)
 ```
@@ -451,7 +477,7 @@ class QualityCheckService:
 
         return 1  # passed all checks
 
-    def _exceeds_rate_of_change(self, obs: Observation, prev: Observation) -> int:
+    def _exceeds_rate_of_change(self, obs: Observation, prev: Observation) -> bool:
         max_rate = self.config.get_max_rate(obs.parameter)
         if max_rate is None:
             return False
@@ -497,16 +523,20 @@ def compute_model_skill(
     skill_store: SkillStore,
     station_configs: list[StationConfig],
     lookback_days: int = 90,
+    clock: Callable[[], datetime] = datetime.now,
 ):
     for station in station_configs:
         forecasts = forecast_store.get_past_forecasts(station, lookback_days=lookback_days)
         observations = observation_store.get_observations(
-            station.id, station.parameter_id,
-            start=datetime.now() - timedelta(days=lookback_days),
-            end=datetime.now(),
+            station.code, station.parameter_id,
+            start=clock() - timedelta(days=lookback_days),
+            end=clock(),
         )
 
-        for model_id in station.model_ids:
+        model_ids = [station.model_config.model_id]
+        if station.fallback_config:
+            model_ids.append(station.fallback_config.model_id)
+        for model_id in model_ids:
             model_forecasts = [f for f in forecasts if f.model_id == model_id]
             metrics = compute_metrics(model_forecasts, observations)
             # metrics: NSE, CRPS, reliability, bias, etc.
@@ -521,7 +551,7 @@ def generate_bulletin(
     forecast_store: ForecastStore,
     bulletin_store: BulletinStore,
     template_loader: TemplateLoader,
-    scope: Literal["country", "basin"],
+    scope: BulletinScope,
     basin_id: str | None = None,
     template_id: str = "default",
     forecast_ids: list[str] | None = None,
@@ -543,7 +573,7 @@ def generate_bulletin(
     bulletin_store.save_bulletin(scope, basin_id, template_id, output_path, forecast_ids)
 
     # Update forecast statuses to published
-    forecast_store.update_forecast_status(forecast_ids, status="published")
+    forecast_store.update_forecast_status(forecast_ids, status=ForecastStatus.PUBLISHED)
 
     return output_path
 ```
@@ -594,11 +624,13 @@ ingest_thresholds_deployment = ingest_flood_thresholds.to_deployment(
 # Forecasts and bulletins are triggered, not scheduled
 ```
 
-### Scheduling and ECMWF forecast availability
+### Scheduling and NWP forecast availability
 
-Weather ingest is scheduled around ECMWF forecast availability (every 6 hours:
-00, 06, 12, 18 UTC). Station ingest runs more frequently (hourly) since
-real-time gauging data arrives continuously.
+Weather forecast ingest is scheduled around ICON-CH2-EPS availability (every 6
+hours: 00, 06, 12, 18 UTC; for v1/Nepal: ECMWF IFS on same schedule). All fetched
+NWP data is permanently archived — see 03-adapters.md "NWP forecast archiving".
+Station ingest (river gauges + weather stations) runs more frequently (hourly)
+since real-time data arrives continuously.
 
 **Open question — event-mode forecasting**: During active flood events, hydromets
 may want higher-frequency forecast updates. ECMWF data limits forecast updates to
@@ -664,15 +696,24 @@ def train_model(
     model_registry: ModelRegistry,
     station_id: str,
     model_type: str,
+    config: ModelConfig,
 ):
     training_data = store.prepare_training_data(station_id)
     model = model_registry.create(model_type)
-    result = model.train(training_data)
+    result = model.train(training_data, config)
 
-    # Validate before deployment: predict on held-out data and sanity check
-    validation_inputs = store.prepare_validation_inputs(station_id)
+    # Validate before deployment: re-predict on training period as sanity check.
+    # Construct minimal ModelInputs from training data for validation.
+    validation_inputs = ModelInputs(
+        station_id=training_data.station_id,
+        parameter_id=list(training_data.observations.keys())[0],
+        observations=training_data.observations,
+        weather_forecasts=training_data.weather_history,
+        forecast_type=ForecastType.DAILY,
+        metadata=training_data.metadata,
+    )
     test_ensemble = model.predict(validation_inputs)
-    validate_ensemble(test_ensemble, station_metadata)
+    validate_ensemble(test_ensemble, training_data.metadata)
 
     model_registry.save(model, station_id)
     store.log_training_result(station_id, result)
@@ -820,3 +861,8 @@ remains active indefinitely. To handle this:
   `station_offline` in the dashboard, not auto-resolved.
 - The operations summary includes a "stations offline with active alerts"
   count for the morning briefing.
+
+## Review History
+
+| Round | Date | Reviewers | Blocking | Advisory | Status |
+|-------|------|-----------|----------|----------|--------|

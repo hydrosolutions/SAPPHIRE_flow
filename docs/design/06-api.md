@@ -1,3 +1,9 @@
+---
+status: DRAFT
+---
+
+> **DRAFT** — This design doc has not completed the review maturity gate. Do not treat as authoritative until `status: READY`.
+
 # REST API and Dashboard
 
 ## API design principles
@@ -519,3 +525,8 @@ If a hydromet:
 
 They skip the HTMX dashboard entirely and consume the REST API.
 The API is the product; the dashboard is a convenience.
+
+## Review History
+
+| Round | Date | Reviewers | Blocking | Advisory | Status |
+|-------|------|-----------|----------|----------|--------|

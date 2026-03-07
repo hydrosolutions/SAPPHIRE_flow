@@ -1,3 +1,9 @@
+---
+status: DRAFT
+---
+
+> **DRAFT** — This design doc has not completed the review maturity gate. Do not treat as authoritative until `status: READY`.
+
 # Forecast Models
 
 ## Pluggable model interface
@@ -442,3 +448,8 @@ accordingly. When unavailable, discharge conversion uses the point estimate
 and the uncertainty bands reflect only the hydrological model uncertainty.
 
 Optional (future): learn an implicit stage-discharge relationship from data.
+
+## Review History
+
+| Round | Date | Reviewers | Blocking | Advisory | Status |
+|-------|------|-----------|----------|----------|--------|

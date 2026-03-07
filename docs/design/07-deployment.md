@@ -1,3 +1,9 @@
+---
+status: DRAFT
+---
+
+> **DRAFT** — This design doc has not completed the review maturity gate. Do not treat as authoritative until `status: READY`.
+
 # Deployment and Operations
 
 ## Docker Compose
@@ -524,3 +530,8 @@ and on the hydromet's own servers.
 - Russian language interface
 - Local language support (Kyrgyz, Tajik, Uzbek) — translation workflow TBD
 - Season definitions: April–September (configurable per deployment)
+
+## Review History
+
+| Round | Date | Reviewers | Blocking | Advisory | Status |
+|-------|------|-----------|----------|----------|--------|

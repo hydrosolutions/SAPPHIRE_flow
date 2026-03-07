@@ -2,7 +2,21 @@
 
 ## Project Overview
 
-SHORT PROJECT DESCRIPTION
+SAPPHIRE Flow is an operational hydrological forecasting system that ingests weather and station data, runs ensemble forecast models, checks flood thresholds, and serves results via a REST API with an optional review dashboard. Currently in **design phase** (no implementation yet — only design docs in `docs/design/` and scaffolding in `src/`). The immediate goal is **v0**: a working end-to-end pipeline using Swiss public data (MeteoSwiss weather, BAFU stations) with simple models, validating the architecture before Nepal deployment in Oct 2026. See `docs/planning-steps.md` for the planning-to-implementation roadmap and `docs/design/00-overview.md` for the full design overview.
+
+## Workflow and Review
+
+See `docs/workflow.md` for the full workflow conventions. Key points:
+
+- **Status lifecycle**: `planned → in-progress → review → done → archived`
+- **Every code change updates affected docs** — no exceptions.
+- **Run `/review` on plans before implementation** — dispatches `plan-reviewer` (adversarial review) alongside relevant specialist agents.
+- **Run `/review` on design docs** — dispatches `design-reviewer` (data flow tracing, interface completeness, junior dev implementability) alongside specialist agents.
+- **Run `/review` before committing** — dispatches specialist agents (domain, security, developer, testing, data-eng, ops, CI/CD, docs) in parallel.
+- **Blocking findings must be resolved** before transitioning to `done`.
+- **`review-docs` always runs** — documentation hygiene is mandatory.
+
+Agents live in `.claude/agents/`. Commands: `/plan`, `/review`.
 
 ## Task Management Principles
 
@@ -24,6 +38,85 @@ Stay focused on the current task until completion. Delegate tasks to sub agents 
 - Route each sub-task to the specialist agent best suited for it
 - Maintain clear task boundaries between agents
 - Give agents all the context they need, and instruction on where to gather more context if needed.
+
+### Plan and Design Maturity Gate (hard rule)
+
+**NEVER declare a plan or design doc "ready" prematurely.** Both must survive independent adversarial review before downstream work begins. A plan that a junior developer cannot implement without asking questions is not ready. A design doc that a junior developer cannot read and understand the full data flow is not ready.
+
+**Rules (apply to both plans and design docs):**
+
+1. **Nothing is ready after one iteration.** After drafting, assume it has major gaps.
+2. **Run `/review` on every plan and every design doc change** before suggesting readiness. Round count is tracked via a `## Review History` section appended to the document.
+3. **A document is ready ONLY when** all of these are true:
+   - The document has `status: DRAFT` frontmatter (all new plans and design docs start as DRAFT)
+   - At least **2 review-fix cycles** completed (tracked in the document's Review History)
+   - The most recent round surfaces **zero blocking findings**
+   - The **Junior Dev Readiness Checklist** passes (see below)
+   - The `## Open Questions` section has no unchecked items (design docs)
+   - The user has explicitly confirmed readiness by replying `confirm ready` (no other phrase counts)
+   - Only after user confirmation: change frontmatter to `status: READY` and remove the DRAFT banner
+4. **After each review round, report the status honestly**: findings by severity, what was fixed, what remains.
+5. **Never say** "this plan looks ready" or "we can start implementing" unless criterion 3 above is fully met.
+
+### Readiness Declaration Protocol (mandatory sequence)
+
+Before suggesting that ANY plan or design doc might be ready, Claude MUST mechanically execute this sequence. Skipping steps is a hard violation.
+
+1. **Check DRAFT status**: Read the document's frontmatter. If `status: READY` already, someone skipped the protocol — flag this as suspicious and re-verify. If `status: DRAFT`, proceed.
+2. **Count review rounds**: Read the document's `## Review History` table. If fewer than 2 rows exist, STOP — the document is not ready. State: "Only N review cycle(s) completed, minimum 2 required."
+3. **Check latest round**: Read the most recent row in the Review History table. If Blocking > 0, STOP — the document is not ready. State: "N blocking finding(s) remain from round M."
+4. **Run the Junior Dev Readiness Checklist**: For every task (plans) or component (design docs), verify each item. List any failures. If any item fails, STOP — the document is not ready.
+5. **Report status to user**: Present the checklist results honestly. Do NOT suggest readiness — instead say: "All mechanical checks pass. Awaiting your confirmation before marking as ready."
+6. **Wait for explicit user confirmation**: Only after the user says the document is ready (e.g., "looks good", "mark it ready", "let's implement") may you change the frontmatter from `status: DRAFT` to `status: READY` and remove the DRAFT banner.
+
+**Implementation gate**: Any agent or conversation that encounters a plan with `status: DRAFT` must refuse to implement it. See the Implementation Gate in `docs/workflow.md`.
+
+**Anti-patterns — NEVER do these:**
+
+- "This plan looks solid, we can start implementing." (Skips the protocol entirely.)
+- "After fixing these issues, the plan should be ready." (Predicts future readiness — you don't know what the next review will find.)
+- "I've addressed all the findings, so the plan is now ready." (Fixing findings ≠ passing review. You must re-run `/review` and it must come back clean.)
+- "This is a minor issue, the plan is essentially ready." (No such thing. Either zero blocking findings or not ready.)
+- Declaring readiness without showing the Review History table status.
+- Running only 1 review cycle and suggesting readiness because findings were minor.
+- Starting implementation from a plan that has `status: DRAFT` frontmatter.
+- Removing the DRAFT banner or changing `status: READY` without explicit user confirmation.
+
+**What to say instead:**
+
+- After a first draft: "Draft complete. This needs at least 2 review-fix cycles before it can be considered ready. Running `/review` now."
+- After fixing findings: "Findings from round N addressed. Running `/review` again — round N+1."
+- After a clean review: "Round N complete with zero blocking findings. Review History shows N rounds completed. All Junior Dev Readiness checklist items pass. Document is still DRAFT. Awaiting your confirmation to mark READY."
+
+### Junior Dev Readiness Checklist (hard rule)
+
+Every task in a plan and every component in a design doc must satisfy **all** of these. If any item is missing, the document is **not ready** — this is a blocking finding.
+
+**Per task (plans):**
+
+1. **Inputs fully specified**: Exact types, where they come from (which module, function, store, or external source), and how they are obtained (function call, query, API request).
+2. **Outputs fully specified**: Exact return types and where they go (who consumes them, how they are stored or passed downstream).
+3. **Data flow trace**: For any task that moves or transforms data, the full path is spelled out: source → parse → transform → store/return, with the **type at each step**. No gaps, no "and then it gets processed."
+4. **Error cases enumerated**: Every error that can occur is listed with the expected behavior (raise, log-and-skip, retry with backoff — and if retry, how many times, what backoff, what happens after exhaustion).
+5. **File paths**: Every file to create or modify is listed with its full path relative to project root.
+6. **Import dependencies**: Which modules and Protocols the task depends on, so the developer knows what to import without searching.
+7. **Mechanical verification**: A copy-pasteable command that passes/fails. The command must verify the actual deliverable, not a proxy:
+   - Code tasks: `uv run pytest tests/test_<module>.py` and/or `uv run pyright --strict src/sapphire_flow/<module>.py`
+   - Schema/migration tasks: migration up+down against test DB (e.g., `uv run alembic upgrade head && uv run alembic downgrade -1`)
+   - Config/infra tasks: a validation script or config-check command
+   - A `pyright` command alone does NOT count as verification for non-code deliverables.
+8. **No implicit decisions**: If two reasonable implementations exist, the plan picks one and explains why. A developer should never have to guess.
+
+**Per component (design docs):**
+
+1. **Data flow is end-to-end**: From external source to final consumer, every hop is documented with types.
+2. **Interfaces are exact**: Protocol methods have full signatures (parameters, return types, exceptions).
+3. **Boundary behavior is explicit**: What happens at every system boundary — parsing, validation, error handling, retries.
+4. **Configuration is specified**: What is configurable, what the defaults are, where config comes from.
+5. **Concurrency and ordering**: If multiple things can happen in parallel or order matters, it is stated explicitly.
+6. **Cross-references are consistent**: Every type, Protocol, and field name matches `docs/spec/types-and-protocols.md` and other design docs.
+7. **No implicit decisions**: Where two reasonable designs exist, the doc picks one and explains why.
+8. **Open Questions resolved**: The `## Open Questions` section is mandatory. Any unchecked item (`- [ ]`) is a blocking finding. Absence of the section is also blocking.
 
 ## Context Awareness
 
@@ -280,6 +373,7 @@ start, end = TimeRange(t0, t1)
 | Fixed set of string options | `Literal` |
 | Domain state with named possibilities | `Enum` |
 | Interface / capability contract | `Protocol` |
+| External data parsing / validation | `pydantic.BaseModel` |
 
 ### Summary of rules
 
@@ -291,6 +385,43 @@ start, end = TimeRange(t0, t1)
 | Literal over raw strings | **Always** — when the set of valid values is fixed and known |
 | Protocols over inheritance | **Prefer** — use inheritance only for shared implementation |
 | NamedTuple for value types | **Default** — the go-to for all domain value types |
+| Pydantic at boundaries only | **Hard rule** — never in domain logic |
+
+### Pydantic for boundary validation
+
+Pydantic is used **exclusively at system boundaries** — API requests/responses, JSONB schema validation, external data ingestion (MeteoSwiss, BAFU, config files). It is **never** used for internal domain types.
+
+The flow is: **External data → Pydantic model (validate) → NamedTuple domain type (internal)**.
+
+```python
+from pydantic import BaseModel
+
+# Boundary: parse external API response
+class StationResponse(BaseModel):
+    id: str
+    name: str
+    latitude: float
+    longitude: float
+
+# Convert to domain type at the boundary
+def parse_station(raw: dict) -> Station:
+    resp = StationResponse.model_validate(raw)
+    return Station(
+        id=StationId(resp.id),
+        name=resp.name,
+        location=GeoCoord(lon=resp.longitude, lat=resp.latitude),
+    )
+```
+
+**Use Pydantic for:**
+- API request/response schemas (FastAPI integration)
+- JSONB field validation (DB storage)
+- External data source parsing (weather APIs, station feeds, config files)
+
+**Do NOT use Pydantic for:**
+- Internal domain value types (use `NamedTuple`)
+- Function signatures in domain logic
+- Anything that doesn't cross a system boundary
 
 ---
 

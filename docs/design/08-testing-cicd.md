@@ -1,3 +1,9 @@
+---
+status: DRAFT
+---
+
+> **DRAFT** — This design doc has not completed the review maturity gate. Do not treat as authoritative until `status: READY`.
+
 # Testing and CI/CD
 
 ## Design principles
@@ -183,6 +189,256 @@ Uses `docker-compose.test.yml` with Swiss data.
 clean up containers and volumes even if the test run is cancelled or times out.
 This prevents orphaned resources from accumulating on CI runners.
 
+### Load tests (manual, pre-release)
+
+Load tests validate that the system handles production-scale data volumes within
+acceptable time and latency bounds. They are **not run in CI** — they require a
+running PostgreSQL+PgBouncer stack and take several minutes to complete.
+
+**When to run**:
+- Before every release
+- After schema changes (new indexes, partition strategy changes)
+- After PostgreSQL or PgBouncer version upgrades
+- When adding new query patterns to the API
+
+#### What is tested
+
+1. **Write throughput — forecast cycle bulk insert**: A single forecast cycle
+   for 500 stations writes 375,000 rows to `forecast_values`
+   (500 stations x 50 ensemble members x 15 lead times). This simulates
+   `run_forecasts` completing and storing results.
+
+2. **Read latency — common query patterns**:
+   - Latest forecast for a station (the dashboard's default view)
+   - Observations for a station over a 7-day range (forecast input preparation)
+   - Active alerts across all stations (alert inbox)
+   - Model skill scores for a station (model comparison view)
+
+3. **Concurrent access**: 20 concurrent writers (simulating parallel
+   `forecast_station` tasks via Prefect `.submit()`) inserting forecast
+   results while read queries execute simultaneously.
+
+#### Data setup
+
+A `tests/load/generate_synthetic_data.py` script creates realistic test data:
+
+```python
+STATIONS = 500
+ENSEMBLE_MEMBERS = 50
+LEAD_TIMES = 15
+OBSERVATION_DAYS = 7
+OBSERVATION_INTERVAL_MINUTES = 15
+ROWS_PER_FORECAST_CYCLE = STATIONS * ENSEMBLE_MEMBERS * LEAD_TIMES  # 375,000
+```
+
+The script seeds the test database with stations, parameters, observations,
+thresholds, and historical forecasts before the load test runs. Data
+generation uses `COPY` for bulk loading to avoid polluting test timing
+with setup overhead.
+
+#### Test implementation
+
+Plain Python scripts using `asyncpg` for async database access. No complex
+load testing framework — the access patterns are well-defined and few.
+
+```python
+"""tests/load/test_load.py — run via `make test-load`."""
+import asyncio
+import time
+import asyncpg
+
+CONCURRENT_WRITERS = 20
+STATIONS_PER_WRITER = 25  # 500 / 20
+
+async def test_forecast_write_throughput(pool: asyncpg.Pool) -> float:
+    """Simulate 500-station forecast cycle with 20 concurrent writers."""
+    async def write_station_batch(station_ids: list[str]) -> None:
+        async with pool.acquire() as conn:
+            for station_id in station_ids:
+                await conn.executemany(
+                    """INSERT INTO forecast_values
+                       (forecast_id, issued_at, lead_time_minutes, member, value)
+                       VALUES ($1, $2, $3, $4, $5)
+                       ON CONFLICT DO NOTHING""",
+                    forecast_rows_for(station_id),
+                )
+
+    start = time.monotonic()
+    batches = partition(all_station_ids, CONCURRENT_WRITERS)
+    await asyncio.gather(*(write_station_batch(b) for b in batches))
+    return time.monotonic() - start
+
+async def test_read_latency(pool: asyncpg.Pool) -> dict[str, list[float]]:
+    """Measure P50/P95/P99 for common read queries."""
+    queries = {
+        "latest_forecast": """
+            SELECT fv.lead_time_minutes, fv.member, fv.value
+            FROM forecast_values fv
+            JOIN forecasts f ON f.id = fv.forecast_id
+            WHERE f.station_id = $1 AND f.parameter_id = $2
+            ORDER BY f.issued_at DESC LIMIT 750""",
+        "observations_7d": """
+            SELECT timestamp, value, quality_flag
+            FROM observations
+            WHERE station_id = $1 AND parameter_id = $2
+              AND timestamp >= NOW() - INTERVAL '7 days'
+            ORDER BY timestamp""",
+        "active_alerts": """
+            SELECT ae.*, s.code AS station_code
+            FROM alert_events ae
+            JOIN stations s ON s.id = ae.station_id
+            WHERE ae.resolved_at IS NULL
+            ORDER BY ae.raised_at DESC""",
+    }
+    # Run each query against 50 random stations, collect latencies
+    ...
+```
+
+#### Acceptance criteria
+
+| Metric | Target | Rationale |
+|--------|--------|-----------|
+| 500-station forecast cycle (375K row insert) | < 5 minutes | Conservative for t3.medium (2 vCPU, 4 GB) |
+| P95 "latest forecast for station" query | < 50 ms | Dashboard responsiveness through PgBouncer |
+| P95 "7-day observations for station" query | < 100 ms | Forecast input preparation, larger result set |
+| P95 "active alerts" query | < 50 ms | Alert inbox must be snappy for flood response |
+| P95 read latency during concurrent writes | < 150 ms | Reads degrade gracefully under write load |
+| Concurrent writers (20) | No deadlocks, no pool exhaustion | PgBouncer `default_pool_size=25` handles 20 writers + reads |
+
+If any target is missed, investigate before releasing:
+- Check `EXPLAIN ANALYZE` for missing indexes
+- Verify partition pruning is active (`rows removed by filter` near zero)
+- Check PgBouncer `SHOW POOLS` for connection queuing
+- Review `pg_stat_user_tables` for sequential scans on large tables
+
+#### Makefile target
+
+```makefile
+test-load:
+	@echo "Starting load test stack..."
+	docker compose -f docker-compose.test.yml up -d db pgbouncer
+	@sleep 5
+	docker compose -f docker-compose.test.yml run --rm migrate
+	@echo "Generating synthetic data (500 stations)..."
+	DATABASE_URL=postgresql://test:test@localhost:6432/sapphire_test \
+		uv run python tests/load/generate_synthetic_data.py
+	@echo "Running load tests..."
+	DATABASE_URL=postgresql://test:test@localhost:6432/sapphire_test \
+		uv run python tests/load/test_load.py
+	docker compose -f docker-compose.test.yml down -v
+```
+
+The load test script prints a summary and exits with code 1 if any criterion
+is violated:
+
+```
+SAPPHIRE Flow Load Test Results
+═══════════════════════════════════════════════════════════════
+Forecast write (375K rows, 20 writers)  :   187.3s  [PASS < 300s]
+Read: latest_forecast          P50:  8ms  P95: 32ms  [PASS < 50ms]
+Read: observations_7d          P50: 21ms  P95: 67ms  [PASS < 100ms]
+Read: active_alerts            P50:  5ms  P95: 18ms  [PASS < 50ms]
+Read during concurrent write   P50: 29ms  P95: 98ms  [PASS < 150ms]
+Concurrent writers: 20                    deadlocks: 0  [PASS]
+═══════════════════════════════════════════════════════════════
+```
+
+---
+
+### Failure mode tests
+
+The failure modes described in DD-05 ("Failure modes and recovery") are
+architectural commitments. Each one needs at least one test proving the system
+behaves correctly under that specific failure.
+
+All failure mode tests live in `tests/integration/test_failure_modes.py` and
+require a real PostgreSQL instance (testcontainers). Tagged
+`@pytest.mark.failure_mode` for independent execution:
+`uv run pytest -m failure_mode`.
+
+#### Summary
+
+| # | Failure mode | Test name | Level | Simulation technique |
+|---|-------------|-----------|-------|---------------------|
+| 1 | DB killed mid-write | `test_db_disconnect_during_upsert_is_idempotent` | Integration | `pg_terminate_backend` mid-transaction |
+| 2 | Worker killed mid-forecast | `test_rerun_after_crash_between_save_and_alert` | Integration | Mock AlertStore raises on first call, then rerun |
+| 3 | Adapter timeout | `test_adapter_circuit_breaker_activates_after_n_failures` | Unit | Mock adapter raises `TimeoutError` N times |
+| 4 | Adapter stale cache | `test_adapter_returns_stale_data_when_circuit_open` | Unit | Trip circuit breaker, verify cached data with stale flag |
+| 5 | Partition missing | `test_insert_without_partition_writes_to_dead_letter_queue` | Integration | Create parent without child partition for target year |
+| 6 | Stale alert | `test_stale_alert_flagged_after_2x_forecast_horizon` | Integration | Old alert + no superseding forecast, run maintenance |
+| 7 | Offline station | `test_offline_station_alert_not_auto_resolved` | Integration | Active alert + last observation > 2x reporting interval |
+
+#### Test specifications
+
+**1. DB killed mid-write** (`tests/integration/test_failure_modes.py::TestDbDisconnect`)
+
+- **Setup**: Seed station + parameter, prepare 100 observations.
+- **Action**: Begin `upsert_observations`, after ~50 rows terminate the backend
+  via `SELECT pg_terminate_backend(pid)` from a second connection. Catch the
+  disconnection error. Reconnect and retry the full upsert.
+- **Assert**: Exactly 100 observations exist (no partial writes, no duplicates).
+
+**2. Worker killed mid-forecast** (`tests/integration/test_failure_modes.py::TestWorkerCrashRecovery`)
+
+- **Setup**: Seed station with danger threshold at 5.0m, observations, weather data.
+  Configure model producing ensemble exceeding threshold.
+- **Action**: Call `forecast_station` with a mock `AlertStore` that raises on first
+  `raise_alert` call (simulating crash after save, before alert). Verify forecast
+  saved, no alert. Rerun with real `AlertStore`.
+- **Assert**: One forecast row (ON CONFLICT no-op on rerun). One alert created on
+  rerun (not duplicated).
+
+**3. Adapter circuit breaker** (`tests/unit/test_failure_modes.py::TestAdapterCircuitBreaker`)
+
+- **Setup**: Adapter with circuit breaker (threshold=5, cooldown=60s), mock HTTP
+  raising `TimeoutError`.
+- **Action**: Call adapter 6 times.
+- **Assert**: First 5 raise `TimeoutError`, 6th raises `CircuitBreakerOpenError`
+  without HTTP call. After advancing clock past cooldown, next call passes through.
+
+**4. Adapter stale cache** (`tests/unit/test_failure_modes.py::TestAdapterCircuitBreaker`)
+
+- **Setup**: One successful fetch to populate cache, then mock raises `TimeoutError`.
+  Trip circuit breaker.
+- **Action**: Call adapter with open circuit.
+- **Assert**: Returns cached data marked with stale flag, matching original fetch.
+
+**5. Partition missing** (`tests/integration/test_failure_modes.py::TestPartitionMissing`)
+
+- **Setup**: Create partitions for 2026 only. Seed station + parameter.
+- **Action**: `upsert_observations` with 2027-timestamped observation.
+- **Assert**: Raises `PartitionMissingError` (not generic `IntegrityError`).
+  `dead_letter_queue` has the rejected row. 2026 data unaffected.
+
+**6. Stale alert** (`tests/integration/test_failure_modes.py::TestStaleAlerts`)
+
+- **Setup**: Station with daily model (24h horizon). Danger alert `raised_at` =
+  50 hours ago. No forecast since alert.
+- **Action**: Run stale alert maintenance task.
+- **Assert**: Alert flagged `stale_unresolvable`, NOT auto-resolved. A 20-hour-old
+  alert for another station is NOT flagged (boundary check).
+
+**7. Offline station** (`tests/integration/test_failure_modes.py::TestOfflineStationAlerts`)
+
+- **Setup**: Station with 1h reporting interval. Active observation-based alert.
+  Last observation = 3 hours ago.
+- **Action**: Run `resolve_observation_alerts` + station-offline detection.
+- **Assert**: Alert NOT resolved, flagged `station_offline`. Health endpoint reports
+  station as offline. Control station with recent below-threshold observation has its
+  alert correctly resolved.
+
+#### CI integration
+
+Failure mode tests run as part of the integration test suite. No additional CI
+configuration needed — they use the same testcontainers PostgreSQL fixture.
+
+```bash
+uv run pytest tests/integration/ -m failure_mode -v  # failure modes only
+uv run pytest tests/integration/ -x                   # all integration tests
+```
+
+---
+
 ## Swiss reference dataset
 
 Swiss hydrological data from BAFU/FOEN is publicly available, well-maintained,
@@ -233,20 +489,44 @@ tests/
 │   ├── test_alerting.py
 │   ├── test_skill.py
 │   ├── test_rating.py
+│   ├── test_ensemble_calibration.py
 │   ├── test_forecast_prep.py
 │   ├── test_domain_types.py
+│   ├── test_settings.py
+│   ├── test_notification.py
+│   ├── test_registry.py
+│   ├── test_flow_ingest.py
+│   ├── test_flow_forecast.py
+│   ├── test_flow_alerts.py
+│   ├── test_flow_maintenance.py
+│   ├── test_flow_verification.py
+│   ├── test_flow_bulletin.py
+│   ├── test_flow_training.py
+│   ├── test_flow_hindcast.py
+│   ├── test_flow_historical.py
+│   ├── test_flow_catch_up.py
 │   └── test_bikram_sambat.py
 ├── integration/
 │   ├── test_store_observations.py
 │   ├── test_store_forecasts.py
 │   ├── test_store_alerts.py
 │   ├── test_store_weather.py
+│   ├── test_store_observation_edits.py
+│   ├── test_store_forecast_adjustments.py
+│   ├── test_store_audit_log.py
 │   ├── test_migrations.py
-│   └── test_api_routes.py
+│   ├── test_api_stations.py
+│   ├── test_api_forecasts.py
+│   ├── test_api_alerts.py
+│   └── test_failure_modes.py   # DB crash, partition missing, stale alerts, etc.
 ├── adapters/
 │   ├── test_hydro_scraper.py    # Contract tests (opt-in)
+│   ├── test_meteoswiss.py       # Synthetic GRIB2 fixtures + opt-in contract test
 │   ├── test_sapphire_dg.py      # Fixture-based
 │   └── test_ieasyhydro.py       # Fixture-based
+├── load/
+│   ├── generate_synthetic_data.py  # Seeds 500 stations for load tests
+│   └── test_load.py                # Write throughput + read latency benchmarks
 └── e2e/
     ├── test_ingest_pipeline.py
     ├── test_forecast_pipeline.py
@@ -600,7 +880,7 @@ make test-pr    # alias for: lint + typecheck + unit + integration
 ### Makefile targets
 
 ```makefile
-.PHONY: test test-unit test-integration test-e2e test-pr lint typecheck
+.PHONY: test test-unit test-integration test-e2e test-load test-pr lint typecheck
 
 test-unit:
 	uv run pytest tests/unit/ -x --tb=short
@@ -616,6 +896,16 @@ test-e2e:
 	docker compose -f docker-compose.test.yml down -v
 
 test-pr: lint typecheck test-unit test-integration
+
+test-load:
+	docker compose -f docker-compose.test.yml up -d db pgbouncer
+	@sleep 5
+	docker compose -f docker-compose.test.yml run --rm migrate
+	DATABASE_URL=postgresql://test:test@localhost:6432/sapphire_test \
+		uv run python tests/load/generate_synthetic_data.py
+	DATABASE_URL=postgresql://test:test@localhost:6432/sapphire_test \
+		uv run python tests/load/test_load.py
+	docker compose -f docker-compose.test.yml down -v
 
 test: test-pr test-e2e
 
@@ -713,3 +1003,8 @@ def make_ensemble(
 | Adapter changes break silently | Contract tests against live Swiss API + recorded fixtures |
 | "Works on my machine" | docker-compose.test.yml identical to production |
 | Slow feedback loop | Test pyramid: seconds for unit, minutes for full E2E |
+
+## Review History
+
+| Round | Date | Reviewers | Blocking | Advisory | Status |
+|-------|------|-----------|----------|----------|--------|

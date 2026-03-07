@@ -1,3 +1,9 @@
+---
+status: DRAFT
+---
+
+> **DRAFT** — This design doc has not completed the review maturity gate. Do not treat as authoritative until `status: READY`.
+
 # Data Model
 
 ## Core concepts
@@ -514,3 +520,8 @@ nonexistent forecasts, unlike a UUID array column.
 - Observation edits: negligible (manual, sparse)
 - Model skill: negligible (periodic batch computation)
 - Bulletins: ~2/day x 365 x 5 = ~3,650 rows
+
+## Review History
+
+| Round | Date | Reviewers | Blocking | Advisory | Status |
+|-------|------|-----------|----------|----------|--------|

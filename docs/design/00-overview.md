@@ -1,3 +1,9 @@
+---
+status: DRAFT
+---
+
+> **DRAFT** — This design doc has not completed the review maturity gate. Do not treat as authoritative until `status: READY`.
+
 # SAPPHIRE Flow — Design Overview
 
 ## What is SAPPHIRE Flow?
@@ -53,10 +59,13 @@ to any hydromet. Purpose: validate the full pipeline end-to-end, develop
 and test model integration, and build confidence before Nepal deployment.
 
 - Full pipeline: ingest → forecast → alert → API, running on Swiss reference stations
-- Weather data from MeteoSwiss open data API (not sapphire-dg — no API key needed)
-- Station data from BAFU/FOEN via hydro_scraper adapter (already planned)
-- Model development by the lead developer using Swiss data
+- Weather forecasts from MeteoSwiss ICON-CH2-EPS via OGD (no API key needed)
+- Weather observations from SwissMetNet stations via OGD (training forcing data)
+- River gauge data from BAFU/FOEN via hydro_scraper adapter
+- NWP forecast archiving from day one (builds hindcast for future bias correction)
+- Model development by the lead developer using Swiss station data
 - Simple models only (linear regression, persistence, possibly HBV via pydrology)
+- Training on co-located SMN weather + BAFU river observations (same approach as Nepal)
 - No Nepal-specific features (no Bikram Sambat, no bulletin generation)
 - No security hardening (local development, no TLS/MFA)
 - Staging environment on AWS with Swiss data running continuously
@@ -116,9 +125,10 @@ and test model integration, and build confidence before Nepal deployment.
 - ~~**sapphire-sdk scope and governance**~~ — **Resolved**: For v1.0, all Protocols and domain types live inside SAPPHIRE_flow (in `src/sapphire_flow/protocols/` and `src/sapphire_flow/types/`). Extraction to a separate `sapphire-sdk` package is deferred until the model collaborator actively needs a shared dependency. This avoids multi-repo coordination overhead while there is only one consumer. The Protocol-based design means extraction is mechanical — move files, add a `pyproject.toml` — when the time comes.
 - ~~**ON CONFLICT strategy for observation ingest**~~ — **Resolved**: uses `INSERT ... ON CONFLICT DO UPDATE` for value and quality_flag columns, handling both duplicate fetches and source corrections. See 02-data-model.md.
 - ~~**forecast_values partitioning strategy**~~ — **Resolved**: `forecast_values` uses a denormalized `issued_at` column and is partitioned by monthly time range. UUIDv7-based range partitioning was rejected due to operational complexity. See 02-data-model.md.
-- **Flood threshold reference datums** — Thresholds may be in different units/datums (m a.s.l. vs m above gauge zero vs m³/s). Need to clarify with hydromet. See 02-data-model.md and 06-api.md.
+- ~~**Flood threshold reference datums**~~ — **Resolved**: `FloodThreshold` now includes a `unit: str` field (e.g. `"m_gauge_zero"`, `"m_asl"`, `"m3s"`). Each adapter populates this from its source. The DB schema already had `unit_note TEXT`; the NamedTuple now matches. Which specific datum each external source uses is determined during adapter implementation (v0: BAFU; v1: Nepal DHM).
 - **Event-mode forecasting** — ECMWF forecasts available every 6 hours. Real-time rainfall data at higher frequency could refine forecasts between ECMWF cycles. Needs research. See 05-flows.md.
-- **MeteoSwiss weather data format** — The MeteoSwiss open data API is used for v0 (Swiss development phase). Unknown whether it provides ensemble forecasts or only deterministic output. If deterministic, the adapter wraps it as a single-member ensemble. Investigate during v0 implementation. See 03-adapters.md.
+- ~~**MeteoSwiss weather data format**~~ — **Resolved**: MeteoSwiss OGD provides ICON-CH2-EPS ensemble forecasts (21 members, 120h horizon, hourly, GRIB2) and ICON-CH1-EPS (11 members, 33h, hourly). Grid data only — adapter extracts nearest grid points via cfgrib + xarray. Files available for 24h after publication. No API key needed. See 03-adapters.md.
+- ~~**v0 training data source**~~ — **Resolved**: Models train on SwissMetNet (SMN) station observations (hourly, 1981–present) co-located with river gauges. This avoids the daily-to-sub-daily temporal disaggregation problem with gridded climate data (RhiresD/TabsD). ICON-CH2-EPS forecasts are archived permanently from day one to build a hindcast archive for future bias correction. See 03-adapters.md.
 
 ## Pre-implementation refinement
 
@@ -128,24 +138,28 @@ exactly what to implement and how to verify that the implementation is correct.*
 
 Areas that need refinement:
 
-- **Load testing strategy**: Define a `make test-load` target that simulates a
-  500-station forecast cycle (382K rows written to `forecast_values` per run)
-  and measures write throughput + query latency through PgBouncer. Acceptance
-  criteria: full cycle completes within N minutes, P95 query latency under M ms.
-  See 08-testing-cicd.md.
-- **Chaos / failure mode testing**: The failure modes in 05-flows.md are described
-  but have no corresponding tests. Add integration tests that simulate: DB killed
-  mid-write, worker killed mid-forecast, adapter timeout, partition missing. One
-  test per failure mode minimum.
-- **JSONB schema validation**: Define Pydantic models for all JSONB fields
-  (`access_tokens.scope`, `stations.metadata`, `rating_curves.data`,
-  `rating_curves.uncertainty`, `model_skill.metrics`). Validate at the API
-  boundary. Document the expected JSON structure for each field.
+- ~~**Load testing strategy**~~ — **Resolved**: `make test-load` target defined
+  in 08-testing-cicd.md. Simulates 500-station cycle (375K rows), 20 concurrent
+  writers, measures P95 latency through PgBouncer. Acceptance criteria: <5 min
+  write, <50ms P95 read, <150ms P95 read under write load.
+- ~~**Chaos / failure mode testing**~~ — **Resolved**: 7 failure mode tests
+  specified in 08-testing-cicd.md covering DB mid-write crash, worker crash
+  recovery, adapter circuit breaker, stale cache fallback, partition missing
+  with dead letter queue, stale alert flagging, and offline station alerts.
+- ~~**JSONB schema validation**~~ — **Resolved**: Pydantic models defined for
+  all 9 JSONB columns in `types-and-protocols.md` ("JSONB Boundary Schemas"
+  section). Models: AccessTokenScope, StationMetadata, BasinMetadata,
+  RatingCurveData, RatingCurveUncertainty, SkillMetrics, AuditDetail
+  (discriminated union), EnsembleSnapshot. Implementation task 0a.14 added.
 - **Upstream/downstream hydrological consistency** (v2.0): Post-forecast check
   that flags cases where a downstream station shows lower water levels than
   upstream during a rising limb. Even a dashboard warning would be valuable.
-- **MeteoSwiss adapter specifics**: Determine API endpoints, data format,
-  temporal resolution, and ensemble availability during v0 implementation.
+- ~~**MeteoSwiss adapter specifics**~~ — **Resolved**: Two adapters for v0:
+  (1) `meteoswiss_nwp` fetches ICON-CH2-EPS ensemble forecasts (21 members,
+  5-day horizon, hourly, GRIB2) via STAC API — grid-only, extracts nearest
+  grid points, archives all data permanently for future bias correction.
+  (2) `meteoswiss_smn` fetches SwissMetNet weather station observations
+  (hourly, ~160 stations, CSV via OGD) for model training. See 03-adapters.md.
 
 ## Document index
 
@@ -158,3 +172,8 @@ Areas that need refinement:
 - [07-deployment.md](07-deployment.md) — Docker Compose and operations
 - [08-testing-cicd.md](08-testing-cicd.md) — Testing strategy and CI/CD pipeline
 - [hydromet-qa-prep.md](hydromet-qa-prep.md) — Nepal DHM meeting preparation
+
+## Review History
+
+| Round | Date | Reviewers | Blocking | Advisory | Status |
+|-------|------|-----------|----------|----------|--------|

@@ -1,3 +1,9 @@
+---
+status: DRAFT
+---
+
+> **DRAFT** — This design doc has not completed the review maturity gate. Do not treat as authoritative until `status: READY`.
+
 # Architecture
 
 ## Tech stack
@@ -59,9 +65,11 @@ Configuration:
                     ┌──────────────────────┐
                     │   External APIs      │
                     │  ┌────────────────┐  │
-                    │  │ sapphire-dg    │  │  weather forecasts + reanalysis
+                    │  │ MeteoSwiss NWP │  │  ICON-CH2-EPS ensemble (v0)
+                    │  │ MeteoSwiss SMN │  │  weather station obs (v0)
+                    │  │ hydro_scraper  │  │  river gauge data (v0)
+                    │  │ sapphire-dg    │  │  ECMWF forecasts (v1)
                     │  │ ieasyhydro     │  │  station data (Central Asia)
-                    │  │ hydro_scraper  │  │  station data (Switzerland)
                     │  │ (future)       │  │  station data (Nepal, ...)
                     │  └────────────────┘  │
                     └──────────┬───────────┘
@@ -127,16 +135,16 @@ SAPPHIRE_flow/
 │   ├── __init__.py
 │   ├── protocols/          # All Protocol definitions (DataSource, ForecastModel, Repository, etc.)
 │   ├── types/              # Shared domain types (Observation, ForecastEnsemble, ModelInputs, etc.)
+│   ├── schemas/           # Pydantic boundary validation (JSONB fields)
 │   ├── adapters/           # Data source adapters
 │   │   ├── __init__.py
-│   │   ├── protocol.py     # DataSource Protocol
-│   │   ├── meteoswiss.py   # MeteoSwiss open data (v0, Switzerland weather)
-│   │   ├── sapphire_dg.py  # ECMWF weather via dg-client (v1+)
-│   │   ├── ieasyhydro.py   # Central Asia stations
-│   │   └── hydro_scraper.py# Switzerland stations (BAFU/FOEN)
+│   │   ├── meteoswiss_nwp.py  # ICON-CH2-EPS ensemble forecasts (v0)
+│   │   ├── meteoswiss_smn.py  # SwissMetNet weather stations (v0)
+│   │   ├── hydro_scraper.py   # BAFU/FOEN river gauges (v0)
+│   │   ├── sapphire_dg.py     # ECMWF weather via dg-client (v1+)
+│   │   └── ieasyhydro.py      # Central Asia stations
 │   ├── models/             # Forecast model interface
 │   │   ├── __init__.py
-│   │   ├── protocol.py     # ForecastModel Protocol
 │   │   └── registry.py     # Model discovery + loading
 │   ├── flows/              # Prefect flows
 │   │   ├── __init__.py
@@ -269,6 +277,22 @@ in tests implements methods in one place.
 ```python
 from typing import Protocol, runtime_checkable
 from datetime import datetime
+from uuid import UUID
+
+@runtime_checkable
+class StationStore(Protocol):
+    def list_stations(self, kind: StationKind | None = None, basin_id: UUID | None = None,
+                      limit: int = 50, after: str | None = None) -> tuple[list[StationConfig], str | None]: ...
+    def get_station_by_id(self, station_id: UUID) -> StationConfig | None: ...
+    def get_station_by_code(self, code: str) -> StationConfig | None: ...
+    def create_station(self, info: StationInfo) -> StationConfig: ...
+    def upsert_stations(self, stations: list[StationInfo]) -> int: ...
+    def get_active_station_configs(self) -> list[StationConfig]: ...
+    def list_basins(self) -> list[BasinInfo]: ...
+    def upsert_model_assignment(self, station_id: UUID, model_id: str, model_version: str,
+                                artifact_path: str, fallback_model_id: str | None = None,
+                                fallback_artifact: str | None = None) -> None: ...
+
 
 @runtime_checkable
 class ObservationStore(Protocol):
@@ -314,8 +338,14 @@ class ForecastStore(Protocol):
     def get_past_forecasts(
         self, station: StationConfig, lookback_days: int,
     ) -> list[Forecast]: ...
+    def update_forecast_status(self, forecast_ids: list[str], status: ForecastStatus) -> None: ...
+
+
+@runtime_checkable
+class RatingCurveStore(Protocol):
     def get_active_rating_curve(self, station: StationConfig) -> RatingCurve | None: ...
-    def update_forecast_status(self, forecast_ids: list[str], status: str) -> None: ...
+    def save_rating_curve(self, rating_curve: RatingCurve) -> None: ...
+    def list_rating_curves(self, station_id: UUID) -> list[RatingCurve]: ...
 
 
 @runtime_checkable
@@ -328,14 +358,15 @@ class AlertStore(Protocol):
         self, station_param_pairs: set[tuple[str, str]],
     ) -> dict[tuple[str, str], list[FloodThreshold]]: ...
     def raise_alert(
-        self, station, forecast, lead_time: int, threshold,
+        self, station: StationConfig, forecast: Forecast, lead_time: int,
+        threshold: FloodThreshold,
         exceedance_fraction: float | None = None,
     ) -> None: ...
-    def raise_observation_alert(self, observation: Observation, threshold) -> None: ...
-    def resolve_stale_alerts(self, station, forecast) -> None: ...
+    def raise_observation_alert(self, observation: Observation, threshold: FloodThreshold) -> None: ...
+    def resolve_stale_alerts(self, station: StationConfig, forecast: Forecast) -> None: ...
     def resolve_observation_alerts(self, station_id: str, parameter_id: str) -> None: ...
     def get_unacknowledged_danger_alerts(
-        self, station_id: str | None = None, source: str | None = None,
+        self, station_id: str | None = None, source: AlertSource | None = None,
     ) -> list[AlertEvent]: ...
 
 
@@ -343,14 +374,21 @@ class AlertStore(Protocol):
 class SkillStore(Protocol):
     """Skill score storage only. Reads forecasts and observations via
     ForecastStore and ObservationStore (injected into the skill service)."""
-    def save_skill_scores(self, station, model_id: str, metrics: dict) -> None: ...
+    def save_skill_scores(self, station: StationConfig, model_id: str, metrics: dict[str, float]) -> None: ...
 
 
 @runtime_checkable
 class BulletinStore(Protocol):
     """Bulletin record storage only. Reads forecasts via ForecastStore
     (injected into the bulletin flow)."""
-    def save_bulletin(self, scope, basin_id, template_id, path, forecast_ids) -> None: ...
+    def save_bulletin(
+        self, scope: BulletinScope, basin_id: str | None,
+        template_id: str, path: str, forecast_ids: list[str],
+    ) -> None: ...
+    def get_bulletin(self, bulletin_id: UUID) -> Bulletin | None: ...
+    def list_bulletins(
+        self, scope: BulletinScope | None = None, basin_id: str | None = None,
+    ) -> list[Bulletin]: ...
 
 
 @runtime_checkable
@@ -378,6 +416,14 @@ def compute_model_skill(
     forecast_store: ForecastStore,
     observation_store: ObservationStore,
     skill_store: SkillStore,
+    ...
+): ...
+
+# Forecast flow receives RatingCurveStore separately for discharge conversion
+def forecast_station(
+    station: StationConfig,
+    forecast_store: ForecastStore,
+    rating_curve_store: RatingCurveStore,
     ...
 ): ...
 ```
@@ -410,3 +456,8 @@ Two health endpoints serve different purposes:
 
 - `GET /api/v1/ping` — returns `200 OK` with no database access. Used by load balancers and external uptime monitors to verify the process is alive.
 - `GET /api/v1/health` — returns system status including database connectivity, last ingest/forecast times, active alert counts, and disk usage. Used for operational monitoring. Times out gracefully (returns HTTP 503 with partial status) if the database does not respond within 5 seconds.
+
+## Review History
+
+| Round | Date | Reviewers | Blocking | Advisory | Status |
+|-------|------|-----------|----------|----------|--------|
