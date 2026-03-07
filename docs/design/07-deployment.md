@@ -133,7 +133,7 @@ sapphire_flow = host=db port=5432 dbname=sapphire_flow
 [pgbouncer]
 listen_addr = 0.0.0.0
 listen_port = 6432
-auth_type = plain
+auth_type = scram-sha-256
 auth_file = /etc/pgbouncer/userlist.txt
 pool_mode = transaction
 default_pool_size = 25
@@ -215,8 +215,14 @@ File permissions: `chmod 600 .env`. Never commit to git (already in .gitignore).
 
 The initial migration creates three application users with minimal privileges:
 
-- `sapphire_api` — SELECT on all tables, INSERT/UPDATE on observation_edits, forecast_adjustments, bulletins, audit_log
-- `sapphire_worker` — SELECT/INSERT/UPDATE on observations, forecasts, forecast_values, alert_events, model_skill
+- `sapphire_api`:
+  - SELECT on all tables (including weather_forecasts, dead_letter_queue, station_weather_sources)
+  - INSERT/UPDATE on: observation_edits, forecast_adjustments, bulletins, alert_events, forecasts (status + version), access_tokens
+  - INSERT only (no UPDATE, no DELETE) on: audit_log — enforces append-only guarantee at the DB level
+  - Note: "acknowledge only" on alert_events is enforced at the application level (API route checks), not via PostgreSQL GRANT. The DB grants full INSERT/UPDATE on alert_events to sapphire_api.
+- `sapphire_worker`:
+  - SELECT/INSERT/UPDATE on: observations, forecasts, forecast_values, alert_events, model_skill, weather_forecasts, dead_letter_queue
+  - DELETE on: weather_forecasts (ensemble-to-statistics transition only)
 - `sapphire_prefect` — full access to the `prefect` database only, no access to `sapphire_flow` tables
 
 The `sapphire_admin` user (from POSTGRES_USER) is only used for migrations and maintenance.
@@ -248,10 +254,6 @@ chmod 600 secrets/*.txt
 cp config.example.toml config.toml
 nano config.toml  # configure adapters, QC params, schedules (NOT station config)
 
-# 4b. Import station metadata (from hydromet API or CSV)
-docker compose exec api sapphire-flow import-stations --source=api
-# Or from CSV: docker compose exec api sapphire-flow import-stations --csv=stations.csv
-
 # 5. Start everything
 docker compose up -d
 
@@ -261,7 +263,11 @@ docker compose exec api sapphire-flow migrate
 # bypassing PgBouncer. PgBouncer's transaction pooling is incompatible
 # with Alembic's advisory locks.
 
-# 6b. Set up the Caddyfile with your domain or IP
+# 6b. Import station metadata (from hydromet API or CSV)
+docker compose exec api sapphire-flow import-stations --source=api
+# Or from CSV: docker compose exec api sapphire-flow import-stations --csv=stations.csv
+
+# 6c. Set up the Caddyfile with your domain or IP
 #     Edit Caddyfile, then: docker compose restart caddy
 
 # 7. Create the first admin user
@@ -384,6 +390,33 @@ Model weight files are backed up alongside the database. Store in a
 
 `config.toml` and `.env` are version-controlled (`.env` in a private
 location, not the public repo). Include in encrypted backups.
+
+### Data retention
+
+| Data | Retention in PG | Archive format |
+|------|-----------------|---------------|
+| Observations | Indefinite | In PostgreSQL |
+| Weather forecast stats | 3 years | Parquet on volume, then S3/offsite |
+| Hydrological forecasts (raw) | 2 years | Parquet on volume |
+| Hydrological forecasts (selected/published) | Indefinite | In PostgreSQL |
+| Model skill scores | Indefinite | In PostgreSQL |
+| Audit log | Per deployment (min 5 years) | In PostgreSQL |
+| Bulletins | Indefinite | In PostgreSQL + generated files |
+
+Archive process: A monthly maintenance flow exports old partitions to
+Parquet (via `COPY ... TO PROGRAM`), verifies row counts AND aggregate
+checksums (MIN/MAX timestamps, SUM of values) match, then drops the
+partition. Archived Parquet files are included in offsite backup.
+
+FK cascade ordering for partition drops:
+1. `forecast_values` partition (references `forecasts.id`)
+2. `alert_events` rows referencing affected forecasts (SET NULL on
+   `forecast_id`, preserving the alert record)
+3. `forecasts` rows (only raw, non-selected forecasts)
+4. `weather_forecasts` partition (no FK dependencies pointing to it)
+
+The archive flow enforces this ordering. Selected/published forecasts
+and their forecast_values are never archived.
 
 ## Monitoring
 
@@ -514,6 +547,18 @@ acceptable for internal Docker network connections.
 
 The beauty of Docker Compose: the exact same setup runs on AWS EC2
 and on the hydromet's own servers.
+
+### Prefect version management
+
+Pin to a specific minor version (e.g. 3.2.x). Upgrade policy:
+- Test new Prefect versions on staging before production
+- Only upgrade between forecast seasons (not during active flood monitoring)
+- Document which Prefect APIs are used: deployments, automations,
+  .submit() for concurrent tasks, flow/task decorators, CronSchedule
+
+Known risk: Prefect 3.x API is evolving. The deployment API changed between
+3.0 and 3.1. Pin exact version in docker-compose.yml and test upgrades
+explicitly.
 
 ## Localization
 

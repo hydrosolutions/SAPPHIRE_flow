@@ -1,8 +1,6 @@
 ---
-status: DRAFT
+status: READY
 ---
-
-> **DRAFT** — This design doc has not completed the review maturity gate. Do not treat as authoritative until `status: READY`.
 
 # Architecture
 
@@ -160,7 +158,8 @@ SAPPHIRE_flow/
 │   │   ├── qc.py           # Automated quality control (range, rate-of-change)
 │   │   ├── skill.py        # Metric computation
 │   │   ├── rating.py       # Rating curve application
-│   │   └── forecast_prep.py # Model input preparation, sanity checks, prepare_model_inputs
+│   │   ├── forecast_prep.py # Model input preparation, sanity checks, prepare_model_inputs
+│   │   └── training_prep.py # Training data assembly (joins observations + weather)
 │   ├── store/              # Database layer
 │   │   ├── __init__.py
 │   │   ├── observations.py # ObservationStore implementation
@@ -221,6 +220,22 @@ SAPPHIRE_flow/
 - PostgreSQL and Prefect are never exposed outside the Docker network
 - Prefect UI is accessible only via SSH tunnel for IT staff
 
+### CORS policy
+- The HTMX dashboard is served from the same origin as the API — no CORS needed for the primary UI
+- External browser-based consumers (e.g. a hydromet's own React frontend) require CORS headers
+- Caddy sets `Access-Control-Allow-Origin` to a configurable allowlist of origins (default: same-origin only)
+- Credentials (`Access-Control-Allow-Credentials: true`) are only sent for origins in the allowlist
+- Allowed methods: `GET, POST, PATCH, DELETE, OPTIONS`
+- Allowed headers: `Authorization, Content-Type, X-CSRF-Token`
+- The allowlist is configured per deployment in `config.toml` under `[security.cors]`
+- If no origins are configured, CORS is disabled (same-origin only) — secure by default
+
+### Error response sanitization
+- Production mode (`ENVIRONMENT=production`): API returns structured JSON errors with an error code and user-safe message only. Internal details (stack traces, SQL fragments, file paths) are logged server-side but never sent to the client.
+- Development mode: FastAPI default behavior with detailed errors for debugging.
+- FastAPI exception handlers catch `Exception` and return `{"error": "<code>", "message": "<safe message>", "request_id": "<uuid>"}`. The `request_id` correlates with server-side logs for debugging.
+- Pydantic validation errors return field-level messages but no internal type details.
+
 ### Authentication
 - Dashboard: cookie-based sessions with TOTP MFA (forecaster + admin roles)
 - API consumers: short-lived JWT (15 min) with refresh token rotation
@@ -232,7 +247,8 @@ Three PostgreSQL users:
 
 `sapphire_api`:
 - SELECT on all tables (including: weather_forecasts, dead_letter_queue, station_weather_sources)
-- INSERT/UPDATE on: observation_edits, forecast_adjustments, bulletins, audit_log, alert_events, forecasts (status + version), access_tokens
+- INSERT/UPDATE on: observation_edits, forecast_adjustments, bulletins, alert_events, forecasts (status + version), access_tokens
+- INSERT only (no UPDATE, no DELETE) on: audit_log — enforces append-only guarantee at the DB level
 - Note: "acknowledge only" on alert_events is enforced at the application level (API route checks), not via PostgreSQL GRANT. The DB grants full INSERT/UPDATE on alert_events to sapphire_api.
 
 `sapphire_worker`:
@@ -254,7 +270,7 @@ flows/   -->  services/  -->  store/
 
 - `routes/` and `flows/` are thin wiring layers (HTTP handling / Prefect orchestration)
 - `services/` contains business logic: pure functions and classes with no framework dependencies
-- `store/` provides data access behind repository Protocols (see store/protocol.py)
+- `store/` provides data access behind repository Protocols (see `protocols/stores.py`)
 - This separation ensures business logic is testable without FastAPI, Prefect, or PostgreSQL
 
 ## Station configuration
@@ -296,11 +312,24 @@ class StationStore(Protocol):
     def get_station_by_code(self, code: str) -> StationConfig | None: ...
     def create_station(self, info: StationInfo) -> StationConfig: ...
     def upsert_stations(self, stations: list[StationInfo]) -> int: ...
+    def update_station(
+        self,
+        station_id: UUID,
+        name: str | None = None,
+        basin_id: UUID | None = None,
+        elevation_m: float | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> StationConfig: ...
+    # Partial update. Only non-None fields are changed.
+
     def get_active_station_configs(self) -> list[StationConfig]: ...
     # Note: get_active_station_configs JOINs station_weather_sources to populate
     # StationConfig.weather_source_ids. Uses LEFT JOIN station_weather_sources sws
     # ON sws.river_station_id = s.id, grouping to collect weather station UUIDs.
     # Stations with no linked weather sources get an empty list.
+
+    def get_station_configs_by_basin(self, basin_id: UUID) -> list[StationConfig]: ...
+
     def list_basins(self) -> list[BasinInfo]: ...
     def get_model_assignment(
         self, station_id: UUID, parameter_id: UUID,
@@ -363,13 +392,13 @@ class ForecastStore(Protocol):
         self, station: StationConfig, param_config: ParameterForecastConfig,
         ensemble: ForecastEnsemble,
     ) -> Forecast: ...
-    def get_forecasts_by_ids(self, ids: list[str]) -> list[Forecast]: ...
-    def get_selected_forecasts_for_basin(self, basin_id: str) -> list[Forecast]: ...
+    def get_forecasts_by_ids(self, ids: list[UUID]) -> list[Forecast]: ...
+    def get_selected_forecasts_for_basin(self, basin_id: UUID) -> list[Forecast]: ...
     def get_all_selected_forecasts(self) -> list[Forecast]: ...
     def get_past_forecasts(
         self, station: StationConfig, lookback_days: int,
     ) -> list[Forecast]: ...
-    def update_forecast_status(self, forecast_ids: list[str], status: ForecastStatus) -> None: ...
+    def update_forecast_status(self, forecast_ids: list[UUID], status: ForecastStatus) -> None: ...
 
 
 @runtime_checkable
@@ -407,7 +436,11 @@ class SkillStore(Protocol):
     ForecastStore and ObservationStore (injected into the skill service)."""
     def save_skill_scores(
         self, station: StationConfig, parameter_id: UUID,
-        model_id: str, metrics: dict[str, float],
+        model_id: str, model_version: str,
+        forecast_type: ForecastType,
+        lead_time_minutes: int,
+        period_start: datetime, period_end: datetime,
+        metrics: dict[str, float],
     ) -> None: ...
 
 
@@ -416,26 +449,33 @@ class BulletinStore(Protocol):
     """Bulletin record storage only. Reads forecasts via ForecastStore
     (injected into the bulletin flow)."""
     def save_bulletin(
-        self, scope: BulletinScope, basin_id: str | None,
-        template_id: str, path: str, forecast_ids: list[str],
+        self, scope: BulletinScope, basin_id: UUID | None,
+        template_id: str, path: str, forecast_ids: list[UUID],
         generated_by: UUID,
     ) -> None: ...
     def get_bulletin(self, bulletin_id: UUID) -> Bulletin | None: ...
     def list_bulletins(
-        self, scope: BulletinScope | None = None, basin_id: str | None = None,
+        self, scope: BulletinScope | None = None, basin_id: UUID | None = None,
     ) -> list[Bulletin]: ...
 
 
 @runtime_checkable
 class TrainingStore(Protocol):
-    def prepare_training_data(
-        self,
-        station_id: UUID,
-        parameter_id: UUID,
-        start: datetime | None = None,  # default: earliest available
-        end: datetime | None = None,    # default: latest available
-        weather_params: list[str] | None = None,  # default: all linked
-    ) -> TrainingDataset: ...
+    """Data access only. Training data assembly (joining observations with
+    weather data, QC filtering) lives in services/training_prep.py — see
+    'What moved to services' section below."""
+    def get_training_observations(
+        self, station_id: UUID, parameter_id: UUID,
+        start: datetime | None = None, end: datetime | None = None,
+    ) -> list[Observation]: ...
+    # Returns QC-passed observations (quality_flag != 9) for the target parameter.
+
+    def get_training_weather(
+        self, weather_station_ids: list[UUID], params: list[str] | None = None,
+        start: datetime | None = None, end: datetime | None = None,
+    ) -> list[Observation]: ...
+    # Returns weather observations from linked stations for specified parameters.
+
     def log_training_result(self, station_id: UUID, result: TrainResult) -> None: ...
 
 
@@ -443,10 +483,10 @@ class TrainingStore(Protocol):
 class ObservationEditStore(Protocol):
     """Records manual edits to observation values with full audit trail."""
     def save_edit(
-        self, station_id: str, timestamp: datetime, edit: ObservationEdit,
+        self, station_id: UUID, timestamp: datetime, edit: ObservationEdit,
     ) -> None: ...
     def get_edits(
-        self, station_id: str, start: datetime, end: datetime,
+        self, station_id: UUID, start: datetime, end: datetime,
     ) -> list[ObservationEdit]: ...
 
 
@@ -463,10 +503,10 @@ class ForecastAdjustmentStore(Protocol):
 class AuditLogStore(Protocol):
     """Append-only log of all user actions for auditability."""
     def log_action(
-        self, user_id: str, action: str, detail: dict[str, Any],
+        self, user_id: UUID, action: str, detail: dict[str, Any],
     ) -> None: ...
     def query_log(
-        self, user_id: str | None = None, action: str | None = None,
+        self, user_id: UUID | None = None, action: str | None = None,
         start: datetime | None = None, end: datetime | None = None,
     ) -> list[dict[str, Any]]: ...
 ```
@@ -522,6 +562,38 @@ def prepare_model_inputs(
 ) -> ModelInputs: ...
 ```
 
+Similarly, `prepare_training_data` (previously on `TrainingStore`) is business logic —
+it joins river observations with weather station data and filters by QC flags.
+It now lives in `services/training_prep.py`:
+
+```python
+# services/training_prep.py
+def prepare_training_data(
+    station: StationConfig,
+    parameter_id: UUID,
+    training_store: TrainingStore,
+    start: datetime | None = None,
+    end: datetime | None = None,
+    weather_params: list[str] | None = None,
+) -> TrainingDataset: ...
+```
+
+### Type bridging: adapter codes ↔ store UUIDs
+
+Adapters produce `Observation` objects with string identifiers (`station_code`, `parameter`).
+Stores use UUIDs internally. The `upsert_observations` return value provides the bridge:
+
+```python
+rows, code_to_uuid = store.upsert_observations(observations)
+# code_to_uuid: dict[(str, str), (UUID, UUID)]  — maps (station_code, parameter) → (station_id, parameter_id)
+```
+
+The QC service (`services/qc.py`) operates on `Observation` objects and uses string keys
+`(station_code, parameter)` for grouping — matching the adapter-level representation.
+Flows bridge the two by converting UUID-keyed store results to string-keyed dicts
+before passing to the QC service. This is intentional: services stay adapter-agnostic,
+stores stay UUID-consistent, and flows handle the wiring.
+
 Domain types (`Observation`, `Forecast`, `AlertEvent`, `FloodThreshold`, etc.)
 referenced here are defined in `sapphire_flow.types`. Adapter-specific and
 model-specific types are documented in 03-adapters.md and 04-models.md.
@@ -542,9 +614,22 @@ scale horizontally with Prefect's work pool feature.
 Two health endpoints serve different purposes:
 
 - `GET /api/v1/ping` — returns `200 OK` with no database access. Used by load balancers and external uptime monitors to verify the process is alive.
-- `GET /api/v1/health` — returns system status including database connectivity, last ingest/forecast times, active alert counts, and disk usage. Used for operational monitoring. Times out gracefully (returns HTTP 503 with partial status) if the database does not respond within 5 seconds.
+- `GET /api/v1/health` — returns system status including database connectivity, Prefect server connectivity (`GET http://prefect:4200/api/health`, 3s timeout), last ingest/forecast times, active alert counts, and disk usage. Used for operational monitoring. Times out gracefully (returns HTTP 503 with partial status) if the database does not respond within 5 seconds. If Prefect is unreachable, reports `"prefect": "unreachable"` and degrades overall status to `"status": "degraded"`.
+
+## Open Questions
+
+All resolved. No open questions remain for 01-architecture.md.
+
+- ~~**Connection pooling approach**~~ — **Resolved**: PgBouncer in transaction mode with `prepare_threshold=0`. See "Connection pooling" section.
+- ~~**Dashboard technology**~~ — **Resolved**: HTMX + Jinja2 for simplicity. No JS build chain.
+- ~~**Store Protocol granularity**~~ — **Resolved**: Entity-based (one Protocol per domain entity). See "Repository Protocols" section.
 
 ## Review History
 
 | Round | Date | Reviewers | Blocking | Advisory | Status |
 |-------|------|-----------|----------|----------|--------|
+| 1 | 2026-03-07 | design-reviewer, review-docs, review-security, review-data-eng | 9 | 18 | fixes-needed |
+| 2 | 2026-03-07 | design-reviewer, review-security, review-data-eng, review-docs | 0 | 6 | fixes-needed |
+| 3 | 2026-03-07 | design-reviewer, review-docs, review-security, review-data-eng, review-ops | 5 | 10 | fixes-needed |
+| 4 | 2026-03-07 | design-reviewer, review-docs, review-security | 0 | 0 | fixes-needed |
+| 5 | 2026-03-07 | design-reviewer, review-docs, review-security, review-data-eng | 0 | 0 | user-confirmed |

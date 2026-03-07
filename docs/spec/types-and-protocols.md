@@ -711,13 +711,13 @@ class ForecastStore(Protocol):
         self, station: StationConfig, param_config: ParameterForecastConfig,
         ensemble: ForecastEnsemble,
     ) -> Forecast: ...
-    def get_forecasts_by_ids(self, ids: list[str]) -> list[Forecast]: ...
-    def get_selected_forecasts_for_basin(self, basin_id: str) -> list[Forecast]: ...
+    def get_forecasts_by_ids(self, ids: list[UUID]) -> list[Forecast]: ...
+    def get_selected_forecasts_for_basin(self, basin_id: UUID) -> list[Forecast]: ...
     def get_all_selected_forecasts(self) -> list[Forecast]: ...
     def get_past_forecasts(
         self, station: StationConfig, lookback_days: int,
     ) -> list[Forecast]: ...
-    def update_forecast_status(self, forecast_ids: list[str], status: ForecastStatus) -> None: ...
+    def update_forecast_status(self, forecast_ids: list[UUID], status: ForecastStatus) -> None: ...
 
 
 @runtime_checkable
@@ -751,37 +751,42 @@ class AlertStore(Protocol):
 class SkillStore(Protocol):
     def save_skill_scores(
         self, station: StationConfig, parameter_id: UUID,
-        model_id: str, metrics: dict[str, float],
+        model_id: str, model_version: str,
+        forecast_type: ForecastType,
+        lead_time_minutes: int,
+        period_start: datetime, period_end: datetime,
+        metrics: dict[str, float],
     ) -> None: ...
 
 
 @runtime_checkable
 class BulletinStore(Protocol):
     def save_bulletin(
-        self, scope: BulletinScope, basin_id: str | None,
-        template_id: str, path: str, forecast_ids: list[str],
+        self, scope: BulletinScope, basin_id: UUID | None,
+        template_id: str, path: str, forecast_ids: list[UUID],
         generated_by: UUID,
     ) -> None: ...
     def get_bulletin(self, bulletin_id: UUID) -> Bulletin | None: ...
     def list_bulletins(
-        self, scope: BulletinScope | None = None, basin_id: str | None = None,
+        self, scope: BulletinScope | None = None, basin_id: UUID | None = None,
     ) -> list[Bulletin]: ...
 
 
 @runtime_checkable
 class TrainingStore(Protocol):
-    def prepare_training_data(
-        self,
-        station_id: UUID,
-        parameter_id: UUID,
-        start: datetime | None = None,  # default: earliest available
-        end: datetime | None = None,    # default: latest available
-        weather_params: list[str] | None = None,  # default: all linked
-    ) -> TrainingDataset: ...
-    # Returns QC-passed observations (quality_flag != 9) for the target
-    # parameter at the river station, plus observations from linked weather
-    # stations for the specified weather parameters. Gaps are represented
-    # as missing entries, not interpolated.
+    """Data access only. Training data assembly (joining observations with
+    weather data, QC filtering) lives in services/training_prep.py."""
+    def get_training_observations(
+        self, station_id: UUID, parameter_id: UUID,
+        start: datetime | None = None, end: datetime | None = None,
+    ) -> list[Observation]: ...
+    # Returns QC-passed observations (quality_flag != 9) for the target parameter.
+
+    def get_training_weather(
+        self, weather_station_ids: list[UUID], params: list[str] | None = None,
+        start: datetime | None = None, end: datetime | None = None,
+    ) -> list[Observation]: ...
+    # Returns weather observations from linked stations for specified parameters.
 
     def log_training_result(self, station_id: UUID, result: TrainResult) -> None: ...
 
@@ -790,10 +795,10 @@ class TrainingStore(Protocol):
 class ObservationEditStore(Protocol):
     """Records manual edits to observation values with full audit trail."""
     def save_edit(
-        self, station_id: str, timestamp: datetime, edit: ObservationEdit,
+        self, station_id: UUID, timestamp: datetime, edit: ObservationEdit,
     ) -> None: ...
     def get_edits(
-        self, station_id: str, start: datetime, end: datetime,
+        self, station_id: UUID, start: datetime, end: datetime,
     ) -> list[ObservationEdit]: ...
 
 
@@ -810,10 +815,10 @@ class ForecastAdjustmentStore(Protocol):
 class AuditLogStore(Protocol):
     """Append-only log of all user actions for auditability."""
     def log_action(
-        self, user_id: str, action: str, detail: dict[str, Any],
+        self, user_id: UUID, action: str, detail: dict[str, Any],
     ) -> None: ...
     def query_log(
-        self, user_id: str | None = None, action: str | None = None,
+        self, user_id: UUID | None = None, action: str | None = None,
         start: datetime | None = None, end: datetime | None = None,
     ) -> list[dict[str, Any]]: ...
 ```
