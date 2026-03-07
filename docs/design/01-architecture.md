@@ -229,9 +229,18 @@ SAPPHIRE_flow/
 
 ### Database access (least privilege)
 Three PostgreSQL users:
-- `sapphire_api` -- read-only on most tables, write on observation_edits, forecast_adjustments, bulletins
-- `sapphire_worker` -- read-write on observations, forecasts, forecast_values, model_skill, alert_events
-- `sapphire_prefect` -- owns the `prefect` database only, no access to application data
+
+`sapphire_api`:
+- SELECT on all tables (including: weather_forecasts, dead_letter_queue, station_weather_sources)
+- INSERT/UPDATE on: observation_edits, forecast_adjustments, bulletins, audit_log, alert_events, forecasts (status + version), access_tokens
+- Note: "acknowledge only" on alert_events is enforced at the application level (API route checks), not via PostgreSQL GRANT. The DB grants full INSERT/UPDATE on alert_events to sapphire_api.
+
+`sapphire_worker`:
+- SELECT/INSERT/UPDATE on: observations, forecasts, forecast_values, alert_events, model_skill, weather_forecasts, dead_letter_queue
+- DELETE on: weather_forecasts (ensemble-to-statistics transition only)
+
+`sapphire_prefect`:
+- Full access to `prefect` database only, no access to `sapphire_flow` tables
 
 ### Audit logging
 Security-relevant events (logins, failed auth, admin actions, token creation/revocation, flow triggers) are logged to an append-only `audit_log` table. Observation edits and forecast adjustments have their own dedicated audit tables.
@@ -288,42 +297,61 @@ class StationStore(Protocol):
     def create_station(self, info: StationInfo) -> StationConfig: ...
     def upsert_stations(self, stations: list[StationInfo]) -> int: ...
     def get_active_station_configs(self) -> list[StationConfig]: ...
+    # Note: get_active_station_configs JOINs station_weather_sources to populate
+    # StationConfig.weather_source_ids. Uses LEFT JOIN station_weather_sources sws
+    # ON sws.river_station_id = s.id, grouping to collect weather station UUIDs.
+    # Stations with no linked weather sources get an empty list.
     def list_basins(self) -> list[BasinInfo]: ...
-    def upsert_model_assignment(self, station_id: UUID, model_id: str, model_version: str,
-                                artifact_path: str, fallback_model_id: str | None = None,
-                                fallback_artifact: str | None = None) -> None: ...
+    def get_model_assignment(
+        self, station_id: UUID, parameter_id: UUID,
+    ) -> ModelAssignment | None: ...
+    def upsert_model_assignment(
+        self,
+        station_id: UUID,
+        parameter_id: UUID,
+        model_id: str,
+        model_version: str,
+        artifact_path: str,
+        fallback_model_id: str | None = None,
+        fallback_artifact: str | None = None,
+    ) -> None: ...
+    def bulk_upsert_model_assignments(
+        self,
+        assignments: list[tuple[str, str, ModelAssignment, ModelAssignment | None]],
+        # Each tuple: (station_code, parameter_name, primary, fallback | None)
+    ) -> int: ...
 
 
 @runtime_checkable
 class ObservationStore(Protocol):
-    def upsert_observations(self, observations: list[Observation]) -> int: ...
+    def upsert_observations(self, observations: list[Observation]) -> tuple[int, dict[tuple[str, str], tuple[UUID, UUID]]]: ...
     def insert_observations_no_overwrite(self, observations: list[Observation]) -> int: ...
     def get_observations(
-        self, station_id: str, parameter_id: str,
+        self, station_id: UUID, parameter_id: UUID,
         start: datetime, end: datetime,
     ) -> list[Observation]: ...
     def get_latest_observation(
-        self, station_id: str, parameter_id: str,
+        self, station_id: UUID, parameter_id: UUID,
     ) -> Observation | None: ...
     def get_previous_observations(
-        self, station_param_pairs: list[tuple[str, str]],
-    ) -> dict[tuple[str, str], Observation]: ...
+        self, station_param_pairs: list[tuple[UUID, UUID]],
+    ) -> dict[tuple[UUID, UUID], Observation]: ...
     def update_quality_flags(
         self, flagged: list[tuple[Observation, int]],
     ) -> None: ...
     def detect_gaps(
-        self, station_ids: list[str],
+        self, station_ids: list[UUID],
         lookback_days: int = 7,
         start: datetime | None = None,
         end: datetime | None = None,
-    ) -> list[tuple[str, datetime, datetime]]: ...
+    ) -> list[tuple[UUID, datetime, datetime]]: ...
 
 
 @runtime_checkable
 class WeatherStore(Protocol):
     def upsert_weather_forecasts(self, forecasts: list[WeatherForecast]) -> int: ...
     def get_weather_forecasts(
-        self, station_id: str, parameter_id: str,
+        self, station_id: UUID, parameter_id: UUID,
         start: datetime, end: datetime,
     ) -> list[WeatherForecast]: ...
 
@@ -331,7 +359,10 @@ class WeatherStore(Protocol):
 @runtime_checkable
 class ForecastStore(Protocol):
     """Single source of truth for all forecast data access."""
-    def save_forecast(self, station: StationConfig, ensemble: ForecastEnsemble) -> Forecast: ...
+    def save_forecast(
+        self, station: StationConfig, param_config: ParameterForecastConfig,
+        ensemble: ForecastEnsemble,
+    ) -> Forecast: ...
     def get_forecasts_by_ids(self, ids: list[str]) -> list[Forecast]: ...
     def get_selected_forecasts_for_basin(self, basin_id: str) -> list[Forecast]: ...
     def get_all_selected_forecasts(self) -> list[Forecast]: ...
@@ -353,10 +384,10 @@ class AlertStore(Protocol):
     """Combines threshold management and alert lifecycle (previously split
     across AlertRepository and ThresholdRepository)."""
     def upsert_thresholds(self, thresholds: list[FloodThreshold]) -> int: ...
-    def get_thresholds(self, station_id: str, parameter_id: str) -> list[FloodThreshold]: ...
+    def get_thresholds(self, station_id: UUID, parameter_id: UUID) -> list[FloodThreshold]: ...
     def get_thresholds_batch(
-        self, station_param_pairs: set[tuple[str, str]],
-    ) -> dict[tuple[str, str], list[FloodThreshold]]: ...
+        self, station_param_pairs: set[tuple[UUID, UUID]],
+    ) -> dict[tuple[UUID, UUID], list[FloodThreshold]]: ...
     def raise_alert(
         self, station: StationConfig, forecast: Forecast, lead_time: int,
         threshold: FloodThreshold,
@@ -364,9 +395,9 @@ class AlertStore(Protocol):
     ) -> None: ...
     def raise_observation_alert(self, observation: Observation, threshold: FloodThreshold) -> None: ...
     def resolve_stale_alerts(self, station: StationConfig, forecast: Forecast) -> None: ...
-    def resolve_observation_alerts(self, station_id: str, parameter_id: str) -> None: ...
+    def resolve_observation_alerts(self, station_id: UUID, parameter_id: UUID) -> None: ...
     def get_unacknowledged_danger_alerts(
-        self, station_id: str | None = None, source: AlertSource | None = None,
+        self, station_id: UUID | None = None, source: AlertSource | None = None,
     ) -> list[AlertEvent]: ...
 
 
@@ -374,7 +405,10 @@ class AlertStore(Protocol):
 class SkillStore(Protocol):
     """Skill score storage only. Reads forecasts and observations via
     ForecastStore and ObservationStore (injected into the skill service)."""
-    def save_skill_scores(self, station: StationConfig, model_id: str, metrics: dict[str, float]) -> None: ...
+    def save_skill_scores(
+        self, station: StationConfig, parameter_id: UUID,
+        model_id: str, metrics: dict[str, float],
+    ) -> None: ...
 
 
 @runtime_checkable
@@ -384,6 +418,7 @@ class BulletinStore(Protocol):
     def save_bulletin(
         self, scope: BulletinScope, basin_id: str | None,
         template_id: str, path: str, forecast_ids: list[str],
+        generated_by: UUID,
     ) -> None: ...
     def get_bulletin(self, bulletin_id: UUID) -> Bulletin | None: ...
     def list_bulletins(
@@ -393,8 +428,47 @@ class BulletinStore(Protocol):
 
 @runtime_checkable
 class TrainingStore(Protocol):
-    def prepare_training_data(self, station_id: str) -> TrainingDataset: ...
-    def log_training_result(self, station_id: str, result: TrainResult) -> None: ...
+    def prepare_training_data(
+        self,
+        station_id: UUID,
+        parameter_id: UUID,
+        start: datetime | None = None,  # default: earliest available
+        end: datetime | None = None,    # default: latest available
+        weather_params: list[str] | None = None,  # default: all linked
+    ) -> TrainingDataset: ...
+    def log_training_result(self, station_id: UUID, result: TrainResult) -> None: ...
+
+
+@runtime_checkable
+class ObservationEditStore(Protocol):
+    """Records manual edits to observation values with full audit trail."""
+    def save_edit(
+        self, station_id: str, timestamp: datetime, edit: ObservationEdit,
+    ) -> None: ...
+    def get_edits(
+        self, station_id: str, start: datetime, end: datetime,
+    ) -> list[ObservationEdit]: ...
+
+
+@runtime_checkable
+class ForecastAdjustmentStore(Protocol):
+    """Records manual adjustments to forecasts during the review workflow."""
+    def save_adjustment(
+        self, forecast_id: UUID, adjustment: ForecastAdjustment,
+    ) -> None: ...
+    def get_adjustments(self, forecast_id: UUID) -> list[ForecastAdjustment]: ...
+
+
+@runtime_checkable
+class AuditLogStore(Protocol):
+    """Append-only log of all user actions for auditability."""
+    def log_action(
+        self, user_id: str, action: str, detail: dict[str, Any],
+    ) -> None: ...
+    def query_log(
+        self, user_id: str | None = None, action: str | None = None,
+        start: datetime | None = None, end: datetime | None = None,
+    ) -> list[dict[str, Any]]: ...
 ```
 
 ### How flows use these Protocols
@@ -441,14 +515,27 @@ It now lives in `services/forecast_prep.py` as a pure function that reads from
 # services/forecast_prep.py
 def prepare_model_inputs(
     station: StationConfig,
+    param_config: ParameterForecastConfig,
     observation_store: ObservationStore,
     weather_store: WeatherStore,
+    use_full_ensemble: bool = False,
 ) -> ModelInputs: ...
 ```
 
 Domain types (`Observation`, `Forecast`, `AlertEvent`, `FloodThreshold`, etc.)
 referenced here are defined in `sapphire_flow.types`. Adapter-specific and
 model-specific types are documented in 03-adapters.md and 04-models.md.
+
+## Worker scaling
+
+v1.0 uses a single Prefect worker container. This is sufficient for
+50-150 stations (forecast cycle completes in minutes with concurrent
+task submission). Scaling limitations:
+- Worker crash fails all in-progress tasks (Prefect retry handles this)
+- CPU-bound models compete for the same cores
+
+v2.0 consideration: Add a second worker container for redundancy, or
+scale horizontally with Prefect's work pool feature.
 
 ## Health check endpoints
 

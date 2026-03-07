@@ -52,22 +52,39 @@ data sharing with external institutions.
 
 ## Scope priorities
 
-### v0 (2026 H1) — Swiss development phase
+**v0 comprises three sub-phases** (v0a, v0b, v0c) that build incrementally.
+The detailed design docs (01–08) use "v0" to refer to the full v0 scope.
+The sub-phase breakdown below specifies which features are implemented in
+each sub-phase:
 
-Internal development and validation using Swiss public data. Not deployed
-to any hydromet. Purpose: validate the full pipeline end-to-end, develop
-and test model integration, and build confidence before Nepal deployment.
+- **v0a**: Core daily pipeline — CAMELS-CH + SMN + ICON-CH2-EPS + hydro_scraper adapters, daily models, full ingest→forecast→alert→API pipeline
+- **v0b**: Sub-daily algorithm R&D — CAMELS generic adapter (DE/NZ/US), LSTM/transformer models, no operational deployment
+- **v0c**: Swiss sub-daily operational validation — BAFU sub-daily sites, end-to-end sub-daily pipeline, staging on AWS
 
-- Full pipeline: ingest → forecast → alert → API, running on Swiss reference stations
-- Weather forecasts from MeteoSwiss ICON-CH2-EPS via OGD (no API key needed)
-- Weather observations from SwissMetNet stations via OGD (training forcing data)
-- River gauge data from BAFU/FOEN via hydro_scraper adapter
-- NWP forecast archiving from day one (builds hindcast for future bias correction)
-- Model development by the lead developer using Swiss station data
-- Simple models only (linear regression, persistence, possibly HBV via pydrology)
-- Training on co-located SMN weather + BAFU river observations (same approach as Nepal)
-- No Nepal-specific features (no Bikram Sambat, no bulletin generation)
-- No security hardening (local development, no TLS/MFA)
+### v0a (2026 H1) — Swiss daily pipeline validation
+
+- CAMELS-CH daily discharge + catchment weather for model training
+- MeteoSwiss SMN hourly weather stations as supplemental forcing data
+- ICON-CH2-EPS ensemble NWP (21 members: 20 perturbed + 1 control, 120h horizon) for operational weather forcing
+- hydro_scraper for operational river gauge data (sub-daily)
+- Daily forecast models (regression, persistence, possibly HBV)
+- Full pipeline: ingest → forecast → alert → API
+- NWP statistics archiving from day one
+- No Nepal-specific features
+- No security hardening
+
+### v0b (2026 H1-H2) — Sub-daily algorithm testing
+
+- CAMELS-DE, CAMELS-NZ, CAMELS-US sub-daily datasets
+- Sub-daily forecast models (LSTM, transformer)
+- Validates sub-daily code paths with real data
+- No operational deployment — research/development phase
+
+### v0c (2026 H2) — Swiss sub-daily validation
+
+- 3 BAFU sites with requested sub-daily water level + discharge
+- End-to-end sub-daily pipeline with Swiss operational data
+- Validates the full sub-daily operational workflow
 - Staging environment on AWS with Swiss data running continuously
 
 ### v1.0 (Oct 2026)
@@ -106,6 +123,7 @@ and test model integration, and build confidence before Nepal deployment.
 - Discharge forecasting via rating curve conversion
 - Rating curve uncertainty quantification
 - Bulk data export endpoint for model training
+- User management API endpoints (list users, deactivate users)
 
 ### v3.0 (post Jan 2028)
 
@@ -126,7 +144,7 @@ and test model integration, and build confidence before Nepal deployment.
 - ~~**ON CONFLICT strategy for observation ingest**~~ — **Resolved**: uses `INSERT ... ON CONFLICT DO UPDATE` for value and quality_flag columns, handling both duplicate fetches and source corrections. See 02-data-model.md.
 - ~~**forecast_values partitioning strategy**~~ — **Resolved**: `forecast_values` uses a denormalized `issued_at` column and is partitioned by monthly time range. UUIDv7-based range partitioning was rejected due to operational complexity. See 02-data-model.md.
 - ~~**Flood threshold reference datums**~~ — **Resolved**: `FloodThreshold` now includes a `unit: str` field (e.g. `"m_gauge_zero"`, `"m_asl"`, `"m3s"`). Each adapter populates this from its source. The DB schema already had `unit_note TEXT`; the NamedTuple now matches. Which specific datum each external source uses is determined during adapter implementation (v0: BAFU; v1: Nepal DHM).
-- **Event-mode forecasting** — ECMWF forecasts available every 6 hours. Real-time rainfall data at higher frequency could refine forecasts between ECMWF cycles. Needs research. See 05-flows.md.
+- ~~**Event-mode forecasting**~~ — **Deferred to v2.0**: NWP forecasts (ICON-CH2-EPS for v0, ECMWF IFS for v1) are available every 6 hours. Real-time rainfall data at higher frequency could refine forecasts between NWP cycles. Needs research into whether sub-cycle updates meaningfully improve lead time for the target catchments. Not blocking for v0/v1 — standard NWP-cycle-driven forecasting is sufficient for initial operational deployment.
 - ~~**MeteoSwiss weather data format**~~ — **Resolved**: MeteoSwiss OGD provides ICON-CH2-EPS ensemble forecasts (21 members, 120h horizon, hourly, GRIB2) and ICON-CH1-EPS (11 members, 33h, hourly). Grid data only — adapter extracts nearest grid points via cfgrib + xarray. Files available for 24h after publication. No API key needed. See 03-adapters.md.
 - ~~**v0 training data source**~~ — **Resolved**: Models train on SwissMetNet (SMN) station observations (hourly, 1981–present) co-located with river gauges. This avoids the daily-to-sub-daily temporal disaggregation problem with gridded climate data (RhiresD/TabsD). ICON-CH2-EPS forecasts are archived permanently from day one to build a hindcast archive for future bias correction. See 03-adapters.md.
 
@@ -171,9 +189,14 @@ Areas that need refinement:
 - [06-api.md](06-api.md) — REST API and optional dashboard
 - [07-deployment.md](07-deployment.md) — Docker Compose and operations
 - [08-testing-cicd.md](08-testing-cicd.md) — Testing strategy and CI/CD pipeline
+- [design-fixes-plan.md](design-fixes-plan.md) — Design doc fixes plan from critical review
 - [hydromet-qa-prep.md](hydromet-qa-prep.md) — Nepal DHM meeting preparation
 
 ## Review History
 
 | Round | Date | Reviewers | Blocking | Advisory | Status |
 |-------|------|-----------|----------|----------|--------|
+| 1 | 2026-03-07 | design-reviewer, review-docs, review-domain | 9 | 14 | fixes-needed |
+| 2 | 2026-03-07 | design-reviewer, review-docs, review-domain | 3 | 13 | fixes-needed |
+| 3 | 2026-03-07 | design-reviewer, review-docs, review-domain | 1 | 5 | fixes-needed |
+| 4 | 2026-03-07 | design-reviewer | 0 | 0 | fixes-needed |

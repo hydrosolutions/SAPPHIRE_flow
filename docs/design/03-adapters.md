@@ -97,7 +97,7 @@ class StationInfo(NamedTuple):
     lon: float
     lat: float
     elevation_m: float | None = None
-    kind: str               # "weather", "river", or "virtual"
+    kind: str               # Valid values: "river", "weather", "virtual"
     basin_code: str | None = None
     metadata: dict[str, Any] | None = None
 
@@ -146,6 +146,8 @@ ThresholdSource is a separate Protocol. Adapters that support it implement both 
 | hydro_scraper    | StationDataSource                    | hydro_data_scraper (BAFU/FOEN) | Switzerland   | v0    |
 | sapphire_dg      | WeatherForecastSource                | sapphire-dg-client (ECMWF+)   | Global        | v1    |
 | ieasyhydro       | StationDataSource, ThresholdSource   | ieasyhydro-python-sdk          | Central Asia  | v1    |
+| camels_ch        | StationDataSource                    | CAMELS-CH dataset (CSV)        | Switzerland   | v0a   |
+| camels_generic   | StationDataSource                    | CAMELS-DE/NZ/US (CSV)          | Multi         | v0b   |
 | (future)         | StationDataSource                    | TBD                            | Nepal         | v1    |
 
 **v0 weather data strategy**: Two MeteoSwiss adapters serve complementary roles:
@@ -220,7 +222,7 @@ The adapter:
 
 | Shortname | Description | Unit | Aggregation |
 |-----------|-------------|------|-------------|
-| TOT_PREC | Total precipitation (accumulated) | kg/m²·s | Accumulation |
+| TOT_PREC | Total precipitation (accumulated) | kg/m² | Accumulation |
 | T_2M | 2m temperature | K | Instant |
 | TD_2M | 2m dew point temperature | K | Instant |
 | ASWDIR_S | Direct shortwave radiation (surface) | W/m² | Average |
@@ -336,6 +338,33 @@ forecast CSVs may be added as an alternative `WeatherForecastSource` implementat
 in the future, particularly for deployments where GRIB2 processing is impractical
 or where quantile-based forcing is sufficient.
 
+## Parameter naming convention
+
+River station parameters use canonical names:
+- `water_level` (m, reference datum documented per station in metadata)
+- `discharge` (m³/s)
+
+Weather station parameters use canonical names mapped from adapter-specific
+names at ingest:
+- `precipitation` (mm) — SMN: `rre150h0`, CAMELS-CH: TBD
+- `temperature` (°C) — SMN: `tre200h0`
+- `humidity` (%) — SMN: `ure200h0`
+- `radiation` (W/m²) — SMN: `gre000h0`
+- `wind_speed` (m/s) — SMN: `fkl010h0`
+- `snow_depth` (cm) — SMN: `htoauths`
+- `reference_et` (mm/h) — SMN: `erefaoh0`
+- `swe` (mm) — snow water equivalent, if available
+
+Each adapter maps its source-specific parameter names to these canonical
+names. The `parameters` table stores the canonical names.
+
+**Naming convention for types**: `ParameterForecastConfig` has both
+`parameter_name: str` (the canonical name, e.g. `"discharge"`) and
+`parameter_id: UUID` (the FK to the `parameters` table). Flow code uses
+`parameter_name` for human-readable contexts and `parameter_id` for
+database queries. The `StationConfig` builder (in the store layer)
+resolves both from the `parameters` table join.
+
 ## Adding a new hydromet
 
 To support a new hydromet, a developer:
@@ -345,18 +374,55 @@ To support a new hydromet, a developer:
 3. Registers the adapter in the deployment's TOML config
 4. Done — no changes to flows, models, API, or dashboard
 
+## Weather input mapping
+
+Each river station is linked to one or more weather stations via the
+`station_weather_sources` table (see DD-02). This mapping is:
+- Created during station import (CLI or API)
+- Distance computed via haversine formula from station coordinates
+- Configurable max distance threshold (default 50 km) — stations beyond
+  this are excluded with a warning
+- Editable via the admin API/dashboard
+
+For NWP forecasts, the adapter extracts the nearest grid point to the
+*river station's* coordinates (not a weather station). The extraction
+uses the river station's (lon, lat) directly against the NWP grid. NWP
+data is stored in `weather_forecasts` keyed by the river station's UUID.
+
+For model training, the `prepare_model_inputs` service queries historical
+observations from the linked weather stations (via `station.weather_source_ids`)
+for the configured weather parameters.
+
 ## Resilience
 
 Each adapter handles its own retry logic and caching:
 
 - **Retry**: Exponential backoff on transient failures (network, 5xx)
-- **Local cache**: Last successful fetch is cached in the database (a `cache` table or the existing observation/weather tables). Database-backed caching survives container restarts, which is critical during extended API outages. Filesystem caching is not used — Docker container filesystems are ephemeral unless explicitly mounted as volumes.
+- **Local cache**: Last successful fetch is cached in its destination table (see Caching strategy below). Database-backed caching survives container restarts, which is critical during extended API outages.
 - **Fallback**: If fetch fails after retries, return cached data with a staleness flag. Each adapter defines a `max_cache_age` (e.g. 12 hours for weather forecasts, 24 hours for station observations). When cache exceeds max age: (a) data is still returned but flagged as `critically_stale`, (b) the forecast flow refuses to use critically stale weather data for new forecasts and logs a prominent warning, (c) an operational alert is triggered. The forecaster must consciously decide to override the staleness check via manual trigger.
 - **Logging**: All fetch attempts logged with status, duration, record count
 - **Circuit breaker**: After N consecutive failures (default 5), the adapter stops attempting the external API for a configurable cooldown period (default 30 minutes). This avoids wasting retry budget and reduces log noise during extended outages. The circuit resets automatically after the cooldown.
 
 The Prefect flow wrapping the adapter adds an additional retry layer,
 but the adapter itself should be robust to transient failures.
+
+### Caching strategy
+
+No separate cache table. Each adapter's data is cached in its destination
+table:
+- NWP statistics → `weather_forecasts` table (ensemble stats archived permanently)
+- SMN weather observations → `observations` table
+- BAFU river observations → `observations` table
+
+Staleness is determined by querying `MAX(issued_at)` or `MAX(timestamp)`
+for the relevant station and parameter. The adapter's `max_cache_age_hours`
+config is compared against this timestamp.
+
+For NWP GRIB2 files: raw files are cached on a Docker volume
+(`/data/grib_cache/`) for 48 hours to enable retry on parse failure.
+This is a filesystem cache, not database-backed. The volume is mounted
+in the worker container. Files older than 48 hours are cleaned up by a
+daily maintenance task.
 
 ## Configuration
 
