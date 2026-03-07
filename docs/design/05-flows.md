@@ -610,10 +610,21 @@ def compute_model_skill(
                     f for f in forecasts
                     if f.model_id == model_id and f.parameter_id == param_config.parameter_id
                 ]
-                metrics = compute_metrics(model_forecasts, observations)
-                skill_store.save_skill_scores(
-                    station, param_config.parameter_id, model_id, metrics,
-                )
+                if not model_forecasts:
+                    continue
+                model_version = model_forecasts[0].model_version
+                forecast_type = model_forecasts[0].forecast_type
+                # compute_metrics returns per-lead-time scores
+                lead_time_metrics = compute_metrics(model_forecasts, observations)
+                for lead_time_minutes, metrics in lead_time_metrics.items():
+                    skill_store.save_skill_scores(
+                        station, param_config.parameter_id,
+                        model_id, model_version, forecast_type,
+                        lead_time_minutes,
+                        period_start=clock() - timedelta(days=lookback_days),
+                        period_end=clock(),
+                        metrics=metrics,
+                    )
 ```
 
 ## Bulletin generation flow

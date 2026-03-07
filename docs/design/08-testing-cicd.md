@@ -846,7 +846,7 @@ services:
       seed:
         condition: service_completed_successfully
       prefect:
-        condition: service_started
+        condition: service_healthy
 
   prefect:
     image: prefecthq/prefect:3.2-python3.11

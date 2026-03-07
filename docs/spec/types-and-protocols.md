@@ -150,6 +150,7 @@ class Observation(NamedTuple):
     timestamp: datetime
     value: float
     quality_flag: int | None = None  # QualityFlag int value
+    source: str | None = None        # provenance, e.g. "bafu", "dhm", "manual"
 ```
 
 No invariants enforced in `__new__` — observations come from external
@@ -389,6 +390,7 @@ class TrainingDataset(NamedTuple):
 class TrainResult(NamedTuple):
     model_id: str
     station_id: str
+    parameter_name: str         # canonical parameter name, e.g. "water_level"
     metrics: dict[str, float]   # training metrics (loss, val_loss, ...)
     artifact_path: str
     trained_at: datetime
@@ -483,9 +485,9 @@ this could be a plain class — implementer's choice, but keep it immutable.
 
 ```python
 class AlertConfig(NamedTuple):
-    default_watch: float = 0.2       # 20% — low signal, heads up
+    default_danger: float = 0.2      # 20% — conservative: fire early for severe events
     default_warning: float = 0.5     # 50% — majority of members
-    default_danger: float = 0.8      # 80% — strong ensemble consensus
+    default_watch: float = 0.7       # 70% — strong consensus needed for low-severity
 
     def default_exceedance(self, level: FloodLevel) -> float:
         match level:
@@ -816,11 +818,15 @@ class AuditLogStore(Protocol):
     """Append-only log of all user actions for auditability."""
     def log_action(
         self, user_id: UUID, action: str, detail: dict[str, Any],
+        ip_address: str | None = None,
     ) -> None: ...
     def query_log(
         self, user_id: UUID | None = None, action: str | None = None,
         start: datetime | None = None, end: datetime | None = None,
     ) -> list[dict[str, Any]]: ...
+    # Note: query_log is admin-only. The API layer must enforce role=admin
+    # before calling this method. The untyped return value includes ip_address
+    # and other sensitive fields — do not expose to non-admin users.
 ```
 
 ---
@@ -936,6 +942,7 @@ src/sapphire_flow/
 | `audit_log` | `detail` | `AuditDetail` (union) | `audit_log.py` |
 | `forecast_adjustments` | `original` | `EnsembleSnapshot` | `forecast_adjustment.py` |
 | `forecast_adjustments` | `adjusted` | `EnsembleSnapshot` | `forecast_adjustment.py` |
+| `training_results` | `metrics` | `SkillMetrics` | `model_skill.py` |
 
 ---
 
@@ -1169,6 +1176,20 @@ class ModelConfigChangedDetail(BaseModel):
     new_version: str | None = None
 
 
+class AccountLockedDetail(BaseModel):
+    action_type: Literal["account_locked"] = "account_locked"
+    username: str
+    trigger: str  # "username" or "ip" — which counter caused the lockout
+    ip_address: str | None = None
+    failed_attempts: int | None = None
+
+
+class PasswordResetDetail(BaseModel):
+    action_type: Literal["password_reset"] = "password_reset"
+    target_user_id: str  # UUID as string — the user whose password was reset
+    reset_by: str  # "admin" or "cli"
+
+
 class AdminActionDetail(BaseModel):
     action_type: Literal["admin_action"] = "admin_action"
     operation: str
@@ -1182,6 +1203,8 @@ AuditDetail = Annotated[
     | TokenRevokedDetail
     | FlowTriggeredDetail
     | ModelConfigChangedDetail
+    | AccountLockedDetail
+    | PasswordResetDetail
     | AdminActionDetail,
     Field(discriminator="action_type"),
 ]

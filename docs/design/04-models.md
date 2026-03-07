@@ -372,7 +372,7 @@ GET /api/v1/export/training-data?station=ABC-001&format=parquet
 
 Export includes:
 - Observations (with quality flags, excluding flag=9 excluded values)
-- Weather forecast history (all ensemble members)
+- Weather forecast summary statistics (median, p10, p90 — full ensemble members are not persisted; see 02-data-model.md `weather_forecasts` storage strategy)
 - Rating curve versions (if applicable)
 - Station metadata (location, elevation, basin area)
 
@@ -417,7 +417,13 @@ Models predict water level as the primary forecast parameter. Water level is
 more directly observable and avoids compounding rating curve errors into
 forecasts. Flood thresholds in v1.0 are defined in water level units.
 
-### v2.0: Discharge conversion
+No rating curve conversion is applied in the v1.0 forecast flow. The forecast
+flow produces and stores water level forecasts only. Rating curve storage and
+management infrastructure exists (see `RatingCurveStore` in DD-01 and
+`rating_curves` table in DD-02), but conversion is not invoked during
+operational forecasting.
+
+### v2.0: Rating curve conversion for discharge
 
 When a rating curve is available and has associated uncertainty:
 - Model predicts water level
@@ -425,27 +431,25 @@ When a rating curve is available and has associated uncertainty:
 - Rating curve uncertainty is propagated into the discharge ensemble spread
 - Both water level and discharge forecasts are stored
 
+When no rating curve exists:
+- Model predicts water level directly
+- Discharge is not computed
+
 **Design consideration**: Storing water-level forecasts as canonical and computing
 discharge at query time (via the active rating curve) would avoid baking a specific
 rating curve version into stored values. This allows retroactive recomputation when
 rating curves are updated. Trade-off: query-time computation adds latency and
 complexity. Decision deferred to v2.0 implementation phase.
 
-When no rating curve exists:
-- Model predicts water level directly
-- Discharge is not computed
-
-### Rating curve uncertainty
-
-Rating curves carry significant uncertainty, especially at high flows (extrapolation
-beyond measured points). The system supports uncertainty bounds on rating curves
-(see 02-data-model.md `rating_curves.uncertainty`). In practice, many hydromets
-do not quantify this uncertainty — the system provides estimation tools and
-encourages adoption, but does not require it.
-
-When uncertainty bounds are available, discharge ensemble spread is widened
-accordingly. When unavailable, discharge conversion uses the point estimate
-and the uncertainty bands reflect only the hydrological model uncertainty.
+**Rating curve uncertainty**: Rating curves carry significant uncertainty,
+especially at high flows (extrapolation beyond measured points). The system
+supports uncertainty bounds on rating curves (see 02-data-model.md
+`rating_curves.uncertainty`). In practice, many hydromets do not quantify this
+uncertainty — the system provides estimation tools and encourages adoption,
+but does not require it. When uncertainty bounds are available, discharge
+ensemble spread is widened accordingly. When unavailable, discharge conversion
+uses the point estimate and the uncertainty bands reflect only the hydrological
+model uncertainty.
 
 Optional (future): learn an implicit stage-discharge relationship from data.
 

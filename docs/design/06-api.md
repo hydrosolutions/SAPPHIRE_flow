@@ -319,7 +319,7 @@ GET    /api/v1/export/training-data              Bulk export for model training
 
 Returns a streamed export of:
 - Observations (with quality flags, excluding flag=9)
-- Weather forecast history (all ensemble members)
+- Weather forecast summary statistics (median, p10, p90 — full ensemble members are not persisted; see 02-data-model.md `weather_forecasts` storage strategy)
 - Station metadata (location, elevation, basin area)
 - Rating curve versions (if applicable)
 
@@ -350,6 +350,16 @@ last ingest times (weather + stations), last forecast time, number of
 stations with stale data, count of active alerts by severity, any failed
 flows in the last 24 hours. Designed for the morning shift handover.
 
+### Model configuration
+
+```
+GET    /api/v1/stations/{id}/model-config                All parameter configs
+GET    /api/v1/stations/{id}/model-config/{parameter}    Config for specific parameter
+PATCH  /api/v1/stations/{id}/model-config/{parameter}    Change model for a parameter
+GET    /api/v1/admin/model-config                        All station model configs
+PATCH  /api/v1/admin/model-config/bulk                   Bulk update
+```
+
 ### Admin
 
 ```
@@ -357,6 +367,10 @@ POST   /api/v1/admin/tokens                  Create scoped access token
 GET    /api/v1/admin/tokens                  List active tokens
 DELETE /api/v1/admin/tokens/{id}             Revoke a token
 ```
+
+**v2.0**: User management endpoints (`GET /api/v1/admin/users`,
+`PATCH /api/v1/admin/users/{id}/deactivate`) are deferred to v2.0.
+For v1.0, user management is handled via CLI commands.
 
 ## Forecast adjustment workflow
 
