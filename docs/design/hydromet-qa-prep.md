@@ -109,7 +109,25 @@ more frequent forecast updates? If so:
 We can't promise this for v1.0, but if DHM wants it, we should plan the
 architecture to support it.
 
-### 9. Data latency (2 min, low priority — skip if short on time)
+### 9. Flood alert timing — before or after forecaster review (3 min)
+
+**Context**: The system can check flood thresholds and raise alerts at two
+points in the pipeline:
+- **On raw forecasts** — immediately after models run, before any human review.
+  Gives earlier warning but alerts may be based on uncorrected values.
+- **On published forecasts** — after a forecaster has reviewed and potentially
+  edited the forecast. Alerts reflect human-vetted values but are delayed by
+  review time.
+- **Both** — initial alert on raw, re-check after publication.
+
+**We need to know**: In DHM's operational workflow, should flood alerts go out
+as soon as the model produces a forecast, or only after a forecaster has
+reviewed and approved it? Or both (preliminary + confirmed)?
+
+**Why we're asking**: This affects pipeline sequencing and whether the alerting
+module needs to run twice per cycle. We need to design for this early.
+
+### 10. Data latency (2 min, low priority — skip if short on time)
 
 **Quick question**: What's the typical delay between a measurement at a
 station and the data appearing in DHM's API? (Seconds? Minutes? Hours?)

@@ -265,8 +265,11 @@ raised --> acknowledged --> resolved
 ## Forecast status workflow
 
 ```
-raw --> reviewed --> selected --> published
+raw --> reviewed --> published
 ```
 
-Transitions enforced server-side. Only `published` forecasts appear in
-bulletins and public API responses.
+- **raw**: Model output, no human interaction yet.
+- **reviewed**: Forecaster has selected preferred model per station (and optionally adjusted values).
+- **published**: Visible in public API and bulletins.
+
+Transitions enforced server-side with optimistic locking.
