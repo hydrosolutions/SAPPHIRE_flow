@@ -241,7 +241,7 @@ Meta-flow — monitors the health of Flows 1 and 2 rather than processing data. 
 #### Notes
 
 - **Distinct from flood alerts**: Ops alerts go to the operations/engineering team, not flood forecasters. Different notification channel, different recipients, different urgency model.
-- **4.1**: Each NWP source has an expected delivery schedule (e.g. ICON-CH2-EPS available ~5h after cycle). Late = expected but not yet arrived. Missing = past the acceptable window.
+- **4.1**: Each NWP source has an expected delivery schedule (e.g. ICON-CH2-EPS available ~5h after cycle). Late = expected but not yet arrived. Missing = past the acceptable window. Also performs retrospective archive completeness audit — detects gaps in the NWP archive that weren't caught in real time. When recoverable gaps are found, triggers Flow 11 (NWP gap recovery).
 - **4.2**: Per-station staleness based on per-adapter-type config (e.g. SMN stations expected every 10 min, DHM stations every hour). Not per-station — too tedious to configure.
 - **4.3**: If the last forecast cycle is older than expected, something in Flow 1 is broken.
 - **4.4**: Queries Prefect's API for recent flow run states. Detects repeated failures, stuck runs.
@@ -432,6 +432,40 @@ Layer:    flows/ — orchestration only, delegates to services/adapters
 ```
 
 5.2 (weather source config) and 5.3–5.4 (historical import + QC) run in parallel after 5.1. Both must complete before 5.5 (model assignment needs weather sources and QC'd observations). 5.6 follows 5.5.
+
+### Flow 11 — NWP gap recovery
+
+```
+Trigger:  Triggered by Flow 4 step 4.1 when recoverable gaps detected
+Flow:     recover_nwp_gaps
+Layer:    flows/ — orchestration only, delegates to adapters/store
+```
+
+Slim recovery flow — gap *detection* lives in Flow 4 (watchdog). This flow only handles the re-fetch.
+
+#### Steps
+
+| # | Step | Layer | Input | Output |
+|---|------|-------|-------|--------|
+| 11.1 | Attempt re-fetch | `adapters/` | Missing cycle list, NWP source config | Recovered data or permanent failure per cycle |
+| 11.2 | Store recovered data | `store/` | Recovered NWP extractions | Persisted to `weather_forecasts`, gaps marked as filled |
+| 11.3 | Flag unrecoverable gaps | `store/` | Permanently failed cycles | Gaps flagged in archive (permanent record) |
+
+#### Notes
+
+- **Conditional flow**: Only relevant when SAPPHIRE handles NWP archiving (Flow 1 step 1.3). Not needed when a Data Gateway manages the archive.
+- **11.1**: Many NWP providers only retain recent data (days to weeks), so recovery is time-sensitive. Flow 4 should trigger this promptly when gaps are detected.
+- **11.3**: Unrecoverable gaps are permanently flagged. They affect hindcast quality (Flow 7 step H.2) and post-processing calibration (Flow 1 step 1.4). Skill computation (Flows 8/10) should account for gap periods.
+- **Permanent retention**: Archive data is never deleted. Storage management is about partitioning and indexing, not purging.
+
+#### Sequencing
+
+```
+11.1 → 11.2
+  ↘ 11.3
+```
+
+11.2 (store recovered) and 11.3 (flag unrecoverable) run in parallel — each cycle is either recovered or flagged.
 
 ---
 
