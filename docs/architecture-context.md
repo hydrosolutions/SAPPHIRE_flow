@@ -218,6 +218,49 @@ raw → reviewed → published
 
 `selected` was dropped — model selection is part of the review action, not a separate status. Adjustments (3.2) are optional and recorded as append-only audit records, independent of status.
 
+### Flow 4 — Pipeline monitoring (watchdog)
+
+```
+Trigger:  Prefect schedule (e.g. every 10 min)
+Flow:     monitor_pipeline
+Layer:    flows/ — orchestration only, delegates to services
+```
+
+Meta-flow — monitors the health of Flows 1 and 2 rather than processing data. Can start in v0 (basic); full implementation is a v1 deliverable.
+
+#### Steps
+
+| # | Step | Layer | Input | Output |
+|---|------|-------|-------|--------|
+| 4.1 | Check NWP delivery status | `services/` | Expected NWP schedule, `weather_forecasts` table | On-time / late / missing per NWP cycle |
+| 4.2 | Check observation freshness | `services/` | Station configs, `observations` table | Per-station: last received, overdue flag |
+| 4.3 | Check forecast freshness | `services/` | Expected forecast schedule, `forecasts` table | Last successful cycle, overdue flag |
+| 4.4 | Check flow run health | `services/` | Prefect flow run API | Recent run statuses for Flows 1 & 2 |
+| 4.5 | Evaluate pipeline status | `services/` | Results from 4.1–4.4 | Aggregated health status, new/resolved issues |
+| 4.6 | Raise / resolve ops alerts | `services/` | Pipeline issues, existing ops alerts | New/updated ops alert records |
+| 4.7 | Notify operations team | `services/` | New/changed ops alerts | Notifications dispatched (ops channel) |
+| 4.8 | Log health metrics | `store/` | All check results | Persisted to pipeline health table |
+
+#### Notes
+
+- **Distinct from flood alerts**: Ops alerts go to the operations/engineering team, not flood forecasters. Different notification channel, different recipients, different urgency model.
+- **4.1**: Each NWP source has an expected delivery schedule (e.g. ICON-CH2-EPS available ~5h after cycle). Late = expected but not yet arrived. Missing = past the acceptable window.
+- **4.2**: Per-station staleness based on per-adapter-type config (e.g. SMN stations expected every 10 min, DHM stations every hour). Not per-station — too tedious to configure.
+- **4.3**: If the last forecast cycle is older than expected, something in Flow 1 is broken.
+- **4.4**: Queries Prefect's API for recent flow run states. Detects repeated failures, stuck runs.
+- **4.8**: Health metrics over time enable diagnostics (e.g. "NWP has been consistently late for a week").
+
+#### Sequencing
+
+```
+4.1 ─┐
+4.2 ─┤
+4.3 ─┼→ 4.5 → 4.6 → 4.7
+4.4 ─┘         ↘ 4.8
+```
+
+Steps 4.1–4.4 are independent checks — run in parallel. They join at 4.5 for evaluation. Notifications (4.7) and metric logging (4.8) run in parallel after 4.6.
+
 ---
 
 ## Component map
