@@ -134,6 +134,48 @@ station and the data appearing in DHM's API? (Seconds? Minutes? Hours?)
 
 This affects how we schedule our ingest cycles.
 
+### 11. Data retention and regulatory requirements (5 min)
+
+**Context**: We're designing data retention policies for the system. Some data
+(NWP archive, observations, forecasts, alerts) could be kept permanently or
+on a rolling window. The choice affects storage costs and infrastructure
+complexity.
+
+**We need to know**:
+
+- Does DHM have regulatory or legal requirements for how long forecast and
+  alert records must be retained? (e.g. 5 years? 10 years? Permanent?)
+- Same question for observation data — is there a mandated retention period?
+- Is there value in keeping the NWP weather forecast archive long-term, or
+  is a rolling window (e.g. 2–3 years) sufficient for DHM's needs?
+- After a flood event, are there post-event investigations that require
+  access to historical forecasts and alerts? How far back?
+
+**Why we're asking**: Permanent retention is the safest default but adds
+storage and maintenance cost. If DHM has specific regulatory requirements,
+we design to those. If not, we can use rolling windows for some data
+categories and reduce operational burden.
+
+### 12. Stale forecast policy (3 min)
+
+**Context**: If the forecast pipeline fails or is delayed, the API continues
+serving the last successful forecast. At some point, a stale forecast becomes
+misleading rather than useful.
+
+**We need to know**: In DHM's operational workflow, how old can a forecast be
+before it should be flagged as unreliable or withdrawn entirely? (e.g. 12h?
+24h? Depends on season?)
+
+### 13. Alert escalation (3 min, low priority)
+
+**Context**: When SAPPHIRE raises a flood alert, someone needs to act on it.
+If no one acknowledges the alert within a certain time, should the system
+escalate (e.g. notify a supervisor)?
+
+**We need to know**: Does DHM have an existing escalation protocol for flood
+alerts? If so, should SAPPHIRE integrate with it, or does DHM handle
+escalation outside the system?
+
 ## Not discussed — handled separately
 
 | Topic | Reason | When |

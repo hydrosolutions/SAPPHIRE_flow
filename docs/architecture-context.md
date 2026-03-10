@@ -13,14 +13,14 @@ times a day. Runs on Docker Compose on a single VM.
 
 ### Operational (recurring, scheduled)
 
-1. **Weather ingest → post-process → forecast → alert → API**
-   Fetch latest NWP ensembles → archive raw extractions → apply post-processing (bias correction, ensemble calibration — pass-through until sufficient archive) → fetch latest river/meteo observations → run forecast models → check flood thresholds → raise/resolve alerts → notify → serve via API
+1. **Weather ingest → post-process → forecast → alert**
+   Fetch NWP forcing → [extract spatial averages] → [archive] → post-process → fetch QC'd observations → run forecast models → [bias-correct outputs] → store → check flood thresholds → raise/resolve alerts → notify
 
 2. **Observation ingest → QC → observation alerts**
    Fetch latest station observations → quality control → check thresholds against observed values → raise/resolve alerts
 
 3. **Forecast review → publish → bulletin**
-   Dashboard shows forecasts + visualizations → forecaster reviews, optionally adjusts values → selects preferred model → publishes → adjustments recorded with forecaster ID and rationale → generate Excel bulletin
+   Dashboard shows forecasts + visualizations → forecaster optionally adjusts values → reviews (selects preferred model) → publishes → generate Excel bulletin on request
 
 4. **Pipeline monitoring (watchdog)**
    Track each cycle's completion status → detect data source outages, late NWP deliveries, missing observations, stale forecasts → alert operations team (distinct from flood alerts) → log pipeline health metrics for diagnostics
@@ -43,8 +43,8 @@ times a day. Runs on Docker Compose on a single VM.
 
 10. **Skill recomputation** → same flow as Flow 8 with broad scope (see Flows 8 & 10 refinement)
 
-11. **NWP archive management**
-    Maintain archive of extracted NWP values (basin-average or point, not raw GRIB2). Permanent retention. Housekeeping: verify completeness, flag gaps, manage storage.
+11. **NWP gap recovery**
+    Re-fetch missing NWP archive data when gaps are detected by Flow 4. Flag unrecoverable gaps permanently. Only needed when SAPPHIRE handles archiving (not when Data Gateway is upstream).
 
 Other potential maintenance needs (TBD):
 - Observation gap-filling between operational cycles
@@ -79,7 +79,7 @@ Layer:    flows/ — orchestration only, delegates to services/adapters
 | 1.11 | Raise / resolve alerts | `services/` | Exceedance flags, existing alerts | New/updated alert records |
 | 1.12 | Notify | `services/` | New/changed alerts | Notifications dispatched |
 
-Steps 1.2, 1.3, 1.4, and 1.8 are **conditional** — see notes.
+Steps 1.2, 1.3, and 1.8 are **conditional** — see notes.
 
 #### Notes
 
@@ -90,9 +90,9 @@ Steps 1.2, 1.3, 1.4, and 1.8 are **conditional** — see notes.
 - **1.5**: Reads QC'd observations from the store. Flow 2 (observation ingest + QC) runs on its own schedule (e.g. every 30 min) — this step reads the *result*, not raw station feeds. The two flows are decoupled. Future option: add a top-up QC call at the start of Flow 1 to guarantee freshness (trivial — reuses the same QC service function).
 - **1.7**: Parallelizable across stations. On model failure, falls back to next assigned model (detail in future iteration).
 - **1.8** *(conditional)*: Forecast *output* bias correction (discharge / water level). Distinct from NWP input correction in 1.4. Pass-through when not configured.
+- **1.9**: Each forecast record links to the model artifact version that produced it.
 - **1.10**: Probability-based: P(Q > threshold) for each danger level.
 - **1.11**: Deduplication via partial unique index. Auto-resolves when exceedance no longer holds.
-- **1.9**: Each forecast record links to the model artifact version that produced it. Enables traceability across model updates.
 - **1.12**: Async. Failed notifications retried by sweep task (every 5 min).
 - **API serving**: No explicit step — the API reads persisted results from the DB. Storing in 1.9 makes forecasts available; publishing happens via Flow 3 (forecast review).
 
@@ -186,11 +186,11 @@ Not a Prefect flow — a sequence of user interactions via the dashboard, backed
 - **3.4**: Publishes selected forecasts. Only `published` forecasts appear in the public API and bulletins.
 - **3.5–3.7**: Re-triggers the same threshold/alert logic from Flow 1 (steps 1.10–1.12) on the published values. Always runs here regardless of whether Flow 1 also checked on raw (see Flow 1 open decision).
 - **3.8**: On-demand — forecaster explicitly requests bulletin generation after publishing.
+- **Status transitions**: `raw → reviewed → published`. Review combines model selection and optional adjustments into one action. Adjustments are append-only audit records independent of status.
 
-#### Open decisions
+#### Open decision
 
 - **Batch vs per-station publish**: Does the forecaster publish one station at a time or an entire cycle at once? Assumed per-cycle (review all, then publish batch). Needs confirmation with hydromet operations staff.
-- **Forecast status transitions**: See open discussion below.
 
 #### Sequencing
 
@@ -200,20 +200,6 @@ Not a Prefect flow — a sequence of user interactions via the dashboard, backed
 ```
 
 Steps 3.5–3.7 (threshold re-check) and 3.8 (bulletin) can run in parallel after publication. Steps 3.2 and 3.3 are interactive and may repeat before 3.4.
-
----
-
-### Resolved: forecast status transitions
-
-```
-raw → reviewed → published
-```
-
-- **`raw`**: Model output stored by Flow 1. No human interaction yet.
-- **`reviewed`**: Forecaster has selected the preferred model per station (and optionally adjusted values). This is an explicit action — the forecaster confirms their review.
-- **`published`**: Forecaster publishes. Only `published` forecasts appear in the public API and bulletins.
-
-`selected` was dropped — model selection is part of the review action, not a separate status. Adjustments (3.2) are optional and recorded as append-only audit records, independent of status.
 
 ### Flow 4 — Pipeline monitoring (watchdog)
 
@@ -258,50 +244,43 @@ Meta-flow — monitors the health of Flows 1 and 2 rather than processing data. 
 
 Steps 4.1–4.4 are independent checks — run in parallel. They join at 4.5 for evaluation. Notifications (4.7) and metric logging (4.8) run in parallel after 4.6.
 
-### Flows 8 & 10 — Skill computation (unified)
+### Flow 5 — Station onboarding
 
 ```
-Trigger:  On-demand (after hindcast, after retraining) or scheduled (yearly refresh)
-Flow:     compute_skills
-Layer:    flows/ — orchestration only, delegates to services
+Trigger:  On-demand (model admin)
+Flow:     onboard_station
+Layer:    flows/ — orchestration only, delegates to services/adapters
 ```
-
-Flows 8 (initial skill computation) and 10 (skill recomputation) are the same flow with different scope. Flow 8 = narrow scope (one station/model after hindcast). Flow 10 = broad scope (all stations/models, yearly or after retraining).
 
 #### Steps
 
 | # | Step | Layer | Input | Output |
 |---|------|-------|-------|--------|
-| S.1 | Determine scope | `services/` | Request params (stations, models, period) or "all" | List of (station, model, period) tuples to evaluate |
-| S.2 | Fetch hindcast results | `store/` | Scope from S.1 | Hindcast forecast ensembles |
-| S.3 | Fetch corresponding observations | `store/` | Matching station/period pairs | QC-passed observed values |
-| S.4 | Compute verification metrics | `services/` | Hindcast ensembles + observations | Per-station, per-model, per-lead-time, per-season skill scores |
-| S.5 | Aggregate metrics | `services/` | Station-level scores | Cross-station summaries (by model, by region, overall) |
-| S.6 | Store skill results | `store/` | Computed metrics | Persisted to skill tables (versioned) |
-
-Using `S.*` prefix since this flow serves both Flow 8 and Flow 10.
+| 5.1 | Register station metadata | `services/` + `store/` | Station definition (location, type, basin, parameters, thresholds) | Station record in DB |
+| 5.2 | Configure weather source mappings | `services/` + `store/` | Station, NWP source config, basin/band geometries | Weather source ↔ station linkage |
+| 5.3 | Import historical observations | `adapters/` + `store/` | Station, data source, date range | Raw observations persisted |
+| 5.4 | Run QC on historical observations | `services/` + `store/` | Imported observations, QC rules | QC flags applied |
+| 5.5 | Configure model assignments | `services/` + `store/` | Station, available models | Model ↔ station mappings |
+| 5.6 | Train initial models | → Flows 6/9 (initial mode) | Station, assigned models, historical period | Trained artifacts + baseline skill scores |
 
 #### Notes
 
-- **S.1**: Scope can be a single station/model (after a hindcast), a set of models (after retraining), or everything (yearly refresh). Same flow function, different scope parameter.
-- **S.4**: Standard metric set, extensible over time:
-  - Ensemble: CRPS, reliability diagram data, spread-skill ratio
-  - Deterministic (on ensemble median/mean): NSE, KGE, PBIAS, MAE
-  - All metrics computed per lead time — skill degrades with lead time and this must be visible.
-  - Seasonal breakdown with configurable season definitions (e.g. monsoon Jun–Sep, dry Oct–May for Nepal; or equal quarters for Switzerland). Season config is per-deployment, not per-station.
-- **S.5**: Two audiences: developers comparing models across stations, and hydrologists seeing which model performs best at their station (used in Flow 3 for model selection).
-- **S.6**: Skill results are versioned — a recomputation creates a new record, doesn't overwrite previous ones. Enables tracking skill evolution over time.
-- **Consumers**: Flow 3 dashboard (hydrologist model selection), developer tools, API.
+- **5.1**: Station metadata includes location (GeoCoord), station type (river/weather), basin assignment, measured parameters, flood threshold definitions. Thresholds are part of station metadata but may come from a different source or be added later. Source can be TOML bootstrap file or dashboard input.
+- **5.2**: Maps the station to its NWP forcing source(s). For basin-average models: which basin geometry. For elevation-band models: which bands. For point models: which grid cell(s). Determines what Flow 1 steps 1.1/1.2 fetch for this station.
+- **5.3**: Bulk import — could be large (decades of hourly data). Adapter-specific: CSV upload, API fetch, or database migration. Handles source-specific parameter name mapping to canonical names.
+- **5.4**: Same QC service as Flow 2 step 2.3, applied to the historical batch. Flagged values excluded from training data (Flows 6/9).
+- **5.5**: Which models run for this station — model admin decision. Can be updated independently later.
+- **5.6**: Invokes Flows 6/9 in initial mode (train → hindcast → skill, auto-promote). Validates that the station is properly configured and models produce reasonable results.
 
 #### Sequencing
 
 ```
-S.1 → S.2 ─┐
-       ↘    ├→ S.4 → S.5 → S.6
-      S.3 ─┘
+5.1 → 5.2 ─┐
+  ↘         ├→ 5.5 → 5.6
+  5.3 → 5.4 ┘
 ```
 
-S.2 and S.3 run in parallel (both are store reads scoped by S.1), then join at S.4. Steps S.4–S.5 are parallelizable across stations.
+5.2 (weather source config) and 5.3–5.4 (historical import + QC) run in parallel after 5.1. Both must complete before 5.5 (model assignment needs weather sources and QC'd observations). 5.6 follows 5.5.
 
 ### Flows 6 & 9 — Model training (unified)
 
@@ -311,7 +290,7 @@ Flow:     train_models
 Layer:    flows/ — orchestration only, delegates to models/services
 ```
 
-Flows 6 (initial training) and 9 (retraining) are the same flow. The flow checks whether an existing artifact exists for each station/model pair: if no → initial training (auto-promote). If yes → retraining (compare + approval).
+Flows 6 (initial training) and 9 (retraining) are the same flow. If no existing artifact → initial training (auto-promote). If existing artifact → retraining (compare + approval).
 
 #### Steps
 
@@ -336,9 +315,9 @@ Using `T.*` prefix since this flow serves both Flow 6 and Flow 9.
 
 - **T.1**: Default training period is all available data. Optionally specify date ranges (model-specific — some models benefit from a rolling window, others from full history). Cross-validation strategy is model-specific.
 - **T.3**: Models are separate packages. Training interface is part of the model Protocol. Compute-intensive — may need different resource allocation than operational flows.
-- **T.4–T.5**: Composes Flow 7 (hindcast) and Flows 8/10 (skill computation) directly. Training is not complete without validation.
+- **T.4–T.5**: Composes Flow 7 (hindcast) and Flows 8/10 (skill computation). Training is not complete without validation.
 - **T.6** *(retraining only)*: Automated comparison on the same hindcast period. Generates a report (skill deltas per metric, per lead time, per season).
-- **T.7–T.8** *(retraining only)*: Human-in-the-loop. Model admin reviews comparison report and approves or rejects. Async step — flow pauses until admin acts (via dashboard or API).
+- **T.7–T.8** *(retraining only)*: Human-in-the-loop. Model admin reviews comparison report and approves or rejects. Async — flow pauses until admin acts (via dashboard or API).
 - **T.8**: Promotion = new artifact becomes the active version. Old artifact retained (never deleted). Rejection logged with comparison report.
 - **Parallelizable** across station/model pairs at steps T.2–T.7.
 
@@ -378,12 +357,8 @@ Using `H.*` prefix since hindcast is referenced from multiple flows.
 - **H.2**: Historical weather forcing — source depends on what's available for the period. Could be archived NWP forecasts, reanalysis (ERA5-Land in v1), or other historical weather forecast products. v0 will use weather forecasts (product TBD).
 - **H.4**: Critical — must simulate operational conditions. Each time step only sees data that would have been available at that point in time (no future leakage). The lookback window per step matches what the model expects operationally.
 - **H.5**: Same model code as operational Flow 1 step 1.7. Parallelizable across time steps (each is independent given its input bundle).
-- **H.6**: Hindcast results stored in dedicated tables, separate from operational forecasts — different volumes and access patterns. Each hindcast record links to the specific model artifact version used, enabling comparison across model versions.
+- **H.6**: Hindcast results stored in dedicated tables, separate from operational forecasts — different volumes and access patterns. Each record links to the model artifact version used. As operational history grows, older operational forecasts may be archived to hindcast storage for long-term skill tracking.
 - **Consumers**: Flows 8/10 (skill computation), Flows 6/9 (training validation), model admin (standalone comparison).
-
-#### Hindcast vs operational storage
-
-Hindcast and operational forecasts use separate storage. As operational history grows, older operational forecasts may be archived or migrated to hindcast storage for long-term skill tracking. Both stores record model artifact version to enable cross-version comparison.
 
 #### Sequencing
 
@@ -395,43 +370,49 @@ H.1 → H.2 ─┐
 
 H.2 and H.3 run in parallel (both are store reads). They join at H.4. Steps H.4–H.5 are parallelizable across time steps.
 
-### Flow 5 — Station onboarding
+### Flows 8 & 10 — Skill computation (unified)
 
 ```
-Trigger:  On-demand (model admin)
-Flow:     onboard_station
-Layer:    flows/ — orchestration only, delegates to services/adapters
+Trigger:  On-demand (after hindcast, after retraining) or scheduled (yearly refresh)
+Flow:     compute_skills
+Layer:    flows/ — orchestration only, delegates to services
 ```
+
+Flows 8 (initial) and 10 (recomputation) are the same flow with different scope. Flow 8 = narrow (one station/model after hindcast). Flow 10 = broad (all stations/models, yearly or after retraining).
 
 #### Steps
 
 | # | Step | Layer | Input | Output |
 |---|------|-------|-------|--------|
-| 5.1 | Register station metadata | `services/` + `store/` | Station definition (location, type, basin, parameters, thresholds) | Station record in DB |
-| 5.2 | Configure weather source mappings | `services/` + `store/` | Station, NWP source config, basin/band geometries | Weather source ↔ station linkage |
-| 5.3 | Import historical observations | `adapters/` + `store/` | Station, data source, date range | Raw observations persisted |
-| 5.4 | Run QC on historical observations | `services/` + `store/` | Imported observations, QC rules | QC flags applied |
-| 5.5 | Configure model assignments | `services/` + `store/` | Station, available models | Model ↔ station mappings |
-| 5.6 | Train initial models | → Flows 6/9 (initial mode) | Station, assigned models, historical period | Trained artifacts + baseline skill scores |
+| S.1 | Determine scope | `services/` | Request params (stations, models, period) or "all" | List of (station, model, period) tuples to evaluate |
+| S.2 | Fetch hindcast results | `store/` | Scope from S.1 | Hindcast forecast ensembles |
+| S.3 | Fetch corresponding observations | `store/` | Matching station/period pairs | QC-passed observed values |
+| S.4 | Compute verification metrics | `services/` | Hindcast ensembles + observations | Per-station, per-model, per-lead-time, per-season skill scores |
+| S.5 | Aggregate metrics | `services/` | Station-level scores | Cross-station summaries (by model, by region, overall) |
+| S.6 | Store skill results | `store/` | Computed metrics | Persisted to skill tables (versioned) |
+
+Using `S.*` prefix since this flow serves both Flow 8 and Flow 10.
 
 #### Notes
 
-- **5.1**: Station metadata includes location (GeoCoord), station type (river/weather), basin assignment, measured parameters, flood threshold definitions. Thresholds are part of station metadata but may come from a different source or be added later. Source can be TOML bootstrap file or dashboard input.
-- **5.2**: Maps the station to its NWP forcing source(s). For basin-average models: which basin geometry. For elevation-band models: which bands. For point models: which grid cell(s). Determines what Flow 1 steps 1.1/1.2 fetch for this station.
-- **5.3**: Bulk import — could be large (decades of hourly data). Adapter-specific: CSV upload, API fetch, or database migration. Handles source-specific parameter name mapping to canonical names.
-- **5.4**: Same QC service as Flow 2 step 2.3, applied to the historical batch. Flagged values excluded from training data (Flows 6/9).
-- **5.5**: Which models run for this station — model admin decision. Can be updated independently later.
-- **5.6**: Invokes Flows 6/9 in initial mode (train → hindcast → skill, auto-promote). Validates that the station is properly configured and models produce reasonable results.
+- **S.4**: Standard metric set, extensible over time:
+  - Ensemble: CRPS, reliability diagram data, spread-skill ratio
+  - Deterministic (on ensemble median/mean): NSE, KGE, PBIAS, MAE
+  - All metrics computed per lead time — skill degrades with lead time and this must be visible.
+  - Seasonal breakdown with configurable season definitions (e.g. monsoon Jun–Sep, dry Oct–May for Nepal; or equal quarters for Switzerland). Season config is per-deployment, not per-station.
+- **S.5**: Two audiences: developers comparing models across stations, and hydrologists choosing models in Flow 3.
+- **S.6**: Versioned — recomputation creates a new record, doesn't overwrite. Enables tracking skill evolution over time.
+- **Consumers**: Flow 3 dashboard (model selection), developer tools, API.
 
 #### Sequencing
 
 ```
-5.1 → 5.2 ─┐
-  ↘         ├→ 5.5 → 5.6
-  5.3 → 5.4 ┘
+S.1 → S.2 ─┐
+       ↘    ├→ S.4 → S.5 → S.6
+      S.3 ─┘
 ```
 
-5.2 (weather source config) and 5.3–5.4 (historical import + QC) run in parallel after 5.1. Both must complete before 5.5 (model assignment needs weather sources and QC'd observations). 5.6 follows 5.5.
+S.2 and S.3 run in parallel (both are store reads scoped by S.1), then join at S.4. Steps S.4–S.5 are parallelizable across stations.
 
 ### Flow 11 — NWP gap recovery
 
