@@ -46,9 +46,11 @@ times a day. Runs on Docker Compose on a single VM.
 11. **NWP gap recovery**
     Re-fetch missing NWP archive data when gaps are detected by Flow 4. Flag unrecoverable gaps permanently. Only needed when SAPPHIRE handles archiving (not when Data Gateway is upstream).
 
-Other potential maintenance needs (TBD):
-- Observation gap-filling between operational cycles
-- Database partition management
+Other maintenance tasks:
+- Database backup (scheduled Prefect task — see backup and disaster recovery)
+- Data archival to cold storage (scheduled Prefect task — see data retention and cold storage)
+- Observation gap-filling between operational cycles (TBD)
+- Database partition management (TBD)
 
 ---
 
@@ -88,13 +90,17 @@ Steps 1.2, 1.3, and 1.8 are **conditional** — see notes.
 - **1.3** *(conditional)*: Only needed when no upstream gateway handles archiving. Archive happens *before* post-processing so raw extracted values are preserved. Permanent retention.
 - **1.4**: NWP *input* bias correction / ensemble calibration. Pass-through until sufficient archive (6–12 months). Distinct from forecast output correction in 1.8.
 - **1.5**: Reads QC'd observations from the store. Flow 2 (observation ingest + QC) runs on its own schedule (e.g. every 30 min) — this step reads the *result*, not raw station feeds. The two flows are decoupled. Future option: add a top-up QC call at the start of Flow 1 to guarantee freshness (trivial — reuses the same QC service function).
+- **1.6**: Assembles the full input window per model. Two patterns:
+  - *ML models*: concatenates historical weather (observations or reanalysis, source TBD for v0) with NWP forecast to fill the lookback window, which is typically longer than the NWP forecast horizon.
+  - *Conceptual models*: runs the model over a warm-up period using observations to derive internal state (soil moisture, snow, groundwater), then switches to NWP forecast forcing at the issue time. State is always observation-derived, never carried forward from a previous forecast.
+  - **Fallback for conceptual models**: if the warm-up run fails, (1) use the last successfully saved state snapshot (max 48h staleness), or (2) if too stale, cold-start with extended warm-up from observations.
 - **1.7**: Parallelizable across stations. On model failure, falls back to next assigned model (detail in future iteration).
 - **1.8** *(conditional)*: Forecast *output* bias correction (discharge / water level). Distinct from NWP input correction in 1.4. Pass-through when not configured.
 - **1.9**: Each forecast record links to the model artifact version that produced it.
-- **1.10**: Probability-based: P(Q > threshold) for each danger level.
+- **1.10**: Probability-based: P(Q > threshold) for each danger level. Thresholds are either authority-defined (3–5 danger levels per station, configured during onboarding) or derived from return periods (HQ2, HQ5, HQ100, HQ300) when authority thresholds are unavailable. Number of danger levels is deployment-configurable.
 - **1.11**: Deduplication via partial unique index. Auto-resolves when exceedance no longer holds.
 - **1.12**: Async. Failed notifications retried by sweep task (every 5 min).
-- **API serving**: No explicit step — the API reads persisted results from the DB. Storing in 1.9 makes forecasts available; publishing happens via Flow 3 (forecast review).
+- **API serving**: No explicit step — the API reads persisted results from the DB. Storing in 1.9 makes forecasts available; publishing happens via Flow 3 (forecast review). The API also serves archived forcing time series (precipitation, temperature, and other predictors) alongside forecasts — see API design notes.
 
 #### Open decision: when to check thresholds
 
@@ -139,7 +145,7 @@ Layer:    flows/ — orchestration only, delegates to services/adapters
 
 - **2.1**: River and weather fetches are independent adapters — run in parallel. v0: BAFU (river) + SMN (weather). Incremental: uses last-seen timestamp per station to fetch only new data.
 - **2.2–2.4**: Single `observations` table. Raw values are stored first (2.2), then QC adds flags/status in place (2.4). Raw values are never overwritten — QC is metadata on the observation, not a replacement. Flagged values are excluded from downstream use (forecasting in Flow 1 step 1.5).
-- **2.3**: QC rules TBD in detail (range checks, rate-of-change, spatial consistency). Grows in sophistication over time.
+- **2.3**: QC rules TBD in detail (range checks, rate-of-change, spatial consistency). Grows in sophistication over time. QC rule version is stored with each flag — enables selective recomputation when rules change without losing the audit trail of previous flagging decisions.
 - **2.5**: Direct comparison of observed value against threshold — simpler than Flow 1's probability-based check.
 - **2.6–2.7**: Same alerting service as Flow 1 but with `source = observation`. Deduplication and auto-resolution work identically.
 - **Relationship to Flow 1**: Flow 1 step 1.5 reads QC-passed observations from the store. The two flows are decoupled — Flow 2's schedule drives observation freshness.
@@ -180,7 +186,7 @@ Not a Prefect flow — a sequence of user interactions via the dashboard, backed
 
 #### Notes
 
-- **3.1**: Read-only. Shows all models that ran for a station so the forecaster can compare.
+- **3.1**: Read-only. Shows all models that ran for a station so the forecaster can compare. Also displays forcing time series (precipitation, temperature by default) alongside the hydrograph. Model admin configures which predictors are shown per station — all archived predictors are available.
 - **3.2**: Optional. Each adjustment is an immutable record (forecaster ID, timestamp, rationale). Original model output is never overwritten. Multiple adjustments can be made before publishing.
 - **3.3**: Review combines model selection and confirmation into one action. Forecaster picks the preferred model per station; status moves to `reviewed`. Optimistic locking on status transitions.
 - **3.4**: Publishes selected forecasts. Only `published` forecasts appear in the public API and bulletins.
@@ -195,11 +201,11 @@ Not a Prefect flow — a sequence of user interactions via the dashboard, backed
 #### Sequencing
 
 ```
-3.1 → 3.2 → 3.3 → 3.4 → 3.5 → 3.6 → 3.7
-                           ↘ 3.8
+3.1 → [3.2 ⇄ 3.3] → 3.4 → 3.5 → 3.6 → 3.7
+                             ↘ 3.8
 ```
 
-Steps 3.5–3.7 (threshold re-check) and 3.8 (bulletin) can run in parallel after publication. Steps 3.2 and 3.3 are interactive and may repeat before 3.4.
+Steps 3.2 and 3.3 form an interactive loop — the forecaster may adjust and review multiple times before publishing (3.4). Steps 3.5–3.7 (threshold re-check) and 3.8 (bulletin) run in parallel after publication.
 
 ### Flow 4 — Pipeline monitoring (watchdog)
 
@@ -265,7 +271,7 @@ Layer:    flows/ — orchestration only, delegates to services/adapters
 
 #### Notes
 
-- **5.1**: Station metadata includes location (GeoCoord), station type (river/weather), basin assignment, measured parameters, flood threshold definitions. Thresholds are part of station metadata but may come from a different source or be added later. Source can be TOML bootstrap file or dashboard input.
+- **5.1**: Station metadata includes location (GeoCoord), station type (river/weather), basin assignment, measured parameters, flood threshold definitions, IANA timezone (e.g. `Asia/Kathmandu`, `Europe/Zurich`), and forecast target parameter (discharge, water level, or both). Thresholds are part of station metadata but may come from a different source or be added later. Initial rating curve may be uploaded here (see rating curve management). Source can be TOML bootstrap file or dashboard input.
 - **5.2**: Maps the station to its NWP forcing source(s). For basin-average models: which basin geometry. For elevation-band models: which bands. For point models: which grid cell(s). Determines what Flow 1 steps 1.1/1.2 fetch for this station.
 - **5.3**: Bulk import — could be large (decades of hourly data). Adapter-specific: CSV upload, API fetch, or database migration. Handles source-specific parameter name mapping to canonical names.
 - **5.4**: Same QC service as Flow 2 step 2.3, applied to the historical batch. Flagged values excluded from training data (Flows 6/9).
@@ -448,6 +454,123 @@ Slim recovery flow — gap *detection* lives in Flow 4 (watchdog). This flow onl
 
 11.2 (store recovered) and 11.3 (flag unrecoverable) run in parallel — each cycle is either recovered or flagged.
 
+### Scheduled maintenance — Database backup
+
+```
+Trigger:  Prefect schedule (e.g. daily)
+Flow:     backup_database
+Layer:    flows/ — infrastructure task
+```
+
+Scheduled `pg_dump` to local disk (same backup target as cold storage). Static Parquet files (cold storage) included in the backup procedure. Not a data flow — an infrastructure task managed by Prefect for scheduling, retry, and failure notification.
+
+---
+
+## Ensemble generation
+
+Ensemble generation is **model-internal** — the system stores ensembles/quantiles regardless of how they were produced. Two strategies coexist:
+
+1. **ML-native uncertainty**: Model directly outputs prediction intervals or quantiles (e.g. quantile regression, MC dropout, mixture density networks).
+2. **NWP ensemble propagation**: Each NWP ensemble member run through a deterministic model → ensemble of forecast traces.
+
+A student thesis will compare these approaches. Both must work within the same framework. The model Protocol outputs a consistent ensemble format; the generation method is opaque to the rest of the system.
+
+---
+
+## Rating curve management
+
+Real-time station data is typically water level. Discharge is derived via rating curves. Rating curves change over time (especially after major flood events).
+
+- **Storage**: Per-station, versioned. Each curve is a list of (water level, discharge) pairs with interpolation. Includes a valid-from date and version identifier.
+- **Upload**: Initial curve during station onboarding (Flow 5 step 5.1). Updated periodically (e.g. yearly by DHM) via API or dashboard.
+- **Bidirectional conversion**: Water level → discharge and discharge → water level, using the active rating curve for that station.
+- **Temporal versioning**: Forecasts and hindcasts reference the rating curve version valid at the time of production. Historical forecasts are never retroactively re-converted.
+- **Forecast target flexibility**: Some stations forecast discharge, others water level, potentially both. Model admin configures this per station.
+- **v0 (Switzerland)**: BAFU provides real-time discharge directly (well-maintained rating curves). Rating curve storage may not be needed for v0 but the data model should support it.
+- **v1 (Nepal)**: DHM provides real-time water level + historical discharge. Rating curves available for daily data but not sub-hourly. DHM will upload updated rating tables yearly.
+
+---
+
+## Skill metric interpretation
+
+Skill scores are accompanied by human-readable interpretation labels. Configured as dictionaries mapping score ranges to labels per metric:
+
+```
+NSE: (0.75, 1.0) → "Very good", (0.65, 0.75) → "Good", (0.50, 0.65) → "Satisfactory", (-∞, 0.50) → "Unsatisfactory"
+```
+
+Classification schemes are deployment-configurable (different agencies may use different standards). Skill scores are computed per lead time (Flows 8/10 step S.4) — lead time degradation is a display concern, not an architectural one. The API and dashboard use per-lead-time skill data to communicate forecast reliability.
+
+---
+
+## Timezone handling
+
+- **Storage**: UTC always. `UtcDatetime` NewType enforced at boundaries.
+- **Station metadata**: Each station has an IANA timezone identifier (e.g. `Asia/Kathmandu`, `Europe/Zurich`). Not a fixed offset — handles DST transitions correctly via `zoneinfo`.
+- **Display**: API and dashboard convert UTC → local timezone for presentation.
+- **Daily aggregation**: Uses the station's local timezone to define day boundaries. A hydrological day in Nepal (00:00–00:00 NPT) differs from a UTC day. This affects cold storage aggregation and dashboard display.
+- **No data loss from UTC storage**: UTC timestamps uniquely identify each observation regardless of DST shifts. Spring-forward and fall-back transitions are handled correctly.
+
+---
+
+## Data retention and cold storage
+
+- **Hot storage (PostgreSQL)**: Full resolution data, rolling 2-year window. Queried by API, dashboard, and operational flows.
+- **Cold storage (Parquet on local disk)**: Full resolution data, permanent. Organized by station/year/parameter. Not queryable by the application directly.
+- **Daily aggregates**: Retained permanently in PostgreSQL (small footprint). Aggregated using local timezone day boundaries.
+- **Archival process**: Scheduled Prefect task (e.g. monthly). Exports data older than 2 years from hot tables to Parquet, verifies file integrity, then deletes exported rows. Idempotent — export first, verify, then delete.
+- **Recovery**: When Flows 6/9 (training) or Flow 7 (hindcast) need historical data beyond the hot window, cold Parquet files are read on demand via Polars (native Parquet support). No permanent re-import needed.
+- **Retention window is deployment-configurable** (e.g. 2 years for Nepal, different for Switzerland).
+- **Backup**: Parquet files are static once written — included in the backup procedure alongside database dumps. Incremental backups are efficient (only new files).
+- **Risks and mitigations**:
+  - Disk failure → mitigated by including Parquet in backups to external storage
+  - Schema drift → store schema version in Parquet metadata, handle migration in read path
+  - Archival job failure → idempotent design (export → verify → delete)
+  - Retraining/hindcast jobs slower when reading cold data → acceptable for infrequent operations (yearly retraining)
+
+---
+
+## Backup and disaster recovery
+
+Current scope: disaster recovery (DR), not high availability (HA).
+
+- **HA (High Availability)**: Redundant systems with automatic failover. Out of scope for current phase — requires replicated infrastructure. Can be added later; the architecture is stateless at the application layer (all state in PostgreSQL), so migration to Docker Swarm/Kubernetes with replicated DB is feasible without redesign.
+- **DR (Disaster Recovery)**: Ability to restore the system after failure from backups.
+
+### DR plan
+
+1. **Automated database backups**: Scheduled Prefect task (daily `pg_dump` to external storage). Cold storage Parquet files backed up alongside.
+2. **Health endpoint**: FastAPI `/health` endpoint returning JSON with component status (DB connectivity, Prefect agent status, last successful forecast cycle age). External monitoring systems poll this — we provide the standard interface, the hydromet integrates with their monitoring infrastructure.
+3. **Documented recovery procedure**: Step-by-step instructions for restoring from backup on a fresh VM. Part of operational documentation delivered to the hydromet.
+
+Communication to hydromet: database backups are automated and recovery procedures are documented. HA (automatic failover) is not included in this project phase but can be added later if required.
+
+---
+
+## External consumers
+
+API-first data export confirmed. Known consumers for v1 (Nepal):
+
+- **DHM forecast dashboard** — full access to all stations and parameters
+- **Nepal DRRMA Bipad portal** — flood alerts and forecast data
+- **Other government authorities** — scoped access per agency
+- **Hydropower agencies** — specific stations relevant to operations
+- **Neighbouring countries** — border-relevant stations
+
+All consumers pull from the REST API. API keys are scoped per consumer (per authority or state). No push-based integrations. The API supports JSON (default) and CSV export.
+
+---
+
+## Notification channels
+
+Notification delivery mechanism TBD — pending input from DHM. Candidates:
+
+- **Email** — standard, reliable
+- **SMS** — critical for areas with limited internet connectivity
+- **Webhook** — for integration with external systems (e.g. Bipad portal)
+
+Architecture supports pluggable notification adapters. Channel selection is per-alert-type and per-recipient configurable.
+
 ---
 
 ## Component map
@@ -529,7 +652,14 @@ Follows from the layering rule. See CLAUDE.md for test writing conventions.
 | Clock injection | No `datetime.now()` in business logic. |
 | Models as separate packages | Discovered via Python entry points. |
 | Forecast adjustments tracked | Every manual adjustment recorded with forecaster ID, timestamp, and rationale. |
+| Ensemble generation is model-internal | ML-native uncertainty and NWP ensemble propagation coexist. Model Protocol outputs a consistent ensemble format. |
+| Rating curves versioned per station | Bidirectional water level ↔ discharge conversion. Temporal versioning for hindcast consistency. |
+| Cold storage for historical data | 2-year hot window in PostgreSQL, full-resolution Parquet on local disk (permanent). Deployment-configurable. |
+| IANA timezone per station | UTC storage, local display. Daily aggregation uses local day boundaries. |
+| DR, not HA | Automated DB backups, `/health` endpoint, documented recovery. No automatic failover in current phase. |
+| QC rules versioned | Rule version stored with each QC flag. Enables recomputation when rules change. |
 | API-first data export | External consumers (Nepal authorities, international) ingest our API. JSON default, CSV export supported. No push-based export. |
+| Forcing time series served via API | Dashboard displays precipitation + temperature by default alongside forecasts. Model admin configures which predictors are shown. |
 
 ## Access management
 
