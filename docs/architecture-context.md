@@ -36,16 +36,14 @@ times a day. Runs on Docker Compose on a single VM.
 7. **Hindcast generation**
    Run forecast models over a historical period for a given station/model combination. Used for: onboarding validation, model comparison, post-retraining verification, ongoing skill tracking.
 
-8. **Skill computation**
-   Compute verification metrics from hindcast results. Supports station-level and cross-station aggregation.
+8. **Skill computation** → same as Flow 10 with narrow scope (see Flows 8 & 10 refinement)
 
 ### Maintenance (yearly or on-demand)
 
 9. **Model retraining**
    Retrain existing models on accumulated data to account for changing conditions.
 
-10. **Skill recomputation**
-    Recompute verification metrics across all stations/models with the latest data.
+10. **Skill recomputation** → same flow as Flow 8 with broad scope (see Flows 8 & 10 refinement)
 
 11. **NWP archive management**
     Maintain archive of extracted NWP values (basin-average or point, not raw GRIB2). Permanent retention. Housekeeping: verify completeness, flag gaps, manage storage.
@@ -260,6 +258,51 @@ Meta-flow — monitors the health of Flows 1 and 2 rather than processing data. 
 ```
 
 Steps 4.1–4.4 are independent checks — run in parallel. They join at 4.5 for evaluation. Notifications (4.7) and metric logging (4.8) run in parallel after 4.6.
+
+### Flows 8 & 10 — Skill computation (unified)
+
+```
+Trigger:  On-demand (after hindcast, after retraining) or scheduled (yearly refresh)
+Flow:     compute_skills
+Layer:    flows/ — orchestration only, delegates to services
+```
+
+Flows 8 (initial skill computation) and 10 (skill recomputation) are the same flow with different scope. Flow 8 = narrow scope (one station/model after hindcast). Flow 10 = broad scope (all stations/models, yearly or after retraining).
+
+#### Steps
+
+| # | Step | Layer | Input | Output |
+|---|------|-------|-------|--------|
+| S.1 | Determine scope | `services/` | Request params (stations, models, period) or "all" | List of (station, model, period) tuples to evaluate |
+| S.2 | Fetch hindcast results | `store/` | Scope from S.1 | Hindcast forecast ensembles |
+| S.3 | Fetch corresponding observations | `store/` | Matching station/period pairs | QC-passed observed values |
+| S.4 | Compute verification metrics | `services/` | Hindcast ensembles + observations | Per-station, per-model, per-lead-time, per-season skill scores |
+| S.5 | Aggregate metrics | `services/` | Station-level scores | Cross-station summaries (by model, by region, overall) |
+| S.6 | Store skill results | `store/` | Computed metrics | Persisted to skill tables (versioned) |
+
+Using `S.*` prefix since this flow serves both Flow 8 and Flow 10.
+
+#### Notes
+
+- **S.1**: Scope can be a single station/model (after a hindcast), a set of models (after retraining), or everything (yearly refresh). Same flow function, different scope parameter.
+- **S.4**: Standard metric set, extensible over time:
+  - Ensemble: CRPS, reliability diagram data, spread-skill ratio
+  - Deterministic (on ensemble median/mean): NSE, KGE, PBIAS, MAE
+  - All metrics computed per lead time — skill degrades with lead time and this must be visible.
+  - Seasonal breakdown with configurable season definitions (e.g. monsoon Jun–Sep, dry Oct–May for Nepal; or equal quarters for Switzerland). Season config is per-deployment, not per-station.
+- **S.5**: Two audiences: developers comparing models across stations, and hydrologists seeing which model performs best at their station (used in Flow 3 for model selection).
+- **S.6**: Skill results are versioned — a recomputation creates a new record, doesn't overwrite previous ones. Enables tracking skill evolution over time.
+- **Consumers**: Flow 3 dashboard (hydrologist model selection), developer tools, API.
+
+#### Sequencing
+
+```
+S.1 → S.2 ─┐
+       ↘    ├→ S.4 → S.5 → S.6
+      S.3 ─┘
+```
+
+S.2 and S.3 run in parallel (both are store reads scoped by S.1), then join at S.4. Steps S.4–S.5 are parallelizable across stations.
 
 ---
 
