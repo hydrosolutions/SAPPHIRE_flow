@@ -1,6 +1,6 @@
 %% Paper 0 — HESS Opinions: references
 %% Style: copernicus.bst (author-year, DOI mandatory for journals)
-%% Last synced with 01-operational-systems.md: 2026-03-09
+%% Last synced: 2026-03-10 (01-operational-systems, 02-ml-architectures, precipitation_products)
 
 %% ===== Section 1: Operational systems =====
 
@@ -292,6 +292,9 @@
 }
 
 %% ===== Section 2: ML architectures (from 02-ml-architectures.md) =====
+%% Last synced: 2026-03-10
+
+%% -- 2.1 LSTM and Variants --
 
 @article{kratzert2018,
   author    = {Kratzert, F. and Klotz, D. and Brenner, C. and Schulz, K. and Herrnegger, M.},
@@ -302,6 +305,17 @@
   year      = {2018},
   doi       = {10.5194/hess-22-6005-2018},
   url       = {https://doi.org/10.5194/hess-22-6005-2018},
+}
+
+@article{kratzert2019a,
+  author    = {Kratzert, F. and Klotz, D. and Herrnegger, M. and Sampson, A. K. and Hochreiter, S. and Nearing, G. S.},
+  title     = {Toward improved predictions in ungauged basins: {Exploiting} the power of machine learning},
+  journal   = {Water Resour. Res.},
+  volume    = {55},
+  pages     = {11344--11354},
+  year      = {2019},
+  doi       = {10.1029/2019WR026065},
+  url       = {https://doi.org/10.1029/2019WR026065},
 }
 
 @article{gauch2021,
@@ -315,29 +329,487 @@
   url       = {https://doi.org/10.5194/hess-25-2045-2021},
 }
 
-@article{rasiyakoya2024,
-  author    = {Rasiya Koya, S. and Roy, T.},
-  title     = {Temporal {Fusion Transformer} for streamflow prediction: {Value} of combining attention with recurrence},
-  journal   = {J. Hydrol.},
-  year      = {2024},
-  note      = {TODO: verify volume, pages, DOI},
+@article{acunaespinoza2025,
+  author    = {Acuna Espinoza, E. and Kratzert, F. and Klotz, D. and Gauch, M. and Alvarez Chaves, M. and Loritz, R. and Ehret, U.},
+  title     = {Technical note: {An} approach for handling multiple temporal frequencies with different input dimensions using a single {LSTM} cell},
+  journal   = {Hydrol. Earth Syst. Sci.},
+  volume    = {29},
+  pages     = {1749--1758},
+  year      = {2025},
+  doi       = {10.5194/hess-29-1749-2025},
+  url       = {https://doi.org/10.5194/hess-29-1749-2025},
 }
 
-@inproceedings{rivermamba2025,
-  author    = {{RiverMamba authors}},
-  title     = {{RiverMamba}: Selective state space models for river-level forecasting},
+@inproceedings{hoedt2021,
+  author    = {Hoedt, P.-J. and Kratzert, F. and Klotz, D. and Halmich, C. and Holzleitner, M. and Nearing, G. S. and Hochreiter, S. and Klambauer, G.},
+  title     = {{MC-LSTM}: {Mass-Conserving LSTM}},
+  booktitle = {Proc. 38th Int. Conf. Machine Learning (ICML)},
+  series    = {PMLR},
+  volume    = {139},
+  pages     = {4275--4286},
+  year      = {2021},
+}
+
+@inproceedings{beck2024,
+  author    = {Beck, M. and others},
+  title     = {{xLSTM}: {Extended Long Short-Term Memory}},
   booktitle = {Advances in Neural Information Processing Systems (NeurIPS)},
-  year      = {2025},
-  note      = {TODO: verify full author list and details},
+  year      = {2024},
+  eprint    = {2405.04517},
+  archiveprefix = {arXiv},
+}
+
+%% -- 2.2 Transformers and Attention --
+
+@article{rasiyakoya2024,
+  author    = {Rasiya Koya, S. and Roy, T.},
+  title     = {Temporal {Fusion Transformers} for streamflow prediction: {Value} of combining attention with recurrence},
+  journal   = {J. Hydrol.},
+  volume    = {637},
+  pages     = {131301},
+  year      = {2024},
+  doi       = {10.1016/j.jhydrol.2024.131301},
+  url       = {https://doi.org/10.1016/j.jhydrol.2024.131301},
+}
+
+@article{lim2021,
+  author    = {Lim, B. and Arik, S. O. and Loeff, N. and Pfister, T.},
+  title     = {Temporal {Fusion Transformers} for interpretable multi-horizon time series forecasting},
+  journal   = {Int. J. Forecasting},
+  volume    = {37},
+  number    = {4},
+  pages     = {1748--1764},
+  year      = {2021},
+  doi       = {10.1016/j.ijforecast.2021.03.012},
+  url       = {https://doi.org/10.1016/j.ijforecast.2021.03.012},
 }
 
 @article{ambika2025,
-  author    = {Ambika, A. K.},
-  title     = {{FutureTST}: Transformer-based streamflow forecasting with future forcing},
+  author    = {Ambika, A. K. and Tayal, K. and Mishra, V. and Lu, D.},
+  title     = {Novel deep learning transformer model for short to sub-seasonal streamflow forecast},
   journal   = {Geophys. Res. Lett.},
+  volume    = {52},
+  number    = {14},
+  pages     = {e2025GL116707},
   year      = {2025},
-  note      = {TODO: verify volume, pages, DOI},
+  doi       = {10.1029/2025GL116707},
+  url       = {https://doi.org/10.1029/2025GL116707},
 }
+
+@article{liu2025benchmark,
+  author    = {Liu, J. and Shen, C. and O'Donncha, F. and Song, Y. and Zhi, W. and Beck, H. E. and Bindas, T. and Kraabel, N. and Lawson, K.},
+  title     = {From {RNNs} to {Transformers}: benchmarking deep learning architectures for hydrologic prediction},
+  journal   = {Hydrol. Earth Syst. Sci.},
+  volume    = {29},
+  pages     = {6811--6828},
+  year      = {2025},
+  doi       = {10.5194/hess-29-6811-2025},
+  url       = {https://doi.org/10.5194/hess-29-6811-2025},
+}
+
+@article{liu2024transformer,
+  author    = {Liu, J. and Bian, Y. and Lawson, K. and Shen, C.},
+  title     = {Probing the limit of hydrologic predictability with the {Transformer} network},
+  journal   = {J. Hydrol.},
+  volume    = {637},
+  pages     = {131389},
+  year      = {2024},
+  doi       = {10.1016/j.jhydrol.2024.131389},
+  url       = {https://doi.org/10.1016/j.jhydrol.2024.131389},
+}
+
+@article{orozcolopez2024,
+  author    = {Orozco Lopez, E. and Kaplan, D. and Linhoss, A.},
+  title     = {Interpretable {Transformer} neural network prediction of diverse environmental time series using weather forecasts},
+  journal   = {Water Resour. Res.},
+  year      = {2024},
+  doi       = {10.1029/2023WR036337},
+  url       = {https://doi.org/10.1029/2023WR036337},
+}
+
+@article{demiray2024,
+  author    = {Demiray, B. Z. and Sit, M. and Mermer, O. and Demir, I.},
+  title     = {Enhancing hydrological modeling with transformers: a case study for 24-h streamflow prediction},
+  journal   = {Water Sci. Technol.},
+  volume    = {89},
+  number    = {9},
+  pages     = {2326--2341},
+  year      = {2024},
+  doi       = {10.2166/wst.2024.110},
+  url       = {https://doi.org/10.2166/wst.2024.110},
+}
+
+%% -- 2.3 State-Space Models --
+
+@inproceedings{shamseddin2025,
+  author    = {Shams Eddin, M. H. and Zhang, Y. and Kollet, S. and Gall, J.},
+  title     = {{RiverMamba}: {A} state space model for global river discharge and flood forecasting},
+  booktitle = {Advances in Neural Information Processing Systems 38 (NeurIPS)},
+  year      = {2025},
+  eprint    = {2505.22535},
+  archiveprefix = {arXiv},
+}
+
+%% -- 2.4 Physics-Informed Hybrids --
+
+@article{du2025,
+  author    = {Du, Y. and Pechlivanidis, I. G.},
+  title     = {Hybrid approaches enhance hydrological model usability for local streamflow prediction},
+  journal   = {Commun. Earth Environ.},
+  year      = {2025},
+  doi       = {10.1038/s43247-025-02324-y},
+  url       = {https://doi.org/10.1038/s43247-025-02324-y},
+}
+
+@article{konapala2020,
+  author    = {Konapala, G. and Kao, S.-C. and Painter, S. L. and Lu, D.},
+  title     = {Machine learning assisted hybrid models can improve streamflow simulation in diverse catchments across the conterminous {US}},
+  journal   = {Environ. Res. Lett.},
+  volume    = {15},
+  pages     = {104022},
+  year      = {2020},
+  doi       = {10.1088/1748-9326/aba927},
+  url       = {https://doi.org/10.1088/1748-9326/aba927},
+}
+
+@article{liu2024hybrid,
+  author    = {Liu, J. and Koch, J. and Stisen, S. and Troldborg, L. and Schneider, R. J. M.},
+  title     = {A national-scale hybrid model for enhanced streamflow estimation -- consolidating a physically based hydrological model with {LSTM} networks},
+  journal   = {Hydrol. Earth Syst. Sci.},
+  volume    = {28},
+  pages     = {2871--2893},
+  year      = {2024},
+  doi       = {10.5194/hess-28-2871-2024},
+  url       = {https://doi.org/10.5194/hess-28-2871-2024},
+}
+
+@article{tsai2021,
+  author    = {Tsai, W.-P. and others},
+  title     = {From calibration to parameter learning: {Harnessing} the scaling effects of big data in geoscientific modeling},
+  journal   = {Nat. Commun.},
+  volume    = {12},
+  pages     = {5988},
+  year      = {2021},
+  doi       = {10.1038/s41467-021-26107-z},
+  url       = {https://doi.org/10.1038/s41467-021-26107-z},
+}
+
+@article{feng2022,
+  author    = {Feng, D. and Liu, J. and Lawson, K. and Shen, C.},
+  title     = {Differentiable, learnable, regionalized process-based models with multiphysical outputs can approach state-of-the-art hydrologic prediction accuracy},
+  journal   = {Water Resour. Res.},
+  volume    = {58},
+  pages     = {e2022WR032404},
+  year      = {2022},
+  doi       = {10.1029/2022WR032404},
+  url       = {https://doi.org/10.1029/2022WR032404},
+}
+
+@article{feng2024,
+  author    = {Feng, D. and others},
+  title     = {Global-scale differentiable hydrological modelling},
+  journal   = {Geosci. Model Dev.},
+  volume    = {17},
+  pages     = {7181--7198},
+  year      = {2024},
+  doi       = {10.5194/gmd-17-7181-2024},
+  url       = {https://doi.org/10.5194/gmd-17-7181-2024},
+}
+
+@article{song2026,
+  author    = {Song, Y. and Sawadekar, K. and Frame, J. M. and Pan, M. and Clark, M. P. and Knoben, W. J. M. and Wood, A. W. and Lawson, K. E. and Patel, T. and Shen, C.},
+  title     = {Physics-informed, differentiable hydrologic models for capturing unseen extreme events},
+  journal   = {Water Resour. Res.},
+  year      = {2026},
+  doi       = {10.1029/2025WR040414},
+  url       = {https://doi.org/10.1029/2025WR040414},
+}
+
+@article{song2025,
+  author    = {Song, Y. and others},
+  title     = {National-scale multiscale differentiable hydrological modelling},
+  journal   = {Water Resour. Res.},
+  volume    = {61},
+  pages     = {e2024WR038928},
+  year      = {2025},
+  doi       = {10.1029/2024WR038928},
+  url       = {https://doi.org/10.1029/2024WR038928},
+}
+
+@article{shen2023,
+  author    = {Shen, C. and others},
+  title     = {Differentiable modelling to unify machine learning and physical models for geosciences},
+  journal   = {Nat. Rev. Earth Environ.},
+  volume    = {4},
+  pages     = {552--567},
+  year      = {2023},
+  doi       = {10.1038/s43017-023-00450-9},
+  url       = {https://doi.org/10.1038/s43017-023-00450-9},
+}
+
+@article{kratzert2022nh,
+  author    = {Kratzert, F. and Gauch, M. and Nearing, G. and Klotz, D.},
+  title     = {{NeuralHydrology} -- {A} {Python} library for deep learning research in hydrology},
+  journal   = {J. Open Source Softw.},
+  volume    = {7},
+  number    = {71},
+  pages     = {4050},
+  year      = {2022},
+  doi       = {10.21105/joss.04050},
+  url       = {https://doi.org/10.21105/joss.04050},
+}
+
+%% -- 2.5 Temporal Mismatch / Disaggregation --
+
+@article{onof2020,
+  author    = {Onof, C. and Wang, L.-P.},
+  title     = {Modelling rainfall with a {Bartlett--Lewis} process: new developments},
+  journal   = {Hydrol. Earth Syst. Sci.},
+  volume    = {24},
+  pages     = {2791--2815},
+  year      = {2020},
+  doi       = {10.5194/hess-24-2791-2020},
+  url       = {https://doi.org/10.5194/hess-24-2791-2020},
+}
+
+@article{kossieris2016,
+  author    = {Kossieris, P. and others},
+  title     = {A rainfall disaggregation scheme for sub-hourly time scales: coupling a {Bartlett-Lewis} based model with adjusting procedures},
+  journal   = {J. Hydrol.},
+  year      = {2016},
+  doi       = {10.1016/j.jhydrol.2016.07.036},
+  url       = {https://doi.org/10.1016/j.jhydrol.2016.07.036},
+}
+
+@article{terzago2018,
+  author    = {Terzago, S. and Palazzi, E. and von Hardenberg, J.},
+  title     = {Stochastic downscaling of precipitation in complex orography: a simple method to reproduce a realistic fine-scale climatology},
+  journal   = {Nat. Hazards Earth Syst. Sci.},
+  volume    = {18},
+  pages     = {2825--2840},
+  year      = {2018},
+  doi       = {10.5194/nhess-18-2825-2018},
+  url       = {https://doi.org/10.5194/nhess-18-2825-2018},
+}
+
+@article{chandra2024,
+  author    = {Chandra, R. and Saharia, M.},
+  title     = {Temporal disaggregation of precipitation using microcanonical multiplicative random cascades with clustering},
+  journal   = {Earth Sci. Inform.},
+  year      = {2024},
+  doi       = {10.1007/s12145-024-01309-3},
+  url       = {https://doi.org/10.1007/s12145-024-01309-3},
+}
+
+@article{oates2025,
+  author    = {Oates, L. and others},
+  title     = {{LSTM}-based precipitation disaggregation with conservation constraints},
+  journal   = {Stoch. Environ. Res. Risk Assess.},
+  volume    = {39},
+  pages     = {2859--2872},
+  year      = {2025},
+  doi       = {10.1007/s00477-025-02996-0},
+  url       = {https://doi.org/10.1007/s00477-025-02996-0},
+}
+
+@article{glawion2025,
+  author    = {Glawion, L. and others},
+  title     = {{SpateGAN-ERA5}: simultaneous spatial and temporal downscaling of {ERA5} precipitation},
+  journal   = {npj Clim. Atmos. Sci.},
+  year      = {2025},
+  doi       = {10.1038/s41612-025-01103-y},
+  url       = {https://doi.org/10.1038/s41612-025-01103-y},
+}
+
+@article{scher2021,
+  author    = {Scher, S. and Pessenteiner, S.},
+  title     = {{spateGAN}: spatio-temporal downscaling of rainfall fields using a cGAN approach},
+  journal   = {Hydrol. Earth Syst. Sci.},
+  volume    = {25},
+  pages     = {3207--3225},
+  year      = {2021},
+  doi       = {10.5194/hess-25-3207-2021},
+  url       = {https://doi.org/10.5194/hess-25-3207-2021},
+}
+
+@article{mardani2025,
+  author    = {Mardani, M. and others},
+  title     = {Residual corrective diffusion modeling for km-scale atmospheric downscaling},
+  journal   = {Commun. Earth Environ.},
+  year      = {2025},
+  doi       = {10.1038/s43247-025-02042-5},
+  url       = {https://doi.org/10.1038/s43247-025-02042-5},
+}
+
+@article{harris2022,
+  author    = {Harris, L. and others},
+  title     = {Generative adversarial networks for high-resolution precipitation forecasting},
+  journal   = {J. Adv. Model. Earth Syst.},
+  volume    = {14},
+  year      = {2022},
+  doi       = {10.1029/2022MS003120},
+  url       = {https://doi.org/10.1029/2022MS003120},
+}
+
+@article{li2018mof,
+  author    = {Li, J. and others},
+  title     = {A comparison of three resampling approaches for temporal disaggregation of precipitation},
+  journal   = {Int. J. Climatol.},
+  year      = {2018},
+  doi       = {10.1002/joc.5438},
+  url       = {https://doi.org/10.1002/joc.5438},
+}
+
+@article{breinl2019,
+  author    = {Breinl, K. and Di Baldassarre, G.},
+  title     = {Space-time disaggregation of precipitation and temperature across different climates and spatial scales},
+  journal   = {J. Hydrol. Reg. Stud.},
+  volume    = {21},
+  pages     = {126--146},
+  year      = {2019},
+}
+
+@article{frontierswater2022,
+  author    = {{Authors TBD}},
+  title     = {Precipitation input uncertainty attribution},
+  journal   = {Front. Water},
+  year      = {2022},
+  doi       = {10.3389/frwa.2022.836554},
+  url       = {https://doi.org/10.3389/frwa.2022.836554},
+  note      = {TODO: verify full author list and title},
+}
+
+@article{waf2022,
+  author    = {{Authors TBD}},
+  title     = {Frequency bias from accumulation and disaggregation of bias-corrected {QPF}},
+  journal   = {Weather Forecasting},
+  year      = {2022},
+  doi       = {10.1175/WAF-D-21-0083.1},
+  url       = {https://doi.org/10.1175/WAF-D-21-0083.1},
+  note      = {TODO: verify full author list and title},
+}
+
+@article{jhydrol2016temporal,
+  author    = {{Authors TBD}},
+  title     = {Impact of temporal resolution on flood event prediction},
+  journal   = {J. Hydrol.},
+  year      = {2016},
+  doi       = {10.1016/j.jhydrol.2016.04.016},
+  url       = {https://doi.org/10.1016/j.jhydrol.2016.04.016},
+  note      = {TODO: verify full author list and title},
+}
+
+%% -- 2.6 CNN-LSTM and Spatial Architectures --
+
+@article{anderson2022,
+  author    = {Anderson, S. and Radic, V.},
+  title     = {Evaluation and interpretation of convolutional long short-term memory networks for regional hydrological modelling},
+  journal   = {Hydrol. Earth Syst. Sci.},
+  volume    = {26},
+  pages     = {795--825},
+  year      = {2022},
+  doi       = {10.5194/hess-26-795-2022},
+  url       = {https://doi.org/10.5194/hess-26-795-2022},
+}
+
+@inproceedings{shi2015,
+  author    = {Shi, X. and Chen, Z. and Wang, H. and Yeung, D.-Y. and Wong, W.-K. and Woo, W.-C.},
+  title     = {Convolutional {LSTM} network: a machine learning approach for precipitation nowcasting},
+  booktitle = {Advances in Neural Information Processing Systems (NeurIPS)},
+  volume    = {28},
+  year      = {2015},
+  eprint    = {1506.04214},
+  archiveprefix = {arXiv},
+}
+
+@article{dehghani2023,
+  author    = {Dehghani, A. and Moazam, H. M. Z. H. and Mortazavizadeh, F. and Ranjbar, V. and Mirzaei, M. and Mortezavi, S. and Ng, J. L. and Dehghani, A.},
+  title     = {Comparative evaluation of {LSTM}, {CNN}, and {ConvLSTM} for hourly short-term streamflow forecasting using deep learning approaches},
+  journal   = {Ecol. Inform.},
+  volume    = {75},
+  pages     = {102119},
+  year      = {2023},
+  doi       = {10.1016/j.ecoinf.2023.102119},
+  url       = {https://doi.org/10.1016/j.ecoinf.2023.102119},
+}
+
+@article{borgel2025,
+  author    = {Borgel, F. and others},
+  title     = {From weather data to river runoff: using spatiotemporal convolutional networks for discharge forecasting},
+  journal   = {Geosci. Model Dev.},
+  volume    = {18},
+  pages     = {2005--2019},
+  year      = {2025},
+  doi       = {10.5194/gmd-18-2005-2025},
+  url       = {https://doi.org/10.5194/gmd-18-2005-2025},
+}
+
+@article{zhang2025,
+  author    = {Zhang, C. and Zhou, Y. and Lu, F. and Liu, J. and Zhang, J. and Yin, Z. and Ji, M. and Li, B.},
+  title     = {Assessing the performance and interpretability of the {CNN-LSTM-Attention} model for daily streamflow forecasting},
+  journal   = {Scientific Reports},
+  volume    = {15},
+  pages     = {82},
+  year      = {2025},
+  doi       = {10.1038/s41598-024-84810-5},
+  url       = {https://doi.org/10.1038/s41598-024-84810-5},
+}
+
+@article{hu2024,
+  author    = {Hu, F. and others},
+  title     = {Incorporating multiple grid-based data in {CNN-LSTM} hybrid model for daily runoff prediction in the source region of the {Yellow River Basin}},
+  journal   = {J. Hydrol. Reg. Stud.},
+  volume    = {51},
+  year      = {2024},
+  note      = {TODO: verify DOI},
+}
+
+@article{pokharel2024,
+  author    = {Pokharel, S. and Roy, T.},
+  title     = {A parsimonious setup for streamflow forecasting using {CNN-LSTM}},
+  journal   = {J. Hydroinf.},
+  volume    = {26},
+  number    = {11},
+  pages     = {2751--2761},
+  year      = {2024},
+  doi       = {10.2166/hydro.2024.114},
+  url       = {https://doi.org/10.2166/hydro.2024.114},
+}
+
+@article{wang2024,
+  author    = {Wang, Y. and Karimi, H. A.},
+  title     = {Enhancing {LSTM}-based streamflow prediction with a spatially distributed approach},
+  journal   = {Hydrol. Earth Syst. Sci.},
+  volume    = {28},
+  pages     = {2107--2122},
+  year      = {2024},
+  doi       = {10.5194/hess-28-2107-2024},
+  url       = {https://doi.org/10.5194/hess-28-2107-2024},
+}
+
+@article{li2023tibetan,
+  author    = {Li, B. and Li, R. and Sun, T. and Gong, A. and Tian, F. and Khan, M. Y. A. and Ni, G.},
+  title     = {Improving {LSTM} hydrological modeling with spatiotemporal deep learning and multi-task learning: a case study of three mountainous areas on the {Tibetan Plateau}},
+  journal   = {J. Hydrol.},
+  volume    = {620},
+  pages     = {129401},
+  year      = {2023},
+  doi       = {10.1016/j.jhydrol.2023.129401},
+  url       = {https://doi.org/10.1016/j.jhydrol.2023.129401},
+}
+
+@article{sun2022,
+  author    = {Sun, A. Y. and Jiang, P. and Yang, Z.-L. and Xie, Y. and Chen, X.},
+  title     = {A graph neural network ({GNN}) approach to basin-scale river network learning: the role of physics-based connectivity and data fusion},
+  journal   = {Hydrol. Earth Syst. Sci.},
+  volume    = {26},
+  pages     = {5163--5184},
+  year      = {2022},
+  doi       = {10.5194/hess-26-5163-2022},
+  url       = {https://doi.org/10.5194/hess-26-5163-2022},
+}
+
+%% ===== Section 1: continued (already present above) =====
 
 @article{lang2024,
   author    = {Lang, S. T. N. and Ben-Bouallegue, Z. and Alexe, M. and Chantry, M. and Dramsch, J. and Dueben, P. D. and Lees, A. and Magnusson, L. and Pinault, F. and Roberts, N. and Bauer, P.},
@@ -397,6 +869,141 @@
   url       = {https://doi.org/10.5194/hess-22-5639-2018},
 }
 
+%% ===== Precipitation products (from precipitation_products.md) =====
+%% Last synced: 2026-03-10
+
+@article{dao2025,
+  author    = {Dao, V. and Arellano, C. J. and Nguyen, P. and Almutlaq, F. and Hsu, K. and Sorooshian, S.},
+  title     = {Bias correction of satellite precipitation estimation using deep neural networks and topographic information over the western {U.S.}},
+  journal   = {J. Geophys. Res. Atmos.},
+  year      = {2025},
+  doi       = {10.1029/2024JD042181},
+  url       = {https://doi.org/10.1029/2024JD042181},
+}
+
+@article{davids2019,
+  author    = {Davids, J. C. and others},
+  title     = {Soda bottle science -- citizen science monsoon precipitation monitoring in {Nepal}},
+  journal   = {Front. Earth Sci.},
+  volume    = {7},
+  pages     = {46},
+  year      = {2019},
+  doi       = {10.3389/feart.2019.00046},
+  url       = {https://doi.org/10.3389/feart.2019.00046},
+}
+
+@article{gironamata2025,
+  author    = {Girona-Mata, M. and Orr, A. and Widmann, M. and Bannister, D. and Dars, G. H. and Hosking, S. and Norris, J. and Ocio, D. and Phillips, T. and Steiner, J. and Turner, R. E.},
+  title     = {Probabilistic precipitation downscaling for ungauged mountain sites: a pilot study for the {Hindu Kush Himalaya}},
+  journal   = {Hydrol. Earth Syst. Sci.},
+  volume    = {29},
+  pages     = {3073--3100},
+  year      = {2025},
+  doi       = {10.5194/hess-29-3073-2025},
+  url       = {https://doi.org/10.5194/hess-29-3073-2025},
+}
+
+@misc{gupta2025,
+  author    = {Gupta, A. and Sheshadri, A. and Suri, D.},
+  title     = {{MAUSAM}: an observations-focused assessment of global {AI} weather prediction models during the {South Asian} monsoon},
+  year      = {2025},
+  eprint    = {2509.01879},
+  archiveprefix = {arXiv},
+}
+
+@article{khadka2022,
+  author    = {Khadka, A. and Wagnon, P. and Brun, F. and Shrestha, D. and Lejeune, Y. and Arnaud, Y.},
+  title     = {Evaluation of {ERA5-Land} and {HARv2} reanalysis data at high elevation in the {Upper Dudh Koshi Basin} ({Everest Region}, {Nepal})},
+  journal   = {J. Appl. Meteor. Climatol.},
+  volume    = {61},
+  number    = {8},
+  pages     = {931--954},
+  year      = {2022},
+  doi       = {10.1175/JAMC-D-21-0091.1},
+  url       = {https://doi.org/10.1175/JAMC-D-21-0091.1},
+}
+
+@article{langmagnusson2025,
+  author    = {Lang, S. and Magnusson, L.},
+  title     = {{AIFS ENS} becomes operational},
+  journal   = {ECMWF Newsletter},
+  number    = {185},
+  year      = {2025},
+}
+
+@article{mishra2023,
+  author    = {Mishra, B. and Panthi, S. and Ghimire, B. R. and Poudel, S. and Maharjan, B. and Mishra, Y.},
+  title     = {Gridded precipitation products on the {Hindu Kush-Himalaya}: performance and accuracy of seven precipitation products},
+  journal   = {PLOS Water},
+  volume    = {2},
+  number    = {8},
+  pages     = {e0000145},
+  year      = {2023},
+  doi       = {10.1371/journal.pwat.0000145},
+  url       = {https://doi.org/10.1371/journal.pwat.0000145},
+}
+
+@article{nepal2024,
+  author    = {Nepal, B. and others},
+  title     = {Assessing multi-source precipitation estimates in {Nepal}},
+  journal   = {J. Geophys. Res. Atmos.},
+  volume    = {129},
+  pages     = {e2024JD040759},
+  year      = {2024},
+  doi       = {10.1029/2024JD040759},
+  url       = {https://doi.org/10.1029/2024JD040759},
+}
+
+@article{nepal2021,
+  author    = {Nepal, B. and Shrestha, D. and Sharma, S. and Shrestha, M. S. and Aryal, D. and Shrestha, N.},
+  title     = {Assessment of {GPM}-era satellite products' ({IMERG} and {GSMaP}) ability to detect precipitation extremes over mountainous country {Nepal}},
+  journal   = {Atmosphere},
+  volume    = {12},
+  number    = {2},
+  pages     = {254},
+  year      = {2021},
+  doi       = {10.3390/atmos12020254},
+  url       = {https://doi.org/10.3390/atmos12020254},
+}
+
+@article{price2025,
+  author    = {Price, I. and Sanchez-Gonzalez, A. and Alet, F. and others},
+  title     = {Probabilistic weather forecasting with machine learning},
+  journal   = {Nature},
+  volume    = {637},
+  pages     = {84--90},
+  year      = {2025},
+  doi       = {10.1038/s41586-024-08252-9},
+  url       = {https://doi.org/10.1038/s41586-024-08252-9},
+}
+
+@article{sharma2020,
+  author    = {Sharma, S. and Chen, Y. and Zhou, X. and Yang, K. and Li, X. and Niu, X. and Hu, X. and Khadka, N.},
+  title     = {Evaluation of {GPM}-era satellite precipitation products on the southern slopes of the central {Himalayas} against rain gauge data},
+  journal   = {Remote Sens.},
+  volume    = {12},
+  number    = {11},
+  pages     = {1836},
+  year      = {2020},
+  doi       = {10.3390/rs12111836},
+  url       = {https://doi.org/10.3390/rs12111836},
+}
+
+@misc{wang2025mswep,
+  author    = {Wang, X. and others},
+  title     = {{MSWEP V3}: machine learning-powered global precipitation estimates at 0.1\degree{} hourly resolution (1979--present)},
+  year      = {2025},
+  eprint    = {2602.01436},
+  archiveprefix = {arXiv},
+}
+
+@techreport{wmosoff2024,
+  author    = {{WMO/SOFF}},
+  title     = {Country hydromet diagnostics: {Nepal}},
+  institution = {World Meteorological Organization},
+  year      = {2024},
+}
+
 %% ===== Additional references to fill =====
 %% TODO: Add as literature search progresses
 %% - Richardson (2000) — economic value score
@@ -405,3 +1012,6 @@
 %% - CAMELS-SPAT (HESS 2025)
 %% - Rating curve uncertainty references
 %% - Nepal DHM modernization review
+%% - Ficchi et al. (Environ. Model. Softw., 2016) — daily disaggregation
+%% - Kerrigan et al. (NeurIPS 2024) — STVD
+%% - Beucler et al. (JMLR, 2023) / Geiss & Hardin (AIES, 2023) — hard-constrained DL
