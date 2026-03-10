@@ -336,6 +336,21 @@ flows/ and api/  →  services/  →  store/
 - **store/**: data access behind Protocols. No business logic.
 - **models/**: pure functions. No DB, no I/O.
 
+### Test layer mapping
+
+Follows from the layering rule. See CLAUDE.md for test writing conventions.
+
+| Layer | Test type | Strategy |
+|-------|-----------|----------|
+| `types/`, `protocols/` | Unit | Pure validation logic. Known-answer tests for `__new__` invariants. |
+| `models/` | Unit | Pure functions — deterministic input/output. Known-answer tests from literature or reference implementations for numerical correctness. |
+| `services/` | Unit | Bulk of test coverage. Fake stores injected via Protocols. No DB, no I/O. |
+| `store/` | Integration | Thin tests against real PostgreSQL (test container). Verify SQL correctness, not business logic. |
+| `adapters/` | Integration | Recorded responses (VCR-style) for external APIs. Contract tests to detect upstream format changes. |
+| `flows/` | Integration | Lightweight orchestration tests. Verify task wiring, not business logic (already covered in `services/`). |
+| `api/` | Integration | FastAPI test client. Verify routing, serialization, status codes. Business logic tested via `services/`. |
+| End-to-end | E2E | Small reference dataset through full ingest → forecast → alert cycle. Few tests, slow, run in CI not locally. |
+
 ## Tech stack
 
 | Component | Choice |
