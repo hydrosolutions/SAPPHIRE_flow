@@ -1,8 +1,7 @@
 # Project Conventions
 
 Patterns and conventions specific to SAPPHIRE Flow that complement the
-coding style rules in `CLAUDE.md` and the type definitions in
-`docs/spec/types-and-protocols.md`.
+coding style rules in `CLAUDE.md`.
 
 ---
 
