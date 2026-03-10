@@ -30,8 +30,7 @@ times a day. Runs on Docker Compose on a single VM.
 5. **Station onboarding**
    Add new station to system → import historical observations → configure model assignments and weather source mappings
 
-6. **Model training**
-   Initial training for new stations/models on historical data.
+6. **Model training** → same as Flow 9 with `mode=initial` (see Flows 6 & 9 refinement)
 
 7. **Hindcast generation**
    Run forecast models over a historical period for a given station/model combination. Used for: onboarding validation, model comparison, post-retraining verification, ongoing skill tracking.
@@ -40,8 +39,7 @@ times a day. Runs on Docker Compose on a single VM.
 
 ### Maintenance (yearly or on-demand)
 
-9. **Model retraining**
-   Retrain existing models on accumulated data to account for changing conditions.
+9. **Model retraining** → same flow as Flow 6 with `mode=retrain` (see Flows 6 & 9 refinement)
 
 10. **Skill recomputation** → same flow as Flow 8 with broad scope (see Flows 8 & 10 refinement)
 
@@ -304,50 +302,53 @@ S.1 → S.2 ─┐
 
 S.2 and S.3 run in parallel (both are store reads scoped by S.1), then join at S.4. Steps S.4–S.5 are parallelizable across stations.
 
-### Flow 9 — Model retraining
+### Flows 6 & 9 — Model training (unified)
 
 ```
-Trigger:  On-demand (model admin) or scheduled (e.g. yearly)
-Flow:     retrain_models
+Trigger:  On-demand (model admin, or from Flow 5) or scheduled (e.g. yearly)
+Flow:     train_models
 Layer:    flows/ — orchestration only, delegates to models/services
 ```
+
+Flows 6 (initial training) and 9 (retraining) are the same flow. The flow checks whether an existing artifact exists for each station/model pair: if no → initial training (auto-promote). If yes → retraining (compare + approval).
 
 #### Steps
 
 | # | Step | Layer | Input | Output |
 |---|------|-------|-------|--------|
-| 9.1 | Determine scope | `services/` | Request params (models, stations, training period) or "all" | List of (station, model, period) tuples to retrain |
-| 9.2 | Gather training data | `store/` | Station configs, training period | Historical observations (+ NWP archive in v1) |
-| 9.3 | Run training | `models/` | Training data, model hyperparameters | New model artifact (versioned) |
-| 9.4 | Run hindcast | → Flow 7 | New artifact, hindcast period | Hindcast forecast ensembles |
-| 9.5 | Compute skill | → Flows 8/10 | Hindcast results | Skill scores for new artifact |
-| 9.6 | Compare against current | `services/` | New skill scores, current model's skill scores | Comparison report |
-| 9.7 | Request approval | `services/` | Comparison report | Pending approval record, notification to model admin |
-| 9.8 | Promote or reject | `services/` + `store/` | Model admin decision | Updated model registry (or rejection logged) |
+| T.1 | Determine scope | `services/` | Request params (models, stations, training period) or "all" | List of (station, model, period) tuples to train |
+| T.2 | Gather training data | `store/` | Station configs, training period | Historical observations (+ NWP archive in v1) |
+| T.3 | Run training | `models/` | Training data, model hyperparameters | New model artifact (versioned) |
+| T.4 | Run hindcast | → Flow 7 | New artifact, hindcast period | Hindcast forecast ensembles |
+| T.5 | Compute skill | → Flows 8/10 | Hindcast results | Skill scores for new artifact |
+| T.6 | Compare against current | `services/` | New skill scores, current model's skill scores | Comparison report |
+| T.7 | Request approval | `services/` | Comparison report | Pending approval record, notification to model admin |
+| T.8 | Promote or reject | `services/` + `store/` | Model admin decision | Updated model registry (or rejection logged) |
+
+Using `T.*` prefix since this flow serves both Flow 6 and Flow 9.
+
+**Initial training (Flow 6)**: T.1 → T.2 → T.3 → T.4 → T.5 → auto-promote. Steps T.6–T.8 skipped (nothing to compare against).
+
+**Retraining (Flow 9)**: All steps. T.6–T.8 require existing artifact for comparison and model admin approval.
 
 #### Notes
 
-- **9.1**: Default training period is all available data. Optionally specify date ranges (model-specific — some models benefit from a rolling window, others from full history). Cross-validation strategy is model-specific.
-- **9.3**: Models are separate packages. Training interface is part of the model Protocol. Compute-intensive — may need different resource allocation than operational flows.
-- **9.4–9.5**: Composes Flow 7 (hindcast) and Flows 8/10 (skill computation) directly. Retraining is not complete without validation.
-- **9.6**: Automated comparison against the current deployed model on the same hindcast period. Generates a comparison report (skill deltas per metric, per lead time, per season).
-- **9.7–9.8**: Human-in-the-loop. Model admin reviews the comparison report and approves or rejects promotion. This is an async step — the flow pauses until the admin acts (via dashboard or API).
-- **9.8**: Promotion = new artifact becomes the active version for that station/model pair. Old artifact is retained (never deleted). Rejection is logged with the comparison report for diagnostics.
-- **Parallelizable** across station/model pairs at steps 9.2–9.7.
-
-#### Model admin role
-
-New role (in addition to org admin, forecaster, API consumer):
-
-- **Model admin**: Manages model configuration — which models run for which stations, hyperparameter overrides, training schedules. Approves or rejects model promotions after retraining. Typically a hydrologist or ML engineer, not necessarily the same person as the forecaster.
+- **T.1**: Default training period is all available data. Optionally specify date ranges (model-specific — some models benefit from a rolling window, others from full history). Cross-validation strategy is model-specific.
+- **T.3**: Models are separate packages. Training interface is part of the model Protocol. Compute-intensive — may need different resource allocation than operational flows.
+- **T.4–T.5**: Composes Flow 7 (hindcast) and Flows 8/10 (skill computation) directly. Training is not complete without validation.
+- **T.6** *(retraining only)*: Automated comparison on the same hindcast period. Generates a report (skill deltas per metric, per lead time, per season).
+- **T.7–T.8** *(retraining only)*: Human-in-the-loop. Model admin reviews comparison report and approves or rejects. Async step — flow pauses until admin acts (via dashboard or API).
+- **T.8**: Promotion = new artifact becomes the active version. Old artifact retained (never deleted). Rejection logged with comparison report.
+- **Parallelizable** across station/model pairs at steps T.2–T.7.
 
 #### Sequencing
 
 ```
-9.1 → 9.2 → 9.3 → 9.4 → 9.5 → 9.6 → 9.7 ... 9.8
+Initial:    T.1 → T.2 → T.3 → T.4 → T.5 → promote
+Retraining: T.1 → T.2 → T.3 → T.4 → T.5 → T.6 → T.7 ... T.8
 ```
 
-Sequential per station/model pair. Pairs are independent and run in parallel. Async pause between 9.7 and 9.8 (awaiting model admin approval).
+Sequential per station/model pair. Pairs are independent and run in parallel. Async pause between T.7 and T.8 (awaiting model admin approval, retraining only).
 
 ### Flow 5 — Station onboarding
 
@@ -366,7 +367,7 @@ Layer:    flows/ — orchestration only, delegates to services/adapters
 | 5.3 | Import historical observations | `adapters/` + `store/` | Station, data source, date range | Raw observations persisted |
 | 5.4 | Run QC on historical observations | `services/` + `store/` | Imported observations, QC rules | QC flags applied |
 | 5.5 | Configure model assignments | `services/` + `store/` | Station, available models | Model ↔ station mappings |
-| 5.6 | Trigger hindcast + skill | → Flows 7, 8/10 | Station, assigned models, historical period | Baseline skill scores |
+| 5.6 | Train initial models | → Flows 6/9 (initial mode) | Station, assigned models, historical period | Trained artifacts + baseline skill scores |
 
 #### Notes
 
@@ -375,7 +376,7 @@ Layer:    flows/ — orchestration only, delegates to services/adapters
 - **5.3**: Bulk import — could be large (decades of hourly data). Adapter-specific: CSV upload, API fetch, or database migration. Handles source-specific parameter name mapping to canonical names.
 - **5.4**: Same QC service as Flow 2 step 2.3, applied to the historical batch. Flagged values excluded from training data (Flows 6/9).
 - **5.5**: Which models run for this station — model admin decision. Can be updated independently later.
-- **5.6**: Optional but recommended. Validates that the station is properly configured and models produce reasonable results. Composes Flows 7 and 8/10.
+- **5.6**: Invokes Flows 6/9 in initial mode (train → hindcast → skill, auto-promote). Validates that the station is properly configured and models produce reasonable results.
 
 #### Sequencing
 
