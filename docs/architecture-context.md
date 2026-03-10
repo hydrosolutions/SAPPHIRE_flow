@@ -304,6 +304,51 @@ S.1 → S.2 ─┐
 
 S.2 and S.3 run in parallel (both are store reads scoped by S.1), then join at S.4. Steps S.4–S.5 are parallelizable across stations.
 
+### Flow 9 — Model retraining
+
+```
+Trigger:  On-demand (model admin) or scheduled (e.g. yearly)
+Flow:     retrain_models
+Layer:    flows/ — orchestration only, delegates to models/services
+```
+
+#### Steps
+
+| # | Step | Layer | Input | Output |
+|---|------|-------|-------|--------|
+| 9.1 | Determine scope | `services/` | Request params (models, stations, training period) or "all" | List of (station, model, period) tuples to retrain |
+| 9.2 | Gather training data | `store/` | Station configs, training period | Historical observations (+ NWP archive in v1) |
+| 9.3 | Run training | `models/` | Training data, model hyperparameters | New model artifact (versioned) |
+| 9.4 | Run hindcast | → Flow 7 | New artifact, hindcast period | Hindcast forecast ensembles |
+| 9.5 | Compute skill | → Flows 8/10 | Hindcast results | Skill scores for new artifact |
+| 9.6 | Compare against current | `services/` | New skill scores, current model's skill scores | Comparison report |
+| 9.7 | Request approval | `services/` | Comparison report | Pending approval record, notification to model admin |
+| 9.8 | Promote or reject | `services/` + `store/` | Model admin decision | Updated model registry (or rejection logged) |
+
+#### Notes
+
+- **9.1**: Default training period is all available data. Optionally specify date ranges (model-specific — some models benefit from a rolling window, others from full history). Cross-validation strategy is model-specific.
+- **9.3**: Models are separate packages. Training interface is part of the model Protocol. Compute-intensive — may need different resource allocation than operational flows.
+- **9.4–9.5**: Composes Flow 7 (hindcast) and Flows 8/10 (skill computation) directly. Retraining is not complete without validation.
+- **9.6**: Automated comparison against the current deployed model on the same hindcast period. Generates a comparison report (skill deltas per metric, per lead time, per season).
+- **9.7–9.8**: Human-in-the-loop. Model admin reviews the comparison report and approves or rejects promotion. This is an async step — the flow pauses until the admin acts (via dashboard or API).
+- **9.8**: Promotion = new artifact becomes the active version for that station/model pair. Old artifact is retained (never deleted). Rejection is logged with the comparison report for diagnostics.
+- **Parallelizable** across station/model pairs at steps 9.2–9.7.
+
+#### Model admin role
+
+New role (in addition to org admin, forecaster, API consumer):
+
+- **Model admin**: Manages model configuration — which models run for which stations, hyperparameter overrides, training schedules. Approves or rejects model promotions after retraining. Typically a hydrologist or ML engineer, not necessarily the same person as the forecaster.
+
+#### Sequencing
+
+```
+9.1 → 9.2 → 9.3 → 9.4 → 9.5 → 9.6 → 9.7 ... 9.8
+```
+
+Sequential per station/model pair. Pairs are independent and run in parallel. Async pause between 9.7 and 9.8 (awaiting model admin approval).
+
 ---
 
 ## Component map
@@ -351,6 +396,11 @@ Follows from the layering rule. See CLAUDE.md for test writing conventions.
 | `api/` | Integration | FastAPI test client. Verify routing, serialization, status codes. Business logic tested via `services/`. |
 | End-to-end | E2E | Small reference dataset through full ingest → forecast → alert cycle. Few tests, slow, run in CI not locally. |
 
+### Cross-cutting standards (TBD — detail in `docs/standards/`)
+
+- **Security**: State-of-the-art practices (OWASP top 10, secrets management, least-privilege DB users, API authentication). Detail to be specified in `docs/standards/security.md`.
+- **CI/CD & deployment**: Automated test → build → deploy pipeline. Single-command deployment for hydromets with limited IT capacity. Docker Compose on a single VM must remain simple to operate. Detail to be specified in `docs/standards/cicd.md`.
+
 ## Tech stack
 
 | Component | Choice |
@@ -384,9 +434,10 @@ Follows from the layering rule. See CLAUDE.md for test writing conventions.
 
 ## Access management
 
-Three roles (v1, Nepal deployment):
+Four roles (v1, Nepal deployment):
 
 - **Org admin**: creates/deletes user accounts, assigns read/write permissions per user, manages API keys (scoped per authority or state)
+- **Model admin**: manages model configuration (which models run for which stations, hyperparameters, training schedules), approves/rejects model promotions after retraining
 - **Forecaster**: reviews, adjusts, and publishes forecasts via dashboard
 - **API consumer**: read-only access via API key
 
