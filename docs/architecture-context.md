@@ -349,6 +349,44 @@ New role (in addition to org admin, forecaster, API consumer):
 
 Sequential per station/model pair. Pairs are independent and run in parallel. Async pause between 9.7 and 9.8 (awaiting model admin approval).
 
+### Flow 5 — Station onboarding
+
+```
+Trigger:  On-demand (model admin)
+Flow:     onboard_station
+Layer:    flows/ — orchestration only, delegates to services/adapters
+```
+
+#### Steps
+
+| # | Step | Layer | Input | Output |
+|---|------|-------|-------|--------|
+| 5.1 | Register station metadata | `services/` + `store/` | Station definition (location, type, basin, parameters, thresholds) | Station record in DB |
+| 5.2 | Configure weather source mappings | `services/` + `store/` | Station, NWP source config, basin/band geometries | Weather source ↔ station linkage |
+| 5.3 | Import historical observations | `adapters/` + `store/` | Station, data source, date range | Raw observations persisted |
+| 5.4 | Run QC on historical observations | `services/` + `store/` | Imported observations, QC rules | QC flags applied |
+| 5.5 | Configure model assignments | `services/` + `store/` | Station, available models | Model ↔ station mappings |
+| 5.6 | Trigger hindcast + skill | → Flows 7, 8/10 | Station, assigned models, historical period | Baseline skill scores |
+
+#### Notes
+
+- **5.1**: Station metadata includes location (GeoCoord), station type (river/weather), basin assignment, measured parameters, flood threshold definitions. Thresholds are part of station metadata but may come from a different source or be added later. Source can be TOML bootstrap file or dashboard input.
+- **5.2**: Maps the station to its NWP forcing source(s). For basin-average models: which basin geometry. For elevation-band models: which bands. For point models: which grid cell(s). Determines what Flow 1 steps 1.1/1.2 fetch for this station.
+- **5.3**: Bulk import — could be large (decades of hourly data). Adapter-specific: CSV upload, API fetch, or database migration. Handles source-specific parameter name mapping to canonical names.
+- **5.4**: Same QC service as Flow 2 step 2.3, applied to the historical batch. Flagged values excluded from training data (Flows 6/9).
+- **5.5**: Which models run for this station — model admin decision. Can be updated independently later.
+- **5.6**: Optional but recommended. Validates that the station is properly configured and models produce reasonable results. Composes Flows 7 and 8/10.
+
+#### Sequencing
+
+```
+5.1 → 5.2 ─┐
+  ↘         ├→ 5.5 → 5.6
+  5.3 → 5.4 ┘
+```
+
+5.2 (weather source config) and 5.3–5.4 (historical import + QC) run in parallel after 5.1. Both must complete before 5.5 (model assignment needs weather sources and QC'd observations). 5.6 follows 5.5.
+
 ---
 
 ## Component map
@@ -434,10 +472,11 @@ Follows from the layering rule. See CLAUDE.md for test writing conventions.
 
 ## Access management
 
-Four roles (v1, Nepal deployment):
+Five roles (v1, Nepal deployment):
 
 - **Org admin**: creates/deletes user accounts, assigns read/write permissions per user, manages API keys (scoped per authority or state)
-- **Model admin**: manages model configuration (which models run for which stations, hyperparameters, training schedules), approves/rejects model promotions after retraining
+- **IT admin**: responsible for deployment, integration with external systems, monitoring production workflows, infrastructure
+- **Model admin**: hydrological domain expert. Station onboarding, model configuration (which models run for which stations, hyperparameters, training schedules), approves/rejects model promotions after retraining
 - **Forecaster**: reviews, adjusts, and publishes forecasts via dashboard
 - **API consumer**: read-only access via API key
 
