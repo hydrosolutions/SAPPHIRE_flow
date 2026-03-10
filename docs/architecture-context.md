@@ -74,7 +74,7 @@ Layer:    flows/ — orchestration only, delegates to services/adapters
 | 1.6 | Prepare model inputs | `services/` | Post-processed NWP, observations, station configs | Per-station input bundles |
 | 1.7 | Run forecast models | `models/` | Input bundles, model artifacts | Ensemble forecast values |
 | 1.8 | Post-process forecasts | `services/` | Raw forecast ensembles, historical archive | Bias-corrected forecast ensembles |
-| 1.9 | Store forecast results | `store/` | Forecast ensembles | Persisted to `forecasts` + `forecast_values` (status = `raw`) |
+| 1.9 | Store forecast results | `store/` | Forecast ensembles + model artifact version | Persisted to `forecasts` + `forecast_values` (status = `raw`) |
 | 1.10 | Check flood thresholds | `services/` | Forecast ensembles, threshold config | Exceedance flags per station/level |
 | 1.11 | Raise / resolve alerts | `services/` | Exceedance flags, existing alerts | New/updated alert records |
 | 1.12 | Notify | `services/` | New/changed alerts | Notifications dispatched |
@@ -92,6 +92,7 @@ Steps 1.2, 1.3, 1.4, and 1.8 are **conditional** — see notes.
 - **1.8** *(conditional)*: Forecast *output* bias correction (discharge / water level). Distinct from NWP input correction in 1.4. Pass-through when not configured.
 - **1.10**: Probability-based: P(Q > threshold) for each danger level.
 - **1.11**: Deduplication via partial unique index. Auto-resolves when exceedance no longer holds.
+- **1.9**: Each forecast record links to the model artifact version that produced it. Enables traceability across model updates.
 - **1.12**: Async. Failed notifications retried by sweep task (every 5 min).
 - **API serving**: No explicit step — the API reads persisted results from the DB. Storing in 1.9 makes forecasts available; publishing happens via Flow 3 (forecast review).
 
@@ -349,6 +350,50 @@ Retraining: T.1 → T.2 → T.3 → T.4 → T.5 → T.6 → T.7 ... T.8
 ```
 
 Sequential per station/model pair. Pairs are independent and run in parallel. Async pause between T.7 and T.8 (awaiting model admin approval, retraining only).
+
+### Flow 7 — Hindcast generation
+
+```
+Trigger:  On-demand (from Flows 6/9, or standalone by model admin)
+Flow:     run_hindcast
+Layer:    flows/ — orchestration only, delegates to models/services
+```
+
+#### Steps
+
+| # | Step | Layer | Input | Output |
+|---|------|-------|-------|--------|
+| H.1 | Determine scope | `services/` | Station, model, model artifact version, hindcast period, time step | List of hindcast time steps |
+| H.2 | Gather historical forcing | `store/` | Station, weather source mappings, hindcast period | Historical weather forecasts or reanalysis per time step |
+| H.3 | Gather historical observations | `store/` | Station, hindcast period, lookback window | QC-passed observations per time step |
+| H.4 | Assemble per-step inputs | `services/` | Forcing + observations, model input requirements | Input bundle per hindcast time step (respecting data availability cutoff) |
+| H.5 | Run model per time step | `models/` | Input bundles, model artifact | Forecast ensembles per hindcast step |
+| H.6 | Store hindcast results | `store/` | Hindcast forecast ensembles + model artifact version | Persisted to hindcast tables |
+
+Using `H.*` prefix since hindcast is referenced from multiple flows.
+
+#### Notes
+
+- **H.1**: Hindcast period and time step are caller-specified. Time step matches the operational forecast frequency (e.g. daily or 6-hourly).
+- **H.2**: Historical weather forcing — source depends on what's available for the period. Could be archived NWP forecasts, reanalysis (ERA5-Land in v1), or other historical weather forecast products. v0 will use weather forecasts (product TBD).
+- **H.4**: Critical — must simulate operational conditions. Each time step only sees data that would have been available at that point in time (no future leakage). The lookback window per step matches what the model expects operationally.
+- **H.5**: Same model code as operational Flow 1 step 1.7. Parallelizable across time steps (each is independent given its input bundle).
+- **H.6**: Hindcast results stored in dedicated tables, separate from operational forecasts — different volumes and access patterns. Each hindcast record links to the specific model artifact version used, enabling comparison across model versions.
+- **Consumers**: Flows 8/10 (skill computation), Flows 6/9 (training validation), model admin (standalone comparison).
+
+#### Hindcast vs operational storage
+
+Hindcast and operational forecasts use separate storage. As operational history grows, older operational forecasts may be archived or migrated to hindcast storage for long-term skill tracking. Both stores record model artifact version to enable cross-version comparison.
+
+#### Sequencing
+
+```
+H.1 → H.2 ─┐
+  ↘         ├→ H.4 → H.5 → H.6
+  H.3 ──────┘
+```
+
+H.2 and H.3 run in parallel (both are store reads). They join at H.4. Steps H.4–H.5 are parallelizable across time steps.
 
 ### Flow 5 — Station onboarding
 
