@@ -189,8 +189,10 @@ for logging and notification.
 ## Timestamps
 
 - **Storage**: always UTC (`TIMESTAMPTZ` in PostgreSQL).
-- **Display**: converted at API/dashboard boundary per deployment config
-  (`localization.timezone` in `config.toml`).
+- **Display**: converted at API/dashboard boundary. Default display timezone
+  from `localization.timezone` in `config.toml`. Per-station IANA timezones
+  (from station metadata) are used for daily aggregation day boundaries —
+  these coincide in single-timezone deployments (Nepal, Switzerland).
 - **Python**: timezone-aware `datetime` objects.
 - **API format**: ISO 8601 with timezone — `"2026-07-01T12:00:00Z"`.
 - **No `datetime.now()`** in business logic — inject a clock (see CLAUDE.md).
@@ -213,8 +215,8 @@ for logging and notification.
 
 | User | Permissions |
 |------|-------------|
-| `sapphire_api` | SELECT all (incl. weather_forecasts, dead_letter_queue, station_weather_sources); INSERT/UPDATE on edits, adjustments, bulletins, alert_events, forecasts (status+version), access_tokens; INSERT only on audit_log (append-only) |
-| `sapphire_worker` | SELECT/INSERT/UPDATE on observations, forecasts, forecast_values, alerts, skill, weather_forecasts, dead_letter_queue; DELETE on weather_forecasts |
+| `sapphire_api` | SELECT all (incl. weather_forecasts, dead_letter_queue, station_weather_sources); INSERT/UPDATE on forecast_adjustments, bulletins, alerts, forecasts (status+version), access_tokens; INSERT only on audit_log (append-only) |
+| `sapphire_worker` | SELECT on stations, station_weather_sources, rating_curves; SELECT/INSERT/UPDATE on observations, forecasts, forecast_values, alerts, skill_scores, weather_forecasts, model_artifacts, dead_letter_queue; SELECT/INSERT on hindcast_forecasts, hindcast_values, pipeline_health |
 | `sapphire_prefect` | Full access to `prefect` database only |
 
 ---
@@ -273,3 +275,28 @@ raw --> reviewed --> published
 - **published**: Visible in public API and bulletins.
 
 Transitions enforced server-side with optimistic locking.
+
+---
+
+## Status and enum master list
+
+All status/enum columns store TEXT matching the Python enum `.value` (lowercase).
+
+| Column / Type | Values | Terminal states |
+|---------------|--------|-----------------|
+| `observations.qc_status` / `QcStatus` | `raw`, `qc_passed`, `qc_failed`, `qc_suspect` | `qc_passed`, `qc_failed` |
+| `forecasts.status` / `ForecastStatus` | `raw`, `reviewed`, `published` | `published` |
+| `forecasts.representation` / `EnsembleRepresentation` | `members`, `quantiles` | — |
+| `forecasts.warm_up_source` / `WarmUpSource` | `fresh`, `snapshot`, `cold_start` | — |
+| `alerts.status` / `AlertStatus` | `raised`, `acknowledged`, `resolved` | `resolved` |
+| `alerts.source` / `AlertSource` | `forecast`, `observation` | — |
+| `model_artifacts.status` / `ModelArtifactStatus` | `training`, `pending_approval`, `active`, `superseded`, `rejected` | `superseded`, `rejected` |
+| `hindcast_forecasts.forcing_type` / `ForcingType` | `nwp_archive`, `reanalysis` | — |
+| `skill_scores.skill_source` / `SkillSource` | `hindcast_nwp_archive`, `hindcast_reanalysis`, `operational` | — |
+| `skill_scores.flow_regime` / `FlowRegime` | `low`, `high`, `flood` | — |
+| `station_weather_sources.extraction_type` / `SpatialRepresentation` | `point`, `basin_average`, `elevation_band`, `gridded` | — |
+| `station_thresholds.source` / `ThresholdSource` | `authority`, `inferred` | — |
+| `stations.regulation_type` / `RegulationType` | `unregulated`, `reservoir`, `irrigation_diversion`, `run_of_river_hydro` | — |
+| `stations.station_kind` / `StationKind` | `weather`, `river` | — |
+| `pipeline_health.status` | `ok`, `warning`, `critical` | — |
+| `pipeline_health.check_type` | `nwp_delivery`, `observation_freshness`, `forecast_freshness`, `flow_run_health` | — |
