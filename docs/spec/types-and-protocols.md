@@ -189,6 +189,11 @@ class StationStatus(Enum):
     SUSPENDED = "suspended"
     DECOMMISSIONED = "decommissioned"
 
+class ObservationSource(Enum):
+    MEASURED = "measured"                          # direct sensor reading
+    RATING_CURVE_DERIVED = "rating_curve_derived"  # derived via rating curve conversion (Flow 2 step 2.5)
+    MANUAL_IMPORT = "manual_import"                # CSV upload (Flow 12 Branch B, Flow 5 step 5.4)
+
 class AuditEventType(Enum):
     LOGIN = "login"
     LOGOUT = "logout"
@@ -203,6 +208,7 @@ class AuditEventType(Enum):
     MODEL_PROMOTED = "model_promoted"
     MODEL_REJECTED = "model_rejected"
     STATION_STATUS_CHANGE = "station_status_change"
+    OBSERVATION_REPROCESSED = "observation_reprocessed"  # Flow 12 reprocessing event
 
 class AuditActorType(Enum):
     USER = "user"
@@ -378,6 +384,9 @@ class RawObservation(NamedTuple):
     timestamp: UtcDatetime
     parameter: str                 # canonical name
     value: float
+    source: ObservationSource      # measured | rating_curve_derived | manual_import
+    rating_curve_id: RatingCurveId | None = None  # set when source = RATING_CURVE_DERIVED
+    rating_curve_correction_version: str | None = None  # correction param version, set when source = RATING_CURVE_DERIVED
 
 class Observation(NamedTuple):
     id: ObservationId
@@ -385,6 +394,9 @@ class Observation(NamedTuple):
     timestamp: UtcDatetime
     parameter: str
     value: float
+    source: ObservationSource      # measured | rating_curve_derived | manual_import
+    rating_curve_id: RatingCurveId | None  # set when source = RATING_CURVE_DERIVED
+    rating_curve_correction_version: str | None  # correction param version, set when source = RATING_CURVE_DERIVED
     qc_status: QcStatus
     qc_flags: list[QcFlag]
     qc_rule_version: str | None    # version of the QC ruleset that last evaluated this row
@@ -858,6 +870,7 @@ class SkillScore(NamedTuple):
     metric: str
     score: float
     sample_size: int
+    is_stale: bool                         # TRUE when underlying data changed; cleared by Flow 10 step S.6
     created_at: UtcDatetime
 ```
 
@@ -993,6 +1006,7 @@ class ObservationStore(Protocol):
         start: UtcDatetime,
         end: UtcDatetime,
         qc_status: QcStatus | None = None,  # None = all statuses
+        source: ObservationSource | None = None,  # None = all sources
     ) -> list[Observation]: ...
     def fetch_latest_timestamp(self, station_id: StationId, parameter: str) -> UtcDatetime | None: ...
     def fetch_observations_batch(
@@ -1002,8 +1016,16 @@ class ObservationStore(Protocol):
         start: UtcDatetime,
         end: UtcDatetime,
         qc_status: QcStatus | None = None,
+        source: ObservationSource | None = None,
     ) -> dict[StationId, list[Observation]]: ...
         # Multi-station fetch. Returns dict keyed by station_id.
+    def fetch_derived_observations_by_curve(
+        self,
+        station_id: StationId,
+        rating_curve_id: RatingCurveId,
+    ) -> list[Observation]: ...
+        # Fetches all RATING_CURVE_DERIVED observations for a specific curve.
+        # Used by Flow 12 Branch A to find observations that need reprocessing.
 ```
 
 #### ForecastStore
@@ -1137,6 +1159,16 @@ class SkillStore(Protocol):
         model_id: ModelId,
         flow_regime: FlowRegime,
     ) -> list[SkillScore]: ...
+    def mark_stale(
+        self,
+        station_id: StationId,
+        start: UtcDatetime,
+        end: UtcDatetime,
+    ) -> int: ...
+        # Sets is_stale=TRUE on all skill_scores rows for this station
+        # whose evaluation period overlaps [start, end].
+        # Returns count of rows marked stale.
+        # Used by Flows 11 and 12 when underlying data changes.
 ```
 
 #### ModelArtifactStore
