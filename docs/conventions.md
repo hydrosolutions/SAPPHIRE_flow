@@ -318,10 +318,10 @@ All status/enum columns store TEXT matching the Python enum `.value` (lowercase)
 | `stations.station_kind` / `StationKind` | `weather`, `river` | — |
 | `pipeline_health.status` / `PipelineHealthStatus` | `ok`, `warning`, `critical` | — |
 | `pipeline_health.check_type` / `PipelineCheckType` | `nwp_delivery`, `observation_freshness`, `forecast_freshness`, `flow_run_health`, `disk_usage`, `backup_freshness`, `backup_restore_test` | — |
-| `dead_letter_queue.resolution` / `DlqResolution` | `replayed`, `discarded` | `replayed`, `discarded` |
+| `dead_letter_queue.resolution` / `DlqResolution` | `replayed`, `discarded` (NULL = unresolved) | `replayed`, `discarded` |
 | `users.role` / `UserRole` | `org_admin`, `it_admin`, `model_admin`, `forecaster` | — |
 | `observations.source` / `ObservationSource` | `measured`, `rating_curve_derived`, `manual_import` | — |
-| `audit_log.event_type` / `AuditEventType` | `login`, `logout`, `login_failed`, `user_created`, `user_deactivated`, `api_key_created`, `api_key_revoked`, `api_key_request`, `forecast_status_change`, `forecast_adjusted`, `model_promoted`, `model_rejected`, `station_status_change`, `observation_reprocessed` | — |
+| `audit_log.event_type` / `AuditEventType` | `login`, `logout`, `login_failed`, `password_changed`, `user_created`, `user_deactivated`, `api_key_created`, `api_key_revoked`, `api_key_request`, `forecast_status_change`, `forecast_adjusted`, `model_promoted`, `model_rejected`, `station_status_change`, `observation_reprocessed` | — |
 | `audit_log.actor_type` / `AuditActorType` | `user`, `api_key`, `system` | — |
 | `forecast_adjustments` adjustment_type / `AdjustmentType` | `shift`, `scale`, `cap`, `floor` | — |
 | deployment config calendar / `Calendar` | `gregorian`, `bikram_sambat` | — |

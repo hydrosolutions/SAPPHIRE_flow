@@ -120,9 +120,9 @@ ML models (e.g. LSTM) require a lookback window (typically 365 days) of historic
 This choice affects model skill and must be consistent between training (Flows 6/9) and operational inference. To be resolved before v0 model training begins.
 
 **ForcingType mapping**: Regardless of which source is chosen, it must map to one of the two `ForcingType` values for hindcast tagging (Flow 7 step H.2):
-- Station observations (SMN) → categorized as `REANALYSIS` (pseudo-perfect forcing)
-- Gridded reanalysis (ERA5-Land) → `REANALYSIS`
-- Archived NWP extractions → `NWP_ARCHIVE`
+- Station observations (SMN) → categorized as `'reanalysis'` (pseudo-perfect forcing)
+- Gridded reanalysis (ERA5-Land) → `'reanalysis'`
+- Archived NWP extractions → `'nwp_archive'`
 
 #### Open decision: NWP lateness fallback
 
@@ -228,7 +228,7 @@ Layer:    flows/ — orchestration only, delegates to services/adapters
 #### Notes
 
 - **2.1**: River and weather fetches are independent adapters — run in parallel. v0: BAFU (river) + SMN (weather). Incremental: uses last-seen timestamp per station to fetch only new data.
-- **2.2**: Single `observations` table. Raw values are stored with `source = MEASURED` and `qc_status = RAW`. Raw values are never overwritten — QC is metadata on the observation, not a replacement. See "Quality control data model" section below for the full type definitions.
+- **2.2**: Single `observations` table. Raw values are stored with `source = 'measured'` and `qc_status = 'raw'`. Raw values are never overwritten — QC is metadata on the observation, not a replacement. See "Quality control data model" section below for the full type definitions.
 
 #### Two-stage QC design
 
@@ -241,23 +241,23 @@ QC runs in two stages with different purposes. This follows established practice
   - **Spike detection**: single-interval excursion that returns to previous value (telemetry corruption).
   - **Gross outlier**: value beyond K standard deviations from rolling climatological window.
   - QC rule version is stored with each flag — enables selective recomputation when rules change without losing the audit trail.
-  - Hard failures → `qc_status = QC_FAILED`, observation stored but excluded from downstream use. No conversion attempted.
+  - Hard failures → `qc_status = 'qc_failed'`, observation stored but excluded from downstream use. No conversion attempted.
 
 - **2.4**: Persists Stage 1 flags. Flagged values are excluded from conversion (2.5) and from downstream use (forecasting in Flow 1 step 1.6).
 
 - **2.5** *(v1+, conditional)*: For stations where the source provides only one parameter (e.g. DHM provides water level but the model needs discharge), derives the complementary parameter using the active rating curve and its associated correction parameter. **Only runs on Stage 1–passed observations.** Key details:
   - **v0 (Switzerland)**: Skipped — BAFU provides discharge directly from well-maintained rating curves.
   - **v1 (Nepal)**: DHM provides real-time water level. Discharge must be derived. DHM will supply hQ rating tables plus a correction parameter (exact correction method TBD — to be clarified with DHM hydromet operations).
-  - **Both original and derived values are stored**: the original as `source = MEASURED`, the derived as `source = RATING_CURVE_DERIVED`. Each derived observation references the `rating_curve_id` and correction parameter version used, so values can be recomputed if the curve or correction is updated.
+  - **Both original and derived values are stored**: the original as `source = 'measured'`, the derived as `source = 'rating_curve_derived'`. Each derived observation references the `rating_curve_id` and correction parameter version used, so values can be recomputed if the curve or correction is updated.
   - **Bidirectional**: direction of conversion is configured per station (`forecast_target` on station config). Some stations may store both directions.
   - **Reprocessing**: Because Stage 1 QC runs on the raw measured value independently of the rating curve, the QC-clean h archive can be reprocessed through updated curves without re-running Stage 1. This is critical when DHM updates rating tables yearly.
   - **Open question**: The correction parameter from DHM and how it modifies the hQ conversion are not yet defined. This will be resolved during Flow 5 design (rating curve ingestion) and DHM data discussions.
 
 - **2.6 — Stage 2 QC (conversion validation)** *(v1+, conditional — runs only when 2.5 ran)*: Operates on derived values. Catches rating curve problems, not sensor problems:
-  - **Extrapolation flag**: water level exceeded the maximum calibrated point of the rating curve. The derived discharge is flagged as `EXTRAPOLATED`, not rejected — extrapolated flood values are operationally important even when uncertain. The calibration range is stored on the `rating_curves` record.
+  - **Extrapolation flag**: water level exceeded the maximum calibrated point of the rating curve. The derived discharge is flagged as `'extrapolated'`, not rejected — extrapolated flood values are operationally important even when uncertain. The calibration range is stored on the `rating_curves` record.
   - **Discharge range check**: derived Q against historical flow statistics (monthly Q1/Q99). Catches gross rating curve errors (e.g. wrong curve applied, order-of-magnitude extrapolation).
   - **Cross-station consistency** (v1+, later): discharge at a downstream station should be >= sum of upstream stations (minus known diversions) within a lag window. Only possible in discharge space — water levels are not comparable across stations.
-  - Stage 2 flags are stored separately from Stage 1 flags. A value can be `stage1_qc = PASSED, stage2_qc = EXTRAPOLATED` — downstream consumers (forecast models, alert logic) decide their own quality thresholds.
+  - Stage 2 flags are stored separately from Stage 1 flags. A value can be `stage1_qc = 'qc_passed', stage2_qc = 'extrapolated'` — downstream consumers (forecast models, alert logic) decide their own quality thresholds.
   - **No observation is silently dropped by Stage 2.** Stage 2 flags degrade quality, they do not reject. This is essential given untrusted rating curves — a discharge that looks implausible may be correct, and discarding it loses exactly the extreme-event data that matters most.
 
 - **2.7**: Persists Stage 2 flags on derived observation rows.
@@ -445,7 +445,7 @@ flowchart TD
 | 4.2 | Check observation freshness | `services/` | Station configs, `observations` table | Per-station: last received, overdue flag |
 | 4.3 | Check forecast freshness | `services/` | Expected forecast schedule, `forecasts` table | Last successful cycle, overdue flag |
 | 4.4 | Check flow run health | `services/` | Prefect flow run API | Recent run statuses for Flows 1 & 2 |
-| 4.5 | Evaluate pipeline status | `services/` | Results from 4.1–4.4 | Aggregated health status, new/resolved issues |
+| 4.5 | Evaluate pipeline status | `services/` | Results from 4.1–4.4, 4.9–4.10 | Aggregated health status, new/resolved issues |
 | 4.6 | Raise / resolve ops alerts | `services/` | Pipeline issues, existing ops alerts | New/updated ops alert records |
 | 4.7 | Notify operations team | `services/` | New/changed ops alerts | Notifications dispatched (ops channel) |
 | 4.8 | Log health metrics | `store/` | All check results | Persisted to pipeline health table |
@@ -455,7 +455,7 @@ flowchart TD
 #### Notes
 
 - **Monitoring boundary**: Flow 4 monitors *application-level* pipeline health — data freshness, flow run status, and disk (a slow-building failure the app is well-positioned to detect). CPU and memory monitoring is deliberately excluded: spikes are transient and expected during forecast runs, meaningful alerting requires time-windowed baselines, and infrastructure monitoring tools (Prometheus, cAdvisor, cloud-native metrics) handle this far better. SAPPHIRE should not duplicate the infrastructure layer.
-- **Distinct from flood alerts**: Ops alerts use `AlertSource.PIPELINE` in the same `alerts` table but go to the operations/engineering team, not flood forecasters. Different notification channel, different recipients, different urgency model. Queried separately via `fetch_active_alerts(source=PIPELINE)`.
+- **Distinct from flood alerts**: Ops alerts use `AlertSource.PIPELINE` in the same `alerts` table but go to the operations/engineering team, not flood forecasters. Different notification channel, different recipients, different urgency model. Queried separately via `fetch_active_alerts(source=AlertSource.PIPELINE)`.
 - **4.1**: Each NWP source has an expected delivery schedule configured in `config.toml` adapter sections (see "Pipeline monitoring schedule config" below). Late = expected but not yet arrived. Missing = past the acceptable window. Also performs retrospective archive completeness audit — detects gaps in the NWP archive that weren't caught in real time. When recoverable gaps are found, triggers Flow 11 (NWP gap recovery).
 - **4.2**: Per-station staleness based on per-adapter-type config (see "Pipeline monitoring schedule config" below). Not per-station — too tedious to configure.
 - **4.3**: If the last forecast cycle is older than the configured `expected_interval_hours`, something in Flow 1 is broken.
@@ -511,13 +511,13 @@ Layer:    flows/ — orchestration only, delegates to services/adapters
 Mode:     Batch — one TOML file or dashboard submission for N stations
 ```
 
-Stations enter with `station_status = ONBOARDING`. They become visible in Flow 1 and on the forecaster dashboard only after the model admin explicitly transitions them to `OPERATIONAL`.
+Stations enter with `station_status = 'onboarding'`. They become visible in Flow 1 and on the forecaster dashboard only after the model admin explicitly transitions them to `'operational'`.
 
 #### Steps
 
 | # | Step | Layer | Input | Output | Restartable? |
 |---|------|-------|-------|--------|-------------|
-| 5.1 | Register station metadata | `services/` + `store/` | Station definitions (batch) | Station records in DB (`status = ONBOARDING`) | Idempotent (upsert on `code`) |
+| 5.1 | Register station metadata | `services/` + `store/` | Station definitions (batch) | Station records in DB (`status = 'onboarding'`) | Idempotent (upsert on `code`) |
 | 5.2 | Fetch catchment attributes | `adapters/` + `services/` | Basin geometries | Static features per basin stored | Idempotent |
 | 5.3 | Configure weather source mappings | `services/` + `store/` | Station, NWP source config, basin/band geometries | Weather source ↔ station linkage | Idempotent |
 | 5.4 | Import historical observations | `adapters/` + `store/` | Station, historical source config, date range | Raw observations persisted | Idempotent (upsert on station + timestamp + parameter) |
@@ -528,7 +528,7 @@ Stations enter with `station_status = ONBOARDING`. They become visible in Flow 1
 | 5.9 | Compute flow regime boundaries | `services/` + `store/` | QC'd historical obs | Q50/Q90 percentiles per station in `flow_regime_configs` | Idempotent |
 | 5.10 | Configure model assignments | `services/` + `store/` | Station, available models | Model ↔ station mappings, group membership | Idempotent |
 | 5.11 | Model readiness | → Flows 6/9 or validation | Station, assigned models | Trained/validated artifacts | See branches below |
-| 5.12 | Model admin review + go-live | dashboard / API | Onboarding checklist status | `station_status` → `OPERATIONAL` | Manual gate |
+| 5.12 | Model admin review + go-live | dashboard / API | Onboarding checklist status | `station_status` → `'operational'` | Manual gate |
 
 #### Notes
 
@@ -540,7 +540,7 @@ Stations enter with `station_status = ONBOARDING`. They become visible in Flow 1
 
 - **5.3**: Maps the station to its NWP forcing source(s). For basin-average models: which basin geometry. For elevation-band models: which bands. For point models: which grid cell(s). Determines what Flow 1 steps 1.1/1.3 fetch for this station.
 
-- **5.4**: Bulk import — could be large (decades of hourly data). Adapter-specific: CSV upload, API fetch, or database migration. Handles source-specific parameter name mapping to canonical names. **Idempotent**: re-importing the same date range upserts rather than duplicates (keyed on station + timestamp + parameter). Observation source is configured at the adapter level in `config.toml [adapters.observation]`, not per-station — the adapter knows how to map station codes to external source identifiers. CSV imports during onboarding use the same validation/ingestion logic as Flow 12 Branch B: `source = MANUAL_IMPORT` for CSV uploads, `source = MEASURED` for API adapter fetches.
+- **5.4**: Bulk import — could be large (decades of hourly data). Adapter-specific: CSV upload, API fetch, or database migration. Handles source-specific parameter name mapping to canonical names. **Idempotent**: re-importing the same date range upserts rather than duplicates (keyed on station + timestamp + parameter). Observation source is configured at the adapter level in `config.toml [adapters.observation]`, not per-station — the adapter knows how to map station codes to external source identifiers. CSV imports during onboarding use the same validation/ingestion logic as Flow 12 Branch B: `source = 'manual_import'` for CSV uploads, `source = 'measured'` for API adapter fetches.
   - **Historical–operational gap**: There will typically be a gap between the end of historical data and the start of real-time ingest (Flow 2). This is accepted — the gap is inconsequential for training and the real-time pipeline will fill forward from its start time.
 
 - **5.5**: Same QC service as Flow 2 step 2.3, applied to the historical batch. Flagged values excluded from training data (Flows 6/9) and from baseline/flow regime computation (5.8–5.9).
@@ -562,14 +562,14 @@ Stations enter with `station_status = ONBOARDING`. They become visible in Flow 1
 
   | Branch | Scenario | Action | Duration |
   |--------|----------|--------|----------|
-  | A | **Pre-trained group model (transfer learning)** | Add station to existing group. Run validation hindcast using existing artifact. Compute skill for the new station (stored with `skill_source = TRANSFER_VALIDATION`). Model admin reviews skill report. | Hours |
+  | A | **Pre-trained group model (transfer learning)** | Add station to existing group. Run validation hindcast using existing artifact. Compute skill for the new station (stored with `skill_source = 'transfer_validation'`). Model admin reviews skill report. | Hours |
   | B | **New conceptual model** (station-scoped, e.g. HBV) | Full training cycle: train → hindcast → skill → auto-promote (Flow 6 initial mode). | Days |
   | C | **New ML model / new group** | Full training cycle (Flow 6 initial mode). | Days |
   | D | **Group model needs retraining** (new station changes the group composition) | Triggers Flow 9 (retraining). Requires model admin approval. Old artifact still serves other stations in the group; new station waits until new artifact is promoted. | Days + async approval |
 
   Multiple branches can run in parallel for the same station (e.g. branch A for the LSTM + branch B for HBV). The model admin restarts individual branches on failure — the orchestrator does not auto-retry training.
 
-- **5.12**: Model admin explicitly transitions station from `ONBOARDING` to `OPERATIONAL`. Precondition: at least one `model_artifact` with `status = ACTIVE` must exist for this station (enforced by the system). The dashboard shows an onboarding checklist:
+- **5.12**: Model admin explicitly transitions station from `'onboarding'` to `'operational'`. Precondition: at least one `model_artifact` with `status = 'active'` must exist for this station (enforced by the system). The dashboard shows an onboarding checklist:
   - ✅ Station metadata registered
   - ✅ Catchment attributes available
   - ✅ Weather source mapped
@@ -580,7 +580,7 @@ Stations enter with `station_status = ONBOARDING`. They become visible in Flow 1
   - ✅ At least one model artifact active
   - ⬜ Flood thresholds defined (optional — alerting won't work without them)
 
-  The model admin can promote to `OPERATIONAL` even with optional items missing — the system warns but does not block. Once operational, Flow 1 includes the station and Flow 2's real-time observation adapter picks it up.
+  The model admin can promote to `'operational'` even with optional items missing — the system warns but does not block. Once operational, Flow 1 includes the station and Flow 2's real-time observation adapter picks it up.
 
 #### Sequencing
 
@@ -635,7 +635,7 @@ flowchart TD
         brD["D: Group retrain<br/>→ Flow 9"]
     end
 
-    s5_12["5.12 Model admin<br/>review + go-live<br/>(ONBOARDING → OPERATIONAL)"]
+    s5_12["5.12 Model admin<br/>review + go-live<br/>(onboarding → operational)"]
 
     trigger --> s5_1
     s5_1 --> s5_2
@@ -679,17 +679,18 @@ The flow runs as a Prefect flow with sub-flows per phase. Long-running steps (5.
 #### Station status lifecycle
 
 ```
-StationStatus enum: ONBOARDING | OPERATIONAL | SUSPENDED | DECOMMISSIONED
+StationStatus enum (Python members → DB values):
+  ONBOARDING → 'onboarding' | OPERATIONAL → 'operational' | SUSPENDED → 'suspended' | DECOMMISSIONED → 'decommissioned'
 
-Transitions:
-  ONBOARDING → OPERATIONAL      model admin confirms (5.12). Precondition: ≥1 active model artifact.
-  OPERATIONAL → SUSPENDED       model admin action (sensor issues, maintenance). Forecasting pauses.
-  SUSPENDED → OPERATIONAL       model admin action. Precondition: ≥1 active model artifact still exists.
-  OPERATIONAL → DECOMMISSIONED  model admin action. Permanent — data retained, forecasting stops.
-  ONBOARDING → DECOMMISSIONED   abandoned onboarding.
+Transitions (shown as DB values):
+  'onboarding' → 'operational'      model admin confirms (5.12). Precondition: ≥1 active model artifact.
+  'operational' → 'suspended'       model admin action (sensor issues, maintenance). Forecasting pauses.
+  'suspended' → 'operational'       model admin action. Precondition: ≥1 active model artifact still exists.
+  'operational' → 'decommissioned'  model admin action. Permanent — data retained, forecasting stops.
+  'onboarding' → 'decommissioned'   abandoned onboarding.
 ```
 
-Flow 1 filters to `station_status = OPERATIONAL` only. Flow 4 monitors for stations stuck in `ONBOARDING` (no progress for configurable duration). All status transitions are audit-logged.
+Flow 1 filters to `station_status = 'operational'` only. Flow 4 monitors for stations stuck in `'onboarding'` (no progress for configurable duration). All status transitions are audit-logged.
 
 ### Flow 5w — Weather station onboarding
 
@@ -706,14 +707,14 @@ Simplified variant of Flow 5 for weather stations. No rating curves, baselines, 
 
 | # | Step | Layer | Input | Output |
 |---|------|-------|-------|--------|
-| 5w.1 | Register station metadata | `services/` + `store/` | Station definitions (`station_kind = weather`) | Station records in DB (`status = ONBOARDING`) |
+| 5w.1 | Register station metadata | `services/` + `store/` | Station definitions (`station_kind = 'weather'`) | Station records in DB (`status = 'onboarding'`) |
 | 5w.2 | Import historical observations | `adapters/` + `store/` | Station, historical source config, date range | Raw observations persisted |
 | 5w.3 | Stage 1 QC on historical obs | `services/` + `store/` | Raw observations, QC rule config | QC flags per measured value |
-| 5w.4 | Model admin confirms go-live | dashboard / API | — | `station_status` → `OPERATIONAL` |
+| 5w.4 | Model admin confirms go-live | dashboard / API | — | `station_status` → `'operational'` |
 
 #### Notes
 
-- **5w.1**: Minimum fields: `code`, `name`, `location`, `station_kind = weather`, `timezone`, `measured_parameters`. Basin assignment optional (weather stations may not belong to a hydrological basin).
+- **5w.1**: Minimum fields: `code`, `name`, `location`, `station_kind = 'weather'`, `timezone`, `measured_parameters`. Basin assignment optional (weather stations may not belong to a hydrological basin).
 - **5w.2–5w.3**: Same import and QC services as Flow 5 steps 5.4–5.5. Idempotent.
 - **5w.4**: No model artifact precondition — weather stations are operational once they have QC'd historical data and the real-time adapter is configured to fetch them. Model admin confirms.
 - **Observation source**: Configured at the adapter level in `config.toml [adapters.observation]`. The adapter maps station codes to the external source system (e.g. SMN station IDs for v0).
@@ -733,7 +734,7 @@ flowchart TD
     s5w_1["5w.1 Register station metadata<br/>(location, kind=weather, timezone,<br/>measured parameters)"]
     s5w_2["5w.2 Import historical<br/>observations"]
     s5w_3["5w.3 Stage 1 QC<br/>(sensor validation)"]
-    s5w_4["5w.4 Model admin<br/>review + go-live<br/>(ONBOARDING -> OPERATIONAL)"]
+    s5w_4["5w.4 Model admin<br/>review + go-live<br/>(onboarding → operational)"]
 
     trigger --> s5w_1 --> s5w_2 --> s5w_3 --> s5w_4
 ```
@@ -784,8 +785,8 @@ flowchart TD
 
 Models declare an `artifact_scope` that determines training and artifact granularity:
 
-- **`STATION`**: one artifact per (station, model). Training uses single-station data. Used for conceptual models (GR4J, HBV) where each station has independently calibrated parameters.
-- **`GROUP`**: one artifact per (station_group, model). Training uses data from all stations in the group. Used for ML models (LSTM, transformer) that learn shared representations across stations. The model receives `station_id` as a feature and uses it for station embeddings.
+- **`'station'`**: one artifact per (station, model). Training uses single-station data. Used for conceptual models (GR4J, HBV) where each station has independently calibrated parameters.
+- **`'group'`**: one artifact per (station_group, model). Training uses data from all stations in the group. Used for ML models (LSTM, transformer) that learn shared representations across stations. The model receives `station_id` as a feature and uses it for station embeddings.
 
 Station groups (`station_groups` table) are named sets of stations grouped by shared hydrological characteristics (e.g. "swiss_alpine", "swiss_lowland", "nepal_koshi_basin"). A deployment-wide group containing all stations is valid for deployments with homogeneous hydrology or models robust enough to handle heterogeneity.
 
@@ -817,13 +818,13 @@ Using `T.*` prefix since this flow serves both Flow 6 and Flow 9.
   - *Station-scoped*: gathers single-station `TrainingData` (forcing, observations, targets for one station).
   - *Group-scoped*: gathers data for all stations in the group, assembles `GroupTrainingData` — a `dict[StationId, TrainingData]` plus group metadata. The model receives all stations' data in one call.
   - After gathering, T.2 validates that the dataset meets the model's declared minimum requirements (e.g. `min_training_samples`, `min_training_period`). If insufficient, the training unit is skipped with a warning (not a pipeline failure) — the model admin sees which units were skipped and why in the training summary.
-- **T.3**: Models are separate packages. Training interface is part of the model Protocol. Station-scoped models receive `TrainingData`; group-scoped models receive `GroupTrainingData`. Compute-intensive — may need different resource allocation than operational flows. The *flow* (not the model) persists the artifact object returned by `train()` — writes the file to `/data/artifacts/` and creates the `model_artifacts` row with status `TRAINING`. Consistent with the layering rule: model artifact loading/saving is handled by the flow or service layer.
+- **T.3**: Models are separate packages. Training interface is part of the model Protocol. Station-scoped models receive `TrainingData`; group-scoped models receive `GroupTrainingData`. Compute-intensive — may need different resource allocation than operational flows. The *flow* (not the model) persists the artifact object returned by `train()` — writes the file to `/data/artifacts/` and creates the `model_artifacts` row with status `'training'`. Consistent with the layering rule: model artifact loading/saving is handled by the flow or service layer.
 - **T.4–T.5**: Composes Flow 7 (hindcast) and Flows 8/10 (skill computation). Training is not complete without validation. For group-scoped models, hindcast uses `predict_batch()` across all stations in the group at each time step — skill is always evaluated per-station.
 - **T.6** *(retraining only)*: Automated comparison on the same hindcast period. Generates a report (skill deltas per metric, per lead time, per season). For group-scoped models, the report covers all stations in the group with aggregate and per-station breakdowns.
 - **T.7–T.8** *(retraining only)*: Human-in-the-loop. Model admin reviews comparison report and approves or rejects. Async — flow pauses until admin acts (via dashboard or API).
-- **T.8**: Promotion = new artifact becomes the active version. Promotion atomically sets the old artifact to `SUPERSEDED` and the new artifact to `ACTIVE` (see `ModelArtifactStatus` transitions). Old artifact retained (never deleted). Rejection logged with comparison report (status → `REJECTED`). For group-scoped models, promotion updates the single artifact; all stations in the group immediately use the new version.
+- **T.8**: Promotion = new artifact becomes the active version. Promotion atomically sets the old artifact to `'superseded'` and the new artifact to `'active'` (see `ModelArtifactStatus` transitions). Old artifact retained (never deleted). Rejection logged with comparison report (status → `'rejected'`). For group-scoped models, promotion updates the single artifact; all stations in the group immediately use the new version.
 - **Parallelizable**: Station-scoped models parallelize across `(station, model)` pairs at T.2–T.7. Group-scoped models parallelize across `(group, model)` pairs — within a group, T.2 gathers all stations' data, T.3 trains once, then T.4–T.5 use `predict_batch()` per hindcast step (all stations in one call).
-- **Failure handling**: If T.3 fails, no artifact row exists (the row is created on success) — nothing to clean up. If T.4 or T.5 fails, the artifact remains in `TRAINING` status. The model admin can retry from T.4 (reusing the same artifact) or discard the artifact (delete the row and file). The orchestrator does not auto-retry — consistent with Flow 5's convention ("the model admin restarts individual branches on failure").
+- **Failure handling**: If T.3 fails, no artifact row exists (the row is created on success) — nothing to clean up. If T.4 or T.5 fails, the artifact remains in `'training'` status. The model admin can retry from T.4 (reusing the same artifact) or discard the artifact (delete the row and file). The orchestrator does not auto-retry — consistent with Flow 5's convention ("the model admin restarts individual branches on failure").
 
 #### Sequencing
 
@@ -885,8 +886,8 @@ Using `H.*` prefix since hindcast is referenced from multiple flows.
 
 - **H.1**: Hindcast period and time step are caller-specified. Time step matches the operational forecast frequency (e.g. daily or 6-hourly). Mirrors the scope convention from T.1: station-scoped models produce per-station tuples, group-scoped models produce per-group tuples (the group carries its member stations). Downstream steps (H.2–H.5) dispatch accordingly.
 - **H.2**: Historical weather forcing — two distinct categories that must not be conflated:
-  - **`NWP_ARCHIVE`**: archived NWP forecasts that would have been available operationally at each hindcast time step. This is the only valid basis for computing operational skill scores — it correctly captures NWP error and lead-time degradation.
-  - **`REANALYSIS`** (or station observations used as pseudo-perfect forcing): assesses model capability given near-perfect forcing. Useful for diagnosing whether errors come from the hydrology or the NWP, but produces optimistic skill scores that overestimate real-world operational performance.
+  - **`'nwp_archive'`**: archived NWP forecasts that would have been available operationally at each hindcast time step. This is the only valid basis for computing operational skill scores — it correctly captures NWP error and lead-time degradation.
+  - **`'reanalysis'`** (or station observations used as pseudo-perfect forcing): assesses model capability given near-perfect forcing. Useful for diagnosing whether errors come from the hydrology or the NWP, but produces optimistic skill scores that overestimate real-world operational performance.
   Every hindcast result (H.6) must carry a `forcing_type` tag (`ForcingType` enum — DB values `"nwp_archive"`, `"reanalysis"` per conventions.md casing rule). v0: forcing product TBD — may initially use station observations (producing diagnostic-only skill scores) until sufficient NWP archive accumulates for operational skill assessment.
   - **ML model lookback**: For ML models requiring a lookback window (e.g. 365 days for LSTM), H.2 must fetch forcing for the full lookback period preceding each hindcast step — not just the step itself. The forcing source must match what the model was trained on (same open decision as Flow 1 step 1.7: station observations, gridded reanalysis, or archived NWP extractions). This is per-step: each hindcast step's lookback window shifts with the simulated issue time.
 - **H.4**: Critical — must simulate operational conditions. Each time step only sees data that would have been available at that point in time (no future leakage). The lookback window per step matches what the model expects operationally. For conceptual models, each hindcast step runs a fresh warm-up from historical observations up to the simulated issue time — no state is carried forward between hindcast steps (matching the operational convention from Flow 1 step 1.7). Snapshot fallback is not used in hindcast mode since observations are always available for the historical period.
@@ -972,15 +973,15 @@ Using `S.*` prefix since this flow serves both Flow 8 and Flow 10.
   - Baseline artifacts (climatology quantiles, persistence forecast) must be computed and stored during station onboarding (Flow 5) — required as reference for CRPSss and BSS. **CRPSss reference baselines**: climatology quantiles provide the probabilistic reference (sampled to match ensemble size); persistence is deterministic (CRPS reduces to MAE), giving a "does the model beat naive persistence?" check. Both baselines are used — climatology measures skill relative to the "no-information" forecast, persistence measures skill relative to the simplest dynamical baseline.
   - Interpretation thresholds (e.g. NSE > 0.75 = "Very good") are timestep-dependent. Standard literature thresholds (Moriasi et al. 2007) apply to daily streamflow; sub-daily forecasts require separate, typically more lenient, classification schemes. The deployment-configurable classification must include a `timestep` field.
 - **S.4 — skill sources**: Skill can be computed on both hindcasts and operational forecasts. Every skill result carries a `skill_source` tag:
-  - **`HINDCAST_NWP_ARCHIVE`**: hindcast forced with archived NWP. Gold standard — reflects true operational conditions including NWP error.
-  - **`HINDCAST_REANALYSIS`**: hindcast forced with reanalysis or observations. Diagnostic — isolates hydrology model skill from NWP error. Optimistic.
-  - **`OPERATIONAL`**: computed on accumulated real-time forecasts. Reflects actual production performance but may be season-biased or short-record.
-  - **`TRANSFER_VALIDATION`**: pre-trained group model applied to a station it was not trained on (Flow 5 step 5.11 branch A). Reflects transfer learning generalization — weaker evidence than in-sample hindcast but better than nothing. Distinct from `HINDCAST_NWP_ARCHIVE` to help forecasters calibrate trust.
-- **S.4 — model promotion skill priority**: The promotion comparison (T.6) uses the best available evidence, not rigidly `HINDCAST_NWP_ARCHIVE`. Priority order:
-  1. `HINDCAST_NWP_ARCHIVE` — preferred
-  2. `OPERATIONAL` — real performance, but may be season-biased
-  3. `HINDCAST_REANALYSIS` — optimistic, but better than nothing
-  4. `TRANSFER_VALIDATION` — transfer learning, not trained on this station
+  - **`'hindcast_nwp_archive'`**: hindcast forced with archived NWP. Gold standard — reflects true operational conditions including NWP error.
+  - **`'hindcast_reanalysis'`**: hindcast forced with reanalysis or observations. Diagnostic — isolates hydrology model skill from NWP error. Optimistic.
+  - **`'operational'`**: computed on accumulated real-time forecasts. Reflects actual production performance but may be season-biased or short-record.
+  - **`'transfer_validation'`**: pre-trained group model applied to a station it was not trained on (Flow 5 step 5.11 branch A). Reflects transfer learning generalization — weaker evidence than in-sample hindcast but better than nothing. Distinct from `'hindcast_nwp_archive'` to help forecasters calibrate trust.
+- **S.4 — model promotion skill priority**: The promotion comparison (T.6) uses the best available evidence, not rigidly `'hindcast_nwp_archive'`. Priority order:
+  1. `'hindcast_nwp_archive'` — preferred
+  2. `'operational'` — real performance, but may be season-biased
+  3. `'hindcast_reanalysis'` — optimistic, but better than nothing
+  4. `'transfer_validation'` — transfer learning, not trained on this station
 
   "Sufficient data" thresholds are deployment-configurable: `min_skill_samples: int` (e.g. 100 forecast-observation pairs), `min_skill_seasons: int` (e.g. 2 — must cover wet + dry). The promotion report (T.6) shows which source was used, why, sample size, and season coverage. The model admin (T.8) sees this context.
 - **S.4 — storage schema**: See "Skill score storage schema" section for table definition.
@@ -1014,7 +1015,7 @@ flowchart TD
     subgraph flow11 [Flow 11 - NWP gap recovery]
         S1["11.1 Prioritize & filter<br/><i>services/</i>"]
         S2["11.2 Attempt re-fetch<br/><i>adapters/</i>"]
-        S3["11.3 Extract per-station values<br/><i>services/</i>"]
+        S3["11.3 Extract per-station values<br/><i>preprocessing/</i>"]
         S4["11.4 Store recovered data<br/><i>store/</i>"]
         S5["11.5 Flag unrecoverable gaps<br/><i>store/</i>"]
         S6["11.6 Report outcomes<br/><i>services/</i>"]
@@ -1036,7 +1037,7 @@ flowchart TD
 |---|------|-------|-------|--------|
 | 11.1 | Prioritize & filter | `services/` | Missing cycle list from Flow 4, NWP source config | Prioritized list of recoverable cycles (filtered by provider retention window, sorted newest-first) |
 | 11.2 | Attempt re-fetch | `adapters/` | Prioritized cycle list, NWP source config | Recovered raw data or permanent failure per cycle |
-| 11.3 | Extract per-station values | `services/` | Recovered raw grids, station configs | Per-station extracted NWP values (basin-average / point / elevation-band) |
+| 11.3 | Extract per-station values | `preprocessing/` | Recovered raw grids, station configs | Per-station extracted NWP values (basin-average / point / elevation-band) |
 | 11.4 | Store recovered data | `store/` | Extracted NWP values | Persisted to `weather_forecasts` with `is_gap=TRUE, gap_status='recovered'`; marks overlapping `skill_scores` rows `is_stale=TRUE` |
 | 11.5 | Flag unrecoverable gaps | `store/` | Permanently failed cycles | Rows inserted with `is_gap=TRUE, gap_status='unrecoverable'` |
 | 11.6 | Report outcomes | `services/` | Recovery results (counts, failures) | Log summary; feed unrecoverable gaps to Flow 4 ops alerting |
@@ -1046,7 +1047,7 @@ flowchart TD
 - **Conditional flow**: Only relevant when SAPPHIRE handles NWP archiving (Flow 1 step 1.4). Not needed when a Data Gateway manages the archive upstream.
 - **11.1 — Prioritization**: Filters out cycles older than the provider's `provider_retention_days` (configured per NWP source — see config below). Remaining cycles are sorted newest-first (recent gaps are more operationally valuable). Cycles already being recovered (idempotency check — see below) are skipped.
 - **11.2 — Retry strategy**: Each cycle gets up to `recovery_max_attempts` tries (configured per NWP source, default 3) with exponential backoff (base 5 min, capped at 1 hour). A cycle is declared unrecoverable after exhausting attempts OR when its age exceeds `provider_retention_days`. Attempt count is tracked in-memory within the flow run — Flow 4 re-triggers the entire flow on the next watchdog cycle if gaps remain, so persistence of attempt counts across flow runs is not needed.
-- **11.3 — Re-extraction**: Recovered raw grids must be run through GridExtractor (same as Flow 1 step 1.4) to produce per-station extracted values. This step reuses the same extraction logic — it is not a separate implementation.
+- **11.3 — Re-extraction**: Recovered raw grids must be run through GridExtractor (same as Flow 1 step 1.3) to produce per-station extracted values. This step reuses the same extraction logic — it is not a separate implementation.
 - **11.4**: Writes to `weather_forecasts` in the hot tier (PostgreSQL), regardless of whether the gap's time period has passed the `weather_hot_days` boundary. The normal tiered retention job will migrate it to cold storage on schedule. After storing recovered data, sets `is_stale = TRUE` on `skill_scores` rows whose evaluation period overlaps the recovered NWP time range (via `SkillStore.mark_stale()`). Stale scores are recomputed by the next Flow 10 run.
 - **11.5**: Unrecoverable gaps are permanently flagged. They affect hindcast quality (Flow 7 step H.2) and post-processing calibration (Flow 1 step 1.5). Skill computation (Flows 8/10) should account for gap periods.
 - **11.6 — Notification**: Unrecoverable gaps are fed back to Flow 4's ops alerting (step 4.6) as pipeline alerts (`alert_level = "nwp_gap_unrecoverable"`). Recovered gaps are logged but do not generate alerts.
@@ -1132,11 +1133,11 @@ flowchart TD
 | # | Step | Layer | Input | Output |
 |---|------|-------|-------|--------|
 | 12.1 | Determine scope | `services/` | Trigger event (branch type, station, time window) | Validated scope (station exists, period valid) |
-| 12.2a | Fetch derived observations for old curve | `store/` | Station, old rating curve ID | All `RATING_CURVE_DERIVED` observations for that curve |
+| 12.2a | Fetch derived observations for old curve | `store/` | Station, old curve's validity period | All `'rating_curve_derived'` observations in that time window |
 | 12.3a | Recompute with new curve | `services/` | Old derived obs, new rating curve + correction parameter | New derived values |
 | 12.4a | Upsert reprocessed observations | `store/` | New derived values | Updated `observations` rows (new curve ID, new values) |
 | 12.2b | Validate CSV | `services/` | CSV file, overwrite flag | Parsed and validated rows (or validation errors) |
-| 12.3b | Ingest validated observations | `store/` | Validated rows | Persisted to `observations` with `source = MANUAL_IMPORT` |
+| 12.3b | Ingest validated observations | `store/` | Validated rows | Persisted to `observations` with `source = 'manual_import'` |
 | 12.4b | Run QC on imported observations | `services/` + `store/` | Newly ingested observations | QC flags applied |
 | 12.2c | Fetch observations in time window | `store/` | Station, time window | All observations in range |
 | 12.3c | Re-run QC rules (current version) | `services/` | Fetched observations, current QC rule config | New QC flags per observation |
@@ -1146,19 +1147,19 @@ flowchart TD
 
 #### Notes
 
-- **Branch A — Rating curve reprocessing** *(v1+, not in v0)*: When a new rating curve is uploaded for a station, all `RATING_CURVE_DERIVED` observations within the old curve's validity period are recomputed using the new curve. Original `MEASURED` observations are never modified. Historical forecasts are **not** retroactively reprocessed — operational forecasts are immutable (standard practice: EFAS, NWS, BOM). The `rating_curve_id` and `rating_curve_correction_version` columns on the reprocessed rows are updated to reference the new curve. Uses `ObservationStore.fetch_derived_observations_by_curve()`.
+- **Branch A — Rating curve reprocessing** *(v1+, not in v0)*: When a new rating curve is uploaded for a station, all `'rating_curve_derived'` observations within the old curve's validity period are recomputed using the new curve. Original `'measured'` observations are never modified. Historical forecasts are **not** retroactively reprocessed — operational forecasts are immutable (standard practice: EFAS, NWS, BOM). The `rating_curve_id` and `rating_curve_correction_version` columns on the reprocessed rows are updated to reference the new curve. Query uses `(station_id, source = 'rating_curve_derived', timestamp)` — served by the `(station_id, source, timestamp)` index on the observations table.
 - **Branch B — Manual data import** *(v0)*: CSV upload via API endpoint. Strict fixed-format CSV:
   ```
   station_code, timestamp, parameter, value
   ```
   Validation rules:
-  - Station must exist with `station_status` = `OPERATIONAL` or `ONBOARDING`
+  - Station must exist with `station_status` = `'operational'` or `'onboarding'`
   - Parameter must be in the station's `measured_parameters`
   - Value must pass deployment-configurable range checks per parameter
   - Timestamps must be valid ISO 8601 UTC
   - No duplicate `(station_code, timestamp, parameter)` within the file
   - Duplicates against existing DB rows: controlled by explicit `overwrite: bool` flag in the API request. If `overwrite = FALSE` and duplicates exist, the request is rejected with a list of conflicting rows. If `overwrite = TRUE`, existing rows are replaced.
-  All imported observations are stored with `source = MANUAL_IMPORT`. QC is run after import (step 12.4b) using the same service as Flow 2 step 2.3. This is the same validation/ingestion logic reused by Flow 5 step 5.4 for CSV-based historical imports.
+  All imported observations are stored with `source = 'manual_import'`. QC is run after import (step 12.4b) using the same service as Flow 2 step 2.3. This is the same validation/ingestion logic reused by Flow 5 step 5.4 for CSV-based historical imports.
 - **Branch C — QC re-evaluation** *(low priority)*: Re-runs QC rules on an existing time window using the current rule version. Updates `qc_flags`, `qc_status`, and `qc_rule_version` on existing rows — does not re-derive rating curve values. Useful when QC rules are updated and the operator wants to retroactively apply the new rules.
 - **12.5**: Sets `is_stale = TRUE` on all `skill_scores` rows whose evaluation period overlaps the affected time window (via `SkillStore.mark_stale()`). Stale scores are cleared by the next Flow 10 (skill recomputation) run.
 - **12.6**: Every reprocessing event is logged to `audit_log` with `event_type = observation_reprocessed`, including branch type, station, time window, and row count. Actor is the user who triggered the reprocessing.
@@ -1277,7 +1278,7 @@ model_artifacts:
   training_period_start: TIMESTAMPTZ
   training_period_end: TIMESTAMPTZ
   trained_at: TIMESTAMPTZ
-  promoted_at: TIMESTAMPTZ NULL          # when status changed to ACTIVE
+  promoted_at: TIMESTAMPTZ NULL          # when status changed to 'active'
   promoted_by: UUID NULL                 # model admin who approved (NULL for initial auto-promote)
   superseded_at: TIMESTAMPTZ NULL        # when a newer artifact replaced this one
   created_at: TIMESTAMPTZ
@@ -1317,13 +1318,15 @@ Index: `(station_id, model_id, issue_time DESC)` for "most recent state" queries
 #### Model artifact status and transitions
 
 ```
-ModelArtifactStatus enum: TRAINING | PENDING_APPROVAL | ACTIVE | SUPERSEDED | REJECTED
-Transitions:
-  TRAINING → PENDING_APPROVAL (training complete, retraining mode)
-  TRAINING → ACTIVE (training complete, initial mode — auto-promote)
-  PENDING_APPROVAL → ACTIVE (model admin approves)
-  PENDING_APPROVAL → REJECTED (model admin rejects)
-  ACTIVE → SUPERSEDED (newer artifact promoted for same scope)
+ModelArtifactStatus enum (Python members → DB values):
+  TRAINING → 'training' | PENDING_APPROVAL → 'pending_approval' | ACTIVE → 'active' | SUPERSEDED → 'superseded' | REJECTED → 'rejected'
+
+Transitions (shown as DB values):
+  'training' → 'pending_approval' (training complete, retraining mode)
+  'training' → 'active' (training complete, initial mode — auto-promote)
+  'pending_approval' → 'active' (model admin approves)
+  'pending_approval' → 'rejected' (model admin rejects)
+  'active' → 'superseded' (newer artifact promoted for same scope)
 ```
 
 Two partial unique indexes enforce at most one active artifact per scope:
@@ -1339,13 +1342,14 @@ Two partial unique indexes enforce at most one active artifact per scope:
 Four types, representing how weather data is spatially organized:
 
 ```
-SpatialRepresentation enum: POINT | BASIN_AVERAGE | ELEVATION_BAND | GRIDDED
+SpatialRepresentation enum (Python members → DB values):
+  POINT → 'point' | BASIN_AVERAGE → 'basin_average' | ELEVATION_BAND → 'elevation_band' | GRIDDED → 'gridded'
 ```
 
-- **`POINT`**: per-station scalar value per parameter per timestep. From point weather stations (e.g. SMN) or single grid-cell extraction.
-- **`BASIN_AVERAGE`**: per-station single value per parameter per timestep, spatially averaged over a basin polygon. From Data Gateway (basin mode) or GridExtractor.
-- **`ELEVATION_BAND`**: per-station, per-band value per parameter per timestep. Multiple elevation bands per basin. From Data Gateway (band mode) or GridExtractor with band geometries.
-- **`GRIDDED`**: full 2D spatial grid per parameter per timestep. From raw NWP (e.g. ICON-CH2-EPS GRIB2, ECMWF IFS). Represented as `xarray.Dataset`.
+- **`'point'`**: per-station scalar value per parameter per timestep. From point weather stations (e.g. SMN) or single grid-cell extraction.
+- **`'basin_average'`**: per-station single value per parameter per timestep, spatially averaged over a basin polygon. From Data Gateway (basin mode) or GridExtractor.
+- **`'elevation_band'`**: per-station, per-band value per parameter per timestep. Multiple elevation bands per basin. From Data Gateway (band mode) or GridExtractor with band geometries.
+- **`'gridded'`**: full 2D spatial grid per parameter per timestep. From raw NWP (e.g. ICON-CH2-EPS GRIB2, ECMWF IFS). Represented as `xarray.Dataset`.
 
 Basin-average and elevation-band are both **tabular** — representable as `polars.DataFrame` (elevation-band has more columns, one per band per parameter). Gridded is structurally different (`xarray.Dataset` with spatial dimensions).
 
@@ -1368,10 +1372,10 @@ NWP post-processing (Flow 1 step 1.5) is a **configurable chain of transforms** 
 |-----------|-------------------|--------------------|---------|
 | Bias correction (quantile mapping) | any | same | Correct systematic NWP bias |
 | Ensemble calibration | any | same | Adjust spread/reliability |
-| Downscaling | GRIDDED | GRIDDED | Increase spatial resolution |
-| Spatial extraction (basin-avg) | GRIDDED | BASIN_AVERAGE | `GridExtractor` Protocol — bulk: one grid read, all station geometries processed |
-| Spatial extraction (elevation-band) | GRIDDED | ELEVATION_BAND | `GridExtractor` Protocol — bulk: one grid read, all band geometries processed |
-| Spatial interpolation | POINT | GRIDDED | Interpolate station network to grid (rare) |
+| Downscaling | gridded | gridded | Increase spatial resolution |
+| Spatial extraction (basin-avg) | gridded | basin_average | `GridExtractor` Protocol — bulk: one grid read, all station geometries processed |
+| Spatial extraction (elevation-band) | gridded | elevation_band | `GridExtractor` Protocol — bulk: one grid read, all band geometries processed |
+| Spatial interpolation | point | gridded | Interpolate station network to grid (rare) |
 
 Transforms are chained. Example pipeline for a basin-average LSTM model using raw ICON-CH2-EPS:
 ```
@@ -1410,9 +1414,9 @@ WeatherSourceConfig:
 station_weather_sources:
   station_id: UUID FK
   nwp_source: TEXT
-  extraction_type: SpatialRepresentation   # BASIN_AVERAGE, ELEVATION_BAND, or POINT only — GRIDDED is not valid here (gridded data is either consumed raw by the model or extracted into one of these three tabular types)
-  basin_geometry: GEOMETRY(MULTIPOLYGON, 4326) NULL  # for BASIN_AVERAGE: single basin polygon
-  band_geometries: JSONB NULL              # for ELEVATION_BAND: list of {"band_id": int, "geometry": GeoJSON, "min_elevation_m": float, "max_elevation_m": float}
+  extraction_type: SpatialRepresentation   # 'basin_average', 'elevation_band', or 'point' only — 'gridded' is not valid here (gridded data is either consumed raw by the model or extracted into one of these three tabular types)
+  basin_geometry: GEOMETRY(MULTIPOLYGON, 4326) NULL  # for 'basin_average': single basin polygon
+  band_geometries: JSONB NULL              # for 'elevation_band': list of {"band_id": int, "geometry": GeoJSON, "min_elevation_m": float, "max_elevation_m": float}
   active: BOOL DEFAULT TRUE
   PK: (station_id, nwp_source)
   CHECK: (extraction_type = 'point' AND basin_geometry IS NULL AND band_geometries IS NULL)
@@ -1432,7 +1436,7 @@ When a model uses multiple weather sources, input preparation (Flow 1 step 1.7):
 
 The model receives one merged forcing input. It does not know about sources — it sees parameters.
 
-For the rare case where a model needs mixed spatial types (e.g. gridded precipitation + basin-average snow), the model declares `GRIDDED` and basin-average values are broadcast to spatially uniform grid fields. This is physically meaningful and lossless.
+For the rare case where a model needs mixed spatial types (e.g. gridded precipitation + basin-average snow), the model declares `'gridded'` and basin-average values are broadcast to spatially uniform grid fields. This is physically meaningful and lossless.
 
 ---
 
@@ -1444,7 +1448,7 @@ Two distinct domain types with different metadata, storage tables, and lifecycle
 
 **`OperationalForecast`** — produced in real time by Flow 1. Has a publication lifecycle (`raw → reviewed → published`), forecaster adjustments, and operational metadata (`warm_up_source`, `nwp_cycle_reference_time`, `observation_staleness_hours`). Stored in `forecasts` + `forecast_values`.
 
-**`HindcastForecast`** — produced retroactively by Flow 7. No publication lifecycle. Carries `forcing_type` (`NWP_ARCHIVE` or `REANALYSIS`) and `hindcast_step` (the simulated issue time). Stored in `hindcast_forecasts` + `hindcast_values`.
+**`HindcastForecast`** — produced retroactively by Flow 7. No publication lifecycle. Carries `forcing_type` (`'nwp_archive'` or `'reanalysis'`) and `hindcast_step` (the simulated issue time). Stored in `hindcast_forecasts` + `hindcast_values`.
 
 Both share the ensemble payload (member traces or quantiles) and can be used for skill computation. The skill service accepts either via a common verification interface — both provide ensemble values, issue time, station, and model needed for metric computation.
 
@@ -1497,15 +1501,21 @@ Tiered retention: hot (PostgreSQL) for `forecast_hot_days` → cold (Parquet) �
 ### Status enum and transitions
 
 ```
-ForecastStatus enum: RAW | REVIEWED | PUBLISHED
-Transitions: RAW → REVIEWED → PUBLISHED (forward only, enforced server-side)
+ForecastStatus enum (Python members → DB values):
+  RAW → 'raw' | REVIEWED → 'reviewed' | PUBLISHED → 'published'
+
+Transitions (shown as DB values):
+  'raw' → 'reviewed' → 'published' (forward only, enforced server-side)
 ```
 
 ### Metadata enums
 
 ```
-WarmUpSource enum: FRESH | SNAPSHOT | COLD_START
-EnsembleRepresentation enum: MEMBERS | QUANTILES
+WarmUpSource enum (Python members → DB values):
+  FRESH → 'fresh' | SNAPSHOT → 'snapshot' | COLD_START → 'cold_start'
+
+EnsembleRepresentation enum (Python members → DB values):
+  MEMBERS → 'members' | QUANTILES → 'quantiles'
 ```
 
 ### Hindcast tables
@@ -1554,21 +1564,22 @@ Same CHECK constraint as `forecast_values`. Partitioned monthly by `hindcast_ste
 ### Skill source enum
 
 ```
-SkillSource enum: HINDCAST_NWP_ARCHIVE | HINDCAST_REANALYSIS | OPERATIONAL | TRANSFER_VALIDATION
+SkillSource enum (Python members → DB values):
+  HINDCAST_NWP_ARCHIVE → 'hindcast_nwp_archive' | HINDCAST_REANALYSIS → 'hindcast_reanalysis' | OPERATIONAL → 'operational' | TRANSFER_VALIDATION → 'transfer_validation'
 ```
 
 Every skill result carries a `skill_source` tag. See Flows 8/10 notes for the promotion priority.
 
-- **`TRANSFER_VALIDATION`**: skill computed when a pre-trained group model is applied to a new station it was **not** trained on (Flow 5 step 5.11 branch A). Distinct from `HINDCAST_NWP_ARCHIVE` because the model has never seen this station's data during training — the scores reflect transfer learning generalization, not in-sample performance. Important for forecaster trust calibration.
+- **`'transfer_validation'`**: skill computed when a pre-trained group model is applied to a new station it was **not** trained on (Flow 5 step 5.11 branch A). Distinct from `'hindcast_nwp_archive'` because the model has never seen this station's data during training — the scores reflect transfer learning generalization, not in-sample performance. Important for forecaster trust calibration.
 
 ### Skill evidence display convention
 
 The dashboard and API derive a station-model's **skill evidence level** from the `skill_scores` table at query time (no denormalized field). Priority order, best to weakest:
 
-1. `HINDCAST_NWP_ARCHIVE` — gold standard
-2. `OPERATIONAL` — real performance
-3. `HINDCAST_REANALYSIS` — optimistic
-4. `TRANSFER_VALIDATION` — transfer learning, not trained on this station
+1. `'hindcast_nwp_archive'` — gold standard
+2. `'operational'` — real performance
+3. `'hindcast_reanalysis'` — optimistic
+4. `'transfer_validation'` — transfer learning, not trained on this station
 5. No rows → **unvalidated**
 
 The API includes a `skill_summary` in station-model forecast responses:
@@ -1647,8 +1658,9 @@ JSONB `data` structures:
 #### Supporting enums
 
 ```
-FlowRegime enum: LOW | HIGH | FLOOD
-  LOW = below Q50, HIGH = Q50–Q90, FLOOD = above Q90
+FlowRegime enum (Python members → DB values):
+  LOW → 'low' | HIGH → 'high' | FLOOD → 'flood'
+  'low' = below Q50, 'high' = Q50–Q90, 'flood' = above Q90
   Percentile thresholds are deployment-configurable, computed during station onboarding.
 ```
 
@@ -1726,13 +1738,13 @@ StationThreshold:
   danger_level: str            # references DangerLevelDefinition.name
   parameter: str               # "discharge" or "water_level" — river parameters only. Weather thresholds (rainfall, temperature) are out of scope; hydromet agencies handle meteorological warnings in their own systems.
   value: float                 # threshold value in parameter units
-  source: ThresholdSource      # enum: AUTHORITY | INFERRED
+  source: ThresholdSource      # enum: 'authority' | 'inferred'
 ```
 
-- **`AUTHORITY`**: defined by the national agency (e.g. BAFU, DHM). Configured during station onboarding.
-- **`INFERRED`**: computed from flood frequency analysis on historical data. **Deferred to v1** — requires sufficient historical record (20+ years), distribution fitting (GEV/log-Pearson III), and hydrologist review before operational use. The data model supports it from v0; the computation does not exist yet.
+- **`'authority'`**: defined by the national agency (e.g. BAFU, DHM). Configured during station onboarding.
+- **`'inferred'`**: computed from flood frequency analysis on historical data. **Deferred to v1** — requires sufficient historical record (20+ years), distribution fitting (GEV/log-Pearson III), and hydrologist review before operational use. The data model supports it from v0; the computation does not exist yet.
 
-Deployment config includes `infer_missing_thresholds: bool` (default `false`). When `true` and the flood frequency analysis service is available (v1+), missing thresholds are inferred during onboarding and flagged with `source = INFERRED`. Forecasters see the source flag on the dashboard.
+Deployment config includes `infer_missing_thresholds: bool` (default `false`). When `true` and the flood frequency analysis service is available (v1+), missing thresholds are inferred during onboarding and flagged with `source = 'inferred'`. Forecasters see the source flag on the dashboard.
 
 ### Observation alerts
 
@@ -1749,15 +1761,16 @@ Observation alerts use the same danger levels and per-station threshold values a
 Observations carry an aggregate QC status:
 
 ```
-QcStatus enum: RAW | QC_PASSED | QC_FAILED | QC_SUSPECT
+QcStatus enum (Python members → DB values):
+  RAW → 'raw' | QC_PASSED → 'qc_passed' | QC_FAILED → 'qc_failed' | QC_SUSPECT → 'qc_suspect'
 ```
 
-- **`RAW`**: just ingested, QC has not run yet.
-- **`QC_PASSED`**: all rules passed. Available for downstream use (forecasting, training).
-- **`QC_SUSPECT`**: at least one rule flagged the value as suspect but not definitively wrong. Excluded from downstream use by default but visible to operators.
-- **`QC_FAILED`**: at least one rule flagged the value as invalid. Excluded from downstream use.
+- **`'raw'`**: just ingested, QC has not run yet.
+- **`'qc_passed'`**: all rules passed. Available for downstream use (forecasting, training).
+- **`'qc_suspect'`**: at least one rule flagged the value as suspect but not definitively wrong. Excluded from downstream use by default but visible to operators.
+- **`'qc_failed'`**: at least one rule flagged the value as invalid. Excluded from downstream use.
 
-Aggregate status is the worst flag: `QC_FAILED` > `QC_SUSPECT` > `QC_PASSED`. An observation with no flags after QC completes is `QC_PASSED`. See `docs/spec/types-and-protocols.md` — QcFlag and `aggregate_qc_status()` for the implementation contract.
+Aggregate status is the worst flag: `'qc_failed'` > `'qc_suspect'` > `'qc_passed'`. An observation with no flags after QC completes is `'qc_passed'`. See `docs/spec/types-and-protocols.md` — QcFlag and `aggregate_qc_status()` for the implementation contract.
 
 ### QC flags
 
@@ -1767,7 +1780,7 @@ Each observation can have multiple QC flags — one per rule that evaluated it. 
 QcFlag:
   rule_id: str               # e.g. "range_check", "rate_of_change"
   rule_version: str           # e.g. "1.0.0" — enables selective recomputation
-  status: QcStatus            # QC_PASSED, QC_SUSPECT, or QC_FAILED (not RAW)
+  status: QcStatus            # 'qc_passed', 'qc_suspect', or 'qc_failed' (not 'raw')
   detail: str | None          # human-readable explanation, e.g. "value 500 exceeds max 200"
 ```
 
@@ -1784,19 +1797,26 @@ observations:
   rating_curve_id: UUID NULL FK  # references rating_curves.id — set when source = rating_curve_derived
   rating_curve_correction_version: TEXT NULL  # correction param version — set when source = rating_curve_derived
   qc_status: TEXT              # aggregate QcStatus enum value
-  qc_flags: JSONB              # list[QcFlag], empty list when status = RAW
+  qc_flags: JSONB              # list[QcFlag], empty list when status = 'raw'
   qc_rule_version: TEXT NULL   # version of the QC ruleset (set of rules + config) that last evaluated this row; individual per-rule versions are in qc_flags[].rule_version
   created_at: TIMESTAMPTZ
 ```
 
+Supporting enum:
+
+```
+ObservationSource enum (Python members → DB values):
+  MEASURED → 'measured' | RATING_CURVE_DERIVED → 'rating_curve_derived' | MANUAL_IMPORT → 'manual_import'
+```
+
 Partitioned yearly by `timestamp`. Indexes:
 - `(station_id, timestamp)` — base index for all observation fetches.
-- `(station_id, source, timestamp)` — for Flow 12 rating curve reprocessing queries.
+- `(station_id, source, timestamp)` — for source-filtered queries: Flow 12 Branch A (rating curve reprocessing by station + source + validity period), Flow 12 Branch B/C, and general source-type lookups.
 - Partial: `(station_id, timestamp) WHERE qc_status = 'qc_passed'` — optimized for the hot path in Flow 1 step 1.6. ~75% smaller than a full three-column index (excludes raw/failed/suspect rows).
 
 ### Manual observation correction (v1+)
 
-Not in v0 scope. When implemented, adds `overridden_by: UUID NULL`, `overridden_at: TIMESTAMPTZ NULL`, `override_rationale: TEXT NULL` columns. A manual override changes `qc_status` to `QC_PASSED` or `QC_FAILED` regardless of automated flags, with full audit trail.
+Not in v0 scope. When implemented, adds `overridden_by: UUID NULL`, `overridden_at: TIMESTAMPTZ NULL`, `override_rationale: TEXT NULL` columns. A manual override changes `qc_status` to `'qc_passed'` or `'qc_failed'` regardless of automated flags, with full audit trail.
 
 ---
 
@@ -1854,6 +1874,11 @@ users:
   updated_at: TIMESTAMPTZ
 ```
 
+```
+UserRole enum (Python members → DB values):
+  ORG_ADMIN → 'org_admin' | IT_ADMIN → 'it_admin' | MODEL_ADMIN → 'model_admin' | FORECASTER → 'forecaster'
+```
+
 Index: `(username)` unique. `(role)` for role-based queries.
 
 ### `access_tokens` table
@@ -1902,7 +1927,8 @@ audit_log:
   event_type: TEXT                       # AuditEventType: login | logout | login_failed | password_changed |
                                          #   user_created | user_deactivated | api_key_created | api_key_revoked |
                                          #   api_key_request | forecast_status_change | forecast_adjusted |
-                                         #   model_promoted | model_rejected | station_status_change
+                                         #   model_promoted | model_rejected | station_status_change |
+                                         #   observation_reprocessed
   actor_id: UUID NULL                    # user or NULL for system events
   actor_type: TEXT                       # "user" | "api_key" | "system"
   target_type: TEXT NULL                 # entity type affected, e.g. "forecast", "user", "access_token"
@@ -1910,6 +1936,21 @@ audit_log:
   detail: JSONB NULL                     # event-specific payload (IP address, rationale, etc.)
   ip_address: INET NULL                  # client IP for auth events
   created_at: TIMESTAMPTZ
+```
+
+Supporting enums:
+
+```
+AuditEventType enum (Python members → DB values):
+  LOGIN → 'login' | LOGOUT → 'logout' | LOGIN_FAILED → 'login_failed' | PASSWORD_CHANGED → 'password_changed' |
+  USER_CREATED → 'user_created' | USER_DEACTIVATED → 'user_deactivated' |
+  API_KEY_CREATED → 'api_key_created' | API_KEY_REVOKED → 'api_key_revoked' | API_KEY_REQUEST → 'api_key_request' |
+  FORECAST_STATUS_CHANGE → 'forecast_status_change' | FORECAST_ADJUSTED → 'forecast_adjusted' |
+  MODEL_PROMOTED → 'model_promoted' | MODEL_REJECTED → 'model_rejected' |
+  STATION_STATUS_CHANGE → 'station_status_change' | OBSERVATION_REPROCESSED → 'observation_reprocessed'
+
+AuditActorType enum (Python members → DB values):
+  USER → 'user' | API_KEY → 'api_key' | SYSTEM → 'system'
 ```
 
 Indexes: `(event_type, created_at DESC)` for event-type queries. `(actor_id, created_at DESC)` for per-user audit trail. `(target_type, target_id, created_at DESC)` for entity history.
@@ -1948,8 +1989,11 @@ Deduplication: two partial unique indexes to handle nullable `station_id`:
 Index: `(station_id, triggered_at DESC)` for alert history queries (API, Bipad portal).
 
 ```
-AlertStatus enum: RAISED | ACKNOWLEDGED | RESOLVED
-AlertSource enum: FORECAST | OBSERVATION | PIPELINE
+AlertStatus enum (Python members → DB values):
+  RAISED → 'raised' | ACKNOWLEDGED → 'acknowledged' | RESOLVED → 'resolved'
+
+AlertSource enum (Python members → DB values):
+  FORECAST → 'forecast' | OBSERVATION → 'observation' | PIPELINE → 'pipeline'
 ```
 
 Pipeline alerts use `source = 'pipeline'` with `alert_level` set to the check type (e.g. `"nwp_delivery"`, `"observation_freshness"`). `trigger_probability` is NULL (not probability-based). Ops alerts go to the operations team, not flood forecasters — routed by `source` in notification config.
@@ -1975,6 +2019,11 @@ forecast_adjustments:
 
 INSERT only for `sapphire_api` — no UPDATE or DELETE.
 
+```
+AdjustmentType enum (Python members → DB values):
+  SHIFT → 'shift' | SCALE → 'scale' | CAP → 'cap' | FLOOR → 'floor'
+```
+
 ### `pipeline_health` table
 
 Low-volume operational monitoring table. Not partitioned.
@@ -1989,6 +2038,17 @@ pipeline_health:
   detail: JSONB                            # check-type-specific payload (see below)
   cycle_time: TIMESTAMPTZ NULL             # relevant NWP or forecast cycle
   created_at: TIMESTAMPTZ
+```
+
+Supporting enums:
+
+```
+PipelineCheckType enum (Python members → DB values):
+  NWP_DELIVERY → 'nwp_delivery' | OBSERVATION_FRESHNESS → 'observation_freshness' | FORECAST_FRESHNESS → 'forecast_freshness' |
+  FLOW_RUN_HEALTH → 'flow_run_health' | DISK_USAGE → 'disk_usage' | BACKUP_FRESHNESS → 'backup_freshness' | BACKUP_RESTORE_TEST → 'backup_restore_test'
+
+PipelineHealthStatus enum (Python members → DB values):
+  OK → 'ok' | WARNING → 'warning' | CRITICAL → 'critical'
 ```
 
 JSONB `detail` structures per `check_type`:
@@ -2016,6 +2076,12 @@ dead_letter_queue:
   resolved_at: TIMESTAMPTZ NULL            # NULL = pending resolution
   resolved_by: TEXT NULL                   # "auto_drain" or operator identifier
   resolution: TEXT NULL                    # "replayed" | "discarded" | NULL
+```
+
+```
+DlqResolution enum (Python members → DB values):
+  REPLAYED → 'replayed' | DISCARDED → 'discarded'
+  Column is nullable — NULL means unresolved (pending).
 ```
 
 Not partitioned (low volume). Index: `(resolved_at) WHERE resolved_at IS NULL` for the drain query.
@@ -2049,6 +2115,16 @@ stations:
   station_status: TEXT DEFAULT 'onboarding'  # StationStatus: onboarding | operational | suspended | decommissioned
   created_at: TIMESTAMPTZ
   updated_at: TIMESTAMPTZ
+```
+
+Supporting enums:
+
+```
+StationKind enum (Python members → DB values):
+  WEATHER → 'weather' | RIVER → 'river'
+
+RegulationType enum (Python members → DB values):
+  UNREGULATED → 'unregulated' | RESERVOIR → 'reservoir' | IRRIGATION_DIVERSION → 'irrigation_diversion' | RUN_OF_RIVER_HYDRO → 'run_of_river_hydro'
 ```
 
 Index: `GIST (location)` for spatial queries. `station_kind` filter index for typed listing. `station_status` filter index for Flow 1 (`WHERE station_status = 'operational'`).
@@ -2128,7 +2204,7 @@ Classification schemes are deployment-configurable (different agencies may use d
 - **Display**: API and dashboard convert UTC → local timezone for presentation.
 - **Daily aggregation**: Uses the station's local timezone to define day boundaries. A hydrological day in Nepal (00:00–00:00 NPT) differs from a UTC day. This affects cold storage aggregation and dashboard display.
 - **No data loss from UTC storage**: UTC timestamps uniquely identify each observation regardless of DST shifts. Spring-forward and fall-back transitions are handled correctly.
-- **Calendar system**: Deployment-configurable (`gregorian` or `bikram_sambat`). Nepal uses BS for official reporting — DHM forecasters, government bulletins, and the Bipad portal expect BS dates. When `calendar = bikram_sambat`, the API supports a `?calendar=bs` query parameter, the dashboard displays BS dates, and the bulletin generator uses BS formatting. Internal storage and computation remain Gregorian/UTC. Conversion via `nepali-datetime` library.
+- **Calendar system**: Deployment-configurable (`Calendar` enum: `GREGORIAN → 'gregorian'` | `BIKRAM_SAMBAT → 'bikram_sambat'`). Nepal uses BS for official reporting — DHM forecasters, government bulletins, and the Bipad portal expect BS dates. When `calendar = bikram_sambat`, the API supports a `?calendar=bs` query parameter, the dashboard displays BS dates, and the bulletin generator uses BS formatting. Internal storage and computation remain Gregorian/UTC. Conversion via `nepali-datetime` library.
 
 ---
 
@@ -2292,12 +2368,13 @@ All consumers pull from the REST API. API keys are scoped per consumer (per auth
 Three notification channels, extensible per deployment:
 
 ```
-NotificationChannel enum: EMAIL | SMS | WEBHOOK
+NotificationChannel enum (Python members → DB values):
+  EMAIL → 'email' | SMS → 'sms' | WEBHOOK → 'webhook'
 ```
 
-- **Email** — standard, reliable
-- **SMS** — critical for areas with limited internet connectivity (Nepal)
-- **Webhook** — for integration with external systems (e.g. Bipad portal)
+- **`'email'`** — standard, reliable
+- **`'sms'`** — critical for areas with limited internet connectivity (Nepal)
+- **`'webhook'`** — for integration with external systems (e.g. Bipad portal)
 
 Architecture supports pluggable notification adapters — one adapter per channel. Channel selection is per-alert-type and per-recipient configurable. Exact provider integrations are deployment-specific (pending DHM input for v1 Nepal).
 
@@ -2311,7 +2388,7 @@ Three categories of alerts, each with different recipients and urgency:
 | **Pipeline alerts** | IT admin, model admin (ops team) | NWP delivery late, observation stale, flow run failed |
 | **Administrative alerts** | Org admin | API key unused 90 days, API key age >1 year, usage spike |
 
-Administrative alerts are low-volume, non-urgent notifications delivered via EMAIL only. They are triggered by a scheduled Prefect task (daily) that checks `access_tokens.last_used_at` and queries `audit_log` for usage patterns. See security.md § API key lifecycle management for trigger thresholds.
+Administrative alerts are low-volume, non-urgent notifications delivered via `'email'` only. They are triggered by a scheduled Prefect task (daily) that checks `access_tokens.last_used_at` and queries `audit_log` for usage patterns. See security.md § API key lifecycle management for trigger thresholds.
 
 ### Notification routing config (TBD)
 
@@ -2441,7 +2518,7 @@ References (does not redefine): tech stack from this doc, DB connection patterns
 | QC rules versioned | Rule version stored with each QC flag. Enables recomputation when rules change. |
 | API-first data export | External consumers (Nepal authorities, international) ingest our API. JSON default, CSV export supported. No push-based export. |
 | Forcing time series served via API | Dashboard displays precipitation + temperature by default alongside forecasts. Model admin configures which predictors are shown. |
-| Hindcast forcing type tagged | Every hindcast carries `forcing_type` (`NWP_ARCHIVE` or `REANALYSIS`). Operational skill metrics computed only on NWP-archive-forced hindcasts. |
+| Hindcast forcing type tagged | Every hindcast carries `forcing_type` (`'nwp_archive'` or `'reanalysis'`). Operational skill metrics computed only on NWP-archive-forced hindcasts. |
 | Snow depth as required input | Snow depth (`H_SNOW`) extracted alongside P and T for snow-dominated catchments. Required for Alpine and high-elevation forecasting. |
 | Alert hysteresis | Separate trigger/resolve probability thresholds per danger level, with time-based duration parameters (`min_trigger_duration` / `min_resolve_duration`) that are schedule-independent. Prevents alert flapping from ensemble probability oscillation. |
 | Forecast metadata transparency | Every forecast records NWP cycle reference time, `warm_up_source`, and `observation_staleness_hours`. Visible to forecasters. |
@@ -2475,3 +2552,27 @@ Swiss public data. Three sub-phases:
 Between v0 and v1, the pipeline will be validated with additional public datasets (candidates: UK, Germany, US, New Zealand — not yet defined) to stress-test adapter generality before Nepal deployment.
 
 v1 adds Nepal (ECMWF IFS, DHM stations, elevation-band NWP extraction, ERA5-Land).
+
+### v0 data flow prioritization
+
+#### Required for v0
+
+| Priority | Flow | v0 simplifications |
+|----------|------|-------------------|
+| 1 | **Flow 5/5w** — Station onboarding | TOML bootstrap only (no dashboard). Skip 5.6–5.7 (rating curves — BAFU provides Q directly). No regulation type needed for Swiss stations. |
+| 2 | **Flow 2** — Observation ingest + QC | Skip 2.5–2.7 (rating curve conversion — v1+). Alerting steps 2.8–2.10 optional (controlled by `enable_alert_cycle`). |
+| 3 | **Flow 6 → 7 → 8** — Train → hindcast → skill | Initial training only (auto-promote, no comparison gate). Hindcast uses station obs as pseudo-perfect forcing until NWP archive accumulates. Skill: reduced metric set acceptable (CRPS, NSE, KGE at minimum). |
+| 4 | **Flow 1** — Forecast cycle | Phase C (alerting 1.11–1.13) off by default. Steps 1.2 (grid archive), 1.5 (NWP post-process), 1.9 (forecast post-process) are pass-through. |
+
+Implementation order matches priority: onboard stations first (everything depends on station + historical data), then observation ingest (validates adapters), then model training pipeline (validates model framework), then the operational forecast cycle (wires it all together).
+
+#### Deferred beyond v0
+
+| Flow | Earliest needed | Reason |
+|------|----------------|--------|
+| **Flow 3** — Forecast review + publish | v1 | No dashboard in v0. Forecasts are consumed via API only. |
+| **Flow 4** — Pipeline monitoring | v0c or v1 | Not blocking while station count is small and pipeline is manually supervised. A simple `/api/v1/health` endpoint suffices for v0. |
+| **Flow 9** — Model retraining (comparison path) | v1 | v0 only needs initial training (Flow 6). The approval gate for retraining matters once models are in production. |
+| **Flow 10** — Skill recomputation (broad) | v1 | Yearly or post-retraining scope. Flow 8 (narrow, per-model after hindcast) covers v0. |
+| **Flow 11** — NWP gap recovery | v0c or v1 | NWP archive will be small during v0. Gaps are accepted and logged, not recovered. |
+| **Flow 12** — Observation reprocessing | Branch B ad-hoc in v0; A/C in v1+ | Branch B (CSV import) overlaps with Flow 5 step 5.4 import logic. Branch A (rating curves) requires v1. Branch C (QC re-eval) is low priority. |

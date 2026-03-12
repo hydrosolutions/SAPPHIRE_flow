@@ -198,6 +198,7 @@ class AuditEventType(Enum):
     LOGIN = "login"
     LOGOUT = "logout"
     LOGIN_FAILED = "login_failed"
+    PASSWORD_CHANGED = "password_changed"
     USER_CREATED = "user_created"
     USER_DEACTIVATED = "user_deactivated"
     API_KEY_CREATED = "api_key_created"
