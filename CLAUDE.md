@@ -6,8 +6,9 @@ SAPPHIRE Flow is an operational hydrological forecasting system that ingests wea
 
 **Key documents (in priority order):**
 1. `docs/architecture-context.md` — System context, data flows, locked decisions (read first for any implementation task)
-2. `docs/conventions.md` — Naming, patterns, error handling conventions
-3. `docs/workflow.md` — Orchestration protocol, plan structure, task exit gates
+2. `docs/spec/types-and-protocols.md` — Python type definitions and Protocol signatures (authoritative for implementation)
+3. `docs/conventions.md` — Naming, patterns, error handling conventions
+4. `docs/workflow.md` — Orchestration protocol, plan structure, task exit gates
 
 ## Workflow
 

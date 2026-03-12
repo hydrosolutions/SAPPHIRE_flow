@@ -27,7 +27,7 @@ coding style rules in `CLAUDE.md`.
 | Junction tables | `{parent}_{child}` plural | `bulletin_forecasts` |
 | Enum columns | store as TEXT matching Python enum `.value` | `"weather"`, `"danger"` |
 | Timestamps | `TIMESTAMPTZ`, always UTC | `created_at`, `updated_at` |
-| Primary keys | `id` (UUID), except audit_log (BIGSERIAL) and models (TEXT) | |
+| Primary keys | `id` (UUID), except audit_log and pipeline_health (BIGSERIAL) and models (TEXT) | |
 | Human-readable refs | `code` column, TEXT UNIQUE | `stations.code = "ABC-001"` |
 
 ### API routes
@@ -44,6 +44,13 @@ PATCH  /api/v1/forecasts/{id}/status
 POST   /api/v1/alerts/{id}/acknowledge
 POST   /api/v1/flows/ingest/trigger
 GET    /api/v1/health
+POST   /api/v1/users
+GET    /api/v1/users
+PATCH  /api/v1/users/{id}
+POST   /api/v1/access-tokens
+GET    /api/v1/access-tokens
+DELETE /api/v1/access-tokens/{id}
+POST   /api/v1/access-tokens/{id}/regenerate
 ```
 
 - Version always in path: `/api/v1/`
@@ -84,7 +91,7 @@ names. The `parameters` table stores the canonical names.
 ### Prefect flows and tasks
 
 - Flow functions: `verb_noun` — `ingest_weather`, `run_forecasts`, `check_flood_alerts`
-- Task functions: `verb_noun` — `fetch_weather_forecasts`, `forecast_station`
+- Task functions: `verb_noun` — `fetch_weather_forecasts`, `run_model_forecasts`
 - Deployment names: kebab-case — `ingest-weather`, `run-forecasts`
 
 ---
@@ -111,7 +118,7 @@ max_cache_age_hours = 24
 
 Each adapter class lives in `adapters/{type}.py` and satisfies the
 corresponding Protocol (`WeatherForecastSource`, `StationDataSource`,
-or `ThresholdSource`). `WeatherReanalysisSource` is retained for v1 (Nepal)
+or `WeatherReanalysisSource`). `WeatherReanalysisSource` is retained for v1 (Nepal)
 but not implemented in v0 — training uses station observations. Config loading
 resolves `${VAR}` references from `os.environ` at startup; unresolved references
 raise immediately.
@@ -137,6 +144,8 @@ models = entry_points(group="sapphire_flow.models")
 
 The entry point name (e.g. `"lstm_daily"`) is the model's TEXT primary key
 in the `models` table and must be stable across versions.
+
+Each model class declares an `artifact_scope` class attribute (`ArtifactScope.STATION` or `ArtifactScope.GROUP`). `ModelRegistry` reads this at startup and stores it in the `models.artifact_scope` column. Station-scoped models (conceptual) are trained per station; group-scoped models (ML) are trained on a station group and produce one shared artifact.
 
 ---
 
@@ -183,6 +192,11 @@ for logging and notification.
 - API accepts both UUID and code for station lookups.
 - Internal services use UUID (from `StationConfig`).
 - Adapter boundaries use string codes.
+- **Polars compatibility**: Polars has no native UUID dtype. UUID columns read from
+  PostgreSQL arrive as `Utf8` (string) columns when using ConnectorX (`read_database_uri`).
+  Domain code uses `StationId = NewType("StationId", UUID)` etc.; conversion between
+  `UUID` and string happens at the store boundary. See `docs/spec/types-and-protocols.md`
+  for the full ID NewType list.
 
 ---
 
@@ -190,7 +204,7 @@ for logging and notification.
 
 - **Storage**: always UTC (`TIMESTAMPTZ` in PostgreSQL).
 - **Display**: converted at API/dashboard boundary. Default display timezone
-  from `localization.timezone` in `config.toml`. Per-station IANA timezones
+  from `default_display_timezone` in deployment config. Per-station IANA timezones
   (from station metadata) are used for daily aggregation day boundaries —
   these coincide in single-timezone deployments (Nepal, Switzerland).
 - **Python**: timezone-aware `datetime` objects.
@@ -215,8 +229,8 @@ for logging and notification.
 
 | User | Permissions |
 |------|-------------|
-| `sapphire_api` | SELECT all (incl. weather_forecasts, dead_letter_queue, station_weather_sources); INSERT/UPDATE on forecast_adjustments, bulletins, alerts, forecasts (status+version), access_tokens; INSERT only on audit_log (append-only) |
-| `sapphire_worker` | SELECT on stations, station_weather_sources, rating_curves; SELECT/INSERT/UPDATE on observations, forecasts, forecast_values, alerts, skill_scores, weather_forecasts, model_artifacts, dead_letter_queue; SELECT/INSERT on hindcast_forecasts, hindcast_values, pipeline_health |
+| `sapphire_api` | SELECT all (incl. weather_forecasts, dead_letter_queue, station_weather_sources); INSERT/UPDATE on forecast_adjustments, bulletins, alerts, forecasts (status+version), access_tokens, users, refresh_tokens; UPDATE `last_used_at` on access_tokens (API middleware); INSERT only on audit_log (append-only) |
+| `sapphire_worker` | SELECT on stations, station_weather_sources, station_groups, station_group_members, rating_curves; SELECT/INSERT/UPDATE on observations, forecasts, forecast_values, alerts, skill_scores, weather_forecasts, model_artifacts, dead_letter_queue; SELECT/INSERT on hindcast_forecasts, hindcast_values, pipeline_health |
 | `sapphire_prefect` | Full access to `prefect` database only |
 
 ---
@@ -242,7 +256,9 @@ Manual adjustments are append-only (each creates an immutable
 | Table | Strategy | Key |
 |-------|----------|-----|
 | `observations` | Yearly range | `timestamp` |
-| `forecast_values` | Monthly range | `issued_at` |
+| `forecast_values` | Monthly range | `issued_at` (denormalized from `forecasts`) |
+| `hindcast_values` | Monthly range | `hindcast_step` (denormalized from `hindcast_forecasts`) |
+| `weather_forecasts` | Monthly range | `cycle_time` |
 
 Managed by `pg_partman` with premake=2 (observations) / premake=3
 (forecast_values). Data landing in a missing partition goes to the
@@ -289,14 +305,23 @@ All status/enum columns store TEXT matching the Python enum `.value` (lowercase)
 | `forecasts.representation` / `EnsembleRepresentation` | `members`, `quantiles` | — |
 | `forecasts.warm_up_source` / `WarmUpSource` | `fresh`, `snapshot`, `cold_start` | — |
 | `alerts.status` / `AlertStatus` | `raised`, `acknowledged`, `resolved` | `resolved` |
-| `alerts.source` / `AlertSource` | `forecast`, `observation` | — |
+| `alerts.source` / `AlertSource` | `forecast`, `observation`, `pipeline` | — |
+| `models.artifact_scope` / `ArtifactScope` | `station`, `group` | — |
 | `model_artifacts.status` / `ModelArtifactStatus` | `training`, `pending_approval`, `active`, `superseded`, `rejected` | `superseded`, `rejected` |
 | `hindcast_forecasts.forcing_type` / `ForcingType` | `nwp_archive`, `reanalysis` | — |
-| `skill_scores.skill_source` / `SkillSource` | `hindcast_nwp_archive`, `hindcast_reanalysis`, `operational` | — |
+| `skill_scores.skill_source` / `SkillSource` | `hindcast_nwp_archive`, `hindcast_reanalysis`, `operational`, `transfer_validation` | — |
 | `skill_scores.flow_regime` / `FlowRegime` | `low`, `high`, `flood` | — |
 | `station_weather_sources.extraction_type` / `SpatialRepresentation` | `point`, `basin_average`, `elevation_band`, `gridded` | — |
 | `station_thresholds.source` / `ThresholdSource` | `authority`, `inferred` | — |
 | `stations.regulation_type` / `RegulationType` | `unregulated`, `reservoir`, `irrigation_diversion`, `run_of_river_hydro` | — |
+| `stations.station_status` / `StationStatus` | `onboarding`, `operational`, `suspended`, `decommissioned` | `decommissioned` |
 | `stations.station_kind` / `StationKind` | `weather`, `river` | — |
-| `pipeline_health.status` | `ok`, `warning`, `critical` | — |
-| `pipeline_health.check_type` | `nwp_delivery`, `observation_freshness`, `forecast_freshness`, `flow_run_health` | — |
+| `pipeline_health.status` / `PipelineHealthStatus` | `ok`, `warning`, `critical` | — |
+| `pipeline_health.check_type` / `PipelineCheckType` | `nwp_delivery`, `observation_freshness`, `forecast_freshness`, `flow_run_health`, `disk_usage`, `backup_freshness`, `backup_restore_test` | — |
+| `dead_letter_queue.resolution` / `DlqResolution` | `replayed`, `discarded` | `replayed`, `discarded` |
+| `users.role` / `UserRole` | `org_admin`, `it_admin`, `model_admin`, `forecaster` | — |
+| `audit_log.event_type` / `AuditEventType` | `login`, `logout`, `login_failed`, `user_created`, `user_deactivated`, `api_key_created`, `api_key_revoked`, `api_key_request`, `forecast_status_change`, `forecast_adjusted`, `model_promoted`, `model_rejected`, `station_status_change` | — |
+| `audit_log.actor_type` / `AuditActorType` | `user`, `api_key`, `system` | — |
+| `forecast_adjustments` adjustment_type / `AdjustmentType` | `shift`, `scale`, `cap`, `floor` | — |
+| deployment config calendar / `Calendar` | `gregorian`, `bikram_sambat` | — |
+| notification channel / `NotificationChannel` | `email`, `sms`, `webhook` | — |

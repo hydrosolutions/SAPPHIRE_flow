@@ -176,6 +176,20 @@ escalate (e.g. notify a supervisor)?
 alerts? If so, should SAPPHIRE integrate with it, or does DHM handle
 escalation outside the system?
 
+### 14. Batch vs per-station forecast publishing (2 min)
+
+**Context**: After reviewing forecasts, the forecaster publishes them to make
+them visible in the API and bulletins. We need to know whether publishing
+happens one station at a time or as a batch for an entire forecast cycle.
+
+**We need to know**: In DHM's operational workflow, does the forecaster review
+and publish stations individually (finish one, move to the next), or review
+all stations first and then publish the entire cycle at once?
+
+**Why we're asking**: This affects the UI design of the review dashboard and
+how we handle partial publication (e.g. what happens if half the stations are
+published but the forecaster steps away).
+
 ## Not discussed — handled separately
 
 | Topic | Reason | When |
