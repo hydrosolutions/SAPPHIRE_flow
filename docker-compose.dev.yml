@@ -1,0 +1,15 @@
+# Development overrides — re-exposes internal service ports for local access.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+# This file is NOT auto-merged. Production uses only: docker compose up
+services:
+  postgres:
+    ports:
+      - "5432:5432"
+
+  prefect-server:
+    ports:
+      - "4200:4200"
+
+  api:
+    ports:
+      - "8000:8000"

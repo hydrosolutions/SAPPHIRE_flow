@@ -275,6 +275,8 @@ Target per-step budgets (50 stations):
 
 ## E. Testing and CI/CD
 
+> Full CI pipeline, Docker topology, log management, and deployment procedures are in [`docs/standards/cicd.md`](standards/cicd.md). This section covers v0 simplifications only.
+
 ### E1. Two-tier test datasets
 
 **Tier 1 — Synthetic (unit tests, no I/O)**: Programmatic generators in `tests/conftest.py`:
@@ -336,6 +338,13 @@ CI records Flow 1 execution time per step. Warns (doesn't fail) on > 50% regress
 ---
 
 ## F. Infrastructure (v0)
+
+> Full service topology, health checks, volume layout, and systemd integration: [`docs/standards/cicd.md`](standards/cicd.md). Container privilege model and secrets management: [`docs/standards/security.md`](standards/security.md).
+
+**Local development**: Internal service ports (postgres, Prefect UI, API) are not exposed in the base `docker-compose.yml`. Use the dev overlay:
+```
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+```
 
 Docker Compose with simplified topology:
 

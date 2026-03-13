@@ -1,0 +1,169 @@
+# SAPPHIRE Flow — v0 Swiss deployment config
+# See docs/spec/config-reference.toml for field documentation.
+
+# Data retention
+weather_hot_days = 180
+forecast_hot_days = 548
+max_retention_days = 3650
+
+# Observation staleness
+observation_staleness_warning_hours = 6.0
+
+# NWP lateness
+nwp_max_wait_hours = 3.0
+nwp_max_fallback_age_hours = 12.0
+
+# Alert cycle
+enable_alert_cycle = false
+threshold_check_mode = "raw"
+
+# Warm-up state (conceptual models)
+warm_up_snapshot_max_age_hours = 48.0
+warm_up_snapshot_max_age_monsoon_hours = 24.0
+
+# Flow regime
+flow_regime_q50_percentile = 50.0
+flow_regime_q90_percentile = 90.0
+
+# Threshold inference
+infer_missing_thresholds = false
+
+# Skill promotion
+min_skill_samples = 100
+min_skill_seasons = 2
+
+# Display
+default_display_timezone = "Europe/Zurich"
+
+# Calendar
+calendar = "gregorian"
+
+
+# Danger levels
+[[danger_levels]]
+level = 1
+name = "Low"
+color = "#FFFF00"
+trigger_probability = 0.5
+resolve_probability = 0.3
+min_trigger_duration_hours = 0.0
+min_resolve_duration_hours = 0.0
+direction = "above"
+
+[[danger_levels]]
+level = 2
+name = "Moderate"
+color = "#FFA500"
+trigger_probability = 0.5
+resolve_probability = 0.3
+min_trigger_duration_hours = 0.0
+min_resolve_duration_hours = 0.0
+direction = "above"
+
+[[danger_levels]]
+level = 3
+name = "Considerable"
+color = "#FF4500"
+trigger_probability = 0.4
+resolve_probability = 0.2
+min_trigger_duration_hours = 0.0
+min_resolve_duration_hours = 0.0
+direction = "above"
+
+[[danger_levels]]
+level = 4
+name = "High"
+color = "#FF0000"
+trigger_probability = 0.3
+resolve_probability = 0.15
+min_trigger_duration_hours = 0.0
+min_resolve_duration_hours = 0.0
+direction = "above"
+
+[[danger_levels]]
+level = 5
+name = "Very High"
+color = "#800000"
+trigger_probability = 0.2
+resolve_probability = 0.1
+min_trigger_duration_hours = 0.0
+min_resolve_duration_hours = 0.0
+direction = "above"
+
+# Seasons
+[[seasons]]
+name = "winter"
+months = [11, 12, 1, 2, 3]
+
+[[seasons]]
+name = "summer"
+months = [4, 5, 6, 7, 8, 9, 10]
+
+# Skill interpretation
+[[skill_interpretation]]
+metric = "crpss"
+time_step_hours = 24.0
+[[skill_interpretation.bands]]
+lower = -1e99
+upper = 0.0
+label = "no skill"
+[[skill_interpretation.bands]]
+lower = 0.0
+upper = 0.1
+label = "marginal"
+[[skill_interpretation.bands]]
+lower = 0.1
+upper = 0.25
+label = "useful"
+[[skill_interpretation.bands]]
+lower = 0.25
+upper = 0.5
+label = "good"
+[[skill_interpretation.bands]]
+lower = 0.5
+upper = 1e99
+label = "excellent"
+
+
+# Adapter configuration
+[adapters.weather_forecast]
+type = "meteoswiss_nwp"
+archive = true
+max_cache_age_hours = 12
+
+[adapters.weather_forecast.monitoring]
+expected_delivery_offset_hours = 5.0
+expected_cycles_per_day = 4
+provider_retention_days = 7
+recovery_max_attempts = 3
+
+[adapters.weather_stations]
+type = "meteoswiss_smn"
+max_cache_age_hours = 24
+
+[adapters.weather_stations.monitoring]
+expected_interval_hours = 0.17
+
+[adapters.river_stations]
+type = "hydro_scraper"
+max_cache_age_hours = 24
+
+[adapters.river_stations.monitoring]
+expected_interval_hours = 0.17
+
+
+# Pipeline monitoring
+[monitoring.forecast_cycle]
+expected_interval_hours = 6.0
+
+
+# Model weather source configuration
+[models.lstm_daily.weather]
+sources = [
+  {nwp_source = "icon_ch2_eps", parameters = ["precipitation", "temperature", "snow_depth"], pipeline = ["extract_basin_avg"]},
+]
+
+
+# API configuration
+[api.cors]
+allow_origins = ["https://sapphire.example.ch"]
