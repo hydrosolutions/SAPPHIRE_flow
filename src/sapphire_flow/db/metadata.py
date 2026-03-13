@@ -1,3 +1,4 @@
+# pyright: reportUnknownArgumentType=false, reportUnknownMemberType=false
 import sqlalchemy as sa
 from geoalchemy2 import Geometry
 from sqlalchemy.dialects.postgresql import ARRAY, BIGINT, BYTEA, INTERVAL, JSONB, UUID

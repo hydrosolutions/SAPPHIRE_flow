@@ -25,7 +25,7 @@ class ForecastEnsemble(NamedTuple):
 
 
 def _from_members(
-    cls,
+    cls: type[ForecastEnsemble],
     station_id: StationId,
     issued_at: UtcDatetime,
     parameter: str,
@@ -63,7 +63,7 @@ ForecastEnsemble.from_members = classmethod(_from_members)  # type: ignore[attr-
 
 
 def _from_quantiles(
-    cls,
+    cls: type[ForecastEnsemble],
     station_id: StationId,
     issued_at: UtcDatetime,
     parameter: str,

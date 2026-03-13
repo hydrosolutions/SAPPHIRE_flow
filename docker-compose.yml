@@ -1,0 +1,94 @@
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_USER: ${DB_USER:-sapphire}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      POSTGRES_DB: sapphire
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-sapphire}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  prefect-server:
+    image: prefecthq/prefect:3-python3.11
+    command: prefect server start --host 0.0.0.0
+    environment:
+      PREFECT_API_DATABASE_CONNECTION_URL: postgresql+asyncpg://${DB_USER:-sapphire}:${DB_PASSWORD}@postgres:5432/prefect
+    ports:
+      - "4200:4200"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4200/api/health')"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  prefect-worker:
+    build: .
+    command: prefect worker start --pool default-agent-pool --type process
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_USER:-sapphire}:${DB_PASSWORD}@postgres:5432/sapphire
+      PREFECT_API_URL: http://prefect-server:4200/api
+    depends_on:
+      prefect-server:
+        condition: service_healthy
+
+  api:
+    build: .
+    command: uvicorn sapphire_flow.api:app --host 0.0.0.0 --port 8000
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_USER:-sapphire}:${DB_PASSWORD}@postgres:5432/sapphire
+      PREFECT_API_URL: http://prefect-server:4200/api
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  caddy:
+    image: caddy:2
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+      - prefect-server
+
+  init:
+    build: .
+    command: >
+      sh -c "
+        python -m sapphire_flow.db.init &&
+        alembic upgrade head &&
+        echo 'Init complete'
+      "
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${DB_USER:-sapphire}:${DB_PASSWORD}@postgres:5432/sapphire
+      PREFECT_API_URL: http://prefect-server:4200/api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:
