@@ -7,61 +7,15 @@
 # name says otherwise. Pydantic validates and converts at load time.
 # Rationale: avoids ISO 8601 string parsing; hours are natural for hydrological
 # operations (NWP cycles, staleness windows, delivery offsets).
+#
+# TOML ordering note: bare key-value fields must come before [[array-of-tables]]
+# headers. Scalar fields are listed first; array-of-tables sections follow.
 
 # =============================================================================
-# DeploymentConfig — top-level fields
+# DeploymentConfig — scalar fields
 # Source: docs/spec/types-and-protocols.md § DeploymentConfig
 # Module: config/deployment.py
 # =============================================================================
-
-# --- Danger levels (array of tables) ---
-# Each entry defines one danger level for threshold-based alerting.
-# Source: types-and-protocols.md § DangerLevelDefinition
-[[danger_levels]]
-level = 1
-name = "Low"
-color = "#FFFF00"
-
-[[danger_levels]]
-level = 2
-name = "Moderate"
-color = "#FFA500"
-
-[[danger_levels]]
-level = 3
-name = "Considerable"
-color = "#FF4500"
-
-[[danger_levels]]
-level = 4
-name = "High"
-color = "#FF0000"
-
-[[danger_levels]]
-level = 5
-name = "Very High"
-color = "#800000"
-
-# --- Seasons (array of tables) ---
-# Defines seasonal boundaries for skill stratification and warm-up tuning.
-# Source: types-and-protocols.md § SeasonDefinition
-[[seasons]]
-name = "winter"
-start_month = 11
-end_month = 3
-
-[[seasons]]
-name = "summer"
-start_month = 4
-end_month = 10
-
-# --- Skill interpretation (array of tables) ---
-# Maps numeric skill score ranges to qualitative labels.
-# Source: types-and-protocols.md § SkillInterpretationScheme
-[[skill_interpretation]]
-metric = "crpss"
-thresholds = [0.0, 0.1, 0.25, 0.5]
-labels = ["no skill", "marginal", "useful", "good", "excellent"]
 
 # --- Data retention ---
 # Tiered: hot (PostgreSQL) -> cold (Parquet) -> delete at max_retention_days.
@@ -112,6 +66,105 @@ default_display_timezone = "Europe/Zurich"
 # --- Calendar ---
 # Source: types-and-protocols.md § DeploymentConfig
 calendar = "gregorian"                # Nepal v1: "bikram_sambat"
+
+
+# =============================================================================
+# DeploymentConfig — array-of-tables sections
+# (Must follow all scalar fields due to TOML parsing rules)
+# =============================================================================
+
+# --- Danger levels (array of tables) ---
+# Each entry defines one danger level for threshold-based alerting.
+# Source: types-and-protocols.md § DangerLevelDefinition
+[[danger_levels]]
+level = 1
+name = "Low"
+color = "#FFFF00"
+trigger_probability = 0.5
+resolve_probability = 0.3
+min_trigger_duration_hours = 0.0
+min_resolve_duration_hours = 0.0
+direction = "above"
+
+[[danger_levels]]
+level = 2
+name = "Moderate"
+color = "#FFA500"
+trigger_probability = 0.5
+resolve_probability = 0.3
+min_trigger_duration_hours = 0.0
+min_resolve_duration_hours = 0.0
+direction = "above"
+
+[[danger_levels]]
+level = 3
+name = "Considerable"
+color = "#FF4500"
+trigger_probability = 0.4
+resolve_probability = 0.2
+min_trigger_duration_hours = 0.0
+min_resolve_duration_hours = 0.0
+direction = "above"
+
+[[danger_levels]]
+level = 4
+name = "High"
+color = "#FF0000"
+trigger_probability = 0.3
+resolve_probability = 0.15
+min_trigger_duration_hours = 0.0
+min_resolve_duration_hours = 0.0
+direction = "above"
+
+[[danger_levels]]
+level = 5
+name = "Very High"
+color = "#800000"
+trigger_probability = 0.2
+resolve_probability = 0.1
+min_trigger_duration_hours = 0.0
+min_resolve_duration_hours = 0.0
+direction = "above"
+
+# --- Seasons (array of tables) ---
+# Defines seasonal boundaries for skill stratification and warm-up tuning.
+# Source: types-and-protocols.md § SeasonDefinition
+[[seasons]]
+name = "winter"
+months = [11, 12, 1, 2, 3]
+
+[[seasons]]
+name = "summer"
+months = [4, 5, 6, 7, 8, 9, 10]
+
+# --- Skill interpretation (array of tables) ---
+# Maps numeric skill score ranges to qualitative labels.
+# Source: types-and-protocols.md § SkillInterpretationScheme
+# Note: skill_interpretation.bands uses nested [[...]] syntax, so this section
+# must be last among DeploymentConfig array-of-tables entries.
+[[skill_interpretation]]
+metric = "crpss"
+time_step_hours = 24.0
+[[skill_interpretation.bands]]
+lower = -1e99
+upper = 0.0
+label = "no skill"
+[[skill_interpretation.bands]]
+lower = 0.0
+upper = 0.1
+label = "marginal"
+[[skill_interpretation.bands]]
+lower = 0.1
+upper = 0.25
+label = "useful"
+[[skill_interpretation.bands]]
+lower = 0.25
+upper = 0.5
+label = "good"
+[[skill_interpretation.bands]]
+lower = 0.5
+upper = 1e99
+label = "excellent"
 
 
 # =============================================================================
