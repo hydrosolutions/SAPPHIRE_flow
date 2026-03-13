@@ -1,0 +1,177 @@
+# SAPPHIRE Flow — config.toml reference
+#
+# This file documents every config.toml field with its purpose, default value,
+# and which design doc defines it. Use v0 Swiss deployment values as examples.
+#
+# Duration convention: all duration fields use hours (float) unless the field
+# name says otherwise. Pydantic validates and converts at load time.
+# Rationale: avoids ISO 8601 string parsing; hours are natural for hydrological
+# operations (NWP cycles, staleness windows, delivery offsets).
+
+# =============================================================================
+# DeploymentConfig — top-level fields
+# Source: docs/spec/types-and-protocols.md § DeploymentConfig
+# Module: config/deployment.py
+# =============================================================================
+
+# --- Danger levels (array of tables) ---
+# Each entry defines one danger level for threshold-based alerting.
+# Source: types-and-protocols.md § DangerLevelDefinition
+[[danger_levels]]
+level = 1
+name = "Low"
+color = "#FFFF00"
+
+[[danger_levels]]
+level = 2
+name = "Moderate"
+color = "#FFA500"
+
+[[danger_levels]]
+level = 3
+name = "Considerable"
+color = "#FF4500"
+
+[[danger_levels]]
+level = 4
+name = "High"
+color = "#FF0000"
+
+[[danger_levels]]
+level = 5
+name = "Very High"
+color = "#800000"
+
+# --- Seasons (array of tables) ---
+# Defines seasonal boundaries for skill stratification and warm-up tuning.
+# Source: types-and-protocols.md § SeasonDefinition
+[[seasons]]
+name = "winter"
+start_month = 11
+end_month = 3
+
+[[seasons]]
+name = "summer"
+start_month = 4
+end_month = 10
+
+# --- Skill interpretation (array of tables) ---
+# Maps numeric skill score ranges to qualitative labels.
+# Source: types-and-protocols.md § SkillInterpretationScheme
+[[skill_interpretation]]
+metric = "crpss"
+thresholds = [0.0, 0.1, 0.25, 0.5]
+labels = ["no skill", "marginal", "useful", "good", "excellent"]
+
+# --- Data retention ---
+# Tiered: hot (PostgreSQL) -> cold (Parquet) -> delete at max_retention_days.
+# v0: no cold storage (everything stays in PostgreSQL). See v0-scope.md § A2.
+# Source: types-and-protocols.md § DeploymentConfig
+weather_hot_days = 180          # weather data hot window (raw grids + extracted NWP + observations)
+forecast_hot_days = 548         # runoff forecast + hindcast hot window (~1.5 years)
+max_retention_days = 3650       # total lifetime for all data (must be set, no default)
+# Constraint: max_retention_days > forecast_hot_days (validated at load time)
+
+# --- Observation staleness ---
+# Source: types-and-protocols.md § DeploymentConfig
+observation_staleness_warning_hours = 6.0  # Flow 1 step 1.6 warning threshold
+
+# --- NWP lateness ---
+# Source: types-and-protocols.md § DeploymentConfig, architecture-context.md § NWP lateness fallback
+nwp_max_wait_hours = 3.0              # max wait for expected NWP delivery
+nwp_max_fallback_age_hours = 12.0     # max age of fallback NWP cycle
+
+# --- Alert cycle ---
+# Source: types-and-protocols.md § DeploymentConfig, v0-scope.md § A8b
+enable_alert_cycle = false                  # v0: off by default
+threshold_check_mode = "raw"                # v0: raw only (no published forecasts)
+
+# --- Warm-up state (conceptual models) ---
+# Source: types-and-protocols.md § DeploymentConfig
+warm_up_snapshot_max_age_hours = 48.0       # default max age for warm-up snapshot
+warm_up_snapshot_max_age_monsoon_hours = 24.0  # shorter during wet season
+
+# --- Flow regime ---
+# Source: types-and-protocols.md § DeploymentConfig
+flow_regime_q50_percentile = 50.0     # customizable percentile boundary
+flow_regime_q90_percentile = 90.0
+
+# --- Threshold inference ---
+# Source: types-and-protocols.md § DeploymentConfig
+infer_missing_thresholds = false      # v1+ only
+
+# --- Skill promotion ---
+# Source: types-and-protocols.md § DeploymentConfig
+min_skill_samples = 100               # minimum forecast-observation pairs
+min_skill_seasons = 2                 # must cover wet + dry
+
+# --- Display ---
+# Source: types-and-protocols.md § DeploymentConfig
+default_display_timezone = "Europe/Zurich"
+
+# --- Calendar ---
+# Source: types-and-protocols.md § DeploymentConfig
+calendar = "gregorian"                # Nepal v1: "bikram_sambat"
+
+
+# =============================================================================
+# Adapter configuration — per-adapter sections
+# NOT part of DeploymentConfig. Loaded separately by each adapter.
+# Source: conventions.md § Adapter registration
+# =============================================================================
+
+[adapters.weather_forecast]
+type = "meteoswiss_nwp"               # maps to MeteoSwissNwpAdapter class
+archive = true                        # permanently store all NWP data
+max_cache_age_hours = 12
+
+# Pipeline monitoring config for this adapter.
+# Source: architecture-context.md § Pipeline monitoring schedule config
+[adapters.weather_forecast.monitoring]
+expected_delivery_offset_hours = 5.0  # ICON-CH2-EPS available ~5h after cycle
+expected_cycles_per_day = 4           # 00, 06, 12, 18 UTC
+provider_retention_days = 7           # how long provider keeps data (for gap recovery)
+recovery_max_attempts = 3             # max re-fetch attempts per cycle
+
+[adapters.weather_stations]
+type = "meteoswiss_smn"               # maps to MeteoSwissSmnAdapter class
+max_cache_age_hours = 24
+
+[adapters.weather_stations.monitoring]
+expected_interval_hours = 0.17        # SMN: every 10 min
+
+[adapters.river_stations]
+type = "hydro_scraper"                # maps to HydroScraperAdapter class
+max_cache_age_hours = 24
+
+[adapters.river_stations.monitoring]
+expected_interval_hours = 0.17        # BAFU: every 10 min
+
+
+# =============================================================================
+# Monitoring — pipeline-level (not per-adapter)
+# Source: architecture-context.md § Pipeline monitoring schedule config
+# =============================================================================
+
+[monitoring.forecast_cycle]
+expected_interval_hours = 6.0         # how often Flow 1 should complete
+
+
+# =============================================================================
+# Model weather source configuration — per model
+# Source: architecture-context.md § Model weather source configuration
+# =============================================================================
+
+[models.lstm_daily.weather]
+sources = [
+  {nwp_source = "icon_ch2_eps", parameters = ["precipitation", "temperature", "snow_depth"], pipeline = ["extract_basin_avg"]},
+]
+
+
+# =============================================================================
+# API configuration
+# Source: docs/standards/security.md § CORS policy
+# =============================================================================
+
+[api.cors]
+allow_origins = ["https://sapphire.example.ch"]  # explicit list, never "*"

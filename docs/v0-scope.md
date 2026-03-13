@@ -21,7 +21,7 @@
 | 1 | **Flow 5/5w** — Station onboarding | Simplified bootstrap script (see A4 below). TOML import, historical obs, QC, baselines, model assignments. No dashboard, no progress tracking. |
 | 2 | **Flow 2** — Observation ingest + QC | Stage 1 QC only. No rating curves (BAFU provides Q directly). Alerting steps optional (`enable_alert_cycle`). |
 | 3 | **Flow 6 → 7 → 8** — Train → hindcast → skill | Auto-promote (no approval gate). Full skill metric suite (CRPS, CRPSss, BSS, POD/FAR/CSI, peak timing, NSE, KGE, PBIAS, MAE, diagrams). |
-| 4 | **Flow 1** — Forecast cycle | Steps 1.2 (grid archive), 1.5 (NWP post-process), 1.9 (forecast post-process) are pass-through. Alerting (1.11-1.13) off by default. |
+| 4 | **Flow 1** — Forecast cycle | **v0a**: point weather forecast data (pre-extracted); steps 1.2, 1.3, 1.4 skipped entirely. **v0b+**: gridded NWP (ICON-CH2-EPS) with GridExtractor. Steps 1.5 (NWP post-process) and 1.9 (forecast post-process) are pass-through throughout v0. Alerting (1.11-1.13) off by default. |
 | — | **API** | FastAPI with basic CRUD for stations, observations, forecasts, alerts. No auth. Health endpoint. |
 
 ### Deferred beyond v0
@@ -108,6 +108,12 @@ Implement the full skill metric suite: CRPS, CRPSss (climatology + persistence b
 
 **v0**: All danger levels use `ABOVE` (flood alerting). `BELOW` is supported by the type system but not exercised.
 
+### A8b. Threshold checking on raw forecasts only
+
+**Full design**: Configurable — check on raw forecasts, published forecasts, or both (see architecture-context.md).
+
+**v0**: Raw only. Flow 3 (forecast review) is deferred, so no `reviewed`→`published` transition exists. All forecasts stay `raw`. Threshold checks (1.11-1.13) run immediately after model output, when enabled via `enable_alert_cycle`.
+
 ### A9. No forecast adjustments
 
 **Full design**: forecast_adjustments table with 4 adjustment types, audit trail, envelope operations.
@@ -119,6 +125,22 @@ Implement the full skill metric suite: CRPS, CRPSss (climatology + persistence b
 **Full design**: restic with encryption, 7/4/12 retention, monthly automated restore rehearsal, 12-step recovery.
 
 **v0**: `pg_dump` to local disk (cron or Prefect task). No restic, no encrypted backup chain, no restore rehearsal. Document a manual restore procedure.
+
+### A11. Point weather data first, gridded later
+
+**Full design**: `WeatherForecastSource` returns either `GriddedForecast` (raw NWP grid) or `dict[StationId, WeatherForecastResult]` (pre-extracted). Gridded sources go through `GridExtractor` for bulk spatial extraction (steps 1.2–1.4).
+
+**v0a**: Use pre-extracted point weather forecast data only. Steps 1.2 (grid archive), 1.3 (spatial extraction), and 1.4 (extraction archive) are skipped entirely — the adapter returns `dict[StationId, PointForecast]` directly. This simplifies initial development: no GRIB2 parsing, no xarray dependency, no basin geometry processing.
+
+**v0b+**: Add gridded NWP support (ICON-CH2-EPS GRIB2 via STAC API) with `GridExtractor` for basin-average extraction. Steps 1.2–1.4 become active. The `WeatherForecastSource` Protocol already supports both return types — this is an adapter swap, not an architecture change.
+
+**Compatibility**: Service and flow signatures accept `WeatherForecastResult` (the full union type) from day one. Only the adapter implementation changes between v0a and v0b.
+
+### A12. ML lookback forcing: SMN station observations
+
+**Full design**: Configurable forcing source for ML model lookback windows — station observations, gridded reanalysis, or archived NWP (see architecture-context.md).
+
+**v0**: Use SMN station observations (hourly, 1981-present) co-located with BAFU river gauges. Simple, immediately available, sufficient for v0 scale. The forcing source is injected via adapter dependency, not hardcoded — `prepare_model_inputs()` and training data assembly accept a forcing source parameter (see §I2). **v1**: Switch to ERA5-Land via `WeatherReanalysisSource` Protocol for Nepal.
 
 ---
 
@@ -144,7 +166,7 @@ These are deferred in architecture-context.md. For v0, don't create their tables
 
 ## C. Database schema (v0 subset)
 
-~18 tables. No partitioning, no DLQ, no auth, no cold storage dispatch.
+22 tables. No partitioning, no DLQ, no auth, no cold storage dispatch.
 
 ### Reference data
 - `parameters` — as designed (canonical parameter names, units, aggregation methods)
@@ -165,7 +187,7 @@ These are deferred in architecture-context.md. For v0, don't create their tables
 - `model_artifacts` — as designed but status enum reduced to `active | superseded` only
 - `model_assignments` — as designed
 - `model_states` — as designed
-- `station_weather_sources` — as designed (geometry columns removed; basin geometry and band geometries live in `basins` table, resolved via `stations.basin_id`)
+- `station_weather_sources` — as designed
 
 ### Forecasts
 - `forecasts` — as designed
@@ -380,13 +402,13 @@ v0 is deliberately scoped down from `architecture-context.md`. The Protocol-firs
 
 ### I1. Keep spatial type unions in service signatures
 
-v0 uses basin-average extraction only (ICON-CH2-EPS). Nepal v1 needs elevation-band extraction (ECMWF IFS). The `GridExtractor` Protocol already returns `BasinAverageForecast | ElevationBandForecast`, but v0 implementations may be tempted to narrow signatures to just `BasinAverageForecast`.
+v0a starts with point weather forecast data (pre-extracted). v0b+ adds basin-average extraction from gridded NWP (ICON-CH2-EPS via GridExtractor). Nepal v1 needs elevation-band extraction (ECMWF IFS). The `GridExtractor` Protocol already returns `BasinAverageForecast | ElevationBandForecast`, but implementations may be tempted to narrow signatures to just one concrete type.
 
-**Rule**: Any service or flow function that handles weather forecast data must accept the full `BasinAverageForecast | ElevationBandForecast` union type, even if v0 only produces the former. Test fakes should exercise both variants where feasible.
+**Rule**: Any service or flow function that handles weather forecast data must accept the full `WeatherForecastResult` union type (`PointForecast | BasinAverageForecast | ElevationBandForecast`), even if the current v0 phase only produces one variant. Test fakes should exercise multiple variants where feasible.
 
 ### I2. Keep forcing source injectable in training and inference
 
-v0 uses SMN station observations for ML model lookback windows (open decision in architecture-context.md). Nepal v1 will use ERA5-Land via `WeatherReanalysisSource`. If `prepare_model_inputs()` or training data assembly hardcodes "fetch from co-located weather station," the entire training/inference pipeline needs rework for v1.
+v0 uses SMN station observations for ML model lookback windows (resolved — see §A12). Nepal v1 will use ERA5-Land via `WeatherReanalysisSource`. If `prepare_model_inputs()` or training data assembly hardcodes "fetch from co-located weather station," the entire training/inference pipeline needs rework for v1.
 
 **Rule**: Training data gathering (Flow 6 step T.2) and forecast input preparation (Flow 1 step 1.7) must accept a forcing source dependency (adapter), not directly query a specific data source. The `WeatherReanalysisSource` Protocol exists but is not implemented in v0 — the injection point must still be present.
 
@@ -400,3 +422,38 @@ v0 uses SMN station observations for ML model lookback windows (open decision in
 | Notification dispatch | Reads alerts, does not change alert model |
 | Forecast adjustments / Flow 3 | New table + service + API endpoints, no v0 schema conflicts |
 | Tiered retention / cold storage | Additive archival task, no schema changes |
+
+---
+
+## J. v0 API endpoints
+
+v0 subset of the full API routes in `conventions.md`. No auth, no forecast adjustments,
+no review/publish workflow. Request/response Pydantic schemas are Phase 9 work —
+derived from domain NamedTuples at implementation time.
+
+```
+# v0 API endpoints (no auth, no forecast adjustments)
+
+GET    /api/v1/stations                    # list stations (paginated)
+GET    /api/v1/stations/{id}               # station detail
+GET    /api/v1/stations/{id}/observations  # observations for station
+GET    /api/v1/stations/{id}/forecasts     # forecasts for station
+
+GET    /api/v1/forecasts/{id}              # forecast detail with ensemble values
+GET    /api/v1/alerts                      # list alerts (filterable by status, source)
+POST   /api/v1/alerts/{id}/acknowledge     # acknowledge an alert
+
+POST   /api/v1/flows/{flow}/trigger        # manually trigger a flow run
+GET    /api/v1/health                      # health check + pipeline status
+
+# Deferred to v1:
+# POST   /api/v1/forecasts/{id}/adjust     (no Flow 3)
+# PATCH  /api/v1/forecasts/{id}/status     (no review/publish workflow)
+# POST   /api/v1/users                     (no auth)
+# GET    /api/v1/users                     (no auth)
+# PATCH  /api/v1/users/{id}               (no auth)
+# POST   /api/v1/access-tokens            (no auth)
+# GET    /api/v1/access-tokens            (no auth)
+# DELETE /api/v1/access-tokens/{id}       (no auth)
+# POST   /api/v1/access-tokens/{id}/regenerate (no auth)
+```

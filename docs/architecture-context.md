@@ -110,37 +110,39 @@ Steps 1.2, 1.3, 1.4, and 1.9 are **conditional** — see notes.
 - **1.13**: Async. Failed notifications retried by sweep task (every 5 min).
 - **API serving**: No explicit step — the API reads persisted results from the DB. Storing in 1.10 makes forecasts available; publishing happens via Flow 3 (forecast review). The API also serves archived forcing time series (precipitation, temperature, and other predictors) alongside forecasts — see API design notes.
 
-#### Open decision: ML model lookback window forcing source
+#### Resolved: ML model lookback window forcing source
 
 ML models (e.g. LSTM) require a lookback window (typically 365 days) of historical weather forcing concatenated with the NWP forecast. The historical portion can come from:
 - **Station observations** (SMN for v0) — co-located weather stations. Simple, available, but introduces a train/operational mismatch if training uses the same source.
 - **Gridded reanalysis** (ERA5-Land for v1) — spatially consistent, gap-free, but daily-only for some Swiss products.
 - **Archived NWP extractions** — from the NWP archive (step 1.4). Only covers the operational period, not the full lookback window.
 
-This choice affects model skill and must be consistent between training (Flows 6/9) and operational inference. To be resolved before v0 model training begins.
+**Decision (v0)**: Use SMN station observations (hourly, 1981-present) co-located with BAFU river gauges. Simple, sufficient for v0 scale (~50 Swiss stations), and immediately available. **v1**: Switch to ERA5-Land via `WeatherReanalysisSource` Protocol for Nepal (better spatial consistency, gap-free). The forcing source must remain injectable in `prepare_model_inputs()` and training data assembly — see v0-scope.md §I2.
+
+This choice affects model skill and must be consistent between training (Flows 6/9) and operational inference.
 
 **ForcingType mapping**: Regardless of which source is chosen, it must map to one of the two `ForcingType` values for hindcast tagging (Flow 7 step H.2):
 - Station observations (SMN) → categorized as `'reanalysis'` (pseudo-perfect forcing)
 - Gridded reanalysis (ERA5-Land) → `'reanalysis'`
 - Archived NWP extractions → `'nwp_archive'`
 
-#### Open decision: NWP lateness fallback
+#### Resolved: NWP lateness fallback
 
-When NWP data is late (common — happens multiple times per month), the forecast cycle must decide:
-- **Wait** up to a configurable maximum (e.g. 3h past expected delivery), then
-- **Fall back** to the most recent available NWP cycle (e.g. use 18 UTC cycle if 00 UTC is late), or
-- **Skip** if no NWP cycle is available within a configurable maximum age.
+When NWP data is late (common — happens multiple times per month), the forecast cycle uses a config-driven three-stage strategy:
+1. **Wait** up to `nwp_max_wait_hours` (default 3.0) past expected delivery, with exponential backoff retries.
+2. **Fall back** to the most recent available NWP cycle (e.g. use 18 UTC cycle if 00 UTC is late).
+3. **Skip** if no NWP cycle is available within `nwp_max_fallback_age_hours` (default 12.0). Log to `pipeline_health`, emit warning.
 
-Every forecast record must store the NWP cycle reference time used as forcing — forecasters and the API must display which NWP cycle produced each forecast, not just the forecast issue time. Flow 4 monitors NWP delivery status independently.
+These are per-NWP-source fields in `DeploymentConfig`. Every forecast record stores the NWP cycle reference time used as forcing — forecasters and the API display which NWP cycle produced each forecast, not just the forecast issue time. Flow 4 monitors NWP delivery status independently.
 
-#### Open decision: when to check thresholds
+#### Resolved: when to check thresholds
 
 Threshold checking (1.11–1.13) can run:
 - **On raw forecasts** (immediately after 1.9) — gives early warning before forecaster review.
 - **On published forecasts** (after forecaster edits in Flow 3) — alerts reflect human-reviewed values.
 - **Both** — initial check on raw, re-check after publication.
 
-This is configurable. To be validated with hydromet operations staff. Flow 3 must support re-triggering 1.11–1.13 after edits regardless of chosen mode.
+**Decision**: Configurable via `threshold_check_mode` in `DeploymentConfig` (values: `raw`, `published`, `both`). **v0**: `raw` only — Flow 3 (forecast review) is deferred, so all forecasts stay `raw` and there is no publication step. **v1**: When Flow 3 is added, default to `both` (early warning on raw + re-check after publication). Flow 3 must support re-triggering 1.11–1.13 after edits regardless of chosen mode.
 
 #### Sequencing
 

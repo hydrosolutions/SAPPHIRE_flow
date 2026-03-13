@@ -1060,8 +1060,34 @@ Behavioral conventions (apply to all stores unless noted):
 - **Idempotent writes**: `store_*` methods use upsert semantics where a natural key exists (e.g. station_id + cycle + model for forecasts). Re-storing the same data is a no-op.
 
 ```python
-class ConflictError(Exception):
-    """Raised when optimistic locking detects a concurrent modification."""
+# Module: exceptions.py
+
+class SapphireError(Exception):
+    """Base for all SAPPHIRE Flow domain errors."""
+
+class InsufficientDataError(SapphireError):
+    """Not enough input data to run a model or service function.
+    Flow-level handling: try fallback model."""
+
+class SanityCheckFailure(SapphireError):
+    """Model output failed plausibility checks.
+    Flow-level handling: try fallback model."""
+
+class ModelLoadError(SapphireError):
+    """Failed to deserialize or load a model artifact.
+    Flow-level handling: try fallback model."""
+
+class ConflictError(SapphireError):
+    """Optimistic locking detected a concurrent modification.
+    API-level handling: return 409 Conflict."""
+
+class AdapterError(SapphireError):
+    """External data source returned an error or timed out.
+    Flow-level handling: retry (via Prefect @task retries), then fallback."""
+
+class ConfigurationError(SapphireError):
+    """Invalid or missing configuration.
+    Startup-level handling: fail fast with clear message."""
 ```
 
 #### ObservationStore
@@ -1630,6 +1656,10 @@ class DeploymentConfig(BaseModel):
     # --- Flow regime ---
     flow_regime_q50_percentile: float = 50.0   # customizable percentile boundary
     flow_regime_q90_percentile: float = 90.0
+
+    # --- Alert cycle ---
+    enable_alert_cycle: bool = False            # v0: off by default (see v0-scope.md)
+    threshold_check_mode: Literal["raw", "published", "both"] = "raw"  # v0: raw only
 
     # --- Threshold inference ---
     infer_missing_thresholds: bool = False      # v1+ only

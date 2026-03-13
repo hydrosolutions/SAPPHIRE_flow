@@ -5,7 +5,7 @@ Derived from table definitions in `architecture-context.md` and scoping rules in
 
 ---
 
-## v0 Schema (20 tables)
+## v0 Schema (22 tables)
 
 Swiss public data, ~50 stations, single VM. No partitioning, no auth, no rating curves,
 no forecast adjustments, no DLQ, no cold storage. See `v0-scope.md` §A–C for rationale.

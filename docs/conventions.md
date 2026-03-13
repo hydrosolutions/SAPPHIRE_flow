@@ -3,6 +3,11 @@
 Patterns and conventions specific to SAPPHIRE Flow that complement the
 coding style rules in `CLAUDE.md`.
 
+> **v0 note**: This document describes the full v1 system. For v0, `v0-scope.md`
+> overrides where it differs — notably: no PgBouncer (direct connections only),
+> no table partitioning, no DLQ, no auth/RBAC, single Prefect work pool. When
+> conventions.md and v0-scope.md conflict, v0-scope.md wins for v0 implementation.
+
 ---
 
 ## Naming
@@ -165,11 +170,18 @@ def fetch_weather_forecasts(adapter, ...):
 
 ### Custom exceptions
 
+All exceptions inherit from `SapphireError`. Authoritative class definitions in
+`types-and-protocols.md` § Exception hierarchy. Module: `exceptions.py`.
+
 | Exception | Meaning | Handling |
 |-----------|---------|----------|
+| `SapphireError` | Base for all domain errors | — |
 | `InsufficientDataError` | Not enough input data | Try fallback model |
 | `SanityCheckFailure` | Model output implausible | Try fallback model |
 | `ModelLoadError` | Failed to load model artifact | Try fallback model |
+| `ConflictError` | Optimistic locking conflict | Return 409 Conflict |
+| `AdapterError` | External source error/timeout | Retry, then fallback |
+| `ConfigurationError` | Invalid/missing config | Fail fast at startup |
 | `PartitionMissingError` | DB partition doesn't exist | Write to dead letter queue, alert ops. **v0: not needed (no partitioning, see v0-scope.md § A1)** |
 
 ### Flow-level strategy
