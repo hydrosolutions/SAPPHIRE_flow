@@ -170,7 +170,7 @@ def fetch_weather_forecasts(adapter, ...):
 | `InsufficientDataError` | Not enough input data | Try fallback model |
 | `SanityCheckFailure` | Model output implausible | Try fallback model |
 | `ModelLoadError` | Failed to load model artifact | Try fallback model |
-| `PartitionMissingError` | DB partition doesn't exist | Write to dead letter queue, alert ops |
+| `PartitionMissingError` | DB partition doesn't exist | Write to dead letter queue, alert ops. **v0: not needed (no partitioning, see v0-scope.md § A1)** |
 
 ### Flow-level strategy
 

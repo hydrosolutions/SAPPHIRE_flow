@@ -5,10 +5,11 @@
 SAPPHIRE Flow is an operational hydrological forecasting system that ingests weather and station data, runs ensemble forecast models, checks flood thresholds, and serves results via a REST API with an optional review dashboard. Currently in **design phase** (no implementation yet — only design docs in `docs/design/` and scaffolding in `src/`). The immediate goal is **v0**: a working end-to-end pipeline using Swiss public data (MeteoSwiss weather, BAFU stations) with simple models, validating the architecture before Nepal deployment in Oct 2026.
 
 **Key documents (in priority order):**
-1. `docs/architecture-context.md` — System context, data flows, locked decisions (read first for any implementation task)
-2. `docs/spec/types-and-protocols.md` — Python type definitions and Protocol signatures (authoritative for implementation)
-3. `docs/conventions.md` — Naming, patterns, error handling conventions
-4. `docs/workflow.md` — Orchestration protocol, plan structure, task exit gates
+1. `docs/v0-scope.md` — **Read first for any implementation task.** What v0 implements, simplifications, performance targets, testing strategy, implementation phases
+2. `docs/architecture-context.md` — System context, data flows, locked decisions (full v1 vision — v0-scope.md overrides for v0)
+3. `docs/spec/types-and-protocols.md` — Python type definitions and Protocol signatures (authoritative for implementation)
+4. `docs/conventions.md` — Naming, patterns, error handling conventions
+5. `docs/workflow.md` — Orchestration protocol, plan structure, task exit gates
 
 ## Workflow
 

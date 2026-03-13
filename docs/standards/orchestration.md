@@ -1,6 +1,8 @@
 # Orchestration Standards
 
 > This document extends `docs/architecture-context.md`. It adds Prefect 3 implementation detail for the 12 data flows (plus Flow 5w) and maintenance tasks. For foundational decisions, see: flow definitions and step sequencing (architecture-context.md § Data flows), Prefect naming conventions (conventions.md § Prefect flows and tasks), retry patterns (conventions.md § Error handling at adapter boundaries), work pool topology and resource limits (cicd.md § Prefect work pool separation), and container layout (cicd.md § Docker Compose service topology). This document does not redefine the tech stack, flow step logic, or data model.
+>
+> **v0 simplifications**: See [`docs/v0-scope.md`](../v0-scope.md) § A6 (single work pool), § A4 (simplified onboarding), § A7 (simplified artifact lifecycle), § D4 (minimize Prefect overhead). v0 uses a single `default` pool — the three-pool topology described below applies to v1.
 
 ## Why Prefect 3
 

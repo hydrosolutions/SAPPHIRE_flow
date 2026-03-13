@@ -2512,7 +2512,7 @@ References (does not redefine): tech stack from this doc, DB connection patterns
 | Forecast adjustments tracked | Every manual adjustment recorded with forecaster ID, timestamp, and rationale. |
 | Ensemble generation is model-internal | ML-native uncertainty and NWP ensemble propagation coexist. Model Protocol outputs a consistent ensemble format. |
 | Rating curves versioned per station | Bidirectional water level ↔ discharge conversion. Temporal versioning for hindcast consistency. |
-| Tiered data retention | Per-class hot windows (`weather_hot_days`, `forecast_hot_days`) in PostgreSQL → cold Parquet → delete at `max_retention_days`. Daily aggregates permanent. Deployment-configurable. |
+| Tiered data retention | Per-class hot windows (`weather_hot_days`, `forecast_hot_days`) in PostgreSQL → cold Parquet → delete at `max_retention_days`. Daily aggregates permanent. Deployment-configurable. **v0: everything in PostgreSQL, no cold storage (see v0-scope.md § A2).** |
 | IANA timezone per station | UTC storage, local display. Daily aggregation uses local day boundaries. |
 | DR, not HA | Automated DB backups, `/health` endpoint, documented recovery. No automatic failover in current phase. |
 | QC rules versioned | Rule version stored with each QC flag. Enables recomputation when rules change. |
@@ -2526,8 +2526,8 @@ References (does not redefine): tech stack from this doc, DB connection patterns
 | Minimum operational ensemble size | Storage allows 1-member ensembles; operational threshold evaluation requires `min_operational_ensemble_size` (default 20). Undersized ensembles skip alert logic. |
 | Bikram Sambat calendar support | Deployment-configurable calendar system. Nepal uses BS for official reporting; API, dashboard, and bulletins convert on display. Internal storage remains Gregorian UTC. |
 | Two-tier health endpoint | Public `/health` exposes only aggregate status. Detailed `/health/detail` requires auth. Independent host-level watchdog polls health outside Docker/Prefect. |
-| Dead letter queue with auto-drain | Partition-missing writes go to DLQ. Hourly auto-drain replays when partition exists. `pg_partman` maintenance via `pg_cron`, not Prefect. |
-| Backup via restic | Encrypted, deduplicated backups of DB + Parquet + model artifacts. Monthly automated restore rehearsal. 12-step recovery procedure documented. |
+| Dead letter queue with auto-drain | Partition-missing writes go to DLQ. Hourly auto-drain replays when partition exists. `pg_partman` maintenance via `pg_cron`, not Prefect. **v0: no partitioning, no DLQ (see v0-scope.md § A1).** |
+| Backup via restic | Encrypted, deduplicated backups of DB + Parquet + model artifacts. Monthly automated restore rehearsal. 12-step recovery procedure documented. **v0: pg_dump to disk (see v0-scope.md § A10).** |
 
 ## Access management
 
@@ -2543,6 +2543,9 @@ v0 defers auth — single-user, no access control.
 
 ## v0 scope
 
+> **Detailed v0 simplifications, performance targets, testing strategy, and implementation phases
+> are in [`docs/v0-scope.md`](v0-scope.md).** This section is the summary.
+
 Swiss public data. Three sub-phases:
 
 - **v0a**: Core daily pipeline — CAMELS-CH catchments as reference basins, SwissMetNet weather observations, ICON-CH2-EPS NWP forecasts, BAFU river observations
@@ -2553,6 +2556,21 @@ Between v0 and v1, the pipeline will be validated with additional public dataset
 
 v1 adds Nepal (ECMWF IFS, DHM stations, elevation-band NWP extraction, ERA5-Land).
 
+### v0 simplifications (summary)
+
+Key simplifications for v0 (~50 stations, single VM, 1-2 users). See `v0-scope.md` for full detail.
+
+- **No table partitioning** — plain tables, no pg_partman/pg_cron/DLQ
+- **No tiered storage** — everything in PostgreSQL, no Parquet cold storage
+- **No PgBouncer** — direct connections with asyncpg pool
+- **Simplified onboarding** — bootstrap script, no progress tracking
+- **Full skill metrics** — kept as designed (high research value)
+- **Single Prefect work pool** — no ops/training/hindcast separation
+- **Simplified artifact lifecycle** — active/superseded only, no approval gate
+- **No notifications** — alerts logged to DB, visible via API
+- **No forecast adjustments** — no dashboard means no adjustments
+- **Simple backup** — pg_dump to disk, no restic/encryption/restore rehearsal
+
 ### v0 data flow prioritization
 
 #### Required for v0
@@ -2561,7 +2579,7 @@ v1 adds Nepal (ECMWF IFS, DHM stations, elevation-band NWP extraction, ERA5-Land
 |----------|------|-------------------|
 | 1 | **Flow 5/5w** — Station onboarding | TOML bootstrap only (no dashboard). Skip 5.6–5.7 (rating curves — BAFU provides Q directly). No regulation type needed for Swiss stations. |
 | 2 | **Flow 2** — Observation ingest + QC | Skip 2.5–2.7 (rating curve conversion — v1+). Alerting steps 2.8–2.10 optional (controlled by `enable_alert_cycle`). |
-| 3 | **Flow 6 → 7 → 8** — Train → hindcast → skill | Initial training only (auto-promote, no comparison gate). Hindcast uses station obs as pseudo-perfect forcing until NWP archive accumulates. Skill: reduced metric set acceptable (CRPS, NSE, KGE at minimum). |
+| 3 | **Flow 6 → 7 → 8** — Train → hindcast → skill | Initial training only (auto-promote, no comparison gate). Hindcast uses station obs as pseudo-perfect forcing until NWP archive accumulates. Full skill metric suite. |
 | 4 | **Flow 1** — Forecast cycle | Phase C (alerting 1.11–1.13) off by default. Steps 1.2 (grid archive), 1.5 (NWP post-process), 1.9 (forecast post-process) are pass-through. |
 
 Implementation order matches priority: onboard stations first (everything depends on station + historical data), then observation ingest (validates adapters), then model training pipeline (validates model framework), then the operational forecast cycle (wires it all together).
