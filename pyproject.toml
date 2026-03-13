@@ -1,6 +1,6 @@
 [project]
 name = "sapphire-flow"
-version = "0.1.18"
+version = "0.1.19"
 description = "Add your description here"
 readme = "README.md"
 license = "MIT"
@@ -10,6 +10,14 @@ authors = [
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.12.5",
+    "polars",
+    "xarray",
+    "shapely",
+    "sqlalchemy>=2.0",
+    "asyncpg",
+    "alembic",
+    "orjson",
+    "geoalchemy2>=0.18.4",
 ]
 
 [build-system]
@@ -22,6 +30,9 @@ dev = [
     "pytest>=9.0.2",
     "pytest-cov>=7.0.0",
     "ruff>=0.15.5",
+    "pyright",
+    "testcontainers[postgres]",
+    "pytest-asyncio",
 ]
 
 [tool.ruff]
@@ -35,7 +46,7 @@ select = ["E", "F", "I", "N", "UP", "B", "A", "SIM", "TCH"]
 testpaths = ["tests"]
 
 [tool.bumpversion]
-current_version = "0.1.18"
+current_version = "0.1.19"
 commit = false
 tag = false
 allow_dirty = true
