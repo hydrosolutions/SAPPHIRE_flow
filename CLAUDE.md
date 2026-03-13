@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-SAPPHIRE Flow is an operational hydrological forecasting system that ingests weather and station data, runs ensemble forecast models, checks flood thresholds, and serves results via a REST API with an optional review dashboard. Currently in **design phase** (no implementation yet — only design docs in `docs/design/` and scaffolding in `src/`). The immediate goal is **v0**: a working end-to-end pipeline using Swiss public data (MeteoSwiss weather, BAFU stations) with simple models, validating the architecture before Nepal deployment in Oct 2026.
+SAPPHIRE Flow is an operational hydrological forecasting system that ingests weather and station data, runs ensemble forecast models, checks alert thresholds, and serves results via a REST API with an optional review dashboard. Currently in **design phase** (no implementation yet — only design docs in `docs/design/` and scaffolding in `src/`). The immediate goal is **v0**: a working end-to-end pipeline using Swiss public data (MeteoSwiss weather, BAFU stations) with simple models, validating the architecture before Nepal deployment in Oct 2026.
 
 **Key documents (in priority order):**
 1. `docs/v0-scope.md` — **Read first for any implementation task.** What v0 implements, simplifications, performance targets, testing strategy, implementation phases

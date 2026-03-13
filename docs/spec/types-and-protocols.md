@@ -104,10 +104,13 @@ class ArtifactScope(Enum):
 
 class ModelArtifactStatus(Enum):
     TRAINING = "training"
-    PENDING_APPROVAL = "pending_approval"
+    PENDING_APPROVAL = "pending_approval"  # v1 — approval gate deferred
     ACTIVE = "active"
     SUPERSEDED = "superseded"
-    REJECTED = "rejected"
+    REJECTED = "rejected"                  # v1 — approval gate deferred
+    # v0: only ACTIVE and SUPERSEDED are used (auto-promote, no approval gate).
+    # TRAINING is transient during training flow. PENDING_APPROVAL and REJECTED
+    # require the approval gate (v1). See v0-scope.md §A7.
 
 class ForcingType(Enum):
     NWP_ARCHIVE = "nwp_archive"
@@ -134,6 +137,10 @@ class ThresholdSource(Enum):
     AUTHORITY = "authority"
     INFERRED = "inferred"
 
+class ThresholdDirection(Enum):
+    ABOVE = "above"  # alert when value > threshold (flood)
+    BELOW = "below"  # alert when value < threshold (low-flow)
+
 class RegulationType(Enum):
     UNREGULATED = "unregulated"
     RESERVOIR = "reservoir"
@@ -143,6 +150,14 @@ class RegulationType(Enum):
 class StationKind(Enum):
     WEATHER = "weather"
     RIVER = "river"
+
+class ParameterDomain(Enum):
+    RIVER = "river"
+    WEATHER = "weather"
+
+class AggregationMethod(Enum):
+    SUM = "sum"
+    MEAN = "mean"
 
 class PipelineHealthStatus(Enum):
     OK = "ok"
@@ -237,6 +252,20 @@ class GeoCoord(NamedTuple):
         return super().__new__(cls, lon, lat, altitude_masl)
 ```
 
+### ParameterDefinition
+
+```python
+class ParameterDefinition(NamedTuple):
+    name: str                              # canonical name (TEXT PK)
+    display_name: str
+    unit: str
+    parameter_domain: ParameterDomain
+    aggregation_method: AggregationMethod
+    created_at: UtcDatetime
+```
+
+Module: `types/domain.py`
+
 ### DangerLevelDefinition
 
 ```python
@@ -247,6 +276,7 @@ class DangerLevelDefinition(NamedTuple):
     resolve_probability: float
     min_trigger_duration: timedelta  # time-based, schedule-independent
     min_resolve_duration: timedelta  # time-based, schedule-independent
+    direction: ThresholdDirection    # ABOVE = flood, BELOW = low-flow
 
     # Time-based duration is schedule-independent — works correctly for both
     # 30-min observation cycles and 6-hourly forecast cycles without reconfiguration.
@@ -259,6 +289,7 @@ class DangerLevelDefinition(NamedTuple):
         resolve_probability: float,
         min_trigger_duration: timedelta,
         min_resolve_duration: timedelta,
+        direction: ThresholdDirection = ThresholdDirection.ABOVE,
     ) -> "DangerLevelDefinition":
         if not (0.0 < trigger_probability <= 1.0):
             raise ValueError(f"trigger_probability must be in (0, 1], got {trigger_probability}")
@@ -274,6 +305,7 @@ class DangerLevelDefinition(NamedTuple):
         return super().__new__(
             cls, name, display_order, trigger_probability,
             resolve_probability, min_trigger_duration, min_resolve_duration,
+            direction,
         )
 ```
 
@@ -366,9 +398,9 @@ class ExceedanceResult(NamedTuple):
     danger_level: str              # references DangerLevelDefinition.name
     parameter: str                 # "discharge" or "water_level"
     threshold_value: float         # the configured threshold
-    exceedance_probability: float | None  # P(forecast > threshold), NULL for observation alerts
+    exceedance_probability: float | None  # P(forecast crosses threshold in configured direction), NULL for observation alerts
     observed_value: float | None   # observed value, NULL for forecast alerts
-    exceeded: bool                 # whether the threshold was exceeded
+    exceeded: bool                 # whether the threshold was crossed in the configured direction
 ```
 
 Module: `types/domain.py`
@@ -386,8 +418,8 @@ class RawObservation(NamedTuple):
     parameter: str                 # canonical name
     value: float
     source: ObservationSource      # measured | rating_curve_derived | manual_import
-    rating_curve_id: RatingCurveId | None = None  # set when source = RATING_CURVE_DERIVED
-    rating_curve_correction_version: str | None = None  # correction param version, set when source = RATING_CURVE_DERIVED
+    rating_curve_id: RatingCurveId | None = None  # v1 — set when source = RATING_CURVE_DERIVED. Omit from v0 DB schema.
+    rating_curve_correction_version: str | None = None  # v1 — correction param version. Omit from v0 DB schema.
 
 class Observation(NamedTuple):
     id: ObservationId
@@ -396,8 +428,8 @@ class Observation(NamedTuple):
     parameter: str
     value: float
     source: ObservationSource      # measured | rating_curve_derived | manual_import
-    rating_curve_id: RatingCurveId | None  # set when source = RATING_CURVE_DERIVED
-    rating_curve_correction_version: str | None  # correction param version, set when source = RATING_CURVE_DERIVED
+    rating_curve_id: RatingCurveId | None  # v1 — set when source = RATING_CURVE_DERIVED. Omit from v0 DB schema.
+    rating_curve_correction_version: str | None  # v1 — correction param version. Omit from v0 DB schema.
     qc_status: QcStatus
     qc_flags: list[QcFlag]
     qc_rule_version: str | None    # version of the QC ruleset that last evaluated this row
@@ -460,8 +492,6 @@ class StationWeatherSource(NamedTuple):
     station_id: StationId
     nwp_source: str
     extraction_type: SpatialRepresentation  # POINT, BASIN_AVERAGE, or ELEVATION_BAND
-    basin_geometry: Any | None     # shapely geometry for BASIN_AVERAGE
-    band_geometries: list[dict] | None  # for ELEVATION_BAND: list of band definitions
     active: bool
 ```
 
@@ -474,8 +504,10 @@ class Basin(NamedTuple):
     id: BasinId
     code: str
     name: str
-    geometry: Any                  # shapely MultiPolygon
+    geometry: Any                        # shapely MultiPolygon
     area_km2: float | None
+    attributes: dict[str, Any] | None    # from JSONB — static catchment descriptors
+    band_geometries: list[dict] | None   # elevation band definitions (computed in Flow 5 step 5.3)
     created_at: UtcDatetime
 ```
 
@@ -488,7 +520,7 @@ class Alert(NamedTuple):
     id: AlertId
     station_id: StationId | None   # NULL for system-wide pipeline alerts (e.g. NWP delivery, disk usage, backup freshness)
     source: AlertSource
-    alert_level: str               # for flood alerts (forecast | observation): references DangerLevelDefinition.name;
+    alert_level: str               # for hydrological alerts (forecast | observation): references DangerLevelDefinition.name;
                                    # for pipeline alerts: check-type identifier (e.g. "nwp_delivery", "dead_letter_queue")
     status: AlertStatus
     trigger_probability: float | None  # NULL for observation and pipeline alerts
@@ -694,6 +726,7 @@ class ModelInputs(NamedTuple):
     station_id: StationId           # identifies the station — used by ML models for station embeddings
     forcing: pl.DataFrame | xr.Dataset
     observations: pl.DataFrame
+    static_attributes: pl.DataFrame | None  # scalar catchment descriptors from basins.attributes
     issue_time: UtcDatetime
     forecast_horizon_steps: int
     time_step: timedelta
@@ -716,6 +749,16 @@ class ModelInputs(NamedTuple):
 
 Models must not use data after `issue_time` from `observations`.
 
+**`static_attributes` column contract** (when `pl.DataFrame`):
+- One column per attribute name (e.g. `mean_elev_m`, `mean_slope`, `forest_fraction`).
+  Single row. Values are `Float64`. Sourced from `basins.attributes` JSONB during
+  input preparation (Flow 1 step 1.7, Flow 6/9 step T.2, Flow 7 step H.4).
+- `None` when the model declares no `required_static_attributes` or the station's
+  basin has no attributes.
+- **Future extension**: gridded static attributes (DEM rasters, soil type grids) will
+  use a separate `static_grids: xr.Dataset | None` field — not this one. Scalar and
+  gridded statics remain distinct types.
+
 ### TrainingData
 
 ```python
@@ -723,6 +766,7 @@ class TrainingData(NamedTuple):
     forcing: pl.DataFrame
     observations: pl.DataFrame
     targets: pl.DataFrame
+    static_attributes: pl.DataFrame | None  # scalar catchment descriptors — same contract as ModelInputs
     time_step: timedelta
     val_start: UtcDatetime | None   # if set, data after this time is validation holdout
 ```
@@ -775,9 +819,35 @@ class ModelRegistryEntry(NamedTuple):
     description: str
     artifact_scope: ArtifactScope     # STATION or GROUP — determines training and artifact granularity
     required_features: frozenset[str]
+    required_static_attributes: frozenset[str]  # empty frozenset if none needed
     spatial_input_type: SpatialRepresentation
     supported_time_steps: frozenset[timedelta]
     registered_at: UtcDatetime
+```
+
+Module: `types/model.py`
+
+### ModelArtifactRecord
+
+Represents the `model_artifacts` DB row — metadata about a trained artifact (status,
+training period, promotion audit trail). Distinct from `ModelArtifact = Any`, which is
+the opaque serialized model blob.
+
+```python
+class ModelArtifactRecord(NamedTuple):
+    id: ArtifactId
+    model_id: ModelId
+    station_id: StationId | None       # non-null for station-scoped models
+    group_id: StationGroupId | None    # non-null for group-scoped models
+    status: ModelArtifactStatus
+    artifact_path: str                 # relative path to serialized artifact file
+    training_period_start: UtcDatetime
+    training_period_end: UtcDatetime
+    trained_at: UtcDatetime
+    promoted_at: UtcDatetime | None    # when status changed to ACTIVE
+    promoted_by: UUID | None           # model admin who approved
+    superseded_at: UtcDatetime | None  # when a newer artifact replaced this one
+    created_at: UtcDatetime
 ```
 
 Module: `types/model.py`
@@ -843,8 +913,8 @@ class WeatherForecastRecord(NamedTuple):
     band_id: int | None                    # non-null when spatial_type == ELEVATION_BAND
     member_id: int | None
     value: float
-    is_gap: bool
-    gap_status: Literal["recovered", "unrecoverable"] | None
+    is_gap: bool                           # v1 (Flow 11) — omit from v0 DB schema
+    gap_status: Literal["recovered", "unrecoverable"] | None  # v1 (Flow 11) — omit from v0 DB schema
     created_at: UtcDatetime
 ```
 
@@ -889,7 +959,7 @@ class SkillDiagram(NamedTuple):
     season: str | None
     flow_regime: FlowRegime | None
     flow_regime_config_id: UUID | None     # FK → flow_regime_configs.id (NULL when flow_regime is NULL)
-    diagram_type: Literal["reliability", "roc"]
+    diagram_type: Literal["reliability", "roc", "rank_histogram"]
     threshold_level: str | None            # danger level name (for ROC/BSS diagrams)
     data: dict                             # diagram-specific structure (validated at boundary)
     created_at: UtcDatetime
@@ -917,6 +987,7 @@ class StationForecastModel(Protocol):
     """Model trained independently per station (conceptual models like GR4J, HBV)."""
     artifact_scope: ArtifactScope          # must be ArtifactScope.STATION
     required_features: frozenset[str]
+    required_static_attributes: frozenset[str]  # e.g. {"mean_elev_m", "mean_slope"} — empty if none needed
     spatial_input_type: SpatialRepresentation
     supported_time_steps: frozenset[timedelta]
 
@@ -936,6 +1007,7 @@ class GroupForecastModel(Protocol):
     """Model trained on a group of stations (ML models like LSTM, transformer)."""
     artifact_scope: ArtifactScope          # must be ArtifactScope.GROUP
     required_features: frozenset[str]
+    required_static_attributes: frozenset[str]  # e.g. {"mean_elev_m", "area_km2"} — empty if none needed
     spatial_input_type: SpatialRepresentation
     supported_time_steps: frozenset[timedelta]
 
@@ -1025,8 +1097,9 @@ class ObservationStore(Protocol):
         station_id: StationId,
         rating_curve_id: RatingCurveId,
     ) -> list[Observation]: ...
-        # Fetches all RATING_CURVE_DERIVED observations for a specific curve.
+        # v1 — Fetches all RATING_CURVE_DERIVED observations for a specific curve.
         # Used by Flow 12 Branch A to find observations that need reprocessing.
+        # Not implemented in v0 (no rating curves). See v0-scope.md §B.
 ```
 
 #### ForecastStore
@@ -1152,7 +1225,7 @@ class SkillStore(Protocol):
         self,
         station_id: StationId,
         model_id: ModelId,
-        diagram_type: Literal["reliability", "roc"] | None = None,
+        diagram_type: Literal["reliability", "roc", "rank_histogram"] | None = None,
     ) -> list[SkillDiagram]: ...
     def fetch_scores_by_regime(
         self,
@@ -1205,6 +1278,9 @@ class ModelArtifactStore(Protocol):
     ) -> tuple[ArtifactId, bytes] | None: ...
         # Convenience: resolves station's group membership for group-scoped models.
         # Checks station-scoped first, then group-scoped. Used by Flow 1 step 1.7.
+    def fetch_artifact_record(self, artifact_id: ArtifactId) -> ModelArtifactRecord | None: ...
+        # Returns full metadata record (status, training period, audit trail).
+        # Use when you need metadata without deserializing the artifact bytes.
     def fetch_artifacts_by_status(
         self,
         model_id: ModelId,
@@ -1338,6 +1414,14 @@ class BasinStore(Protocol):
     def fetch_basin_by_code(self, code: str) -> Basin | None: ...
     def fetch_all_basins(self) -> list[Basin]: ...
     def store_basin(self, basin: Basin) -> BasinId: ...
+```
+
+#### ParameterStore
+
+```python
+class ParameterStore(Protocol):
+    def fetch_all(self) -> list[ParameterDefinition]: ...
+    def fetch_by_name(self, name: str) -> ParameterDefinition | None: ...
 ```
 
 Module: `protocols/stores.py` (all store Protocols in one module — they share `ConflictError`).
@@ -1474,10 +1558,13 @@ class GridExtractor(Protocol):
         self,
         grid: xr.Dataset,
         configs: list[StationWeatherSource],
+        basins: dict[StationId, Basin],
         cycle_time: UtcDatetime,
         nwp_source: str,
     ) -> dict[StationId, BasinAverageForecast | ElevationBandForecast]: ...
-        # Dispatches on each config's extraction_type (basin_average or elevation_band).
+        # Geometry comes from basins dict: basin.geometry for basin-average,
+        # basin.band_geometries for elevation-band. configs carries extraction_type
+        # to dispatch. POINT configs are filtered out before calling GridExtractor.
         # Mixed extraction types handled in one grid read.
 ```
 
@@ -1611,6 +1698,7 @@ All fake stores use `dict[ID, Entity]` or `list[Entity]` as backing storage. The
 - `FakeAlertStore` — keyed on `AlertId`. Enforces partial unique index (one active alert per station/alert_level/source) in memory.
 - `FakeWeatherForecastStore` — backed by `list[WeatherForecastRecord]`. Implements `fetch_lookback` with simple range scan.
 - `FakeSkillStore` — backed by `list[SkillScore]`. Supports `computation_version` queries.
+- `FakeParameterStore` — backed by `dict[str, ParameterDefinition]`. Seeded from canonical parameter list.
 
 ### Fake adapter contracts
 
@@ -1621,7 +1709,7 @@ All fake stores use `dict[ID, Entity]` or `list[Entity]` as backing storage. The
 
 ### Fake model contract
 
-- `FakeForecastModel` — `predict()` returns a deterministic `ForecastEnsemble` (configurable member count, constant values). `train()` returns a trivial artifact. Useful for testing the orchestration and service layers without real ML.
+- `FakeForecastModel` — `predict()` returns a deterministic `ForecastEnsemble` (configurable member count, constant values). `train()` returns a trivial artifact. Declares `required_static_attributes = frozenset()` (no static attributes needed). Ignores `static_attributes` in inputs. Useful for testing the orchestration and service layers without real ML.
 
 ### Verification
 
@@ -1639,10 +1727,10 @@ src/sapphire_flow/
 │   ├── ids.py              # StationId, ModelId, ObservationId, ForecastAdjustmentId, etc.
 │   ├── datetime.py         # UtcDatetime, ensure_utc()
 │   ├── enums.py            # All enums
-│   ├── domain.py           # GeoCoord, DangerLevelDefinition, QcFlag, SeasonDefinition,
-│   │                       #   ExceedanceResult, SkillInterpretationScheme, etc.
+│   ├── domain.py           # GeoCoord, ParameterDefinition, DangerLevelDefinition, QcFlag,
+│   │                       #   SeasonDefinition, ExceedanceResult, SkillInterpretationScheme, etc.
 │   ├── ensemble.py         # ForecastEnsemble
-│   ├── model.py            # ModelInputs, TrainingData, ModelParams, ModelArtifact
+│   ├── model.py            # ModelInputs, TrainingData, ModelParams, ModelArtifact, ModelArtifactRecord
 │   ├── observation.py      # Observation, RawObservation
 │   ├── forecast.py         # OperationalForecast, HindcastForecast, ForecastAdjustment
 │   ├── weather.py          # WeatherForecastRecord, PointForecast, BasinAverageForecast, etc.
@@ -1663,7 +1751,7 @@ src/sapphire_flow/
 │   │                       #    ModelArtifactStore, StationStore, PipelineHealthStore,
 │   │                       #    RatingCurveStore, FlowRegimeConfigStore,
 │   │                       #    ForecastAdjustmentStore, BasinStore,
-│   │                       #    ModelStateStore, ModelStore)
+│   │                       #    ModelStateStore, ModelStore, ParameterStore)
 │   ├── adapters.py         # WeatherForecastSource, StationDataSource, WeatherReanalysisSource
 │   ├── grid_extractor.py   # GridExtractor
 │   └── notification.py     # NotificationAdapter

@@ -6,7 +6,7 @@
 
 - Prepare a simple system diagram: ingest → forecast → alert → (API)
 - Prepare a 1-page summary of v1.0 scope (water level forecasts, no bulletins, no discharge)
-- Have a mock flood threshold table to walk through units/datums
+- Have a mock alert threshold table to walk through units/datums
 - Have the station metadata format ready (what fields we need per station)
 
 ## Agenda

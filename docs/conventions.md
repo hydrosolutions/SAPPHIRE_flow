@@ -90,7 +90,7 @@ names. The `parameters` table stores the canonical names.
 
 ### Prefect flows and tasks
 
-- Flow functions: `verb_noun` — `ingest_weather`, `run_forecasts`, `check_flood_alerts`
+- Flow functions: `verb_noun` — `ingest_weather`, `run_forecasts`, `check_alerts`
 - Task functions: `verb_noun` — `fetch_weather_forecasts`, `run_model_forecasts`
 - Deployment names: kebab-case — `ingest-weather`, `run-forecasts`
 
@@ -215,7 +215,7 @@ for logging and notification.
 
 - **Pentadal**: days 1-5, 6-10, 11-15, 16-20, 21-25, 26-end (last pentad is 3-6 days).
 - **Dekadal**: days 1-10, 11-20, 21-end.
-- **Method**: per parameter (precipitation: sum, temperature: mean, water level: mean).
+- **Method**: per parameter — defined in the `parameters` table (`aggregation_method` column). See `architecture-context.md` for the table definition.
 
 ---
 
@@ -229,8 +229,8 @@ for logging and notification.
 
 | User | Permissions |
 |------|-------------|
-| `sapphire_api` | SELECT all (incl. weather_forecasts, dead_letter_queue, station_weather_sources); INSERT/UPDATE on forecast_adjustments, bulletins, alerts, forecasts (status+version), access_tokens, users, refresh_tokens; UPDATE `last_used_at` on access_tokens (API middleware); INSERT only on audit_log (append-only) |
-| `sapphire_worker` | SELECT on stations, station_weather_sources, station_groups, station_group_members, rating_curves; SELECT/INSERT/UPDATE on observations, forecasts, forecast_values, alerts, skill_scores, weather_forecasts, model_artifacts, dead_letter_queue; SELECT/INSERT on hindcast_forecasts, hindcast_values, pipeline_health |
+| `sapphire_api` | SELECT all (incl. parameters, weather_forecasts, dead_letter_queue, station_weather_sources); INSERT/UPDATE on forecast_adjustments, bulletins, alerts, forecasts (status+version), access_tokens, users, refresh_tokens; UPDATE `last_used_at` on access_tokens (API middleware); INSERT only on audit_log (append-only) |
+| `sapphire_worker` | SELECT on stations, parameters, station_weather_sources, station_groups, station_group_members, rating_curves; SELECT/INSERT/UPDATE on observations, forecasts, forecast_values, alerts, skill_scores, weather_forecasts, model_artifacts, dead_letter_queue; SELECT/INSERT on hindcast_forecasts, hindcast_values, pipeline_health |
 | `sapphire_prefect` | Full access to `prefect` database only |
 
 ---
@@ -313,8 +313,11 @@ All status/enum columns store TEXT matching the Python enum `.value` (lowercase)
 | `skill_scores.flow_regime` / `FlowRegime` | `low`, `high`, `flood` | — |
 | `station_weather_sources.extraction_type` / `SpatialRepresentation` | `point`, `basin_average`, `elevation_band`, `gridded` | — |
 | `station_thresholds.source` / `ThresholdSource` | `authority`, `inferred` | — |
+| `DangerLevelDefinition.direction` / `ThresholdDirection` | `above`, `below` | — |
 | `stations.regulation_type` / `RegulationType` | `unregulated`, `reservoir`, `irrigation_diversion`, `run_of_river_hydro` | — |
 | `stations.station_status` / `StationStatus` | `onboarding`, `operational`, `suspended`, `decommissioned` | `decommissioned` |
+| `parameters.parameter_domain` / `ParameterDomain` | `river`, `weather` | — |
+| `parameters.aggregation_method` / `AggregationMethod` | `sum`, `mean` | — |
 | `stations.station_kind` / `StationKind` | `weather`, `river` | — |
 | `pipeline_health.status` / `PipelineHealthStatus` | `ok`, `warning`, `critical` | — |
 | `pipeline_health.check_type` / `PipelineCheckType` | `nwp_delivery`, `observation_freshness`, `forecast_freshness`, `flow_run_health`, `disk_usage`, `backup_freshness`, `backup_restore_test` | — |

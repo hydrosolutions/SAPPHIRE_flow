@@ -51,7 +51,7 @@
 
 **Full design**: Hot (PostgreSQL) → cold (Parquet) → delete at max_retention_days. Cold storage layout, archival task, hot/cold dispatch in stores, Parquet schema versioning.
 
-**v0**: Everything stays in PostgreSQL. No cold storage, no archival task, no Parquet export. Set generous retention — v0 data fits in a few GB.
+**v0**: Everything stays in PostgreSQL. No cold storage, no archival task, no Parquet export. Set generous retention — v0 data fits in a few GB. **Exception**: `pipeline_health` and resolved `alerts` rows are deleted on a schedule (default 30 and 90 days respectively) to prevent unbounded growth — these have no analytical value and no cold-storage path.
 
 **Removes**: `archive_cold_data` flow, cold storage directory layout, Parquet read/write in stores, hot/cold dispatch logic, schema version metadata.
 
@@ -102,6 +102,12 @@ Implement the full skill metric suite: CRPS, CRPSss (climatology + persistence b
 
 **v0**: Alerts logged to alerts table. Visible via API. No notification dispatch.
 
+### A8a. Alert thresholds: ABOVE direction only
+
+**Full design**: `ThresholdDirection.ABOVE` (flood) and `BELOW` (low-flow/drought). Direction is a field on `DangerLevelDefinition`.
+
+**v0**: All danger levels use `ABOVE` (flood alerting). `BELOW` is supported by the type system but not exercised.
+
 ### A9. No forecast adjustments
 
 **Full design**: forecast_adjustments table with 4 adjustment types, audit trail, envelope operations.
@@ -138,7 +144,10 @@ These are deferred in architecture-context.md. For v0, don't create their tables
 
 ## C. Database schema (v0 subset)
 
-~17 tables. No partitioning, no DLQ, no auth, no cold storage dispatch.
+~18 tables. No partitioning, no DLQ, no auth, no cold storage dispatch.
+
+### Reference data
+- `parameters` — as designed (canonical parameter names, units, aggregation methods)
 
 ### Core entities
 - `stations` — as designed (without override columns)
@@ -156,7 +165,7 @@ These are deferred in architecture-context.md. For v0, don't create their tables
 - `model_artifacts` — as designed but status enum reduced to `active | superseded` only
 - `model_assignments` — as designed
 - `model_states` — as designed
-- `station_weather_sources` — as designed
+- `station_weather_sources` — as designed (geometry columns removed; basin geometry and band geometries live in `basins` table, resolved via `stations.basin_id`)
 
 ### Forecasts
 - `forecasts` — as designed
@@ -362,3 +371,32 @@ Key principles:
 - Every phase includes its tests — no separate testing phase
 - Replay adapters built alongside production adapters (same Protocol)
 - Phase 11 is the capstone: proves full pipeline against golden answers
+
+---
+
+## I. v1 compatibility risks
+
+v0 is deliberately scoped down from `architecture-context.md`. The Protocol-first architecture makes most v1 additions purely additive (partitioning, PgBouncer, dashboard, notifications, forecast adjustments, Bikram Sambat calendar). Two areas require active guarding during v0 implementation to avoid dead ends:
+
+### I1. Keep spatial type unions in service signatures
+
+v0 uses basin-average extraction only (ICON-CH2-EPS). Nepal v1 needs elevation-band extraction (ECMWF IFS). The `GridExtractor` Protocol already returns `BasinAverageForecast | ElevationBandForecast`, but v0 implementations may be tempted to narrow signatures to just `BasinAverageForecast`.
+
+**Rule**: Any service or flow function that handles weather forecast data must accept the full `BasinAverageForecast | ElevationBandForecast` union type, even if v0 only produces the former. Test fakes should exercise both variants where feasible.
+
+### I2. Keep forcing source injectable in training and inference
+
+v0 uses SMN station observations for ML model lookback windows (open decision in architecture-context.md). Nepal v1 will use ERA5-Land via `WeatherReanalysisSource`. If `prepare_model_inputs()` or training data assembly hardcodes "fetch from co-located weather station," the entire training/inference pipeline needs rework for v1.
+
+**Rule**: Training data gathering (Flow 6 step T.2) and forecast input preparation (Flow 1 step 1.7) must accept a forcing source dependency (adapter), not directly query a specific data source. The `WeatherReanalysisSource` Protocol exists but is not implemented in v0 — the injection point must still be present.
+
+### Not risks (safe to defer)
+
+| v1 feature | Why safe |
+|------------|----------|
+| Table partitioning | Additive migration on small data |
+| Rating curve columns on observations | Nullable column addition (metadata-only in PostgreSQL) |
+| Stage 2 QC (2.5–2.7) | Independent flag set, does not change Stage 1 interface |
+| Notification dispatch | Reads alerts, does not change alert model |
+| Forecast adjustments / Flow 3 | New table + service + API endpoints, no v0 schema conflicts |
+| Tiered retention / cold storage | Additive archival task, no schema changes |

@@ -5,7 +5,7 @@ Read this first before working on any task.
 ## What SAPPHIRE Flow does
 
 Operational hydrological forecasting system. Ingests historical and real-time weather forecasts and
-weather station as well as river observations, runs ensemble forecast models, checks flood thresholds, and
+weather station as well as river observations, runs ensemble forecast models, checks alert thresholds, and
 serves results via REST API. Forecasters review and publish forecasts multiple 
 times a day. Runs on Docker Compose on a single VM.
 
@@ -14,7 +14,7 @@ times a day. Runs on Docker Compose on a single VM.
 ### Operational (recurring, scheduled)
 
 1. **Weather ingest → post-process → forecast → alert**
-   Fetch NWP forcing → [extract spatial averages] → [archive] → post-process → fetch QC'd observations → run forecast models → [bias-correct outputs] → store → check flood thresholds → raise/resolve alerts → notify
+   Fetch NWP forcing → [extract spatial averages] → [archive] → post-process → fetch QC'd observations → run forecast models → [bias-correct outputs] → store → check alert thresholds → raise/resolve alerts → notify
 
 2. **Observation ingest → QC → observation alerts**
    Fetch latest station observations → quality control → check thresholds against observed values → raise/resolve alerts
@@ -83,7 +83,7 @@ Layer:    flows/ — orchestration only, delegates to services/adapters
 | 1.8 | Run forecast models | per (model, group\|station) | `models/` | Input bundles, model artifacts | Ensemble forecast values |
 | 1.9 | Post-process forecasts | per station | `services/` | Raw forecast ensembles, historical archive | Bias-corrected forecast ensembles |
 | 1.10 | Store forecast results | batch | `store/` | Forecast ensembles + model artifact version | Persisted to `forecasts` + `forecast_values` (status = `raw`) |
-| 1.11 | Check flood thresholds | per station | `services/` | Forecast ensembles, threshold config | Exceedance flags per station/level |
+| 1.11 | Check alert thresholds | per station | `services/` | Forecast ensembles, threshold config | Exceedance flags per station/level |
 | 1.12 | Raise / resolve alerts | per station | `services/` | Exceedance flags, existing alerts | New/updated alert records |
 | 1.13 | Notify | batch | `services/` | New/changed alerts | Notifications dispatched |
 
@@ -93,18 +93,18 @@ Steps 1.2, 1.3, 1.4, and 1.9 are **conditional** — see notes.
 
 - **1.1**: One fetch per NWP source. Gridded sources (e.g. ICON-CH2-EPS, ECMWF IFS) return a single `GriddedForecast`; pre-extracted sources (Data Gateway, point stations) return `dict[StationId, WeatherForecastResult]`. See "Weather forecast data flows" section and `WeatherForecastSource` Protocol in types-and-protocols.md.
 - **1.2** *(conditional)*: Archives the raw gridded NWP data (e.g. GRIB2 files) to object storage before any extraction or post-processing. Only applies when 1.1 returns a `GriddedForecast` (i.e. gridded source, not pre-extracted). Skipped when the SAPPHIRE Data Gateway handles NWP archiving upstream. Enables reprocessing (re-extraction with changed station geometries, new variables) without re-fetching from the NWP provider. **Tiered retention**: raw grids stay in hot storage (local disk / object store, original format) for `weather_hot_days` (default 180). After that, a scheduled Prefect task compresses them (zstd) and moves them to cold storage (`cold/nwp_grids/{nwp_source}/{cycle_date}/`). Cold grids are deleted at `max_retention_days`. The archival task is idempotent (compress → verify → move → verify → delete hot copy).
-- **1.3** *(conditional)*: Bulk extraction via `GridExtractor` Protocol. Receives the full grid + all `StationWeatherSource` configs, returns `dict[StationId, BasinAverageForecast | ElevationBandForecast]`. Mixed extraction types (basin-average and elevation-band) handled in one grid read. Skipped when 1.1 returns a pre-extracted dict. v0: GridExtractor on ICON-CH2-EPS.
+- **1.3** *(conditional)*: Bulk extraction via `GridExtractor` Protocol. Receives the full grid + `StationWeatherSource` configs + `basins` dict (geometry resolved from `basins` table via station→basin FK), returns `dict[StationId, BasinAverageForecast | ElevationBandForecast]`. Mixed extraction types (basin-average and elevation-band) handled in one grid read. Skipped when 1.1 returns a pre-extracted dict. v0: GridExtractor on ICON-CH2-EPS.
 - **1.4** *(conditional)*: Only needed when no upstream gateway handles archiving. Archives the full `dict[StationId, ...]` per NWP source in bulk. Archive happens *before* post-processing so raw extracted values are preserved. Tiered retention: hot (PostgreSQL) for `weather_hot_days` → cold (Parquet) → deleted at `max_retention_days`. Each archived row records `spatial_type` at archival time (from the adapter's spatial representation) — this is denormalized from `station_weather_sources.extraction_type` so archived data remains self-describing if a station's extraction config changes later.
 - **1.5**: NWP post-processing. Operates on the full `dict[StationId, ...]` per NWP source. May include bias correction (quantile mapping), ensemble calibration, downscaling — configured per model per deployment. Preserves or transforms the spatial representation (see "Weather forecast data flows"). Pass-through until sufficient archive (6–12 months) for bias correction. Distinct from forecast output correction in 1.9.
 - **1.6**: Reads QC'd observations from the store. Flow 2 (observation ingest + QC) runs on its own schedule (e.g. every 30 min) — this step reads the *result*, not raw station feeds. The two flows are decoupled. Future option: add a top-up QC call at the start of Flow 1 to guarantee freshness (trivial — reuses the same QC service function). **Staleness guard**: if the most recent observation for a station is older than a deployment-configurable threshold (e.g. 6h), the forecast proceeds with a warning flag on the forecast record (`observation_staleness_hours`) visible to forecasters in the API and dashboard. Flow 4 detects prolonged staleness independently.
-- **1.7**: Groups stations by (model, artifact_scope). Group models: assembles `dict[StationId, ModelInputs]` for the entire group. Station models: assembles individual `ModelInputs` per station. Each model declares `required_features`, `spatial_input_type`, and `supported_time_steps` — input preparation validates that (a) all configured sources have been transformed to the correct spatial format and merged into a single forcing object, and (b) the `time_step` configured in `model_assignments` is in the model's `supported_time_steps` (see "Weather forecast data flows" and "Model Protocol"). **Orchestration note**: The **flow layer** (not the service) runs each weather source through its post-processing pipeline (step 1.5) and passes the merged result to the input preparation service. The service validates and assembles input bundles but does not fetch or transform weather data — this keeps the service pure. Two patterns:
+- **1.7**: Groups stations by (model, artifact_scope). Group models: assembles `dict[StationId, ModelInputs]` for the entire group. Station models: assembles individual `ModelInputs` per station. Each model declares `required_features`, `required_static_attributes`, `spatial_input_type`, and `supported_time_steps` — input preparation validates that (a) all configured sources have been transformed to the correct spatial format and merged into a single forcing object, (b) the `time_step` configured in `model_assignments` is in the model's `supported_time_steps`, and (c) `basins.attributes` contains all keys in `required_static_attributes` (see "Weather forecast data flows" and "Model Protocol"). **Orchestration note**: The **flow layer** (not the service) runs each weather source through its post-processing pipeline (step 1.5) and passes the merged result to the input preparation service. The service validates and assembles input bundles but does not fetch or transform weather data — this keeps the service pure. Two patterns:
   - *ML models*: concatenates historical weather with NWP forecast to fill the lookback window, which is typically longer than the NWP forecast horizon. The historical weather source is an open decision — see below.
   - *Conceptual models*: runs the model over a warm-up period using observations to derive internal state (soil moisture, snow, groundwater), then switches to NWP forecast forcing at the issue time. State is always observation-derived, never carried forward from a previous forecast.
   - **Fallback for conceptual models**: if the warm-up run fails, (1) use the last successfully saved state snapshot (staleness threshold is deployment-configurable and season-dependent — shorter during wet/monsoon season when catchment state changes rapidly, longer during dry season), or (2) if too stale, cold-start with extended warm-up from observations. Any forecast produced from a snapshot or cold-start records `warm_up_source: WarmUpSource` and `warm_up_state_age_hours` in the forecast metadata — visible to forecasters in the API and dashboard, and flagged by Flow 4.
-- **1.8**: Dispatches on `artifact_scope`: GROUP → single `predict_batch()` call per (model, group) with `dict[StationId, ModelInputs]`; STATION → `predict()` per station. Parallelizable across (model, group) and (model, station) units. On model failure, falls back to next assigned model by priority (detail in future iteration). **State persistence** (conceptual models only): after a successful `predict()`, the flow layer saves the warm-up state snapshot via `ModelStateStore.save()`. This is the write path that enables the snapshot fallback described in 1.7 — without it, no snapshot would exist to fall back to. ML models do not produce state; this step is a no-op for them.
+- **1.8**: Dispatches on `artifact_scope`: GROUP → single `predict_batch()` call per (model, group) with `dict[StationId, ModelInputs]`; STATION → `predict()` per station. Parallelizable across (model, group) and (model, station) units. On model failure, falls back to next assigned model by priority (detail in future iteration). **State persistence** (conceptual models only): after a successful `predict()`, the flow layer saves the warm-up state snapshot via `ModelStateStore.store_state()`. This is the write path that enables the snapshot fallback described in 1.7 — without it, no snapshot would exist to fall back to. ML models do not produce state; this step is a no-op for them.
 - **1.9** *(conditional)*: Forecast *output* bias correction (discharge / water level). Distinct from NWP input correction in 1.5. Pass-through when not configured.
 - **1.10**: Each forecast record links to the model artifact version that produced it.
-- **1.11**: Probability-based: P(Q > threshold) for each danger level. See "Danger levels and threshold configuration" section below for the full config shape. Only evaluates levels where the station has a defined threshold value — undefined levels are skipped (no alert, no display). The exceedance probability that triggers an alert is deployment-configurable per danger level. Defaults must be set; hydromet operations staff confirm acceptable false alarm rates before production deployment.
+- **1.11**: Probability-based: P(Q > threshold) for ABOVE levels, P(Q < threshold) for BELOW levels. See "Danger levels and threshold configuration" section below for the full config shape. Only evaluates levels where the station has a defined threshold value — undefined levels are skipped (no alert, no display). The exceedance probability that triggers an alert is deployment-configurable per danger level. Defaults must be set; hydromet operations staff confirm acceptable false alarm rates before production deployment.
 - **1.12**: Deduplication via partial unique index. Auto-resolution uses hysteresis to prevent alert flapping: separate `trigger_probability` and `resolve_probability` thresholds per danger level (resolve threshold lower than trigger), and configurable minimum duration (`min_trigger_duration` / `min_resolve_duration`) before triggering or resolving. Time-based durations are schedule-independent — they work correctly for both 30-min observation cycles and 6-hourly forecast cycles. Without hysteresis, ensemble probability oscillation between NWP cycles causes fire-resolve-fire loops and alert fatigue.
 - **1.11–1.13** *(v0 testing)*: Phase C is **optional during v0**. A deployment-level flag (`enable_alert_cycle`, default `false` for v0) controls whether these steps run. When enabled during testing, alerts are **informational only** — stored in the DB and logged, but notifications (1.13) are suppressed (no external push). This lets the team validate threshold logic and hysteresis tuning against real forecasts without operational consequences.
 - **1.13**: Async. Failed notifications retried by sweep task (every 5 min).
@@ -186,7 +186,7 @@ flowchart TD
 
     subgraph PhaseC ["Phase C — all stations (optional during v0)"]
         direction TB
-        s1_11["1.11 Check flood thresholds<br/>(P(Q > threshold) per level)<br/><i>optional during v0</i>"]
+        s1_11["1.11 Check alert thresholds<br/>(P(Q vs threshold) per level)<br/><i>optional during v0</i>"]
         s1_12["1.12 Raise / resolve alerts<br/>(with hysteresis)<br/><i>optional during v0</i>"]
         s1_13["1.13 Notify<br/>(async, retried)<br/><i>optional during v0</i>"]
         s1_11 --> s1_12 --> s1_13
@@ -337,7 +337,7 @@ Not a Prefect flow — a sequence of user interactions via the dashboard, backed
 | 3.2 | Adjust forecast values | `api/` → `services/` | Forecaster edits + rationale | Adjustment record (append-only) |
 | 3.3 | Review (select model + confirm) | `api/` → `services/` | Model choice per station | Forecast status → `reviewed` |
 | 3.4 | Publish forecasts | `api/` → `services/` | Forecaster confirmation | Forecast status → `published` |
-| 3.5 | Re-check flood thresholds | `services/` | Published (possibly adjusted) ensembles | Updated exceedance flags |
+| 3.5 | Re-check alert thresholds | `services/` | Published (possibly adjusted) ensembles | Updated exceedance flags |
 | 3.6 | Raise / resolve alerts | `services/` | Exceedance flags, existing alerts | New/updated alert records |
 | 3.7 | Notify | `services/` | New/changed alerts | Notifications dispatched |
 | 3.8 | Generate bulletin | `bulletin/` | Published forecasts | Excel file |
@@ -385,7 +385,7 @@ flowchart TD
         direction LR
         subgraph Alerts ["Threshold re-check"]
             direction TB
-            s3_5["3.5 Re-check flood thresholds<br/>(P(Q > threshold) per level)"]
+            s3_5["3.5 Re-check alert thresholds<br/>(P(Q vs threshold) per level)"]
             s3_6["3.6 Raise / resolve alerts"]
             s3_7["3.7 Notify"]
             s3_5 --> s3_6 --> s3_7
@@ -519,7 +519,7 @@ Stations enter with `station_status = 'onboarding'`. They become visible in Flow
 |---|------|-------|-------|--------|-------------|
 | 5.1 | Register station metadata | `services/` + `store/` | Station definitions (batch) | Station records in DB (`status = 'onboarding'`) | Idempotent (upsert on `code`) |
 | 5.2 | Fetch catchment attributes | `adapters/` + `services/` | Basin geometries | Static features per basin stored | Idempotent |
-| 5.3 | Configure weather source mappings | `services/` + `store/` | Station, NWP source config, basin/band geometries | Weather source ↔ station linkage | Idempotent |
+| 5.3 | Configure weather source mappings | `services/` + `store/` | Station, NWP source config | Weather source ↔ station linkage + band geometries in `basins` | Idempotent |
 | 5.4 | Import historical observations | `adapters/` + `store/` | Station, historical source config, date range | Raw observations persisted | Idempotent (upsert on station + timestamp + parameter) |
 | 5.5 | Stage 1 QC on historical obs | `services/` + `store/` | Raw observations, QC rule config | QC flags per measured value | Idempotent (recomputable) |
 | 5.6 | Rating curve conversion | `services/` + `store/` | Stage 1–passed obs, active rating curve | Derived observations (h→Q or Q→h) | Conditional + idempotent |
@@ -532,13 +532,13 @@ Stations enter with `station_status = 'onboarding'`. They become visible in Flow
 
 #### Notes
 
-- **5.1**: Station metadata includes location (GeoCoord), station type (`river`), basin assignment, measured parameters, IANA timezone (e.g. `Asia/Kathmandu`, `Europe/Zurich`), forecast target parameter (discharge, water level, or both), and regulation type (`unregulated`, `reservoir`, `irrigation_diversion`, `run_of_river_hydro`, or `None` if unknown). Regulation type is used for model selection guidance and forecaster warnings — regulated stations produce systematically different forecast errors during operator-driven release changes. Initial rating curve may be uploaded here (see rating curve management). Flood thresholds are part of station metadata but may come from a different source or be added later — not required for onboarding to proceed. Source: TOML bootstrap file (v0) or dashboard input (v1+).
+- **5.1**: Station metadata includes location (GeoCoord), station type (`river`), basin assignment, measured parameters, IANA timezone (e.g. `Asia/Kathmandu`, `Europe/Zurich`), forecast target parameter (discharge, water level, or both), and regulation type (`unregulated`, `reservoir`, `irrigation_diversion`, `run_of_river_hydro`, or `None` if unknown). Regulation type is used for model selection guidance and forecaster warnings — regulated stations produce systematically different forecast errors during operator-driven release changes. Initial rating curve may be uploaded here (see rating curve management). Alert thresholds are part of station metadata but may come from a different source or be added later — not required for onboarding to proceed. Source: TOML bootstrap file (v0) or dashboard input (v1+).
   - **Minimum required fields**: `code`, `name`, `location`, `station_kind`, `timezone`, `basin_id`, `measured_parameters`. Everything else nullable / deferrable.
   - **Batch mode**: A single TOML file can define multiple stations. Each station is upserted independently — partial failures don't block other stations.
 
 - **5.2**: Fetches static catchment attributes for each station's basin. These are required as input features for ML models (EA-LSTM, delta-HBV) and for transfer learning to new sites. See `basins.attributes` JSONB column. Sources: global datasets (HydroATLAS, MERIT DEM), national GIS data (swisstopo for v0, Nepal DHM GIS for v1). For v0 this can be a one-time bulk computation; for v1 it must run per basin as stations are added.
 
-- **5.3**: Maps the station to its NWP forcing source(s). For basin-average models: which basin geometry. For elevation-band models: which bands. For point models: which grid cell(s). Determines what Flow 1 steps 1.1/1.3 fetch for this station.
+- **5.3**: Maps the station to its NWP forcing source(s) and extraction type. Basin geometry for basin-average extraction comes from `basins.geometry`; elevation-band definitions are computed here and stored in `basins.band_geometries`. For point extraction: station coordinates are used directly. Determines what Flow 1 steps 1.1/1.3 fetch for this station.
 
 - **5.4**: Bulk import — could be large (decades of hourly data). Adapter-specific: CSV upload, API fetch, or database migration. Handles source-specific parameter name mapping to canonical names. **Idempotent**: re-importing the same date range upserts rather than duplicates (keyed on station + timestamp + parameter). Observation source is configured at the adapter level in `config.toml [adapters.observation]`, not per-station — the adapter knows how to map station codes to external source identifiers. CSV imports during onboarding use the same validation/ingestion logic as Flow 12 Branch B: `source = 'manual_import'` for CSV uploads, `source = 'measured'` for API adapter fetches.
   - **Historical–operational gap**: There will typically be a gap between the end of historical data and the start of real-time ingest (Flow 2). This is accepted — the gap is inconsequential for training and the real-time pipeline will fill forward from its start time.
@@ -578,7 +578,7 @@ Stations enter with `station_status = 'onboarding'`. They become visible in Flow
   - ✅ Baseline artifacts computed
   - ✅ Flow regime boundaries computed
   - ✅ At least one model artifact active
-  - ⬜ Flood thresholds defined (optional — alerting won't work without them)
+  - ⬜ Alert thresholds defined (optional — alerting won't work without them)
 
   The model admin can promote to `'operational'` even with optional items missing — the system warns but does not block. Once operational, Flow 1 includes the station and Flow 2's real-time observation adapter picks it up.
 
@@ -815,8 +815,9 @@ Using `T.*` prefix since this flow serves both Flow 6 and Flow 9.
 
 - **T.1**: Default training period is all available data. Optionally specify date ranges (model-specific — some models benefit from a rolling window, others from full history). Cross-validation strategy is model-specific. For group-scoped models, T.1 resolves the station group membership to produce a single training unit per (group, model) rather than per (station, model).
 - **T.2**: Two paths depending on `artifact_scope`:
-  - *Station-scoped*: gathers single-station `TrainingData` (forcing, observations, targets for one station).
-  - *Group-scoped*: gathers data for all stations in the group, assembles `GroupTrainingData` — a `dict[StationId, TrainingData]` plus group metadata. The model receives all stations' data in one call.
+  - *Station-scoped*: gathers single-station `TrainingData` (forcing, observations, targets, static attributes for one station).
+  - *Group-scoped*: gathers data for all stations in the group, assembles `GroupTrainingData` — a `dict[StationId, TrainingData]` plus group metadata. Each station's `TrainingData` includes its `static_attributes` from `basins.attributes`. The model receives all stations' data in one call.
+  - Static attributes are loaded from `basins.attributes` JSONB and filtered to the model's `required_static_attributes`. Validated for completeness — missing attributes skip the training unit with a warning.
   - After gathering, T.2 validates that the dataset meets the model's declared minimum requirements (e.g. `min_training_samples`, `min_training_period`). If insufficient, the training unit is skipped with a warning (not a pipeline failure) — the model admin sees which units were skipped and why in the training summary.
 - **T.3**: Models are separate packages. Training interface is part of the model Protocol. Station-scoped models receive `TrainingData`; group-scoped models receive `GroupTrainingData`. Compute-intensive — may need different resource allocation than operational flows. The *flow* (not the model) persists the artifact object returned by `train()` — writes the file to `/data/artifacts/` and creates the `model_artifacts` row with status `'training'`. Consistent with the layering rule: model artifact loading/saving is handled by the flow or service layer.
 - **T.4–T.5**: Composes Flow 7 (hindcast) and Flows 8/10 (skill computation). Training is not complete without validation. For group-scoped models, hindcast uses `predict_batch()` across all stations in the group at each time step — skill is always evaluated per-station.
@@ -890,7 +891,7 @@ Using `H.*` prefix since hindcast is referenced from multiple flows.
   - **`'reanalysis'`** (or station observations used as pseudo-perfect forcing): assesses model capability given near-perfect forcing. Useful for diagnosing whether errors come from the hydrology or the NWP, but produces optimistic skill scores that overestimate real-world operational performance.
   Every hindcast result (H.6) must carry a `forcing_type` tag (`ForcingType` enum — DB values `"nwp_archive"`, `"reanalysis"` per conventions.md casing rule). v0: forcing product TBD — may initially use station observations (producing diagnostic-only skill scores) until sufficient NWP archive accumulates for operational skill assessment.
   - **ML model lookback**: For ML models requiring a lookback window (e.g. 365 days for LSTM), H.2 must fetch forcing for the full lookback period preceding each hindcast step — not just the step itself. The forcing source must match what the model was trained on (same open decision as Flow 1 step 1.7: station observations, gridded reanalysis, or archived NWP extractions). This is per-step: each hindcast step's lookback window shifts with the simulated issue time.
-- **H.4**: Critical — must simulate operational conditions. Each time step only sees data that would have been available at that point in time (no future leakage). The lookback window per step matches what the model expects operationally. For conceptual models, each hindcast step runs a fresh warm-up from historical observations up to the simulated issue time — no state is carried forward between hindcast steps (matching the operational convention from Flow 1 step 1.7). Snapshot fallback is not used in hindcast mode since observations are always available for the historical period.
+- **H.4**: Critical — must simulate operational conditions. Each time step only sees data that would have been available at that point in time (no future leakage). The lookback window per step matches what the model expects operationally. Static attributes are loaded once per hindcast run (they are time-invariant) and included in each step's `ModelInputs`. For conceptual models, each hindcast step runs a fresh warm-up from historical observations up to the simulated issue time — no state is carried forward between hindcast steps (matching the operational convention from Flow 1 step 1.7). Snapshot fallback is not used in hindcast mode since observations are always available for the historical period.
   - **Gap handling**: Historical records may contain gaps — NWP archive gaps (unrecoverable, per Flow 11) and observation gaps (QC-rejected or missing). When H.4 assembles inputs for a time step and finds insufficient data (forcing or observations below the model's minimum completeness requirement), it **skips the step** and logs the gap with the reason. The hindcast run continues with remaining steps. The final hindcast summary reports total steps attempted, completed, and skipped (with reasons) — this propagates to skill computation (Flows 8/10) where sample size is visible in the skill report.
 - **H.5**: Same model code as operational Flow 1 step 1.8. Group models use `predict_batch()` across all stations at each hindcast time step. Parallelizable across time steps (each is independent given its input bundle). **Partial failure**: if a time step fails (model error, NaN output, numerical divergence), the step is logged with the error and skipped — the hindcast run continues. No model fallback (unlike operational Flow 1) since hindcast evaluates a specific artifact. The hindcast summary (see H.4 gap handling) includes failed steps alongside data-gap skips.
 - **H.6**: Hindcast results stored in dedicated tables, separate from operational forecasts — different volumes and access patterns. Each record links to the model artifact version used. As operational history grows, older operational forecasts may be archived to hindcast storage for long-term skill tracking.
@@ -1204,7 +1205,7 @@ The system supports two canonical representations, tagged with a discriminator:
 
 Every `ForecastEnsemble` carries a `representation` tag (see `docs/spec/types-and-protocols.md` — ForecastEnsemble). Downstream consumers (threshold checking, CRPS, BSS) handle both:
 
-- **Threshold exceedance probability**: members → `count(exceeding) / N`. Quantiles → CDF interpolation (with documented accuracy caveat for tail probabilities where flood thresholds typically sit). Quantile CDF interpolation accuracy degrades in the tails. To mitigate: operational quantile sets must include at least one level >= 0.95, ensuring meaningful interpolation near flood thresholds. Models producing fewer than 7 quantile levels or lacking tail coverage skip threshold evaluation and are flagged in forecast metadata.
+- **Threshold exceedance probability**: members → `count(exceeding) / N`. Quantiles → CDF interpolation (with documented accuracy caveat for tail probabilities where alert thresholds typically sit). Quantile CDF interpolation accuracy degrades in the tails. To mitigate: operational quantile sets must include at least one level >= 0.95, ensuring meaningful interpolation near alert thresholds. Models producing fewer than 7 quantile levels or lacking tail coverage skip threshold evaluation and are flagged in forecast metadata.
 - **CRPS**: members → standard CRPS formula. Quantiles → quantile-weighted CRPS approximation (Laio & Tamea 2007).
 - **BSS**: derived from exceedance probability regardless of representation.
 
@@ -1219,7 +1220,8 @@ All forecast models satisfy a single `ForecastModel` Protocol. Models are pure f
 **Full Protocol signature, supporting types (`ModelInputs`, `TrainingData`, `ModelParams`, `ModelArtifact`), and behavioral contracts:** see `docs/spec/types-and-protocols.md` — ForecastModel.
 
 Key points:
-- **`required_features`**: class-level declaration of canonical parameter names. Input preparation (Flow 1 step 1.7) validates completeness before calling `predict()` / `predict_batch()`.
+- **`required_features`**: class-level declaration of canonical parameter names (forcing variables). Input preparation (Flow 1 step 1.7) validates completeness before calling `predict()` / `predict_batch()`.
+- **`required_static_attributes`**: class-level declaration of static catchment attribute names (e.g. `{"mean_elev_m", "mean_slope", "forest_fraction"}`). Input preparation loads these from `basins.attributes` JSONB and passes as `static_attributes: pl.DataFrame` in `ModelInputs` / `TrainingData`. Empty `frozenset()` for models that don't use static attributes (e.g. pure conceptual models). Validated before calling `predict()` / `train()`.
 - **`spatial_input_type`**: class-level declaration of the expected spatial representation (`SpatialRepresentation`). Input preparation validates that the final post-processed forcing matches this type.
 - **`supported_time_steps`**: class-level declaration of time steps the model can operate on (e.g. `{timedelta(hours=1), timedelta(days=1)}`). The `model_assignments` table configures which time step to use per station — input preparation validates the configured step is in the model's supported set.
 - **`train()`**: receives historical data + hyperparameters, returns opaque artifact. `rng` ensures reproducibility.
@@ -1386,9 +1388,9 @@ The final output spatial type **must match the model's declared `spatial_input_t
 
 ### Model weather source configuration
 
-Configured **per model per deployment**, with per-station geometry.
+Configured **per model per deployment**. Geometry is resolved from the `basins` table (via `stations.basin_id`), not stored in `station_weather_sources`.
 
-**Deployment-level** (configured once per model) — lives in **config.toml**, not in the database. This is deployment-level configuration that changes rarely and applies to all stations running a given model. The per-station `station_weather_sources` table (in DB) provides the geometry; this config defines which sources and post-processing pipeline a model uses.
+**Deployment-level** (configured once per model) — lives in **config.toml**, not in the database. This is deployment-level configuration that changes rarely and applies to all stations running a given model. The per-station `station_weather_sources` table (in DB) maps stations to NWP sources and extraction types; basin geometry and elevation-band definitions live in the `basins` table. This config defines which sources and post-processing pipeline a model uses.
 
 ```toml
 [models.lstm_daily.weather]
@@ -1415,14 +1417,11 @@ station_weather_sources:
   station_id: UUID FK
   nwp_source: TEXT
   extraction_type: SpatialRepresentation   # 'basin_average', 'elevation_band', or 'point' only — 'gridded' is not valid here (gridded data is either consumed raw by the model or extracted into one of these three tabular types)
-  basin_geometry: GEOMETRY(MULTIPOLYGON, 4326) NULL  # for 'basin_average': single basin polygon
-  band_geometries: JSONB NULL              # for 'elevation_band': list of {"band_id": int, "geometry": GeoJSON, "min_elevation_m": float, "max_elevation_m": float}
   active: BOOL DEFAULT TRUE
   PK: (station_id, nwp_source)
-  CHECK: (extraction_type = 'point' AND basin_geometry IS NULL AND band_geometries IS NULL)
-      OR (extraction_type = 'basin_average' AND basin_geometry IS NOT NULL AND band_geometries IS NULL)
-      OR (extraction_type = 'elevation_band' AND basin_geometry IS NULL AND band_geometries IS NOT NULL)
 ```
+
+Geometry is resolved at runtime from the `basins` table via `stations.basin_id`: `basins.geometry` for basin-average extraction, `basins.band_geometries` for elevation-band extraction. Basin geometry is a physical property of the catchment, not per-NWP-source config — storing it once in `basins` avoids duplication and inconsistency.
 
 Most stations inherit the deployment default extraction type. Per-station override is available for special cases (e.g. one station needs elevation-band extraction while the rest use basin-average).
 
@@ -1433,8 +1432,9 @@ When a model uses multiple weather sources, input preparation (Flow 1 step 1.7):
 2. Transforms all sources to the model's declared `spatial_input_type`
 3. Merges all parameters into a single forcing object (`polars.DataFrame` for tabular, `xarray.Dataset` for gridded)
 4. Validates that all `required_features` are present
+5. Loads static catchment attributes from `basins.attributes` JSONB, selects columns matching `required_static_attributes`, validates completeness, and passes as `static_attributes: pl.DataFrame` (or `None` if `required_static_attributes` is empty)
 
-The model receives one merged forcing input. It does not know about sources — it sees parameters.
+The model receives one merged forcing input and one static attributes frame. It does not know about sources — it sees parameters and attributes.
 
 For the rare case where a model needs mixed spatial types (e.g. gridded precipitation + basin-average snow), the model declares `'gridded'` and basin-average values are broadcast to spatially uniform grid fields. This is physically meaningful and lossless.
 
@@ -1684,8 +1684,8 @@ weather_forecasts:
   band_id: INT NULL                     # elevation band identifier; non-null when spatial_type = 'elevation_band'
   member_id: INT NULL                    # NULL for deterministic NWP. Assumes member-based NWP — if a future source delivers quantile-based forecasts, add a `quantile` column + CHECK analogous to `forecast_values`.
   value: DOUBLE PRECISION
-  is_gap: BOOL DEFAULT FALSE            # true if this cycle was originally missing. Denormalized from `gap_status IS NOT NULL` for indexing convenience (partial index below uses `is_gap = TRUE`).
-  gap_status: TEXT NULL                  # NULL = not a gap, "recovered" = re-fetched, "unrecoverable" = permanently lost
+  is_gap: BOOL DEFAULT FALSE            # v1 (Flow 11) — true if this cycle was originally missing. Omit from v0 DB schema. Denormalized from `gap_status IS NOT NULL` for indexing convenience (partial index below uses `is_gap = TRUE`).
+  gap_status: TEXT NULL                  # v1 (Flow 11) — NULL = not a gap, "recovered" = re-fetched, "unrecoverable" = permanently lost. Omit from v0 DB schema.
   created_at: TIMESTAMPTZ
   CHECK: (spatial_type = 'elevation_band' AND band_id IS NOT NULL)
       OR (spatial_type != 'elevation_band' AND band_id IS NULL)
@@ -1694,7 +1694,7 @@ weather_forecasts:
 Partitioned monthly by `cycle_time`. Indexes:
 - `(station_id, nwp_source, cycle_time, valid_time)` — primary archive index, used by `fetch_weather_forecasts` and `fetch_received_cycles`.
 - `(station_id, nwp_source, valid_time, cycle_time DESC)` — lookback index, used by `fetch_lookback` in Flow 1 step 1.7 and Flow 7 step H.2 (picks most recent cycle per valid_time across the lookback window).
-- Partial index on `is_gap = TRUE` for Flow 11 recovery queries.
+- Partial index on `is_gap = TRUE` for Flow 11 recovery queries. (v1 — omit from v0 schema along with gap fields.)
 
 Tiered retention: hot (PostgreSQL) for `weather_hot_days` → cold (Parquet) → deleted at `max_retention_days`. See "Data retention and cold storage" section.
 
@@ -1726,6 +1726,7 @@ DangerLevelDefinition:
   resolve_probability: float   # P(exceedance) to resolve alert (< trigger), e.g. 0.30
   min_trigger_duration: timedelta  # minimum exceedance duration before triggering, e.g. timedelta(hours=12)
   min_resolve_duration: timedelta  # minimum below-threshold duration before resolving, e.g. timedelta(hours=6)
+  direction: ThresholdDirection  # ABOVE = flood (P(Q > threshold)), BELOW = low-flow (P(Q < threshold))
 ```
 
 ### Per-station thresholds
@@ -1748,9 +1749,9 @@ Deployment config includes `infer_missing_thresholds: bool` (default `false`). W
 
 ### Observation alerts
 
-Observation alerts use the same danger levels and per-station threshold values as forecast alerts. The check is a direct value comparison (`observed_value > threshold_value`) rather than probability-based. Same hysteresis parameters apply (`min_trigger_duration` / `min_resolve_duration`), which are schedule-independent and work correctly across different ingest frequencies.
+Observation alerts use the same danger levels and per-station threshold values as forecast alerts. The check is a direction-aware value comparison (`observed_value > threshold_value` for ABOVE, `observed_value < threshold_value` for BELOW) rather than probability-based. Same hysteresis parameters apply (`min_trigger_duration` / `min_resolve_duration`), which are schedule-independent and work correctly across different ingest frequencies.
 
-**Hysteresis fields used by observation alerts**: Observation alerts use only the duration-based hysteresis fields from `DangerLevelDefinition` — `min_trigger_duration` and `min_resolve_duration`. The probability-based fields (`trigger_probability`, `resolve_probability`) are **forecast-only** and ignored for observation alerts. The direct value comparison (`observed_value > threshold_value`) replaces the probability check. The alert service selects which `DangerLevelDefinition` fields to use based on `AlertSource`.
+**Hysteresis fields used by observation alerts**: Observation alerts use only the duration-based hysteresis fields from `DangerLevelDefinition` — `min_trigger_duration` and `min_resolve_duration`. The probability-based fields (`trigger_probability`, `resolve_probability`) are **forecast-only** and ignored for observation alerts. The direction-aware value comparison (`observed_value > threshold_value` for ABOVE, `observed_value < threshold_value` for BELOW) replaces the probability check. The alert service selects which `DangerLevelDefinition` fields to use based on `AlertSource`.
 
 ---
 
@@ -1966,9 +1967,9 @@ Retention: permanent. Included in database backup. Not partitioned (moderate vol
 ```
 alerts:
   id: UUID PK
-  station_id: UUID FK NULL                   # non-null for flood/observation alerts; null for system-wide pipeline alerts (e.g. NWP delivery, disk usage, backup freshness)
+  station_id: UUID FK NULL                   # non-null for hydrological alerts (forecast/observation); null for system-wide pipeline alerts (e.g. NWP delivery, disk usage, backup freshness)
   source: TEXT                             # AlertSource: forecast | observation | pipeline
-  alert_level: TEXT                        # for flood alerts (source = forecast | observation): references DangerLevelDefinition.name;
+  alert_level: TEXT                        # for hydrological alerts (source = forecast | observation): references DangerLevelDefinition.name;
                                            # for pipeline alerts (source = pipeline): check-type identifier (e.g. "nwp_delivery", "observation_freshness", "dead_letter_queue")
   status: TEXT                             # AlertStatus: raised | acknowledged | resolved
   trigger_probability: DOUBLE PRECISION NULL  # NULL for observation alerts
@@ -1987,6 +1988,8 @@ Deduplication: two partial unique indexes to handle nullable `station_id`:
 - System-wide: `(alert_level, source) WHERE status IN ('raised', 'acknowledged') AND station_id IS NULL`
 
 Index: `(station_id, triggered_at DESC)` for alert history queries (API, Bipad portal).
+
+Retention: resolved alerts older than `alerts_retention_days` (default 90) are deleted by the archival scheduled task. Raised and acknowledged alerts are never deleted regardless of age.
 
 ```
 AlertStatus enum (Python members → DB values):
@@ -2026,7 +2029,7 @@ AdjustmentType enum (Python members → DB values):
 
 ### `pipeline_health` table
 
-Low-volume operational monitoring table. Not partitioned.
+Low-volume operational monitoring table. Not partitioned. Retention: rows older than `pipeline_health_retention_days` (default 30) are deleted by the archival scheduled task. No cold storage — old health checks have no analytical value.
 
 ```
 pipeline_health:
@@ -2095,6 +2098,41 @@ Replays are idempotent — the payload includes natural keys and uses upsert sem
 
 **`pg_partman` maintenance**: Partition creation runs as a PostgreSQL-level cron job (`pg_cron` extension, `SELECT partman.run_maintenance_proc()` every hour) inside the PostgreSQL container — not as a Prefect task. This ensures partitions are created even when the Prefect worker is down, which is the most likely cause of a DLQ spike.
 
+### `parameters` table
+
+Reference / lookup table for canonical parameter names. Makes the DB self-documenting — a consumer can discover that `precipitation` means `mm` and should be summed for temporal aggregation without reading prose docs.
+
+```
+parameters:
+  name: TEXT PK                           # canonical name — "discharge", "precipitation", etc.
+  display_name: TEXT                      # human-readable — "Discharge", "Precipitation", etc.
+  unit: TEXT                              # SI or conventional unit — "m3/s", "mm", "°C", etc.
+  parameter_domain: TEXT                  # ParameterDomain: river | weather
+  aggregation_method: TEXT                # AggregationMethod: sum | mean — for pentadal/dekadal temporal aggregation
+  created_at: TIMESTAMPTZ
+```
+
+TEXT primary key (like `models`) — this is a small, mostly-static lookup table (~10 rows). No UUID.
+
+`stations.measured_parameters` entries reference `parameters.name` — validated at the application layer during station onboarding (Flow 5), not via FK constraint (PostgreSQL cannot FK from array elements).
+
+Similarly, `observations.parameter`, `weather_forecasts.parameter`, and `station_thresholds.parameter` reference `parameters.name` — validated at ingest boundaries, not via FK.
+
+**Seed data:**
+
+| name | display_name | unit | parameter_domain | aggregation_method |
+|------|-------------|------|-----------------|-------------------|
+| `discharge` | Discharge | m³/s | river | mean |
+| `water_level` | Water Level | m | river | mean |
+| `precipitation` | Precipitation | mm | weather | sum |
+| `temperature` | Temperature | °C | weather | mean |
+| `humidity` | Humidity | % | weather | mean |
+| `radiation` | Radiation | W/m² | weather | mean |
+| `wind_speed` | Wind Speed | m/s | weather | mean |
+| `snow_depth` | Snow Depth | cm | weather | mean |
+| `reference_et` | Reference ET | mm/h | weather | sum |
+| `swe` | SWE | mm | weather | mean |
+
 ### `stations` table
 
 Central entity — referenced by observations, forecasts, alerts, model assignments, weather sources, and thresholds.
@@ -2131,7 +2169,7 @@ Index: `GIST (location)` for spatial queries. `station_kind` filter index for ty
 
 ### `station_thresholds` table
 
-Per-station flood threshold values. Separate from `stations` because thresholds may be added later or come from a different source. Not all danger levels need to be defined for every station — undefined levels are skipped.
+Per-station alert threshold values. Separate from `stations` because thresholds may be added later or come from a different source. Not all danger levels need to be defined for every station — undefined levels are skipped.
 
 ```
 station_thresholds:
@@ -2160,6 +2198,10 @@ basins:
                                            #   Populated during station onboarding (Flow 5 step 5.2).
                                            #   Schema: deployment-specific — v0 uses HydroATLAS/MERIT DEM attributes,
                                            #   v1 adds Nepal DHM GIS data. Validated at model training time.
+  band_geometries: JSONB NULL              # for elevation-band extraction: list of
+                                           #   {"band_id": int, "geometry": GeoJSON,
+                                           #    "min_elevation_m": float, "max_elevation_m": float}
+                                           #   Computed during station onboarding (Flow 5 step 5.3).
   created_at: TIMESTAMPTZ
 ```
 
@@ -2222,6 +2264,8 @@ All time-series data follows a unified tiered lifecycle: **hot (PostgreSQL / obj
 | Runoff forecasts | `forecast_hot_days` (548) | Parquet | `max_retention_days` | `forecasts` + `forecast_values` |
 | Hindcast forecasts | `forecast_hot_days` (548) | Parquet | `max_retention_days` | `hindcast_forecasts` + `hindcast_values` |
 | Daily aggregates | **permanent** (PostgreSQL) | — | **never** | in-place |
+| Pipeline health | `pipeline_health_retention_days` (30) | — | `pipeline_health_retention_days` | `pipeline_health` |
+| Resolved alerts | `alerts_retention_days` (90) | — | `alerts_retention_days` | `alerts` (resolved only) |
 
 Constraint: `max_retention_days` must be > `forecast_hot_days` (validated at config load time).
 
@@ -2235,8 +2279,9 @@ One scheduled Prefect task (monthly) with two sweeps:
 
 1. **Hot → cold**: Per table, export rows older than the data class's hot window to Parquet, verify file integrity, then delete from PostgreSQL. For raw grids: compress (zstd), move to cold path (`cold/nwp_grids/{nwp_source}/{cycle_date}/`), verify, delete hot copy.
 2. **Cold → delete**: Scan cold directories, delete Parquet/compressed files where data age > `max_retention_days`.
+3. **Ops cleanup**: Delete `pipeline_health` rows older than `pipeline_health_retention_days`. Delete `alerts` rows where `status = 'resolved'` and `resolved_at` older than `alerts_retention_days`.
 
-Both sweeps are idempotent — export/compress first, verify, then delete.
+All sweeps are idempotent.
 
 ### Warnings
 
@@ -2556,41 +2601,6 @@ Between v0 and v1, the pipeline will be validated with additional public dataset
 
 v1 adds Nepal (ECMWF IFS, DHM stations, elevation-band NWP extraction, ERA5-Land).
 
-### v0 simplifications (summary)
+### v0 simplifications, flow prioritization, and implementation phases
 
-Key simplifications for v0 (~50 stations, single VM, 1-2 users). See `v0-scope.md` for full detail.
-
-- **No table partitioning** — plain tables, no pg_partman/pg_cron/DLQ
-- **No tiered storage** — everything in PostgreSQL, no Parquet cold storage
-- **No PgBouncer** — direct connections with asyncpg pool
-- **Simplified onboarding** — bootstrap script, no progress tracking
-- **Full skill metrics** — kept as designed (high research value)
-- **Single Prefect work pool** — no ops/training/hindcast separation
-- **Simplified artifact lifecycle** — active/superseded only, no approval gate
-- **No notifications** — alerts logged to DB, visible via API
-- **No forecast adjustments** — no dashboard means no adjustments
-- **Simple backup** — pg_dump to disk, no restic/encryption/restore rehearsal
-
-### v0 data flow prioritization
-
-#### Required for v0
-
-| Priority | Flow | v0 simplifications |
-|----------|------|-------------------|
-| 1 | **Flow 5/5w** — Station onboarding | TOML bootstrap only (no dashboard). Skip 5.6–5.7 (rating curves — BAFU provides Q directly). No regulation type needed for Swiss stations. |
-| 2 | **Flow 2** — Observation ingest + QC | Skip 2.5–2.7 (rating curve conversion — v1+). Alerting steps 2.8–2.10 optional (controlled by `enable_alert_cycle`). |
-| 3 | **Flow 6 → 7 → 8** — Train → hindcast → skill | Initial training only (auto-promote, no comparison gate). Hindcast uses station obs as pseudo-perfect forcing until NWP archive accumulates. Full skill metric suite. |
-| 4 | **Flow 1** — Forecast cycle | Phase C (alerting 1.11–1.13) off by default. Steps 1.2 (grid archive), 1.5 (NWP post-process), 1.9 (forecast post-process) are pass-through. |
-
-Implementation order matches priority: onboard stations first (everything depends on station + historical data), then observation ingest (validates adapters), then model training pipeline (validates model framework), then the operational forecast cycle (wires it all together).
-
-#### Deferred beyond v0
-
-| Flow | Earliest needed | Reason |
-|------|----------------|--------|
-| **Flow 3** — Forecast review + publish | v1 | No dashboard in v0. Forecasts are consumed via API only. |
-| **Flow 4** — Pipeline monitoring | v0c or v1 | Not blocking while station count is small and pipeline is manually supervised. A simple `/api/v1/health` endpoint suffices for v0. |
-| **Flow 9** — Model retraining (comparison path) | v1 | v0 only needs initial training (Flow 6). The approval gate for retraining matters once models are in production. |
-| **Flow 10** — Skill recomputation (broad) | v1 | Yearly or post-retraining scope. Flow 8 (narrow, per-model after hindcast) covers v0. |
-| **Flow 11** — NWP gap recovery | v0c or v1 | NWP archive will be small during v0. Gaps are accepted and logged, not recovered. |
-| **Flow 12** — Observation reprocessing | Branch B ad-hoc in v0; A/C in v1+ | Branch B (CSV import) overlaps with Flow 5 step 5.4 import logic. Branch A (rating curves) requires v1. Branch C (QC re-eval) is low priority. |
+See [`docs/v0-scope.md`](v0-scope.md) — the single source of truth for v0 scope, simplifications, deferred flows, performance targets, testing strategy, and implementation phases. Not duplicated here to avoid drift.
