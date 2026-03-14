@@ -112,9 +112,9 @@ erDiagram
         UUID station_id FK
         TIMESTAMPTZ timestamp
         TEXT parameter
-        DOUBLE_PRECISION value
+        DOUBLE_PRECISION value "NULL when missing"
         TEXT source "measured | manual_import"
-        TEXT qc_status "raw | qc_passed | qc_failed | qc_suspect"
+        TEXT qc_status "raw | qc_passed | qc_failed | qc_suspect | missing"
         JSONB qc_flags
         TEXT qc_rule_version "NULL"
         TIMESTAMPTZ created_at

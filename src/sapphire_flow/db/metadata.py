@@ -204,7 +204,7 @@ observations = sa.Table(
     ),
     sa.Column("timestamp", sa.DateTime(timezone=True), nullable=False),
     sa.Column("parameter", sa.Text, nullable=False),
-    sa.Column("value", sa.Float, nullable=False),
+    sa.Column("value", sa.Float, nullable=True),
     sa.Column(
         "source",
         sa.Text,
@@ -215,7 +215,7 @@ observations = sa.Table(
         "qc_status",
         sa.Text,
         sa.CheckConstraint(
-            "qc_status IN ('raw', 'qc_passed', 'qc_failed', 'qc_suspect')"
+            "qc_status IN ('raw', 'qc_passed', 'qc_failed', 'qc_suspect', 'missing')"
         ),
         nullable=False,
         server_default="raw",
@@ -227,6 +227,10 @@ observations = sa.Table(
         sa.DateTime(timezone=True),
         nullable=False,
         server_default=sa.func.now(),
+    ),
+    sa.CheckConstraint(
+        "(qc_status = 'missing') = (value IS NULL)",
+        name="ck_observations_missing_value",
     ),
 )
 
