@@ -80,7 +80,7 @@ Training triggered separately (Flow 6) after onboarding completes. No onboarding
 
 ### A5. Full skill metrics (keep as designed)
 
-Implement the full skill metric suite: CRPS, CRPSss (climatology + persistence baselines), BSS per danger level, POD/FAR/CSI, peak timing error, NSE, KGE, PBIAS, MAE — per lead time, per season, per flow regime. Plus reliability diagrams, ROC curves, rank histograms.
+Implement the full skill metric suite: CRPS, CRPSss (climatology + persistence baselines), BSS per danger level, POD/FAR/CSI, peak timing error, NSE, KGE, PBIAS, MAE, sharpness (mean prediction interval width, mean ensemble range) — per lead time, per season, per flow regime. Plus reliability diagrams, ROC curves, rank histograms.
 
 **Rationale**: Pure computation, high research value, most implementations available in libraries (`properscoring`, `xskillscore`). The effort is wiring, not algorithms.
 

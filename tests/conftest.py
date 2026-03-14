@@ -101,12 +101,18 @@ def make_observation(
 
     rng = rng or random.Random(_RNG_SEED)
     sid = station_id or StationId(_uuid(rng))
+    if value is None:
+        resolved_value: float | None = (
+            None if qc_status == QcStatus.MISSING else rng.uniform(0.5, 100.0)
+        )
+    else:
+        resolved_value = value
     return Observation(
         id=ObservationId(_uuid(rng)),
         station_id=sid,
         timestamp=timestamp or _EPOCH,
         parameter=parameter,
-        value=value if value is not None else rng.uniform(0.5, 100.0),
+        value=resolved_value,
         source=ObservationSource.MEASURED,
         rating_curve_id=None,
         rating_curve_correction_version=None,

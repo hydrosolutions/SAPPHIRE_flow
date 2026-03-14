@@ -166,6 +166,10 @@ class TestQcFlag:
         )
         assert f.status == QcStatus.QC_SUSPECT
 
+    def test_missing_rejected(self) -> None:
+        with pytest.raises(ValueError, match="MISSING"):
+            QcFlag(rule_id="gap_check", rule_version="1.0.0", status=QcStatus.MISSING)
+
 
 class TestAggregateQcStatus:
     def test_empty_flags(self) -> None:

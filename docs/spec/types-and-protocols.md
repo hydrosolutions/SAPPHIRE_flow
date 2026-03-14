@@ -73,6 +73,7 @@ class QcStatus(Enum):
     QC_PASSED = "qc_passed"
     QC_FAILED = "qc_failed"
     QC_SUSPECT = "qc_suspect"
+    MISSING = "missing"
 
 class ForecastStatus(Enum):
     RAW = "raw"
@@ -340,6 +341,8 @@ class QcFlag(NamedTuple):
     ) -> "QcFlag":
         if status == QcStatus.RAW:
             raise ValueError("QcFlag.status cannot be RAW — RAW means QC has not run")
+        if status == QcStatus.MISSING:
+            raise ValueError("QcFlag.status cannot be MISSING — MISSING is set directly on observations, not by QC rules")
         return super().__new__(cls, rule_id, rule_version, status, detail)
 
 
@@ -426,7 +429,7 @@ class Observation(NamedTuple):
     station_id: StationId
     timestamp: UtcDatetime
     parameter: str
-    value: float
+    value: float | None            # None when qc_status is MISSING (explicit gap record)
     source: ObservationSource      # measured | rating_curve_derived | manual_import
     rating_curve_id: RatingCurveId | None  # v1 — set when source = RATING_CURVE_DERIVED. Omit from v0 DB schema.
     rating_curve_correction_version: str | None  # v1 — correction param version. Omit from v0 DB schema.
@@ -938,7 +941,7 @@ class SkillScore(NamedTuple):
     season: str | None                     # NULL = all-season
     flow_regime: FlowRegime | None         # NULL = all-regime
     flow_regime_config_id: UUID | None     # FK → flow_regime_configs.id (NULL when flow_regime is NULL)
-    metric: str
+    metric: str                            # e.g. "crps", "nse", "kge", "bss", "sharpness_p10_p90", "sharpness_p25_p75", "ensemble_range"
     score: float
     sample_size: int
     is_stale: bool                         # TRUE when underlying data changed; cleared by Flow 10 step S.6

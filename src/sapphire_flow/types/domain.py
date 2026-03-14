@@ -128,6 +128,11 @@ def _qcflag_new(
 ) -> QcFlag:
     if status == QcStatus.RAW:
         raise ValueError("QcFlag.status cannot be RAW — RAW means QC has not run")
+    if status == QcStatus.MISSING:
+        raise ValueError(
+            "QcFlag.status cannot be MISSING — MISSING is set directly on observations,"
+            " not by QC rules"
+        )
     return cast("QcFlag", tuple.__new__(cls, (rule_id, rule_version, status, detail)))
 
 

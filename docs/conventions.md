@@ -312,7 +312,7 @@ All status/enum columns store TEXT matching the Python enum `.value` (lowercase)
 
 | Column / Type | Values | Terminal states |
 |---------------|--------|-----------------|
-| `observations.qc_status` / `QcStatus` | `raw`, `qc_passed`, `qc_failed`, `qc_suspect` | `qc_passed`, `qc_failed` |
+| `observations.qc_status` / `QcStatus` | `raw`, `qc_passed`, `qc_failed`, `qc_suspect`, `missing` | `qc_passed`, `qc_failed`, `missing` |
 | `forecasts.status` / `ForecastStatus` | `raw`, `reviewed`, `published` | `published` |
 | `forecasts.representation` / `EnsembleRepresentation` | `members`, `quantiles` | — |
 | `forecasts.warm_up_source` / `WarmUpSource` | `fresh`, `snapshot`, `cold_start` | — |

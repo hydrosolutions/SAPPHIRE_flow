@@ -966,6 +966,7 @@ Using `S.*` prefix since this flow serves both Flow 8 and Flow 10.
 
 - **S.4**: Standard metric set, extensible over time:
   - Ensemble: CRPS, CRPS skill score (CRPSss against climatology and persistence baselines), reliability diagram data, spread-skill ratio, rank histogram (PIT)
+  - Sharpness: mean prediction interval width (P10–P90 and P25–P75), mean ensemble range (max − min member), computed per lead time. Sharpness is a property of the forecast alone (does not require observations) — tracked alongside reliability to detect overconfidence or excessive hedging. Corresponds to the "sharpness" dimension in WMO-1364.
   - Threshold-specific: Brier Skill Score (BSS) at each configured danger level threshold — directly measures the skill of probability forecasts that drive the alert system. ROC curve data per threshold (stored for display).
   - Event contingency (at each danger level, at a configured probability decision threshold, e.g. P>0.5): Probability of Detection (POD), False Alarm Ratio (FAR), Critical Success Index (CSI). These are the metrics flood warning agencies report operationally — "we detected X% of floods" / "Y% of warnings were false alarms."
   - Peak timing: mean peak timing error (hours early/late) and its distribution, computed for events exceeding a configurable flow threshold (default: Q90). Isolates timing skill — a metric unique to hydrological forecasting that NSE/KGE penalize only indirectly.
@@ -1765,13 +1766,14 @@ Observations carry an aggregate QC status:
 
 ```
 QcStatus enum (Python members → DB values):
-  RAW → 'raw' | QC_PASSED → 'qc_passed' | QC_FAILED → 'qc_failed' | QC_SUSPECT → 'qc_suspect'
+  RAW → 'raw' | QC_PASSED → 'qc_passed' | QC_FAILED → 'qc_failed' | QC_SUSPECT → 'qc_suspect' | MISSING → 'missing'
 ```
 
 - **`'raw'`**: just ingested, QC has not run yet.
 - **`'qc_passed'`**: all rules passed. Available for downstream use (forecasting, training).
 - **`'qc_suspect'`**: at least one rule flagged the value as suspect but not definitively wrong. Excluded from downstream use by default but visible to operators.
 - **`'qc_failed'`**: at least one rule flagged the value as invalid. Excluded from downstream use.
+- **`'missing'`**: expected observation not received. The observation row exists as an explicit gap marker with `value = NULL`. Not derived from QC rules — set during gap detection in the observation ingest pipeline. Excluded from downstream use.
 
 Aggregate status is the worst flag: `'qc_failed'` > `'qc_suspect'` > `'qc_passed'`. An observation with no flags after QC completes is `'qc_passed'`. See `docs/spec/types-and-protocols.md` — QcFlag and `aggregate_qc_status()` for the implementation contract.
 
@@ -1795,14 +1797,15 @@ observations:
   station_id: UUID FK
   timestamp: TIMESTAMPTZ
   parameter: TEXT              # canonical name (e.g. "discharge", "precipitation")
-  value: DOUBLE PRECISION      # the observed value (never overwritten by QC)
+  value: DOUBLE PRECISION NULL  # NULL when qc_status = 'missing'; otherwise the observed value (never overwritten by QC)
   source: TEXT                 # ObservationSource: measured | rating_curve_derived | manual_import
   rating_curve_id: UUID NULL FK  # references rating_curves.id — set when source = rating_curve_derived
   rating_curve_correction_version: TEXT NULL  # correction param version — set when source = rating_curve_derived
   qc_status: TEXT              # aggregate QcStatus enum value
-  qc_flags: JSONB              # list[QcFlag], empty list when status = 'raw'
+  qc_flags: JSONB              # list[QcFlag], empty list when status = 'raw' or 'missing'
   qc_rule_version: TEXT NULL   # version of the QC ruleset (set of rules + config) that last evaluated this row; individual per-rule versions are in qc_flags[].rule_version
   created_at: TIMESTAMPTZ
+  -- CHECK: (qc_status = 'missing') = (value IS NULL)
 ```
 
 Supporting enum:

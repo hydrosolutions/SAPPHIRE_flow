@@ -6,6 +6,7 @@ class QcStatus(Enum):
     QC_PASSED = "qc_passed"
     QC_FAILED = "qc_failed"
     QC_SUSPECT = "qc_suspect"
+    MISSING = "missing"
 
 
 class ForecastStatus(Enum):
