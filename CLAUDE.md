@@ -15,6 +15,7 @@ SAPPHIRE Flow is an operational hydrological forecasting system that ingests wea
 - `docs/standards/security.md` — Container privilege model, secrets management, auth/authz, OWASP mitigations. **Read before** any work on Dockerfile, entrypoint, secrets, authentication, or API security.
 - `docs/standards/cicd.md` — Docker Compose topology, named volumes, logging config, health checks, DB migrations, deployment procedures. **Read before** any work on docker-compose.yml, container config, or deployment.
 - `docs/standards/orchestration.md` — Prefect 3 flow mapping, task granularity, fan-out patterns, scheduling, concurrency controls, deployment registration. **Read before** any work on Prefect flows, scheduling, or work pool configuration.
+- `docs/standards/wmo.md` — WMO publication inventory mapped to SAPPHIRE Flow subsystems. **Read before** any work on forecast verification metrics, alert level definitions, ensemble post-processing, observation QC flags, or international data exchange formats.
 
 ## Workflow
 
