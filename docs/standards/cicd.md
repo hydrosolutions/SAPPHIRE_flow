@@ -111,10 +111,11 @@ All containers: `json-file` with `max-size: 50m`, `max-file: 5`. Set in `docker-
 
 ### Application logging
 
-- Format: structured JSON via `structlog`
-- Levels: ERROR (exceptions), WARNING (degraded state, fallbacks), INFO (cycle completions, key events), DEBUG (adapter calls, query timing)
+See [`docs/standards/logging.md`](logging.md) for the full logging strategy: framework configuration, mandatory context fields, event naming taxonomy, log levels, and security constraints. Summary:
+
+- Framework: `structlog` (JSON in prod, console in dev)
 - Logger per module: `structlog.get_logger(__name__)`
-- No `print()` — enforced by ruff rule
+- No `print()` — enforced by ruff rule `T201`
 
 ### Caddy access logs
 

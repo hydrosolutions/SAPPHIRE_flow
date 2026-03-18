@@ -2531,6 +2531,12 @@ Covers: Docker Compose service topology (containers, dependencies, health checks
 
 References (does not redefine): tech stack from this doc, DB connection patterns from conventions.md, partitioning strategy from conventions.md, cold storage layout from this doc, backup/DR plan from this doc.
 
+#### `docs/standards/logging.md`
+
+Covers: structlog framework configuration, mandatory context fields (correlation ID, flow/task/station context), event naming taxonomy, context binding protocol (Prefect fan-out, FastAPI requests), log levels mapped to operational scenarios, audit log vs application log separation, security constraints (PII, secrets).
+
+References (does not redefine): container log driver from cicd.md, audit_log schema from this doc, OWASP A09 from security.md, PipelineHealthRecord from types-and-protocols.md.
+
 ## Tech stack
 
 | Component | Choice |

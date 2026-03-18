@@ -211,6 +211,15 @@ expected_interval_hours = 6.0         # how often Flow 1 should complete
 
 
 # =============================================================================
+# Logging — application-level logging configuration
+# Source: docs/standards/logging.md § Configuration
+# =============================================================================
+
+[logging]
+level = "INFO"                               # Root log level. Per-module override: env var SAPPHIRE_LOG_{MODULE}=DEBUG
+
+
+# =============================================================================
 # Model weather source configuration — per model
 # Source: architecture-context.md § Model weather source configuration
 # =============================================================================

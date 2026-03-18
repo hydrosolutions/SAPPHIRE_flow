@@ -99,6 +99,11 @@ names. The `parameters` table stores the canonical names.
 - Task functions: `verb_noun` — `fetch_weather_forecasts`, `run_model_forecasts`
 - Deployment names: kebab-case — `ingest-weather`, `run-forecasts`
 
+### Log events
+
+- Event names: `{entity}.{action}` — `nwp.fetch_completed`, `observation.qc_failed`, `forecast.stored`
+- See [`docs/standards/logging.md`](standards/logging.md) § Event naming for pattern rules and examples.
+
 ---
 
 ## Adapter registration
