@@ -16,3 +16,4 @@ class Basin(NamedTuple):
     attributes: dict[str, Any] | None
     band_geometries: list[dict] | None  # type: ignore[type-arg]
     created_at: UtcDatetime
+    network: str

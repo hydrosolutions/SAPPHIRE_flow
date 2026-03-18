@@ -20,9 +20,11 @@ if TYPE_CHECKING:
         QcStatus,
         SkillSource,
         StationKind,
+        StationOwnership,
     )
     from sapphire_flow.types.forecast import (
         ForecastAdjustment,
+        ForeignForecast,
         HindcastForecast,
         OperationalForecast,
     )
@@ -32,6 +34,7 @@ if TYPE_CHECKING:
         BasinId,
         ForecastAdjustmentId,
         ForecastId,
+        ForeignForecastId,
         HindcastForecastId,
         ModelId,
         ObservationId,
@@ -144,6 +147,30 @@ class ForecastStore(Protocol):
         model_id: ModelId | None = None,
         status: ForecastStatus | None = None,
     ) -> list[OperationalForecast]:
+        raise NotImplementedError
+
+
+@runtime_checkable
+class ForeignForecastStore(Protocol):
+    def store_foreign_forecast(self, forecast: ForeignForecast) -> ForeignForecastId:
+        raise NotImplementedError
+
+    def fetch_foreign_forecast(
+        self, forecast_id: ForeignForecastId
+    ) -> ForeignForecast | None:
+        raise NotImplementedError
+
+    def fetch_latest_foreign_forecast(
+        self, station_id: StationId
+    ) -> ForeignForecast | None:
+        raise NotImplementedError
+
+    def fetch_foreign_forecasts_in_range(
+        self,
+        station_id: StationId,
+        start: UtcDatetime,
+        end: UtcDatetime,
+    ) -> list[ForeignForecast]:
         raise NotImplementedError
 
 
@@ -373,11 +400,18 @@ class StationStore(Protocol):
     def fetch_station(self, station_id: StationId) -> StationConfig | None:
         raise NotImplementedError
 
-    def fetch_station_by_code(self, code: str) -> StationConfig | None:
+    def fetch_station_by_code(self, code: str, network: str) -> StationConfig | None:
         raise NotImplementedError
 
     def fetch_all_stations(
         self, kind: StationKind | None = None
+    ) -> list[StationConfig]:
+        raise NotImplementedError
+
+    def fetch_stations_by_ownership(
+        self,
+        ownership: StationOwnership,
+        kind: StationKind | None = None,
     ) -> list[StationConfig]:
         raise NotImplementedError
 
@@ -488,7 +522,7 @@ class BasinStore(Protocol):
     def fetch_basin(self, basin_id: BasinId) -> Basin | None:
         raise NotImplementedError
 
-    def fetch_basin_by_code(self, code: str) -> Basin | None:
+    def fetch_basin_by_code(self, code: str, network: str) -> Basin | None:
         raise NotImplementedError
 
     def fetch_all_basins(self) -> list[Basin]:

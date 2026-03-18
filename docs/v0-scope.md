@@ -159,6 +159,7 @@ These are deferred in architecture-context.md. For v0, don't create their tables
 | Manual observation correction | Override columns on observations |
 | Inferred thresholds | Flood frequency analysis service |
 | Dead letter queue | `dead_letter_queue` table (no partitioning = no DLQ needed) |
+| Foreign forecast tables (v1) | `foreign_forecasts`, `foreign_forecast_values` — types/protocols defined, DB tables deferred |
 
 **Rationale**: Empty "for later" tables add migration maintenance burden and clutter the schema.
 
@@ -172,8 +173,8 @@ These are deferred in architecture-context.md. For v0, don't create their tables
 - `parameters` — as designed (canonical parameter names, units, aggregation methods)
 
 ### Core entities
-- `stations` — as designed (without override columns)
-- `basins` — as designed
+- `stations` — as designed (without override columns); includes `network`, `ownership`, `wigos_id` columns; unique constraint is `(network, code)`
+- `basins` — as designed; includes `network` column; unique constraint is `(network, code)`
 - `station_thresholds` — as designed
 - `flow_regime_configs` — as designed
 
@@ -358,6 +359,13 @@ Docker Compose with simplified topology:
 | `init` | custom (sapphire-flow) | One-shot: migrations + deployment registration |
 
 **Not in v0**: PgBouncer, separate training/hindcast workers, restic backup, restore rehearsal.
+
+### F1. Config profiles
+
+Switch deployment configuration via `SAPPHIRE_CONFIG` environment variable pointing to a TOML
+file. Default `config.toml` at repo root (Swiss profile). Other profiles in `config/` directory
+(e.g., `config/uk.toml`). `load_config()` reads `SAPPHIRE_CONFIG` when no path argument is
+provided.
 
 ---
 

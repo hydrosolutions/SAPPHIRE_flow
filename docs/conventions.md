@@ -93,6 +93,14 @@ names. The `parameters` table stores the canonical names.
 - API keys: `SAPPHIRE_DG_API_KEY`, `IEASYHYDRO_API_KEY`
 - Connection strings: `DATABASE_URL` (via PgBouncer), `DATABASE_URL_DIRECT` (admin/migrations)
 
+### Network identifiers
+
+Lowercase, underscore-separated labels identifying the data source network:
+`"bafu"`, `"uk_ea"`, `"usgs"`, `"bfg"`, `"dhm"`.
+
+Set once at import; used as part of the `(network, code)` composite unique
+constraint on `stations` and `basins`.
+
 ### Prefect flows and tasks
 
 - Flow functions: `verb_noun` — `ingest_weather`, `run_forecasts`, `check_alerts`
@@ -132,6 +140,9 @@ or `WeatherReanalysisSource`). `WeatherReanalysisSource` is retained for v1 (Nep
 but not implemented in v0 — training uses station observations. Config loading
 resolves `${VAR}` references from `os.environ` at startup; unresolved references
 raise immediately.
+
+The `foreign_forecast` adapter role is defined via the `ForeignForecastSource` Protocol
+(`protocols/adapters.py`). Implementation deferred — no adapter class exists in v0.
 
 ---
 
@@ -346,3 +357,11 @@ All status/enum columns store TEXT matching the Python enum `.value` (lowercase)
 | `forecast_adjustments` adjustment_type / `AdjustmentType` | `shift`, `scale`, `cap`, `floor` | — |
 | deployment config calendar / `Calendar` | `gregorian`, `bikram_sambat` | — |
 | notification channel / `NotificationChannel` | `email`, `sms`, `webhook` | — |
+| `stations.ownership` / `StationOwnership` | `own`, `foreign` | `foreign` (cannot transition to own) |
+| `ForeignForecastStatus` | `published` | `published` |
+
+---
+
+## Invariants
+
+- **Foreign stations cannot have model assignments.** `model_assignments` must only reference stations with `ownership='own'`. Foreign stations are display-only and never run through local models. Enforced at application layer; DB trigger deferred to v1.

@@ -32,6 +32,7 @@ RefreshTokenId = NewType("RefreshTokenId", UUID)
 # ModelId wraps str, not UUID — entry point name is the stable TEXT PK
 ModelId = NewType("ModelId", str)
 StationGroupId = NewType("StationGroupId", UUID)
+ForeignForecastId = NewType("ForeignForecastId", UUID)
 
 # pipeline_health and audit_log use BIGSERIAL PK — append-only, never
 # referenced by ID from other tables. No NewType wrapper.
@@ -231,6 +232,13 @@ class AuditActorType(Enum):
     USER = "user"
     API_KEY = "api_key"
     SYSTEM = "system"
+
+class StationOwnership(Enum):
+    OWN = "own"
+    FOREIGN = "foreign"
+
+class ForeignForecastStatus(Enum):
+    PUBLISHED = "published"
 ```
 
 ---
@@ -458,6 +466,9 @@ class StationConfig(NamedTuple):
     station_status: StationStatus  # lifecycle state — Flow 1 filters to OPERATIONAL only
     created_at: UtcDatetime
     updated_at: UtcDatetime
+    network: str                       # e.g., "bafu", "uk_ea", "usgs"
+    ownership: StationOwnership        # own = locally managed, foreign = display-only
+    wigos_id: str | None               # WMO station ID, format: 0-{country}-{network}-{local}
 ```
 
 ### ModelAssignment
@@ -512,6 +523,7 @@ class Basin(NamedTuple):
     attributes: dict[str, Any] | None    # from JSONB — static catchment descriptors
     band_geometries: list[dict] | None   # elevation band definitions (computed in Flow 5 step 5.3)
     created_at: UtcDatetime
+    network: str
 ```
 
 Module: `types/basin.py`
@@ -895,6 +907,30 @@ class HindcastForecast(NamedTuple):
     representation: EnsembleRepresentation
     hindcast_run_id: UUID                  # groups all steps of one hindcast execution
     ensemble: ForecastEnsemble             # the values payload
+    created_at: UtcDatetime
+```
+
+Module: `types/forecast.py`
+
+### ForeignForecast
+
+Published forecast pulled from an upstream SAPPHIRE instance for transboundary display.
+DB tables deferred — types and protocols only for v0 (see `v0-scope.md` §B).
+
+```python
+class ForeignForecast(NamedTuple):
+    id: ForeignForecastId
+    station_id: StationId              # must reference a foreign-owned station
+    upstream_instance_url: str         # e.g., "https://sapphire.kyrgyzstan.gov"
+    upstream_station_id: str           # upstream's UUID as string (not our StationId)
+    upstream_forecast_id: str          # upstream's forecast UUID as string
+    issued_at: UtcDatetime
+    valid_from: UtcDatetime            # denormalized from ensemble for range queries
+    valid_to: UtcDatetime
+    representation: EnsembleRepresentation
+    status: ForeignForecastStatus
+    ensemble: ForecastEnsemble
+    fetched_at: UtcDatetime            # when we pulled it (staleness detection)
     created_at: UtcDatetime
 ```
 
@@ -1361,8 +1397,11 @@ class ModelStateStore(Protocol):
 ```python
 class StationStore(Protocol):
     def fetch_station(self, station_id: StationId) -> StationConfig | None: ...
-    def fetch_station_by_code(self, code: str) -> StationConfig | None: ...
+    def fetch_station_by_code(self, code: str, network: str) -> StationConfig | None: ...
     def fetch_all_stations(self, kind: StationKind | None = None) -> list[StationConfig]: ...
+    def fetch_stations_by_ownership(
+        self, ownership: StationOwnership, kind: StationKind | None = None,
+    ) -> list[StationConfig]: ...
     def store_station(self, station: StationConfig) -> StationId: ...
     def fetch_thresholds(self, station_id: StationId) -> list[StationThreshold]: ...
     def store_thresholds(self, thresholds: list[StationThreshold]) -> None: ...
@@ -1435,12 +1474,27 @@ class ForecastAdjustmentStore(Protocol):
         # Returns all adjustments for a forecast, ordered by adjusted_at.
 ```
 
+#### ForeignForecastStore
+
+```python
+@runtime_checkable
+class ForeignForecastStore(Protocol):
+    def store_foreign_forecast(self, forecast: ForeignForecast) -> ForeignForecastId: ...
+    def fetch_foreign_forecast(self, forecast_id: ForeignForecastId) -> ForeignForecast | None: ...
+    def fetch_latest_foreign_forecast(self, station_id: StationId) -> ForeignForecast | None: ...
+    def fetch_foreign_forecasts_in_range(
+        self, station_id: StationId, start: UtcDatetime, end: UtcDatetime,
+    ) -> list[ForeignForecast]: ...
+```
+
+Module: `protocols/stores.py`
+
 #### BasinStore
 
 ```python
 class BasinStore(Protocol):
     def fetch_basin(self, basin_id: BasinId) -> Basin | None: ...
-    def fetch_basin_by_code(self, code: str) -> Basin | None: ...
+    def fetch_basin_by_code(self, code: str, network: str) -> Basin | None: ...
     def fetch_all_basins(self) -> list[Basin]: ...
     def store_basin(self, basin: Basin) -> BasinId: ...
 ```
@@ -1547,6 +1601,22 @@ class WeatherReanalysisSource(Protocol):
     ) -> dict[StationId, BasinAverageForecast | ElevationBandForecast]: ...
         # Station-keyed dict. Reanalysis is always pre-extracted (no gridded path).
 ```
+
+#### ForeignForecastSource
+
+Pulls published forecasts from an upstream SAPPHIRE instance. Implementation deferred to v1.
+
+```python
+@runtime_checkable
+class ForeignForecastSource(Protocol):
+    def fetch_published_forecasts(
+        self,
+        upstream_station_ids: list[str],
+        since: UtcDatetime,
+    ) -> list[ForeignForecast]: ...
+```
+
+Module: `protocols/adapters.py`
 
 #### PipelineStatusSource
 
@@ -1765,7 +1835,7 @@ src/sapphire_flow/
 │   ├── ensemble.py         # ForecastEnsemble
 │   ├── model.py            # ModelInputs, TrainingData, ModelParams, ModelArtifact, ModelArtifactRecord
 │   ├── observation.py      # Observation, RawObservation
-│   ├── forecast.py         # OperationalForecast, HindcastForecast, ForecastAdjustment
+│   ├── forecast.py         # OperationalForecast, HindcastForecast, ForecastAdjustment, ForeignForecast
 │   ├── weather.py          # WeatherForecastRecord, PointForecast, BasinAverageForecast, etc.
 │   ├── alert.py            # Alert
 │   ├── skill.py            # SkillScore, SkillDiagram, FlowRegimeConfig
@@ -1783,9 +1853,10 @@ src/sapphire_flow/
 │   │                       #    WeatherForecastStore, AlertStore, SkillStore,
 │   │                       #    ModelArtifactStore, StationStore, PipelineHealthStore,
 │   │                       #    RatingCurveStore, FlowRegimeConfigStore,
-│   │                       #    ForecastAdjustmentStore, BasinStore,
+│   │                       #    ForecastAdjustmentStore, ForeignForecastStore, BasinStore,
 │   │                       #    ModelStateStore, ModelStore, ParameterStore)
-│   ├── adapters.py         # WeatherForecastSource, StationDataSource, WeatherReanalysisSource
+│   ├── adapters.py         # WeatherForecastSource, StationDataSource, WeatherReanalysisSource,
+│   │                       #   ForeignForecastSource
 │   ├── grid_extractor.py   # GridExtractor
 │   └── notification.py     # NotificationAdapter
 └── config/

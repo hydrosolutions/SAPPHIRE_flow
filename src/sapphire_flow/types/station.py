@@ -11,6 +11,7 @@ if TYPE_CHECKING:
         RegulationType,
         SpatialRepresentation,
         StationKind,
+        StationOwnership,
         StationStatus,
     )
     from sapphire_flow.types.ids import BasinId, ModelId, StationGroupId, StationId
@@ -30,6 +31,9 @@ class StationConfig(NamedTuple):
     station_status: StationStatus
     created_at: UtcDatetime
     updated_at: UtcDatetime
+    network: str
+    ownership: StationOwnership
+    wigos_id: str | None
 
 
 class ModelAssignment(NamedTuple):

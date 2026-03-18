@@ -16,17 +16,20 @@ from sapphire_flow.types.enums import (
     AlertSource,
     AlertStatus,
     EnsembleRepresentation,
+    ForeignForecastStatus,
     ModelArtifactStatus,
     ObservationSource,
     QcStatus,
     RegulationType,
     StationKind,
+    StationOwnership,
     StationStatus,
 )
 from sapphire_flow.types.ids import (
     AlertId,
     ArtifactId,
     BasinId,
+    ForeignForecastId,
     ModelId,
     ObservationId,
     StationId,
@@ -64,6 +67,9 @@ def make_station_config(
     forecast_target: str | None = "discharge",
     measured_parameters: frozenset[str] | None = None,
     station_status: StationStatus = StationStatus.OPERATIONAL,
+    network: str = "bafu",
+    ownership: StationOwnership = StationOwnership.OWN,
+    wigos_id: str | None = None,
     rng: random.Random | None = None,
 ) -> Any:  # returns StationConfig
     from sapphire_flow.types.station import StationConfig
@@ -85,6 +91,9 @@ def make_station_config(
         station_status=station_status,
         created_at=now,
         updated_at=now,
+        network=network,
+        ownership=ownership,
+        wigos_id=wigos_id,
     )
 
 
@@ -278,6 +287,43 @@ def make_alert(
         resolved_at=None,
         first_detected_at=None,
         notified_at=None,
+        created_at=_EPOCH,
+    )
+
+
+def make_foreign_forecast(
+    *,
+    station_id: StationId | None = None,
+    upstream_instance_url: str = "https://sapphire.example.gov",
+    representation: EnsembleRepresentation = EnsembleRepresentation.MEMBERS,
+    n_members: int = 21,
+    n_steps: int = 120,
+    rng: random.Random | None = None,
+) -> Any:  # returns ForeignForecast
+    from sapphire_flow.types.forecast import ForeignForecast
+
+    rng = rng or random.Random(_RNG_SEED)
+    sid = station_id or StationId(_uuid(rng))
+    ensemble = make_forecast_ensemble(
+        station_id=sid,
+        representation=representation,
+        n_members=n_members,
+        n_steps=n_steps,
+        rng=rng,
+    )
+    return ForeignForecast(
+        id=ForeignForecastId(_uuid(rng)),
+        station_id=sid,
+        upstream_instance_url=upstream_instance_url,
+        upstream_station_id=str(_uuid(rng)),
+        upstream_forecast_id=str(_uuid(rng)),
+        issued_at=_EPOCH,
+        valid_from=_EPOCH,
+        valid_to=_utc(2025, 1, 6),
+        representation=representation,
+        status=ForeignForecastStatus.PUBLISHED,
+        ensemble=ensemble,
+        fetched_at=_EPOCH,
         created_at=_EPOCH,
     )
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from sapphire_flow.types.datetime import UtcDatetime  # noqa: TC001
+from sapphire_flow.types.forecast import ForeignForecast  # noqa: TC001
 from sapphire_flow.types.ids import StationId  # noqa: TC001
 from sapphire_flow.types.observation import RawObservation  # noqa: TC001
 from sapphire_flow.types.pipeline import FlowRunStatus  # noqa: TC001
@@ -41,6 +42,22 @@ class FakeStationDataSource:
         since: dict[StationId, UtcDatetime],
     ) -> list[RawObservation]:
         return self._observations
+
+
+class FakeForeignForecastSource:
+    def __init__(self, forecasts: list[ForeignForecast] | None = None) -> None:
+        self._forecasts = forecasts or []
+
+    def fetch_published_forecasts(
+        self,
+        upstream_station_ids: list[str],
+        since: UtcDatetime,
+    ) -> list[ForeignForecast]:
+        return [
+            f
+            for f in self._forecasts
+            if f.upstream_station_id in upstream_station_ids and f.fetched_at >= since
+        ]
 
 
 class FakePipelineStatusSource:

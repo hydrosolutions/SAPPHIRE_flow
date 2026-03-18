@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
+    from sapphire_flow.types.forecast import ForeignForecast
     from sapphire_flow.types.ids import StationId
     from sapphire_flow.types.observation import RawObservation
     from sapphire_flow.types.pipeline import FlowRunStatus
@@ -45,6 +46,16 @@ class WeatherReanalysisSource(Protocol):
         end: UtcDatetime,
         parameters: list[str],
     ) -> dict[StationId, BasinAverageForecast | ElevationBandForecast]:
+        raise NotImplementedError
+
+
+@runtime_checkable
+class ForeignForecastSource(Protocol):
+    def fetch_published_forecasts(
+        self,
+        upstream_station_ids: list[str],
+        since: UtcDatetime,
+    ) -> list[ForeignForecast]:
         raise NotImplementedError
 
 

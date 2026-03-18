@@ -689,6 +689,7 @@ Transitions (shown as DB values):
   'operational' → 'suspended'       model admin action (sensor issues, maintenance). Forecasting pauses.
   'suspended' → 'operational'       model admin action. Precondition: ≥1 active model artifact still exists.
   'operational' → 'decommissioned'  model admin action. Permanent — data retained, forecasting stops.
+  'suspended' → 'decommissioned'    model admin action. Permanent — no need to unsuspend first.
   'onboarding' → 'decommissioned'   abandoned onboarding.
 ```
 
@@ -2172,6 +2173,8 @@ RegulationType enum (Python members → DB values):
 
 Index: `GIST (location)` for spatial queries. `station_kind` filter index for typed listing. `station_status` filter index for Flow 1 (`WHERE station_status = 'operational'`).
 
+The `network` field scopes station codes for multi-network registries (e.g., `"bafu"`, `"uk_ea"`, `"usgs"`). `StationOwnership` (`own` | `foreign`) distinguishes locally managed stations from display-only foreign stations pulled from upstream SAPPHIRE instances. The `wigos_id` (nullable) stores the WMO station identifier for transboundary data exchange.
+
 ### `station_thresholds` table
 
 Per-station alert threshold values. Separate from `stations` because thresholds may be added later or come from a different source. Not all danger levels need to be defined for every station — undefined levels are skipped.
@@ -2411,6 +2414,8 @@ API-first data export confirmed. Known consumers for v1 (Nepal):
 
 All consumers pull from the REST API. API keys are scoped per consumer (per authority or state). No push-based integrations. The API supports JSON (default) and CSV export.
 
+`ForeignForecast` type and `ForeignForecastStore` / `ForeignForecastSource` protocols support downstream consumption of published forecasts from upstream SAPPHIRE instances. DB tables deferred to v1; types and protocols defined for v0.
+
 ---
 
 ## Notification channels
@@ -2480,6 +2485,8 @@ src/sapphire_flow/
 ├── config/         # Settings (config.toml + env vars)
 └── preprocessing/  # NWP spatial extraction (GridExtractor)
 ```
+
+`SAPPHIRE_CONFIG` environment variable enables deployment profile switching. `load_config()` reads this env var when no explicit path is provided. Default profile: `config.toml` (Swiss). Other profiles in `config/` directory.
 
 ## Layering rule
 

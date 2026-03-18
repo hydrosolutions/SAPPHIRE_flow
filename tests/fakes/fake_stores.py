@@ -25,9 +25,11 @@ from sapphire_flow.types.enums import (
     QcStatus,
     SkillSource,
     StationKind,
+    StationOwnership,
 )
 from sapphire_flow.types.forecast import (  # noqa: TC001
     ForecastAdjustment,
+    ForeignForecast,
     HindcastForecast,
     OperationalForecast,
 )
@@ -37,6 +39,7 @@ from sapphire_flow.types.ids import (
     BasinId,
     ForecastAdjustmentId,
     ForecastId,
+    ForeignForecastId,
     HindcastForecastId,
     ModelId,
     ObservationId,
@@ -601,14 +604,32 @@ class FakeStationStore:
     def fetch_station(self, station_id: StationId) -> StationConfig | None:
         return self._stations.get(station_id)
 
-    def fetch_station_by_code(self, code: str) -> StationConfig | None:
-        return next((s for s in self._stations.values() if s.code == code), None)
+    def fetch_station_by_code(self, code: str, network: str) -> StationConfig | None:
+        return next(
+            (
+                s
+                for s in self._stations.values()
+                if s.code == code and s.network == network
+            ),
+            None,
+        )
 
     def fetch_all_stations(
         self, kind: StationKind | None = None
     ) -> list[StationConfig]:
         return [
             s for s in self._stations.values() if kind is None or s.station_kind == kind
+        ]
+
+    def fetch_stations_by_ownership(
+        self,
+        ownership: StationOwnership,
+        kind: StationKind | None = None,
+    ) -> list[StationConfig]:
+        return [
+            s
+            for s in self._stations.values()
+            if s.ownership == ownership and (kind is None or s.station_kind == kind)
         ]
 
     def store_station(self, station: StationConfig) -> StationId:
@@ -793,8 +814,15 @@ class FakeBasinStore:
     def fetch_basin(self, basin_id: BasinId) -> Basin | None:
         return self._basins.get(basin_id)
 
-    def fetch_basin_by_code(self, code: str) -> Basin | None:
-        return next((b for b in self._basins.values() if b.code == code), None)
+    def fetch_basin_by_code(self, code: str, network: str) -> Basin | None:
+        return next(
+            (
+                b
+                for b in self._basins.values()
+                if b.code == code and b.network == network
+            ),
+            None,
+        )
 
     def fetch_all_basins(self) -> list[Basin]:
         return list(self._basins.values())
@@ -817,3 +845,35 @@ class FakeParameterStore:
     def seed(self, params: list[ParameterDefinition]) -> None:
         for p in params:
             self._params[p.name] = p
+
+
+class FakeForeignForecastStore:
+    def __init__(self) -> None:
+        self._forecasts: dict[ForeignForecastId, ForeignForecast] = {}
+
+    def store_foreign_forecast(self, forecast: ForeignForecast) -> ForeignForecastId:
+        self._forecasts[forecast.id] = forecast
+        return forecast.id
+
+    def fetch_foreign_forecast(
+        self, forecast_id: ForeignForecastId
+    ) -> ForeignForecast | None:
+        return self._forecasts.get(forecast_id)
+
+    def fetch_latest_foreign_forecast(
+        self, station_id: StationId
+    ) -> ForeignForecast | None:
+        matches = [f for f in self._forecasts.values() if f.station_id == station_id]
+        return max(matches, key=lambda f: f.issued_at) if matches else None
+
+    def fetch_foreign_forecasts_in_range(
+        self,
+        station_id: StationId,
+        start: UtcDatetime,
+        end: UtcDatetime,
+    ) -> list[ForeignForecast]:
+        return [
+            f
+            for f in self._forecasts.values()
+            if f.station_id == station_id and start <= f.issued_at <= end
+        ]

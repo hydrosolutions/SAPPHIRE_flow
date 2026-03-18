@@ -11,12 +11,14 @@ if TYPE_CHECKING:
         EnsembleRepresentation,
         ForcingType,
         ForecastStatus,
+        ForeignForecastStatus,
         WarmUpSource,
     )
     from sapphire_flow.types.ids import (
         ArtifactId,
         ForecastAdjustmentId,
         ForecastId,
+        ForeignForecastId,
         HindcastForecastId,
         ModelId,
         StationId,
@@ -62,3 +64,19 @@ class ForecastAdjustment(NamedTuple):
     adjusted_at: UtcDatetime
     rationale: str
     adjustments: list[dict]  # type: ignore[type-arg]
+
+
+class ForeignForecast(NamedTuple):
+    id: ForeignForecastId
+    station_id: StationId
+    upstream_instance_url: str
+    upstream_station_id: str
+    upstream_forecast_id: str
+    issued_at: UtcDatetime
+    valid_from: UtcDatetime
+    valid_to: UtcDatetime
+    representation: EnsembleRepresentation
+    status: ForeignForecastStatus
+    ensemble: ForecastEnsemble
+    fetched_at: UtcDatetime
+    created_at: UtcDatetime

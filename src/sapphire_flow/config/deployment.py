@@ -135,9 +135,14 @@ def _resolve_env_vars(text: str) -> str:
     return _ENV_VAR_PATTERN.sub(_replace, text)
 
 
-def load_config(path: Path | str) -> DeploymentConfig:
+def load_config(path: Path | str | None = None) -> DeploymentConfig:
     from pathlib import Path as _Path
 
+    if path is None:
+        env_path = os.environ.get("SAPPHIRE_CONFIG")
+        if env_path is None:
+            raise ValueError("No config path provided and SAPPHIRE_CONFIG is not set")
+        path = env_path
     path = _Path(path)
     raw_text = path.read_text()
     resolved_text = _resolve_env_vars(raw_text)

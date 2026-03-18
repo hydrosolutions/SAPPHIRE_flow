@@ -43,7 +43,7 @@ basins = sa.Table(
     "basins",
     metadata,
     sa.Column("id", UUID(as_uuid=True), primary_key=True),
-    sa.Column("code", sa.Text, nullable=False, unique=True),
+    sa.Column("code", sa.Text, nullable=False),
     sa.Column("name", sa.Text, nullable=False),
     sa.Column(
         "geometry",
@@ -59,13 +59,15 @@ basins = sa.Table(
         nullable=False,
         server_default=sa.func.now(),
     ),
+    sa.Column("network", sa.Text, nullable=False),
+    sa.UniqueConstraint("network", "code", name="uq_basins_network_code"),
 )
 
 stations = sa.Table(
     "stations",
     metadata,
     sa.Column("id", UUID(as_uuid=True), primary_key=True),
-    sa.Column("code", sa.Text, nullable=False, unique=True),
+    sa.Column("code", sa.Text, nullable=False),
     sa.Column("name", sa.Text, nullable=False),
     sa.Column("location", Geometry("POINT", srid=4326), nullable=False),
     sa.Column("altitude_masl", sa.Float, nullable=True),
@@ -104,6 +106,16 @@ stations = sa.Table(
         nullable=False,
         server_default=sa.func.now(),
     ),
+    sa.Column("network", sa.Text, nullable=False),
+    sa.Column(
+        "ownership",
+        sa.Text,
+        sa.CheckConstraint("ownership IN ('own', 'foreign')"),
+        nullable=False,
+        server_default="own",
+    ),
+    sa.Column("wigos_id", sa.Text, nullable=True),
+    sa.UniqueConstraint("network", "code", name="uq_stations_network_code"),
 )
 
 station_thresholds = sa.Table(
@@ -394,6 +406,9 @@ sa.Index(
     ),
 )
 
+# INVARIANT: model_assignments must only reference stations with ownership='own'.
+# Foreign stations are display-only and never run through local models.
+# Enforced at application layer; DB trigger deferred to v1.
 model_assignments = sa.Table(
     "model_assignments",
     metadata,

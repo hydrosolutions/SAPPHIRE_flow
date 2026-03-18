@@ -189,3 +189,12 @@ class AuditActorType(Enum):
     USER = "user"
     API_KEY = "api_key"
     SYSTEM = "system"
+
+
+class StationOwnership(Enum):
+    OWN = "own"
+    FOREIGN = "foreign"
+
+
+class ForeignForecastStatus(Enum):
+    PUBLISHED = "published"

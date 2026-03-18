@@ -100,6 +100,22 @@ class TestDeploymentConfig:
         assert len(schemes[0].bands) == 3
         assert schemes[0].bands[0].label == "no skill"
 
+    def test_load_config_from_env_var(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        toml = tmp_path / "profile.toml"
+        toml.write_text("max_retention_days = 4000\n")
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(toml))
+        config = load_config()
+        assert config.max_retention_days == 4000
+
+    def test_load_config_no_path_no_env_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("SAPPHIRE_CONFIG", raising=False)
+        with pytest.raises(ValueError, match="SAPPHIRE_CONFIG"):
+            load_config()
+
     def test_config_reference_toml_loads(self) -> None:
         from pathlib import Path as _Path
 

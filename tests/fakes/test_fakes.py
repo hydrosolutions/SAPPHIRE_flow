@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from sapphire_flow.protocols.adapters import (
+    ForeignForecastSource,
     PipelineStatusSource,
     StationDataSource,
     WeatherForecastSource,
@@ -15,6 +16,7 @@ from sapphire_flow.protocols.stores import (
     FlowRegimeConfigStore,
     ForecastAdjustmentStore,
     ForecastStore,
+    ForeignForecastStore,
     HindcastStore,
     ModelArtifactStore,
     ModelStateStore,
@@ -29,6 +31,7 @@ from sapphire_flow.protocols.stores import (
     WeatherForecastStore,
 )
 from tests.fakes.fake_adapters import (
+    FakeForeignForecastSource,
     FakePipelineStatusSource,
     FakeStationDataSource,
     FakeWeatherForecastSource,
@@ -41,6 +44,7 @@ from tests.fakes.fake_stores import (
     FakeFlowRegimeConfigStore,
     FakeForecastAdjustmentStore,
     FakeForecastStore,
+    FakeForeignForecastStore,
     FakeHindcastStore,
     FakeModelArtifactStore,
     FakeModelStateStore,
@@ -108,6 +112,9 @@ class TestFakeStoreConformance:
     def test_parameter_store(self) -> None:
         assert isinstance(FakeParameterStore(), ParameterStore)
 
+    def test_foreign_forecast_store(self) -> None:
+        assert isinstance(FakeForeignForecastStore(), ForeignForecastStore)
+
 
 class TestFakeAdapterConformance:
     def test_weather_forecast_source(self) -> None:
@@ -118,6 +125,9 @@ class TestFakeAdapterConformance:
 
     def test_pipeline_status_source(self) -> None:
         assert isinstance(FakePipelineStatusSource(), PipelineStatusSource)
+
+    def test_foreign_forecast_source(self) -> None:
+        assert isinstance(FakeForeignForecastSource(), ForeignForecastSource)
 
 
 class TestFakeModelConformance:
