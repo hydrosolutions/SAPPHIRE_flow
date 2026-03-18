@@ -21,4 +21,5 @@ class GridExtractor(Protocol):
         basins: dict[StationId, Basin],
         cycle_time: UtcDatetime,
         nwp_source: str,
-    ) -> dict[StationId, BasinAverageForecast | ElevationBandForecast]: ...
+    ) -> dict[StationId, BasinAverageForecast | ElevationBandForecast]:
+        raise NotImplementedError

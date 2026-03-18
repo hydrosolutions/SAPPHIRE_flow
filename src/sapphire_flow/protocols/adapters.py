@@ -22,7 +22,8 @@ class WeatherForecastSource(Protocol):
         self,
         station_configs: list[StationWeatherSource],
         cycle_time: UtcDatetime,
-    ) -> GriddedForecast | dict[StationId, WeatherForecastResult]: ...
+    ) -> GriddedForecast | dict[StationId, WeatherForecastResult]:
+        raise NotImplementedError
 
 
 @runtime_checkable
@@ -31,7 +32,8 @@ class StationDataSource(Protocol):
         self,
         station_configs: list[StationConfig],
         since: dict[StationId, UtcDatetime],
-    ) -> list[RawObservation]: ...
+    ) -> list[RawObservation]:
+        raise NotImplementedError
 
 
 @runtime_checkable
@@ -42,7 +44,8 @@ class WeatherReanalysisSource(Protocol):
         start: UtcDatetime,
         end: UtcDatetime,
         parameters: list[str],
-    ) -> dict[StationId, BasinAverageForecast | ElevationBandForecast]: ...
+    ) -> dict[StationId, BasinAverageForecast | ElevationBandForecast]:
+        raise NotImplementedError
 
 
 @runtime_checkable
@@ -51,4 +54,5 @@ class PipelineStatusSource(Protocol):
         self,
         flow_names: list[str],
         since: UtcDatetime,
-    ) -> list[FlowRunStatus]: ...
+    ) -> list[FlowRunStatus]:
+        raise NotImplementedError

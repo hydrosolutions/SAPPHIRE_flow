@@ -16,4 +16,5 @@ class NotificationAdapter(Protocol):
         subject: str,
         body: str,
         alert: Alert | None = None,
-    ) -> None: ...
+    ) -> None:
+        raise NotImplementedError

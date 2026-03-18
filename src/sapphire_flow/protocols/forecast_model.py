@@ -28,16 +28,23 @@ class StationForecastModel(Protocol):
 
     def train(
         self, data: TrainingData, params: ModelParams, rng: random.Random
-    ) -> ModelArtifact: ...
+    ) -> ModelArtifact:
+        raise NotImplementedError
+
     def predict(
         self,
         artifact: ModelArtifact,
         inputs: ModelInputs,
         rng: random.Random,
         prior_state: bytes | None = None,
-    ) -> tuple[ForecastEnsemble, bytes | None]: ...
-    def serialize_artifact(self, artifact: ModelArtifact) -> bytes: ...
-    def deserialize_artifact(self, raw: bytes) -> ModelArtifact: ...
+    ) -> tuple[ForecastEnsemble, bytes | None]:
+        raise NotImplementedError
+
+    def serialize_artifact(self, artifact: ModelArtifact) -> bytes:
+        raise NotImplementedError
+
+    def deserialize_artifact(self, raw: bytes) -> ModelArtifact:
+        raise NotImplementedError
 
 
 @runtime_checkable
@@ -50,15 +57,22 @@ class GroupForecastModel(Protocol):
 
     def train(
         self, data: GroupTrainingData, params: ModelParams, rng: random.Random
-    ) -> ModelArtifact: ...
+    ) -> ModelArtifact:
+        raise NotImplementedError
+
     def predict_batch(
         self,
         artifact: ModelArtifact,
         inputs: dict[StationId, ModelInputs],
         rng: random.Random,
-    ) -> dict[StationId, tuple[ForecastEnsemble, bytes | None]]: ...
-    def serialize_artifact(self, artifact: ModelArtifact) -> bytes: ...
-    def deserialize_artifact(self, raw: bytes) -> ModelArtifact: ...
+    ) -> dict[StationId, tuple[ForecastEnsemble, bytes | None]]:
+        raise NotImplementedError
+
+    def serialize_artifact(self, artifact: ModelArtifact) -> bytes:
+        raise NotImplementedError
+
+    def deserialize_artifact(self, raw: bytes) -> ModelArtifact:
+        raise NotImplementedError
 
 
 ForecastModel = StationForecastModel | GroupForecastModel
