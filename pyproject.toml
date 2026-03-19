@@ -1,6 +1,6 @@
 [project]
 name = "sapphire-flow"
-version = "0.1.30"
+version = "0.1.31"
 description = "Add your description here"
 readme = "README.md"
 license = "MIT"
@@ -46,7 +46,7 @@ select = ["E", "F", "I", "N", "UP", "B", "A", "SIM", "TCH"]
 testpaths = ["tests"]
 
 [tool.bumpversion]
-current_version = "0.1.30"
+current_version = "0.1.31"
 commit = false
 tag = false
 allow_dirty = true

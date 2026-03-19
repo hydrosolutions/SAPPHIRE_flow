@@ -93,7 +93,7 @@ Steps 1.2, 1.3, 1.4, and 1.9 are **conditional** — see notes.
 
 - **1.1**: One fetch per NWP source. Gridded sources (e.g. ICON-CH2-EPS, ECMWF IFS) return a single `GriddedForecast`; pre-extracted sources (Data Gateway, point stations) return `dict[StationId, WeatherForecastResult]`. See "Weather forecast data flows" section and `WeatherForecastSource` Protocol in types-and-protocols.md.
 - **1.2** *(conditional)*: Archives the raw gridded NWP data (e.g. GRIB2 files) to object storage before any extraction or post-processing. Only applies when 1.1 returns a `GriddedForecast` (i.e. gridded source, not pre-extracted). Skipped when the SAPPHIRE Data Gateway handles NWP archiving upstream. Enables reprocessing (re-extraction with changed station geometries, new variables) without re-fetching from the NWP provider. **Tiered retention**: raw grids stay in hot storage (local disk / object store, original format) for `weather_hot_days` (default 180). After that, a scheduled Prefect task compresses them (zstd) and moves them to cold storage (`cold/nwp_grids/{nwp_source}/{cycle_date}/`). Cold grids are deleted at `max_retention_days`. The archival task is idempotent (compress → verify → move → verify → delete hot copy).
-- **1.3** *(conditional)*: Bulk extraction via `GridExtractor` Protocol. Receives the full grid + `StationWeatherSource` configs + `basins` dict (geometry resolved from `basins` table via station→basin FK), returns `dict[StationId, BasinAverageForecast | ElevationBandForecast]`. Mixed extraction types (basin-average and elevation-band) handled in one grid read. Skipped when 1.1 returns a pre-extracted dict. v0: GridExtractor on ICON-CH2-EPS.
+- **1.3** *(conditional)*: Bulk extraction via `GridExtractor` Protocol. Receives the full grid + `StationWeatherSource` configs + `basins` dict (geometry resolved from `basins` table via station→basin FK), returns `dict[StationId, BasinAverageForecast | ElevationBandForecast]`. Mixed extraction types (basin-average and elevation-band) handled in one grid read. Skipped when 1.1 returns a pre-extracted dict. v0a: skipped entirely (point weather data only — see v0-scope.md §A11). v0b+: GridExtractor on ICON-CH2-EPS.
 - **1.4** *(conditional)*: Only needed when no upstream gateway handles archiving. Archives the full `dict[StationId, ...]` per NWP source in bulk. Archive happens *before* post-processing so raw extracted values are preserved. Tiered retention: hot (PostgreSQL) for `weather_hot_days` → cold (Parquet) → deleted at `max_retention_days`. Each archived row records `spatial_type` at archival time (from the adapter's spatial representation) — this is denormalized from `station_weather_sources.extraction_type` so archived data remains self-describing if a station's extraction config changes later.
 - **1.5**: NWP post-processing. Operates on the full `dict[StationId, ...]` per NWP source. May include bias correction (quantile mapping), ensemble calibration, downscaling — configured per model per deployment. Preserves or transforms the spatial representation (see "Weather forecast data flows"). Pass-through until sufficient archive (6–12 months) for bias correction. Distinct from forecast output correction in 1.9.
 - **1.6**: Reads QC'd observations from the store. Flow 2 (observation ingest + QC) runs on its own schedule (e.g. every 30 min) — this step reads the *result*, not raw station feeds. The two flows are decoupled. Future option: add a top-up QC call at the start of Flow 1 to guarantee freshness (trivial — reuses the same QC service function). **Staleness guard**: if the most recent observation for a station is older than a deployment-configurable threshold (e.g. 6h), the forecast proceeds with a warning flag on the forecast record (`observation_staleness_hours`) visible to forecasters in the API and dashboard. Flow 4 detects prolonged staleness independently.
@@ -106,7 +106,7 @@ Steps 1.2, 1.3, 1.4, and 1.9 are **conditional** — see notes.
 - **1.10**: Each forecast record links to the model artifact version that produced it.
 - **1.11**: Probability-based: P(Q > threshold) for ABOVE levels, P(Q < threshold) for BELOW levels. See "Danger levels and threshold configuration" section below for the full config shape. Only evaluates levels where the station has a defined threshold value — undefined levels are skipped (no alert, no display). The exceedance probability that triggers an alert is deployment-configurable per danger level. Defaults must be set; hydromet operations staff confirm acceptable false alarm rates before production deployment.
 - **1.12**: Deduplication via partial unique index. Auto-resolution uses hysteresis to prevent alert flapping: separate `trigger_probability` and `resolve_probability` thresholds per danger level (resolve threshold lower than trigger), and configurable minimum duration (`min_trigger_duration` / `min_resolve_duration`) before triggering or resolving. Time-based durations are schedule-independent — they work correctly for both 30-min observation cycles and 6-hourly forecast cycles. Without hysteresis, ensemble probability oscillation between NWP cycles causes fire-resolve-fire loops and alert fatigue.
-- **1.11–1.13** *(v0 testing)*: Phase C is **optional during v0**. A deployment-level flag (`enable_alert_cycle`, default `false` for v0) controls whether these steps run. When enabled during testing, alerts are **informational only** — stored in the DB and logged, but notifications (1.13) are suppressed (no external push). This lets the team validate threshold logic and hysteresis tuning against real forecasts without operational consequences.
+- **1.11–1.13** *(v0 testing)*: Phase C is **optional during v0**. A deployment-level flag (`enable_forecast_alerts`, default `false` for v0) controls whether these steps run. When enabled during testing, alerts are **informational only** — stored in the DB and logged, but notifications (1.13) are suppressed (no external push). This lets the team validate threshold logic and hysteresis tuning against real forecasts without operational consequences.
 - **1.13**: Async. Failed notifications retried by sweep task (every 5 min).
 - **API serving**: No explicit step — the API reads persisted results from the DB. Storing in 1.10 makes forecasts available; publishing happens via Flow 3 (forecast review). The API also serves archived forcing time series (precipitation, temperature, and other predictors) alongside forecasts — see API design notes.
 
@@ -1269,7 +1269,7 @@ station_group_members:
   PK: (group_id, station_id)
 ```
 
-A station can belong to multiple groups (e.g. one group per ML model trained on different subsets). Group membership is managed during station onboarding (Flow 5 step 5.5) and can be updated independently.
+A station can belong to multiple groups (e.g. one group per ML model trained on different subsets). Group membership is managed during station onboarding (Flow 5 step 5.10) and can be updated independently.
 
 #### `model_artifacts` table (trained instances)
 
@@ -2146,7 +2146,7 @@ Central entity — referenced by observations, forecasts, alerts, model assignme
 ```
 stations:
   id: UUID PK
-  code: TEXT UNIQUE                        # human-readable reference, e.g. "ABC-001"
+  code: TEXT                                # human-readable reference, e.g. "ABC-001"
   name: TEXT
   location: GEOMETRY(POINT, 4326)          # PostGIS point (lon, lat)
   altitude_masl: DOUBLE PRECISION NULL     # meters above mean sea level; NULL if unknown
@@ -2157,9 +2157,14 @@ stations:
   forecast_target: TEXT NULL               # "discharge", "water_level", or "both" (NULL for weather stations)
   measured_parameters: TEXT[]              # canonical parameter names this station reports, e.g. {"discharge", "water_level"}
   station_status: TEXT DEFAULT 'onboarding'  # StationStatus: onboarding | operational | suspended | decommissioned
+  network: TEXT NOT NULL                   # scopes station codes for multi-network registries (e.g. "bafu", "uk_ea")
+  ownership: TEXT DEFAULT 'own'            # StationOwnership: own | foreign
+  wigos_id: TEXT NULL                      # WMO station identifier for transboundary exchange
   created_at: TIMESTAMPTZ
   updated_at: TIMESTAMPTZ
 ```
+
+Unique constraint: `(network, code)` — station codes are unique within a network, not globally.
 
 Supporting enums:
 
@@ -2196,7 +2201,8 @@ station_thresholds:
 ```
 basins:
   id: UUID PK
-  code: TEXT UNIQUE                        # human-readable reference, e.g. "BASIN-01"
+  code: TEXT                                # human-readable reference, e.g. "BASIN-01"
+  network: TEXT NOT NULL                   # scopes basin codes for multi-network registries
   name: TEXT
   geometry: GEOMETRY(MULTIPOLYGON, 4326)   # PostGIS
   area_km2: DOUBLE PRECISION NULL
@@ -2212,6 +2218,8 @@ basins:
                                            #   Computed during station onboarding (Flow 5 step 5.3).
   created_at: TIMESTAMPTZ
 ```
+
+Unique constraint: `(network, code)` — basin codes are unique within a network, not globally.
 
 Spatial index: `GIST (geometry)` for spatial queries in station onboarding (Flow 5 step 5.3).
 

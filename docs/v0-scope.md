@@ -19,21 +19,23 @@
 | Priority | Flow | v0 scope |
 |----------|------|----------|
 | 1 | **Flow 5/5w** — Station onboarding | Simplified bootstrap script (see A4 below). TOML import, historical obs, QC, baselines, model assignments. No dashboard, no progress tracking. |
-| 2 | **Flow 2** — Observation ingest + QC | Stage 1 QC only. No rating curves (BAFU provides Q directly). Alerting steps optional (`enable_alert_cycle`). |
+| 2 | **Flow 2** — Observation ingest + QC | Stage 1 QC only. No rating curves (BAFU provides Q directly). Alerting steps optional (`enable_observation_alerts`). |
 | 3 | **Flow 6 → 7 → 8** — Train → hindcast → skill | Auto-promote (no approval gate). Full skill metric suite (CRPS, CRPSss, BSS, POD/FAR/CSI, peak timing, NSE, KGE, PBIAS, MAE, diagrams). |
-| 4 | **Flow 1** — Forecast cycle | **v0a**: point weather forecast data (pre-extracted); steps 1.2, 1.3, 1.4 skipped entirely. **v0b+**: gridded NWP (ICON-CH2-EPS) with GridExtractor. Steps 1.5 (NWP post-process) and 1.9 (forecast post-process) are pass-through throughout v0. Alerting (1.11-1.13) off by default. |
+| 4 | **Flow 1** — Forecast cycle | **v0a**: point weather forecast data (pre-extracted); steps 1.2, 1.3, 1.4 skipped entirely. **v0b+**: gridded NWP (ICON-CH2-EPS) with GridExtractor. Steps 1.5 (NWP post-process) and 1.9 (forecast post-process) are pass-through throughout v0. Alerting (1.11-1.13) controlled by `enable_forecast_alerts` (default `false`). |
 | — | **API** | FastAPI with basic CRUD for stations, observations, forecasts, alerts. No auth. Health endpoint. |
+| — | **Flow 12B** — Manual CSV import | Branch B only (validate CSV, ingest with `source = 'manual_import'`, run QC). Branches A (rating curve reprocessing) and C (QC re-evaluation) deferred. |
 
 ### Deferred beyond v0
 
 | Flow | Earliest | Why |
 |------|----------|-----|
 | Flow 3 — Forecast review | v1 | No dashboard |
-| Flow 4 — Pipeline monitoring | v0c or v1 | Manual supervision suffices at ~50 stations |
+| Flow 4 — Pipeline monitoring | v0c or v1 | Manual supervision suffices at ~50 stations. Health endpoint (`/api/v1/health`) does lightweight live checks (DB ping, Prefect heartbeat) independently — does not require Flow 4. `pipeline_health` table exists but is not populated until Flow 4 is implemented. |
 | Flow 9 — Model retraining (comparison) | v1 | Only initial training needed |
 | Flow 10 — Skill recomputation (broad) | v1 | Flow 8 (narrow) covers v0 |
 | Flow 11 — NWP gap recovery | v0c or v1 | Gaps accepted and logged |
 | Flow 12 — Observation reprocessing | Branch B ad-hoc only | Branch A (rating curves) requires v1 |
+| NWP lateness fallback | v0b or v1 | Manual monitoring suffices; three-stage strategy (wait → fallback cycle → skip) implemented when gridded NWP is added |
 
 ---
 
@@ -94,7 +96,7 @@ Implement the full skill metric suite: CRPS, CRPSss (climatology + persistence b
 
 **Full design**: 5 statuses (training → pending_approval → active → superseded → rejected), approval gate.
 
-**v0**: 2 statuses: `active` and `superseded`. Training produces artifact → auto-promote → done. No approval gate.
+**v0**: 3 statuses: `training`, `active`, and `superseded`. Training produces artifact with `training` status → auto-promote to `active` → done. No approval gate. `active` → `superseded` when replaced by a newer artifact.
 
 ### A8. No notification system
 
@@ -112,7 +114,18 @@ Implement the full skill metric suite: CRPS, CRPSss (climatology + persistence b
 
 **Full design**: Configurable — check on raw forecasts, published forecasts, or both (see architecture-context.md).
 
-**v0**: Raw only. Flow 3 (forecast review) is deferred, so no `reviewed`→`published` transition exists. All forecasts stay `raw`. Threshold checks (1.11-1.13) run immediately after model output, when enabled via `enable_alert_cycle`.
+**v0**: Raw only. Flow 3 (forecast review) is deferred, so no `reviewed`→`published` transition exists. All forecasts stay `raw`. Threshold checks (1.11-1.13) run immediately after model output, when enabled via `enable_forecast_alerts`.
+
+### A8c. Per-source alert enablement
+
+**Full design**: All alert sources active by default.
+
+**v0**: Three independent flags in `DeploymentConfig`, all default `false`:
+- `enable_forecast_alerts` — gates Flow 1 Phase C (steps 1.11–1.13)
+- `enable_observation_alerts` — gates Flow 2 steps 2.8–2.10
+- `enable_pipeline_alerts` — gates Flow 4 steps 4.6–4.7
+
+Rationale: per-source flags allow incremental activation during testing — pipeline alerts first (ops team, low risk), then observation alerts (simple value-vs-threshold), then forecast alerts (probability-based, needs hysteresis tuning). Aligns with the three `AlertSource` enum values (`forecast`, `observation`, `pipeline`).
 
 ### A9. No forecast adjustments
 
@@ -170,7 +183,7 @@ These are deferred in architecture-context.md. For v0, don't create their tables
 22 tables. No partitioning, no DLQ, no auth, no cold storage dispatch.
 
 ### Reference data
-- `parameters` — as designed (canonical parameter names, units, aggregation methods)
+- `parameters` — as designed (canonical parameter names, units, aggregation methods). Seeded via Alembic migration with the 10 canonical parameters defined in `architecture-context.md`.
 
 ### Core entities
 - `stations` — as designed (without override columns); includes `network`, `ownership`, `wigos_id` columns; unique constraint is `(network, code)`
@@ -185,7 +198,7 @@ These are deferred in architecture-context.md. For v0, don't create their tables
 - `models` — as designed
 - `station_groups` — as designed
 - `station_group_members` — as designed
-- `model_artifacts` — as designed but status enum reduced to `active | superseded` only
+- `model_artifacts` — as designed but status enum reduced to `training | active | superseded` (no `pending_approval` or `rejected` — approval gate deferred)
 - `model_assignments` — as designed
 - `model_states` — as designed
 - `station_weather_sources` — as designed
@@ -462,6 +475,8 @@ POST   /api/v1/alerts/{id}/acknowledge     # acknowledge an alert
 
 POST   /api/v1/flows/{flow}/trigger        # manually trigger a flow run
 GET    /api/v1/health                      # health check + pipeline status
+GET    /api/v1/health/detail               # detailed component status (no auth in v0)
+# Health checks are live (DB ping, Prefect worker heartbeat) — independent of Flow 4
 
 # Deferred to v1:
 # POST   /api/v1/forecasts/{id}/adjust     (no Flow 3)
