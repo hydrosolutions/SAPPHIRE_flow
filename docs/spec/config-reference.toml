@@ -35,10 +35,12 @@ observation_staleness_warning_hours = 6.0  # Flow 1 step 1.6 warning threshold
 nwp_max_wait_hours = 3.0              # max wait for expected NWP delivery
 nwp_max_fallback_age_hours = 12.0     # max age of fallback NWP cycle
 
-# --- Alert cycle ---
-# Source: types-and-protocols.md § DeploymentConfig, v0-scope.md § A8b
-enable_alert_cycle = false                  # v0: off by default
-threshold_check_mode = "raw"                # v0: raw only (no published forecasts)
+# --- Per-source alert enablement ---
+# Source: types-and-protocols.md § DeploymentConfig, v0-scope.md § A8c
+enable_forecast_alerts = false              # v0: off by default; gates Flow 1 Phase C
+enable_observation_alerts = false           # v0: off by default; gates Flow 2 steps 2.8-2.10
+enable_pipeline_alerts = false              # v0: off by default; gates Flow 4 steps 4.6-4.7
+threshold_check_mode = "raw"               # v0: raw only (no published forecasts)
 
 # --- Warm-up state (conceptual models) ---
 # Source: types-and-protocols.md § DeploymentConfig

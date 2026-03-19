@@ -248,23 +248,24 @@ class ForeignForecastStatus(Enum):
 ### GeoCoord
 
 ```python
-class GeoCoord(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class GeoCoord:
     lon: float
     lat: float
-    altitude_masl: float | None      # meters above mean sea level; None if unknown
+    altitude_masl: float | None = None      # meters above mean sea level; None if unknown
 
-    def __new__(cls, lon: float, lat: float, altitude_masl: float | None = None) -> "GeoCoord":
-        if not (-180.0 <= lon <= 180.0):
-            raise ValueError(f"longitude {lon} out of range [-180, 180]")
-        if not (-90.0 <= lat <= 90.0):
-            raise ValueError(f"latitude {lat} out of range [-90, 90]")
-        return super().__new__(cls, lon, lat, altitude_masl)
+    def __post_init__(self) -> None:
+        if not (-180.0 <= self.lon <= 180.0):
+            raise ValueError(f"longitude {self.lon} out of range [-180, 180]")
+        if not (-90.0 <= self.lat <= 90.0):
+            raise ValueError(f"latitude {self.lat} out of range [-90, 90]")
 ```
 
 ### ParameterDefinition
 
 ```python
-class ParameterDefinition(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ParameterDefinition:
     name: str                              # canonical name (TEXT PK)
     display_name: str
     unit: str
@@ -278,50 +279,38 @@ Module: `types/domain.py`
 ### DangerLevelDefinition
 
 ```python
-class DangerLevelDefinition(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class DangerLevelDefinition:
     name: str
     display_order: int
     trigger_probability: float
     resolve_probability: float
     min_trigger_duration: timedelta  # time-based, schedule-independent
     min_resolve_duration: timedelta  # time-based, schedule-independent
-    direction: ThresholdDirection    # ABOVE = flood, BELOW = low-flow
+    direction: ThresholdDirection = ThresholdDirection.ABOVE    # ABOVE = flood, BELOW = low-flow
 
     # Time-based duration is schedule-independent — works correctly for both
     # 30-min observation cycles and 6-hourly forecast cycles without reconfiguration.
 
-    def __new__(
-        cls,
-        name: str,
-        display_order: int,
-        trigger_probability: float,
-        resolve_probability: float,
-        min_trigger_duration: timedelta,
-        min_resolve_duration: timedelta,
-        direction: ThresholdDirection = ThresholdDirection.ABOVE,
-    ) -> "DangerLevelDefinition":
-        if not (0.0 < trigger_probability <= 1.0):
-            raise ValueError(f"trigger_probability must be in (0, 1], got {trigger_probability}")
-        if not (0.0 < resolve_probability < trigger_probability):
+    def __post_init__(self) -> None:
+        if not (0.0 < self.trigger_probability <= 1.0):
+            raise ValueError(f"trigger_probability must be in (0, 1], got {self.trigger_probability}")
+        if not (0.0 < self.resolve_probability < self.trigger_probability):
             raise ValueError(
                 f"resolve_probability must be in (0, trigger_probability), "
-                f"got {resolve_probability} >= {trigger_probability}"
+                f"got {self.resolve_probability} >= {self.trigger_probability}"
             )
-        if min_trigger_duration < timedelta(0):
-            raise ValueError(f"min_trigger_duration must be >= 0, got {min_trigger_duration}")
-        if min_resolve_duration < timedelta(0):
-            raise ValueError(f"min_resolve_duration must be >= 0, got {min_resolve_duration}")
-        return super().__new__(
-            cls, name, display_order, trigger_probability,
-            resolve_probability, min_trigger_duration, min_resolve_duration,
-            direction,
-        )
+        if self.min_trigger_duration < timedelta(0):
+            raise ValueError(f"min_trigger_duration must be >= 0, got {self.min_trigger_duration}")
+        if self.min_resolve_duration < timedelta(0):
+            raise ValueError(f"min_resolve_duration must be >= 0, got {self.min_resolve_duration}")
 ```
 
 ### StationThreshold
 
 ```python
-class StationThreshold(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class StationThreshold:
     station_id: StationId
     danger_level: str          # references DangerLevelDefinition.name
     parameter: str             # "discharge" or "water_level"
@@ -334,24 +323,18 @@ class StationThreshold(NamedTuple):
 ### QcFlag
 
 ```python
-class QcFlag(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class QcFlag:
     rule_id: str               # e.g. "range_check", "rate_of_change"
     rule_version: str          # e.g. "1.0.0"
     status: QcStatus           # QC_PASSED, QC_SUSPECT, or QC_FAILED — never RAW
-    detail: str | None
+    detail: str | None = None
 
-    def __new__(
-        cls,
-        rule_id: str,
-        rule_version: str,
-        status: QcStatus,
-        detail: str | None = None,
-    ) -> "QcFlag":
-        if status == QcStatus.RAW:
+    def __post_init__(self) -> None:
+        if self.status == QcStatus.RAW:
             raise ValueError("QcFlag.status cannot be RAW — RAW means QC has not run")
-        if status == QcStatus.MISSING:
+        if self.status == QcStatus.MISSING:
             raise ValueError("QcFlag.status cannot be MISSING — MISSING is set directly on observations, not by QC rules")
-        return super().__new__(cls, rule_id, rule_version, status, detail)
 
 
 def aggregate_qc_status(flags: list[QcFlag]) -> QcStatus:
@@ -370,16 +353,16 @@ def aggregate_qc_status(flags: list[QcFlag]) -> QcStatus:
 ### SeasonDefinition
 
 ```python
-class SeasonDefinition(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class SeasonDefinition:
     name: str                  # e.g. "monsoon", "dry"
     months: frozenset[int]     # 1–12
 
-    def __new__(cls, name: str, months: frozenset[int]) -> "SeasonDefinition":
-        if not months:
+    def __post_init__(self) -> None:
+        if not self.months:
             raise ValueError("months must not be empty")
-        if not all(1 <= m <= 12 for m in months):
-            raise ValueError(f"months must be in [1, 12], got {months}")
-        return super().__new__(cls, name, months)
+        if not all(1 <= m <= 12 for m in self.months):
+            raise ValueError(f"months must be in [1, 12], got {self.months}")
 ```
 
 ### SkillInterpretationScheme
@@ -387,12 +370,14 @@ class SeasonDefinition(NamedTuple):
 ```python
 from datetime import timedelta
 
-class SkillInterpretationBand(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class SkillInterpretationBand:
     lower: float               # inclusive (use float('-inf') for open lower bound)
     upper: float               # exclusive (use float('inf') for open upper bound)
     label: str                 # e.g. "Very good"
 
-class SkillInterpretationScheme(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class SkillInterpretationScheme:
     metric: str                # e.g. "nse", "kge"
     time_step: timedelta       # daily vs sub-daily have different thresholds
     bands: tuple[SkillInterpretationBand, ...]  # ordered from worst to best
@@ -400,11 +385,12 @@ class SkillInterpretationScheme(NamedTuple):
 
 ### ExceedanceResult
 
-Intermediate output of threshold checking (Flow 1 steps 1.10–1.11, Flow 2 steps 2.5–2.6).
+Intermediate output of threshold checking (Flow 1 steps 1.11–1.12, Flow 2 steps 2.8–2.9).
 Consumed by the alert service to raise or resolve alerts.
 
 ```python
-class ExceedanceResult(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ExceedanceResult:
     station_id: StationId
     danger_level: str              # references DangerLevelDefinition.name
     parameter: str                 # "discharge" or "water_level"
@@ -423,7 +409,8 @@ Module: `types/domain.py`
 ### Observation
 
 ```python
-class RawObservation(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class RawObservation:
     station_id: StationId
     timestamp: UtcDatetime
     parameter: str                 # canonical name
@@ -432,7 +419,8 @@ class RawObservation(NamedTuple):
     rating_curve_id: RatingCurveId | None = None  # v1 — set when source = RATING_CURVE_DERIVED. Omit from v0 DB schema.
     rating_curve_correction_version: str | None = None  # v1 — correction param version. Omit from v0 DB schema.
 
-class Observation(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class Observation:
     id: ObservationId
     station_id: StationId
     timestamp: UtcDatetime
@@ -452,7 +440,8 @@ Module: `types/observation.py`
 ### StationConfig
 
 ```python
-class StationConfig(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class StationConfig:
     id: StationId
     code: str
     name: str
@@ -474,7 +463,8 @@ class StationConfig(NamedTuple):
 ### ModelAssignment
 
 ```python
-class ModelAssignment(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ModelAssignment:
     station_id: StationId
     model_id: ModelId
     time_step: timedelta           # configured time step for this assignment
@@ -488,21 +478,24 @@ Priority convention: linear regression (0) > ML (1) > conceptual (2). All model 
 ### StationGroup
 
 ```python
-class StationGroup(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class StationGroup:
     id: StationGroupId
     name: str                      # e.g. "swiss_alpine", "nepal_koshi_basin"
     station_ids: frozenset[StationId]
+    description: str | None = None
     created_at: UtcDatetime
 ```
 
-Station groups define the training scope for group-scoped ML models. A station can belong to multiple groups. Groups are managed during station onboarding (Flow 5 step 5.5).
+Station groups define the training scope for group-scoped ML models. A station can belong to multiple groups. Groups are managed during station onboarding (Flow 5 step 5.10).
 
 Module: `types/station.py`
 
 ### StationWeatherSource
 
 ```python
-class StationWeatherSource(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class StationWeatherSource:
     station_id: StationId
     nwp_source: str
     extraction_type: SpatialRepresentation  # POINT, BASIN_AVERAGE, or ELEVATION_BAND
@@ -514,7 +507,8 @@ Module: `types/station.py`
 ### Basin
 
 ```python
-class Basin(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class Basin:
     id: BasinId
     code: str
     name: str
@@ -531,7 +525,8 @@ Module: `types/basin.py`
 ### Alert
 
 ```python
-class Alert(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class Alert:
     id: AlertId
     station_id: StationId | None   # NULL for system-wide pipeline alerts (e.g. NWP delivery, disk usage, backup freshness)
     source: AlertSource
@@ -554,7 +549,8 @@ Module: `types/alert.py`
 ### ForecastAdjustment
 
 ```python
-class ForecastAdjustment(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ForecastAdjustment:
     id: ForecastAdjustmentId
     forecast_id: ForecastId
     forecaster_id: UUID
@@ -594,7 +590,8 @@ Module (ForecastAdjustment): `types/forecast.py`
 ### RatingCurve
 
 ```python
-class RatingCurve(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class RatingCurve:
     id: RatingCurveId
     station_id: StationId
     version: int
@@ -611,7 +608,8 @@ Module: `types/rating_curve.py`
 ### FlowRegimeConfig
 
 ```python
-class FlowRegimeConfig(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class FlowRegimeConfig:
     id: UUID
     station_id: StationId
     q50: float                     # 50th percentile discharge (m³/s)
@@ -627,7 +625,8 @@ Module: `types/skill.py`
 ### PipelineHealthRecord
 
 ```python
-class PipelineHealthRecord(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class PipelineHealthRecord:
     check_type: PipelineCheckType
     checked_at: UtcDatetime
     status: PipelineHealthStatus
@@ -644,12 +643,14 @@ Module: `types/pipeline.py`
 v0 defers auth — these types are defined but unused until v1. See architecture-context.md § Authentication schemas for DB table definitions.
 
 ```python
-class AccessTokenScope(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class AccessTokenScope:
     stations: list[StationId] | None     # None = all stations
     parameters: list[str] | None         # None = all parameters
     boundary: dict | None                # GeoJSON boundary or None = no geographic restriction
 
-class User(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class User:
     id: UserId
     username: str                        # email address
     display_name: str
@@ -657,7 +658,8 @@ class User(NamedTuple):
     is_active: bool
     created_at: UtcDatetime
 
-class AccessToken(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class AccessToken:
     id: AccessTokenId
     consumer_name: str
     scope: AccessTokenScope
@@ -666,7 +668,8 @@ class AccessToken(NamedTuple):
     last_used_at: UtcDatetime | None     # NULL = never used
     revoked_at: UtcDatetime | None       # NULL = active
 
-class AuditEntry(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class AuditEntry:
     event_type: AuditEventType
     actor_id: UserId | None              # None for system events
     actor_type: AuditActorType
@@ -688,7 +691,8 @@ Module: `types/auth.py`
 ```python
 import polars as pl
 
-class ForecastEnsemble(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ForecastEnsemble:
     representation: EnsembleRepresentation
     values: pl.DataFrame
     station_id: StationId
@@ -717,7 +721,7 @@ default 20). Ensembles below this threshold skip threshold evaluation and are fl
 `insufficient_ensemble_size` in forecast metadata.
 
 Minimum quantile levels: 7 for operational use. Operational quantile sets must include
-tail coverage: at least one quantile >= 0.95 and one <= 0.05. The `__new__` validator
+tail coverage: at least one quantile >= 0.95 and one <= 0.05. The `__post_init__` validator
 on `ForecastEnsemble` enforces this constraint for operational forecasts. Models producing
 fewer than 7 quantile levels or lacking tail coverage skip threshold evaluation and are
 flagged in forecast metadata.
@@ -726,18 +730,19 @@ flagged in forecast metadata.
 
 `ForecastEnsemble` provides two factory classmethods that validate the DataFrame column contract at construction time:
 
-- `ForecastEnsemble.from_members(station_id, model_id, issued_at, parameter, units, time_step, values: pl.DataFrame) -> ForecastEnsemble` — validates: `member_id` column present and `int` dtype, `quantile` column absent, `valid_time` column present and `Datetime` dtype, `value` column present and `Float64` dtype, at least 1 member. Sets `representation = MEMBERS`.
+- `ForecastEnsemble.from_members(station_id, issued_at, parameter, units, time_step, values: pl.DataFrame) -> ForecastEnsemble` — validates: `member_id` column present and `int` dtype, `quantile` column absent, `valid_time` column present and `Datetime` dtype, `value` column present and `Float64` dtype, at least 1 member. Sets `representation = MEMBERS`.
 
-- `ForecastEnsemble.from_quantiles(station_id, model_id, issued_at, parameter, units, time_step, values: pl.DataFrame) -> ForecastEnsemble` — validates: `quantile` column present and `Float64` dtype, `member_id` column absent, `valid_time` column present, `value` column present, at least 7 quantile levels with tail coverage (min <= 0.05, max >= 0.95). Sets `representation = QUANTILES`.
+- `ForecastEnsemble.from_quantiles(station_id, issued_at, parameter, units, time_step, values: pl.DataFrame) -> ForecastEnsemble` — validates: `quantile` column present and `Float64` dtype, `member_id` column absent, `valid_time` column present, `value` column present, at least 7 quantile levels with tail coverage (min <= 0.05, max >= 0.95). Sets `representation = QUANTILES`.
 
-Both raise `ValueError` with a descriptive message on validation failure. The raw `NamedTuple.__new__` remains available for store-layer reconstruction of already-validated data.
+Both raise `ValueError` with a descriptive message on validation failure. The standard constructor always runs `__post_init__` validation. For store-layer reconstruction of already-validated data, the validation is idempotent and cheap — no bypass is needed.
 
 ### ModelInputs
 
 ```python
 import xarray as xr
 
-class ModelInputs(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ModelInputs:
     station_id: StationId           # identifies the station — used by ML models for station embeddings
     forcing: pl.DataFrame | xr.Dataset
     observations: pl.DataFrame
@@ -777,7 +782,8 @@ Models must not use data after `issue_time` from `observations`.
 ### TrainingData
 
 ```python
-class TrainingData(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class TrainingData:
     forcing: pl.DataFrame
     observations: pl.DataFrame
     targets: pl.DataFrame
@@ -795,7 +801,8 @@ Training always uses tabular forcing (`pl.DataFrame`), not gridded.
 ### GroupTrainingData
 
 ```python
-class GroupTrainingData(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class GroupTrainingData:
     group_id: StationGroupId
     station_data: dict[StationId, TrainingData]  # one TrainingData per station in the group
     time_step: timedelta
@@ -826,11 +833,33 @@ model-specific state. Must round-trip through `serialize_artifact()` / `deserial
 
 Module: `types/ensemble.py`, `types/model.py`
 
-### ModelRegistryEntry
+### ModelRecord
+
+Corresponds to the `models` DB table — the persistent identity of a registered model.
+Used by `ModelStore` for CRUD operations.
 
 ```python
-class ModelRegistryEntry(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ModelRecord:
     id: ModelId                       # TEXT PK — entry point name
+    display_name: str
+    artifact_scope: ArtifactScope     # STATION or GROUP
+    description: str | None
+    created_at: UtcDatetime
+```
+
+Module: `types/model.py`
+
+### ModelRegistryEntry
+
+Runtime metadata for a registered model — includes features, spatial input type,
+and supported time steps needed by the pipeline. Superset of `ModelRecord`.
+
+```python
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ModelRegistryEntry:
+    id: ModelId                       # TEXT PK — entry point name
+    display_name: str
     description: str
     artifact_scope: ArtifactScope     # STATION or GROUP — determines training and artifact granularity
     required_features: frozenset[str]
@@ -849,7 +878,8 @@ training period, promotion audit trail). Distinct from `ModelArtifact = Any`, wh
 the opaque serialized model blob.
 
 ```python
-class ModelArtifactRecord(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ModelArtifactRecord:
     id: ArtifactId
     model_id: ModelId
     station_id: StationId | None       # non-null for station-scoped models
@@ -873,7 +903,8 @@ Wraps the `forecasts` + `forecast_values` join. Contains a `ForecastEnsemble` fo
 values payload.
 
 ```python
-class OperationalForecast(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class OperationalForecast:
     id: ForecastId
     station_id: StationId
     model_id: ModelId
@@ -897,7 +928,8 @@ class OperationalForecast(NamedTuple):
 Wraps `hindcast_forecasts` + `hindcast_values`. No publication lifecycle.
 
 ```python
-class HindcastForecast(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class HindcastForecast:
     id: HindcastForecastId
     station_id: StationId
     model_id: ModelId
@@ -918,7 +950,8 @@ Published forecast pulled from an upstream SAPPHIRE instance for transboundary d
 DB tables deferred — types and protocols only for v0 (see `v0-scope.md` §B).
 
 ```python
-class ForeignForecast(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ForeignForecast:
     id: ForeignForecastId
     station_id: StationId              # must reference a foreign-owned station
     upstream_instance_url: str         # e.g., "https://sapphire.kyrgyzstan.gov"
@@ -941,7 +974,8 @@ Module: `types/forecast.py`
 Matches the `weather_forecasts` table — one row per NWP value.
 
 ```python
-class WeatherForecastRecord(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class WeatherForecastRecord:
     id: UUID
     station_id: StationId
     nwp_source: str
@@ -964,7 +998,8 @@ Module: `types/weather.py`
 Narrow/tall design — one row per metric per stratum.
 
 ```python
-class SkillScore(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class SkillScore:
     id: UUID
     station_id: StationId
     model_id: ModelId
@@ -987,7 +1022,8 @@ class SkillScore(NamedTuple):
 ### SkillDiagram
 
 ```python
-class SkillDiagram(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class SkillDiagram:
     id: UUID
     station_id: StationId
     model_id: ModelId
@@ -1367,10 +1403,10 @@ class ModelArtifactStore(Protocol):
 
 ```python
 class ModelStore(Protocol):
-    def register_model(self, entry: ModelRegistryEntry) -> None: ...
-        # Upsert keyed on entry.id.
-    def fetch_model(self, model_id: ModelId) -> ModelRegistryEntry | None: ...
-    def fetch_all_models(self) -> list[ModelRegistryEntry]: ...
+    def register_model(self, record: ModelRecord) -> None: ...
+        # Upsert keyed on record.id.
+    def fetch_model(self, model_id: ModelId) -> ModelRecord | None: ...
+    def fetch_all_models(self) -> list[ModelRecord]: ...
 ```
 
 #### ModelStateStore
@@ -1537,7 +1573,8 @@ Two return paths:
 **Raw NWP grid** (pre-extraction, not per-station):
 
 ```python
-class GriddedForecast(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class GriddedForecast:
     nwp_source: str
     cycle_time: UtcDatetime
     values: xr.Dataset             # dimensions: time × parameter × y × x
@@ -1549,17 +1586,20 @@ it represents a single NWP grid that the `GridExtractor` processes for all stati
 **Extracted/fetched results** (station-keyed, produced in bulk):
 
 ```python
-class PointForecast(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class PointForecast:
     nwp_source: str
     cycle_time: UtcDatetime
     values: pl.DataFrame           # columns: valid_time, parameter, member_id|quantile, value
 
-class BasinAverageForecast(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class BasinAverageForecast:
     nwp_source: str
     cycle_time: UtcDatetime
     values: pl.DataFrame           # columns: valid_time, parameter, member_id|quantile, value
 
-class ElevationBandForecast(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ElevationBandForecast:
     nwp_source: str
     cycle_time: UtcDatetime
     values: pl.DataFrame           # columns: valid_time, parameter, band_id, member_id|quantile, value
@@ -1623,7 +1663,8 @@ Module: `protocols/adapters.py`
 Used by Flow 4 step 4.4 to query flow run health. Abstracts the Prefect API behind a Protocol for testability.
 
 ```python
-class FlowRunStatus(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class FlowRunStatus:
     flow_name: str
     run_id: str
     state: str                    # e.g. "COMPLETED", "FAILED", "CRASHED", "RUNNING"
@@ -1730,8 +1771,12 @@ class DeploymentConfig(BaseModel):
     flow_regime_q50_percentile: float = 50.0   # customizable percentile boundary
     flow_regime_q90_percentile: float = 90.0
 
-    # --- Alert cycle ---
-    enable_alert_cycle: bool = False            # v0: off by default (see v0-scope.md)
+    # --- Per-source alert enablement (v0-scope.md §A8c) ---
+    # Per-source flags allow incremental activation: pipeline alerts first,
+    # then observation alerts, then forecast alerts. All default false for v0.
+    enable_forecast_alerts: bool = False         # gates Flow 1 Phase C (steps 1.11-1.13)
+    enable_observation_alerts: bool = False      # gates Flow 2 steps 2.8-2.10
+    enable_pipeline_alerts: bool = False         # gates Flow 4 steps 4.6-4.7
     threshold_check_mode: Literal["raw", "published", "both"] = "raw"  # v0: raw only
 
     # --- Threshold inference ---

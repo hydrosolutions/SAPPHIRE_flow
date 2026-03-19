@@ -67,7 +67,9 @@ class DeploymentConfig(BaseModel):
     flow_regime_q50_percentile: float = 50.0
     flow_regime_q90_percentile: float = 90.0
 
-    enable_alert_cycle: bool = False
+    enable_forecast_alerts: bool = False
+    enable_observation_alerts: bool = False
+    enable_pipeline_alerts: bool = False
     threshold_check_mode: Literal["raw", "published", "both"] = "raw"
 
     infer_missing_thresholds: bool = False

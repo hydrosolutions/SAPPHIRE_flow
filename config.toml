@@ -13,8 +13,10 @@ observation_staleness_warning_hours = 6.0
 nwp_max_wait_hours = 3.0
 nwp_max_fallback_age_hours = 12.0
 
-# Alert cycle
-enable_alert_cycle = false
+# Per-source alert enablement
+enable_forecast_alerts = false
+enable_observation_alerts = false
+enable_pipeline_alerts = false
 threshold_check_mode = "raw"
 
 # Warm-up state (conceptual models)

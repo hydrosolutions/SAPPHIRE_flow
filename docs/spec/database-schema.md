@@ -13,7 +13,7 @@ no forecast adjustments, no DLQ, no cold storage. See `v0-scope.md` §A–C for 
 **Differences from full schema** (marked with `v0▸` below):
 - `observations`: no `rating_curve_id`, no `rating_curve_correction_version` columns
 - `weather_forecasts`: no `is_gap`, no `gap_status` columns (Flow 11 deferred)
-- `model_artifacts.status`: only `active | superseded` (no approval gate)
+- `model_artifacts.status`: only `training | active | superseded` (no approval gate)
 - No table partitioning anywhere
 - 9 tables removed entirely (see "Not in v0" below)
 
@@ -38,7 +38,8 @@ erDiagram
 
     basins {
         UUID id PK
-        TEXT code UK
+        TEXT code "UK (network, code)"
+        TEXT network "NOT NULL"
         TEXT name
         GEOMETRY geometry "MULTIPOLYGON 4326"
         DOUBLE_PRECISION area_km2 "NULL"
@@ -49,7 +50,7 @@ erDiagram
 
     stations {
         UUID id PK
-        TEXT code UK
+        TEXT code "UK (network, code)"
         TEXT name
         GEOMETRY location "POINT 4326"
         DOUBLE_PRECISION altitude_masl "NULL"
@@ -60,6 +61,9 @@ erDiagram
         TEXT forecast_target "NULL"
         TEXT_ARRAY measured_parameters
         TEXT station_status "default onboarding"
+        TEXT network "NOT NULL"
+        TEXT ownership "default own"
+        TEXT wigos_id "NULL"
         TIMESTAMPTZ created_at
         TIMESTAMPTZ updated_at
     }
@@ -146,7 +150,7 @@ erDiagram
 
     %% ──────────────────────────────────────────────
     %% MODEL DOMAIN
-    %% v0: model_artifacts.status = active | superseded only
+    %% v0: model_artifacts.status = training | active | superseded only
     %% ──────────────────────────────────────────────
 
     models {
@@ -162,12 +166,13 @@ erDiagram
         TEXT model_id FK
         UUID station_id FK "NULL — station-scoped"
         UUID group_id FK "NULL — group-scoped"
-        TEXT status "v0: active | superseded"
+        TEXT status "v0: training | active | superseded"
         TEXT artifact_path
         TIMESTAMPTZ training_period_start
         TIMESTAMPTZ training_period_end
         TIMESTAMPTZ trained_at
         TIMESTAMPTZ promoted_at "NULL"
+        UUID promoted_by "NULL"
         TIMESTAMPTZ superseded_at "NULL"
         TIMESTAMPTZ created_at
     }
@@ -392,8 +397,8 @@ erDiagram
 | — | `pipeline_health` | BIGSERIAL | Ops |
 
 **Note**: `alerts` and `pipeline_health` bring the total to 22 if counted.
-`v0-scope.md` §C lists ~18 tables — the count depends on whether `alerts` + `pipeline_health`
-are included (alerting is optional in v0, controlled by `enable_alert_cycle`).
+`v0-scope.md` §C lists 22 tables (including alerts and pipeline_health) — the count depends on whether `alerts` + `pipeline_health`
+are included (alerting is optional in v0, controlled by per-source alert flags (see v0-scope.md §A8c)).
 
 ### Not in v0 (9 tables added in v1)
 
@@ -436,7 +441,8 @@ erDiagram
 
     basins {
         UUID id PK
-        TEXT code UK
+        TEXT code "UK (network, code)"
+        TEXT network "NOT NULL"
         TEXT name
         GEOMETRY geometry "MULTIPOLYGON 4326"
         DOUBLE_PRECISION area_km2 "NULL"
@@ -447,7 +453,7 @@ erDiagram
 
     stations {
         UUID id PK
-        TEXT code UK
+        TEXT code "UK (network, code)"
         TEXT name
         GEOMETRY location "POINT 4326"
         DOUBLE_PRECISION altitude_masl "NULL"
@@ -458,6 +464,9 @@ erDiagram
         TEXT forecast_target "NULL"
         TEXT_ARRAY measured_parameters
         TEXT station_status "default onboarding"
+        TEXT network "NOT NULL"
+        TEXT ownership "default own"
+        TEXT wigos_id "NULL"
         TIMESTAMPTZ created_at
         TIMESTAMPTZ updated_at
     }
@@ -507,11 +516,11 @@ erDiagram
         UUID station_id FK
         TIMESTAMPTZ timestamp "partition key (yearly)"
         TEXT parameter
-        DOUBLE_PRECISION value
+        DOUBLE_PRECISION value "NULL when missing"
         TEXT source "measured | rating_curve_derived | manual_import"
         UUID rating_curve_id FK "NULL"
         TEXT rating_curve_correction_version "NULL"
-        TEXT qc_status "raw | qc_passed | qc_failed | qc_suspect"
+        TEXT qc_status "raw | qc_passed | qc_failed | qc_suspect | missing"
         JSONB qc_flags
         TEXT qc_rule_version "NULL"
         TIMESTAMPTZ created_at
