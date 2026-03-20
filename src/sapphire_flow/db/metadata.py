@@ -316,6 +316,65 @@ sa.Index(
 )
 
 # ──────────────────────────────────────────────
+# HISTORICAL FORCING DOMAIN
+# ──────────────────────────────────────────────
+
+historical_forcing = sa.Table(
+    "historical_forcing",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True),
+    sa.Column(
+        "station_id", UUID(as_uuid=True), sa.ForeignKey("stations.id"), nullable=False
+    ),
+    sa.Column("source", sa.Text, nullable=False),
+    sa.Column("version", sa.Text, nullable=False),
+    sa.Column("valid_time", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("parameter", sa.Text, nullable=False),
+    sa.Column(
+        "spatial_type",
+        sa.Text,
+        sa.CheckConstraint(
+            "spatial_type IN ('point', 'basin_average', 'elevation_band')"
+        ),
+        nullable=False,
+    ),
+    sa.Column("band_id", sa.Integer, nullable=True),
+    sa.Column("member_id", sa.Integer, nullable=True),
+    sa.Column("value", sa.Float, nullable=False),
+    sa.Column(
+        "created_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+    ),
+    sa.CheckConstraint(
+        "(spatial_type = 'elevation_band' AND band_id IS NOT NULL) OR "
+        "(spatial_type != 'elevation_band' AND band_id IS NULL)",
+        name="ck_historical_forcing_band_id_consistency",
+    ),
+)
+
+# Indexes on historical_forcing
+sa.Index(
+    "ix_historical_forcing_station_source_valid",
+    historical_forcing.c.station_id,
+    historical_forcing.c.source,
+    historical_forcing.c.valid_time,
+)
+sa.Index(
+    "uq_historical_forcing_natural_key",
+    historical_forcing.c.station_id,
+    historical_forcing.c.source,
+    historical_forcing.c.version,
+    historical_forcing.c.valid_time,
+    historical_forcing.c.parameter,
+    historical_forcing.c.spatial_type,
+    sa.text("COALESCE(band_id, -1)"),
+    sa.text("COALESCE(member_id, -1)"),
+    unique=True,
+)
+
+# ──────────────────────────────────────────────
 # MODEL DOMAIN
 # ──────────────────────────────────────────────
 

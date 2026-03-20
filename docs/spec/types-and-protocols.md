@@ -33,6 +33,7 @@ RefreshTokenId = NewType("RefreshTokenId", UUID)
 ModelId = NewType("ModelId", str)
 StationGroupId = NewType("StationGroupId", UUID)
 ForeignForecastId = NewType("ForeignForecastId", UUID)
+HistoricalForcingId = NewType("HistoricalForcingId", UUID)
 
 # pipeline_health and audit_log use BIGSERIAL PK — append-only, never
 # referenced by ID from other tables. No NewType wrapper.
@@ -993,6 +994,42 @@ class WeatherForecastRecord:
 
 Module: `types/weather.py`
 
+### RawHistoricalForcing / HistoricalForcingRecord
+
+Input and persistent forms of historical weather forcing used for model training and hindcasts.
+
+```python
+@dataclass(frozen=True, kw_only=True, slots=True)
+class RawHistoricalForcing:
+    station_id: StationId
+    source: str              # "camels-ch", "era5", "era5-land", "smn"
+    version: str             # dataset version tag
+    valid_time: UtcDatetime
+    parameter: str
+    spatial_type: SpatialRepresentation
+    band_id: int | None      # non-null when spatial_type == ELEVATION_BAND
+    member_id: int | None    # None=deterministic, 0=control, 1..N=ensemble members
+    value: float
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class HistoricalForcingRecord:
+    id: HistoricalForcingId
+    station_id: StationId
+    source: str
+    version: str
+    valid_time: UtcDatetime
+    parameter: str
+    spatial_type: SpatialRepresentation
+    band_id: int | None
+    member_id: int | None
+    value: float
+    created_at: UtcDatetime
+```
+
+`RawHistoricalForcing` is the unpersisted form (adapter output / pre-insert). `HistoricalForcingRecord` is the persisted form with DB-assigned `id` and `created_at`. The natural key is `(station_id, source, version, valid_time, parameter, spatial_type, band_id, member_id)`.
+
+Module: `types/weather.py`
+
 ### SkillScore
 
 Narrow/tall design — one row per metric per stratum.
@@ -1523,6 +1560,42 @@ class ForeignForecastStore(Protocol):
     ) -> list[ForeignForecast]: ...
 ```
 
+#### HistoricalForcingStore
+
+Persistence layer for historical weather forcing used by model training (Flow 6) and hindcast generation (Flow 7). Supports multi-source, multi-version, and ensemble reanalysis storage.
+
+```python
+@runtime_checkable
+class HistoricalForcingStore(Protocol):
+    def store_forcing(self, records: list[HistoricalForcingRecord]) -> None: ...
+        # Upsert keyed on natural key (station_id, source, version, valid_time,
+        # parameter, spatial_type, band_id, member_id).
+    def fetch_forcing(
+        self,
+        station_id: StationId,
+        source: str,
+        start: UtcDatetime,
+        end: UtcDatetime,
+        parameters: list[str] | None = None,   # None = all parameters
+        version: str | None = None,            # None = latest version
+        member_id: int | None = None,          # None = all members
+    ) -> list[HistoricalForcingRecord]: ...
+    def fetch_forcing_as_dataframe(
+        self,
+        station_id: StationId,
+        source: str,
+        start: UtcDatetime,
+        end: UtcDatetime,
+        parameters: list[str] | None = None,
+        version: str | None = None,
+    ) -> pl.DataFrame | None: ...
+        # Returns None if no data found. DataFrame columns: valid_time + one column
+        # per parameter (deterministic) or valid_time + parameter + member_id (ensemble).
+    def fetch_available_sources(self, station_id: StationId) -> list[str]: ...
+        # Returns distinct source strings for the station. Used during training scope
+        # determination to verify forcing is available before launching a training run.
+```
+
 Module: `protocols/stores.py`
 
 #### BasinStore
@@ -1638,8 +1711,10 @@ class WeatherReanalysisSource(Protocol):
         start: UtcDatetime,
         end: UtcDatetime,
         parameters: list[str],
-    ) -> dict[StationId, BasinAverageForecast | ElevationBandForecast]: ...
-        # Station-keyed dict. Reanalysis is always pre-extracted (no gridded path).
+    ) -> list[RawHistoricalForcing]: ...
+        # Returns flat list of raw forcing records — callers group by station_id as needed.
+        # Reanalysis is always pre-extracted (no gridded path). Supports ensemble reanalysis
+        # (e.g. ERA5 ensemble members) via member_id field.
 ```
 
 #### ForeignForecastSource
@@ -1872,7 +1947,7 @@ Summary of where each type and Protocol lives in the source tree:
 ```
 src/sapphire_flow/
 ├── types/
-│   ├── ids.py              # StationId, ModelId, ObservationId, ForecastAdjustmentId, etc.
+│   ├── ids.py              # StationId, ModelId, ObservationId, ForecastAdjustmentId, HistoricalForcingId, etc.
 │   ├── datetime.py         # UtcDatetime, ensure_utc()
 │   ├── enums.py            # All enums
 │   ├── domain.py           # GeoCoord, ParameterDefinition, DangerLevelDefinition, QcFlag,
@@ -1881,7 +1956,8 @@ src/sapphire_flow/
 │   ├── model.py            # ModelInputs, TrainingData, ModelParams, ModelArtifact, ModelArtifactRecord
 │   ├── observation.py      # Observation, RawObservation
 │   ├── forecast.py         # OperationalForecast, HindcastForecast, ForecastAdjustment, ForeignForecast
-│   ├── weather.py          # WeatherForecastRecord, PointForecast, BasinAverageForecast, etc.
+│   ├── weather.py          # WeatherForecastRecord, PointForecast, BasinAverageForecast,
+│   │                       #   RawHistoricalForcing, HistoricalForcingRecord, etc.
 │   ├── alert.py            # Alert
 │   ├── skill.py            # SkillScore, SkillDiagram, FlowRegimeConfig
 │   ├── station.py          # StationConfig, ModelAssignment, StationWeatherSource
@@ -1898,7 +1974,8 @@ src/sapphire_flow/
 │   │                       #    WeatherForecastStore, AlertStore, SkillStore,
 │   │                       #    ModelArtifactStore, StationStore, PipelineHealthStore,
 │   │                       #    RatingCurveStore, FlowRegimeConfigStore,
-│   │                       #    ForecastAdjustmentStore, ForeignForecastStore, BasinStore,
+│   │                       #    ForecastAdjustmentStore, ForeignForecastStore,
+│   │                       #    HistoricalForcingStore, BasinStore,
 │   │                       #    ModelStateStore, ModelStore, ParameterStore)
 │   ├── adapters.py         # WeatherForecastSource, StationDataSource, WeatherReanalysisSource,
 │   │                       #   ForeignForecastSource

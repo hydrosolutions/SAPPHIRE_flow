@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from uuid import UUID
 
+    import polars as pl
+
     from sapphire_flow.types.alert import Alert
     from sapphire_flow.types.basin import Basin
     from sapphire_flow.types.datetime import UtcDatetime
@@ -28,6 +30,7 @@ if TYPE_CHECKING:
         HindcastForecast,
         OperationalForecast,
     )
+    from sapphire_flow.types.historical_forcing import HistoricalForcingRecord
     from sapphire_flow.types.ids import (
         AlertId,
         ArtifactId,
@@ -42,7 +45,7 @@ if TYPE_CHECKING:
         StationGroupId,
         StationId,
     )
-    from sapphire_flow.types.model import ModelArtifactRecord, ModelRegistryEntry
+    from sapphire_flow.types.model import ModelArtifactRecord, ModelRecord
     from sapphire_flow.types.observation import Observation, RawObservation
     from sapphire_flow.types.pipeline import PipelineHealthRecord
     from sapphire_flow.types.rating_curve import RatingCurve
@@ -366,13 +369,13 @@ class ModelArtifactStore(Protocol):
 
 @runtime_checkable
 class ModelStore(Protocol):
-    def register_model(self, entry: ModelRegistryEntry) -> None:
+    def register_model(self, record: ModelRecord) -> None:
         raise NotImplementedError
 
-    def fetch_model(self, model_id: ModelId) -> ModelRegistryEntry | None:
+    def fetch_model(self, model_id: ModelId) -> ModelRecord | None:
         raise NotImplementedError
 
-    def fetch_all_models(self) -> list[ModelRegistryEntry]:
+    def fetch_all_models(self) -> list[ModelRecord]:
         raise NotImplementedError
 
 
@@ -538,4 +541,36 @@ class ParameterStore(Protocol):
         raise NotImplementedError
 
     def fetch_by_name(self, name: str) -> ParameterDefinition | None:
+        raise NotImplementedError
+
+
+@runtime_checkable
+class HistoricalForcingStore(Protocol):
+    def store_forcing(self, records: list[HistoricalForcingRecord]) -> None:
+        raise NotImplementedError
+
+    def fetch_forcing(
+        self,
+        station_id: StationId,
+        source: str,
+        start: UtcDatetime,
+        end: UtcDatetime,
+        parameters: list[str] | None = None,
+        version: str | None = None,
+        member_id: int | None = None,
+    ) -> list[HistoricalForcingRecord]:
+        raise NotImplementedError
+
+    def fetch_forcing_as_dataframe(
+        self,
+        station_id: StationId,
+        source: str,
+        start: UtcDatetime,
+        end: UtcDatetime,
+        parameters: list[str] | None = None,
+        version: str | None = None,
+    ) -> pl.DataFrame | None:
+        raise NotImplementedError
+
+    def fetch_available_sources(self, station_id: StationId) -> list[str]:
         raise NotImplementedError

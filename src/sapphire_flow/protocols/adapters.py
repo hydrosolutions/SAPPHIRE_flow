@@ -5,16 +5,12 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.forecast import ForeignForecast
+    from sapphire_flow.types.historical_forcing import RawHistoricalForcing
     from sapphire_flow.types.ids import StationId
     from sapphire_flow.types.observation import RawObservation
     from sapphire_flow.types.pipeline import FlowRunStatus
     from sapphire_flow.types.station import StationConfig, StationWeatherSource
-    from sapphire_flow.types.weather import (
-        BasinAverageForecast,
-        ElevationBandForecast,
-        GriddedForecast,
-        WeatherForecastResult,
-    )
+    from sapphire_flow.types.weather import GriddedForecast, WeatherForecastResult
 
 
 @runtime_checkable
@@ -45,7 +41,7 @@ class WeatherReanalysisSource(Protocol):
         start: UtcDatetime,
         end: UtcDatetime,
         parameters: list[str],
-    ) -> dict[StationId, BasinAverageForecast | ElevationBandForecast]:
+    ) -> list[RawHistoricalForcing]:
         raise NotImplementedError
 
 

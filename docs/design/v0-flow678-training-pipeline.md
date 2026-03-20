@@ -10,11 +10,12 @@ Per `v0-scope.md` § A5 and § A7:
 
 | Aspect | Full design (architecture-context.md) | v0 simplification |
 |--------|---------------------------------------|-------------------|
-| Artifact lifecycle | 5 statuses (training → pending_approval → active → superseded → rejected) | 2 statuses: `TRAINING` → `ACTIVE` (auto-promote). `ACTIVE` → `SUPERSEDED` when replaced. |
+| Artifact lifecycle | 5 statuses (training → pending_approval → active → superseded → rejected) | 3 statuses: `TRAINING` → `ACTIVE` (auto-promote). `ACTIVE` → `SUPERSEDED` when replaced. |
 | Retraining comparison | T.6–T.8 (compare, request approval, promote/reject) | Skipped — auto-promote on initial training. Flow 9 deferred. |
 | Work pools | 3 pools (ops, training, hindcast) | Single `default` pool |
 | Forcing source | Configurable (station obs, reanalysis, NWP archive) | SMN station observations as pseudo-perfect forcing, tagged `ForcingType.REANALYSIS` |
 | Skill metrics | Full suite | Full suite — kept as designed (pure computation, high research value) |
+| `is_stale` flag | Set TRUE on data change, cleared by recomputation | Not exercised in v0 — no observation correction or NWP recovery flows. Field exists in schema. |
 | Model params | Config-based override per model | Empty dict `{}` default. Models define internal defaults. |
 
 ### What v0 implements
@@ -27,14 +28,37 @@ Flow 8 (skill):    S.1 → S.2 + S.3 → S.4 → S.6
 
 Steps T.6–T.8 (retraining comparison/approval) and S.5 (cross-station aggregation) are deferred.
 
+```mermaid
+flowchart TD
+    trigger["Manual trigger<br/>(model admin)"]
+
+    t1["T.1 determine_training_scope()<br/><i>services/scope.py</i>"]
+
+    subgraph PerUnit ["Per TrainingUnit (parallel across units)"]
+        direction TB
+        t2["T.2 assemble_training_data()<br/><i>services/training_data.py</i>"]
+        t3["T.3 train_model() + serialize<br/><i>services/training.py</i>"]
+        promote["store_and_promote_artifact()<br/>TRAINING → ACTIVE<br/>old ACTIVE → SUPERSEDED"]
+        t4["T.4 run_hindcast<br/><i>subflow → services/hindcast.py</i>"]
+        t5["T.5 compute_skills<br/><i>subflow → services/skill/</i>"]
+        t2 --> t3 --> promote --> t4 --> t5
+    end
+
+    result["TrainingResult per unit"]
+
+    trigger --> t1
+    t1 --> PerUnit
+    t5 --> result
+```
+
 ---
 
 ## 2. What already exists
 
 | Layer | Status | Key files |
 |-------|--------|-----------|
-| Types | Complete | `types/model.py` (TrainingData, GroupTrainingData, ModelInputs, ModelRegistryEntry, ModelArtifactRecord), `types/skill.py` (SkillScore, SkillDiagram, FlowRegimeConfig), `types/forecast.py` (HindcastForecast), `types/station.py` (ModelAssignment, StationGroup) |
-| Protocols | Complete | `protocols/forecast_model.py` (StationForecastModel, GroupForecastModel), `protocols/stores.py` (all 17 store Protocols), `protocols/adapters.py` (WeatherReanalysisSource — v1 only) |
+| Types | Complete | `types/model.py` (TrainingData, GroupTrainingData, ModelInputs, ModelRecord, ModelRegistryEntry, ModelArtifactRecord), `types/skill.py` (SkillScore, SkillDiagram, FlowRegimeConfig), `types/forecast.py` (HindcastForecast), `types/station.py` (ModelAssignment, StationGroup) |
+| Protocols | Complete | `protocols/forecast_model.py` (StationForecastModel, GroupForecastModel), `protocols/stores.py` (all store Protocols including HistoricalForcingStore), `protocols/adapters.py` (WeatherReanalysisSource — returns `list[RawHistoricalForcing]`) |
 | DB schema | Complete | `db/metadata.py` (models, model_artifacts, hindcast_forecasts, skill_scores, etc.) |
 | Fakes | Complete | `tests/fakes/fake_stores.py`, `tests/fakes/fake_models.py`, `tests/fakes/fake_adapters.py` |
 | Factories | Complete | `tests/conftest.py` (make_station_config, make_observation(s), make_forecast_ensemble, make_model_artifact_record) |
@@ -51,7 +75,8 @@ Steps T.6–T.8 (retraining comparison/approval) and S.5 (cross-station aggregat
 Captures one (model × station) or (model × group) work item from scope determination.
 
 ```python
-class TrainingUnit(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class TrainingUnit:
     model_id: ModelId
     station_id: StationId | None       # set for STATION-scoped models
     group_id: StationGroupId | None    # set for GROUP-scoped models
@@ -61,19 +86,21 @@ class TrainingUnit(NamedTuple):
     time_step: timedelta
 ```
 
-**XOR invariant**: Exactly one of `station_id` / `group_id` must be set. Enforced via `__new__`.
+**XOR invariant**: Exactly one of `station_id` / `group_id` must be set. Enforced via `__post_init__`.
 
 ### 3b. `TrainingScope`
 
 ```python
-class TrainingScope(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class TrainingScope:
     units: tuple[TrainingUnit, ...]
 ```
 
 ### 3c. `HindcastStepResult`
 
 ```python
-class HindcastStepResult(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class HindcastStepResult:
     issue_time: UtcDatetime
     success: bool
     error: str | None = None
@@ -82,7 +109,8 @@ class HindcastStepResult(NamedTuple):
 ### 3d. `TrainingResult`
 
 ```python
-class TrainingResult(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class TrainingResult:
     training_unit: TrainingUnit
     artifact_id: ArtifactId | None
     hindcast_steps: list[HindcastStepResult]
@@ -94,29 +122,28 @@ class TrainingResult(NamedTuple):
 
 ## 4. New protocol needed
 
-### 4a. `HistoricalForcingSource` (protocols/adapters.py)
+### 4a. `WeatherReanalysisSource` as the forcing adapter (protocols/adapters.py)
 
-Distinct from `WeatherReanalysisSource` (which returns gridded `BasinAverageForecast | ElevationBandForecast`). Training and hindcast need tabular forcing as `pl.DataFrame` keyed by timestamp + parameter. v0 impl wraps co-located SMN weather station observations; v1 swaps to ERA5-Land adapter.
+Training and hindcast use `WeatherReanalysisSource` (defined in `protocols/adapters.py`) to fetch historical weather forcing. In v0, the concrete adapter wraps co-located SMN weather station observations; v1 swaps to ERA5-Land. The Protocol now returns `list[RawHistoricalForcing]` — a flat list of raw forcing records that callers group by station_id and convert to a `pl.DataFrame` as needed.
 
 ```python
-@runtime_checkable
-class HistoricalForcingSource(Protocol):
-    def fetch_forcing(
+class WeatherReanalysisSource(Protocol):
+    def fetch_reanalysis(
         self,
-        station_id: StationId,
+        station_configs: list[StationWeatherSource],
         start: UtcDatetime,
         end: UtcDatetime,
-        parameters: frozenset[str],
-    ) -> pl.DataFrame | None: ...
+        parameters: list[str],
+    ) -> list[RawHistoricalForcing]: ...
 ```
 
-**Returns**: DataFrame with `timestamp` column + one column per requested parameter. Returns `None` if data is insufficient (missing station, missing parameters, no data in range).
+**Persistence layer**: `HistoricalForcingStore` (defined in `protocols/stores.py`) is the complementary store Protocol. After fetching from `WeatherReanalysisSource`, the flow persists records via `HistoricalForcingStore.store_forcing()` and re-fetches for training/hindcast via `fetch_forcing_as_dataframe()`. This keeps the adapter stateless and allows training runs to reuse previously ingested forcing without re-fetching.
 
-**Why not reuse `WeatherReanalysisSource`?** That Protocol returns spatially-processed forecasts (`BasinAverageForecast | ElevationBandForecast`) — gridded NWP output. `HistoricalForcingSource` returns simple tabular time series for a single station. Different shapes, different access patterns, different v0 vs v1 implementations.
+**v0 note**: v0 always produces the `pl.DataFrame` variant of forcing. The `xr.Dataset` path in `ModelInputs.forcing` is reserved for v1 gridded reanalysis.
 
-**v0 implementation**: `FakeHistoricalForcingSource` (canned DataFrames keyed by station_id). Production adapter wraps SMN observation queries — fetches co-located weather station data for the requested parameters and time range.
+**v0 implementation**: `FakeWeatherReanalysisSource` (canned `list[RawHistoricalForcing]` keyed by station_id). Production adapter wraps SMN observation queries — fetches co-located weather station data for the requested parameters and time range.
 
-**v1 swap**: ERA5-Land adapter implementing the same Protocol — returns basin-average reanalysis as tabular time series.
+**v1 swap**: ERA5-Land adapter implementing the same Protocol — returns basin-average reanalysis as `list[RawHistoricalForcing]`.
 
 ---
 
@@ -142,6 +169,51 @@ services/       ← Pure Python, injected deps (stores, adapters, clock, rng)
 protocols/      ← Store/adapter/model Protocols (no implementation)
 ```
 
+```mermaid
+flowchart TD
+    subgraph Services ["services/"]
+        registry["model_registry.py"]
+        scope["scope.py"]
+        tdata["training_data.py"]
+        train["training.py"]
+        hc["hindcast.py"]
+        skill["skill/service.py"]
+    end
+
+    subgraph Protocols ["protocols/ (injected)"]
+        ms["ModelStore"]
+        ss["StationStore"]
+        gs["StationGroupStore"]
+        os["ObservationStore"]
+        bs["BasinStore"]
+        mas["ModelArtifactStore"]
+        hs["HindcastStore"]
+        sks["SkillStore"]
+        frs["FlowRegimeConfigStore"]
+        hfs["WeatherReanalysisSource"]
+        fm["ForecastModel Protocol"]
+    end
+
+    registry --> ms
+    scope --> ms
+    scope --> ss
+    scope --> gs
+    tdata --> os
+    tdata --> bs
+    tdata --> ss
+    tdata --> hfs
+    train --> mas
+    train --> fm
+    hc --> hfs
+    hc --> os
+    hc --> bs
+    hc --> hs
+    hc --> ss
+    hc --> fm
+    skill --> sks
+    skill --> frs
+```
+
 ### 6a. Model Registry Service (services/model_registry.py)
 
 Discovers models via Python entry points and registers in DB.
@@ -159,6 +231,8 @@ def register_models(
 ```
 
 **Entry point group**: `sapphire_flow.models`. Each entry point name becomes the `ModelId`. Models are classes satisfying `StationForecastModel` or `GroupForecastModel` Protocol.
+
+**`display_name`**: Derived from the entry point name via title-casing (e.g. `lstm_daily` → `LSTM Daily`). Models may override with a `display_name` class attribute.
 
 ### 6b. Scope Determination Service (services/scope.py)
 
@@ -203,7 +277,7 @@ def assemble_station_training_data(
     period_start: UtcDatetime,
     period_end: UtcDatetime,
     time_step: timedelta,
-    forcing_source: HistoricalForcingSource,
+    forcing_source: WeatherReanalysisSource,
     obs_store: ObservationStore,
     basin_store: BasinStore,
     station_store: StationStore,
@@ -282,7 +356,7 @@ def run_station_hindcast(
     period_start: UtcDatetime,
     period_end: UtcDatetime,
     time_step: timedelta,
-    forcing_source: HistoricalForcingSource,
+    forcing_source: WeatherReanalysisSource,
     obs_store: ObservationStore,
     basin_store: BasinStore,
     hindcast_store: HindcastStore,
@@ -306,8 +380,10 @@ def run_group_hindcast(
 2. Observations: fetched only up to `issue_time`
 3. Lookback window: `issue_time - (lookback_steps × time_step)` to `issue_time`
 4. Return `None` if data insufficient → step skipped, logged
-5. No warm-up state carried between steps (cold start each step)
+5. No warm-up state carried between steps (cold start each step). For conceptual models, this means each step would need a fresh warm-up run from observations — deferred to when conceptual model implementations arrive. v0 targets ML models which are stateless.
 6. Each step independently catchable — model exception → step skipped, others continue
+
+**v0 simplification**: Forcing and observations are fetched per-step via store/adapter calls rather than pre-fetched in bulk (architecture-context.md H.2/H.3). Acceptable for v0 scale; v1 may batch-fetch for performance.
 
 **No-future-leakage invariant**: This is the single most critical property of the hindcast service. All forcing and observation data must have timestamps ≤ `issue_time`. Tests must assert this explicitly with timestamp comparisons.
 
@@ -387,16 +463,41 @@ def compute_skill_for_station(
 3. Extract `lead_time_hours` from ensemble (valid_time − hindcast_step)
 4. Stratify by: lead_time_hours × season × flow_regime
 5. For each stratum, compute all metrics
-6. Build `SkillScore` records (one per metric × stratum)
+6. Build `SkillScore` records (one per metric × stratum). Each `SkillScore` includes `sample_size` — the count of forecast-observation pairs in the stratum. Required for `min_skill_samples` threshold in `DeploymentConfig`.
 7. Build `SkillDiagram` records for relevant strata
 8. Use `computation_version = 1` (constant for v0)
+9. v0 uses `skill_source = SkillSource.HINDCAST_REANALYSIS` (station observations as pseudo-perfect forcing)
 
 **Stratification dimensions**:
 - **Lead time**: Unique lead times extracted from hindcast ensemble valid_times
 - **Season**: Month of `hindcast_step` mapped to `SeasonDefinition`. `None` for "all seasons" aggregate.
 - **Flow regime**: Observed value at `hindcast_step` classified by `FlowRegimeConfig` (< q50 = LOW, q50–q90 = HIGH, > q90 = FLOOD). `None` for "all regimes" aggregate.
 
-**Metric names**: `"crps"`, `"nse"`, `"kge"`, `"pbias"`, `"mae"`, `"bss"`, `"pod"`, `"far"`, `"csi"`, `"sharpness_p10_p90"`, `"sharpness_range"`, `"peak_timing_error"`
+```mermaid
+flowchart TD
+    input["Hindcast-observation pairs<br/>(paired by timestamp)"]
+
+    split_lt["Group by lead_time_hours"]
+
+    subgraph Stratify ["Stratification (per lead time)"]
+        direction TB
+        split_s["Split by season<br/><i>+ all-season aggregate</i>"]
+        split_fr["Split by flow regime<br/><i>LOW / HIGH / FLOOD + all-regime</i>"]
+        split_s --> split_fr
+    end
+
+    subgraph Compute ["Per stratum"]
+        direction LR
+        metrics["Metrics:<br/>CRPS, NSE, KGE, PBIAS, MAE,<br/>BSS, POD/FAR/CSI per danger level,<br/>sharpness, peak timing"]
+        diagrams["Diagrams:<br/>reliability, ROC, rank histogram"]
+    end
+
+    output["SkillScore + SkillDiagram records<br/>(one per metric × stratum)"]
+
+    input --> split_lt --> Stratify --> Compute --> output
+```
+
+**Metric names**: `"crps"`, `"nse"`, `"kge"`, `"pbias"`, `"mae"`, `"bss_danger_{level}"`, `"pod_danger_{level}"`, `"far_danger_{level}"`, `"csi_danger_{level}"`, `"sharpness_p10_p90"`, `"sharpness_range"`, `"peak_timing_error"`
 
 ---
 
@@ -487,7 +588,7 @@ scope = determine_training_scope(..., model_store=FakeModelStore(), ...)
 | architecture-context.md says | This design | Notes |
 |------------------------------|-------------|-------|
 | T.1 resolves scope from request params | `determine_training_scope()` with optional filters | Aligned |
-| T.2 gathers `TrainingData` / `GroupTrainingData` | `assemble_station_training_data()` / `assemble_group_training_data()` | Uses existing NamedTuples from `types/model.py` |
+| T.2 gathers `TrainingData` / `GroupTrainingData` | `assemble_station_training_data()` / `assemble_group_training_data()` | Uses existing dataclasses from `types/model.py` |
 | T.3 calls model Protocol `train()` + persist artifact | `train_station_model()` + `store_and_promote_artifact()` | Artifact persisted by service, not model — aligned with layering rule |
 | T.4 composes Flow 7 | `run_hindcast` subflow | Aligned |
 | T.5 composes Flow 8 | `compute_skills` subflow | Aligned |
@@ -544,7 +645,7 @@ scope = determine_training_scope(..., model_store=FakeModelStore(), ...)
 
 | Table | Usage | Consistent? |
 |-------|-------|-------------|
-| `models` | `register_model()` writes here | ✓ Columns match `ModelRegistryEntry` |
+| `models` | `register_model()` writes here | ✓ Columns match `ModelRecord` |
 | `model_artifacts` | `store_artifact()` / `transition_artifact_status()` | ✓ `status` enum, `promoted_at`, `superseded_at` |
 | `model_assignments` | `fetch_model_assignments()` reads here | ✓ `is_active` filter |
 | `hindcast_forecasts` | `store_hindcast()` writes here | ✓ `forcing_type`, `hindcast_run_id` columns present |
@@ -557,7 +658,7 @@ scope = determine_training_scope(..., model_store=FakeModelStore(), ...)
 
 ### Resolved by this design
 
-1. **Where does `HistoricalForcingSource` go?** → `protocols/adapters.py` alongside other adapter Protocols. Distinct from `WeatherReanalysisSource`.
+1. **Forcing adapter for training/hindcast** → `WeatherReanalysisSource` in `protocols/adapters.py`. Returns `list[RawHistoricalForcing]`. Persistence via `HistoricalForcingStore` in `protocols/stores.py`.
 
 2. **How are model params sourced?** → Empty dict `{}` default for v0. Models define internal defaults. Config-based override deferred to when model implementations arrive. (The `[models]` section is already excluded by `load_config()` via `data.pop("models", None)`.)
 
@@ -571,7 +672,7 @@ scope = determine_training_scope(..., model_store=FakeModelStore(), ...)
 
 2. **Hindcast period defaults**: What's the default hindcast period when called from training (T.4)? Options: (a) same as training period, (b) configurable separately. Suggest: same as training period for v0, with option to narrow.
 
-3. **CRPSss reference baselines**: Climatology quantiles and persistence baselines are computed during station onboarding (Flow 5 step 5.8). Are they stored? Where? The skill service needs them as reference for CRPSss. This is a dependency on onboarding that must be resolved before skill computation can produce CRPSss.
+3. **CRPSss reference baselines**: Climatology quantiles and persistence baselines are computed during station onboarding (Flow 5 step 5.8). Are they stored? Where? The skill service needs them as reference for CRPSss. This is a dependency on onboarding that must be resolved before skill computation can produce CRPSss. **v0 note**: CRPSss is deferred until onboarding (Flow 5) stores baselines. All other metrics in the v0 skill suite are independent of baselines.
 
 ---
 
@@ -603,7 +704,7 @@ scope = determine_training_scope(..., model_store=FakeModelStore(), ...)
 
 | Phase | Creates | Tests |
 |-------|---------|-------|
-| P1 | `types/training.py`, `HistoricalForcingSource` Protocol, `FakeHistoricalForcingSource`, FakeModelArtifactStore fix, conftest factories | XOR invariant, fake conformance |
+| P1 | `types/training.py`, `HistoricalForcingRecord`/`RawHistoricalForcing` types, `HistoricalForcingStore` Protocol, `FakeWeatherReanalysisSource`, FakeModelArtifactStore fix, conftest factories | XOR invariant, fake conformance |
 | P2 | `services/model_registry.py` | Entry point discovery, store registration |
 | P3 | `services/training_data.py` | Happy path, missing features → None, missing attrs → None, empty obs → None, group partial |
 | P4 | `services/training.py` | Artifact bytes, promotion lifecycle (TRAINING → ACTIVE, old → SUPERSEDED) |

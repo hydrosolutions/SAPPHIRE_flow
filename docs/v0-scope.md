@@ -53,7 +53,7 @@
 
 **Full design**: Hot (PostgreSQL) → cold (Parquet) → delete at max_retention_days. Cold storage layout, archival task, hot/cold dispatch in stores, Parquet schema versioning.
 
-**v0**: Everything stays in PostgreSQL. No cold storage, no archival task, no Parquet export. Set generous retention — v0 data fits in a few GB. **Exception**: `pipeline_health` and resolved `alerts` rows are deleted on a schedule (default 30 and 90 days respectively) to prevent unbounded growth — these have no analytical value and no cold-storage path.
+**v0**: Everything stays in PostgreSQL. No cold storage, no archival task, no Parquet export. Set generous retention — v0 data fits in a few GB. **Exception**: Resolved `alerts` rows are deleted on a schedule (default 90 days) to prevent unbounded growth — these have no analytical value and no cold-storage path.
 
 **Removes**: `archive_cold_data` flow, cold storage directory layout, Parquet read/write in stores, hot/cold dispatch logic, schema version metadata.
 
@@ -78,7 +78,7 @@
 6. Configures model assignments
 7. Marks stations operational
 
-Training triggered separately (Flow 6) after onboarding completes. No onboarding dashboard, no progress tracking, no model readiness branches.
+Training triggered separately (Flow 6) after onboarding completes. No onboarding dashboard, no progress tracking, no model readiness branches. **v0a** skips catchment attribute fetching (step 5.2) — the initial linear regression model does not require static attributes. **v0b** adds catchment attribute fetching when ML models with `required_static_attributes` are introduced.
 
 ### A5. Full skill metrics (keep as designed)
 
@@ -180,7 +180,7 @@ These are deferred in architecture-context.md. For v0, don't create their tables
 
 ## C. Database schema (v0 subset)
 
-22 tables. No partitioning, no DLQ, no auth, no cold storage dispatch.
+23 tables. No partitioning, no DLQ, no auth, no cold storage dispatch.
 
 ### Reference data
 - `parameters` — as designed (canonical parameter names, units, aggregation methods). Seeded via Alembic migration with the 10 canonical parameters defined in `architecture-context.md`.
@@ -213,6 +213,7 @@ These are deferred in architecture-context.md. For v0, don't create their tables
 
 ### Weather archive
 - `weather_forecasts` — as designed but **not partitioned**, drop gap recovery fields (`is_gap`, `gap_status`)
+- `historical_forcing` — as designed; permanent retention (no cold-storage tiering in v0)
 
 ### Skill
 - `skill_scores` — as designed
@@ -327,7 +328,7 @@ Target: full integration suite < 60s locally. Individual tests < 5s.
 
 ### E5. CI pipeline (GitHub Actions)
 
-Three parallel jobs:
+Four parallel jobs:
 - **lint**: ruff + pyright --strict (< 30s)
 - **unit**: pytest tests/unit/ --cov (< 30s, no DB)
 - **integration**: real PostgreSQL, replay adapters, scenario tests (< 2 min)
@@ -388,7 +389,7 @@ Implement the **full** type system and Protocol definitions from `types-and-prot
 
 - All ID NewTypes, UtcDatetime, GeoCoord
 - All enums (minus deferred ones: UserRole, AuditEventType, AdjustmentType, Calendar)
-- All entity NamedTuples
+- All entity dataclasses (frozen)
 - All store Protocols (minus RatingCurveStore, ForecastAdjustmentStore)
 - All adapter Protocols (minus NotificationAdapter)
 - ForecastModel Protocol (both StationForecastModel and GroupForecastModel)
@@ -459,7 +460,7 @@ v0 uses SMN station observations for ML model lookback windows (resolved — see
 
 v0 subset of the full API routes in `conventions.md`. No auth, no forecast adjustments,
 no review/publish workflow. Request/response Pydantic schemas are Phase 9 work —
-derived from domain NamedTuples at implementation time.
+derived from domain dataclasses at implementation time.
 
 ```
 # v0 API endpoints (no auth, no forecast adjustments)

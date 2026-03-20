@@ -1247,7 +1247,7 @@ models:
   created_at: TIMESTAMPTZ
 ```
 
-Populated at startup by `ModelRegistry` scanning entry points (see conventions.md "Model discovery"). The `artifact_scope` value comes from the model class attribute and determines training granularity and artifact lookup strategy.
+Python type: `ModelRecord` (`types/model.py`). Populated at startup by `ModelRegistry` scanning entry points (see conventions.md "Model discovery"). The `artifact_scope` value comes from the model class attribute and determines training granularity and artifact lookup strategy.
 
 #### `station_groups` table (station groups for group-scoped models)
 
@@ -1623,7 +1623,8 @@ skill_scores:
   flow_regime_config_id: UUID NULL         # FK → flow_regime_configs.id (NULL when flow_regime is NULL)
   metric: TEXT                             # e.g. "crps", "crpss_climatology", "crpss_persistence", "nse", "kge", "pbias", "mae",
                                            #   "bss_danger_1", "pod_danger_1", "far_danger_1", "csi_danger_1",
-                                           #   "peak_timing_mean_hours", "peak_timing_std_hours"
+                                           #   "peak_timing_mean_hours", "peak_timing_std_hours",
+                                           #   "sharpness_p10_p90", "sharpness_p25_p75", "ensemble_range"
   score: DOUBLE PRECISION
   sample_size: INT                         # number of forecast-observation pairs
   is_stale: BOOLEAN DEFAULT FALSE          # TRUE when underlying data changed (obs correction, NWP recovery); cleared by Flow 10 step S.6
@@ -1711,6 +1712,40 @@ Used by Flow 11 (NWP gap recovery). Gap detection (Flow 4 step 4.1) identifies m
 
 ---
 
+## Historical forcing archive schema
+
+Stores pre-fetched historical weather forcing used by model training (Flow 6/9 step T.2) and hindcast generation (Flow 7 step H.2). Populated by `WeatherReanalysisSource` adapters; read by `HistoricalForcingStore`. Decoupled from the operational `weather_forecasts` table — different retention policy, different access patterns, and supports ensemble reanalysis (e.g. ERA5 ensemble members via `member_id`).
+
+### `historical_forcing` table
+
+```
+historical_forcing:
+  id: UUID PK
+  station_id: UUID FK                   # station this forcing is for
+  source: TEXT                          # dataset name, e.g. "smn", "era5-land", "camels-ch"
+  version: TEXT                         # dataset version tag (e.g. "2025-01", "v1.0")
+  valid_time: TIMESTAMPTZ               # timestamp of the forcing value
+  parameter: TEXT                        # canonical parameter name
+  spatial_type: TEXT                    # SpatialRepresentation (point, basin_average, elevation_band)
+  band_id: INT NULL                     # elevation band identifier; non-null when spatial_type = 'elevation_band'
+  member_id: INT NULL                   # NULL = deterministic; 0 = control; 1..N = ensemble members
+  value: DOUBLE PRECISION
+  created_at: TIMESTAMPTZ
+  UNIQUE (station_id, source, version, valid_time, parameter, spatial_type, band_id, member_id)
+  CHECK: (spatial_type = 'elevation_band' AND band_id IS NOT NULL)
+      OR (spatial_type != 'elevation_band' AND band_id IS NULL)
+```
+
+Indexes:
+- `(station_id, source, version, valid_time)` — primary training/hindcast query index (fetch by station + source + date range).
+- `(station_id, source)` — used by `fetch_available_sources()` to enumerate sources for a station.
+
+The `member_id` column supports ensemble reanalysis products (e.g. ERA5 ensemble with 10 members). Deterministic sources store `member_id = NULL`. Version tagging allows multiple ingested versions to coexist — the store's `fetch_forcing` method defaults to the latest version when `version=None`.
+
+Permanent retention (no hot/cold tiering) — historical forcing is ingested once and reused across many training runs.
+
+---
+
 ## Danger levels and threshold configuration
 
 ### Deployment-level configuration
@@ -1720,7 +1755,7 @@ Danger levels are **fixed per deployment** — the set of level names and their 
 - Switzerland (5 levels per FOEN): `low_or_none` (1), `moderate` (2), `considerable` (3), `high` (4), `very_high` (5)
 - Nepal (TBD with DHM): likely 3–4 levels
 
-Each danger level has deployment-wide alert parameters (see `docs/spec/types-and-protocols.md` — DangerLevelDefinition for `__new__` invariants):
+Each danger level has deployment-wide alert parameters (see `docs/spec/types-and-protocols.md` — DangerLevelDefinition for `__post_init__` invariants):
 
 ```
 DangerLevelDefinition:
@@ -1861,7 +1896,7 @@ Index: `(station_id, valid_from DESC)` for temporal lookup. Partial unique index
 
 ## Authentication schemas
 
-v0 defers auth — these tables are created but unused until v1. See `docs/standards/security.md` for authentication flows, authorization matrix, and bootstrap process.
+v0 defers auth — tables are **not created** until auth is implemented (see `docs/v0-scope.md` §B). Add via Alembic migration when needed. See `docs/standards/security.md` for authentication flows, authorization matrix, and bootstrap process.
 
 ### `users` table
 
@@ -2479,7 +2514,7 @@ Per-alert-category channel selection and per-recipient configuration. Schema wil
 
 ```
 src/sapphire_flow/
-├── types/          # Domain NamedTuples
+├── types/          # Domain dataclasses (frozen)
 ├── schemas/        # Pydantic models (system boundary validation only)
 ├── protocols/      # Store, adapter, model, notification Protocols
 ├── adapters/       # External data source implementations
@@ -2517,7 +2552,7 @@ Follows from the layering rule. See CLAUDE.md for test writing conventions.
 
 | Layer | Test type | Strategy |
 |-------|-----------|----------|
-| `types/`, `protocols/` | Unit | Pure validation logic. Known-answer tests for `__new__` invariants. |
+| `types/`, `protocols/` | Unit | Pure validation logic. Known-answer tests for `__post_init__` invariants. |
 | `models/` | Unit | Pure functions — deterministic input/output. Known-answer tests from literature or reference implementations for numerical correctness. |
 | `preprocessing/` | Unit | Pure spatial transforms. Known-answer tests with synthetic `xr.Dataset` inputs: (1) uniform grid → basin average equals constant, (2) gradient grid → analytically verifiable average for rectangular basins, (3) elevation-band extraction with 2-3 bands summing to full basin. No real NWP files needed. |
 | `services/` | Unit | Bulk of test coverage. Fake stores injected via Protocols. No DB, no I/O. |
@@ -2572,12 +2607,12 @@ References (does not redefine): container log driver from cicd.md, audit_log sch
 | Decision | Summary |
 |----------|---------|
 | Types in this package | All Protocols and domain types in `protocols/` and `types/`. No separate SDK. |
-| NamedTuple domain types | Pydantic only at system boundaries. |
+| Frozen dataclass domain types | Pydantic only at system boundaries. |
 | Entity-based store Protocols | One Protocol per entity, not a generic repository. See `docs/spec/types-and-protocols.md`. |
 | Station config in DB | TOML is bootstrap import only. Runtime config in database. |
 | Ensemble-first | All forecasts are ensembles or quantiles. Models reduce internally. |
 | UTC everywhere | `UtcDatetime` NewType. Naive datetimes rejected at boundaries. |
-| Parse, don't validate | Raw → Pydantic at boundary → domain NamedTuple. |
+| Parse, don't validate | Raw → Pydantic at boundary → domain frozen dataclass. |
 | Clock injection | No `datetime.now()` in business logic. |
 | Models as separate packages | Discovered via Python entry points. |
 | Forecast adjustments tracked | Every manual adjustment recorded with forecaster ID, timestamp, and rationale. |

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID, uuid4
+
+import polars as pl
 
 from sapphire_flow.exceptions import ConflictError
 from sapphire_flow.types.alert import Alert  # noqa: TC001
@@ -33,6 +36,9 @@ from sapphire_flow.types.forecast import (  # noqa: TC001
     HindcastForecast,
     OperationalForecast,
 )
+from sapphire_flow.types.historical_forcing import (
+    HistoricalForcingRecord,  # noqa: TC001
+)
 from sapphire_flow.types.ids import (
     AlertId,
     ArtifactId,
@@ -49,7 +55,7 @@ from sapphire_flow.types.ids import (
 )
 from sapphire_flow.types.model import (  # noqa: TC001
     ModelArtifactRecord,
-    ModelRegistryEntry,
+    ModelRecord,
 )
 from sapphire_flow.types.observation import Observation, RawObservation  # noqa: TC001
 from sapphire_flow.types.pipeline import PipelineHealthRecord  # noqa: TC001
@@ -107,8 +113,8 @@ class FakeObservationStore:
         qc_flags: list[QcFlag],
     ) -> None:
         obs = self._observations[observation_id]
-        self._observations[observation_id] = obs._replace(
-            qc_status=qc_status, qc_flags=qc_flags
+        self._observations[observation_id] = replace(
+            obs, qc_status=qc_status, qc_flags=qc_flags
         )
 
     def fetch_observations(
@@ -216,8 +222,8 @@ class FakeForecastStore:
                 f"Version mismatch: expected {expected_version}, got {f.version}"
             )
         new_version = f.version + 1
-        self._forecasts[forecast_id] = f._replace(
-            status=new_status, version=new_version
+        self._forecasts[forecast_id] = replace(
+            f, status=new_status, version=new_version
         )
         return new_version
 
@@ -346,7 +352,7 @@ class FakeAlertStore:
                     and existing.status != AlertStatus.RESOLVED
                     and existing.id != alert.id
                 ):
-                    self._alerts[existing.id] = alert._replace(id=existing.id)
+                    self._alerts[existing.id] = replace(alert, id=existing.id)
                     return existing.id
         self._alerts[alert.id] = alert
         return alert.id
@@ -366,12 +372,12 @@ class FakeAlertStore:
 
     def resolve_alert(self, alert_id: AlertId) -> None:
         a = self._alerts[alert_id]
-        self._alerts[alert_id] = a._replace(status=AlertStatus.RESOLVED)
+        self._alerts[alert_id] = replace(a, status=AlertStatus.RESOLVED)
 
     def acknowledge_alert(self, alert_id: AlertId, acknowledged_by: UUID) -> None:
         a = self._alerts[alert_id]
-        self._alerts[alert_id] = a._replace(
-            status=AlertStatus.ACKNOWLEDGED, acknowledged_by=acknowledged_by
+        self._alerts[alert_id] = replace(
+            a, status=AlertStatus.ACKNOWLEDGED, acknowledged_by=acknowledged_by
         )
 
     def fetch_alert_history(
@@ -454,7 +460,7 @@ class FakeSkillStore:
         new_scores = []
         for s in self._scores:
             if s.station_id == station_id and not s.is_stale:
-                new_scores.append(s._replace(is_stale=True))
+                new_scores.append(replace(s, is_stale=True))
                 count += 1
             else:
                 new_scores.append(s)
@@ -556,20 +562,20 @@ class FakeModelArtifactStore:
         promoted_by: UUID | None = None,
     ) -> None:
         rec = self._records[artifact_id]
-        self._records[artifact_id] = rec._replace(status=new_status)
+        self._records[artifact_id] = replace(rec, status=new_status)
 
 
 class FakeModelStore:
     def __init__(self) -> None:
-        self._models: dict[ModelId, ModelRegistryEntry] = {}
+        self._models: dict[ModelId, ModelRecord] = {}
 
-    def register_model(self, entry: ModelRegistryEntry) -> None:
-        self._models[entry.id] = entry
+    def register_model(self, record: ModelRecord) -> None:
+        self._models[record.id] = record
 
-    def fetch_model(self, model_id: ModelId) -> ModelRegistryEntry | None:
+    def fetch_model(self, model_id: ModelId) -> ModelRecord | None:
         return self._models.get(model_id)
 
-    def fetch_all_models(self) -> list[ModelRegistryEntry]:
+    def fetch_all_models(self) -> list[ModelRecord]:
         return list(self._models.values())
 
 
@@ -691,13 +697,14 @@ class FakeStationGroupStore:
     ) -> StationGroupId:
         for g in self._groups.values():
             if g.name == name:
-                self._groups[g.id] = g._replace(station_ids=station_ids)
+                self._groups[g.id] = replace(g, station_ids=station_ids)
                 return g.id
         gid = StationGroupId(uuid4())
         self._groups[gid] = StationGroup(
             id=gid,
             name=name,
             station_ids=station_ids,
+            description=None,
             created_at=ensure_utc(datetime.now(UTC)),
         )
         return gid
@@ -718,13 +725,13 @@ class FakeStationGroupStore:
         self, group_id: StationGroupId, station_id: StationId
     ) -> None:
         g = self._groups[group_id]
-        self._groups[group_id] = g._replace(station_ids=g.station_ids | {station_id})
+        self._groups[group_id] = replace(g, station_ids=g.station_ids | {station_id})
 
     def remove_station_from_group(
         self, group_id: StationGroupId, station_id: StationId
     ) -> None:
         g = self._groups[group_id]
-        self._groups[group_id] = g._replace(station_ids=g.station_ids - {station_id})
+        self._groups[group_id] = replace(g, station_ids=g.station_ids - {station_id})
 
 
 class FakePipelineHealthStore:
@@ -777,7 +784,7 @@ class FakeRatingCurveStore:
 
     def supersede_curve(self, curve_id: RatingCurveId, valid_to: UtcDatetime) -> None:
         c = self._curves[curve_id]
-        self._curves[curve_id] = c._replace(valid_to=valid_to)
+        self._curves[curve_id] = replace(c, valid_to=valid_to)
 
 
 class FakeFlowRegimeConfigStore:
@@ -877,3 +884,56 @@ class FakeForeignForecastStore:
             for f in self._forecasts.values()
             if f.station_id == station_id and start <= f.issued_at <= end
         ]
+
+
+class FakeHistoricalForcingStore:
+    def __init__(self) -> None:
+        self._records: list[HistoricalForcingRecord] = []
+
+    def store_forcing(self, records: list[HistoricalForcingRecord]) -> None:
+        self._records.extend(records)
+
+    def fetch_forcing(
+        self,
+        station_id: StationId,
+        source: str,
+        start: UtcDatetime,
+        end: UtcDatetime,
+        parameters: list[str] | None = None,
+        version: str | None = None,
+        member_id: int | None = None,
+    ) -> list[HistoricalForcingRecord]:
+        return [
+            r
+            for r in self._records
+            if r.station_id == station_id
+            and r.source == source
+            and start <= r.valid_time <= end
+            and (parameters is None or r.parameter in parameters)
+            and (version is None or r.version == version)
+            and (member_id is None or r.member_id == member_id)
+        ]
+
+    def fetch_forcing_as_dataframe(
+        self,
+        station_id: StationId,
+        source: str,
+        start: UtcDatetime,
+        end: UtcDatetime,
+        parameters: list[str] | None = None,
+        version: str | None = None,
+    ) -> pl.DataFrame | None:
+        records = self.fetch_forcing(
+            station_id, source, start, end, parameters, version
+        )
+        if not records:
+            return None
+        rows = [
+            {"valid_time": r.valid_time, "parameter": r.parameter, "value": r.value}
+            for r in records
+        ]
+        df = pl.DataFrame(rows)
+        return df.pivot(on="parameter", index="valid_time", values="value")
+
+    def fetch_available_sources(self, station_id: StationId) -> list[str]:
+        return sorted({r.source for r in self._records if r.station_id == station_id})
