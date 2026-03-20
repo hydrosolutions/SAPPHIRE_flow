@@ -5,7 +5,7 @@ Derived from table definitions in `architecture-context.md` and scoping rules in
 
 ---
 
-## v0 Schema (22 tables)
+## v0 Schema (23 tables)
 
 Swiss public data, ~50 stations, single VM. No partitioning, no auth, no rating curves,
 no forecast adjustments, no DLQ, no cold storage. See `v0-scope.md` §A–C for rationale.
@@ -147,6 +147,26 @@ erDiagram
     }
 
     stations ||--o{ weather_forecasts : "station_id"
+
+    %% ──────────────────────────────────────────────
+    %% HISTORICAL FORCING DOMAIN
+    %% ──────────────────────────────────────────────
+
+    historical_forcing {
+        UUID id PK
+        UUID station_id FK
+        TEXT source "camels-ch | era5 | era5-land | smn"
+        TEXT version "dataset version tag"
+        TIMESTAMPTZ valid_time
+        TEXT parameter
+        TEXT spatial_type "point | basin_average | elevation_band"
+        INT band_id "NULL"
+        INT member_id "NULL — deterministic | control | ensemble"
+        DOUBLE_PRECISION value
+        TIMESTAMPTZ created_at
+    }
+
+    stations ||--o{ historical_forcing : "station_id"
 
     %% ──────────────────────────────────────────────
     %% MODEL DOMAIN
@@ -369,7 +389,7 @@ erDiagram
     stations ||--o{ alerts : "station_id"
 ```
 
-### v0 table inventory (20 tables)
+### v0 table inventory (21 tables)
 
 | # | Table | PK | Domain |
 |---|-------|----|--------|
@@ -382,22 +402,23 @@ erDiagram
 | 7 | `station_group_members` | composite | Station |
 | 8 | `observations` | UUID | Observation |
 | 9 | `weather_forecasts` | UUID | Weather |
-| 10 | `models` | TEXT | Model |
-| 11 | `model_artifacts` | UUID | Model |
-| 12 | `model_assignments` | composite | Model |
-| 13 | `model_states` | UUID | Model |
-| 14 | `forecasts` | UUID | Forecast |
-| 15 | `forecast_values` | UUID | Forecast |
-| 16 | `hindcast_forecasts` | UUID | Forecast |
-| 17 | `hindcast_values` | UUID | Forecast |
-| 18 | `skill_scores` | UUID | Skill |
-| 19 | `skill_diagrams` | UUID | Skill |
-| 20 | `flow_regime_configs` | UUID | Skill |
+| 10 | `historical_forcing` | UUID | Weather |
+| 11 | `models` | TEXT | Model |
+| 12 | `model_artifacts` | UUID | Model |
+| 13 | `model_assignments` | composite | Model |
+| 14 | `model_states` | UUID | Model |
+| 15 | `forecasts` | UUID | Forecast |
+| 16 | `forecast_values` | UUID | Forecast |
+| 17 | `hindcast_forecasts` | UUID | Forecast |
+| 18 | `hindcast_values` | UUID | Forecast |
+| 19 | `skill_scores` | UUID | Skill |
+| 20 | `skill_diagrams` | UUID | Skill |
+| 21 | `flow_regime_configs` | UUID | Skill |
 | — | `alerts` | UUID | Ops |
 | — | `pipeline_health` | BIGSERIAL | Ops |
 
-**Note**: `alerts` and `pipeline_health` bring the total to 22 if counted.
-`v0-scope.md` §C lists 22 tables (including alerts and pipeline_health) — the count depends on whether `alerts` + `pipeline_health`
+**Note**: `alerts` and `pipeline_health` bring the total to 23 if counted.
+`v0-scope.md` §C lists 23 tables (including alerts and pipeline_health) — the count depends on whether `alerts` + `pipeline_health`
 are included (alerting is optional in v0, controlled by per-source alert flags (see v0-scope.md §A8c)).
 
 ### Not in v0 (9 tables added in v1)
@@ -414,7 +435,7 @@ are included (alerting is optional in v0, controlled by per-source alert flags (
 
 ---
 
-## Full Schema (29 tables)
+## Full Schema (30 tables)
 
 The complete v1 schema. Adds partitioning, auth, rating curves, forecast adjustments,
 DLQ, and gap recovery fields. See `architecture-context.md` for column details, CHECK
@@ -563,6 +584,26 @@ erDiagram
     }
 
     stations ||--o{ weather_forecasts : "station_id"
+
+    %% ──────────────────────────────────────────────
+    %% HISTORICAL FORCING DOMAIN
+    %% ──────────────────────────────────────────────
+
+    historical_forcing {
+        UUID id PK
+        UUID station_id FK
+        TEXT source "camels-ch | era5 | era5-land | smn"
+        TEXT version "dataset version tag"
+        TIMESTAMPTZ valid_time
+        TEXT parameter
+        TEXT spatial_type "point | basin_average | elevation_band"
+        INT band_id "NULL"
+        INT member_id "NULL — deterministic | control | ensemble"
+        DOUBLE_PRECISION value
+        TIMESTAMPTZ created_at
+    }
+
+    stations ||--o{ historical_forcing : "station_id"
 
     %% ──────────────────────────────────────────────
     %% MODEL DOMAIN
@@ -855,7 +896,7 @@ erDiagram
     users ||--o{ forecast_adjustments : "forecaster_id"
 ```
 
-### Full table inventory (29 tables)
+### Full table inventory (30 tables)
 
 | # | Table | PK type | Partitioned | Domain |
 |---|-------|---------|-------------|--------|
@@ -869,25 +910,26 @@ erDiagram
 | 8 | `observations` | UUID | yearly by `timestamp` | Observation |
 | 9 | `rating_curves` | UUID | no | Observation |
 | 10 | `weather_forecasts` | UUID | monthly by `cycle_time` | Weather |
-| 11 | `models` | TEXT | no | Model |
-| 12 | `model_artifacts` | UUID | no | Model |
-| 13 | `model_assignments` | composite | no | Model |
-| 14 | `model_states` | UUID | no | Model |
-| 15 | `forecasts` | UUID | no | Forecast |
-| 16 | `forecast_values` | UUID | monthly by `issued_at` | Forecast |
-| 17 | `hindcast_forecasts` | UUID | no | Forecast |
-| 18 | `hindcast_values` | UUID | monthly by `hindcast_step` | Forecast |
-| 19 | `forecast_adjustments` | UUID | no | Forecast |
-| 20 | `skill_scores` | UUID | no | Skill |
-| 21 | `skill_diagrams` | UUID | no | Skill |
-| 22 | `flow_regime_configs` | UUID | no | Skill |
-| 23 | `alerts` | UUID | no | Ops |
-| 24 | `pipeline_health` | BIGSERIAL | no | Ops |
-| 25 | `dead_letter_queue` | BIGSERIAL | no | Ops |
-| 26 | `users` | UUID | no | Auth |
-| 27 | `access_tokens` | UUID | no | Auth |
-| 28 | `refresh_tokens` | UUID | no | Auth |
-| 29 | `audit_log` | BIGSERIAL | no | Auth |
+| 11 | `historical_forcing` | UUID | no | Weather |
+| 12 | `models` | TEXT | no | Model |
+| 13 | `model_artifacts` | UUID | no | Model |
+| 14 | `model_assignments` | composite | no | Model |
+| 15 | `model_states` | UUID | no | Model |
+| 16 | `forecasts` | UUID | no | Forecast |
+| 17 | `forecast_values` | UUID | monthly by `issued_at` | Forecast |
+| 18 | `hindcast_forecasts` | UUID | no | Forecast |
+| 19 | `hindcast_values` | UUID | monthly by `hindcast_step` | Forecast |
+| 20 | `forecast_adjustments` | UUID | no | Forecast |
+| 21 | `skill_scores` | UUID | no | Skill |
+| 22 | `skill_diagrams` | UUID | no | Skill |
+| 23 | `flow_regime_configs` | UUID | no | Skill |
+| 24 | `alerts` | UUID | no | Ops |
+| 25 | `pipeline_health` | BIGSERIAL | no | Ops |
+| 26 | `dead_letter_queue` | BIGSERIAL | no | Ops |
+| 27 | `users` | UUID | no | Auth |
+| 28 | `access_tokens` | UUID | no | Auth |
+| 29 | `refresh_tokens` | UUID | no | Auth |
+| 30 | `audit_log` | BIGSERIAL | no | Auth |
 
 Column details, CHECK constraints, indexes, and retention policies
 are defined in `architecture-context.md`.
