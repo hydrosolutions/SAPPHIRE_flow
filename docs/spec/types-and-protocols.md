@@ -314,7 +314,7 @@ class DangerLevelDefinition:
 class StationThreshold:
     station_id: StationId
     danger_level: str          # references DangerLevelDefinition.name
-    parameter: str             # "discharge" or "water_level"
+    parameter: Literal["discharge", "water_level"]
     value: float               # threshold value in parameter units
     source: ThresholdSource
     created_at: UtcDatetime
@@ -350,6 +350,100 @@ def aggregate_qc_status(flags: list[QcFlag]) -> QcStatus:
     worst = max(flags, key=lambda f: severity[f.status])
     return worst.status
 ```
+
+### QcRuleParams
+
+Per-rule threshold parameters. Each rule has a set of thresholds that may vary by
+parameter and time step. The time-step dimension allows the same QC service to handle
+both 10-minute operational data and daily historical data with appropriate thresholds.
+
+```python
+from datetime import timedelta
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class QcRuleParams:
+    rule_id: str                   # e.g. "range_check", "rate_of_change", "frozen_sensor", "spike", "gross_outlier"
+    rule_version: str              # e.g. "1.0.0"
+    parameter: str                 # canonical parameter name (e.g. "discharge", "water_level")
+    time_step: timedelta           # observation time step these thresholds apply to
+    thresholds: dict[str, float]   # rule-specific thresholds, e.g. {"value_min": 0, "value_max": 5000}
+```
+
+**Threshold keys by rule**:
+- `range_check`: `value_min`, `value_max`
+- `rate_of_change`: `max_rate` (units per second)
+- `frozen_sensor`: `tolerance`, `min_consecutive` (int stored as float)
+- `spike`: `tolerance`
+- `gross_outlier`: `k_sigma`
+
+### QcRuleSet
+
+A versioned collection of QC rules for a deployment. Loaded from `config.toml` `[qc_rules]`
+section (see `config-reference.toml`).
+
+```python
+@dataclass(frozen=True, kw_only=True, slots=True)
+class QcRuleSet:
+    version: str                           # ruleset version (e.g. "1.0.0")
+    rules: tuple[QcRuleParams, ...]        # all rules for all parameters and time steps
+
+    def rules_for(self, parameter: str, time_step: timedelta) -> tuple[QcRuleParams, ...]:
+        """Filter rules matching this parameter and time step."""
+        return tuple(r for r in self.rules if r.parameter == parameter and r.time_step == time_step)
+```
+
+### StationQcOverride
+
+Per-station override of specific QC rule thresholds. Fields set to `None` inherit from
+the deployment-level `QcRuleSet`. Loaded from station onboarding TOML; v1 migrates to
+DB (dashboard-editable).
+
+```python
+@dataclass(frozen=True, kw_only=True, slots=True)
+class StationQcOverride:
+    station_id: StationId
+    rule_id: str
+    parameter: str
+    time_step: timedelta
+    thresholds: dict[str, float | None]    # None = inherit deployment default
+```
+
+### ClimBaseline
+
+Rolling climatological mean and standard deviation, pre-computed during station
+onboarding (Flow 5 step 5.8). Used by the gross outlier QC rule.
+
+```python
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ClimBaseline:
+    station_id: StationId
+    parameter: str
+    day_of_year: int               # 1–366
+    rolling_mean: float
+    rolling_std: float
+    sample_count: int              # number of years contributing to this estimate
+```
+
+Module: `types/domain.py`
+
+### QualityChecker Protocol
+
+```python
+@runtime_checkable
+class QualityChecker(Protocol):
+    def check(
+        self,
+        observations: list[Observation],
+        rule_set: QcRuleSet,
+        overrides: list[StationQcOverride],
+        baselines: list[ClimBaseline],
+    ) -> dict[ObservationId, list[QcFlag]]: ...
+        # Returns QC flags per observation. Empty list = all rules passed (QC_PASSED).
+        # The caller aggregates flags via aggregate_qc_status() and calls
+        # ObservationStore.update_qc() to persist.
+```
+
+Module: `protocols/stores.py` (alongside other service-adjacent Protocols).
 
 ### SeasonDefinition
 
@@ -394,7 +488,7 @@ Consumed by the alert service to raise or resolve alerts.
 class ExceedanceResult:
     station_id: StationId
     danger_level: str              # references DangerLevelDefinition.name
-    parameter: str                 # "discharge" or "water_level"
+    parameter: Literal["discharge", "water_level"]
     threshold_value: float         # the configured threshold
     exceedance_probability: float | None  # P(forecast crosses threshold in configured direction), NULL for observation alerts
     observed_value: float | None   # observed value, NULL for forecast alerts
@@ -573,7 +667,7 @@ from pydantic import BaseModel
 class ForecastAdjustmentItem(BaseModel):
     valid_time: str                                              # ISO 8601 UTC
     lead_time_hours: int
-    adjustment_type: Literal["shift", "scale", "cap", "floor"]  # envelope operation
+    adjustment_type: Literal["shift", "scale", "cap", "floor"]  # envelope operation; AdjustmentType enum provides the canonical values; Literal is used here for Pydantic boundary compatibility
     value: float                                                 # delta for shift, factor for scale,
                                                                  # threshold for cap/floor
 ```
@@ -613,8 +707,8 @@ Module: `types/rating_curve.py`
 class FlowRegimeConfig:
     id: UUID
     station_id: StationId
-    q50: float                     # 50th percentile discharge (m³/s)
-    q90: float                     # 90th percentile discharge (m³/s)
+    p50: float                     # 50th percentile of forecast target parameter
+    p90: float                     # 90th percentile of forecast target parameter
     computed_at: UtcDatetime
     observation_count: int
     version: int                   # monotonically increasing per station
@@ -635,6 +729,40 @@ class PipelineHealthRecord:
     detail: dict                   # check-type-specific payload (validated at boundary)
     cycle_time: UtcDatetime | None
     created_at: UtcDatetime
+```
+
+Module: `types/pipeline.py`
+
+### FlowRunState
+
+Enum representing the state of a Prefect flow run.
+
+```python
+class FlowRunState(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CRASHED = "crashed"
+    CANCELLING = "cancelling"
+    CANCELLED = "cancelled"
+```
+
+Module: `types/enums.py`
+
+### FlowRunStatus
+
+Snapshot of a Prefect flow run's current state, used by the pipeline monitoring subsystem (Flow 4).
+
+```python
+@dataclass(frozen=True, kw_only=True, slots=True)
+class FlowRunStatus:
+    flow_name: str
+    run_id: str
+    state: FlowRunState
+    started_at: UtcDatetime | None
+    duration_seconds: float | None
+    error_message: str | None
 ```
 
 Module: `types/pipeline.py`
@@ -845,7 +973,7 @@ class ModelRecord:
     id: ModelId                       # TEXT PK — entry point name
     display_name: str
     artifact_scope: ArtifactScope     # STATION or GROUP
-    description: str | None
+    description: str
     created_at: UtcDatetime
 ```
 
@@ -987,8 +1115,8 @@ class WeatherForecastRecord:
     band_id: int | None                    # non-null when spatial_type == ELEVATION_BAND
     member_id: int | None
     value: float
-    is_gap: bool                           # v1 (Flow 11) — omit from v0 DB schema
-    gap_status: Literal["recovered", "unrecoverable"] | None  # v1 (Flow 11) — omit from v0 DB schema
+    is_gap: bool = False                   # v1 (Flow 11): omit from v0 DB schema; default allows v0 construction without these fields
+    gap_status: Literal["recovered", "unrecoverable"] | None = None  # v1 (Flow 11): default allows v0 construction
     created_at: UtcDatetime
 ```
 
@@ -1028,7 +1156,7 @@ class HistoricalForcingRecord:
 
 `RawHistoricalForcing` is the unpersisted form (adapter output / pre-insert). `HistoricalForcingRecord` is the persisted form with DB-assigned `id` and `created_at`. The natural key is `(station_id, source, version, valid_time, parameter, spatial_type, band_id, member_id)`.
 
-Module: `types/weather.py`
+Module: `types/historical_forcing.py`
 
 ### SkillScore
 
@@ -1491,8 +1619,8 @@ class StationStore(Protocol):
 
 ```python
 class StationGroupStore(Protocol):
-    def store_group(self, name: str, station_ids: frozenset[StationId]) -> StationGroupId: ...
-        # Upsert keyed on name. Replaces membership.
+    def store_group(self, group: StationGroup) -> None: ...
+        # Upsert keyed on group_id. Replaces membership.
     def fetch_group(self, group_id: StationGroupId) -> StationGroup | None: ...
     def fetch_group_by_name(self, name: str) -> StationGroup | None: ...
     def fetch_groups_for_station(self, station_id: StationId) -> list[StationGroup]: ...
@@ -1737,16 +1865,9 @@ Module: `protocols/adapters.py`
 
 Used by Flow 4 step 4.4 to query flow run health. Abstracts the Prefect API behind a Protocol for testability.
 
-```python
-@dataclass(frozen=True, kw_only=True, slots=True)
-class FlowRunStatus:
-    flow_name: str
-    run_id: str
-    state: str                    # e.g. "COMPLETED", "FAILED", "CRASHED", "RUNNING"
-    started_at: UtcDatetime | None
-    duration_seconds: float | None
-    error_message: str | None
+`FlowRunStatus` is defined in `types/pipeline.py` (see § FlowRunStatus above).
 
+```python
 @runtime_checkable
 class PipelineStatusSource(Protocol):
     def fetch_recent_runs(
@@ -1757,8 +1878,6 @@ class PipelineStatusSource(Protocol):
 ```
 
 Production implementation wraps the Prefect client. Tests inject a `FakePipelineStatusSource` returning pre-configured states.
-
-`FlowRunStatus` defined in `types/pipeline.py`. Protocol defined in `protocols/adapters.py`.
 
 Module: `protocols/adapters.py`
 
@@ -1843,8 +1962,8 @@ class DeploymentConfig(BaseModel):
     warm_up_snapshot_max_age_monsoon_hours: float = 24.0  # shorter during wet season
 
     # --- Flow regime ---
-    flow_regime_q50_percentile: float = 50.0   # customizable percentile boundary
-    flow_regime_q90_percentile: float = 90.0
+    flow_regime_p50_percentile: float = 50.0   # customizable percentile boundary
+    flow_regime_p90_percentile: float = 90.0
 
     # --- Per-source alert enablement (v0-scope.md §A8c) ---
     # Per-source flags allow incremental activation: pipeline alerts first,
@@ -1951,19 +2070,21 @@ src/sapphire_flow/
 │   ├── datetime.py         # UtcDatetime, ensure_utc()
 │   ├── enums.py            # All enums
 │   ├── domain.py           # GeoCoord, ParameterDefinition, DangerLevelDefinition, QcFlag,
+│   │                       #   QcRuleParams, QcRuleSet, StationQcOverride, ClimBaseline,
 │   │                       #   SeasonDefinition, ExceedanceResult, SkillInterpretationScheme, etc.
 │   ├── ensemble.py         # ForecastEnsemble
 │   ├── model.py            # ModelInputs, TrainingData, ModelParams, ModelArtifact, ModelArtifactRecord
 │   ├── observation.py      # Observation, RawObservation
 │   ├── forecast.py         # OperationalForecast, HindcastForecast, ForecastAdjustment, ForeignForecast
 │   ├── weather.py          # WeatherForecastRecord, PointForecast, BasinAverageForecast,
-│   │                       #   RawHistoricalForcing, HistoricalForcingRecord, etc.
+│   │                       #   ElevationBandForecast, GriddedForecast
+│   ├── historical_forcing.py # RawHistoricalForcing, HistoricalForcingRecord
 │   ├── alert.py            # Alert
 │   ├── skill.py            # SkillScore, SkillDiagram, FlowRegimeConfig
 │   ├── station.py          # StationConfig, ModelAssignment, StationWeatherSource
 │   ├── basin.py            # Basin
 │   ├── rating_curve.py     # RatingCurve
-│   ├── pipeline.py         # PipelineHealthRecord
+│   ├── pipeline.py         # PipelineHealthRecord, FlowRunStatus
 │   └── auth.py             # User, AccessToken, AccessTokenScope, AuditEntry
 ├── schemas/
 │   └── forecast.py         # ForecastAdjustmentItem (Pydantic boundary validation)
@@ -1978,7 +2099,7 @@ src/sapphire_flow/
 │   │                       #    HistoricalForcingStore, BasinStore,
 │   │                       #    ModelStateStore, ModelStore, ParameterStore)
 │   ├── adapters.py         # WeatherForecastSource, StationDataSource, WeatherReanalysisSource,
-│   │                       #   ForeignForecastSource
+│   │                       #   ForeignForecastSource, PipelineStatusSource
 │   ├── grid_extractor.py   # GridExtractor
 │   └── notification.py     # NotificationAdapter
 └── config/

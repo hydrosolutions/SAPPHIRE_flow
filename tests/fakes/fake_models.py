@@ -57,7 +57,7 @@ class FakeStationForecastModel:
             pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
             pl.col("member_id").cast(pl.Int32),
         )
-        ens = ForecastEnsemble.from_members(  # type: ignore[attr-defined]
+        ens = ForecastEnsemble.from_members(
             station_id=inputs.station_id,
             issued_at=inputs.issue_time,
             parameter="discharge",
@@ -115,7 +115,7 @@ class FakeGroupForecastModel:
                 pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
                 pl.col("member_id").cast(pl.Int32),
             )
-            ens = ForecastEnsemble.from_members(  # type: ignore[attr-defined]
+            ens = ForecastEnsemble.from_members(
                 station_id=sid,
                 issued_at=inp.issue_time,
                 parameter="discharge",

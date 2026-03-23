@@ -177,7 +177,7 @@ erDiagram
         TEXT id PK "entry point name"
         TEXT display_name
         TEXT artifact_scope "station | group"
-        TEXT description "NULL"
+        TEXT description
         TIMESTAMPTZ created_at
     }
 
@@ -335,8 +335,8 @@ erDiagram
     flow_regime_configs {
         UUID id PK
         UUID station_id FK
-        DOUBLE_PRECISION q50
-        DOUBLE_PRECISION q90
+        DOUBLE_PRECISION p50
+        DOUBLE_PRECISION p90
         TIMESTAMPTZ computed_at
         INT observation_count
         INT version
@@ -613,7 +613,7 @@ erDiagram
         TEXT id PK "entry point name"
         TEXT display_name
         TEXT artifact_scope "station | group"
-        TEXT description "NULL"
+        TEXT description
         TIMESTAMPTZ created_at
     }
 
@@ -779,8 +779,8 @@ erDiagram
     flow_regime_configs {
         UUID id PK
         UUID station_id FK
-        DOUBLE_PRECISION q50
-        DOUBLE_PRECISION q90
+        DOUBLE_PRECISION p50
+        DOUBLE_PRECISION p90
         TIMESTAMPTZ computed_at
         INT observation_count
         INT version

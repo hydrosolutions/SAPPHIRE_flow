@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, NamedTuple
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.ids import BasinId
 
 
-class Basin(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class Basin:
     id: BasinId
     code: str
     name: str

@@ -1,21 +1,30 @@
 from __future__ import annotations
 
 import random
+from datetime import UTC, datetime
+from uuid import UUID
 
 import pytest
 
+from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import ObservationSource, QcStatus
 from sapphire_flow.types.ids import ObservationId, StationId
 from sapphire_flow.types.observation import Observation
-from tests.conftest import _EPOCH, _uuid, make_observation
+from tests.conftest import make_observation
+
+_TEST_EPOCH = ensure_utc(datetime(2025, 1, 1, tzinfo=UTC))
+
+
+def _test_uuid(rng: random.Random) -> UUID:
+    return UUID(int=rng.getrandbits(128), version=4)
 
 
 def _make_obs(value: float | None, qc_status: QcStatus) -> Observation:
     rng = random.Random(42)
     return Observation(
-        id=ObservationId(_uuid(rng)),
-        station_id=StationId(_uuid(rng)),
-        timestamp=_EPOCH,
+        id=ObservationId(_test_uuid(rng)),
+        station_id=StationId(_test_uuid(rng)),
+        timestamp=_TEST_EPOCH,
         parameter="discharge",
         value=value,
         source=ObservationSource.MEASURED,
@@ -24,7 +33,7 @@ def _make_obs(value: float | None, qc_status: QcStatus) -> Observation:
         qc_status=qc_status,
         qc_flags=[],
         qc_rule_version=None,
-        created_at=_EPOCH,
+        created_at=_TEST_EPOCH,
     )
 
 

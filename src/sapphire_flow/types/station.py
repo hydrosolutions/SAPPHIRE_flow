@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal, NamedTuple
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from datetime import timedelta
@@ -17,7 +18,8 @@ if TYPE_CHECKING:
     from sapphire_flow.types.ids import BasinId, ModelId, StationGroupId, StationId
 
 
-class StationConfig(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class StationConfig:
     id: StationId
     code: str
     name: str
@@ -36,7 +38,8 @@ class StationConfig(NamedTuple):
     wigos_id: str | None
 
 
-class ModelAssignment(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ModelAssignment:
     station_id: StationId
     model_id: ModelId
     time_step: timedelta
@@ -45,15 +48,19 @@ class ModelAssignment(NamedTuple):
     created_at: UtcDatetime
 
 
-class StationGroup(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class StationGroup:
     id: StationGroupId
     name: str
     station_ids: frozenset[StationId]
+    description: str | None = None
     created_at: UtcDatetime
 
 
-class StationWeatherSource(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class StationWeatherSource:
     station_id: StationId
     nwp_source: str
     extraction_type: SpatialRepresentation
+    # TODO(v0-store): convert to enum per "enums over booleans" rule
     active: bool

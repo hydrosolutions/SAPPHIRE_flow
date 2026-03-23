@@ -13,8 +13,8 @@ from sapphire_flow.types.historical_forcing import (
     RawHistoricalForcing,
 )
 from sapphire_flow.types.ids import HistoricalForcingId, StationId
+from tests.conftest import make_historical_forcing_record
 from tests.fakes.fake_stores import FakeHistoricalForcingStore
-from tests.integration.conftest import make_historical_forcing_record
 
 _NOW = ensure_utc(datetime(2026, 1, 15, 12, 0, tzinfo=UTC))
 _STATION = StationId(uuid4())

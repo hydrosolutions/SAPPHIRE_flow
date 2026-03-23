@@ -32,6 +32,7 @@ class TestDatabaseSetup:
             "flow_regime_configs",
             "alerts",
             "pipeline_health",
+            "historical_forcing",
         }
         # alembic_version table also exists
         assert expected.issubset(tables), f"Missing tables: {expected - tables}"

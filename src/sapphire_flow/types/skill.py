@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal, NamedTuple
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -10,7 +11,8 @@ if TYPE_CHECKING:
     from sapphire_flow.types.ids import ArtifactId, ModelId, StationId
 
 
-class SkillScore(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class SkillScore:
     id: UUID
     station_id: StationId
     model_id: ModelId
@@ -26,11 +28,13 @@ class SkillScore(NamedTuple):
     metric: str
     score: float
     sample_size: int
+    # TODO(v0-store): convert to enum per "enums over booleans" rule
     is_stale: bool
     created_at: UtcDatetime
 
 
-class SkillDiagram(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class SkillDiagram:
     id: UUID
     station_id: StationId
     model_id: ModelId
@@ -47,11 +51,12 @@ class SkillDiagram(NamedTuple):
     created_at: UtcDatetime
 
 
-class FlowRegimeConfig(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class FlowRegimeConfig:
     id: UUID
     station_id: StationId
-    q50: float
-    q90: float
+    p50: float
+    p90: float
     computed_at: UtcDatetime
     observation_count: int
     version: int

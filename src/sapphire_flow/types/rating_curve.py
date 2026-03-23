@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal, NamedTuple
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -9,7 +10,8 @@ if TYPE_CHECKING:
     from sapphire_flow.types.ids import RatingCurveId, StationId
 
 
-class RatingCurve(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class RatingCurve:
     id: RatingCurveId
     station_id: StationId
     version: int

@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-SAPPHIRE Flow is an operational hydrological forecasting system that ingests weather and station data, runs ensemble forecast models, checks alert thresholds, and serves results via a REST API with an optional review dashboard. Currently in **design phase** (no implementation yet — only design docs in `docs/design/` and scaffolding in `src/`). The immediate goal is **v0**: a working end-to-end pipeline using Swiss public data (MeteoSwiss weather, BAFU stations) with simple models, validating the architecture before Nepal deployment in Oct 2026.
+SAPPHIRE Flow is an operational hydrological forecasting system that ingests weather and station data, runs ensemble forecast models, checks alert thresholds, and serves results via a REST API with an optional review dashboard. Currently in **early implementation** (Phase 1a: types, Protocols, and test infrastructure underway — see `docs/v0-scope.md` §H for implementation phases). The immediate goal is **v0**: a working end-to-end pipeline using Swiss public data (MeteoSwiss weather, BAFU stations) with simple models, validating the architecture before Nepal deployment in Oct 2026.
 
 **Key documents (in priority order):**
 1. `docs/v0-scope.md` — **Read first for any implementation task.** What v0 implements, simplifications, performance targets, testing strategy, implementation phases
@@ -125,7 +125,7 @@ value: str | None = None
 
 ### Logging
 
-- Use `logging` — never `print` — for runtime diagnostics.
+- Use `structlog` — never `print` or stdlib `logging.getLogger()` — for runtime diagnostics. See `docs/standards/logging.md`.
 
 ### Formatting & Linting
 
@@ -139,7 +139,7 @@ value: str | None = None
 
 Before committing, follow this exact sequence:
 
-1. `uv run bump-my-version bump patch` — modifies `pyproject.toml` and `src/mypackage/__init__.py`
+1. `uv run bump-my-version bump patch` — modifies `pyproject.toml` and `src/sapphire_flow/__init__.py`
 2. Stage version files alongside code changes
 3. Commit with a conventional commit message
 4. `git tag v$(uv run bump-my-version show current_version)` — tag the commit
@@ -170,38 +170,40 @@ def delineate(comid: int, lat: float, lon: float) -> dict: ...
 def delineate(comid: ComId, pour_point: GeoCoord) -> Watershed: ...
 ```
 
-Parsing happens once, at the edge. Everything downstream receives types that are **valid by construction**. Use `__new__` to enforce invariants at creation time.
+Parsing happens once, at the edge. Everything downstream receives types that are **valid by construction**. Use `__post_init__` on frozen dataclasses to enforce invariants at creation time.
 
 ### NewType and wrapper types
 
-Use `NewType` for lightweight semantic distinction and `NamedTuple` for structured domain values:
+Use `NewType` for lightweight semantic distinction and frozen dataclasses for structured domain values:
 
 ```python
-from typing import NewType, NamedTuple
+from dataclasses import dataclass
+from typing import NewType
 
 # Lightweight — zero runtime cost, caught by static analysis
 UserId = NewType("UserId", int)
 Meters = NewType("Meters", float)
 
 # Plain value type — no invariants to enforce
-class GridCoord(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class GridCoord:
     col: int
     row: int
 
-# Validated domain type — invariants enforced via __new__
-class GeoCoord(NamedTuple):
+# Validated domain type — invariants enforced via __post_init__
+@dataclass(frozen=True, kw_only=True, slots=True)
+class GeoCoord:
     lon: float
     lat: float
 
-    def __new__(cls, lon: float, lat: float) -> "GeoCoord":
-        if not (-180 <= lon <= 180):
-            raise ValueError(f"longitude {lon} out of range")
-        if not (-90 <= lat <= 90):
-            raise ValueError(f"latitude {lat} out of range")
-        return super().__new__(cls, lon, lat)
+    def __post_init__(self) -> None:
+        if not (-180 <= self.lon <= 180):
+            raise ValueError(f"longitude {self.lon} out of range")
+        if not (-90 <= self.lat <= 90):
+            raise ValueError(f"latitude {self.lat} out of range")
 ```
 
-A function accepting `GeoCoord` cannot be confused with one accepting `GridCoord`. `NewType` catches `UserId`/`int` swaps in type checkers without runtime overhead. `__new__` ensures no invalid `GeoCoord` can ever exist — unlike a factory classmethod, there is no escape hatch.
+A function accepting `GeoCoord` cannot be confused with one accepting `GridCoord`. `NewType` catches `UserId`/`int` swaps in type checkers without runtime overhead. `__post_init__` validates at construction time — every `GeoCoord(...)` call is checked.
 
 **When to wrap:**
 - Two parameters of the same primitive type could be swapped (IDs, coordinates, thresholds)
@@ -230,7 +232,7 @@ class TraceDirection(Enum):
 def trace(direction: TraceDirection) -> list[Node]: ...
 ```
 
-This applies to function parameters, NamedTuple fields, and return values. A `bool` says nothing about intent; an enum is self-documenting and extensible.
+This applies to function parameters, dataclass fields, and return values. A `bool` says nothing about intent; an enum is self-documenting and extensible.
 
 ### Literal types for constrained strings
 
@@ -264,22 +266,21 @@ def process(source: Readable) -> Result:
 
 Any object with a matching `.read()` method satisfies this — no inheritance required.
 
-### NamedTuple as the default value type
+### Frozen dataclasses as the default value type
 
-`NamedTuple` is the default for domain value types. It gives you immutability, hashing, unpacking, and low overhead for free — no decorators or dependencies needed.
+Frozen dataclasses (`@dataclass(frozen=True, kw_only=True, slots=True)`) are the default for domain value types. They give you immutability, hashing, keyword-only construction (prevents argument swaps on large types), and slot-based memory efficiency.
 
 ```python
-class TimeRange(NamedTuple):
+from dataclasses import dataclass
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class TimeRange:
     start: datetime
     end: datetime
 
-    def __new__(cls, start: datetime, end: datetime) -> "TimeRange":
-        if start >= end:
-            raise ValueError(f"start {start} must precede end {end}")
-        return super().__new__(cls, start, end)
-
-# Immutable, hashable, unpackable
-start, end = TimeRange(t0, t1)
+    def __post_init__(self) -> None:
+        if self.start >= self.end:
+            raise ValueError(f"start {self.start} must precede end {self.end}")
 ```
 
 **When to use each type tool:**
@@ -287,8 +288,8 @@ start, end = TimeRange(t0, t1)
 | Need | Tool |
 |---|---|
 | Semantic distinction on a primitive | `NewType` |
-| Structured value, no invariants | Plain `NamedTuple` |
-| Structured value with invariants | `NamedTuple` + `__new__` validation |
+| Structured value, no invariants | `@dataclass(frozen=True, kw_only=True, slots=True)` |
+| Structured value with invariants | Frozen dataclass + `__post_init__` validation |
 | Fixed set of string options | `Literal` |
 | Domain state with named possibilities | `Enum` |
 | Interface / capability contract | `Protocol` |
@@ -303,14 +304,14 @@ start, end = TimeRange(t0, t1)
 | Enums over booleans | **Always** — no `bool` for domain states |
 | Literal over raw strings | **Always** — when the set of valid values is fixed and known |
 | Protocols over inheritance | **Prefer** — use inheritance only for shared implementation |
-| NamedTuple for value types | **Default** — the go-to for all domain value types |
+| Frozen dataclasses for value types | **Default** — the go-to for all domain value types |
 | Pydantic at boundaries only | **Hard rule** — never in domain logic |
 
 ### Pydantic for boundary validation
 
 Pydantic is used **exclusively at system boundaries** — API requests/responses, JSONB schema validation, external data ingestion (MeteoSwiss, BAFU, config files). It is **never** used for internal domain types.
 
-The flow is: **External data → Pydantic model (validate) → NamedTuple domain type (internal)**.
+The flow is: **External data → Pydantic model (validate) → frozen dataclass domain type (internal)**.
 
 ```python
 from pydantic import BaseModel
@@ -338,7 +339,7 @@ def parse_station(raw: dict) -> Station:
 - External data source parsing (weather APIs, station feeds, config files)
 
 **Do NOT use Pydantic for:**
-- Internal domain value types (use `NamedTuple`)
+- Internal domain value types (use frozen dataclasses)
 - Function signatures in domain logic
 - Anything that doesn't cross a system boundary
 

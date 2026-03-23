@@ -109,6 +109,8 @@ The org admin (a hydromet staff member) manages all user accounts through the da
 
 ## Authorization matrix
 
+> **v1-only**: The entire authorization matrix applies from v1. v0 has no authentication or authorization.
+
 Role-to-endpoint mapping. Enforced via FastAPI dependency injection (`Depends(require_role(...))`), not frontend visibility.
 
 | Endpoint pattern | Org admin | IT admin | Model admin | Forecaster | API consumer |
@@ -145,12 +147,12 @@ All secrets use Docker secrets (`secrets:` block in `docker-compose.yml`). Mount
 
 Required secrets:
 - `db_password` — PostgreSQL password for application users
-- `secret_key` — JWT signing key (read from `/run/secrets/secret_key`, referenced as `SECRET_KEY` in application config)
-- `totp_encryption_key` — Fernet key for encrypting TOTP seeds at rest (see § TOTP secret encryption)
+- `secret_key` — JWT signing key (read from `/run/secrets/secret_key`, referenced as `SECRET_KEY` in application config) *(v1)*
+- `totp_encryption_key` — Fernet key for encrypting TOTP seeds at rest (see § TOTP secret encryption) *(v1)*
 - `sapphire_dg_api_key` — Data Gateway API key (v1)
-- `notification_smtp_password` — email notification credentials
+- `notification_smtp_password` — email notification credentials *(v1)*
 - `notification_sms_api_key` — SMS provider credentials (v1 Nepal)
-- `backup_repo_password` — restic repository password
+- `backup_repo_password` — restic repository password *(v1)*
 
 ### Development
 
@@ -163,6 +165,8 @@ Required secrets:
 - `db_password`: rotated annually. Requires coordinated restart of all application containers.
 - `totp_encryption_key`: rotated rarely (requires re-encrypting all `users.totp_secret` values). Rotation procedure: generate new key, run migration script to decrypt-with-old / encrypt-with-new, deploy new key, verify TOTP login works.
 - External API keys (`sapphire_dg_api_key`): rotated per provider schedule.
+
+> **v1-only**: TOTP/MFA is deferred to v1. This section applies from v1 onwards.
 
 ### TOTP secret encryption at rest
 
@@ -177,6 +181,8 @@ TOTP seeds (`users.totp_secret`) are encrypted at rest using Fernet symmetric en
 **Key generation**: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. Store the output in `./secrets/totp_encryption_key`.
 
 **Limitation**: An attacker with root access to the host VM can read both the DB and `/run/secrets/totp_encryption_key`, defeating this protection. This is consistent with the threat model (§ Threat model: host compromise) — application-level encryption protects against DB-level compromise, not host-level compromise.
+
+> **v1-only**: API key management is deferred to v1 (no auth in v0).
 
 ## API key lifecycle management
 
@@ -210,6 +216,8 @@ A scheduled Prefect task (daily, low priority) checks API key health and sends a
 | Usage spike | Requests in last 24h >10x the 30-day daily average | Email: "API key for *{consumer}* made {n} requests today (normal: ~{avg}/day)." |
 
 These use the existing notification infrastructure (EMAIL channel, notification adapters). See architecture-context.md § Notification channels → Alert categories.
+
+> **v1-only** (v0-scope.md §A10): v0 uses simple pg_dump backups. restic encryption is deferred to v1.
 
 ## Backup encryption
 
@@ -313,8 +321,8 @@ The entrypoint pattern above handles secrets access: `chown` makes `/run/secrets
 
 ### Volume permissions
 
-- `/data/artifacts/` — read-only for `api` container, read-write for `prefect-worker-training` only
-- `/data/cold/` — read-only for `api` container, read-write for `prefect-worker-ops` (archival task)
+- `/data/artifacts/` — read-only for `api` container, read-write for `prefect-worker-training` only; read-only for `prefect-worker-ops` and `prefect-worker-hindcast`
+- `/data/cold/` — read-only for `api` container, read-write for `prefect-worker-ops` (archival task) *(v1, §A2)*; read-only for `prefect-worker-hindcast`
 
 ## Network policy
 
@@ -323,7 +331,7 @@ The entrypoint pattern above handles secrets access: `chown` makes `/run/secrets
 
 ### Internal only (Docker network, not exposed to host)
 - PostgreSQL: 5432
-- PgBouncer: 6432
+- PgBouncer: 6432 *(v1, §A3)*
 - Prefect server: 4200
 - FastAPI: 8000
 
@@ -343,7 +351,9 @@ Configured in Caddy as global `header` directives. Applied to all responses.
 
 API-only responses (JSON) benefit from `X-Content-Type-Options` and `Strict-Transport-Security`. The CSP is primarily relevant for the HTMX dashboard.
 
-## Audit logging
+## Audit logging **(v1)**
+
+> The `audit_log` table is created in v1; v0 relies on structured application logs for traceability.
 
 The `audit_log` table is INSERT-only for `sapphire_api` (no UPDATE/DELETE). Records:
 - All authentication events (login, logout, failed attempts, password changes)

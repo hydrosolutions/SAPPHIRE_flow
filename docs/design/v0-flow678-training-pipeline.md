@@ -120,11 +120,11 @@ class TrainingResult:
 
 ---
 
-## 4. New protocol needed
+## 4. Adapter implementation needed
 
-### 4a. `WeatherReanalysisSource` as the forcing adapter (protocols/adapters.py)
+### 4a. `WeatherReanalysisSource` concrete adapter (protocols/adapters.py)
 
-Training and hindcast use `WeatherReanalysisSource` (defined in `protocols/adapters.py`) to fetch historical weather forcing. In v0, the concrete adapter wraps co-located SMN weather station observations; v1 swaps to ERA5-Land. The Protocol now returns `list[RawHistoricalForcing]` — a flat list of raw forcing records that callers group by station_id and convert to a `pl.DataFrame` as needed.
+The `WeatherReanalysisSource` Protocol already exists in `protocols/adapters.py`. What v0 needs is the **concrete adapter implementation**. In v0, this wraps co-located SMN weather station observations; v1 swaps to ERA5-Land. The Protocol returns `list[RawHistoricalForcing]` — a flat list of raw forcing records that callers group by station_id and convert to a `pl.DataFrame` as needed.
 
 ```python
 class WeatherReanalysisSource(Protocol):
@@ -137,7 +137,7 @@ class WeatherReanalysisSource(Protocol):
     ) -> list[RawHistoricalForcing]: ...
 ```
 
-**Persistence layer**: `HistoricalForcingStore` (defined in `protocols/stores.py`) is the complementary store Protocol. After fetching from `WeatherReanalysisSource`, the flow persists records via `HistoricalForcingStore.store_forcing()` and re-fetches for training/hindcast via `fetch_forcing_as_dataframe()`. This keeps the adapter stateless and allows training runs to reuse previously ingested forcing without re-fetching.
+**Persistence layer**: `HistoricalForcingStore` (defined in `protocols/stores.py`) is the complementary store Protocol. Forcing data is ingested once (during station onboarding or a separate ingest step) via `HistoricalForcingStore.store_forcing()` and retained permanently. The v0 concrete `SmNObservationForcingSource` adapter wraps `HistoricalForcingStore.fetch_forcing_as_dataframe()` internally — its `fetch_reanalysis()` reads from the DB, not from a live API. This means services take only `WeatherReanalysisSource` (the adapter) as a dependency; they do not need `HistoricalForcingStore` directly.
 
 **v0 note**: v0 always produces the `pl.DataFrame` variant of forcing. The `xr.Dataset` path in `ModelInputs.forcing` is reserved for v1 gridded reanalysis.
 
@@ -286,7 +286,7 @@ def assemble_station_training_data(
 
 **Steps**:
 1. Fetch QC-passed discharge observations for training period
-2. Fetch forcing via `forcing_source.fetch_forcing()` for model's `required_features`
+2. Fetch forcing via `forcing_source.fetch_reanalysis()` for model's `required_features`
 3. Load static attributes from `basin_store.fetch_basin(station.basin_id).attributes`
 4. Validate `required_features` present in forcing columns
 5. Validate `required_static_attributes` present in basin attributes
@@ -416,7 +416,7 @@ All functions operate on numpy arrays. No I/O, no external dependencies beyond n
 | `compute_bss(ensemble, observed, threshold)` | 2D, 1D, scalar | float | Brier Skill Score per danger level |
 | `compute_contingency(ensemble, observed, threshold, decision_probability)` | 2D, 1D, scalars | (POD, FAR, CSI) | Contingency table metrics |
 | `compute_peak_timing_error(predicted_median, observed, peak_threshold)` | 1D arrays, scalar | float \| None | None if no peaks found |
-| `compute_sharpness(ensemble)` | 2D array | (p10_p90_width, range) | Forecast-only metric |
+| `compute_sharpness(ensemble)` | 2D array | (p10_p90_width, p25_p75_width, ensemble_range) | Forecast-only metric (3 named values) |
 
 **Why implement CRPS from scratch?** `properscoring` is abandoned since 2015 and has numpy compatibility risk. Ensemble CRPS is ~20 lines of numpy. All metric functions are pure with no external dependencies beyond numpy.
 
@@ -471,7 +471,7 @@ def compute_skill_for_station(
 **Stratification dimensions**:
 - **Lead time**: Unique lead times extracted from hindcast ensemble valid_times
 - **Season**: Month of `hindcast_step` mapped to `SeasonDefinition`. `None` for "all seasons" aggregate.
-- **Flow regime**: Observed value at `hindcast_step` classified by `FlowRegimeConfig` (< q50 = LOW, q50–q90 = HIGH, > q90 = FLOOD). `None` for "all regimes" aggregate.
+- **Flow regime**: Observed value at `hindcast_step` classified by `FlowRegimeConfig` (< p50 = LOW, p50–p90 = HIGH, > p90 = FLOOD). `None` for "all regimes" aggregate.
 
 ```mermaid
 flowchart TD
@@ -497,7 +497,7 @@ flowchart TD
     input --> split_lt --> Stratify --> Compute --> output
 ```
 
-**Metric names**: `"crps"`, `"nse"`, `"kge"`, `"pbias"`, `"mae"`, `"bss_danger_{level}"`, `"pod_danger_{level}"`, `"far_danger_{level}"`, `"csi_danger_{level}"`, `"sharpness_p10_p90"`, `"sharpness_range"`, `"peak_timing_error"`
+**Metric names**: `"crps"`, `"nse"`, `"kge"`, `"pbias"`, `"mae"`, `"bss_danger_{level}"`, `"pod_danger_{level}"`, `"far_danger_{level}"`, `"csi_danger_{level}"`, `"sharpness_p10_p90"`, `"sharpness_p25_p75"`, `"ensemble_range"`, `"peak_timing_error"`
 
 ---
 
@@ -670,7 +670,7 @@ scope = determine_training_scope(..., model_store=FakeModelStore(), ...)
 
 1. **ModelParams config loading**: The `[models]` TOML section is currently popped by `load_config()`. A separate loader or removal of the pop is needed when per-model parameter overrides become necessary. Not blocking for v0.
 
-2. **Hindcast period defaults**: What's the default hindcast period when called from training (T.4)? Options: (a) same as training period, (b) configurable separately. Suggest: same as training period for v0, with option to narrow.
+2. ~~**Hindcast period defaults**~~: **Resolved.** Default hindcast period is the same as the training period (T.4 inherits `period_start` / `period_end` from the `TrainingUnit`). Configurable separately in standalone hindcast runs via `run_hindcast` flow parameters.
 
 3. **CRPSss reference baselines**: Climatology quantiles and persistence baselines are computed during station onboarding (Flow 5 step 5.8). Are they stored? Where? The skill service needs them as reference for CRPSss. This is a dependency on onboarding that must be resolved before skill computation can produce CRPSss. **v0 note**: CRPSss is deferred until onboarding (Flow 5) stores baselines. All other metrics in the v0 skill suite are independent of baselines.
 
@@ -724,4 +724,4 @@ scope = determine_training_scope(..., model_store=FakeModelStore(), ...)
 | CRPS from scratch may have numerical edge cases | Test against known analytical solutions. Cross-validate with `properscoring` in a one-off script (not a runtime dependency). |
 | Hindcast no-future-leakage is subtle | Explicit timestamp assertions in tests. Code review gate on `_assemble_hindcast_inputs`. |
 | `model_assignments` lookup adds complexity to scope | Already modeled in FakeStationStore. Seed test data with explicit assignments. |
-| CRPSss requires baseline artifacts from onboarding | CRPSss deferred until onboarding stores baselines. Other metrics work independently. |
+| CRPSss requires baseline artifacts from onboarding | CRPSss deferred until onboarding stores baselines. Other metrics work independently. Flow 5 (Vertical Slice 1) phases S1–S7 must complete before training can run on real data. |

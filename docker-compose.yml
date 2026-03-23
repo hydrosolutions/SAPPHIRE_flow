@@ -6,7 +6,7 @@ services:
     image: postgis/postgis:16-3.4
     environment:
       POSTGRES_USER: ${DB_USER:-sapphire}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
       POSTGRES_DB: sapphire
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -24,6 +24,8 @@ services:
       - SETGID
       - FOWNER
       - DAC_OVERRIDE
+    secrets:
+      - db_password
     restart: unless-stopped
     logging:
       driver: json-file
@@ -33,9 +35,11 @@ services:
 
   prefect-server:
     image: prefecthq/prefect:3-python3.11
-    command: prefect server start --host 0.0.0.0
-    environment:
-      PREFECT_API_DATABASE_CONNECTION_URL: postgresql+asyncpg://${DB_USER:-sapphire}:${DB_PASSWORD}@postgres:5432/prefect
+    command: >
+      sh -c "
+        export PREFECT_API_DATABASE_CONNECTION_URL=\"postgresql+asyncpg://${DB_USER:-sapphire}:$$(cat /run/secrets/db_password)@postgres:5432/prefect\" &&
+        prefect server start --host 0.0.0.0
+      "
     depends_on:
       postgres:
         condition: service_healthy
@@ -46,6 +50,8 @@ services:
       retries: 3
     cap_drop:
       - ALL
+    secrets:
+      - db_password
     restart: unless-stopped
     volumes:
       - prefect_data:/data/prefect
@@ -60,13 +66,15 @@ services:
     image: sapphire-flow:${VERSION:-latest}
     command: prefect worker start --pool default --type process
     environment:
-      DATABASE_URL: postgresql+asyncpg://${DB_USER:-sapphire}:${DB_PASSWORD}@postgres:5432/sapphire
+      DATABASE_URL_TEMPLATE: postgresql+asyncpg://${DB_USER:-sapphire}@postgres:5432/sapphire
       PREFECT_API_URL: http://prefect-server:4200/api
     depends_on:
       prefect-server:
         condition: service_healthy
     cap_drop:
       - ALL
+    secrets:
+      - db_password
     read_only: true
     tmpfs:
       - /tmp
@@ -85,7 +93,7 @@ services:
     image: sapphire-flow:${VERSION:-latest}
     command: uvicorn sapphire_flow.api:app --host 0.0.0.0 --port 8000
     environment:
-      DATABASE_URL: postgresql+asyncpg://${DB_USER:-sapphire}:${DB_PASSWORD}@postgres:5432/sapphire
+      DATABASE_URL_TEMPLATE: postgresql+asyncpg://${DB_USER:-sapphire}@postgres:5432/sapphire
       PREFECT_API_URL: http://prefect-server:4200/api
     depends_on:
       postgres:
@@ -97,6 +105,8 @@ services:
       retries: 3
     cap_drop:
       - ALL
+    secrets:
+      - db_password
     read_only: true
     tmpfs:
       - /tmp
@@ -114,6 +124,7 @@ services:
     image: caddy:2
     ports:
       - "80:80"
+      - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile
       - caddy_data:/data
@@ -125,6 +136,11 @@ services:
         condition: service_healthy
     cap_drop:
       - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    read_only: true
+    tmpfs:
+      - /tmp
     restart: unless-stopped
     logging:
       driver: json-file
@@ -141,7 +157,7 @@ services:
         echo 'Init complete'
       "
     environment:
-      DATABASE_URL: postgresql+asyncpg://${DB_USER:-sapphire}:${DB_PASSWORD}@postgres:5432/sapphire
+      DATABASE_URL_TEMPLATE: postgresql+asyncpg://${DB_USER:-sapphire}@postgres:5432/sapphire
       PREFECT_API_URL: http://prefect-server:4200/api
     depends_on:
       postgres:
@@ -150,6 +166,8 @@ services:
         condition: service_healthy
     cap_drop:
       - ALL
+    secrets:
+      - db_password
     read_only: true
     tmpfs:
       - /tmp
@@ -168,3 +186,7 @@ volumes:
   caddy_config:
   model_artifacts:
   prefect_data:
+
+secrets:
+  db_password:
+    file: ./secrets/db_password

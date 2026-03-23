@@ -389,7 +389,7 @@ models = sa.Table(
         sa.CheckConstraint("artifact_scope IN ('station', 'group')"),
         nullable=False,
     ),
-    sa.Column("description", sa.Text, nullable=True),
+    sa.Column("description", sa.Text, nullable=False),
     sa.Column(
         "created_at",
         sa.DateTime(timezone=True),
@@ -654,8 +654,8 @@ flow_regime_configs = sa.Table(
     sa.Column(
         "station_id", UUID(as_uuid=True), sa.ForeignKey("stations.id"), nullable=False
     ),
-    sa.Column("q50", sa.Float, nullable=False),
-    sa.Column("q90", sa.Float, nullable=False),
+    sa.Column("p50", sa.Float, nullable=False),
+    sa.Column("p90", sa.Float, nullable=False),
     sa.Column("computed_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("observation_count", sa.Integer, nullable=False),
     sa.Column("version", sa.Integer, nullable=False),

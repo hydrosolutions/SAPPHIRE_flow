@@ -24,8 +24,8 @@ warm_up_snapshot_max_age_hours = 48.0
 warm_up_snapshot_max_age_monsoon_hours = 24.0
 
 # Flow regime
-flow_regime_q50_percentile = 50.0
-flow_regime_q90_percentile = 90.0
+flow_regime_p50_percentile = 50.0
+flow_regime_p90_percentile = 90.0
 
 # Threshold inference
 infer_missing_thresholds = false

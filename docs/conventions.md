@@ -40,15 +40,27 @@ coding style rules in `CLAUDE.md`.
 Pattern: `/api/v1/{resource}` with nested sub-resources.
 
 ```
-GET    /api/v1/stations
-GET    /api/v1/stations/{id}
-GET    /api/v1/stations/{id}/observations
-GET    /api/v1/stations/{id}/forecasts
-POST   /api/v1/forecasts/{id}/adjust
-PATCH  /api/v1/forecasts/{id}/status
-POST   /api/v1/alerts/{id}/acknowledge
-POST   /api/v1/flows/ingest/trigger
-GET    /api/v1/health
+# Stations & data
+GET    /api/v1/stations                         # list stations (paginated)
+GET    /api/v1/stations/{id}                    # station detail
+GET    /api/v1/stations/{id}/observations       # observations for station
+GET    /api/v1/stations/{id}/forecasts          # forecasts for station
+
+# Forecasts
+GET    /api/v1/forecasts/{id}                   # forecast detail with ensemble values
+POST   /api/v1/forecasts/{id}/adjust            # apply adjustment (v1 — requires Flow 3)
+PATCH  /api/v1/forecasts/{id}/status            # transition status (v1 — requires Flow 3)
+
+# Alerts
+GET    /api/v1/alerts                           # list alerts (filterable by status, source)
+POST   /api/v1/alerts/{id}/acknowledge          # acknowledge an alert
+
+# Operations
+POST   /api/v1/flows/{flow}/trigger             # manually trigger a flow run
+GET    /api/v1/health                           # health check (aggregate status)
+GET    /api/v1/health/detail                    # detailed component status (v1: requires auth)
+
+# Auth (v1)
 POST   /api/v1/users
 GET    /api/v1/users
 PATCH  /api/v1/users/{id}
@@ -91,7 +103,7 @@ names. The `parameters` table stores the canonical names.
 
 - Secrets: `DB_ADMIN_PASSWORD`, `SECRET_KEY`
 - API keys: `SAPPHIRE_DG_API_KEY`, `IEASYHYDRO_API_KEY`
-- Connection strings: `DATABASE_URL` (via PgBouncer), `DATABASE_URL_DIRECT` (admin/migrations)
+- Connection strings: `DATABASE_URL` (via PgBouncer) *(v1)*, `DATABASE_URL_DIRECT` (admin/migrations). v0: `DATABASE_URL` connects directly to PostgreSQL (no PgBouncer).
 
 ### Network identifiers
 
@@ -103,9 +115,9 @@ constraint on `stations` and `basins`.
 
 ### Prefect flows and tasks
 
-- Flow functions: `verb_noun` — `ingest_weather`, `run_forecasts`, `check_alerts`
+- Flow functions: `verb_noun` — `run_forecast_cycle`, `ingest_observations`, `compute_skills`
 - Task functions: `verb_noun` — `fetch_weather_forecasts`, `run_model_forecasts`
-- Deployment names: kebab-case — `ingest-weather`, `run-forecasts`
+- Deployment names: kebab-case — `run-forecast-cycle`, `ingest-observations`
 
 ### Log events
 
@@ -249,6 +261,8 @@ for logging and notification.
 
 ## Database connection patterns
 
+> **v1-only** (v0-scope.md §A3): PgBouncer is not used in v0. v0: direct PostgreSQL connection for all traffic.
+
 - **Runtime traffic**: through PgBouncer (`DATABASE_URL`, port 6432, transaction pooling).
 - **Migrations**: direct connection (`DATABASE_URL_DIRECT`), bypasses PgBouncer.
 - **Prefect server**: direct connection (manages own pool).
@@ -257,8 +271,8 @@ for logging and notification.
 
 | User | Permissions |
 |------|-------------|
-| `sapphire_api` | SELECT all (incl. parameters, weather_forecasts, dead_letter_queue, station_weather_sources); INSERT/UPDATE on forecast_adjustments, bulletins, alerts, forecasts (status+version), access_tokens, users, refresh_tokens; UPDATE `last_used_at` on access_tokens (API middleware); INSERT only on audit_log (append-only) |
-| `sapphire_worker` | SELECT on stations, parameters, station_weather_sources, station_groups, station_group_members, rating_curves; SELECT/INSERT/UPDATE on observations, forecasts, forecast_values, alerts, skill_scores, weather_forecasts, model_artifacts, dead_letter_queue; SELECT/INSERT on hindcast_forecasts, hindcast_values, pipeline_health |
+| `sapphire_api` | SELECT all (incl. parameters, weather_forecasts, dead_letter_queue *(v1)*, station_weather_sources); INSERT/UPDATE on forecast_adjustments *(v1)*, bulletins *(v1)*, alerts, forecasts (status+version), access_tokens *(v1)*, users *(v1)*, refresh_tokens *(v1)*; UPDATE `last_used_at` on access_tokens (API middleware); INSERT only on audit_log *(v1)* (append-only) |
+| `sapphire_worker` | SELECT on stations, parameters, station_weather_sources, station_groups, station_group_members, rating_curves; SELECT/INSERT/UPDATE on observations, forecasts, forecast_values, alerts, skill_scores, weather_forecasts, model_artifacts, dead_letter_queue *(v1)*; SELECT/INSERT on hindcast_forecasts, hindcast_values, pipeline_health |
 | `sapphire_prefect` | Full access to `prefect` database only |
 
 ---
@@ -274,12 +288,14 @@ WHERE id = $2 AND version = $3;
 ```
 
 Returns 409 Conflict to the API caller if the version doesn't match.
-Manual adjustments are append-only (each creates an immutable
+Manual adjustments *(v1)* are append-only (each creates an immutable
 `forecast_adjustments` row).
 
 ---
 
 ## Partitioning
+
+> **v1-only** (v0-scope.md §A1): Table partitioning is not used in v0. All tables are unpartitioned.
 
 | Table | Strategy | Key |
 |-------|----------|-----|
@@ -304,7 +320,7 @@ raised --> acknowledged --> resolved
 - **Observation alerts**: measured value exceeds threshold.
 - **Auto-resolution**: newer data no longer exceeds threshold.
 - **Deduplication**: partial unique indexes prevent duplicates on flow reruns.
-- **Notification retry**: sweep every 5 min for alerts with `notified_at IS NULL`.
+- **Notification retry** *(v1)*: sweep every 5 min for alerts with `notified_at IS NULL`.
 
 ---
 
@@ -320,45 +336,48 @@ raw --> reviewed --> published
 
 Transitions enforced server-side with optimistic locking.
 
+> **v0 note**: v0 uses only `raw` status -- Flow 3 (forecast review/publish) is deferred to v1.
+
 ---
 
 ## Status and enum master list
 
 All status/enum columns store TEXT matching the Python enum `.value` (lowercase).
 
-| Column / Type | Values | Terminal states |
-|---------------|--------|-----------------|
-| `observations.qc_status` / `QcStatus` | `raw`, `qc_passed`, `qc_failed`, `qc_suspect`, `missing` | `qc_passed`, `qc_failed`, `missing` |
-| `forecasts.status` / `ForecastStatus` | `raw`, `reviewed`, `published` | `published` |
-| `forecasts.representation` / `EnsembleRepresentation` | `members`, `quantiles` | — |
-| `forecasts.warm_up_source` / `WarmUpSource` | `fresh`, `snapshot`, `cold_start` | — |
-| `alerts.status` / `AlertStatus` | `raised`, `acknowledged`, `resolved` | `resolved` |
-| `alerts.source` / `AlertSource` | `forecast`, `observation`, `pipeline` | — |
-| `models.artifact_scope` / `ArtifactScope` | `station`, `group` | — |
-| `model_artifacts.status` / `ModelArtifactStatus` | `training`, `pending_approval`, `active`, `superseded`, `rejected` | `superseded`, `rejected` |
-| `hindcast_forecasts.forcing_type` / `ForcingType` | `nwp_archive`, `reanalysis` | — |
-| `skill_scores.skill_source` / `SkillSource` | `hindcast_nwp_archive`, `hindcast_reanalysis`, `operational`, `transfer_validation` | — |
-| `skill_scores.flow_regime` / `FlowRegime` | `low`, `high`, `flood` | — |
-| `station_weather_sources.extraction_type` / `SpatialRepresentation` | `point`, `basin_average`, `elevation_band`, `gridded` | — |
-| `station_thresholds.source` / `ThresholdSource` | `authority`, `inferred` | — |
-| `DangerLevelDefinition.direction` / `ThresholdDirection` | `above`, `below` | — |
-| `stations.regulation_type` / `RegulationType` | `unregulated`, `reservoir`, `irrigation_diversion`, `run_of_river_hydro` | — |
-| `stations.station_status` / `StationStatus` | `onboarding`, `operational`, `suspended`, `decommissioned` | `decommissioned` |
-| `parameters.parameter_domain` / `ParameterDomain` | `river`, `weather` | — |
-| `parameters.aggregation_method` / `AggregationMethod` | `sum`, `mean` | — |
-| `stations.station_kind` / `StationKind` | `weather`, `river` | — |
-| `pipeline_health.status` / `PipelineHealthStatus` | `ok`, `warning`, `critical` | — |
-| `pipeline_health.check_type` / `PipelineCheckType` | `nwp_delivery`, `observation_freshness`, `forecast_freshness`, `flow_run_health`, `disk_usage`, `backup_freshness`, `backup_restore_test` | — |
-| `dead_letter_queue.resolution` / `DlqResolution` | `replayed`, `discarded` (NULL = unresolved) | `replayed`, `discarded` |
-| `users.role` / `UserRole` | `org_admin`, `it_admin`, `model_admin`, `forecaster` | — |
-| `observations.source` / `ObservationSource` | `measured`, `rating_curve_derived`, `manual_import` | — |
-| `audit_log.event_type` / `AuditEventType` | `login`, `logout`, `login_failed`, `password_changed`, `user_created`, `user_deactivated`, `api_key_created`, `api_key_revoked`, `api_key_request`, `forecast_status_change`, `forecast_adjusted`, `model_promoted`, `model_rejected`, `station_status_change`, `observation_reprocessed` | — |
-| `audit_log.actor_type` / `AuditActorType` | `user`, `api_key`, `system` | — |
-| `forecast_adjustments` adjustment_type / `AdjustmentType` | `shift`, `scale`, `cap`, `floor` | — |
-| deployment config calendar / `Calendar` | `gregorian`, `bikram_sambat` | — |
-| notification channel / `NotificationChannel` | `email`, `sms`, `webhook` | — |
-| `stations.ownership` / `StationOwnership` | `own`, `foreign` | `foreign` (cannot transition to own) |
-| `ForeignForecastStatus` | `published` | `published` |
+| Column / Type | Values | Terminal states | Scope |
+|---------------|--------|-----------------|-------|
+| `observations.qc_status` / `QcStatus` | `raw`, `qc_passed`, `qc_failed`, `qc_suspect`, `missing` | `qc_passed`, `qc_failed`, `missing` | v0+v1 |
+| `forecasts.status` / `ForecastStatus` | `raw`, `reviewed`, `published` | `published` | v0+v1 |
+| `forecasts.representation` / `EnsembleRepresentation` | `members`, `quantiles` | — | v0+v1 |
+| `forecasts.warm_up_source` / `WarmUpSource` | `fresh`, `snapshot`, `cold_start` | — | v0+v1 |
+| `alerts.status` / `AlertStatus` | `raised`, `acknowledged`, `resolved` | `resolved` | v0+v1 |
+| `alerts.source` / `AlertSource` | `forecast`, `observation`, `pipeline` | — | v0+v1 |
+| `models.artifact_scope` / `ArtifactScope` | `station`, `group` | — | v0+v1 |
+| `model_artifacts.status` / `ModelArtifactStatus` | `training`, `pending_approval` *(v1 -- v0 auto-promotes, §A7)*, `active`, `superseded`, `rejected` *(v1)* | `superseded`, `rejected` | v0+v1 |
+| `hindcast_forecasts.forcing_type` / `ForcingType` | `nwp_archive`, `reanalysis` | — | v0+v1 |
+| `skill_scores.skill_source` / `SkillSource` | `hindcast_nwp_archive`, `hindcast_reanalysis`, `operational`, `transfer_validation` | — | v0+v1 |
+| `skill_scores.flow_regime` / `FlowRegime` | `low`, `high`, `flood` | — | v0+v1 |
+| `station_weather_sources.extraction_type` / `SpatialRepresentation` | `point`, `basin_average`, `elevation_band`, `gridded` | — | v0+v1 |
+| `station_thresholds.source` / `ThresholdSource` | `authority`, `inferred` | — | v0+v1 |
+| `DangerLevelDefinition.direction` / `ThresholdDirection` | `above`, `below` | — | v0+v1 |
+| `stations.regulation_type` / `RegulationType` | `unregulated`, `reservoir`, `irrigation_diversion`, `run_of_river_hydro` | — | v0+v1 |
+| `stations.station_status` / `StationStatus` | `onboarding`, `operational`, `suspended`, `decommissioned` | `decommissioned` | v0+v1 |
+| `parameters.parameter_domain` / `ParameterDomain` | `river`, `weather` | — | v0+v1 |
+| `parameters.aggregation_method` / `AggregationMethod` | `sum`, `mean` | — | v0+v1 |
+| `stations.station_kind` / `StationKind` | `weather`, `river` | — | v0+v1 |
+| `pipeline_health.status` / `PipelineHealthStatus` | `ok`, `warning`, `critical` | — | v0+v1 |
+| `pipeline_health.check_type` / `PipelineCheckType` | `nwp_delivery`, `observation_freshness`, `forecast_freshness`, `flow_run_health`, `disk_usage`, `backup_freshness`, `backup_restore_test` | — | v0+v1 |
+| `dead_letter_queue.resolution` / `DlqResolution` | `replayed`, `discarded` (NULL = unresolved) | `replayed`, `discarded` | **v1** |
+| `users.role` / `UserRole` | `org_admin`, `it_admin`, `model_admin`, `forecaster` | — | **v1** |
+| `observations.source` / `ObservationSource` | `measured`, `rating_curve_derived`, `manual_import` | — | v0+v1 |
+| `audit_log.event_type` / `AuditEventType` | `login`, `logout`, `login_failed`, `password_changed`, `user_created`, `user_deactivated`, `api_key_created`, `api_key_revoked`, `api_key_request`, `forecast_status_change`, `forecast_adjusted`, `model_promoted`, `model_rejected`, `station_status_change`, `observation_reprocessed` | — | **v1** |
+| `audit_log.actor_type` / `AuditActorType` | `user`, `api_key`, `system` | — | **v1** |
+| `forecast_adjustments` adjustment_type / `AdjustmentType` | `shift`, `scale`, `cap`, `floor` | — | **v1** |
+| deployment config calendar / `Calendar` | `gregorian`, `bikram_sambat` | — | v0+v1 |
+| notification channel / `NotificationChannel` | `email`, `sms`, `webhook` | — | **v1** |
+| `stations.ownership` / `StationOwnership` | `own`, `foreign` | `foreign` (cannot transition to own) | v0+v1 |
+| `ForeignForecastStatus` | `published` | `published` | v0+v1 |
+| `FlowRunState` | `pending`, `running`, `completed`, `failed`, `crashed`, `cancelling`, `cancelled` | — | v0+v1 |
 
 ---
 

@@ -47,6 +47,18 @@ Plans end with a JSON dependency graph:
 Tasks within a phase run in parallel unless marked otherwise. Phases run
 sequentially based on `depends_on`.
 
+## Preserve Existing Logic
+
+**Do not break pre-existing data flows, code logic, or documented workflows without
+extremely good reason.** The architecture and flow designs represent deliberate decisions.
+
+- Before changing any existing behavior, verify it is genuinely wrong — not just
+  unfamiliar or different from what you would have chosen.
+- If you believe existing logic or a documented workflow must change, **stop and discuss
+  with the user first.** Present the evidence for why the change is necessary.
+- Refactors that preserve behavior are fine. Changes that alter behavior require explicit
+  approval.
+
 ## Plan Readiness
 
 - Plans start as `status: DRAFT`. No subagent runs from a DRAFT plan.

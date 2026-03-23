@@ -974,7 +974,7 @@ Using `S.*` prefix since this flow serves both Flow 8 and Flow 10.
   - Deterministic (on ensemble median/mean): NSE, KGE, PBIAS, MAE
   - All metrics computed per lead time — skill degrades with lead time and this must be visible.
   - Seasonal breakdown with configurable season definitions (e.g. monsoon Jun–Sep, dry Oct–May for Nepal; or equal quarters for Switzerland). Season config is per-deployment, not per-station.
-  - Flow-regime stratification: scores computed separately for low flow (<Q50), high flow (Q50–Q90), and flood range (>Q90). Percentile thresholds are deployment-configurable and computed from historical observations during station onboarding. Flood-range BSS and CRPS are the primary operational metrics for model promotion decisions.
+  - Flow-regime stratification: scores computed separately for low flow (<Q50), high flow (Q50–Q90), and flood range (>Q90). Percentile thresholds are deployment-configurable and computed from historical observations during station onboarding (for water_level stations, the same percentile logic applies to stage values). Flood-range BSS and CRPS are the primary operational metrics for model promotion decisions.
   - Baseline artifacts (climatology quantiles, persistence forecast) must be computed and stored during station onboarding (Flow 5) — required as reference for CRPSss and BSS. **CRPSss reference baselines**: climatology quantiles provide the probabilistic reference (sampled to match ensemble size); persistence is deterministic (CRPS reduces to MAE), giving a "does the model beat naive persistence?" check. Both baselines are used — climatology measures skill relative to the "no-information" forecast, persistence measures skill relative to the simplest dynamical baseline.
   - Interpretation thresholds (e.g. NSE > 0.75 = "Very good") are timestep-dependent. Standard literature thresholds (Moriasi et al. 2007) apply to daily streamflow; sub-daily forecasts require separate, typically more lenient, classification schemes. The deployment-configurable classification must include a `timestep` field.
 - **S.4 — skill sources**: Skill can be computed on both hindcasts and operational forecasts. Every skill result carries a `skill_source` tag:
@@ -1243,7 +1243,7 @@ models:
   id: TEXT PK                            # entry point name, e.g. "lstm_daily" — stable across versions
   display_name: TEXT                     # human-readable, e.g. "LSTM Daily"
   artifact_scope: TEXT                   # ArtifactScope: station | group
-  description: TEXT NULL
+  description: TEXT NOT NULL
   created_at: TIMESTAMPTZ
 ```
 
@@ -2104,7 +2104,7 @@ JSONB `detail` structures per `check_type`:
 - **`disk_usage`**: `{"mount_point": str, "usage_percent": float, "available_gb": float, "threshold_warning": float, "threshold_critical": float}`
 - **`backup_freshness`**: `{"last_backup_at": str (ISO 8601) | null, "age_hours": float, "backup_type": str, "expected_interval_hours": float}`
 
-Indexes: `(check_type, checked_at DESC)` for "last N checks of type X" queries. `(subject, check_type, checked_at DESC)` for "last check of type X for subject Y" (per-station freshness in Flow 4 step 4.2). Retention: 90 days (handled by archival task).
+Indexes: `(check_type, checked_at DESC)` for "last N checks of type X" queries. `(subject, check_type, checked_at DESC)` for "last check of type X for subject Y" (per-station freshness in Flow 4 step 4.2). Retention: 30 days (configurable via `pipeline_health_retention_days`) (handled by archival task).
 
 ### `dead_letter_queue` table
 
@@ -2266,8 +2266,8 @@ Per-station flow regime boundaries, computed from historical observations during
 flow_regime_configs:
   id: UUID PK
   station_id: UUID FK
-  q50: DOUBLE PRECISION                    # 50th percentile discharge (m³/s)
-  q90: DOUBLE PRECISION                    # 90th percentile discharge (m³/s)
+  p50: DOUBLE PRECISION                    # 50th percentile of forecast target parameter
+  p90: DOUBLE PRECISION                    # 90th percentile of forecast target parameter
   computed_at: TIMESTAMPTZ
   observation_count: INT                   # number of observations used
   version: INT                             # monotonically increasing per station

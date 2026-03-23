@@ -28,7 +28,9 @@ def parse_frontmatter(text: str) -> dict[str, str]:
 
 def find_review_history_section(text: str) -> str | None:
     """Return the content of the ## Review History section, or None."""
-    pattern = re.compile(r"^## Review History\s*\n(.*?)(?=^## |\Z)", re.MULTILINE | re.DOTALL)
+    pattern = re.compile(
+        r"^## Review History\s*\n(.*?)(?=^## |\Z)", re.MULTILINE | re.DOTALL
+    )
     match = pattern.search(text)
     if not match:
         return None
@@ -41,7 +43,9 @@ def parse_review_table(section: str) -> list[dict[str, str]]:
     Expects a header row, a separator row, then data rows.
     Returns a list of dicts keyed by lowercase, stripped header names.
     """
-    lines = [line.strip() for line in section.splitlines() if line.strip().startswith("|")]
+    lines = [
+        line.strip() for line in section.splitlines() if line.strip().startswith("|")
+    ]
     if len(lines) < 3:
         return []
 
@@ -78,12 +82,16 @@ def check_readiness(path: Path) -> tuple[bool, str, dict[str, str]]:
     report_fields contains keys: status, rounds, blocking, latest_status, verdict, reason.
     """
     if not path.is_file():
-        return False, f"File not found: {path}", {
-            "status": "N/A",
-            "rounds": "N/A",
-            "blocking": "N/A",
-            "latest_status": "N/A",
-        }
+        return (
+            False,
+            f"File not found: {path}",
+            {
+                "status": "N/A",
+                "rounds": "N/A",
+                "blocking": "N/A",
+                "latest_status": "N/A",
+            },
+        )
 
     text = path.read_text(encoding="utf-8")
 
@@ -91,12 +99,16 @@ def check_readiness(path: Path) -> tuple[bool, str, dict[str, str]]:
     frontmatter = parse_frontmatter(text)
     fm_status = frontmatter.get("status", "")
     if not fm_status:
-        return False, "No 'status' field in YAML frontmatter", {
-            "status": "MISSING",
-            "rounds": "N/A",
-            "blocking": "N/A",
-            "latest_status": "N/A",
-        }
+        return (
+            False,
+            "No 'status' field in YAML frontmatter",
+            {
+                "status": "MISSING",
+                "rounds": "N/A",
+                "blocking": "N/A",
+                "latest_status": "N/A",
+            },
+        )
 
     report: dict[str, str] = {"status": fm_status}
 
@@ -126,7 +138,9 @@ def check_readiness(path: Path) -> tuple[bool, str, dict[str, str]]:
                 break
 
     blocking_count = extract_blocking_count(blocking_col) if blocking_col else None
-    report["blocking"] = str(blocking_count) if blocking_count is not None else "PARSE_ERROR"
+    report["blocking"] = (
+        str(blocking_count) if blocking_count is not None else "PARSE_ERROR"
+    )
 
     # --- Latest status ---
     status_col = latest.get("status", latest.get("outcome", ""))
@@ -142,16 +156,28 @@ def check_readiness(path: Path) -> tuple[bool, str, dict[str, str]]:
         return False, f"Frontmatter status is '{fm_status}', expected 'READY'", report
 
     if num_rounds < 2:
-        return False, f"Only {num_rounds} review round(s) completed, minimum 2 required", report
+        return (
+            False,
+            f"Only {num_rounds} review round(s) completed, minimum 2 required",
+            report,
+        )
 
     if blocking_count is None:
         return False, "Could not parse blocking count from latest review round", report
 
     if blocking_count > 0:
-        return False, f"{blocking_count} blocking finding(s) remain in latest round", report
+        return (
+            False,
+            f"{blocking_count} blocking finding(s) remain in latest round",
+            report,
+        )
 
     if status_col != "user-confirmed":
-        return False, f"Latest round status is '{status_col}', expected 'user-confirmed'", report
+        return (
+            False,
+            f"Latest round status is '{status_col}', expected 'user-confirmed'",
+            report,
+        )
 
     return True, "All checks pass", report
 

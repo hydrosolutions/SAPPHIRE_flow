@@ -444,9 +444,7 @@ class StationStore(Protocol):
 
 @runtime_checkable
 class StationGroupStore(Protocol):
-    def store_group(
-        self, name: str, station_ids: frozenset[StationId]
-    ) -> StationGroupId:
+    def store_group(self, group: StationGroup) -> None:
         raise NotImplementedError
 
     def fetch_group(self, group_id: StationGroupId) -> StationGroup | None:

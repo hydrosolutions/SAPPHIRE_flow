@@ -43,7 +43,7 @@ WMO sets international standards for operational hydrology — covering data col
 - **WMO-1364** (primary): Defines five verification dimensions — accuracy, bias, reliability, resolution, sharpness. Recommends CRPS for full-distribution ensemble evaluation, Brier Score for threshold exceedance, reliability diagrams for calibration, rank histograms for ensemble spread. This is the normative reference for `compute_skills` flow output.
 - **CAWCR verification site**: Practical implementation reference for metric formulas. Use alongside WMO-1364.
 
-Maps to: `compute_skills` flow, skill interpretation schemes in DB, `SkillRecord` types.
+Maps to: `compute_skills` flow, skill interpretation schemes in DB, `SkillScore` types.
 
 ### Ensemble forecasting and post-processing (Flow 1 — forecast cycle)
 
@@ -130,7 +130,7 @@ Maps to: overall architecture validation, pipeline monitoring (Flow 4), Nepal v1
 |-----|--------------|------|----------|
 | **Impact-based warnings** | WMO-1150 | Add impact layer (exposure, vulnerability) on top of existing danger levels. Nepal DHM may handle alerting in-house. | v1 |
 | **CAP alert format** | WMO-1109 | CAP XML serializer for alert records. Optional API endpoint or push feed for DHM integration. | v1 |
-| **WIGOS Station Identifiers** | WMO-1192 | Add `wigos_id` column to stations table. Populate during Nepal station onboarding. | v1 |
+| **WIGOS Station Identifiers** | WMO-1192 | Column added in v0 (present in `stations` table). Population: Swiss stations have WIGOS IDs in v0; Nepal stations populated during v1 onboarding. | v0 (column), v1 (Nepal population) |
 | **WaterML 2.0 / WHOS** | WHOS | Optional WaterML 2.0 serializer for observation and forecast time series. Only if international data sharing is required. | v1+ |
 | **Advanced EPS calibration** | WMO-1254 Tier 2/3 | MOS (Tier 2) after 6–12 months NWP archive. EMOS/BMA (Tier 3) post-v1. | v1 |
-| **Neighboring station visualization** | WMO-168 Vol I (spatial consistency) | Dashboard map view showing neighboring stations for manual spatial consistency assessment. Not automated QC — SAPPHIRE is a forecast tool, not a QC platform. | v2 (dashboard) |
+| **Neighboring station visualization** | WMO-168 Vol I (spatial consistency) | Dashboard map view showing neighboring stations for manual spatial consistency assessment. Not automated QC — SAPPHIRE is a forecast tool, not a QC platform. | v1+ (dashboard) |

@@ -329,8 +329,10 @@ Three distinct destinations:
 | Destination | Medium | Retention | Purpose | Decision rule |
 |---|---|---|---|---|
 | Application log | structlog -> stdout -> Docker `json-file` | Ephemeral (50 MB x 5 files per container) | Debugging, performance, incident response | "What happened and why?" |
-| Audit log | `audit_log` DB table (INSERT-only) | Permanent | Security and compliance | "Who did what?" |
+| Audit log **(v1)** | `audit_log` DB table (INSERT-only) | Permanent | Security and compliance | "Who did what?" |
 | Pipeline health | `pipeline_health` DB table | 30 days | Flow 4 watchdog, `/api/v1/health/detail` | "Is the system healthy?" |
+
+In v0, only **application logs** and **pipeline health** are active. The audit log destination is not implemented until v1.
 
 Different destinations serve different audiences. The same underlying problem (e.g., corrupted model artifact) may appear as an ERROR in application logs (with traceback, for developers) and as a `pipeline_health` record (status check, for ops). This is not duplication — each destination records the event for its own purpose. What to avoid: logging the same event twice to the *same* destination.
 

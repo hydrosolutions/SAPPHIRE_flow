@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, NamedTuple
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from datetime import timedelta
@@ -21,7 +22,8 @@ ModelParams = dict[str, Any]
 ModelArtifact = Any
 
 
-class ModelInputs(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ModelInputs:
     station_id: StationId
     forcing: pl.DataFrame | xr.Dataset
     observations: pl.DataFrame
@@ -32,7 +34,8 @@ class ModelInputs(NamedTuple):
     warm_up_steps: int | None
 
 
-class TrainingData(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class TrainingData:
     forcing: pl.DataFrame
     observations: pl.DataFrame
     targets: pl.DataFrame
@@ -41,15 +44,27 @@ class TrainingData(NamedTuple):
     val_start: UtcDatetime | None
 
 
-class GroupTrainingData(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class GroupTrainingData:
     group_id: StationGroupId
     station_data: dict[StationId, TrainingData]
     time_step: timedelta
     val_start: UtcDatetime | None
 
 
-class ModelRegistryEntry(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ModelRecord:
     id: ModelId
+    display_name: str
+    artifact_scope: ArtifactScope
+    description: str
+    created_at: UtcDatetime
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ModelRegistryEntry:
+    id: ModelId
+    display_name: str
     description: str
     artifact_scope: ArtifactScope
     required_features: frozenset[str]
@@ -59,7 +74,8 @@ class ModelRegistryEntry(NamedTuple):
     registered_at: UtcDatetime
 
 
-class ModelArtifactRecord(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ModelArtifactRecord:
     id: ArtifactId
     model_id: ModelId
     station_id: StationId | None

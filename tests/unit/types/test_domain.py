@@ -177,22 +177,22 @@ class TestAggregateQcStatus:
 
     def test_all_passed(self) -> None:
         flags = [
-            QcFlag("a", "1.0", QcStatus.QC_PASSED),
-            QcFlag("b", "1.0", QcStatus.QC_PASSED),
+            QcFlag(rule_id="a", rule_version="1.0", status=QcStatus.QC_PASSED),
+            QcFlag(rule_id="b", rule_version="1.0", status=QcStatus.QC_PASSED),
         ]
         assert aggregate_qc_status(flags) == QcStatus.QC_PASSED
 
     def test_suspect_wins_over_passed(self) -> None:
         flags = [
-            QcFlag("a", "1.0", QcStatus.QC_PASSED),
-            QcFlag("b", "1.0", QcStatus.QC_SUSPECT),
+            QcFlag(rule_id="a", rule_version="1.0", status=QcStatus.QC_PASSED),
+            QcFlag(rule_id="b", rule_version="1.0", status=QcStatus.QC_SUSPECT),
         ]
         assert aggregate_qc_status(flags) == QcStatus.QC_SUSPECT
 
     def test_failed_wins_over_suspect(self) -> None:
         flags = [
-            QcFlag("a", "1.0", QcStatus.QC_SUSPECT),
-            QcFlag("b", "1.0", QcStatus.QC_FAILED),
+            QcFlag(rule_id="a", rule_version="1.0", status=QcStatus.QC_SUSPECT),
+            QcFlag(rule_id="b", rule_version="1.0", status=QcStatus.QC_FAILED),
         ]
         assert aggregate_qc_status(flags) == QcStatus.QC_FAILED
 

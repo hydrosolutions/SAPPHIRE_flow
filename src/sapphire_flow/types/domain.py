@@ -1,8 +1,8 @@
-# pyright: reportUnknownMemberType=false
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import timedelta
-from typing import TYPE_CHECKING, NamedTuple, cast
+from typing import TYPE_CHECKING, Literal
 
 from sapphire_flow.types.enums import (
     AggregationMethod,
@@ -17,26 +17,21 @@ if TYPE_CHECKING:
     from sapphire_flow.types.ids import StationId
 
 
-class GeoCoord(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class GeoCoord:
     lon: float
     lat: float
     altitude_masl: float | None = None
 
-
-def _geocoord_new(
-    cls: type, lon: float, lat: float, altitude_masl: float | None = None
-) -> GeoCoord:
-    if not (-180.0 <= lon <= 180.0):
-        raise ValueError(f"longitude {lon} out of range [-180, 180]")
-    if not (-90.0 <= lat <= 90.0):
-        raise ValueError(f"latitude {lat} out of range [-90, 90]")
-    return cast("GeoCoord", tuple.__new__(cls, (lon, lat, altitude_masl)))
+    def __post_init__(self) -> None:
+        if not (-180.0 <= self.lon <= 180.0):
+            raise ValueError(f"longitude {self.lon} out of range [-180, 180]")
+        if not (-90.0 <= self.lat <= 90.0):
+            raise ValueError(f"latitude {self.lat} out of range [-90, 90]")
 
 
-GeoCoord.__new__ = _geocoord_new  # type: ignore[method-assign]
-
-
-class ParameterDefinition(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ParameterDefinition:
     name: str
     display_name: str
     unit: str
@@ -45,7 +40,8 @@ class ParameterDefinition(NamedTuple):
     created_at: UtcDatetime
 
 
-class DangerLevelDefinition(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class DangerLevelDefinition:
     name: str
     display_order: int
     trigger_probability: float
@@ -54,89 +50,52 @@ class DangerLevelDefinition(NamedTuple):
     min_resolve_duration: timedelta
     direction: ThresholdDirection = ThresholdDirection.ABOVE
 
-
-def _dangerlevel_new(
-    cls: type,
-    name: str,
-    display_order: int,
-    trigger_probability: float,
-    resolve_probability: float,
-    min_trigger_duration: timedelta,
-    min_resolve_duration: timedelta,
-    direction: ThresholdDirection = ThresholdDirection.ABOVE,
-) -> DangerLevelDefinition:
-    if not (0.0 < trigger_probability <= 1.0):
-        raise ValueError(
-            f"trigger_probability must be in (0, 1], got {trigger_probability}"
-        )
-    if not (0.0 < resolve_probability < trigger_probability):
-        raise ValueError(
-            f"resolve_probability must be in (0, trigger_probability), "
-            f"got {resolve_probability} >= {trigger_probability}"
-        )
-    if min_trigger_duration < timedelta(0):
-        raise ValueError(
-            f"min_trigger_duration must be >= 0, got {min_trigger_duration}"
-        )
-    if min_resolve_duration < timedelta(0):
-        raise ValueError(
-            f"min_resolve_duration must be >= 0, got {min_resolve_duration}"
-        )
-    return cast(
-        "DangerLevelDefinition",
-        tuple.__new__(
-            cls,
-            (
-                name,
-                display_order,
-                trigger_probability,
-                resolve_probability,
-                min_trigger_duration,
-                min_resolve_duration,
-                direction,
-            ),
-        ),
-    )
+    def __post_init__(self) -> None:
+        if not (0.0 < self.trigger_probability <= 1.0):
+            raise ValueError(
+                f"trigger_probability must be in (0, 1], got {self.trigger_probability}"
+            )
+        if not (0.0 < self.resolve_probability < self.trigger_probability):
+            raise ValueError(
+                f"resolve_probability must be in (0, trigger_probability), "
+                f"got {self.resolve_probability} >= {self.trigger_probability}"
+            )
+        if self.min_trigger_duration < timedelta(0):
+            raise ValueError(
+                f"min_trigger_duration must be >= 0, got {self.min_trigger_duration}"
+            )
+        if self.min_resolve_duration < timedelta(0):
+            raise ValueError(
+                f"min_resolve_duration must be >= 0, got {self.min_resolve_duration}"
+            )
 
 
-DangerLevelDefinition.__new__ = _dangerlevel_new  # type: ignore[method-assign]
-
-
-class StationThreshold(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class StationThreshold:
     station_id: StationId
     danger_level: str
-    parameter: str
+    parameter: Literal["discharge", "water_level"]
     value: float
     source: ThresholdSource
     created_at: UtcDatetime
     updated_at: UtcDatetime
 
 
-class QcFlag(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class QcFlag:
     rule_id: str
     rule_version: str
     status: QcStatus
     detail: str | None = None
 
-
-def _qcflag_new(
-    cls: type,
-    rule_id: str,
-    rule_version: str,
-    status: QcStatus,
-    detail: str | None = None,
-) -> QcFlag:
-    if status == QcStatus.RAW:
-        raise ValueError("QcFlag.status cannot be RAW — RAW means QC has not run")
-    if status == QcStatus.MISSING:
-        raise ValueError(
-            "QcFlag.status cannot be MISSING — MISSING is set directly on observations,"
-            " not by QC rules"
-        )
-    return cast("QcFlag", tuple.__new__(cls, (rule_id, rule_version, status, detail)))
-
-
-QcFlag.__new__ = _qcflag_new  # type: ignore[method-assign]
+    def __post_init__(self) -> None:
+        if self.status == QcStatus.RAW:
+            raise ValueError("QcFlag.status cannot be RAW — RAW means QC has not run")
+        if self.status == QcStatus.MISSING:
+            raise ValueError(
+                "QcFlag.status cannot be MISSING — MISSING is set directly"
+                " on observations, not by QC rules"
+            )
 
 
 def aggregate_qc_status(flags: list[QcFlag]) -> QcStatus:
@@ -147,38 +106,37 @@ def aggregate_qc_status(flags: list[QcFlag]) -> QcStatus:
     return worst.status
 
 
-class SeasonDefinition(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class SeasonDefinition:
     name: str
     months: frozenset[int]
 
-
-def _seasondef_new(cls: type, name: str, months: frozenset[int]) -> SeasonDefinition:
-    if not months:
-        raise ValueError("months must not be empty")
-    if not all(1 <= m <= 12 for m in months):
-        raise ValueError(f"months must be in [1, 12], got {months}")
-    return cast("SeasonDefinition", tuple.__new__(cls, (name, months)))
+    def __post_init__(self) -> None:
+        if not self.months:
+            raise ValueError("months must not be empty")
+        if not all(1 <= m <= 12 for m in self.months):
+            raise ValueError(f"months must be in [1, 12], got {self.months}")
 
 
-SeasonDefinition.__new__ = _seasondef_new  # type: ignore[method-assign]
-
-
-class SkillInterpretationBand(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class SkillInterpretationBand:
     lower: float
     upper: float
     label: str
 
 
-class SkillInterpretationScheme(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class SkillInterpretationScheme:
     metric: str
     time_step: timedelta
     bands: tuple[SkillInterpretationBand, ...]
 
 
-class ExceedanceResult(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ExceedanceResult:
     station_id: StationId
     danger_level: str
-    parameter: str
+    parameter: Literal["discharge", "water_level"]
     threshold_value: float
     exceedance_probability: float | None
     observed_value: float | None

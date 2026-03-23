@@ -130,28 +130,6 @@ class NotificationChannel(Enum):
     WEBHOOK = "webhook"
 
 
-class DlqResolution(Enum):
-    REPLAYED = "replayed"
-    DISCARDED = "discarded"
-
-
-class AdjustmentType(Enum):
-    SHIFT = "shift"
-    SCALE = "scale"
-    CAP = "cap"
-    FLOOR = "floor"
-
-
-class Calendar(Enum):
-    GREGORIAN = "gregorian"
-    BIKRAM_SAMBAT = "bikram_sambat"
-
-
-class UserRole(Enum):
-    ORG_ADMIN = "org_admin"
-    IT_ADMIN = "it_admin"
-    MODEL_ADMIN = "model_admin"
-    FORECASTER = "forecaster"
 
 
 class StationStatus(Enum):
@@ -167,30 +145,6 @@ class ObservationSource(Enum):
     MANUAL_IMPORT = "manual_import"
 
 
-class AuditEventType(Enum):
-    LOGIN = "login"
-    LOGOUT = "logout"
-    LOGIN_FAILED = "login_failed"
-    PASSWORD_CHANGED = "password_changed"
-    USER_CREATED = "user_created"
-    USER_DEACTIVATED = "user_deactivated"
-    API_KEY_CREATED = "api_key_created"
-    API_KEY_REVOKED = "api_key_revoked"
-    API_KEY_REQUEST = "api_key_request"
-    FORECAST_STATUS_CHANGE = "forecast_status_change"
-    FORECAST_ADJUSTED = "forecast_adjusted"
-    MODEL_PROMOTED = "model_promoted"
-    MODEL_REJECTED = "model_rejected"
-    STATION_STATUS_CHANGE = "station_status_change"
-    OBSERVATION_REPROCESSED = "observation_reprocessed"
-
-
-class AuditActorType(Enum):
-    USER = "user"
-    API_KEY = "api_key"
-    SYSTEM = "system"
-
-
 class StationOwnership(Enum):
     OWN = "own"
     FOREIGN = "foreign"
@@ -198,3 +152,13 @@ class StationOwnership(Enum):
 
 class ForeignForecastStatus(Enum):
     PUBLISHED = "published"
+
+
+class FlowRunState(Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CRASHED = "crashed"
+    CANCELLING = "cancelling"
+    CANCELLED = "cancelled"

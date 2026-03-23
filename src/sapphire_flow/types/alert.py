@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, NamedTuple
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -10,7 +11,8 @@ if TYPE_CHECKING:
     from sapphire_flow.types.ids import AlertId, StationId
 
 
-class Alert(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class Alert:
     id: AlertId
     station_id: StationId | None
     source: AlertSource

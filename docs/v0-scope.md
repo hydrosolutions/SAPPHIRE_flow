@@ -70,21 +70,26 @@
 **Full design**: Flow 5 is a 12-step Prefect flow with 7 phases, progress tracking, failure handling per station, model readiness branches (A/B/C/D).
 
 **v0**: A Python script (or simple Prefect flow) that:
-1. Reads TOML with station definitions
-2. Inserts stations, basins, weather source mappings
+1. Reads TOML with station definitions (v0 defaults: `network = "bafu"`, `ownership = "own"`)
+2. Inserts stations, basins (with `network`), weather source mappings
 3. Imports historical observations (bulk CSV/API)
 4. Runs QC (reuses same QC service)
-5. Computes baselines + flow regime boundaries
+5. Computes climatology quantiles (CRPSss reference), persistence baseline, and flow regime boundaries (Q50/Q90)
 6. Configures model assignments
-7. Marks stations operational
+7. Triggers training (Flow 6 → 7 → 8). Station remains in `onboarding` status.
+8. Marks stations `operational` after ≥1 model artifact reaches `active` status (auto-promoted in v0)
 
-Training triggered separately (Flow 6) after onboarding completes. No onboarding dashboard, no progress tracking, no model readiness branches. **v0a** skips catchment attribute fetching (step 5.2) — the initial linear regression model does not require static attributes. **v0b** adds catchment attribute fetching when ML models with `required_static_attributes` are introduced.
+Training is triggered as part of onboarding (step 7), not as a separate workflow. No onboarding dashboard, no progress tracking, no model readiness branches.
+
+For `station_kind = 'weather'` stations (Flow 5w), steps 5–8 are skipped — weather stations provide forcing data, not forecasts. They become `operational` after QC (step 4).
+
+**v0a** skips catchment attribute fetching (step 5.2) — the initial linear regression model does not require static attributes. **v0b** adds catchment attribute fetching when ML models with `required_static_attributes` are introduced.
 
 ### A5. Full skill metrics (keep as designed)
 
 Implement the full skill metric suite: CRPS, CRPSss (climatology + persistence baselines), BSS per danger level, POD/FAR/CSI, peak timing error, NSE, KGE, PBIAS, MAE, sharpness (mean prediction interval width, mean ensemble range) — per lead time, per season, per flow regime. Plus reliability diagrams, ROC curves, rank histograms.
 
-**Rationale**: Pure computation, high research value, most implementations available in libraries (`properscoring`, `xskillscore`). The effort is wiring, not algorithms.
+**Rationale**: Pure computation, high research value. CRPS and all metrics are implemented from scratch (~20 lines of numpy each) — `properscoring` is abandoned (last release 2015, numpy compatibility risk) and `xskillscore` adds a heavy xarray dependency. The effort is wiring, not algorithms.
 
 ### A6. Single Prefect work pool
 

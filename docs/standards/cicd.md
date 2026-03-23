@@ -10,17 +10,18 @@ Single VM deployment. All services in one `docker-compose.yml`.
 
 ### Services
 
-| Service | Image | Depends on | Health check | Restart |
-|---------|-------|-----------|-------------|---------|
-| `postgres` | `postgres:16` + PostGIS | — | `pg_isready -U sapphire` | `unless-stopped` |
-| `pgbouncer` | `pgbouncer/pgbouncer` | postgres (healthy) | `pg_isready -h localhost -p 6432` | `unless-stopped` |
-| `prefect-server` | `prefecthq/prefect:3-python3.11` | postgres (healthy) | `curl -f http://localhost:4200/api/health` | `unless-stopped` |
-| `prefect-worker-ops` | custom (sapphire-flow) | prefect-server, pgbouncer | — | `unless-stopped` |
-| `prefect-worker-hindcast` | custom (sapphire-flow) | prefect-server, pgbouncer | — | `unless-stopped` |
-| `prefect-worker-training` | custom (sapphire-flow) | prefect-server, pgbouncer | — | `unless-stopped` |
-| `api` | custom (sapphire-flow) | pgbouncer, prefect-server | `curl -f http://localhost:8000/api/v1/health` | `unless-stopped` |
-| `caddy` | `caddy:2` | api | TCP check on 443 | `unless-stopped` |
-| `init` | custom (sapphire-flow) | postgres (healthy) | — | `no` (one-shot) |
+| Service | Image | Depends on | Health check | Restart | Scope |
+|---------|-------|-----------|-------------|---------|-------|
+| `postgres` | `postgis/postgis:16-3.4` | — | `pg_isready -U sapphire` | `unless-stopped` | v0+v1 |
+| `pgbouncer` | `pgbouncer/pgbouncer` | postgres (healthy) | `pg_isready -h localhost -p 6432` | `unless-stopped` | **v1** (§A3) |
+| `prefect-server` | `prefecthq/prefect:3-python3.11` | postgres (healthy) | `curl -f http://localhost:4200/api/health` | `unless-stopped` | v0+v1 |
+| `prefect-worker` | custom (sapphire-flow) | prefect-server, postgres | — | `unless-stopped` | **v0** (§A6) |
+| `prefect-worker-ops` | custom (sapphire-flow) | prefect-server, pgbouncer | — | `unless-stopped` | **v1** (§A6) |
+| `prefect-worker-hindcast` | custom (sapphire-flow) | prefect-server, pgbouncer | — | `unless-stopped` | **v1** (§A6) |
+| `prefect-worker-training` | custom (sapphire-flow) | prefect-server, pgbouncer | — | `unless-stopped` | **v1** (§A6) |
+| `api` | custom (sapphire-flow) | postgres (v0) / pgbouncer (v1), prefect-server | `curl -f http://localhost:8000/api/v1/health` | `unless-stopped` | v0+v1 |
+| `caddy` | `caddy:2` | api | TCP check on 443 | `unless-stopped` | v0+v1 |
+| `init` | custom (sapphire-flow) | postgres (healthy) | — | `no` (one-shot) | v0+v1 |
 
 ### Custom image
 
@@ -28,12 +29,12 @@ One Dockerfile for `prefect-worker-ops`, `prefect-worker-hindcast`, `prefect-wor
 
 ### Named volumes
 
-| Volume | Mount path | Used by | Purpose |
-|--------|-----------|---------|---------|
-| `pg_data` | `/var/lib/postgresql/data` | postgres | PostgreSQL data directory |
-| `model_artifacts` | `/data/artifacts` | prefect-worker-ops (ro), prefect-worker-hindcast (ro), prefect-worker-training (rw), api (ro) | Trained model files |
-| `cold_storage` | `/data/cold` | prefect-worker-ops (rw), prefect-worker-hindcast (ro), api (ro) | Parquet archive |
-| `prefect_data` | `/data/prefect` | prefect-server | Prefect server state |
+| Volume | Mount path | Used by | Purpose | Scope |
+|--------|-----------|---------|---------|-------|
+| `pg_data` | `/var/lib/postgresql/data` | postgres | PostgreSQL data directory | v0+v1 |
+| `model_artifacts` | `/data/artifacts` | prefect-worker-ops (ro), prefect-worker-hindcast (ro), prefect-worker-training (rw), api (ro) | Trained model files | v0+v1 |
+| `cold_storage` | `/data/cold` | prefect-worker-ops (rw), prefect-worker-hindcast (ro), api (ro) | Parquet archive | **v1** (§A2) |
+| `prefect_data` | `/data/prefect` | prefect-server | Prefect server state | v0+v1 |
 
 Config bind mount: `./config.toml:/app/config.toml:ro` on api and all three workers.
 
@@ -49,9 +50,20 @@ postgres ──→ pgbouncer ──→ api ──→ caddy
     init (one-shot, runs before workers/api)
 ```
 
+> **v0 variant** (v0-scope.md §A3, §A6): No PgBouncer intermediary; single `prefect-worker` replaces the three specialized workers.
+> ```
+> postgres ──→ api ──→ caddy
+>     │
+>     └──→ prefect-server ──→ prefect-worker
+>
+>     init (one-shot, runs before worker/api)
+> ```
+
 All `depends_on` use `condition: service_healthy` where health checks are defined.
 
 ## Prefect work pool separation
+
+> **v1-only** (v0-scope.md §A6): v0 uses a single `default` work pool. The three-pool topology below applies to v1.
 
 Three work pools isolate workloads with different resource and concurrency profiles:
 
@@ -74,7 +86,7 @@ Flow 1 (forecast cycle) has an additional per-flow concurrency limit of 1 — pr
 
 ### Tool: Alembic
 
-- Migration files in `src/sapphire_flow/migrations/`
+- Migration files in `alembic/versions/`
 - Uses `DATABASE_URL_DIRECT` (bypasses PgBouncer — see conventions.md § Database connection patterns)
 - Connection used only during migration, not at runtime
 
@@ -83,10 +95,13 @@ Flow 1 (forecast cycle) has an additional per-flow concurrency limit of 1 — pr
 The `init` service runs before `api` and workers start:
 
 1. Wait for PostgreSQL health check to pass
-2. Create database and extensions: `CREATE EXTENSION IF NOT EXISTS postgis; CREATE EXTENSION IF NOT EXISTS pg_partman; CREATE EXTENSION IF NOT EXISTS pg_cron;`
+2. Create database and extensions: `CREATE EXTENSION IF NOT EXISTS postgis;`
+> **v1-only** (v0-scope.md §A1): pg_partman and pg_cron extensions are not used in v0.
+`CREATE EXTENSION IF NOT EXISTS pg_partman; CREATE EXTENSION IF NOT EXISTS pg_cron;`
 3. Create DB service users (`sapphire_api`, `sapphire_worker`, `sapphire_prefect`) with permissions per conventions.md § Database connection patterns
 4. Run `alembic upgrade head` — creates all tables, indexes, constraints
-5. Run `SELECT partman.run_maintenance_proc()` — creates initial partitions
+5. > **v1-only** (v0-scope.md §A1)
+Run `SELECT partman.run_maintenance_proc()` — creates initial partitions
 6. If `deployments` table is empty: run bootstrap import from `config.toml` (danger levels, season definitions, skill interpretation schemes)
 7. Scan model entry points and populate `models` table
 
@@ -127,7 +142,7 @@ Retained in Prefect database. Retention: 30 days (configured in Prefect server s
 
 ### Disk impact
 
-With 4 forecast cycles/day and 48 obs ingest runs/day, estimated log volume is ~100 MB/day before rotation. The `max-file: 5` x `max-size: 50m` = 250 MB cap per container. 8 containers x 250 MB = ~2 GB maximum disk usage for container logs.
+With 4 forecast cycles/day and 48 obs ingest runs/day, estimated log volume is ~100 MB/day before rotation. The `max-file: 5` x `max-size: 50m` = 250 MB cap per container. 8 containers x 250 MB = ~2 GB maximum disk usage for container logs. v0 has 6 containers (no PgBouncer, one worker instead of three).
 
 ## Systemd integration
 

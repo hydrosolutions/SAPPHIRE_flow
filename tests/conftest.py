@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import random
 from datetime import UTC, datetime, timedelta
-from typing import Any
-from uuid import UUID
+from typing import TYPE_CHECKING
+from uuid import UUID, uuid4
 
 import polars as pl
 import pytest
@@ -21,6 +21,7 @@ from sapphire_flow.types.enums import (
     ObservationSource,
     QcStatus,
     RegulationType,
+    SpatialRepresentation,
     StationKind,
     StationOwnership,
     StationStatus,
@@ -30,10 +31,23 @@ from sapphire_flow.types.ids import (
     ArtifactId,
     BasinId,
     ForeignForecastId,
+    HistoricalForcingId,
     ModelId,
     ObservationId,
     StationId,
 )
+
+if TYPE_CHECKING:
+    from sapphire_flow.config.deployment import DeploymentConfig
+    from sapphire_flow.types.alert import Alert
+    from sapphire_flow.types.ensemble import ForecastEnsemble
+    from sapphire_flow.types.forecast import ForeignForecast
+    from sapphire_flow.types.historical_forcing import HistoricalForcingRecord
+    from sapphire_flow.types.model import ModelArtifactRecord
+    from sapphire_flow.types.observation import Observation
+    from sapphire_flow.types.station import StationConfig
+    from sapphire_flow.types.weather import PointForecast
+    from tests.fakes.fake_clock import FakeClock
 
 _EPOCH = ensure_utc(datetime(2025, 1, 1, tzinfo=UTC))
 _RNG_SEED = 42
@@ -48,9 +62,11 @@ def _uuid(rng: random.Random) -> UUID:
 
 
 @pytest.fixture
-def fake_clock() -> UtcDatetime:
-    """Returns a fixed UtcDatetime for deterministic tests."""
-    return _EPOCH
+def fake_clock() -> FakeClock:
+    """Returns a FakeClock fixed at _EPOCH for deterministic tests."""
+    from tests.fakes.fake_clock import FakeClock as _FakeClock
+
+    return _FakeClock(_EPOCH)
 
 
 def make_station_config(
@@ -71,7 +87,7 @@ def make_station_config(
     ownership: StationOwnership = StationOwnership.OWN,
     wigos_id: str | None = None,
     rng: random.Random | None = None,
-) -> Any:  # returns StationConfig
+) -> StationConfig:
     from sapphire_flow.types.station import StationConfig
 
     rng = rng or random.Random(_RNG_SEED)
@@ -105,7 +121,7 @@ def make_observation(
     timestamp: UtcDatetime | None = None,
     qc_status: QcStatus = QcStatus.QC_PASSED,
     rng: random.Random | None = None,
-) -> Any:  # returns Observation
+) -> Observation:
     from sapphire_flow.types.observation import Observation
 
     rng = rng or random.Random(_RNG_SEED)
@@ -140,7 +156,7 @@ def make_observations(
     start: UtcDatetime | None = None,
     interval: timedelta = timedelta(hours=1),
     rng: random.Random | None = None,
-) -> list[Any]:
+) -> list[Observation]:
     rng = rng or random.Random(_RNG_SEED)
     sid = station_id or StationId(_uuid(rng))
     t = start or _EPOCH
@@ -162,7 +178,7 @@ def make_nwp_forecast(
     n_steps: int = 5,
     cycle_time: UtcDatetime | None = None,
     rng: random.Random | None = None,
-) -> dict[StationId, Any]:
+) -> dict[StationId, PointForecast]:
     from sapphire_flow.types.weather import PointForecast
 
     rng = rng or random.Random(_RNG_SEED)
@@ -199,7 +215,7 @@ def make_forecast_ensemble(
     n_steps: int = 120,
     parameter: str = "discharge",
     rng: random.Random | None = None,
-) -> Any:
+) -> ForecastEnsemble:
     from sapphire_flow.types.ensemble import ForecastEnsemble
 
     rng = rng or random.Random(_RNG_SEED)
@@ -253,7 +269,7 @@ def make_forecast_ensemble(
         )
 
 
-def make_deployment_config(**overrides: Any) -> Any:
+def make_deployment_config(**overrides: object) -> DeploymentConfig:
     from sapphire_flow.config.deployment import DeploymentConfig
 
     defaults = {"max_retention_days": 3650}
@@ -268,7 +284,7 @@ def make_alert(
     alert_level: str = "Moderate",
     status: AlertStatus = AlertStatus.RAISED,
     rng: random.Random | None = None,
-) -> Any:
+) -> Alert:
     from sapphire_flow.types.alert import Alert
 
     rng = rng or random.Random(_RNG_SEED)
@@ -299,7 +315,7 @@ def make_foreign_forecast(
     n_members: int = 21,
     n_steps: int = 120,
     rng: random.Random | None = None,
-) -> Any:  # returns ForeignForecast
+) -> ForeignForecast:
     from sapphire_flow.types.forecast import ForeignForecast
 
     rng = rng or random.Random(_RNG_SEED)
@@ -334,7 +350,7 @@ def make_model_artifact_record(
     station_id: StationId | None = None,
     status: ModelArtifactStatus = ModelArtifactStatus.ACTIVE,
     rng: random.Random | None = None,
-) -> Any:
+) -> ModelArtifactRecord:
     from sapphire_flow.types.model import ModelArtifactRecord
 
     rng = rng or random.Random(_RNG_SEED)
@@ -351,5 +367,36 @@ def make_model_artifact_record(
         promoted_at=_EPOCH if status == ModelArtifactStatus.ACTIVE else None,
         promoted_by=None,
         superseded_at=None,
+        created_at=_EPOCH,
+    )
+
+
+def make_historical_forcing_record(
+    *,
+    station_id: StationId | None = None,
+    source: str = "camels-ch",
+    version: str = "1.0",
+    valid_time: datetime | None = None,
+    parameter: str = "precipitation",
+    spatial_type: SpatialRepresentation = SpatialRepresentation.BASIN_AVERAGE,
+    band_id: int | None = None,
+    member_id: int | None = None,
+    value: float = 5.0,
+    rng: random.Random | None = None,
+) -> HistoricalForcingRecord:
+    from sapphire_flow.types.historical_forcing import HistoricalForcingRecord
+
+    rng = rng or random.Random(_RNG_SEED)
+    return HistoricalForcingRecord(
+        id=HistoricalForcingId(_uuid(rng)),
+        station_id=station_id or StationId(_uuid(rng)),
+        source=source,
+        version=version,
+        valid_time=ensure_utc(valid_time or datetime(2026, 1, 15, 12, 0, tzinfo=UTC)),
+        parameter=parameter,
+        spatial_type=spatial_type,
+        band_id=band_id,
+        member_id=member_id,
+        value=value,
         created_at=_EPOCH,
     )

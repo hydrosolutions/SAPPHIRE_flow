@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID, uuid4
 
@@ -10,7 +9,7 @@ import polars as pl
 from sapphire_flow.exceptions import ConflictError
 from sapphire_flow.types.alert import Alert  # noqa: TC001
 from sapphire_flow.types.basin import Basin  # noqa: TC001
-from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
+from sapphire_flow.types.datetime import UtcDatetime  # noqa: TC001
 from sapphire_flow.types.domain import (  # noqa: TC001
     ParameterDefinition,
     QcFlag,
@@ -692,22 +691,8 @@ class FakeStationGroupStore:
     def __init__(self) -> None:
         self._groups: dict[StationGroupId, StationGroup] = {}
 
-    def store_group(
-        self, name: str, station_ids: frozenset[StationId]
-    ) -> StationGroupId:
-        for g in self._groups.values():
-            if g.name == name:
-                self._groups[g.id] = replace(g, station_ids=station_ids)
-                return g.id
-        gid = StationGroupId(uuid4())
-        self._groups[gid] = StationGroup(
-            id=gid,
-            name=name,
-            station_ids=station_ids,
-            description=None,
-            created_at=ensure_utc(datetime.now(UTC)),
-        )
-        return gid
+    def store_group(self, group: StationGroup) -> None:
+        self._groups[group.id] = group
 
     def fetch_group(self, group_id: StationGroupId) -> StationGroup | None:
         return self._groups.get(group_id)

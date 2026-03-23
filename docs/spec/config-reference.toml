@@ -49,8 +49,8 @@ warm_up_snapshot_max_age_monsoon_hours = 24.0  # shorter during wet season
 
 # --- Flow regime ---
 # Source: types-and-protocols.md § DeploymentConfig
-flow_regime_q50_percentile = 50.0     # customizable percentile boundary
-flow_regime_q90_percentile = 90.0
+flow_regime_p50_percentile = 50.0     # customizable percentile boundary
+flow_regime_p90_percentile = 90.0
 
 # --- Threshold inference ---
 # Source: types-and-protocols.md § DeploymentConfig
@@ -167,6 +167,185 @@ label = "good"
 lower = 0.5
 upper = 1e99
 label = "excellent"
+
+
+# =============================================================================
+# QC rule configuration — deployment-level defaults
+# Source: types-and-protocols.md § QcRuleSet, QcRuleParams
+# Three-layer hierarchy: deployment defaults → per-station overrides → rule versioning
+# Time-step dimension: QC service selects thresholds by matching observation parameter
+# and time step.
+# =============================================================================
+
+[qc_rules]
+version = "1.0.0"
+
+# --- Discharge (10-min operational) ---
+[[qc_rules.rules]]
+rule_id = "range_check"
+rule_version = "1.0.0"
+parameter = "discharge"
+time_step_seconds = 600
+thresholds = { value_min = 0.0, value_max = 5000.0 }
+
+[[qc_rules.rules]]
+rule_id = "rate_of_change"
+rule_version = "1.0.0"
+parameter = "discharge"
+time_step_seconds = 600
+thresholds = { max_rate = 50.0 }   # m³/s per 10 min
+
+[[qc_rules.rules]]
+rule_id = "frozen_sensor"
+rule_version = "1.0.0"
+parameter = "discharge"
+time_step_seconds = 600
+thresholds = { tolerance = 0.001, min_consecutive = 12.0 }  # 2 hours at 10-min
+
+[[qc_rules.rules]]
+rule_id = "spike"
+rule_version = "1.0.0"
+parameter = "discharge"
+time_step_seconds = 600
+thresholds = { tolerance = 0.1 }   # fraction of previous value
+
+[[qc_rules.rules]]
+rule_id = "gross_outlier"
+rule_version = "1.0.0"
+parameter = "discharge"
+time_step_seconds = 600
+thresholds = { k_sigma = 5.0 }
+
+# --- Discharge (daily historical — CAMELS-CH) ---
+[[qc_rules.rules]]
+rule_id = "range_check"
+rule_version = "1.0.0"
+parameter = "discharge"
+time_step_seconds = 86400
+thresholds = { value_min = 0.0, value_max = 5000.0 }
+
+[[qc_rules.rules]]
+rule_id = "rate_of_change"
+rule_version = "1.0.0"
+parameter = "discharge"
+time_step_seconds = 86400
+thresholds = { max_rate = 500.0 }  # m³/s per day
+
+[[qc_rules.rules]]
+rule_id = "frozen_sensor"
+rule_version = "1.0.0"
+parameter = "discharge"
+time_step_seconds = 86400
+thresholds = { tolerance = 0.001, min_consecutive = 5.0 }  # 5 days
+
+[[qc_rules.rules]]
+rule_id = "spike"
+rule_version = "1.0.0"
+parameter = "discharge"
+time_step_seconds = 86400
+thresholds = { tolerance = 0.1 }
+
+[[qc_rules.rules]]
+rule_id = "gross_outlier"
+rule_version = "1.0.0"
+parameter = "discharge"
+time_step_seconds = 86400
+thresholds = { k_sigma = 5.0 }
+
+# --- Water level (10-min operational) ---
+[[qc_rules.rules]]
+rule_id = "range_check"
+rule_version = "1.0.0"
+parameter = "water_level"
+time_step_seconds = 600
+thresholds = { value_min = -2.0, value_max = 20.0 }  # meters
+
+[[qc_rules.rules]]
+rule_id = "rate_of_change"
+rule_version = "1.0.0"
+parameter = "water_level"
+time_step_seconds = 600
+thresholds = { max_rate = 0.5 }   # m per 10 min
+
+[[qc_rules.rules]]
+rule_id = "frozen_sensor"
+rule_version = "1.0.0"
+parameter = "water_level"
+time_step_seconds = 600
+thresholds = { tolerance = 0.001, min_consecutive = 12.0 }
+
+[[qc_rules.rules]]
+rule_id = "spike"
+rule_version = "1.0.0"
+parameter = "water_level"
+time_step_seconds = 600
+thresholds = { tolerance = 0.1 }
+
+[[qc_rules.rules]]
+rule_id = "gross_outlier"
+rule_version = "1.0.0"
+parameter = "water_level"
+time_step_seconds = 600
+thresholds = { k_sigma = 5.0 }
+
+# --- Water temperature (10-min operational) ---
+[[qc_rules.rules]]
+rule_id = "range_check"
+rule_version = "1.0.0"
+parameter = "water_temperature"
+time_step_seconds = 600
+thresholds = { value_min = -2.0, value_max = 40.0 }  # °C
+
+[[qc_rules.rules]]
+rule_id = "rate_of_change"
+rule_version = "1.0.0"
+parameter = "water_temperature"
+time_step_seconds = 600
+thresholds = { max_rate = 2.0 }   # °C per 10 min
+
+[[qc_rules.rules]]
+rule_id = "frozen_sensor"
+rule_version = "1.0.0"
+parameter = "water_temperature"
+time_step_seconds = 600
+thresholds = { tolerance = 0.01, min_consecutive = 18.0 }  # 3 hours
+
+[[qc_rules.rules]]
+rule_id = "gross_outlier"
+rule_version = "1.0.0"
+parameter = "water_temperature"
+time_step_seconds = 600
+thresholds = { k_sigma = 4.0 }
+
+# --- Precipitation (daily historical — CAMELS-CH) ---
+[[qc_rules.rules]]
+rule_id = "range_check"
+rule_version = "1.0.0"
+parameter = "precipitation"
+time_step_seconds = 86400
+thresholds = { value_min = 0.0, value_max = 500.0 }  # mm/d
+
+[[qc_rules.rules]]
+rule_id = "gross_outlier"
+rule_version = "1.0.0"
+parameter = "precipitation"
+time_step_seconds = 86400
+thresholds = { k_sigma = 5.0 }
+
+# --- Temperature (daily historical — CAMELS-CH) ---
+[[qc_rules.rules]]
+rule_id = "range_check"
+rule_version = "1.0.0"
+parameter = "temperature"
+time_step_seconds = 86400
+thresholds = { value_min = -50.0, value_max = 50.0 }  # °C
+
+[[qc_rules.rules]]
+rule_id = "gross_outlier"
+rule_version = "1.0.0"
+parameter = "temperature"
+time_step_seconds = 86400
+thresholds = { k_sigma = 4.0 }
 
 
 # =============================================================================

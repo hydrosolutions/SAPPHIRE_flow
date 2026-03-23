@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, NamedTuple
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -25,13 +26,15 @@ if TYPE_CHECKING:
     )
 
 
-class OperationalForecast(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class OperationalForecast:
     id: ForecastId
     station_id: StationId
     model_id: ModelId
     model_artifact_id: ArtifactId
     issued_at: UtcDatetime
     nwp_cycle_reference_time: UtcDatetime
+    # TODO(v0-store): convert to enum per "enums over booleans" rule
     nwp_cycle_is_fallback: bool
     representation: EnsembleRepresentation
     status: ForecastStatus
@@ -44,7 +47,8 @@ class OperationalForecast(NamedTuple):
     updated_at: UtcDatetime
 
 
-class HindcastForecast(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class HindcastForecast:
     id: HindcastForecastId
     station_id: StationId
     model_id: ModelId
@@ -57,7 +61,8 @@ class HindcastForecast(NamedTuple):
     created_at: UtcDatetime
 
 
-class ForecastAdjustment(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ForecastAdjustment:
     id: ForecastAdjustmentId
     forecast_id: ForecastId
     forecaster_id: UUID
@@ -66,7 +71,8 @@ class ForecastAdjustment(NamedTuple):
     adjustments: list[dict]  # type: ignore[type-arg]
 
 
-class ForeignForecast(NamedTuple):
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ForeignForecast:
     id: ForeignForecastId
     station_id: StationId
     upstream_instance_url: str

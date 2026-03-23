@@ -62,9 +62,7 @@ def upgrade() -> None:
     op.alter_column("basins", "network", server_default=None)
 
     # Add composite unique constraint
-    op.create_unique_constraint(
-        "uq_basins_network_code", "basins", ["network", "code"]
-    )
+    op.create_unique_constraint("uq_basins_network_code", "basins", ["network", "code"])
 
 
 def downgrade() -> None:

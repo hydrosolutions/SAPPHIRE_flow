@@ -64,8 +64,8 @@ class DeploymentConfig(BaseModel):
     warm_up_snapshot_max_age_hours: float = 48.0
     warm_up_snapshot_max_age_monsoon_hours: float = 24.0
 
-    flow_regime_q50_percentile: float = 50.0
-    flow_regime_q90_percentile: float = 90.0
+    flow_regime_p50_percentile: float = 50.0
+    flow_regime_p90_percentile: float = 90.0
 
     enable_forecast_alerts: bool = False
     enable_observation_alerts: bool = False

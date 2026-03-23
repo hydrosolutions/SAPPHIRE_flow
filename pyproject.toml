@@ -1,6 +1,6 @@
 [project]
 name = "sapphire-flow"
-version = "0.1.34"
+version = "0.1.35"
 description = "Add your description here"
 readme = "README.md"
 license = "MIT"
@@ -41,13 +41,13 @@ target-version = "py311"
 line-length = 88
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "N", "UP", "B", "A", "SIM", "TCH"]
+select = ["E", "F", "I", "N", "UP", "B", "A", "SIM", "TCH", "T20"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
 [tool.bumpversion]
-current_version = "0.1.34"
+current_version = "0.1.35"
 commit = false
 tag = false
 allow_dirty = true
