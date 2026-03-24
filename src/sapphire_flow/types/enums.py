@@ -130,8 +130,6 @@ class NotificationChannel(Enum):
     WEBHOOK = "webhook"
 
 
-
-
 class StationStatus(Enum):
     ONBOARDING = "onboarding"
     OPERATIONAL = "operational"

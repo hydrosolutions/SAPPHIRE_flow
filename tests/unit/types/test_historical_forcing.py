@@ -13,7 +13,7 @@ from sapphire_flow.types.historical_forcing import (
     RawHistoricalForcing,
 )
 from sapphire_flow.types.ids import HistoricalForcingId, StationId
-from tests.conftest import make_historical_forcing_record
+from tests.conftest import make_raw_historical_forcing
 from tests.fakes.fake_stores import FakeHistoricalForcingStore
 
 _NOW = ensure_utc(datetime(2026, 1, 15, 12, 0, tzinfo=UTC))
@@ -163,22 +163,20 @@ class TestFakeHistoricalForcingStore:
 
     def test_store_and_fetch_round_trip(self) -> None:
         store = FakeHistoricalForcingStore()
-        rec = make_historical_forcing_record(station_id=_STATION)
-        store.store_forcing([rec])
+        raw = make_raw_historical_forcing(station_id=_STATION)
+        store.store_forcing([raw])
         result = store.fetch_forcing(
             _STATION, "camels-ch", _NOW - timedelta(hours=1), _NOW + timedelta(hours=1)
         )
         assert len(result) == 1
-        assert result[0].id == rec.id
+        assert result[0].station_id == raw.station_id
+        assert result[0].parameter == raw.parameter
+        assert result[0].value == raw.value
 
     def test_filter_by_parameters(self) -> None:
         store = FakeHistoricalForcingStore()
-        r1 = make_historical_forcing_record(
-            station_id=_STATION, parameter="precipitation"
-        )
-        r2 = make_historical_forcing_record(
-            station_id=_STATION, parameter="temperature"
-        )
+        r1 = make_raw_historical_forcing(station_id=_STATION, parameter="precipitation")
+        r2 = make_raw_historical_forcing(station_id=_STATION, parameter="temperature")
         store.store_forcing([r1, r2])
         result = store.fetch_forcing(
             _STATION,
@@ -192,8 +190,8 @@ class TestFakeHistoricalForcingStore:
 
     def test_filter_by_version(self) -> None:
         store = FakeHistoricalForcingStore()
-        r1 = make_historical_forcing_record(station_id=_STATION, version="1.0")
-        r2 = make_historical_forcing_record(station_id=_STATION, version="2.0")
+        r1 = make_raw_historical_forcing(station_id=_STATION, version="1.0")
+        r2 = make_raw_historical_forcing(station_id=_STATION, version="2.0")
         store.store_forcing([r1, r2])
         result = store.fetch_forcing(
             _STATION,
@@ -207,8 +205,8 @@ class TestFakeHistoricalForcingStore:
 
     def test_filter_by_member_id(self) -> None:
         store = FakeHistoricalForcingStore()
-        r1 = make_historical_forcing_record(station_id=_STATION, member_id=None)
-        r2 = make_historical_forcing_record(station_id=_STATION, member_id=3)
+        r1 = make_raw_historical_forcing(station_id=_STATION, member_id=None)
+        r2 = make_raw_historical_forcing(station_id=_STATION, member_id=3)
         store.store_forcing([r1, r2])
         result = store.fetch_forcing(
             _STATION,
@@ -226,25 +224,25 @@ class TestFakeHistoricalForcingStore:
         t2 = ensure_utc(datetime(2026, 1, 15, 13, 0, tzinfo=UTC))
         store.store_forcing(
             [
-                make_historical_forcing_record(
+                make_raw_historical_forcing(
                     station_id=_STATION,
                     valid_time=t1,
                     parameter="precipitation",
                     value=5.0,
                 ),
-                make_historical_forcing_record(
+                make_raw_historical_forcing(
                     station_id=_STATION,
                     valid_time=t1,
                     parameter="temperature",
                     value=10.0,
                 ),
-                make_historical_forcing_record(
+                make_raw_historical_forcing(
                     station_id=_STATION,
                     valid_time=t2,
                     parameter="precipitation",
                     value=3.0,
                 ),
-                make_historical_forcing_record(
+                make_raw_historical_forcing(
                     station_id=_STATION,
                     valid_time=t2,
                     parameter="temperature",
@@ -277,9 +275,9 @@ class TestFakeHistoricalForcingStore:
         store = FakeHistoricalForcingStore()
         store.store_forcing(
             [
-                make_historical_forcing_record(station_id=_STATION, source="camels-ch"),
-                make_historical_forcing_record(station_id=_STATION, source="era5"),
-                make_historical_forcing_record(station_id=_STATION, source="camels-ch"),
+                make_raw_historical_forcing(station_id=_STATION, source="camels-ch"),
+                make_raw_historical_forcing(station_id=_STATION, source="era5"),
+                make_raw_historical_forcing(station_id=_STATION, source="camels-ch"),
             ]
         )
         sources = store.fetch_available_sources(_STATION)

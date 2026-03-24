@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
+# Convention: all range queries use half-open intervals [start, end).
+# SQL: WHERE timestamp >= start AND timestamp < end
+# Fakes must match: start <= x < end (not start <= x <= end).
+
 if TYPE_CHECKING:
     from uuid import UUID
 
@@ -30,7 +34,10 @@ if TYPE_CHECKING:
         HindcastForecast,
         OperationalForecast,
     )
-    from sapphire_flow.types.historical_forcing import HistoricalForcingRecord
+    from sapphire_flow.types.historical_forcing import (
+        HistoricalForcingRecord,
+        RawHistoricalForcing,
+    )
     from sapphire_flow.types.ids import (
         AlertId,
         ArtifactId,
@@ -74,6 +81,7 @@ class ObservationStore(Protocol):
         observation_id: ObservationId,
         qc_status: QcStatus,
         qc_flags: list[QcFlag],
+        qc_rule_version: str | None = None,
     ) -> None:
         raise NotImplementedError
 
@@ -309,6 +317,10 @@ class SkillStore(Protocol):
 
 @runtime_checkable
 class ModelArtifactStore(Protocol):
+    # The implementation is responsible for persisting artifact_bytes to a configured
+    # storage backend (filesystem, S3, etc.) and recording the resulting path in
+    # artifact_path on the ModelArtifactRecord. Callers pass raw bytes; the store
+    # decides where and how to persist them.
     def store_artifact(
         self,
         model_id: ModelId,
@@ -457,6 +469,8 @@ class StationGroupStore(Protocol):
         raise NotImplementedError
 
     def fetch_groups_for_model(self, model_id: ModelId) -> list[StationGroup]:
+        # All groups with at least one station that has an active model assignment
+        # for this model. Used by training scope determination.
         raise NotImplementedError
 
     def add_station_to_group(
@@ -544,7 +558,9 @@ class ParameterStore(Protocol):
 
 @runtime_checkable
 class HistoricalForcingStore(Protocol):
-    def store_forcing(self, records: list[HistoricalForcingRecord]) -> None:
+    def store_forcing(self, records: list[RawHistoricalForcing]) -> None:
+        # Upsert keyed on natural key (station_id, source, version, valid_time,
+        # parameter, spatial_type, band_id, member_id). IDs assigned by store.
         raise NotImplementedError
 
     def fetch_forcing(

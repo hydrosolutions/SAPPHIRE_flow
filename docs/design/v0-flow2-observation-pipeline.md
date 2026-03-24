@@ -155,10 +155,9 @@ camelsch.load_timeseries(data_dir, basin_ids, variables)
     │   → ObservationStore.store_raw_observations(batch)
     │     qc_status = 'raw', then Stage 1 QC runs
     │
-    │   **Note**: Discharge conversion deferred pending verification of raw Zenodo
-    │   data (see open question #6). If Zenodo lacks absolute discharge, a minimal
-    │   `area_km2`-only import from CAMELS-CH attributes is needed (not the full
-    │   234-column attribute set deferred by v0-scope.md § A4).
+    │   **Note**: Raw Zenodo CSVs contain absolute discharge (m³/s) directly.
+    │   The adapter reads m³/s from raw CSVs (not via `camelsch` library's
+    │   `discharge_spec`). No basin area conversion needed (open question #6 resolved).
     │
     └── Weather forcing path (→ historical_forcing table):
         "precipitation" (mm/d), "temperature" (°C)
@@ -567,12 +566,11 @@ S1 (stores) ──┬── S2 (CAMELS-CH adapter) ──┐
    dimension. See `architecture-context.md` § QC rule configuration,
    `types-and-protocols.md` § QcRuleSet, `config-reference.toml` § `[qc_rules]`.
 
-6. **CAMELS-CH raw data verification** (**blocking for Phase S2**): Does the original
-   Zenodo dataset contain absolute discharge (m³/s) in addition to specific discharge
-   (mm/d)? The `camelsch` library only exposes `discharge_spec` — but the raw CSVs may
-   have additional columns. **Action**: Verify before starting Phase S2. If raw Zenodo
-   lacks m³/s, a minimal `area_km2`-only import from CAMELS-CH attributes is needed
-   for unit conversion (not the full 234-column attribute set deferred by v0-scope.md § A4).
+6. ~~**CAMELS-CH raw data verification**~~: **Resolved.** The raw Zenodo dataset contains
+   absolute discharge (m³/s) and water levels. The `camelsch` library only exposes
+   `discharge_spec` (mm/d), but the adapter can read m³/s directly from the raw CSVs.
+   No basin area conversion needed. Water level data opens a future possibility for
+   deriving rating curves, but this is a sideline — not in v0 scope.
 
 7. **LamaH-CE Swiss station IDs**: What are the BAFU 4-digit codes for the 25 Swiss
    stations in LamaH-CE? Contact dataset authors or inspect supplementary metadata.

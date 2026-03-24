@@ -3,7 +3,7 @@ from __future__ import annotations
 import random
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import polars as pl
 import pytest
@@ -42,7 +42,10 @@ if TYPE_CHECKING:
     from sapphire_flow.types.alert import Alert
     from sapphire_flow.types.ensemble import ForecastEnsemble
     from sapphire_flow.types.forecast import ForeignForecast
-    from sapphire_flow.types.historical_forcing import HistoricalForcingRecord
+    from sapphire_flow.types.historical_forcing import (
+        HistoricalForcingRecord,
+        RawHistoricalForcing,
+    )
     from sapphire_flow.types.model import ModelArtifactRecord
     from sapphire_flow.types.observation import Observation
     from sapphire_flow.types.station import StationConfig
@@ -399,4 +402,33 @@ def make_historical_forcing_record(
         member_id=member_id,
         value=value,
         created_at=_EPOCH,
+    )
+
+
+def make_raw_historical_forcing(
+    *,
+    station_id: StationId | None = None,
+    source: str = "camels-ch",
+    version: str = "1.0",
+    valid_time: datetime | None = None,
+    parameter: str = "precipitation",
+    spatial_type: SpatialRepresentation = SpatialRepresentation.BASIN_AVERAGE,
+    band_id: int | None = None,
+    member_id: int | None = None,
+    value: float = 5.0,
+    rng: random.Random | None = None,
+) -> RawHistoricalForcing:
+    from sapphire_flow.types.historical_forcing import RawHistoricalForcing
+
+    rng = rng or random.Random(_RNG_SEED)
+    return RawHistoricalForcing(
+        station_id=station_id or StationId(_uuid(rng)),
+        source=source,
+        version=version,
+        valid_time=ensure_utc(valid_time or datetime(2026, 1, 15, 12, 0, tzinfo=UTC)),
+        parameter=parameter,
+        spatial_type=spatial_type,
+        band_id=band_id,
+        member_id=member_id,
+        value=value,
     )

@@ -37,6 +37,7 @@ from sapphire_flow.types.forecast import (  # noqa: TC001
 )
 from sapphire_flow.types.historical_forcing import (
     HistoricalForcingRecord,  # noqa: TC001
+    RawHistoricalForcing,  # noqa: TC001
 )
 from sapphire_flow.types.ids import (
     AlertId,
@@ -46,6 +47,7 @@ from sapphire_flow.types.ids import (
     ForecastId,
     ForeignForecastId,
     HindcastForecastId,
+    HistoricalForcingId,
     ModelId,
     ObservationId,
     RatingCurveId,
@@ -110,10 +112,11 @@ class FakeObservationStore:
         observation_id: ObservationId,
         qc_status: QcStatus,
         qc_flags: list[QcFlag],
+        qc_rule_version: str | None = None,
     ) -> None:
         obs = self._observations[observation_id]
         self._observations[observation_id] = replace(
-            obs, qc_status=qc_status, qc_flags=qc_flags
+            obs, qc_status=qc_status, qc_flags=qc_flags, qc_rule_version=qc_rule_version
         )
 
     def fetch_observations(
@@ -130,7 +133,7 @@ class FakeObservationStore:
             for o in self._observations.values()
             if o.station_id == station_id
             and o.parameter == parameter
-            and start <= o.timestamp <= end
+            and start <= o.timestamp < end
             and (qc_status is None or o.qc_status == qc_status)
             and (source is None or o.source == source)
         ]
@@ -238,7 +241,7 @@ class FakeForecastStore:
             f
             for f in self._forecasts.values()
             if f.station_id == station_id
-            and start <= f.issued_at <= end
+            and start <= f.issued_at < end
             and (model_id is None or f.model_id == model_id)
             and (status is None or f.status == status)
         ]
@@ -266,7 +269,7 @@ class FakeHindcastStore:
             for h in self._hindcasts.values()
             if h.station_id == station_id
             and h.model_id == model_id
-            and start <= h.hindcast_step <= end
+            and start <= h.hindcast_step < end
             and (forcing_type is None or h.forcing_type == forcing_type)
             and (hindcast_run_id is None or h.hindcast_run_id == hindcast_run_id)
         ]
@@ -307,7 +310,7 @@ class FakeWeatherForecastStore:
             for r in self._records
             if r.station_id == station_id
             and r.nwp_source == nwp_source
-            and start <= r.valid_time <= end
+            and start <= r.valid_time < end
         ]
 
     def fetch_received_cycles(
@@ -319,7 +322,7 @@ class FakeWeatherForecastStore:
         cycles = {
             r.cycle_time
             for r in self._records
-            if r.nwp_source == nwp_source and start <= r.cycle_time <= end
+            if r.nwp_source == nwp_source and start <= r.cycle_time < end
         }
         return sorted(cycles)
 
@@ -390,7 +393,7 @@ class FakeAlertStore:
             a
             for a in self._alerts.values()
             if a.station_id == station_id
-            and start <= a.triggered_at <= end
+            and start <= a.triggered_at < end
             and (source is None or a.source == source)
         ]
 
@@ -458,7 +461,8 @@ class FakeSkillStore:
         count = 0
         new_scores = []
         for s in self._scores:
-            if s.station_id == station_id and not s.is_stale:
+            overlaps = s.eval_period_start < end and s.eval_period_end > start
+            if s.station_id == station_id and not s.is_stale and overlaps:
                 new_scores.append(replace(s, is_stale=True))
                 count += 1
             else:
@@ -468,9 +472,10 @@ class FakeSkillStore:
 
 
 class FakeModelArtifactStore:
-    def __init__(self) -> None:
+    def __init__(self, group_store: FakeStationGroupStore | None = None) -> None:
         self._records: dict[ArtifactId, ModelArtifactRecord] = {}
         self._bytes: dict[ArtifactId, bytes] = {}
+        self._group_store = group_store
 
     def store_artifact(
         self,
@@ -530,7 +535,15 @@ class FakeModelArtifactStore:
         station_id: StationId,
         model_id: ModelId,
     ) -> tuple[ArtifactId, bytes] | None:
-        return self.fetch_active_artifact(model_id, station_id=station_id)
+        result = self.fetch_active_artifact(model_id, station_id=station_id)
+        if result is not None:
+            return result
+        if self._group_store is not None:
+            for group in self._group_store.fetch_groups_for_station(station_id):
+                result = self.fetch_active_artifact(model_id, group_id=group.id)
+                if result is not None:
+                    return result
+        return None
 
     def fetch_artifact_record(
         self, artifact_id: ArtifactId
@@ -690,6 +703,12 @@ class FakeStationStore:
 class FakeStationGroupStore:
     def __init__(self) -> None:
         self._groups: dict[StationGroupId, StationGroup] = {}
+        self._group_model_assignments: dict[ModelId, set[StationGroupId]] = {}
+
+    def seed_group_model_assignment(
+        self, group_id: StationGroupId, model_id: ModelId
+    ) -> None:
+        self._group_model_assignments.setdefault(model_id, set()).add(group_id)
 
     def store_group(self, group: StationGroup) -> None:
         self._groups[group.id] = group
@@ -704,7 +723,8 @@ class FakeStationGroupStore:
         return [g for g in self._groups.values() if station_id in g.station_ids]
 
     def fetch_groups_for_model(self, model_id: ModelId) -> list[StationGroup]:
-        return list(self._groups.values())  # simplified
+        assigned_ids = self._group_model_assignments.get(model_id, set())
+        return [g for g in self._groups.values() if g.id in assigned_ids]
 
     def add_station_to_group(
         self, group_id: StationGroupId, station_id: StationId
@@ -867,7 +887,7 @@ class FakeForeignForecastStore:
         return [
             f
             for f in self._forecasts.values()
-            if f.station_id == station_id and start <= f.issued_at <= end
+            if f.station_id == station_id and start <= f.issued_at < end
         ]
 
 
@@ -875,8 +895,23 @@ class FakeHistoricalForcingStore:
     def __init__(self) -> None:
         self._records: list[HistoricalForcingRecord] = []
 
-    def store_forcing(self, records: list[HistoricalForcingRecord]) -> None:
-        self._records.extend(records)
+    def store_forcing(self, records: list[RawHistoricalForcing]) -> None:
+        for raw in records:
+            fid = HistoricalForcingId(uuid4())
+            record = HistoricalForcingRecord(
+                id=fid,
+                station_id=raw.station_id,
+                source=raw.source,
+                version=raw.version,
+                valid_time=raw.valid_time,
+                parameter=raw.parameter,
+                spatial_type=raw.spatial_type,
+                band_id=raw.band_id,
+                member_id=raw.member_id,
+                value=raw.value,
+                created_at=raw.valid_time,
+            )
+            self._records.append(record)
 
     def fetch_forcing(
         self,
@@ -893,7 +928,7 @@ class FakeHistoricalForcingStore:
             for r in self._records
             if r.station_id == station_id
             and r.source == source
-            and start <= r.valid_time <= end
+            and start <= r.valid_time < end
             and (parameters is None or r.parameter in parameters)
             and (version is None or r.version == version)
             and (member_id is None or r.member_id == member_id)

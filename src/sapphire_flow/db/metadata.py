@@ -258,6 +258,14 @@ sa.Index(
     observations.c.timestamp,
     postgresql_where=observations.c.qc_status == "qc_passed",
 )
+sa.Index(
+    "uq_observations_natural_key",
+    observations.c.station_id,
+    observations.c.timestamp,
+    observations.c.parameter,
+    observations.c.source,
+    unique=True,
+)
 
 # ──────────────────────────────────────────────
 # WEATHER / NWP DOMAIN
@@ -313,6 +321,18 @@ sa.Index(
     weather_forecasts.c.nwp_source,
     weather_forecasts.c.valid_time,
     weather_forecasts.c.cycle_time.desc(),
+)
+sa.Index(
+    "uq_weather_forecasts_natural_key",
+    weather_forecasts.c.station_id,
+    weather_forecasts.c.nwp_source,
+    weather_forecasts.c.cycle_time,
+    weather_forecasts.c.valid_time,
+    weather_forecasts.c.parameter,
+    weather_forecasts.c.spatial_type,
+    sa.text("COALESCE(band_id, -1)"),
+    sa.text("COALESCE(member_id, -1)"),
+    unique=True,
 )
 
 # ──────────────────────────────────────────────
@@ -505,6 +525,14 @@ model_states = sa.Table(
     ),
 )
 
+# Indexes on model_states
+sa.Index(
+    "ix_model_states_station_model_issue_desc",
+    model_states.c.station_id,
+    model_states.c.model_id,
+    model_states.c.issue_time.desc(),
+)
+
 # ──────────────────────────────────────────────
 # FORECAST DOMAIN
 # ──────────────────────────────────────────────
@@ -557,6 +585,8 @@ forecasts = sa.Table(
         nullable=False,
         server_default=sa.func.now(),
     ),
+    sa.Column("parameter", sa.Text, nullable=False),
+    sa.Column("units", sa.Text, nullable=False),
 )
 
 forecast_values = sa.Table(
@@ -583,6 +613,26 @@ sa.Index(
     "ix_forecast_values_forecast_valid_time",
     forecast_values.c.forecast_id,
     forecast_values.c.valid_time,
+)
+
+# Indexes on forecasts
+sa.Index(
+    "ix_forecasts_station_issued_desc",
+    forecasts.c.station_id,
+    forecasts.c.issued_at.desc(),
+)
+sa.Index(
+    "ix_forecasts_issued_station",
+    forecasts.c.issued_at.desc(),
+    forecasts.c.station_id,
+)
+sa.Index(
+    "uq_forecasts_station_model_issued",
+    forecasts.c.station_id,
+    forecasts.c.model_id,
+    forecasts.c.issued_at,
+    unique=True,
+    postgresql_where=forecasts.c.status != "superseded",
 )
 
 hindcast_forecasts = sa.Table(
@@ -613,12 +663,22 @@ hindcast_forecasts = sa.Table(
         nullable=False,
     ),
     sa.Column("hindcast_run_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("parameter", sa.Text, nullable=False),
+    sa.Column("units", sa.Text, nullable=False),
     sa.Column(
         "created_at",
         sa.DateTime(timezone=True),
         nullable=False,
         server_default=sa.func.now(),
     ),
+)
+
+# Indexes on hindcast_forecasts
+sa.Index(
+    "ix_hindcast_forecasts_station_model_step",
+    hindcast_forecasts.c.station_id,
+    hindcast_forecasts.c.model_id,
+    hindcast_forecasts.c.hindcast_step,
 )
 
 hindcast_values = sa.Table(
@@ -698,6 +758,8 @@ skill_scores = sa.Table(
     sa.Column("score", sa.Float, nullable=False),
     sa.Column("sample_size", sa.Integer, nullable=False),
     sa.Column("is_stale", sa.Boolean, nullable=False, server_default="false"),
+    sa.Column("eval_period_start", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("eval_period_end", sa.DateTime(timezone=True), nullable=False),
     sa.Column(
         "created_at",
         sa.DateTime(timezone=True),
@@ -739,12 +801,36 @@ skill_diagrams = sa.Table(
     ),
     sa.Column("threshold_level", sa.Text, nullable=True),
     sa.Column("data", JSONB, nullable=False),
+    sa.Column("eval_period_start", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("eval_period_end", sa.DateTime(timezone=True), nullable=False),
     sa.Column(
         "created_at",
         sa.DateTime(timezone=True),
         nullable=False,
         server_default=sa.func.now(),
     ),
+)
+
+# Indexes on skill_scores
+sa.Index(
+    "uq_skill_scores_natural_key",
+    skill_scores.c.station_id,
+    skill_scores.c.model_artifact_id,
+    skill_scores.c.skill_source,
+    skill_scores.c.lead_time_hours,
+    skill_scores.c.metric,
+    sa.text("COALESCE(season, '')"),
+    sa.text("COALESCE(flow_regime, '')"),
+    sa.text("COALESCE(forcing_type, '')"),
+    unique=True,
+)
+sa.Index(
+    "ix_skill_scores_station_model_version",
+    skill_scores.c.station_id,
+    skill_scores.c.model_id,
+    skill_scores.c.computation_version,
+    skill_scores.c.metric,
+    skill_scores.c.lead_time_hours,
 )
 
 # ──────────────────────────────────────────────

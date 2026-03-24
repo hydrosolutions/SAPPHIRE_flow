@@ -182,6 +182,22 @@ Each model class declares an `artifact_scope` class attribute (`ArtifactScope.ST
 
 ---
 
+## Time range convention: half-open intervals
+
+All store Protocol methods that accept `start` and `end` parameters use **half-open intervals `[start, end)`**:
+
+- SQL: `WHERE timestamp >= start AND timestamp < end`
+- Python fakes: `start <= x.timestamp < end`
+
+This convention:
+- Prevents double-counting at boundaries when adjacent windows abut
+- Matches PostgreSQL's default `tstzrange` semantics
+- Composes cleanly: `[t0, t1)` + `[t1, t2)` covers `[t0, t2)` with no overlap
+
+The convention applies to all `fetch_*` methods with time range parameters and to `mark_stale`.
+
+---
+
 ## Error handling at adapter boundaries
 
 ### Retry + circuit breaker

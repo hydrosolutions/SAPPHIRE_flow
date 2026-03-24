@@ -30,6 +30,8 @@ class SkillScore:
     sample_size: int
     # TODO(v0-store): convert to enum per "enums over booleans" rule
     is_stale: bool
+    eval_period_start: UtcDatetime
+    eval_period_end: UtcDatetime
     created_at: UtcDatetime
 
 
@@ -48,6 +50,8 @@ class SkillDiagram:
     diagram_type: Literal["reliability", "roc", "rank_histogram"]
     threshold_level: str | None
     data: dict  # type: ignore[type-arg]
+    eval_period_start: UtcDatetime
+    eval_period_end: UtcDatetime
     created_at: UtcDatetime
 
 
