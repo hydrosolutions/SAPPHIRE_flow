@@ -34,6 +34,7 @@ from sapphire_flow.types.ids import (
     HistoricalForcingId,
     ModelId,
     ObservationId,
+    StationGroupId,
     StationId,
 )
 
@@ -49,6 +50,7 @@ if TYPE_CHECKING:
     from sapphire_flow.types.model import ModelArtifactRecord
     from sapphire_flow.types.observation import Observation
     from sapphire_flow.types.station import StationConfig
+    from sapphire_flow.types.training import TrainingUnit
     from sapphire_flow.types.weather import PointForecast
     from tests.fakes.fake_clock import FakeClock
 
@@ -402,6 +404,34 @@ def make_historical_forcing_record(
         member_id=member_id,
         value=value,
         created_at=_EPOCH,
+    )
+
+
+def make_training_unit(
+    *,
+    model_id: ModelId | None = None,
+    station_id: StationId | None = None,
+    group_id: StationGroupId | None = None,
+    rng: random.Random | None = None,
+) -> TrainingUnit:
+    from sapphire_flow.types.training import TrainingUnit
+
+    rng = rng or random.Random(_RNG_SEED)
+    mid = model_id or ModelId("test_model")
+    if group_id is not None:
+        sid = None
+        station_ids: frozenset[StationId] = frozenset({StationId(_uuid(rng))})
+    else:
+        sid = station_id or StationId(_uuid(rng))
+        station_ids = frozenset({sid})
+    return TrainingUnit(
+        model_id=mid,
+        station_id=sid,
+        group_id=group_id,
+        station_ids=station_ids,
+        training_period_start=_EPOCH,
+        training_period_end=_EPOCH,
+        time_step=timedelta(days=1),
     )
 
 

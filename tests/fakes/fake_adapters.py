@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from sapphire_flow.types.datetime import UtcDatetime  # noqa: TC001
 from sapphire_flow.types.forecast import ForeignForecast  # noqa: TC001
+from sapphire_flow.types.historical_forcing import RawHistoricalForcing  # noqa: TC001
 from sapphire_flow.types.ids import StationId  # noqa: TC001
 from sapphire_flow.types.observation import RawObservation  # noqa: TC001
 from sapphire_flow.types.pipeline import FlowRunStatus  # noqa: TC001
@@ -70,3 +71,24 @@ class FakePipelineStatusSource:
         since: UtcDatetime,
     ) -> list[FlowRunStatus]:
         return [r for r in self._runs if r.flow_name in flow_names]
+
+
+class FakeWeatherReanalysisSource:
+    def __init__(self, records: list[RawHistoricalForcing] | None = None) -> None:
+        self._records = records or []
+
+    def fetch_reanalysis(
+        self,
+        station_configs: list[StationWeatherSource],
+        start: UtcDatetime,
+        end: UtcDatetime,
+        parameters: list[str],
+    ) -> list[RawHistoricalForcing]:
+        station_ids = {cfg.station_id for cfg in station_configs}
+        return [
+            r
+            for r in self._records
+            if r.station_id in station_ids
+            and start <= r.valid_time < end
+            and r.parameter in parameters
+        ]

@@ -5,6 +5,7 @@ from sapphire_flow.protocols.adapters import (
     PipelineStatusSource,
     StationDataSource,
     WeatherForecastSource,
+    WeatherReanalysisSource,
 )
 from sapphire_flow.protocols.forecast_model import (
     GroupForecastModel,
@@ -37,6 +38,7 @@ from tests.fakes.fake_adapters import (
     FakePipelineStatusSource,
     FakeStationDataSource,
     FakeWeatherForecastSource,
+    FakeWeatherReanalysisSource,
 )
 from tests.fakes.fake_clock import FakeClock  # noqa: F401
 from tests.fakes.fake_models import FakeGroupForecastModel, FakeStationForecastModel
@@ -138,6 +140,9 @@ class TestFakeAdapterConformance:
 
     def test_foreign_forecast_source(self) -> None:
         assert isinstance(FakeForeignForecastSource(), ForeignForecastSource)
+
+    def test_weather_reanalysis_source(self) -> None:
+        assert isinstance(FakeWeatherReanalysisSource(), WeatherReanalysisSource)
 
 
 class TestFakeModelConformance:
