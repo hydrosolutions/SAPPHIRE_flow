@@ -5,7 +5,8 @@ from pathlib import Path
 
 import sqlalchemy as sa
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent
+# _db.py → flows/ → sapphire_flow/ → src/ → repo_root
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 
 
 def create_engine_from_env() -> sa.Engine:
