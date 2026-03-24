@@ -11,6 +11,7 @@ from sapphire_flow.types.alert import Alert  # noqa: TC001
 from sapphire_flow.types.basin import Basin  # noqa: TC001
 from sapphire_flow.types.datetime import UtcDatetime  # noqa: TC001
 from sapphire_flow.types.domain import (  # noqa: TC001
+    ClimBaseline,
     ParameterDefinition,
     QcFlag,
     StationThreshold,
@@ -969,3 +970,29 @@ class FakeHistoricalForcingStore:
 
     def fetch_available_sources(self, station_id: StationId) -> list[str]:
         return sorted({r.source for r in self._records if r.station_id == station_id})
+
+
+class FakeClimBaselineStore:
+    def __init__(self) -> None:
+        self._baselines: dict[tuple[StationId, str, int], ClimBaseline] = {}
+
+    def store_baselines(self, baselines: list[ClimBaseline]) -> None:
+        for b in baselines:
+            self._baselines[(b.station_id, b.parameter, b.day_of_year)] = b
+
+    def fetch_baselines(
+        self, station_id: StationId, parameter: str
+    ) -> list[ClimBaseline]:
+        return sorted(
+            [
+                b
+                for (sid, param, _), b in self._baselines.items()
+                if sid == station_id and param == parameter
+            ],
+            key=lambda b: b.day_of_year,
+        )
+
+    def fetch_baseline(
+        self, station_id: StationId, parameter: str, day_of_year: int
+    ) -> ClimBaseline | None:
+        return self._baselines.get((station_id, parameter, day_of_year))

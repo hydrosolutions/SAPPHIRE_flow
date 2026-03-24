@@ -598,6 +598,23 @@ class HistoricalForcingStore(Protocol):
 
 
 @runtime_checkable
+class ClimBaselineStore(Protocol):
+    def store_baselines(self, baselines: list[ClimBaseline]) -> None:
+        # Upsert keyed on (station_id, parameter, day_of_year)
+        raise NotImplementedError
+
+    def fetch_baselines(
+        self, station_id: StationId, parameter: str
+    ) -> list[ClimBaseline]:
+        raise NotImplementedError
+
+    def fetch_baseline(
+        self, station_id: StationId, parameter: str, day_of_year: int
+    ) -> ClimBaseline | None:
+        raise NotImplementedError
+
+
+@runtime_checkable
 class QualityChecker(Protocol):
     def check(
         self,

@@ -13,6 +13,7 @@ from sapphire_flow.protocols.forecast_model import (
 from sapphire_flow.protocols.stores import (
     AlertStore,
     BasinStore,
+    ClimBaselineStore,
     FlowRegimeConfigStore,
     ForecastAdjustmentStore,
     ForecastStore,
@@ -42,6 +43,7 @@ from tests.fakes.fake_models import FakeGroupForecastModel, FakeStationForecastM
 from tests.fakes.fake_stores import (
     FakeAlertStore,
     FakeBasinStore,
+    FakeClimBaselineStore,
     FakeFlowRegimeConfigStore,
     FakeForecastAdjustmentStore,
     FakeForecastStore,
@@ -119,6 +121,9 @@ class TestFakeStoreConformance:
 
     def test_historical_forcing_store(self) -> None:
         assert isinstance(FakeHistoricalForcingStore(), HistoricalForcingStore)
+
+    def test_clim_baseline_store(self) -> None:
+        assert isinstance(FakeClimBaselineStore(), ClimBaselineStore)
 
 
 class TestFakeAdapterConformance:

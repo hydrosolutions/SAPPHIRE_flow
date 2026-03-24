@@ -725,6 +725,34 @@ hindcast_values = sa.Table(
 )
 
 # ──────────────────────────────────────────────
+# BASELINE DOMAIN
+# ──────────────────────────────────────────────
+
+clim_baselines = sa.Table(
+    "clim_baselines",
+    metadata,
+    sa.Column(
+        "station_id", UUID(as_uuid=True), sa.ForeignKey("stations.id"), nullable=False
+    ),
+    sa.Column("parameter", sa.Text, nullable=False),
+    sa.Column("day_of_year", sa.Integer, nullable=False),
+    sa.Column("rolling_mean", sa.Float, nullable=False),
+    sa.Column("rolling_std", sa.Float, nullable=False),
+    sa.Column("sample_count", sa.Integer, nullable=False),
+    sa.Column(
+        "created_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+    ),
+    sa.PrimaryKeyConstraint("station_id", "parameter", "day_of_year"),
+    sa.CheckConstraint(
+        "day_of_year >= 1 AND day_of_year <= 366",
+        name="ck_clim_baselines_day_of_year",
+    ),
+)
+
+# ──────────────────────────────────────────────
 # SKILL DOMAIN
 # ──────────────────────────────────────────────
 
