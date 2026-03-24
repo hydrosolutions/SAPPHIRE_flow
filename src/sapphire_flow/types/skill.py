@@ -7,7 +7,12 @@ if TYPE_CHECKING:
     from uuid import UUID
 
     from sapphire_flow.types.datetime import UtcDatetime
-    from sapphire_flow.types.enums import FlowRegime, ForcingType, SkillSource
+    from sapphire_flow.types.enums import (
+        FlowRegime,
+        ForcingType,
+        SkillFreshness,
+        SkillSource,
+    )
     from sapphire_flow.types.ids import ArtifactId, ModelId, StationId
 
 
@@ -28,8 +33,7 @@ class SkillScore:
     metric: str
     score: float
     sample_size: int
-    # TODO(v0-store): convert to enum per "enums over booleans" rule
-    is_stale: bool
+    freshness: SkillFreshness
     eval_period_start: UtcDatetime
     eval_period_end: UtcDatetime
     created_at: UtcDatetime

@@ -107,6 +107,49 @@ def aggregate_qc_status(flags: list[QcFlag]) -> QcStatus:
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
+class QcRuleParams:
+    rule_id: str
+    rule_version: str
+    parameter: str
+    time_step: timedelta
+    thresholds: dict[str, float]
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class QcRuleSet:
+    version: str
+    rules: tuple[QcRuleParams, ...]
+
+    def rules_for(
+        self, parameter: str, time_step: timedelta
+    ) -> tuple[QcRuleParams, ...]:
+        return tuple(
+            r
+            for r in self.rules
+            if r.parameter == parameter and r.time_step == time_step
+        )
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class StationQcOverride:
+    station_id: StationId
+    rule_id: str
+    parameter: str
+    time_step: timedelta
+    thresholds: dict[str, float | None]
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ClimBaseline:
+    station_id: StationId
+    parameter: str
+    day_of_year: int
+    rolling_mean: float
+    rolling_std: float
+    sample_count: int
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
 class SeasonDefinition:
     name: str
     months: frozenset[int]

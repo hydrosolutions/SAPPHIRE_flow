@@ -25,6 +25,7 @@ from sapphire_flow.types.enums import (
     ObservationSource,
     PipelineCheckType,
     QcStatus,
+    SkillFreshness,
     SkillSource,
     StationKind,
     StationOwnership,
@@ -462,8 +463,9 @@ class FakeSkillStore:
         new_scores = []
         for s in self._scores:
             overlaps = s.eval_period_start < end and s.eval_period_end > start
-            if s.station_id == station_id and not s.is_stale and overlaps:
-                new_scores.append(replace(s, is_stale=True))
+            is_current = s.freshness == SkillFreshness.CURRENT
+            if s.station_id == station_id and is_current and overlaps:
+                new_scores.append(replace(s, freshness=SkillFreshness.STALE))
                 count += 1
             else:
                 new_scores.append(s)

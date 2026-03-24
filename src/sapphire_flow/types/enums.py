@@ -1,4 +1,4 @@
-from enum import Enum
+from enum import Enum, StrEnum
 
 
 class QcStatus(Enum):
@@ -152,7 +152,27 @@ class ForeignForecastStatus(Enum):
     PUBLISHED = "published"
 
 
-class FlowRunState(Enum):
+class NwpCycleSource(Enum):
+    PRIMARY = "primary"
+    FALLBACK = "fallback"
+
+
+class WeatherSourceStatus(Enum):
+    ACTIVE = "active"
+    INACTIVE = "inactive"
+
+
+class SkillFreshness(Enum):
+    CURRENT = "current"
+    STALE = "stale"
+
+
+class ModelAssignmentStatus(Enum):
+    ACTIVE = "active"
+    INACTIVE = "inactive"
+
+
+class FlowRunState(StrEnum):
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -160,3 +180,9 @@ class FlowRunState(Enum):
     CRASHED = "crashed"
     CANCELLING = "cancelling"
     CANCELLED = "cancelled"
+
+
+class AuditActorType(Enum):
+    USER = "user"
+    API_KEY = "api_key"
+    SYSTEM = "system"

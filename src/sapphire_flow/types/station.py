@@ -9,11 +9,13 @@ if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.domain import GeoCoord
     from sapphire_flow.types.enums import (
+        ModelAssignmentStatus,
         RegulationType,
         SpatialRepresentation,
         StationKind,
         StationOwnership,
         StationStatus,
+        WeatherSourceStatus,
     )
     from sapphire_flow.types.ids import BasinId, ModelId, StationGroupId, StationId
 
@@ -43,7 +45,7 @@ class ModelAssignment:
     station_id: StationId
     model_id: ModelId
     time_step: timedelta
-    is_active: bool
+    status: ModelAssignmentStatus
     priority: int
     created_at: UtcDatetime
 
@@ -62,5 +64,4 @@ class StationWeatherSource:
     station_id: StationId
     nwp_source: str
     extraction_type: SpatialRepresentation
-    # TODO(v0-store): convert to enum per "enums over booleans" rule
-    active: bool
+    status: WeatherSourceStatus

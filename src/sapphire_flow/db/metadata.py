@@ -163,7 +163,13 @@ station_weather_sources = sa.Table(
         ),
         nullable=False,
     ),
-    sa.Column("active", sa.Boolean, nullable=False, server_default="true"),
+    sa.Column(
+        "status",
+        sa.Text,
+        sa.CheckConstraint("status IN ('active', 'inactive')"),
+        nullable=False,
+        server_default="active",
+    ),
     sa.PrimaryKeyConstraint("station_id", "nwp_source"),
 )
 
@@ -496,7 +502,13 @@ model_assignments = sa.Table(
     ),
     sa.Column("model_id", sa.Text, sa.ForeignKey("models.id"), nullable=False),
     sa.Column("time_step", INTERVAL, nullable=False),
-    sa.Column("is_active", sa.Boolean, nullable=False, server_default="true"),
+    sa.Column(
+        "status",
+        sa.Text,
+        sa.CheckConstraint("status IN ('active', 'inactive')"),
+        nullable=False,
+        server_default="active",
+    ),
     sa.Column("priority", sa.Integer, nullable=False, server_default="0"),
     sa.Column(
         "created_at",
@@ -554,7 +566,11 @@ forecasts = sa.Table(
     sa.Column("issued_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("nwp_cycle_reference_time", sa.DateTime(timezone=True), nullable=False),
     sa.Column(
-        "nwp_cycle_is_fallback", sa.Boolean, nullable=False, server_default="false"
+        "nwp_cycle_source",
+        sa.Text,
+        sa.CheckConstraint("nwp_cycle_source IN ('primary', 'fallback')"),
+        nullable=False,
+        server_default="primary",
     ),
     sa.Column(
         "representation",
@@ -757,7 +773,13 @@ skill_scores = sa.Table(
     sa.Column("metric", sa.Text, nullable=False),
     sa.Column("score", sa.Float, nullable=False),
     sa.Column("sample_size", sa.Integer, nullable=False),
-    sa.Column("is_stale", sa.Boolean, nullable=False, server_default="false"),
+    sa.Column(
+        "freshness",
+        sa.Text,
+        sa.CheckConstraint("freshness IN ('current', 'stale')"),
+        nullable=False,
+        server_default="current",
+    ),
     sa.Column("eval_period_start", sa.DateTime(timezone=True), nullable=False),
     sa.Column("eval_period_end", sa.DateTime(timezone=True), nullable=False),
     sa.Column(

@@ -14,7 +14,14 @@ if TYPE_CHECKING:
     from sapphire_flow.types.alert import Alert
     from sapphire_flow.types.basin import Basin
     from sapphire_flow.types.datetime import UtcDatetime
-    from sapphire_flow.types.domain import ParameterDefinition, QcFlag, StationThreshold
+    from sapphire_flow.types.domain import (
+        ClimBaseline,
+        ParameterDefinition,
+        QcFlag,
+        QcRuleSet,
+        StationQcOverride,
+        StationThreshold,
+    )
     from sapphire_flow.types.enums import (
         AlertSource,
         FlowRegime,
@@ -587,4 +594,16 @@ class HistoricalForcingStore(Protocol):
         raise NotImplementedError
 
     def fetch_available_sources(self, station_id: StationId) -> list[str]:
+        raise NotImplementedError
+
+
+@runtime_checkable
+class QualityChecker(Protocol):
+    def check(
+        self,
+        observations: list[Observation],
+        rule_set: QcRuleSet,
+        overrides: list[StationQcOverride],
+        baselines: list[ClimBaseline],
+    ) -> dict[ObservationId, list[QcFlag]]:
         raise NotImplementedError

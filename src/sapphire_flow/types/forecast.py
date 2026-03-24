@@ -13,6 +13,7 @@ if TYPE_CHECKING:
         ForcingType,
         ForecastStatus,
         ForeignForecastStatus,
+        NwpCycleSource,
         WarmUpSource,
     )
     from sapphire_flow.types.ids import (
@@ -34,8 +35,7 @@ class OperationalForecast:
     model_artifact_id: ArtifactId
     issued_at: UtcDatetime
     nwp_cycle_reference_time: UtcDatetime
-    # TODO(v0-store): convert to enum per "enums over booleans" rule
-    nwp_cycle_is_fallback: bool
+    nwp_cycle_source: NwpCycleSource
     representation: EnsembleRepresentation
     status: ForecastStatus
     version: int

@@ -240,6 +240,22 @@ class StationOwnership(Enum):
 
 class ForeignForecastStatus(Enum):
     PUBLISHED = "published"
+
+class NwpCycleSource(Enum):
+    PRIMARY = "primary"
+    FALLBACK = "fallback"
+
+class WeatherSourceStatus(Enum):
+    ACTIVE = "active"
+    INACTIVE = "inactive"
+
+class SkillFreshness(Enum):
+    CURRENT = "current"
+    STALE = "stale"
+
+class ModelAssignmentStatus(Enum):
+    ACTIVE = "active"
+    INACTIVE = "inactive"
 ```
 
 ---
@@ -563,7 +579,7 @@ class ModelAssignment:
     station_id: StationId
     model_id: ModelId
     time_step: timedelta           # configured time step for this assignment
-    is_active: bool
+    status: ModelAssignmentStatus
     priority: int                  # fallback order: 0 = primary
     created_at: UtcDatetime
 ```
@@ -594,7 +610,7 @@ class StationWeatherSource:
     station_id: StationId
     nwp_source: str
     extraction_type: SpatialRepresentation  # POINT, BASIN_AVERAGE, or ELEVATION_BAND
-    active: bool
+    status: WeatherSourceStatus
 ```
 
 Module: `types/station.py`
@@ -1040,7 +1056,7 @@ class OperationalForecast:
     model_artifact_id: ArtifactId
     issued_at: UtcDatetime
     nwp_cycle_reference_time: UtcDatetime
-    nwp_cycle_is_fallback: bool
+    nwp_cycle_source: NwpCycleSource
     representation: EnsembleRepresentation
     status: ForecastStatus
     version: int                           # optimistic locking
@@ -1180,7 +1196,7 @@ class SkillScore:
     metric: str                            # e.g. "crps", "nse", "kge", "bss", "sharpness_p10_p90", "sharpness_p25_p75", "ensemble_range"
     score: float
     sample_size: int
-    is_stale: bool                         # TRUE when underlying data changed; cleared by Flow 10 step S.6
+    freshness: SkillFreshness              # STALE when underlying data changed; cleared by Flow 10 step S.6
     created_at: UtcDatetime
 ```
 
@@ -1505,7 +1521,7 @@ class SkillStore(Protocol):
         start: UtcDatetime,
         end: UtcDatetime,
     ) -> int: ...
-        # Sets is_stale=TRUE on all skill_scores rows for this station
+        # Sets freshness=STALE on all skill_scores rows for this station
         # whose evaluation period overlaps [start, end].
         # Returns count of rows marked stale.
         # Used by Flows 11 and 12 when underlying data changes.

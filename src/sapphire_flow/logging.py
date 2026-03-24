@@ -1,3 +1,5 @@
+# pyright: reportMissingImports=false, reportUnknownVariableType=false
+# pyright: reportUnknownMemberType=false, reportUnknownArgumentType=false
 from __future__ import annotations
 
 import logging
