@@ -1,6 +1,6 @@
 [project]
 name = "sapphire-flow"
-version = "0.1.74"
+version = "0.1.76"
 description = "Add your description here"
 readme = "README.md"
 license = "MIT"
@@ -14,6 +14,7 @@ dependencies = [
     "geoalchemy2>=0.18.4",
     "orjson",
     "polars",
+    "prefect>=3.0",
     "psycopg[binary]>=3.3.3",
     "pydantic>=2.12.5",
     "shapely",
@@ -49,7 +50,7 @@ select = ["E", "F", "I", "N", "UP", "B", "A", "SIM", "TCH", "T20"]
 testpaths = ["tests"]
 
 [tool.bumpversion]
-current_version = "0.1.74"
+current_version = "0.1.76"
 commit = false
 tag = false
 allow_dirty = true
