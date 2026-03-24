@@ -145,9 +145,15 @@ def geometry_to_basin(
     basin_id: BasinId,
     clock: Callable[[], UtcDatetime],
 ) -> Basin:
+    import math
+
+    from shapely import force_2d
     from shapely.geometry import MultiPolygon, Polygon
 
     from sapphire_flow.types.basin import Basin
+
+    # Drop Z coordinate — DB column is 2D MULTIPOLYGON
+    geometry = force_2d(geometry)
 
     if isinstance(geometry, Polygon):
         geometry = MultiPolygon([geometry])
@@ -155,13 +161,20 @@ def geometry_to_basin(
     name = str(attrs["gauge_name"]) if "gauge_name" in attrs.index else gauge_id
     area = float(attrs["area"]) if "area" in attrs.index else None
 
+    # Sanitise attributes: replace NaN with None (NaN is invalid JSON)
+    raw_attrs = attrs.to_dict()
+    clean_attrs = {
+        k: (None if isinstance(v, float) and math.isnan(v) else v)
+        for k, v in raw_attrs.items()
+    }
+
     return Basin(
         id=basin_id,
         code=gauge_id,
         name=name,
         geometry=geometry,
         area_km2=area,
-        attributes=attrs.to_dict(),
+        attributes=clean_attrs,
         band_geometries=None,
         created_at=clock(),
         network="bafu",
@@ -176,10 +189,20 @@ def load_stations(
     import camelsch
 
     attrs_df = camelsch.load_attributes(data_dir, basin_ids=basin_ids)
-    geom_gdf = camelsch.load_geometries(data_dir, basin_ids=basin_ids, crs="EPSG:4326")
+    # Load ALL geometries — camelsch geometry index may use float-suffixed
+    # IDs ("2004.0") that don't match the basin_ids filter ("2004").
+    # We filter client-side after normalising IDs.
+    geom_gdf = camelsch.load_geometries(data_dir, crs="EPSG:4326")
 
     stations: list[StationConfig] = []
     basins: list[Basin] = []
+
+    # Build a normalised geometry lookup — shapefile gauge_ids may have
+    # a ".0" float suffix (e.g. "2004.0") while attributes use "2004".
+    geom_lookup: dict[str, Any] = {}
+    for gid in geom_gdf.index:
+        normalised = str(gid).removesuffix(".0")
+        geom_lookup[normalised] = geom_gdf.loc[gid]
 
     for gauge_id in attrs_df.index:
         bid = BasinId(uuid4())
@@ -188,8 +211,9 @@ def load_stations(
         station = attributes_to_station(gauge_id, attrs, bid, sid, clock)
         stations.append(station)
 
-        if gauge_id in geom_gdf.index:
-            geom_row = geom_gdf.loc[gauge_id]
+        normalised_id = str(gauge_id).removesuffix(".0")
+        if normalised_id in geom_lookup:
+            geom_row = geom_lookup[normalised_id]
             geometry = (
                 geom_row.geometry
                 if hasattr(geom_row, "geometry")

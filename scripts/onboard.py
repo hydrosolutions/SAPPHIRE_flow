@@ -195,7 +195,12 @@ def main() -> int:
     )
 
     try:
-        with engine.connect() as conn, conn.begin():
+        with engine.connect() as conn:
+            # Use autocommit so each store operation commits independently.
+            # This prevents a single FK violation from aborting all
+            # subsequent operations within the same PostgreSQL transaction.
+            conn = conn.execution_options(isolation_level="AUTOCOMMIT")
+
             basin_store = PgBasinStore(conn)
             station_store = PgStationStore(conn)
             obs_store = PgObservationStore(conn)
@@ -220,7 +225,9 @@ def main() -> int:
     except Exception as exc:
         log.error("onboarding_failed", error=str(exc))
         print(f"\nERROR: Onboarding failed — {exc}", file=sys.stderr)
-        print("Nothing was committed to the database.", file=sys.stderr)
+        print(
+            "Partial data may have been committed.", file=sys.stderr
+        )
         return 1
 
     _print_result(result)

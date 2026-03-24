@@ -25,6 +25,10 @@ class PgHistoricalForcingStore:
     def __init__(self, conn: sa.Connection) -> None:
         self._conn = conn
 
+    # psycopg has a 65,535 parameter limit per statement. With 10 columns
+    # per row, batch at ~5,000 rows to stay well under the limit.
+    _BATCH_SIZE = 5000
+
     def store_forcing(self, records: list[RawHistoricalForcing]) -> None:
         if not records:
             return
@@ -43,8 +47,10 @@ class PgHistoricalForcingStore:
             }
             for r in records
         ]
-        stmt = pg_insert(historical_forcing).values(rows).on_conflict_do_nothing()
-        self._conn.execute(stmt)
+        for i in range(0, len(rows), self._BATCH_SIZE):
+            batch = rows[i : i + self._BATCH_SIZE]
+            stmt = pg_insert(historical_forcing).values(batch)
+            self._conn.execute(stmt.on_conflict_do_nothing())
 
     def fetch_forcing(
         self,

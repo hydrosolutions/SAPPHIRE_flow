@@ -79,11 +79,11 @@ def _run_onboarding(
             if existing is not None:
                 basins_skipped += 1
                 basin_code_to_id[basin.code] = existing.id
-                log.debug("basin_already_exists", code=basin.code)
+                log.info("basin_already_exists", code=basin.code)
             else:
                 basin_store.store_basin(basin)
                 basins_created += 1
-                log.debug("basin_stored", code=basin.code)
+                log.info("basin_stored", code=basin.code)
         except Exception as exc:
             msg = f"Failed to store basin {basin.code}: {exc}"
             log.error("basin_store_error", code=basin.code, error=str(exc))
@@ -100,12 +100,12 @@ def _run_onboarding(
             if existing is not None:
                 stations_skipped += 1
                 station_map[station.code] = existing.id
-                log.debug("station_already_exists", code=station.code)
+                log.info("station_already_exists", code=station.code)
             else:
                 station_store.store_station(station)
                 station_map[station.code] = station.id
                 stations_created += 1
-                log.debug("station_stored", code=station.code)
+                log.info("station_stored", code=station.code)
         except Exception as exc:
             msg = f"Failed to store station {station.code}: {exc}"
             log.error("station_store_error", code=station.code, error=str(exc))

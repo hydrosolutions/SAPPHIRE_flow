@@ -169,7 +169,7 @@ class TestGeometryToBasin:
         assert basin.area_km2 == pytest.approx(150.0)
         assert basin.band_geometries is None
         assert basin.network == "bafu"
-        assert basin.geometry is mp
+        assert basin.geometry.equals(mp)
 
     def test_converts_polygon_to_multipolygon(self) -> None:
         polygon = Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])
