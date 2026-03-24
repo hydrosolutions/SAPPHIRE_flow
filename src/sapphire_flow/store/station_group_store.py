@@ -1,0 +1,157 @@
+# pyright: reportUnknownMemberType=false, reportUnknownArgumentType=false
+from __future__ import annotations
+
+import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+from sapphire_flow.db.metadata import (
+    model_assignments,
+    station_group_members,
+    station_groups,
+)
+from sapphire_flow.store._helpers import utc_from_row
+from sapphire_flow.types.ids import ModelId, StationGroupId, StationId
+from sapphire_flow.types.station import StationGroup
+
+
+class PgStationGroupStore:
+    def __init__(self, conn: sa.Connection) -> None:
+        self._conn = conn
+
+    def store_group(self, group: StationGroup) -> None:
+        self._conn.execute(
+            pg_insert(station_groups)
+            .values(
+                id=group.id,
+                name=group.name,
+                description=group.description,
+                created_at=group.created_at,
+            )
+            .on_conflict_do_update(
+                index_elements=["id"],
+                set_={
+                    "name": group.name,
+                    "description": group.description,
+                },
+            )
+        )
+        if group.station_ids:
+            self._conn.execute(
+                pg_insert(station_group_members)
+                .values(
+                    [
+                        {"group_id": group.id, "station_id": sid}
+                        for sid in group.station_ids
+                    ]
+                )
+                .on_conflict_do_nothing()
+            )
+
+    def fetch_group(self, group_id: StationGroupId) -> StationGroup | None:
+        row = (
+            self._conn.execute(
+                sa.select(station_groups).where(station_groups.c.id == group_id)
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if row is None:
+            return None
+        return _build_group(self._conn, row)
+
+    def fetch_group_by_name(self, name: str) -> StationGroup | None:
+        row = (
+            self._conn.execute(
+                sa.select(station_groups).where(station_groups.c.name == name)
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if row is None:
+            return None
+        return _build_group(self._conn, row)
+
+    def fetch_groups_for_station(self, station_id: StationId) -> list[StationGroup]:
+        rows = (
+            self._conn.execute(
+                sa.select(station_groups)
+                .join(
+                    station_group_members,
+                    station_groups.c.id == station_group_members.c.group_id,
+                )
+                .where(station_group_members.c.station_id == station_id)
+            )
+            .mappings()
+            .all()
+        )
+        return [_build_group(self._conn, row) for row in rows]
+
+    def fetch_groups_for_model(self, model_id: ModelId) -> list[StationGroup]:
+        subq = (
+            sa.select(station_group_members.c.group_id)
+            .join(
+                model_assignments,
+                station_group_members.c.station_id == model_assignments.c.station_id,
+            )
+            .where(
+                sa.and_(
+                    model_assignments.c.model_id == model_id,
+                    model_assignments.c.status == "active",
+                )
+            )
+            .distinct()
+            .subquery()
+        )
+        rows = (
+            self._conn.execute(
+                sa.select(station_groups).where(
+                    station_groups.c.id.in_(sa.select(subq))
+                )
+            )
+            .mappings()
+            .all()
+        )
+        return [_build_group(self._conn, row) for row in rows]
+
+    def add_station_to_group(
+        self, group_id: StationGroupId, station_id: StationId
+    ) -> None:
+        self._conn.execute(
+            pg_insert(station_group_members)
+            .values(group_id=group_id, station_id=station_id)
+            .on_conflict_do_nothing()
+        )
+
+    def remove_station_from_group(
+        self, group_id: StationGroupId, station_id: StationId
+    ) -> None:
+        self._conn.execute(
+            sa.delete(station_group_members).where(
+                sa.and_(
+                    station_group_members.c.group_id == group_id,
+                    station_group_members.c.station_id == station_id,
+                )
+            )
+        )
+
+
+def _fetch_member_ids(
+    conn: sa.Connection, group_id: StationGroupId
+) -> frozenset[StationId]:
+    rows = conn.execute(
+        sa.select(station_group_members.c.station_id).where(
+            station_group_members.c.group_id == group_id
+        )
+    ).all()
+    return frozenset(StationId(row[0]) for row in rows)
+
+
+def _build_group(conn: sa.Connection, row: sa.engine.row.RowMapping) -> StationGroup:
+    group_id = StationGroupId(row["id"])
+    return StationGroup(
+        id=group_id,
+        name=row["name"],
+        description=row["description"],
+        created_at=utc_from_row(row["created_at"]),
+        station_ids=_fetch_member_ids(conn, group_id),
+    )
