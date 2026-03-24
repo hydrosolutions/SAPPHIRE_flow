@@ -461,6 +461,13 @@ Flow 2 step 2.1 (operational fetch).
 
 **Depends on**: Phases S2, S3, S4.
 
+**Implementation note (2026-03-24)**: S1–S4 and S7 are implemented. The onboarding
+service (`services/onboarding.py`) is testable with fakes. For the first real-data
+validation, a CLI script (`scripts/onboard.py`) invokes `onboard_from_camelsch()`
+against a live PostgreSQL instance. **TODO**: Once the script validates successfully,
+promote to a Prefect flow (`flows/onboard.py`) following the same dependency-injection
+pattern as `train_models_flow`. The script is a stepping stone, not the final form.
+
 ### Dependency graph
 
 ```json
