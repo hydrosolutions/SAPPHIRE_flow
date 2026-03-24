@@ -208,6 +208,11 @@ station_group_members = sa.Table(
     sa.PrimaryKeyConstraint("group_id", "station_id"),
 )
 
+sa.Index(
+    "ix_station_group_members_station_id",
+    station_group_members.c.station_id,
+)
+
 # ──────────────────────────────────────────────
 # OBSERVATION DOMAIN
 # v0: no rating_curve_id, no rating_curve_correction_version
@@ -853,6 +858,14 @@ sa.Index(
     skill_scores.c.computation_version,
     skill_scores.c.metric,
     skill_scores.c.lead_time_hours,
+)
+sa.Index(
+    "ix_skill_scores_station_freshness",
+    skill_scores.c.station_id,
+    skill_scores.c.freshness,
+    skill_scores.c.eval_period_start,
+    skill_scores.c.eval_period_end,
+    postgresql_where=skill_scores.c.freshness == "current",
 )
 
 # ──────────────────────────────────────────────

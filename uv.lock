@@ -1226,14 +1226,14 @@ wheels = [
 
 [[package]]
 name = "sapphire-flow"
-version = "0.1.39"
+version = "0.1.40"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
-    { name = "asyncpg" },
     { name = "geoalchemy2" },
     { name = "orjson" },
     { name = "polars" },
+    { name = "psycopg", extra = ["binary"] },
     { name = "pydantic" },
     { name = "shapely" },
     { name = "sqlalchemy" },
@@ -1243,8 +1243,8 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "asyncpg" },
     { name = "bump-my-version" },
-    { name = "psycopg", extra = ["binary"] },
     { name = "pyright" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -1256,10 +1256,10 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "alembic" },
-    { name = "asyncpg" },
     { name = "geoalchemy2", specifier = ">=0.18.4" },
     { name = "orjson" },
     { name = "polars" },
+    { name = "psycopg", extras = ["binary"], specifier = ">=3.3.3" },
     { name = "pydantic", specifier = ">=2.12.5" },
     { name = "shapely" },
     { name = "sqlalchemy", specifier = ">=2.0" },
@@ -1269,8 +1269,8 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "asyncpg" },
     { name = "bump-my-version", specifier = ">=1.2.7" },
-    { name = "psycopg", extras = ["binary"], specifier = ">=3.3.3" },
     { name = "pyright" },
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "pytest-asyncio" },
