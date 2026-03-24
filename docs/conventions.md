@@ -394,6 +394,8 @@ All status/enum columns store TEXT matching the Python enum `.value` (lowercase)
 | `stations.ownership` / `StationOwnership` | `own`, `foreign` | `foreign` (cannot transition to own) | v0+v1 |
 | `ForeignForecastStatus` | `published` | `published` | v0+v1 |
 | `FlowRunState` | `pending`, `running`, `completed`, `failed`, `crashed`, `cancelling`, `cancelled` | — | v0+v1 |
+| `ForcingProvenance` | `nwp_direct`, `observed`, `interpolated`, `gap_filled_climatology`, `gap_filled_persistence`, `reanalysis`, `derived`, `unknown` | — | v0+v1 |
+| Forecast QC rule IDs (string, not enum) | `negative_value`, `range_check`, `flat_ensemble`, `ensemble_spread`, `climatology_outlier`, `temporal_consistency`, `quantile_crossing` | — | v0+v1 |
 
 ---
 

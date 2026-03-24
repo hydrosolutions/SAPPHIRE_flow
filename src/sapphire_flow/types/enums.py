@@ -186,3 +186,14 @@ class AuditActorType(Enum):
     USER = "user"
     API_KEY = "api_key"
     SYSTEM = "system"
+
+
+class ForcingProvenance(Enum):
+    NWP_DIRECT = "nwp_direct"
+    OBSERVED = "observed"
+    INTERPOLATED = "interpolated"
+    GAP_FILLED_CLIMATOLOGY = "gap_filled_climatology"
+    GAP_FILLED_PERSISTENCE = "gap_filled_persistence"
+    REANALYSIS = "reanalysis"
+    DERIVED = "derived"
+    UNKNOWN = "unknown"

@@ -5,6 +5,7 @@ from itertools import groupby
 from statistics import median
 from typing import TYPE_CHECKING
 
+from sapphire_flow.services._qc_helpers import merge_thresholds
 from sapphire_flow.types.domain import (
     ClimBaseline,
     QcFlag,
@@ -26,18 +27,14 @@ def _merge_thresholds(
     overrides: list[StationQcOverride],
     station_id: StationId,
 ) -> dict[str, float]:
-    base = dict(rule.thresholds)
-    for o in overrides:
-        if (
-            o.station_id == station_id
-            and o.rule_id == rule.rule_id
-            and o.parameter == rule.parameter
-            and o.time_step == rule.time_step
-        ):
-            for k, v in o.thresholds.items():
-                if v is not None:
-                    base[k] = v
-    return base
+    return merge_thresholds(
+        rule.thresholds,
+        overrides,
+        station_id,
+        rule.rule_id,
+        rule.parameter,
+        rule.time_step,
+    )
 
 
 def _infer_time_step(obs: list[Observation]) -> timedelta:

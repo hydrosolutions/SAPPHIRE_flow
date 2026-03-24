@@ -608,6 +608,13 @@ forecasts = sa.Table(
     ),
     sa.Column("parameter", sa.Text, nullable=False),
     sa.Column("units", sa.Text, nullable=False),
+    sa.Column(
+        "qc_status",
+        sa.Text,
+        nullable=False,
+        server_default="raw",
+    ),
+    sa.Column("qc_flags", JSONB, nullable=False, server_default="[]"),
 )
 
 forecast_values = sa.Table(
@@ -692,6 +699,13 @@ hindcast_forecasts = sa.Table(
         nullable=False,
         server_default=sa.func.now(),
     ),
+    sa.Column(
+        "qc_status",
+        sa.Text,
+        nullable=False,
+        server_default="raw",
+    ),
+    sa.Column("qc_flags", JSONB, nullable=False, server_default="[]"),
 )
 
 # Indexes on hindcast_forecasts
@@ -721,6 +735,25 @@ hindcast_values = sa.Table(
     sa.CheckConstraint(
         "(member_id IS NOT NULL) != (quantile IS NOT NULL)",
         name="ck_hindcast_values_representation_xor",
+    ),
+)
+
+forecast_qc_overrides = sa.Table(
+    "forecast_qc_overrides",
+    metadata,
+    sa.Column(
+        "station_id", UUID(as_uuid=True), sa.ForeignKey("stations.id"), nullable=False
+    ),
+    sa.Column("rule_id", sa.Text, nullable=False),
+    sa.Column("parameter", sa.Text, nullable=False),
+    sa.Column("time_step_seconds", sa.Integer, nullable=False),
+    sa.Column("thresholds", JSONB, nullable=False),
+    sa.UniqueConstraint(
+        "station_id",
+        "rule_id",
+        "parameter",
+        "time_step_seconds",
+        name="uq_forecast_qc_overrides_natural_key",
     ),
 )
 

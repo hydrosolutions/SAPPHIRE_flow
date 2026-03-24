@@ -3,11 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+import polars as pl  # noqa: TC002
+
 if TYPE_CHECKING:
     from datetime import timedelta
     from uuid import UUID
 
-    import polars as pl
     import xarray as xr
 
     from sapphire_flow.types.datetime import UtcDatetime
@@ -20,6 +21,30 @@ if TYPE_CHECKING:
 
 ModelParams = dict[str, Any]
 ModelArtifact = Any
+
+PROVENANCE_SUFFIX = "_provenance"
+
+
+def forcing_provenance_columns(forcing: pl.DataFrame) -> list[str]:
+    return [c for c in forcing.columns if c.endswith(PROVENANCE_SUFFIX)]
+
+
+def parameter_columns(forcing: pl.DataFrame) -> list[str]:
+    return [
+        c
+        for c in forcing.columns
+        if c != "timestamp" and not c.endswith(PROVENANCE_SUFFIX)
+    ]
+
+
+def validate_forcing_provenance(forcing: pl.DataFrame) -> None:
+    param_cols = parameter_columns(forcing)
+    expected = {f"{p}{PROVENANCE_SUFFIX}" for p in param_cols}
+    actual = set(forcing_provenance_columns(forcing))
+    if missing := expected - actual:
+        raise ValueError(f"Missing provenance columns: {missing}")
+    if extra := actual - expected:
+        raise ValueError(f"Orphaned provenance columns: {extra}")
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

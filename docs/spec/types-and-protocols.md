@@ -256,6 +256,16 @@ class SkillFreshness(Enum):
 class ModelAssignmentStatus(Enum):
     ACTIVE = "active"
     INACTIVE = "inactive"
+
+class ForcingProvenance(Enum):
+    NWP_DIRECT = "nwp_direct"                          # direct NWP model output
+    OBSERVED = "observed"                                # from station observations
+    INTERPOLATED = "interpolated"                        # temporal interpolation between known values
+    GAP_FILLED_CLIMATOLOGY = "gap_filled_climatology"    # filled from climatological mean
+    GAP_FILLED_PERSISTENCE = "gap_filled_persistence"    # filled with last known value
+    REANALYSIS = "reanalysis"                            # from reanalysis product (v1: ERA5-Land)
+    DERIVED = "derived"                                  # computed from other parameters
+    UNKNOWN = "unknown"                                  # provenance not tracked (legacy data)
 ```
 
 ---
@@ -424,6 +434,59 @@ class StationQcOverride:
     thresholds: dict[str, float | None]    # None = inherit deployment default
 ```
 
+### ForecastQcRuleParams
+
+Per-rule threshold parameters for forecast output QC. Parallel to `QcRuleParams` for observation
+QC, but operates on ensemble forecasts rather than individual observations.
+
+```python
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ForecastQcRuleParams:
+    rule_id: str                   # e.g. "negative_value", "ensemble_spread", "quantile_crossing"
+    rule_version: str
+    parameter: str                 # "discharge" or "water_level"
+    time_step: timedelta
+    thresholds: dict[str, float]
+```
+
+**Threshold keys by rule**:
+- `negative_value`: `value_min`
+- `range_check`: `value_min`, `value_max`
+- `flat_ensemble`: `tolerance`
+- `ensemble_spread`: `min_spread_ratio`, `max_spread_ratio` (ratio to climatic std)
+- `climatology_outlier`: `k_sigma`
+- `temporal_consistency`: `max_rate` (units per timestep)
+- `quantile_crossing`: *(no thresholds — structural check)*
+
+### ForecastQcRuleSet
+
+```python
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ForecastQcRuleSet:
+    version: str
+    rules: tuple[ForecastQcRuleParams, ...]
+
+    def rules_for(self, parameter: str, time_step: timedelta) -> tuple[ForecastQcRuleParams, ...]:
+        return tuple(r for r in self.rules if r.parameter == parameter and r.time_step == time_step)
+```
+
+### StationForecastQcOverride
+
+Per-station override of forecast QC rule thresholds. Fields set to `None` inherit from
+the deployment-level `ForecastQcRuleSet`.
+
+```python
+@dataclass(frozen=True, kw_only=True, slots=True)
+class StationForecastQcOverride:
+    station_id: StationId
+    rule_id: str
+    parameter: str
+    time_step: timedelta
+    thresholds: dict[str, float | None]
+```
+
+Module: `types/domain.py`
+
 ### ClimBaseline
 
 Rolling climatological mean and standard deviation, pre-computed during station
@@ -460,6 +523,29 @@ class QualityChecker(Protocol):
 ```
 
 Module: `protocols/stores.py` (alongside other service-adjacent Protocols).
+
+### ForecastQualityChecker Protocol
+
+```python
+@runtime_checkable
+class ForecastQualityChecker(Protocol):
+    def check(
+        self,
+        ensemble: ForecastEnsemble,
+        rule_set: ForecastQcRuleSet,
+        overrides: list[StationForecastQcOverride],
+        baselines: list[ClimBaseline],
+    ) -> list[QcFlag]: ...
+        # Returns QC flags for the forecast. Empty list = all rules passed.
+        # The caller aggregates via aggregate_qc_status() and sets qc_status/qc_flags
+        # on the OperationalForecast before storage.
+        # Rules that depend on ClimBaseline (ensemble_spread, climatology_outlier)
+        # skip gracefully when no baseline is available.
+```
+
+Module: `protocols/stores.py`
+
+**Flow 1 integration note** — Step 1.9: Forecast output QC. Runs `ForecastQualityChecker.check()` on each ensemble. Aggregate `QC_FAILED` raises `SanityCheckFailure` (flow tries fallback model). `QC_PASSED` or `QC_SUSPECT` results are stored on the `OperationalForecast`. For hindcasts, `QC_FAILED` flags the hindcast but does not trigger fallback.
 
 ### SeasonDefinition
 
@@ -904,6 +990,23 @@ class ModelInputs:
   `temperature_band_2`, etc. Rows = timesteps covering full input window (lookback +
   forecast horizon for ML; warm-up + forecast for conceptual).
 
+**Forcing provenance convention** (when `pl.DataFrame`):
+
+For each parameter column `{param}`, a companion column `{param}_provenance` tracks the origin
+of each timestep's value. Dtype: Polars `Enum` built from `ForcingProvenance` values. Helper
+functions in `types/model.py`:
+
+- `PROVENANCE_SUFFIX = "_provenance"` — suffix constant
+- `parameter_columns(forcing)` — returns parameter columns (excludes timestamp and provenance)
+- `forcing_provenance_columns(forcing)` — returns provenance columns
+- `validate_forcing_provenance(forcing)` — raises `ValueError` if provenance columns are incomplete or orphaned
+
+Provenance is set by the input preparation service (Step 1.7) and training data assembly (Flow 6).
+Models that care about provenance inspect these columns; models that don't ignore them.
+
+For `xr.Dataset` forcing (gridded models): companion data variable `{param}_provenance` with
+`dtype=str`, validated against `ForcingProvenance` values.
+
 **`forcing` schema** (when `xr.Dataset`):
 - Dimensions: `time × parameter × y × x`. For GRIDDED models only.
 
@@ -1066,6 +1169,8 @@ class OperationalForecast:
     ensemble: ForecastEnsemble             # the values payload
     created_at: UtcDatetime
     updated_at: UtcDatetime
+    qc_status: QcStatus = QcStatus.RAW            # aggregate forecast QC status
+    qc_flags: tuple[QcFlag, ...] = ()              # individual rule results
 ```
 
 ### HindcastForecast
@@ -1085,6 +1190,8 @@ class HindcastForecast:
     hindcast_run_id: UUID                  # groups all steps of one hindcast execution
     ensemble: ForecastEnsemble             # the values payload
     created_at: UtcDatetime
+    qc_status: QcStatus = QcStatus.RAW            # aggregate forecast QC status
+    qc_flags: tuple[QcFlag, ...] = ()              # individual rule results
 ```
 
 Module: `types/forecast.py`

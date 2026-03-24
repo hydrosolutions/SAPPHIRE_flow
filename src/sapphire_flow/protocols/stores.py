@@ -16,12 +16,15 @@ if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.domain import (
         ClimBaseline,
+        ForecastQcRuleSet,
         ParameterDefinition,
         QcFlag,
         QcRuleSet,
+        StationForecastQcOverride,
         StationQcOverride,
         StationThreshold,
     )
+    from sapphire_flow.types.ensemble import ForecastEnsemble
     from sapphire_flow.types.enums import (
         AlertSource,
         FlowRegime,
@@ -624,3 +627,14 @@ class QualityChecker(Protocol):
         baselines: list[ClimBaseline],
     ) -> dict[ObservationId, list[QcFlag]]:
         raise NotImplementedError
+
+
+@runtime_checkable
+class ForecastQualityChecker(Protocol):
+    def check(
+        self,
+        ensemble: ForecastEnsemble,
+        rule_set: ForecastQcRuleSet,
+        overrides: list[StationForecastQcOverride],
+        baselines: list[ClimBaseline],
+    ) -> list[QcFlag]: ...

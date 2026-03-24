@@ -3,10 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from sapphire_flow.types.enums import QcStatus
+
 if TYPE_CHECKING:
     from uuid import UUID
 
     from sapphire_flow.types.datetime import UtcDatetime
+    from sapphire_flow.types.domain import QcFlag
     from sapphire_flow.types.ensemble import ForecastEnsemble
     from sapphire_flow.types.enums import (
         EnsembleRepresentation,
@@ -45,6 +48,8 @@ class OperationalForecast:
     ensemble: ForecastEnsemble
     created_at: UtcDatetime
     updated_at: UtcDatetime
+    qc_status: QcStatus = QcStatus.RAW
+    qc_flags: tuple[QcFlag, ...] = ()
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -59,6 +64,8 @@ class HindcastForecast:
     hindcast_run_id: UUID
     ensemble: ForecastEnsemble
     created_at: UtcDatetime
+    qc_status: QcStatus = QcStatus.RAW
+    qc_flags: tuple[QcFlag, ...] = ()
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

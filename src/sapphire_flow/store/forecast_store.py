@@ -12,11 +12,13 @@ import sqlalchemy as sa
 from sapphire_flow.db.metadata import forecast_values, forecasts
 from sapphire_flow.exceptions import ConflictError
 from sapphire_flow.store._helpers import utc_from_row
+from sapphire_flow.types.domain import QcFlag
 from sapphire_flow.types.ensemble import ForecastEnsemble
 from sapphire_flow.types.enums import (
     EnsembleRepresentation,
     ForecastStatus,
     NwpCycleSource,
+    QcStatus,
     WarmUpSource,
 )
 from sapphire_flow.types.forecast import OperationalForecast
@@ -54,6 +56,16 @@ class PgForecastStore:
                 units=forecast.ensemble.units,
                 created_at=forecast.created_at,
                 updated_at=forecast.updated_at,
+                qc_status=forecast.qc_status.value,
+                qc_flags=[
+                    {
+                        "rule_id": f.rule_id,
+                        "rule_version": f.rule_version,
+                        "status": f.status.value,
+                        "detail": f.detail,
+                    }
+                    for f in forecast.qc_flags
+                ],
             )
         )
         rows = _build_value_rows(forecast)
@@ -271,4 +283,14 @@ def _rows_to_domain(rows: list) -> OperationalForecast:  # type: ignore[type-arg
         ensemble=ensemble,
         created_at=utc_from_row(header["created_at"]),
         updated_at=utc_from_row(header["updated_at"]),
+        qc_status=QcStatus(header["qc_status"]),
+        qc_flags=tuple(
+            QcFlag(
+                rule_id=f["rule_id"],
+                rule_version=f["rule_version"],
+                status=QcStatus(f["status"]),
+                detail=f.get("detail"),
+            )
+            for f in (header["qc_flags"] or [])
+        ),
     )

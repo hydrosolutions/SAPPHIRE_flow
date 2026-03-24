@@ -11,8 +11,9 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from sapphire_flow.db.metadata import hindcast_forecasts, hindcast_values
 from sapphire_flow.store._helpers import utc_from_row
+from sapphire_flow.types.domain import QcFlag
 from sapphire_flow.types.ensemble import ForecastEnsemble
-from sapphire_flow.types.enums import EnsembleRepresentation, ForcingType
+from sapphire_flow.types.enums import EnsembleRepresentation, ForcingType, QcStatus
 from sapphire_flow.types.forecast import HindcastForecast
 from sapphire_flow.types.ids import ArtifactId, HindcastForecastId, ModelId, StationId
 
@@ -38,6 +39,16 @@ class PgHindcastStore:
                 parameter=hindcast.ensemble.parameter,
                 units=hindcast.ensemble.units,
                 created_at=hindcast.created_at,
+                qc_status=hindcast.qc_status.value,
+                qc_flags=[
+                    {
+                        "rule_id": f.rule_id,
+                        "rule_version": f.rule_version,
+                        "status": f.status.value,
+                        "detail": f.detail,
+                    }
+                    for f in hindcast.qc_flags
+                ],
             )
         )
 
@@ -121,6 +132,16 @@ class PgHindcastStore:
                     hindcast_run_id=UUID(str(header["hindcast_run_id"])),
                     ensemble=ensemble,
                     created_at=utc_from_row(header["created_at"]),
+                    qc_status=QcStatus(header["qc_status"]),
+                    qc_flags=tuple(
+                        QcFlag(
+                            rule_id=f["rule_id"],
+                            rule_version=f["rule_version"],
+                            status=QcStatus(f["status"]),
+                            detail=f.get("detail"),
+                        )
+                        for f in (header["qc_flags"] or [])
+                    ),
                 )
             )
         return result

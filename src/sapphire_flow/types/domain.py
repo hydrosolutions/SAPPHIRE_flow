@@ -184,3 +184,36 @@ class ExceedanceResult:
     exceedance_probability: float | None
     observed_value: float | None
     exceeded: bool
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ForecastQcRuleParams:
+    rule_id: str
+    rule_version: str
+    parameter: str
+    time_step: timedelta
+    thresholds: dict[str, float]
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ForecastQcRuleSet:
+    version: str
+    rules: tuple[ForecastQcRuleParams, ...]
+
+    def rules_for(
+        self, parameter: str, time_step: timedelta
+    ) -> tuple[ForecastQcRuleParams, ...]:
+        return tuple(
+            r
+            for r in self.rules
+            if r.parameter == parameter and r.time_step == time_step
+        )
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class StationForecastQcOverride:
+    station_id: StationId
+    rule_id: str
+    parameter: str
+    time_step: timedelta
+    thresholds: dict[str, float | None]
