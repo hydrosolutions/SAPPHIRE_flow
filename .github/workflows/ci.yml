@@ -54,3 +54,11 @@ jobs:
       - run: uv run pytest tests/integration/ -v
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/sapphire_test
+
+  # Phase 11 stub — full end-to-end pipeline test (Docker Compose stack + live pipeline run).
+  # Will be implemented in Phase 11 once all pipeline flows are complete.
+  e2e:
+    needs: [unit, integration]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "e2e job is a Phase 11 stub — not yet implemented"
