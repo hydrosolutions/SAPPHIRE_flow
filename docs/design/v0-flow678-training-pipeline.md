@@ -15,7 +15,7 @@ Per `v0-scope.md` § A5 and § A7:
 | Work pools | 3 pools (ops, training, hindcast) | Single `default` pool |
 | Forcing source | Configurable (station obs, reanalysis, NWP archive) | SMN station observations as pseudo-perfect forcing, tagged `ForcingType.REANALYSIS` |
 | Skill metrics | Full suite | Full suite — kept as designed (pure computation, high research value) |
-| `is_stale` flag | Set TRUE on data change, cleared by recomputation | Not exercised in v0 — no observation correction or NWP recovery flows. Field exists in schema. |
+| `freshness` field | Set STALE on data change, reset to CURRENT by recomputation | Not exercised in v0 — no observation correction or NWP recovery flows. Field exists in schema. |
 | Model params | Config-based override per model | Empty dict `{}` default. Models define internal defaults. |
 
 ### What v0 implements
@@ -611,7 +611,7 @@ scope = determine_training_scope(..., model_store=FakeModelStore(), ...)
 | `HindcastForecast` | `types/forecast.py` | Hindcast store output | ✓ Has `forcing_type`, `hindcast_run_id` |
 | `SkillScore` | `types/skill.py` | Skill service output | ✓ Has all stratification fields |
 | `SkillDiagram` | `types/skill.py` | Skill service output | ✓ Has `diagram_type`, `data` |
-| `ModelAssignment` | `types/station.py` | Scope determination | ✓ Has `model_id`, `is_active` |
+| `ModelAssignment` | `types/station.py` | Scope determination | ✓ Has `model_id`, `status: ModelAssignmentStatus` |
 | `StationGroup` | `types/station.py` | Group training/hindcast | ✓ Has `station_ids` |
 
 ### Alignment with existing Protocols
@@ -647,7 +647,7 @@ scope = determine_training_scope(..., model_store=FakeModelStore(), ...)
 |-------|-------|-------------|
 | `models` | `register_model()` writes here | ✓ Columns match `ModelRecord` |
 | `model_artifacts` | `store_artifact()` / `transition_artifact_status()` | ✓ `status` enum, `promoted_at`, `superseded_at` |
-| `model_assignments` | `fetch_model_assignments()` reads here | ✓ `is_active` filter |
+| `model_assignments` | `fetch_model_assignments()` reads here | ✓ `status` filter (ModelAssignmentStatus.ACTIVE) |
 | `hindcast_forecasts` | `store_hindcast()` writes here | ✓ `forcing_type`, `hindcast_run_id` columns present |
 | `skill_scores` | `store_skill_scores()` writes here | ✓ All stratification columns present |
 | `skill_diagrams` | `store_skill_diagrams()` writes here | ✓ |

@@ -496,12 +496,12 @@ class FakeModelArtifactStore:
             model_id=model_id,
             station_id=station_id,
             group_id=group_id,
-            status=ModelArtifactStatus.ACTIVE,
+            status=ModelArtifactStatus.TRAINING,
             artifact_path=f"artifacts/{aid}.bin",
             training_period_start=training_period_start,
             training_period_end=training_period_end,
             trained_at=trained_at,
-            promoted_at=trained_at,
+            promoted_at=None,
             promoted_by=None,
             superseded_at=None,
             created_at=trained_at,
@@ -576,7 +576,17 @@ class FakeModelArtifactStore:
         promoted_by: UUID | None = None,
     ) -> None:
         rec = self._records[artifact_id]
-        self._records[artifact_id] = replace(rec, status=new_status)
+        now = rec.trained_at  # use trained_at as clock proxy in fakes
+        if new_status == ModelArtifactStatus.ACTIVE:
+            self._records[artifact_id] = replace(
+                rec, status=new_status, promoted_at=now, promoted_by=promoted_by
+            )
+        elif new_status == ModelArtifactStatus.SUPERSEDED:
+            self._records[artifact_id] = replace(
+                rec, status=new_status, superseded_at=now
+            )
+        else:
+            self._records[artifact_id] = replace(rec, status=new_status)
 
 
 class FakeModelStore:

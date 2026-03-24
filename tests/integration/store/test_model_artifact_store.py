@@ -116,6 +116,7 @@ class TestPgModelArtifactStore:
         aid = store.store_artifact(
             model_id, payload, _T0, _T1, _T2, station_id=station_id
         )
+        store.transition_artifact_status(aid, ModelArtifactStatus.ACTIVE)
         result = store.fetch_active_artifact(model_id, station_id=station_id)
 
         assert result is not None
@@ -133,6 +134,7 @@ class TestPgModelArtifactStore:
         aid = store.store_artifact(
             model_id, payload, _T0, _T1, _T2, station_id=station_id
         )
+        store.transition_artifact_status(aid, ModelArtifactStatus.ACTIVE)
         result = store.fetch_active_artifact_for_station(station_id, model_id)
 
         assert result is not None
@@ -149,6 +151,7 @@ class TestPgModelArtifactStore:
         payload = b"group_artifact_bytes"
 
         aid = store.store_artifact(model_id, payload, _T0, _T1, _T2, group_id=group_id)
+        store.transition_artifact_status(aid, ModelArtifactStatus.ACTIVE)
         result = store.fetch_active_artifact_for_station(station_id, model_id)
 
         assert result is not None
@@ -163,14 +166,20 @@ class TestPgModelArtifactStore:
         model_id = _seed_model(db_connection)
         store = PgModelArtifactStore(db_connection, tmp_path)
 
-        # Store group-level artifact, then supersede it and add station-level
+        # Store group-level artifact, promote, then supersede; add station-level
         group_aid = store.store_artifact(
             model_id, b"group_bytes", _T0, _T1, _T2, group_id=group_id
         )
-        store.transition_artifact_status(group_aid, ModelArtifactStatus.SUPERSEDED)
+        store.transition_artifact_status(group_aid, ModelArtifactStatus.ACTIVE)
+        store.transition_artifact_status(
+            group_aid, ModelArtifactStatus.SUPERSEDED
+        )
 
         station_aid = store.store_artifact(
             model_id, b"station_bytes", _T0, _T1, _T2, station_id=station_id
+        )
+        store.transition_artifact_status(
+            station_aid, ModelArtifactStatus.ACTIVE
         )
 
         result = store.fetch_active_artifact_for_station(station_id, model_id)
@@ -196,11 +205,11 @@ class TestPgModelArtifactStore:
         assert record.model_id == model_id
         assert record.station_id == station_id
         assert record.group_id is None
-        assert record.status == ModelArtifactStatus.ACTIVE
+        assert record.status == ModelArtifactStatus.TRAINING
         assert record.training_period_start == _T0
         assert record.training_period_end == _T1
         assert record.trained_at == _T2
-        assert record.promoted_at == _T2
+        assert record.promoted_at is None
         assert record.promoted_by is None
         assert record.superseded_at is None
 
@@ -220,12 +229,15 @@ class TestPgModelArtifactStore:
         aid1 = store.store_artifact(
             model_id, b"a1", _T0, _T1, _T2, station_id=station_id
         )
-        # Supersede aid1 before inserting aid2 (partial unique index enforces one active
-        # per station+model scope)
-        store.transition_artifact_status(aid1, ModelArtifactStatus.SUPERSEDED)
+        store.transition_artifact_status(aid1, ModelArtifactStatus.ACTIVE)
+        # Supersede aid1 before promoting aid2 (partial unique index)
+        store.transition_artifact_status(
+            aid1, ModelArtifactStatus.SUPERSEDED
+        )
         aid2 = store.store_artifact(
             model_id, b"a2", _T0, _T1, _T2, station_id=station_id
         )
+        store.transition_artifact_status(aid2, ModelArtifactStatus.ACTIVE)
 
         active = store.fetch_artifacts_by_status(
             model_id, ModelArtifactStatus.ACTIVE, station_id=station_id
