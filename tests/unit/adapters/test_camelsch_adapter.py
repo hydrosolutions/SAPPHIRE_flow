@@ -12,11 +12,13 @@ from sapphire_flow.adapters.camelsch_adapter import (
     geometry_to_basin,
     timeseries_to_forcing,
     timeseries_to_observations,
+    timeseries_to_waterlevel_observations,
 )
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
     ObservationSource,
     SpatialRepresentation,
+    StationKind,
     StationStatus,
 )
 from sapphire_flow.types.ids import BasinId, StationId
@@ -191,3 +193,75 @@ class TestGeometryToBasin:
         basin = geometry_to_basin("2007", mp, attrs, _BASIN_ID, _CLOCK)
 
         assert basin.name == "2007"
+
+
+_LAKE_ATTRS = pd.Series(
+    {
+        "gauge_name": "Lake Murten",
+        "area": 150.0,
+        "gauge_lon": 7.12,
+        "gauge_lat": 46.93,
+        "elev_mean": 500.0,
+        "water_body_type": "lake",
+    }
+)
+
+
+class TestTimeseriesToWaterlevelObservations:
+    def test_converts_waterlevel(self) -> None:
+        df = _make_ts_df({"waterlevel": [1.5, 2.3, 1.8]})
+        result = timeseries_to_waterlevel_observations(df, _STATION_ID, _CLOCK)
+
+        assert len(result) == 3
+        obs = result[0]
+        assert obs.station_id == _STATION_ID
+        assert obs.parameter == "water_level"
+        assert obs.value == pytest.approx(1.5)
+        assert obs.source == ObservationSource.MANUAL_IMPORT
+
+    def test_skips_nan(self) -> None:
+        df = _make_ts_df({"waterlevel": [1.5, float("nan"), 1.8]})
+        result = timeseries_to_waterlevel_observations(df, _STATION_ID, _CLOCK)
+
+        assert len(result) == 2
+        assert all(not pd.isna(o.value) for o in result)
+
+    def test_returns_empty_when_column_missing(self) -> None:
+        df = _make_ts_df({"discharge_vol": [10.5, 20.3, 5.0]})
+        result = timeseries_to_waterlevel_observations(df, _STATION_ID, _CLOCK)
+
+        assert result == []
+
+
+class TestAttributesToStationClassification:
+    def test_stream_station(self) -> None:
+        attrs = pd.Series(
+            {
+                "gauge_name": "Test Stream",
+                "area": 100.0,
+                "gauge_lon": 8.5,
+                "gauge_lat": 47.4,
+                "water_body_type": "stream",
+            }
+        )
+        station = attributes_to_station("2004", attrs, _BASIN_ID, _STATION_ID, _CLOCK)
+
+        assert station.station_kind == StationKind.RIVER
+        assert station.forecast_target == "discharge"
+        assert station.measured_parameters == frozenset({"discharge"})
+
+    def test_lake_station(self) -> None:
+        station = attributes_to_station(
+            "3001", _LAKE_ATTRS, _BASIN_ID, _STATION_ID, _CLOCK
+        )
+
+        assert station.station_kind == StationKind.LAKE
+        assert station.forecast_target == "water_level"
+        assert station.measured_parameters == frozenset({"water_level"})
+
+    def test_missing_type_defaults_to_river(self) -> None:
+        station = attributes_to_station("2004", _ATTRS, _BASIN_ID, _STATION_ID, _CLOCK)
+
+        assert station.station_kind == StationKind.RIVER
+        assert station.forecast_target == "discharge"
+        assert station.measured_parameters == frozenset({"discharge"})

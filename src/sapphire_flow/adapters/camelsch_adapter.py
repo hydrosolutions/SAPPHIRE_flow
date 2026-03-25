@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import pandas as pd
+import structlog
 
 from sapphire_flow.types.enums import (
     ObservationSource,
@@ -26,6 +27,8 @@ if TYPE_CHECKING:
     from sapphire_flow.types.historical_forcing import RawHistoricalForcing
     from sapphire_flow.types.observation import RawObservation
     from sapphire_flow.types.station import StationConfig
+
+log = structlog.get_logger(__name__)
 
 _PARAM_NAME_MAP: dict[str, str] = {
     "temperature_mean": "temperature",
@@ -58,6 +61,39 @@ def timeseries_to_observations(
                 station_id=station_id,
                 timestamp=ensure_utc(dt),
                 parameter="discharge",
+                value=float(value),
+                source=ObservationSource.MANUAL_IMPORT,
+            )
+        )
+    return results
+
+
+def timeseries_to_waterlevel_observations(
+    df: pd.DataFrame,
+    station_id: StationId,
+    clock: Callable[[], UtcDatetime],
+) -> list[RawObservation]:
+    from sapphire_flow.types.datetime import ensure_utc
+    from sapphire_flow.types.observation import RawObservation
+
+    if "waterlevel" not in df.columns:
+        return []
+
+    results: list[RawObservation] = []
+    for ts, row in df.iterrows():
+        value = row["waterlevel"]
+        if pd.isna(value):
+            continue
+        dt = pd.Timestamp(ts).to_pydatetime()
+        if dt.tzinfo is None:
+            import datetime as _dt
+
+            dt = dt.replace(tzinfo=_dt.UTC)
+        results.append(
+            RawObservation(
+                station_id=station_id,
+                timestamp=ensure_utc(dt),
+                parameter="water_level",
                 value=float(value),
                 source=ObservationSource.MANUAL_IMPORT,
             )
@@ -118,17 +154,39 @@ def attributes_to_station(
 
     name = str(attrs["gauge_name"]) if "gauge_name" in attrs.index else gauge_id
     now = clock()
+
+    water_body_type = (
+        str(attrs["water_body_type"]) if "water_body_type" in attrs.index else None
+    )
+    if water_body_type == "lake":
+        station_kind = StationKind.LAKE
+        forecast_target = "water_level"
+        measured_parameters: frozenset[str] = frozenset({"water_level"})
+    elif water_body_type is None or water_body_type == "stream":
+        station_kind = StationKind.RIVER
+        forecast_target = "discharge"
+        measured_parameters = frozenset({"discharge"})
+    else:
+        log.warning(
+            "unrecognized_water_body_type",
+            gauge_id=gauge_id,
+            water_body_type=water_body_type,
+        )
+        station_kind = StationKind.RIVER
+        forecast_target = "discharge"
+        measured_parameters = frozenset({"discharge"})
+
     return StationConfig(
         id=station_id,
         code=gauge_id,
         name=name,
         location=GeoCoord(lon=float(attrs["gauge_lon"]), lat=float(attrs["gauge_lat"])),
-        station_kind=StationKind.RIVER,
+        station_kind=station_kind,
         basin_id=basin_id,
         timezone="Europe/Zurich",
         regulation_type=None,
-        forecast_target="discharge",
-        measured_parameters=frozenset({"discharge"}),
+        forecast_target=forecast_target,
+        measured_parameters=measured_parameters,
         station_status=StationStatus.ONBOARDING,
         created_at=now,
         updated_at=now,
@@ -237,15 +295,24 @@ def load_observations(
     ts_data = camelsch.load_timeseries(
         data_dir,
         basin_ids=list(station_map.keys()),
-        variables=["discharge_vol"],
+        variables=["discharge_vol", "waterlevel"],
         start_date=start_date,
         end_date=end_date,
     )
-    return {
-        station_map[gid]: timeseries_to_observations(df, station_map[gid], clock)
-        for gid, df in ts_data.items()
-        if gid in station_map
-    }
+    result: dict[StationId, list[RawObservation]] = {}
+    for gauge_id, df in ts_data.items():
+        sid = station_map.get(str(gauge_id))
+        if sid is None:
+            continue
+        discharge_obs = timeseries_to_observations(df, sid, clock)
+        waterlevel_obs = timeseries_to_waterlevel_observations(df, sid, clock)
+        combined = discharge_obs + waterlevel_obs
+        if not combined:
+            log.warning(
+                "station_no_observations", gauge_id=gauge_id, station_id=str(sid)
+            )
+        result[sid] = combined
+    return result
 
 
 def load_forcing(

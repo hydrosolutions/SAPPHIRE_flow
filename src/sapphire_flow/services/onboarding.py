@@ -111,8 +111,15 @@ def _run_onboarding(
             log.error("station_store_error", code=station.code, error=str(exc))
             errors.append(msg)
 
-    # Resolved StationId set for downstream steps
+    # Resolved StationId set + per-station target parameter for downstream steps
     resolved_station_ids = set(station_map.values())
+
+    # Build lookup: station_id → forecast_target parameter for QC/baseline/regime
+    station_target: dict[StationId, str] = {}
+    for station in stations:
+        sid = station_map.get(station.code)
+        if sid is not None and station.forecast_target is not None:
+            station_target[sid] = station.forecast_target
 
     # Step 3: Store observations
     for station_id, raw_obs in obs_by_station.items():
@@ -150,12 +157,13 @@ def _run_onboarding(
             log.error("forcing_store_error", station_id=str(station_id), error=str(exc))
             errors.append(msg)
 
-    # Step 5: Run QC
+    # Step 5: Run QC (per station, using the station's target parameter)
     checker = Stage1QualityChecker()
     for station_id in resolved_station_ids:
+        parameter = station_target.get(station_id, "discharge")
         try:
             raw_obs = obs_store.fetch_observations(
-                station_id, "discharge", start_utc, end_utc, qc_status=QcStatus.RAW
+                station_id, parameter, start_utc, end_utc, qc_status=QcStatus.RAW
             )
             if not raw_obs:
                 continue
@@ -169,29 +177,36 @@ def _run_onboarding(
                     observations_qc_failed += 1
                 elif status == QcStatus.QC_SUSPECT:
                     observations_qc_suspect += 1
-            log.debug("qc_complete", station_id=str(station_id), count=len(raw_obs))
+            log.debug(
+                "qc_complete",
+                station_id=str(station_id),
+                parameter=parameter,
+                count=len(raw_obs),
+            )
         except Exception as exc:
             msg = f"QC failed for station {station_id}: {exc}"
             log.error("qc_error", station_id=str(station_id), error=str(exc))
             errors.append(msg)
 
-    # Step 6: Compute climatological baselines
+    # Step 6: Compute climatological baselines (per station's target parameter)
     for station_id in resolved_station_ids:
+        parameter = station_target.get(station_id, "discharge")
         try:
             qc_passed = obs_store.fetch_observations(
                 station_id,
-                "discharge",
+                parameter,
                 start_utc,
                 end_utc,
                 qc_status=QcStatus.QC_PASSED,
             )
-            clim = compute_clim_baselines(qc_passed, station_id, "discharge")
+            clim = compute_clim_baselines(qc_passed, station_id, parameter)
             if clim:
                 baseline_store.store_baselines(clim)
                 baselines_computed += len(clim)
                 log.debug(
                     "baselines_computed",
                     station_id=str(station_id),
+                    parameter=parameter,
                     count=len(clim),
                 )
         except Exception as exc:
@@ -199,23 +214,28 @@ def _run_onboarding(
             log.error("baseline_error", station_id=str(station_id), error=str(exc))
             errors.append(msg)
 
-    # Step 7: Compute flow regimes
+    # Step 7: Compute flow regimes (per station's target parameter)
     for station_id in resolved_station_ids:
+        parameter = station_target.get(station_id, "discharge")
         try:
             qc_passed = obs_store.fetch_observations(
                 station_id,
-                "discharge",
+                parameter,
                 start_utc,
                 end_utc,
                 qc_status=QcStatus.QC_PASSED,
             )
             regime = compute_flow_regime(
-                qc_passed, station_id, "discharge", clock, uuid4
+                qc_passed, station_id, parameter, clock, uuid4
             )
             if regime is not None:
                 flow_regime_store.store_config(regime)
                 flow_regimes_computed += 1
-                log.debug("flow_regime_computed", station_id=str(station_id))
+                log.debug(
+                    "flow_regime_computed",
+                    station_id=str(station_id),
+                    parameter=parameter,
+                )
         except Exception as exc:
             msg = f"Flow regime computation failed for station {station_id}: {exc}"
             log.error("flow_regime_error", station_id=str(station_id), error=str(exc))
