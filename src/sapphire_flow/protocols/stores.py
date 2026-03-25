@@ -529,7 +529,9 @@ class FlowRegimeConfigStore(Protocol):
     def store_config(self, config: FlowRegimeConfig) -> None:
         raise NotImplementedError
 
-    def fetch_latest(self, station_id: StationId) -> FlowRegimeConfig | None:
+    def fetch_latest(
+        self, station_id: StationId, parameter: str
+    ) -> FlowRegimeConfig | None:
         raise NotImplementedError
 
 

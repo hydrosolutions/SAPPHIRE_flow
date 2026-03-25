@@ -18,6 +18,7 @@ class PgFlowRegimeConfigStore:
             sa.insert(flow_regime_configs).values(
                 id=config.id,
                 station_id=config.station_id,
+                parameter=config.parameter,
                 p50=config.p50,
                 p90=config.p90,
                 computed_at=config.computed_at,
@@ -27,10 +28,13 @@ class PgFlowRegimeConfigStore:
             )
         )
 
-    def fetch_latest(self, station_id: StationId) -> FlowRegimeConfig | None:
+    def fetch_latest(
+        self, station_id: StationId, parameter: str
+    ) -> FlowRegimeConfig | None:
         stmt = (
             sa.select(flow_regime_configs)
             .where(flow_regime_configs.c.station_id == station_id)
+            .where(flow_regime_configs.c.parameter == parameter)
             .order_by(flow_regime_configs.c.version.desc())
             .limit(1)
         )
@@ -42,6 +46,7 @@ def _row_to_domain(row: sa.engine.row.RowMapping) -> FlowRegimeConfig:
     return FlowRegimeConfig(
         id=row["id"],
         station_id=StationId(row["station_id"]),
+        parameter=row["parameter"],
         p50=row["p50"],
         p90=row["p90"],
         computed_at=utc_from_row(row["computed_at"]),

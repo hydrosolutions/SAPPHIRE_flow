@@ -153,6 +153,7 @@ class RegulationType(Enum):
 class StationKind(Enum):
     WEATHER = "weather"
     RIVER = "river"
+    LAKE = "lake"
 
 class ParameterDomain(Enum):
     RIVER = "river"
@@ -809,6 +810,7 @@ Module: `types/rating_curve.py`
 class FlowRegimeConfig:
     id: UUID
     station_id: StationId
+    parameter: str                 # canonical parameter name, e.g. "discharge"
     p50: float                     # 50th percentile of forecast target parameter
     p90: float                     # 90th percentile of forecast target parameter
     computed_at: UtcDatetime
@@ -1784,8 +1786,8 @@ class RatingCurveStore(Protocol):
 ```python
 class FlowRegimeConfigStore(Protocol):
     def store_config(self, config: FlowRegimeConfig) -> None: ...
-    def fetch_latest(self, station_id: StationId) -> FlowRegimeConfig | None: ...
-        # Returns the config with the highest version for this station.
+    def fetch_latest(self, station_id: StationId, parameter: str) -> FlowRegimeConfig | None: ...
+        # Returns the config with the highest version for this station+parameter.
 ```
 
 #### ForecastAdjustmentStore

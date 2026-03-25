@@ -63,6 +63,7 @@ class SkillDiagram:
 class FlowRegimeConfig:
     id: UUID
     station_id: StationId
+    parameter: str
     p50: float
     p90: float
     computed_at: UtcDatetime

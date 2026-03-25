@@ -96,6 +96,7 @@ class RegulationType(Enum):
 class StationKind(Enum):
     WEATHER = "weather"
     RIVER = "river"
+    LAKE = "lake"
 
 
 class ParameterDomain(Enum):

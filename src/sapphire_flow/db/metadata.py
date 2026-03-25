@@ -74,7 +74,7 @@ stations = sa.Table(
     sa.Column(
         "station_kind",
         sa.Text,
-        sa.CheckConstraint("station_kind IN ('weather', 'river')"),
+        sa.CheckConstraint("station_kind IN ('weather', 'river', 'lake')"),
         nullable=False,
     ),
     sa.Column(
@@ -796,6 +796,7 @@ flow_regime_configs = sa.Table(
     sa.Column(
         "station_id", UUID(as_uuid=True), sa.ForeignKey("stations.id"), nullable=False
     ),
+    sa.Column("parameter", sa.Text, nullable=False, server_default="discharge"),
     sa.Column("p50", sa.Float, nullable=False),
     sa.Column("p90", sa.Float, nullable=False),
     sa.Column("computed_at", sa.DateTime(timezone=True), nullable=False),

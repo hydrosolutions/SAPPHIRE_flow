@@ -52,6 +52,7 @@ def compute_flow_regime(
     return FlowRegimeConfig(
         id=uuid_factory(),
         station_id=station_id,
+        parameter=parameter,
         p50=float(np.percentile(values, 50)),
         p90=float(np.percentile(values, 90)),
         computed_at=now,

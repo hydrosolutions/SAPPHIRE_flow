@@ -812,8 +812,14 @@ class FakeFlowRegimeConfigStore:
     def store_config(self, config: FlowRegimeConfig) -> None:
         self._configs.setdefault(config.station_id, []).append(config)
 
-    def fetch_latest(self, station_id: StationId) -> FlowRegimeConfig | None:
-        configs = self._configs.get(station_id, [])
+    def fetch_latest(
+        self, station_id: StationId, parameter: str
+    ) -> FlowRegimeConfig | None:
+        configs = [
+            c
+            for c in self._configs.get(station_id, [])
+            if c.parameter == parameter
+        ]
         return max(configs, key=lambda c: c.version) if configs else None
 
 

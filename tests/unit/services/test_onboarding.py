@@ -282,7 +282,7 @@ class TestFlowRegimesComputed:
         )
 
         assert result.flow_regimes_computed == 1
-        stored = s.regime.fetch_latest(sid)
+        stored = s.regime.fetch_latest(sid, "discharge")
         assert stored is not None
         assert stored.station_id == sid
 

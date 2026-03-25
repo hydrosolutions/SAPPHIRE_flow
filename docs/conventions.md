@@ -380,7 +380,7 @@ All status/enum columns store TEXT matching the Python enum `.value` (lowercase)
 | `stations.station_status` / `StationStatus` | `onboarding`, `operational`, `suspended`, `decommissioned` | `decommissioned` | v0+v1 |
 | `parameters.parameter_domain` / `ParameterDomain` | `river`, `weather` | — | v0+v1 |
 | `parameters.aggregation_method` / `AggregationMethod` | `sum`, `mean` | — | v0+v1 |
-| `stations.station_kind` / `StationKind` | `weather`, `river` | — | v0+v1 |
+| `stations.station_kind` / `StationKind` | `weather`, `river`, `lake` | — | v0+v1 |
 | `pipeline_health.status` / `PipelineHealthStatus` | `ok`, `warning`, `critical` | — | v0+v1 |
 | `pipeline_health.check_type` / `PipelineCheckType` | `nwp_delivery`, `observation_freshness`, `forecast_freshness`, `flow_run_health`, `disk_usage`, `backup_freshness`, `backup_restore_test` | — | v0+v1 |
 | `dead_letter_queue.resolution` / `DlqResolution` | `replayed`, `discarded` (NULL = unresolved) | `replayed`, `discarded` | **v1** |

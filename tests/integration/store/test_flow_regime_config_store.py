@@ -38,10 +38,12 @@ def _make_config(
     version: int = 1,
     p50: float = 50.0,
     p90: float = 90.0,
+    parameter: str = "discharge",
 ) -> FlowRegimeConfig:
     return FlowRegimeConfig(
         id=uuid.uuid4(),
         station_id=station_id,
+        parameter=parameter,
         p50=p50,
         p90=p90,
         computed_at=_NOW,
@@ -58,7 +60,7 @@ class TestPgFlowRegimeConfigStore:
         config = _make_config(station_id, p50=55.5, p90=92.3)
 
         store.store_config(config)
-        result = store.fetch_latest(station_id)
+        result = store.fetch_latest(station_id, "discharge")
 
         assert result is not None
         assert result.id == config.id
@@ -79,7 +81,7 @@ class TestPgFlowRegimeConfigStore:
         store.store_config(config_v1)
         store.store_config(config_v2)
 
-        result = store.fetch_latest(station_id)
+        result = store.fetch_latest(station_id, "discharge")
 
         assert result is not None
         assert result.version == 2
@@ -87,5 +89,5 @@ class TestPgFlowRegimeConfigStore:
 
     def test_fetch_latest_nonexistent(self, db_connection: sa.Connection) -> None:
         store = PgFlowRegimeConfigStore(db_connection)
-        result = store.fetch_latest(StationId(uuid.uuid4()))
+        result = store.fetch_latest(StationId(uuid.uuid4()), "discharge")
         assert result is None

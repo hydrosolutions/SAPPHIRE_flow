@@ -100,7 +100,9 @@ def compute_skills_flow(
 
     thresholds = station_store.fetch_thresholds(station_id) if station_store else []
     flow_regime_config = (
-        flow_regime_store.fetch_latest(station_id) if flow_regime_store else None
+        flow_regime_store.fetch_latest(station_id, "discharge")
+        if flow_regime_store
+        else None
     )
 
     seasons = []
