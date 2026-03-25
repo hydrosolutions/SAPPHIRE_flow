@@ -97,6 +97,19 @@ class TestDefaultRules:
         rules = _default_swiss_qc_rules()
         assert rules.version == "1.0.0"
 
+    def test_water_level_daily_rules_exist(self) -> None:
+        rules = _default_swiss_qc_rules()
+        wl_daily = rules.rules_for("water_level", timedelta(seconds=86400))
+        assert len(wl_daily) == 5
+        rule_ids = {r.rule_id for r in wl_daily}
+        assert rule_ids == {
+            "range_check",
+            "rate_of_change",
+            "frozen_sensor",
+            "spike",
+            "gross_outlier",
+        }
+
 
 class TestRulesForFilter:
     def test_rules_for_returns_correct_subset(self) -> None:

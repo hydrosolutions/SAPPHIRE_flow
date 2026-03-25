@@ -256,6 +256,67 @@ class TestOverrideMerging:
         assert flags[0].status == QcStatus.QC_FAILED
 
 
+class TestWaterLevelQc:
+    def test_water_level_range_check(self) -> None:
+        checker = Stage1QualityChecker()
+        obs = Observation(
+            id=ObservationId(uuid4()),
+            station_id=_STATION,
+            timestamp=_t(0),
+            parameter="water_level",
+            value=9999.0,
+            source=ObservationSource.MEASURED,
+            rating_curve_id=None,
+            rating_curve_correction_version=None,
+            qc_status=QcStatus.RAW,
+            qc_flags=[],
+            qc_rule_version=None,
+            created_at=_T0,
+        )
+        rule = QcRuleParams(
+            rule_id="range_check",
+            rule_version="1.0",
+            parameter="water_level",
+            time_step=timedelta(hours=1),
+            thresholds={"value_min": 0.0, "value_max": 100.0},
+        )
+        rs = QcRuleSet(version="1.0", rules=(rule,))
+        result = checker.check([obs], rs, [], [])
+        flags = result[obs.id]
+        assert len(flags) == 1
+        assert flags[0].status == QcStatus.QC_FAILED
+        assert flags[0].rule_id == "range_check"
+
+    def test_water_level_no_daily_rules_returns_empty_flags(self) -> None:
+        # 10-min rule; obs inferred as hourly → no rule match → empty flags
+        checker = Stage1QualityChecker()
+        obs = Observation(
+            id=ObservationId(uuid4()),
+            station_id=_STATION,
+            timestamp=_t(0),
+            parameter="water_level",
+            value=999.0,
+            source=ObservationSource.MEASURED,
+            rating_curve_id=None,
+            rating_curve_correction_version=None,
+            qc_status=QcStatus.RAW,
+            qc_flags=[],
+            qc_rule_version=None,
+            created_at=_T0,
+        )
+        rule = QcRuleParams(
+            rule_id="range_check",
+            rule_version="1.0",
+            parameter="water_level",
+            time_step=timedelta(minutes=10),
+            thresholds={"value_min": 0.0, "value_max": 100.0},
+        )
+        rs = QcRuleSet(version="1.0", rules=(rule,))
+        result = checker.check([obs], rs, [], [])
+        # No rules match the daily (1-hour step) obs — all pass
+        assert result[obs.id] == []
+
+
 class TestIntegration:
     def test_multiple_rules_multiple_flags(self) -> None:
         checker = Stage1QualityChecker()

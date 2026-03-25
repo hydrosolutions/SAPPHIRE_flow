@@ -7,7 +7,7 @@ from sapphire_flow.services.onboarding import _run_onboarding
 from sapphire_flow.types.basin import Basin
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.domain import QcRuleParams, QcRuleSet
-from sapphire_flow.types.enums import ObservationSource, QcStatus
+from sapphire_flow.types.enums import ObservationSource, QcStatus, StationKind
 from sapphire_flow.types.ids import BasinId, StationId
 from sapphire_flow.types.observation import RawObservation
 from tests.conftest import make_raw_historical_forcing, make_station_config
@@ -33,6 +33,13 @@ _TEST_RULES = QcRuleSet(
             parameter="discharge",
             time_step=timedelta(days=1),
             thresholds={"value_min": 0.0, "value_max": 10000.0},
+        ),
+        QcRuleParams(
+            rule_id="range_check",
+            rule_version="1.0",
+            parameter="water_level",
+            time_step=timedelta(days=1),
+            thresholds={"value_min": 0.0, "value_max": 1000.0},
         ),
     ),
 )
@@ -70,6 +77,26 @@ def _make_raw_obs(
             ),
             parameter="discharge",
             value=float(10 + i % 50),
+            source=ObservationSource.MANUAL_IMPORT,
+        )
+        for i in range(n)
+    ]
+
+
+def _make_raw_waterlevel_obs(
+    station_id: StationId,
+    n: int = 100,
+    start: UtcDatetime | None = None,
+) -> list[RawObservation]:
+    t = start or _EPOCH
+    return [
+        RawObservation(
+            station_id=station_id,
+            timestamp=ensure_utc(
+                datetime.fromtimestamp(t.timestamp() + i * 86400, tz=UTC)
+            ),
+            parameter="water_level",
+            value=float(100 + i % 50),
             source=ObservationSource.MANUAL_IMPORT,
         )
         for i in range(n)
@@ -311,3 +338,44 @@ class TestEmptyStations:
         assert result.baselines_computed == 0
         assert result.flow_regimes_computed == 0
         assert result.errors == []
+
+
+class TestLakeStationOnboarding:
+    def test_lake_station_onboarding(self) -> None:
+        sid = StationId(uuid4())
+        station = make_station_config(
+            station_id=sid,
+            code="LAKE001",
+            station_kind=StationKind.LAKE,
+            forecast_target="water_level",
+            measured_parameters=frozenset({"water_level"}),
+        )
+        basin = _make_basin("LAKE001")
+        obs = _make_raw_waterlevel_obs(sid, 400)
+        s = _Stores()
+
+        result = _run(
+            s,
+            stations=[station],
+            basins=[basin],
+            obs_by_station={sid: obs},
+            forcing_by_station={sid: []},
+        )
+
+        assert result.stations_created == 1
+        assert result.observations_imported == 400
+        assert result.errors == []
+        # QC ran on water_level observations
+        assert result.observations_qc_passed == 400
+        assert result.observations_qc_failed == 0
+        # No discharge observations were touched
+        discharge_obs = s.obs.fetch_observations(sid, "discharge", _START, _END)
+        assert discharge_obs == []
+        waterlevel_obs = s.obs.fetch_observations(sid, "water_level", _START, _END)
+        assert len(waterlevel_obs) == 400
+        # Baselines and flow regime computed for water_level
+        assert len(s.baseline.fetch_baselines(sid, "water_level")) > 0
+        assert len(s.baseline.fetch_baselines(sid, "discharge")) == 0
+        regime = s.regime.fetch_latest(sid, "water_level")
+        assert regime is not None
+        assert regime.station_id == sid

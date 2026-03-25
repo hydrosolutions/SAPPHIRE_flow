@@ -232,6 +232,12 @@ class TestTimeseriesToWaterlevelObservations:
 
         assert result == []
 
+    def test_timestamp_is_utc(self) -> None:
+        df = _make_ts_df({"waterlevel": [1.5, 2.3, 1.8]})
+        result = timeseries_to_waterlevel_observations(df, _STATION_ID, _CLOCK)
+        for obs in result:
+            assert obs.timestamp.tzinfo is not None
+
 
 class TestAttributesToStationClassification:
     def test_stream_station(self) -> None:

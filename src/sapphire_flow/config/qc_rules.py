@@ -144,6 +144,42 @@ def _default_swiss_qc_rules() -> QcRuleSet:
                 time_step=timedelta(seconds=600),
                 thresholds={"k_sigma": 5.0},
             ),
+            # --- Water level (daily — CAMELS-CH lake stations) ---
+            QcRuleParams(
+                rule_id="range_check",
+                rule_version="1.0.0",
+                parameter="water_level",
+                time_step=timedelta(seconds=86400),
+                thresholds={"value_min": -5.0, "value_max": 30.0},
+            ),
+            QcRuleParams(
+                rule_id="rate_of_change",
+                rule_version="1.0.0",
+                parameter="water_level",
+                time_step=timedelta(seconds=86400),
+                thresholds={"max_rate": 1.0},
+            ),
+            QcRuleParams(
+                rule_id="frozen_sensor",
+                rule_version="1.0.0",
+                parameter="water_level",
+                time_step=timedelta(seconds=86400),
+                thresholds={"tolerance": 0.001, "min_consecutive": 5.0},
+            ),
+            QcRuleParams(
+                rule_id="spike",
+                rule_version="1.0.0",
+                parameter="water_level",
+                time_step=timedelta(seconds=86400),
+                thresholds={"tolerance": 0.3},
+            ),
+            QcRuleParams(
+                rule_id="gross_outlier",
+                rule_version="1.0.0",
+                parameter="water_level",
+                time_step=timedelta(seconds=86400),
+                thresholds={"k_sigma": 5.0},
+            ),
             # --- Water temperature (10-min operational) ---
             QcRuleParams(
                 rule_id="range_check",

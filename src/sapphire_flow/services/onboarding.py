@@ -92,6 +92,8 @@ def _run_onboarding(
     # Step 2: Store stations; build station_map for downstream
     # Maps the original gauge_id (station.code) → StationId
     station_map: dict[str, StationId] = {}
+    # Build lookup: station_id → forecast_target parameter for QC/baseline/regime
+    station_target: dict[StationId, str] = {}
     for station in stations:
         try:
             existing = station_store.fetch_station_by_code(
@@ -100,26 +102,23 @@ def _run_onboarding(
             if existing is not None:
                 stations_skipped += 1
                 station_map[station.code] = existing.id
+                if existing.forecast_target is not None:
+                    station_target[existing.id] = existing.forecast_target
                 log.info("station_already_exists", code=station.code)
             else:
                 station_store.store_station(station)
                 station_map[station.code] = station.id
                 stations_created += 1
+                if station.forecast_target is not None:
+                    station_target[station.id] = station.forecast_target
                 log.info("station_stored", code=station.code)
         except Exception as exc:
             msg = f"Failed to store station {station.code}: {exc}"
             log.error("station_store_error", code=station.code, error=str(exc))
             errors.append(msg)
 
-    # Resolved StationId set + per-station target parameter for downstream steps
+    # Resolved StationId set for downstream steps
     resolved_station_ids = set(station_map.values())
-
-    # Build lookup: station_id → forecast_target parameter for QC/baseline/regime
-    station_target: dict[StationId, str] = {}
-    for station in stations:
-        sid = station_map.get(station.code)
-        if sid is not None and station.forecast_target is not None:
-            station_target[sid] = station.forecast_target
 
     # Step 3: Store observations
     for station_id, raw_obs in obs_by_station.items():
@@ -160,7 +159,10 @@ def _run_onboarding(
     # Step 5: Run QC (per station, using the station's target parameter)
     checker = Stage1QualityChecker()
     for station_id in resolved_station_ids:
-        parameter = station_target.get(station_id, "discharge")
+        parameter = station_target.get(station_id)
+        if parameter is None:
+            log.warning("station_no_forecast_target", station_id=str(station_id))
+            continue
         try:
             raw_obs = obs_store.fetch_observations(
                 station_id, parameter, start_utc, end_utc, qc_status=QcStatus.RAW
@@ -190,7 +192,10 @@ def _run_onboarding(
 
     # Step 6: Compute climatological baselines (per station's target parameter)
     for station_id in resolved_station_ids:
-        parameter = station_target.get(station_id, "discharge")
+        parameter = station_target.get(station_id)
+        if parameter is None:
+            log.warning("station_no_forecast_target", station_id=str(station_id))
+            continue
         try:
             qc_passed = obs_store.fetch_observations(
                 station_id,
@@ -216,7 +221,10 @@ def _run_onboarding(
 
     # Step 7: Compute flow regimes (per station's target parameter)
     for station_id in resolved_station_ids:
-        parameter = station_target.get(station_id, "discharge")
+        parameter = station_target.get(station_id)
+        if parameter is None:
+            log.warning("station_no_forecast_target", station_id=str(station_id))
+            continue
         try:
             qc_passed = obs_store.fetch_observations(
                 station_id,
@@ -225,9 +233,7 @@ def _run_onboarding(
                 end_utc,
                 qc_status=QcStatus.QC_PASSED,
             )
-            regime = compute_flow_regime(
-                qc_passed, station_id, parameter, clock, uuid4
-            )
+            regime = compute_flow_regime(qc_passed, station_id, parameter, clock, uuid4)
             if regime is not None:
                 flow_regime_store.store_config(regime)
                 flow_regimes_computed += 1
