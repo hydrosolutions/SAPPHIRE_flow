@@ -164,6 +164,8 @@ def run_hindcast_flow(
         if artifact is None:
             raise ValueError("artifact must be provided for group hindcast")
         group = station_store.fetch_group(group_id) if station_store else None
+        if group is None:
+            raise ValueError(f"Group {group_id} not found")
         return _run_group_hindcast_task(
             model=model,
             artifact=artifact,

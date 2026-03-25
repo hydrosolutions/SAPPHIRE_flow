@@ -435,13 +435,17 @@ class FakeSkillStore:
         model_id: ModelId,
         diagram_type: Literal["reliability", "roc", "rank_histogram"] | None = None,
     ) -> list[SkillDiagram]:
-        return [
+        matches = [
             d
             for d in self._diagrams
             if d.station_id == station_id
             and d.model_id == model_id
             and (diagram_type is None or d.diagram_type == diagram_type)
         ]
+        if not matches:
+            return []
+        max_ver = max(d.computation_version for d in matches)
+        return [d for d in matches if d.computation_version == max_ver]
 
     def fetch_scores_by_regime(
         self,
@@ -816,9 +820,7 @@ class FakeFlowRegimeConfigStore:
         self, station_id: StationId, parameter: str
     ) -> FlowRegimeConfig | None:
         configs = [
-            c
-            for c in self._configs.get(station_id, [])
-            if c.parameter == parameter
+            c for c in self._configs.get(station_id, []) if c.parameter == parameter
         ]
         return max(configs, key=lambda c: c.version) if configs else None
 

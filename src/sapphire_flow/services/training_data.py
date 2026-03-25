@@ -51,7 +51,7 @@ def _raw_forcing_to_dataframe(
 
 
 def _observations_to_dataframe(observations: list) -> pl.DataFrame:
-    rows = [{"timestamp": o.timestamp, "discharge": o.value} for o in observations]
+    rows = [{"timestamp": o.timestamp, "value": o.value} for o in observations]
     return pl.DataFrame(rows)
 
 
@@ -73,9 +73,10 @@ def assemble_station_training_data(
         log.warning("training_data.station_not_found", station_id=str(station_id))
         return None
 
+    parameter = station.forecast_target or "discharge"
     observations = obs_store.fetch_observations(
         station_id=station_id,
-        parameter="discharge",
+        parameter=parameter,
         start=period_start,
         end=period_end,
         qc_status=QcStatus.QC_PASSED,
@@ -142,7 +143,7 @@ def assemble_station_training_data(
         return None
 
     obs_df = _observations_to_dataframe(observations)
-    targets_df = obs_df.select(["timestamp", "discharge"])
+    targets_df = obs_df.select(["timestamp", "value"])
 
     return TrainingData(
         forcing=forcing_df,

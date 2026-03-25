@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
+import structlog
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from sapphire_flow.db.metadata import weather_forecasts
@@ -14,6 +15,9 @@ from sapphire_flow.types.weather import WeatherForecastRecord
 
 if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
+
+
+log = structlog.get_logger(__name__)
 
 
 class PgWeatherForecastStore:
@@ -106,7 +110,12 @@ class PgWeatherForecastStore:
         cycle_time: UtcDatetime,
         recoverable: bool,
     ) -> None:
-        pass
+        log.warning(
+            "mark_gap.not_implemented",
+            station_id=str(station_id),
+            nwp_source=nwp_source,
+            cycle_time=str(cycle_time),
+        )
 
     def fetch_latest_cycle_time(self, nwp_source: str) -> UtcDatetime | None:
         q = sa.select(sa.func.max(weather_forecasts.c.cycle_time)).where(

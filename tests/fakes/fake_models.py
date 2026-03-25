@@ -26,6 +26,8 @@ class FakeStationForecastModel:
     supported_time_steps: frozenset[timedelta] = frozenset(
         {timedelta(hours=1), timedelta(hours=24)}
     )
+    parameter: str = "discharge"
+    units: str = "m3/s"
 
     def train(
         self, data: TrainingData, params: ModelParams, rng: random.Random
@@ -60,8 +62,8 @@ class FakeStationForecastModel:
         ens = ForecastEnsemble.from_members(
             station_id=inputs.station_id,
             issued_at=inputs.issue_time,
-            parameter="discharge",
-            units="m3/s",
+            parameter=self.parameter,
+            units=self.units,
             time_step=inputs.time_step,
             values=df,
         )
@@ -80,6 +82,8 @@ class FakeGroupForecastModel:
     required_static_attributes: frozenset[str] = frozenset()
     spatial_input_type = SpatialRepresentation.POINT
     supported_time_steps: frozenset[timedelta] = frozenset({timedelta(hours=1)})
+    parameter: str = "discharge"
+    units: str = "m3/s"
 
     def train(
         self, data: GroupTrainingData, params: ModelParams, rng: random.Random
@@ -118,8 +122,8 @@ class FakeGroupForecastModel:
             ens = ForecastEnsemble.from_members(
                 station_id=sid,
                 issued_at=inp.issue_time,
-                parameter="discharge",
-                units="m3/s",
+                parameter=self.parameter,
+                units=self.units,
                 time_step=inp.time_step,
                 values=df,
             )

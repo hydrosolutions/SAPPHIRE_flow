@@ -86,6 +86,7 @@ def _assemble_hindcast_inputs(
     obs_store: ObservationStore,
     weather_sources: list[StationWeatherSource],
     static_attributes: pl.DataFrame | None,
+    parameter: str = "discharge",
 ) -> ModelInputs | None:
     lookback_start = ensure_utc(issue_time - lookback_steps * time_step)
 
@@ -100,7 +101,7 @@ def _assemble_hindcast_inputs(
     # NO-FUTURE-LEAKAGE: end=issue_time
     observations = obs_store.fetch_observations(
         station_id=station_id,
-        parameter="discharge",
+        parameter=parameter,
         start=lookback_start,
         end=issue_time,
         qc_status=QcStatus.QC_PASSED,
@@ -176,6 +177,7 @@ def run_station_hindcast(
     weather_sources = station_store.fetch_weather_sources(station_id)
     static_df = _load_static_attributes(basin_store, station_config)
     required_features = list(model.required_features)
+    parameter = station_config.forecast_target or "discharge"
 
     results: list[HindcastStepResult] = []
     for issue_time in _issue_times(period_start, period_end, time_step):
@@ -191,6 +193,7 @@ def run_station_hindcast(
                 obs_store=obs_store,
                 weather_sources=weather_sources,
                 static_attributes=static_df,
+                parameter=parameter,
             )
             if inputs is None:
                 results.append(
@@ -273,6 +276,11 @@ def run_group_hindcast(
         for sid, cfg in station_configs.items()
         if cfg is not None
     }
+    parameter_map: dict[StationId, str] = {
+        sid: (cfg.forecast_target or "discharge")
+        for sid, cfg in station_configs.items()
+        if cfg is not None
+    }
     required_features = list(model.required_features)
 
     per_station: dict[StationId, list[HindcastStepResult]] = {
@@ -300,12 +308,19 @@ def run_group_hindcast(
                     obs_store=obs_store,
                     weather_sources=weather_sources_map[sid],
                     static_attributes=static_map.get(sid),
+                    parameter=parameter_map.get(sid, "discharge"),
                 )
                 if inputs is None:
                     skipped[sid] = "insufficient data"
                 else:
                     inputs_batch[sid] = inputs
             except Exception as exc:
+                log.warning(
+                    "hindcast.step_failed",
+                    station_id=str(sid),
+                    issue_time=str(issue_time),
+                    error=str(exc),
+                )
                 skipped[sid] = str(exc)
 
         for sid, reason in skipped.items():
@@ -354,6 +369,12 @@ def run_group_hindcast(
                     HindcastStepResult(issue_time=issue_time, success=True)
                 )
             except Exception as exc:
+                log.warning(
+                    "hindcast.store_failed",
+                    station_id=str(sid),
+                    issue_time=str(issue_time),
+                    error=str(exc),
+                )
                 per_station[sid].append(
                     HindcastStepResult(
                         issue_time=issue_time, success=False, error=str(exc)
