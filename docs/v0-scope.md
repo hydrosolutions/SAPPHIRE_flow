@@ -21,6 +21,7 @@
 | 1 | **Flow 5/5w** — Station onboarding | Simplified bootstrap script (see A4 below). TOML import, historical obs, QC, baselines, model assignments. No dashboard, no progress tracking. |
 | 2 | **Flow 2** — Observation ingest + QC | Stage 1 QC only. No rating curves (BAFU provides Q directly). Alerting steps optional (`enable_observation_alerts`). |
 | 3 | **Flow 6 → 7 → 8** — Train → hindcast → skill | Auto-promote (no approval gate). Full skill metric suite (CRPS, CRPSss, BSS, POD/FAR/CSI, peak timing, NSE, KGE, PBIAS, MAE, diagrams). |
+| 3 | **Flow 13** — Model onboarding | Register + validate + train + hindcast + skill gate + auto-promote. Sample model (LinearRegressionDaily). No approval gate (auto-promote). Composes Flows 6→7→8 with validation logic. |
 | 4 | **Flow 1** — Forecast cycle | **v0a**: point weather forecast data (pre-extracted); steps 1.2, 1.3, 1.4 skipped entirely. **v0b+**: gridded NWP (ICON-CH2-EPS) with GridExtractor. Steps 1.5 (NWP post-process) and 1.9 (forecast post-process) are pass-through throughout v0. Alerting (1.11-1.13) controlled by `enable_forecast_alerts` (default `false`). |
 | — | **API** | FastAPI with basic CRUD for stations, observations, forecasts, alerts. No auth. Health endpoint. |
 | — | **Flow 12B** — Manual CSV import | Branch B only (validate CSV, ingest with `source = 'manual_import'`, run QC). Branches A (rating curve reprocessing) and C (QC re-evaluation) deferred. |
@@ -36,6 +37,7 @@
 | Flow 11 — NWP gap recovery | v0c or v1 | Gaps accepted and logged |
 | Flow 12 — Observation reprocessing | Branch B ad-hoc only | Branch A (rating curves) requires v1 |
 | NWP lateness fallback | v0b or v1 | Manual monitoring suffices; three-stage strategy (wait → fallback cycle → skip) implemented when gridded NWP is added |
+| Flow 13 approval gate | v1 | Auto-promote sufficient for v0; PENDING_APPROVAL + human review added in v1 |
 
 ---
 
@@ -75,7 +77,7 @@
 3. Imports historical observations (bulk CSV/API)
 4. Runs QC (reuses same QC service)
 5. Computes climatology quantiles (CRPSss reference), persistence baseline, and flow regime boundaries (Q50/Q90)
-6. Configures model assignments
+6. Configures model assignments (**Prerequisite**: Model types must be onboarded via Flow 13 before they can be assigned to stations in this step.)
 7. Triggers training (Flow 6 → 7 → 8). Station remains in `onboarding` status.
 8. Marks stations `operational` after ≥1 model artifact reaches `active` status (auto-promoted in v0)
 
@@ -102,6 +104,8 @@ Implement the full skill metric suite: CRPS, CRPSss (climatology + persistence b
 **Full design**: 5 statuses (training → pending_approval → active → superseded → rejected), approval gate.
 
 **v0**: 3 statuses: `training`, `active`, and `superseded`. Training produces artifact with `training` status → auto-promote to `active` → done. No approval gate. `active` → `superseded` when replaced by a newer artifact.
+
+Flow 13 (model onboarding) uses the same auto-promote path: `training` → `active`. The `pending_approval` status and approval gate (skill comparison, human review) are v1 additions. Flow 13 adds a skill gate evaluation step that in v0 logs results but does not block promotion.
 
 ### A8. No notification system
 
@@ -159,6 +163,12 @@ Rationale: per-source flags allow incremental activation during testing — pipe
 **Full design**: Configurable forcing source for ML model lookback windows — station observations, gridded reanalysis, or archived NWP (see architecture-context.md).
 
 **v0**: Use SMN station observations (hourly, 1981-present) co-located with BAFU river gauges. Simple, immediately available, sufficient for v0 scale. The forcing source is injected via adapter dependency, not hardcoded — `prepare_model_inputs()` and training data assembly accept a forcing source parameter (see §I2). **v1**: Switch to ERA5-Land via `WeatherReanalysisSource` Protocol for Nepal.
+
+### A13. Generalized model input container
+
+**Full design**: 4-slot data contract (past_targets, past_dynamic, future_dynamic, static) with ModelDataRequirements declaring per-slot feature needs. GroupModelInputs uses stacked DataFrames for batch ML inference.
+
+**v0**: Fully implemented. past_dynamic and future_dynamic use the same reanalysis source in training/hindcast (future_dynamic filled from reanalysis as teacher forcing). Operational forecast path (Flow 1) provides true NWP data in future_dynamic. Multi-target predictions supported from day one.
 
 ---
 
@@ -414,10 +424,11 @@ Phase 3: Adapters (production + replay)                           ├─ paralle
 Phase 3b: Record reference test dataset from public APIs          │
 Phase 4: Services (QC, threshold, alert, skill, forecast input)  ─┘
           │
-Phase 5: Station onboarding (simplified) ─┐
-Phase 6: Observation ingest (Flow 2)       ├─ parallel
-Phase 7: Model framework + training        │
-Phase 9: FastAPI REST API                 ─┘
+Phase 5: Station onboarding (simplified)           ─┐
+Phase 6: Observation ingest (Flow 2)               ├─ parallel
+Phase 7: Model framework + training                │
+Phase 7b: Model onboarding (Flow 13) + sample model─┤
+Phase 9: FastAPI REST API                          ─┘
           │
 Phase 8: Forecast cycle (Flow 1) + scenario tests
           │

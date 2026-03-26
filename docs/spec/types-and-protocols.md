@@ -648,7 +648,7 @@ class StationConfig:
     basin_id: BasinId | None       # NULL for weather stations without basin assignment
     timezone: str                  # IANA timezone, e.g. "Asia/Kathmandu"
     regulation_type: RegulationType | None  # NULL if unknown
-    forecast_target: Literal["discharge", "water_level", "both"] | None  # NULL for weather stations
+    forecast_targets: frozenset[str] | None  # NULL for weather stations; e.g. frozenset({"discharge", "water_level"})
     measured_parameters: frozenset[str]  # canonical parameter names
     station_status: StationStatus  # lifecycle state — Flow 1 filters to OPERATIONAL only
     created_at: UtcDatetime
@@ -666,6 +666,15 @@ class ModelAssignment:
     station_id: StationId
     model_id: ModelId
     time_step: timedelta           # configured time step for this assignment
+    status: ModelAssignmentStatus
+    priority: int                  # fallback order: 0 = primary
+    created_at: UtcDatetime
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class GroupModelAssignment:
+    group_id: StationGroupId
+    model_id: ModelId
+    time_step: timedelta
     status: ModelAssignmentStatus
     priority: int                  # fallback order: 0 = primary
     created_at: UtcDatetime
@@ -969,97 +978,126 @@ flagged in forecast metadata.
 
 Both raise `ValueError` with a descriptive message on validation failure. The standard constructor always runs `__post_init__` validation. For store-layer reconstruction of already-validated data, the validation is idempotent and cheap — no bypass is needed.
 
-### ModelInputs
+### StationInputData / StationModelInputs / GroupModelInputs
+
+Input containers passed to model `predict()` / `predict_batch()` calls.
 
 ```python
-import xarray as xr
+@dataclass(frozen=True, kw_only=True, slots=True)
+class StationInputData:
+    """Feature matrices for a single station inference call."""
+    past_targets: pl.DataFrame       # timestamp + target parameter columns (lookback window)
+    past_dynamic: pl.DataFrame       # timestamp + dynamic forcing columns (lookback window)
+    future_dynamic: pl.DataFrame     # timestamp + dynamic forcing columns (forecast horizon)
+    static: pl.DataFrame | None      # single-row scalar catchment attributes; None if not needed
 
 @dataclass(frozen=True, kw_only=True, slots=True)
-class ModelInputs:
-    station_id: StationId           # identifies the station — used by ML models for station embeddings
-    forcing: pl.DataFrame | xr.Dataset
-    observations: pl.DataFrame
-    static_attributes: pl.DataFrame | None  # scalar catchment descriptors from basins.attributes
+class StationModelInputs:
+    """Full inference payload for a single-station model."""
+    station_id: StationId            # used by ML models for station embeddings
+    data: StationInputData
     issue_time: UtcDatetime
     forecast_horizon_steps: int
     time_step: timedelta
-    warm_up_steps: int | None       # conceptual/hybrid models only; None for pure ML
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class GroupModelInputs:
+    """Batch inference payload for a group-scoped model.
+
+    DataFrames are stacked with a `station_id` (Utf8) column prepended.
+    ``for_station()`` slices back to per-station ``StationInputData`` for
+    models that need to iterate station-by-station internally.
+    """
+    group_id: StationGroupId
+    station_ids: frozenset[StationId]
+    past_targets: pl.DataFrame       # stacked: station_id + timestamp + target columns
+    past_dynamic: pl.DataFrame       # stacked: station_id + timestamp + dynamic columns
+    future_dynamic: pl.DataFrame     # stacked: station_id + timestamp + dynamic columns
+    static: pl.DataFrame | None      # stacked: station_id + attribute columns; None if not needed
+    issue_time: UtcDatetime
+    forecast_horizon_steps: int
+    time_step: timedelta
+
+    def for_station(self, station_id: StationId) -> StationInputData:
+        """Slice stacked DataFrames for one station."""
+        ...
 ```
 
-**`forcing` column contract** (when `pl.DataFrame`):
-- Columns: `timestamp` (Datetime UTC) + one column per canonical parameter name.
-  For elevation-band models, parameter columns are band-qualified: `precipitation_band_1`,
-  `temperature_band_2`, etc. Rows = timesteps covering full input window (lookback +
-  forecast horizon for ML; warm-up + forecast for conceptual).
+**Column contracts:**
 
-**Forcing provenance convention** (when `pl.DataFrame`):
+`past_targets` / `past_dynamic` / `future_dynamic`:
+- First column: `timestamp` (Datetime UTC). Subsequent columns: one per canonical parameter name.
+- For elevation-band models, parameter columns are band-qualified: `precipitation_band_1`,
+  `temperature_band_2`, etc.
+- For each parameter column `{param}`, a companion `{param}_provenance` column (Polars `Enum`
+  built from `ForcingProvenance` values) tracks data origin. Helper functions in `types/model.py`:
+  - `PROVENANCE_SUFFIX = "_provenance"` — suffix constant
+  - `parameter_columns(df)` — returns parameter columns (excludes timestamp and provenance)
+  - `forcing_provenance_columns(df)` — returns provenance columns
+  - `validate_forcing_provenance(df)` — raises `ValueError` if provenance columns are incomplete or orphaned
 
-For each parameter column `{param}`, a companion column `{param}_provenance` tracks the origin
-of each timestep's value. Dtype: Polars `Enum` built from `ForcingProvenance` values. Helper
-functions in `types/model.py`:
-
-- `PROVENANCE_SUFFIX = "_provenance"` — suffix constant
-- `parameter_columns(forcing)` — returns parameter columns (excludes timestamp and provenance)
-- `forcing_provenance_columns(forcing)` — returns provenance columns
-- `validate_forcing_provenance(forcing)` — raises `ValueError` if provenance columns are incomplete or orphaned
-
-Provenance is set by the input preparation service (Step 1.7) and training data assembly (Flow 6).
-Models that care about provenance inspect these columns; models that don't ignore them.
-
-For `xr.Dataset` forcing (gridded models): companion data variable `{param}_provenance` with
-`dtype=str`, validated against `ForcingProvenance` values.
-
-**`forcing` schema** (when `xr.Dataset`):
-- Dimensions: `time × parameter × y × x`. For GRIDDED models only.
-
-**`observations` column contract:**
-- Columns: `timestamp` (Datetime UTC) + observed parameters (`discharge`, `water_level`).
-  Rows = timesteps covering the lookback / warm-up period. Always tabular regardless of
-  model spatial type.
-
-Models must not use data after `issue_time` from `observations`.
-
-**`static_attributes` column contract** (when `pl.DataFrame`):
+`static`:
 - One column per attribute name (e.g. `mean_elev_m`, `mean_slope`, `forest_fraction`).
-  Single row. Values are `Float64`. Sourced from `basins.attributes` JSONB during
-  input preparation (Flow 1 step 1.7, Flow 6/9 step T.2, Flow 7 step H.4).
-- `None` when the model declares no `required_static_attributes` or the station's
-  basin has no attributes.
-- **Future extension**: gridded static attributes (DEM rasters, soil type grids) will
-  use a separate `static_grids: xr.Dataset | None` field — not this one. Scalar and
-  gridded statics remain distinct types.
+  Single row per station. Values are `Float64`. Sourced from `basins.attributes` JSONB.
+- `None` when the model declares no `static_features` or the station's basin has no attributes.
+- **Future extension**: gridded static attributes will use a separate `static_grids: xr.Dataset | None` field.
 
-### TrainingData
+### StationTrainingData / GroupTrainingData
+
+Training data containers passed to model `train()` calls.
 
 ```python
 @dataclass(frozen=True, kw_only=True, slots=True)
-class TrainingData:
-    forcing: pl.DataFrame
-    observations: pl.DataFrame
-    targets: pl.DataFrame
-    static_attributes: pl.DataFrame | None  # scalar catchment descriptors — same contract as ModelInputs
+class StationTrainingData:
+    """Training features and targets for a single station."""
+    past_targets: pl.DataFrame       # timestamp + target parameter columns
+    past_dynamic: pl.DataFrame       # timestamp + dynamic forcing columns
+    future_dynamic: pl.DataFrame     # timestamp + dynamic forcing columns (shifted for teacher forcing)
+    static: pl.DataFrame | None      # single-row scalar catchment attributes; None if not needed
     time_step: timedelta
-    val_start: UtcDatetime | None   # if set, data after this time is validation holdout
-```
+    val_start: UtcDatetime | None    # if set, data after this time is validation holdout
 
-**`targets` column contract:**
-- Columns: `timestamp` (Datetime UTC) + target parameters (`discharge`, `water_level`).
-
-`forcing` and `observations` follow the same contracts as `ModelInputs`.
-Training always uses tabular forcing (`pl.DataFrame`), not gridded.
-
-### GroupTrainingData
-
-```python
 @dataclass(frozen=True, kw_only=True, slots=True)
 class GroupTrainingData:
+    """Stacked training data for a group-scoped model.
+
+    DataFrames are stacked with a `station_id` (Utf8) column prepended.
+    ``for_station()`` slices back to per-station ``StationTrainingData``.
+    """
     group_id: StationGroupId
-    station_data: dict[StationId, TrainingData]  # one TrainingData per station in the group
+    station_ids: frozenset[StationId]
+    past_targets: pl.DataFrame       # stacked: station_id + timestamp + target columns
+    past_dynamic: pl.DataFrame       # stacked: station_id + timestamp + dynamic columns
+    future_dynamic: pl.DataFrame     # stacked: station_id + timestamp + dynamic columns
+    static: pl.DataFrame | None      # stacked: station_id + attribute columns; None if not needed
     time_step: timedelta
-    val_start: UtcDatetime | None   # group-wide validation split
+    val_start: UtcDatetime | None    # group-wide validation split
+
+    def for_station(self, station_id: StationId) -> StationTrainingData:
+        """Slice stacked DataFrames for one station."""
+        ...
 ```
 
-Used by group-scoped ML models. The model receives training data for all stations in the group in a single `train()` call. Each station's `TrainingData` follows the same contracts as single-station training. The model uses `StationId` keys for station embeddings / identification.
+Column contracts for `past_targets`, `past_dynamic`, `future_dynamic`, and `static` match
+those described above for `StationInputData`. Training always uses tabular data (no `xr.Dataset`).
+
+### ModelDataRequirements
+
+Declares what data a model needs. Stored on the Protocol as `data_requirements` and in
+`ModelRegistryEntry`. Used by the input preparation service and model onboarding to match
+stations to models.
+
+```python
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ModelDataRequirements:
+    target_parameters: frozenset[str]          # e.g. frozenset({"discharge"})
+    past_dynamic_features: frozenset[str]      # e.g. frozenset({"precipitation", "temperature"})
+    future_dynamic_features: frozenset[str]    # e.g. frozenset({"precipitation"})
+    static_features: frozenset[str]            # empty frozenset if none needed
+    supported_time_steps: frozenset[timedelta]
+    lookback_steps: int
+    spatial_input_type: SpatialRepresentation
+```
 
 Module: `types/model.py`
 
@@ -1112,10 +1150,7 @@ class ModelRegistryEntry:
     display_name: str
     description: str
     artifact_scope: ArtifactScope     # STATION or GROUP — determines training and artifact granularity
-    required_features: frozenset[str]
-    required_static_attributes: frozenset[str]  # empty frozenset if none needed
-    spatial_input_type: SpatialRepresentation
-    supported_time_steps: frozenset[timedelta]
+    data_requirements: ModelDataRequirements
     registered_at: UtcDatetime
 ```
 
@@ -1351,19 +1386,16 @@ import random
 class StationForecastModel(Protocol):
     """Model trained independently per station (conceptual models like GR4J, HBV)."""
     artifact_scope: ArtifactScope          # must be ArtifactScope.STATION
-    required_features: frozenset[str]
-    required_static_attributes: frozenset[str]  # e.g. {"mean_elev_m", "mean_slope"} — empty if none needed
-    spatial_input_type: SpatialRepresentation
-    supported_time_steps: frozenset[timedelta]
+    data_requirements: ModelDataRequirements
 
-    def train(self, data: TrainingData, params: ModelParams, rng: random.Random) -> ModelArtifact: ...
+    def train(self, data: StationTrainingData, params: ModelParams, rng: random.Random) -> ModelArtifact: ...
     def predict(
         self,
         artifact: ModelArtifact,
-        inputs: ModelInputs,
+        inputs: StationModelInputs,
         rng: random.Random,
         prior_state: bytes | None = None,
-    ) -> tuple[ForecastEnsemble, bytes | None]: ...
+    ) -> tuple[dict[str, ForecastEnsemble], bytes | None]: ...
     def serialize_artifact(self, artifact: ModelArtifact) -> bytes: ...
     def deserialize_artifact(self, raw: bytes) -> ModelArtifact: ...
 
@@ -1371,18 +1403,15 @@ class StationForecastModel(Protocol):
 class GroupForecastModel(Protocol):
     """Model trained on a group of stations (ML models like LSTM, transformer)."""
     artifact_scope: ArtifactScope          # must be ArtifactScope.GROUP
-    required_features: frozenset[str]
-    required_static_attributes: frozenset[str]  # e.g. {"mean_elev_m", "area_km2"} — empty if none needed
-    spatial_input_type: SpatialRepresentation
-    supported_time_steps: frozenset[timedelta]
+    data_requirements: ModelDataRequirements
 
     def train(self, data: GroupTrainingData, params: ModelParams, rng: random.Random) -> ModelArtifact: ...
     def predict_batch(
         self,
         artifact: ModelArtifact,
-        inputs: dict[StationId, ModelInputs],
+        inputs: GroupModelInputs,
         rng: random.Random,
-    ) -> dict[StationId, tuple[ForecastEnsemble, bytes | None]]: ...
+    ) -> dict[StationId, tuple[dict[str, ForecastEnsemble], bytes | None]]: ...
     def serialize_artifact(self, artifact: ModelArtifact) -> bytes: ...
     def deserialize_artifact(self, raw: bytes) -> ModelArtifact: ...
 
@@ -1393,23 +1422,63 @@ ForecastModel = StationForecastModel | GroupForecastModel
 Models are pure functions — no DB, no I/O. Artifact serialization is the model's
 responsibility; artifact *persistence* (reading/writing files) is the caller's.
 
+**`predict()` / `predict_batch()` return type** — `dict[str, ForecastEnsemble]` maps target
+parameter name (e.g. `"discharge"`) to its ensemble. Multi-target models populate multiple
+keys. Single-target models return a single-entry dict.
+
 **Key difference — training**: `StationForecastModel.train()` receives single-station
-`TrainingData`; `GroupForecastModel.train()` receives `GroupTrainingData` with data for all
-stations in the group. The orchestration layer (Flow 6/9 T.2–T.3) checks `artifact_scope`
-to dispatch.
+`StationTrainingData`; `GroupForecastModel.train()` receives `GroupTrainingData` with stacked
+data for all stations in the group. The orchestration layer (Flow 6/9 T.2–T.3) checks
+`artifact_scope` to dispatch.
 
 **Key difference — prediction**: Orchestration dispatches on `artifact_scope`:
 - *Station models* → `predict()` per station. Accepts optional `prior_state` (opaque bytes
   from a previous run). Models that maintain internal state (conceptual, hybrid) return
-  `(ensemble, updated_state)`. Stateless models return `(ensemble, None)`.
+  `(ensembles, updated_state)`. Stateless models return `(ensembles, None)`.
 - *Group models* → single `predict_batch()` call per (model, group). Receives
-  `dict[StationId, ModelInputs]`, returns `dict[StationId, tuple[ForecastEnsemble, bytes | None]]`.
-  `ModelInputs` includes `station_id` so ML models can use station embeddings. No `prior_state`
-  input — ML models are stateless. A single-station group is a single-entry dict (no special case).
+  `GroupModelInputs` (stacked), returns `dict[StationId, tuple[dict[str, ForecastEnsemble], bytes | None]]`.
+  `StationModelInputs.station_id` (accessible via `for_station()`) lets ML models use station
+  embeddings. No `prior_state` input — ML models are stateless. A single-station group is
+  a single-key result dict (no special case).
 
 The caller persists state via `ModelStateStore`.
 
 Module: `protocols/forecast_model.py`
+
+---
+
+### Model onboarding types
+
+Result types for Flow 5 model onboarding (step 5.10).
+
+```python
+@dataclass(frozen=True, kw_only=True, slots=True)
+class CompatibilityReport:
+    model_id: ModelId
+    protocol_satisfied: bool           # isinstance check against StationForecastModel | GroupForecastModel
+    missing_features: dict[str, frozenset[str]]  # keyed by feature set name (e.g. "past_dynamic_features")
+    missing_static: frozenset[str]
+    time_step_compatible: bool         # at least one configured time step is in supported_time_steps
+    errors: list[str]                  # human-readable failure descriptions
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class SkillGateResult:
+    passed: bool
+    scores: dict[str, float]           # metric → score (e.g. {"crps": 0.42, "nse": 0.71})
+    thresholds: dict[str, float]       # metric → required minimum
+    failures: list[str]                # metrics that did not meet threshold
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ModelOnboardingResult:
+    model_id: ModelId
+    compatibility: CompatibilityReport
+    artifact_id: ArtifactId | None     # None if training/promotion did not complete
+    skill_gate: SkillGateResult | None  # None if compatibility check failed before skill evaluation
+    stations_assigned: int             # number of stations that received an active ModelAssignment
+    errors: list[str]
+```
+
+Module: `types/model.py`
 
 ---
 
@@ -1754,6 +1823,9 @@ class StationGroupStore(Protocol):
         # All groups that have an active artifact for this model.
     def add_station_to_group(self, group_id: StationGroupId, station_id: StationId) -> None: ...
     def remove_station_from_group(self, group_id: StationGroupId, station_id: StationId) -> None: ...
+    def fetch_group_model_assignments(self, group_id: StationGroupId) -> list[GroupModelAssignment]: ...
+    def store_group_model_assignment(self, assignment: GroupModelAssignment) -> None: ...
+        # Upsert keyed on (group_id, model_id).
 ```
 
 #### PipelineHealthStore
@@ -2198,7 +2270,11 @@ src/sapphire_flow/
 │   │                       #   QcRuleParams, QcRuleSet, StationQcOverride, ClimBaseline,
 │   │                       #   SeasonDefinition, ExceedanceResult, SkillInterpretationScheme, etc.
 │   ├── ensemble.py         # ForecastEnsemble
-│   ├── model.py            # ModelInputs, TrainingData, ModelParams, ModelArtifact, ModelArtifactRecord
+│   ├── model.py            # StationInputData, StationModelInputs, GroupModelInputs,
+│   │                       #   StationTrainingData, GroupTrainingData,
+│   │                       #   ModelDataRequirements, ModelParams, ModelArtifact,
+│   │                       #   ModelRecord, ModelRegistryEntry, ModelArtifactRecord,
+│   │                       #   CompatibilityReport, SkillGateResult, ModelOnboardingResult
 │   ├── observation.py      # Observation, RawObservation
 │   ├── forecast.py         # OperationalForecast, HindcastForecast, ForecastAdjustment, ForeignForecast
 │   ├── weather.py          # WeatherForecastRecord, PointForecast, BasinAverageForecast,
@@ -2206,7 +2282,7 @@ src/sapphire_flow/
 │   ├── historical_forcing.py # RawHistoricalForcing, HistoricalForcingRecord
 │   ├── alert.py            # Alert
 │   ├── skill.py            # SkillScore, SkillDiagram, FlowRegimeConfig
-│   ├── station.py          # StationConfig, ModelAssignment, StationWeatherSource
+│   ├── station.py          # StationConfig, ModelAssignment, GroupModelAssignment, StationWeatherSource
 │   ├── basin.py            # Basin
 │   ├── rating_curve.py     # RatingCurve
 │   ├── pipeline.py         # PipelineHealthRecord, FlowRunStatus
