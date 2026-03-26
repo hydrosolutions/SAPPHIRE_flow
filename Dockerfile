@@ -5,6 +5,7 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 WORKDIR /app
 
 COPY pyproject.toml uv.lock README.md ./
+RUN mkdir -p src/sapphire_flow && touch src/sapphire_flow/__init__.py
 
 RUN uv sync --frozen --no-dev
 
@@ -20,7 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends gosu curl \
 
 WORKDIR /app
 
-COPY entrypoint.sh /entrypoint.sh
+COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 COPY --from=builder --chown=app:app /app/.venv /app/.venv
