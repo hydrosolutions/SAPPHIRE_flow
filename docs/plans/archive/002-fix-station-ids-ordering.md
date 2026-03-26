@@ -49,3 +49,9 @@ since the architecture doc doesn't specify Python types at this granularity.
   `OnboardingUnit`, not `GroupModelInputs` or `GroupTrainingData`
 - Grep for `station_ids.*tuple` in spec — should match `GroupModelInputs` and
   `GroupTrainingData`
+
+## Note
+
+`TrainingUnit.station_ids` in `docs/design/v0-flow678-training-pipeline.md` (line 83) also
+uses `frozenset[StationId]`. This is correct — it represents membership ("the stations
+involved"), not an ordered batch dimension.
