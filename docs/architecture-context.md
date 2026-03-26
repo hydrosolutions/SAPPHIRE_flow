@@ -27,6 +27,9 @@ times a day. Runs on Docker Compose on a single VM.
 
 ### Initialization (on-demand)
 
+0. **Deployment onboarding** (one-time per deployment region)
+   Define area of interest → download area-wide static attribute datasets → download area-wide historical dynamic datasets → verify completeness → register datasets in catalog. Prerequisite for Flow 5 step 5.2 (catchment attributes) and model training with static features.
+
 5. **River station onboarding** (batch)
    Register stations → fetch catchment attributes → import historical observations → QC → rating curve conversion → compute baselines + flow regimes → configure models → train or validate → model admin confirms operational
 
@@ -506,6 +509,90 @@ expected_interval_hours = 6.0          # how often Flow 1 should complete
 
 The monitoring service reads these from loaded adapter config at runtime. Not part of `DeploymentConfig` — these are per-adapter and per-deployment.
 
+### Flow 0 — Deployment onboarding
+
+```
+Trigger:  One-time per deployment region (model admin / system admin)
+Flow:     onboard_deployment
+Layer:    flows/ — orchestration only, delegates to adapters/services
+Mode:     Sequential — area-wide data preparation before any station onboarding
+```
+
+Deployment onboarding prepares area-wide datasets **before** individual stations are onboarded. This separates the slow, bulk data download (which may take hours for large regions or reanalysis archives) from station-specific processing (which should complete in minutes once area data is cached locally).
+
+#### Motivation
+
+- **Fast station addition**: Once area-wide data is cached, adding a new station extracts its static attributes and historical forcing from the local cache in seconds — no per-station remote downloads.
+- **Consistency**: All stations in a deployment use the same dataset versions. No risk of one station using HydroATLAS v1.0 while another uses v1.1.
+- **Predictability**: The 15-minute "first station operational" target is achievable because the slow download step is decoupled from station onboarding.
+- **Feature onboarding**: When new static attributes or historical dynamic predictors are added, the same area-wide download + per-station extraction pattern applies — without re-downloading data that's already cached.
+
+#### Steps
+
+| # | Step | Layer | Input | Output | Restartable? |
+|---|------|-------|-------|--------|-------------|
+| 0.1 | Define area of interest | config / UI | Country bounding box or union of watershed geometries | AOI polygon stored in deployment config | Idempotent |
+| 0.2 | Download static attribute datasets | `adapters/` | AOI, dataset catalog | Local cache (GeoTIFF / Parquet / shapefile) per dataset | Idempotent (resume) |
+| 0.3 | Download historical dynamic datasets | `adapters/` | AOI, date range, variable list | Local cache (Zarr / Parquet / netCDF) per dataset | Idempotent (resume) |
+| 0.4 | Verify completeness | `services/` | Local cache, expected coverage | Completeness report (spatial + temporal) | Idempotent |
+| 0.5 | Register datasets in catalog | `store/` | Dataset metadata (source, version, path, AOI, variables) | Dataset registry records | Idempotent (upsert) |
+
+#### Notes
+
+- **0.1**: The area of interest (AOI) defines the spatial extent for all bulk downloads. For v0 (Switzerland), this is the bounding box of all BAFU catchments. For v1 (Nepal), this is the bounding box of all DHM basins. The AOI can be specified as a country bounding box, a union of known watershed geometries, or a manually defined polygon. Stored as part of deployment configuration.
+
+- **0.2**: Static attribute datasets are time-invariant catchment descriptors downloaded once for the entire AOI. Sources by deployment:
+  - **v0 (Switzerland)**: CAMELS-CH (234+ attributes, ~1.5 GB from Zenodo — already serves this role in the current implementation), HydroATLAS, MERIT DEM (90m elevation)
+  - **v1 (Nepal)**: HydroATLAS, MERIT DEM, Nepal DHM GIS data
+  - **Global**: HydroATLAS (~500 MB), MERIT DEM (~500 MB) — downloaded once, usable across deployments
+
+  Downloads are resumable and cached. Re-running step 0.2 skips already-downloaded datasets (verified by checksum).
+
+- **0.3**: Historical dynamic datasets are time-varying gridded or point data needed for model training and hindcast generation. Sources by deployment:
+  - **v0 (Switzerland)**: CAMELS-CH forcing (daily precipitation + temperature, bundled with 0.2), SMN station observations (hourly, fetched via adapter)
+  - **v1 (Nepal)**: ERA5-Land reanalysis (hourly, multi-variable, fetched via **SAPPHIRE Data Gateway** — see below)
+
+  For large reanalysis archives (ERA5-Land), this step may take hours. It runs in the background and can be monitored via Flow 4.
+
+- **0.4**: Validates that downloaded data covers the full AOI and requested date range. Reports gaps (spatial holes, missing time steps). Gaps in static data block station onboarding; gaps in dynamic data produce warnings (stations can still onboard with reduced training windows).
+
+- **0.5**: Records each dataset's metadata (source name, version, download timestamp, local path, AOI coverage, variable list) in a dataset registry. Flow 5 step 5.2 queries this registry to find cached static attributes for a basin instead of fetching them remotely.
+
+#### SAPPHIRE Data Gateway integration (v1)
+
+For Nepal v1, historical reanalysis data (ERA5-Land) and operational NWP data (ECMWF IFS) are sourced via the **SAPPHIRE Data Gateway** — a separate system maintained by the data gateway development team.
+
+**Deployment onboarding interaction with Data Gateway:**
+
+1. **Upload AOI shapefile**: SAPPHIRE Flow uploads the deployment's AOI geometry (union of all watershed boundaries) to the Data Gateway via its API.
+2. **Trigger area-wide data preparation**: Request the Data Gateway to prepare ERA5-Land reanalysis for the AOI + date range. The Data Gateway handles the CDS API interaction, caching, and spatial extraction on their side.
+3. **Define operational data flows**: Configure the Data Gateway to produce ongoing NWP extractions (ECMWF IFS basin-average or elevation-band) for the same AOI. These feed into Flow 1 step 1.1 during operational forecasting.
+4. **Download prepared data**: Once the Data Gateway signals readiness, SAPPHIRE Flow downloads the prepared reanalysis archive (step 0.3) and registers it locally (step 0.5).
+
+This interaction is designed jointly with the Data Gateway developer. The Data Gateway owns the heavy lifting of CDS API pagination, quota management, and grid-to-basin extraction for reanalysis data. SAPPHIRE Flow consumes the prepared output.
+
+**When a new station is added after deployment onboarding**: If the station's basin falls within the existing AOI, its static attributes and historical forcing are extracted from the local cache (seconds). If outside the AOI, the AOI must be expanded and steps 0.2–0.3 re-run for the delta region (or the Data Gateway re-triggered for the expanded geometry).
+
+#### Feature onboarding (adding new predictors)
+
+When a new static attribute or historical dynamic predictor is introduced (e.g. adding `soil_type` as a static feature, or `snow_depth` as a dynamic predictor):
+
+1. Add the dataset source to the dataset catalog configuration.
+2. Re-run step 0.2 (static) or 0.3 (dynamic) — only the new dataset is downloaded (existing datasets are cached and skipped).
+3. Re-run extraction for all existing basins to populate the new attribute/variable.
+4. Update `basins.attributes` JSONB (for static) or `historical_forcing` table (for dynamic) with the new data.
+5. Models that declare the new feature in their `ModelDataRequirements.static_features` or `past_dynamic_features` can now be trained.
+
+This ensures that adding new features does not require re-downloading existing data, and all stations receive the same new feature from the same dataset version.
+
+#### v0 implementation
+
+For v0, CAMELS-CH already bundles static attributes and historical forcing in a single ZIP download from Zenodo. The current `scripts/onboard.py --download` effectively performs steps 0.2 + 0.3 combined. Formalizing this as Flow 0 is a design-level change that prepares the architecture for v1 without requiring immediate code changes — the existing download step is retroactively recognized as a deployment onboarding step.
+
+**v0 timing**: CAMELS-CH download (~1.5 GB) takes 1–5 minutes. Station onboarding steps 5.1–5.9 take ~10 seconds for 50 stations. Total first-deployment time: **under 10 minutes** — well within the 15-minute target.
+
+---
+
 ### Flow 5 — River station onboarding
 
 ```
@@ -540,7 +627,7 @@ Stations enter with `station_status = 'onboarding'`. They become visible in Flow
   - **Minimum required fields**: `code`, `name`, `location`, `station_kind`, `timezone`, `basin_id`, `measured_parameters`. Everything else nullable / deferrable.
   - **Batch mode**: A single TOML file can define multiple stations. Each station is upserted independently — partial failures don't block other stations.
 
-- **5.2**: Fetches static catchment attributes for each station's basin. These are required as input features for ML models (EA-LSTM, delta-HBV) and for transfer learning to new sites. See `basins.attributes` JSONB column. Sources: global datasets (HydroATLAS, MERIT DEM), national GIS data (swisstopo for v0, Nepal DHM GIS for v1). For v0 this can be a one-time bulk computation; for v1 it must run per basin as stations are added.
+- **5.2**: Fetches static catchment attributes for each station's basin. These are required as input features for ML models (EA-LSTM, delta-HBV) and for transfer learning to new sites. See `basins.attributes` JSONB column. **Primary source: local cache prepared by Flow 0 (deployment onboarding)**. When Flow 0 has run, step 5.2 extracts basin-level attributes from the cached area-wide datasets — no remote downloads needed. If Flow 0 has not run or the basin falls outside the cached AOI, falls back to direct fetch from global datasets (HydroATLAS, MERIT DEM) or national GIS data (swisstopo for v0, Nepal DHM GIS for v1).
 
 - **5.3**: Maps the station to its NWP forcing source(s) and extraction type. Basin geometry for basin-average extraction comes from `basins.geometry`; elevation-band definitions are computed here and stored in `basins.band_geometries`. For point extraction: station coordinates are used directly. Determines what Flow 1 steps 1.1/1.3 fetch for this station.
 

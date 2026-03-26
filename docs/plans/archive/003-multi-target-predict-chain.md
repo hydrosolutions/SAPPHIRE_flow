@@ -1,7 +1,7 @@
 # Plan 003 — Multi-Target predict() Chain
 
 ---
-status: DONE
+status: ARCHIVED
 created: 2026-03-26
 scope: protocols + services + store + tests + docs
 depends_on: [007, 004]  # Phase 0 needs 007; Phase 2 needs 004 (SkillScore.parameter field)
