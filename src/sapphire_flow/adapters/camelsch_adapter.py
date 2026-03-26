@@ -160,11 +160,11 @@ def attributes_to_station(
     )
     if water_body_type == "lake":
         station_kind = StationKind.LAKE
-        forecast_target = "water_level"
+        forecast_targets: frozenset[str] = frozenset({"water_level"})
         measured_parameters: frozenset[str] = frozenset({"water_level"})
     elif water_body_type is None or water_body_type == "stream":
         station_kind = StationKind.RIVER
-        forecast_target = "discharge"
+        forecast_targets: frozenset[str] = frozenset({"discharge"})
         measured_parameters = frozenset({"discharge"})
     else:
         log.warning(
@@ -173,7 +173,7 @@ def attributes_to_station(
             water_body_type=water_body_type,
         )
         station_kind = StationKind.RIVER
-        forecast_target = "discharge"
+        forecast_targets: frozenset[str] = frozenset({"discharge"})
         measured_parameters = frozenset({"discharge"})
 
     return StationConfig(
@@ -185,7 +185,7 @@ def attributes_to_station(
         basin_id=basin_id,
         timezone="Europe/Zurich",
         regulation_type=None,
-        forecast_target=forecast_target,
+        forecast_targets=forecast_targets,
         measured_parameters=measured_parameters,
         station_status=StationStatus.ONBOARDING,
         created_at=now,

@@ -347,7 +347,7 @@ class TestLakeStationOnboarding:
             station_id=sid,
             code="LAKE001",
             station_kind=StationKind.LAKE,
-            forecast_target="water_level",
+            forecast_targets=frozenset({"water_level"}),
             measured_parameters=frozenset({"water_level"}),
         )
         basin = _make_basin("LAKE001")

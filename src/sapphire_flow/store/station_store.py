@@ -107,7 +107,9 @@ class PgStationStore:
                 regulation_type=station.regulation_type.value
                 if station.regulation_type is not None
                 else None,
-                forecast_target=station.forecast_target,
+                forecast_targets=list(station.forecast_targets)
+                if station.forecast_targets
+                else None,
                 measured_parameters=list(station.measured_parameters),
                 station_status=station.station_status.value,
                 created_at=station.created_at,
@@ -241,7 +243,9 @@ def _row_to_station(row: sa.engine.row.RowMapping) -> StationConfig:
         regulation_type=RegulationType(regulation_raw)
         if regulation_raw is not None
         else None,
-        forecast_target=row["forecast_target"],
+        forecast_targets=frozenset(row["forecast_targets"])
+        if row["forecast_targets"]
+        else None,
         measured_parameters=frozenset(row["measured_parameters"]),
         station_status=StationStatus(row["station_status"]),
         created_at=utc_from_row(row["created_at"]),

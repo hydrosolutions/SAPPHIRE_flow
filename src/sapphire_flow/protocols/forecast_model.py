@@ -4,14 +4,14 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     import random
-    from datetime import timedelta
 
     from sapphire_flow.types.ensemble import ForecastEnsemble
-    from sapphire_flow.types.enums import ArtifactScope, SpatialRepresentation
+    from sapphire_flow.types.enums import ArtifactScope
     from sapphire_flow.types.ids import StationId
     from sapphire_flow.types.model import (
         GroupTrainingData,
         ModelArtifact,
+        ModelDataRequirements,
         ModelInputs,
         ModelParams,
         TrainingData,
@@ -21,10 +21,7 @@ if TYPE_CHECKING:
 @runtime_checkable
 class StationForecastModel(Protocol):
     artifact_scope: ArtifactScope
-    required_features: frozenset[str]
-    required_static_attributes: frozenset[str]
-    spatial_input_type: SpatialRepresentation
-    supported_time_steps: frozenset[timedelta]
+    data_requirements: ModelDataRequirements
 
     def train(
         self, data: TrainingData, params: ModelParams, rng: random.Random
@@ -50,10 +47,7 @@ class StationForecastModel(Protocol):
 @runtime_checkable
 class GroupForecastModel(Protocol):
     artifact_scope: ArtifactScope
-    required_features: frozenset[str]
-    required_static_attributes: frozenset[str]
-    spatial_input_type: SpatialRepresentation
-    supported_time_steps: frozenset[timedelta]
+    data_requirements: ModelDataRequirements
 
     def train(
         self, data: GroupTrainingData, params: ModelParams, rng: random.Random

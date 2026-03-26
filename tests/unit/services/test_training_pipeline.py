@@ -102,7 +102,7 @@ def _setup_stores(
     clock = lambda: _EPOCH  # noqa: E731
     register_models({model_id: model}, model_store, clock)
 
-    # Create station with no basin (model has no required_static_attributes)
+    # Create station with no basin (model has no static_features requirement)
     station = make_station_config(station_id=station_id)
     station_store.store_station(station)
 

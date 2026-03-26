@@ -159,12 +159,7 @@ class TestNoFutureLeakage:
 
         class RecordingModel:
             artifact_scope = FakeStationForecastModel.artifact_scope
-            required_features = FakeStationForecastModel.required_features
-            required_static_attributes = (
-                FakeStationForecastModel.required_static_attributes
-            )
-            spatial_input_type = FakeStationForecastModel.spatial_input_type
-            supported_time_steps = FakeStationForecastModel.supported_time_steps
+            data_requirements = FakeStationForecastModel.data_requirements
 
             def __init__(self) -> None:
                 self.calls: list[tuple[UtcDatetime, ModelInputs]] = []
@@ -253,12 +248,7 @@ class TestStepFailureContinues:
 
         class BombModel:
             artifact_scope = FakeStationForecastModel.artifact_scope
-            required_features = FakeStationForecastModel.required_features
-            required_static_attributes = (
-                FakeStationForecastModel.required_static_attributes
-            )
-            spatial_input_type = FakeStationForecastModel.spatial_input_type
-            supported_time_steps = FakeStationForecastModel.supported_time_steps
+            data_requirements = FakeStationForecastModel.data_requirements
 
             def predict(
                 self,

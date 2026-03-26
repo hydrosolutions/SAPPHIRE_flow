@@ -92,7 +92,7 @@ def _run_onboarding(
     # Step 2: Store stations; build station_map for downstream
     # Maps the original gauge_id (station.code) → StationId
     station_map: dict[str, StationId] = {}
-    # Build lookup: station_id → forecast_target parameter for QC/baseline/regime
+    # Build lookup: station_id → forecast_targets parameter for QC/baseline/regime
     station_target: dict[StationId, str] = {}
     for station in stations:
         try:
@@ -102,15 +102,17 @@ def _run_onboarding(
             if existing is not None:
                 stations_skipped += 1
                 station_map[station.code] = existing.id
-                if existing.forecast_target is not None:
-                    station_target[existing.id] = existing.forecast_target
+                if existing.forecast_targets:
+                    ft = existing.forecast_targets
+                    station_target[existing.id] = next(iter(ft), "discharge")
                 log.info("station_already_exists", code=station.code)
             else:
                 station_store.store_station(station)
                 station_map[station.code] = station.id
                 stations_created += 1
-                if station.forecast_target is not None:
-                    station_target[station.id] = station.forecast_target
+                if station.forecast_targets:
+                    ft = station.forecast_targets
+                    station_target[station.id] = next(iter(ft), "discharge")
                 log.info("station_stored", code=station.code)
         except Exception as exc:
             msg = f"Failed to store station {station.code}: {exc}"
@@ -161,7 +163,7 @@ def _run_onboarding(
     for station_id in resolved_station_ids:
         parameter = station_target.get(station_id)
         if parameter is None:
-            log.warning("station_no_forecast_target", station_id=str(station_id))
+            log.warning("station_no_forecast_targets", station_id=str(station_id))
             continue
         try:
             raw_obs = obs_store.fetch_observations(
@@ -194,7 +196,7 @@ def _run_onboarding(
     for station_id in resolved_station_ids:
         parameter = station_target.get(station_id)
         if parameter is None:
-            log.warning("station_no_forecast_target", station_id=str(station_id))
+            log.warning("station_no_forecast_targets", station_id=str(station_id))
             continue
         try:
             qc_passed = obs_store.fetch_observations(
@@ -223,7 +225,7 @@ def _run_onboarding(
     for station_id in resolved_station_ids:
         parameter = station_target.get(station_id)
         if parameter is None:
-            log.warning("station_no_forecast_target", station_id=str(station_id))
+            log.warning("station_no_forecast_targets", station_id=str(station_id))
             continue
         try:
             qc_passed = obs_store.fetch_observations(

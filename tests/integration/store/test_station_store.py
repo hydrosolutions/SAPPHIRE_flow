@@ -78,7 +78,7 @@ class TestStoreAndFetchStation:
             basin_id=None,
             timezone="Europe/Zurich",
             regulation_type=None,
-            forecast_target=None,
+            forecast_targets=None,
             measured_parameters=frozenset({"temperature"}),
             station_status=StationStatus.OPERATIONAL,
             created_at=_NOW,

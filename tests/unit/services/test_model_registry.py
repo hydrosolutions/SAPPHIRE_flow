@@ -25,9 +25,12 @@ class TestBuildRegistryEntryStationModel:
 
         assert entry.id == model_id
         assert entry.artifact_scope == ArtifactScope.STATION
-        assert entry.required_features == frozenset({"precipitation", "temperature"})
-        assert entry.required_static_attributes == frozenset()
-        assert entry.spatial_input_type == SpatialRepresentation.POINT
+        reqs = entry.data_requirements
+        assert reqs.past_dynamic_features == frozenset(
+            {"precipitation", "temperature"}
+        )
+        assert entry.data_requirements.static_features == frozenset()
+        assert entry.data_requirements.spatial_input_type == SpatialRepresentation.POINT
         assert entry.registered_at == _NOW
 
     def test_display_name_derived_from_model_id(self) -> None:
@@ -72,7 +75,7 @@ class TestBuildRegistryEntryGroupModel:
         entry = build_registry_entry(
             ModelId("regional_lstm"), model, registered_at=_NOW
         )
-        assert timedelta(hours=1) in entry.supported_time_steps
+        assert timedelta(hours=1) in entry.data_requirements.supported_time_steps
 
 
 class TestRegisterModels:

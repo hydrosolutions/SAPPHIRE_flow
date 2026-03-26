@@ -82,7 +82,7 @@ stations = sa.Table(
     ),
     sa.Column("timezone", sa.Text, nullable=False),
     sa.Column("regulation_type", sa.Text, nullable=True),
-    sa.Column("forecast_target", sa.Text, nullable=True),
+    sa.Column("forecast_targets", JSONB, nullable=True),
     sa.Column("measured_parameters", ARRAY(sa.Text), nullable=False),
     sa.Column(
         "station_status",

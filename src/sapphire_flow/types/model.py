@@ -87,15 +87,23 @@ class ModelRecord:
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
+class ModelDataRequirements:
+    target_parameters: frozenset[str]
+    past_dynamic_features: frozenset[str]
+    future_dynamic_features: frozenset[str]
+    static_features: frozenset[str]
+    supported_time_steps: frozenset[timedelta]
+    lookback_steps: int
+    spatial_input_type: SpatialRepresentation
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
 class ModelRegistryEntry:
     id: ModelId
     display_name: str
     description: str
     artifact_scope: ArtifactScope
-    required_features: frozenset[str]
-    required_static_attributes: frozenset[str]
-    spatial_input_type: SpatialRepresentation
-    supported_time_steps: frozenset[timedelta]
+    data_requirements: ModelDataRequirements
     registered_at: UtcDatetime
 
 

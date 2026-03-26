@@ -73,7 +73,8 @@ def assemble_station_training_data(
         log.warning("training_data.station_not_found", station_id=str(station_id))
         return None
 
-    parameter = station.forecast_target or "discharge"
+    targets = station.forecast_targets
+    parameter = next(iter(targets), "discharge") if targets else "discharge"
     observations = obs_store.fetch_observations(
         station_id=station_id,
         parameter=parameter,
@@ -95,7 +96,7 @@ def assemble_station_training_data(
         log.warning("training_data.no_weather_sources", station_id=str(station_id))
         return None
 
-    required_features = list(model.required_features)
+    required_features = list(model.data_requirements.past_dynamic_features)
     raw_forcing = forcing_source.fetch_reanalysis(
         station_configs=weather_sources,
         start=period_start,
@@ -109,7 +110,7 @@ def assemble_station_training_data(
         return None
 
     forcing_columns = set(forcing_df.columns) - {"timestamp"}
-    missing_features = model.required_features - forcing_columns
+    missing_features = model.data_requirements.past_dynamic_features - forcing_columns
     if missing_features:
         log.warning(
             "training_data.missing_features",
@@ -122,8 +123,8 @@ def assemble_station_training_data(
     if station.basin_id is not None:
         basin = basin_store.fetch_basin(station.basin_id)
         if basin is not None and basin.attributes:
-            if model.required_static_attributes:
-                missing_attrs = model.required_static_attributes - set(
+            if model.data_requirements.static_features:
+                missing_attrs = model.data_requirements.static_features - set(
                     basin.attributes.keys()
                 )
                 if missing_attrs:
@@ -134,11 +135,11 @@ def assemble_station_training_data(
                     )
                     return None
             static_attributes = pl.DataFrame([basin.attributes])
-    elif model.required_static_attributes:
+    elif model.data_requirements.static_features:
         log.warning(
             "training_data.missing_static_attributes",
             station_id=str(station_id),
-            missing=sorted(model.required_static_attributes),
+            missing=sorted(model.data_requirements.static_features),
         )
         return None
 

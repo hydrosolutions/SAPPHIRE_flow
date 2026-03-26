@@ -12,6 +12,7 @@ from sapphire_flow.types.ids import StationId  # noqa: TC001
 from sapphire_flow.types.model import (  # noqa: TC001
     GroupTrainingData,
     ModelArtifact,
+    ModelDataRequirements,
     ModelInputs,
     ModelParams,
     TrainingData,
@@ -20,11 +21,14 @@ from sapphire_flow.types.model import (  # noqa: TC001
 
 class FakeStationForecastModel:
     artifact_scope = ArtifactScope.STATION
-    required_features: frozenset[str] = frozenset({"precipitation", "temperature"})
-    required_static_attributes: frozenset[str] = frozenset()
-    spatial_input_type = SpatialRepresentation.POINT
-    supported_time_steps: frozenset[timedelta] = frozenset(
-        {timedelta(hours=1), timedelta(hours=24)}
+    data_requirements: ModelDataRequirements = ModelDataRequirements(
+        target_parameters=frozenset({"discharge"}),
+        past_dynamic_features=frozenset({"precipitation", "temperature"}),
+        future_dynamic_features=frozenset(),
+        static_features=frozenset(),
+        supported_time_steps=frozenset({timedelta(hours=1), timedelta(hours=24)}),
+        lookback_steps=720,
+        spatial_input_type=SpatialRepresentation.POINT,
     )
     parameter: str = "discharge"
     units: str = "m3/s"
@@ -78,10 +82,15 @@ class FakeStationForecastModel:
 
 class FakeGroupForecastModel:
     artifact_scope = ArtifactScope.GROUP
-    required_features: frozenset[str] = frozenset({"precipitation", "temperature"})
-    required_static_attributes: frozenset[str] = frozenset()
-    spatial_input_type = SpatialRepresentation.POINT
-    supported_time_steps: frozenset[timedelta] = frozenset({timedelta(hours=1)})
+    data_requirements: ModelDataRequirements = ModelDataRequirements(
+        target_parameters=frozenset({"discharge"}),
+        past_dynamic_features=frozenset({"precipitation", "temperature"}),
+        future_dynamic_features=frozenset(),
+        static_features=frozenset(),
+        supported_time_steps=frozenset({timedelta(hours=1), timedelta(hours=24)}),
+        lookback_steps=720,
+        spatial_input_type=SpatialRepresentation.POINT,
+    )
     parameter: str = "discharge"
     units: str = "m3/s"
 

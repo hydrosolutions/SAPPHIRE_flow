@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-03-26
 scope: source code alignment with spec field renames
 depends_on: [001, 006]
@@ -67,6 +67,10 @@ belong to the plan that implements Flow 13.
 - `downgrade()`: reverse (reconstruct `forecast_target TEXT` from first element or NULL;
   drop `forecast_targets`).
 
+**Downgrade note:** The downgrade is lossy for stations that had `forecast_target = "both"`.
+On downgrade, only the first element of the JSONB array is preserved (e.g. `["discharge", "water_level"]`
+→ `"discharge"`). This is acceptable for a development-stage migration.
+
 ### 4. Update services and adapters
 
 **`src/sapphire_flow/services/model_registry.py`** (lines 54–64)
@@ -79,6 +83,11 @@ belong to the plan that implements Flow 13.
   → `parameter = next(iter(station.forecast_targets), "discharge") if station.forecast_targets else "discharge"`
 - Lines 98, 103, 106, 112: `model.required_features` → `model.data_requirements.past_dynamic_features`
 - Lines 125–126, 137, 141: `model.required_static_attributes` → `model.data_requirements.static_features`
+
+  **v0 simplification:** `next(iter(frozenset))` picks an arbitrary element when the set
+  has multiple entries. This is acceptable for v0 (all Swiss stations are single-parameter).
+  Multi-target iteration belongs to plans 003/005. Applied consistently in `training_data.py`,
+  `hindcast.py`, and `onboarding.py`.
 
 **`src/sapphire_flow/services/hindcast.py`**
 - Line 84: parameter `required_features: list[str]` → `required_features: list[str]` (kept as local
@@ -159,5 +168,22 @@ belong to the plan that implements Flow 13.
 - Grep for `required_features` in `src/` — zero matches (except imports of `ModelDataRequirements`)
 - Grep for `required_static_attributes` in `src/` — zero matches
 - Grep for `forecast_target[^s]` in `src/` — zero matches
+- Grep for `forecast_target[^s]` in `alembic/versions/` — zero matches except in the new migration's `downgrade()` (which reconstructs the old column)
+- Grep for `required_features` in `alembic/` — zero matches (these fields were never in DB schema)
 - `uv run pytest` passes
 - `uv run ruff check` clean
+
+## Guardrails
+
+- Run `uv run pytest` before starting changes to establish a green baseline
+- Run `uv run pytest` after each change group (sections 1–5) to catch regressions early
+- The migration should be tested by running `alembic upgrade head` against the test database
+- Version bump: `uv run bump-my-version bump patch` before committing (per CLAUDE.md)
+
+## Open items
+
+1. **v0-scope.md §A13 tension** — §A13 says "Multi-target predictions supported from day one"
+   but all service code in this plan uses single-target extraction (`next(iter(...))`). This is
+   a deliberate v0 simplification: the _types_ support multi-target (`frozenset[str]`), the
+   _storage_ supports multi-target (JSONB array), but the _service logic_ remains single-target
+   until plan 003 lands the multi-parameter iteration loops.

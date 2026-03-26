@@ -146,7 +146,7 @@ class TestAttributesToStation:
         assert station.location.lat == pytest.approx(47.4)
         assert station.basin_id == _BASIN_ID
         assert station.timezone == "Europe/Zurich"
-        assert station.forecast_target == "discharge"
+        assert station.forecast_targets == frozenset({"discharge"})
         assert station.measured_parameters == frozenset({"discharge"})
         assert station.station_status == StationStatus.ONBOARDING
         assert station.network == "bafu"
@@ -253,7 +253,7 @@ class TestAttributesToStationClassification:
         station = attributes_to_station("2004", attrs, _BASIN_ID, _STATION_ID, _CLOCK)
 
         assert station.station_kind == StationKind.RIVER
-        assert station.forecast_target == "discharge"
+        assert station.forecast_targets == frozenset({"discharge"})
         assert station.measured_parameters == frozenset({"discharge"})
 
     def test_lake_station(self) -> None:
@@ -262,12 +262,12 @@ class TestAttributesToStationClassification:
         )
 
         assert station.station_kind == StationKind.LAKE
-        assert station.forecast_target == "water_level"
+        assert station.forecast_targets == frozenset({"water_level"})
         assert station.measured_parameters == frozenset({"water_level"})
 
     def test_missing_type_defaults_to_river(self) -> None:
         station = attributes_to_station("2004", _ATTRS, _BASIN_ID, _STATION_ID, _CLOCK)
 
         assert station.station_kind == StationKind.RIVER
-        assert station.forecast_target == "discharge"
+        assert station.forecast_targets == frozenset({"discharge"})
         assert station.measured_parameters == frozenset({"discharge"})

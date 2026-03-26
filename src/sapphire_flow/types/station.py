@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from datetime import timedelta
@@ -30,7 +30,7 @@ class StationConfig:
     basin_id: BasinId | None
     timezone: str
     regulation_type: RegulationType | None
-    forecast_target: Literal["discharge", "water_level", "both"] | None
+    forecast_targets: frozenset[str] | None
     measured_parameters: frozenset[str]
     station_status: StationStatus
     created_at: UtcDatetime

@@ -176,8 +176,9 @@ def run_station_hindcast(
 
     weather_sources = station_store.fetch_weather_sources(station_id)
     static_df = _load_static_attributes(basin_store, station_config)
-    required_features = list(model.required_features)
-    parameter = station_config.forecast_target or "discharge"
+    required_features = list(model.data_requirements.past_dynamic_features)
+    targets = station_config.forecast_targets
+    parameter = next(iter(targets), "discharge") if targets else "discharge"
 
     results: list[HindcastStepResult] = []
     for issue_time in _issue_times(period_start, period_end, time_step):
@@ -277,11 +278,15 @@ def run_group_hindcast(
         if cfg is not None
     }
     parameter_map: dict[StationId, str] = {
-        sid: (cfg.forecast_target or "discharge")
+        sid: (
+            next(iter(cfg.forecast_targets), "discharge")
+            if cfg.forecast_targets
+            else "discharge"
+        )
         for sid, cfg in station_configs.items()
         if cfg is not None
     }
-    required_features = list(model.required_features)
+    required_features = list(model.data_requirements.past_dynamic_features)
 
     per_station: dict[StationId, list[HindcastStepResult]] = {
         sid: [] for sid in group.station_ids

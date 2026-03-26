@@ -56,10 +56,7 @@ def build_registry_entry(
         display_name=display_name,
         description=description,
         artifact_scope=model.artifact_scope,
-        required_features=model.required_features,
-        required_static_attributes=model.required_static_attributes,
-        spatial_input_type=model.spatial_input_type,
-        supported_time_steps=model.supported_time_steps,
+        data_requirements=model.data_requirements,
         registered_at=registered_at,
     )
 
