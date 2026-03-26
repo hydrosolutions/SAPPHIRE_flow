@@ -34,7 +34,7 @@ class StationForecastModel(Protocol):
         inputs: ModelInputs,
         rng: random.Random,
         prior_state: bytes | None = None,
-    ) -> tuple[ForecastEnsemble, bytes | None]:
+    ) -> tuple[dict[str, ForecastEnsemble], bytes | None]:
         raise NotImplementedError
 
     def serialize_artifact(self, artifact: ModelArtifact) -> bytes:
@@ -59,7 +59,7 @@ class GroupForecastModel(Protocol):
         artifact: ModelArtifact,
         inputs: dict[StationId, ModelInputs],
         rng: random.Random,
-    ) -> dict[StationId, tuple[ForecastEnsemble, bytes | None]]:
+    ) -> dict[StationId, tuple[dict[str, ForecastEnsemble], bytes | None]]:
         raise NotImplementedError
 
     def serialize_artifact(self, artifact: ModelArtifact) -> bytes:

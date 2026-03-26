@@ -1643,6 +1643,7 @@ class HindcastStore(Protocol):
         end: UtcDatetime,
         forcing_type: ForcingType | None = None,  # None = all types
         hindcast_run_id: UUID | None = None,       # None = all runs
+        parameter: str | None = None,              # None = all parameters
     ) -> list[HindcastForecast]: ...
 ```
 

@@ -86,6 +86,7 @@ class PgHindcastStore:
         end: UtcDatetime,
         forcing_type: ForcingType | None = None,
         hindcast_run_id: UUID | None = None,
+        parameter: str | None = None,
     ) -> list[HindcastForecast]:
         q = sa.select(hindcast_forecasts).where(
             sa.and_(
@@ -99,6 +100,8 @@ class PgHindcastStore:
             q = q.where(hindcast_forecasts.c.forcing_type == forcing_type.value)
         if hindcast_run_id is not None:
             q = q.where(hindcast_forecasts.c.hindcast_run_id == hindcast_run_id)
+        if parameter is not None:
+            q = q.where(hindcast_forecasts.c.parameter == parameter)
 
         header_rows = self._conn.execute(q).mappings().all()
         if not header_rows:

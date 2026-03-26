@@ -317,9 +317,19 @@ def compute_skill_for_station(
     forcing_type: ForcingType | None,
     clock: Callable[[], UtcDatetime],
     uuid_factory: Callable[[], UUID],
+    *,
+    parameter: str,
 ) -> tuple[list[SkillScore], list[SkillDiagram]]:
     if not hindcasts or not observations:
         return [], []
+
+    mismatched = [hc for hc in hindcasts if hc.ensemble.parameter != parameter]
+    if mismatched:
+        raise ValueError(
+            f"compute_skill_for_station received hindcasts with parameters "
+            f"other than '{parameter}': "
+            f"{sorted({hc.ensemble.parameter for hc in mismatched})}"
+        )
 
     obs_lookup: dict[object, float] = {
         o.timestamp: o.value for o in observations if o.value is not None

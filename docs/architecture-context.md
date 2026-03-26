@@ -886,6 +886,8 @@ flowchart TD
 | H.5 | Run model per time step | `models/` | Input bundles, model artifact | Forecast ensembles per hindcast step |
 | H.6 | Store hindcast results | `store/` | Hindcast forecast ensembles + model artifact version | Persisted to hindcast tables |
 
+**Multi-target note:** Multi-target models produce one `HindcastForecast` record per `(station_id, hindcast_step, parameter)` combination. Consumers (Flow 8 skill computation) must filter by parameter when fetching.
+
 Using `H.*` prefix since hindcast is referenced from multiple flows.
 
 #### Notes
@@ -967,6 +969,7 @@ Using `S.*` prefix since this flow serves both Flow 8 and Flow 10.
 
 #### Notes
 
+- **Parameter scoping:** `compute_skill_for_station()` requires an explicit `parameter: str` argument. Hindcasts must be pre-filtered by parameter before passing to skill computation.
 - **S.4**: Standard metric set, extensible over time:
   - Ensemble: CRPS, CRPS skill score (CRPSss against climatology and persistence baselines), reliability diagram data, spread-skill ratio, rank histogram (PIT)
   - Sharpness: mean prediction interval width (P10–P90 and P25–P75), mean ensemble range (max − min member), computed per lead time. Sharpness is a property of the forecast alone (does not require observations) — tracked alongside reliability to detect overconfidence or excessive hedging. Corresponds to the "sharpness" dimension in WMO-1364.

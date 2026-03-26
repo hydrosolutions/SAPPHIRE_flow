@@ -48,6 +48,7 @@ def _make_hindcast(
     n_members: int = 5,
     n_steps: int = 3,
     value: float = 10.0,
+    parameter: str = "discharge",
 ) -> object:
     from sapphire_flow.types.ensemble import ForecastEnsemble
     from sapphire_flow.types.forecast import HindcastForecast
@@ -67,11 +68,12 @@ def _make_hindcast(
         pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
         pl.col("member_id").cast(pl.Int32),
     )
+    units = "m3/s" if parameter == "discharge" else "m"
     ensemble = ForecastEnsemble.from_members(
         station_id=station_id,
         issued_at=hindcast_step,
-        parameter="discharge",
-        units="m3/s",
+        parameter=parameter,
+        units=units,
         time_step=time_step,
         values=df,
     )
@@ -208,6 +210,7 @@ class TestComputeSkillBasic:
             forcing_type=ForcingType.REANALYSIS,
             clock=clock,  # type: ignore[arg-type]
             uuid_factory=uuid_factory,  # type: ignore[arg-type]
+            parameter="discharge",
         )
 
         assert len(scores) > 0
@@ -273,6 +276,7 @@ class TestComputeSkillBasic:
             forcing_type=ForcingType.REANALYSIS,
             clock=clock,  # type: ignore[arg-type]
             uuid_factory=uuid_factory,  # type: ignore[arg-type]
+            parameter="discharge",
         )
 
         # All-season/all-regime aggregate at lead_time=1 → sample_size = n_hindcasts
@@ -325,6 +329,7 @@ class TestNoMatchingObservations:
             forcing_type=None,
             clock=clock,  # type: ignore[arg-type]
             uuid_factory=uuid_factory,  # type: ignore[arg-type]
+            parameter="discharge",
         )
 
         assert scores == []
@@ -353,6 +358,7 @@ class TestNoMatchingObservations:
             forcing_type=None,
             clock=clock,  # type: ignore[arg-type]
             uuid_factory=uuid_factory,  # type: ignore[arg-type]
+            parameter="discharge",
         )
         assert scores == []
         assert diagrams == []
@@ -418,6 +424,7 @@ class TestSeasonStratification:
             forcing_type=ForcingType.REANALYSIS,
             clock=clock,  # type: ignore[arg-type]
             uuid_factory=uuid_factory,  # type: ignore[arg-type]
+            parameter="discharge",
         )
 
         season_names = {s.season for s in scores}
@@ -463,7 +470,50 @@ class TestSeasonStratification:
             forcing_type=ForcingType.REANALYSIS,
             clock=clock,  # type: ignore[arg-type]
             uuid_factory=uuid_factory,  # type: ignore[arg-type]
+            parameter="discharge",
         )
 
         assert all(s.freshness == SkillFreshness.CURRENT for s in scores)
         assert all(s.computation_version == 1 for s in scores)
+
+
+class TestParameterMismatch:
+    def test_mismatched_parameter_raises(
+        self,
+        station_id: StationId,
+        model_id: ModelId,
+        artifact_id: ArtifactId,
+        clock: object,
+        uuid_factory: object,
+        seasons: list[SeasonDefinition],
+    ) -> None:
+        step = _utc(2025, 1, 1)
+        vt = ensure_utc(datetime.fromtimestamp(step.timestamp() + 3600, tz=UTC))
+        hindcasts = [
+            _make_hindcast(
+                station_id=station_id,
+                model_id=model_id,
+                artifact_id=artifact_id,
+                hindcast_step=step,
+                n_steps=1,
+                parameter="water_level",
+            )
+        ]
+        observations = [_make_observation(station_id=station_id, timestamp=vt)]
+
+        with pytest.raises(ValueError, match="parameters other than"):
+            compute_skill_for_station(
+                station_id=station_id,
+                model_id=model_id,
+                artifact_id=artifact_id,
+                hindcasts=hindcasts,
+                observations=observations,
+                thresholds=[],
+                flow_regime_config=None,
+                seasons=seasons,
+                skill_source=SkillSource.HINDCAST_REANALYSIS,
+                forcing_type=ForcingType.REANALYSIS,
+                clock=clock,  # type: ignore[arg-type]
+                uuid_factory=uuid_factory,  # type: ignore[arg-type]
+                parameter="discharge",
+            )

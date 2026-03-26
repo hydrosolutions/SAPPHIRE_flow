@@ -715,6 +715,13 @@ sa.Index(
     hindcast_forecasts.c.model_id,
     hindcast_forecasts.c.hindcast_step,
 )
+sa.Index(
+    "ix_hindcast_forecasts_station_model_step_param",
+    hindcast_forecasts.c.station_id,
+    hindcast_forecasts.c.model_id,
+    hindcast_forecasts.c.hindcast_step,
+    hindcast_forecasts.c.parameter,
+)
 
 hindcast_values = sa.Table(
     "hindcast_values",

@@ -208,6 +208,7 @@ class HindcastStore(Protocol):
         end: UtcDatetime,
         forcing_type: ForcingType | None = None,
         hindcast_run_id: UUID | None = None,
+        parameter: str | None = None,
     ) -> list[HindcastForecast]:
         raise NotImplementedError
 

@@ -303,6 +303,7 @@ def train_models_flow(
                 station_id=sid,
                 model_id=unit.model_id,
                 artifact_id=artifact_id,
+                parameter="discharge",
                 hindcast_run_id=hindcast_run_id,
                 hindcast_store=hindcast_store,
                 obs_store=obs_store,

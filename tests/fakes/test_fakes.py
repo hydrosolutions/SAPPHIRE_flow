@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import random
+from datetime import UTC, datetime, timedelta
+from uuid import UUID
+
+import polars as pl
+
 from sapphire_flow.protocols.adapters import (
     ForeignForecastSource,
     PipelineStatusSource,
@@ -151,3 +157,116 @@ class TestFakeModelConformance:
 
     def test_group_forecast_model(self) -> None:
         assert isinstance(FakeGroupForecastModel(), GroupForecastModel)
+
+
+_RNG = random.Random(99)
+_EPOCH = datetime(2025, 1, 15, 0, 0, tzinfo=UTC)
+
+
+def _fake_uuid() -> UUID:
+    return UUID(int=_RNG.getrandbits(128), version=4)
+
+
+def _build_hindcast(*, parameter: str = "discharge") -> "HindcastForecast":
+    from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
+    from sapphire_flow.types.ensemble import ForecastEnsemble
+    from sapphire_flow.types.enums import EnsembleRepresentation, ForcingType
+    from sapphire_flow.types.forecast import HindcastForecast
+    from sapphire_flow.types.ids import (
+        ArtifactId,
+        HindcastForecastId,
+        ModelId,
+        StationId,
+    )
+
+    station_id = StationId(_fake_uuid())
+    model_id = ModelId("test_model")
+    issued_at: UtcDatetime = ensure_utc(_EPOCH)
+    time_step = timedelta(hours=1)
+    vt = ensure_utc(datetime(2025, 1, 15, 1, 0, tzinfo=UTC))
+
+    df = pl.DataFrame(
+        [{"valid_time": vt, "member_id": m, "value": 10.0 + m} for m in range(3)]
+    ).with_columns(
+        pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
+        pl.col("member_id").cast(pl.Int32),
+    )
+
+    units = "m3/s" if parameter == "discharge" else "m"
+    ensemble = ForecastEnsemble.from_members(
+        station_id=station_id,
+        issued_at=issued_at,
+        parameter=parameter,
+        units=units,
+        time_step=time_step,
+        values=df,
+    )
+    return HindcastForecast(
+        id=HindcastForecastId(_fake_uuid()),
+        station_id=station_id,
+        model_id=model_id,
+        model_artifact_id=ArtifactId(_fake_uuid()),
+        hindcast_step=issued_at,
+        forcing_type=ForcingType.REANALYSIS,
+        representation=EnsembleRepresentation.MEMBERS,
+        hindcast_run_id=_fake_uuid(),
+        ensemble=ensemble,
+        created_at=issued_at,
+    )
+
+
+class TestFakeHindcastStoreParameterFilter:
+    def test_parameter_none_returns_all(self) -> None:
+        from sapphire_flow.types.datetime import ensure_utc
+
+        store = FakeHindcastStore()
+        h1 = _build_hindcast(parameter="discharge")
+        h2 = _build_hindcast(parameter="water_level")
+
+        # Both must share station_id/model_id for the filter to matter
+        # Rebuild h2 to share station_id and model_id with h1
+        from dataclasses import replace as dc_replace
+
+        h2 = dc_replace(h2, station_id=h1.station_id, model_id=h1.model_id)
+
+        store.store_hindcast(h1)
+        store.store_hindcast(h2)
+
+        start = ensure_utc(datetime(2020, 1, 1, tzinfo=UTC))
+        end = ensure_utc(datetime(2030, 1, 1, tzinfo=UTC))
+
+        result = store.fetch_hindcasts(
+            station_id=h1.station_id,
+            model_id=h1.model_id,
+            start=start,
+            end=end,
+            parameter=None,
+        )
+        assert len(result) == 2
+
+    def test_parameter_filters_exact_match(self) -> None:
+        from sapphire_flow.types.datetime import ensure_utc
+
+        store = FakeHindcastStore()
+        h1 = _build_hindcast(parameter="discharge")
+        h2 = _build_hindcast(parameter="water_level")
+
+        from dataclasses import replace as dc_replace
+
+        h2 = dc_replace(h2, station_id=h1.station_id, model_id=h1.model_id)
+
+        store.store_hindcast(h1)
+        store.store_hindcast(h2)
+
+        start = ensure_utc(datetime(2020, 1, 1, tzinfo=UTC))
+        end = ensure_utc(datetime(2030, 1, 1, tzinfo=UTC))
+
+        result = store.fetch_hindcasts(
+            station_id=h1.station_id,
+            model_id=h1.model_id,
+            start=start,
+            end=end,
+            parameter="discharge",
+        )
+        assert len(result) == 1
+        assert result[0].ensemble.parameter == "discharge"

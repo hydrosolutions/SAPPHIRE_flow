@@ -206,26 +206,31 @@ def run_station_hindcast(
                 )
                 continue
 
-            ensemble, _ = model.predict(
+            ensembles, _ = model.predict(
                 artifact=artifact,
                 inputs=inputs,
                 rng=rng,
                 prior_state=None,
             )
-
-            hindcast = HindcastForecast(
-                id=HindcastForecastId(uuid4()),
-                station_id=station_id,
-                model_id=model_id,
-                model_artifact_id=artifact_id,
-                hindcast_step=issue_time,
-                forcing_type=ForcingType.REANALYSIS,
-                representation=EnsembleRepresentation.MEMBERS,
-                hindcast_run_id=hindcast_run_id,
-                ensemble=ensemble,
-                created_at=clock(),
-            )
-            hindcast_store.store_hindcast(hindcast)
+            for param_name, ensemble in ensembles.items():
+                if ensemble.parameter != param_name:
+                    raise ValueError(
+                        f"Dict key '{param_name}' != ensemble.parameter "
+                        f"'{ensemble.parameter}'"
+                    )
+                hindcast = HindcastForecast(
+                    id=HindcastForecastId(uuid4()),
+                    station_id=station_id,
+                    model_id=model_id,
+                    model_artifact_id=artifact_id,
+                    hindcast_step=issue_time,
+                    forcing_type=ForcingType.REANALYSIS,
+                    representation=EnsembleRepresentation.MEMBERS,
+                    hindcast_run_id=hindcast_run_id,
+                    ensemble=ensemble,
+                    created_at=clock(),
+                )
+                hindcast_store.store_hindcast(hindcast)
             results.append(HindcastStepResult(issue_time=issue_time, success=True))
 
         except Exception as exc:
@@ -355,34 +360,44 @@ def run_group_hindcast(
                 )
             continue
 
-        for sid, (ensemble, _) in batch_results.items():
+        for sid, (ensembles, _) in batch_results.items():
+            param_name: str | None = None
             try:
-                hindcast = HindcastForecast(
-                    id=HindcastForecastId(uuid4()),
-                    station_id=sid,
-                    model_id=model_id,
-                    model_artifact_id=artifact_id,
-                    hindcast_step=issue_time,
-                    forcing_type=ForcingType.REANALYSIS,
-                    representation=EnsembleRepresentation.MEMBERS,
-                    hindcast_run_id=hindcast_run_id,
-                    ensemble=ensemble,
-                    created_at=clock(),
-                )
-                hindcast_store.store_hindcast(hindcast)
+                for param_name, ensemble in ensembles.items():
+                    if ensemble.parameter != param_name:
+                        raise ValueError(
+                            f"Dict key '{param_name}' != ensemble.parameter "
+                            f"'{ensemble.parameter}'"
+                        )
+                    hindcast = HindcastForecast(
+                        id=HindcastForecastId(uuid4()),
+                        station_id=sid,
+                        model_id=model_id,
+                        model_artifact_id=artifact_id,
+                        hindcast_step=issue_time,
+                        forcing_type=ForcingType.REANALYSIS,
+                        representation=EnsembleRepresentation.MEMBERS,
+                        hindcast_run_id=hindcast_run_id,
+                        ensemble=ensemble,
+                        created_at=clock(),
+                    )
+                    hindcast_store.store_hindcast(hindcast)
                 per_station[sid].append(
                     HindcastStepResult(issue_time=issue_time, success=True)
                 )
             except Exception as exc:
-                log.warning(
+                log.error(
                     "hindcast.store_failed",
                     station_id=str(sid),
                     issue_time=str(issue_time),
-                    error=str(exc),
+                    parameter=param_name or "<unknown>",
+                    exc_info=exc,
                 )
                 per_station[sid].append(
                     HindcastStepResult(
-                        issue_time=issue_time, success=False, error=str(exc)
+                        issue_time=issue_time,
+                        success=False,
+                        error=str(exc),
                     )
                 )
 

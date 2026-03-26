@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from sapphire_flow.services.hindcast import run_station_hindcast
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
+from sapphire_flow.types.ensemble import ForecastEnsemble
 from sapphire_flow.types.enums import SpatialRepresentation, WeatherSourceStatus
 from sapphire_flow.types.ids import ArtifactId, ModelId, StationId
 from sapphire_flow.types.station import StationWeatherSource
@@ -133,6 +134,8 @@ class TestBasicHindcast:
         assert len(results) == 5
         assert all(r.success for r in results)
         assert all(r.error is None for r in results)
+        for h in hindcast_store._hindcasts.values():
+            assert isinstance(h.ensemble, ForecastEnsemble)
 
 
 class TestNoFutureLeakage:
@@ -409,3 +412,128 @@ class TestHindcastStored:
             assert h.model_artifact_id == artifact_id
             assert h.hindcast_run_id == run_id
             assert h.forcing_type.value == "reanalysis"
+            assert isinstance(h.ensemble, ForecastEnsemble)
+
+
+class TestMultiParameterStation:
+    def test_two_parameters_stored_per_step(self) -> None:
+        from tests.fakes.fake_models import FakeMultiTargetStationForecastModel
+
+        rng = random.Random(42)
+        station = make_station_config()
+        sid = station.id
+        model_id = ModelId("test_model")
+        artifact_id = ArtifactId(uuid4())
+        run_id = uuid4()
+
+        obs_store = FakeObservationStore()
+        hindcast_store = FakeHindcastStore()
+        station_store = FakeStationStore()
+        basin_store = FakeBasinStore()
+        forcing_source = FakeWeatherReanalysisSource()
+
+        station_store.store_station(station)
+        station_store.store_weather_source(_make_weather_source(sid))
+
+        data_start = ensure_utc(datetime(2021, 1, 1, tzinfo=UTC))
+        _seed_observations(obs_store, sid, data_start, n_days=400)
+        _seed_forcing(forcing_source, sid, data_start, n_days=400)
+
+        model = FakeMultiTargetStationForecastModel(
+            parameters=("discharge", "water_level"),
+        )
+
+        results = run_station_hindcast(
+            model=model,
+            artifact=b"artifact",
+            station_id=sid,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            period_start=_PERIOD_START,
+            period_end=_PERIOD_END,
+            time_step=_STEP,
+            forcing_source=forcing_source,
+            obs_store=obs_store,
+            hindcast_store=hindcast_store,
+            station_store=station_store,
+            basin_store=basin_store,
+            clock=_fixed_clock,
+            rng=rng,
+            hindcast_run_id=run_id,
+            forecast_horizon_steps=5,
+        )
+
+        assert all(r.success for r in results)
+        n_steps = len(results)
+        all_hindcasts = list(hindcast_store._hindcasts.values())
+        assert len(all_hindcasts) == 2 * n_steps
+        for h in all_hindcasts:
+            assert isinstance(h.ensemble, ForecastEnsemble)
+        discharge_hindcasts = hindcast_store.fetch_hindcasts(
+            station_id=sid,
+            model_id=model_id,
+            start=_PERIOD_START,
+            end=ensure_utc(datetime(2022, 1, 10, tzinfo=UTC)),
+            parameter="discharge",
+        )
+        water_level_hindcasts = hindcast_store.fetch_hindcasts(
+            station_id=sid,
+            model_id=model_id,
+            start=_PERIOD_START,
+            end=ensure_utc(datetime(2022, 1, 10, tzinfo=UTC)),
+            parameter="water_level",
+        )
+        assert len(discharge_hindcasts) == n_steps
+        assert len(water_level_hindcasts) == n_steps
+
+
+class TestSingleParameterBackwardCompat:
+    def test_single_param_model_stores_one_record_per_step(self) -> None:
+        rng = random.Random(42)
+        station = make_station_config()
+        sid = station.id
+        model_id = ModelId("test_model")
+        artifact_id = ArtifactId(uuid4())
+        run_id = uuid4()
+
+        obs_store = FakeObservationStore()
+        hindcast_store = FakeHindcastStore()
+        station_store = FakeStationStore()
+        basin_store = FakeBasinStore()
+        forcing_source = FakeWeatherReanalysisSource()
+
+        station_store.store_station(station)
+        station_store.store_weather_source(_make_weather_source(sid))
+
+        data_start = ensure_utc(datetime(2021, 1, 1, tzinfo=UTC))
+        _seed_observations(obs_store, sid, data_start, n_days=400)
+        _seed_forcing(forcing_source, sid, data_start, n_days=400)
+
+        model = FakeStationForecastModel()
+
+        results = run_station_hindcast(
+            model=model,
+            artifact=b"artifact",
+            station_id=sid,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            period_start=_PERIOD_START,
+            period_end=_PERIOD_END,
+            time_step=_STEP,
+            forcing_source=forcing_source,
+            obs_store=obs_store,
+            hindcast_store=hindcast_store,
+            station_store=station_store,
+            basin_store=basin_store,
+            clock=_fixed_clock,
+            rng=rng,
+            hindcast_run_id=run_id,
+            forecast_horizon_steps=5,
+        )
+
+        assert all(r.success for r in results)
+        n_steps = len(results)
+        all_hindcasts = list(hindcast_store._hindcasts.values())
+        assert len(all_hindcasts) == n_steps
+        for h in all_hindcasts:
+            assert isinstance(h.ensemble, ForecastEnsemble)

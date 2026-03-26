@@ -452,6 +452,7 @@ def compute_skill_for_station(
     seasons: list[SeasonDefinition],
     skill_source: SkillSource,
     forcing_type: ForcingType | None,
+    parameter: str,
     clock: Callable[[], UtcDatetime],
     uuid_factory: Callable[[], UUID],
 ) -> tuple[list[SkillScore], list[SkillDiagram]]:
@@ -549,6 +550,7 @@ def compute_skills(
     station_id: str,
     model_id: str,
     artifact_id: str,
+    parameter: str,
     hindcast_run_id: str | None = None,
 ) -> tuple[list[SkillScore], list[SkillDiagram]]:
 ```

@@ -265,6 +265,7 @@ class FakeHindcastStore:
         end: UtcDatetime,
         forcing_type: ForcingType | None = None,
         hindcast_run_id: UUID | None = None,
+        parameter: str | None = None,
     ) -> list[HindcastForecast]:
         return [
             h
@@ -274,6 +275,7 @@ class FakeHindcastStore:
             and start <= h.hindcast_step < end
             and (forcing_type is None or h.forcing_type == forcing_type)
             and (hindcast_run_id is None or h.hindcast_run_id == hindcast_run_id)
+            and (parameter is None or h.ensemble.parameter == parameter)
         ]
 
 

@@ -18,6 +18,7 @@ def _fetch_hindcasts(
     period_start: object,
     period_end: object,
     hindcast_run_id: UUID | None,
+    parameter: str,
 ) -> list:
     return hindcast_store.fetch_hindcasts(
         station_id=station_id,
@@ -25,6 +26,7 @@ def _fetch_hindcasts(
         start=period_start,
         end=period_end,
         hindcast_run_id=hindcast_run_id,
+        parameter=parameter,
     )
 
 
@@ -34,12 +36,13 @@ def _fetch_observations(
     station_id: StationId,
     period_start: object,
     period_end: object,
+    parameter: str,
 ) -> list:
     from sapphire_flow.types.enums import QcStatus
 
     return obs_store.fetch_observations(
         station_id=station_id,
-        parameter="discharge",
+        parameter=parameter,
         start=period_start,
         end=period_end,
         qc_status=QcStatus.QC_PASSED,
@@ -61,6 +64,7 @@ def compute_skills_flow(
     station_id: StationId,
     model_id: ModelId,
     artifact_id: ArtifactId,
+    parameter: str,
     hindcast_run_id: UUID | None = None,
     hindcast_store: object = None,
     obs_store: object = None,
@@ -73,6 +77,12 @@ def compute_skills_flow(
     from datetime import UTC, datetime
 
     from sapphire_flow.types.datetime import ensure_utc
+
+    if parameter != "discharge":
+        raise NotImplementedError(
+            "Non-discharge skill computation requires SkillScore.parameter "
+            "field (plan 004) to comply with WMO verification standards"
+        )
 
     if clock is None:
         clock = lambda: ensure_utc(datetime.now(UTC))  # noqa: E731
@@ -87,6 +97,7 @@ def compute_skills_flow(
         broad_start,
         broad_end,
         hindcast_run_id,
+        parameter=parameter,
     )
 
     if not hindcasts:
@@ -96,11 +107,13 @@ def compute_skills_flow(
     period_start = min(hindcast_steps)
     period_end = max(hindcast_steps)
 
-    observations = _fetch_observations(obs_store, station_id, period_start, period_end)
+    observations = _fetch_observations(
+        obs_store, station_id, period_start, period_end, parameter=parameter
+    )
 
     thresholds = station_store.fetch_thresholds(station_id) if station_store else []
     flow_regime_config = (
-        flow_regime_store.fetch_latest(station_id, "discharge")
+        flow_regime_store.fetch_latest(station_id, parameter)
         if flow_regime_store
         else None
     )
@@ -122,6 +135,7 @@ def compute_skills_flow(
         forcing_type=ForcingType.REANALYSIS,
         clock=clock,
         uuid_factory=uuid4,
+        parameter=parameter,
     )
 
     _store_skill_results(skill_store, scores, diagrams)
