@@ -286,10 +286,10 @@ def assemble_station_training_data(
 
 **Steps**:
 1. Fetch QC-passed discharge observations for training period
-2. Fetch forcing via `forcing_source.fetch_reanalysis()` for model's `required_features`
+2. Fetch forcing via `forcing_source.fetch_reanalysis()` for model's `data_requirements.past_dynamic_features | data_requirements.future_dynamic_features`
 3. Load static attributes from `basin_store.fetch_basin(station.basin_id).attributes`
-4. Validate `required_features` present in forcing columns
-5. Validate `required_static_attributes` present in basin attributes
+4. Validate `data_requirements.past_dynamic_features` (and `future_dynamic_features`) present in forcing columns
+5. Validate `data_requirements.static_features` present in basin attributes
 6. Return `None` + log warning if insufficient data
 
 ```python
@@ -606,7 +606,7 @@ scope = determine_training_scope(..., model_store=FakeModelStore(), ...)
 | `TrainingData` | `types/model.py` | `assemble_station_training_data()` return | ✓ Fields match |
 | `GroupTrainingData` | `types/model.py` | `assemble_group_training_data()` return | ✓ Fields match |
 | `ModelInputs` | `types/model.py` | `_assemble_hindcast_inputs()` return | ✓ Fields match |
-| `ModelRegistryEntry` | `types/model.py` | `register_models()`, scope determination | ✓ Has `required_features`, `artifact_scope` |
+| `ModelRegistryEntry` | `types/model.py` | `register_models()`, scope determination | ✓ Has `data_requirements`, `artifact_scope` |
 | `ModelArtifactRecord` | `types/model.py` | `store_and_promote_artifact()` | ✓ Has `status`, `promoted_at`, `superseded_at` |
 | `HindcastForecast` | `types/forecast.py` | Hindcast store output | ✓ Has `forcing_type`, `hindcast_run_id` |
 | `SkillScore` | `types/skill.py` | Skill service output | ✓ Has all stratification fields |

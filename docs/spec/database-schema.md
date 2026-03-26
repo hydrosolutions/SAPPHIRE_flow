@@ -58,7 +58,7 @@ erDiagram
         UUID basin_id FK "NULL"
         TEXT timezone "IANA"
         TEXT regulation_type "NULL"
-        TEXT forecast_target "NULL"
+        TEXT_ARRAY forecast_targets "NULL"
         TEXT_ARRAY measured_parameters
         TEXT station_status "default onboarding"
         TEXT network "NOT NULL"
@@ -482,7 +482,7 @@ erDiagram
         UUID basin_id FK "NULL"
         TEXT timezone "IANA"
         TEXT regulation_type "NULL"
-        TEXT forecast_target "NULL"
+        TEXT_ARRAY forecast_targets "NULL"
         TEXT_ARRAY measured_parameters
         TEXT station_status "default onboarding"
         TEXT network "NOT NULL"

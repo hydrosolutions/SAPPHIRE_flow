@@ -85,7 +85,7 @@ Training is triggered as part of onboarding (step 7), not as a separate workflow
 
 For `station_kind = 'weather'` stations (Flow 5w), steps 5–8 are skipped — weather stations provide forcing data, not forecasts. They become `operational` after QC (step 4).
 
-**v0a** skips catchment attribute fetching (step 5.2) — the initial linear regression model does not require static attributes. **v0b** adds catchment attribute fetching when ML models with `required_static_attributes` are introduced.
+**v0a** skips catchment attribute fetching (step 5.2) — the initial linear regression model does not require static attributes. **v0b** adds catchment attribute fetching when ML models with `data_requirements.static_features` are introduced.
 
 ### A5. Full skill metrics (keep as designed)
 
