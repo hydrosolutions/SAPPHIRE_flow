@@ -116,6 +116,51 @@ class TestDeploymentConfig:
         with pytest.raises(ValueError, match="SAPPHIRE_CONFIG"):
             load_config()
 
+    def test_paths_section_populates_field(self, tmp_path: Path) -> None:
+        toml = tmp_path / "config.toml"
+        toml.write_text(
+            textwrap.dedent("""\
+            max_retention_days = 3650
+            [paths]
+            data_dir = "/some/path"
+        """)
+        )
+        config = load_config(toml)
+        assert config.paths_data_dir == "/some/path"
+
+    def test_paths_section_absent_gives_none(self, tmp_path: Path) -> None:
+        toml = tmp_path / "config.toml"
+        toml.write_text("max_retention_days = 3650\n")
+        config = load_config(toml)
+        assert config.paths_data_dir is None
+
+    def test_paths_without_data_dir_gives_none(self, tmp_path: Path) -> None:
+        toml = tmp_path / "config.toml"
+        toml.write_text(
+            textwrap.dedent("""\
+            max_retention_days = 3650
+            [paths]
+            other_key = "foo"
+        """)
+        )
+        config = load_config(toml)
+        assert config.paths_data_dir is None
+
+    def test_paths_data_dir_env_var_interpolation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MY_DATA_ROOT", "/opt/data")
+        toml = tmp_path / "config.toml"
+        toml.write_text(
+            textwrap.dedent("""\
+            max_retention_days = 3650
+            [paths]
+            data_dir = "${MY_DATA_ROOT}/sapphire"
+        """)
+        )
+        config = load_config(toml)
+        assert config.paths_data_dir == "/opt/data/sapphire"
+
     def test_config_reference_toml_loads(self) -> None:
         from pathlib import Path as _Path
 
@@ -126,3 +171,4 @@ class TestDeploymentConfig:
         assert len(config.skill_interpretation) == 1
         assert config.skill_interpretation[0].metric == "crpss"
         assert len(config.skill_interpretation[0].bands) == 5
+        assert config.paths_data_dir == "/tmp/sapphire-test-data"

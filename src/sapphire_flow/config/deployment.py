@@ -80,6 +80,8 @@ class DeploymentConfig(BaseModel):
     default_display_timezone: str = "UTC"
     calendar: Literal["gregorian", "bikram_sambat"] = "gregorian"
 
+    paths_data_dir: str | None = None
+
     @model_validator(mode="after")
     def _validate_retention(self) -> DeploymentConfig:
         if self.max_retention_days <= self.forecast_hot_days:
@@ -154,4 +156,6 @@ def load_config(path: Path | str | None = None) -> DeploymentConfig:
     data.pop("monitoring", None)
     data.pop("models", None)
     data.pop("api", None)
+    paths_section = data.pop("paths", {})
+    data["paths_data_dir"] = paths_section.get("data_dir")
     return DeploymentConfig.model_validate(data)

@@ -12,3 +12,6 @@ wheels/
 # Secrets
 .env
 secrets/
+
+# Downloaded data (never commit)
+data/

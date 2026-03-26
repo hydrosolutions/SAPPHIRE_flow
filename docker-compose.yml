@@ -66,6 +66,7 @@ services:
     image: sapphire-flow:${VERSION:-latest}
     command: prefect worker start --pool default --type process
     environment:
+      SAPPHIRE_DATA_DIR: /data
       DATABASE_URL_TEMPLATE: postgresql+asyncpg://${DB_USER:-sapphire}@postgres:5432/sapphire
       PREFECT_API_URL: http://prefect-server:4200/api
     depends_on:
@@ -78,9 +79,11 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+      - /data/cache
     restart: unless-stopped
     volumes:
       - model_artifacts:/data/artifacts:rw
+      - sapphire_data:/data/raw:rw
       - ./config.toml:/app/config.toml:ro
     logging:
       driver: json-file
@@ -186,6 +189,7 @@ volumes:
   caddy_config:
   model_artifacts:
   prefect_data:
+  sapphire_data:
 
 secrets:
   db_password:

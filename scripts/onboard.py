@@ -101,8 +101,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--data-dir",
         type=Path,
-        default=Path("./data/CAMELS_CH"),
-        help="Path to CAMELS-CH data directory (default: ./data/CAMELS_CH)",
+        default=None,
+        help="Path to CAMELS-CH data (default: $SAPPHIRE_DATA_DIR/raw/CAMELS_CH)",
     )
     parser.add_argument(
         "--basin-ids",
@@ -151,7 +151,19 @@ def main() -> int:
         )
         return 1
 
-    data_dir: Path = args.data_dir
+    if args.data_dir is not None:
+        data_dir: Path = args.data_dir
+    else:
+        from sapphire_flow.config.paths import resolve_data_dir
+
+        config_data_dir: str | None = None
+        config_path = os.environ.get("SAPPHIRE_CONFIG")
+        if config_path is not None:
+            from sapphire_flow.config.deployment import load_config
+
+            config_data_dir = load_config(config_path).paths_data_dir
+        data_dir = resolve_data_dir(config_data_dir) / "raw" / "CAMELS_CH"
+
     basin_ids: list[str] | None = args.basin_ids
     start_date: str | None = args.start_date
     end_date: str | None = args.end_date

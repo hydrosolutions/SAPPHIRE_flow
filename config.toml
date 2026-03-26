@@ -41,6 +41,9 @@ default_display_timezone = "Europe/Zurich"
 calendar = "gregorian"
 
 
+[paths]
+# data_dir = "/data"   # uncomment for production; override with SAPPHIRE_DATA_DIR env var
+
 # Danger levels
 [[danger_levels]]
 level = 1

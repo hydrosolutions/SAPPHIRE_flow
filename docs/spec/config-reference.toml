@@ -75,6 +75,9 @@ calendar = "gregorian"                # Nepal v1: "bikram_sambat"
 # (Must follow all scalar fields due to TOML parsing rules)
 # =============================================================================
 
+[paths]
+data_dir = "/tmp/sapphire-test-data"
+
 # --- Danger levels (array of tables) ---
 # Each entry defines one danger level for threshold-based alerting.
 # Source: types-and-protocols.md § DangerLevelDefinition

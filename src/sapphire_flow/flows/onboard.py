@@ -35,6 +35,18 @@ def _load_qc_rules() -> object:
     return _default_swiss_qc_rules()
 
 
+def _resolve_default_camels_dir() -> str:
+    from sapphire_flow.config.paths import resolve_data_dir
+
+    config_data_dir: str | None = None
+    config_path = os.environ.get("SAPPHIRE_CONFIG")
+    if config_path is not None:
+        from sapphire_flow.config.deployment import load_config
+
+        config_data_dir = load_config(config_path).paths_data_dir
+    return str(resolve_data_dir(config_data_dir) / "raw" / "CAMELS_CH")
+
+
 def _setup_production_stores(
     database_url: str,
 ) -> tuple[object, dict[str, object]]:
@@ -53,7 +65,7 @@ def _setup_production_stores(
 
 @flow(name="onboard-stations", log_prints=False)
 def onboard_stations_flow(
-    data_dir: str = "./data/CAMELS_CH",
+    data_dir: str = "",
     basin_ids: list[str] | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
@@ -69,6 +81,8 @@ def onboard_stations_flow(
 ) -> object:
     if clock is None:
         clock = lambda: ensure_utc(datetime.now(UTC))  # noqa: E731
+
+    data_dir = data_dir or _resolve_default_camels_dir()
 
     if download:
         data_dir = _download_task(data_dir)
