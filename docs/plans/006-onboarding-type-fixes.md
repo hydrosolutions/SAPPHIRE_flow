@@ -17,6 +17,25 @@ Issue 2 (multi-target predict chain) is covered by plan 003.
 `OnboardingUnit` is structurally identical to `TrainingUnit` (field name difference
 only). Drop it. `OnboardingUnitResult.unit` references `TrainingUnit` directly.
 
+```python
+# TrainingUnit (types/training.py)
+class TrainingUnit:
+    model_id: ModelId
+    station_id: StationId | None
+    group_id: StationGroupId | None
+    station_ids: frozenset[StationId]
+    training_period_start: UtcDatetime
+    training_period_end: UtcDatetime
+    time_step: timedelta
+
+    def __post_init__(self) -> None:
+        if (self.station_id is None) == (self.group_id is None):
+            raise ValueError("Exactly one of station_id or group_id must be set")
+```
+
+`OnboardingUnit` only differed in field names (`onboarding_period_start/end` vs
+`training_period_start/end`) with the same XOR invariant — the types are equivalent.
+
 Files: design doc §3f, §1 (mermaid diagram label "Per OnboardingUnit"), §6d (`onboard_model` signature), §8 (five `@task` signatures using `unit: OnboardingUnit`), §11 (P4 phase description); spec (types/model_onboarding.py section); architecture-context.md
 
 ### D2. `CompatibilityReport.compatible` → method `is_compatible()` (Issue 4)
@@ -86,6 +105,17 @@ class OnboardingUnitResult:
 Update `ModelOnboardingResult` — drop stored counters, add methods:
 
 ```python
+# Module-level constants (avoid slots=True class variable conflict)
+_ONBOARDING_FAILED_OUTCOMES = frozenset({
+    OnboardingOutcome.FAILED_TRAINING,
+    OnboardingOutcome.FAILED_HINDCAST,
+    OnboardingOutcome.FAILED_SKILL,
+})
+_ONBOARDING_SKIPPED_OUTCOMES = frozenset({
+    OnboardingOutcome.SKIPPED_COMPAT,
+    OnboardingOutcome.SKIPPED_NO_DATA,
+})
+
 class ModelOnboardingResult:
     model_id: ModelId
     units: tuple[OnboardingUnitResult, ...]
@@ -96,14 +126,11 @@ class ModelOnboardingResult:
     def promoted_count(self) -> int:
         return sum(1 for u in self.units if u.outcome == OnboardingOutcome.PROMOTED)
 
-    _FAILED = frozenset({OnboardingOutcome.FAILED_TRAINING, OnboardingOutcome.FAILED_HINDCAST, OnboardingOutcome.FAILED_SKILL})
-    _SKIPPED = frozenset({OnboardingOutcome.SKIPPED_COMPAT, OnboardingOutcome.SKIPPED_NO_DATA})
-
     def failed_count(self) -> int:
-        return sum(1 for u in self.units if u.outcome in self._FAILED)
+        return sum(1 for u in self.units if u.outcome in _ONBOARDING_FAILED_OUTCOMES)
 
     def skipped_count(self) -> int:
-        return sum(1 for u in self.units if u.outcome in self._SKIPPED)
+        return sum(1 for u in self.units if u.outcome in _ONBOARDING_SKIPPED_OUTCOMES)
 
     def gate_rejected_count(self) -> int:
         return sum(1 for u in self.units
@@ -126,13 +153,18 @@ an active _assignment_." These differ when a model has an artifact but the skill
 rejected it. Callers should be aware that post-D5, `fetch_groups_for_model` returns groups
 where the model is actively assigned, not merely where an artifact exists.
 
+**Naming note:** The spec uses `store_group_model_assignment()` while the design doc §10
+(P6/P7 phases) uses `store_group_assignment()`. This naming inconsistency should be resolved
+when D5 is implemented — prefer the spec's longer form for clarity.
+
 ### D6. `skill_gate_thresholds` in `DeploymentConfig` (Issue 9)
 
 Add to spec's `DeploymentConfig`:
 
 ```python
 skill_gate_thresholds: dict[str, float]  # metric_name → minimum value
-# Default: {"crpss": 0.0, "bss_danger_1": 0.0}
+# Default: TBD — requires hydrologist input (design doc §12 open item 2)
+# Candidates: {"crpss": 0.0, "bss_danger_1": 0.0} or {"nse": 0.0}
 # Evaluated as min-across-strata (Issue 10)
 ```
 
@@ -163,6 +195,9 @@ Document in spec's module map that `types/model_onboarding.py` imports
 Clarify filename: `model_onboarding.py` (not `onboarding.py`, which is Flow 5's
 station onboarding).
 
+Also remove `OnboardingUnit` from the module listing (replaced by importing
+`TrainingUnit` from `types/training.py` per D1).
+
 Files: spec (module map)
 
 ---
@@ -183,3 +218,13 @@ Files: spec (module map)
 - Grep for `total:` / `promoted:` / `skipped:` / `failed:` as fields on ModelOnboardingResult — zero
 - Grep for `skill_gate_thresholds` in spec — should match DeploymentConfig section
 - Grep for `OnboardingOutcome` in spec — should match enums section
+
+## Notes for implementers
+
+- **D2 callers**: Any future source code implementing the onboarding service must call
+  `report.is_compatible()` (method), not access `.compatible` (removed field).
+- **D4 class variables**: The `_ONBOARDING_FAILED_OUTCOMES` and `_ONBOARDING_SKIPPED_OUTCOMES`
+  constants are module-level, not class-level, to avoid conflicts with `slots=True` on frozen
+  dataclasses.
+- **No source code changes in this plan** — all changes are documentation-only. No test runs
+  required.
