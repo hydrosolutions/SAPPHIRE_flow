@@ -96,12 +96,13 @@ def _make_observation(
     station_id: StationId,
     timestamp: UtcDatetime,
     value: float = 10.0,
+    parameter: str = "discharge",
 ) -> Observation:
     return Observation(
         id=ObservationId(_uuid()),
         station_id=station_id,
         timestamp=timestamp,
-        parameter="discharge",
+        parameter=parameter,
         value=value,
         source=ObservationSource.MEASURED,
         rating_curve_id=None,
@@ -517,3 +518,86 @@ class TestParameterMismatch:
                 uuid_factory=uuid_factory,  # type: ignore[arg-type]
                 parameter="discharge",
             )
+
+
+class TestParameterFiltering:
+    def test_discharge_only_hindcasts_produce_correct_sample_size(
+        self,
+        station_id: StationId,
+        model_id: ModelId,
+        artifact_id: ArtifactId,
+        clock: object,
+        uuid_factory: object,
+        seasons: list[SeasonDefinition],
+    ) -> None:
+        n_discharge = 3
+        hindcasts_all = []
+        observations = []
+
+        # 3 discharge hindcasts
+        for i in range(n_discharge):
+            step = _utc(2025, 1, i + 1)
+            hindcasts_all.append(
+                _make_hindcast(
+                    station_id=station_id,
+                    model_id=model_id,
+                    artifact_id=artifact_id,
+                    hindcast_step=step,
+                    n_steps=1,
+                    parameter="discharge",
+                )
+            )
+            vt = ensure_utc(datetime.fromtimestamp(step.timestamp() + 3600, tz=UTC))
+            observations.append(
+                _make_observation(
+                    station_id=station_id, timestamp=vt, value=10.0, parameter="discharge"
+                )
+            )
+
+        # 2 water_level hindcasts (should be excluded by pre-filter)
+        for i in range(2):
+            step = _utc(2025, 2, i + 1)
+            hindcasts_all.append(
+                _make_hindcast(
+                    station_id=station_id,
+                    model_id=model_id,
+                    artifact_id=artifact_id,
+                    hindcast_step=step,
+                    n_steps=1,
+                    parameter="water_level",
+                )
+            )
+
+        # Pre-filter to discharge only (as the flow would do)
+        discharge_hindcasts = [
+            h for h in hindcasts_all if h.ensemble.parameter == "discharge"
+        ]
+        assert len(discharge_hindcasts) == n_discharge
+
+        scores, diagrams = compute_skill_for_station(
+            station_id=station_id,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            hindcasts=discharge_hindcasts,
+            observations=observations,
+            thresholds=[],
+            flow_regime_config=None,
+            seasons=seasons,
+            skill_source=SkillSource.HINDCAST_REANALYSIS,
+            forcing_type=ForcingType.REANALYSIS,
+            clock=clock,  # type: ignore[arg-type]
+            uuid_factory=uuid_factory,  # type: ignore[arg-type]
+            parameter="discharge",
+        )
+
+        assert len(scores) > 0
+        assert len(diagrams) > 0
+
+        # All-season/all-regime aggregate at lead_time=1
+        aggregate = [
+            s
+            for s in scores
+            if s.lead_time_hours == 1 and s.season is None and s.flow_regime is None
+        ]
+        assert len(aggregate) > 0
+        assert all(s.sample_size == n_discharge for s in aggregate)

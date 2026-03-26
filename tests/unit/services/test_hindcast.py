@@ -5,12 +5,12 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from sapphire_flow.services.hindcast import run_station_hindcast
+from sapphire_flow.services.hindcast import run_group_hindcast, run_station_hindcast
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.ensemble import ForecastEnsemble
 from sapphire_flow.types.enums import SpatialRepresentation, WeatherSourceStatus
-from sapphire_flow.types.ids import ArtifactId, ModelId, StationId
-from sapphire_flow.types.station import StationWeatherSource
+from sapphire_flow.types.ids import ArtifactId, ModelId, StationGroupId, StationId
+from sapphire_flow.types.station import StationGroup, StationWeatherSource
 
 if TYPE_CHECKING:
     from sapphire_flow.types.model import ModelArtifact, ModelInputs
@@ -537,3 +537,158 @@ class TestSingleParameterBackwardCompat:
         assert len(all_hindcasts) == n_steps
         for h in all_hindcasts:
             assert isinstance(h.ensemble, ForecastEnsemble)
+
+
+class TestMultiParameterGroup:
+    def test_two_params_stored_per_station_per_step(self) -> None:
+        from tests.fakes.fake_models import FakeMultiTargetGroupForecastModel
+
+        rng = random.Random(99)
+        station_a = make_station_config(
+            station_id=StationId(uuid4()), code="A-001", name="Station A",
+        )
+        station_b = make_station_config(
+            station_id=StationId(uuid4()), code="B-002", name="Station B",
+        )
+        sid_a = station_a.id
+        sid_b = station_b.id
+        model_id = ModelId("group_model")
+        artifact_id = ArtifactId(uuid4())
+        run_id = uuid4()
+
+        obs_store = FakeObservationStore()
+        hindcast_store = FakeHindcastStore()
+        station_store = FakeStationStore()
+        basin_store = FakeBasinStore()
+        forcing_source = FakeWeatherReanalysisSource()
+
+        for st in (station_a, station_b):
+            station_store.store_station(st)
+            station_store.store_weather_source(_make_weather_source(st.id))
+
+        data_start = ensure_utc(datetime(2021, 1, 1, tzinfo=UTC))
+        all_forcing: list = []
+        for i, sid in enumerate((sid_a, sid_b)):
+            obs = make_observations(
+                n=400 * 24,
+                station_id=sid,
+                start=data_start,
+                interval=timedelta(hours=1),
+                rng=random.Random(i),  # unique rng avoids ObservationId collisions
+            )
+            obs_store.store_observations(obs)
+            _seed_forcing(forcing_source, sid, data_start, n_days=400)
+            all_forcing.extend(forcing_source._records)
+        # _seed_forcing overwrites _records each call; restore combined records
+        forcing_source._records = all_forcing
+
+        group = StationGroup(
+            id=StationGroupId(uuid4()),
+            name="test-group",
+            station_ids=frozenset({sid_a, sid_b}),
+            created_at=_fixed_clock(),
+        )
+
+        model = FakeMultiTargetGroupForecastModel(
+            parameters=("discharge", "water_level"),
+        )
+
+        all_results = run_group_hindcast(
+            model=model,
+            artifact=b"artifact",
+            group=group,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            period_start=_PERIOD_START,
+            period_end=_PERIOD_END,
+            time_step=_STEP,
+            forcing_source=forcing_source,
+            obs_store=obs_store,
+            hindcast_store=hindcast_store,
+            station_store=station_store,
+            basin_store=basin_store,
+            clock=_fixed_clock,
+            rng=rng,
+            hindcast_run_id=run_id,
+            forecast_horizon_steps=5,
+        )
+
+        n_steps = 5  # 5 issue times
+        for sid in (sid_a, sid_b):
+            assert all(r.success for r in all_results[sid])
+
+        all_hindcasts = list(hindcast_store._hindcasts.values())
+        # 2 params * 2 stations * 5 steps = 20
+        assert len(all_hindcasts) == 2 * 2 * n_steps
+        for h in all_hindcasts:
+            assert isinstance(h.ensemble, ForecastEnsemble)
+
+
+class TestEmptyEnsembleDict:
+    def test_empty_ensemble_dict_stores_nothing(self) -> None:
+        class EmptyModel:
+            artifact_scope = FakeStationForecastModel.artifact_scope
+            data_requirements = FakeStationForecastModel.data_requirements
+
+            def predict(
+                self,
+                artifact: object,
+                inputs: object,
+                rng: random.Random,
+                prior_state: bytes | None = None,
+            ) -> tuple:
+                return ({}, b"state")
+
+            def train(self, data: object, params: object, rng: random.Random) -> bytes:
+                return b"art"
+
+            def serialize_artifact(self, a: object) -> bytes:
+                return a if isinstance(a, bytes) else b""
+
+            def deserialize_artifact(self, b: bytes) -> object:
+                return b
+
+        rng = random.Random(0)
+        station = make_station_config()
+        sid = station.id
+        model_id = ModelId("test_model")
+        artifact_id = ArtifactId(uuid4())
+        run_id = uuid4()
+
+        obs_store = FakeObservationStore()
+        hindcast_store = FakeHindcastStore()
+        station_store = FakeStationStore()
+        basin_store = FakeBasinStore()
+        forcing_source = FakeWeatherReanalysisSource()
+
+        station_store.store_station(station)
+        station_store.store_weather_source(_make_weather_source(sid))
+
+        data_start = ensure_utc(datetime(2021, 1, 1, tzinfo=UTC))
+        _seed_observations(obs_store, sid, data_start, n_days=400)
+        _seed_forcing(forcing_source, sid, data_start, n_days=400)
+
+        model = EmptyModel()
+
+        results = run_station_hindcast(
+            model=model,
+            artifact=b"artifact",
+            station_id=sid,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            period_start=_PERIOD_START,
+            period_end=_PERIOD_END,
+            time_step=_STEP,
+            forcing_source=forcing_source,
+            obs_store=obs_store,
+            hindcast_store=hindcast_store,
+            station_store=station_store,
+            basin_store=basin_store,
+            clock=_fixed_clock,
+            rng=rng,
+            hindcast_run_id=run_id,
+            forecast_horizon_steps=5,
+        )
+
+        assert all(r.success for r in results)
+        assert len(hindcast_store._hindcasts) == 0
