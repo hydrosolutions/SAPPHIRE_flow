@@ -1009,7 +1009,7 @@ class GroupModelInputs:
     models that need to iterate station-by-station internally.
     """
     group_id: StationGroupId
-    station_ids: frozenset[StationId]
+    station_ids: tuple[StationId, ...]
     past_targets: pl.DataFrame       # stacked: station_id + timestamp + target columns
     past_dynamic: pl.DataFrame       # stacked: station_id + timestamp + dynamic columns
     future_dynamic: pl.DataFrame     # stacked: station_id + timestamp + dynamic columns
@@ -1065,7 +1065,7 @@ class GroupTrainingData:
     ``for_station()`` slices back to per-station ``StationTrainingData``.
     """
     group_id: StationGroupId
-    station_ids: frozenset[StationId]
+    station_ids: tuple[StationId, ...]
     past_targets: pl.DataFrame       # stacked: station_id + timestamp + target columns
     past_dynamic: pl.DataFrame       # stacked: station_id + timestamp + dynamic columns
     future_dynamic: pl.DataFrame     # stacked: station_id + timestamp + dynamic columns
@@ -1140,8 +1140,9 @@ Module: `types/model.py`
 
 ### ModelRegistryEntry
 
-Runtime metadata for a registered model — includes features, spatial input type,
-and supported time steps needed by the pipeline. Superset of `ModelRecord`.
+Runtime metadata for a registered model — includes `data_requirements` (feature sets,
+static features, spatial input type) and supported time steps needed by the pipeline.
+Superset of `ModelRecord`.
 
 ```python
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -1455,30 +1456,64 @@ Result types for Flow 5 model onboarding (step 5.10).
 @dataclass(frozen=True, kw_only=True, slots=True)
 class CompatibilityReport:
     model_id: ModelId
-    protocol_satisfied: bool           # isinstance check against StationForecastModel | GroupForecastModel
-    missing_features: dict[str, frozenset[str]]  # keyed by feature set name (e.g. "past_dynamic_features")
-    missing_static: frozenset[str]
-    time_step_compatible: bool         # at least one configured time step is in supported_time_steps
-    errors: list[str]                  # human-readable failure descriptions
+    protocol_conforms: bool
+    missing_target_parameters: frozenset[str]   # params station needs but model can't provide
+    missing_past_dynamic: frozenset[str]         # features model needs but station lacks
+    missing_future_dynamic: frozenset[str]
+    missing_static_features: frozenset[str]
+    time_step_compatible: bool
+    compatible: bool                             # True iff all checks pass
+
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class SkillGateResult:
+    model_id: ModelId
+    station_id: StationId | None
+    group_id: StationGroupId | None
     passed: bool
-    scores: dict[str, float]           # metric → score (e.g. {"crps": 0.42, "nse": 0.71})
-    thresholds: dict[str, float]       # metric → required minimum
-    failures: list[str]                # metrics that did not meet threshold
+    metric_scores: dict[str, float]             # metric_name → score
+    thresholds: dict[str, float]                # metric_name → required threshold
+    failing_metrics: frozenset[str]             # metrics that did not meet threshold
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class OnboardingUnit:
+    model_id: ModelId
+    station_id: StationId | None
+    group_id: StationGroupId | None
+    station_ids: frozenset[StationId]           # 1 for station-scoped, N for group-scoped
+    onboarding_period_start: UtcDatetime
+    onboarding_period_end: UtcDatetime
+    time_step: timedelta
+
+    def __post_init__(self) -> None:
+        if (self.station_id is None) == (self.group_id is None):
+            raise ValueError("Exactly one of station_id / group_id must be set")
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class OnboardingUnitResult:
+    unit: OnboardingUnit
+    compatibility: CompatibilityReport
+    artifact_id: ArtifactId | None
+    hindcast_steps: list[HindcastStepResult]
+    skill_gate: SkillGateResult | None
+    promoted: bool
+    assigned: bool
+    error: str | None = None
+
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class ModelOnboardingResult:
     model_id: ModelId
-    compatibility: CompatibilityReport
-    artifact_id: ArtifactId | None     # None if training/promotion did not complete
-    skill_gate: SkillGateResult | None  # None if compatibility check failed before skill evaluation
-    stations_assigned: int             # number of stations that received an active ModelAssignment
-    errors: list[str]
+    units: tuple[OnboardingUnitResult, ...]
+    total: int
+    promoted: int
+    skipped: int                                # compatibility failures
+    failed: int                                 # training/hindcast errors
 ```
 
-Module: `types/model.py`
+Module: `types/model_onboarding.py`
 
 ---
 
@@ -2248,7 +2283,7 @@ All fake stores use `dict[ID, Entity]` or `list[Entity]` as backing storage. The
 
 ### Fake model contract
 
-- `FakeForecastModel` — `predict()` returns a deterministic `ForecastEnsemble` (configurable member count, constant values). `train()` returns a trivial artifact. Declares `required_static_attributes = frozenset()` (no static attributes needed). Ignores `static_attributes` in inputs. Useful for testing the orchestration and service layers without real ML.
+- `FakeForecastModel` — `predict()` returns a deterministic `ForecastEnsemble` (configurable member count, constant values). `train()` returns a trivial artifact. Declares `data_requirements.static_features = frozenset()` (no static attributes needed). Ignores `static_attributes` in inputs. Useful for testing the orchestration and service layers without real ML.
 
 ### Verification
 
@@ -2273,8 +2308,9 @@ src/sapphire_flow/
 │   ├── model.py            # StationInputData, StationModelInputs, GroupModelInputs,
 │   │                       #   StationTrainingData, GroupTrainingData,
 │   │                       #   ModelDataRequirements, ModelParams, ModelArtifact,
-│   │                       #   ModelRecord, ModelRegistryEntry, ModelArtifactRecord,
-│   │                       #   CompatibilityReport, SkillGateResult, ModelOnboardingResult
+│   │                       #   ModelRecord, ModelRegistryEntry, ModelArtifactRecord
+│   ├── model_onboarding.py # CompatibilityReport, SkillGateResult,
+│   │                       #   OnboardingUnit, OnboardingUnitResult, ModelOnboardingResult
 │   ├── observation.py      # Observation, RawObservation
 │   ├── forecast.py         # OperationalForecast, HindcastForecast, ForecastAdjustment, ForeignForecast
 │   ├── weather.py          # WeatherForecastRecord, PointForecast, BasinAverageForecast,
@@ -2294,11 +2330,11 @@ src/sapphire_flow/
 │   ├── stores.py           # All store Protocols + ConflictError
 │   │                       #   (ObservationStore, ForecastStore, HindcastStore,
 │   │                       #    WeatherForecastStore, AlertStore, SkillStore,
-│   │                       #    ModelArtifactStore, StationStore, PipelineHealthStore,
-│   │                       #    RatingCurveStore, FlowRegimeConfigStore,
-│   │                       #    ForecastAdjustmentStore, ForeignForecastStore,
-│   │                       #    HistoricalForcingStore, BasinStore,
-│   │                       #    ModelStateStore, ModelStore, ParameterStore)
+│   │                       #    ModelArtifactStore, StationStore, StationGroupStore,
+│   │                       #    PipelineHealthStore, RatingCurveStore,
+│   │                       #    FlowRegimeConfigStore, ForecastAdjustmentStore,
+│   │                       #    ForeignForecastStore, HistoricalForcingStore,
+│   │                       #    BasinStore, ModelStateStore, ModelStore, ParameterStore)
 │   ├── adapters.py         # WeatherForecastSource, StationDataSource, WeatherReanalysisSource,
 │   │                       #   ForeignForecastSource, PipelineStatusSource
 │   ├── grid_extractor.py   # GridExtractor
