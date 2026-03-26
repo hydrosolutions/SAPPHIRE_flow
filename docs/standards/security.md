@@ -156,7 +156,17 @@ Required secrets:
 
 ### Development
 
-`.env` files for local development only. `.env` is in `.gitignore` — CI fails if `.env` is committed. Environment variable names match conventions.md § Environment variables.
+Secrets are stored outside the repository at `~/.config/sapphire-flow/secrets/`. A gitignored symlink in the repo root lets Docker Compose resolve `./secrets/` transparently:
+
+```bash
+mkdir -p ~/.config/sapphire-flow/secrets
+openssl rand -base64 24 > ~/.config/sapphire-flow/secrets/db_password
+ln -s ~/.config/sapphire-flow/secrets secrets
+```
+
+This preserves the same file-based secrets path as production — no `.env`-based divergence. The symlink is gitignored (`secrets/` in `.gitignore`), so neither the symlink nor the secret values can be committed.
+
+Alternatively, `.env` files can supply secrets as environment variables for local development. `.env` is in `.gitignore` — CI fails if `.env` is committed. Environment variable names match conventions.md § Environment variables.
 
 ### Rotation
 
