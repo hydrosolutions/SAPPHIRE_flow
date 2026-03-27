@@ -8,7 +8,7 @@
 
 - v0 = Swiss public data, ~50 stations, single VM, 1-2 users
 - As fast as possible: aggressive performance optimization on the forecast cycle
-- Research-friendly: easy to add models, run experiments, export data
+- Research-friendly: easy to add models, run experiments, export data. v0 includes multi-parameter forecasting experiments — river stations forecast discharge, lake stations (33 in CAMELS-CH) forecast water_level. This validates the multi-target pipeline (§A13) before Nepal v1 deployment, which requires both discharge and water_level stage.
 - Professional enough for hydromet handover (clean types, documented APIs, reproducible results)
 - `architecture-context.md` stays as the v1 north star — don't implement v1 complexity in v0
 
@@ -168,7 +168,7 @@ Rationale: per-source flags allow incremental activation during testing — pipe
 
 **Full design**: 4-slot data contract (past_targets, past_dynamic, future_dynamic, static) with ModelDataRequirements declaring per-slot feature needs. GroupModelInputs uses stacked DataFrames for batch ML inference.
 
-**v0**: Fully implemented. past_dynamic and future_dynamic use the same reanalysis source in training/hindcast (future_dynamic filled from reanalysis as teacher forcing). Operational forecast path (Flow 1) provides true NWP data in future_dynamic. Multi-target predictions supported from day one.
+**v0**: Fully implemented. past_dynamic and future_dynamic use the same reanalysis source in training/hindcast (future_dynamic filled from reanalysis as teacher forcing). Operational forecast path (Flow 1) provides true NWP data in future_dynamic. Multi-target predictions supported from day one. v0 exercises this with discharge (river) and water_level (lake) forecasting — skill computation, store filtering, and training orchestration are all parameter-scoped.
 
 ---
 

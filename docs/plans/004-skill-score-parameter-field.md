@@ -38,6 +38,9 @@ class SkillScore:
 
 Same for `SkillDiagram`.
 
+**Spec update:** Also add `parameter: str` to `SkillScore` and `SkillDiagram` definitions in
+`docs/spec/types-and-protocols.md` (authoritative for type definitions).
+
 **Dependencies:** None.
 
 ### Phase 2 — Service Layer
@@ -83,6 +86,9 @@ def fetch_scores_by_regime(
 ```
 
 Default `None` means "all parameters" — backward-compatible with existing callers.
+
+**Spec update:** Also update `SkillStore` fetch method signatures in
+`docs/spec/types-and-protocols.md` to include the `parameter` filter.
 
 **Dependencies:** 1A.
 
@@ -296,6 +302,13 @@ must be updated:
 
 Phases 1+2, 3, and 4 can proceed in parallel. Phase 5 depends on 1–4. Phase 6 depends on all of 1–5.
 
+**Commit boundaries:**
+- Phases 1–5 can be split across commits as convenient.
+- **Phase 6A+6B+6C+6D must be a single commit** — removing the guard (6A) without updating
+  the training loop (6B) leaves the system in a state where non-discharge skill computation
+  is silently enabled but never invoked. Combining them ensures the guard removal and the
+  loop that exercises it land atomically.
+
 ---
 
 ## File-Level Change Summary (updated)
@@ -303,6 +316,7 @@ Phases 1+2, 3, and 4 can proceed in parallel. Phase 5 depends on 1–4. Phase 6 
 | File | Change type | Phase |
 |---|---|---|
 | `src/sapphire_flow/types/skill.py` | Add `parameter: str` to `SkillScore` and `SkillDiagram` | 1A |
+| `docs/spec/types-and-protocols.md` | Add `parameter: str` to `SkillScore`, `SkillDiagram`; add `parameter` filter to `SkillStore` | 1A, 3A |
 | `src/sapphire_flow/services/skill/service.py` | Pass `parameter=` to score/diagram construction | 2A |
 | `src/sapphire_flow/protocols/stores.py` | Add `parameter` filter to `SkillStore` fetch methods | 3A |
 | `src/sapphire_flow/store/skill_store.py` | Add `parameter` filter + write to `PgSkillStore` | 3B |
@@ -311,6 +325,7 @@ Phases 1+2, 3, and 4 can proceed in parallel. Phase 5 depends on 1–4. Phase 6 
 | `alembic/versions/0016_skill_parameter_column.py` | New migration: add + backfill parameter column | 4A |
 | `tests/unit/services/skill/test_service.py` | Fix existing + add `TestParameterStamping` | 5A, 5B |
 | `tests/unit/store/test_skill_store.py` | Add `TestParameterFilter` | 5B |
+| `tests/integration/store/test_skill_store.py` | Update `_make_score()` and `_make_diagram()` helpers | 5A |
 | `tests/fakes/fake_stores.py` | Update fixture data + add filter tests | 5A, 5B |
 | `src/sapphire_flow/flows/compute_skills.py` | Remove `NotImplementedError` guard | 6A |
 | `src/sapphire_flow/flows/train_models.py` | Add multi-parameter loop around `compute_skills_flow` call | 6B |
