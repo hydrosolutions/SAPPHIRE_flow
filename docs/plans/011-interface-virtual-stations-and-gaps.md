@@ -176,6 +176,33 @@ these two don't conflict and the data flow is clear.
 
 ---
 
+### E — Remote Training for Large ML Models
+
+**What:** Large models (LSTM, transformer-based) may require GPU resources not
+available on the default Docker Compose worker. The design for remote/GPU training
+exists in `docs/design/v0-flow13-model-onboarding.md` §9 but is barely surfaced in
+`architecture-context.md` (only a passing mention of "work pool separation" in the
+CI/CD standards summary, line ~2845).
+
+**Existing design (v0-flow13 §9):**
+- v1: `ModelDataRequirements` gains `compute_backend: Literal["cpu", "gpu"]`. Prefect
+  routes to a `gpu_training` work pool via `with_options(work_pool_name=...)`.
+- v0: all training on CPU `default` pool; GPU routing annotated but not active.
+- No Protocol changes — routing stays in the flow layer.
+
+**Investigation tasks:**
+
+1. Decide whether `architecture-context.md` should promote remote training to a
+   first-class architectural concern (dedicated subsection) or if the flow-13 design
+   doc is sufficient.
+2. If promoted: document the work pool topology, GPU pool provisioning (cloud provider
+   agnostic), artifact transfer between pools, and failure/retry semantics.
+3. Consider whether remote training should be offered as an optional paid service
+   (see `docs/business/paid-services.md`) — this affects whether the feature is
+   behind a deployment-level toggle.
+
+---
+
 ## Dependencies
 
 | Area | Blocks / Blocked by |
@@ -184,6 +211,7 @@ these two don't conflict and the data flow is clear.
 | B (Virtual stations) | Informs Flow 5 redesign, station type system |
 | C (Forecast QC) | Blocks Flow 1 implementation (Phase 8) |
 | D (Weather mapping) | Informational — verify existing design |
+| E (Remote training) | Informational — existing design may need promotion to architecture-context |
 
 ## Next Steps
 
@@ -192,3 +220,4 @@ these two don't conflict and the data flow is clear.
 2. **Investigate C** — Confirm the gap, propose Flow 1 step insertion.
 3. **Design B** — Station type taxonomy, calculated station formula spec.
 4. **Verify D** — Read the intersection logic, confirm correctness.
+5. **Verify E** — Decide if architecture-context.md needs a remote training section.
