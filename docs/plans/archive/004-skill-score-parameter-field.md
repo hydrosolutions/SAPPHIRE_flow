@@ -1,5 +1,5 @@
 ---
-status: READY
+status: ARCHIVED
 created: 2026-03-26
 scope: types + DB schema + store + service + tests
 depends_on: []  # 007 (ARCHIVED, already merged). Independent of 003; plan 003 Phase 2 depends on THIS plan's Phase 1
