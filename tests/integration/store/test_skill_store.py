@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 
 import sqlalchemy as sa
 
-from sapphire_flow.db.metadata import model_artifacts, models, stations
+from sapphire_flow.db.metadata import model_artifacts, models, skill_diagrams, stations
 from sapphire_flow.store.skill_store import PgSkillStore
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
@@ -352,3 +352,147 @@ class TestPgSkillStore:
         assert count == 0
         results = store.fetch_latest_scores(sid, mid)
         assert results[0].freshness == SkillFreshness.CURRENT
+
+    def test_fetch_filters_by_parameter(self, db_connection: sa.Connection) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgSkillStore(db_connection)
+
+        discharge = _make_score(sid, mid, aid, parameter="discharge", metric="crps_q")
+        water_level = _make_score(
+            sid, mid, aid, parameter="water_level", metric="crps_q"
+        )
+        store.store_skill_scores([discharge, water_level])
+
+        discharge_results = store.fetch_latest_scores(sid, mid, parameter="discharge")
+        assert len(discharge_results) == 1
+        assert discharge_results[0].parameter == "discharge"
+
+        all_results = store.fetch_latest_scores(sid, mid, parameter=None)
+        assert len(all_results) == 2
+
+    def test_fetch_diagrams_by_parameter(self, db_connection: sa.Connection) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgSkillStore(db_connection)
+
+        discharge = _make_diagram(
+            sid, mid, aid, parameter="discharge", diagram_type="roc_param"
+        )
+        water_level = _make_diagram(
+            sid, mid, aid, parameter="water_level", diagram_type="roc_param"
+        )
+        store.store_skill_diagrams([discharge, water_level])
+
+        discharge_results = store.fetch_latest_diagrams(sid, mid, parameter="discharge")
+        assert len(discharge_results) == 1
+        assert discharge_results[0].parameter == "discharge"
+
+        all_results = store.fetch_latest_diagrams(sid, mid, parameter=None)
+        assert len(all_results) == 2
+
+    def test_fetch_scores_by_regime_with_parameter(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgSkillStore(db_connection)
+
+        discharge = _make_score(
+            sid,
+            mid,
+            aid,
+            flow_regime=FlowRegime.LOW,
+            parameter="discharge",
+            metric="nse_regime",
+        )
+        water_level = _make_score(
+            sid,
+            mid,
+            aid,
+            flow_regime=FlowRegime.LOW,
+            parameter="water_level",
+            metric="nse_regime",
+        )
+        store.store_skill_scores([discharge, water_level])
+
+        discharge_results = store.fetch_scores_by_regime(
+            sid, mid, FlowRegime.LOW, parameter="discharge"
+        )
+        assert len(discharge_results) == 1
+        assert discharge_results[0].parameter == "discharge"
+
+        all_results = store.fetch_scores_by_regime(
+            sid, mid, FlowRegime.LOW, parameter=None
+        )
+        assert len(all_results) == 2
+
+    def test_mark_stale_filters_by_parameter(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgSkillStore(db_connection)
+
+        discharge = _make_score(
+            sid,
+            mid,
+            aid,
+            parameter="discharge",
+            metric="crps_ms",
+            freshness=SkillFreshness.CURRENT,
+            eval_period_start=_T0,
+            eval_period_end=_T2,
+        )
+        water_level = _make_score(
+            sid,
+            mid,
+            aid,
+            parameter="water_level",
+            metric="crps_ms",
+            freshness=SkillFreshness.CURRENT,
+            eval_period_start=_T0,
+            eval_period_end=_T2,
+        )
+        store.store_skill_scores([discharge, water_level])
+
+        count = store.mark_stale(sid, _T1, _T3, parameter="discharge")
+        assert count == 1
+
+        all_scores = store.fetch_latest_scores(sid, mid, parameter=None)
+        by_param = {r.parameter: r for r in all_scores}
+        assert by_param["discharge"].freshness == SkillFreshness.STALE
+        assert by_param["water_level"].freshness == SkillFreshness.CURRENT
+
+        remaining_count = store.mark_stale(sid, _T1, _T3, parameter=None)
+        assert remaining_count == 1
+
+        all_scores = store.fetch_latest_scores(sid, mid, parameter=None)
+        assert all(r.freshness == SkillFreshness.STALE for r in all_scores)
+
+    def test_store_diagrams_idempotent(self, db_connection: sa.Connection) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgSkillStore(db_connection)
+
+        diagrams = [
+            _make_diagram(sid, mid, aid, diagram_type="rank_histogram"),
+            _make_diagram(sid, mid, aid, diagram_type="roc"),
+        ]
+        store.store_skill_diagrams(diagrams)
+        store.store_skill_diagrams(diagrams)
+
+        count = db_connection.execute(
+            sa.select(sa.func.count())
+            .select_from(skill_diagrams)
+            .where(
+                skill_diagrams.c.station_id == sid,
+                skill_diagrams.c.model_id == mid,
+            )
+        ).scalar()
+        assert count == 2
