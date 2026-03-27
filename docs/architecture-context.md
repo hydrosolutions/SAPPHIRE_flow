@@ -1836,7 +1836,7 @@ skill_scores:
 ```
 
 Indexes:
-- `uq_skill_scores_natural_key` — unique on `(station_id, model_artifact_id, parameter, skill_source, computation_version, lead_time_hours, season, flow_regime, metric)` — prevents duplicate rows and supports idempotent upserts
+- `uq_skill_scores_natural_key` — unique on `(station_id, model_artifact_id, parameter, skill_source, forcing_type, computation_version, lead_time_hours, season, flow_regime, metric)` — prevents duplicate rows and supports idempotent upserts. Nullable columns (`forcing_type`, `season`, `flow_regime`) use `COALESCE(..., '')` in the index so NULLs compare equal.
 - `ix_skill_scores_station_freshness` — partial index on `(station_id, model_id)` WHERE `freshness = 'current'` — fast lookup of active scores without scanning stale history
 - Common query pattern: `(station_id, model_id, computation_version, metric, lead_time_hours)` for "latest skill for model X at station Y." The `computation_version` pattern avoids expensive `GROUP BY MAX(computed_at)` — instead `WHERE computation_version = (SELECT MAX(...))`.
 
@@ -1865,7 +1865,7 @@ skill_diagrams:
   created_at: TIMESTAMPTZ
 ```
 
-Index: `uq_skill_diagrams_natural_key` — unique on `(station_id, model_artifact_id, parameter, skill_source, computation_version, lead_time_hours, season, flow_regime, diagram_type, threshold_level)` — prevents duplicate diagram rows and supports idempotent upserts.
+Index: `uq_skill_diagrams_natural_key` — unique on `(station_id, model_artifact_id, parameter, skill_source, computation_version, lead_time_hours, season, flow_regime, diagram_type, threshold_level)` — prevents duplicate diagram rows and supports idempotent upserts. Nullable columns (`season`, `flow_regime`, `threshold_level`) use `COALESCE(..., '')` in the index so NULLs compare equal.
 
 JSONB `data` structures:
 - **Reliability diagram**: `{"bins": [{"forecast_prob": 0.1, "observed_freq": 0.08, "count": 45}, ...]}`

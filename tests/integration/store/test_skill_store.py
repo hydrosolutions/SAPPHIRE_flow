@@ -379,10 +379,10 @@ class TestPgSkillStore:
         store = PgSkillStore(db_connection)
 
         discharge = _make_diagram(
-            sid, mid, aid, parameter="discharge", diagram_type="roc_param"
+            sid, mid, aid, parameter="discharge", diagram_type="roc"
         )
         water_level = _make_diagram(
-            sid, mid, aid, parameter="water_level", diagram_type="roc_param"
+            sid, mid, aid, parameter="water_level", diagram_type="roc"
         )
         store.store_skill_diagrams([discharge, water_level])
 
