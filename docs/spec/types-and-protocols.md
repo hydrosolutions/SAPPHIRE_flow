@@ -1621,11 +1621,13 @@ class ForecastStore(Protocol):
         self,
         station_id: StationId,
         model_id: ModelId | None = None,  # None = any model
+        parameter: str | None = None,
     ) -> OperationalForecast | None: ...
     def fetch_forecasts_for_cycle(
         self,
         issued_at: UtcDatetime,
         station_id: StationId | None = None,  # None = all stations
+        parameter: str | None = None,
     ) -> list[OperationalForecast]: ...
     def transition_status(
         self,
@@ -1641,6 +1643,7 @@ class ForecastStore(Protocol):
         end: UtcDatetime,
         model_id: ModelId | None = None,
         status: ForecastStatus | None = None,
+        parameter: str | None = None,
     ) -> list[OperationalForecast]: ...
 ```
 

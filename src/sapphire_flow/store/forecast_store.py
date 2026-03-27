@@ -95,10 +95,13 @@ class PgForecastStore:
         self,
         station_id: StationId,
         model_id: ModelId | None = None,
+        parameter: str | None = None,
     ) -> OperationalForecast | None:
         sub = sa.select(forecasts.c.id).where(forecasts.c.station_id == station_id)
         if model_id is not None:
             sub = sub.where(forecasts.c.model_id == model_id)
+        if parameter is not None:
+            sub = sub.where(forecasts.c.parameter == parameter)
         sub = sub.order_by(forecasts.c.issued_at.desc()).limit(1).scalar_subquery()
         fid_row = self._conn.execute(sa.select(sub)).scalar_one_or_none()
         if fid_row is None:
@@ -109,10 +112,13 @@ class PgForecastStore:
         self,
         issued_at: UtcDatetime,
         station_id: StationId | None = None,
+        parameter: str | None = None,
     ) -> list[OperationalForecast]:
         stmt = sa.select(forecasts.c.id).where(forecasts.c.issued_at == issued_at)
         if station_id is not None:
             stmt = stmt.where(forecasts.c.station_id == station_id)
+        if parameter is not None:
+            stmt = stmt.where(forecasts.c.parameter == parameter)
         fids = [ForecastId(r[0]) for r in self._conn.execute(stmt).fetchall()]
         return self._fetch_by_ids(fids)
 
@@ -143,6 +149,7 @@ class PgForecastStore:
         end: UtcDatetime,
         model_id: ModelId | None = None,
         status: ForecastStatus | None = None,
+        parameter: str | None = None,
     ) -> list[OperationalForecast]:
         stmt = (
             sa.select(forecasts.c.id)
@@ -154,6 +161,8 @@ class PgForecastStore:
             stmt = stmt.where(forecasts.c.model_id == model_id)
         if status is not None:
             stmt = stmt.where(forecasts.c.status == status.value)
+        if parameter is not None:
+            stmt = stmt.where(forecasts.c.parameter == parameter)
         fids = [ForecastId(r[0]) for r in self._conn.execute(stmt).fetchall()]
         return self._fetch_by_ids(fids)
 

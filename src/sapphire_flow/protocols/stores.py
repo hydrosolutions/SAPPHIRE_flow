@@ -142,6 +142,7 @@ class ForecastStore(Protocol):
         self,
         station_id: StationId,
         model_id: ModelId | None = None,
+        parameter: str | None = None,
     ) -> OperationalForecast | None:
         raise NotImplementedError
 
@@ -149,6 +150,7 @@ class ForecastStore(Protocol):
         self,
         issued_at: UtcDatetime,
         station_id: StationId | None = None,
+        parameter: str | None = None,
     ) -> list[OperationalForecast]:
         raise NotImplementedError
 
@@ -167,6 +169,7 @@ class ForecastStore(Protocol):
         end: UtcDatetime,
         model_id: ModelId | None = None,
         status: ForecastStatus | None = None,
+        parameter: str | None = None,
     ) -> list[OperationalForecast]:
         raise NotImplementedError
 

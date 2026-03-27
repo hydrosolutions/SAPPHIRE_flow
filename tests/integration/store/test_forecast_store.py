@@ -5,7 +5,9 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
+import pytest
 import sqlalchemy as sa
+import sqlalchemy.exc
 
 from sapphire_flow.db.metadata import model_artifacts, models
 from sapphire_flow.exceptions import ConflictError
@@ -85,6 +87,7 @@ def _make_forecast(
     status: ForecastStatus = ForecastStatus.RAW,
     n_members: int = 5,
     n_steps: int = 10,
+    parameter: str = "discharge",
     rng: random.Random | None = None,
 ) -> OperationalForecast:
     rng = rng or random.Random(42)
@@ -93,6 +96,7 @@ def _make_forecast(
         representation=representation,
         n_members=n_members,
         n_steps=n_steps,
+        parameter=parameter,
         rng=rng,
     )
     return OperationalForecast(
@@ -350,7 +354,107 @@ class TestTransitionStatus:
         fc = _make_forecast(sid, mid, aid)
         store.store_forecast(fc)
 
-        import pytest
-
         with pytest.raises(ConflictError):
             store.transition_status(fc.id, 99, ForecastStatus.REVIEWED)
+
+
+class TestParameterFilter:
+    def test_fetch_latest_with_parameter_filter(
+        self, db_connection: sa.Connection
+    ) -> None:
+
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgForecastStore(db_connection)
+
+        fc_discharge = _make_forecast(
+            sid,
+            mid,
+            aid,
+            issued_at=_ISSUED_A,
+            parameter="discharge",
+            rng=random.Random(20),
+        )
+        fc_water_level = _make_forecast(
+            sid,
+            mid,
+            aid,
+            issued_at=_ISSUED_A,
+            parameter="water_level",
+            rng=random.Random(21),
+        )
+        store.store_forecast(fc_discharge)
+        store.store_forecast(fc_water_level)
+
+        result_discharge = store.fetch_latest_forecast(sid, parameter="discharge")
+        assert result_discharge is not None
+        assert result_discharge.id == fc_discharge.id
+        assert result_discharge.ensemble.parameter == "discharge"
+
+        result_water_level = store.fetch_latest_forecast(sid, parameter="water_level")
+        assert result_water_level is not None
+        assert result_water_level.id == fc_water_level.id
+        assert result_water_level.ensemble.parameter == "water_level"
+
+        result_any = store.fetch_latest_forecast(sid, parameter=None)
+        assert result_any is not None
+
+    def test_unique_constraint_allows_same_cycle_different_params(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgForecastStore(db_connection)
+
+        fc_discharge = _make_forecast(
+            sid,
+            mid,
+            aid,
+            issued_at=_ISSUED_A,
+            parameter="discharge",
+            rng=random.Random(22),
+        )
+        fc_water_level = _make_forecast(
+            sid,
+            mid,
+            aid,
+            issued_at=_ISSUED_A,
+            parameter="water_level",
+            rng=random.Random(23),
+        )
+        store.store_forecast(fc_discharge)
+        store.store_forecast(fc_water_level)
+
+        results = store.fetch_forecasts_for_cycle(_ISSUED_A, station_id=sid)
+        assert len(results) == 2
+
+    def test_unique_constraint_rejects_duplicate_param(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgForecastStore(db_connection)
+
+        fc_first = _make_forecast(
+            sid,
+            mid,
+            aid,
+            issued_at=_ISSUED_A,
+            parameter="discharge",
+            rng=random.Random(24),
+        )
+        fc_duplicate = _make_forecast(
+            sid,
+            mid,
+            aid,
+            issued_at=_ISSUED_A,
+            parameter="discharge",
+            rng=random.Random(25),
+        )
+        store.store_forecast(fc_first)
+
+        with pytest.raises(sqlalchemy.exc.IntegrityError):
+            store.store_forecast(fc_duplicate)

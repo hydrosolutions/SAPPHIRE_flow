@@ -655,10 +655,11 @@ sa.Index(
     forecasts.c.station_id,
 )
 sa.Index(
-    "uq_forecasts_station_model_issued",
+    "uq_forecasts_station_model_issued_param",
     forecasts.c.station_id,
     forecasts.c.model_id,
     forecasts.c.issued_at,
+    forecasts.c.parameter,
     unique=True,
     postgresql_where=forecasts.c.status != "superseded",
 )

@@ -1670,18 +1670,22 @@ forecasts:
   model_artifact_id: UUID FK → model_artifacts.id  # which trained artifact produced this forecast
   issued_at: TIMESTAMPTZ                     # forecast issue time
   nwp_cycle_reference_time: TIMESTAMPTZ      # which NWP cycle produced the forcing
-  nwp_cycle_is_fallback: BOOL DEFAULT FALSE  # true when a non-current NWP cycle was used
+  nwp_cycle_source: TEXT NOT NULL DEFAULT 'primary'  # CHECK ('primary'|'fallback')
   representation: TEXT                       # "members" or "quantiles"
   status: TEXT DEFAULT 'raw'                 # ForecastStatus: raw | reviewed | published
   version: INT DEFAULT 1                    # optimistic locking
   warm_up_source: TEXT NULL                  # WarmUpSource: fresh | snapshot | cold_start (NULL for ML models)
   warm_up_state_age_hours: DOUBLE PRECISION NULL  # hours since last state snapshot (NULL when fresh or ML)
   observation_staleness_hours: DOUBLE PRECISION NULL  # age of most recent observation used
+  parameter: TEXT NOT NULL                    # forecast target (e.g. "discharge", "water_level")
+  units: TEXT NOT NULL                        # measurement units (e.g. "m³/s", "m")
+  qc_status: TEXT NOT NULL DEFAULT 'raw'      # output QC status
+  qc_flags: JSONB NOT NULL DEFAULT '[]'       # output QC flag details
   created_at: TIMESTAMPTZ
   updated_at: TIMESTAMPTZ
 ```
 
-Indexes: `(station_id, issued_at DESC)` for latest-forecast queries. `(issued_at DESC, station_id)` for cycle-first queries (Flow 3 dashboard, bulk alert re-checks). Partial unique: `(station_id, model_id, issued_at)` to prevent duplicate forecasts per cycle.
+Indexes: `(station_id, issued_at DESC)` for latest-forecast queries. `(issued_at DESC, station_id)` for cycle-first queries (Flow 3 dashboard, bulk alert re-checks). Partial unique: `(station_id, model_id, issued_at, parameter) WHERE status != 'superseded'` to prevent duplicate forecasts per cycle.
 
 ### `forecast_values` table
 

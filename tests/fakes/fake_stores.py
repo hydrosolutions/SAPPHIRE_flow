@@ -191,12 +191,14 @@ class FakeForecastStore:
         self,
         station_id: StationId,
         model_id: ModelId | None = None,
+        parameter: str | None = None,
     ) -> OperationalForecast | None:
         matches = [
             f
             for f in self._forecasts.values()
             if f.station_id == station_id
             and (model_id is None or f.model_id == model_id)
+            and (parameter is None or f.ensemble.parameter == parameter)
         ]
         return max(matches, key=lambda f: f.issued_at) if matches else None
 
@@ -204,12 +206,14 @@ class FakeForecastStore:
         self,
         issued_at: UtcDatetime,
         station_id: StationId | None = None,
+        parameter: str | None = None,
     ) -> list[OperationalForecast]:
         return [
             f
             for f in self._forecasts.values()
             if f.issued_at == issued_at
             and (station_id is None or f.station_id == station_id)
+            and (parameter is None or f.ensemble.parameter == parameter)
         ]
 
     def transition_status(
@@ -238,6 +242,7 @@ class FakeForecastStore:
         end: UtcDatetime,
         model_id: ModelId | None = None,
         status: ForecastStatus | None = None,
+        parameter: str | None = None,
     ) -> list[OperationalForecast]:
         return [
             f
@@ -246,6 +251,7 @@ class FakeForecastStore:
             and start <= f.issued_at < end
             and (model_id is None or f.model_id == model_id)
             and (status is None or f.status == status)
+            and (parameter is None or f.ensemble.parameter == parameter)
         ]
 
 
