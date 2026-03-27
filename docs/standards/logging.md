@@ -164,6 +164,12 @@ Ruff rule `T201` bans `print()` — no exceptions.
 | `request_id` | FastAPI middleware (explicit) | UUID per HTTP request. Only in API context. |
 | `parent_flow_run_id` | Sub-flow caller (explicit) | Parent flow's run ID. Only when calling sub-flows. |
 
+### Recommended context fields
+
+| Field | Bound at | Description |
+|---|---|---|
+| `parameter` | `bind_contextvars(parameter=...)` in `compute_skills_task` | The forecast parameter being scored (e.g., `discharge`, `water_level`). Not mandatory globally — most flows operate on a single implicit parameter. |
+
 ## Context binding protocol
 
 1. **Flow entry**: Auto-processor reads `prefect.runtime`. No manual binding.
@@ -317,7 +323,7 @@ log.info("nwp.fetch_completed", duration_ms=round(duration_ms, 1), record_count=
 
 ## Prefect-specific settings
 
-- `log_prints=False` on all `@task` decorators in Flow 1 (NWP ingest -> forecast -> alerts) and Flow 2 (observation ingest -> QC). These are high-frequency flows.
+- Use `log_prints=False` on any `@task` or `@flow` used in high-fan-out `task.map()` patterns, and on all tasks in Flows 1 and 2.
 - Production: `PREFECT_LOGGING_LEVEL=WARNING` — suppresses Prefect's internal chatter. Our structlog events provide the operational picture.
 - Dev: `PREFECT_LOGGING_LEVEL=INFO`.
 - Prefect UI remains useful for flow run state inspection. Operational diagnostics come from structlog.

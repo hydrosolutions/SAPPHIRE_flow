@@ -158,6 +158,14 @@ class StationKind(Enum):
 class ParameterDomain(Enum):
     RIVER = "river"
     WEATHER = "weather"
+    WATER_QUALITY = "water_quality"
+    GROUNDWATER = "groundwater"
+    SOIL = "soil"
+    # Semi-open: the DB column is TEXT with no CHECK constraint. Deployments may
+    # register parameters with domains not in this enum — the system accepts them
+    # but logs a structured warning (known_domain=false). This enum defines the
+    # "known" set for which downstream behavior (thresholds, alerting, skill
+    # computation) has been validated.
 
 class AggregationMethod(Enum):
     SUM = "sum"
@@ -1329,6 +1337,7 @@ class SkillScore:
     id: UUID
     station_id: StationId
     model_id: ModelId
+    parameter: str
     model_artifact_id: ArtifactId
     skill_source: SkillSource
     forcing_type: ForcingType | None       # NULL for operational
@@ -1342,6 +1351,8 @@ class SkillScore:
     score: float
     sample_size: int
     freshness: SkillFreshness              # STALE when underlying data changed; cleared by Flow 10 step S.6
+    eval_period_start: UtcDatetime
+    eval_period_end: UtcDatetime
     created_at: UtcDatetime
 ```
 
@@ -1353,6 +1364,7 @@ class SkillDiagram:
     id: UUID
     station_id: StationId
     model_id: ModelId
+    parameter: str
     model_artifact_id: ArtifactId
     skill_source: SkillSource
     computation_version: int
@@ -1363,6 +1375,8 @@ class SkillDiagram:
     diagram_type: Literal["reliability", "roc", "rank_histogram"]
     threshold_level: str | None            # danger level name (for ROC/BSS diagrams)
     data: dict                             # diagram-specific structure (validated at boundary)
+    eval_period_start: UtcDatetime
+    eval_period_end: UtcDatetime
     created_at: UtcDatetime
 ```
 
@@ -1715,6 +1729,7 @@ class SkillStore(Protocol):
         station_id: StationId,
         model_id: ModelId,
         skill_source: SkillSource | None = None,
+        parameter: str | None = None,
     ) -> list[SkillScore]: ...
         # Returns scores for the latest computation_version.
     def fetch_latest_diagrams(
@@ -1722,18 +1737,21 @@ class SkillStore(Protocol):
         station_id: StationId,
         model_id: ModelId,
         diagram_type: Literal["reliability", "roc", "rank_histogram"] | None = None,
+        parameter: str | None = None,
     ) -> list[SkillDiagram]: ...
     def fetch_scores_by_regime(
         self,
         station_id: StationId,
         model_id: ModelId,
         flow_regime: FlowRegime,
+        parameter: str | None = None,
     ) -> list[SkillScore]: ...
     def mark_stale(
         self,
         station_id: StationId,
         start: UtcDatetime,
         end: UtcDatetime,
+        parameter: str | None = None,
     ) -> int: ...
         # Sets freshness=STALE on all skill_scores rows for this station
         # whose evaluation period overlaps [start, end].
@@ -1975,6 +1993,11 @@ class BasinStore(Protocol):
 class ParameterStore(Protocol):
     def fetch_all(self) -> list[ParameterDefinition]: ...
     def fetch_by_name(self, name: str) -> ParameterDefinition | None: ...
+    def register(self, definition: ParameterDefinition) -> None: ...
+    # Idempotent upsert. Called by Flow 0 step 0.6 to register deployment-
+    # specific parameters from config TOML. Updates display_name, unit, and
+    # aggregation_method if the parameter already exists; does not delete
+    # parameters absent from config (seed data is preserved).
 ```
 
 Module: `protocols/stores.py` (all store Protocols in one module — they share `ConflictError`).
@@ -2226,6 +2249,10 @@ class DeploymentConfig(BaseModel):
 This is the deployment-wide config. Adapter-specific config (adapter types, cache ages,
 archive flags) lives in the `[adapters]` section of `config.toml` and is loaded separately
 by each adapter — not part of `DeploymentConfig`.
+
+Deployment-specific parameters live in `[[parameters]]` sections of `config.toml` — loaded
+during Flow 0 step 0.6 and upserted into the `parameters` table. See `architecture-context.md`
+§`parameters` table for the schema and extensibility model.
 
 Module: `config/deployment.py`
 

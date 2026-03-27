@@ -831,6 +831,7 @@ skill_scores = sa.Table(
         sa.ForeignKey("model_artifacts.id"),
         nullable=False,
     ),
+    sa.Column("parameter", sa.Text, nullable=False),
     sa.Column("skill_source", sa.Text, nullable=False),
     sa.Column("forcing_type", sa.Text, nullable=True),
     sa.Column("computation_version", sa.Integer, nullable=False),
@@ -878,6 +879,7 @@ skill_diagrams = sa.Table(
         sa.ForeignKey("model_artifacts.id"),
         nullable=False,
     ),
+    sa.Column("parameter", sa.Text, nullable=False),
     sa.Column("skill_source", sa.Text, nullable=False),
     sa.Column("computation_version", sa.Integer, nullable=False),
     sa.Column("lead_time_hours", sa.Integer, nullable=False),
@@ -913,6 +915,7 @@ sa.Index(
     skill_scores.c.station_id,
     skill_scores.c.model_artifact_id,
     skill_scores.c.skill_source,
+    skill_scores.c.parameter,
     skill_scores.c.lead_time_hours,
     skill_scores.c.metric,
     sa.text("COALESCE(season, '')"),
@@ -935,6 +938,19 @@ sa.Index(
     skill_scores.c.eval_period_start,
     skill_scores.c.eval_period_end,
     postgresql_where=skill_scores.c.freshness == "current",
+)
+sa.Index(
+    "uq_skill_diagrams_natural_key",
+    skill_diagrams.c.station_id,
+    skill_diagrams.c.model_artifact_id,
+    skill_diagrams.c.skill_source,
+    skill_diagrams.c.parameter,
+    skill_diagrams.c.lead_time_hours,
+    skill_diagrams.c.diagram_type,
+    sa.text("COALESCE(season, '')"),
+    sa.text("COALESCE(flow_regime, '')"),
+    sa.text("COALESCE(threshold_level, '')"),
+    unique=True,
 )
 
 # ──────────────────────────────────────────────

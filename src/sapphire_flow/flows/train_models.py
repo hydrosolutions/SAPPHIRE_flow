@@ -6,9 +6,14 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from prefect import flow, task
+from prefect.utilities.annotations import unmapped
 
-from sapphire_flow.flows.compute_skills import compute_skills_flow
+from sapphire_flow.flows.compute_skills import compute_skills_task
 from sapphire_flow.flows.run_hindcast import run_hindcast_flow
+from sapphire_flow.protocols.forecast_model import (
+    GroupForecastModel,
+    StationForecastModel,
+)
 from sapphire_flow.services.model_registry import discover_models, register_models
 from sapphire_flow.services.scope import determine_training_scope
 from sapphire_flow.services.training import (
@@ -292,29 +297,38 @@ def train_models_flow(
         else:
             hindcast_steps = hindcast_steps_raw
 
-        # T.5: compute skills per station (as subflow)
+        # T.5: compute skills per station × parameter (task.map fan-out)
+        # NOTE: task.map() with unmapped() store args requires in-process task runner
+        # (ThreadPoolTaskRunner). Stores hold SQLAlchemy connections that are not
+        # pickle-serializable — distributed/subprocess runners would fail.
         skill_computed = False
         station_ids_for_skill: list[StationId] = (
             [unit.station_id] if unit.station_id is not None else list(unit.station_ids)
         )
 
-        for sid in station_ids_for_skill:
-            scores, _ = compute_skills_flow(
-                station_id=sid,
-                model_id=unit.model_id,
-                artifact_id=artifact_id,
-                parameter="discharge",
-                hindcast_run_id=hindcast_run_id,
-                hindcast_store=hindcast_store,
-                obs_store=obs_store,
-                skill_store=skill_store,
-                station_store=station_store,
-                flow_regime_store=flow_regime_store,
-                deployment_config=deployment_config,
-                clock=clock,
-            )
-            if scores:
-                skill_computed = True
+        assert isinstance(model_instance, (StationForecastModel, GroupForecastModel))
+        target_parameters = model_instance.data_requirements.target_parameters
+        skill_pairs = [
+            (sid, param)
+            for sid in station_ids_for_skill
+            for param in sorted(target_parameters)
+        ]
+        futures = compute_skills_task.map(
+            station_id=[sid for sid, _ in skill_pairs],
+            model_id=unmapped(unit.model_id),
+            artifact_id=unmapped(artifact_id),
+            parameter=[param for _, param in skill_pairs],
+            hindcast_run_id=unmapped(hindcast_run_id),
+            hindcast_store=unmapped(hindcast_store),
+            obs_store=unmapped(obs_store),
+            skill_store=unmapped(skill_store),
+            station_store=unmapped(station_store),
+            flow_regime_store=unmapped(flow_regime_store),
+            deployment_config=unmapped(deployment_config),
+            clock=unmapped(clock),
+        )
+        skill_results = [f.result() for f in futures]
+        skill_computed = any(scores for scores, _ in skill_results)
 
         results.append(
             TrainingResult(

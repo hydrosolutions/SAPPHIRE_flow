@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID, uuid4
 
+import structlog
 from prefect import flow, task
 
 from sapphire_flow.services.skill.service import compute_skill_for_station
@@ -10,7 +11,6 @@ from sapphire_flow.types.ids import ArtifactId, ModelId, StationId  # noqa: TC00
 from sapphire_flow.types.skill import SkillDiagram, SkillScore  # noqa: TC001
 
 
-@task(name="fetch-hindcasts-for-skill")
 def _fetch_hindcasts(
     hindcast_store: object,
     station_id: StationId,
@@ -30,7 +30,6 @@ def _fetch_hindcasts(
     )
 
 
-@task(name="fetch-observations-for-skill")
 def _fetch_observations(
     obs_store: object,
     station_id: StationId,
@@ -49,7 +48,6 @@ def _fetch_observations(
     )
 
 
-@task(name="store-skill-results")
 def _store_skill_results(
     skill_store: object,
     scores: list[SkillScore],
@@ -59,8 +57,8 @@ def _store_skill_results(
     skill_store.store_skill_diagrams(diagrams)
 
 
-@flow(name="compute-skills", log_prints=False)
-def compute_skills_flow(
+@task(name="compute-skills-task", log_prints=False)
+def compute_skills_task(
     station_id: StationId,
     model_id: ModelId,
     artifact_id: ArtifactId,
@@ -78,11 +76,10 @@ def compute_skills_flow(
 
     from sapphire_flow.types.datetime import ensure_utc
 
-    if parameter != "discharge":
-        raise NotImplementedError(
-            "Non-discharge skill computation requires SkillScore.parameter "
-            "field (plan 004) to comply with WMO verification standards"
-        )
+    structlog.contextvars.bind_contextvars(
+        station_id=str(station_id),
+        parameter=parameter,
+    )
 
     if clock is None:
         clock = lambda: ensure_utc(datetime.now(UTC))  # noqa: E731
@@ -141,3 +138,34 @@ def compute_skills_flow(
     _store_skill_results(skill_store, scores, diagrams)
 
     return scores, diagrams
+
+
+@flow(name="compute-skills", log_prints=False)
+def compute_skills_flow(
+    station_id: StationId,
+    model_id: ModelId,
+    artifact_id: ArtifactId,
+    parameter: str,
+    hindcast_run_id: UUID | None = None,
+    hindcast_store: object = None,
+    obs_store: object = None,
+    skill_store: object = None,
+    station_store: object = None,
+    flow_regime_store: object = None,
+    deployment_config: object = None,
+    clock: object = None,
+) -> tuple[list[SkillScore], list[SkillDiagram]]:
+    return compute_skills_task(
+        station_id=station_id,
+        model_id=model_id,
+        artifact_id=artifact_id,
+        parameter=parameter,
+        hindcast_run_id=hindcast_run_id,
+        hindcast_store=hindcast_store,
+        obs_store=obs_store,
+        skill_store=skill_store,
+        station_store=station_store,
+        flow_regime_store=flow_regime_store,
+        deployment_config=deployment_config,
+        clock=clock,
+    )

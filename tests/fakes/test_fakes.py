@@ -270,3 +270,100 @@ class TestFakeHindcastStoreParameterFilter:
         )
         assert len(result) == 1
         assert result[0].ensemble.parameter == "discharge"
+
+
+class TestFakeSkillStoreParameterFilter:
+    def test_fetch_scores_filters_by_parameter(self) -> None:
+        from sapphire_flow.types.datetime import ensure_utc
+        from sapphire_flow.types.enums import SkillFreshness, SkillSource
+        from sapphire_flow.types.ids import ArtifactId, ModelId, StationId
+        from sapphire_flow.types.skill import SkillScore
+
+        store = FakeSkillStore()
+        sid = StationId(_fake_uuid())
+        mid = ModelId("test")
+        aid = ArtifactId(_fake_uuid())
+        now = ensure_utc(datetime(2025, 1, 1, tzinfo=UTC))
+
+        def _score(parameter: str) -> SkillScore:
+            return SkillScore(
+                id=_fake_uuid(),
+                station_id=sid,
+                model_id=mid,
+                parameter=parameter,
+                model_artifact_id=aid,
+                skill_source=SkillSource.HINDCAST_REANALYSIS,
+                forcing_type=None,
+                computation_version=1,
+                computed_at=now,
+                lead_time_hours=24,
+                season=None,
+                flow_regime=None,
+                flow_regime_config_id=None,
+                metric="crps",
+                score=0.5,
+                sample_size=100,
+                freshness=SkillFreshness.CURRENT,
+                eval_period_start=now,
+                eval_period_end=now,
+                created_at=now,
+            )
+
+        store.store_skill_scores([_score("discharge"), _score("water_level")])
+
+        discharge_only = store.fetch_latest_scores(sid, mid, parameter="discharge")
+        assert len(discharge_only) == 1
+        assert discharge_only[0].parameter == "discharge"
+
+        all_params = store.fetch_latest_scores(sid, mid, parameter=None)
+        assert len(all_params) == 2
+
+    def test_mark_stale_filters_by_parameter(self) -> None:
+
+        from sapphire_flow.types.datetime import ensure_utc
+        from sapphire_flow.types.enums import SkillFreshness, SkillSource
+        from sapphire_flow.types.ids import ArtifactId, ModelId, StationId
+        from sapphire_flow.types.skill import SkillScore
+
+        store = FakeSkillStore()
+        sid = StationId(_fake_uuid())
+        mid = ModelId("test")
+        aid = ArtifactId(_fake_uuid())
+        t0 = ensure_utc(datetime(2024, 1, 1, tzinfo=UTC))
+        t1 = ensure_utc(datetime(2025, 1, 1, tzinfo=UTC))
+        t2 = ensure_utc(datetime(2026, 1, 1, tzinfo=UTC))
+
+        def _score(parameter: str) -> SkillScore:
+            return SkillScore(
+                id=_fake_uuid(),
+                station_id=sid,
+                model_id=mid,
+                parameter=parameter,
+                model_artifact_id=aid,
+                skill_source=SkillSource.HINDCAST_REANALYSIS,
+                forcing_type=None,
+                computation_version=1,
+                computed_at=t1,
+                lead_time_hours=24,
+                season=None,
+                flow_regime=None,
+                flow_regime_config_id=None,
+                metric="crps",
+                score=0.5,
+                sample_size=100,
+                freshness=SkillFreshness.CURRENT,
+                eval_period_start=t0,
+                eval_period_end=t1,
+                created_at=t1,
+            )
+
+        store.store_skill_scores([_score("discharge"), _score("water_level")])
+
+        count = store.mark_stale(sid, t0, t2, parameter="discharge")
+        assert count == 1
+
+        all_scores = store.fetch_latest_scores(sid, mid)
+        discharge = [s for s in all_scores if s.parameter == "discharge"]
+        water_level = [s for s in all_scores if s.parameter == "water_level"]
+        assert discharge[0].freshness == SkillFreshness.STALE
+        assert water_level[0].freshness == SkillFreshness.CURRENT

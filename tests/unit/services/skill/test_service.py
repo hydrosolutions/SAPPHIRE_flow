@@ -550,7 +550,10 @@ class TestParameterFiltering:
             vt = ensure_utc(datetime.fromtimestamp(step.timestamp() + 3600, tz=UTC))
             observations.append(
                 _make_observation(
-                    station_id=station_id, timestamp=vt, value=10.0, parameter="discharge"
+                    station_id=station_id,
+                    timestamp=vt,
+                    value=10.0,
+                    parameter="discharge",
                 )
             )
 
@@ -601,3 +604,98 @@ class TestParameterFiltering:
         ]
         assert len(aggregate) > 0
         assert all(s.sample_size == n_discharge for s in aggregate)
+
+
+class TestParameterStamping:
+    def test_parameter_stamped_on_scores(
+        self,
+        station_id: StationId,
+        model_id: ModelId,
+        artifact_id: ArtifactId,
+        clock: object,
+        uuid_factory: object,
+        seasons: list[SeasonDefinition],
+    ) -> None:
+        step = _utc(2025, 1, 1)
+        vt = ensure_utc(datetime.fromtimestamp(step.timestamp() + 3600, tz=UTC))
+        hindcasts = [
+            _make_hindcast(
+                station_id=station_id,
+                model_id=model_id,
+                artifact_id=artifact_id,
+                hindcast_step=step,
+                n_steps=1,
+                parameter="water_level",
+            )
+        ]
+        observations = [
+            _make_observation(
+                station_id=station_id, timestamp=vt, parameter="water_level"
+            )
+        ]
+
+        scores, _ = compute_skill_for_station(
+            station_id=station_id,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            hindcasts=hindcasts,
+            observations=observations,
+            thresholds=[],
+            flow_regime_config=None,
+            seasons=seasons,
+            skill_source=SkillSource.HINDCAST_REANALYSIS,
+            forcing_type=ForcingType.REANALYSIS,
+            clock=clock,  # type: ignore[arg-type]
+            uuid_factory=uuid_factory,  # type: ignore[arg-type]
+            parameter="water_level",
+        )
+
+        assert len(scores) > 0
+        assert all(s.parameter == "water_level" for s in scores)
+
+    def test_parameter_stamped_on_diagrams(
+        self,
+        station_id: StationId,
+        model_id: ModelId,
+        artifact_id: ArtifactId,
+        clock: object,
+        uuid_factory: object,
+        seasons: list[SeasonDefinition],
+    ) -> None:
+        step = _utc(2025, 1, 1)
+        vt = ensure_utc(datetime.fromtimestamp(step.timestamp() + 3600, tz=UTC))
+        hindcasts = [
+            _make_hindcast(
+                station_id=station_id,
+                model_id=model_id,
+                artifact_id=artifact_id,
+                hindcast_step=step,
+                n_steps=1,
+                n_members=5,
+                parameter="water_level",
+            )
+        ]
+        observations = [
+            _make_observation(
+                station_id=station_id, timestamp=vt, parameter="water_level"
+            )
+        ]
+
+        _, diagrams = compute_skill_for_station(
+            station_id=station_id,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            hindcasts=hindcasts,
+            observations=observations,
+            thresholds=[],
+            flow_regime_config=None,
+            seasons=seasons,
+            skill_source=SkillSource.HINDCAST_REANALYSIS,
+            forcing_type=ForcingType.REANALYSIS,
+            clock=clock,  # type: ignore[arg-type]
+            uuid_factory=uuid_factory,  # type: ignore[arg-type]
+            parameter="water_level",
+        )
+
+        assert len(diagrams) > 0
+        assert all(d.parameter == "water_level" for d in diagrams)

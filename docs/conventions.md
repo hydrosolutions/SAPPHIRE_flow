@@ -99,6 +99,12 @@ names at ingest:
 Each adapter maps its source-specific parameter names to these canonical
 names. The `parameters` table stores the canonical names.
 
+**Extensibility:** The list above is the v0 seed data. Deployments can register additional
+parameters via `[[parameters]]` in the deployment config TOML (loaded in Flow 0 step 0.6).
+Future domains include water quality (`water_temperature`, `dissolved_oxygen`, `turbidity`),
+groundwater (`groundwater_level`), and soil (`soil_moisture`). See `architecture-context.md`
+§`parameters` table for the extensibility model and `ParameterDomain` enum.
+
 ### Environment variables
 
 - Secrets: `DB_ADMIN_PASSWORD`, `SECRET_KEY`
@@ -115,9 +121,11 @@ constraint on `stations` and `basins`.
 
 ### Prefect flows and tasks
 
-- Flow functions: `verb_noun` — `run_forecast_cycle`, `ingest_observations`, `compute_skills`
-- Task functions: `verb_noun` — `fetch_weather_forecasts`, `run_model_forecasts`
-- Deployment names: kebab-case — `run-forecast-cycle`, `ingest-observations`
+- Flow functions: `verb_noun` — `run_forecast_cycle`, `ingest_observations`, `compute_skills_flow`
+- Task functions: `verb_noun` — `fetch_weather_forecasts`, `run_model_forecasts`, `compute_skills_task`
+- Deployment names: kebab-case — `run-forecast-cycle`, `ingest-observations`, `compute-skills`
+
+When the dual-interface pattern is used (see `orchestration.md` §Flow composition, pattern 4), append `_task` and `_flow` suffixes to the `verb_noun` base name (e.g., `compute_skills_task`, `compute_skills_flow`). The Prefect deployment `name=` in the `@flow` decorator retains the unsuffixed kebab-case form (`compute-skills`).
 
 ### Log events
 

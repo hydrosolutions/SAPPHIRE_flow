@@ -418,6 +418,7 @@ class FakeSkillStore:
         station_id: StationId,
         model_id: ModelId,
         skill_source: SkillSource | None = None,
+        parameter: str | None = None,
     ) -> list[SkillScore]:
         matches = [
             s
@@ -425,6 +426,7 @@ class FakeSkillStore:
             if s.station_id == station_id
             and s.model_id == model_id
             and (skill_source is None or s.skill_source == skill_source)
+            and (parameter is None or s.parameter == parameter)
         ]
         if not matches:
             return []
@@ -436,6 +438,7 @@ class FakeSkillStore:
         station_id: StationId,
         model_id: ModelId,
         diagram_type: Literal["reliability", "roc", "rank_histogram"] | None = None,
+        parameter: str | None = None,
     ) -> list[SkillDiagram]:
         matches = [
             d
@@ -443,6 +446,7 @@ class FakeSkillStore:
             if d.station_id == station_id
             and d.model_id == model_id
             and (diagram_type is None or d.diagram_type == diagram_type)
+            and (parameter is None or d.parameter == parameter)
         ]
         if not matches:
             return []
@@ -454,6 +458,7 @@ class FakeSkillStore:
         station_id: StationId,
         model_id: ModelId,
         flow_regime: FlowRegime,
+        parameter: str | None = None,
     ) -> list[SkillScore]:
         return [
             s
@@ -461,17 +466,23 @@ class FakeSkillStore:
             if s.station_id == station_id
             and s.model_id == model_id
             and s.flow_regime == flow_regime
+            and (parameter is None or s.parameter == parameter)
         ]
 
     def mark_stale(
-        self, station_id: StationId, start: UtcDatetime, end: UtcDatetime
+        self,
+        station_id: StationId,
+        start: UtcDatetime,
+        end: UtcDatetime,
+        parameter: str | None = None,
     ) -> int:
         count = 0
         new_scores = []
         for s in self._scores:
             overlaps = s.eval_period_start < end and s.eval_period_end > start
             is_current = s.freshness == SkillFreshness.CURRENT
-            if s.station_id == station_id and is_current and overlaps:
+            param_match = parameter is None or s.parameter == parameter
+            if s.station_id == station_id and is_current and overlaps and param_match:
                 new_scores.append(replace(s, freshness=SkillFreshness.STALE))
                 count += 1
             else:

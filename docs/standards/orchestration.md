@@ -20,7 +20,7 @@ Prefect 3 replaces a patchwork of Luigi, bash scripts, and cron jobs with a sing
 | 5w — Weather station onboarding | `onboard_weather_stations` | `ops` | On-demand | — | v0+v1 |
 | 6/9 — Model training | `train_models` | `training` | On-demand or scheduled | 1 | v0+v1 |
 | 7 — Hindcast generation | `run_hindcast` | `hindcast` | Subflow or on-demand | — | v0+v1 |
-| 8/10 — Skill computation | `compute_skills` | `hindcast` | Subflow or on-demand | — | v0+v1 |
+| 8/10 — Skill computation | `compute_skills_flow` (deployment) / `compute_skills_task` (fan-out) | `hindcast` | Subflow or on-demand | — | v0+v1 |
 | 11 — NWP gap recovery | `recover_nwp_gaps` | `ops` | Event-triggered (from Flow 4) | — | **v0c+** (§D5) |
 | 12 — Observation reprocessing | `reprocess_observations` | `ops` | Event-triggered / on-demand | Per-station (see below) | v0+v1 |
 | Backup | `backup_database` | `ops` | Cron (daily) | — | v0+v1 |
@@ -45,12 +45,16 @@ Keep inline (plain function call inside a `@flow` or `@task`) when:
 
 One task per side-effect boundary is the guiding rule. Tasks should be idempotent where possible — re-running a task on retry should not create duplicate records or double-write data. See conventions.md § Prefect flows and tasks for function naming (`verb_noun`) and deployment naming (kebab-case).
 
+When a `@task` is itself invoked via `task.map()` at high fan-out (hundreds+ concurrent invocations), inner `@task` decorators on DB-boundary helpers may be removed to avoid Prefect UI saturation. Retry responsibility moves to the outer task.
+
 ## Fan-out and convergence
 
 Flow 1 parallelizes forecast execution across stations. Two mechanisms are available:
 
 - `task.map()` — for homogeneous work over a collection (e.g. running the same forecast task for each station/model pair).
 - `task.submit()` + gather — for heterogeneous parallel work where tasks differ by inputs or type.
+
+`task.map()` with `unmapped()` store/connection arguments requires an in-process task runner (`ThreadPoolTaskRunner` or `ConcurrentTaskRunner`). Stores hold SQLAlchemy connections that are not pickle-serializable — distributed or subprocess runners would fail. v0 uses a single work pool with in-process execution.
 
 Illustrative sketch for Flow 1 (not implementation):
 
@@ -94,12 +98,12 @@ for group, model, period in scope:             # parallelizable across groups
     # T.4-T.5: fan out hindcast + skill per station in group
     for station in group.station_ids:
         run_hindcast(station, model, artifact, period)
-        compute_skills(station, model, artifact)
+        compute_skills_task(station, model, artifact)
 ```
 
 ## Flow composition
 
-Three composition patterns are used across the 12 flows (plus Flow 5w):
+Four composition patterns are used across the 12 flows (plus Flow 5w):
 
 **1. Direct subflow call** — a `@flow` calls another `@flow` in-process. Prefect tracks the parent–child relationship in the UI. Used for Flows 6/9 calling Flow 7 (hindcast) and Flows 8/10 (skill) as part of the training pipeline.
 
@@ -108,6 +112,8 @@ Three composition patterns are used across the 12 flows (plus Flow 5w):
 **2. Cross-pool submission** — a parent flow submits work to a different work pool via `run_deployment()`. The parent does not block; it polls or waits for the child deployment's run to complete. Used when the training pool (`training`) needs to dispatch hindcast and skill work to the `hindcast` pool after T.3 completes.
 
 **3. Event-triggered** — a flow emits a Prefect event or triggers a deployment asynchronously. Used for Flow 4 → Flow 11: when `monitor_pipeline` detects a recoverable NWP archive gap (step 4.1), it triggers `recover_nwp_gaps` without waiting for it to complete.
+
+**4. Dual-interface (task + flow wrapper)** — a `@task` contains the computation logic and is used with `task.map()` for fan-out. A thin `@flow` wrapper calls the task and preserves standalone deployment registration. Used when the same computation needs both concurrent fan-out (inside a parent flow) and independent invocability. Example: `compute_skills_task` (used via `.map()` inside `train_models`) and `compute_skills_flow` (registered as a standalone deployment for on-demand invocation).
 
 Composition graph:
 

@@ -47,10 +47,13 @@ class PgSkillStore:
         station_id: StationId,
         model_id: ModelId,
         skill_source: SkillSource | None = None,
+        parameter: str | None = None,
     ) -> list[SkillScore]:
         filters = [ss.c.station_id == station_id, ss.c.model_id == model_id]
         if skill_source is not None:
             filters.append(ss.c.skill_source == skill_source.value)
+        if parameter is not None:
+            filters.append(ss.c.parameter == parameter)
 
         max_ver = (
             sa.select(sa.func.max(ss.c.computation_version))
@@ -66,10 +69,13 @@ class PgSkillStore:
         station_id: StationId,
         model_id: ModelId,
         diagram_type: Literal["reliability", "roc", "rank_histogram"] | None = None,
+        parameter: str | None = None,
     ) -> list[SkillDiagram]:
         filters = [sd.c.station_id == station_id, sd.c.model_id == model_id]
         if diagram_type is not None:
             filters.append(sd.c.diagram_type == diagram_type)
+        if parameter is not None:
+            filters.append(sd.c.parameter == parameter)
 
         max_ver = (
             sa.select(sa.func.max(sd.c.computation_version))
@@ -85,12 +91,15 @@ class PgSkillStore:
         station_id: StationId,
         model_id: ModelId,
         flow_regime: FlowRegime,
+        parameter: str | None = None,
     ) -> list[SkillScore]:
         stmt = sa.select(ss).where(
             ss.c.station_id == station_id,
             ss.c.model_id == model_id,
             ss.c.flow_regime == flow_regime.value,
         )
+        if parameter is not None:
+            stmt = stmt.where(ss.c.parameter == parameter)
         rows = self._conn.execute(stmt).mappings().all()
         return [_row_to_score(row) for row in rows]
 
@@ -99,15 +108,19 @@ class PgSkillStore:
         station_id: StationId,
         start: UtcDatetime,
         end: UtcDatetime,
+        parameter: str | None = None,
     ) -> int:
+        filters = [
+            ss.c.station_id == station_id,
+            ss.c.freshness == SkillFreshness.CURRENT.value,
+            ss.c.eval_period_start < end,
+            ss.c.eval_period_end > start,
+        ]
+        if parameter is not None:
+            filters.append(ss.c.parameter == parameter)
         result = self._conn.execute(
             sa.update(ss)
-            .where(
-                ss.c.station_id == station_id,
-                ss.c.freshness == SkillFreshness.CURRENT.value,
-                ss.c.eval_period_start < end,
-                ss.c.eval_period_end > start,
-            )
+            .where(*filters)
             .values(freshness=SkillFreshness.STALE.value)
         )
         return result.rowcount
@@ -119,6 +132,7 @@ def _score_to_row(s: SkillScore) -> dict:  # type: ignore[type-arg]
         "station_id": s.station_id,
         "model_id": s.model_id,
         "model_artifact_id": s.model_artifact_id,
+        "parameter": s.parameter,
         "skill_source": s.skill_source.value,
         "forcing_type": s.forcing_type.value if s.forcing_type is not None else None,
         "computation_version": s.computation_version,
@@ -143,6 +157,7 @@ def _diagram_to_row(d: SkillDiagram) -> dict:  # type: ignore[type-arg]
         "station_id": d.station_id,
         "model_id": d.model_id,
         "model_artifact_id": d.model_artifact_id,
+        "parameter": d.parameter,
         "skill_source": d.skill_source.value,
         "computation_version": d.computation_version,
         "lead_time_hours": d.lead_time_hours,
@@ -166,6 +181,7 @@ def _row_to_score(row: sa.engine.row.RowMapping) -> SkillScore:
         station_id=StationId(row["station_id"]),
         model_id=ModelId(row["model_id"]),
         model_artifact_id=ArtifactId(row["model_artifact_id"]),
+        parameter=row["parameter"],
         skill_source=SkillSource(row["skill_source"]),
         forcing_type=ForcingType(forcing_raw) if forcing_raw is not None else None,
         computation_version=row["computation_version"],
@@ -193,6 +209,7 @@ def _row_to_diagram(row: sa.engine.row.RowMapping) -> SkillDiagram:
         station_id=StationId(row["station_id"]),
         model_id=ModelId(row["model_id"]),
         model_artifact_id=ArtifactId(row["model_artifact_id"]),
+        parameter=row["parameter"],
         skill_source=SkillSource(row["skill_source"]),
         computation_version=row["computation_version"],
         lead_time_hours=row["lead_time_hours"],

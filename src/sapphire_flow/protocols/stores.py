@@ -298,6 +298,7 @@ class SkillStore(Protocol):
         station_id: StationId,
         model_id: ModelId,
         skill_source: SkillSource | None = None,
+        parameter: str | None = None,
     ) -> list[SkillScore]:
         raise NotImplementedError
 
@@ -306,6 +307,7 @@ class SkillStore(Protocol):
         station_id: StationId,
         model_id: ModelId,
         diagram_type: Literal["reliability", "roc", "rank_histogram"] | None = None,
+        parameter: str | None = None,
     ) -> list[SkillDiagram]:
         raise NotImplementedError
 
@@ -314,6 +316,7 @@ class SkillStore(Protocol):
         station_id: StationId,
         model_id: ModelId,
         flow_regime: FlowRegime,
+        parameter: str | None = None,
     ) -> list[SkillScore]:
         raise NotImplementedError
 
@@ -322,6 +325,7 @@ class SkillStore(Protocol):
         station_id: StationId,
         start: UtcDatetime,
         end: UtcDatetime,
+        parameter: str | None = None,
     ) -> int:
         raise NotImplementedError
 

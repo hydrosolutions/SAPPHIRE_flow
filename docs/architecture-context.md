@@ -536,6 +536,7 @@ Deployment onboarding prepares area-wide datasets **before** individual stations
 | 0.3 | Download historical dynamic datasets | `adapters/` | AOI, date range, variable list | Local cache (Zarr / Parquet / netCDF) per dataset | Idempotent (resume) |
 | 0.4 | Verify completeness | `services/` | Local cache, expected coverage | Completeness report (spatial + temporal) | Idempotent |
 | 0.5 | Register datasets in catalog | `store/` | Dataset metadata (source, version, path, AOI, variables) | Dataset registry records | Idempotent (upsert) |
+| 0.6 | Register parameters | `store/` | `[[parameters]]` section from deployment config TOML | Parameter records in `parameters` table | Idempotent (upsert) |
 
 #### Notes
 
@@ -557,6 +558,8 @@ Deployment onboarding prepares area-wide datasets **before** individual stations
 - **0.4**: Validates that downloaded data covers the full AOI and requested date range. Reports gaps (spatial holes, missing time steps). Gaps in static data block station onboarding; gaps in dynamic data produce warnings (stations can still onboard with reduced training windows).
 
 - **0.5**: Records each dataset's metadata (source name, version, download timestamp, local path, AOI coverage, variable list) in a dataset registry. Flow 5 step 5.2 queries this registry to find cached static attributes for a basin instead of fetching them remotely.
+
+- **0.6**: Reads the `[[parameters]]` section from the deployment config TOML and upserts each entry into the `parameters` table via `ParameterStore.register()`. This extends the migration seed data with deployment-specific parameters (e.g. `water_temperature` for water quality monitoring, `groundwater_level` for borehole deployments). If a parameter's `parameter_domain` is not in the known `ParameterDomain` set, the system logs a structured warning (`known_domain=false`) but proceeds — allowing experimentation without code changes. Idempotent: re-running updates display names and units but cannot delete seed parameters.
 
 #### SAPPHIRE Data Gateway integration (v1)
 
@@ -1005,11 +1008,13 @@ H.2 and H.3 run in parallel (both are bulk store reads scoped by H.1). They join
 
 ```
 Trigger:  On-demand (after hindcast, after retraining) or scheduled (yearly refresh)
-Flow:     compute_skills
+Flow:     compute_skills_flow  (thin Prefect wrapper; body is compute_skills_task for fan-out)
 Layer:    flows/ — orchestration only, delegates to services
 ```
 
 Flows 8 (initial) and 10 (recomputation) are the same flow with different scope. Flow 8 = narrow (one station/model after hindcast). Flow 10 = broad (all stations/models, yearly or after retraining).
+
+**Dual-interface pattern**: `compute_skills_flow` is the thin Prefect `@flow`-decorated entry point used for standalone deployment and on-demand triggering. The computation body lives in `compute_skills_task` (a `@task`), which is mapped via `task.map()` for parallel per-station fan-out. Internal helpers (metric computation, aggregation) are plain functions — not Prefect tasks — keeping the core logic testable without a Prefect runtime.
 
 ```mermaid
 flowchart TD
@@ -1083,7 +1088,7 @@ Using `S.*` prefix since this flow serves both Flow 8 and Flow 10.
   "Sufficient data" thresholds are deployment-configurable: `min_skill_samples: int` (e.g. 100 forecast-observation pairs), `min_skill_seasons: int` (e.g. 2 — must cover wet + dry). The promotion report (T.6) shows which source was used, why, sample size, and season coverage. The model admin (T.8) sees this context.
 - **S.4 — storage schema**: See "Skill score storage schema" section for table definition.
 - **S.5**: Two audiences: developers comparing models across stations, and hydrologists choosing models in Flow 3.
-- **S.6**: Versioned — recomputation creates a new record, doesn't overwrite. Enables tracking skill evolution over time. Clears `is_stale = FALSE` on superseded rows for the recomputed (station, model, artifact) scope.
+- **S.6**: Versioned — recomputation creates a new record, doesn't overwrite. Enables tracking skill evolution over time. Sets `freshness = 'stale'` on superseded rows for the recomputed (station, model, artifact) scope.
 - **Consumers**: Flow 3 dashboard (model selection), developer tools, API.
 
 #### Sequencing
@@ -1135,7 +1140,7 @@ flowchart TD
 | 11.1 | Prioritize & filter | `services/` | Missing cycle list from Flow 4, NWP source config | Prioritized list of recoverable cycles (filtered by provider retention window, sorted newest-first) |
 | 11.2 | Attempt re-fetch | `adapters/` | Prioritized cycle list, NWP source config | Recovered raw data or permanent failure per cycle |
 | 11.3 | Extract per-station values | `preprocessing/` | Recovered raw grids, station configs | Per-station extracted NWP values (basin-average / point / elevation-band) |
-| 11.4 | Store recovered data | `store/` | Extracted NWP values | Persisted to `weather_forecasts` with `is_gap=TRUE, gap_status='recovered'`; marks overlapping `skill_scores` rows `is_stale=TRUE` |
+| 11.4 | Store recovered data | `store/` | Extracted NWP values | Persisted to `weather_forecasts` with `is_gap=TRUE, gap_status='recovered'`; marks overlapping `skill_scores` rows `freshness='stale'` |
 | 11.5 | Flag unrecoverable gaps | `store/` | Permanently failed cycles | Rows inserted with `is_gap=TRUE, gap_status='unrecoverable'` |
 | 11.6 | Report outcomes | `services/` | Recovery results (counts, failures) | Log summary; feed unrecoverable gaps to Flow 4 ops alerting |
 
@@ -1145,7 +1150,7 @@ flowchart TD
 - **11.1 — Prioritization**: Filters out cycles older than the provider's `provider_retention_days` (configured per NWP source — see config below). Remaining cycles are sorted newest-first (recent gaps are more operationally valuable). Cycles already being recovered (idempotency check — see below) are skipped.
 - **11.2 — Retry strategy**: Each cycle gets up to `recovery_max_attempts` tries (configured per NWP source, default 3) with exponential backoff (base 5 min, capped at 1 hour). A cycle is declared unrecoverable after exhausting attempts OR when its age exceeds `provider_retention_days`. Attempt count is tracked in-memory within the flow run — Flow 4 re-triggers the entire flow on the next watchdog cycle if gaps remain, so persistence of attempt counts across flow runs is not needed.
 - **11.3 — Re-extraction**: Recovered raw grids must be run through GridExtractor (same as Flow 1 step 1.3) to produce per-station extracted values. This step reuses the same extraction logic — it is not a separate implementation.
-- **11.4**: Writes to `weather_forecasts` in the hot tier (PostgreSQL), regardless of whether the gap's time period has passed the `weather_hot_days` boundary. The normal tiered retention job will migrate it to cold storage on schedule. After storing recovered data, sets `is_stale = TRUE` on `skill_scores` rows whose evaluation period overlaps the recovered NWP time range (via `SkillStore.mark_stale()`). Stale scores are recomputed by the next Flow 10 run.
+- **11.4**: Writes to `weather_forecasts` in the hot tier (PostgreSQL), regardless of whether the gap's time period has passed the `weather_hot_days` boundary. The normal tiered retention job will migrate it to cold storage on schedule. After storing recovered data, sets `freshness = 'stale'` on `skill_scores` rows whose evaluation period overlaps the recovered NWP time range (via `SkillStore.mark_stale()`). Stale scores are recomputed by the next Flow 10 run.
 - **11.5**: Unrecoverable gaps are permanently flagged. They affect hindcast quality (Flow 7 step H.2) and post-processing calibration (Flow 1 step 1.5). Skill computation (Flows 8/10) should account for gap periods.
 - **11.6 — Notification**: Unrecoverable gaps are fed back to Flow 4's ops alerting (step 4.6) as pipeline alerts (`alert_level = "nwp_gap_unrecoverable"`). Recovered gaps are logged but do not generate alerts.
 - **Idempotency**: Flow 11 is safe to re-trigger for the same gaps. Step 11.1 checks the `weather_forecasts` table — cycles that already have rows (either `gap_status='recovered'` or `gap_status='unrecoverable'`) are skipped. No duplicate writes.
@@ -1239,7 +1244,7 @@ flowchart TD
 | 12.2c | Fetch observations in time window | `store/` | Station, time window | All observations in range |
 | 12.3c | Re-run QC rules (current version) | `services/` | Fetched observations, current QC rule config | New QC flags per observation |
 | 12.4c | Update QC flags | `store/` | New QC flags | Updated `qc_status`, `qc_flags`, `qc_rule_version` on existing rows |
-| 12.5 | Mark affected skill scores stale | `store/` | Station, affected time window | `is_stale = TRUE` on overlapping `skill_scores` rows |
+| 12.5 | Mark affected skill scores stale | `store/` | Station, affected time window | `freshness = 'stale'` on overlapping `skill_scores` rows |
 | 12.6 | Audit log | `store/` | Reprocessing summary (branch, station, time window, row count) | `audit_log` entry with `event_type = observation_reprocessed` |
 
 #### Notes
@@ -1258,7 +1263,7 @@ flowchart TD
   - Duplicates against existing DB rows: controlled by explicit `overwrite: bool` flag in the API request. If `overwrite = FALSE` and duplicates exist, the request is rejected with a list of conflicting rows. If `overwrite = TRUE`, existing rows are replaced.
   All imported observations are stored with `source = 'manual_import'`. QC is run after import (step 12.4b) using the same service as Flow 2 step 2.3. This is the same validation/ingestion logic reused by Flow 5 step 5.4 for CSV-based historical imports.
 - **Branch C — QC re-evaluation** *(low priority)*: Re-runs QC rules on an existing time window using the current rule version. Updates `qc_flags`, `qc_status`, and `qc_rule_version` on existing rows — does not re-derive rating curve values. Useful when QC rules are updated and the operator wants to retroactively apply the new rules.
-- **12.5**: Sets `is_stale = TRUE` on all `skill_scores` rows whose evaluation period overlaps the affected time window (via `SkillStore.mark_stale()`). Stale scores are cleared by the next Flow 10 (skill recomputation) run.
+- **12.5**: Sets `freshness = 'stale'` on all `skill_scores` rows whose evaluation period overlaps the affected time window (via `SkillStore.mark_stale()`). Stale scores are cleared (set to `freshness = 'current'`) by the next Flow 10 (skill recomputation) run.
 - **12.6**: Every reprocessing event is logged to `audit_log` with `event_type = observation_reprocessed`, including branch type, station, time window, and row count. Actor is the user who triggered the reprocessing.
 - **Concurrency**: Must not overlap with Flow 2 (observation ingest) for the same station and time period. Enforced via Prefect concurrency limits keyed on `(station_id, "observation_write")`.
 - **Scope**: v0 = Branch B only. Branch A = v1 (requires rating curves). Branch C = low priority, after v1.
@@ -1808,10 +1813,13 @@ skill_scores:
   station_id: UUID FK
   model_id: TEXT FK
   model_artifact_id: UUID FK → model_artifacts.id  # which model artifact was evaluated
+  parameter: TEXT NOT NULL                 # forecast parameter evaluated (e.g. "discharge", "water_level")
   skill_source: TEXT                       # SkillSource: hindcast_nwp_archive | hindcast_reanalysis | operational | transfer_validation
   forcing_type: TEXT NULL                  # ForcingType (NULL for operational). For transfer_validation: the forcing used in the validation hindcast (nwp_archive or reanalysis).
   computation_version: INT                 # monotonically increasing per (station, model, artifact) — enables "latest" queries
   computed_at: TIMESTAMPTZ
+  eval_period_start: TIMESTAMPTZ NOT NULL  # inclusive start of the evaluation window
+  eval_period_end: TIMESTAMPTZ NOT NULL    # exclusive end of the evaluation window
   lead_time_hours: INT                     # forecast lead time this score applies to
   season: TEXT NULL                        # e.g. "monsoon", "dry", NULL = all-season
   flow_regime: TEXT NULL                   # FlowRegime: low | high | flood | NULL = all-regime
@@ -1822,11 +1830,15 @@ skill_scores:
                                            #   "sharpness_p10_p90", "sharpness_p25_p75", "ensemble_range"
   score: DOUBLE PRECISION
   sample_size: INT                         # number of forecast-observation pairs
-  is_stale: BOOLEAN DEFAULT FALSE          # TRUE when underlying data changed (obs correction, NWP recovery); cleared by Flow 10 step S.6
+  freshness: TEXT NOT NULL DEFAULT 'current' CHECK (freshness IN ('current', 'stale'))
+                                           # 'stale' when underlying data changed (obs correction, NWP recovery); reset to 'current' by Flow 10 step S.6
   created_at: TIMESTAMPTZ
 ```
 
-Index: `(station_id, model_id, computation_version, metric, lead_time_hours)` for the common query "latest skill for model X at station Y." The `computation_version` pattern avoids expensive `GROUP BY MAX(computed_at)` — instead `WHERE computation_version = (SELECT MAX(...))`.
+Indexes:
+- `uq_skill_scores_natural_key` — unique on `(station_id, model_artifact_id, parameter, skill_source, computation_version, lead_time_hours, season, flow_regime, metric)` — prevents duplicate rows and supports idempotent upserts
+- `ix_skill_scores_station_freshness` — partial index on `(station_id, model_id)` WHERE `freshness = 'current'` — fast lookup of active scores without scanning stale history
+- Common query pattern: `(station_id, model_id, computation_version, metric, lead_time_hours)` for "latest skill for model X at station Y." The `computation_version` pattern avoids expensive `GROUP BY MAX(computed_at)` — instead `WHERE computation_version = (SELECT MAX(...))`.
 
 #### `skill_diagrams` table
 
@@ -1838,8 +1850,11 @@ skill_diagrams:
   station_id: UUID FK
   model_id: TEXT FK
   model_artifact_id: UUID FK → model_artifacts.id
+  parameter: TEXT NOT NULL                 # forecast parameter evaluated (e.g. "discharge", "water_level")
   skill_source: TEXT
   computation_version: INT
+  eval_period_start: TIMESTAMPTZ NOT NULL  # inclusive start of the evaluation window
+  eval_period_end: TIMESTAMPTZ NOT NULL    # exclusive end of the evaluation window
   lead_time_hours: INT
   season: TEXT NULL
   flow_regime: TEXT NULL                   # FlowRegime: low | high | flood | NULL = all-regime
@@ -1849,6 +1864,8 @@ skill_diagrams:
   data: JSONB                              # diagram-specific structure (see below)
   created_at: TIMESTAMPTZ
 ```
+
+Index: `uq_skill_diagrams_natural_key` — unique on `(station_id, model_artifact_id, parameter, skill_source, computation_version, lead_time_hours, season, flow_regime, diagram_type, threshold_level)` — prevents duplicate diagram rows and supports idempotent upserts.
 
 JSONB `data` structures:
 - **Reliability diagram**: `{"bins": [{"forecast_prob": 0.1, "observed_freq": 0.08, "count": 45}, ...]}`
@@ -2343,7 +2360,7 @@ parameters:
   name: TEXT PK                           # canonical name — "discharge", "precipitation", etc.
   display_name: TEXT                      # human-readable — "Discharge", "Precipitation", etc.
   unit: TEXT                              # SI or conventional unit — "m3/s", "mm", "°C", etc.
-  parameter_domain: TEXT                  # ParameterDomain: river | weather
+  parameter_domain: TEXT                  # ParameterDomain: river | weather (extensible — see below)
   aggregation_method: TEXT                # AggregationMethod: sum | mean — for pentadal/dekadal temporal aggregation
   created_at: TIMESTAMPTZ
 ```
@@ -2368,6 +2385,55 @@ Similarly, `observations.parameter`, `weather_forecasts.parameter`, and `station
 | `snow_depth` | Snow Depth | cm | weather | mean |
 | `reference_et` | Reference ET | mm/h | weather | sum |
 | `swe` | SWE | mm | weather | mean |
+
+#### Parameter extensibility
+
+The seed data above covers v0 (Swiss river + weather parameters). Deployments can register
+additional parameters via the `[[parameters]]` section in the deployment config TOML, loaded
+during Flow 0 step 0.6. Examples of future parameters by domain:
+
+| Domain | Parameters | Use case |
+|--------|-----------|----------|
+| `water_quality` | `water_temperature`, `dissolved_oxygen`, `turbidity` | River station water quality monitoring and alerting |
+| `groundwater` | `groundwater_level` | Borehole monitoring and groundwater table forecasting |
+| `soil` | `soil_moisture` | Lysimeter / soil probe measurements for recharge estimation |
+
+**`ParameterDomain` is semi-open.** The `ParameterDomain` enum defines known domains (`river`,
+`weather`, `water_quality`, `groundwater`, `soil`). When a deployment registers a parameter with
+a domain not in the enum, the system accepts it but logs a structured warning
+(`known_domain=false`). This allows experimentation without code changes while making novel
+domains visible in monitoring. The DB column remains `TEXT` with no CHECK constraint — the enum
+is advisory, not a gate.
+
+**Config-driven registration (Flow 0 step 0.6):**
+
+```toml
+# In deployment config TOML — extends the migration seed data
+[[parameters]]
+name = "water_temperature"
+display_name = "Water Temperature"
+unit = "°C"
+parameter_domain = "water_quality"
+aggregation_method = "mean"
+```
+
+`ParameterStore.register()` performs an idempotent upsert — safe to call on every deployment
+start. Parameters from the migration seed and from config coexist; config cannot delete seed
+parameters.
+
+**What parameter registration unlocks without further code changes:**
+- Observations can be ingested for any registered parameter (`Observation.parameter: str`)
+- Forecasts and hindcasts can target any registered parameter (`ForecastEnsemble.parameter: str`)
+- Skill computation works for any parameter (`SkillScore.parameter: str`)
+- Store filtering works for any parameter (all `parameter` filters accept `str`)
+
+**What requires additional work per new domain:**
+- **Thresholds and alerting**: `StationThreshold.parameter` must be widened from
+  `Literal["discharge", "water_level"]` to `str` before non-river thresholds can be defined
+- **Station kinds**: new monitoring types (boreholes, lysimeters) need `StationKind` extension
+  and station onboarding (Flow 5) updates
+- **Forcing data**: models for new domains may need different forcing sources (e.g. soil
+  moisture models need recharge data, not NWP precipitation)
 
 ### `stations` table
 

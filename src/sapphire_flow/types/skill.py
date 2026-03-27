@@ -21,6 +21,7 @@ class SkillScore:
     id: UUID
     station_id: StationId
     model_id: ModelId
+    parameter: str
     model_artifact_id: ArtifactId
     skill_source: SkillSource
     forcing_type: ForcingType | None
@@ -44,6 +45,7 @@ class SkillDiagram:
     id: UUID
     station_id: StationId
     model_id: ModelId
+    parameter: str
     model_artifact_id: ArtifactId
     skill_source: SkillSource
     computation_version: int
