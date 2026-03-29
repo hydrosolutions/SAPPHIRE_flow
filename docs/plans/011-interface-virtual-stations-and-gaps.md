@@ -203,6 +203,89 @@ CI/CD standards summary, line ~2845).
 
 ---
 
+### F — Selective Hindcast Recomputation (v1)
+
+**What:** When individual hindcast steps fail (recorded as `HindcastStepResult(success=False)`),
+the only recovery path is re-running the entire Flow 13 onboarding for that model/station
+unit — which re-runs the full hindcast. v0 starts with a smaller station set but scales
+to ~1000 stations with sub-daily data for planned large-scale experiments. At that scale,
+full-period re-runs for individual step failures are prohibitively expensive.
+
+**Design tasks:**
+
+1. **Flow 7 selective replay** — Extend `run_{station|group}_hindcast()` to accept an
+   optional set of timestamps to replay, instead of always running the full period.
+   Only re-run steps where `success=False`.
+2. **Flow 10 gap-fill mode** — Flow 10 (skill recomputation, scoped for v1) could
+   include a "fill gaps" mode: identify failed hindcast steps, re-run them selectively,
+   then recompute skill scores from the updated result set.
+3. **Incremental skill update** — When individual steps are re-run, skill scores should
+   be updated incrementally rather than recomputed from scratch. Design the merge
+   semantics (replace failed step results, recompute affected strata scores).
+4. **API/CLI trigger** — Provide a way to trigger selective hindcast re-runs for
+   specific (model, station, timestamp) combinations — either via API endpoint or
+   CLI command.
+
+---
+
+### G — Update v0 Scale Assumptions (~50 → ~1000 Stations)
+
+**What:** Multiple docs reference "~50 stations" as the v0 scale target. This is outdated —
+v0 starts smaller but must scale to ~1000 stations with sub-daily data for planned
+large-scale experiments. The "~50 stations" figure drives simplification rationales,
+performance budgets, and "acceptable at v0 scale" justifications that need re-evaluation.
+
+**Affected files:**
+
+- `docs/v0-scope.md` — line 9 ("~50 stations, single VM"), line 34 (Flow 4 deferral
+  rationale), line 50 (partitioning rationale), lines 248/256/284 (performance targets
+  and per-step budgets)
+- `docs/architecture-context.md` — line 595 (onboarding timing for "50 stations")
+- `docs/spec/database-schema.md` — line 10 ("~50 stations")
+- `docs/design/v0-flow2-observation-pipeline.md` — lines 61, 385, 387 (query-time
+  aggregation viability at "~50 stations")
+
+**Tasks:**
+
+1. Update all station count references to reflect the scale range (starting smaller,
+   scaling to ~1000).
+2. Re-evaluate simplification rationales that depend on small scale — particularly:
+   - **A1 (no partitioning)**: ~1000 stations × sub-daily × multiple parameters may
+     produce significantly more than "a few GB/year." Re-assess whether partitioning
+     is still safely deferred.
+   - **Flow 4 deferral**: Manual supervision at ~1000 stations is less credible than
+     at ~50. Re-assess timeline.
+   - **D2 batch write budgets**: 1000 stations × 21 members × 120 timesteps = 2.52M
+     rows per forecast cycle (not 126K). Verify COPY performance at this scale.
+3. Update performance budgets (§D) for 1000-station target. The 60-second forecast
+   cycle target may need revisiting or the budget breakdown needs rebalancing.
+4. Check if "single VM" (line 9) still holds at 1000-station scale or if the
+   infrastructure section needs updating.
+
+---
+
+### H — Frozen Dataclass Immutable-Container Consistency
+
+**What:** Three QC frozen dataclasses in the spec (`QcRuleParams`, `StationQcOverride`,
+`ForecastQcRuleParams`) use `dict[str, float]` fields, which makes instances non-hashable
+and allows mutation despite `frozen=True`. Plan 006 (D3) fixes this for `SkillGateResult`
+by using `tuple[tuple[str, float], ...]`, but the QC types remain inconsistent.
+
+**Cleanup tasks:**
+
+1. Audit all frozen dataclasses in `types-and-protocols.md` for mutable container fields
+   (`list`, `dict`, `set`). Replace with immutable equivalents (`tuple`, `tuple[tuple[...], ...]`,
+   `frozenset`) where the type is used as a result or value object.
+2. For config-like types that are never hashed or collected in sets, decide whether the
+   ergonomic cost of `tuple[tuple[...], ...]` outweighs the purity benefit — document
+   the convention either way.
+3. Also fix `TrainingResult.hindcast_steps: list[HindcastStepResult]` →
+   `tuple[HindcastStepResult, ...]` for consistency with `OnboardingUnitResult.hindcast_steps`
+   (plan 006 D4 noted this but deferred it).
+4. Codify the resulting convention in `conventions.md` (currently unwritten).
+
+---
+
 ## Dependencies
 
 | Area | Blocks / Blocked by |
@@ -212,6 +295,9 @@ CI/CD standards summary, line ~2845).
 | C (Forecast QC) | Blocks Flow 1 implementation (Phase 8) |
 | D (Weather mapping) | Informational — verify existing design |
 | E (Remote training) | Informational — existing design may need promotion to architecture-context |
+| F (Selective hindcast) | v1 — needed before large-scale experiments hit failure-recovery limits |
+| G (Scale assumptions) | Foundational — affects performance targets, simplification rationales across all docs |
+| H (Frozen dataclass containers) | Low priority — cleanup after plan 006 implementation |
 
 ## Next Steps
 
@@ -221,3 +307,6 @@ CI/CD standards summary, line ~2845).
 3. **Design B** — Station type taxonomy, calculated station formula spec.
 4. **Verify D** — Read the intersection logic, confirm correctness.
 5. **Verify E** — Decide if architecture-context.md needs a remote training section.
+6. **Design F** — Selective hindcast replay, incremental skill update, CLI/API trigger.
+7. **Update G** — Sweep all docs for ~50 station references, re-evaluate affected rationales.
+8. **Cleanup H** — Audit frozen dataclasses for mutable containers, codify convention.

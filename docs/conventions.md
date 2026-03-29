@@ -236,6 +236,10 @@ All exceptions inherit from `SapphireError`. Authoritative class definitions in
 | `ConfigurationError` | Invalid/missing config | Fail fast at startup |
 | `PartitionMissingError` | DB partition doesn't exist | Write to dead letter queue, alert ops. **v0: not needed (no partitioning, see v0-scope.md § A1)** |
 
+> **`InsufficientDataError` — Flow 13 exception**: In model onboarding (and other multi-phase initialization flows), there is no fallback model. Exception mapping is phase-based, not type-based: `InsufficientDataError` before training maps to `SKIPPED_NO_DATA`; once training begins, any `SapphireError` subclass maps to the `FAILED_*` variant for the current phase (e.g., `FAILED_TRAINING`, `FAILED_HINDCAST`, `FAILED_SKILL`, `FAILED_ASSIGNMENT`). True unexpected exceptions (`TypeError`, `AttributeError`) propagate to Prefect as task-level failures per the standard rule.
+
+> **`ConfigurationError` — Flow 13 exception**: `ConfigurationError` is also raised at flow invocation time when required scope parameters are missing (e.g., `group_ids=None` for a group-scoped model with no existing assignments). The "fail fast" principle applies: reject the invocation immediately rather than proceeding with an empty scope.
+
 ### Flow-level strategy
 
 Expected failures (data/model issues) catch and try fallback model.

@@ -34,7 +34,9 @@ flowchart TD
     m1["M.1 register_model_class()\nservices/model_registry.py"]
     m2["M.2 validate_compatibility()\nservices/model_onboarding.py"]
 
-    subgraph PerUnit ["Per OnboardingUnit (parallel across target stations/groups)"]
+    scope["M.0 Scope determination<br/>(resolve stations/groups → TrainingUnits)"]
+
+    subgraph PerUnit ["Per TrainingUnit (parallel across target stations/groups)"]
         direction TB
         m3["M.3 initial training\nreuses services/training.py"]
         m4["M.4 hindcast\nsubflow → services/hindcast.py"]
@@ -46,7 +48,7 @@ flowchart TD
 
     result["ModelOnboardingResult"]
 
-    trigger --> m1 --> m2 --> PerUnit --> result
+    trigger --> m1 --> m2 --> scope --> PerUnit --> result
 ```
 
 ---
@@ -197,44 +199,64 @@ class CompatibilityReport:
     missing_future_dynamic: frozenset[str]
     missing_static_features: frozenset[str]
     time_step_compatible: bool
-    compatible: bool                             # True iff all checks pass
+
+    @property
+    def is_compatible(self) -> bool:
+        return (
+            self.protocol_conforms
+            and not self.missing_target_parameters
+            and not self.missing_past_dynamic
+            and not self.missing_future_dynamic
+            and not self.missing_static_features
+            and self.time_step_compatible
+        )
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class SkillGateResult:
-    model_id: ModelId
-    station_id: StationId | None
-    group_id: StationGroupId | None
-    passed: bool
-    metric_scores: dict[str, float]             # metric_name → score
-    thresholds: dict[str, float]                # metric_name → required threshold
-    failing_metrics: frozenset[str]             # metrics that did not meet threshold
-
-
-@dataclass(frozen=True, kw_only=True, slots=True)
-class OnboardingUnit:
-    model_id: ModelId
-    station_id: StationId | None
-    group_id: StationGroupId | None
-    station_ids: frozenset[StationId]           # 1 for station-scoped, N for group-scoped
-    onboarding_period_start: UtcDatetime
-    onboarding_period_end: UtcDatetime
-    time_step: timedelta
+    artifact_id: ArtifactId
+    metric_scores: tuple[tuple[str, float], ...]   # metric_name → score
+    thresholds: tuple[tuple[str, float], ...]       # metric_name → required threshold
+    failing_metrics: frozenset[str]                 # metrics that did not meet threshold
 
     def __post_init__(self) -> None:
-        if (self.station_id is None) == (self.group_id is None):
-            raise ValueError("Exactly one of station_id / group_id must be set")
+        score_keys = {k for k, _ in self.metric_scores}
+        if len(score_keys) != len(self.metric_scores):
+            raise ValueError("Duplicate metric name in metric_scores")
+        thresh_keys = {k for k, _ in self.thresholds}
+        if len(thresh_keys) != len(self.thresholds):
+            raise ValueError("Duplicate metric name in thresholds")
+
+    @property
+    def passed(self) -> bool:
+        return not self.failing_metrics
+
+
+# OnboardingUnit has been dropped — use TrainingUnit from types/training.py instead.
+# TrainingUnit is structurally identical (same fields, same XOR invariant).
+
+
+# Module-level constants (avoid slots=True class variable conflict)
+ONBOARDING_FAILED_OUTCOMES = frozenset({
+    OnboardingOutcome.FAILED_TRAINING,
+    OnboardingOutcome.FAILED_HINDCAST,
+    OnboardingOutcome.FAILED_SKILL,
+    OnboardingOutcome.FAILED_ASSIGNMENT,
+})
+ONBOARDING_SKIPPED_OUTCOMES = frozenset({
+    OnboardingOutcome.SKIPPED_COMPAT,
+    OnboardingOutcome.SKIPPED_NO_DATA,
+})
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class OnboardingUnitResult:
-    unit: OnboardingUnit
+    unit: TrainingUnit                          # replaces OnboardingUnit (D1)
+    outcome: OnboardingOutcome
     compatibility: CompatibilityReport
     artifact_id: ArtifactId | None
-    hindcast_steps: list[HindcastStepResult]
+    hindcast_steps: tuple[HindcastStepResult, ...]
     skill_gate: SkillGateResult | None
-    promoted: bool
-    assigned: bool
     error: str | None = None
 
 
@@ -242,10 +264,35 @@ class OnboardingUnitResult:
 class ModelOnboardingResult:
     model_id: ModelId
     units: tuple[OnboardingUnitResult, ...]
-    total: int
-    promoted: int
-    skipped: int                                # compatibility failures
-    failed: int                                 # training/hindcast errors
+
+    def __len__(self) -> int:
+        return len(self.units)
+
+    def promoted_count(self) -> int:
+        return sum(1 for u in self.units if u.outcome == OnboardingOutcome.PROMOTED)
+
+    def failed_count(self) -> int:
+        return sum(1 for u in self.units if u.outcome in ONBOARDING_FAILED_OUTCOMES)
+
+    def skipped_count(self) -> int:
+        return sum(1 for u in self.units if u.outcome in ONBOARDING_SKIPPED_OUTCOMES)
+
+    def gate_rejected_count(self) -> int:
+        return sum(1 for u in self.units if u.outcome == OnboardingOutcome.GATE_REJECTED)
+```
+
+`OnboardingOutcome` enum (defined in `types/enums.py`):
+
+```python
+class OnboardingOutcome(Enum):
+    PROMOTED = "promoted"
+    GATE_REJECTED = "gate_rejected"
+    SKIPPED_COMPAT = "skipped_compat"
+    SKIPPED_NO_DATA = "skipped_no_data"
+    FAILED_TRAINING = "failed_training"
+    FAILED_HINDCAST = "failed_hindcast"
+    FAILED_SKILL = "failed_skill"
+    FAILED_ASSIGNMENT = "failed_assignment"
 ```
 
 ### 3g. `StationConfig.forecast_targets` (types/station.py)
@@ -413,7 +460,7 @@ def validate_compatibility(
 4. Future dynamic check: `model.data_requirements.future_dynamic_features ⊆ available_features`
 5. Static check: `model.data_requirements.static_features ⊆ available_static`
 6. Time step check: `requested_time_step ∈ model.data_requirements.supported_time_steps`
-7. `compatible = True` iff all checks pass
+7. `is_compatible` property returns `True` iff all checks pass
 
 ### 6b. Skill gate evaluation (services/model_onboarding.py)
 
@@ -431,15 +478,33 @@ def evaluate_skill_gate(
 **Logic**:
 1. Fetch `SkillScore` records for `(model_id, artifact_id)` from `skill_store`
 2. Filter to `sample_size >= config.min_skill_samples` (strata with too few pairs excluded)
-3. For each metric in `config.skill_gate_thresholds`, compute mean score across valid strata
-4. `passed = True` iff all gated metrics meet their threshold
+3. For each metric in `config.skill_gate_thresholds`, compute min score across valid strata
+4. `passed` is derived from `failing_metrics` (returns `True` when `failing_metrics` is empty)
 5. Returns scores and which metrics failed
+
+**Failing_metrics population rule**: For each configured threshold key, if the metric has
+no score in `metric_scores` (e.g., zero valid strata survived the `min_skill_samples`
+filter), the key is added to `failing_metrics`. Missing score = failing. This ensures
+zero valid pairs + active thresholds = `GATE_REJECTED`, never a false `PROMOTED`.
+
+**Min-across-strata semantics**: The skill gate evaluates `min(metric_value across all
+strata)` against the threshold. A model must meet the threshold in every stratum
+(lead time × season × flow regime) to pass. This prevents deploying models with hidden
+regime-specific weaknesses. `min_skill_samples` is the critical companion parameter:
+strata with fewer valid pairs than `min_skill_samples` are excluded before
+min-aggregation, preventing noisy low-sample strata from producing spurious rejections.
+
+With the default `skill_gate_thresholds = {}`, the gate is a pass-through (auto-promote).
+Configuring thresholds activates blocking — `GATE_REJECTED` leaves the artifact in
+`TRAINING` status.
 
 **`DeploymentConfig` additions**:
 
 ```python
-skill_gate_thresholds: dict[str, float]  # metric_name → minimum required score
-# e.g. {"nse": 0.3, "crpss": 0.0}       # non-negative skill relative to climatology
+skill_gate_thresholds: dict[str, float] = {}  # metric_name → minimum required score
+# Empty dict = no gate (pass-through) — all models auto-promoted
+# e.g. {"crpss": 0.0}   non-negative skill relative to climatology
+# Final values require hydrologist input
 ```
 
 ### 6c. Assignment creation (services/model_onboarding.py)
@@ -472,7 +537,7 @@ Both upsert via the respective store. If an assignment already exists for the (s
 def onboard_model(
     model_id: ModelId,
     model: ForecastModel,
-    units: list[OnboardingUnit],
+    units: tuple[TrainingUnit, ...],
     model_store: ModelStore,
     station_store: StationStore,
     group_store: StationGroupStore,
@@ -494,19 +559,50 @@ def onboard_model(
 ```
 For each unit in units (parallelized at flow layer):
   1. validate_compatibility()                    # fast — pure logic
-     → skip unit if not compatible
+     → skip unit if not is_compatible
   2. assemble_training_data()                    # existing service
      → skip unit if returns None
   3. train_{station|group}_model()               # existing service
-  4. store_and_promote_artifact()                # existing service (auto-promote)
+  4. store_artifact()                            # TRAINING status
   5. run_{station|group}_hindcast()              # existing service
   6. compute_skill_for_station()                 # existing service (per station in group)
   7. evaluate_skill_gate()
-     → skip assignment if gate fails (artifact remains ACTIVE, not assigned)
-  8. create_{station|group}_assignment()
+     → skip promotion if gate fails (artifact remains TRAINING, not promoted or assigned)
+  8. promote_artifact()                          # TRAINING → ACTIVE
+  9. create_{station|group}_assignment()
 ```
 
-**Composing existing services**: `onboard_model` is a thin orchestrator. Steps 2–6 delegate entirely to `services/training_data.py`, `services/training.py`, `services/hindcast.py`, and `services/skill/`. No new algorithmic logic lives in `model_onboarding.py` beyond the three new functions (steps 1, 7, 8).
+**Scope determination** (called in the flow layer before `onboard_model`):
+
+```python
+def determine_onboarding_scope(
+    model_id: ModelId,
+    model: ForecastModel,
+    station_ids: frozenset[StationId] | None,
+    group_ids: frozenset[StationGroupId] | None,
+    station_store: StationStore,
+    group_store: StationGroupStore,
+    training_period_start: UtcDatetime,
+    training_period_end: UtcDatetime,
+    time_step: timedelta,
+) -> tuple[TrainingUnit, ...]:
+    """Resolve onboarding scope to concrete TrainingUnits.
+
+    Raises ConfigurationError for group-scoped models when group_ids
+    is None and no existing assignments exist.
+    """
+```
+
+Logic:
+1. Load `ModelRegistryEntry` (from M.1) to get `artifact_scope` and `data_requirements`.
+2. If `station_ids`/`group_ids` are explicitly provided: use them.
+3. If `station_ids is None` and model is station-scoped: fetch all operational stations
+   via `station_store.fetch_all_stations()` and post-filter by `StationStatus.OPERATIONAL`.
+4. If `group_ids is None` and model is group-scoped: raise `ConfigurationError` — group-scoped
+   models require explicit group IDs for initial onboarding.
+5. Build `tuple[TrainingUnit, ...]` from the resolved scope.
+
+**Composing existing services**: `onboard_model` is a thin orchestrator. Steps 2–6 delegate entirely to `services/training_data.py`, `services/training.py`, `services/hindcast.py`, and `services/skill/`. No new algorithmic logic lives in `model_onboarding.py` beyond the four functions (steps 1, 7, 8, and `determine_onboarding_scope`).
 
 ---
 
@@ -565,24 +661,41 @@ def onboard_model_flow(
 **Task structure**:
 
 ```python
+@task(name="determine-onboarding-scope")
+def determine_onboarding_scope_task(
+    model_id: ModelId,
+    model: ForecastModel,
+    station_ids: frozenset[StationId] | None,   # parsed from list[str] | None at flow boundary
+    group_ids: frozenset[StationGroupId] | None, # parsed from list[str] | None at flow boundary
+    ...
+) -> tuple[TrainingUnit, ...]: ...
+
 @task(name="register-model-class")
 def register_model_class_task(model_id: ModelId, ...) -> ModelRegistryEntry: ...
 
 @task(name="validate-compatibility")
-def validate_compatibility_task(unit: OnboardingUnit, ...) -> CompatibilityReport: ...
+def validate_compatibility_task(unit: TrainingUnit, ...) -> CompatibilityReport: ...
 
 @task(name="assemble-onboarding-data")
-def assemble_onboarding_data_task(unit: OnboardingUnit, ...) -> StationTrainingData | GroupTrainingData | None: ...
+def assemble_onboarding_data_task(unit: TrainingUnit, ...) -> StationTrainingData | GroupTrainingData | None: ...
 
 @task(name="train-onboarding-model")
-def train_onboarding_model_task(unit: OnboardingUnit, data: ..., ...) -> ArtifactId: ...
+def train_onboarding_model_task(unit: TrainingUnit, data: ..., ...) -> ArtifactId: ...
 
 @task(name="evaluate-skill-gate")
-def evaluate_skill_gate_task(unit: OnboardingUnit, artifact_id: ArtifactId, ...) -> SkillGateResult: ...
+def evaluate_skill_gate_task(unit: TrainingUnit, artifact_id: ArtifactId, ...) -> SkillGateResult: ...
 
 @task(name="create-assignment")
-def create_assignment_task(unit: OnboardingUnit, ...) -> None: ...
+def create_assignment_task(unit: TrainingUnit, ...) -> None: ...
 ```
+
+**Parse boundary**: The Prefect flow signature uses `list[str] | None` for `station_ids`
+and `group_ids` (JSON-serializable). Inside the flow body, these are parsed to domain
+types (`frozenset[StationId]` / `frozenset[StationGroupId]`) before passing to
+`determine_onboarding_scope_task`. The flow body is the parse-don't-validate boundary.
+For group-scoped models with `group_ids=None` and no existing assignments,
+`determine_onboarding_scope` raises `ConfigurationError` — the operator must provide
+explicit group IDs.
 
 Hindcast and skill computation delegate to the existing `run_hindcast` and `compute_skills` subflows (same as `train_models`).
 
@@ -627,7 +740,7 @@ All training in v0 runs on the single `default` pool (CPU). The `gpu_training` p
 |------------------------------|-------------|-------|
 | Flow 5 step 5.6: configure model assignments | M.7 `create_assignment()` | Onboarding creates assignments after skill gate passes |
 | Flow 5 step 5.7: trigger training (Flow 6) | M.3 initial training | Onboarding composes same training services as Flow 6 |
-| Flow 5 step 5.8: auto-promote in v0 | M.6 auto-promote | Implemented via existing `store_and_promote_artifact()` |
+| Flow 5 step 5.8: auto-promote in v0 | M.6 auto-promote | Implemented via `store_artifact()` (TRAINING) + `promote_artifact()` (TRAINING → ACTIVE after skill gate) |
 | Flow 6 T.1–T.5 pipeline | Reused in M.3–M.5 | No duplication: onboarding calls the same service functions |
 | `model_assignments` table | `ModelAssignment` persisted via `StationStore` | ✓ |
 | `model_artifacts.status` enum | `training \| active \| superseded` (v0) | ✓ `pending_approval` deferred |
@@ -656,7 +769,7 @@ All training in v0 runs on the single `default` pool (CPU). The `gpu_training` p
 | `HindcastStore.store_hindcast()` | M.4 (via hindcast.py) | ✓ |
 | `SkillStore.fetch_skill_scores()` | M.5 gate evaluation | ✓ Needs `fetch_skill_scores(model_id, artifact_id)` overload |
 | `StationStore.store_model_assignment()` | M.7 | ✓ Store method exists |
-| `StationGroupStore.store_group_assignment()` | M.7 | Needs `store_group_assignment(GroupModelAssignment)` added |
+| `StationGroupStore.store_group_model_assignment()` | M.7 | Needs `store_group_model_assignment(GroupModelAssignment)` added |
 
 ### Protocol method gaps
 
@@ -665,7 +778,7 @@ Two store methods need adding to existing Protocols (not new Protocols):
 | Method | Protocol | Notes |
 |--------|----------|-------|
 | `fetch_skill_scores(model_id, artifact_id)` | `SkillStore` | M.5 reads skill scores for gate evaluation |
-| `store_group_assignment(assignment)` | `StationGroupStore` | M.7 persists group-level assignment |
+| `store_group_model_assignment(assignment)` | `StationGroupStore` | M.7 persists group-level assignment |
 
 ### DB schema alignment
 
@@ -688,11 +801,11 @@ Two store methods need adding to existing Protocols (not new Protocols):
     "P1": { "name": "Docs update (v0-scope.md, types-and-protocols.md)", "depends_on": [] },
     "P2": { "name": "types/model.py — StationInputData, StationModelInputs, GroupModelInputs, StationTrainingData, GroupTrainingData (with for_station), ModelDataRequirements; remove old ModelInputs/TrainingData", "depends_on": [] },
     "P3": { "name": "types/station.py — GroupModelAssignment; StationConfig.forecast_targets; remove forecast_target Literal", "depends_on": [] },
-    "P4": { "name": "types/model_onboarding.py — CompatibilityReport, SkillGateResult, OnboardingUnit, OnboardingUnitResult, ModelOnboardingResult", "depends_on": [] },
+    "P4": { "name": "types/model_onboarding.py — CompatibilityReport, SkillGateResult, OnboardingUnitResult, ModelOnboardingResult; types/enums.py — OnboardingOutcome", "depends_on": [] },
     "P5": { "name": "protocols/forecast_model.py — data_requirements replaces 4 attrs; updated train/predict signatures", "depends_on": ["P2", "P3"] },
-    "P6": { "name": "protocols/stores.py — add fetch_skill_scores(model_id, artifact_id) to SkillStore; add store_group_assignment to StationGroupStore", "depends_on": ["P3"] },
-    "P7": { "name": "tests/fakes/ — update FakeStationForecastModel, FakeGroupForecastModel for new Protocol; add FakeStationGroupStore.store_group_assignment; add FakeSkillStore.fetch_skill_scores", "depends_on": ["P5", "P6"] },
-    "P8": { "name": "tests/conftest.py — add make_station_input_data, make_group_model_inputs, make_station_training_data, make_onboarding_unit, make_compatibility_report factories", "depends_on": ["P2", "P3", "P4"] },
+    "P6": { "name": "protocols/stores.py — add fetch_skill_scores(model_id, artifact_id) to SkillStore; add store_group_model_assignment to StationGroupStore", "depends_on": ["P3"] },
+    "P7": { "name": "tests/fakes/ — update FakeStationForecastModel, FakeGroupForecastModel for new Protocol; add FakeStationGroupStore.store_group_model_assignment; add FakeSkillStore.fetch_skill_scores", "depends_on": ["P5", "P6"] },
+    "P8": { "name": "tests/conftest.py — add make_station_input_data, make_group_model_inputs, make_station_training_data, make_training_unit, make_compatibility_report factories", "depends_on": ["P2", "P3", "P4"] },
     "P9": { "name": "services/training_data.py — update to return StationTrainingData / GroupTrainingData", "depends_on": ["P7", "P8"] },
     "P10": { "name": "services/hindcast.py — update to use StationModelInputs / GroupModelInputs; update _assemble_hindcast_inputs", "depends_on": ["P7", "P8"] },
     "P11": { "name": "services/training.py — update train_station_model / train_group_model signatures", "depends_on": ["P7", "P8"] },
@@ -725,7 +838,7 @@ Two store methods need adding to existing Protocols (not new Protocols):
 | P1 | `docs/v0-scope.md` (Flow 13 entry), `docs/spec/types-and-protocols.md` | — |
 | P2 | `types/model.py` — new input/training container types, `ModelDataRequirements`, remove old types | `__post_init__` field validations, `for_station()` slicing |
 | P3 | `types/station.py` — `GroupModelAssignment`, `forecast_targets` field | Dataclass field types |
-| P4 | `types/model_onboarding.py` — all result/report types | XOR invariant on `OnboardingUnit`, `CompatibilityReport.compatible` logic |
+| P4 | `types/model_onboarding.py` — all result/report types; `types/enums.py` — `OnboardingOutcome` | XOR invariant on `TrainingUnit`, `CompatibilityReport.is_compatible` property |
 | P5 | `protocols/forecast_model.py` — updated signatures | Protocol conformance check on `LinearRegressionDaily` placeholder |
 | P6 | `protocols/stores.py` — two new Protocol methods | — |
 | P7 | `tests/fakes/` — updated and new fakes | Fake conformance with updated Protocols |
@@ -760,10 +873,10 @@ Two store methods need adding to existing Protocols (not new Protocols):
 
 6. **v0a skips static attributes** → `static_features = frozenset()` on `LinearRegressionDaily`. `StationTrainingData.static = None` when model requests no static features. No v0a/v0b branching needed in the service layer.
 
+7. **Skill gate defaults (D6)** → `skill_gate_thresholds = {}` (empty dict = pass-through, no gate). Specific threshold values (e.g., `{"crpss": 0.0}`) still require hydrologist input before activating the gate.
+
 ### Still open
 
 1. **`forecast_targets` DB migration scope**: The `stations.forecast_target` column (Literal string) must be migrated to `forecast_targets` (JSONB string array). Existing data maps: `"discharge"` → `["discharge"]`, `"water_level"` → `["water_level"]`, `"both"` → `["discharge", "water_level"]`, `null` → `null`. The migration script is straightforward but must be written and tested before P15 merges.
 
-2. **Skill gate defaults**: What should `DeploymentConfig.skill_gate_thresholds` default to? A sensible v0 default might be `{"nse": 0.0}` (non-negative NSE — model outperforms mean flow). Deliberately permissive to avoid blocking the first onboarding. Hydrologist input needed before this is locked.
-
-3. **Assignment priority convention**: `assignment_priority` defaults to 10 in the flow. For stations onboarded with multiple models, priority determines forecast cycle model order. Convention (lower = higher priority? or higher = higher priority?) should be documented in `conventions.md`. Not blocking for single-model v0.
+2. **Assignment priority convention**: `assignment_priority` defaults to 10 in the flow. For stations onboarded with multiple models, priority determines forecast cycle model order. Convention (lower = higher priority? or higher = higher priority?) should be documented in `conventions.md`. Not blocking for single-model v0.

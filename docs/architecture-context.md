@@ -844,7 +844,7 @@ Note:     Automated skill-based retraining triggers (e.g. retrain when operation
           drops below threshold) deferred — v0 uses manual/scheduled triggers only.
 ```
 
-Flows 6 (initial training) and 9 (retraining) are the same flow. If no existing artifact → initial training (auto-promote). If existing artifact → retraining (compare + approval).
+Flows 6 (initial training) and 9 (retraining) are the same flow. If no existing artifact → initial training (auto-promote when standalone; deferred to M.6 when called from Flow 13). If existing artifact → retraining (compare + approval).
 
 ```mermaid
 flowchart TD
@@ -902,7 +902,7 @@ Station groups (`station_groups` table) are named sets of stations grouped by sh
 
 Using `T.*` prefix since this flow serves both Flow 6 and Flow 9.
 
-**Initial training (Flow 6)**: T.1 → T.2 → T.3 → T.4 → T.5 → auto-promote. Steps T.6–T.8 skipped (nothing to compare against).
+**Initial training (Flow 6)**: T.1 → T.2 → T.3 → T.4 → T.5 → auto-promote (when standalone; deferred to M.6 when called from Flow 13). Steps T.6–T.8 skipped (nothing to compare against).
 
 **Retraining (Flow 9)**: All steps. T.6–T.8 require existing artifact for comparison and model admin approval.
 
@@ -925,7 +925,7 @@ Using `T.*` prefix since this flow serves both Flow 6 and Flow 9.
 #### Sequencing
 
 ```
-Initial:    T.1 → T.2 → T.3 → T.4 → T.5 → promote
+Initial:    T.1 → T.2 → T.3 → T.4 → T.5 → promote (when standalone; deferred to M.6 when called from Flow 13)
 Retraining: T.1 → T.2 → T.3 → T.4 → T.5 → T.6 → T.7 ... T.8
 ```
 
@@ -1287,9 +1287,11 @@ Dependencies: Requires station onboarding (Flow 5) to have completed for target 
 
 Registers a new model type, validates its compatibility with the system, runs the full training + verification pipeline, evaluates a skill gate, and assigns the model to stations or groups. Composes Flows 6, 7, and 8 with additional gating logic. Distinct from Flow 5 step 5.11 (which handles the model readiness branch for a specific station during station onboarding) — Flow 13 handles onboarding the model type itself before any station assignment can occur.
 
+M.0 Scope determination (flow-layer preamble — resolves station_ids/group_ids to TrainingUnits)
+
 ```
 ┌─────────────────────────────────────────────────────┐
-│  Flow 13 — Model onboarding                         │
+│  Flow 13 — Model onboarding (per unit)              │
 │                                                     │
 │  M.1 Registration                                   │
 │    ↓                                                │
@@ -1313,9 +1315,9 @@ Registers a new model type, validates its compatibility with the system, runs th
 |------|------|-------------|
 | M.1 | Registration | Model package installed (via `uv add`). `discover_models()` scans entry points and finds the new model class. `register_models()` writes a `ModelRecord` to the `models` table. Idempotent — re-registering an existing model_id is a no-op unless the class attributes changed. |
 | M.2 | Compatibility validation | (a) Protocol satisfaction: runtime `isinstance(model_cls, ForecastModel)` check. (b) Feature availability: each feature slot declared in `ModelDataRequirements` is verified to exist in configured data sources for the target stations (past_dynamic sources, future_dynamic sources, static attribute columns). (c) Time step compatibility: declared `supported_time_steps` checked against deployment configuration. (d) Smoke test: model trained and called with a small synthetic dataset to catch serialization or shape errors before committing to a full training run. Fails fast with a descriptive error if any check fails. |
-| M.3 | Initial training | Delegates to Flow 6 (T.1–T.3). Artifact lands in `TRAINING` status. v0: auto-promotes to `ACTIVE`. v1: transitions to `PENDING_APPROVAL` if a champion already exists (see M.6). |
+| M.3 | Initial training | Delegates to Flow 6 (T.1–T.3). Artifact lands in `TRAINING` status. v0: auto-promotes to `ACTIVE` at M.6 (after skill gate pass-through). v1: transitions to `PENDING_APPROVAL` at M.6 if a champion already exists. |
 | M.4 | Hindcast verification | Delegates to Flow 7. Runs hindcast over the configured validation period for all target stations. |
-| M.5 | Skill gate | Delegates to Flow 8 (skill computation). Evaluates resulting scores against thresholds configured in `DeploymentConfig`: CRPSss > 0 (better than climatology), BSS at danger levels > 0, no seasonal collapse (skill must hold across all seasons), no regression vs existing champion if one exists. Failing the gate keeps the artifact in `TRAINING` status and notifies the model admin — the run does not auto-retry. |
+| M.5 | Skill gate | Delegates to Flow 8 (skill computation). Evaluates resulting scores against `skill_gate_thresholds`: each configured metric must meet its threshold at every stratum (lead time × season × flow regime). No regression vs existing champion if one exists (v1). Failing the gate keeps the artifact in `TRAINING` status and notifies the model admin — the run does not auto-retry. |
 | M.6 | Promotion decision | v0: auto-promote (`TRAINING → ACTIVE`). v1: if a champion model exists for any target station/group, transition to `PENDING_APPROVAL` and notify the model admin for human review. The model admin can approve (`ACTIVE`) or reject (`REJECTED`). |
 | M.7 | Station/group assignment | Create `ModelAssignment` (station-scoped) or `GroupModelAssignment` (group-scoped) records for all target stations/groups. Sets `priority` per assignment (convention: linear regression = 0, ML = 1, conceptual = 2). |
 
@@ -1324,14 +1326,14 @@ Registers a new model type, validates its compatibility with the system, runs th
 - **M.1 — Entry point discovery**: Model classes are registered via Python entry points under the `sapphire_flow.models` group (see `docs/conventions.md` model discovery). The entry point name becomes the stable `models.id` key.
 - **M.2 — Smoke test data**: Synthetic data is generated from station metadata (basin area, elevation, parameter ranges from `measured_parameters`). The smoke test does not require real observations — it only validates the model's interface contract and internal consistency.
 - **M.3 — Partial delegation**: Flow 13 delegates T.1–T.3 from Flow 6 only (data prep, feature engineering, training). It does not delegate T.4–T.5 (hindcast + skill) — those are explicit as M.4–M.5 so the skill gate logic lives in Flow 13.
-- **M.5 — Skill gate thresholds**: All thresholds are in `DeploymentConfig.model_onboarding_skill_gate`. Defaults: `crpss_min = 0.0`, `bss_danger_min = 0.0`. A model that improves on climatology at any lead time passes by default — the gate is intentionally permissive for v0.
+- **M.5 — Skill gate thresholds**: All thresholds are in `DeploymentConfig.skill_gate_thresholds` (`dict[str, float]`, default `{}`). A model must meet the threshold at every stratum (lead time × season × flow regime) to pass. With the default empty dict, the gate is a pass-through (auto-promote). Configuring thresholds (e.g., `{"crpss": 0.0}`) activates blocking.
 - **M.6 — Champion comparison**: "Champion" = the current `ACTIVE` artifact for the same model_id and scope. If no champion exists (first onboarding of this model type), M.6 always auto-promotes regardless of v0/v1.
-- **Failure handling**: M.2 failures are terminal — fix the model package and re-run. M.3–M.5 failures leave the artifact in `TRAINING` status. The model admin can retry from M.3 (reusing the artifact row) or discard it. Flow 13 does not auto-retry.
+- **Failure handling**: M.0 failures (`ConfigurationError`) are terminal — provide explicit group IDs and re-run. M.2 failures are terminal — fix the model package and re-run. M.3–M.5 failures leave the artifact in `TRAINING` status. The model admin can retry from M.3 (reusing the artifact row) or discard it. Flow 13 does not auto-retry.
 
 #### Sequencing
 
 ```
-M.1 → M.2 → M.3 → M.4 → M.5 → M.6 → M.7
+M.0 → M.1 → M.2 → M.3 → M.4 → M.5 → M.6 → M.7
 ```
 
 M.2 fails fast — no training runs if compatibility checks fail. M.7 runs only after M.6 confirms promotion (or auto-promotes in v0).
@@ -1528,7 +1530,7 @@ ModelArtifactStatus enum (Python members → DB values):
 
 Transitions (shown as DB values):
   'training' → 'pending_approval' (training complete, retraining mode)
-  'training' → 'active' (training complete, initial mode — auto-promote)
+  'training' → 'active' (initial mode — auto-promote after T.5 when standalone, or after skill gate at M.6 when called from Flow 13)
   'pending_approval' → 'active' (model admin approves)
   'pending_approval' → 'rejected' (model admin rejects)
   'active' → 'superseded' (newer artifact promoted for same scope)

@@ -275,6 +275,16 @@ class ForcingProvenance(Enum):
     REANALYSIS = "reanalysis"                            # from reanalysis product (v1: ERA5-Land)
     DERIVED = "derived"                                  # computed from other parameters
     UNKNOWN = "unknown"                                  # provenance not tracked (legacy data)
+
+class OnboardingOutcome(Enum):                           # in-memory only, no DB column
+    PROMOTED = "promoted"
+    GATE_REJECTED = "gate_rejected"
+    SKIPPED_COMPAT = "skipped_compat"
+    SKIPPED_NO_DATA = "skipped_no_data"
+    FAILED_TRAINING = "failed_training"
+    FAILED_HINDCAST = "failed_hindcast"
+    FAILED_SKILL = "failed_skill"
+    FAILED_ASSIGNMENT = "failed_assignment"
 ```
 
 ---
@@ -1464,7 +1474,7 @@ Module: `protocols/forecast_model.py`
 
 ### Model onboarding types
 
-Result types for Flow 5 model onboarding (step 5.10).
+Result types for Flow 13 model onboarding.
 
 ```python
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -1476,55 +1486,88 @@ class CompatibilityReport:
     missing_future_dynamic: frozenset[str]
     missing_static_features: frozenset[str]
     time_step_compatible: bool
-    compatible: bool                             # True iff all checks pass
+
+    @property
+    def is_compatible(self) -> bool:
+        return (
+            self.protocol_conforms
+            and not self.missing_target_parameters
+            and not self.missing_past_dynamic
+            and not self.missing_future_dynamic
+            and not self.missing_static_features
+            and self.time_step_compatible
+        )
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class SkillGateResult:
-    model_id: ModelId
-    station_id: StationId | None
-    group_id: StationGroupId | None
-    passed: bool
-    metric_scores: dict[str, float]             # metric_name → score
-    thresholds: dict[str, float]                # metric_name → required threshold
-    failing_metrics: frozenset[str]             # metrics that did not meet threshold
-
-
-@dataclass(frozen=True, kw_only=True, slots=True)
-class OnboardingUnit:
-    model_id: ModelId
-    station_id: StationId | None
-    group_id: StationGroupId | None
-    station_ids: frozenset[StationId]           # 1 for station-scoped, N for group-scoped
-    onboarding_period_start: UtcDatetime
-    onboarding_period_end: UtcDatetime
-    time_step: timedelta
+    artifact_id: ArtifactId
+    metric_scores: tuple[tuple[str, float], ...]  # metric_name → score
+    thresholds: tuple[tuple[str, float], ...]     # metric_name → required threshold
+    failing_metrics: frozenset[str]               # metrics that did not meet threshold
 
     def __post_init__(self) -> None:
-        if (self.station_id is None) == (self.group_id is None):
-            raise ValueError("Exactly one of station_id / group_id must be set")
+        score_keys = {k for k, _ in self.metric_scores}
+        if len(score_keys) != len(self.metric_scores):
+            raise ValueError("Duplicate metric name in metric_scores")
+        thresh_keys = {k for k, _ in self.thresholds}
+        if len(thresh_keys) != len(self.thresholds):
+            raise ValueError("Duplicate metric name in thresholds")
+
+    @property
+    def passed(self) -> bool:
+        return not self.failing_metrics
+
+
+# OnboardingUnit has been removed. Use TrainingUnit from types/training.py instead.
+# TrainingUnit carries the same fields (model_id, station_id | None, group_id | None,
+# station_ids, training_period_start, training_period_end, time_step) with the XOR
+# invariant: "Exactly one of station_id or group_id must be set".
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class OnboardingUnitResult:
-    unit: OnboardingUnit
+    unit: TrainingUnit
+    outcome: OnboardingOutcome
     compatibility: CompatibilityReport
     artifact_id: ArtifactId | None
-    hindcast_steps: list[HindcastStepResult]
+    hindcast_steps: tuple[HindcastStepResult, ...]
     skill_gate: SkillGateResult | None
-    promoted: bool
-    assigned: bool
     error: str | None = None
+
+
+ONBOARDING_FAILED_OUTCOMES = frozenset({
+    OnboardingOutcome.FAILED_TRAINING,
+    OnboardingOutcome.FAILED_HINDCAST,
+    OnboardingOutcome.FAILED_SKILL,
+    OnboardingOutcome.FAILED_ASSIGNMENT,
+})
+ONBOARDING_SKIPPED_OUTCOMES = frozenset({
+    OnboardingOutcome.SKIPPED_COMPAT,
+    OnboardingOutcome.SKIPPED_NO_DATA,
+})
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class ModelOnboardingResult:
     model_id: ModelId
     units: tuple[OnboardingUnitResult, ...]
-    total: int
-    promoted: int
-    skipped: int                                # compatibility failures
-    failed: int                                 # training/hindcast errors
+
+    def __len__(self) -> int:
+        return len(self.units)
+
+    def promoted_count(self) -> int:
+        return sum(1 for u in self.units if u.outcome == OnboardingOutcome.PROMOTED)
+
+    def failed_count(self) -> int:
+        return sum(1 for u in self.units if u.outcome in ONBOARDING_FAILED_OUTCOMES)
+
+    def skipped_count(self) -> int:
+        return sum(1 for u in self.units if u.outcome in ONBOARDING_SKIPPED_OUTCOMES)
+
+    def gate_rejected_count(self) -> int:
+        return sum(1 for u in self.units
+                   if u.outcome == OnboardingOutcome.GATE_REJECTED)
 ```
 
 Module: `types/model_onboarding.py`
@@ -1877,7 +1920,7 @@ class StationGroupStore(Protocol):
     def fetch_groups_for_station(self, station_id: StationId) -> list[StationGroup]: ...
         # All groups this station belongs to.
     def fetch_groups_for_model(self, model_id: ModelId) -> list[StationGroup]: ...
-        # All groups that have an active artifact for this model.
+        # All groups that have an active group-level assignment for this model.
     def add_station_to_group(self, group_id: StationGroupId, station_id: StationId) -> None: ...
     def remove_station_from_group(self, group_id: StationGroupId, station_id: StationId) -> None: ...
     def fetch_group_model_assignments(self, group_id: StationGroupId) -> list[GroupModelAssignment]: ...
@@ -2212,6 +2255,9 @@ class DeploymentConfig(BaseModel):
     # --- Observation staleness ---
     observation_staleness_warning_hours: float = 6.0  # Flow 1 step 1.6 warning threshold
 
+    # --- Model onboarding ---
+    skill_gate_thresholds: dict[str, float] = {}  # metric_name → minimum value; empty = pass-through (auto-promote)
+
     # --- NWP lateness ---
     nwp_max_wait_hours: float = 3.0            # max wait for expected NWP delivery
     nwp_max_fallback_age_hours: float = 12.0   # max age of fallback NWP cycle
@@ -2331,7 +2377,7 @@ src/sapphire_flow/
 ├── types/
 │   ├── ids.py              # StationId, ModelId, ObservationId, ForecastAdjustmentId, HistoricalForcingId, etc.
 │   ├── datetime.py         # UtcDatetime, ensure_utc()
-│   ├── enums.py            # All enums
+│   ├── enums.py            # All enums (including OnboardingOutcome — in-memory only, no DB column)
 │   ├── domain.py           # GeoCoord, ParameterDefinition, DangerLevelDefinition, QcFlag,
 │   │                       #   QcRuleParams, QcRuleSet, StationQcOverride, ClimBaseline,
 │   │                       #   SeasonDefinition, ExceedanceResult, SkillInterpretationScheme, etc.
@@ -2340,8 +2386,12 @@ src/sapphire_flow/
 │   │                       #   StationTrainingData, GroupTrainingData,
 │   │                       #   ModelDataRequirements, ModelParams, ModelArtifact,
 │   │                       #   ModelRecord, ModelRegistryEntry, ModelArtifactRecord
+│   ├── training.py         # TrainingUnit, HindcastStepResult
 │   ├── model_onboarding.py # CompatibilityReport, SkillGateResult,
-│   │                       #   OnboardingUnit, OnboardingUnitResult, ModelOnboardingResult
+│   │                       #   OnboardingUnitResult, ModelOnboardingResult,
+│   │                       #   ONBOARDING_FAILED_OUTCOMES, ONBOARDING_SKIPPED_OUTCOMES
+│   │                       #   (imports TrainingUnit, HindcastStepResult from types/training.py;
+│   │                       #    imports ArtifactId from types/ids.py)
 │   ├── observation.py      # Observation, RawObservation
 │   ├── forecast.py         # OperationalForecast, HindcastForecast, ForecastAdjustment, ForeignForecast
 │   ├── weather.py          # WeatherForecastRecord, PointForecast, BasinAverageForecast,

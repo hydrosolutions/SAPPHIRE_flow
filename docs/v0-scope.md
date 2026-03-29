@@ -103,9 +103,9 @@ Implement the full skill metric suite: CRPS, CRPSss (climatology + persistence b
 
 **Full design**: 5 statuses (training → pending_approval → active → superseded → rejected), approval gate.
 
-**v0**: 3 statuses: `training`, `active`, and `superseded`. Training produces artifact with `training` status → auto-promote to `active` → done. No approval gate. `active` → `superseded` when replaced by a newer artifact.
+**v0**: 3 statuses: `training`, `active`, and `superseded`. Training produces artifact with `training` status → auto-promote to `active` (after skill gate) → done. No approval gate. `active` → `superseded` when replaced by a newer artifact.
 
-Flow 13 (model onboarding) uses the same auto-promote path: `training` → `active`. The `pending_approval` status and approval gate (skill comparison, human review) are v1 additions. Flow 13 adds a skill gate evaluation step that in v0 logs results but does not block promotion.
+Flow 13 (model onboarding) uses the same auto-promote path: `training` → `active`. The `pending_approval` status and approval gate (skill comparison, human review) are v1 additions. Flow 13 adds a skill gate evaluation step that in v0 logs results and does not block promotion by default (`skill_gate_thresholds = {}`); configuring thresholds activates blocking.
 
 ### A8. No notification system
 
