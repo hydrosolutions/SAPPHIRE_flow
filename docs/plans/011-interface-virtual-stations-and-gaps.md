@@ -24,6 +24,9 @@ or alignment tasks with the external `ForecastInterface` contract package.
 `~/Documents/GitHub/ForecastInterface`) and assess consistency with SAPPHIRE Flow's
 internal types and protocols.
 
+**Related:** Plan 008 (GroupModelInputs) — see Open Item 9 for how plan 008's internal
+types relate to ForecastInterface's external contract.
+
 **ForecastInterface summary (as of 2026-03-27):**
 
 - Pydantic + Polars package defining contracts between an operational forecast system
@@ -45,27 +48,68 @@ internal types and protocols.
   - Properties: `lookback`, `future_steps`, `max_nan`, `ensemble`.
 - **Interface module** (`forecast_interface/interface/`): placeholder, not yet implemented.
 
-**Investigation tasks:**
+**Findings from plan 008 review (2026-03-30):**
 
-1. **Type mapping** — Compare SAPPHIRE Flow's `ForecastEnsemble` / `OperationalForecast`
-   types with ForecastInterface's `ModelOutput` / `VariableOutput`. Identify:
-   - Semantic overlaps and naming divergences.
-   - Whether SAPPHIRE Flow's `predict()` return type can be constructed from or converted
-     to `ModelOutput` at the boundary.
-   - Gaps: fields present in one but not the other (e.g. `epistemic_uncertainty`,
-     `ForecastFlag`, `offset`).
+ForecastInterface and SAPPHIRE Flow's internal types (including plan 008's `GroupModelInputs`)
+operate at different layers — they are complementary, not competing:
+
+- **ForecastInterface** = external contract for ML model developers. Describes what data
+  a model needs (per-variable requirements with product provenance) and what it returns
+  (`ModelOutput`). No concept of station, group, batch, or stacking.
+- **SAPPHIRE Flow internals** = how the operational system assembles and delivers data.
+  `ModelDataRequirements` (flat feature-name sets) → assembly → `GroupModelInputs` /
+  `ModelInputs` (pre-assembled DataFrames ready for inference).
+
+The adapter boundary sits between these layers:
+
+```
+ModelDataRequirements → assembly → GroupModelInputs → adapter → FI input → model → ModelOutput → adapter → dict[str, ForecastEnsemble]
+     (SAPPHIRE)          (SAPPHIRE)   (SAPPHIRE)      (boundary)  (FI)              (FI)         (boundary)    (SAPPHIRE)
+```
+
+Key divergences identified:
+
+| Aspect | ForecastInterface | SAPPHIRE Flow | Adapter responsibility |
+|--------|------------------|---------------|----------------------|
+| Station identity | Not present | `station_id` in `GroupModelInputs`, `ForecastEnsemble` | Inject on input, extract on output |
+| Output format | `ModelOutput` → `VariableOutput` → `DeterministicData`/`QuantileData`/`TrajectoryData` | `dict[str, ForecastEnsemble]` | Convert `ModelOutput` → `dict[str, ForecastEnsemble]` |
+| Input granularity | Per-variable with product provenance (`past_known`/`future_known` temporality) | Flat feature-name sets + assembled DataFrames (`past_dynamic`/`future_dynamic`) | Map FI's rich requirements → `ModelDataRequirements`; convert `GroupModelInputs` → FI input format |
+| Epistemic uncertainty | First-class (`EpistemicUncertaintyData`) | Not modeled | Gap in SAPPHIRE Flow — consider adding or dropping at boundary |
+| Forecast flags | `ForecastFlag` enum (`HIGH_EPISTEMIC_UNCERTAINTY`, `DATA_AVAILABILITY`) | No equivalent on `ForecastEnsemble` | Could map to SAPPHIRE Flow's forecast QC flags |
+| Ensemble representation | Separate types: `TrajectoryData` (members), `QuantileData` (quantiles), `DeterministicData` (point) | Single `ForecastEnsemble` with `EnsembleRepresentation` enum (`MEMBERS`/`QUANTILES`) | Convert between representations |
+
+**Investigation tasks (updated priorities):**
+
+1. **Output adapter design** (highest priority — FI output types are fully implemented):
+   - Design `ModelOutput` → `dict[str, ForecastEnsemble]` conversion.
+   - Map `VariableOutput.status` / `flags` to SAPPHIRE Flow's QC / metadata fields.
+   - Handle `TrajectoryData` → `ForecastEnsemble(MEMBERS)` and
+     `QuantileData` → `ForecastEnsemble(QUANTILES)` conversion.
+   - Decide what to do with `DeterministicData` (no SAPPHIRE Flow equivalent —
+     wrap as single-member ensemble? Separate field?).
+   - Decide what to do with `EpistemicUncertaintyData` (drop at boundary? Add to
+     SAPPHIRE Flow types? Store as metadata?).
 
 2. **Enum alignment** — Compare `Unit`, `Resolution`, `VariableStatus` enums with
-   SAPPHIRE Flow equivalents (`Parameter`, `QcStatus`, time-step handling).
+   SAPPHIRE Flow equivalents (`Parameter`, `QcStatus`, time-step handling). Map or
+   convert at the adapter boundary.
 
-3. **DataFrame contract** — SAPPHIRE Flow uses xarray internally for ensemble data;
-   ForecastInterface uses Polars DataFrames. Define the conversion boundary — where
-   does the format switch happen? The natural boundary is the model adapter.
+3. **Input requirements alignment** (lower priority — FI input types not yet implemented):
+   - ForecastInterface's input spec describes requirements per-variable with product
+     provenance. SAPPHIRE Flow's `ModelDataRequirements` uses flat `frozenset[str]`
+     feature-name sets with a single `lookback_steps` int.
+   - When FI implements its input types, `ModelDataRequirements` should be derivable
+     from or compatible with FI's richer per-variable spec.
+   - The `past_known`/`future_known` temporality axis maps to SAPPHIRE Flow's
+     `past_dynamic`/`future_dynamic` split (and plan 008's `GroupModelInputs` fields).
+   - Flag as future alignment point, not a current blocker.
 
-4. **Input contract** — ForecastInterface's input spec describes what a model needs
-   (lookback, future_steps, etc.). Compare with SAPPHIRE Flow's `ModelInputs` /
-   `prepare_model_inputs()` protocol. Determine if the input contract should drive
-   SAPPHIRE Flow's input preparation or vice versa.
+4. **Interface module alignment** (deferred — FI interface not yet implemented):
+   - When FI implements its `interface/` module (model protocol), SAPPHIRE Flow's
+     `StationForecastModel`/`GroupForecastModel` protocols should be implementable
+     as thin adapters around FI's interface.
+   - Plan 008's `GroupModelInputs` design does not prevent this — the adapter sits
+     outside `predict_batch()`.
 
 5. **Proposal direction** — Where ForecastInterface and SAPPHIRE Flow diverge, decide
    which should adapt. Criteria: ForecastInterface is the public contract for external
