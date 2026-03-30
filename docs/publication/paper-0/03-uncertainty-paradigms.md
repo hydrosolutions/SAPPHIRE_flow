@@ -25,8 +25,8 @@ Last updated: 2026-03-30.
    CRPS-trained models show better calibration than NLL-trained models,
    at slight cost to sharpness.
 5. **Diffusion models represent an emerging Paradigm D** — generating ensemble
-   traces via a learned stochastic process. DRUM (arXiv, 2024) and
-   HydroDiffusion (arXiv, 2025) show promising results but are preprints with
+   traces via a learned stochastic process. DRUM (Ou et al., GRL 2025) and
+   HydroDiffusion (Wang et al., arXiv 2025) show promising results but have
    no NWP forcing integration.
 6. **The one study comparing deep ensemble LSTM with NWP forcing found poor
    spread-skill** (Sabzipour et al., J. Hydrol., 2023) — suggesting naive
@@ -212,12 +212,15 @@ one model with a mixture density head). The NeuralHydrology framework supports
 multi-seed training as a configuration option.
 
 **Sabzipour et al. (J. Hydrol., 2023)** compared LSTM deep ensembles against
-the CEQUEAU process-based model, both driven by NWP forecasts, over a Canadian
-catchment. The LSTM ensemble showed **small spread and increasing bias at longer
-lead times**, penalising CRPS compared to the process-based model. This
-suggests that naive Paradigm C (deep ensemble with deterministic NWP) may not
-capture forecast uncertainty adequately — the ensemble diversity from random
-seed initialisation is insufficient to represent forcing uncertainty.
+the CEQUEAU process-based model, both driven by NWP forecasts, over a single
+Canadian catchment. The LSTM ensemble showed **small spread and increasing bias
+at longer lead times**, penalising CRPS compared to the process-based model.
+This suggests that naive Paradigm C (deep ensemble with deterministic NWP) may
+not capture forecast uncertainty adequately — the ensemble diversity from random
+seed initialisation is insufficient to represent forcing uncertainty. (Caveat:
+single-catchment study — the finding may not generalise across hydroclimatic
+regimes. This is currently the only such comparison; replication across diverse
+basins is needed.)
 
 This is a critical finding: **seed diversity ≠ forcing uncertainty**. Deep
 ensembles capture model uncertainty (epistemic), but the dominant source of
@@ -349,10 +352,11 @@ complete formulation.**
 Diffusion models generate ensemble traces via a learned stochastic process,
 bypassing both NWP propagation and explicit distribution heads.
 
-**DRUM** (Ou et al., arXiv:2412.11942, 2024): Diffusion-based runoff model with
-LSTM encoder-decoder for probabilistic flood forecasting across CONUS. Extends
-reliable lead times by nearly a full day for 20/50-year floods compared to
-deterministic baselines. [preprint]
+**DRUM** (Ou et al., GRL, doi:10.1029/2025GL115705, 2025): Diffusion-based
+runoff model with LSTM encoder-decoder for probabilistic flood forecasting
+across CONUS. Extends reliable lead times by nearly a full day for 20/50-year
+floods compared to deterministic baselines. Originally arXiv:2412.11942;
+published in Geophysical Research Letters.
 
 **HydroDiffusion** (Wang et al., arXiv:2512.12183, 2025): Diffusion framework
 with state-space model backbone. Outperforms LSTM-based diffusion variants on
@@ -419,7 +423,7 @@ characteristics than process-based ensembles.
 
 An active area that sits between Paradigms A and B:
 
-**Frame et al. (HESS, 2021)**: LSTM post-processes National Water Model output.
+**Frame et al. (JAWRA, 2021)**: LSTM post-processes National Water Model output.
 The "Errorcastnet" lineage — ML learns NWM systematic errors and corrects them.
 
 **Sharma et al. (J. Hydroinformatics, 2023)**: Per-member, per-lead-time LSTM
@@ -432,9 +436,9 @@ the primary model.
 
 **Key references**:
 - Frame, J. M., Kratzert, F., Raney, A., Rahman, M., Salas, F. R., and
-  Nearing, G. S.: Post-processing the National Water Model with long short-term
-  memory networks, Hydrol. Earth Syst. Sci., 25, 4917–4935,
-  doi:10.5194/hess-25-4917-2021, 2021.
+  Nearing, G. S.: Post-Processing the National Water Model with Long Short-Term
+  Memory Networks for Streamflow Predictions and Model Diagnostics, JAWRA J.
+  Am. Water Resour. Assoc., 57, 885–905, doi:10.1111/1752-1688.12964, 2021.
 - Solanki, H., Vegad, U., Kushwaha, A., and Mishra, V.: Improving Streamflow
   Prediction Using Multiple Hydrological Models and Machine Learning Methods,
   Water Resour. Res., 61(1), doi:10.1029/2024WR038192, 2025.
@@ -547,15 +551,20 @@ Verified 2026-03-30.
 - [x] Sharma et al. (J. Hydroinformatics, 2023) — **DOI corrected** from
   10.2166/hydro.2022.167 (which resolves to unrelated paper) to
   10.2166/hydro.2022.114.
-- [x] Frame et al. (HESS, 2021) — DOI 10.5194/hess-25-4917-2021 (NWM
-  post-processing). Previously verified in Section 1.
+- [x] Frame et al. (2021) — **CORRECTED**: Published in JAWRA, not HESS.
+  DOI: 10.1111/1752-1688.12964. See CRAAB section above.
 - [x] Dong et al. (HESS, 2025) — previously verified in Section 1.
 - [x] Klotz et al. (HESS, 2022) — previously verified in Section 1.
 - [x] Nevo et al. (HESS, 2022) — previously verified in Section 1.
 
-### Preprints (flagged in text)
-- [ ] DRUM — arXiv:2412.11942 (Ou et al., 2024). arXiv ID confirmed.
-- [ ] HydroDiffusion — arXiv:2512.12183 (Wang et al., 2025). arXiv ID confirmed.
+### Updated during CRAAB review
+- [x] DRUM — **Now published in GRL**: doi:10.1029/2025GL115705 (Ou et al.,
+  2025). Originally arXiv:2412.11942. Updated from preprint to published.
+- [x] HydroDiffusion — arXiv:2512.12183 (Wang et al., 2025) confirmed.
+  Still preprint.
+- [x] Frame et al. (2021) — **CORRECTED**: Journal is JAWRA (not HESS).
+  DOI: 10.1111/1752-1688.12964. The previously cited DOI 10.5194/hess-25-4917-2021
+  resolves to an unrelated paper (Gasset et al.).
 - [ ] AIFS-CRPS ensemble-specific paper — not yet identified. The AIFS-CRPS
   approach is described in ECMWF technical memos and NeurIPS 2024 workshop
   presentations. A standalone peer-reviewed publication may not yet exist.
