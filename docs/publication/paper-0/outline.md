@@ -76,29 +76,28 @@ NWP forcing?
 
 ### 3. Uncertainty Paradigms (intellectual core)
 
+> **Research**: [03-uncertainty-paradigms.md](03-uncertainty-paradigms.md) ✅
+
 **Question**: Where should forecast uncertainty come from when coupling ML with
 ensemble NWP?
 
-**To cover**:
-- **Paradigm A — NWP pass-through**: each ensemble member → deterministic model
-  → N streamflow members. Standard in process-based systems (EFAS). Assumes
-  uncertainty = forcing uncertainty. Never systematically tested with ML.
-- **Paradigm B — Learned distribution (MDN/CMAL)**: single model, mixture
-  density output head. Klotz et al. (HESS 2022): CMAL > UMAL > GMM >> MC
-  Dropout. But tested only with observed forcing, daily. Huo et al. (HESS 2023):
-  QRF comparable to CMAL, 50% faster. Modi et al. (JAMES 2025): DL in ensemble
-  streamflow, but daily.
-- **Paradigm C — Deep ensembles**: M models (different seeds).
-  Lakshminarayanan et al. (NeurIPS 2017) established the method. Standard in
-  weather (AIFS-CRPS, Lang et al. 2024). Never tested head-to-head with MDN
-  in hydrology.
-- **Hybrid paradigms**: A+B (CMAL per NWP member), A+C (deep ensemble per
-  NWP member). Untested.
-- **CRPS-as-loss frontier**: AIFS-CRPS showed direct CRPS optimisation for
-  ensemble weather models. Unexplored for streamflow.
-- **Testable predictions**: A → spread correlates with NWP spread; B → spread
-  reflects learned patterns; C → spread reflects model disagreement. CRPS
-  decomposition and spread-skill ratio can distinguish these.
+**Key findings**:
+- Three paradigms (A: NWP pass-through, B: learned distribution, C: deep
+  ensembles) have never been compared head-to-head for ML streamflow.
+- Paradigm A has never been applied to a pure ML streamflow model. Dong et al.
+  (HESS 2025) used a hybrid; Modi et al. (JAMES 2025) used historical
+  resampling, not NWP.
+- CMAL is the best-performing learned distribution (Klotz et al., HESS 2022)
+  but tested only with observed forcing. QRF is comparable, 50% faster
+  (Zhang et al., HESS 2023 — note: outline originally said "Huo et al.",
+  corrected).
+- Sabzipour et al. (J. Hydrol., 2023): deep ensemble LSTM showed poor
+  spread-skill vs process-based model — seed diversity ≠ forcing uncertainty.
+- AIFS-CRPS (Lang et al., 2024): CRPS as direct training loss for ensemble
+  weather. Transferable to streamflow but not yet applied.
+- Diffusion models (DRUM, HydroDiffusion) represent emerging Paradigm D.
+- Permutation-invariant NN for ensemble NWP input (Hohlein et al., AIES 2024)
+  demonstrated for weather but not streamflow.
 
 **Key gap**: No head-to-head comparison of A vs B vs C for streamflow. This is
 the central open question.
