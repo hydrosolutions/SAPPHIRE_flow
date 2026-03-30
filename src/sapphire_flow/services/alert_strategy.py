@@ -43,12 +43,8 @@ def _compute_exceedance(
     QUANTILES: per-timestep CDF interpolation between adjacent quantile levels.
     """
     if ensemble.representation == EnsembleRepresentation.MEMBERS:
-        per_time = (
-            ensemble.values
-            .group_by("valid_time")
-            .agg(
-                (pl.col("value") > threshold_value).mean().alias("exceedance")
-            )
+        per_time = ensemble.values.group_by("valid_time").agg(
+            (pl.col("value") > threshold_value).mean().alias("exceedance")
         )
         max_val = per_time["exceedance"].max()
         return float(max_val) if isinstance(max_val, (int, float)) else 0.0
@@ -59,8 +55,7 @@ def _compute_exceedance(
 
     for vt in valid_times:
         ts_df = (
-            ensemble.values
-            .filter(pl.col("valid_time") == vt)
+            ensemble.values.filter(pl.col("valid_time") == vt)
             .group_by("quantile")
             .agg(pl.col("value").median().alias("median_value"))
             .sort("quantile")
@@ -81,7 +76,9 @@ def _compute_exceedance(
                 if values[i] <= threshold_value <= values[i + 1]:
                     span = values[i + 1] - values[i]
                     frac = (threshold_value - values[i]) / span if span != 0.0 else 0.0
-                    cdf_at_threshold = quantiles[i] + frac * (quantiles[i + 1] - quantiles[i])
+                    cdf_at_threshold = quantiles[i] + frac * (
+                        quantiles[i + 1] - quantiles[i]
+                    )
                     exc = 1.0 - cdf_at_threshold
                     break
 
@@ -94,8 +91,8 @@ def _compute_exceedance(
 def _pool_ensembles(
     model_ensembles: dict[ModelId, ForecastEnsemble],
 ) -> ForecastEnsemble:
-    """Concatenate all models' members into a grand ensemble with renumbered member IDs."""
-    from sapphire_flow.types.ensemble import ForecastEnsemble as FE
+    """Concatenate all models' members into a grand ensemble."""
+    from sapphire_flow.types.ensemble import ForecastEnsemble as Ens
 
     frames: list[pl.DataFrame] = []
     member_offset = 0
@@ -113,7 +110,7 @@ def _pool_ensembles(
     assert ref_ensemble is not None
     pooled_df = pl.concat(frames)
 
-    return FE.from_members(
+    return Ens.from_members(
         station_id=ref_ensemble.station_id,
         issued_at=ref_ensemble.issued_at,
         parameter=ref_ensemble.parameter,
