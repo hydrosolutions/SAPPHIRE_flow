@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
@@ -10,7 +11,7 @@ from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.enums import EnsembleRepresentation, ForcingType, QcStatus
 from sapphire_flow.types.forecast import HindcastForecast
 from sapphire_flow.types.ids import ArtifactId, HindcastForecastId, ModelId, StationId
-from sapphire_flow.types.model import ModelInputs
+from sapphire_flow.types.model import ModelInputs, stack_model_inputs
 from sapphire_flow.types.training import HindcastStepResult
 
 if TYPE_CHECKING:
@@ -349,10 +350,25 @@ def run_group_hindcast(
         if not inputs_batch:
             continue
 
+        t0 = time.perf_counter()
+        group_inputs = stack_model_inputs(
+            group_id=group.id,
+            inputs=inputs_batch,
+            issue_time=issue_time,
+        )
+        t1 = time.perf_counter()
+        log.info(
+            "group_inputs.stacking_completed",
+            group_id=str(group.id),
+            station_count=len(inputs_batch),
+            issue_time=str(issue_time),
+            duration_ms=round((t1 - t0) * 1000, 1),
+        )
+
         try:
             batch_results = model.predict_batch(
                 artifact=artifact,
-                inputs=inputs_batch,
+                inputs=group_inputs,
                 rng=rng,
             )
         except Exception as exc:

@@ -168,7 +168,7 @@ Rationale: per-source flags allow incremental activation during testing — pipe
 
 **Full design**: 4-slot data contract (past_targets, past_dynamic, future_dynamic, static) with ModelDataRequirements declaring per-slot feature needs. GroupModelInputs uses stacked DataFrames for batch ML inference.
 
-**v0**: Fully implemented. past_dynamic and future_dynamic use the same reanalysis source in training/hindcast (future_dynamic filled from reanalysis as teacher forcing). Operational forecast path (Flow 1) provides true NWP data in future_dynamic. Multi-target predictions supported from day one. v0 exercises this with discharge (river) and water_level (lake) forecasting — skill computation, store filtering, and training orchestration are all parameter-scoped.
+**v0**: Implemented (plan 008). `GroupModelInputs` and `stack_model_inputs()` provide the stacked DataFrame container with `for_station()` slicing. `predict_batch()` accepts `GroupModelInputs` in the hindcast path; operational forecast path (Flow 1) will use the same stacking when implemented. past_dynamic and future_dynamic use the same reanalysis source in training/hindcast (future_dynamic filled from reanalysis as teacher forcing). Multi-target predictions supported from day one. v0 exercises this with discharge (river) and water_level (lake) forecasting — skill computation, store filtering, and training orchestration are all parameter-scoped.
 
 ---
 

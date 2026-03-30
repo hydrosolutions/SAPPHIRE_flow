@@ -1060,6 +1060,14 @@ class GroupModelInputs:
 - `None` when the model declares no `static_features` or the station's basin has no attributes.
 - **Future extension**: gridded static attributes will use a separate `static_grids: xr.Dataset | None` field.
 
+**Stacked DataFrames (`GroupModelInputs`):** The same column contracts apply, with `station_id`
+(Utf8) prepended as the first column. Column order: `station_id`, `timestamp`, then parameter
+columns with companion provenance columns. For `static`: `station_id`, then attribute columns
+(no timestamp). `parameter_columns(df)` excludes both `timestamp` and `station_id`.
+`stack_model_inputs()` (in `types/model.py`) constructs `GroupModelInputs` from
+`dict[StationId, ModelInputs]` by splitting forcing on `issue_time` into `past_dynamic`
+(≤ issue_time) / `future_dynamic` (> issue_time) and mapping observations to `past_targets`.
+
 ### StationTrainingData / GroupTrainingData
 
 Training data containers passed to model `train()` calls.
@@ -1462,9 +1470,9 @@ data for all stations in the group. The orchestration layer (Flow 6/9 T.2–T.3)
   `(ensembles, updated_state)`. Stateless models return `(ensembles, None)`.
 - *Group models* → single `predict_batch()` call per (model, group). Receives
   `GroupModelInputs` (stacked), returns `dict[StationId, tuple[dict[str, ForecastEnsemble], bytes | None]]`.
-  `StationModelInputs.station_id` (accessible via `for_station()`) lets ML models use station
-  embeddings. No `prior_state` input — ML models are stateless. A single-station group is
-  a single-key result dict (no special case).
+  ML models access station identity via `GroupModelInputs.station_ids` or the `station_id`
+  argument passed to `for_station()`. No `prior_state` input — ML models are stateless. A
+  single-station group is a single-key result dict (no special case).
 
 The caller persists state via `ModelStateStore`.
 
@@ -2385,7 +2393,8 @@ src/sapphire_flow/
 │   ├── model.py            # StationInputData, StationModelInputs, GroupModelInputs,
 │   │                       #   StationTrainingData, GroupTrainingData,
 │   │                       #   ModelDataRequirements, ModelParams, ModelArtifact,
-│   │                       #   ModelRecord, ModelRegistryEntry, ModelArtifactRecord
+│   │                       #   ModelRecord, ModelRegistryEntry, ModelArtifactRecord,
+│   │                       #   stack_model_inputs()
 │   ├── training.py         # TrainingUnit, HindcastStepResult
 │   ├── model_onboarding.py # CompatibilityReport, SkillGateResult,
 │   │                       #   OnboardingUnitResult, ModelOnboardingResult,

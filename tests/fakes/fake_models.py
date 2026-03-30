@@ -10,6 +10,7 @@ from sapphire_flow.types.ensemble import ForecastEnsemble
 from sapphire_flow.types.enums import ArtifactScope, SpatialRepresentation
 from sapphire_flow.types.ids import StationId  # noqa: TC001
 from sapphire_flow.types.model import (  # noqa: TC001
+    GroupModelInputs,
     GroupTrainingData,
     ModelArtifact,
     ModelDataRequirements,
@@ -168,17 +169,18 @@ class FakeGroupForecastModel:
     def predict_batch(
         self,
         artifact: ModelArtifact,
-        inputs: dict[StationId, ModelInputs],
+        inputs: GroupModelInputs,
         rng: random.Random,
     ) -> dict[StationId, tuple[dict[str, ForecastEnsemble], bytes | None]]:
         result = {}
-        for sid, inp in inputs.items():
+        for sid in inputs.station_ids:
+            _station_data = inputs.for_station(sid)
             rows = []
-            for step in range(inp.forecast_horizon_steps):
+            for step in range(inputs.forecast_horizon_steps):
                 vt = ensure_utc(
                     datetime.fromtimestamp(
-                        inp.issue_time.timestamp()
-                        + (step + 1) * inp.time_step.total_seconds(),
+                        inputs.issue_time.timestamp()
+                        + (step + 1) * inputs.time_step.total_seconds(),
                         tz=UTC,
                     )
                 )
@@ -196,10 +198,10 @@ class FakeGroupForecastModel:
             )
             ens = ForecastEnsemble.from_members(
                 station_id=sid,
-                issued_at=inp.issue_time,
+                issued_at=inputs.issue_time,
                 parameter=self.parameter,
                 units=self.units,
-                time_step=inp.time_step,
+                time_step=inputs.time_step,
                 values=df,
             )
             result[sid] = ({self.parameter: ens}, None)
@@ -231,19 +233,20 @@ class FakeMultiTargetGroupForecastModel:
     def predict_batch(
         self,
         artifact: ModelArtifact,
-        inputs: dict[StationId, ModelInputs],
+        inputs: GroupModelInputs,
         rng: random.Random,
     ) -> dict[StationId, tuple[dict[str, ForecastEnsemble], bytes | None]]:
         result: dict[StationId, tuple[dict[str, ForecastEnsemble], bytes | None]] = {}
-        for sid, inp in inputs.items():
+        for sid in inputs.station_ids:
+            _station_data = inputs.for_station(sid)
             ensembles: dict[str, ForecastEnsemble] = {}
             for param in self.parameters:
                 rows = []
                 for step in range(self.horizon_steps):
                     vt = ensure_utc(
                         datetime.fromtimestamp(
-                            inp.issue_time.timestamp()
-                            + (step + 1) * inp.time_step.total_seconds(),
+                            inputs.issue_time.timestamp()
+                            + (step + 1) * inputs.time_step.total_seconds(),
                             tz=UTC,
                         )
                     )
@@ -259,10 +262,10 @@ class FakeMultiTargetGroupForecastModel:
                 )
                 ensembles[param] = ForecastEnsemble.from_members(
                     station_id=sid,
-                    issued_at=inp.issue_time,
+                    issued_at=inputs.issue_time,
                     parameter=param,
                     units="m3/s" if param == "discharge" else "m",
-                    time_step=inp.time_step,
+                    time_step=inputs.time_step,
                     values=df,
                 )
             result[sid] = (ensembles, None)

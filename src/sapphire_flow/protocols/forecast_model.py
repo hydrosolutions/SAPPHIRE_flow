@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from sapphire_flow.types.enums import ArtifactScope
     from sapphire_flow.types.ids import StationId
     from sapphire_flow.types.model import (
+        GroupModelInputs,
         GroupTrainingData,
         ModelArtifact,
         ModelDataRequirements,
@@ -57,7 +58,7 @@ class GroupForecastModel(Protocol):
     def predict_batch(
         self,
         artifact: ModelArtifact,
-        inputs: dict[StationId, ModelInputs],
+        inputs: GroupModelInputs,
         rng: random.Random,
     ) -> dict[StationId, tuple[dict[str, ForecastEnsemble], bytes | None]]:
         raise NotImplementedError
