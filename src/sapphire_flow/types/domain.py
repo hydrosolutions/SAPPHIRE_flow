@@ -176,6 +176,9 @@ class SkillInterpretationScheme:
     bands: tuple[SkillInterpretationBand, ...]
 
 
+ForecastParameter = Literal["discharge", "water_level"]
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class ExceedanceResult:
     station_id: StationId

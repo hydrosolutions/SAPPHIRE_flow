@@ -9,8 +9,8 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sapphire_flow.db.metadata import alerts
 from sapphire_flow.store._helpers import utc_from_row, utc_or_none
 from sapphire_flow.types.alert import Alert
-from sapphire_flow.types.enums import AlertSource, AlertStatus
-from sapphire_flow.types.ids import AlertId, StationId
+from sapphire_flow.types.enums import AlertModelStrategy, AlertSource, AlertStatus
+from sapphire_flow.types.ids import AlertId, ModelId, StationId
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -136,6 +136,8 @@ def _to_values(alert: Alert) -> dict:  # type: ignore[type-arg]
         "first_detected_at": alert.first_detected_at,
         "notified_at": alert.notified_at,
         "created_at": alert.created_at,
+        "model_ids": [str(mid) for mid in alert.model_ids],
+        "alert_model_strategy": alert.alert_model_strategy.value if alert.alert_model_strategy is not None else None,
     }
 
 
@@ -150,6 +152,8 @@ def _mutable_fields(alert: Alert) -> dict:  # type: ignore[type-arg]
         "resolved_at": alert.resolved_at,
         "first_detected_at": alert.first_detected_at,
         "notified_at": alert.notified_at,
+        "model_ids": [str(mid) for mid in alert.model_ids],
+        "alert_model_strategy": alert.alert_model_strategy.value if alert.alert_model_strategy is not None else None,
     }
 
 
@@ -171,4 +175,6 @@ def _row_to_domain(row: sa.engine.row.RowMapping) -> Alert:
         first_detected_at=utc_or_none(row["first_detected_at"]),
         notified_at=utc_or_none(row["notified_at"]),
         created_at=utc_from_row(row["created_at"]),
+        model_ids=tuple(ModelId(mid) for mid in (row["model_ids"] or [])),
+        alert_model_strategy=AlertModelStrategy(row["alert_model_strategy"]) if row["alert_model_strategy"] is not None else None,
     )
