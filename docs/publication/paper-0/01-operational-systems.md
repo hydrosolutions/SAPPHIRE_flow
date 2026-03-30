@@ -1,7 +1,7 @@
 # 1. Operational Ensemble Flood Forecasting Systems
 
 Literature review for Section 1 of the Paper 0 outline.
-Last updated: 2026-03-09.
+Last updated: 2026-03-30.
 
 ## Key Findings
 
@@ -78,14 +78,18 @@ Service since 2011; research prototype from ~2003).
   D. S., and Thielen, J.: The monetary benefit of early flood warnings in
   Europe, Environ. Sci. Policy, 51, 278–291, 2015. (Benefit-cost ratio ~400:1;
   total EFAS cost ~EUR 42M over 10 years including development.)
-  <!-- TODO: Verify DOI — likely 10.1016/j.envsci.2014.09.005 -->
+  https://doi.org/10.1016/j.envsci.2015.04.016
 - Mazzetti, C., Decremer, D., and Prudhomme, C.: Major upgrade of the European
   Flood Awareness System, ECMWF Newsletter, 166, 2021.
   https://www.ecmwf.int/en/newsletter/166/meteorology/major-upgrade-european-flood-awareness-system
-  <!-- TODO: This is the 2021 article (Newsletter 166). The EFAS v5.0 upgrade
-  (1 arcminute, LISFLOOD 30x speedup) went operational Sep 2023 and may be
-  described in a later newsletter. Verify whether a separate v5.0 article
-  exists, or whether the claims here belong to a different source. -->
+  (Describes pre-v5.0 upgrades; see Mazzetti et al. (2023) below for v5.0.)
+- Mazzetti, C., Carton de Wiart, C., Gomes, G., Russo, C., Decremer, D.,
+  Grimaldi, S., Disperati, J., Ziese, M., Schweim, C., Garcia Sanchez, R.,
+  Jacobson, T., Ramos, A., Prudhomme, C., and Salamon, P.: EFAS v5.0
+  hydrological reanalysis, European Commission, Ispra, JRC134686, 2023.
+  https://publications.jrc.ec.europa.eu/repository/handle/JRC134686
+  (Primary source for the 1 arcminute resolution upgrade and new LISFLOOD
+  calibration with 1,903 gauge stations.)
 
 ### GloFAS (Global Flood Awareness System)
 
@@ -245,10 +249,11 @@ NWP ensemble spread. This is Paradigm B (learned distribution), not Paradigm A
 
 ### ECMWF AIFL (AI for Flood Forecasting)
 
-**Pre-operational** LSTM-based global streamflow model. Pre-trained on
-ERA5-Land, fine-tuned on IFS. Delivers up to 10-day streamflow predictions.
+**Pre-operational** LSTM-based global streamflow model [preprint]. Pre-trained
+on ERA5-Land, fine-tuned on IFS. Delivers up to 10-day streamflow predictions.
 Successfully predicted a 20-year flood signal 6 days ahead during Storm Henk
-(Jan 2024). Not yet replacing LISFLOOD but being integrated.
+(Jan 2024). Not yet replacing LISFLOOD but being integrated. Claims below are
+from an arXiv preprint and have not yet undergone peer review.
 
 **SEED-FD project** (started Feb 2024, 3-year): Developing LSTM error models to
 improve GloFAS forecasts using ML and satellite data.
@@ -313,7 +318,9 @@ representations across catchments.
 
 **"Never train on a single basin"** — Kratzert et al. (HESS, 2024) argued that
 per-basin LSTM training is strictly inferior to multi-basin training. Most
-published LSTM hydrology studies violate this principle.
+published LSTM hydrology studies violate this principle. (Note: this is an HESS
+Opinions piece, not an empirical study. The "never" claim is well-argued but
+edge cases may exist for extremely data-rich single basins.)
 
 The Nearing et al. (2024) Nature paper demonstrated that a **single global
 LSTM** outperformed GloFAS (which requires per-location calibration) even in
@@ -322,6 +329,11 @@ its weakest point (transferability to data-scarce regions).
 
 Google scaled training from 5,680 to 16,000 gauges, improving everywhere
 including locations not in the training set.
+
+Independent work corroborates the regional training advantage: Jiang et al.
+(GRL, 2020) demonstrated that integrating physical knowledge into deep learning
+models improves generalisation across Chinese river basins, providing a
+non-Google data point for the scalability of ML hydrology.
 
 **Key references**:
 - Kratzert, F., Klotz, D., Shalev, G., Klambauer, G., Hochreiter, S., and
@@ -333,6 +345,11 @@ including locations not in the training set.
   train a Long Short-Term Memory (LSTM) network on a single basin, Hydrol.
   Earth Syst. Sci., 28, 4187–4201, doi:10.5194/hess-28-4187-2024, 2024.
   https://doi.org/10.5194/hess-28-4187-2024
+- Jiang, S., Zheng, Y., and Solomatine, D.: Improving AI system awareness of
+  geoscience knowledge: Symbiotic integration of physical approaches and deep
+  learning, Geophys. Res. Lett., 47, e2020GL088229,
+  doi:10.1029/2020GL088229, 2020.
+  https://doi.org/10.1029/2020GL088229
 
 ### Computational cost
 
@@ -373,9 +390,9 @@ https://doi.org/10.1080/02626667.2021.2023157
 
 ## 1.4 The Post-2021 Shift to Probabilistic Forecasting
 
-Busker et al. (2025) compared FFEWSs in transboundary river basins across
-Luxembourg, Germany, the Netherlands, and Belgium — all affected by the July
-2021 European floods (>200 fatalities).
+Busker et al. (2025) [preprint] compared FFEWSs in transboundary river basins
+across Luxembourg, Germany, the Netherlands, and Belgium — all affected by the
+July 2021 European floods (>200 fatalities).
 
 **Key findings**:
 - All countries have invested in probabilistic flood forecasting post-2021
@@ -403,18 +420,21 @@ dichotomy, two additional approaches are relevant:
 ### Paradigm C: Deep Ensembles and MC Dropout
 
 **MC Dropout** (Gal & Ghahramani, 2016) uses dropout at inference time to
-approximate Bayesian uncertainty. Applied to streamflow by Fang et al. (WRR,
-2020) who showed MC Dropout LSTMs can estimate prediction intervals, but
-intervals were often under-dispersed compared to CMAL-based approaches.
+approximate Bayesian uncertainty. Fang et al. (WRR, 2020) demonstrated MC
+Dropout LSTMs for soil moisture prediction intervals; Klotz et al. (HESS, 2022)
+tested MC Dropout specifically for streamflow, finding it under-dispersed
+compared to CMAL-based approaches (CMAL > UMAL > GMM >> MC Dropout).
 
 **Deep ensembles** (Lakshminarayanan et al., NeurIPS 2017) train M models with
 different random seeds. Standard in AI weather forecasting (AIFS-CRPS, Lang et
 al., 2024) but **never tested head-to-head against MDN/CMAL for streamflow**.
 
-**Klotz et al. (HESS, 2022)** compared uncertainty approaches for LSTM
-streamflow: CMAL > UMAL > GMM >> MC Dropout. This is the closest to a
-systematic comparison, but tested only with **observed forcing at daily
+**Klotz et al. (HESS, 2022)** is the only systematic comparison of uncertainty
+approaches for LSTM streamflow, but tested only with **observed forcing at daily
 resolution** — the interaction with NWP ensemble uncertainty was not examined.
+Note that this study, like much of the foundational ML-hydrology literature,
+originates from the Google/Neuralhydrology group; independent replication of
+these rankings at scale is lacking.
 
 **Key references**:
 - Klotz, D., Kratzert, F., Gauch, M., et al.: Uncertainty estimation with
@@ -441,10 +461,12 @@ reviewer will ask why ML doesn't simply post-process process-based ensemble
 output (as Errorcastnet does for NWM).
 
 **Key references**:
-- Hemri, S., Scheuerer, M., Pappenberger, F., Bogner, K., and Haiden, T.:
-  Trends in the predictive performance of raw ensemble weather forecasts,
-  Geophys. Res. Lett., 41, 9197–9205, doi:10.1002/2014GL062472, 2014.
-  https://doi.org/10.1002/2014GL062472
+- Hemri, S., Lisniak, D., and Klein, B.: Multivariate postprocessing techniques
+  for probabilistic hydrological forecasting, Water Resour. Res., 51,
+  7436–7451, doi:10.1002/2014WR016473, 2015.
+  https://doi.org/10.1002/2014WR016473
+  (Applies EMOS with copula approaches to hydrological ensemble post-processing
+  on Rhine basin data.)
 - Duan, Q., Ajami, N. K., Gao, X., and Sorooshian, S.: Multi-model ensemble
   hydrologic prediction using Bayesian model averaging, Adv. Water Resour.,
   30, 1371–1386, doi:10.1016/j.advwatres.2006.11.014, 2007.
@@ -473,15 +495,28 @@ compared uncertainty methods but only with observed forcing at daily resolution
 — the interaction with NWP ensemble uncertainty at sub-daily timescales is
 unexamined. This is the central open question.
 
+A broader concern also applies: Todini (2017) argued that ML approaches lack
+physical interpretability and cannot reliably extrapolate to unseen conditions
+(e.g., unprecedented floods), advocating for physically-based models with data
+assimilation. While Nearing et al. (2024) and Frame et al. (2022) provide
+evidence that LSTMs can handle extreme events, the extrapolation concern remains
+unresolved for events well beyond the training distribution — a limitation any
+ML-based operational system must acknowledge.
+
+**Reference**: Todini, E.: Flood Forecasting and Decision Making in the new
+Millennium. Where are We?, Water Resour. Manage., 31, 3111–3129,
+doi:10.1007/s11269-017-1693-7, 2017.
+https://doi.org/10.1007/s11269-017-1693-7
+
 The closest work to bridging this gap:
 - Dong et al. (HESS, 2025): CNN downscales ECMWF S2S ensemble NWP, feeds to
   hybrid XAJ-LSTM for streamflow. But: sub-seasonal (daily), not medium-range;
   single basin.
 - Nikhil Teja et al. (J. Hydrol., 2023): Multiple NWP+HM combinations, but
-  HMs are process-based. ML (Random Forest) used only for multi-model
-  combination.
-  <!-- TODO: Verify RF claim — may be conflated with a 2022 companion paper
-  by the same group on QRF for NWP post-processing. -->
+  HMs are process-based. ML used only for multi-model combination (note: the
+  specific ML method — Random Forest or otherwise — should be verified against
+  the paper; the same group's 2022 review covers QRF for NWP post-processing
+  separately).
 
 **Reference for Dong et al.**: Dong, N., Hao, H., Yang, M., Wei, J., Xu, S.,
 and Kunstmann, H.: Deep-learning-based sub-seasonal precipitation and
@@ -544,6 +579,14 @@ NWP ensemble uncertainty but are expensive and require per-catchment
 calibration; Google's ML system scales elegantly but sidesteps ensemble NWP
 entirely in favor of learned uncertainty. Nobody has bridged the two approaches,
 and nobody has tested whether bridging them would even help.
+
+A caveat on the evidence base: the ML-hydrology literature is dominated by a
+small group of researchers now at Google and ECMWF (Kratzert, Nearing, Klotz,
+Gauch, Nevo), who authored or co-authored the majority of the critical
+references below. This concentration is partly structural — the field is young
+and these researchers produced the foundational work — but independent
+replication at scale remains limited. The conclusions below should be read with
+this concentration in mind.
 
 Five lessons emerge for SAPPHIRE Flow's design:
 
@@ -615,22 +658,32 @@ For the SAPPHIRE Flow codebase, these conclusions translate to:
 
 ## Reference Verification Status
 
-Verified 2026-03-09 via DOI resolution and web search:
-- [x] Busker et al. (2025) — full 14-author list added, DOI confirmed
-- [ ] "Smith et al. (2023)" ECMWF Newsletter — **CORRECTED**: Newsletter 166 is
-  by Mazzetti, Decremer, and Prudhomme (2021). The EFAS v5.0 (1 arcminute,
-  2023) source needs manual identification — may be a different newsletter
-  issue or technical report.
+Verified 2026-03-09 via DOI resolution and web search; updated 2026-03-30 via
+CRAAB review.
+
+- [x] Busker et al. (2025) — full 14-author list added, DOI confirmed.
+  **Preprint** (EGUsphere) — flagged in text.
+- [x] EFAS v5.0 — **RESOLVED**: Added Mazzetti et al. (2023) JRC134686 as
+  primary source. Newsletter 166 (Mazzetti, Decremer, Prudhomme, 2021)
+  retained for pre-v5.0 context only.
 - [x] "Zsoter et al. (2022)" — **CORRECTED**: DOI 10.1080/02626667.2021.2023157
   is by Nikhil Teja, K. and Umamahesh, N. V. (not Zsoter). Pages: 477–493.
 - [x] Nikhil Teja et al. (J. Hydrol., 2023) — full citation added.
-  DOI: 10.1016/j.jhydrol.2023.130176
-- [x] ECMWF AIFL — arXiv:2602.16579, Taccari et al. (2026), full author list
+  DOI: 10.1016/j.jhydrol.2023.130176. RF claim softened (unverified detail).
+- [x] ECMWF AIFL — arXiv:2602.16579, Taccari et al. (2026), full author list.
+  **Preprint** — flagged in text.
 - [x] "Nakakita et al. (2020)" — **CORRECTED**: DOI 10.1186/s40645-020-00391-7
   is by Sayama, T. et al. (not Nakakita). Full title with subtitle added.
-- [x] Hapuarachchi et al. (2022) — pages 4801–4821 confirmed
-- [ ] Pappenberger et al. (2015) — DOI needs verification (try
-  10.1016/j.envsci.2014.09.005)
+- [x] Hapuarachchi et al. (2022) — pages 4801–4821 confirmed.
+- [x] Pappenberger et al. (2015) — **DOI CONFIRMED**: 10.1016/j.envsci.2015.04.016
+  (the previously suspected 10.1016/j.envsci.2014.09.005 resolves to an
+  unrelated paper by Firnkorn & Muller).
+- [x] Hemri et al. — **CORRECTED**: Replaced Hemri et al. (2014) GRL (about
+  weather ensemble trends) with Hemri, Lisniak, and Klein (2015) WRR (about
+  hydrological ensemble post-processing). The 2014 paper was a domain mismatch.
+- [x] Fang et al. (2020) — **CLARIFIED**: Paper is about soil moisture, not
+  streamflow. Citation retained with correct domain noted; Klotz et al. (2022)
+  now cited as the streamflow-specific MC Dropout reference.
 
 ## Additional References Found
 
@@ -648,3 +701,24 @@ These were not in the original outline but are relevant:
   memory (LSTM) networks, Hydrol. Earth Syst. Sci., 26, 3079–3101,
   doi:10.5194/hess-26-3079-2022, 2022. (LSTM benchmarking 669 GB catchments.)
   https://doi.org/10.5194/hess-26-3079-2022
+
+### Added during CRAAB review (2026-03-30)
+- Todini, E.: Flood Forecasting and Decision Making in the new Millennium.
+  Where are We?, Water Resour. Manage., 31, 3111–3129,
+  doi:10.1007/s11269-017-1693-7, 2017. (Skeptical perspective on ML replacing
+  process-based models; extrapolation concerns.)
+  https://doi.org/10.1007/s11269-017-1693-7
+- Jiang, S., Zheng, Y., and Solomatine, D.: Improving AI system awareness of
+  geoscience knowledge: Symbiotic integration of physical approaches and deep
+  learning, Geophys. Res. Lett., 47, e2020GL088229,
+  doi:10.1029/2020GL088229, 2020. (Independent (Tsinghua) ML-hydrology work;
+  physics-aware deep learning on Chinese basins.)
+  https://doi.org/10.1029/2020GL088229
+- Hemri, S., Lisniak, D., and Klein, B.: Multivariate postprocessing techniques
+  for probabilistic hydrological forecasting, Water Resour. Res., 51,
+  7436–7451, doi:10.1002/2014WR016473, 2015. (Replaced Hemri et al. 2014 —
+  correct paper for hydrological EMOS.)
+  https://doi.org/10.1002/2014WR016473
+- Mazzetti, C., et al.: EFAS v5.0 hydrological reanalysis, JRC134686, 2023.
+  (Replaced Newsletter 166 as primary EFAS v5.0 source.)
+  https://publications.jrc.ec.europa.eu/repository/handle/JRC134686
