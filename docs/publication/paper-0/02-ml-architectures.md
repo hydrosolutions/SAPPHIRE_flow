@@ -1,7 +1,7 @@
 # 2. ML Architectures for Sub-Daily Streamflow
 
 Literature review for Section 2 of the Paper 0 outline.
-Last updated: 2026-03-10.
+Last updated: 2026-03-30.
 
 ## Key Findings
 
@@ -36,8 +36,10 @@ Last updated: 2026-03-10.
    catchment-dependent for catchments >100 km². ICON-CH2-EPS at hourly/2 km is
    convection-permitting — sub-hourly disaggregation adds synthetic structure
    below the model's physical resolution.
-9. **CNN-LSTM and ConvLSTM dramatically outperform lumped LSTM** when gridded
-   NWP input is available — NSE 0.83 vs 0.51 in one study (Hu et al., 2024).
+9. **CNN-LSTM and ConvLSTM dramatically outperform standalone LSTM** when gridded
+   NWP input is available — NSE 0.83 vs 0.51 in one study (Hu et al., 2024;
+   comparison is spatially-aware hybrid vs non-spatial LSTM, not distributed vs
+   lumped in the traditional hydrological sense).
    For steep mountain catchments, the spatial dimension (elevation-dependent
    precipitation, snow/rain partitioning) may matter more than temporal
    resolution. No CNN-LSTM has been applied to Himalayan streamflow with
@@ -56,6 +58,12 @@ Last updated: 2026-03-10.
 ## 2.1 LSTM and Variants
 
 ### Standard LSTM
+
+Note: The LSTM-hydrology literature is dominated by the Google/JKU Linz group
+(Kratzert, Gauch, Klotz, Hochreiter, Nearing), who developed most variants
+below and the NeuralHydrology framework. This reflects the field's youth rather
+than lack of independent work — Liu et al. (HESS, 2025) provide an independent
+benchmark confirming LSTM's dominance (§2.2).
 
 Kratzert et al. (2018) established that a single LSTM trained regionally across
 multiple catchments outperforms SAC-SMA + Snow-17. On 531 CAMELS basins, the
@@ -164,9 +172,11 @@ memory mixing) and mLSTM (matrix memory, fully parallelisable, covariance
 update rule). Integrated into NeuralHydrology. Not yet benchmarked for
 hydrology but represents the architectural frontier for LSTM-family models.
 
-**Reference**: Beck, M., et al.: xLSTM: Extended Long Short-Term Memory,
-Advances in Neural Information Processing Systems (NeurIPS), 2024.
-arXiv:2405.04517.
+**Reference**: Beck, M., Pöppel, K., Spanring, M., Auer, A., Prudnikova, O.,
+Kopp, M., Klambauer, G., Brandstetter, J., and Hochreiter, S.: xLSTM:
+Extended Long Short-Term Memory, Advances in Neural Information Processing
+Systems 37 (NeurIPS), 2024.
+https://proceedings.neurips.cc/paper_files/paper/2024/hash/c2ce2f2701c10a2b2f2ea0bfa43cfaa3-Abstract-Conference.html
 
 ### Other RNN Variants
 
@@ -747,7 +757,8 @@ temporal processing happen simultaneously at every timestep, preserving
 spatial structure throughout. Dehghani et al. (Ecol. Inform., 75, 102119,
 2023) found **ConvLSTM outperformed CNN+LSTM** for hourly streamflow
 forecasting (NSE 0.98–0.99), with the most accurate peak flow timing and
-magnitude. Borgel et al. (GMD, 18, 2005–2019, 2025,
+magnitude. (Caveat: single-basin result — such high NSE values are unlikely
+to generalise across diverse catchments.) Borgel et al. (GMD, 18, 2005–2019, 2025,
 doi:10.5194/gmd-18-2005-2025) used ConvLSTM to predict runoff for **97 Baltic
 rivers simultaneously** from atmospheric forcing grids alone.
 
@@ -762,7 +773,7 @@ precipitation patterns from NWP grids.
 
 | Study | Spatial method | NSE (spatial) | NSE (lumped LSTM) | Domain |
 |-------|---------------|--------------|-------------------|--------|
-| Hu et al. (J. Hydrol. Reg. Stud., 51, 2024) | CNN-LSTM (GPM+SM grids) | **0.834** | 0.510 | Yellow River source |
+| Hu et al. (J. Hydrol. Reg. Stud., 51, 2024, doi:10.1016/j.ejrh.2023.101652) | CNN-LSTM (GPM+SM grids) | **0.834** | 0.510 (standalone LSTM, no spatial input) | Yellow River source |
 | Pokharel & Roy (J. Hydroinf., 26, 2024, doi:10.2166/hydro.2024.114) | CNN-LSTM (ERA5-Land P+T) | improved 21/32 | baseline | Nebraska, 32 basins |
 | Wang & Karimi (HESS, 28, 2107, 2024) | Spatially recursive LSTM | +0.113 KGE | baseline | Great Lakes, 141 basins |
 | Li et al. (J. Hydrol., 620, 2023) | CNN-LSTM + multi-task | 0.79–0.92 | lower | Tibetan Plateau |
@@ -913,37 +924,55 @@ catchments is testable and would be a novel contribution.
 
 ## References Not Yet Fully Verified
 
+Updated 2026-03-30 via CRAAB review.
+
+### Verified during CRAAB review (2026-03-30)
+- [x] Hu et al. (J. Hydrol. Reg. Stud., 51, 2024) — **DOI confirmed**:
+  10.1016/j.ejrh.2023.101652. NSE 0.834 vs 0.510 verified. Note: comparison
+  is CNN-LSTM (spatial) vs standalone LSTM (no spatial input), not distributed
+  vs lumped in traditional sense. Caveat added in text.
+- [x] Beck et al. (2024) — xLSTM **confirmed in NeurIPS 2024 proceedings**
+  (poster #96260). Citation updated from arXiv to proceedings.
+- [x] Shams Eddin et al. (2025) — RiverMamba **confirmed accepted at NeurIPS
+  2025** (camera-ready v3, Oct 2025). Not just arXiv preprint.
+- [x] Song et al. (WRR, 2026) — **Published** in WRR vol 62, issue 2, Feb 2026.
+  doi:10.1029/2025WR040414. Not early view.
+- [x] Dehghani et al. (Ecol. Inform., 75, 2023) — single-basin caveat added
+  for NSE 0.98–0.99 claim.
+
+### Previously verified
+- [x] Onof and Wang (HESS, 2020) — BLRP new developments, verified (was "Kaczmarska et al.")
+- [x] Kossieris et al. (J. Hydrol., 2016) — BLRP sub-hourly scheme, DOI verified
+- [x] Harris et al. (JAMES, 2022) — GAN/VAE-GAN on IFS forecasts, DOI verified
+- [x] Mardani et al. (Commun. Earth Environ., 2025) — CorrDiff, DOI verified
+- [x] Terzago et al. (NHESS, 2018) — RainFARM complex orography, verified (was "Rebora et al.")
+- [x] Frontiers in Water (2022) — precipitation uncertainty 50% attribution, DOI verified
+- [x] Li et al. (Int. J. Climatol., 2018) — MOF three resampling approaches, DOI verified
+- [x] Breinl and Di Baldassarre (J. Hydrol. Reg. Stud., 21, 2019) — S-MOF, verified (was "2018")
+- [x] Wang & Karimi (HESS, 28, 2107, 2024) — spatially distributed LSTM, DOI verified
+- [x] Li et al. (J. Hydrol., 620, 2023) — CNN-LSTM Tibetan Plateau, verified (was "Xiang et al.")
+- [x] Anderson & Radic (HESS, 26, 795, 2022) — CNN-LSTM regional hydrology, DOI verified
+- [x] Shi et al. (NeurIPS, 2015) — ConvLSTM original paper, arXiv verified
+- [x] Dehghani et al. (Ecol. Inform., 75, 2023) — ConvLSTM vs CNN-LSTM, verified (was "Hosseiny et al.")
+- [x] Borgel et al. (GMD, 18, 2005, 2025) — ConvLSTM 97 rivers Baltic, DOI verified
+- [x] Pokharel & Roy (J. Hydroinf., 26, 2024) — parsimonious CNN-LSTM, DOI verified
+- [x] Sun et al. (HESS, 26, 5163–5184, 2022) — GNN river network learning, DOI verified (page range corrected)
+
+### Still unverified
 - [ ] GRU hourly study (Earth Science Informatics, 2024) — exact citation
 - [ ] Lechner and Hasani (2020) — ODE-LSTM reference
 - [ ] MR-ACF-TE-LSTM (Scientific Reports, 2026) — verify
 - [ ] BWDformer — verify publication status
 - [ ] Xiang and Demir (2020) — Neural Runoff Model, exact citation
 - [ ] Chandra & Saharia (Earth Sci. Inform., 2024) — MMRC + DBSCAN, verify exact citation
-- [x] Onof and Wang (HESS, 2020) — BLRP new developments, verified (was "Kaczmarska et al.")
-- [x] Kossieris et al. (J. Hydrol., 2016) — BLRP sub-hourly scheme, DOI verified
 - [ ] Beucler et al. (JMLR, 2023) / Geiss & Hardin (AIES, 2023) — hard-constrained DL, verify
-- [x] Harris et al. (JAMES, 2022) — GAN/VAE-GAN on IFS forecasts, DOI verified
 - [ ] Kerrigan et al. (NeurIPS 2024) — STVD, verify
-- [x] Mardani et al. (Commun. Earth Environ., 2025) — CorrDiff, DOI verified
 - [ ] Ficchi et al. (Environ. Model. Softw., 2016) — daily disaggregation for hourly models
-- [x] Terzago et al. (NHESS, 2018) — RainFARM complex orography, verified (was "Rebora et al.")
 - [ ] Wuest et al. — Swiss gridded hourly precipitation, exact citation
-- [x] Frontiers in Water (2022) — precipitation uncertainty 50% attribution, DOI verified
-- [x] Li et al. (Int. J. Climatol., 2018) — MOF three resampling approaches, DOI verified
-- [x] Breinl and Di Baldassarre (J. Hydrol. Reg. Stud., 21, 2019) — S-MOF, verified (was "2018")
 - [ ] Tremblay (2005) — convective/stratiform classification from station data
 - [ ] Putkonen (2004) — Annapurna precipitation transect
 - [ ] Dimri et al. (Atmos. Res., 2024) — elevation-dependent precip Upper Ganga
-- [x] Wang & Karimi (HESS, 28, 2107, 2024) — spatially distributed LSTM, DOI verified
-- [x] Li et al. (J. Hydrol., 620, 2023) — CNN-LSTM Tibetan Plateau, verified (was "Xiang et al.")
 - [ ] Li et al. (J. Hydrol. Reg. Stud., 2023) — CNN-LSTM Yellow River
 - [ ] Loritz et al. (HESS, 25, 147, 2021) — distributed vs lumped precipitation
-- [x] Anderson & Radic (HESS, 26, 795, 2022) — CNN-LSTM regional hydrology, DOI verified
-- [x] Shi et al. (NeurIPS, 2015) — ConvLSTM original paper, arXiv verified
-- [x] Dehghani et al. (Ecol. Inform., 75, 2023) — ConvLSTM vs CNN-LSTM, verified (was "Hosseiny et al.")
-- [x] Borgel et al. (GMD, 18, 2005, 2025) — ConvLSTM 97 rivers Baltic, DOI verified
-- [ ] Hu et al. (J. Hydrol. Reg. Stud., 51, 2024) — CNN-LSTM Yellow River source
-- [x] Pokharel & Roy (J. Hydroinf., 26, 2024) — parsimonious CNN-LSTM, DOI verified
 - [ ] Oddo et al. (Front. Water, 6, 2024) — deep ConvLSTM flash floods
-- [x] Sun et al. (HESS, 26, 5163–5184, 2022) — GNN river network learning, DOI verified (page range corrected)
 - [ ] Sadler et al. (WRR, 58, 2022) — multi-task streamflow + temperature
