@@ -7,8 +7,8 @@ if TYPE_CHECKING:
     from uuid import UUID
 
     from sapphire_flow.types.datetime import UtcDatetime
-    from sapphire_flow.types.enums import AlertSource, AlertStatus
-    from sapphire_flow.types.ids import AlertId, StationId
+    from sapphire_flow.types.enums import AlertModelStrategy, AlertSource, AlertStatus
+    from sapphire_flow.types.ids import AlertId, ModelId, StationId
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -27,3 +27,5 @@ class Alert:
     first_detected_at: UtcDatetime | None
     notified_at: UtcDatetime | None
     created_at: UtcDatetime
+    model_ids: tuple[ModelId, ...] = ()
+    alert_model_strategy: AlertModelStrategy | None = None

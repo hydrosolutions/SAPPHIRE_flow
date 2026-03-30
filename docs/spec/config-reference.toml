@@ -42,6 +42,12 @@ enable_observation_alerts = false           # v0: off by default; gates Flow 2 s
 enable_pipeline_alerts = false              # v0: off by default; gates Flow 4 steps 4.6-4.7
 threshold_check_mode = "raw"               # v0: raw only (no published forecasts)
 
+# --- Multi-model alert strategy ---
+# Source: types-and-protocols.md § DeploymentConfig, plan 010
+alert_model_strategy = "primary"          # "primary"|"pooled"|"bma"|"consensus"
+min_operational_ensemble_size = 20        # minimum members for ensemble forecasts
+min_operational_quantile_levels = 7       # minimum quantile levels (must be >= 7)
+
 # --- Warm-up state (conceptual models) ---
 # Source: types-and-protocols.md § DeploymentConfig
 warm_up_snapshot_max_age_hours = 48.0       # default max age for warm-up snapshot

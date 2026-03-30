@@ -86,6 +86,13 @@ class ThresholdDirection(Enum):
     BELOW = "below"
 
 
+class AlertModelStrategy(Enum):
+    PRIMARY = "primary"
+    POOLED = "pooled"
+    BMA = "bma"
+    CONSENSUS = "consensus"
+
+
 class RegulationType(Enum):
     UNREGULATED = "unregulated"
     RESERVOIR = "reservoir"

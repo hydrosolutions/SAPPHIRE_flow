@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from datetime import timedelta
 
     from sapphire_flow.types.datetime import UtcDatetime
-    from sapphire_flow.types.ids import StationId
+    from sapphire_flow.types.ids import ModelId, StationId
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -24,6 +24,17 @@ class ForecastEnsemble:
     units: str
     forecast_horizon_steps: int
     time_step: timedelta
+    model_id: ModelId | None = None
+
+    @property
+    def member_count(self) -> int:
+        match self.representation:
+            case EnsembleRepresentation.MEMBERS:
+                return self.values["member_id"].n_unique()
+            case EnsembleRepresentation.QUANTILES:
+                return self.values["quantile"].n_unique()
+            case _:
+                raise ValueError(f"Unknown representation: {self.representation}")
 
     @classmethod
     def from_members(
@@ -34,6 +45,7 @@ class ForecastEnsemble:
         units: str,
         time_step: timedelta,
         values: pl.DataFrame,
+        model_id: ModelId | None = None,
     ) -> ForecastEnsemble:
         if "member_id" not in values.columns:
             raise ValueError("members DataFrame must have 'member_id' column")
@@ -58,6 +70,7 @@ class ForecastEnsemble:
             units=units,
             forecast_horizon_steps=horizon,
             time_step=time_step,
+            model_id=model_id,
         )
 
     @classmethod
@@ -69,6 +82,7 @@ class ForecastEnsemble:
         units: str,
         time_step: timedelta,
         values: pl.DataFrame,
+        model_id: ModelId | None = None,
     ) -> ForecastEnsemble:
         if "quantile" not in values.columns:
             raise ValueError("quantiles DataFrame must have 'quantile' column")
@@ -100,4 +114,5 @@ class ForecastEnsemble:
             units=units,
             forecast_horizon_steps=horizon,
             time_step=time_step,
+            model_id=model_id,
         )

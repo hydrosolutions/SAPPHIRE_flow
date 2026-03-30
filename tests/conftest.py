@@ -220,6 +220,7 @@ def make_forecast_ensemble(
     n_steps: int = 120,
     parameter: str = "discharge",
     rng: random.Random | None = None,
+    model_id: ModelId | None = None,
 ) -> ForecastEnsemble:
     from sapphire_flow.types.ensemble import ForecastEnsemble
 
@@ -249,6 +250,7 @@ def make_forecast_ensemble(
             units="m3/s",
             time_step=time_step,
             values=df,
+            model_id=model_id,
         )
     else:
         quantile_levels = [0.02, 0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95, 0.98]
@@ -271,6 +273,7 @@ def make_forecast_ensemble(
             units="m3/s",
             time_step=time_step,
             values=df,
+            model_id=model_id,
         )
 
 
@@ -309,6 +312,8 @@ def make_alert(
         first_detected_at=None,
         notified_at=None,
         created_at=_EPOCH,
+        model_ids=(),
+        alert_model_strategy=None,
     )
 
 

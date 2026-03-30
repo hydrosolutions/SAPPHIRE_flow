@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Literal
 
 from sapphire_flow.types.enums import (
     AggregationMethod,
+    AlertModelStrategy,
     ParameterDomain,
     QcStatus,
     ThresholdDirection,
@@ -14,7 +15,7 @@ from sapphire_flow.types.enums import (
 
 if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
-    from sapphire_flow.types.ids import StationId
+    from sapphire_flow.types.ids import ModelId, StationId
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -184,6 +185,8 @@ class ExceedanceResult:
     exceedance_probability: float | None
     observed_value: float | None
     exceeded: bool
+    model_ids: tuple[ModelId, ...] = ()
+    strategy: AlertModelStrategy = AlertModelStrategy.PRIMARY
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

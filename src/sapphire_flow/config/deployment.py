@@ -6,7 +6,7 @@ import tomllib
 from datetime import timedelta
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 from sapphire_flow.types.domain import (
     DangerLevelDefinition,
@@ -14,7 +14,7 @@ from sapphire_flow.types.domain import (
     SkillInterpretationBand,
     SkillInterpretationScheme,
 )
-from sapphire_flow.types.enums import ThresholdDirection
+from sapphire_flow.types.enums import AlertModelStrategy, ThresholdDirection
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -72,6 +72,10 @@ class DeploymentConfig(BaseModel):
     enable_pipeline_alerts: bool = False
     threshold_check_mode: Literal["raw", "published", "both"] = "raw"
 
+    alert_model_strategy: AlertModelStrategy = AlertModelStrategy.PRIMARY
+    min_operational_ensemble_size: int = 20
+    min_operational_quantile_levels: int = 7
+
     infer_missing_thresholds: bool = False
 
     min_skill_samples: int = 100
@@ -81,6 +85,28 @@ class DeploymentConfig(BaseModel):
     calendar: Literal["gregorian", "bikram_sambat"] = "gregorian"
 
     paths_data_dir: str | None = None
+
+    @field_validator("min_operational_ensemble_size")
+    @classmethod
+    def _validate_min_ensemble_size(cls, v: int) -> int:
+        if v < 1:
+            from sapphire_flow.exceptions import ConfigurationError
+
+            raise ConfigurationError(
+                f"min_operational_ensemble_size must be >= 1, got {v}"
+            )
+        return v
+
+    @field_validator("min_operational_quantile_levels")
+    @classmethod
+    def _validate_min_quantile_levels(cls, v: int) -> int:
+        if v < 7:
+            from sapphire_flow.exceptions import ConfigurationError
+
+            raise ConfigurationError(
+                f"min_operational_quantile_levels must be >= 7, got {v}"
+            )
+        return v
 
     @model_validator(mode="after")
     def _validate_retention(self) -> DeploymentConfig:

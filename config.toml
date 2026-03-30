@@ -18,6 +18,9 @@ enable_forecast_alerts = false
 enable_observation_alerts = false
 enable_pipeline_alerts = false
 threshold_check_mode = "raw"
+alert_model_strategy = "primary"
+min_operational_ensemble_size = 20
+min_operational_quantile_levels = 7
 
 # Warm-up state (conceptual models)
 warm_up_snapshot_max_age_hours = 48.0

@@ -992,6 +992,8 @@ alerts = sa.Table(
     sa.Column("resolved_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("first_detected_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("notified_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("model_ids", JSONB, nullable=False, server_default=sa.text("'[]'::jsonb")),
+    sa.Column("alert_model_strategy", sa.Text, nullable=True),
     sa.Column(
         "created_at",
         sa.DateTime(timezone=True),
