@@ -139,6 +139,13 @@ class TestBasicHindcast:
 
 
 class TestNoFutureLeakage:
+    """Observations must never contain data at or beyond issue_time (target leakage).
+
+    Forcing legitimately extends beyond issue_time — reanalysis serves as teacher
+    forcing in hindcast (v0-scope §A13). Forcing must stay within the full window:
+    [lookback_start, horizon_end).
+    """
+
     def test_inputs_contain_only_past_data(self) -> None:
         rng = random.Random(0)
         station = make_station_config()
@@ -159,6 +166,9 @@ class TestNoFutureLeakage:
         data_start = ensure_utc(datetime(2021, 1, 1, tzinfo=UTC))
         _seed_observations(obs_store, sid, data_start, n_days=400)
         _seed_forcing(forcing_source, sid, data_start, n_days=400)
+
+        forecast_horizon_steps = 5
+        lookback_steps = 720
 
         class RecordingModel:
             artifact_scope = FakeStationForecastModel.artifact_scope
@@ -204,12 +214,19 @@ class TestNoFutureLeakage:
             clock=_fixed_clock,
             rng=rng,
             hindcast_run_id=run_id,
-            forecast_horizon_steps=5,
+            forecast_horizon_steps=forecast_horizon_steps,
+            lookback_steps=lookback_steps,
         )
 
         assert len(recording.calls) == 5, "expected predict called once per issue_time"
 
         for issue_time, inputs in recording.calls:
+            lookback_start = ensure_utc(issue_time - lookback_steps * _STEP)
+            horizon_end = ensure_utc(
+                issue_time + forecast_horizon_steps * _STEP
+            )
+
+            # Observations: must not contain data at or beyond issue_time
             obs_timestamps = inputs.observations["timestamp"].to_list()
             for ts in obs_timestamps:
                 assert ts < issue_time, (
@@ -217,11 +234,14 @@ class TestNoFutureLeakage:
                     "future leakage detected"
                 )
 
+            # Forcing: covers [lookback_start, horizon_end) — teacher forcing
             forcing_timestamps = inputs.forcing["timestamp"].to_list()
             for ts in forcing_timestamps:
-                assert ts < issue_time, (
-                    f"forcing timestamp {ts} >= issue_time {issue_time}: "
-                    "future leakage detected"
+                assert ts >= lookback_start, (
+                    f"forcing timestamp {ts} < lookback_start {lookback_start}"
+                )
+                assert ts < horizon_end, (
+                    f"forcing timestamp {ts} >= horizon_end {horizon_end}"
                 )
 
 

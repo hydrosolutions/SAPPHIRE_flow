@@ -89,12 +89,15 @@ def _assemble_hindcast_inputs(
     parameter: str = "discharge",
 ) -> ModelInputs | None:
     lookback_start = ensure_utc(issue_time - lookback_steps * time_step)
+    horizon_end = ensure_utc(issue_time + forecast_horizon_steps * time_step)
 
-    # NO-FUTURE-LEAKAGE: end=issue_time, not issue_time + horizon
+    # Observations end at issue_time (no target leakage).
+    # Forcing extends through the forecast horizon: reanalysis serves as
+    # teacher forcing in hindcast (v0-scope §A13).
     raw_forcing = forcing_source.fetch_reanalysis(
         station_configs=weather_sources,
         start=lookback_start,
-        end=issue_time,
+        end=horizon_end,
         parameters=required_features,
     )
 
@@ -206,6 +209,11 @@ def run_station_hindcast(
                 )
                 continue
 
+            # GUARDRAIL: inputs.forcing now contains rows beyond issue_time
+            # (reanalysis teacher forcing — v0-scope §A13). Station models MUST NOT
+            # read raw forcing rows past the issue_time boundary. This is enforced
+            # structurally once ModelInputs → StationInputData alignment lands
+            # (plan 008, Open Item 1).
             ensembles, _ = model.predict(
                 artifact=artifact,
                 inputs=inputs,
