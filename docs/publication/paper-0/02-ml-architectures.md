@@ -180,12 +180,13 @@ https://proceedings.neurips.cc/paper_files/paper/2024/hash/c2ce2f2701c10a2b2f2ea
 
 ### Other RNN Variants
 
-- **GRU**: Trains faster, comparable accuracy. A 2024 study (Earth Science
-  Informatics) showed GRU achieving NSE ~0.96–0.98 at 1-hour lead times in NW
-  Spain. The hydrology community has standardised on LSTM partly due to the
+- **GRU**: Trains faster, comparable accuracy. Farfan-Duran & Cea (Earth Sci.
+  Inform., 17, 5289–5315, 2024, doi:10.1007/s12145-024-01454-9) showed GRU
+  achieving NSE ~0.96–0.98 at 1-hour lead times in NW Spain. The hydrology community has standardised on LSTM partly due to the
   NeuralHydrology ecosystem.
 - **ODE-LSTM**: Continuous-time LSTM using neural ODE solvers for irregular
-  time series. Available in NeuralHydrology. (Lechner and Hasani, 2020.)
+  time series. Available in NeuralHydrology. (Lechner and Hasani, NeurIPS,
+  2020, arXiv:2006.04418.)
 
 ---
 
@@ -425,8 +426,8 @@ and decouples the two problems (temporal downscaling vs rainfall-runoff).
 precipitation from coarse to fine scales by multiplying by random weights at
 each cascade level. Microcanonical variants conserve mass exactly at each
 scale. Recent hybrids combining MMRC with clustering (k-means, DBSCAN) improve
-extreme event representation (Chandra & Saharia, Earth Sci. Inform., 2024,
-doi:10.1007/s12145-024-01309-3). Limitation: tends to overstate extreme
+extreme event representation (Chowdhury & Saha, Earth Sci. Inform., 17(4),
+2024, doi:10.1007/s12145-024-01309-3). Limitation: tends to overstate extreme
 precipitation due to predefined classification assumptions.
 
 **Bartlett-Lewis Rectangular Pulse (BLRP)**: Poisson-cluster-process-based
@@ -473,7 +474,9 @@ Pessenteiner (HESS, 25, 3207–3225, 2021, doi:10.5194/hess-25-3207-2021).
 UNet-based downscaler with spatio-temporal factorised attention, plus a
 conditional video diffusion model that captures residual stochastic details.
 Diffusion models avoid GAN mode collapse and capture multimodal distributions
-more reliably. Tested on FV3GFS output. (Kerrigan et al., NeurIPS 2024.)
+more reliably. Tested on FV3GFS output. (Srivastava, Yang, Kerrigan,
+Dresdner, McGibbon, Bretherton, and Mandt, NeurIPS 2024,
+arXiv:2312.06071.)
 
 **Residual Corrective Diffusion (CorrDiff)**: UNet predicts the mean, then a
 corrector diffusion model predicts the stochastic residual. Downscales 25 km
@@ -485,8 +488,9 @@ doi:10.1038/s43247-025-02042-5.)
 (Scaled Additive Constraint Layer, Multiplicative Constraint Layer) that
 **guarantee mass/energy conservation** between low-resolution and
 high-resolution outputs. Can be applied to any CNN/UNet/GAN generator.
-(Beucler et al., JMLR, 24, 2023; Geiss & Hardin, Artif. Intell. Earth Syst.,
-2(1), 2023.)
+(Harder, Hernandez-Garcia, Ramesh, Yang, Sattegeri, Szwarcman, Watson, and
+Rolnick, JMLR, 24(365), 2023; Geiss & Hardin, Artif. Intell. Earth Syst.,
+2(1), doi:10.1175/AIES-D-21-0012.1, 2023.)
 
 **GAN/VAE-GAN on NWP forecasts**: Harris et al. (2022) downscaled IFS
 (ECMWF) hourly forecasts to high-resolution NIMROD radar over UK — one of the
@@ -558,14 +562,15 @@ hourly ICON input and outputs hourly streamflow.
   surfaces, very small catchments (<10 km²), flash flood events.
 - **Hourly is sufficient for**: meso-scale catchments (100–1000 km²) typical
   of BAFU stations, where the catchment itself acts as a temporal smoother.
-- Ficchi et al. (2016, Environ. Model. Softw.) showed that simple
-  disaggregation of daily rainfall produces hourly streamflow models that
-  perform almost as well as those developed from hourly data — suggesting
-  hydrological models are robust to precipitation timing errors.
-- Impact of temporal resolution on 2400 flood events (J. Hydrol., 2016,
-  doi:[10.1016/j.jhydrol.2016.04.016](https://doi.org/10.1016/j.jhydrol.2016.04.016)): hourly outperforms daily for up to
-  4-day lead times, but **marginal benefit of going finer than hourly is small
-  and catchment-dependent**.
+- Ficchì, Perrin, and Andréassian (J. Hydrol., 538, 454–470, 2016,
+  doi:10.1016/j.jhydrol.2016.04.016) analysed the impact of temporal resolution
+  on 2400 flood events across 240 catchments: hourly outperforms daily for up
+  to 4-day lead times, but **marginal benefit of going finer than hourly is
+  small and catchment-dependent**. Their follow-up (J. Hydrol., 575, 1308–1327,
+  2019, doi:10.1016/j.jhydrol.2019.05.084) showed that flux-matching
+  disaggregation of daily models to sub-daily time steps produces performance
+  approaching native sub-daily calibration — suggesting hydrological models are
+  robust to precipitation timing errors.
 
 ### Swiss/Alpine-specific considerations
 
@@ -576,9 +581,11 @@ hourly ICON input and outputs hourly streamflow.
   resolution. For 0–6 h lead times, blending radar nowcasts (genuine
   sub-hourly information) with NWP via STEPS-like approaches (pysteps) is
   preferable to fabricating sub-hourly NWP patterns.
-- Wuest et al. developed gridded hourly Swiss precipitation by disaggregating
-  daily gauge analyses using hourly radar patterns — errors below 25% on the
-  Swiss Plateau but larger in Alpine valleys due to radar shielding.
+- Wüest, Frei, Altenhoff, Hagen, Litschi, and Schär (Int. J. Climatol., 30,
+  1764–1775, 2010, doi:10.1002/joc.2025) developed gridded hourly Swiss
+  precipitation by disaggregating daily gauge analyses using hourly radar
+  patterns — errors below 25% on the Swiss Plateau but larger in Alpine
+  valleys due to radar shielding.
 - The GWEX-MRC weather generator combines daily stochastic generation with
   MMRC disaggregation for sub-daily resolution in Switzerland, with parameters
   spatially interpolated using kriging with elevation — designed for climate
@@ -616,8 +623,9 @@ monsoon has distinct regimes detectable from station covariates:
 
 Classification from 10-min intensity variance, temperature, and time of day
 can select appropriate fragment templates (peaked/intermittent for convective;
-smooth/continuous for stratiform). Tremblay (2005) successfully classified ~95%
-of 6-hour amounts into convective/stratiform using weather state and cloud type.
+smooth/continuous for stratiform). Tremblay (J. Atmos. Sci., 62, 1513–1528,
+2005, doi:10.1175/JAS3411.1) successfully classified ~95% of 6-hour amounts
+into convective/stratiform using weather state and cloud type.
 
 **Real-time blending for short lead times**: The system already ingests
 real-time 10-min station data. A simple operational blending scheme:
@@ -648,8 +656,9 @@ non-linear with a mid-elevation maximum:
 | High Himalaya (>3,500 m) | Rapidly decreasing | Moisture depleted |
 | Trans-Himalaya | 200–500 mm | Rain shadow |
 
-(Putkonen, 2004: Annapurna transect peaks at 5,032 mm/yr at ~3,000 m, drops
-to ~1,100 mm/yr north of the crest.)
+(Putkonen, Arct. Antarct. Alp. Res., 36(2), 244–248, 2004,
+doi:10.1657/1523-0430(2004)036[0244:CSARDA]2.0.CO;2: Annapurna transect peaks
+at 5,032 mm/yr at ~3,000 m, drops to ~1,100 mm/yr north of the crest.)
 
 A single basin-average value destroys the elevation signal, which controls:
 
@@ -682,8 +691,8 @@ Averaging these cells erases the elevation gradient entirely.
    temporal sequence. Wang & Karimi (HESS, 28, 2107, 2024) showed that
    **LSTM trained on spatially distributed rainfall significantly outperformed
    basin-averaged LSTM**. Li et al. (J. Hydrol., 2023) achieved NSE
-   0.79–0.92 with CNN-LSTM on Tibetan Plateau mountain basins. Li et al.
-   (J. Hydrol. Reg. Stud., 2023) found CNN-LSTM improved in 66% of basins
+   0.79–0.92 with CNN-LSTM on Tibetan Plateau mountain basins. Pokharel &
+   Roy (J. Hydroinf., 2024) found CNN-LSTM improved in 66% of basins (21/32)
    over standalone LSTM.
 
 For Paper 0's scope, elevation-band extraction is the pragmatic choice —
@@ -958,21 +967,64 @@ Updated 2026-03-30 via CRAAB review.
 - [x] Pokharel & Roy (J. Hydroinf., 26, 2024) — parsimonious CNN-LSTM, DOI verified
 - [x] Sun et al. (HESS, 26, 5163–5184, 2022) — GNN river network learning, DOI verified (page range corrected)
 
+### Verified during CRAAB review (2026-03-30, round 2)
+- [x] GRU hourly study — **Identified**: Farfan-Duran & Cea, Earth Sci.
+  Inform., 17, 5289–5315, 2024, doi:10.1007/s12145-024-01454-9. GRU NSE
+  0.96–0.98 at 1-h lead in NW Spain. Citation updated in text.
+- [x] Lechner and Hasani (2020) — **Confirmed** NeurIPS 2020 spotlight,
+  arXiv:2006.04418. Citation updated in text.
+- [x] MR-ACF-TE-LSTM — **Identified**: Apak, Kilinc, Yurtsever, Haznedar, and
+  Ozkan, Scientific Reports, 16(1), 10149, 2026,
+  doi:10.1038/s41598-026-40713-1. Published Feb 2026.
+- [x] BWDformer — **Identified**: Xu, Zeng, Wang, Zhang, Wang, and Zang,
+  Scientific Reports, 15, 2025, doi:10.1038/s41598-025-21007-4. Informer-based
+  with wavelet decomposition. Published 2025, not 2026.
+- [x] Xiang and Demir (2020) — **Two papers**: (a) Xiang, Yan, and Demir, WRR,
+  56(1), e2019WR025326, 2020 (seq2seq foundation); (b) Xiang and Demir,
+  Environ. Model. Softw., 131, 104761, 2020 (Neural Runoff Model, 125 Iowa
+  stations). Paper (b) is the "NRM" reference.
+- [x] Chandra & Saharia — **CORRECTED**: Authors are Chowdhury & Saha (not
+  Chandra & Saharia). DOI 10.1007/s12145-024-01309-3 confirmed. Citation
+  corrected in text.
+- [x] Beucler et al. (JMLR, 2023) — **CORRECTED**: Paper is by Harder,
+  Hernandez-Garcia, Ramesh et al., JMLR 24(365), 2023 (not Beucler). Beucler's
+  constraint paper is Phys. Rev. Lett., 126, 098302, 2021. Citation corrected.
+  Geiss & Hardin (AIES, 2(1), 2023) confirmed, doi:10.1175/AIES-D-21-0012.1.
+- [x] Kerrigan et al. (NeurIPS 2024) — **CORRECTED**: First author is
+  Srivastava (Kerrigan is 3rd author). Full: Srivastava, Yang, Kerrigan,
+  Dresdner, McGibbon, Bretherton, and Mandt, NeurIPS 2024, arXiv:2312.06071.
+  Title: "Precipitation Downscaling with Spatiotemporal Video Diffusion."
+  Citation corrected in text.
+- [x] Ficchi et al. — **CORRECTED**: Journal is J. Hydrol. (not Environ. Model.
+  Softw.). Two papers: (a) Ficchì et al., J. Hydrol., 538, 454–470, 2016,
+  doi:10.1016/j.jhydrol.2016.04.016 (temporal resolution impact); (b) Ficchì
+  et al., J. Hydrol., 575, 1308–1327, 2019, doi:10.1016/j.jhydrol.2019.05.084
+  (flux-matching disaggregation). Both now cited in text.
+- [x] Wüest et al. — **Identified**: Wüest, Frei, Altenhoff, Hagen, Litschi,
+  and Schär, Int. J. Climatol., 30, 1764–1775, 2010, doi:10.1002/joc.2025.
+  Citation updated in text.
+- [x] Tremblay (2005) — **DOI confirmed**: 10.1175/JAS3411.1. J. Atmos. Sci.,
+  62(5), 1513–1528. Citation updated in text.
+- [x] Putkonen (2004) — **DOI confirmed**:
+  10.1657/1523-0430(2004)036[0244:CSARDA]2.0.CO;2. Arct. Antarct. Alp. Res.,
+  36(2), 244–248. Citation updated in text.
+- [x] Loritz et al. (HESS, 25, 147, 2021) — **DOI confirmed**:
+  10.5194/hess-25-147-2021. Title: "The role and value of distributed
+  precipitation data in hydrological models."
+- [x] Oddo et al. (Front. Water, 6, 2024) — **DOI confirmed**:
+  10.3389/frwa.2024.1346104. Authors: Oddo, Bolten, Kumar, and Cleary (NASA
+  GSFC). Deep ConvLSTM for flash flood prediction.
+- [x] Sadler et al. (WRR, 58, 2022) — **DOI confirmed**:
+  10.1029/2021WR030138. Authors: Sadler, Appling, Read, Oliver, Jia, Zwart,
+  and Kumar. Multi-task deep learning of streamflow + water temperature.
+
 ### Still unverified
-- [ ] GRU hourly study (Earth Science Informatics, 2024) — exact citation
-- [ ] Lechner and Hasani (2020) — ODE-LSTM reference
-- [ ] MR-ACF-TE-LSTM (Scientific Reports, 2026) — verify
-- [ ] BWDformer — verify publication status
-- [ ] Xiang and Demir (2020) — Neural Runoff Model, exact citation
-- [ ] Chandra & Saharia (Earth Sci. Inform., 2024) — MMRC + DBSCAN, verify exact citation
-- [ ] Beucler et al. (JMLR, 2023) / Geiss & Hardin (AIES, 2023) — hard-constrained DL, verify
-- [ ] Kerrigan et al. (NeurIPS 2024) — STVD, verify
-- [ ] Ficchi et al. (Environ. Model. Softw., 2016) — daily disaggregation for hourly models
-- [ ] Wuest et al. — Swiss gridded hourly precipitation, exact citation
-- [ ] Tremblay (2005) — convective/stratiform classification from station data
-- [ ] Putkonen (2004) — Annapurna precipitation transect
-- [ ] Dimri et al. (Atmos. Res., 2024) — elevation-dependent precip Upper Ganga
-- [ ] Li et al. (J. Hydrol. Reg. Stud., 2023) — CNN-LSTM Yellow River
-- [ ] Loritz et al. (HESS, 25, 147, 2021) — distributed vs lumped precipitation
-- [ ] Oddo et al. (Front. Water, 6, 2024) — deep ConvLSTM flash floods
-- [ ] Sadler et al. (WRR, 58, 2022) — multi-task streamflow + temperature
+- [ ] Dimri et al. (Atmos. Res., 2024) — elevation-dependent precip Upper Ganga.
+  A.P. Dimri (JNU) is a known Himalayan meteorology researcher; paper is
+  plausible but DOI could not be confirmed via web search. **Manual
+  verification required before publication.**
+- [ ] Li et al. (J. Hydrol. Reg. Stud., 2023) — CNN-LSTM Yellow River. **Likely
+  does not exist as described.** Extensive search found no matching paper. The
+  "66% of basins" finding may conflate Pokharel & Roy (2024, 21/32 Nebraska
+  basins) with the Yellow River CNN-LSTM topic from Hu et al. (2024). **Remove
+  or replace before publication.**
