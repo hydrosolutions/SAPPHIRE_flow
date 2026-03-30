@@ -712,3 +712,88 @@ class TestEmptyEnsembleDict:
 
         assert all(r.success for r in results)
         assert len(hindcast_store._hindcasts) == 0
+
+
+class TestGroupHindcastUsesGroupModelInputs:
+    def test_predict_batch_receives_group_model_inputs(self) -> None:
+        from sapphire_flow.types.model import GroupModelInputs
+        from tests.fakes.fake_models import FakeGroupForecastModel
+
+        rng = random.Random(42)
+        station_a = make_station_config(
+            station_id=StationId(uuid4()), code="R-001", name="Recording A",
+        )
+        station_b = make_station_config(
+            station_id=StationId(uuid4()), code="R-002", name="Recording B",
+        )
+        sid_a = station_a.id
+        sid_b = station_b.id
+        model_id = ModelId("recording_group_model")
+        artifact_id = ArtifactId(uuid4())
+        run_id = uuid4()
+
+        obs_store = FakeObservationStore()
+        hindcast_store = FakeHindcastStore()
+        station_store = FakeStationStore()
+        basin_store = FakeBasinStore()
+        forcing_source = FakeWeatherReanalysisSource()
+
+        for st in (station_a, station_b):
+            station_store.store_station(st)
+            station_store.store_weather_source(_make_weather_source(st.id))
+
+        data_start = ensure_utc(datetime(2021, 1, 1, tzinfo=UTC))
+        all_forcing: list = []
+        for i, sid in enumerate((sid_a, sid_b)):
+            obs = make_observations(
+                n=400 * 24,
+                station_id=sid,
+                start=data_start,
+                interval=timedelta(hours=1),
+                rng=random.Random(100 + i),
+            )
+            obs_store.store_observations(obs)
+            _seed_forcing(forcing_source, sid, data_start, n_days=400)
+            all_forcing.extend(forcing_source._records)
+        forcing_source._records = all_forcing
+
+        group = StationGroup(
+            id=StationGroupId(uuid4()),
+            name="recording-group",
+            station_ids=frozenset({sid_a, sid_b}),
+            created_at=_fixed_clock(),
+        )
+
+        class RecordingGroupModel(FakeGroupForecastModel):
+            def __init__(self) -> None:
+                super().__init__()
+                self.last_inputs: GroupModelInputs | None = None
+
+            def predict_batch(self, artifact, inputs, rng):  # type: ignore[override]
+                self.last_inputs = inputs
+                return super().predict_batch(artifact, inputs, rng)
+
+        recording = RecordingGroupModel()
+
+        run_group_hindcast(
+            model=recording,
+            artifact=b"artifact",
+            group=group,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            period_start=_PERIOD_START,
+            period_end=_PERIOD_END,
+            time_step=_STEP,
+            forcing_source=forcing_source,
+            obs_store=obs_store,
+            hindcast_store=hindcast_store,
+            station_store=station_store,
+            basin_store=basin_store,
+            clock=_fixed_clock,
+            rng=rng,
+            hindcast_run_id=run_id,
+            forecast_horizon_steps=5,
+        )
+
+        assert recording.last_inputs is not None
+        assert isinstance(recording.last_inputs, GroupModelInputs)

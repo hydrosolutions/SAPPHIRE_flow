@@ -198,7 +198,11 @@ def stack_model_inputs(
         past_targets=_reorder_station_id_first(pl.concat(past_targets_parts)),
         past_dynamic=_reorder_station_id_first(pl.concat(past_dynamic_parts)),
         future_dynamic=_reorder_station_id_first(pl.concat(future_dynamic_parts)),
-        static=_reorder_station_id_first(pl.concat(static_parts)) if static_parts else None,
+        static=(
+            _reorder_station_id_first(pl.concat(static_parts))
+            if static_parts
+            else None
+        ),
         issue_time=first.issue_time,
         forecast_horizon_steps=first.forecast_horizon_steps,
         time_step=first.time_step,
