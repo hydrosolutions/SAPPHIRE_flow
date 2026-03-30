@@ -102,6 +102,9 @@ class StationKind(Enum):
 class ParameterDomain(Enum):
     RIVER = "river"
     WEATHER = "weather"
+    WATER_QUALITY = "water_quality"
+    GROUNDWATER = "groundwater"
+    SOIL = "soil"
 
 
 class AggregationMethod(Enum):

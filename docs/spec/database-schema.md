@@ -27,7 +27,7 @@ erDiagram
         TEXT name PK "canonical name"
         TEXT display_name
         TEXT unit
-        TEXT parameter_domain "river | weather"
+        TEXT parameter_domain "river | weather | water_quality | groundwater | soil"
         TEXT aggregation_method "sum | mean"
         TIMESTAMPTZ created_at
     }
@@ -451,7 +451,7 @@ erDiagram
         TEXT name PK "canonical name"
         TEXT display_name
         TEXT unit
-        TEXT parameter_domain "river | weather"
+        TEXT parameter_domain "river | weather | water_quality | groundwater | soil"
         TEXT aggregation_method "sum | mean"
         TIMESTAMPTZ created_at
     }

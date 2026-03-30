@@ -390,7 +390,7 @@ All status/enum columns store TEXT matching the Python enum `.value` (lowercase)
 | `DangerLevelDefinition.direction` / `ThresholdDirection` | `above`, `below` | — | v0+v1 |
 | `stations.regulation_type` / `RegulationType` | `unregulated`, `reservoir`, `irrigation_diversion`, `run_of_river_hydro` | — | v0+v1 |
 | `stations.station_status` / `StationStatus` | `onboarding`, `operational`, `suspended`, `decommissioned` | `decommissioned` | v0+v1 |
-| `parameters.parameter_domain` / `ParameterDomain` | `river`, `weather` | — | v0+v1 |
+| `parameters.parameter_domain` / `ParameterDomain` | `river`, `weather`, `water_quality`, `groundwater`, `soil` | — | v0+v1 |
 | `parameters.aggregation_method` / `AggregationMethod` | `sum`, `mean` | — | v0+v1 |
 | `stations.station_kind` / `StationKind` | `weather`, `river`, `lake` | — | v0+v1 |
 | `pipeline_health.status` / `PipelineHealthStatus` | `ok`, `warning`, `critical` | — | v0+v1 |
