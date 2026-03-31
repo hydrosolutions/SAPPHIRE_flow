@@ -458,7 +458,7 @@ Key principles:
 
 ## I. v1 compatibility risks
 
-v0 is deliberately scoped down from `architecture-context.md`. The Protocol-first architecture makes most v1 additions purely additive (partitioning, PgBouncer, dashboard, notifications, forecast adjustments, Bikram Sambat calendar). Two areas require active guarding during v0 implementation to avoid dead ends:
+v0 is deliberately scoped down from `architecture-context.md`. The Protocol-first architecture makes most v1 additions purely additive (partitioning, PgBouncer, dashboard, notifications, forecast adjustments, Bikram Sambat calendar). Four areas require active guarding during v0 implementation to avoid dead ends:
 
 ### I1. Keep spatial type unions in service signatures
 
@@ -477,6 +477,16 @@ v0 uses SMN station observations for ML model lookback windows (resolved — see
 `ModelAssignment.priority` is extended in v0 from "fallback order" to also mean "alert-selection priority" (whose ensemble drives alerts when all models succeed). These semantics are consistent today (priority 0 = run first = use for alerts) but could diverge in v1 if a fast-but-less-accurate model gets priority 0 for fallback speed but should not drive alert decisions.
 
 **v1 action:** Add `alert_priority: int | None` to `ModelAssignment` (and `group_model_assignments`). When set, overrides `priority` for alert selection. When NULL, falls back to `priority`. This is an additive, nullable column — safe migration on small data.
+
+### I4. Keep `future_dynamic` extensible for ensemble-aware models
+
+v0 models receive NWP forcing as a 2D DataFrame in the `future_dynamic` slot of `ModelInputs` (timesteps × features). For NWP ensemble propagation (Paradigm A), the flow runs N forward passes through the same model — one per NWP member. This works but precludes **permutation-invariant ensemble processing** (Hohlein et al., AIES 2024), where the model ingests all NWP members simultaneously and learns inter-member relationships (e.g. ensemble agreement as a signal for forecast confidence).
+
+Permutation-invariant processing requires `future_dynamic` to carry a member dimension (members × timesteps × features) — a 3D tensor. If `prepare_model_inputs()` or `ModelInputs` is locked to 2D DataFrames, adding this later requires rework across input preparation, training data assembly, and model Protocols.
+
+**Rule**: Do not add validation that rejects a `member_id` column in `future_dynamic`. When ensemble-aware models are introduced (v0b+ or v1), `ModelDataRequirements` gains an `ensemble_input: bool` field; input preparation passes raw NWP members when `True`, collapsed statistics when `False`. This is an additive change — but only if v0 doesn't accidentally close the door.
+
+**Context**: Paper 0 lit review (§3.7) confirms no ML streamflow model has used permutation-invariant NWP input yet — Hohlein et al. demonstrated it for weather post-processing only. This is a research opportunity, not an immediate need.
 
 ### Not risks (safe to defer)
 
