@@ -144,6 +144,12 @@ class ThresholdDirection(Enum):
     ABOVE = "above"  # alert when value > threshold (flood)
     BELOW = "below"  # alert when value < threshold (low-flow)
 
+class AlertModelStrategy(Enum):
+    PRIMARY = "primary"      # highest-priority model only
+    POOLED = "pooled"        # grand ensemble from all models
+    BMA = "bma"              # Bayesian Model Averaging (skill-weighted)
+    CONSENSUS = "consensus"  # per-model threshold check, then vote
+
 class RegulationType(Enum):
     UNREGULATED = "unregulated"
     RESERVOIR = "reservoir"
@@ -286,6 +292,18 @@ class OnboardingOutcome(Enum):                           # in-memory only, no DB
     FAILED_SKILL = "failed_skill"
     FAILED_ASSIGNMENT = "failed_assignment"
 ```
+
+---
+
+## Type aliases
+
+```python
+from typing import Literal
+
+ForecastParameter = Literal["discharge", "water_level"]
+```
+
+Module: `types/enums.py`
 
 ---
 
@@ -614,6 +632,8 @@ class ExceedanceResult:
     exceedance_probability: float | None  # P(forecast crosses threshold in configured direction), NULL for observation alerts
     observed_value: float | None   # observed value, NULL for forecast alerts
     exceeded: bool                 # whether the threshold was crossed in the configured direction
+    model_ids: tuple[ModelId, ...] = ()                        # models that contributed
+    strategy: AlertModelStrategy = AlertModelStrategy.PRIMARY   # which strategy produced this result
 ```
 
 Module: `types/domain.py`
@@ -767,6 +787,8 @@ class Alert:
     first_detected_at: UtcDatetime | None  # when exceedance first detected (before min_trigger_duration elapsed)
     notified_at: UtcDatetime | None  # NULL = notification pending
     created_at: UtcDatetime
+    model_ids: tuple[ModelId, ...] = ()                        # models that contributed; () for observation/pipeline alerts
+    alert_model_strategy: AlertModelStrategy | None = None      # strategy; None for observation/pipeline alerts
 ```
 
 Module: `types/alert.py`
@@ -961,6 +983,15 @@ class ForecastEnsemble:
     units: str                     # e.g. "m3/s", "m" — for display and unit-mismatch guards
     forecast_horizon_steps: int
     time_step: timedelta
+    model_id: ModelId | None = None    # set during forecast cycle; None for test/legacy
+
+    @property
+    def member_count(self) -> int:
+        match self.representation:
+            case EnsembleRepresentation.MEMBERS:
+                return self.values["member_id"].n_unique()
+            case EnsembleRepresentation.QUANTILES:
+                return self.values["quantile"].n_unique()
 ```
 
 **DataFrame column contract for `values`:**
@@ -990,9 +1021,9 @@ flagged in forecast metadata.
 
 `ForecastEnsemble` provides two factory classmethods that validate the DataFrame column contract at construction time:
 
-- `ForecastEnsemble.from_members(station_id, issued_at, parameter, units, time_step, values: pl.DataFrame) -> ForecastEnsemble` — validates: `member_id` column present and `int` dtype, `quantile` column absent, `valid_time` column present and `Datetime` dtype, `value` column present and `Float64` dtype, at least 1 member. Sets `representation = MEMBERS`.
+- `ForecastEnsemble.from_members(station_id, issued_at, parameter, units, time_step, values: pl.DataFrame, model_id: ModelId | None = None) -> ForecastEnsemble` — validates: `member_id` column present and `int` dtype, `quantile` column absent, `valid_time` column present and `Datetime` dtype, `value` column present and `Float64` dtype, at least 1 member. Sets `representation = MEMBERS`.
 
-- `ForecastEnsemble.from_quantiles(station_id, issued_at, parameter, units, time_step, values: pl.DataFrame) -> ForecastEnsemble` — validates: `quantile` column present and `Float64` dtype, `member_id` column absent, `valid_time` column present, `value` column present, at least 7 quantile levels with tail coverage (min <= 0.05, max >= 0.95). Sets `representation = QUANTILES`.
+- `ForecastEnsemble.from_quantiles(station_id, issued_at, parameter, units, time_step, values: pl.DataFrame, model_id: ModelId | None = None) -> ForecastEnsemble` — validates: `quantile` column present and `Float64` dtype, `member_id` column absent, `valid_time` column present, `value` column present, at least 7 quantile levels with tail coverage (min <= 0.05, max >= 0.95). Sets `representation = QUANTILES`.
 
 Both raise `ValueError` with a descriptive message on validation failure. The standard constructor always runs `__post_init__` validation. For store-layer reconstruction of already-validated data, the validation is idempotent and cheap — no bypass is needed.
 
@@ -1477,6 +1508,29 @@ data for all stations in the group. The orchestration layer (Flow 6/9 T.2–T.3)
 The caller persists state via `ModelStateStore`.
 
 Module: `protocols/forecast_model.py`
+
+---
+
+### ModelAlertStrategy Protocol
+
+Pluggable strategy for combining or selecting model ensembles before threshold evaluation.
+Implementations correspond to `AlertModelStrategy` enum values. Registered via `DeploymentConfig.alert_model_strategy`.
+
+```python
+@runtime_checkable
+class ModelAlertStrategy(Protocol):
+    def evaluate(
+        self,
+        station_id: StationId,
+        parameter: ForecastParameter,
+        model_ensembles: dict[ModelId, ForecastEnsemble],
+        thresholds: list[StationThreshold],
+        danger_levels: list[DangerLevelDefinition],
+        priorities: dict[ModelId, int],
+    ) -> list[ExceedanceResult]: ...
+```
+
+Module: `protocols/alert_strategy.py`
 
 ---
 
@@ -2301,6 +2355,11 @@ class DeploymentConfig(BaseModel):
     # Nepal uses Bikram Sambat for official reporting. When configured, API and
     # bulletin generation convert Gregorian dates to BS for display. Internal
     # storage remains UTC Gregorian.
+
+    # --- Multi-model alert strategy ---
+    alert_model_strategy: AlertModelStrategy = AlertModelStrategy.PRIMARY
+    min_operational_ensemble_size: int = 20
+    min_operational_quantile_levels: int = 7
 ```
 
 This is the deployment-wide config. Adapter-specific config (adapter types, cache ages,

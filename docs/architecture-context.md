@@ -110,7 +110,15 @@ Steps 1.2, 1.3, 1.4, and 1.9 are **conditional** — see notes.
 - **1.9** *(conditional)*: Forecast *output* bias correction (discharge / water level). Distinct from NWP input correction in 1.5. Pass-through when not configured.
 - **1.10**: Each forecast record links to the model artifact version that produced it.
 - **1.11**: Probability-based: P(Q > threshold) for ABOVE levels, P(Q < threshold) for BELOW levels. See "Danger levels and threshold configuration" section below for the full config shape. Only evaluates levels where the station has a defined threshold value — undefined levels are skipped (no alert, no display). The exceedance probability that triggers an alert is deployment-configurable per danger level. Defaults must be set; hydromet operations staff confirm acceptable false alarm rates before production deployment.
-- **1.12**: Deduplication via partial unique index. Auto-resolution uses hysteresis to prevent alert flapping: separate `trigger_probability` and `resolve_probability` thresholds per danger level (resolve threshold lower than trigger), and configurable minimum duration (`min_trigger_duration` / `min_resolve_duration`) before triggering or resolving. Time-based durations are schedule-independent — they work correctly for both 30-min observation cycles and 6-hourly forecast cycles. Without hysteresis, ensemble probability oscillation between NWP cycles causes fire-resolve-fire loops and alert fatigue.
+- **1.12**: Deduplication via partial unique index. Auto-resolution uses hysteresis to prevent alert flapping: separate `trigger_probability` and `resolve_probability` thresholds per danger level (resolve threshold lower than trigger), and configurable minimum duration (`min_trigger_duration` / `min_resolve_duration`) before triggering or resolving. Time-based durations are schedule-independent — they work correctly for both 30-min observation cycles and 6-hourly forecast cycles. Without hysteresis, ensemble probability oscillation between NWP cycles causes fire-resolve-fire loops and alert fatigue. **v0**: `DangerLevelDefinition` fields exist (`trigger_probability`, `resolve_probability`, `min_trigger_duration`, `min_resolve_duration`); alert service does not enforce duration-based hysteresis — triggers and resolves within a single cycle. v1 adds cross-cycle state tracking.
+
+**Multi-model alert strategy (steps 1.11–1.12)**: Phase C receives all models' ensembles per station (collected from Phase B fan-out) and dispatches to the configured `alert_model_strategy`. Four strategies:
+- `primary` — use the highest-priority model's ensemble only (priority 0). Default for v0.
+- `pooled` — merge all models' members into a grand ensemble; compute exceedance probability across the combined pool.
+- `bma` — weight each model's contribution by its skill score (Bayesian Model Averaging); recommended default for mature multi-model deployments.
+- `consensus` — each model casts a per-danger-level vote based on its own ensemble probability; the station-level alert fires if enough models agree.
+
+Cascading fallback: `bma` → `pooled` → `primary` (if weights missing or single model); `consensus` → `pooled` → `primary` (if single model or mixed representation); `pooled` → `primary` (if single model or mixed representations). Every `ExceedanceResult` and `Alert` carries `model_ids` (list of model IDs whose ensembles were used) for full traceability — visible in the API and dashboard. See `docs/v0-scope.md §A8d` and plan 010 for implementation detail.
 - **1.11–1.13** *(v0 testing)*: Phase C is **optional during v0**. A deployment-level flag (`enable_forecast_alerts`, default `false` for v0) controls whether these steps run. When enabled during testing, alerts are **informational only** — stored in the DB and logged, but notifications (1.13) are suppressed (no external push). This lets the team validate threshold logic and hysteresis tuning against real forecasts without operational consequences.
 - **1.13**: Async. Failed notifications retried by sweep task (every 5 min).
 - **API serving**: No explicit step — the API reads persisted results from the DB. Storing in 1.10 makes forecasts available; publishing happens via Flow 3 (forecast review). The API also serves archived forcing time series (precipitation, temperature, and other predictors) alongside forecasts — see API design notes.
@@ -164,7 +172,7 @@ Phase C — all stations (optional during v0):
   [1.11] → [1.12] → [1.13]
 ```
 
-Brackets denote conditional steps. Phase A and step 1.6 run in parallel. Phase B starts when both complete. Phase C runs after all Phase B units complete. **Phase C is optional during v0 testing** — alert logic is implemented but disabled by default. When enabled, alerts are informational only (logged and stored, not pushed to external recipients).
+Brackets denote conditional steps. Phase A and step 1.6 run in parallel. Phase B starts when both complete. Phase C runs after all Phase B units complete. **Phase C is optional during v0 testing** — alert logic is implemented but disabled by default. When enabled, alerts are informational only (logged and stored, not pushed to external recipients). Phase C collects all models' forecast ensembles per station (aggregated across Phase B) and applies the configured `alert_model_strategy` to determine exceedance per danger level.
 
 ```mermaid
 flowchart TD
@@ -885,7 +893,7 @@ Models declare an `artifact_scope` that determines training and artifact granula
 
 Station groups (`station_groups` table) are named sets of stations grouped by shared hydrological characteristics (e.g. "swiss_alpine", "swiss_lowland", "nepal_koshi_basin"). A deployment-wide group containing all stations is valid for deployments with homogeneous hydrology or models robust enough to handle heterogeneity.
 
-**Priority convention**: Within a station's `model_assignments`, priority order is: linear regression (simplest, most robust) > ML model > conceptual model. This ensures the simplest defensible model runs first; more complex models serve as alternatives for forecaster comparison and fallback.
+**Priority convention**: Within a station's `model_assignments`, priority order is: linear regression (simplest, most robust) > ML model > conceptual model. This ensures the simplest defensible model runs first; more complex models serve as alternatives for forecaster comparison and fallback. Priority 0 carries dual semantics: it is both the primary fallback (first model attempted when generating forecasts) and the alert-selection primary (whose ensemble drives alert decisions when `alert_model_strategy = primary` and all models succeed). These semantics are consistent in v0 but may diverge in v1 — see `docs/v0-scope.md §I3`.
 
 #### Steps
 
@@ -2239,6 +2247,8 @@ alerts:
   resolved_at: TIMESTAMPTZ NULL
   first_detected_at: TIMESTAMPTZ NULL         # when exceedance first detected (before min_trigger_duration elapsed); alert service computes duration as now - first_detected_at vs min_trigger_duration
   notified_at: TIMESTAMPTZ NULL            # NULL = notification pending
+  model_ids: JSONB NOT NULL DEFAULT '[]'   # model IDs whose ensembles drove this alert; [] for observation and pipeline alerts
+  alert_model_strategy: TEXT NULL          # strategy used (primary|pooled|bma|consensus); NULL for observation and pipeline alerts
   created_at: TIMESTAMPTZ
 ```
 

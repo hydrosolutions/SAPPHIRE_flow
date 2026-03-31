@@ -63,6 +63,11 @@ Illustrative sketch for Flow 1 (not implementation):
 nwp = fetch_nwp(cycle_time)                    # shared work, single task
 inputs = prepare_inputs.map(stations, nwp=nwp) # fan-out per station
 
+# Structure: station → model → parameter_name → ForecastEnsemble
+all_ensembles: dict[StationId, dict[ModelId, dict[str, ForecastEnsemble]]] = defaultdict(dict)
+# Structure: station → model → priority_value
+all_priorities: dict[StationId, dict[ModelId, int]] = defaultdict(dict)
+
 # Group-scoped models (ML): load artifact once, share across stations
 for model in group_scoped_models:
     artifact = deserialize_artifact(fetch_active_artifact(group_id, model_id))
@@ -75,7 +80,7 @@ for model in group_scoped_models:
 for model in station_scoped_models:
     station_results = forecast_station.map(inputs)  # each loads its own artifact
 
-check_thresholds(all_results)                  # converge
+check_station_alerts(all_ensembles, all_thresholds, danger_levels, all_priorities, config, alert_store, clock)  # Phase C (plan 010)
 ```
 
 For group-scoped models, the artifact is deserialized once per model (not per station) and passed to all mapped tasks via Prefect's `unmapped()`. This eliminates deserialization overhead without changing the per-station `predict()` contract.

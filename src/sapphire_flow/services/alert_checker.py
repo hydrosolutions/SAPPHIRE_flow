@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import structlog
 
 from sapphire_flow.services.alert_strategy import (
-    PrimaryModelStrategy,
     PooledEnsembleStrategy,
+    PrimaryModelStrategy,
 )
 from sapphire_flow.types.enums import (
     AlertModelStrategy,
@@ -19,15 +18,17 @@ from sapphire_flow.types.enums import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from sapphire_flow.config.deployment import DeploymentConfig
     from sapphire_flow.protocols.stores import AlertStore
+    from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.domain import (
         DangerLevelDefinition,
         ExceedanceResult,
         ForecastParameter,
         StationThreshold,
     )
-    from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.ensemble import ForecastEnsemble
     from sapphire_flow.types.ids import ModelId, StationId
 
@@ -150,7 +151,12 @@ def _check_station(
 
     if evaluated_parameters:
         _process_results(
-            all_results, station_id, evaluated_parameters, thresholds, alert_store, clock
+            all_results,
+            station_id,
+            evaluated_parameters,
+            thresholds,
+            alert_store,
+            clock,
         )
 
 
@@ -197,7 +203,10 @@ def _resolve_strategy_and_filter(
     param_ensembles: dict[ModelId, ForecastEnsemble],
     representations: set[EnsembleRepresentation],
     priorities: dict[ModelId, int],
-) -> tuple[PrimaryModelStrategy | PooledEnsembleStrategy, dict[ModelId, ForecastEnsemble]]:
+) -> tuple[
+    PrimaryModelStrategy | PooledEnsembleStrategy,
+    dict[ModelId, ForecastEnsemble],
+]:
     n_models = len(param_ensembles)
 
     if n_models <= 1:

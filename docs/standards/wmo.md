@@ -66,8 +66,12 @@ Maps to: `QualityChecker` Protocol, QC flag enum, observation ingest pipeline.
 
 - **WMO-1150**: Impact-based warnings — moves beyond pure threshold exceedance toward impact severity. Defines three-tier severity (yellow/orange/red) with recommended language and dissemination protocols. Directly relevant to Nepal v1 where DHM handles alerting; informs danger level design.
 - **CAP / WMO-1109**: Common Alerting Protocol — machine-readable XML alert format. Defines `severity`, `urgency`, `certainty`, geographic `area`, and recommended actions. Enables integration with national and international warning dissemination systems.
+- **WMO-1091 §10**: Multiple forecasting systems provide additional probability information for extreme events. When several independent hydrological models are available per station, their ensembles can be combined rather than selecting a single model, improving tail-event probability estimates. SAPPHIRE's multi-model alert strategy (see `architecture-context.md` Flow 1 Phase C) implements this principle via four combination strategies (primary, pooled, bma, consensus).
+- **WMO-1091 §9.1.1 (by analogy)**: Per-model bias correction should be applied before combination. The original section addresses NWP ensemble post-processing; the principle extends to hydrological model output — each model's forecast ensemble should pass through its own post-processing (step 1.9) before entering the pooled or BMA combination in Phase C.
 
-Maps to: `AlertChecker` Protocol, danger level definitions, notification system, Nepal v1 DHM integration.
+**Distinguishing SAPPHIRE BMA from WMO-1254 BMA**: WMO-1254 Tier 3 defines BMA as a method for post-processing atmospheric EPS members into calibrated probabilistic forecasts (operating on raw NWP member output). SAPPHIRE's BMA (`bma` alert strategy, plan 010) operates at a different point in the forecast chain — it combines outputs from multiple hydrological models (each already producing an ensemble over NWP members) using skill-based weights. Both use Bayesian Model Averaging as the mathematical framework, but they address distinct combination problems and are applied at different stages. The WMO-1254 Tier 3 approach would apply to step 1.5 (NWP post-processing); SAPPHIRE BMA applies at step 1.11 (alert threshold checking).
+
+Maps to: `AlertChecker` Protocol, danger level definitions, notification system, Nepal v1 DHM integration, multi-model alert strategy (plan 010).
 
 ### Station metadata (Flow 5 — station onboarding)
 

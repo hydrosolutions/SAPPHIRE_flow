@@ -136,6 +136,16 @@ Flow 13 (model onboarding) uses the same auto-promote path: `training` → `acti
 
 Rationale: per-source flags allow incremental activation during testing — pipeline alerts first (ops team, low risk), then observation alerts (simple value-vs-threshold), then forecast alerts (probability-based, needs hysteresis tuning). Aligns with the three `AlertSource` enum values (`forecast`, `observation`, `pipeline`).
 
+### A8d. Multi-model alert strategy
+
+**Full design**: Four strategies (primary, pooled, bma, consensus) selectable per deployment via `alert_model_strategy` config. BMA is the recommended default for mature multi-model deployments. Cascading fallback: bma → pooled → primary.
+
+**v0**: `alert_model_strategy` config field exists with default `primary`. The strategy enum, config field, convergence structure, and type traceability (`model_ids` on `ExceedanceResult` and `Alert`) are implemented from day one. Only `PrimaryModelStrategy` is exercised at runtime.
+
+**v0b**: `pooled` strategy implemented when second model is onboarded per station. Deployers with multiple models per station switch config to `pooled`.
+
+**v1**: `bma` strategy implemented with weight training pipeline (linked to Flow 8/10 skill recomputation). `consensus` strategy implemented if stakeholder demand exists.
+
 ### A9. No forecast adjustments
 
 **Full design**: forecast_adjustments table with 4 adjustment types, audit trail, envelope operations.
@@ -235,7 +245,7 @@ These are deferred in architecture-context.md. For v0, don't create their tables
 - `skill_diagrams` — as designed
 
 ### Operational support
-- `alerts` — as designed (without notification-related fields: keep `notified_at` as always-NULL)
+- `alerts` — as designed, plus `model_ids` (JSONB, `[]` for observation/pipeline alerts) and `alert_model_strategy` (TEXT, NULL for observation/pipeline alerts) for forecast alert traceability (see §A8d). Keep `notified_at` as always-NULL.
 - `pipeline_health` — as designed
 
 ### Not created in v0
@@ -291,6 +301,7 @@ Target per-step budgets (50 stations):
 | 1.7 Prepare inputs | 3s | In-memory |
 | 1.8 Run models (all) | 10-30s | CPU (parallel) |
 | 1.10 Store results | 3s | DB write (COPY) |
+| 1.11–1.13 Alert checking | < 5s | In-memory |
 | **Total** | **< 60s** | |
 
 ### D7. API response speed
@@ -458,6 +469,12 @@ v0a starts with point weather forecast data (pre-extracted). v0b+ adds basin-ave
 v0 uses SMN station observations for ML model lookback windows (resolved — see §A12). Nepal v1 will use ERA5-Land via `WeatherReanalysisSource`. If `prepare_model_inputs()` or training data assembly hardcodes "fetch from co-located weather station," the entire training/inference pipeline needs rework for v1.
 
 **Rule**: Training data gathering (Flow 6 step T.2) and forecast input preparation (Flow 1 step 1.7) must accept a forcing source dependency (adapter), not directly query a specific data source. The `WeatherReanalysisSource` Protocol exists but is not implemented in v0 — the injection point must still be present.
+
+### I3. Decouple alert-selection priority from fallback priority
+
+`ModelAssignment.priority` is extended in v0 from "fallback order" to also mean "alert-selection priority" (whose ensemble drives alerts when all models succeed). These semantics are consistent today (priority 0 = run first = use for alerts) but could diverge in v1 if a fast-but-less-accurate model gets priority 0 for fallback speed but should not drive alert decisions.
+
+**v1 action:** Add `alert_priority: int | None` to `ModelAssignment` (and `group_model_assignments`). When set, overrides `priority` for alert selection. When NULL, falls back to `priority`. This is an additive, nullable column — safe migration on small data.
 
 ### Not risks (safe to defer)
 

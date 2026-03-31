@@ -175,6 +175,6 @@ def _row_to_domain(row: sa.engine.row.RowMapping) -> Alert:
         first_detected_at=utc_or_none(row["first_detected_at"]),
         notified_at=utc_or_none(row["notified_at"]),
         created_at=utc_from_row(row["created_at"]),
-        model_ids=tuple(ModelId(mid) for mid in (row["model_ids"] or [])),
+        model_ids=tuple(ModelId(mid) for mid in (row["model_ids"] or [])),  # type: ignore[arg-type]
         alert_model_strategy=AlertModelStrategy(row["alert_model_strategy"]) if row["alert_model_strategy"] is not None else None,
     )
