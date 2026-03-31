@@ -1,7 +1,7 @@
 # 3. Uncertainty Paradigms for ML-Based Ensemble Streamflow Forecasting
 
 Literature review for Section 3 of the Paper 0 outline.
-Last updated: 2026-03-30.
+Last updated: 2026-03-31.
 
 ## Key Findings
 
@@ -128,6 +128,35 @@ Asymmetric Laplacians — a flexible mixture distribution trained with negative
 log-likelihood loss. When forecast uncertainty exceeds ~50 cm, lead time is
 shortened rather than issuing uncertain forecasts.
 
+### Theoretical foundation: ALD and quantile regression
+
+The asymmetric Laplace distribution (ALD) provides the probabilistic foundation
+for quantile regression: minimising the quantile (pinball) loss is mathematically
+equivalent to maximising the ALD likelihood (Yu & Moyeed, 2001; Kozumi &
+Kobayashi, 2011). CMAL exploits this directly — each component in the mixture is
+an asymmetric Laplacian, so the mixture density head is a multi-component
+generalisation of quantile regression. This equivalence also means that any
+single-quantile neural network trained with pinball loss is implicitly fitting a
+single ALD; CMAL's advantage is that the mixture captures the full conditional
+distribution rather than individual quantiles.
+
+**Bayesian quantile regression neural networks** (Jantre et al., J. Stat. Theory
+Pract., 2021) formalise this further: they assume an ALD likelihood for the
+response variable and use MCMC (Gibbs + Metropolis-Hastings) via the
+normal-exponential mixture representation of the ALD density for posterior
+inference over network weights. They prove posterior consistency under a
+misspecified ALD model. This is conceptually related to Paradigm B but uses
+Bayesian weight inference rather than a mixture density head; the computational
+cost of MCMC makes it impractical for operational use but theoretically
+interesting for understanding the ALD–quantile–Bayesian triangle.
+
+**Relaxed Quantile Regression** (Pouplin et al., ICML 2024) addresses a
+practical limitation of standard quantile regression: the requirement that
+prediction intervals be symmetric around the median. RQR removes this constraint
+while maintaining coverage guarantees, producing tighter intervals for skewed
+distributions — relevant for streamflow where right-skewed flood peaks are the
+norm.
+
 ### Systematic comparison of learned distributions
 
 **Klotz et al. (HESS, 2022)** is the only systematic comparison for LSTM
@@ -191,6 +220,14 @@ are Zhang, Ye, Analui, Nguyen, Sorooshian, Hsu, and Wang.
   short-term memory models for probabilistic post-processing of satellite
   precipitation-driven streamflow simulations, Hydrol. Earth Syst. Sci., 27,
   4529–4550, doi:10.5194/hess-27-4529-2023, 2023.
+- Yu, K. and Moyeed, R. A.: Bayesian quantile regression, Stat. Probab. Lett.,
+  54(4), 437–447, doi:10.1016/S0167-7152(01)00124-9, 2001.
+- Jantre, S. R., Bhattacharya, S., and Maiti, T.: Quantile Regression Neural
+  Networks: A Bayesian Approach, J. Stat. Theory Pract., 15(3),
+  doi:10.1007/s42519-021-00189-w, 2021.
+- Pouplin, T., Jeffares, A., Seedat, N., and van der Schaar, M.: Relaxed
+  Quantile Regression: Prediction Intervals for Asymmetric Noise, in: Proc.
+  ICML 2024, arXiv:2406.03258, 2024.
 
 ---
 
@@ -237,6 +274,23 @@ to produce **underdispersive intervals** and is computationally expensive
 (requires many forward passes for a single prediction). Not competitive for
 operational use.
 
+Recent work attempts to improve MC Dropout calibration: Son & Seok
+(Neurocomputing, 2025) propose stable output layers to reduce variance in
+uncertainty estimates; an enhanced MCD framework (arXiv:2505.15671, 2025)
+integrates uncertainty-aware loss functions. These may narrow the gap with
+CMAL but do not address the fundamental limitation that dropout-based
+variational inference is a crude posterior approximation.
+
+**Note on "MC-ALD"**: Combining MC Dropout with ALD/quantile loss (sometimes
+informally called "MC-ALD") is a theoretically motivated composite —
+ALD loss captures aleatoric uncertainty via quantile spread while MC Dropout
+captures epistemic uncertainty via weight sampling. However, this is strictly
+weaker than CMAL: a single ALD component per quantile versus a full mixture
+of asymmetric Laplacians that already captures multi-modal conditional
+distributions. Klotz et al. (2022) effectively tested this idea (MC Dropout
+was evaluated alongside CMAL) and found it worst among all methods. The
+composite does not appear as a named method in the literature.
+
 **Key references**:
 - Lakshminarayanan, B., Pritzel, A., and Blundell, C.: Simple and Scalable
   Predictive Uncertainty Estimation using Deep Ensembles, Advances in Neural
@@ -248,6 +302,12 @@ operational use.
   network with a physically-based hydrological model for streamflow forecasting
   over a Canadian catchment, J. Hydrol., 627, 130380,
   doi:10.1016/j.jhydrol.2023.130380, 2023.
+- Son, S. and Seok, J.: Improving Monte Carlo dropout uncertainty estimation
+  with stable output layers, Neurocomputing, 131927,
+  doi:10.1016/j.neucom.2025.131927, 2025.
+- Tyralis, H. and Papacharalampous, G.: A review of predictive uncertainty
+  estimation with machine learning, Artif. Intell. Rev., 57, 94,
+  doi:10.1007/s10462-023-10698-8, 2024.
 
 ---
 
@@ -571,6 +631,18 @@ Verified 2026-03-30.
   **The CRPS-as-loss principle is well-established (Rasp & Lerch, 2018,
   doi:10.1175/MWR-D-18-0187.1); the AIFS-specific application needs a better
   source before publication.**
+
+### Added 2026-03-31 (ALD/MC-ALD investigation)
+- [ ] Yu & Moyeed (2001) — Bayesian quantile regression, doi:10.1016/S0167-7152(01)00124-9.
+  Foundational ALD–quantile equivalence. Not yet DOI-verified.
+- [ ] Jantre et al. (J. Stat. Theory Pract., 2021) — Bayesian QRNN via ALD + MCMC,
+  arXiv:2009.13591. Not yet DOI-verified.
+- [ ] Pouplin et al. (ICML 2024) — Relaxed Quantile Regression, arXiv:2406.03258.
+  Confirmed accepted at ICML 2024.
+- [ ] Son & Seok (Neurocomputing, 2025) — Stable output layers for MC Dropout,
+  doi:10.1016/j.neucom.2025.131927. ScienceDirect listing confirmed.
+- [ ] Tyralis & Papacharalampous (AI Review, 2024) — Predictive UQ review,
+  doi:10.1007/s10462-023-10698-8. Springer listing confirmed; arXiv:2209.08307.
 
 ### Not yet searched (lower priority for Section 3)
 - [ ] Gawlikowski et al. (2023, AI Review) — UQ survey, doi:10.1007/s10462-023-10562-9
