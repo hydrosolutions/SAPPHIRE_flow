@@ -31,8 +31,9 @@ Last updated: 2026-03-31.
    ~40 mm/month overestimation in Alps, "spectacular" monsoon overestimation
    in Himalayas. Bias correction is mandatory.
 7. **The reanalysis-to-NWP distribution shift is substantial** — AIFL showed
-   NSE drops from 0.58 to 0.33 without fine-tuning. Two-stage training
-   (pre-train reanalysis, fine-tune NWP) is essential for operational systems.
+   performance degrades substantially without fine-tuning on NWP (exact NSE
+   drop TBC). Two-stage training (pre-train reanalysis, fine-tune NWP)
+   recovers skill (median KGE' 0.66). Essential for operational systems.
 8. **No dataset exists for Nepal** — CAMELS-IND covers peninsular India only,
    excluding Himalayan catchments. SAPPHIRE v1 must construct its own dataset
    from DHM stations + ERA5-Land/IFS forcing.
@@ -55,12 +56,12 @@ survey of operational precipitation products for Nepal.
 | **CAMELSH** | CONUS | 5,188+ | Hourly | Yes | No | NLDAS-2 (11 vars) | 1980-2024 | Zenodo, open |
 | **LamaH-CE** | Central Europe | 859 | Hourly | Yes | No | ERA5-Land | ~1981-2017 | Zenodo, open |
 | **CAMELS-GB v2** | Great Britain | 671 | Hourly | Yes | **Yes** | Radar-gauge 1 km | 2006-2022 | EIDC, OGL |
-| **CAMELS-SPAT** | US/Canada | 1,426 | Hourly | Yes | No | 3 products | Varies | FRDR, open |
+| **CAMELS-SPAT** | US/Canada | 1,426 | Hourly | Yes | No | 4 products | Varies | FRDR, open |
 | **CAMELS-CH** | Switzerland | 331 | **Daily** | Yes | Yes (daily) | Daily met | 1981-2020 | Zenodo, open |
 | **CAMELS-DE** | Germany | 1,582 | **Daily** | Yes | Yes (daily) | DWD | 1951-2020 | Open |
 | **HydroCH** | Switzerland | 291 | Hourly | Yes | No | **None** | Varies | Zenodo, open |
 | **CAMELS-IND** | Peninsular India | 228 | **Daily** | Yes | No | IMD/IMDAA | 1980-2020 | Zenodo, open |
-| **Caravan** | Global | ~22,000+ | **Daily** | Yes | No | ERA5-Land | 1950-2023 | Zenodo, open |
+| **Caravan** | Global | ~6,830 (original); ~22,000+ (community extensions) | **Daily** | Yes | No | ERA5-Land | 1950-2023 | Zenodo, open |
 | **USGS NWIS** | US | ~10,000+ | **15-min** | Yes | Yes | **None** | ~1990s- | Free API |
 
 ### CAMELSH (Tran et al., Sci. Data, 2025)
@@ -140,24 +141,26 @@ The only sub-hourly streamflow source at scale. ~10,000+ active gauges with
 - Tran, V. N., et al.: CAMELSH: A Large-Sample Hourly Hydrometeorological
   Dataset and Attributes at Watershed-Scale for CONUS, Sci. Data, 12, 1307,
   doi:10.1038/s41597-025-05612-6, 2025.
-- Klingler, C., Herrnegger, M., Kratzert, F., and Schulz, K.: LamaH-CE:
-  LArge-SaMple DAta for Hydrology and Environmental Sciences for Central
-  Europe, Earth Syst. Sci. Data, 13, 4529-4565,
-  doi:10.5194/essd-13-4529-2021, 2021.
+- Klingler, C., Schulz, K., and Herrnegger, M.: LamaH-CE: LArge-SaMple DAta
+  for Hydrology and Environmental Sciences for Central Europe, Earth Syst. Sci.
+  Data, 13, 4529-4565, doi:10.5194/essd-13-4529-2021, 2021.
 - Coxon, G., et al.: CAMELS-GB v2: hydrometeorological time series and
   landscape attributes for 671 catchments in Great Britain, Earth Syst. Sci.
   Data (preprint), doi:10.5194/essd-2025-608, 2025.
-- Hoege, M., et al.: CAMELS-CH: hydro-meteorological time series and landscape
+- Höge, M., et al.: CAMELS-CH: hydro-meteorological time series and landscape
   attributes for 331 catchments in hydrologic Switzerland, Earth Syst. Sci.
   Data, 15, 5755-5784, doi:10.5194/essd-15-5755-2023, 2023.
 - Kauzlaric, M., et al.: Hourly discharge database HydroCH, Zenodo,
   doi:10.5281/zenodo.7691294, 2023.
 - Knoben, W. J. M., et al.: CAMELS-SPAT: streamflow observations, forcing data
   and geospatial data for hydrologic studies across North America, Hydrol. Earth
-  Syst. Sci., 29, 5791-5832, doi:10.5194/hess-29-5791-2025, 2025.
+  Syst. Sci., 29, 5791-5833, doi:10.5194/hess-29-5791-2025, 2025.
 - Mangukiya, N. K., et al.: CAMELS-IND: hydrometeorological time series and
   catchment attributes for 228 catchments in Peninsular India, Earth Syst. Sci.
-  Data, 17, 461-489, doi:10.5194/essd-17-461-2025, 2025.
+  Data, 17, 461-491, doi:10.5194/essd-17-461-2025, 2025.
+- Loritz, R., et al.: CAMELS-DE: hydro-meteorological time series and attributes
+  for 1582 catchments in Germany, Earth Syst. Sci. Data, 16, 5625-5642,
+  doi:10.5194/essd-16-5625-2024, 2024.
 - Kratzert, F., et al.: Caravan — A global community dataset for large-sample
   hydrology, Sci. Data, 10, 61, doi:10.1038/s41597-023-01975-w, 2023.
 
@@ -239,7 +242,7 @@ access for external researchers is unclear.
 | **ERA5** | ~31 km | Hourly | Global | 1940-present | Coarser; precipitation biases similar |
 | **NLDAS-2** | ~12 km | Hourly | CONUS | 1979-2018 | US only; radar-disaggregated precip |
 | **CHESS-met** | 1 km | **Daily** | Great Britain | 1961-2019 | Daily only; interpolation artefacts |
-| **HARv2** | 10 km | Hourly | High Asia | 1980-present | Better than ERA5-Land for wind in Nepal |
+| **HARv2** | 10 km | Hourly | High Asia | 1979-present | Better than ERA5-Land for wind in Nepal |
 
 ### ERA5-Land: the default for global ML hydrology
 
@@ -248,8 +251,9 @@ training. It is the backbone of Caravan, AIFL, and most global LSTM studies.
 However, systematic biases in complex topography are well-documented:
 
 - **Alps**: ~40 mm/month precipitation overestimation, ~2.1 deg C temperature
-  underestimation (South Tyrol study). Overall precipitation RMAE 37% in Alpine
-  headwaters.
+  underestimation (Dalla Torre and Di Marco, J. Hydrol. Reg. Stud., 2024;
+  South Tyrol). ERA5 (not ERA5-Land) precipitation RMAE 37% in Austrian Alpine
+  headwaters (Water, 2025).
 - **Nepal/Himalayas**: "Spectacular overestimation" during monsoon at high
   elevations in Everest/Dudh Koshi basin (Khadka et al., JAMC, 2022). Negative
   bias at high altitudes, positive at lower altitudes.
@@ -273,18 +277,26 @@ correction.
 - *Ambiguity*: ERA5-Land precipitation is a model product (not assimilated from
   gauges directly) — its "observation-like" status is misleading.
 
-### NLDAS-2 vs ERA5-Land performance comparison
+### NLDAS-2 vs ERA5 performance comparison
 
-Gauch et al. (HESS, 2021) showed NLDAS-2 local forcing achieved median daily
-NSE 0.71 vs ERA5's 0.54 on CAMELS-US — a ~0.17 NSE advantage primarily from
-higher spatial resolution (12 km vs 31 km). However, ERA5 outperformed NLDAS-2
-in western/NW US (median NSE 0.83 vs 0.78), suggesting the advantage is
-region-dependent.
+Predicting streamflow with global datasets (Front. Water, 2023) showed NLDAS-2
+local forcing achieved median daily NSE 0.71 vs ERA5's 0.54 on CAMELS-US — a
+~0.17 NSE advantage primarily from higher spatial resolution (12 km vs 31 km).
+However, ERA5 outperformed NLDAS-2 in western/NW US (median NSE 0.83 vs 0.78),
+suggesting the advantage is region-dependent. *Note: these figures are from a
+2023 Frontiers in Water paper, not from Gauch et al. (2021) MTS-LSTM — verify
+exact source and add full citation.*
 
 **Key references**:
 - Khadka, A., et al.: Evaluation of ERA5-Land and HARv2 Reanalysis Data at
   High Elevation in the Upper Dudh Koshi Basin (Everest Region, Nepal), J. Appl.
   Meteor. Climatol., 61(8), 931-954, doi:10.1175/JAMC-D-21-0091.1, 2022.
+- Dalla Torre, D. and Di Marco, N.: Suitability of ERA5-Land reanalysis dataset
+  for hydrological modelling in the Alpine region, J. Hydrol. Reg. Stud., 52,
+  101718, doi:10.1016/j.ejrh.2024.101718, 2024.
+- Wang, X., et al.: WRF-based dynamical downscaling of ERA5 reanalysis data for
+  High Mountain Asia: Towards a new version of the High Asia Refined analysis,
+  Int. J. Climatol., 41(S1), 743-762, doi:10.1002/joc.6686, 2021.
 - Gauch, M., et al.: Rainfall-runoff prediction at multiple timescales with a
   single Long Short-Term Memory network, Hydrol. Earth Syst. Sci., 25,
   2045-2062, doi:10.5194/hess-25-2045-2021, 2021.
@@ -298,7 +310,9 @@ region-dependent.
 Standard k-fold cross-validation is invalid for time series due to temporal
 autocorrelation. Sequential temporal splits are mandatory. Recent work quantified
 the leakage: 10-fold CV with pre-split sequence construction inflates
-performance by up to 20.5% RMSE (arXiv:2512.06932).
+performance by up to 20.5% RMSE (Albelali and Ahmed, arXiv:2512.06932, 2025 —
+general time-series methodology, not hydrology-specific, but directly
+applicable).
 
 **Recommended structure**:
 - **Sequential holdout**: Train on earlier period, validate, test on latest.
@@ -322,7 +336,7 @@ forecasts (21-51). Strategies from the literature:
 | **Fair CRPS** | Remove finite-ensemble-size bias from evaluation scores | Ferro (QJ RMS, 2014) |
 | **Few members suffice** | 4 training members sufficient; larger ensembles at inference only | AIFS-CRPS (Lang et al., 2026) |
 | **Member-as-sample** | Treat each member as a separate training example | Sharma et al. (J. Hydroinformatics, 2023) |
-| **PoET** | Ensemble-size-agnostic transformer post-processing | Ashkboos et al. (AIES, 2024) |
+| **PoET** | Ensemble-size-agnostic transformer post-processing | Ben Bouallègue et al. (AIES, 2024) |
 
 The AIFL strategy (train on reanalysis, fine-tune on NWP control, deploy
 per-member) sidesteps the member count problem entirely and is the most
@@ -340,11 +354,12 @@ practical approach for systems like SAPPHIRE where no NWP reforecast exists.
 ### The reanalysis-to-NWP domain shift
 
 AIFL (Taccari et al., 2026) quantified this directly:
-- NSE drops from 0.58 (ERA5-Land) to 0.33 (IFS without fine-tuning).
+- Performance degrades substantially when ERA5-Land-trained model is applied to
+  IFS without fine-tuning (exact NSE drop TBC — verify against paper tables).
 - Normalised Wasserstein distance between ERA5-Land and IFS precipitation is
   substantial (median 0.045, extreme cases 0.638).
-- Two-stage training (pre-train ERA5-Land 40 years, fine-tune IFS 4 years)
-  recovers skill to KGE' 0.66.
+- Two-stage training (pre-train ERA5-Land 40 years, fine-tune IFS 2016–2019)
+  recovers skill to median KGE' 0.66 (median NSE 0.53 on 2021–2024 test set).
 - Fine-tuning primarily rescues poorly-performing basins (44.7% improved, 22.7%
   minor degradation).
 
@@ -362,6 +377,14 @@ fine-tuning period can be short (~4 years) relative to pre-training (40 years).
 - Sharma, S., Ghimire, G. R., and Siddique, R.: Machine learning for
   postprocessing ensemble streamflow forecasts, J. Hydroinformatics, 25(1),
   126-139, doi:10.2166/hydro.2022.114, 2023.
+- Lang, S., et al.: AIFS-CRPS: ensemble forecasting using a model trained with
+  a loss function based on the continuous ranked probability score, npj Artif.
+  Intell., 2, 18, doi:10.1038/s44387-026-00073-7, 2026.
+- Ben Bouallègue, Z., et al.: Improving Medium-Range Ensemble Weather Forecasts
+  with Hierarchical Ensemble Transformers, Artif. Intell. Earth Syst., 3(1),
+  e230027, doi:10.1175/AIES-D-23-0027.1, 2024.
+- Albelali, S. and Ahmed, M.: Hidden Leaks in Time Series Forecasting: How Data
+  Leakage Affects LSTM Evaluation, arXiv:2512.06932, 2025.
 
 ---
 
@@ -397,10 +420,22 @@ fine-tuning period can be short (~4 years) relative to pre-training (40 years).
 ### Verification TODOs
 - [ ] Confirm CAMELSH v2 includes water level (agent reports no; outline claims
   yes — check the actual dataset)
-- [ ] Check CAMELS-GB v2 review status — is it published or still preprint?
-- [ ] Verify HydroCH catchment count (291) and temporal coverage
+- [x] Check CAMELS-GB v2 review status — still preprint as of March 2026
+- [x] Verify HydroCH catchment count (291) and temporal coverage — confirmed
 - [ ] Check whether ECMWF open-data policy extends to reforecast archive
-- [ ] Confirm GEFS reforecast temporal resolution details (3h→6h transition)
-- [ ] Verify AIFS-CRPS "4 members suffice" finding — check exact claim
+- [ ] Confirm GEFS reforecast member count details (5 daily / 11 weekly flagged
+  as potentially incorrect — may be 5 throughout; verify against paper Table 1)
+- [ ] Verify AIFS-CRPS "4 members suffice" finding — check exact claim in Lang
+  et al. (npj AI, 2026)
 - [ ] Search for any post-May-2025 sub-hourly curated dataset publications
-- [ ] Check CAMELS-SPAT hourly forcing product identities
+- [x] Check CAMELS-SPAT hourly forcing product identities — 4 products: RDRS
+  v2.1, ERA5, EM-Earth (all hourly), Daymet v4 R1 (daily)
+- [ ] Find exact source for NLDAS-2 vs ERA5 NSE comparison (0.71 vs 0.54) —
+  likely from Front. Water, 2023 (doi:10.3389/frwa.2023.1166124), not Gauch
+  et al. 2021. Add full citation.
+- [ ] Verify AIFL exact NSE values for domain shift (0.58/0.33 unconfirmed —
+  aligned with §5 TBC flag)
+- [ ] Verify Khadka et al. (2022) "spectacular overestimation" phrasing — needs
+  full-text check
+- [ ] Confirm ERA5-Land RMAE 37% source — Austrian Alpine headwaters study
+  (Water, 2025) uses ERA5 not ERA5-Land; verify distinction
