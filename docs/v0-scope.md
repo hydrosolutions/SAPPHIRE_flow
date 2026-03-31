@@ -144,7 +144,7 @@ Rationale: per-source flags allow incremental activation during testing — pipe
 
 **v0b**: `pooled` strategy implemented when second model is onboarded per station. Deployers with multiple models per station switch config to `pooled`.
 
-**v1**: `bma` strategy implemented with weight training pipeline (linked to Flow 8/10 skill recomputation). `consensus` strategy implemented if stakeholder demand exists.
+**v1**: `bma` strategy implemented with weight training pipeline (linked to Flow 8/10 skill recomputation). Deployers switch config to `bma` once weights are trained. `consensus` strategy implemented if stakeholder demand exists.
 
 ### A9. No forecast adjustments
 

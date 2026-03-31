@@ -1494,7 +1494,7 @@ model_assignments:
   model_id: TEXT FK → models.id
   time_step: INTERVAL                    # configured time step for this assignment, e.g. '1 hour', '1 day'
   is_active: BOOL DEFAULT TRUE           # can be deactivated without deleting
-  priority: INT DEFAULT 0                # fallback order: 0 = primary, 1 = first fallback, 2 = second fallback, etc.
+  priority: INT DEFAULT 0                # fallback order AND alert-selection priority: 0 = primary (run first, drives alerts when all succeed). See §I3 in v0-scope.md.
   created_at: TIMESTAMPTZ
   PK: (station_id, model_id)
 ```
@@ -1509,7 +1509,7 @@ group_model_assignments:
   model_id: TEXT FK → models.id
   time_step: INTERVAL                    # configured time step for this assignment, e.g. '1 hour', '1 day'
   is_active: BOOL DEFAULT TRUE           # can be deactivated without deleting
-  priority: INT DEFAULT 0                # fallback order within the group: 0 = primary, 1 = first fallback, etc.
+  priority: INT DEFAULT 0                # fallback order AND alert-selection priority within the group: 0 = primary. Group priorities are expanded to per-station entries by Phase B for Phase C strategy dispatch. See §I3 in v0-scope.md.
   created_at: TIMESTAMPTZ
   PK: (group_id, model_id)
 ```

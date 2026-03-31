@@ -173,6 +173,33 @@ class TestResolveStrategyAndFilter:
 
         assert isinstance(strategy, PrimaryModelStrategy)
 
+    def test_consensus_falls_back_to_primary_with_mixed_representations(self) -> None:
+        mid_a = ModelId("model_a")
+        mid_b = ModelId("model_b")
+        param_ensembles = {
+            mid_a: make_forecast_ensemble(
+                station_id=_STATION,
+                representation=EnsembleRepresentation.MEMBERS,
+                model_id=mid_a,
+            ),
+            mid_b: make_forecast_ensemble(
+                station_id=_STATION,
+                representation=EnsembleRepresentation.QUANTILES,
+                model_id=mid_b,
+            ),
+        }
+        representations = {EnsembleRepresentation.MEMBERS, EnsembleRepresentation.QUANTILES}
+
+        strategy, effective = _resolve_strategy_and_filter(
+            preferred=AlertModelStrategy.CONSENSUS,
+            param_ensembles=param_ensembles,
+            representations=representations,
+            priorities={mid_a: 0, mid_b: 1},
+        )
+
+        assert isinstance(strategy, PrimaryModelStrategy)
+        assert len(effective) == 1
+
     def test_pooled_falls_back_to_primary_with_mixed_representations(self) -> None:
         mid_a = ModelId("model_a")
         mid_b = ModelId("model_b")
@@ -484,11 +511,54 @@ class TestCheckStationAlerts:
 
         assert store.fetch_active_alerts() == []
 
-    def test_skipped_when_quantile_levels_too_few(self) -> None:
+    def test_skipped_evaluation_preserves_active_alerts(self) -> None:
+        """When ALL parameters are skipped, _process_results is NOT called and
+        existing active alerts must be preserved unchanged."""
+        store = FakeAlertStore()
+        existing = make_alert(
+            station_id=_STATION,
+            source=AlertSource.FORECAST,
+            alert_level="DL3",
+            status=AlertStatus.RAISED,
+        )
+        store.upsert_alert(existing)
+
+        # min size much higher than ensemble size → all parameters skipped
+        config = make_deployment_config(
+            enable_forecast_alerts=True,
+            min_operational_ensemble_size=100,
+        )
+        mid = ModelId("m")
+        ens = make_forecast_ensemble(
+            station_id=_STATION, model_id=mid, n_members=20
+        )
+        all_ensembles = {_STATION: {mid: {"discharge": ens}}}
+        threshold = _make_threshold(danger_level="DL3", value=1.0)
+        dl = _make_danger_level(name="DL3", trigger_prob=0.1)
+
+        check_station_alerts(
+            all_ensembles=all_ensembles,
+            all_thresholds={_STATION: [threshold]},
+            danger_levels=[dl],
+            all_priorities={},
+            config=config,
+            alert_store=store,
+            clock=_clock,
+        )
+
+        active = store.fetch_active_alerts(station_id=_STATION, source=AlertSource.FORECAST)
+        assert len(active) == 1
+        assert active[0].alert_level == "DL3"
+        assert active[0].status == AlertStatus.RAISED
+
+    def test_skipped_when_quantile_levels_below_config_minimum(self) -> None:
+        # ForecastEnsemble.from_quantiles() enforces a minimum of 7 levels at
+        # construction time. Set min_operational_quantile_levels=15 so that a
+        # normal 9-level ensemble passes construction but fails the config check.
         store = FakeAlertStore()
         config = make_deployment_config(
             enable_forecast_alerts=True,
-            min_operational_quantile_levels=7,
+            min_operational_quantile_levels=15,
         )
         mid = ModelId("m")
         ens = make_forecast_ensemble(
@@ -496,8 +566,7 @@ class TestCheckStationAlerts:
             model_id=mid,
             representation=EnsembleRepresentation.QUANTILES,
         )
-        # 9 quantile levels ≥ 7 — but config.min_operational_quantile_levels=7
-        # Confirm it does NOT skip (this is a passing case)
+        # Default ensemble has 9 quantile levels < config minimum of 15 → skip
         all_ensembles = {_STATION: {mid: {"discharge": ens}}}
         threshold = _make_threshold(danger_level="DL1", value=1.0)
         dl = _make_danger_level(name="DL1", trigger_prob=0.1)
@@ -512,9 +581,7 @@ class TestCheckStationAlerts:
             clock=_clock,
         )
 
-        # Should proceed — 9 quantile levels ≥ 7
-        # The alert may or may not raise depending on forecast values, but no skipping
-        # Verify no ValueError was thrown (test passes if we get here)
+        assert store.fetch_active_alerts() == []
 
     def test_quantile_ensemble_not_skipped_at_default_member_threshold(self) -> None:
         """Quantile ensemble is not checked against member count threshold."""
@@ -725,6 +792,35 @@ class TestProcessResults:
         active = store.fetch_active_alerts(station_id=_STATION)
         assert len(active) == 1
         assert set(active[0].model_ids) == {mid_a, mid_b, mid_c}
+
+    def test_alert_level_danger_level_field_mapping(self) -> None:
+        """Alert.alert_level must equal ExceedanceResult.danger_level (which equals
+        DangerLevelDefinition.name used to produce that result)."""
+        from sapphire_flow.types.domain import ExceedanceResult
+
+        store = FakeAlertStore()
+        mid = ModelId("m")
+        danger_level_name = "DL2"
+        result = ExceedanceResult(
+            station_id=_STATION,
+            danger_level=danger_level_name,
+            parameter="discharge",
+            threshold_value=100.0,
+            exceedance_probability=0.75,
+            observed_value=None,
+            exceeded=True,
+            model_ids=(mid,),
+            strategy=AlertModelStrategy.PRIMARY,
+        )
+        threshold = _make_threshold(danger_level=danger_level_name, parameter="discharge", value=100.0)
+
+        _process_results(
+            [result], _STATION, {"discharge"}, [threshold], store, _clock
+        )
+
+        active = store.fetch_active_alerts(station_id=_STATION)
+        assert len(active) == 1
+        assert active[0].alert_level == danger_level_name
 
     def test_model_ids_sorted_deterministically(self) -> None:
         """model_ids on the alert are sorted lexicographically."""

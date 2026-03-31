@@ -303,7 +303,7 @@ from typing import Literal
 ForecastParameter = Literal["discharge", "water_level"]
 ```
 
-Module: `types/enums.py`
+Module: `types/domain.py`
 
 ---
 
@@ -627,7 +627,7 @@ Consumed by the alert service to raise or resolve alerts.
 class ExceedanceResult:
     station_id: StationId
     danger_level: str              # references DangerLevelDefinition.name
-    parameter: Literal["discharge", "water_level"]
+    parameter: ForecastParameter
     threshold_value: float         # the configured threshold
     exceedance_probability: float | None  # P(forecast crosses threshold in configured direction), NULL for observation alerts
     observed_value: float | None   # observed value, NULL for forecast alerts
@@ -705,7 +705,7 @@ class ModelAssignment:
     model_id: ModelId
     time_step: timedelta           # configured time step for this assignment
     status: ModelAssignmentStatus
-    priority: int                  # fallback order: 0 = primary
+    priority: int                  # fallback order AND alert-selection priority: 0 = primary (run first, drives alerts when all succeed). See §I3 in v0-scope.md.
     created_at: UtcDatetime
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -714,7 +714,7 @@ class GroupModelAssignment:
     model_id: ModelId
     time_step: timedelta
     status: ModelAssignmentStatus
-    priority: int                  # fallback order: 0 = primary
+    priority: int                  # fallback order AND alert-selection priority within the group: 0 = primary. Expanded to per-station entries by Phase B for Phase C strategy dispatch.
     created_at: UtcDatetime
 ```
 
@@ -992,6 +992,8 @@ class ForecastEnsemble:
                 return self.values["member_id"].n_unique()
             case EnsembleRepresentation.QUANTILES:
                 return self.values["quantile"].n_unique()
+            case _:
+                raise ValueError(f"Unknown representation: {self.representation}")
 ```
 
 **DataFrame column contract for `values`:**

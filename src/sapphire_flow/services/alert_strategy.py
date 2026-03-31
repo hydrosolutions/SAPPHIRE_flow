@@ -104,15 +104,17 @@ def _pool_ensembles(
         # Original member IDs may be arbitrary non-contiguous labels.
         # Assign new sequential IDs starting from the current offset.
         unique_ids = ens.values["member_id"].unique().sort()
-        mapping = pl.DataFrame({
-            "member_id": unique_ids,
-            "new_id": pl.Series(
-                range(member_offset, member_offset + len(unique_ids)), dtype=pl.Int32
-            ),
-        })
+        mapping = pl.DataFrame(
+            {
+                "member_id": unique_ids,
+                "new_id": pl.Series(
+                    range(member_offset, member_offset + len(unique_ids)),
+                    dtype=pl.Int32,
+                ),
+            }
+        )
         df = (
-            ens.values
-            .join(mapping, on="member_id")
+            ens.values.join(mapping, on="member_id")
             .drop("member_id")
             .rename({"new_id": "member_id"})
         )
