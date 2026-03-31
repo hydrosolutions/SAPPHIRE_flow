@@ -104,22 +104,36 @@ the central open question.
 
 ### 4. Sub-Hourly Resolution: Value and Limits
 
+> **Research**: [04-sub-hourly-resolution.md](04-sub-hourly-resolution.md) ✅
+
 **Question**: When does sub-hourly resolution add value over hourly/daily?
 
-**To cover**:
-- Flash flood context: catchments <100 km², concentration time <3 h.
-  15-min resolution could double effective lead time.
-- Available data: USGS NWIS 15-min (~5,000+ gauges), CAMELSH hourly (3,166),
-  LamaH-CE hourly (859), CAMELS-GB v2 hourly (671), CAMELS-SPAT (HESS 2025)
-- NWP bottleneck: can ML learn sub-NWP-timestep dynamics from discharge
-  autoregression? MTS-LSTM suggests yes. Empirically untested.
-- Diminishing returns: large catchments (>1,000 km², response >12 h) — daily
-  may suffice. Value is catchment-size-dependent.
-- Water level vs discharge: sub-hourly more natural for stage. Rating curve
-  uncertainty at high flows (20–30%+). No ML comparison of stage vs discharge.
+**Key findings**:
+- Sub-hourly ML streamflow forecasting is virtually unexplored. No large-sample
+  study tests ML at 15-min or finer resolution. The hourly-to-sub-hourly
+  transition is a genuine research gap.
+- Catchment size determines where sub-hourly adds value: below ~25 km² (T_c
+  < 1 h) sub-hourly is essential; 25-100 km² catchment-specific; > 100 km²
+  hourly generally sufficient (Ficchi et al., J. Hydrol., 2016).
+- No rigorous evidence supports "15-min doubles effective lead time" — plausible
+  from first principles but unquantified in the literature.
+- Rating curve uncertainty at high flows (15-40%, up to 43% in mountains) may
+  mask the benefit of fine-resolution discharge forecasting — argues for
+  predicting stage directly.
+- No large-sample ML comparison of stage vs discharge prediction exists.
+  CAMELSH (2025) enables one (5,188+ basins with both variables at hourly).
+- No sub-hourly benchmark dataset exists anywhere. CAMELS-CH is daily only.
+- ML temporal disaggregation emerging (SpateGAN, LSTM) but untested on NWP
+  forecast fields or coupled to hydrology.
+- The NWP temporal mismatch is under-discussed: MTS-LSTM handles daily+hourly
+  but only tested in simulation mode. Autoregressive discharge interpolation of
+  sub-NWP-timestep dynamics is empirically untested.
+- **Gap confirmed**: sub-hourly ML streamflow forecasting is unexplored, and the
+  interaction between temporal resolution and uncertainty paradigm is unknown.
 
-**Key gap**: Sub-hourly ML streamflow forecasting is unexplored. The
-interaction between temporal resolution and uncertainty paradigm is unknown.
+**Deliverables in research file**: Catchment size threshold table, NWP mismatch
+analysis, rating curve uncertainty synthesis, dataset inventory, CRAAB analysis
+per sub-topic, verification TODOs.
 
 ### 5. Transfer Learning at Sub-Daily Resolution
 
