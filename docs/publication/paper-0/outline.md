@@ -137,29 +137,73 @@ per sub-topic, verification TODOs.
 
 ### 5. Transfer Learning at Sub-Daily Resolution
 
+> **Research**: [05-transfer-learning.md](05-transfer-learning.md) ✅
+
 **Question**: Can sub-daily ML models transfer across regions?
 
-**To cover**:
-- Google/Nevo et al. (Nature 2024): daily transfer works globally
-- Sub-hourly transfer: completely untested
-- Climate dissimilarity effects: does sub-hourly transfer degrade faster?
-- Minimum calibration data at fine resolution
+**Key findings**:
+- Daily transfer is well-established: multi-basin training always outperforms
+  single-basin (Kratzert et al., HESS 2024). Global LSTM on 5,680+ gauges
+  matches operational systems for ungauged flood prediction (Nearing et al.,
+  Nature 2024). Cross-continental transfer works with fine-tuning (Ma et al.,
+  WRR 2021).
+- Sub-daily transfer is virtually untested. Only one published result: Lee
+  et al. (2025) achieved 10-min PUB (NSE 0.59) on 35 South Korean basins —
+  notably lower than daily PUB baselines (0.69-0.78).
+- Entity awareness questioned: static attributes may serve as basin identifiers
+  rather than encoding generalisable physics (Heudorfer et al., GRL 2025).
+- Reanalysis-to-forecast domain shift is substantial: AIFL showed NSE drops
+  from 0.58 to 0.33 without NWP fine-tuning (Taccari et al., 2026). Two-stage
+  training essential for operational systems.
+- Climate dissimilarity degrades transfer, but process mismatch (absent runoff
+  generation mechanisms) matters more than geographic distance. No quantitative
+  distance framework exists.
+- No foundation model operates at sub-daily resolution. All three frontier
+  global models (Google, AIFL, RiverMamba) are daily-only.
+- Probabilistic transfer is unexplored — unknown whether CMAL/quantile
+  calibration survives transfer.
+- Minimum fine-tuning data at sub-daily resolution is unknown.
+- **Gap confirmed**: sub-daily transfer learning is unexplored. The interaction
+  between temporal resolution, climate dissimilarity, and uncertainty
+  calibration under transfer is entirely open.
 
-**Key gap**: Sub-hourly transfer learning is unexplored.
+**Deliverables in research file**: Daily baseline synthesis, global transfer
+analysis, climate dissimilarity evidence, entity awareness critique,
+foundation model inventory, sub-daily gap analysis, CRAAB per sub-topic,
+verification TODOs.
 
 ### 6. Datasets and NWP Ensemble Products
 
+> **Research**: [06-datasets-and-nwp.md](06-datasets-and-nwp.md) ✅
+> **See also**: [precipitation_products.md](precipitation_products.md)
+
 **Question**: What data exists to run these experiments?
 
-**To cover**:
-- Streamflow: USGS NWIS 15-min, CAMELSH, LamaH-CE, CAMELS-GB v2
-- NWP ensembles: GEFS v12 reforecast (5–11 members, 3-hourly, 2000–2019),
-  GEFS v12 operational (31 members), TIGGE (51 members, 6-hourly),
-  ECMWF IFS ENS open data (51 members, 3-hourly, 2024+)
-- Reanalysis: NLDAS-2, ERA5-Land, CHESS-met
-- Training vs evaluation split strategies for different member counts
+**Key findings**:
+- Four curated hourly datasets exist: CAMELSH (5,188+ US), LamaH-CE (859
+  Central Europe), CAMELS-GB v2 (671 UK), CAMELS-SPAT (1,426 US/Canada). All
+  stop at hourly — no sub-hourly benchmark exists.
+- Only CAMELS-GB v2 provides hourly water level alongside discharge.
+- CAMELS-CH is daily only (331 Swiss catchments). No hourly extension published.
+- Two NWP ensemble reforecast archives: GEFSv12 (5/11 members, 3h, 2000-2019,
+  free) and ECMWF ENS (11 members, 6h, rolling 20 yr, restricted). No AI
+  weather model reforecast archive publicly available.
+- ICON-CH2-EPS (SAPPHIRE v0 primary NWP) has no public reforecast — must use
+  reanalysis→NWP domain adaptation strategy.
+- ERA5-Land is the only viable global hourly reanalysis but has systematic
+  precipitation biases in mountains. Bias correction mandatory.
+- AIFL showed reanalysis→NWP domain shift drops NSE from 0.58 to 0.33 without
+  fine-tuning. Two-stage training essential.
+- No dataset exists for Nepal/Himalayan catchments at any resolution.
+- Ensemble member count mismatch strategies emerging (fair CRPS, per-member
+  processing, 4 members suffice for training) but unvalidated for hydrology.
+- **Gap confirmed**: no sub-hourly benchmark, no NWP ensemble forcing in any
+  dataset, no Nepal data.
 
-**Deliverable**: Table of data sources with resolution, coverage, access.
+**Deliverables in research file**: Streamflow dataset inventory table, NWP
+ensemble product comparison, reanalysis quality synthesis, train/eval split
+strategies, member count mismatch strategies, CRAAB per sub-topic, verification
+TODOs.
 
 ---
 
