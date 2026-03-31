@@ -28,7 +28,7 @@ Prefect 3 replaces a patchwork of Luigi, bash scripts, and cron jobs with a sing
 | Data archival | `archive_cold_data` | `ops` | Cron (monthly) | — | **v1** (§A2) |
 | Backup restore rehearsal | `rehearse_backup_restore` | `ops` | Cron (monthly) | — | **v1** (§A10) |
 
-All cron schedules are deployment-configurable — set as `CronSchedule` parameters in each deployment definition, not hardcoded. See cicd.md § Prefect work pool separation for pool-level concurrency limits and container resource bounds.
+All cron schedules are deployment-configurable — set as `CronSchedule` parameters in each deployment definition, not hardcoded. **→ DECISION (plan 013)**: At ~1000 stations on a single `default` work pool (v0), staggering forecast cycles, observation ingest (48 runs/day), and backup flows is a recommended operational practice to reduce contention. Operators should offset cron schedules to avoid simultaneous heavy flows (e.g., stagger `run_forecast_cycle` and `train_models` by at least 10 minutes). See cicd.md § Prefect work pool separation for pool-level concurrency limits and container resource bounds.
 
 ## Task granularity
 
@@ -54,7 +54,7 @@ Flow 1 parallelizes forecast execution across stations. Two mechanisms are avail
 - `task.map()` — for homogeneous work over a collection (e.g. running the same forecast task for each station/model pair).
 - `task.submit()` + gather — for heterogeneous parallel work where tasks differ by inputs or type.
 
-`task.map()` with `unmapped()` store/connection arguments requires an in-process task runner (`ThreadPoolTaskRunner` or `ConcurrentTaskRunner`). Stores hold SQLAlchemy connections that are not pickle-serializable — distributed or subprocess runners would fail. v0 uses a single work pool with in-process execution.
+`task.map()` with `unmapped()` store/connection arguments requires an in-process task runner (`ThreadPoolTaskRunner`; note: `ConcurrentTaskRunner` is a backwards-compatibility alias for the same class in Prefect 3.6+). Stores hold SQLAlchemy connections that are not pickle-serializable — distributed or subprocess runners would fail. v0 uses a single work pool with in-process execution. **→ BENCHMARK (plan 013)**: Default `max_workers` is unbounded (`sys.maxsize`). At ~1000-station fan-out via `task.map()`, this spawns ~1000 concurrent OS threads. Cap via `ThreadPoolTaskRunner(max_workers=N)` or `PREFECT_TASK_RUNNER_THREAD_POOL_MAX_WORKERS` env var. Benchmark thread count limits, memory footprint, and connection pool pressure before deploying at >500 stations.
 
 Illustrative sketch for Flow 1 (not implementation):
 
@@ -164,11 +164,13 @@ Flows 7 and 8/10 appear in both on-demand and subflow categories: they can be in
 **Shared resources**: Use Prefect's `concurrency()` context manager to guard shared resources within a flow. For example, flows that write to the DB in bulk should acquire a named concurrency slot to avoid saturating the connection pool:
 
 ```python
-async with concurrency("db_bulk_write", occupy=1):
+with concurrency("db_bulk_write", occupy=1):  # from prefect.concurrency.sync import concurrency
     store.write_batch(records)
 ```
 
-**Per-station write lock**: Flow 12 (`reprocess_observations`) must not overlap with Flow 2 (`ingest_observations`) for the same station and time period. Enforced via `concurrency("observation_write:{station_id}", occupy=1)`.
+**→ DECISION (plan 013)**: At ~1000-station fan-out, `occupy=1` serializes all bulk writes — this is the write-throughput ceiling. The slot width is a tuning lever: widen to `occupy=2–4` with a correspondingly sized connection pool when benchmarks confirm safe. For v0 (~170 stations), `occupy=1` is sufficient.
+
+**Per-station write lock**: Flow 12 (`reprocess_observations`) must not overlap with Flow 2 (`ingest_observations`) for the same station and time period. Enforced via `concurrency("observation_write:{station_id}", occupy=1)`. **→ DECISION (plan 013)**: At ~1000 stations during reprocessing events, 1000 active named slots generate Prefect DB I/O for slot acquisition/release. Keep as-is; note this compounds with the 30-day Prefect DB retention concern (cicd.md line 141).
 
 **Pool-level**: See cicd.md § Prefect work pool separation for per-pool default concurrency limits and container resource bounds (`mem_limit`, `cpus`). All limits are deployment-configurable.
 

@@ -58,7 +58,7 @@ no station ID mapping needed. The `stations.code` field directly matches both CA
 `gauge_id` and LINDAS `site_code`.
 
 Not all 331 CAMELS-CH basins will have real-time LINDAS data. The v0 station selection
-(~10–50 stations) should be drawn from the intersection of CAMELS-CH basins that also
+(up to ~170 stations) should be drawn from the intersection of CAMELS-CH basins that also
 have operational LINDAS telemetry.
 
 ### 1d. Sub-daily datasets for v0b (temporal resolution experiments)
@@ -380,15 +380,13 @@ for the v0b experimental setup.
    (`architecture-context.md` § Data retention) specifies that **daily aggregates are
    retained permanently in PostgreSQL** as a pre-computed layer, aggregated using local
    timezone day boundaries. This is distinct from the raw sub-daily observations which
-   follow the hot→cold→delete lifecycle.
+   follow the hot→cold→delete lifecycle (v1; v0 retains all data in PostgreSQL — see v0-scope §A2).
 
-   For v0: query-time aggregation is viable at v0 scale (~50 stations, 2.6M rows/year)
-   and can serve as a stopgap. Query-time `date_trunc('day', timestamp)` GROUP BY
-   completes in <1 second for 50 stations with existing indexes.
+   For v0 (~170 Swiss stations): query-time aggregation is viable (~9M rows/year, ~2.5× the original ~50-station estimate of 2.6M rows/year). Query-time `date_trunc('day', timestamp)` GROUP BY completes in <1 second with existing indexes. **→ BENCHMARK (plan 013)**: At the ~1000-station architectural ceiling (~52–63M rows/year), index performance is untested; verify before deploying at >500 stations.
 
-   For v1 (Nepal, 500 stations): the architecture's pre-computed daily aggregate approach
-   becomes necessary. At 500 stations × 144 obs/day × 548-day hot window ≈ 39M rows in
-   PostgreSQL, query-time aggregation remains feasible (<5s) but the permanent daily
+   For v1 (Nepal, ~1000 stations): the architecture's pre-computed daily aggregate approach
+   becomes necessary. At 1000 stations × 144 obs/day × 548-day hot window ≈ 79M rows in
+   PostgreSQL, query-time aggregation may exceed acceptable latency. The permanent daily
    aggregate table provides:
    - Instant reads for daily models (no aggregation at query time)
    - Survival beyond the hot window (daily aggregates are permanent, raw obs are archived)
@@ -396,7 +394,7 @@ for the v0b experimental setup.
 
    **v0 implementation**: Start with query-time aggregation. Add the permanent daily
    aggregate computation as part of Flow 2 (after QC, before storage completes) when
-   sub-daily operational data arrives. This aligns with the architecture's design.
+   sub-daily operational data arrives or when station count exceeds ~300 (whichever comes first). This aligns with the architecture's design.
 
 3. **CAMELS-CH unit convention**: CAMELS-CH uses specific discharge (mm/d) which requires
    basin area for conversion to absolute discharge (m³/s). The adapter must have access to
@@ -556,7 +554,7 @@ S1 (stores) ──┬── S2 (CAMELS-CH adapter) ──┐
    - Mix of catchment sizes (small flashy + large slow)
    - Mix of regulation types (unregulated preferred)
    - Known edge cases (glacier-fed, lake-regulated)
-   - Suggested: 10 stations for development, expand to ~50 for validation
+   - Suggested: 10 stations for development, expand to ~50 for initial validation, target full LINDAS-available fleet (~170 stations) for v0 production
 
 3. **Daily timestamp convention**: CAMELS-CH provides dates without time. Use midnight UTC?
    This affects joins with operational 10-min data when both exist for the same station.

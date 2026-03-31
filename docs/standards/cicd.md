@@ -6,7 +6,7 @@
 
 ## Docker Compose service topology
 
-Single VM deployment. All services in one `docker-compose.yml`.
+Single VM deployment. All services in one `docker-compose.yml`. Swiss v0 targets up to ~170 stations; architecture supports ~1000 stations across deployments.
 
 ### Services
 
@@ -122,7 +122,7 @@ No schema downgrade path — rollback = restore from backup + redeploy previous 
 
 ### Container log driver
 
-All containers: `json-file` with `max-size: 50m`, `max-file: 5`. Set in `docker-compose.yml` logging config.
+All containers: `json-file` with `max-size: 50m`, `max-file: 5`. Set in `docker-compose.yml` logging config. **→ DECISION (plan 013)**: At ~1000 stations, log volume scales ~20× (see line 145). For deployments exceeding ~300 stations, increase to `max-file: 10` for the worker container or route structured logs to a persistent sink to preserve diagnostic history during incidents.
 
 ### Application logging
 
@@ -138,11 +138,11 @@ JSON format, auto-rotated by Caddy. Include: timestamp, client IP, method, path,
 
 ### Prefect flow logs
 
-Retained in Prefect database. Retention: 30 days (configured in Prefect server settings). Older logs pruned automatically.
+Retained in Prefect database. Retention: 30 days (configured in Prefect server settings). Older logs pruned automatically. **Plan 013 note**: At ~1000 stations, Prefect DB log volume grows ~20× — monitor Prefect DB disk usage alongside application data growth.
 
 ### Disk impact
 
-With 4 forecast cycles/day and 48 obs ingest runs/day, estimated log volume is ~100 MB/day before rotation. The `max-file: 5` x `max-size: 50m` = 250 MB cap per container. 8 containers x 250 MB = ~2 GB maximum disk usage for container logs. v0 has 6 containers (no PgBouncer, one worker instead of three).
+With 4 forecast cycles/day and 48 obs ingest runs/day, estimated log volume is ~100 MB/day at ~50 stations before rotation, scaling roughly linearly with station count (~340 MB/day at ~170 stations, ~2 GB/day at ~1000 stations). The `max-file: 5` x `max-size: 50m` = 250 MB cap per container. 8 containers x 250 MB = ~2 GB maximum disk usage for container logs. v0 has 6 containers (no PgBouncer, one worker instead of three). At ~1000 stations, the 250 MB cap causes logs to rotate within hours — see plan 013 DECISION on line 125.
 
 ## Systemd integration
 

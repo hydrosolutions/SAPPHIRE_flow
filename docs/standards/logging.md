@@ -146,7 +146,7 @@ def _apply_structlog_config(processors: list[structlog.types.Processor], config_
             module_logger.setLevel(getattr(logging, val.upper(), logging.INFO))
 ```
 
-**Warning**: Enabling DEBUG on a high-frequency adapter in production can generate 10K+ events/day. Use targeted module overrides (e.g., `SAPPHIRE_LOG_ADAPTERS_METEOSWISS=DEBUG`), not root-level DEBUG.
+**Warning**: Enabling DEBUG on a high-frequency adapter in production can generate 10K+ events/day at ~50 stations (scaling linearly — ~34K+/day at ~170 stations, ~200K+/day at ~1000 stations). Use targeted module overrides (e.g., `SAPPHIRE_LOG_ADAPTERS_METEOSWISS=DEBUG`), not root-level DEBUG.
 
 `SAPPHIRE_ENV=prod` (default) selects `JSONRenderer`. `SAPPHIRE_ENV=dev` selects `ConsoleRenderer`.
 
@@ -334,7 +334,7 @@ Three distinct destinations:
 
 | Destination | Medium | Retention | Purpose | Decision rule |
 |---|---|---|---|---|
-| Application log | structlog -> stdout -> Docker `json-file` | Ephemeral (50 MB x 5 files per container) | Debugging, performance, incident response | "What happened and why?" |
+| Application log | structlog -> stdout -> Docker `json-file` | Ephemeral (50 MB x 5 files per container; plan 013: increase `max-file` for worker at >300 stations — see cicd.md line 125) | Debugging, performance, incident response | "What happened and why?" |
 | Audit log **(v1)** | `audit_log` DB table (INSERT-only) | Permanent | Security and compliance | "Who did what?" |
 | Pipeline health | `pipeline_health` DB table | 30 days | Flow 4 watchdog, `/api/v1/health/detail` | "Is the system healthy?" |
 

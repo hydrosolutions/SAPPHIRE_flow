@@ -7,7 +7,7 @@ Read this first before working on any task.
 Operational hydrological forecasting system. Ingests historical and real-time weather forecasts and
 weather station as well as river observations, runs ensemble forecast models, checks alert thresholds, and
 serves results via REST API. Forecasters review and publish forecasts multiple 
-times a day. Runs on Docker Compose on a single VM.
+times a day. Runs on Docker Compose on a single VM. Swiss v0 targets up to ~170 stations (LINDAS-available BAFU gauges); the architecture supports scaling to ~1000 stations across deployments.
 
 ## Data flows
 
@@ -132,7 +132,7 @@ ML models (e.g. LSTM) require a lookback window (typically 365 days) of historic
 - **Gridded reanalysis** (ERA5-Land for v1) — spatially consistent, gap-free, but daily-only for some Swiss products.
 - **Archived NWP extractions** — from the NWP archive (step 1.4). Only covers the operational period, not the full lookback window.
 
-**Decision (v0)**: Use SMN station observations (hourly, 1981-present) co-located with BAFU river gauges. Simple, sufficient for v0 scale (~50 Swiss stations), and immediately available. **v1**: Switch to ERA5-Land via `WeatherReanalysisSource` Protocol for Nepal (better spatial consistency, gap-free). The forcing source must remain injectable in `prepare_model_inputs()` and training data assembly — see v0-scope.md §I2.
+**Decision (v0)**: Use SMN station observations (hourly, 1981-present) co-located with BAFU river gauges. Simple, sufficient for Swiss v0 scale (~170 LINDAS-available BAFU gauges), and immediately available. **→ DECISION (plan 013)**: The binding constraint is co-located SMN/BAFU pairs with sufficient hourly history (1981–present) for ML training — a subset of ~170. "~1000 stations" is the multi-deployment architectural ceiling; non-Swiss deployments use ERA5-Land, not SMN. **v1**: Switch to ERA5-Land via `WeatherReanalysisSource` Protocol for Nepal (better spatial consistency, gap-free). The forcing source must remain injectable in `prepare_model_inputs()` and training data assembly — see v0-scope.md §I2.
 
 This choice affects model skill and must be consistent between training (Flows 6/9) and operational inference.
 
@@ -603,7 +603,7 @@ This ensures that adding new features does not require re-downloading existing d
 
 For v0, CAMELS-CH already bundles static attributes and historical forcing in a single ZIP download from Zenodo. The current `scripts/onboard.py --download` effectively performs steps 0.2 + 0.3 combined. Formalizing this as Flow 0 is a design-level change that prepares the architecture for v1 without requiring immediate code changes — the existing download step is retroactively recognized as a deployment onboarding step.
 
-**v0 timing**: CAMELS-CH download (~1.5 GB) takes 1–5 minutes. Station onboarding steps 5.1–5.9 take ~10 seconds for 50 stations. Total first-deployment time: **under 10 minutes** — well within the 15-minute target.
+**v0 timing**: **→ DECISION (plan 013)**: CAMELS-CH download (~1.5 GB) is fixed-cost: 1–5 minutes regardless of station count. Per-station steps (5.1–5.9) are O(n): QC, climatology quantiles, persistence baseline, flow regime boundaries, and training trigger each scale linearly. At ~170 Swiss stations: ~35 seconds for per-station steps. At ~1000 stations: ~200 seconds (~3.3 minutes). Total first-deployment time: **under 10 minutes** at ~170 stations, **under 9 minutes** at ~1000 stations (assuming median CAMELS-CH download speed) — well within the 15-minute target.
 
 ---
 
@@ -1502,7 +1502,7 @@ model_assignments:
   PK: (station_id, model_id)
 ```
 
-Station-scoped model assignments use per-station rows regardless of `artifact_scope`. A group-scoped ML model assigned via `model_assignments` to 50 stations = 50 rows, all referencing the same `model_id`. The artifact lookup differs: station-scoped → `model_artifacts WHERE station_id = ?`, group-scoped → `model_artifacts WHERE group_id = (SELECT group_id FROM station_group_members WHERE station_id = ? ...) AND model_id = ?`. Priority convention: linear regression (0) > ML (1) > conceptual (2). One time step per (station, model) — if the same model is needed at multiple time steps (uncommon), register it as a separate model entry (e.g. `lstm_hourly`, `lstm_daily`).
+Station-scoped model assignments use per-station rows regardless of `artifact_scope`. A group-scoped ML model assigned via `model_assignments` to 1000 stations = 1000 rows, all referencing the same `model_id`. The artifact lookup differs: station-scoped → `model_artifacts WHERE station_id = ?`, group-scoped → `model_artifacts WHERE group_id = (SELECT group_id FROM station_group_members WHERE station_id = ? ...) AND model_id = ?`. Priority convention: linear regression (0) > ML (1) > conceptual (2). One time step per (station, model) — if the same model is needed at multiple time steps (uncommon), register it as a separate model entry (e.g. `lstm_hourly`, `lstm_daily`).
 
 #### `group_model_assignments` table (group-scoped model assignments)
 
@@ -2691,7 +2691,7 @@ Current scope: disaster recovery (DR), not high availability (HA).
        "database": {"status": "ok | down", "latency_ms": 4},
        "prefect_worker": {"status": "ok | stale | down", "last_heartbeat_ago_seconds": 12},
        "nwp_ingest": {"status": "ok | warning | critical", "last_cycle": "ISO 8601", "age_hours": 7.2},
-       "observation_ingest": {"status": "ok | warning", "stations_stale": 0, "stations_total": 42},
+       "observation_ingest": {"status": "ok | warning", "stations_stale": 0, "stations_total": 170},
        "forecast_cycle": {"status": "ok | warning | critical", "last_issued_at": "ISO 8601", "age_hours": 1.1},
        "dead_letter_queue": {"status": "ok | warning | critical", "unresolved_count": 0},
        "disk": {"status": "ok | warning | critical", "usage_percent": 61, "available_gb": 142.5}
@@ -2717,9 +2717,10 @@ Current scope: disaster recovery (DR), not high availability (HA).
 
 ### Capacity planning
 
-- **Estimated growth**: ~1.5 GB/day for a 500-station deployment with 21-member NWP. Worked example: 500 stations × 21 members × 4 cycles/day × 120 timesteps × ~60 bytes/row ≈ 1.5 GB/day raw, plus Parquet cold storage and model artifacts.
-- **Minimum disk**: 1 TB SSD recommended for v1. Review quarterly against actual growth.
+- **Estimated growth (plan 013 re-derivation)**: Raw forecast_values row volume = stations × 21 members × 4 cycles/day × 120 timesteps × ~60 bytes/row. At ~170 Swiss stations: ~103 MB/day raw. At ~1000 stations (architectural ceiling): ~605 MB/day raw (~0.6 GB/day). PostgreSQL on-disk (heap overhead, indexes, WAL): ~2–4× raw. Total storage growth: ~0.2–0.4 GB/day at ~170 stations, ~1.2–2.4 GB/day at ~1000 stations. Observations add <50 MB/day (negligible vs forecasts).
+- **Minimum disk**: 1 TB SSD recommended. At ~170 Swiss stations, 1 TB provides 2,500–5,000 days of headroom. At ~1000 stations (architectural ceiling), 1 TB fills in ~415–830 days depending on PostgreSQL overhead — review quarterly against actual growth and plan upgrade to 2 TB before reaching 70% utilization.
 - **Monitoring**: Flow 4 step 4.5 checks disk usage and writes to `pipeline_health` with `check_type = 'disk_usage'`. Thresholds: WARNING at 80%, CRITICAL at 90%. Exposed in `/api/v1/health/detail` under the `disk` component (already present in the health endpoint schema above).
+- **Single VM viability (plan 013 Task 4)**: At Swiss v0 scale (~170 stations), single VM is comfortably sufficient — storage growth is ~0.2–0.4 GB/day, forecast cycle completes in < 60s, and in-process fan-out stays under ~200 threads. At the ~1000-station architectural ceiling, single VM remains viable for I/O and storage (1 TB SSD provides ~1–2 years) but two areas require benchmarking before deployment at that scale: (a) in-process `task.map()` across 1000 stations (~1000 OS threads, memory footprint, connection pool pressure — see orchestration.md BENCHMARK), and (b) ICON-CH2-EPS GridExtractor CPU load at bulk extraction scale. The HA escape hatch (line 2643: migration to Docker Swarm/Kubernetes) addresses availability failover, not performance saturation — it remains valid but does not substitute for the benchmarks above.
 
 Communication to hydromet: database backups are automated and recovery procedures are documented. HA (automatic failover) is not included in this project phase but can be added later if required.
 

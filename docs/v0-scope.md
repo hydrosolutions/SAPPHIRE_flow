@@ -6,7 +6,7 @@
 
 ## Guiding principles
 
-- v0 = Swiss public data, ~50 stations, single VM, 1-2 users
+- v0 = Swiss public data, up to ~170 stations (LINDAS-available BAFU gauges), single VM, 1-2 users. Architecture supports scaling to ~1000 stations across deployments.
 - As fast as possible: aggressive performance optimization on the forecast cycle
 - Research-friendly: easy to add models, run experiments, export data. v0 includes multi-parameter forecasting experiments — river stations forecast discharge, lake stations (33 in CAMELS-CH) forecast water_level. This validates the multi-target pipeline (§A13) before Nepal v1 deployment, which requires both discharge and water_level stage.
 - Professional enough for hydromet handover (clean types, documented APIs, reproducible results)
@@ -31,7 +31,7 @@
 | Flow | Earliest | Why |
 |------|----------|-----|
 | Flow 3 — Forecast review | v1 | No dashboard |
-| Flow 4 — Pipeline monitoring | v0c or v1 | Manual supervision suffices at ~50 stations. Health endpoint (`/api/v1/health`) does lightweight live checks (DB ping, Prefect heartbeat) independently — does not require Flow 4. `pipeline_health` table exists but is not populated until Flow 4 is implemented. |
+| Flow 4 — Pipeline monitoring | v0c or v1 | **→ DECISION (plan 013)**: Manual supervision suffices at Swiss v0 scale (~170 stations). Health endpoint (`/api/v1/health`) does lightweight live checks (DB ping, Prefect heartbeat) independently — does not require Flow 4. `pipeline_health` table exists but is not populated until Flow 4 is implemented. |
 | Flow 9 — Model retraining (comparison) | v1 | Only initial training needed |
 | Flow 10 — Skill recomputation (broad) | v1 | Flow 8 (narrow) covers v0 |
 | Flow 11 — NWP gap recovery | v0c or v1 | Gaps accepted and logged |
@@ -47,7 +47,7 @@
 
 **Full design**: 4 tables partitioned (observations yearly, forecast_values monthly, hindcast_values monthly, weather_forecasts monthly) with pg_partman, pg_cron, dead letter queue, DLQ drain task.
 
-**v0**: Plain unpartitioned tables. ~50 stations with daily forecasts produce a few GB/year — negligible. Migration to partitioned tables later is a one-time operation on small data.
+**v0**: Plain unpartitioned tables. **→ DECISION (plan 013)**: At the Swiss v0 ceiling of ~170 stations with 1 forecast parameter/station and 4 cycles/day, forecast_values grows at ~0.1 GB/day raw (~0.2–0.4 GB/day with PostgreSQL overhead). At the architectural ceiling of ~1000 stations across deployments: ~0.6 GB/day raw (~1.2–2.4 GB/day with overhead), producing ~3.7B forecast_values rows/year. Partitioning deferral remains defensible for Swiss v0 (~170 stations); revisit when a deployment exceeds ~300 stations or when cumulative forecast_values exceeds ~500M rows. Migration to partitioned tables is a one-time operation but no longer on "small data" at the 1000-station ceiling.
 
 **Removes**: pg_partman, pg_cron extension, `dead_letter_queue` table, `drain_dlq` Prefect task, `PartitionMissingError` handling, all DLQ-related logic in stores.
 
@@ -55,7 +55,7 @@
 
 **Full design**: Hot (PostgreSQL) → cold (Parquet) → delete at max_retention_days. Cold storage layout, archival task, hot/cold dispatch in stores, Parquet schema versioning.
 
-**v0**: Everything stays in PostgreSQL. No cold storage, no archival task, no Parquet export. Set generous retention — v0 data fits in a few GB. **Exception**: Resolved `alerts` rows are deleted on a schedule (default 90 days) to prevent unbounded growth — these have no analytical value and no cold-storage path.
+**v0**: Everything stays in PostgreSQL. No cold storage, no archival task, no Parquet export. **→ DECISION (plan 013)**: At ~170 Swiss stations, daily storage growth is ~0.2–0.4 GB/day; the 548-day hot window (architecture-context.md line 2595) accumulates ~0.11–0.22 TB — well within a 1 TB SSD. At the ~1000-station architectural ceiling: 1.2–2.4 GB/day, accumulating ~0.64–1.28 TB in the hot window. Retention deferral is defensible for Swiss v0; revisit when total DB size approaches 500 GB. **Exception**: Resolved `alerts` rows are deleted on a schedule (default 90 days) to prevent unbounded growth — these have no analytical value and no cold-storage path.
 
 **Removes**: `archive_cold_data` flow, cold storage directory layout, Parquet read/write in stores, hot/cold dispatch logic, schema version metadata.
 
@@ -63,7 +63,7 @@
 
 **Full design**: PgBouncer in transaction mode, separate `DATABASE_URL_DIRECT` for migrations.
 
-**v0**: Direct PostgreSQL connections. One API process + one Prefect worker = no connection pooling needed. Use asyncpg's built-in pool or SQLAlchemy's pool.
+**v0**: Direct PostgreSQL connections. One API process + one Prefect worker = no connection pooling needed. Use asyncpg's built-in pool or SQLAlchemy's pool. **→ DECISION (plan 013)**: PgBouncer deferral remains safe for v0. At ~1000 stations with sub-daily ingest, connection pressure increases (particularly v0b's GridExtractor subflow concurrency), but asyncpg's built-in pool with 5-10 connections is sufficient for a single worker process. Revisit if connection pool exhaustion is observed or if multiple worker processes are introduced.
 
 **Removes**: PgBouncer container, dual connection string config, transaction-mode gotchas.
 
@@ -97,7 +97,7 @@ Implement the full skill metric suite: CRPS, CRPSss (climatology + persistence b
 
 **Full design**: Three work pools (ops, training, hindcast) with per-pool concurrency and resource limits.
 
-**v0**: Single `default` pool. At v0 scale, resource isolation is unnecessary. Training runs are infrequent and manual.
+**v0**: Single `default` pool. **→ DECISION (plan 013)**: Resource isolation remains unnecessary for v0. Training runs are infrequent and manual. At ~170 Swiss stations, training does not compete materially with the forecast cycle. Operational note: avoid running `train_models` concurrently with `run_forecast_cycle` on resource-constrained VMs. Pool separation (three-pool topology) is warranted when training becomes scheduled/frequent or when a deployment exceeds ~500 stations.
 
 ### A7. Simplified model artifact lifecycle
 
@@ -172,7 +172,7 @@ Rationale: per-source flags allow incremental activation during testing — pipe
 
 **Full design**: Configurable forcing source for ML model lookback windows — station observations, gridded reanalysis, or archived NWP (see architecture-context.md).
 
-**v0**: Use SMN station observations (hourly, 1981-present) co-located with BAFU river gauges. Simple, immediately available, sufficient for v0 scale. The forcing source is injected via adapter dependency, not hardcoded — `prepare_model_inputs()` and training data assembly accept a forcing source parameter (see §I2). **v1**: Switch to ERA5-Land via `WeatherReanalysisSource` Protocol for Nepal.
+**v0**: Use SMN station observations (hourly, 1981-present) co-located with BAFU river gauges. Simple, immediately available, sufficient for Swiss v0 scale (~170 LINDAS-available BAFU gauges). **→ DECISION (plan 013)**: The binding constraint is how many BAFU gauges have co-located SMN weather stations with sufficient hourly history (1981–present) for ML training — this is a subset of ~170. "~1000 stations" is the multi-deployment architectural ceiling (including non-Swiss deployments where SMN is irrelevant). Swiss v0 is SMN-bounded; non-Swiss v1 deployments use ERA5-Land. The forcing source is injected via adapter dependency, not hardcoded — `prepare_model_inputs()` and training data assembly accept a forcing source parameter (see §I2). **v1**: Switch to ERA5-Land via `WeatherReanalysisSource` Protocol for Nepal.
 
 ### A13. Generalized model input container
 
@@ -256,7 +256,7 @@ These are deferred in architecture-context.md. For v0, don't create their tables
 
 ## D. Performance: fast forecast cycle
 
-Target: full forecast cycle for 50 stations in < 60 seconds.
+Target: full forecast cycle in < 60 seconds at Swiss v0 scale (~170 stations). At the ~1000-station architectural ceiling, the target shifts to per-station budget (< 60 ms/station wall-clock with parallelism) pending benchmarks — see plan 013 Task 3.
 
 ### D1. Pre-load model artifacts
 
@@ -264,7 +264,7 @@ Load model artifacts into memory at worker startup (or LRU cache on first use). 
 
 ### D2. Batch database operations
 
-- **Writes**: PostgreSQL `COPY` protocol (asyncpg `copy_to_table()` or Polars `write_database()`) for forecast_values. 50 stations x 21 members x 120 timesteps = 126K rows — COPY is 10-50x faster than INSERT.
+- **Writes**: PostgreSQL `COPY` protocol (asyncpg `copy_to_table()` or Polars `write_database()`) for forecast_values. At ~170 Swiss stations: 170 × 21 members × 120 timesteps = ~429K rows/cycle. At ~1000-station ceiling: 1000 × 21 × 120 = 2.52M rows/cycle. **→ BENCHMARK (plan 013)**: COPY performance at 2.52M rows/cycle is untested; verify before deploying at >500 stations. COPY is 10-50x faster than INSERT.
 - **Reads**: `WHERE station_id = ANY($1)` for batch observation fetch. ConnectorX or Polars `read_database_uri()` for bulk reads into DataFrames.
 - **Pool**: asyncpg connection pool (5-10 connections) in the worker process.
 
@@ -292,19 +292,21 @@ Load model artifacts into memory at worker startup (or LRU cache on first use). 
 
 Every Flow 1 step instrumented with `time.perf_counter()` + structured logging.
 
-Target per-step budgets (50 stations):
+Target per-step budgets (~170 Swiss stations; scale linearly for larger deployments — see plan 013 Task 3 for ~1000-station re-derivation):
 
-| Step | Target | Bottleneck |
-|------|--------|-----------|
-| 1.1 NWP fetch | 15-30s | Network |
-| 1.3 Spatial extraction | 5s | CPU |
-| 1.6 Observation fetch | 2s | DB read |
-| 1.7 Prepare inputs | 3s | In-memory |
-| 1.8 Run models (all) | 10-30s | CPU (parallel) |
-| 1.10 Forecast QC | < 1s | In-memory |
-| 1.11 Store results | 3s | DB write (COPY) |
-| 1.12–1.14 Alert checking | < 5s | In-memory |
-| **Total** | **< 60s** | |
+| Step | Target (~170 stations) | Target (~1000 stations) | Bottleneck | Scaling |
+|------|----------------------|------------------------|-----------|---------|
+| 1.1 NWP fetch | 15-30s | 15-30s | Network | Fixed (one grid fetch) |
+| 1.3 Spatial extraction | 5s | 5-15s | CPU | O(n) but bulk-extracted in one pass |
+| 1.6 Observation fetch | 2s | 5-10s | DB read | O(n) with batch `ANY($1)` |
+| 1.7 Prepare inputs | 3s | 10-15s | In-memory | O(n) per station |
+| 1.8 Run models (all) | 10-30s | 10-30s | CPU (parallel) | Parallelized via `task.map()` — wall-clock ~ constant if threads available |
+| 1.10 Forecast QC | < 1s | 2-5s | In-memory | O(n) per station |
+| 1.11 Store results | 3s | 10-30s | DB write (COPY) | O(n) rows; **→ BENCHMARK**: 2.52M rows/cycle via COPY untested. Bottlenecked by `db_bulk_write` slot (see orchestration.md DECISION) |
+| 1.12–1.14 Alert checking | < 5s | 5-15s | In-memory | O(n) per station |
+| **Total** | **< 60s** | **~60-150s (pending benchmarks)** | | |
+
+**Plan 013 Task 3 notes**: At ~1000 stations, the < 60s headline target is unlikely without chunked fan-out and `max_workers` tuning. The per-station budget target (< 60 ms/station) is a better framing for larger deployments. Steps 1.8 and 1.11 are the binding constraints — 1.8 depends on `ThreadPoolTaskRunner` `max_workers` tuning (see orchestration.md BENCHMARK), 1.11 depends on `db_bulk_write` slot width and COPY throughput. The `db_bulk_write` single-slot bottleneck (orchestration.md lines 164-169) directly constrains step 1.11. Network-bound step 1.1 remains fixed-cost regardless of station count (one grid fetch, bulk extraction).
 
 ### D7. API response speed
 
@@ -492,7 +494,7 @@ Permutation-invariant processing requires `future_dynamic` to carry a member dim
 
 | v1 feature | Why safe |
 |------------|----------|
-| Table partitioning | Additive migration on small data |
+| Table partitioning | Additive migration — small data at Swiss v0 scale (~170 stations). At the ~1000-station architectural ceiling (~3.7B forecast_values rows/year), migration is no longer trivial; plan partitioning before exceeding ~500M cumulative rows. See §A1 DECISION (plan 013). |
 | Rating curve columns on observations | Nullable column addition (metadata-only in PostgreSQL) |
 | Stage 2 QC (2.5–2.7) | Independent flag set, does not change Stage 1 interface |
 | Notification dispatch | Reads alerts, does not change alert model |

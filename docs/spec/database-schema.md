@@ -7,8 +7,8 @@ Derived from table definitions in `architecture-context.md` and scoping rules in
 
 ## v0 Schema (23 tables)
 
-Swiss public data, ~50 stations, single VM. No partitioning, no auth, no rating curves,
-no forecast adjustments, no DLQ, no cold storage. See `v0-scope.md` §A–C for rationale.
+Swiss public data, up to ~170 stations (LINDAS-available BAFU gauges), single VM. Architecture supports ~1000 stations across deployments. No partitioning, no auth, no rating curves,
+no forecast adjustments, no DLQ, no cold storage. See `v0-scope.md` §A–C for rationale and plan 013 for scale re-evaluation.
 
 **Differences from full schema** (marked with `v0▸` below):
 - `observations`: no `rating_curve_id`, no `rating_curve_correction_version` columns
@@ -108,7 +108,7 @@ erDiagram
     %% OBSERVATION DOMAIN
     %% v0: no rating_curve_id, no rating_curve_correction_version
     %% v0: no rating_curves table
-    %% v0: not partitioned
+    %% v0: not partitioned (plan 013: ~8.9M rows/year at ~170 stations, ~52.6M at ~1000 — ~6×)
     %% ──────────────────────────────────────────────
 
     observations {
@@ -129,7 +129,7 @@ erDiagram
     %% ──────────────────────────────────────────────
     %% WEATHER / NWP DOMAIN
     %% v0: no is_gap, no gap_status (Flow 11 deferred)
-    %% v0: not partitioned
+    %% v0: not partitioned (plan 013: negligible volume vs forecast_values)
     %% ──────────────────────────────────────────────
 
     weather_forecasts {
@@ -225,7 +225,7 @@ erDiagram
 
     %% ──────────────────────────────────────────────
     %% FORECAST DOMAIN
-    %% v0: not partitioned
+    %% v0: not partitioned (plan 013: ~3.7B forecast_values rows/year at ~1000 stations; see v0-scope §A1 DECISION)
     %% v0: no forecast_adjustments table
     %% ──────────────────────────────────────────────
 
@@ -356,6 +356,7 @@ erDiagram
     %% v0: alerts kept but notified_at always NULL (no notification system)
     %% Retention: pipeline_health rows deleted after 30 days;
     %%            resolved alerts deleted after 90 days
+    %% Plan 013: growth rate increases ~20× at ~1000 stations vs ~50
     %% ──────────────────────────────────────────────
 
     alerts {
@@ -427,7 +428,7 @@ are included (alerting is optional in v0, controlled by per-source alert flags (
 |-------|-------------|-----------|
 | `rating_curves` | BAFU provides discharge directly | v0-scope §B |
 | `forecast_adjustments` | No dashboard, no forecaster adjustments | v0-scope §A9 |
-| `dead_letter_queue` | No partitioning = no DLQ needed | v0-scope §A1 |
+| `dead_letter_queue` | No partitioning = no DLQ needed (plan 013: if partitioning is advanced, DLQ must be re-evaluated — see v0-scope §A1 DECISION) | v0-scope §A1 |
 | `users` | Auth deferred to v1 | v0-scope §B |
 | `access_tokens` | Auth deferred to v1 | v0-scope §B |
 | `refresh_tokens` | Auth deferred to v1 | v0-scope §B |
