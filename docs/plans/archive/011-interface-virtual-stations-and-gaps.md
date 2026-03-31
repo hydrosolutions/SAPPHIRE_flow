@@ -27,7 +27,8 @@ The remaining items (§E, §F, §H) are retained here as backlog.
 **What:** Large models (LSTM, transformer-based) may require GPU resources not
 available on the default Docker Compose worker. The design for remote/GPU training
 exists in `docs/design/v0-flow13-model-onboarding.md` §9 but is barely surfaced in
-`architecture-context.md`.
+`architecture-context.md` (only a passing mention of "work pool separation" in the
+CI/CD standards summary, line ~2845).
 
 **Existing design (v0-flow13 §9):**
 - v1: `ModelDataRequirements` gains `compute_backend: Literal["cpu", "gpu"]`. Prefect
@@ -42,8 +43,9 @@ exists in `docs/design/v0-flow13-model-onboarding.md` §9 but is barely surfaced
    doc is sufficient.
 2. If promoted: document the work pool topology, GPU pool provisioning (cloud provider
    agnostic), artifact transfer between pools, and failure/retry semantics.
-3. Consider whether remote training should be offered as an optional paid service —
-   this affects whether the feature is behind a deployment-level toggle.
+3. Consider whether remote training should be offered as an optional paid service
+   (see `docs/business/paid-services.md`) — this affects whether the feature is
+   behind a deployment-level toggle.
 
 **Target:** v1.
 
@@ -53,7 +55,8 @@ exists in `docs/design/v0-flow13-model-onboarding.md` §9 but is barely surfaced
 
 **What:** When individual hindcast steps fail (recorded as `HindcastStepResult(success=False)`),
 the only recovery path is re-running the entire Flow 13 onboarding for that model/station
-unit — which re-runs the full hindcast. At ~1000 stations with sub-daily data,
+unit — which re-runs the full hindcast. v0 starts with a smaller station set but scales
+to ~1000 stations with sub-daily data for planned large-scale experiments. At that scale,
 full-period re-runs for individual step failures are prohibitively expensive.
 
 **Tasks:**
@@ -93,6 +96,6 @@ by using `tuple[tuple[str, float], ...]`, but the QC types remain inconsistent.
 3. Also fix `TrainingResult.hindcast_steps: list[HindcastStepResult]` →
    `tuple[HindcastStepResult, ...]` for consistency with `OnboardingUnitResult.hindcast_steps`
    (plan 006 D4 noted this but deferred it).
-4. Codify the resulting convention in `conventions.md`.
+4. Codify the resulting convention in `conventions.md` (currently unwritten).
 
 **Target:** Low priority cleanup.
