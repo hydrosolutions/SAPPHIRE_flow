@@ -67,6 +67,7 @@ services:
     command: prefect worker start --pool default --type process
     environment:
       SAPPHIRE_DATA_DIR: /data
+      SAPPHIRE_CONFIG: /app/config.toml
       DATABASE_URL_TEMPLATE: postgresql+asyncpg://${DB_USER:-sapphire}@postgres:5432/sapphire
       PREFECT_API_URL: http://prefect-server:4200/api
     depends_on:

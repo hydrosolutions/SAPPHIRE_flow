@@ -582,7 +582,7 @@ class ForecastQualityChecker(Protocol):
 
 Module: `protocols/stores.py`
 
-**Flow 1 integration note** — Step 1.9: Forecast output QC. Runs `ForecastQualityChecker.check()` on each ensemble. Aggregate `QC_FAILED` raises `SanityCheckFailure` (flow tries fallback model). `QC_PASSED` or `QC_SUSPECT` results are stored on the `OperationalForecast`. For hindcasts, `QC_FAILED` flags the hindcast but does not trigger fallback.
+**Flow 1 integration note** — Step 1.10: Forecast output QC. Runs `ForecastQualityChecker.check()` on each ensemble. Aggregate `QC_FAILED` raises `SanityCheckFailure` (flow tries fallback model). `QC_PASSED` or `QC_SUSPECT` results are stored on the `OperationalForecast`. For hindcasts, `QC_FAILED` flags the hindcast but does not trigger fallback.
 
 ### SeasonDefinition
 
@@ -619,7 +619,7 @@ class SkillInterpretationScheme:
 
 ### ExceedanceResult
 
-Intermediate output of threshold checking (Flow 1 steps 1.11–1.12, Flow 2 steps 2.8–2.9).
+Intermediate output of threshold checking (Flow 1 steps 1.12–1.13, Flow 2 steps 2.8–2.9).
 Consumed by the alert service to raise or resolve alerts.
 
 ```python
@@ -2337,7 +2337,7 @@ class DeploymentConfig(BaseModel):
     # --- Per-source alert enablement (v0-scope.md §A8c) ---
     # Per-source flags allow incremental activation: pipeline alerts first,
     # then observation alerts, then forecast alerts. All default false for v0.
-    enable_forecast_alerts: bool = False         # gates Flow 1 Phase C (steps 1.11-1.13)
+    enable_forecast_alerts: bool = False         # gates Flow 1 Phase C (steps 1.12-1.14)
     enable_observation_alerts: bool = False      # gates Flow 2 steps 2.8-2.10
     enable_pipeline_alerts: bool = False         # gates Flow 4 steps 4.6-4.7
     threshold_check_mode: Literal["raw", "published", "both"] = "raw"  # v0: raw only

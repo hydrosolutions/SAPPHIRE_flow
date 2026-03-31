@@ -87,10 +87,11 @@ Layer:    flows/ — orchestration only, delegates to services/adapters
 | 1.7 | Prepare model inputs | per (model, group\|station) | `services/` | Post-processed NWP dict, observations, station configs | Group: `dict[StationId, ModelInputs]`. Station: individual `ModelInputs`. |
 | 1.8 | Run forecast models | per (model, group\|station) | `models/` | Input bundles, model artifacts | Ensemble forecast values |
 | 1.9 | Post-process forecasts | per station | `services/` | Raw forecast ensembles, historical archive | Bias-corrected forecast ensembles |
-| 1.10 | Store forecast results | batch | `store/` | Forecast ensembles + model artifact version | Persisted to `forecasts` + `forecast_values` (status = `raw`) |
-| 1.11 | Check alert thresholds | per station | `services/` | Forecast ensembles, threshold config | Exceedance flags per station/level |
-| 1.12 | Raise / resolve alerts | per station | `services/` | Exceedance flags, existing alerts | New/updated alert records |
-| 1.13 | Notify | batch | `services/` | New/changed alerts | Notifications dispatched |
+| 1.10 | Forecast QC | per (model, group\|station) | `services/` | Forecast ensembles (post bias-correction), QC rule set, overrides, baselines | QC flags per ensemble; `QC_FAILED` triggers fallback |
+| 1.11 | Store forecast results | batch | `store/` | Forecast ensembles + model artifact version | Persisted to `forecasts` + `forecast_values` (status = `raw`) |
+| 1.12 | Check alert thresholds | per station | `services/` | Forecast ensembles, threshold config | Exceedance flags per station/level |
+| 1.13 | Raise / resolve alerts | per station | `services/` | Exceedance flags, existing alerts | New/updated alert records |
+| 1.14 | Notify | batch | `services/` | New/changed alerts | Notifications dispatched |
 
 Steps 1.2, 1.3, 1.4, and 1.9 are **conditional** — see notes.
 
@@ -108,20 +109,21 @@ Steps 1.2, 1.3, 1.4, and 1.9 are **conditional** — see notes.
   - **Fallback for conceptual models**: if the warm-up run fails, (1) use the last successfully saved state snapshot (staleness threshold is deployment-configurable and season-dependent — shorter during wet/monsoon season when catchment state changes rapidly, longer during dry season), or (2) if too stale, cold-start with extended warm-up from observations. Any forecast produced from a snapshot or cold-start records `warm_up_source: WarmUpSource` and `warm_up_state_age_hours` in the forecast metadata — visible to forecasters in the API and dashboard, and flagged by Flow 4.
 - **1.8**: Dispatches on `artifact_scope`: GROUP → single `predict_batch()` call per (model, group) with `GroupModelInputs`; STATION → `predict()` per station. Parallelizable across (model, group) and (model, station) units. On model failure, falls back to next assigned model by priority (detail in future iteration). **State persistence** (conceptual models only): after a successful `predict()`, the flow layer saves the warm-up state snapshot via `ModelStateStore.store_state()`. This is the write path that enables the snapshot fallback described in 1.7 — without it, no snapshot would exist to fall back to. ML models do not produce state; this step is a no-op for them.
 - **1.9** *(conditional)*: Forecast *output* bias correction (discharge / water level). Distinct from NWP input correction in 1.5. Pass-through when not configured.
-- **1.10**: Each forecast record links to the model artifact version that produced it.
-- **1.11**: Probability-based: P(Q > threshold) for ABOVE levels, P(Q < threshold) for BELOW levels. See "Danger levels and threshold configuration" section below for the full config shape. Only evaluates levels where the station has a defined threshold value — undefined levels are skipped (no alert, no display). The exceedance probability that triggers an alert is deployment-configurable per danger level. Defaults must be set; hydromet operations staff confirm acceptable false alarm rates before production deployment.
-- **1.12**: Deduplication via partial unique index. Auto-resolution uses hysteresis to prevent alert flapping: separate `trigger_probability` and `resolve_probability` thresholds per danger level (resolve threshold lower than trigger), and configurable minimum duration (`min_trigger_duration` / `min_resolve_duration`) before triggering or resolving. Time-based durations are schedule-independent — they work correctly for both 30-min observation cycles and 6-hourly forecast cycles. Without hysteresis, ensemble probability oscillation between NWP cycles causes fire-resolve-fire loops and alert fatigue. **v0**: `DangerLevelDefinition` fields exist (`trigger_probability`, `resolve_probability`, `min_trigger_duration`, `min_resolve_duration`); alert service does not enforce duration-based hysteresis — triggers and resolves within a single cycle. v1 adds cross-cycle state tracking.
+- **1.10**: Forecast output QC. Runs `ForecastQualityChecker.check()` on each `ForecastEnsemble` per (station, model, parameter). `aggregate_qc_status()` derives the aggregate status. `QC_PASSED` or `QC_SUSPECT`: store the forecast with its `qc_status` and `qc_flags`. `QC_FAILED`: raise `SanityCheckFailure` → flow tries the next model by priority (same fallback path as runtime model failure). For `GroupForecastModel` batch predictions, QC-failed individual station results are stored with `QC_FAILED` status (no per-station fallback within a batch). QC rule set and overrides are batch pre-fetched at flow start; `ClimBaseline` records are batch pre-fetched alongside observation fetch (step 1.6). Always-on (not conditional). Active in v0.
+- **1.11**: Each forecast record links to the model artifact version that produced it.
+- **1.12**: Probability-based: P(Q > threshold) for ABOVE levels, P(Q < threshold) for BELOW levels. See "Danger levels and threshold configuration" section below for the full config shape. Only evaluates levels where the station has a defined threshold value — undefined levels are skipped (no alert, no display). The exceedance probability that triggers an alert is deployment-configurable per danger level. Defaults must be set; hydromet operations staff confirm acceptable false alarm rates before production deployment.
+- **1.13**: Deduplication via partial unique index. Auto-resolution uses hysteresis to prevent alert flapping: separate `trigger_probability` and `resolve_probability` thresholds per danger level (resolve threshold lower than trigger), and configurable minimum duration (`min_trigger_duration` / `min_resolve_duration`) before triggering or resolving. Time-based durations are schedule-independent — they work correctly for both 30-min observation cycles and 6-hourly forecast cycles. Without hysteresis, ensemble probability oscillation between NWP cycles causes fire-resolve-fire loops and alert fatigue. **v0**: `DangerLevelDefinition` fields exist (`trigger_probability`, `resolve_probability`, `min_trigger_duration`, `min_resolve_duration`); alert service does not enforce duration-based hysteresis — triggers and resolves within a single cycle. v1 adds cross-cycle state tracking.
 
-**Multi-model alert strategy (steps 1.11–1.12)**: Phase C receives all models' ensembles per station (collected from Phase B fan-out) and dispatches to the configured `alert_model_strategy`. Four strategies:
+**Multi-model alert strategy (steps 1.12–1.13)**: Phase C receives all models' ensembles per station (collected from Phase B fan-out) and dispatches to the configured `alert_model_strategy`. Four strategies:
 - `primary` — use the highest-priority model's ensemble only (priority 0). Default for v0.
 - `pooled` — merge all models' members into a grand ensemble; compute exceedance probability across the combined pool.
 - `bma` — weight each model's contribution by its skill score (Bayesian Model Averaging); recommended default for mature multi-model deployments.
 - `consensus` — each model casts a per-danger-level vote based on its own ensemble probability; the station-level alert fires if enough models agree.
 
 Cascading fallback: `bma` → `pooled` → `primary` (if weights missing or single model); `consensus` → `pooled` → `primary` (if single model or mixed representation); `pooled` → `primary` (if single model or mixed representations). Every `ExceedanceResult` and `Alert` carries `model_ids` (list of model IDs whose ensembles were used) for full traceability — visible in the API and dashboard. See `docs/v0-scope.md §A8d` and plan 010 for implementation detail.
-- **1.11–1.13** *(v0 testing)*: Phase C is **optional during v0**. A deployment-level flag (`enable_forecast_alerts`, default `false` for v0) controls whether these steps run. When enabled during testing, alerts are **informational only** — stored in the DB and logged, but notifications (1.13) are suppressed (no external push). This lets the team validate threshold logic and hysteresis tuning against real forecasts without operational consequences.
-- **1.13**: Async. Failed notifications retried by sweep task (every 5 min).
-- **API serving**: No explicit step — the API reads persisted results from the DB. Storing in 1.10 makes forecasts available; publishing happens via Flow 3 (forecast review). The API also serves archived forcing time series (precipitation, temperature, and other predictors) alongside forecasts — see API design notes.
+- **1.12–1.14** *(v0 testing)*: Phase C is **optional during v0**. A deployment-level flag (`enable_forecast_alerts`, default `false` for v0) controls whether these steps run. When enabled during testing, alerts are **informational only** — stored in the DB and logged, but notifications (1.14) are suppressed (no external push). This lets the team validate threshold logic and hysteresis tuning against real forecasts without operational consequences.
+- **1.14**: Async. Failed notifications retried by sweep task (every 5 min).
+- **API serving**: No explicit step — the API reads persisted results from the DB. Storing in 1.11 makes forecasts available; publishing happens via Flow 3 (forecast review). The API also serves archived forcing time series (precipitation, temperature, and other predictors) alongside forecasts — see API design notes.
 
 #### Resolved: ML model lookback window forcing source
 
@@ -150,12 +152,12 @@ These are per-NWP-source fields in `DeploymentConfig`. Every forecast record sto
 
 #### Resolved: when to check thresholds
 
-Threshold checking (1.11–1.13) can run:
-- **On raw forecasts** (immediately after 1.9) — gives early warning before forecaster review.
+Threshold checking (1.12–1.14) can run:
+- **On raw forecasts** (immediately after 1.10) — gives early warning before forecaster review.
 - **On published forecasts** (after forecaster edits in Flow 3) — alerts reflect human-reviewed values.
 - **Both** — initial check on raw, re-check after publication.
 
-**Decision**: Configurable via `threshold_check_mode` in `DeploymentConfig` (values: `raw`, `published`, `both`). **v0**: `raw` only — Flow 3 (forecast review) is deferred, so all forecasts stay `raw` and there is no publication step. **v1**: When Flow 3 is added, default to `both` (early warning on raw + re-check after publication). Flow 3 must support re-triggering 1.11–1.13 after edits regardless of chosen mode.
+**Decision**: Configurable via `threshold_check_mode` in `DeploymentConfig` (values: `raw`, `published`, `both`). **v0**: `raw` only — Flow 3 (forecast review) is deferred, so all forecasts stay `raw` and there is no publication step. **v1**: When Flow 3 is added, default to `both` (early warning on raw + re-check after publication). Flow 3 must support re-triggering 1.12–1.14 after edits regardless of chosen mode.
 
 #### Sequencing
 
@@ -166,10 +168,10 @@ Phase A — per NWP source (parallel across sources):
 1.6 batch obs fetch (parallel with Phase A)
 
 Phase B — per (model, group|station) (parallel across units):
-  1.7 → 1.8 → [1.9] → 1.10
+  1.7 → 1.8 → [1.9] → 1.10 → 1.11
 
 Phase C — all stations (optional during v0):
-  [1.11] → [1.12] → [1.13]
+  [1.12] → [1.13] → [1.14]
 ```
 
 Brackets denote conditional steps. Phase A and step 1.6 run in parallel. Phase B starts when both complete. Phase C runs after all Phase B units complete. **Phase C is optional during v0 testing** — alert logic is implemented but disabled by default. When enabled, alerts are informational only (logged and stored, not pushed to external recipients). Phase C collects all models' forecast ensembles per station (aggregated across Phase B) and applies the configured `alert_model_strategy` to determine exceedance per danger level.
@@ -195,16 +197,17 @@ flowchart TD
         s1_7["1.7 Prepare model inputs"]
         s1_8["1.8 Run forecast models"]
         s1_9["1.9 Post-process forecasts<br/><i>conditional</i>"]
-        s1_10["1.10 Store forecast results<br/>(status = raw)"]
-        s1_7 --> s1_8 --> s1_9 --> s1_10
+        s1_10["1.10 Forecast QC"]
+        s1_11["1.11 Store forecast results<br/>(status = raw)"]
+        s1_7 --> s1_8 --> s1_9 --> s1_10 --> s1_11
     end
 
     subgraph PhaseC ["Phase C — all stations (optional during v0)"]
         direction TB
-        s1_11["1.11 Check alert thresholds<br/>(P(Q vs threshold) per level)<br/><i>optional during v0</i>"]
-        s1_12["1.12 Raise / resolve alerts<br/>(with hysteresis)<br/><i>optional during v0</i>"]
-        s1_13["1.13 Notify<br/>(async, retried)<br/><i>optional during v0</i>"]
-        s1_11 --> s1_12 --> s1_13
+        s1_12["1.12 Check alert thresholds<br/>(P(Q vs threshold) per level)<br/><i>optional during v0</i>"]
+        s1_13["1.13 Raise / resolve alerts<br/>(with hysteresis)<br/><i>optional during v0</i>"]
+        s1_14["1.14 Notify<br/>(async, retried)<br/><i>optional during v0</i>"]
+        s1_12 --> s1_13 --> s1_14
     end
 
     api["API serves results from DB"]
@@ -214,7 +217,7 @@ flowchart TD
     PhaseA --> PhaseB
     s1_6 --> PhaseB
     PhaseB --> PhaseC
-    s1_10 -.-> api
+    s1_11 -.-> api
 ```
 
 ### Flow 2 — Observation ingest + QC
@@ -363,7 +366,7 @@ Not a Prefect flow — a sequence of user interactions via the dashboard, backed
 - **3.2**: Optional. Each adjustment is an immutable record (forecaster ID, timestamp, rationale). Original model output is never overwritten. Multiple adjustments can be made before publishing.
 - **3.3**: Review combines model selection and confirmation into one action. Forecaster picks the preferred model per station; status moves to `reviewed`. Optimistic locking on status transitions.
 - **3.4**: Publishes selected forecasts. Only `published` forecasts appear in the public API and bulletins.
-- **3.5–3.7**: Re-triggers the same threshold/alert logic from Flow 1 (steps 1.11–1.13) on the published values. Always runs here regardless of whether Flow 1 also checked on raw (see Flow 1 open decision).
+- **3.5–3.7**: Re-triggers the same threshold/alert logic from Flow 1 (steps 1.12–1.14) on the published values. Always runs here regardless of whether Flow 1 also checked on raw (see resolved decision at line 151). QC-failed forecasts are filtered from the ensemble dict before re-triggering — same filter as the Flow 1 Phase C entry point.
 - **3.8**: On-demand — forecaster explicitly requests bulletin generation after publishing.
 - **Status transitions**: `raw → reviewed → published`. Review combines model selection and optional adjustments into one action. Adjustments are append-only audit records independent of status.
 
@@ -995,7 +998,7 @@ Using `H.*` prefix since hindcast is referenced from multiple flows.
   - **`'nwp_archive'`**: archived NWP forecasts that would have been available operationally at each hindcast time step. This is the only valid basis for computing operational skill scores — it correctly captures NWP error and lead-time degradation.
   - **`'reanalysis'`** (or station observations used as pseudo-perfect forcing): assesses model capability given near-perfect forcing. Useful for diagnosing whether errors come from the hydrology or the NWP, but produces optimistic skill scores that overestimate real-world operational performance.
   Every hindcast result (H.6) must carry a `forcing_type` tag (`ForcingType` enum — DB values `"nwp_archive"`, `"reanalysis"` per conventions.md casing rule). v0: forcing product TBD — may initially use station observations (producing diagnostic-only skill scores) until sufficient NWP archive accumulates for operational skill assessment.
-  - **ML model lookback**: For ML models requiring a lookback window (e.g. 365 days for LSTM), H.2 must fetch forcing for the full lookback period preceding each hindcast step — not just the step itself. The forcing source must match what the model was trained on (same open decision as Flow 1 step 1.7: station observations, gridded reanalysis, or archived NWP extractions). This is per-step: each hindcast step's lookback window shifts with the simulated issue time.
+  - **ML model lookback**: For ML models requiring a lookback window (e.g. 365 days for LSTM), H.2 must fetch forcing for the full lookback period preceding each hindcast step — not just the step itself. The forcing source must match what the model was trained on (resolved — see ML model lookback decision above (station observations in v0)). This is per-step: each hindcast step's lookback window shifts with the simulated issue time.
 - **H.4**: Critical — must simulate operational conditions. Each time step only sees data that would have been available at that point in time (no future leakage). The lookback window per step matches what the model expects operationally. Static attributes are loaded once per hindcast run (they are time-invariant) and included in each step's `ModelInputs`. For conceptual models, each hindcast step runs a fresh warm-up from historical observations up to the simulated issue time — no state is carried forward between hindcast steps (matching the operational convention from Flow 1 step 1.7). Snapshot fallback is not used in hindcast mode since observations are always available for the historical period.
   - **Gap handling**: Historical records may contain gaps — NWP archive gaps (unrecoverable, per Flow 11) and observation gaps (QC-rejected or missing). When H.4 assembles inputs for a time step and finds insufficient data (forcing or observations below the model's minimum completeness requirement), it **skips the step** and logs the gap with the reason. The hindcast run continues with remaining steps. The final hindcast summary reports total steps attempted, completed, and skipped (with reasons) — this propagates to skill computation (Flows 8/10) where sample size is visible in the skill report.
 - **H.5**: Same model code as operational Flow 1 step 1.8. Group models use `predict_batch()` across all stations at each hindcast time step. Parallelizable across time steps (each is independent given its input bundle). **Partial failure**: if a time step fails (model error, NaN output, numerical divergence), the step is logged with the error and skipped — the hindcast run continues. No model fallback (unlike operational Flow 1) since hindcast evaluates a specific artifact. The hindcast summary (see H.4 gap handling) includes failed steps alongside data-gap skips.

@@ -22,7 +22,7 @@
 | 2 | **Flow 2** — Observation ingest + QC | Stage 1 QC only. No rating curves (BAFU provides Q directly). Alerting steps optional (`enable_observation_alerts`). |
 | 3 | **Flow 6 → 7 → 8** — Train → hindcast → skill | Auto-promote (no approval gate). Full skill metric suite (CRPS, CRPSss, BSS, POD/FAR/CSI, peak timing, NSE, KGE, PBIAS, MAE, diagrams). |
 | 3 | **Flow 13** — Model onboarding | Register + validate + train + hindcast + skill gate + auto-promote. Sample model (LinearRegressionDaily). No approval gate (auto-promote). Composes Flows 6→7→8 with validation logic. |
-| 4 | **Flow 1** — Forecast cycle | **v0a**: point weather forecast data (pre-extracted); steps 1.2, 1.3, 1.4 skipped entirely. **v0b+**: gridded NWP (ICON-CH2-EPS) with GridExtractor. Steps 1.5 (NWP post-process) and 1.9 (forecast post-process) are pass-through throughout v0. Alerting (1.11-1.13) controlled by `enable_forecast_alerts` (default `false`). |
+| 4 | **Flow 1** — Forecast cycle | **v0a**: point weather forecast data (pre-extracted); steps 1.2, 1.3, 1.4 skipped entirely. **v0b+**: gridded NWP (ICON-CH2-EPS) with GridExtractor. Steps 1.5 (NWP post-process) and 1.9 (forecast post-process) are pass-through throughout v0. Step 1.10 (forecast QC) is active throughout v0. Alerting (1.12-1.14) controlled by `enable_forecast_alerts` (default `false`). |
 | — | **API** | FastAPI with basic CRUD for stations, observations, forecasts, alerts. No auth. Health endpoint. |
 | — | **Flow 12B** — Manual CSV import | Branch B only (validate CSV, ingest with `source = 'manual_import'`, run QC). Branches A (rating curve reprocessing) and C (QC re-evaluation) deferred. |
 
@@ -123,14 +123,14 @@ Flow 13 (model onboarding) uses the same auto-promote path: `training` → `acti
 
 **Full design**: Configurable — check on raw forecasts, published forecasts, or both (see architecture-context.md).
 
-**v0**: Raw only. Flow 3 (forecast review) is deferred, so no `reviewed`→`published` transition exists. All forecasts stay `raw`. Threshold checks (1.11-1.13) run immediately after model output, when enabled via `enable_forecast_alerts`.
+**v0**: Raw only. Flow 3 (forecast review) is deferred, so no `reviewed`→`published` transition exists. All forecasts stay `raw`. Threshold checks (1.12-1.14) run immediately after model output, when enabled via `enable_forecast_alerts`.
 
 ### A8c. Per-source alert enablement
 
 **Full design**: All alert sources active by default.
 
 **v0**: Three independent flags in `DeploymentConfig`, all default `false`:
-- `enable_forecast_alerts` — gates Flow 1 Phase C (steps 1.11–1.13)
+- `enable_forecast_alerts` — gates Flow 1 Phase C (steps 1.12–1.14)
 - `enable_observation_alerts` — gates Flow 2 steps 2.8–2.10
 - `enable_pipeline_alerts` — gates Flow 4 steps 4.6–4.7
 
@@ -205,7 +205,7 @@ These are deferred in architecture-context.md. For v0, don't create their tables
 
 ## C. Database schema (v0 subset)
 
-23 tables. No partitioning, no DLQ, no auth, no cold storage dispatch.
+24 tables. No partitioning, no DLQ, no auth, no cold storage dispatch.
 
 ### Reference data
 - `parameters` — as designed (canonical parameter names, units, aggregation methods). Seeded via Alembic migration with the 10 canonical parameters defined in `architecture-context.md`.
@@ -229,11 +229,12 @@ These are deferred in architecture-context.md. For v0, don't create their tables
 - `station_weather_sources` — as designed
 
 ### Forecasts
-- `forecasts` — as designed
+- `forecasts` — as designed; includes `qc_status` and `qc_flags` columns (migration 0012)
 - `forecast_values` — as designed but **not partitioned**
+- `forecast_qc_overrides` — per-station QC threshold overrides; unique on `(station_id, rule_id, parameter, time_step_seconds)` (migration 0012)
 
 ### Hindcast
-- `hindcast_forecasts` — as designed but **not partitioned**
+- `hindcast_forecasts` — as designed but **not partitioned**; includes `qc_status` and `qc_flags` columns (migration 0012)
 - `hindcast_values` — as designed but **not partitioned**
 
 ### Weather archive
@@ -300,8 +301,9 @@ Target per-step budgets (50 stations):
 | 1.6 Observation fetch | 2s | DB read |
 | 1.7 Prepare inputs | 3s | In-memory |
 | 1.8 Run models (all) | 10-30s | CPU (parallel) |
-| 1.10 Store results | 3s | DB write (COPY) |
-| 1.11–1.13 Alert checking | < 5s | In-memory |
+| 1.10 Forecast QC | < 1s | In-memory |
+| 1.11 Store results | 3s | DB write (COPY) |
+| 1.12–1.14 Alert checking | < 5s | In-memory |
 | **Total** | **< 60s** | |
 
 ### D7. API response speed

@@ -205,7 +205,7 @@ Ruff rule `T201` bans `print()` — no exceptions.
 
 Pattern: `{entity}.{action}` — entity is the domain object, action is what happened.
 
-Developers create new event names following this pattern. No need to update this document.
+Developers create new event names following this pattern. Core-subsystem events (observation QC, forecast QC, alerting) are canonicalized in the table below for discoverability.
 
 Examples:
 
@@ -213,7 +213,7 @@ Examples:
 |---|---|
 | `nwp` | `fetch_started`, `fetch_completed`, `fetch_failed`, `extraction_completed` |
 | `observation` | `ingested`, `qc_passed`, `qc_failed`, `qc_suspect` |
-| `forecast` | `run_started`, `run_completed`, `stored` |
+| `forecast` | `run_started`, `run_completed`, `stored`, `qc_passed`, `qc_failed`, `qc_suspect` |
 | `alert` | `raised`, `resolved`, `suppressed` |
 | `model` | `loaded`, `prediction_completed` |
 | `station` | `onboarding_started`, `status_changed` |
@@ -289,7 +289,7 @@ Cross-reference: Prefect UI shows flow run state and task-level failures. Match 
    ```bash
    docker logs sapphire-worker | jq 'select(.flow_run_id == "abc-123")'
    ```
-3. Cross-service tracing: the `forecasts` table records `flow_run_id` (set during Flow 1 step 1.10), linking API-visible data back to the producing flow run.
+3. Cross-service tracing: the `forecasts` table records `flow_run_id` (set during Flow 1 step 1.11), linking API-visible data back to the producing flow run.
 4. Prefect UI: search by flow run ID to see task states, durations, and retries.
 
 ### Scenario 3: "Observation QC flags too aggressive for station X"

@@ -80,7 +80,17 @@ for model in group_scoped_models:
 for model in station_scoped_models:
     station_results = forecast_station.map(inputs)  # each loads its own artifact
 
-check_station_alerts(all_ensembles, all_thresholds, danger_levels, all_priorities, config, alert_store, clock)  # Phase C (plan 010)
+# Step 1.10: Forecast QC — filter QC-failed forecasts before Phase C
+# rule_set, overrides, baselines batch pre-fetched at flow start
+for station_id, model_ensembles in all_ensembles.items():
+    for model_id, param_ensembles in list(model_ensembles.items()):
+        for param, ensemble in list(param_ensembles.items()):
+            flags = qc_checker.check(ensemble, rule_set, overrides[station_id], baselines[station_id])
+            status = aggregate_qc_status(flags)
+            if status == QcStatus.QC_FAILED:
+                del all_ensembles[station_id][model_id][param]  # filtered from Phase C
+
+check_station_alerts(all_ensembles, all_thresholds, danger_levels, all_priorities, config, alert_store, clock)  # Phase C (plan 010) — QC-failed ensembles already filtered above
 ```
 
 For group-scoped models, the artifact is deserialized once per model (not per station) and passed to all mapped tasks via Prefect's `unmapped()`. This eliminates deserialization overhead without changing the per-station `predict()` contract.
