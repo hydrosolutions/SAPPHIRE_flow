@@ -21,9 +21,10 @@ Last updated: 2026-03-31.
    awareness is small. This challenges a core assumption of transfer learning
    for ungauged basins.
 4. **The reanalysis-to-forecast domain shift is substantial.** AIFL (Taccari
-   et al., arXiv 2026) showed NSE drops from 0.58 to 0.33 without fine-tuning
-   on NWP. Two-stage training (pre-train on reanalysis, fine-tune on NWP)
-   recovers most skill. Essential for any operational system.
+   et al., arXiv 2026) showed performance degrades substantially without
+   fine-tuning on NWP (exact NSE drop TBC). Two-stage training (pre-train on
+   reanalysis, fine-tune on NWP) recovers most skill (median KGE' 0.66).
+   Essential for any operational system.
 5. **Climate dissimilarity degrades transfer, but process dissimilarity matters
    more than geographic distance.** Donor selection by physiographic similarity
    outperforms indiscriminate pooling (Ougahi & Rowan, WRR 2026). US-to-Tibet
@@ -31,8 +32,9 @@ Last updated: 2026-03-31.
    and glacier melt processes absent from training data were the main barrier.
 6. **No foundation model operates at sub-daily resolution** as of March 2026.
    All three frontier global models (Google Flood Hub, AIFL, RiverMamba) are
-   daily-only. CAMELSH (2025) provides hourly data for 5,188+ US basins but
-   no model has been benchmarked on it for transfer.
+   daily-only. CAMELSH (Tran et al., Sci. Data, 2025) provides hourly
+   streamflow for 3,166 US basins (5,188 in post-publication update) but no
+   model has been benchmarked on it for transfer.
 7. **Probabilistic transfer is unexplored.** No study examines whether
    uncertainty estimates (CMAL, quantile regression) remain calibrated after
    transfer to new basins or climates.
@@ -68,7 +70,7 @@ Arsenault et al. (HESS, 2023) demonstrated LSTM outperforming traditional
 regionalisation in leave-one-out cross-validation on 148 northeast North
 American basins (median NSE 0.78 for PUB vs 0.58-0.63 for process-based
 regionalisation). The LSTM outperformed even calibrated-in-place models in
-75-78% of basins.
+78% of basins.
 
 **CRAAB**:
 - *Claim*: LSTM PUB outperforms traditional regionalisation. Well-supported.
@@ -94,10 +96,11 @@ regionalisation). The LSTM outperformed even calibrated-in-place models in
 
 ## 5.2 Global Transfer: The Nearing et al. Landmark
 
-Nearing et al. (Nature, 2024) trained an LSTM on 5,680 gauges globally,
+Nearing et al. (Nature, 2024) trained an LSTM on ~5,680 GRDC gauges globally,
 achieving 5-day flood predictions in ungauged basins matching or exceeding
-GloFAS nowcast reliability. Operational via Google Flood Hub in 80+ countries.
-Later expanded to ~16,000 gauges via CARAVAN.
+GloFAS nowcast reliability. Operational via Google Flood Hub in 80+ countries
+(now 100+). Separately, the CARAVAN community dataset was expanded to ~16,000
+basins (v1.3, April 2024), enabling further scaling of similar approaches.
 
 **CRAAB**:
 - *Claim*: Global LSTM matches operational physics-based systems for ungauged
@@ -111,7 +114,8 @@ Later expanded to ~16,000 gauges via CARAVAN.
   introduce systematic biases in data-poor regions.
 - *Ambiguity*: Relative contribution of data volume vs architecture unclear.
   The role of Google's proprietary weather model vs public NWP is opaque.
-- *Bias*: 5,680 gauges overwhelmingly in developed countries. "Ungauged"
+  Training gauge count may be ~5,680 or ~5,860 depending on filtering stage.
+- *Bias*: ~5,680 gauges overwhelmingly in developed countries. "Ungauged"
   evaluation withholds existing data — different from truly data-sparse regions.
 
 **Key reference**:
@@ -135,8 +139,9 @@ to Chile: US-trained 76.9% success, Canada-trained 66.2%, UK-trained only
 42.5% — demonstrating that training diversity matters more than proximity.
 
 Ougahi and Rowan (WRR, 2026) showed cluster-based donor selection (matching
-physiographic similarity) outperforms indiscriminate pooling for transfer to
-Central Asian basins. Adding dissimilar basins can degrade performance.
+physiographic similarity) outperforms indiscriminate pooling for transfer from
+data-rich regions (Scotland, Switzerland, British Columbia) to Central Asian
+basins. Adding dissimilar basins can degrade performance.
 
 **CRAAB** (cross-cutting):
 - *Claim*: Cross-continental transfer works with fine-tuning. Supported.
@@ -201,8 +206,9 @@ basins. Key concerns: (a) intense monsoon convection, (b) glacier-fed baseflows,
 ## 5.5 Entity Awareness Under Scrutiny
 
 Heudorfer et al. (GRL, 2025) challenged a core assumption of transfer learning.
-Through ablation experiments, they showed that static attributes in EA-LSTM may
-primarily serve as **in-sample unique identifiers** enabling the model to
+Through ablation experiments, they showed that meteorological dynamic features
+are the main driver of generalisability, and that static attributes in EA-LSTM
+may primarily serve as **in-sample unique identifiers** enabling the model to
 differentiate basins, rather than encoding physically meaningful features that
 generalise out of sample. Out-of-sample entity awareness exists but is small.
 
@@ -225,8 +231,8 @@ SAPPHIRE Flow's transfer strategy from Switzerland to Nepal.
   global datasets.
 
 **Key references**:
-- Heudorfer, B., Kratzert, F., Klotz, D., and Nearing, G.: Are deep learning
-  models in hydrology entity aware?, Geophys. Res. Lett., 52, e2024GL113036,
+- Heudorfer, B., Gupta, H. V., and Loritz, R.: Are deep learning models in
+  hydrology entity aware?, Geophys. Res. Lett., 52, e2024GL113036,
   doi:10.1029/2024GL113036, 2025.
 - Yu, Z., et al.: Deciphering the mechanism of better predictions of regional
   LSTM models in ungauged basins, Water Resour. Res., 60, e2023WR035876,
@@ -242,17 +248,18 @@ SAPPHIRE Flow's transfer strategy from Switzerland to Nepal.
 |---|---|---|---|---|---|
 | Google Flood Hub (Nearing et al., 2024) | ~16,000 | Daily | LSTM | No | Yes (80+ countries) |
 | AIFL (Taccari et al., arXiv 2026) | 18,588 | Daily | LSTM | No | Pre-operational (ECMWF) |
-| RiverMamba (Shams et al., NeurIPS 2025) | Global grid | Daily | Mamba SSM | No | Research |
+| RiverMamba (Shams Eddin et al., NeurIPS 2025) | Global grid | Daily | Mamba SSM | No | Research |
 
 All are daily. None produce ensemble outputs natively. No foundation model
 operates at sub-daily resolution.
 
 ### The reanalysis-to-forecast domain shift
 
-AIFL quantified this directly: NSE drops from 0.58 to 0.33 when an
-ERA5-Land-trained model is applied to IFS forecasts without fine-tuning. The
-two-stage training (pre-train on ERA5-Land, fine-tune on IFS control, 4 years)
-recovers most skill to KGE' 0.66.
+AIFL quantified this directly: performance degrades substantially when an
+ERA5-Land-trained model is applied to IFS forecasts without fine-tuning
+(exact NSE drop TBC — verify against paper tables). The two-stage training
+(pre-train on ERA5-Land, fine-tune on IFS control, 2016–2019) recovers most
+skill to median KGE' 0.66 (median NSE 0.53 on 2021–2024 test set).
 
 This is the most important practical finding for operational systems: training
 on reanalysis and deploying on NWP requires explicit domain adaptation.
@@ -286,27 +293,40 @@ attention-based models gradually surpass LSTMs.
 - Taccari, M. L., et al.: AIFL: A Global Daily Streamflow Forecasting Model
   Using Deterministic LSTM Pre-trained on ERA5-Land and Fine-tuned on IFS,
   arXiv:2602.16579, 2026.
-- Shams, H., et al.: RiverMamba: A State Space Model for Global River Discharge
-  and Flood Forecasting, NeurIPS 2025, arXiv:2505.22535, 2025.
+- Shams Eddin, M. H., Zhang, Y., Kollet, S., and Gall, J.: RiverMamba: A State
+  Space Model for Global River Discharge and Flood Forecasting, NeurIPS 2025,
+  arXiv:2505.22535, 2025.
 - Liu, J., et al.: From RNNs to Transformers: benchmarking deep learning
   architectures for hydrologic prediction, Hydrol. Earth Syst. Sci., 29,
-  6811-6842, doi:10.5194/hess-29-6811-2025, 2025.
+  6811-6828, doi:10.5194/hess-29-6811-2025, 2025.
 
 ### Fine-tuning strategies
 
 Two recent studies validate fine-tuning of global models:
-- **Fine-tuning LSTM for seamless transition** (Environ. Model. Softw., 2025):
-  Local fine-tuning enhanced 73.5% of basins (median NSE 0.63). Regional
-  fine-tuning helped only 55.1%. Adding recent discharge raised NSE to 0.71.
-- **Fine Flood Forecasts** (arXiv/ICLR 2025): Fine-tuning a 6,375-basin global
-  model to individual US basins yielded 8% NSE improvement, with largest gains
-  in underperforming basins.
+- **Fine-tuning LSTM for seamless transition** (Chen et al., Environ. Model.
+  Softw., 2025): Local fine-tuning enhanced 73.5% of basins (median NSE 0.63).
+  Regional fine-tuning helped only 55.1%. Adding recent discharge raised NSE
+  to 0.71.
+- **Fine Flood Forecasts** (Ryd and Nearing, ICLR 2025 Workshop on Tackling
+  Climate Change with ML): Fine-tuning a 6,375-basin global model (Caravan) to
+  159 individual basins yielded ~7% median NSE improvement (0.042), with
+  largest gains in underperforming basins.
 
 **CRAAB**:
-- *Research gap*: Both daily, US-only. Minimum fine-tuning data length not
-  systematically quantified. No probabilistic outputs.
+- *Research gap*: Both daily. Chen et al. is US-only; Ryd and Nearing use
+  global Caravan basins. Minimum fine-tuning data length not systematically
+  quantified. No probabilistic outputs.
 - *Key finding*: Local fine-tuning beats regional fine-tuning, suggesting
   basin-specific adaptation is valuable even from a strong global initialisation.
+
+**Key references**:
+- Chen, X., Zhang, Y., Ye, A., and Sorooshian, S.: Fine-tuning long short-term
+  memory models for seamless transition in hydrological modelling: From
+  pre-training to post-application, Environ. Model. Softw., 186, 106350,
+  doi:10.1016/j.envsoft.2025.106350, 2025.
+- Ryd, E. and Nearing, G.: Fine Flood Forecasts: Incorporating local data into
+  global models through fine-tuning, arXiv:2504.12559, ICLR 2025 Workshop on
+  Tackling Climate Change with ML, 2025.
 
 ### Related: HydroGEM (foundation model for QC)
 
@@ -315,6 +335,11 @@ HydroGEM (arXiv, 2025) is a 14.2M parameter TCN-Transformer self-supervised on
 detection with zero-shot cross-national transfer (Tolerant F1 0.70). Not a
 forecasting model, but demonstrates that foundation-model pre-training transfers
 cross-nationally for hydrological tasks.
+
+**Key reference**:
+- Haq, I. U., Lee, B. S., Perdrial, J. N., and Baude, D.: HydroGEM: A Self
+  Supervised Zero Shot Hybrid TCN Transformer Foundation Model for Continental
+  Scale Streamflow Quality Control, arXiv:2512.14106, 2025.
 
 ---
 
@@ -344,12 +369,14 @@ This is the only published sub-daily PUB result found.
 - Lee, J., Chung, E.-S., Kim, S., and Kim, D.: Streamflow forecasting in
   ungauged basins with CNN-LSTM and radar-based precipitation, J. Hydro-environ.
   Res., 60-61, 100666, doi:10.1016/j.jher.2025.100666, 2025.
+  *Note: A corrigendum exists on ScienceDirect — check what was corrected.*
 
 ### Why the gap exists
 
 1. **Data scarcity**: Few countries have large-sample hourly datasets with
-   matched forcings. CAMELSH (US, 2025) is the first; no global hourly
-   equivalent exists.
+   matched forcings. CAMELSH (Tran et al., Sci. Data, 2025; 3,166 basins
+   with hourly streamflow, US-only) is the first; no global hourly equivalent
+   exists.
 2. **Computational cost**: Hourly sequences are 24x longer, making training
    expensive and convergence harder.
 3. **Forcing quality**: Sub-daily NWP/reanalysis has higher uncertainty; transfer
@@ -370,6 +397,11 @@ This is the only published sub-daily PUB result found.
 4. New catchment attributes relevant to fast-response processes.
 5. Evaluation on cross-climate transfer (not just within CONUS).
 
+**Key reference**:
+- Tran, V. N., Xu, D., Van Nguyen, T., et al.: CAMELSH: A Large-Sample Hourly
+  Hydrometeorological Dataset and Attributes at Watershed-Scale for CONUS,
+  Sci. Data, 12, 1307, doi:10.1038/s41597-025-05612-6, 2025.
+
 ---
 
 ## 5.8 Minimum Calibration Data
@@ -380,7 +412,7 @@ This is the only published sub-daily PUB result found.
 | Yang et al. (2023) | Monthly | Chinese basins | 20% of data (few-shot) |
 | Kratzert (2018) | Daily | CAMELS-US | ~15 years minimum from scratch |
 | Environ. Model. Softw. (2025) | Daily | Global→local | Local fine-tuning helps 73.5% of basins |
-| Fine Flood Forecasts (2025) | Daily | Global→US | 8% NSE improvement from fine-tuning |
+| Fine Flood Forecasts (Ryd & Nearing, 2025) | Daily | Global→individual | ~7% median NSE improvement from fine-tuning |
 
 **Key observation**: Pre-training dramatically reduces fine-tuning data needs
 compared to training from scratch. At daily resolution, a few years suffice when
@@ -404,8 +436,9 @@ years needed, but the higher complexity of sub-daily processes might offset this
 No study combines uncertainty quantification with transfer learning or PUB.
 Klotz et al. (HESS, 2022) established CMAL-based probabilistic LSTM baselines
 but only for gauged basins at daily resolution. Chandra et al. (arXiv, 2024)
-tried quantile-ensemble LSTM but explicitly did not test ungauged basins and
-found regionalisation unsuccessful.
+tried quantile-ensemble LSTM on Australian catchments but explicitly did not
+test ungauged basins and noted that a single model cannot represent the wide
+range of data distributions across catchments in a regionalisation context.
 
 **CRAAB**:
 - *Research gap*: Critical for SAPPHIRE Flow's ensemble-first design. If
@@ -414,6 +447,15 @@ found regionalisation unsuccessful.
 - *Assumption*: That training-period uncertainty characteristics transfer to new
   basins/climates. Highly questionable — different catchments have different
   intrinsic variability.
+
+**Key references**:
+- Klotz, D., Kratzert, F., Gauch, M., Keefe Sampson, A., Brandstetter, J.,
+  Klambauer, G., Hochreiter, S., and Nearing, G.: Uncertainty estimation with
+  deep learning for rainfall-runoff modeling, Hydrol. Earth Syst. Sci., 26,
+  1673-1693, doi:10.5194/hess-26-1673-2022, 2022.
+- Chandra, R., Kapoor, A., Khedkar, S., Ng, J., and Vervoort, R. W.: Ensemble
+  quantile-based deep learning framework for streamflow and flood prediction in
+  Australian catchments, arXiv:2407.15882, 2024.
 
 ---
 
@@ -462,10 +504,16 @@ found regionalisation unsuccessful.
 - [ ] Confirm Heudorfer et al. (2025) findings hold — check for rebuttals or
   follow-up work
 - [ ] Verify AIFL architecture details (hidden size, layers, parameter count)
+  and confirm exact NSE values for the domain shift comparison (0.58/0.33
+  unconfirmed — may be from a specific lead time or subset)
 - [ ] Check whether any CAMELSH-based transfer study has been published since
   dataset release (2025)
-- [ ] Verify Nearing et al. (2024) gauge count (~5,680 in paper, ~16,000 via
-  CARAVAN expansion)
-- [ ] Confirm RiverMamba is NeurIPS 2025 — check proceedings
+- [x] Verify Nearing et al. (2024) gauge count — ~5,680 GRDC gauges (possibly
+  5,860 at different filtering stage). CARAVAN expansion is separate.
+- [x] Confirm RiverMamba is NeurIPS 2025 — confirmed (poster presentation)
 - [ ] Check whether MF-LSTM (2025) has been tested for transfer
 - [ ] Search for any Nepal-specific ML streamflow papers
+- [ ] Check Lee et al. (2025) corrigendum — nature of correction unknown
+- [ ] Verify Zhang et al. (2024) exact catchment count (paper says "more than
+  2,000"; 2,089 cited here but may be rounded)
+- [ ] Verify Ma et al. (2021) exact phrasing on minimum fine-tuning data length
