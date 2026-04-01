@@ -107,7 +107,7 @@ Steps 1.2, 1.3, 1.4, and 1.9 are **conditional** — see notes.
   - *ML models*: concatenates historical weather with NWP forecast to fill the lookback window, which is typically longer than the NWP forecast horizon. The historical weather source is resolved — see "Resolved: ML model lookback window forcing source" below.
   - *Conceptual models*: runs the model over a warm-up period using observations to derive internal state (soil moisture, snow, groundwater), then switches to NWP forecast forcing at the issue time. State is always observation-derived, never carried forward from a previous forecast.
   - **Fallback for conceptual models**: if the warm-up run fails, (1) use the last successfully saved state snapshot (staleness threshold is deployment-configurable and season-dependent — shorter during wet/monsoon season when catchment state changes rapidly, longer during dry season), or (2) if too stale, cold-start with extended warm-up from observations. Any forecast produced from a snapshot or cold-start records `warm_up_source: WarmUpSource` and `warm_up_state_age_hours` in the forecast metadata — visible to forecasters in the API and dashboard, and flagged by Flow 4.
-- **1.8**: Dispatches on `artifact_scope`: GROUP → single `predict_batch()` call per (model, group) with `GroupModelInputs`; STATION → `predict()` per station. Parallelizable across (model, group) and (model, station) units. On model failure, falls back to next assigned model by priority (detail in future iteration). **State persistence** (conceptual models only): after a successful `predict()`, the flow layer saves the warm-up state snapshot via `ModelStateStore.store_state()`. This is the write path that enables the snapshot fallback described in 1.7 — without it, no snapshot would exist to fall back to. ML models do not produce state; this step is a no-op for them.
+- **1.8**: Dispatches on `artifact_scope`: GROUP → single `predict_batch()` call per (model, group) with `GroupModelInputs`; STATION → `predict()` per station. Parallelizable across (model, group) and (model, station) units. On model failure, falls back to next assigned model by priority (detail in future iteration). **State persistence** (conceptual models only): after a successful `predict()`, the flow layer saves the warm-up state snapshot via `ModelStateStore.store_state()`. This is the write path that enables the snapshot fallback described in 1.7 — without it, no snapshot would exist to fall back to. ML models do not produce state; this step is a no-op for them. ML models wrapped via `ForecastInterface` go through the `ForecastInterfaceAdapter` at this step — the adapter translates inputs and outputs between SAPPHIRE Flow's internal types and FI's contract. FI-wrapped models are stateless; the adapter returns `None` for state bytes.
 - **1.9** *(conditional)*: Forecast *output* bias correction (discharge / water level). Distinct from NWP input correction in 1.5. Pass-through when not configured.
 - **1.10**: Forecast output QC. Runs `ForecastQualityChecker.check()` on each `ForecastEnsemble` per (station, model, parameter). `aggregate_qc_status()` derives the aggregate status. `QC_PASSED` or `QC_SUSPECT`: store the forecast with its `qc_status` and `qc_flags`. `QC_FAILED`: raise `SanityCheckFailure` → flow tries the next model by priority (same fallback path as runtime model failure). For `GroupForecastModel` batch predictions, QC-failed individual station results are stored with `QC_FAILED` status (no per-station fallback within a batch). QC rule set and overrides are batch pre-fetched at flow start; `ClimBaseline` records are batch pre-fetched alongside observation fetch (step 1.6). Always-on (not conditional). Active in v0.
 - **1.11**: Each forecast record links to the model artifact version that produced it.
@@ -1393,6 +1393,16 @@ All forecast models satisfy a single `ForecastModel` Protocol. Models are pure f
 
 **Full Protocol signature, supporting types (`ModelInputs`, `TrainingData`, `ModelParams`, `ModelArtifact`), and behavioral contracts:** see `docs/spec/types-and-protocols.md` — ForecastModel.
 
+**ForecastInterface adapter:** ML model developers implement models against the
+`ForecastInterface` external contract (`hydrosolutions/ForecastInterface`), which
+defines input requirements and `ModelOutput` output types using Pydantic + Polars.
+A `ForecastInterfaceAdapter` in `adapters/forecast_interface/` bridges FI types to
+SAPPHIRE Flow's internal types — converting `ModelOutput` →
+`tuple[dict[str, ForecastEnsemble], bytes | None]` on output, and
+`GroupModelInputs`/`StationModelInputs` → FI input format on input. Conceptual
+models and simple statistical models implement `StationForecastModel` /
+`GroupForecastModel` directly without FI.
+
 #### Generalized 4-slot model input contract
 
 `ModelInputs` (and `TrainingData`) follow a universal 4-slot pattern adopted from NeuralHydrology, PyTorch Forecasting (TFT), Darts, and Google Flood Forecasting:
@@ -1413,16 +1423,21 @@ Replaces the earlier `required_features` + `required_static_attributes` pair wit
 ```python
 @dataclass(frozen=True, kw_only=True, slots=True)
 class ModelDataRequirements:
-    past_targets: frozenset[str]        # e.g. {"discharge"}
-    past_dynamic: frozenset[str]        # e.g. {"precipitation", "temperature"} — empty if unused
-    future_dynamic: frozenset[str]      # e.g. {"precipitation", "temperature"}
-    static: frozenset[str]              # e.g. {"mean_elev_m", "forest_fraction"} — empty if unused
+    # Per-slot feature declarations (map to the 4-slot input contract above)
+    target_parameters: frozenset[str]          # e.g. {"discharge"} — slot 1 (past_targets)
+    past_dynamic_features: frozenset[str]      # e.g. {"precipitation", "temperature"} — slot 2; empty if unused
+    future_dynamic_features: frozenset[str]    # e.g. {"precipitation", "temperature"} — slot 3
+    static_features: frozenset[str]            # e.g. {"mean_elev_m", "forest_fraction"} — slot 4; empty if unused
+    # Constraint declarations
+    supported_time_steps: frozenset[timedelta] # e.g. {timedelta(hours=1), timedelta(days=1)}
+    lookback_steps: int                        # number of past time steps the model requires
+    spatial_input_type: SpatialRepresentation  # LUMPED or DISTRIBUTED
 ```
 
 Each model class declares a `data_requirements: ModelDataRequirements` class attribute. Input preparation validates that all declared features are available in configured data sources before calling `predict()` or `train()`. Compatibility validation in Flow 13 step M.2 also uses this declaration to check feature availability at onboarding time.
 
 Key points:
-- **`data_requirements`**: replaces `required_features` and `required_static_attributes`. Declares per-slot features as a `ModelDataRequirements` instance. Input preparation (Flow 1 step 1.7) validates completeness before calling `predict()` / `predict_batch()`. Static attributes are loaded from `basins.attributes` JSONB using the `static` slot declaration and passed in the `static` slot of `ModelInputs`. Empty `frozenset()` for unused slots (e.g. `static` for pure conceptual models).
+- **`data_requirements`**: replaces `required_features` and `required_static_attributes`. Declares per-slot features as a `ModelDataRequirements` instance. Input preparation (Flow 1 step 1.7) validates completeness before calling `predict()` / `predict_batch()`. Static attributes are loaded from `basins.attributes` JSONB using the `static_features` declaration and passed in the `static` slot of `ModelInputs`. Empty `frozenset()` for unused slots (e.g. `static_features` for pure conceptual models). `target_parameters` declares which parameters the model produces (e.g. `{"discharge"}` or `{"discharge", "water_level"}`).
 - **`spatial_input_type`**: class-level declaration of the expected spatial representation (`SpatialRepresentation`). Input preparation validates that the final post-processed forcing matches this type.
 - **`supported_time_steps`**: class-level declaration of time steps the model can operate on (e.g. `{timedelta(hours=1), timedelta(days=1)}`). The `model_assignments` table configures which time step to use per station — input preparation validates the configured step is in the model's supported set.
 - **`train()`**: receives historical data + hyperparameters, returns opaque artifact. `rng` ensures reproducibility.
@@ -1644,14 +1659,19 @@ Most stations inherit the deployment default extraction type. Per-station overri
 ### Input preparation and merging
 
 When a model uses multiple weather sources, input preparation (Flow 1 step 1.7):
+0. **Source intersection:** computes the extraction set as `station_weather_sources` (active entries for this station) ∩ `config.toml [models.*.weather]` (sources the model expects). Only sources in both sets are extracted. If the intersection is empty — i.e. the model requires a source not mapped to the station — this is a hard error raised at onboarding validation (Flow 5 step 5.3 / Flow 13 step M.2), not at forecast time.
 1. Runs each source through its configured post-processing pipeline
 2. Transforms all sources to the model's declared `spatial_input_type`
 3. Merges all parameters into a single forcing object (`polars.DataFrame` for tabular, `xarray.Dataset` for gridded)
-4. Validates that all features declared in `ModelDataRequirements.future_dynamic` and `past_dynamic` are present
-5. Loads static catchment attributes from `basins.attributes` JSONB, selects columns matching `ModelDataRequirements.static`, validates completeness, and passes as the `static` slot of `ModelInputs` (or empty if `static` is an empty frozenset)
+4. Validates that all features declared in `ModelDataRequirements.future_dynamic_features` and `past_dynamic_features` are present
+5. Loads static catchment attributes from `basins.attributes` JSONB, selects columns matching `ModelDataRequirements.static_features`, validates completeness, and passes as the `static` slot of `ModelInputs` (or empty if `static_features` is an empty frozenset)
 6. Fetches past target variable history into the `past_targets` slot
 
 The model receives a fully-populated `ModelInputs` with all four slots. It does not know about data sources — it sees features by canonical name.
+
+For FI-wrapped models, the `ForecastInterfaceAdapter` converts the four-slot
+`ModelInputs` to FI's per-variable hierarchy (`past_known`/`future_known`/`static`)
+before calling the model.
 
 For the rare case where a model needs mixed spatial types (e.g. gridded precipitation + basin-average snow), the model declares `'gridded'` and basin-average values are broadcast to spatially uniform grid fields. This is physically meaningful and lossless.
 
@@ -2879,6 +2899,7 @@ References (does not redefine): container log driver from cicd.md, audit_log sch
 | Orchestration | Prefect 3 |
 | API | FastAPI |
 | Dashboard | HTMX + Jinja2 |
+| ML model contract | ForecastInterface (`hydrosolutions/ForecastInterface`) |
 | Reverse proxy | Caddy |
 | Type checker | pyright --strict |
 | Linter/formatter | ruff |

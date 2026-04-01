@@ -1023,9 +1023,9 @@ flagged in forecast metadata.
 
 `ForecastEnsemble` provides two factory classmethods that validate the DataFrame column contract at construction time:
 
-- `ForecastEnsemble.from_members(station_id, issued_at, parameter, units, time_step, values: pl.DataFrame, model_id: ModelId | None = None) -> ForecastEnsemble` — validates: `member_id` column present and `int` dtype, `quantile` column absent, `valid_time` column present and `Datetime` dtype, `value` column present and `Float64` dtype, at least 1 member. Sets `representation = MEMBERS`.
+- `ForecastEnsemble.from_members(station_id, issued_at, parameter, units, time_step, forecast_horizon_steps, values: pl.DataFrame, model_id: ModelId | None = None) -> ForecastEnsemble` — validates: `member_id` column present and `Int32` dtype, `quantile` column absent, `valid_time` column present and `Datetime` dtype, `value` column present and `Float64` dtype, at least 1 member. Sets `representation = MEMBERS`.
 
-- `ForecastEnsemble.from_quantiles(station_id, issued_at, parameter, units, time_step, values: pl.DataFrame, model_id: ModelId | None = None) -> ForecastEnsemble` — validates: `quantile` column present and `Float64` dtype, `member_id` column absent, `valid_time` column present, `value` column present, at least 7 quantile levels with tail coverage (min <= 0.05, max >= 0.95). Sets `representation = QUANTILES`.
+- `ForecastEnsemble.from_quantiles(station_id, issued_at, parameter, units, time_step, forecast_horizon_steps, values: pl.DataFrame, model_id: ModelId | None = None) -> ForecastEnsemble` — validates: `quantile` column present and `Float64` dtype, `member_id` column absent, `valid_time` column present, `value` column present, at least 7 quantile levels with tail coverage (min <= 0.05, max >= 0.95). Sets `representation = QUANTILES`.
 
 Both raise `ValueError` with a descriptive message on validation failure. The standard constructor always runs `__post_init__` validation. For store-layer reconstruction of already-validated data, the validation is idempotent and cheap — no bypass is needed.
 
@@ -1665,6 +1665,10 @@ class SanityCheckFailure(SapphireError):
 
 class ModelLoadError(SapphireError):
     """Failed to deserialize or load a model artifact.
+    Flow-level handling: try fallback model."""
+
+class ModelOutputError(SapphireError):
+    """Model ran but produced zero convertible ensembles.
     Flow-level handling: try fallback model."""
 
 class ConflictError(SapphireError):

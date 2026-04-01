@@ -1,6 +1,6 @@
 [project]
 name = "sapphire-flow"
-version = "0.1.147"
+version = "0.1.148"
 description = "Add your description here"
 readme = "README.md"
 license = "MIT"
@@ -11,6 +11,7 @@ requires-python = ">=3.11"
 dependencies = [
     "alembic",
     "camelsch>=0.2.0",
+    "forecastinterface",
     "geoalchemy2>=0.18.4",
     "orjson",
     "platformdirs>=4.0",
@@ -55,7 +56,7 @@ select = ["E", "F", "I", "N", "UP", "B", "A", "SIM", "TCH", "T20"]
 testpaths = ["tests"]
 
 [tool.bumpversion]
-current_version = "0.1.147"
+current_version = "0.1.148"
 commit = false
 tag = false
 allow_dirty = true
@@ -69,3 +70,6 @@ replace = 'version = "{new_version}"'
 filename = "src/sapphire_flow/__init__.py"
 search = '__version__ = "{current_version}"'
 replace = '__version__ = "{new_version}"'
+
+[tool.uv.sources]
+forecastinterface = { path = "../ForecastInterface", editable = true }

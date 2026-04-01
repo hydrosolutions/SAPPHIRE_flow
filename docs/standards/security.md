@@ -334,6 +334,23 @@ The entrypoint pattern above handles secrets access: `chown` makes `/run/secrets
 - `/data/artifacts/` — read-only for `api` container, read-write for `prefect-worker-training` only; read-only for `prefect-worker-ops` and `prefect-worker-hindcast`
 - `/data/cold/` — read-only for `api` container, read-write for `prefect-worker-ops` (archival task) *(v1, §A2)*; read-only for `prefect-worker-hindcast`
 
+## Model code trust boundary
+
+Forecast models — including FI-wrapped ML models via `ForecastInterfaceAdapter` — execute
+in the same worker process as DB connections and Docker secrets.
+
+**Trust model:** Model packages are vetted by the IT team and installed at Docker image
+build time via Python entry-point registry. No user-supplied or runtime-loaded model code
+is permitted. Only registered entry points are discoverable by the model loading mechanism.
+
+**In-process exposure:** The container privilege model (non-root, dropped capabilities)
+limits host-level impact but does not isolate model code from in-process state. This is
+an accepted risk given the trust model above.
+
+**Output validation:** Model outputs pass through `SanityCheckFailure` validation
+(conventions.md §Custom exceptions) before DB insertion. This is a data integrity check,
+not a security boundary — it rejects implausible values but does not sandbox model execution.
+
 ## Network policy
 
 ### Exposed ports (via Caddy)

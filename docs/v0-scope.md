@@ -180,6 +180,16 @@ Rationale: per-source flags allow incremental activation during testing — pipe
 
 **v0**: Implemented (plan 008). `GroupModelInputs` and `stack_model_inputs()` provide the stacked DataFrame container with `for_station()` slicing. `predict_batch()` accepts `GroupModelInputs` in the hindcast path; operational forecast path (Flow 1) will use the same stacking when implemented. past_dynamic and future_dynamic use the same reanalysis source in training/hindcast (future_dynamic filled from reanalysis as teacher forcing). Multi-target predictions supported from day one. v0 exercises this with discharge (river) and water_level (lake) forecasting — skill computation, store filtering, and training orchestration are all parameter-scoped.
 
+**A14. ForecastInterface adapter**
+
+**v0a**: Not needed — `LinearRegressionDaily` implements `StationForecastModel` directly.
+
+**v0b**: Active when FI-compatible ML models are onboarded. The `ForecastInterfaceAdapter`
+bridges `hydrosolutions/ForecastInterface` types to SAPPHIRE Flow internals — converting
+`ModelOutput` → `ForecastEnsemble` on output, and `GroupModelInputs`/`StationModelInputs`
+→ FI input format on input. External dependency: `ForecastInterface` is under active
+development; input types are contributed via PR from SAPPHIRE Flow (see plan 014).
+
 ---
 
 ## B. Deferred schemas (don't create tables)
@@ -334,6 +344,7 @@ Target per-step budgets (~170 Swiss stations; scale linearly for larger deployme
 Every external dependency goes through an adapter Protocol. Test replay adapters serve recorded data with `simulated_time` parameter:
 - `ReplayNwpAdapter` → recorded GRIB2/Parquet from fixtures
 - `ReplayStationAdapter` → recorded observation CSVs from fixtures
+- `ReplayForecastInterfaceAdapter` → recorded `ModelOutput` fixtures for FI-wrapped model testing
 
 Full forecast cycle runs in seconds using recorded data — no network, no waiting.
 
@@ -421,7 +432,7 @@ Implement the **full** type system and Protocol definitions from `types-and-prot
 - All enums (minus deferred ones: UserRole, AuditEventType, AdjustmentType, Calendar)
 - All entity dataclasses (frozen)
 - All store Protocols (minus RatingCurveStore, ForecastAdjustmentStore)
-- All adapter Protocols (minus NotificationAdapter)
+- All adapter Protocols (minus NotificationAdapter). v0b adds `ForecastInterfaceAdapter` for FI-wrapped ML models.
 - ForecastModel Protocol (both StationForecastModel and GroupForecastModel)
 
 ---

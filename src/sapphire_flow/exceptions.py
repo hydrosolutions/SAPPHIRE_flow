@@ -14,6 +14,10 @@ class ModelLoadError(SapphireError):
     """Failed to deserialize or load a model artifact."""
 
 
+class ModelOutputError(SapphireError):
+    """Model ran but produced zero convertible ensembles."""
+
+
 class ConflictError(SapphireError):
     """Optimistic locking detected a concurrent modification."""
 
