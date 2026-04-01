@@ -54,7 +54,8 @@ def _apply_structlog_config(
 
     for key, val in os.environ.items():
         if key.startswith("SAPPHIRE_LOG_"):
-            module = key[len("SAPPHIRE_LOG_") :].lower().replace("_", ".")
+            suffix = key[len("SAPPHIRE_LOG_") :].lower()
+            module = suffix.replace("__", "\x00").replace("_", ".").replace("\x00", "_")
             module_logger = logging.getLogger(f"sapphire_flow.{module}")
             module_logger.setLevel(getattr(logging, val.upper(), logging.INFO))
 

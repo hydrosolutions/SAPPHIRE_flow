@@ -141,10 +141,12 @@ def _apply_structlog_config(processors: list[structlog.types.Processor], config_
     # Per-module level overrides: SAPPHIRE_LOG_ADAPTERS=DEBUG etc.
     for key, val in os.environ.items():
         if key.startswith("SAPPHIRE_LOG_"):
-            module = key[len("SAPPHIRE_LOG_"):].lower().replace("_", ".")
+            module = key[len("SAPPHIRE_LOG_"):].lower().replace("__", "\x00").replace("_", ".").replace("\x00", "_")
             module_logger = logging.getLogger(f"sapphire_flow.{module}")
             module_logger.setLevel(getattr(logging, val.upper(), logging.INFO))
 ```
+
+**Underscore encoding:** Single `_` maps to `.` (package separator). Double `__` maps to a literal `_` (for module names like `forecast_interface`). Example: `SAPPHIRE_LOG_ADAPTERS_FORECAST__INTERFACE=DEBUG` targets `sapphire_flow.adapters.forecast_interface`. Leading or trailing `__` in a component produces a leading or trailing `_` in the module name — this is almost always a typo.
 
 **Warning**: Enabling DEBUG on a high-frequency adapter in production can generate 10K+ events/day at ~50 stations (scaling linearly — ~34K+/day at ~170 stations, ~200K+/day at ~1000 stations). Use targeted module overrides (e.g., `SAPPHIRE_LOG_ADAPTERS_METEOSWISS=DEBUG`), not root-level DEBUG.
 

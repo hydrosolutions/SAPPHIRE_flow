@@ -110,6 +110,7 @@ groundwater (`groundwater_level`), and soil (`soil_moisture`). See `architecture
 - Secrets: `DB_ADMIN_PASSWORD`, `SECRET_KEY`
 - API keys: `SAPPHIRE_DG_API_KEY`, `IEASYHYDRO_API_KEY`
 - Connection strings: `DATABASE_URL` (via PgBouncer) *(v1)*, `DATABASE_URL_DIRECT` (admin/migrations). v0: `DATABASE_URL` connects directly to PostgreSQL (no PgBouncer).
+- Log overrides: `SAPPHIRE_LOG_<MODULE>=<LEVEL>`. Single `_` maps to `.` (package separator); double `__` maps to literal `_` (e.g. `SAPPHIRE_LOG_ADAPTERS_FORECAST__INTERFACE=DEBUG`).
 
 ### Network identifiers
 
