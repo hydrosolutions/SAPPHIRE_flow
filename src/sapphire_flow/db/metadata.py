@@ -115,6 +115,16 @@ stations = sa.Table(
         server_default="own",
     ),
     sa.Column("wigos_id", sa.Text, nullable=True),
+    sa.Column(
+        "gauging_status",
+        sa.Text,
+        sa.CheckConstraint(
+            "gauging_status IN ('gauged', 'ungauged', 'calculated')",
+            name="ck_stations_gauging_status",
+        ),
+        nullable=False,
+        server_default="gauged",
+    ),
     sa.UniqueConstraint("network", "code", name="uq_stations_network_code"),
 )
 
@@ -992,7 +1002,9 @@ alerts = sa.Table(
     sa.Column("resolved_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("first_detected_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("notified_at", sa.DateTime(timezone=True), nullable=True),
-    sa.Column("model_ids", JSONB, nullable=False, server_default=sa.text("'[]'::jsonb")),
+    sa.Column(
+        "model_ids", JSONB, nullable=False, server_default=sa.text("'[]'::jsonb")
+    ),
     sa.Column("alert_model_strategy", sa.Text, nullable=True),
     sa.Column(
         "created_at",

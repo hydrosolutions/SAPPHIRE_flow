@@ -222,6 +222,11 @@ class StationStatus(Enum):
     SUSPENDED = "suspended"
     DECOMMISSIONED = "decommissioned"
 
+class GaugingStatus(Enum):
+    GAUGED = "gauged"
+    UNGAUGED = "ungauged"
+    CALCULATED = "calculated"
+
 class ObservationSource(Enum):
     MEASURED = "measured"                          # direct sensor reading
     RATING_CURVE_DERIVED = "rating_curve_derived"  # derived via rating curve conversion (Flow 2 step 2.5)
@@ -694,6 +699,7 @@ class StationConfig:
     network: str                       # e.g., "bafu", "uk_ea", "usgs"
     ownership: StationOwnership        # own = locally managed, foreign = display-only
     wigos_id: str | None               # WMO station ID, format: 0-{country}-{network}-{local}
+    gauging_status: GaugingStatus = GaugingStatus.GAUGED
 ```
 
 ### ModelAssignment

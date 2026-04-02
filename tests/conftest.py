@@ -17,6 +17,7 @@ from sapphire_flow.types.enums import (
     AlertStatus,
     EnsembleRepresentation,
     ForeignForecastStatus,
+    GaugingStatus,
     ModelArtifactStatus,
     ObservationSource,
     QcStatus,
@@ -91,6 +92,7 @@ def make_station_config(
     network: str = "bafu",
     ownership: StationOwnership = StationOwnership.OWN,
     wigos_id: str | None = None,
+    gauging_status: GaugingStatus = GaugingStatus.GAUGED,
     rng: random.Random | None = None,
 ) -> StationConfig:
     from sapphire_flow.types.station import StationConfig
@@ -115,6 +117,7 @@ def make_station_config(
         network=network,
         ownership=ownership,
         wigos_id=wigos_id,
+        gauging_status=gauging_status,
     )
 
 

@@ -154,6 +154,12 @@ class ObservationSource(Enum):
     MANUAL_IMPORT = "manual_import"
 
 
+class GaugingStatus(Enum):
+    GAUGED = "gauged"
+    UNGAUGED = "ungauged"
+    CALCULATED = "calculated"
+
+
 class StationOwnership(Enum):
     OWN = "own"
     FOREIGN = "foreign"

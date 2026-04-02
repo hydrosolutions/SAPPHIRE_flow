@@ -13,6 +13,7 @@ from sapphire_flow.db.metadata import (
 from sapphire_flow.store._helpers import utc_from_row
 from sapphire_flow.types.domain import GeoCoord, StationThreshold
 from sapphire_flow.types.enums import (
+    GaugingStatus,
     ModelAssignmentStatus,
     RegulationType,
     SpatialRepresentation,
@@ -117,6 +118,7 @@ class PgStationStore:
                 network=station.network,
                 ownership=station.ownership.value,
                 wigos_id=station.wigos_id,
+                gauging_status=station.gauging_status.value,
             )
         )
         return station.id
@@ -253,6 +255,7 @@ def _row_to_station(row: sa.engine.row.RowMapping) -> StationConfig:
         network=row["network"],
         ownership=StationOwnership(row["ownership"]),
         wigos_id=row["wigos_id"],
+        gauging_status=GaugingStatus(row["gauging_status"]),
     )
 
 

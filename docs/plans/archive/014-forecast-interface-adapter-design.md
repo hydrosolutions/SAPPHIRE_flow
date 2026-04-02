@@ -1,5 +1,5 @@
 ---
-status: PARTIAL
+status: DONE
 created: 2026-03-30
 completed_tasks: [1, 2]  # output adapter + enum alignment — implemented 2026-04-01
 in_flight: [3]           # FI input types PR — instructions prepared, work in FI repo

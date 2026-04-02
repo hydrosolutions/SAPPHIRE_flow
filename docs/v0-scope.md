@@ -208,6 +208,7 @@ These are deferred in architecture-context.md. For v0, don't create their tables
 | Inferred thresholds | Flood frequency analysis service |
 | Dead letter queue | `dead_letter_queue` table (no partitioning = no DLQ needed) |
 | Foreign forecast tables (v1) | `foreign_forecasts`, `foreign_forecast_values` — types/protocols defined, DB tables deferred |
+| Virtual station formulas (v1) | `calculated_station_formulas` table, DB triggers for component-must-be-gauged invariant (plan 015) |
 
 **Rationale**: Empty "for later" tables add migration maintenance burden and clutter the schema.
 
@@ -221,7 +222,7 @@ These are deferred in architecture-context.md. For v0, don't create their tables
 - `parameters` — as designed (canonical parameter names, units, aggregation methods). Seeded via Alembic migration with the 10 canonical parameters defined in `architecture-context.md`.
 
 ### Core entities
-- `stations` — as designed (without override columns); includes `network`, `ownership`, `wigos_id` columns; unique constraint is `(network, code)`
+- `stations` — as designed (without override columns); includes `network`, `ownership`, `wigos_id`, `gauging_status` columns; unique constraint is `(network, code)`
 - `basins` — as designed; includes `network` column; unique constraint is `(network, code)`
 - `station_thresholds` — as designed
 - `flow_regime_configs` — as designed
@@ -429,7 +430,7 @@ provided.
 Implement the **full** type system and Protocol definitions from `types-and-protocols.md`. Types are cheap, catch bugs early, and define the contract for all downstream implementation. This includes:
 
 - All ID NewTypes, UtcDatetime, GeoCoord
-- All enums (minus deferred ones: UserRole, AuditEventType, AdjustmentType, Calendar)
+- All enums (minus deferred ones: UserRole, AuditEventType, AdjustmentType, Calendar); within non-deferred enums, `ObservationSource.COMPONENT_DERIVED` is deferred to v1
 - All entity dataclasses (frozen)
 - All store Protocols (minus RatingCurveStore, ForecastAdjustmentStore)
 - All adapter Protocols (minus NotificationAdapter). v0b adds `ForecastInterfaceAdapter` for FI-wrapped ML models.
@@ -500,6 +501,12 @@ Permutation-invariant processing requires `future_dynamic` to carry a member dim
 **Rule**: Do not add validation that rejects a `member_id` column in `future_dynamic`. When ensemble-aware models are introduced (v0b+ or v1), `ModelDataRequirements` gains an `ensemble_input: bool` field; input preparation passes raw NWP members when `True`, collapsed statistics when `False`. This is an additive change — but only if v0 doesn't accidentally close the door.
 
 **Context**: Paper 0 lit review (§3.7) confirms no ML streamflow model has used permutation-invariant NWP input yet — Hohlein et al. demonstrated it for weather post-processing only. This is a research opportunity, not an immediate need.
+
+### I5. Do not hard-code "all stations are GAUGED" in flow code
+
+v0 operates exclusively with BAFU automatic gauging stations (`gauging_status = GAUGED`). It is tempting to skip the `gauging_status` check and write flow logic that assumes continuous observations are always available.
+
+**Rule**: Flow code that gates on observation availability (e.g. QC dispatch, alert evaluation, model inference scheduling) must branch on `station.gauging_status`, not assume `GAUGED`. Manually-read stations (`STAFF_GAUGE`, `CREST_GAUGE`) and ungauged stations will be introduced in v1 (plan 017). If v0 flow code never consults `gauging_status`, every such code path needs retrofitting before plan 017 can land.
 
 ### Not risks (safe to defer)
 

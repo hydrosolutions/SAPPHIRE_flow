@@ -9,6 +9,7 @@ import sqlalchemy as sa
 from sapphire_flow.store.station_store import PgStationStore
 from sapphire_flow.types.domain import GeoCoord, StationThreshold
 from sapphire_flow.types.enums import (
+    GaugingStatus,
     ModelAssignmentStatus,
     SpatialRepresentation,
     StationKind,
@@ -96,6 +97,24 @@ class TestStoreAndFetchStation:
         store = PgStationStore(db_connection)
         result = store.fetch_station(StationId(uuid.uuid4()))
         assert result is None
+
+
+class TestGaugingStatusRoundTrip:
+    @pytest.mark.parametrize("status", list(GaugingStatus))
+    def test_gauging_status_survives_round_trip(
+        self, db_connection: sa.Connection, status: GaugingStatus
+    ) -> None:
+        store = PgStationStore(db_connection)
+        station = make_station_config(
+            station_id=StationId(uuid.uuid4()),
+            code=f"GS-{status.value}",
+            network="bafu",
+            gauging_status=status,
+        )
+        store.store_station(station)
+        fetched = store.fetch_station(station.id)
+        assert fetched is not None
+        assert fetched.gauging_status is status
 
 
 class TestFetchStationByCode:

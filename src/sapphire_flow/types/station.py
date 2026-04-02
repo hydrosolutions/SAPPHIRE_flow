@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from sapphire_flow.types.enums import GaugingStatus
+
 if TYPE_CHECKING:
     from datetime import timedelta
 
@@ -38,6 +40,7 @@ class StationConfig:
     network: str
     ownership: StationOwnership
     wigos_id: str | None
+    gauging_status: GaugingStatus = GaugingStatus.GAUGED
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

@@ -398,13 +398,14 @@ All status/enum columns store TEXT matching the Python enum `.value` (lowercase)
 | `pipeline_health.check_type` / `PipelineCheckType` | `nwp_delivery`, `observation_freshness`, `forecast_freshness`, `flow_run_health`, `disk_usage`, `backup_freshness`, `backup_restore_test` | — | v0+v1 |
 | `dead_letter_queue.resolution` / `DlqResolution` | `replayed`, `discarded` (NULL = unresolved) | `replayed`, `discarded` | **v1** |
 | `users.role` / `UserRole` | `org_admin`, `it_admin`, `model_admin`, `forecaster` | — | **v1** |
-| `observations.source` / `ObservationSource` | `measured`, `rating_curve_derived`, `manual_import` | — | v0+v1 |
+| `observations.source` / `ObservationSource` | `measured`, `rating_curve_derived`, `manual_import`, `component_derived` *(v1 only)* | — | v0+v1 |
 | `audit_log.event_type` / `AuditEventType` | `login`, `logout`, `login_failed`, `password_changed`, `user_created`, `user_deactivated`, `api_key_created`, `api_key_revoked`, `api_key_request`, `forecast_status_change`, `forecast_adjusted`, `model_promoted`, `model_rejected`, `station_status_change`, `observation_reprocessed` | — | **v1** |
 | `audit_log.actor_type` / `AuditActorType` | `user`, `api_key`, `system` | — | **v1** |
 | `forecast_adjustments` adjustment_type / `AdjustmentType` | `shift`, `scale`, `cap`, `floor` | — | **v1** |
 | deployment config calendar / `Calendar` | `gregorian`, `bikram_sambat` | — | v0+v1 |
 | notification channel / `NotificationChannel` | `email`, `sms`, `webhook` | — | **v1** |
 | `stations.ownership` / `StationOwnership` | `own`, `foreign` | `foreign` (cannot transition to own) | v0+v1 |
+| `stations.gauging_status` / `GaugingStatus` | `gauged`, `ungauged`, `calculated` | — | v0+v1 |
 | `ForeignForecastStatus` | `published` | `published` | v0+v1 |
 | `FlowRunState` | `pending`, `running`, `completed`, `failed`, `crashed`, `cancelling`, `cancelled` | — | v0+v1 |
 | `ForcingProvenance` | `nwp_direct`, `observed`, `interpolated`, `gap_filled_climatology`, `gap_filled_persistence`, `reanalysis`, `derived`, `unknown` | — | v0+v1 |
