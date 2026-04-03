@@ -258,12 +258,8 @@ class TestDataDirResolution:
         assert result.stations_created == 1
         call_args = mock_load_stations.call_args
         # data_dir may be passed positionally or as kwarg
-        actual_data_dir = (
-            call_args[1].get("data_dir") or call_args[0][0]
-        )
-        assert actual_data_dir == Path(
-            str(resolved_root / "raw" / "CAMELS_CH")
-        )
+        actual_data_dir = call_args[1].get("data_dir") or call_args[0][0]
+        assert actual_data_dir == Path(str(resolved_root / "raw" / "CAMELS_CH"))
 
     def test_explicit_data_dir_bypasses_resolution(self) -> None:
         sid = StationId(uuid4())

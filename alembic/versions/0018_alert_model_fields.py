@@ -20,7 +20,12 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    op.add_column("alerts", sa.Column("model_ids", JSONB, nullable=False, server_default=sa.text("'[]'::jsonb")))
+    op.add_column(
+        "alerts",
+        sa.Column(
+            "model_ids", JSONB, nullable=False, server_default=sa.text("'[]'::jsonb")
+        ),
+    )
     op.add_column("alerts", sa.Column("alert_model_strategy", sa.Text, nullable=True))
 
 

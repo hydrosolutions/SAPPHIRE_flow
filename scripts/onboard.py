@@ -237,9 +237,7 @@ def main() -> int:
     except Exception as exc:
         log.error("onboarding_failed", error=str(exc))
         print(f"\nERROR: Onboarding failed — {exc}", file=sys.stderr)
-        print(
-            "Partial data may have been committed.", file=sys.stderr
-        )
+        print("Partial data may have been committed.", file=sys.stderr)
         return 1
 
     _print_result(result)

@@ -167,7 +167,7 @@ def _fake_uuid() -> UUID:
     return UUID(int=_RNG.getrandbits(128), version=4)
 
 
-def _build_hindcast(*, parameter: str = "discharge") -> "HindcastForecast":
+def _build_hindcast(*, parameter: str = "discharge") -> HindcastForecast:
     from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
     from sapphire_flow.types.ensemble import ForecastEnsemble
     from sapphire_flow.types.enums import EnsembleRepresentation, ForcingType

@@ -222,9 +222,7 @@ class TestNoFutureLeakage:
 
         for issue_time, inputs in recording.calls:
             lookback_start = ensure_utc(issue_time - lookback_steps * _STEP)
-            horizon_end = ensure_utc(
-                issue_time + forecast_horizon_steps * _STEP
-            )
+            horizon_end = ensure_utc(issue_time + forecast_horizon_steps * _STEP)
 
             # Observations: must not contain data at or beyond issue_time
             obs_timestamps = inputs.observations["timestamp"].to_list()
@@ -565,10 +563,14 @@ class TestMultiParameterGroup:
 
         rng = random.Random(99)
         station_a = make_station_config(
-            station_id=StationId(uuid4()), code="A-001", name="Station A",
+            station_id=StationId(uuid4()),
+            code="A-001",
+            name="Station A",
         )
         station_b = make_station_config(
-            station_id=StationId(uuid4()), code="B-002", name="Station B",
+            station_id=StationId(uuid4()),
+            code="B-002",
+            name="Station B",
         )
         sid_a = station_a.id
         sid_b = station_b.id
@@ -721,10 +723,14 @@ class TestGroupHindcastUsesGroupModelInputs:
 
         rng = random.Random(42)
         station_a = make_station_config(
-            station_id=StationId(uuid4()), code="R-001", name="Recording A",
+            station_id=StationId(uuid4()),
+            code="R-001",
+            name="Recording A",
         )
         station_b = make_station_config(
-            station_id=StationId(uuid4()), code="R-002", name="Recording B",
+            station_id=StationId(uuid4()),
+            code="R-002",
+            name="Recording B",
         )
         sid_a = station_a.id
         sid_b = station_b.id

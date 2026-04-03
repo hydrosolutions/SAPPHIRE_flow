@@ -55,10 +55,12 @@ def _make_observations(start: UtcDatetime, n_hours: int) -> pl.DataFrame:
         ensure_utc(datetime.fromtimestamp(start.timestamp() + i * 3600, tz=UTC))
         for i in range(n_hours)
     ]
-    return pl.DataFrame({
-        "timestamp": timestamps,
-        "value": [10.0 + i for i in range(n_hours)],
-    }).with_columns(pl.col("timestamp").cast(pl.Datetime("us", "UTC")))
+    return pl.DataFrame(
+        {
+            "timestamp": timestamps,
+            "value": [10.0 + i for i in range(n_hours)],
+        }
+    ).with_columns(pl.col("timestamp").cast(pl.Datetime("us", "UTC")))
 
 
 def _make_static() -> pl.DataFrame:
@@ -96,9 +98,7 @@ class TestGroupModelInputs:
             _SID_A: _make_model_inputs(_SID_A),
             _SID_B: _make_model_inputs(_SID_B),
         }
-        group = stack_model_inputs(
-            group_id=_GROUP_ID, inputs=inputs, issue_time=_ISSUE
-        )
+        group = stack_model_inputs(group_id=_GROUP_ID, inputs=inputs, issue_time=_ISSUE)
 
         sliced = group.for_station(_SID_A)
         assert isinstance(sliced, StationInputData)
@@ -110,9 +110,7 @@ class TestGroupModelInputs:
 
     def test_for_station_static_none(self) -> None:
         inputs = {_SID_A: _make_model_inputs(_SID_A, static=None)}
-        group = stack_model_inputs(
-            group_id=_GROUP_ID, inputs=inputs, issue_time=_ISSUE
-        )
+        group = stack_model_inputs(group_id=_GROUP_ID, inputs=inputs, issue_time=_ISSUE)
         assert group.static is None
 
         sliced = group.for_station(_SID_A)
@@ -120,9 +118,7 @@ class TestGroupModelInputs:
 
     def test_for_station_unknown_station_raises(self) -> None:
         inputs = {_SID_A: _make_model_inputs(_SID_A)}
-        group = stack_model_inputs(
-            group_id=_GROUP_ID, inputs=inputs, issue_time=_ISSUE
-        )
+        group = stack_model_inputs(group_id=_GROUP_ID, inputs=inputs, issue_time=_ISSUE)
         unknown = StationId("unknown")
         with pytest.raises(ValueError, match="not in group"):
             group.for_station(unknown)
@@ -134,9 +130,7 @@ class TestStackModelInputs:
             _SID_A: _make_model_inputs(_SID_A),
             _SID_B: _make_model_inputs(_SID_B),
         }
-        group = stack_model_inputs(
-            group_id=_GROUP_ID, inputs=inputs, issue_time=_ISSUE
-        )
+        group = stack_model_inputs(group_id=_GROUP_ID, inputs=inputs, issue_time=_ISSUE)
 
         assert group.group_id == _GROUP_ID
         assert set(group.station_ids) == {_SID_A, _SID_B}
@@ -164,9 +158,7 @@ class TestStackModelInputs:
             _SID_A: _make_model_inputs(_SID_A, with_provenance=True),
             _SID_B: _make_model_inputs(_SID_B, with_provenance=True),
         }
-        group = stack_model_inputs(
-            group_id=_GROUP_ID, inputs=inputs, issue_time=_ISSUE
-        )
+        group = stack_model_inputs(group_id=_GROUP_ID, inputs=inputs, issue_time=_ISSUE)
 
         # Drop station_id before validating provenance
         past_no_sid = group.past_dynamic.drop("station_id")
@@ -228,9 +220,7 @@ class TestStackModelInputs:
             sid: _make_model_inputs(sid, static=statics[sid])
             for sid in (_SID_A, _SID_B, _SID_C)
         }
-        group = stack_model_inputs(
-            group_id=_GROUP_ID, inputs=inputs, issue_time=_ISSUE
-        )
+        group = stack_model_inputs(group_id=_GROUP_ID, inputs=inputs, issue_time=_ISSUE)
 
         for sid, original in inputs.items():
             sliced = group.for_station(sid)
@@ -243,9 +233,7 @@ class TestStackModelInputs:
             # future_dynamic rows match original forcing rows > issue_time
             original_forcing = original.forcing
             assert isinstance(original_forcing, pl.DataFrame)
-            expected_future = original_forcing.filter(
-                pl.col("timestamp") > _ISSUE
-            )
+            expected_future = original_forcing.filter(pl.col("timestamp") > _ISSUE)
             assert sliced.future_dynamic.height == expected_future.height
             assert (
                 sliced.future_dynamic["temperature"].to_list()

@@ -35,6 +35,4 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_index("ix_skill_scores_station_freshness", "skill_scores")
-    op.drop_index(
-        "ix_station_group_members_station_id", "station_group_members"
-    )
+    op.drop_index("ix_station_group_members_station_id", "station_group_members")

@@ -93,9 +93,7 @@ def downgrade() -> None:
     # --- skill_scores: freshness → is_stale ---
     op.add_column("skill_scores", sa.Column("is_stale", sa.Boolean, nullable=True))
     op.execute("UPDATE skill_scores SET is_stale = (freshness = 'stale')")
-    op.alter_column(
-        "skill_scores", "is_stale", nullable=False, server_default="false"
-    )
+    op.alter_column("skill_scores", "is_stale", nullable=False, server_default="false")
     op.drop_constraint("ck_skill_scores_freshness", "skill_scores")
     op.drop_column("skill_scores", "freshness")
 

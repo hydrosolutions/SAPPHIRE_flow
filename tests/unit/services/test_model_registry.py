@@ -26,9 +26,7 @@ class TestBuildRegistryEntryStationModel:
         assert entry.id == model_id
         assert entry.artifact_scope == ArtifactScope.STATION
         reqs = entry.data_requirements
-        assert reqs.past_dynamic_features == frozenset(
-            {"precipitation", "temperature"}
-        )
+        assert reqs.past_dynamic_features == frozenset({"precipitation", "temperature"})
         assert entry.data_requirements.static_features == frozenset()
         assert entry.data_requirements.spatial_input_type == SpatialRepresentation.POINT
         assert entry.registered_at == _NOW

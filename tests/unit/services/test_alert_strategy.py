@@ -6,13 +6,18 @@ from uuid import uuid4
 import polars as pl
 import pytest
 
-from sapphire_flow.services.alert_strategy import PooledEnsembleStrategy, PrimaryModelStrategy
+from sapphire_flow.services.alert_strategy import (
+    PooledEnsembleStrategy,
+    PrimaryModelStrategy,
+)
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.domain import DangerLevelDefinition, ForecastParameter, StationThreshold
+from sapphire_flow.types.domain import (
+    DangerLevelDefinition,
+    ForecastParameter,
+    StationThreshold,
+)
 from sapphire_flow.types.ensemble import ForecastEnsemble
 from sapphire_flow.types.enums import (
-    AlertModelStrategy,
-    EnsembleRepresentation,
     ThresholdDirection,
     ThresholdSource,
 )
@@ -138,7 +143,12 @@ class TestPrimaryModelStrategy:
         danger_level = _make_danger_level(trigger_prob=0.5)
 
         results = PrimaryModelStrategy().evaluate(
-            _STATION, "discharge", model_ensembles, [threshold], [danger_level], priorities
+            _STATION,
+            "discharge",
+            model_ensembles,
+            [threshold],
+            [danger_level],
+            priorities,
         )
 
         assert len(results) == 1
@@ -156,7 +166,12 @@ class TestPrimaryModelStrategy:
         danger_level = _make_danger_level(trigger_prob=0.5)
 
         results = PrimaryModelStrategy().evaluate(
-            _STATION, "discharge", model_ensembles, [threshold], [danger_level], priorities
+            _STATION,
+            "discharge",
+            model_ensembles,
+            [threshold],
+            [danger_level],
+            priorities,
         )
 
         assert results[0].model_ids == (mid_a,)
@@ -184,16 +199,19 @@ class TestPrimaryModelStrategy:
         danger_level = _make_danger_level(trigger_prob=0.5)
 
         results = PrimaryModelStrategy().evaluate(
-            _STATION, "discharge", model_ensembles, [threshold], [danger_level], priorities
+            _STATION,
+            "discharge",
+            model_ensembles,
+            [threshold],
+            [danger_level],
+            priorities,
         )
 
         assert len(results) == 1
         assert results[0].model_ids == (mid,)
 
     def test_empty_ensembles_returns_empty(self) -> None:
-        results = PrimaryModelStrategy().evaluate(
-            _STATION, "discharge", {}, [], [], {}
-        )
+        results = PrimaryModelStrategy().evaluate(_STATION, "discharge", {}, [], [], {})
         assert results == []
 
     def test_model_ids_contains_only_primary(self) -> None:

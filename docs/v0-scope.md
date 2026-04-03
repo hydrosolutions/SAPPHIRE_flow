@@ -506,7 +506,7 @@ Permutation-invariant processing requires `future_dynamic` to carry a member dim
 
 v0 operates exclusively with BAFU automatic gauging stations (`gauging_status = GAUGED`). It is tempting to skip the `gauging_status` check and write flow logic that assumes continuous observations are always available.
 
-**Rule**: Flow code that gates on observation availability (e.g. QC dispatch, alert evaluation, model inference scheduling) must branch on `station.gauging_status`, not assume `GAUGED`. Manually-read stations (`STAFF_GAUGE`, `CREST_GAUGE`) and ungauged stations will be introduced in v1 (plan 017). If v0 flow code never consults `gauging_status`, every such code path needs retrofitting before plan 017 can land.
+**Rule**: Flow code that gates on observation availability (e.g. QC dispatch, alert evaluation, model inference scheduling) must branch on `station.gauging_status`, not assume `GAUGED`. Manual stations (per-station `AutomationLevel`, plan 017) and ungauged stations (plan 015) will be introduced in v1. If v0 flow code never consults `gauging_status`, every such code path needs retrofitting before these plans can land.
 
 ### Not risks (safe to defer)
 

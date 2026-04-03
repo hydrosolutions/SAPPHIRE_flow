@@ -116,11 +116,13 @@ class FakeMultiTargetStationForecastModel:
                     )
                 )
                 for m in range(self.n_members):
-                    rows.append({
-                        "valid_time": vt,
-                        "member_id": m,
-                        "value": rng.uniform(1.0, 50.0),
-                    })
+                    rows.append(
+                        {
+                            "valid_time": vt,
+                            "member_id": m,
+                            "value": rng.uniform(1.0, 50.0),
+                        }
+                    )
             df = pl.DataFrame(rows).with_columns(
                 pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
                 pl.col("member_id").cast(pl.Int32),
@@ -216,9 +218,7 @@ class FakeGroupForecastModel:
 
 class FakeMultiTargetGroupForecastModel:
     artifact_scope = ArtifactScope.GROUP
-    data_requirements: ModelDataRequirements = (
-        FakeGroupForecastModel.data_requirements
-    )
+    data_requirements: ModelDataRequirements = FakeGroupForecastModel.data_requirements
 
     def __init__(
         self,
@@ -251,11 +251,13 @@ class FakeMultiTargetGroupForecastModel:
                         )
                     )
                     for m in range(self.n_members):
-                        rows.append({
-                            "valid_time": vt,
-                            "member_id": m,
-                            "value": rng.uniform(1.0, 50.0),
-                        })
+                        rows.append(
+                            {
+                                "valid_time": vt,
+                                "member_id": m,
+                                "value": rng.uniform(1.0, 50.0),
+                            }
+                        )
                 df = pl.DataFrame(rows).with_columns(
                     pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
                     pl.col("member_id").cast(pl.Int32),

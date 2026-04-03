@@ -9,6 +9,7 @@ Create Date: 2026-03-27
 from collections.abc import Sequence
 
 import sqlalchemy as sa
+
 from alembic import op
 
 revision: str = "0016"
@@ -20,8 +21,14 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     # Add parameter column using server_default/drop pattern (matches migration 0008).
     # Safe even if skill rows already exist in a developer's local DB.
-    op.add_column("skill_scores", sa.Column("parameter", sa.Text, nullable=False, server_default="discharge"))
-    op.add_column("skill_diagrams", sa.Column("parameter", sa.Text, nullable=False, server_default="discharge"))
+    op.add_column(
+        "skill_scores",
+        sa.Column("parameter", sa.Text, nullable=False, server_default="discharge"),
+    )
+    op.add_column(
+        "skill_diagrams",
+        sa.Column("parameter", sa.Text, nullable=False, server_default="discharge"),
+    )
     op.alter_column("skill_scores", "parameter", server_default=None)
     op.alter_column("skill_diagrams", "parameter", server_default=None)
 

@@ -137,7 +137,9 @@ def _to_values(alert: Alert) -> dict:  # type: ignore[type-arg]
         "notified_at": alert.notified_at,
         "created_at": alert.created_at,
         "model_ids": [str(mid) for mid in alert.model_ids],
-        "alert_model_strategy": alert.alert_model_strategy.value if alert.alert_model_strategy is not None else None,
+        "alert_model_strategy": alert.alert_model_strategy.value
+        if alert.alert_model_strategy is not None
+        else None,
     }
 
 
@@ -153,7 +155,9 @@ def _mutable_fields(alert: Alert) -> dict:  # type: ignore[type-arg]
         "first_detected_at": alert.first_detected_at,
         "notified_at": alert.notified_at,
         "model_ids": [str(mid) for mid in alert.model_ids],
-        "alert_model_strategy": alert.alert_model_strategy.value if alert.alert_model_strategy is not None else None,
+        "alert_model_strategy": alert.alert_model_strategy.value
+        if alert.alert_model_strategy is not None
+        else None,
     }
 
 
@@ -176,5 +180,7 @@ def _row_to_domain(row: sa.engine.row.RowMapping) -> Alert:
         notified_at=utc_or_none(row["notified_at"]),
         created_at=utc_from_row(row["created_at"]),
         model_ids=tuple(ModelId(mid) for mid in (row["model_ids"] or [])),  # type: ignore[arg-type]
-        alert_model_strategy=AlertModelStrategy(row["alert_model_strategy"]) if row["alert_model_strategy"] is not None else None,
+        alert_model_strategy=AlertModelStrategy(row["alert_model_strategy"])
+        if row["alert_model_strategy"] is not None
+        else None,
     )

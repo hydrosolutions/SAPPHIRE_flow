@@ -171,16 +171,12 @@ class TestPgModelArtifactStore:
             model_id, b"group_bytes", _T0, _T1, _T2, group_id=group_id
         )
         store.transition_artifact_status(group_aid, ModelArtifactStatus.ACTIVE)
-        store.transition_artifact_status(
-            group_aid, ModelArtifactStatus.SUPERSEDED
-        )
+        store.transition_artifact_status(group_aid, ModelArtifactStatus.SUPERSEDED)
 
         station_aid = store.store_artifact(
             model_id, b"station_bytes", _T0, _T1, _T2, station_id=station_id
         )
-        store.transition_artifact_status(
-            station_aid, ModelArtifactStatus.ACTIVE
-        )
+        store.transition_artifact_status(station_aid, ModelArtifactStatus.ACTIVE)
 
         result = store.fetch_active_artifact_for_station(station_id, model_id)
 
@@ -231,9 +227,7 @@ class TestPgModelArtifactStore:
         )
         store.transition_artifact_status(aid1, ModelArtifactStatus.ACTIVE)
         # Supersede aid1 before promoting aid2 (partial unique index)
-        store.transition_artifact_status(
-            aid1, ModelArtifactStatus.SUPERSEDED
-        )
+        store.transition_artifact_status(aid1, ModelArtifactStatus.SUPERSEDED)
         aid2 = store.store_artifact(
             model_id, b"a2", _T0, _T1, _T2, station_id=station_id
         )

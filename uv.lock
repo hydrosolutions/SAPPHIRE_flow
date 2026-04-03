@@ -916,7 +916,7 @@ wheels = [
 
 [[package]]
 name = "forecastinterface"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "../ForecastInterface" }
 dependencies = [
     { name = "polars" },
@@ -3593,7 +3593,7 @@ wheels = [
 
 [[package]]
 name = "sapphire-flow"
-version = "0.1.148"
+version = "0.1.152"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },

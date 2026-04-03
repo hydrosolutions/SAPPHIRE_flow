@@ -4,14 +4,14 @@ import logging
 import os
 from unittest.mock import patch
 
-import pytest
-
 from sapphire_flow.logging import configure_api_logging
 
 
 def _resolve(env_suffix: str) -> str:
     """Simulate the env var → module path resolution."""
-    return env_suffix.lower().replace("__", "\x00").replace("_", ".").replace("\x00", "_")
+    return (
+        env_suffix.lower().replace("__", "\x00").replace("_", ".").replace("\x00", "_")
+    )
 
 
 class TestModuleResolver:
@@ -30,7 +30,10 @@ class TestModuleResolver:
         assert _resolve("STORES_OBSERVATION__STORE") == "stores.observation_store"
 
     def test_multi_word_underscore_module(self) -> None:
-        assert _resolve("STORES_WEATHER__FORECAST__STORE") == "stores.weather_forecast_store"
+        assert (
+            _resolve("STORES_WEATHER__FORECAST__STORE")
+            == "stores.weather_forecast_store"
+        )
 
     def test_triple_underscore_greedy(self) -> None:
         # Greedy left-to-right: first __ consumed, remaining _ becomes .

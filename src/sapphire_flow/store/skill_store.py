@@ -119,9 +119,7 @@ class PgSkillStore:
         if parameter is not None:
             filters.append(ss.c.parameter == parameter)
         result = self._conn.execute(
-            sa.update(ss)
-            .where(*filters)
-            .values(freshness=SkillFreshness.STALE.value)
+            sa.update(ss).where(*filters).values(freshness=SkillFreshness.STALE.value)
         )
         return result.rowcount
 

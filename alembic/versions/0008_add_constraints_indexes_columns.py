@@ -64,13 +64,24 @@ def upgrade() -> None:
     )
 
     # --- C2: parameter/units on forecast header tables ---
-    op.add_column("forecasts", sa.Column("parameter", sa.Text, nullable=False, server_default="discharge"))
-    op.add_column("forecasts", sa.Column("units", sa.Text, nullable=False, server_default="m3/s"))
+    op.add_column(
+        "forecasts",
+        sa.Column("parameter", sa.Text, nullable=False, server_default="discharge"),
+    )
+    op.add_column(
+        "forecasts", sa.Column("units", sa.Text, nullable=False, server_default="m3/s")
+    )
     op.alter_column("forecasts", "parameter", server_default=None)
     op.alter_column("forecasts", "units", server_default=None)
 
-    op.add_column("hindcast_forecasts", sa.Column("parameter", sa.Text, nullable=False, server_default="discharge"))
-    op.add_column("hindcast_forecasts", sa.Column("units", sa.Text, nullable=False, server_default="m3/s"))
+    op.add_column(
+        "hindcast_forecasts",
+        sa.Column("parameter", sa.Text, nullable=False, server_default="discharge"),
+    )
+    op.add_column(
+        "hindcast_forecasts",
+        sa.Column("units", sa.Text, nullable=False, server_default="m3/s"),
+    )
     op.alter_column("hindcast_forecasts", "parameter", server_default=None)
     op.alter_column("hindcast_forecasts", "units", server_default=None)
 
@@ -109,13 +120,45 @@ def upgrade() -> None:
     )
 
     # --- H4: Evaluation period on skill tables ---
-    op.add_column("skill_scores", sa.Column("eval_period_start", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("'1970-01-01T00:00:00Z'")))
-    op.add_column("skill_scores", sa.Column("eval_period_end", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("'1970-01-01T00:00:00Z'")))
+    op.add_column(
+        "skill_scores",
+        sa.Column(
+            "eval_period_start",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("'1970-01-01T00:00:00Z'"),
+        ),
+    )
+    op.add_column(
+        "skill_scores",
+        sa.Column(
+            "eval_period_end",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("'1970-01-01T00:00:00Z'"),
+        ),
+    )
     op.alter_column("skill_scores", "eval_period_start", server_default=None)
     op.alter_column("skill_scores", "eval_period_end", server_default=None)
 
-    op.add_column("skill_diagrams", sa.Column("eval_period_start", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("'1970-01-01T00:00:00Z'")))
-    op.add_column("skill_diagrams", sa.Column("eval_period_end", sa.DateTime(timezone=True), nullable=False, server_default=sa.text("'1970-01-01T00:00:00Z'")))
+    op.add_column(
+        "skill_diagrams",
+        sa.Column(
+            "eval_period_start",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("'1970-01-01T00:00:00Z'"),
+        ),
+    )
+    op.add_column(
+        "skill_diagrams",
+        sa.Column(
+            "eval_period_end",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("'1970-01-01T00:00:00Z'"),
+        ),
+    )
     op.alter_column("skill_diagrams", "eval_period_start", server_default=None)
     op.alter_column("skill_diagrams", "eval_period_end", server_default=None)
 
@@ -133,7 +176,9 @@ def downgrade() -> None:
     op.drop_index("ix_forecasts_issued_station", table_name="forecasts")
     op.drop_index("ix_forecasts_station_issued_desc", table_name="forecasts")
     op.drop_index("ix_model_states_station_model_issue_desc", table_name="model_states")
-    op.drop_index("ix_hindcast_forecasts_station_model_step", table_name="hindcast_forecasts")
+    op.drop_index(
+        "ix_hindcast_forecasts_station_model_step", table_name="hindcast_forecasts"
+    )
 
     # C2
     op.drop_column("hindcast_forecasts", "units")

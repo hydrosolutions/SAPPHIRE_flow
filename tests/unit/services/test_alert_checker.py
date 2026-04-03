@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -8,13 +7,14 @@ import pytest
 
 from sapphire_flow.services.alert_checker import (
     _STRATEGY_FALLBACK_WARNED,
-    _check_station,
-    _ensemble_size_adequate,
     _process_results,
     _resolve_strategy_and_filter,
     check_station_alerts,
 )
-from sapphire_flow.services.alert_strategy import PooledEnsembleStrategy, PrimaryModelStrategy
+from sapphire_flow.services.alert_strategy import (
+    PooledEnsembleStrategy,
+    PrimaryModelStrategy,
+)
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.domain import DangerLevelDefinition, StationThreshold
 from sapphire_flow.types.enums import (
@@ -188,7 +188,10 @@ class TestResolveStrategyAndFilter:
                 model_id=mid_b,
             ),
         }
-        representations = {EnsembleRepresentation.MEMBERS, EnsembleRepresentation.QUANTILES}
+        representations = {
+            EnsembleRepresentation.MEMBERS,
+            EnsembleRepresentation.QUANTILES,
+        }
 
         strategy, effective = _resolve_strategy_and_filter(
             preferred=AlertModelStrategy.CONSENSUS,
@@ -215,7 +218,10 @@ class TestResolveStrategyAndFilter:
                 model_id=mid_b,
             ),
         }
-        representations = {EnsembleRepresentation.MEMBERS, EnsembleRepresentation.QUANTILES}
+        representations = {
+            EnsembleRepresentation.MEMBERS,
+            EnsembleRepresentation.QUANTILES,
+        }
 
         strategy, effective = _resolve_strategy_and_filter(
             preferred=AlertModelStrategy.POOLED,
@@ -242,7 +248,10 @@ class TestResolveStrategyAndFilter:
                 model_id=mid_b,
             ),
         }
-        representations = {EnsembleRepresentation.MEMBERS, EnsembleRepresentation.QUANTILES}
+        representations = {
+            EnsembleRepresentation.MEMBERS,
+            EnsembleRepresentation.QUANTILES,
+        }
 
         strategy, effective = _resolve_strategy_and_filter(
             preferred=AlertModelStrategy.BMA,
@@ -369,7 +378,10 @@ class TestResolveStrategyAndFilter:
             _resolve_strategy_and_filter(
                 preferred=AlertModelStrategy.BMA,
                 param_ensembles=mixed_ensembles,
-                representations={EnsembleRepresentation.MEMBERS, EnsembleRepresentation.QUANTILES},
+                representations={
+                    EnsembleRepresentation.MEMBERS,
+                    EnsembleRepresentation.QUANTILES,
+                },
                 priorities={mid_a: 0, mid_b: 1},
             )
 
@@ -433,7 +445,9 @@ class TestCheckStationAlerts:
             station_id=_STATION, model_id=mid, n_members=21, n_steps=3
         )
         all_ensembles = {_STATION: {mid: {"discharge": ens}}}
-        threshold = _make_threshold(station_id=_STATION, danger_level="LowFlow", value=5.0)
+        threshold = _make_threshold(
+            station_id=_STATION, danger_level="LowFlow", value=5.0
+        )
         below_level = _make_danger_level(
             name="LowFlow", trigger_prob=0.5, direction=ThresholdDirection.BELOW
         )
@@ -492,9 +506,7 @@ class TestCheckStationAlerts:
             min_operational_ensemble_size=50,
         )
         mid = ModelId("m")
-        ens = make_forecast_ensemble(
-            station_id=_STATION, model_id=mid, n_members=21
-        )
+        ens = make_forecast_ensemble(station_id=_STATION, model_id=mid, n_members=21)
         all_ensembles = {_STATION: {mid: {"discharge": ens}}}
         threshold = _make_threshold(danger_level="DL1", value=1.0)
         dl = _make_danger_level(name="DL1", trigger_prob=0.1)
@@ -529,9 +541,7 @@ class TestCheckStationAlerts:
             min_operational_ensemble_size=100,
         )
         mid = ModelId("m")
-        ens = make_forecast_ensemble(
-            station_id=_STATION, model_id=mid, n_members=20
-        )
+        ens = make_forecast_ensemble(station_id=_STATION, model_id=mid, n_members=20)
         all_ensembles = {_STATION: {mid: {"discharge": ens}}}
         threshold = _make_threshold(danger_level="DL3", value=1.0)
         dl = _make_danger_level(name="DL3", trigger_prob=0.1)
@@ -546,7 +556,9 @@ class TestCheckStationAlerts:
             clock=_clock,
         )
 
-        active = store.fetch_active_alerts(station_id=_STATION, source=AlertSource.FORECAST)
+        active = store.fetch_active_alerts(
+            station_id=_STATION, source=AlertSource.FORECAST
+        )
         assert len(active) == 1
         assert active[0].alert_level == "DL3"
         assert active[0].status == AlertStatus.RAISED
@@ -631,11 +643,11 @@ class TestProcessResults:
             model_ids=(mid,),
             strategy=AlertModelStrategy.PRIMARY,
         )
-        threshold = _make_threshold(danger_level="DL1", parameter="discharge", value=100.0)
-
-        _process_results(
-            [result], _STATION, {"discharge"}, [threshold], store, _clock
+        threshold = _make_threshold(
+            danger_level="DL1", parameter="discharge", value=100.0
         )
+
+        _process_results([result], _STATION, {"discharge"}, [threshold], store, _clock)
 
         active = store.fetch_active_alerts(station_id=_STATION)
         assert len(active) == 1
@@ -651,16 +663,22 @@ class TestProcessResults:
             status=AlertStatus.RAISED,
         )
         store.upsert_alert(existing)
-        threshold = _make_threshold(danger_level="DL1", parameter="discharge", value=100.0)
+        threshold = _make_threshold(
+            danger_level="DL1", parameter="discharge", value=100.0
+        )
 
         _process_results([], _STATION, {"discharge"}, [threshold], store, _clock)
 
-        active = store.fetch_active_alerts(station_id=_STATION, source=AlertSource.FORECAST)
+        active = store.fetch_active_alerts(
+            station_id=_STATION, source=AlertSource.FORECAST
+        )
         assert len(active) == 0
 
     def test_no_resolution_when_no_active_alerts(self) -> None:
         store = FakeAlertStore()
-        threshold = _make_threshold(danger_level="DL1", parameter="discharge", value=100.0)
+        threshold = _make_threshold(
+            danger_level="DL1", parameter="discharge", value=100.0
+        )
 
         _process_results([], _STATION, {"discharge"}, [threshold], store, _clock)
 
@@ -711,7 +729,6 @@ class TestProcessResults:
 
     def test_partial_model_failure_preserves_alert(self) -> None:
         """Only water_level evaluated (discharge absent) → discharge-keyed alert preserved."""
-        from sapphire_flow.types.domain import ExceedanceResult
 
         store = FakeAlertStore()
         mid = ModelId("m")
@@ -812,11 +829,11 @@ class TestProcessResults:
             model_ids=(mid,),
             strategy=AlertModelStrategy.PRIMARY,
         )
-        threshold = _make_threshold(danger_level=danger_level_name, parameter="discharge", value=100.0)
-
-        _process_results(
-            [result], _STATION, {"discharge"}, [threshold], store, _clock
+        threshold = _make_threshold(
+            danger_level=danger_level_name, parameter="discharge", value=100.0
         )
+
+        _process_results([result], _STATION, {"discharge"}, [threshold], store, _clock)
 
         active = store.fetch_active_alerts(station_id=_STATION)
         assert len(active) == 1
@@ -830,7 +847,9 @@ class TestProcessResults:
         mid_c = ModelId("model_c")
         mid_a = ModelId("model_a")
         mid_b = ModelId("model_b")
-        threshold = _make_threshold(danger_level="DL1", parameter="discharge", value=100.0)
+        threshold = _make_threshold(
+            danger_level="DL1", parameter="discharge", value=100.0
+        )
         result = ExceedanceResult(
             station_id=_STATION,
             danger_level="DL1",
@@ -843,9 +862,7 @@ class TestProcessResults:
             strategy=AlertModelStrategy.POOLED,
         )
 
-        _process_results(
-            [result], _STATION, {"discharge"}, [threshold], store, _clock
-        )
+        _process_results([result], _STATION, {"discharge"}, [threshold], store, _clock)
 
         active = store.fetch_active_alerts(station_id=_STATION)
         assert active[0].model_ids == (mid_a, mid_b, mid_c)
