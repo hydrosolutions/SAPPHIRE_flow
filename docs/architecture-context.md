@@ -1,6 +1,6 @@
 # Architecture Context
 
-Read this first before working on any task.
+Full v1 architecture reference. For v0 implementation, read `v0-scope.md` first — it overrides this document where they differ.
 
 ## What SAPPHIRE Flow does
 

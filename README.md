@@ -1,6 +1,6 @@
 # SAPPHIRE Flow
 
-Operational hydrological forecasting system. Ingests weather and station data, runs ensemble forecast models, checks alert thresholds, and serves results via a REST API.
+Operational hydrological forecasting system. Ingests weather and station data, runs ensemble forecast models, checks alert thresholds, and will serve results via a REST API (in progress).
 
 ## Requirements
 
