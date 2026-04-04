@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-SAPPHIRE Flow is an operational hydrological forecasting system that ingests weather and station data, runs ensemble forecast models, checks alert thresholds, and serves results via a REST API with an optional review dashboard. Currently in **early implementation** (Phase 1a: types, Protocols, and test infrastructure underway — see `docs/v0-scope.md` §H for implementation phases). The immediate goal is **v0**: a working end-to-end pipeline using Swiss public data (MeteoSwiss weather, BAFU stations) with simple models, validating the architecture before Nepal deployment in Oct 2026.
+SAPPHIRE Flow is an operational hydrological forecasting system that ingests weather and station data, runs ensemble forecast models, checks alert thresholds, and serves results via a REST API with an optional review dashboard. Currently in **mid-implementation** — Phases 1a/1b (types, Protocols, test infra, DB schema), 2 (stores), 4 (services), 5 (station onboarding), 7/7b (model framework + training) are complete. Next up: Phase 3 remainder (production NWP adapters), Phase 6 (observation ingest flow), Phase 8 (forecast cycle), Phase 9 (FastAPI API). See `docs/v0-scope.md` §H for the full phase ladder. The immediate goal is **v0**: a working end-to-end pipeline using Swiss public data (MeteoSwiss weather, BAFU stations) with simple models, validating the architecture before Nepal deployment in Oct 2026.
 
 **Key documents (in priority order):**
 1. `docs/v0-scope.md` — **Read first for any implementation task.** What v0 implements, simplifications, performance targets, testing strategy, implementation phases
@@ -37,12 +37,6 @@ Stay focused on the current task until completion. Do not change direction mid-s
 Plans start as `status: DRAFT`. Opus self-reviews before presenting to user.
 User confirms, then Opus sets `status: READY`. Do not begin implementation from
 a DRAFT plan.
-
-## Context Awareness
-
-### Library Implementation Details
-
-`.context` contains git submodules of libraries used. Grep for implementation details of the files you work with to ensure consistency with library conventions.
 
 ## Ask Questions
 

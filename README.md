@@ -12,15 +12,13 @@ Operational hydrological forecasting system. Ingests weather and station data, r
 
 ### 1. Create secrets
 
-Secrets live outside the repository at `~/.config/sapphire-flow/secrets/` (dev) or `/opt/sapphire/secrets/` (production). A gitignored symlink in the repo lets Docker Compose find them:
+Secrets live outside the repository at `~/.config/sapphire-flow/secrets/` (dev). A gitignored symlink in the repo lets Docker Compose find them. In production, Docker secrets mount files at `/run/secrets/<name>` — see [security standards](docs/standards/security.md) for the full model.
 
 ```bash
 mkdir -p ~/.config/sapphire-flow/secrets
 openssl rand -base64 24 > ~/.config/sapphire-flow/secrets/db_password
 ln -s ~/.config/sapphire-flow/secrets secrets
 ```
-
-See [security standards](docs/standards/security.md) for the full secrets model.
 
 ### 2. Start the database
 

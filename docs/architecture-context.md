@@ -2816,18 +2816,19 @@ Per-alert-category channel selection and per-recipient configuration. Schema wil
 ```
 src/sapphire_flow/
 ├── types/          # Domain dataclasses (frozen)
-├── schemas/        # Pydantic models (system boundary validation only)
 ├── protocols/      # Store, adapter, model, notification Protocols
 ├── adapters/       # External data source implementations
-├── models/         # Forecast model implementations (separate packages)
 ├── store/          # PostgreSQL store implementations
 ├── services/       # Business logic (alerting, QC, skill, forecast prep)
 ├── flows/          # Prefect flow definitions (orchestration only)
-├── api/            # FastAPI routes (JSON + CSV export)
-├── bulletin/       # Excel bulletin generation
-├── dashboard/      # HTMX review dashboard (review, adjust, visualize)
 ├── config/         # Settings (config.toml + env vars)
-└── preprocessing/  # NWP spatial extraction (GridExtractor)
+├── db/             # SQLAlchemy table metadata
+├── exceptions.py   # Domain exception hierarchy
+├── logging.py      # structlog configuration
+├── api/            # FastAPI routes (JSON + CSV export)              — not yet implemented
+├── bulletin/       # Excel bulletin generation                      — not yet implemented
+├── dashboard/      # HTMX review dashboard                         — not yet implemented
+└── preprocessing/  # NWP spatial extraction (GridExtractor)         — not yet implemented
 ```
 
 `SAPPHIRE_CONFIG` environment variable enables deployment profile switching. `load_config()` reads this env var when no explicit path is provided. Default profile: `config.toml` (Swiss). Other profiles in `config/` directory.
