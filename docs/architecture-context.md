@@ -232,6 +232,7 @@ Layer:    flows/ — orchestration only, delegates to services/adapters
 
 | # | Step | Layer | Input | Output |
 |---|------|-------|-------|--------|
+| 2.0 | Filter eligible stations | `services/` | All station configs | Gauged stations (Wave 1); calculated stations queued for Wave 2 *(v1 — plan 015; v0: all stations are gauged, no filtering needed)* |
 | 2.1 | Fetch latest station observations | `adapters/` | Station configs, last-seen timestamps | Raw river + meteo observations |
 | 2.2 | Store raw observations | `store/` | Raw observations | Persisted to `observations` (status = `raw`) |
 | 2.3 | Stage 1 QC — sensor validation | `services/` | Raw observations, QC rule config | QC flags per measured value |
@@ -245,6 +246,7 @@ Layer:    flows/ — orchestration only, delegates to services/adapters
 
 #### Notes
 
+- **2.0** *(v1 — plan 015)*: Excludes `GaugingStatus.UNGAUGED` stations (no observations to fetch). Splits remaining stations into Wave 1 (`GAUGED` — standard ingest + QC via steps 2.1–2.7) and Wave 2 (`CALCULATED` — derive from Wave 1 results via formula, propagate QC flags per plan 015 D6). v0: all stations are `GAUGED`, so this step is a no-op pass-through.
 - **2.1**: River and weather fetches are independent adapters — run in parallel. v0: BAFU (river) + SMN (weather). Incremental: uses last-seen timestamp per station to fetch only new data.
 - **2.2**: Single `observations` table. Raw values are stored with `source = 'measured'` and `qc_status = 'raw'`. Raw values are never overwritten — QC is metadata on the observation, not a replacement. See "Quality control data model" section below for the full type definitions.
 
@@ -475,7 +477,7 @@ flowchart TD
 - **Monitoring boundary**: Flow 4 monitors *application-level* pipeline health — data freshness, flow run status, and disk (a slow-building failure the app is well-positioned to detect). CPU and memory monitoring is deliberately excluded: spikes are transient and expected during forecast runs, meaningful alerting requires time-windowed baselines, and infrastructure monitoring tools (Prometheus, cAdvisor, cloud-native metrics) handle this far better. SAPPHIRE should not duplicate the infrastructure layer.
 - **Distinct from flood alerts**: Ops alerts use `AlertSource.PIPELINE` in the same `alerts` table but go to the operations/engineering team, not flood forecasters. Different notification channel, different recipients, different urgency model. Queried separately via `fetch_active_alerts(source=AlertSource.PIPELINE)`.
 - **4.1**: Each NWP source has an expected delivery schedule configured in `config.toml` adapter sections (see "Pipeline monitoring schedule config" below). Late = expected but not yet arrived. Missing = past the acceptable window. Also performs retrospective archive completeness audit — detects gaps in the NWP archive that weren't caught in real time. When recoverable gaps are found, triggers Flow 11 (NWP gap recovery).
-- **4.2**: Per-station staleness based on per-adapter-type config (see "Pipeline monitoring schedule config" below). Not per-station — too tedious to configure.
+- **4.2**: Per-station staleness based on per-adapter-type config (see "Pipeline monitoring schedule config" below). Not per-station — too tedious to configure. *(v1 — plan 015)*: Excludes `GaugingStatus.UNGAUGED` stations from freshness checks — they never emit observations, so an overdue flag would be permanently raised and meaningless. *(v1 — plan 017)*: Per-station interval derived from `AutomationLevel` replaces adapter-level config for mixed manual/automatic networks.
 - **4.3**: If the last forecast cycle is older than the configured `expected_interval_hours`, something in Flow 1 is broken.
 - **4.4**: Queries Prefect's API for recent flow run states. Detects repeated failures, stuck runs.
 - **4.8**: Health metrics over time enable diagnostics (e.g. "NWP has been consistently late for a week").
@@ -694,13 +696,16 @@ Phase 1:  5.1 (register)
 Phase 2:  5.2 (catchment attrs) ∥ 5.3 (weather sources) ∥ 5.4 (import historical obs)
 Phase 3:  5.5 (Stage 1 QC) — depends on 5.4
 Phase 4:  5.6 (hQ conversion, conditional) → 5.7 (Stage 2 QC, conditional) — depends on 5.5 + rating curve
-Phase 5:  5.8 (baselines) ∥ 5.9 (flow regimes) — depends on 5.5 (or 5.7 if 5.6 ran)
+Phase 4C: 5.C3 (derive calculated obs, conditional) — depends on component stations' 5.5  [v1 — plan 015]
+Phase 5:  5.8 (baselines) ∥ 5.9 (flow regimes) — depends on 5.5/5.7 (GAUGED) or 5.C3 (CALCULATED)
 Phase 5': 5.10 (model assignments) — depends on 5.2 and 5.3 only (parallel with Phase 5)
 Phase 6:  5.11 (model readiness) — depends on 5.10 and Phase 5; branches may run for days
 Phase 7:  5.12 (go-live) — manual, after 5.11 completes for at least one model
 ```
 
 Within each phase, steps parallelize across stations in the batch. Phases 2–5 form the per-station data pipeline. Phase 5' (model assignments) runs in parallel with Phase 5 — it depends only on catchment attributes and weather sources, not baselines or flow regimes. Phase 6 (model readiness) waits for both.
+
+*(v1 — plan 015)*: For `CALCULATED` stations, Phase 4C replaces Phases 3–4. Step 5.C3 computes `Q_virtual = Σ(wᵢ × Qᵢ)` from component stations' QC-passed observations and propagates QC flags (D6 rule). Steps 5.4, 5.5, 5.6, 5.7 are skipped — calculated stations have no raw observations to import or QC. For `UNGAUGED` stations, Phases 2–5 are entirely skipped (no observations, no baselines, no flow regimes); only Phases 1, 5', 6, 7 apply.
 
 ```mermaid
 flowchart TD
@@ -722,6 +727,10 @@ flowchart TD
         s5_6["5.6 Rating curve<br/>conversion (bulk h↔Q)"]
         s5_7["5.7 Stage 2 QC<br/>(conversion validation)"]
         s5_6 --> s5_7
+    end
+
+    subgraph Phase4C ["Phase 4C — CALCULATED stations only (v1 — plan 015)"]
+        s5_C3["5.C3 Derive calculated<br/>observations from<br/>component formula"]
     end
 
     subgraph Phase5 ["Phase 5 — parallel"]
@@ -752,6 +761,9 @@ flowchart TD
     s5_5 --> s5_9
     s5_7 --> s5_8
     s5_7 --> s5_9
+    s5_5 -.-> s5_C3
+    s5_C3 -.-> s5_8
+    s5_C3 -.-> s5_9
     s5_2 --> s5_10
     s5_3 --> s5_10
     s5_10 --> brA
@@ -790,7 +802,7 @@ StationStatus enum (Python members → DB values):
 Transitions (shown as DB values):
   'onboarding' → 'operational'      model admin confirms (5.12). Precondition: ≥1 active model artifact.
   'operational' → 'suspended'       model admin action (sensor issues, maintenance). Forecasting pauses.
-  'suspended' → 'operational'       model admin action. Precondition: ≥1 active model artifact still exists.
+  'suspended' → 'operational'       model admin action. Precondition: ≥1 active model artifact still exists. (v1 — plan 015): For CALCULATED stations, also requires component stations operational and formula valid.
   'operational' → 'decommissioned'  model admin action. Permanent — data retained, forecasting stops.
   'suspended' → 'decommissioned'    model admin action. Permanent — no need to unsuspend first.
   'onboarding' → 'decommissioned'   abandoned onboarding.
@@ -1409,12 +1421,12 @@ models and simple statistical models implement `StationForecastModel` /
 
 | Slot | Name | Description |
 |------|------|-------------|
-| 1 | `past_targets` | Observed target variable history up to `issue_time` (e.g. discharge, water level). Always present for stateful models. |
+| 1 | `past_targets` | Observed target variable history up to `issue_time` (e.g. discharge, water level). Always non-None. May be zero-row for ungauged stations (`GaugingStatus.UNGAUGED`). *(v0: all stations are gauged; zero-row case is v1 — plan 015.)* |
 | 2 | `past_dynamic` | Time-varying forcing observed up to `issue_time` (e.g. weather station observations, reanalysis). Optional — absent for models that only use NWP and targets. |
 | 3 | `future_dynamic` | Time-varying forcing known beyond `issue_time` (NWP forecasts for operational runs; reanalysis or NWP archive in hindcast mode). Always present. |
 | 4 | `static` | Time-invariant catchment and station properties (e.g. basin area, mean elevation, forest fraction). Optional — absent for models that declare no static requirements. |
 
-Models declare per-slot feature requirements via `ModelDataRequirements` (see below). Input preparation (Flow 1 step 1.7, Flow 7 step H.3) reads `ModelDataRequirements` and constructs the appropriate slots, validating completeness before calling `predict()`.
+Models declare per-slot feature requirements via `ModelDataRequirements` (see below). Input preparation (Flow 1 step 1.7, Flow 7 step H.4) reads `ModelDataRequirements` and constructs the appropriate slots, validating completeness before calling `predict()`.
 
 #### `ModelDataRequirements`
 
@@ -2083,7 +2095,7 @@ observations:
   timestamp: TIMESTAMPTZ
   parameter: TEXT              # canonical name (e.g. "discharge", "precipitation")
   value: DOUBLE PRECISION NULL  # NULL when qc_status = 'missing'; otherwise the observed value (never overwritten by QC)
-  source: TEXT                 # ObservationSource: measured | rating_curve_derived | manual_import
+  source: TEXT                 # ObservationSource: measured | rating_curve_derived | manual_import | component_derived (v1 — plan 015)
   rating_curve_id: UUID NULL FK  # references rating_curves.id — set when source = rating_curve_derived
   rating_curve_correction_version: TEXT NULL  # correction param version — set when source = rating_curve_derived
   qc_status: TEXT              # aggregate QcStatus enum value
@@ -2097,7 +2109,7 @@ Supporting enum:
 
 ```
 ObservationSource enum (Python members → DB values):
-  MEASURED → 'measured' | RATING_CURVE_DERIVED → 'rating_curve_derived' | MANUAL_IMPORT → 'manual_import'
+  MEASURED → 'measured' | RATING_CURVE_DERIVED → 'rating_curve_derived' | MANUAL_IMPORT → 'manual_import' | COMPONENT_DERIVED → 'component_derived'  # v1 — plan 015: derived observations from calculated station formulas
 ```
 
 Partitioned yearly by `timestamp`. Indexes:
@@ -2492,6 +2504,7 @@ stations:
   forecast_targets: TEXT[] NOT NULL DEFAULT '{}'  # frozenset[str] — e.g. {"discharge"}, {"water_level"}, {"discharge", "water_level"}. Empty for weather stations. Replaces earlier `forecast_target: TEXT NULL`.
   measured_parameters: TEXT[]              # canonical parameter names this station reports, e.g. {"discharge", "water_level"}
   station_status: TEXT DEFAULT 'onboarding'  # StationStatus: onboarding | operational | suspended | decommissioned
+  gauging_status: TEXT DEFAULT 'gauged'    # GaugingStatus: gauged | ungauged | calculated (v0: all gauged; ungauged/calculated v1 — plan 015)
   network: TEXT NOT NULL                   # scopes station codes for multi-network registries (e.g. "bafu", "uk_ea")
   ownership: TEXT DEFAULT 'own'            # StationOwnership: own | foreign
   wigos_id: TEXT NULL                      # WMO station identifier for transboundary exchange
@@ -2509,11 +2522,34 @@ StationKind enum (Python members → DB values):
 
 RegulationType enum (Python members → DB values):
   UNREGULATED → 'unregulated' | RESERVOIR → 'reservoir' | IRRIGATION_DIVERSION → 'irrigation_diversion' | RUN_OF_RIVER_HYDRO → 'run_of_river_hydro'
+
+GaugingStatus enum (Python members → DB values):
+  GAUGED → 'gauged' | UNGAUGED → 'ungauged' | CALCULATED → 'calculated'
 ```
 
 Index: `GIST (location)` for spatial queries. `station_kind` filter index for typed listing. `station_status` filter index for Flow 1 (`WHERE station_status = 'operational'`).
 
 The `network` field scopes station codes for multi-network registries (e.g., `"bafu"`, `"uk_ea"`, `"usgs"`). `StationOwnership` (`own` | `foreign`) distinguishes locally managed stations from display-only foreign stations pulled from upstream SAPPHIRE instances. The `wigos_id` (nullable) stores the WMO station identifier for transboundary data exchange.
+
+### `calculated_station_formulas` table *(v1 — plan 015)*
+
+Defines the weighted linear combination formula for calculated (virtual) stations. Each row links a component station to a calculated station with a weight. The derived observation is `Q_virtual = Σ(wᵢ × Qᵢ)` where `Qᵢ` is the QC-passed observation from component station `i`.
+
+```
+calculated_station_formulas:
+  id: UUID PK
+  calculated_station_id: UUID FK → stations.id  # the virtual station (gauging_status = 'calculated')
+  component_station_id: UUID FK → stations.id   # a contributing gauged station
+  weight: DOUBLE PRECISION NOT NULL              # wᵢ in the linear combination
+  parameter: TEXT NOT NULL                       # which parameter this formula applies to (e.g. "discharge")
+  effective_from: TIMESTAMPTZ NOT NULL           # formula versioning — when this weight became active
+  effective_to: TIMESTAMPTZ NULL                 # NULL = currently active; set when superseded
+  created_at: TIMESTAMPTZ
+  -- EXCLUDE USING gist (calculated_station_id WITH =, component_station_id WITH =, parameter WITH =,
+  --   tstzrange(effective_from, effective_to) WITH &&)  -- no overlapping validity periods per component
+```
+
+Constraints: a calculated station must have `gauging_status = 'calculated'`; component stations must have `gauging_status = 'gauged'`. Weights are not required to sum to 1.0 (e.g. difference formulas use negative weights). The `effective_from`/`effective_to` range enables formula versioning without deleting history.
 
 ### `station_thresholds` table
 
