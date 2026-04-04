@@ -14,7 +14,7 @@ Per `v0-scope.md` §A7 and §G:
 |--------|---------------------------------------|-------------------|
 | Approval gate | `PENDING_APPROVAL` status between training and promotion | Deferred. v0 auto-promotes (TRAINING → ACTIVE). `PENDING_APPROVAL` added later. |
 | Cloud training | Dedicated training work pool with GPU resource labels | Single `default` pool. Work pool routing annotation is in place; execution is local. |
-| Group assignment | `GroupModelAssignment` persisted via dedicated store method | Implemented as `station_group_assignments` table rows via `StationGroupStore`. |
+| Group assignment | `GroupModelAssignment` persisted via dedicated store method | Implemented as `group_model_assignments` table rows via `StationGroupStore`. |
 | Compatibility check | Protocol conformance + feature availability + time step | Full compatibility check. No hardware checks. |
 | Skill gate thresholds | Per-deployment configuration | Stored in `DeploymentConfig`. Numeric thresholds only (no percentile-relative gates in v0). |
 | Multi-target predictions | `predict()` returns `dict[str, ForecastEnsemble]` | Implemented. Single-target models return a one-entry dict. |
@@ -57,18 +57,19 @@ flowchart TD
 
 | Layer | Status | Key files |
 |-------|--------|-----------|
-| Types (core model) | Complete | `types/model.py` (`TrainingData`, `GroupTrainingData`, `ModelInputs`, `ModelRecord`, `ModelRegistryEntry`, `ModelArtifactRecord`) |
+| Types (core model) | Complete — includes new input/training containers | `types/model.py` (`StationInputData`, `GroupModelInputs`, `ModelDataRequirements`, `ModelRecord`, `ModelRegistryEntry`, `ModelArtifactRecord`). Old `TrainingData` (with `forcing`/`observations`/`targets` fields) still present — **rename to `StationTrainingData` pending** (§3c). |
 | Types (training) | Complete | `types/training.py` (`TrainingUnit`, `TrainingScope`, `TrainingResult`, `HindcastStepResult`) |
-| Types (station) | Complete | `types/station.py` (`ModelAssignment`, `StationGroup`, `StationConfig`) |
+| Types (station) | Complete — `forecast_targets` already migrated | `types/station.py` (`ModelAssignment`, `StationGroup`, `StationConfig` with `forecast_targets: frozenset[str] \| None`). **`GroupModelAssignment` still missing** (§3e). |
 | Types (ensemble) | Complete | `types/ensemble.py` (`ForecastEnsemble` with `parameter: str` field) |
-| Protocols (model) | Exists — **needs update** | `protocols/forecast_model.py` (`StationForecastModel`, `GroupForecastModel`) — `required_features` / `required_static_attributes` replaced by `data_requirements`, `predict()` return type widens |
-| Protocols (stores) | Exists — **needs extension** | `protocols/stores.py` — needs `GroupModelAssignmentStore` |
-| DB schema | Complete | `db/metadata.py` |
-| Services (registry) | Complete | `services/model_registry.py` |
-| Services (training) | Complete | `services/training.py` |
-| Services (hindcast) | Complete | `services/hindcast.py` |
+| Protocols (model) | **Already updated** | `protocols/forecast_model.py` — `data_requirements: ModelDataRequirements` is in place, `predict()` returns `tuple[dict[str, ForecastEnsemble], bytes \| None]`, `predict_batch()` takes `GroupModelInputs`. No further Protocol changes needed. |
+| Protocols (stores) | Exists — **needs extension** | `protocols/stores.py` — needs `store_group_model_assignment` + `fetch_group_model_assignments` on `StationGroupStore`; needs `fetch_skill_scores(model_id, artifact_id, parameter=None)` on `SkillStore` |
+| DB schema | Complete | `db/metadata.py` — `group_model_assignments` table not yet created (needs migration) |
+| Services (registry) | Complete — already uses `data_requirements` | `services/model_registry.py` |
+| Services (training) | Complete — **needs type migration** | `services/training.py` — still accepts old `TrainingData`/`GroupTrainingData`; update when §3c rename lands |
+| Services (hindcast) | Complete — **needs type migration** | `services/hindcast.py` — still constructs old `ModelInputs`; update to `StationModelInputs` when §3c lands |
 | Services (skill) | Complete | `services/skill/` |
-| Fakes | Exists — **needs extension** | `tests/fakes/` |
+| Fakes (models) | **Already updated** for new Protocol | `tests/fakes/fake_models.py` — use `data_requirements` and multi-target signatures. Still accept old `TrainingData` in `train()` — update with §3c. |
+| Fakes (stores) | Exists — **needs extension** | `tests/fakes/fake_stores.py` — `FakeStationGroupStore` has internal scaffolding but no public `store_group_model_assignment`/`fetch_group_model_assignments`. `FakeSkillStore` needs `fetch_skill_scores`. |
 | Factories | Exists — **needs extension** | `tests/conftest.py` |
 | Config | Complete | `config/deployment.py` (`DeploymentConfig`) |
 | Services (onboarding) | **Missing** | No `services/model_onboarding.py` |
@@ -654,7 +655,7 @@ def onboard_model_flow(
     period_start: str | None = None,           # ISO 8601; defaults to 2 years ago
     period_end: str | None = None,             # ISO 8601; defaults to now
     time_step_hours: int = 24,
-    assignment_priority: int = 10,
+    assignment_priority: int = 0,
 ) -> ModelOnboardingResult:
 ```
 
@@ -795,38 +796,45 @@ Two store methods need adding to existing Protocols (not new Protocols):
 
 ## 11. Implementation phases
 
+> **Note (2026-04-04):** Original plan had 19 phases across 8 waves. Code review shows
+> many items are already implemented (Protocol updates, new input types, `ModelDataRequirements`,
+> `forecast_targets` migration, fake model updates). The revised plan below reflects only
+> remaining work. ~~Struck~~ original phases are complete.
+
 ```json
 {
   "phases": {
-    "P1": { "name": "Docs update (v0-scope.md, types-and-protocols.md)", "depends_on": [] },
-    "P2": { "name": "types/model.py — StationInputData, StationModelInputs, GroupModelInputs, StationTrainingData, GroupTrainingData (with for_station), ModelDataRequirements; remove old ModelInputs/TrainingData", "depends_on": [] },
-    "P3": { "name": "types/station.py — GroupModelAssignment; StationConfig.forecast_targets; remove forecast_target Literal", "depends_on": [] },
-    "P4": { "name": "types/model_onboarding.py — CompatibilityReport, SkillGateResult, OnboardingUnitResult, ModelOnboardingResult; types/enums.py — OnboardingOutcome", "depends_on": [] },
-    "P5": { "name": "protocols/forecast_model.py — data_requirements replaces 4 attrs; updated train/predict signatures", "depends_on": ["P2", "P3"] },
-    "P6": { "name": "protocols/stores.py — add fetch_skill_scores(model_id, artifact_id) to SkillStore; add store_group_model_assignment to StationGroupStore", "depends_on": ["P3"] },
-    "P7": { "name": "tests/fakes/ — update FakeStationForecastModel, FakeGroupForecastModel for new Protocol; add FakeStationGroupStore.store_group_model_assignment; add FakeSkillStore.fetch_skill_scores", "depends_on": ["P5", "P6"] },
-    "P8": { "name": "tests/conftest.py — add make_station_input_data, make_group_model_inputs, make_station_training_data, make_training_unit, make_compatibility_report factories", "depends_on": ["P2", "P3", "P4"] },
-    "P9": { "name": "services/training_data.py — update to return StationTrainingData / GroupTrainingData", "depends_on": ["P7", "P8"] },
-    "P10": { "name": "services/hindcast.py — update to use StationModelInputs / GroupModelInputs; update _assemble_hindcast_inputs", "depends_on": ["P7", "P8"] },
-    "P11": { "name": "services/training.py — update train_station_model / train_group_model signatures", "depends_on": ["P7", "P8"] },
-    "P12": { "name": "services/model_registry.py — update build_registry_entry to use ModelDataRequirements", "depends_on": ["P9", "P10", "P11"] },
-    "P13": { "name": "services/scope.py — update assemble_training_scope to use data_requirements", "depends_on": ["P9", "P10", "P11"] },
-    "P14": { "name": "models/linear_regression_daily.py — full StationForecastModel implementation", "depends_on": ["P5"] },
-    "P15": { "name": "pyproject.toml — linear_regression_daily entry point; DB migration for forecast_targets column", "depends_on": ["P3", "P14"] },
-    "P16": { "name": "services/model_onboarding.py — validate_compatibility, evaluate_skill_gate, create_assignment, onboard_model", "depends_on": ["P12", "P13"] },
-    "P17": { "name": "flows/onboard_model.py — @flow + @task wrappers, dependency injection", "depends_on": ["P16"] },
-    "P18": { "name": "Update existing tests broken by Protocol/type changes (test_training.py, test_hindcast.py, test_scope.py)", "depends_on": ["P9", "P10", "P11", "P12", "P13"] },
-    "P19": { "name": "New tests: test_model_onboarding.py (compatibility, skill gate, full onboard), test_linear_regression_daily.py", "depends_on": ["P16", "P17", "P14"] }
+    "P1":  { "name": "Docs update (v0-scope.md §C, types-and-protocols.md SkillStore, conventions.md, orchestration.md Flow 13 mapping, training pipeline doc stale refs)", "depends_on": [] },
+    "P2":  { "name": "DONE — StationInputData, GroupModelInputs, ModelDataRequirements already in types/model.py", "depends_on": [] },
+    "P3a": { "name": "types/station.py — add GroupModelAssignment", "depends_on": [] },
+    "P3b": { "name": "DONE — StationConfig.forecast_targets already migrated", "depends_on": [] },
+    "P4":  { "name": "types/model_onboarding.py — CompatibilityReport, SkillGateResult, OnboardingUnitResult, ModelOnboardingResult; types/enums.py — OnboardingOutcome", "depends_on": [] },
+    "P5":  { "name": "DONE — protocols/forecast_model.py already has data_requirements + updated signatures", "depends_on": [] },
+    "P6a": { "name": "protocols/stores.py — add fetch_skill_scores(model_id, artifact_id, parameter=None) to SkillStore", "depends_on": [] },
+    "P6b": { "name": "protocols/stores.py — add store_group_model_assignment + fetch_group_model_assignments to StationGroupStore", "depends_on": ["P3a"] },
+    "P7a": { "name": "Alembic migration — group_model_assignments table", "depends_on": ["P3a"] },
+    "P7b": { "name": "store/station_group_store.py — implement store_group_model_assignment + fetch_group_model_assignments", "depends_on": ["P6b", "P7a"] },
+    "P7c": { "name": "store/skill_store.py — implement fetch_skill_scores", "depends_on": ["P6a"] },
+    "P7d": { "name": "tests/fakes/ — add FakeStationGroupStore.store_group_model_assignment/fetch_group_model_assignments; add FakeSkillStore.fetch_skill_scores", "depends_on": ["P6a", "P6b"] },
+    "P8":  { "name": "tests/conftest.py — add make_compatibility_report, make_skill_gate_result, make_onboarding_unit_result factories", "depends_on": ["P4"] },
+    "P9":  { "name": "types/model.py — rename TrainingData → StationTrainingData (4-slot); update GroupTrainingData to stacked format", "depends_on": [] },
+    "P10": { "name": "services/training_data.py + services/hindcast.py + services/training.py — update to StationTrainingData / StationModelInputs", "depends_on": ["P9", "P7d"] },
+    "P11": { "name": "services/scope.py — update determine_training_scope to use data_requirements", "depends_on": ["P10"] },
+    "P12": { "name": "models/linear_regression_daily.py — full StationForecastModel implementation", "depends_on": ["P9"] },
+    "P13": { "name": "pyproject.toml — linear_regression_daily entry point + scikit-learn dependency", "depends_on": ["P12"] },
+    "P14": { "name": "services/model_onboarding.py — validate_compatibility, evaluate_skill_gate, create_assignment, determine_onboarding_scope, onboard_model", "depends_on": ["P11", "P7b", "P7c"] },
+    "P15": { "name": "flows/onboard_model.py — @flow + @task wrappers, dependency injection", "depends_on": ["P14"] },
+    "P16": { "name": "Update existing tests broken by type renames (test_training.py, test_hindcast.py, test_scope.py, test_training_data.py)", "depends_on": ["P10", "P11"] },
+    "P17": { "name": "New tests: test_model_onboarding.py, test_onboard_model_flow.py, test_linear_regression_daily.py", "depends_on": ["P14", "P15", "P12"] }
   },
   "execution_waves": {
-    "wave_1": ["P1", "P2", "P3", "P4"],
-    "wave_2": ["P5", "P6"],
-    "wave_3": ["P7", "P8"],
-    "wave_4": ["P9", "P10", "P11"],
-    "wave_5": ["P12", "P13"],
-    "wave_6": ["P14", "P15"],
-    "wave_7": ["P16", "P17"],
-    "wave_8": ["P18", "P19"]
+    "wave_1": ["P1", "P3a", "P4", "P6a", "P6b", "P9"],
+    "wave_2": ["P7a", "P7c", "P7d", "P8"],
+    "wave_3": ["P7b", "P10", "P12"],
+    "wave_4": ["P11", "P13"],
+    "wave_5": ["P14"],
+    "wave_6": ["P15", "P16"],
+    "wave_7": ["P17"]
   }
 }
 ```
@@ -835,25 +843,28 @@ Two store methods need adding to existing Protocols (not new Protocols):
 
 | Phase | Creates / modifies | Tests |
 |-------|-------------------|-------|
-| P1 | `docs/v0-scope.md` (Flow 13 entry), `docs/spec/types-and-protocols.md` | — |
-| P2 | `types/model.py` — new input/training container types, `ModelDataRequirements`, remove old types | `__post_init__` field validations, `for_station()` slicing |
-| P3 | `types/station.py` — `GroupModelAssignment`, `forecast_targets` field | Dataclass field types |
-| P4 | `types/model_onboarding.py` — all result/report types; `types/enums.py` — `OnboardingOutcome` | XOR invariant on `TrainingUnit`, `CompatibilityReport.is_compatible` property |
-| P5 | `protocols/forecast_model.py` — updated signatures | Protocol conformance check on `LinearRegressionDaily` placeholder |
-| P6 | `protocols/stores.py` — two new Protocol methods | — |
-| P7 | `tests/fakes/` — updated and new fakes | Fake conformance with updated Protocols |
+| P1 | Doc updates: `v0-scope.md` §C (add `group_model_assignments` table, `forecast_targets` migration note), `types-and-protocols.md` (add `SkillStore.fetch_skill_scores`, fix stale `ModelInputs` prose), `conventions.md` (priority convention, enum master list), `orchestration.md` (Flow 13 mapping), `v0-flow678-training-pipeline.md` (mark stale type references) | — |
+| ~~P2~~ | ~~DONE~~ — `StationInputData`, `GroupModelInputs`, `ModelDataRequirements` already exist | — |
+| P3a | `types/station.py` — `GroupModelAssignment` | Dataclass field types |
+| ~~P3b~~ | ~~DONE~~ — `forecast_targets: frozenset[str] \| None` already in place | — |
+| P4 | `types/model_onboarding.py` — all result/report types; `types/enums.py` — `OnboardingOutcome` | `CompatibilityReport.is_compatible` property, `SkillGateResult.passed` property |
+| ~~P5~~ | ~~DONE~~ — Protocol already updated with `data_requirements` and new signatures | — |
+| P6a | `protocols/stores.py` — `SkillStore.fetch_skill_scores` | — |
+| P6b | `protocols/stores.py` — `StationGroupStore` assignment methods | — |
+| P7a | Alembic migration for `group_model_assignments` table | Migration applies cleanly |
+| P7b | `store/station_group_store.py` — implement two assignment methods | Integration tests |
+| P7c | `store/skill_store.py` — implement `fetch_skill_scores` | Integration test |
+| P7d | `tests/fakes/` — extend `FakeStationGroupStore`, `FakeSkillStore` | Fake conformance |
 | P8 | `tests/conftest.py` — new factory functions | Factory output conforms to types |
-| P9 | `services/training_data.py` | Happy path, missing features → None, partial group |
-| P10 | `services/hindcast.py` | No-future-leakage, data gap skip, multi-target output |
-| P11 | `services/training.py` | Artifact lifecycle with new input types |
-| P12 | `services/model_registry.py` | Entry discovery, `data_requirements` population |
-| P13 | `services/scope.py` | All filter combos, unassigned excluded |
-| P14 | `models/linear_regression_daily.py` | Train/predict/serialize round-trip, ensemble size, residual bootstrap |
-| P15 | `pyproject.toml`, Alembic migration | Entry point discoverable via `importlib.metadata` |
-| P16 | `services/model_onboarding.py` | Compatibility logic (all failure modes), skill gate pass/fail, assignment upsert |
-| P17 | `flows/onboard_model.py` | Flow callable with fakes, full unit result shape |
-| P18 | Updated existing tests | All previously passing tests green |
-| P19 | `tests/unit/test_model_onboarding.py`, `tests/unit/test_linear_regression_daily.py` | Happy path end-to-end with fakes; compatibility failures; gate threshold boundary |
+| P9 | `types/model.py` — rename `TrainingData` → `StationTrainingData`, restructure `GroupTrainingData` | `for_station()` slicing, field validations |
+| P10 | `services/training_data.py`, `services/hindcast.py`, `services/training.py` — type migration | Updated happy-path tests |
+| P11 | `services/scope.py` — update `determine_training_scope` | All filter combos |
+| P12 | `models/linear_regression_daily.py` | Train/predict/serialize round-trip, ensemble size, residual bootstrap |
+| P13 | `pyproject.toml` — entry point + dependency | Entry point discoverable via `importlib.metadata` |
+| P14 | `services/model_onboarding.py` | Compatibility logic (all failure modes), skill gate pass/fail, assignment upsert |
+| P15 | `flows/onboard_model.py` | Flow callable with fakes, full unit result shape |
+| P16 | Updated existing tests | All previously passing tests green |
+| P17 | `tests/unit/test_model_onboarding.py`, `tests/unit/test_onboard_model_flow.py`, `tests/unit/test_linear_regression_daily.py` | Happy path e2e with fakes; compatibility failures; gate threshold boundary |
 
 ---
 
@@ -877,6 +888,6 @@ Two store methods need adding to existing Protocols (not new Protocols):
 
 ### Still open
 
-1. **`forecast_targets` DB migration scope**: The `stations.forecast_target` column (Literal string) must be migrated to `forecast_targets` (JSONB string array). Existing data maps: `"discharge"` → `["discharge"]`, `"water_level"` → `["water_level"]`, `"both"` → `["discharge", "water_level"]`, `null` → `null`. The migration script is straightforward but must be written and tested before P15 merges.
+1. ~~**`forecast_targets` DB migration scope**~~: **Resolved.** Already migrated — `StationConfig.forecast_targets: frozenset[str] | None` is in place in `types/station.py`, and the DB column has been migrated.
 
-2. **Assignment priority convention**: `assignment_priority` defaults to 10 in the flow. For stations onboarded with multiple models, priority determines forecast cycle model order. Convention (lower = higher priority? or higher = higher priority?) should be documented in `conventions.md`. Not blocking for single-model v0.
+2. ~~**Assignment priority convention**~~: **Resolved.** Lower integer = higher priority. `0` = primary (run first, drives alerts). Convention: linear regression = 0, ML = 1, conceptual = 2. Matches `architecture-context.md`, `db/metadata.py` (`server_default="0"`), and alert strategy code (`min()` ascending). Flow default updated to `assignment_priority: int = 0`. Documented in `conventions.md`.
