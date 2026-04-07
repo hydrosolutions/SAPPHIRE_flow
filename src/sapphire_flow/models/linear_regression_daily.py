@@ -77,6 +77,9 @@ class LinearRegressionDaily:
 
         future_ts = data.future_dynamic.sort("timestamp")
         n_steps = future_ts["timestamp"].n_unique()
+        if n_steps == 0:
+            # Training data has no future split — default to lookback_steps
+            n_steps = _LOOKBACK
 
         joined = past_dyn.join(
             targets.select(["timestamp", "discharge"]),
