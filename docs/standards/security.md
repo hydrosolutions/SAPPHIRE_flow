@@ -231,10 +231,11 @@ These use the existing notification infrastructure (EMAIL channel, notification 
 
 ## Backup encryption
 
-Handled by `restic` — encrypts all backup data at rest with AES-256-CTR. The repository password is stored separately from the backup target:
-- Not on the same VM as the data
+Handled by `restic` — encrypts all backup data at rest with AES-256-CTR. The repository password (`backup_repo_password`) is available on the VM at runtime as a Docker secret (mounted in-memory via tmpfs, never on disk inside containers) — restic needs it for every backup and restore operation.
+
+A **recovery copy** of the password must be stored separately from the VM, so that backups can be decrypted if the VM is lost:
 - Stored in the IT admin's password manager or printed and stored offline
-- For Nepal v1: two copies — one with DHM IT admin, one with project team
+- For Nepal: two copies — one with DHM IT admin, one with project team
 
 See architecture-context.md § Backup and disaster recovery for backup contents and schedule.
 
@@ -346,6 +347,14 @@ is permitted. Only registered entry points are discoverable by the model loading
 **In-process exposure:** The container privilege model (non-root, dropped capabilities)
 limits host-level impact but does not isolate model code from in-process state. This is
 an accepted risk given the trust model above.
+
+**Artifact serialization preference hierarchy:** Model implementors must use safe serialization formats in priority order:
+
+1. **Format-native serialization** — `numpy.savez_compressed` (linear/statistical models), XGBoost/LightGBM `save_model()`, TF SavedModel / `.keras`, PyTorch `safetensors` for `state_dict()`. Always preferred — these formats cannot execute arbitrary Python code on deserialization.
+2. **`skops`** — for sklearn estimators. Preferred over joblib/pickle. Requires an explicit `trusted=[...]` type list in `deserialize_artifact()` to prevent type confusion attacks.
+3. **Pickle** — permitted only when no safe alternative covers the use case. Requires explicit justification in the `deserialize_artifact()` docstring and IT review of the model package. Note: `joblib` is not a safe alternative — it uses pickle internally for Python objects.
+
+SHA-256 hash verification (stored in `model_artifacts.sha256_hash`) is the primary artifact integrity control regardless of format. The preference hierarchy is defense-in-depth against deserialization attacks — it reduces but does not eliminate risk for formats lower in the hierarchy.
 
 **Output validation:** Model outputs pass through `SanityCheckFailure` validation
 (conventions.md §Custom exceptions) before DB insertion. This is a data integrity check,

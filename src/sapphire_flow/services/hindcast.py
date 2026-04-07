@@ -11,7 +11,11 @@ from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.enums import EnsembleRepresentation, ForcingType, QcStatus
 from sapphire_flow.types.forecast import HindcastForecast
 from sapphire_flow.types.ids import ArtifactId, HindcastForecastId, ModelId, StationId
-from sapphire_flow.types.model import ModelInputs, stack_model_inputs
+from sapphire_flow.types.model import (
+    StationInputData,
+    StationModelInputs,
+    stack_model_inputs,
+)
 from sapphire_flow.types.training import HindcastStepResult
 
 if TYPE_CHECKING:
@@ -88,13 +92,10 @@ def _assemble_hindcast_inputs(
     weather_sources: list[StationWeatherSource],
     static_attributes: pl.DataFrame | None,
     parameter: str = "discharge",
-) -> ModelInputs | None:
+) -> StationModelInputs | None:
     lookback_start = ensure_utc(issue_time - lookback_steps * time_step)
     horizon_end = ensure_utc(issue_time + forecast_horizon_steps * time_step)
 
-    # Observations end at issue_time (no target leakage).
-    # Forcing extends through the forecast horizon: reanalysis serves as
-    # teacher forcing in hindcast (v0-scope §A13).
     raw_forcing = forcing_source.fetch_reanalysis(
         station_configs=weather_sources,
         start=lookback_start,
@@ -130,15 +131,24 @@ def _assemble_hindcast_inputs(
 
     obs_df = _observations_to_dataframe(observations)
 
-    return ModelInputs(
+    # Split forcing into past (≤ issue_time) and future (> issue_time).
+    # Reanalysis serves as teacher forcing in hindcast (v0-scope §A13).
+    past_dynamic = forcing_df.filter(pl.col("timestamp") <= issue_time)
+    future_dynamic = forcing_df.filter(pl.col("timestamp") > issue_time)
+
+    station_data = StationInputData(
+        past_targets=obs_df,
+        past_dynamic=past_dynamic,
+        future_dynamic=future_dynamic,
+        static=static_attributes,
+    )
+
+    return StationModelInputs(
         station_id=station_id,
-        forcing=forcing_df,
-        observations=obs_df,
-        static_attributes=static_attributes,
+        data=station_data,
         issue_time=issue_time,
         forecast_horizon_steps=forecast_horizon_steps,
         time_step=time_step,
-        warm_up_steps=None,
     )
 
 
@@ -152,6 +162,33 @@ def _load_static_attributes(
     if basin is not None and basin.attributes:
         return pl.DataFrame([basin.attributes])
     return None
+
+
+# ---------------------------------------------------------------------------
+# Legacy stacking helper — converts StationModelInputs back to ModelInputs
+# format for stack_model_inputs(). Removed once group hindcast is refactored.
+# ---------------------------------------------------------------------------
+
+
+def _to_legacy_model_inputs(inputs: StationModelInputs) -> object:
+    """Temporary shim: pack StationModelInputs into legacy ModelInputs for stacking."""
+    from sapphire_flow.types.model import ModelInputs
+
+    # Reconstruct flat forcing DataFrame from past + future dynamic.
+    past = inputs.data.past_dynamic
+    future = inputs.data.future_dynamic
+    forcing = past if future.is_empty() else pl.concat([past, future]).sort("timestamp")
+
+    return ModelInputs(
+        station_id=inputs.station_id,
+        forcing=forcing,
+        observations=inputs.data.past_targets,
+        static_attributes=inputs.data.static,
+        issue_time=inputs.issue_time,
+        forecast_horizon_steps=inputs.forecast_horizon_steps,
+        time_step=inputs.time_step,
+        warm_up_steps=None,
+    )
 
 
 def run_station_hindcast(
@@ -210,11 +247,6 @@ def run_station_hindcast(
                 )
                 continue
 
-            # GUARDRAIL: inputs.forcing now contains rows beyond issue_time
-            # (reanalysis teacher forcing — v0-scope §A13). Station models MUST NOT
-            # read raw forcing rows past the issue_time boundary. This is enforced
-            # structurally once ModelInputs → StationInputData alignment lands
-            # (plan 008, Open Item 1).
             ensembles, _ = model.predict(
                 artifact=artifact,
                 inputs=inputs,
@@ -307,7 +339,7 @@ def run_group_hindcast(
     }
 
     for issue_time in _issue_times(period_start, period_end, time_step):
-        inputs_batch: dict[StationId, ModelInputs] = {}
+        inputs_batch: dict[StationId, StationModelInputs] = {}
         skipped: dict[StationId, str] = {}
 
         for sid in group.station_ids:
@@ -350,10 +382,16 @@ def run_group_hindcast(
         if not inputs_batch:
             continue
 
+        # Convert StationModelInputs → legacy ModelInputs for GroupModelInputs stacking.
+        # TODO: refactor stack_model_inputs to accept StationModelInputs directly.
+        legacy_batch = {
+            sid: _to_legacy_model_inputs(inp) for sid, inp in inputs_batch.items()
+        }
+
         t0 = time.perf_counter()
         group_inputs = stack_model_inputs(
             group_id=group.id,
-            inputs=inputs_batch,
+            inputs=legacy_batch,
             issue_time=issue_time,
         )
         t1 = time.perf_counter()

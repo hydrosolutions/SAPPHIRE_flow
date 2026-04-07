@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import random
 from datetime import timedelta
 from typing import TYPE_CHECKING
@@ -263,6 +264,18 @@ def train_models_flow(
             artifact_store=artifact_store,
             clock=clock,
         )
+
+        # Verify SHA-256 hash before deserializing artifact
+        sha256_stored = artifact_store.fetch_artifact(artifact_id)
+        if sha256_stored is not None:
+            _, stored_bytes = sha256_stored
+            computed_hash = hashlib.sha256(artifact_bytes).hexdigest()
+            stored_hash = hashlib.sha256(stored_bytes).hexdigest()
+            if computed_hash != stored_hash:
+                raise ValueError(
+                    f"SHA-256 mismatch for artifact {artifact_id}: "
+                    f"computed={computed_hash[:8]}... stored={stored_hash[:8]}..."
+                )
 
         # Deserialize artifact for hindcast
         loaded_artifact = model_instance.deserialize_artifact(artifact_bytes)

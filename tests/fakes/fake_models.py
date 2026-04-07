@@ -14,9 +14,9 @@ from sapphire_flow.types.model import (  # noqa: TC001
     GroupTrainingData,
     ModelArtifact,
     ModelDataRequirements,
-    ModelInputs,
     ModelParams,
-    TrainingData,
+    StationModelInputs,
+    StationTrainingData,
 )
 
 
@@ -35,14 +35,14 @@ class FakeStationForecastModel:
     units: str = "m3/s"
 
     def train(
-        self, data: TrainingData, params: ModelParams, rng: random.Random
+        self, data: StationTrainingData, params: ModelParams, rng: random.Random
     ) -> ModelArtifact:
         return b"fake_artifact"
 
     def predict(
         self,
         artifact: ModelArtifact,
-        inputs: ModelInputs,
+        inputs: StationModelInputs,
         rng: random.Random,
         prior_state: bytes | None = None,
     ) -> tuple[dict[str, ForecastEnsemble], bytes | None]:
@@ -97,10 +97,15 @@ class FakeMultiTargetStationForecastModel:
         self.n_members = n_members
         self.horizon_steps = horizon_steps
 
+    def train(
+        self, data: StationTrainingData, params: ModelParams, rng: random.Random
+    ) -> ModelArtifact:
+        return b"fake_artifact"
+
     def predict(
         self,
         artifact: ModelArtifact,
-        inputs: ModelInputs,
+        inputs: StationModelInputs,
         rng: random.Random,
         prior_state: bytes | None = None,
     ) -> tuple[dict[str, ForecastEnsemble], bytes | None]:
@@ -136,11 +141,6 @@ class FakeMultiTargetStationForecastModel:
                 values=df,
             )
         return result, b"fake_state"
-
-    def train(
-        self, data: TrainingData, params: ModelParams, rng: random.Random
-    ) -> ModelArtifact:
-        return b"fake_artifact"
 
     def serialize_artifact(self, artifact: ModelArtifact) -> bytes:
         return artifact if isinstance(artifact, bytes) else b"serialized"
@@ -230,6 +230,11 @@ class FakeMultiTargetGroupForecastModel:
         self.n_members = n_members
         self.horizon_steps = horizon_steps
 
+    def train(
+        self, data: GroupTrainingData, params: ModelParams, rng: random.Random
+    ) -> ModelArtifact:
+        return b"fake_group_artifact"
+
     def predict_batch(
         self,
         artifact: ModelArtifact,
@@ -272,11 +277,6 @@ class FakeMultiTargetGroupForecastModel:
                 )
             result[sid] = (ensembles, None)
         return result
-
-    def train(
-        self, data: GroupTrainingData, params: ModelParams, rng: random.Random
-    ) -> ModelArtifact:
-        return b"fake_group_artifact"
 
     def serialize_artifact(self, artifact: ModelArtifact) -> bytes:
         return artifact if isinstance(artifact, bytes) else b"serialized"

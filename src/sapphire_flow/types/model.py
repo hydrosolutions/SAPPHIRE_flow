@@ -48,41 +48,30 @@ def validate_forcing_provenance(forcing: pl.DataFrame) -> None:
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
-class ModelInputs:
-    station_id: StationId
-    forcing: pl.DataFrame | xr.Dataset
-    observations: pl.DataFrame
-    static_attributes: pl.DataFrame | None
-    issue_time: UtcDatetime
-    forecast_horizon_steps: int
-    time_step: timedelta
-    warm_up_steps: int | None
-
-
-@dataclass(frozen=True, kw_only=True, slots=True)
-class TrainingData:
-    forcing: pl.DataFrame
-    observations: pl.DataFrame
-    targets: pl.DataFrame
-    static_attributes: pl.DataFrame | None
-    time_step: timedelta
-    val_start: UtcDatetime | None
-
-
-@dataclass(frozen=True, kw_only=True, slots=True)
-class GroupTrainingData:
-    group_id: StationGroupId
-    station_data: dict[StationId, TrainingData]
-    time_step: timedelta
-    val_start: UtcDatetime | None
-
-
-@dataclass(frozen=True, kw_only=True, slots=True)
 class StationInputData:
     past_targets: pl.DataFrame
     past_dynamic: pl.DataFrame
     future_dynamic: pl.DataFrame
     static: pl.DataFrame | None
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class StationModelInputs:
+    station_id: StationId
+    data: StationInputData
+    issue_time: UtcDatetime
+    forecast_horizon_steps: int
+    time_step: timedelta
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class StationTrainingData:
+    past_targets: pl.DataFrame  # wide: [timestamp, param1, param2, ...]
+    past_dynamic: pl.DataFrame  # wide: [timestamp, precip, temp, ...]
+    future_dynamic: pl.DataFrame  # wide: [timestamp, precip, temp, ...]
+    static: pl.DataFrame | None  # single-row: [attr1, attr2, ...]
+    time_step: timedelta
+    val_start: UtcDatetime | None
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -106,9 +95,6 @@ class GroupModelInputs:
         def _filter(df: pl.DataFrame) -> pl.DataFrame:
             return df.filter(pl.col("station_id") == sid_str).drop("station_id")
 
-        # Edge case: if self.static is not None but filtering yields zero rows
-        # (station exists in station_ids but has no row in stacked static DF),
-        # return None rather than an empty DataFrame.
         static_filtered: pl.DataFrame | None = None
         if self.static is not None:
             sf = _filter(self.static)
@@ -120,6 +106,60 @@ class GroupModelInputs:
             future_dynamic=_filter(self.future_dynamic),
             static=static_filtered,
         )
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class GroupTrainingData:
+    group_id: StationGroupId
+    station_ids: tuple[StationId, ...]
+    past_targets: pl.DataFrame  # [timestamp, station_id, param1, ...]
+    past_dynamic: pl.DataFrame  # [timestamp, station_id, precip, temp, ...]
+    future_dynamic: pl.DataFrame  # [timestamp, station_id, precip, temp, ...]
+    static: pl.DataFrame | None  # [station_id, attr1, attr2, ...] — N rows
+    time_step: timedelta
+    val_start: UtcDatetime | None
+
+    def for_station(self, station_id: StationId) -> StationTrainingData:
+        """Extract single-station slices from stacked DataFrames."""
+        if station_id not in self.station_ids:
+            msg = f"Station {station_id} not in group {self.group_id}"
+            raise ValueError(msg)
+        sid_str = str(station_id)
+
+        def _filter(df: pl.DataFrame) -> pl.DataFrame:
+            return df.filter(pl.col("station_id") == sid_str).drop("station_id")
+
+        static_filtered: pl.DataFrame | None = None
+        if self.static is not None:
+            sf = _filter(self.static)
+            static_filtered = sf if not sf.is_empty() else None
+
+        return StationTrainingData(
+            past_targets=_filter(self.past_targets),
+            past_dynamic=_filter(self.past_dynamic),
+            future_dynamic=_filter(self.future_dynamic),
+            static=static_filtered,
+            time_step=self.time_step,
+            val_start=self.val_start,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Legacy types retained for stack_model_inputs (GroupModelInputs stacking).
+# ModelInputs uses xr.Dataset in forcing — kept until hindcast refactor lands.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ModelInputs:
+    station_id: StationId
+    forcing: pl.DataFrame | xr.Dataset
+    observations: pl.DataFrame
+    static_attributes: pl.DataFrame | None
+    issue_time: UtcDatetime
+    forecast_horizon_steps: int
+    time_step: timedelta
+    warm_up_steps: int | None
 
 
 def _reorder_station_id_first(df: pl.DataFrame) -> pl.DataFrame:
@@ -245,6 +285,7 @@ class ModelArtifactRecord:
     group_id: StationGroupId | None
     status: ModelArtifactStatus
     artifact_path: str
+    sha256_hash: str
     training_period_start: UtcDatetime
     training_period_end: UtcDatetime
     trained_at: UtcDatetime

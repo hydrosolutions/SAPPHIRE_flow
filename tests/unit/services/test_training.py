@@ -7,6 +7,7 @@ from uuid import UUID
 import polars as pl
 
 from sapphire_flow.services.training import (
+    promote_artifact,
     store_and_promote_artifact,
     train_group_model,
     train_station_model,
@@ -14,7 +15,7 @@ from sapphire_flow.services.training import (
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import ModelArtifactStatus
 from sapphire_flow.types.ids import ModelId, StationGroupId, StationId
-from sapphire_flow.types.model import GroupTrainingData, TrainingData
+from sapphire_flow.types.model import GroupTrainingData, StationTrainingData
 from tests.fakes.fake_models import FakeGroupForecastModel, FakeStationForecastModel
 from tests.fakes.fake_stores import FakeModelArtifactStore
 
@@ -25,21 +26,21 @@ _CLOCK = lambda: _NOW  # noqa: E731
 _RNG = random.Random(42)
 
 
-def _make_training_data() -> TrainingData:
-    forcing = pl.DataFrame(
+def _make_training_data() -> StationTrainingData:
+    past_targets = pl.DataFrame({"timestamp": [_START], "discharge": [10.0]})
+    past_dynamic = pl.DataFrame(
         {
             "timestamp": [_START],
             "precipitation": [5.0],
             "temperature": [15.0],
         }
     )
-    obs = pl.DataFrame({"timestamp": [_START], "discharge": [10.0]})
-    targets = pl.DataFrame({"timestamp": [_START], "discharge": [10.0]})
-    return TrainingData(
-        forcing=forcing,
-        observations=obs,
-        targets=targets,
-        static_attributes=None,
+    future_dynamic = past_dynamic.clear()
+    return StationTrainingData(
+        past_targets=past_targets,
+        past_dynamic=past_dynamic,
+        future_dynamic=future_dynamic,
+        static=None,
         time_step=timedelta(hours=1),
         val_start=None,
     )
@@ -49,9 +50,20 @@ def _make_group_training_data() -> GroupTrainingData:
     rng = random.Random(1)
     sid = StationId(UUID(int=rng.getrandbits(128), version=4))
     gid = StationGroupId(UUID(int=rng.getrandbits(128), version=4))
+    data = _make_training_data()
+    sid_col = pl.lit(str(sid)).alias("station_id")
+
+    def _reorder(df: pl.DataFrame) -> pl.DataFrame:
+        cols = ["station_id"] + [c for c in df.columns if c != "station_id"]
+        return df.select(cols)
+
     return GroupTrainingData(
         group_id=gid,
-        station_data={sid: _make_training_data()},
+        station_ids=(sid,),
+        past_targets=_reorder(data.past_targets.with_columns(sid_col)),
+        past_dynamic=_reorder(data.past_dynamic.with_columns(sid_col)),
+        future_dynamic=_reorder(data.future_dynamic.with_columns(sid_col)),
+        static=None,
         time_step=timedelta(hours=1),
         val_start=None,
     )
@@ -222,3 +234,76 @@ class TestStoreAndPromote:
         assert record.status == ModelArtifactStatus.ACTIVE
         assert record.group_id == group_id
         assert record.station_id is None
+
+
+class TestPromoteArtifact:
+    def test_promote_artifact_standalone(self) -> None:
+        store = FakeModelArtifactStore()
+        model_id = ModelId("test_model")
+        rng = random.Random(10)
+        station_id = StationId(UUID(int=rng.getrandbits(128), version=4))
+        now = _NOW
+
+        # Store an artifact directly (in TRAINING status)
+        new_id, _sha = store.store_artifact(
+            model_id=model_id,
+            artifact_bytes=b"artifact",
+            training_period_start=_START,
+            training_period_end=_END,
+            trained_at=now,
+            station_id=station_id,
+        )
+
+        promote_artifact(
+            artifact_store=store,
+            model_id=model_id,
+            new_id=new_id,
+            station_id=station_id,
+        )
+
+        record = store.fetch_artifact_record(new_id)
+        assert record is not None
+        assert record.status == ModelArtifactStatus.ACTIVE
+
+    def test_promote_artifact_supersedes_existing(self) -> None:
+        store = FakeModelArtifactStore()
+        model_id = ModelId("test_model")
+        rng = random.Random(11)
+        station_id = StationId(UUID(int=rng.getrandbits(128), version=4))
+        now = _NOW
+
+        # First artifact — store and promote via store_and_promote
+        first_id = store_and_promote_artifact(
+            artifact_store=store,
+            model_id=model_id,
+            artifact_bytes=b"v1",
+            period_start=_START,
+            period_end=_END,
+            clock=_CLOCK,
+            station_id=station_id,
+        )
+
+        # Second artifact — store raw, then promote via promote_artifact
+        second_id, _sha = store.store_artifact(
+            model_id=model_id,
+            artifact_bytes=b"v2",
+            training_period_start=_START,
+            training_period_end=_END,
+            trained_at=now,
+            station_id=station_id,
+        )
+
+        promote_artifact(
+            artifact_store=store,
+            model_id=model_id,
+            new_id=second_id,
+            station_id=station_id,
+        )
+
+        first_record = store.fetch_artifact_record(first_id)
+        second_record = store.fetch_artifact_record(second_id)
+
+        assert first_record is not None
+        assert first_record.status == ModelArtifactStatus.SUPERSEDED
+        assert second_record is not None
+        assert second_record.status == ModelArtifactStatus.ACTIVE

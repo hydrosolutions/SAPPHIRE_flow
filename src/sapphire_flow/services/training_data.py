@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     )
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.ids import StationId
-    from sapphire_flow.types.model import GroupTrainingData, TrainingData
+    from sapphire_flow.types.model import GroupTrainingData, StationTrainingData
     from sapphire_flow.types.station import StationGroup
 
 log = structlog.get_logger()
@@ -50,8 +50,8 @@ def _raw_forcing_to_dataframe(
     return pl.DataFrame(list(pivot.values()))
 
 
-def _observations_to_dataframe(observations: list) -> pl.DataFrame:
-    rows = [{"timestamp": o.timestamp, "value": o.value} for o in observations]
+def _observations_to_dataframe(observations: list, parameter: str) -> pl.DataFrame:
+    rows = [{"timestamp": o.timestamp, parameter: o.value} for o in observations]
     return pl.DataFrame(rows)
 
 
@@ -65,8 +65,8 @@ def assemble_station_training_data(
     obs_store: ObservationStore,
     basin_store: BasinStore,
     station_store: StationStore,
-) -> TrainingData | None:
-    from sapphire_flow.types.model import TrainingData
+) -> StationTrainingData | None:
+    from sapphire_flow.types.model import StationTrainingData
 
     station = station_store.fetch_station(station_id)
     if station is None:
@@ -143,14 +143,16 @@ def assemble_station_training_data(
         )
         return None
 
-    obs_df = _observations_to_dataframe(observations)
-    targets_df = obs_df.select(["timestamp", "value"])
+    past_targets_df = _observations_to_dataframe(observations, parameter)
+    # For training data, all forcing is historical — future_dynamic is empty
+    # (same schema as past_dynamic but zero rows).
+    future_dynamic_df = forcing_df.clear()
 
-    return TrainingData(
-        forcing=forcing_df,
-        observations=obs_df,
-        targets=targets_df,
-        static_attributes=static_attributes,
+    return StationTrainingData(
+        past_targets=past_targets_df,
+        past_dynamic=forcing_df,
+        future_dynamic=future_dynamic_df,
+        static=static_attributes,
         time_step=time_step,
         val_start=None,
     )
@@ -169,7 +171,12 @@ def assemble_group_training_data(
 ) -> GroupTrainingData | None:
     from sapphire_flow.types.model import GroupTrainingData
 
-    station_data = {}
+    past_targets_parts: list[pl.DataFrame] = []
+    past_dynamic_parts: list[pl.DataFrame] = []
+    future_dynamic_parts: list[pl.DataFrame] = []
+    static_parts: list[pl.DataFrame] = []
+    valid_station_ids: list[StationId] = []
+
     for station_id in group.station_ids:
         data = assemble_station_training_data(
             station_id=station_id,
@@ -182,19 +189,35 @@ def assemble_group_training_data(
             basin_store=basin_store,
             station_store=station_store,
         )
-        if data is not None:
-            station_data[station_id] = data
+        if data is None:
+            continue
 
-    if not station_data:
+        sid_col = pl.lit(str(station_id)).alias("station_id")
+        past_targets_parts.append(data.past_targets.with_columns(sid_col))
+        past_dynamic_parts.append(data.past_dynamic.with_columns(sid_col))
+        future_dynamic_parts.append(data.future_dynamic.with_columns(sid_col))
+        if data.static is not None:
+            static_parts.append(data.static.with_columns(sid_col))
+        valid_station_ids.append(station_id)
+
+    if not valid_station_ids:
         log.warning(
             "training_data.group_no_data",
             group_id=str(group.id),
         )
         return None
 
+    def _reorder(df: pl.DataFrame) -> pl.DataFrame:
+        cols = ["station_id"] + [c for c in df.columns if c != "station_id"]
+        return df.select(cols)
+
     return GroupTrainingData(
         group_id=group.id,
-        station_data=station_data,
+        station_ids=tuple(valid_station_ids),
+        past_targets=_reorder(pl.concat(past_targets_parts)),
+        past_dynamic=_reorder(pl.concat(past_dynamic_parts)),
+        future_dynamic=_reorder(pl.concat(future_dynamic_parts)),
+        static=_reorder(pl.concat(static_parts)) if static_parts else None,
         time_step=time_step,
         val_start=None,
     )

@@ -84,7 +84,7 @@ Layer:    flows/ — orchestration only, delegates to services/adapters
 | 1.4 | Archive NWP extractions | per NWP source (bulk) | `store/` | All extractions for this source | Persisted to `weather_forecasts` |
 | 1.5 | Post-process NWP | per NWP source (bulk) | `flows/` → `services/` + `preprocessing/` | Full dict + historical archive | Bias-corrected / calibrated `dict[StationId, ...]` |
 | 1.6 | Fetch latest observations | batch | `store/` | Station configs, lookback window | Recent QC'd river + meteo observations |
-| 1.7 | Prepare model inputs | per (model, group\|station) | `services/` | Post-processed NWP dict, observations, station configs | Group: `dict[StationId, ModelInputs]`. Station: individual `ModelInputs`. |
+| 1.7 | Prepare model inputs | per (model, group\|station) | `services/` | Post-processed NWP dict, observations, station configs | Group: `GroupModelInputs` (stacked DataFrame). Station: individual `StationModelInputs`. |
 | 1.8 | Run forecast models | per (model, group\|station) | `models/` | Input bundles, model artifacts | Ensemble forecast values |
 | 1.9 | Post-process forecasts | per station | `services/` | Raw forecast ensembles, historical archive | Bias-corrected forecast ensembles |
 | 1.10 | Forecast QC | per (model, group\|station) | `services/` | Forecast ensembles (post bias-correction), QC rule set, overrides, baselines | QC flags per ensemble; `QC_FAILED` triggers fallback |
@@ -103,7 +103,7 @@ Steps 1.2, 1.3, 1.4, and 1.9 are **conditional** — see notes.
 - **1.4** *(conditional)*: Only needed when no upstream gateway handles archiving. Archives the full `dict[StationId, ...]` per NWP source in bulk. Archive happens *before* post-processing so raw extracted values are preserved. Tiered retention: hot (PostgreSQL) for `weather_hot_days` → cold (Parquet) → deleted at `max_retention_days`. Each archived row records `spatial_type` at archival time (from the adapter's spatial representation) — this is denormalized from `station_weather_sources.extraction_type` so archived data remains self-describing if a station's extraction config changes later.
 - **1.5**: NWP post-processing. Operates on the full `dict[StationId, ...]` per NWP source. May include bias correction (quantile mapping), ensemble calibration, downscaling — configured per model per deployment. Preserves or transforms the spatial representation (see "Weather forecast data flows"). Pass-through until sufficient archive (6–12 months) for bias correction. Distinct from forecast output correction in 1.9.
 - **1.6**: Reads QC'd observations from the store. Flow 2 (observation ingest + QC) runs on its own schedule (e.g. every 30 min) — this step reads the *result*, not raw station feeds. The two flows are decoupled. Future option: add a top-up QC call at the start of Flow 1 to guarantee freshness (trivial — reuses the same QC service function). **Staleness guard**: if the most recent observation for a station is older than a deployment-configurable threshold (e.g. 6h), the forecast proceeds with a warning flag on the forecast record (`observation_staleness_hours`) visible to forecasters in the API and dashboard. Flow 4 detects prolonged staleness independently.
-- **1.7**: Groups stations by (model, artifact_scope). Group models: assembles `dict[StationId, ModelInputs]` for the entire group. Station models: assembles individual `ModelInputs` per station. Each model declares `data_requirements: ModelDataRequirements` (covering feature sets, static features, and spatial input type) and `supported_time_steps` — input preparation validates that (a) all configured sources have been transformed to the correct spatial format and merged into a single forcing object, (b) the `time_step` configured in `model_assignments` is in the model's `supported_time_steps`, and (c) `basins.attributes` contains all keys in `data_requirements.static_features` (see "Weather forecast data flows" and "Model Protocol"). **Orchestration note**: The **flow layer** (not the service) runs each weather source through its post-processing pipeline (step 1.5) and passes the merged result to the input preparation service. The service validates and assembles input bundles but does not fetch or transform weather data — this keeps the service pure. Two patterns:
+- **1.7**: Groups stations by (model, artifact_scope). Group models: assembles `GroupModelInputs` (stacked DataFrames with `station_id` column) for the entire group. Station models: assembles individual `StationModelInputs` per station. Each model declares `data_requirements: ModelDataRequirements` (covering feature sets, static features, and spatial input type) and `supported_time_steps` — input preparation validates that (a) all configured sources have been transformed to the correct spatial format and merged into a single forcing object, (b) the `time_step` configured in `model_assignments` is in the model's `supported_time_steps`, and (c) `basins.attributes` contains all keys in `data_requirements.static_features` (see "Weather forecast data flows" and "Model Protocol"). **Orchestration note**: The **flow layer** (not the service) runs each weather source through its post-processing pipeline (step 1.5) and passes the merged result to the input preparation service. The service validates and assembles input bundles but does not fetch or transform weather data — this keeps the service pure. Two patterns:
   - *ML models*: concatenates historical weather with NWP forecast to fill the lookback window, which is typically longer than the NWP forecast horizon. The historical weather source is resolved — see "Resolved: ML model lookback window forcing source" below.
   - *Conceptual models*: runs the model over a warm-up period using observations to derive internal state (soil moisture, snow, groundwater), then switches to NWP forecast forcing at the issue time. State is always observation-derived, never carried forward from a previous forecast.
   - **Fallback for conceptual models**: if the warm-up run fails, (1) use the last successfully saved state snapshot (staleness threshold is deployment-configurable and season-dependent — shorter during wet/monsoon season when catchment state changes rapidly, longer during dry season), or (2) if too stale, cold-start with extended warm-up from observations. Any forecast produced from a snapshot or cold-start records `warm_up_source: WarmUpSource` and `warm_up_state_age_hours` in the forecast metadata — visible to forecasters in the API and dashboard, and flagged by Flow 4.
@@ -915,7 +915,7 @@ Station groups (`station_groups` table) are named sets of stations grouped by sh
 | # | Step | Layer | Input | Output |
 |---|------|-------|-------|--------|
 | T.1 | Determine scope | `services/` | Request params (models, stations/groups, training period) or "all" | Station-scoped: list of `(station, model, period)` tuples. Group-scoped: list of `(group, model, period)` tuples. |
-| T.2 | Gather training data | `store/` | Station/group configs, training period | Station-scoped: single-station `TrainingData`. Group-scoped: `GroupTrainingData` (keyed by `StationId`). |
+| T.2 | Gather training data | `store/` | Station/group configs, training period | Station-scoped: single-station `StationTrainingData`. Group-scoped: `GroupTrainingData` (stacked DataFrame format). |
 | T.3 | Run training | `models/` | Training data, model hyperparameters | New model artifact (versioned) |
 | T.4 | Run hindcast | → Flow 7 | New artifact, hindcast period | Hindcast forecast ensembles |
 | T.5 | Compute skill | → Flows 8/10 | Hindcast results | Skill scores for new artifact |
@@ -925,7 +925,7 @@ Station groups (`station_groups` table) are named sets of stations grouped by sh
 
 Using `T.*` prefix since this flow serves both Flow 6 and Flow 9.
 
-**Initial training (Flow 6)**: T.1 → T.2 → T.3 → T.4 → T.5 → auto-promote (when standalone; deferred to M.6 when called from Flow 13). Steps T.6–T.8 skipped (nothing to compare against).
+**Initial training (Flow 6)**: T.1 → T.2 → T.3 → T.4 → T.5 → auto-promote (when standalone; deferred to M.6 when reused from Flow 13). Steps T.6–T.8 skipped (nothing to compare against). **Note**: Flow 13 does not call `train_models` flow — it composes the underlying services from Flows 6/7/8 directly. `train_models` is the standalone training flow; Flow 13 reuses the same service layer without going through it.
 
 **Retraining (Flow 9)**: All steps. T.6–T.8 require existing artifact for comparison and model admin approval.
 
@@ -933,11 +933,11 @@ Using `T.*` prefix since this flow serves both Flow 6 and Flow 9.
 
 - **T.1**: Default training period is all available data. Optionally specify date ranges (model-specific — some models benefit from a rolling window, others from full history). Cross-validation strategy is model-specific. For group-scoped models, T.1 resolves the station group membership to produce a single training unit per (group, model) rather than per (station, model).
 - **T.2**: Two paths depending on `artifact_scope`:
-  - *Station-scoped*: gathers single-station `TrainingData` (forcing, observations, targets, static attributes for one station).
-  - *Group-scoped*: gathers data for all stations in the group, assembles `GroupTrainingData` — a `dict[StationId, TrainingData]` plus group metadata. Each station's `TrainingData` includes its `static_attributes` from `basins.attributes`. The model receives all stations' data in one call.
+  - *Station-scoped*: gathers single-station `StationTrainingData` (past_targets, past_dynamic, future_dynamic, static slots for one station).
+  - *Group-scoped*: gathers data for all stations in the group, assembles `GroupTrainingData` — stacked DataFrames with a `station_id` column across all slots (same 4-slot structure, multi-station). Each station's static attributes from `basins.attributes` appear as rows in the `static` slot. The model receives all stations' data in one call.
   - Static attributes are loaded from `basins.attributes` JSONB and filtered to the model's `data_requirements.static_features`. Validated for completeness — missing attributes skip the training unit with a warning.
   - After gathering, T.2 validates that the dataset meets the model's declared minimum requirements (e.g. `min_training_samples`, `min_training_period`). If insufficient, the training unit is skipped with a warning (not a pipeline failure) — the model admin sees which units were skipped and why in the training summary.
-- **T.3**: Models are separate packages. Training interface is part of the model Protocol. Station-scoped models receive `TrainingData`; group-scoped models receive `GroupTrainingData`. Compute-intensive — may need different resource allocation than operational flows. The *flow* (not the model) persists the artifact object returned by `train()` — writes the file to `/data/artifacts/` and creates the `model_artifacts` row with status `'training'`. Consistent with the layering rule: model artifact loading/saving is handled by the flow or service layer.
+- **T.3**: Models are separate packages. Training interface is part of the model Protocol. Station-scoped models receive `StationTrainingData`; group-scoped models receive `GroupTrainingData` (stacked format). Compute-intensive — may need different resource allocation than operational flows. The *flow* (not the model) persists the artifact object returned by `train()` — writes the file to `/data/artifacts/` and creates the `model_artifacts` row with status `'training'`. Consistent with the layering rule: model artifact loading/saving is handled by the flow or service layer.
 - **T.4–T.5**: Composes Flow 7 (hindcast) and Flows 8/10 (skill computation). Training is not complete without validation. For group-scoped models, hindcast uses `predict_batch()` across all stations in the group at each time step — skill is always evaluated per-station.
 - **T.6** *(retraining only)*: Automated comparison on the same hindcast period. Generates a report (skill deltas per metric, per lead time, per season). For group-scoped models, the report covers all stations in the group with aggregate and per-station breakdowns.
 - **T.7–T.8** *(retraining only)*: Human-in-the-loop. Model admin reviews comparison report and approves or rejects. Async — flow pauses until admin acts (via dashboard or API).
@@ -948,7 +948,7 @@ Using `T.*` prefix since this flow serves both Flow 6 and Flow 9.
 #### Sequencing
 
 ```
-Initial:    T.1 → T.2 → T.3 → T.4 → T.5 → promote (when standalone; deferred to M.6 when called from Flow 13)
+Initial:    T.1 → T.2 → T.3 → T.4 → T.5 → promote (when standalone; deferred to M.6 when services reused from Flow 13)
 Retraining: T.1 → T.2 → T.3 → T.4 → T.5 → T.6 → T.7 ... T.8
 ```
 
@@ -1011,7 +1011,7 @@ Using `H.*` prefix since hindcast is referenced from multiple flows.
   - **`'reanalysis'`** (or station observations used as pseudo-perfect forcing): assesses model capability given near-perfect forcing. Useful for diagnosing whether errors come from the hydrology or the NWP, but produces optimistic skill scores that overestimate real-world operational performance.
   Every hindcast result (H.6) must carry a `forcing_type` tag (`ForcingType` enum — DB values `"nwp_archive"`, `"reanalysis"` per conventions.md casing rule). v0: forcing product TBD — may initially use station observations (producing diagnostic-only skill scores) until sufficient NWP archive accumulates for operational skill assessment.
   - **ML model lookback**: For ML models requiring a lookback window (e.g. 365 days for LSTM), H.2 must fetch forcing for the full lookback period preceding each hindcast step — not just the step itself. The forcing source must match what the model was trained on (resolved — see ML model lookback decision above (station observations in v0)). This is per-step: each hindcast step's lookback window shifts with the simulated issue time.
-- **H.4**: Critical — must simulate operational conditions. Each time step only sees data that would have been available at that point in time (no future leakage). The lookback window per step matches what the model expects operationally. Static attributes are loaded once per hindcast run (they are time-invariant) and included in each step's `ModelInputs`. For conceptual models, each hindcast step runs a fresh warm-up from historical observations up to the simulated issue time — no state is carried forward between hindcast steps (matching the operational convention from Flow 1 step 1.7). Snapshot fallback is not used in hindcast mode since observations are always available for the historical period.
+- **H.4**: Critical — must simulate operational conditions. Each time step only sees data that would have been available at that point in time (no future leakage). The lookback window per step matches what the model expects operationally. Static attributes are loaded once per hindcast run (they are time-invariant) and included in each step's `StationModelInputs` / `GroupModelInputs`. For conceptual models, each hindcast step runs a fresh warm-up from historical observations up to the simulated issue time — no state is carried forward between hindcast steps (matching the operational convention from Flow 1 step 1.7). Snapshot fallback is not used in hindcast mode since observations are always available for the historical period.
   - **Gap handling**: Historical records may contain gaps — NWP archive gaps (unrecoverable, per Flow 11) and observation gaps (QC-rejected or missing). When H.4 assembles inputs for a time step and finds insufficient data (forcing or observations below the model's minimum completeness requirement), it **skips the step** and logs the gap with the reason. The hindcast run continues with remaining steps. The final hindcast summary reports total steps attempted, completed, and skipped (with reasons) — this propagates to skill computation (Flows 8/10) where sample size is visible in the skill report.
 - **H.5**: Same model code as operational Flow 1 step 1.8. Group models use `predict_batch()` across all stations at each hindcast time step. Parallelizable across time steps (each is independent given its input bundle). **Partial failure**: if a time step fails (model error, NaN output, numerical divergence), the step is logged with the error and skipped — the hindcast run continues. No model fallback (unlike operational Flow 1) since hindcast evaluates a specific artifact. The hindcast summary (see H.4 gap handling) includes failed steps alongside data-gap skips.
 - **H.6**: Hindcast results stored in dedicated tables, separate from operational forecasts — different volumes and access patterns. Each record links to the model artifact version used. As operational history grows, older operational forecasts may be archived to hindcast storage for long-term skill tracking.
@@ -1308,7 +1308,7 @@ Layer:        flows/ — orchestration only
 Dependencies: Requires station onboarding (Flow 5) to have completed for target stations
 ```
 
-Registers a new model type, validates its compatibility with the system, runs the full training + verification pipeline, evaluates a skill gate, and assigns the model to stations or groups. Composes Flows 6, 7, and 8 with additional gating logic. Distinct from Flow 5 step 5.11 (which handles the model readiness branch for a specific station during station onboarding) — Flow 13 handles onboarding the model type itself before any station assignment can occur.
+Registers a new model type, validates its compatibility with the system, runs the full training + verification pipeline, evaluates a skill gate, and assigns the model to stations or groups. Reuses services from Flows 6/7/8 — does NOT call `train_models` flow; it composes the same underlying service layer directly to interpose the skill gate between training and promotion. Distinct from Flow 5 step 5.11 (which handles the model readiness branch for a specific station during station onboarding) — Flow 13 handles onboarding the model type itself before any station assignment can occur.
 
 M.0 Scope determination (flow-layer preamble — resolves station_ids/group_ids to TrainingUnits)
 
@@ -1337,29 +1337,31 @@ M.0 Scope determination (flow-layer preamble — resolves station_ids/group_ids 
 | Step | Name | Description |
 |------|------|-------------|
 | M.1 | Registration | Model package installed (via `uv add`). `discover_models()` scans entry points and finds the new model class. `register_models()` writes a `ModelRecord` to the `models` table. Idempotent — re-registering an existing model_id is a no-op unless the class attributes changed. |
-| M.2 | Compatibility validation | (a) Protocol satisfaction: runtime `isinstance(model_cls, ForecastModel)` check. (b) Feature availability: each feature slot declared in `ModelDataRequirements` is verified to exist in configured data sources for the target stations (past_dynamic sources, future_dynamic sources, static attribute columns). (c) Time step compatibility: declared `supported_time_steps` checked against deployment configuration. (d) Smoke test: model trained and called with a small synthetic dataset to catch serialization or shape errors before committing to a full training run. Fails fast with a descriptive error if any check fails. |
-| M.3 | Initial training | Delegates to Flow 6 (T.1–T.3). Artifact lands in `TRAINING` status. v0: auto-promotes to `ACTIVE` at M.6 (after skill gate pass-through). v1: transitions to `PENDING_APPROVAL` at M.6 if a champion already exists. |
-| M.4 | Hindcast verification | Delegates to Flow 7. Runs hindcast over the configured validation period for all target stations. |
-| M.5 | Skill gate | Delegates to Flow 8 (skill computation). Evaluates resulting scores against `skill_gate_thresholds`: each configured metric must meet its threshold at every stratum (lead time × season × flow regime). No regression vs existing champion if one exists (v1). Failing the gate keeps the artifact in `TRAINING` status and notifies the model admin — the run does not auto-retry. |
+| M.2 | Compatibility validation | (a) Protocol satisfaction: runtime `isinstance(model_cls, StationForecastModel \| GroupForecastModel)` check. (b) Feature availability: each feature slot declared in `ModelDataRequirements` is verified against the deployment's `available_nwp_parameters` (past/future dynamic) and `basins.attributes` (static columns) for target stations. (c) Time step compatibility: declared `supported_time_steps` checked against deployment configuration. Fails fast — incompatible units are skipped, not terminal. |
+| M.2b | Smoke test | Generates synthetic `StationTrainingData` / `GroupTrainingData` shaped from `model.data_requirements` (random floats, correct column names, 10 rows per slot, correct `time_step`), then exercises the full round-trip: `train()` → `serialize_artifact()` → `deserialize_artifact()` → `predict()`. Validates result shape and that each dict key equals its `ForecastEnsemble.parameter`. Catches serialization bugs, shape errors, and contract violations in under 1 second. Raises `ModelSmokeTestError` on failure. |
+| M.3 | Initial training | Reuses services from Flow 6 (T.1–T.3). Artifact lands in `TRAINING` status. Forcing source is injected (v0: SMN observations via `WeatherReanalysisSource`-compatible adapter; v1: ERA5-Land). Store-and-promote separation: `store_artifact()` is called directly (TRAINING status); `promote_artifact()` is called separately at M.6 after skill gate. v0: auto-promotes to `ACTIVE` at M.6 (after skill gate pass-through). v1: transitions to `PENDING_APPROVAL` at M.6 if a champion already exists. |
+| M.4 | Hindcast verification | Reuses services from Flow 7. Runs hindcast over the configured validation period for all target stations. |
+| M.5 | Skill gate | Reuses services from Flow 8 (skill computation). Evaluates resulting scores against `skill_gate_thresholds` (`dict[str, SkillGateMetric]`): for each metric, computes worst score across valid strata (`min()` for `higher_is_better`, `max()` for `lower_is_better`). A model must meet the threshold in every stratum (lead time × season × flow regime) to pass. If zero strata survive `min_skill_samples`, outcome is `SKIPPED_INSUFFICIENT_EVAL` rather than `GATE_REJECTED`. Failing the gate keeps the artifact in `TRAINING` status — the run does not auto-retry. |
 | M.6 | Promotion decision | v0: auto-promote (`TRAINING → ACTIVE`). v1: if a champion model exists for any target station/group, transition to `PENDING_APPROVAL` and notify the model admin for human review. The model admin can approve (`ACTIVE`) or reject (`REJECTED`). |
-| M.7 | Station/group assignment | Create `ModelAssignment` (station-scoped) or `GroupModelAssignment` (group-scoped) records for all target stations/groups. Sets `priority` per assignment (convention: linear regression = 0, ML = 1, conceptual = 2). |
+| M.7 | Station/group assignment | Create `ModelAssignment` (station-scoped) or `GroupModelAssignment` (group-scoped) records for all target stations/groups. Sets `priority` per assignment (convention: linear regression = 0, ML = 1, conceptual = 2). Skips units where an existing assignment has `status = INACTIVE` — logs `model.assignment_skipped_inactive`. |
 
 #### Notes
 
 - **M.1 — Entry point discovery**: Model classes are registered via Python entry points under the `sapphire_flow.models` group (see `docs/conventions.md` model discovery). The entry point name becomes the stable `models.id` key.
-- **M.2 — Smoke test data**: Synthetic data is generated from station metadata (basin area, elevation, parameter ranges from `measured_parameters`). The smoke test does not require real observations — it only validates the model's interface contract and internal consistency.
-- **M.3 — Partial delegation**: Flow 13 delegates T.1–T.3 from Flow 6 only (data prep, feature engineering, training). It does not delegate T.4–T.5 (hindcast + skill) — those are explicit as M.4–M.5 so the skill gate logic lives in Flow 13.
-- **M.5 — Skill gate thresholds**: All thresholds are in `DeploymentConfig.skill_gate_thresholds` (`dict[str, float]`, default `{}`). A model must meet the threshold at every stratum (lead time × season × flow regime) to pass. With the default empty dict, the gate is a pass-through (auto-promote). Configuring thresholds (e.g., `{"crpss": 0.0}`) activates blocking.
+- **M.2 — Compatibility check**: Per-unit skip, not terminal. An incompatible unit (station or group) is skipped with outcome `SKIPPED_COMPAT`; remaining units continue. The flow does not abort.
+- **M.2b — Smoke test data**: Synthetic data is generated from `model.data_requirements` (correct column names, random float values, 10 rows per slot). Uses `model.data_requirements`-shaped random data — not station metadata — so the smoke test is a pure interface contract check, not a mini-integration test. Raises `ModelSmokeTestError` on failure; the unit outcome is `FAILED_SMOKE_TEST`.
+- **M.3 — Forcing source injection**: `onboard_model` accepts a `forcing_source` parameter. v0: SMN observation adapter (used as pseudo-reanalysis). v1: ERA5-Land via `WeatherReanalysisSource`. Store/promote separation is critical: `store_artifact()` is called with `TRAINING` status; `promote_artifact()` is called separately at M.6 after the skill gate.
+- **M.5 — Skill gate thresholds**: All thresholds are in `DeploymentConfig.skill_gate_thresholds` (`dict[str, SkillGateMetric]`, default `{}`). `SkillGateMetric` carries `threshold: float` and `higher_is_better: bool`. Worst-across-strata: `min(scores)` for `higher_is_better`, `max(scores)` for not. With the default empty dict, the gate is a pass-through (auto-promote). Configuring thresholds activates blocking.
 - **M.6 — Champion comparison**: "Champion" = the current `ACTIVE` artifact for the same model_id and scope. If no champion exists (first onboarding of this model type), M.6 always auto-promotes regardless of v0/v1.
-- **Failure handling**: M.0 failures (`ConfigurationError`) are terminal — provide explicit group IDs and re-run. M.2 failures are terminal — fix the model package and re-run. M.3–M.5 failures leave the artifact in `TRAINING` status. The model admin can retry from M.3 (reusing the artifact row) or discard it. Flow 13 does not auto-retry.
+- **Failure handling**: M.0 failures (`ConfigurationError`) are terminal — provide explicit group IDs and re-run. M.2 incompatibility is a per-unit skip (not terminal). M.2b failure is a per-unit `FAILED_SMOKE_TEST` (not terminal). M.3–M.5 failures leave the artifact in `TRAINING` status. Artifacts in `TRAINING` that never reach M.6 are harmless (never selected for operational forecasts). The model admin can retry from M.3 or discard. Flow 13 does not auto-retry.
 
 #### Sequencing
 
 ```
-M.0 → M.1 → M.2 → M.3 → M.4 → M.5 → M.6 → M.7
+M.0 → M.1 → M.2 → M.2b → M.3 → M.4 → M.5 → M.6 → M.7
 ```
 
-M.2 fails fast — no training runs if compatibility checks fail. M.7 runs only after M.6 confirms promotion (or auto-promotes in v0).
+M.2 and M.2b are per-unit skips (not terminal). M.7 runs only after M.6 confirms promotion (or auto-promotes in v0).
 
 ### Scheduled maintenance — Database backup
 
@@ -1401,9 +1403,9 @@ This applies to both weather forecast ensembles (NWP) and runoff/water level for
 
 ### Model Protocol
 
-All forecast models satisfy a single `ForecastModel` Protocol. Models are pure functions — no DB, no I/O. Artifact serialization is the model's responsibility; artifact *persistence* (reading/writing files) is the caller's.
+Forecast models satisfy one of two Protocols: `StationForecastModel` (per-station artifact, `predict()` interface) or `GroupForecastModel` (per-group artifact, `predict_batch()` interface). Models are pure functions — no DB, no I/O. Artifact serialization is the model's responsibility; artifact *persistence* (reading/writing files) is the caller's.
 
-**Full Protocol signature, supporting types (`ModelInputs`, `TrainingData`, `ModelParams`, `ModelArtifact`), and behavioral contracts:** see `docs/spec/types-and-protocols.md` — ForecastModel.
+**Full Protocol signatures, supporting types (`StationModelInputs`, `GroupModelInputs`, `StationTrainingData`, `GroupTrainingData`, `ModelParams`, `ModelArtifact`), and behavioral contracts:** see `docs/spec/types-and-protocols.md` — StationForecastModel and GroupForecastModel.
 
 **ForecastInterface adapter:** ML model developers implement models against the
 `ForecastInterface` external contract (`hydrosolutions/ForecastInterface`), which
@@ -1411,13 +1413,13 @@ defines input requirements and `ModelOutput` output types using Pydantic + Polar
 A `ForecastInterfaceAdapter` in `adapters/forecast_interface/` bridges FI types to
 SAPPHIRE Flow's internal types — converting `ModelOutput` →
 `tuple[dict[str, ForecastEnsemble], bytes | None]` on output, and
-`GroupModelInputs`/`StationModelInputs` → FI input format on input. Conceptual
+`StationModelInputs`/`GroupModelInputs` → FI input format on input. Conceptual
 models and simple statistical models implement `StationForecastModel` /
 `GroupForecastModel` directly without FI.
 
 #### Generalized 4-slot model input contract
 
-`ModelInputs` (and `TrainingData`) follow a universal 4-slot pattern adopted from NeuralHydrology, PyTorch Forecasting (TFT), Darts, and Google Flood Forecasting:
+`StationModelInputs` (and `StationTrainingData`) follow a universal 4-slot pattern adopted from NeuralHydrology, PyTorch Forecasting (TFT), Darts, and Google Flood Forecasting. `GroupModelInputs` and `GroupTrainingData` use the same 4 slots with a `station_id` column prepended to each DataFrame for batch-efficient multi-station processing.
 
 | Slot | Name | Description |
 |------|------|-------------|
@@ -1426,7 +1428,7 @@ models and simple statistical models implement `StationForecastModel` /
 | 3 | `future_dynamic` | Time-varying forcing known beyond `issue_time` (NWP forecasts for operational runs; reanalysis or NWP archive in hindcast mode). Always present. |
 | 4 | `static` | Time-invariant catchment and station properties (e.g. basin area, mean elevation, forest fraction). Optional — absent for models that declare no static requirements. |
 
-Models declare per-slot feature requirements via `ModelDataRequirements` (see below). Input preparation (Flow 1 step 1.7, Flow 7 step H.4) reads `ModelDataRequirements` and constructs the appropriate slots, validating completeness before calling `predict()`.
+Models declare per-slot feature requirements via `ModelDataRequirements` (see below). Input preparation (Flow 1 step 1.7, Flow 7 step H.4) reads `ModelDataRequirements` and constructs the appropriate slots, validating completeness before calling `predict()` / `predict_batch()`.
 
 #### `ModelDataRequirements`
 
@@ -1443,17 +1445,17 @@ class ModelDataRequirements:
     # Constraint declarations
     supported_time_steps: frozenset[timedelta] # e.g. {timedelta(hours=1), timedelta(days=1)}
     lookback_steps: int                        # number of past time steps the model requires
-    spatial_input_type: SpatialRepresentation  # LUMPED or DISTRIBUTED
+    spatial_input_type: SpatialRepresentation  # POINT, BASIN_AVERAGE, ELEVATION_BAND, or GRIDDED
 ```
 
 Each model class declares a `data_requirements: ModelDataRequirements` class attribute. Input preparation validates that all declared features are available in configured data sources before calling `predict()` or `train()`. Compatibility validation in Flow 13 step M.2 also uses this declaration to check feature availability at onboarding time.
 
 Key points:
-- **`data_requirements`**: replaces `required_features` and `required_static_attributes`. Declares per-slot features as a `ModelDataRequirements` instance. Input preparation (Flow 1 step 1.7) validates completeness before calling `predict()` / `predict_batch()`. Static attributes are loaded from `basins.attributes` JSONB using the `static_features` declaration and passed in the `static` slot of `ModelInputs`. Empty `frozenset()` for unused slots (e.g. `static_features` for pure conceptual models). `target_parameters` declares which parameters the model produces (e.g. `{"discharge"}` or `{"discharge", "water_level"}`).
+- **`data_requirements`**: replaces `required_features` and `required_static_attributes`. Declares per-slot features as a `ModelDataRequirements` instance. Input preparation (Flow 1 step 1.7) validates completeness before calling `predict()` / `predict_batch()`. Static attributes are loaded from `basins.attributes` JSONB using the `static_features` declaration and passed in the `static` slot of `StationModelInputs` / `GroupModelInputs`. Empty `frozenset()` for unused slots (e.g. `static_features` for pure conceptual models). `target_parameters` declares which parameters the model produces (e.g. `{"discharge"}` or `{"discharge", "water_level"}`).
 - **`spatial_input_type`**: class-level declaration of the expected spatial representation (`SpatialRepresentation`). Input preparation validates that the final post-processed forcing matches this type.
 - **`supported_time_steps`**: class-level declaration of time steps the model can operate on (e.g. `{timedelta(hours=1), timedelta(days=1)}`). The `model_assignments` table configures which time step to use per station — input preparation validates the configured step is in the model's supported set.
-- **`train()`**: receives historical data + hyperparameters, returns opaque artifact. `rng` ensures reproducibility.
-- **`predict()` / `predict_batch()`**: Station models use `predict()` per station — receives pre-loaded artifact + prepared inputs + optional prior state, returns `tuple[dict[str, ForecastEnsemble], bytes | None]`. The first element is a dict keyed by parameter name (e.g. `{"discharge": ..., "water_level": ...}`); single-target models return a dict with one entry. The second element is the model's internal state at `issue_time` (opaque bytes, model serializes internally). Conceptual and hybrid models return state for snapshotting; `prior_state: bytes | None` allows the orchestrator to pass a previously saved state — the service layer decides based on `warm_up_snapshot_max_age_hours` whether to pass it or `None`. Group models use `predict_batch()` — receives `GroupModelInputs` (stacked Polars DataFrames with `for_station()` slice method), returns `dict[StationId, tuple[dict[str, ForecastEnsemble], bytes | None]]`. ML models are stateless (no `prior_state` input, return `None` for state). Deterministic models ignore the `rng`.
+- **`train()`**: receives `StationTrainingData` (station-scoped) or `GroupTrainingData` (group-scoped) + hyperparameters, returns opaque artifact. `rng` ensures reproducibility.
+- **`predict()` / `predict_batch()`**: Station models use `predict()` per station — receives pre-loaded artifact + prepared `StationModelInputs` + optional prior state, returns `tuple[dict[str, ForecastEnsemble], bytes | None]`. The first element is a dict keyed by parameter name (e.g. `{"discharge": ..., "water_level": ...}`); single-target models return a dict with one entry. The second element is the model's internal state at `issue_time` (opaque bytes, model serializes internally). Conceptual and hybrid models return state for snapshotting; `prior_state: bytes | None` allows the orchestrator to pass a previously saved state — the service layer decides based on `warm_up_snapshot_max_age_hours` whether to pass it or `None`. Group models use `predict_batch()` — receives `GroupModelInputs` (stacked Polars DataFrames with `for_station()` slice method), returns `dict[StationId, tuple[dict[str, ForecastEnsemble], bytes | None]]`. ML models are stateless (no `prior_state` input, return `None` for state). Deterministic models ignore the `rng`.
 - **`serialize_artifact()` / `deserialize_artifact()`**: model-specific. Caller handles file I/O — models never touch the filesystem.
 
 ### Model registry schema
@@ -1505,6 +1507,7 @@ model_artifacts:
   group_id: UUID FK → station_groups.id NULL  # non-null for group-scoped models
   status: TEXT                           # ModelArtifactStatus enum
   artifact_path: TEXT                    # relative path to serialized artifact file
+  sha256_hash: TEXT NOT NULL             # SHA-256 hex digest of the artifact file (OWASP A08 integrity control)
   training_period_start: TIMESTAMPTZ
   training_period_end: TIMESTAMPTZ
   trained_at: TIMESTAMPTZ
@@ -1523,7 +1526,7 @@ model_assignments:
   station_id: UUID FK → stations.id
   model_id: TEXT FK → models.id
   time_step: INTERVAL                    # configured time step for this assignment, e.g. '1 hour', '1 day'
-  is_active: BOOL DEFAULT TRUE           # can be deactivated without deleting
+  status: TEXT                           # ModelAssignmentStatus: active | inactive
   priority: INT DEFAULT 0                # fallback order AND alert-selection priority: 0 = primary (run first, drives alerts when all succeed). See §I3 in v0-scope.md.
   created_at: TIMESTAMPTZ
   PK: (station_id, model_id)
@@ -1538,7 +1541,7 @@ group_model_assignments:
   group_id: UUID FK → station_groups.id
   model_id: TEXT FK → models.id
   time_step: INTERVAL                    # configured time step for this assignment, e.g. '1 hour', '1 day'
-  is_active: BOOL DEFAULT TRUE           # can be deactivated without deleting
+  status: TEXT                           # ModelAssignmentStatus: active | inactive
   priority: INT DEFAULT 0                # fallback order AND alert-selection priority within the group: 0 = primary. Group priorities are expanded to per-station entries by Phase B for Phase C strategy dispatch. See §I3 in v0-scope.md.
   created_at: TIMESTAMPTZ
   PK: (group_id, model_id)
@@ -1676,13 +1679,13 @@ When a model uses multiple weather sources, input preparation (Flow 1 step 1.7):
 2. Transforms all sources to the model's declared `spatial_input_type`
 3. Merges all parameters into a single forcing object (`polars.DataFrame` for tabular, `xarray.Dataset` for gridded)
 4. Validates that all features declared in `ModelDataRequirements.future_dynamic_features` and `past_dynamic_features` are present
-5. Loads static catchment attributes from `basins.attributes` JSONB, selects columns matching `ModelDataRequirements.static_features`, validates completeness, and passes as the `static` slot of `ModelInputs` (or empty if `static_features` is an empty frozenset)
+5. Loads static catchment attributes from `basins.attributes` JSONB, selects columns matching `ModelDataRequirements.static_features`, validates completeness, and passes as the `static` slot of `StationModelInputs` / `GroupModelInputs` (or empty if `static_features` is an empty frozenset)
 6. Fetches past target variable history into the `past_targets` slot
 
-The model receives a fully-populated `ModelInputs` with all four slots. It does not know about data sources — it sees features by canonical name.
+The model receives a fully-populated `StationModelInputs` (or `GroupModelInputs` for group-scoped models) with all four slots. It does not know about data sources — it sees features by canonical name.
 
 For FI-wrapped models, the `ForecastInterfaceAdapter` converts the four-slot
-`ModelInputs` to FI's per-variable hierarchy (`past_known`/`future_known`/`static`)
+`StationModelInputs` / `GroupModelInputs` to FI's per-variable hierarchy (`past_known`/`future_known`/`static`)
 before calling the model.
 
 For the rare case where a model needs mixed spatial types (e.g. gridded precipitation + basin-average snow), the model declares `'gridded'` and basin-average values are broadcast to spatially uniform grid fields. This is physically meaningful and lossless.
@@ -2699,6 +2702,10 @@ Current scope: disaster recovery (DR), not high availability (HA).
 - **HA (High Availability)**: Redundant systems with automatic failover. Out of scope for current phase — requires replicated infrastructure. Can be added later; the architecture is stateless at the application layer (all state in PostgreSQL), so migration to Docker Swarm/Kubernetes with replicated DB is feasible without redesign.
 - **DR (Disaster Recovery)**: Ability to restore the system after failure from backups.
 
+### Design decision: SAPPHIRE-owned backup automation
+
+Backup automation is shipped as part of SAPPHIRE Flow (Prefect scheduled tasks), not delegated to the deployment team's infrastructure. This ensures consistent, tested backup procedures across all deployments (Switzerland, Nepal, future sites) without depending on each team's backup tooling or practices. The deployment team provides storage targets and physical connectivity; SAPPHIRE handles scheduling, execution, encryption, retention, and automated restore rehearsal.
+
 ### DR plan
 
 1. **Backup system** (automated, daily at 02:00 UTC via Prefect scheduled task)
@@ -2777,6 +2784,20 @@ Current scope: disaster recovery (DR), not high availability (HA).
 - **Minimum disk**: 1 TB SSD recommended. At ~170 Swiss stations, 1 TB provides 2,500–5,000 days of headroom. At ~1000 stations (architectural ceiling), 1 TB fills in ~415–830 days depending on PostgreSQL overhead — review quarterly against actual growth and plan upgrade to 2 TB before reaching 70% utilization.
 - **Monitoring**: Flow 4 step 4.5 checks disk usage and writes to `pipeline_health` with `check_type = 'disk_usage'`. Thresholds: WARNING at 80%, CRITICAL at 90%. Exposed in `/api/v1/health/detail` under the `disk` component (already present in the health endpoint schema above).
 - **Single VM viability (plan 013 Task 4)**: At Swiss v0 scale (~170 stations), single VM is comfortably sufficient — storage growth is ~0.2–0.4 GB/day, forecast cycle completes in < 60s, and in-process fan-out stays under ~200 threads. At the ~1000-station architectural ceiling, single VM remains viable for I/O and storage (1 TB SSD provides ~1–2 years) but two areas require benchmarking before deployment at that scale: (a) in-process `task.map()` across 1000 stations (~1000 OS threads, memory footprint, connection pool pressure — see orchestration.md BENCHMARK), and (b) ICON-CH2-EPS GridExtractor CPU load at bulk extraction scale. The HA escape hatch (line 2643: migration to Docker Swarm/Kubernetes) addresses availability failover, not performance saturation — it remains valid but does not substitute for the benchmarks above.
+
+### Backup storage estimate
+
+Backup storage grows with the primary database and cold storage, but restic deduplication means daily snapshots share most data — only changed blocks are stored. Effective backup repository size is roughly 1.5–2× the largest single snapshot, not 23× (7 daily + 4 weekly + 12 monthly).
+
+| Component | Single snapshot size (after 18 months) | Notes |
+|---|---|---|
+| PostgreSQL dump (`pg_dump --format=custom`) | ~20–70 GB | Custom format compresses ~3–5× vs raw. Hot window: 548 days of forecasts + observations. |
+| Model artifacts | < 1 GB | One artifact per model per station/group. Small files. |
+| Cold storage Parquet | ~50–150 GB | Grows with data age. Parquet is already compressed. Depends on `max_retention_days`. |
+| **Total single snapshot** | **~70–220 GB** | At ~170 stations. Scales linearly with station count. |
+| **Total repository (with retention + dedup)** | **~100–400 GB** | restic deduplication keeps effective size at ~1.5–2× single snapshot. |
+
+**Recommendation**: Backup target should be at least 500 GB, ideally 1 TB (matching the primary disk). Review quarterly alongside primary disk utilization.
 
 Communication to hydromet: database backups are automated and recovery procedures are documented. HA (automatic failover) is not included in this project phase but can be added later if required.
 
@@ -2972,7 +2993,7 @@ References (does not redefine): container log driver from cicd.md, audit_log sch
 | Bikram Sambat calendar support | Deployment-configurable calendar system. Nepal uses BS for official reporting; API, dashboard, and bulletins convert on display. Internal storage remains Gregorian UTC. |
 | Two-tier health endpoint | Public `/health` exposes only aggregate status. Detailed `/health/detail` requires auth. Independent host-level watchdog polls health outside Docker/Prefect. |
 | Dead letter queue with auto-drain | Partition-missing writes go to DLQ. Hourly auto-drain replays when partition exists. `pg_partman` maintenance via `pg_cron`, not Prefect. **v0: no partitioning, no DLQ (see v0-scope.md § A1).** |
-| Backup via restic | Encrypted, deduplicated backups of DB + Parquet + model artifacts. Monthly automated restore rehearsal. 12-step recovery procedure documented. **v0: pg_dump to disk (see v0-scope.md § A10).** |
+| Backup via restic (SAPPHIRE-owned) | Backup automation ships with SAPPHIRE Flow (Prefect tasks), not delegated to deployment team infrastructure — ensures consistency across deployments. Encrypted, deduplicated backups of DB + Parquet + model artifacts. Monthly automated restore rehearsal. 12-step recovery procedure documented. Deployment team provides storage targets only. **v0: pg_dump to disk (see v0-scope.md § A10).** |
 
 ## Access management
 

@@ -13,9 +13,9 @@ if TYPE_CHECKING:
         GroupTrainingData,
         ModelArtifact,
         ModelDataRequirements,
-        ModelInputs,
         ModelParams,
-        TrainingData,
+        StationModelInputs,
+        StationTrainingData,
     )
 
 
@@ -25,14 +25,14 @@ class StationForecastModel(Protocol):
     data_requirements: ModelDataRequirements
 
     def train(
-        self, data: TrainingData, params: ModelParams, rng: random.Random
+        self, data: StationTrainingData, params: ModelParams, rng: random.Random
     ) -> ModelArtifact:
         raise NotImplementedError
 
     def predict(
         self,
         artifact: ModelArtifact,
-        inputs: ModelInputs,
+        inputs: StationModelInputs,
         rng: random.Random,
         prior_state: bytes | None = None,
     ) -> tuple[dict[str, ForecastEnsemble], bytes | None]:

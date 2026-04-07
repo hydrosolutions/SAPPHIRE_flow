@@ -119,8 +119,8 @@ class TestAssembleStationTrainingDataHappyPath:
         )
 
         assert result is not None
-        assert "precipitation" in result.forcing.columns
-        assert "temperature" in result.forcing.columns
+        assert "precipitation" in result.past_dynamic.columns
+        assert "temperature" in result.past_dynamic.columns
 
     def test_observations_count(self) -> None:
         model = FakeStationForecastModel()
@@ -144,7 +144,7 @@ class TestAssembleStationTrainingDataHappyPath:
         )
 
         assert result is not None
-        assert result.observations.height == 10
+        assert result.past_targets.height == 10
         assert result.time_step == _STEP
         assert result.val_start is None
 
@@ -294,9 +294,9 @@ class TestAssembleGroupTrainingData:
 
         assert result is not None
         assert result.group_id == gid
-        assert len(result.station_data) == 2
-        assert sid1 in result.station_data
-        assert sid2 in result.station_data
+        assert len(result.station_ids) == 2
+        assert sid1 in result.station_ids
+        assert sid2 in result.station_ids
 
     def test_partial_data_one_station(self) -> None:
         sid1 = _sid()
@@ -338,9 +338,9 @@ class TestAssembleGroupTrainingData:
         )
 
         assert result is not None
-        assert len(result.station_data) == 1
-        assert sid1 in result.station_data
-        assert sid2 not in result.station_data
+        assert len(result.station_ids) == 1
+        assert sid1 in result.station_ids
+        assert sid2 not in result.station_ids
 
     def test_all_stations_missing_returns_none(self) -> None:
         sid1 = _sid()

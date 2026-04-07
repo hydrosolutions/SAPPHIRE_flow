@@ -13,7 +13,7 @@ from sapphire_flow.types.ids import ArtifactId, ModelId, StationGroupId, Station
 from sapphire_flow.types.station import StationGroup, StationWeatherSource
 
 if TYPE_CHECKING:
-    from sapphire_flow.types.model import ModelArtifact, ModelInputs
+    from sapphire_flow.types.model import ModelArtifact, StationModelInputs
 from tests.conftest import (
     make_observations,
     make_raw_historical_forcing,
@@ -175,12 +175,12 @@ class TestNoFutureLeakage:
             data_requirements = FakeStationForecastModel.data_requirements
 
             def __init__(self) -> None:
-                self.calls: list[tuple[UtcDatetime, ModelInputs]] = []
+                self.calls: list[tuple[UtcDatetime, StationModelInputs]] = []
 
             def predict(
                 self,
                 artifact: ModelArtifact,
-                inputs: ModelInputs,
+                inputs: StationModelInputs,
                 rng: random.Random,
                 prior_state: bytes | None = None,
             ) -> tuple:
@@ -225,15 +225,21 @@ class TestNoFutureLeakage:
             horizon_end = ensure_utc(issue_time + forecast_horizon_steps * _STEP)
 
             # Observations: must not contain data at or beyond issue_time
-            obs_timestamps = inputs.observations["timestamp"].to_list()
+            obs_timestamps = inputs.data.past_targets["timestamp"].to_list()
             for ts in obs_timestamps:
                 assert ts < issue_time, (
                     f"observation timestamp {ts} >= issue_time {issue_time}: "
                     "future leakage detected"
                 )
 
-            # Forcing: covers [lookback_start, horizon_end) — teacher forcing
-            forcing_timestamps = inputs.forcing["timestamp"].to_list()
+            # Forcing: past_dynamic covers [lookback_start, issue_time],
+            # future_dynamic covers (issue_time, horizon_end) — teacher forcing
+            import polars as pl
+
+            forcing_df = pl.concat(
+                [inputs.data.past_dynamic, inputs.data.future_dynamic]
+            ).sort("timestamp")
+            forcing_timestamps = forcing_df["timestamp"].to_list()
             for ts in forcing_timestamps:
                 assert ts >= lookback_start, (
                     f"forcing timestamp {ts} < lookback_start {lookback_start}"
@@ -274,7 +280,7 @@ class TestStepFailureContinues:
             def predict(
                 self,
                 artifact: ModelArtifact,
-                inputs: ModelInputs,
+                inputs: StationModelInputs,
                 rng: random.Random,
                 prior_state: bytes | None = None,
             ) -> tuple:
