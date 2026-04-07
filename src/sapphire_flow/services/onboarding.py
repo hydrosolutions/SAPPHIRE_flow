@@ -278,9 +278,14 @@ def _run_onboarding(
     discovered: dict = {}
     if model_store is not None:
         from sapphire_flow.services.model_onboarding import create_station_assignment
-        from sapphire_flow.services.model_registry import discover_models
+        from sapphire_flow.services.model_registry import (
+            discover_models,
+            register_models,
+        )
 
         discovered = discover_models()
+        if discovered:
+            register_models(discovered, model_store, clock)
         for station_id in resolved_station_ids:
             station = station_store.fetch_station(station_id)
             if station is None or station.station_kind == StationKind.WEATHER:
