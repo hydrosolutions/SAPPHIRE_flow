@@ -228,6 +228,7 @@ def main() -> int:
                 StoreBackedReanalysisSource,
             )
             from sapphire_flow.config.deployment import DeploymentConfig, load_config
+            from sapphire_flow.config.paths import resolve_artifact_dir
             from sapphire_flow.store.hindcast_store import PgHindcastStore
             from sapphire_flow.store.model_artifact_store import PgModelArtifactStore
             from sapphire_flow.store.model_store import PgModelStore
@@ -235,7 +236,7 @@ def main() -> int:
             from sapphire_flow.store.station_group_store import PgStationGroupStore
 
             model_store = PgModelStore(conn)
-            artifact_store = PgModelArtifactStore(conn)
+            artifact_store = PgModelArtifactStore(conn, resolve_artifact_dir())
             group_store = PgStationGroupStore(conn)
             hindcast_store = PgHindcastStore(conn)
             skill_store = PgSkillStore(conn)
