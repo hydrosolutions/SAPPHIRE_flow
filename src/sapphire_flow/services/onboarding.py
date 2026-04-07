@@ -16,8 +16,10 @@ from sapphire_flow.types.enums import (
     ArtifactScope,
     ModelArtifactStatus,
     QcStatus,
+    SpatialRepresentation,
     StationKind,
     StationStatus,
+    WeatherSourceStatus,
 )
 from sapphire_flow.types.onboarding import OnboardingResult
 
@@ -181,6 +183,28 @@ def _run_onboarding(
             msg = f"Failed to store forcing for station {station_id}: {exc}"
             log.error("forcing_store_error", station_id=str(station_id), error=str(exc))
             errors.append(msg)
+
+    # Step 4b: Create weather source mappings for stations with forcing data
+    for station_id, forcing in forcing_by_station.items():
+        if station_id not in resolved_station_ids or not forcing:
+            continue
+        try:
+            from sapphire_flow.types.station import StationWeatherSource
+
+            source_name = forcing[0].source  # e.g. "camels-ch"
+            ws = StationWeatherSource(
+                station_id=station_id,
+                nwp_source=source_name,
+                extraction_type=SpatialRepresentation.POINT,
+                status=WeatherSourceStatus.ACTIVE,
+            )
+            station_store.store_weather_source(ws)
+        except Exception as exc:
+            log.warning(
+                "weather_source_store_error",
+                station_id=str(station_id),
+                error=str(exc),
+            )
 
     # Step 5: Run QC (per station, using the station's target parameter)
     checker = Stage1QualityChecker()
