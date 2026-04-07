@@ -28,3 +28,11 @@ class AdapterError(SapphireError):
 
 class ConfigurationError(SapphireError):
     """Invalid or missing configuration."""
+
+
+class ModelSmokeTestError(SapphireError):
+    """Model failed smoke test during onboarding."""
+
+
+class ArtifactIntegrityError(SapphireError):
+    """SHA-256 hash verification failed on artifact deserialization."""

@@ -54,6 +54,16 @@ class ModelAssignment:
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
+class GroupModelAssignment:
+    group_id: StationGroupId
+    model_id: ModelId
+    time_step: timedelta
+    status: ModelAssignmentStatus
+    priority: int
+    created_at: UtcDatetime
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
 class StationGroup:
     id: StationGroupId
     name: str

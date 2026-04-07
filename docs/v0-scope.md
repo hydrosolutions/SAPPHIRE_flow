@@ -21,7 +21,7 @@
 | 1 | **Flow 5/5w** — Station onboarding | Simplified bootstrap script (see A4 below). TOML import, historical obs, QC, baselines, model assignments. No dashboard, no progress tracking. |
 | 2 | **Flow 2** — Observation ingest + QC | Stage 1 QC only. No rating curves (BAFU provides Q directly). Alerting steps optional (`enable_observation_alerts`). |
 | 3 | **Flow 6 → 7 → 8** — Train → hindcast → skill | Auto-promote (no approval gate). Full skill metric suite (CRPS, CRPSss, BSS, POD/FAR/CSI, peak timing, NSE, KGE, PBIAS, MAE, diagrams). |
-| 3 | **Flow 13** — Model onboarding | Register + validate + train + hindcast + skill gate + auto-promote. Sample model (LinearRegressionDaily). No approval gate (auto-promote). Composes Flows 6→7→8 with validation logic. |
+| 3 | **Flow 13** — Model onboarding | Register + validate + smoke test + train + hindcast + skill gate + auto-promote. Sample model (LinearRegressionDaily). No approval gate (auto-promote). Reuses services from Flows 6/7/8 directly (does NOT call `train_models` flow — composes the underlying service layer to interpose the skill gate). |
 | 4 | **Flow 1** — Forecast cycle | **v0a**: point weather forecast data (pre-extracted); steps 1.2, 1.3, 1.4 skipped entirely. **v0b+**: gridded NWP (ICON-CH2-EPS) with GridExtractor. Steps 1.5 (NWP post-process) and 1.9 (forecast post-process) are pass-through throughout v0. Step 1.10 (forecast QC) is active throughout v0. Alerting (1.12-1.14) controlled by `enable_forecast_alerts` (default `false`). |
 | — | **API** | FastAPI with basic CRUD for stations, observations, forecasts, alerts. No auth. Health endpoint. |
 | — | **Flow 12B** — Manual CSV import | Branch B only (validate CSV, ingest with `source = 'manual_import'`, run QC). Branches A (rating curve reprocessing) and C (QC re-evaluation) deferred. |
@@ -103,9 +103,13 @@ Implement the full skill metric suite: CRPS, CRPSss (climatology + persistence b
 
 **Full design**: 5 statuses (training → pending_approval → active → superseded → rejected), approval gate.
 
-**v0**: 3 statuses: `training`, `active`, and `superseded`. Training produces artifact with `training` status → auto-promote to `active` (after skill gate) → done. No approval gate. `active` → `superseded` when replaced by a newer artifact.
+**v0**: The PostgreSQL enum and Python `ModelArtifactStatus` define all 5 values (`training`, `pending_approval`, `active`, `superseded`, `rejected`) for forward compatibility — `ALTER TYPE ... ADD VALUE` cannot run inside a transaction, so adding values later is painful. v0 wires only 3 transition paths: `training` → `active` (auto-promote after skill gate), `active` → `superseded` (replaced by newer artifact), and `training` stays on gate rejection. The `pending_approval` and `rejected` statuses are defined but not reachable in v0.
 
-Flow 13 (model onboarding) uses the same auto-promote path: `training` → `active`. The `pending_approval` status and approval gate (skill comparison, human review) are v1 additions. Flow 13 adds a skill gate evaluation step that in v0 logs results and does not block promotion by default (`skill_gate_thresholds = {}`); configuring thresholds activates blocking.
+Flow 13 (model onboarding) uses the same auto-promote path: `training` → `active`. The approval gate (skill comparison, human review, `pending_approval` → `active`/`rejected` transitions) is a v1 addition. Flow 13 adds a skill gate evaluation step that in v0 does not block promotion by default (`skill_gate_thresholds = {}`); configuring thresholds activates blocking (gate rejection leaves artifact in `training` status).
+
+**Worst-across-strata aggregation**: The skill gate evaluates the worst score across all strata (lead time × season × flow regime) against each threshold. "Worst" is direction-aware: `min(scores)` for `higher_is_better` metrics (e.g. CRPSS, NSE — higher is better, so the minimum is the worst), and `max(scores)` for `lower_is_better` metrics (e.g. CRPS, RMSE — lower is better, so the maximum is the worst). A model must meet the threshold in every stratum to pass. Strata with fewer than `min_skill_samples` forecast-observation pairs are excluded before aggregation to prevent noisy low-sample strata from producing spurious rejections.
+
+**`SKIPPED_INSUFFICIENT_EVAL`**: If **zero** strata survive the `min_skill_samples` filter (i.e. no stratum has enough pairs to be evaluated), the unit outcome is `SKIPPED_INSUFFICIENT_EVAL` rather than `GATE_REJECTED`. This distinguishes "model failed quality bar" from "insufficient observation data to evaluate the model." `GATE_REJECTED` is reserved for cases where scores exist but fall below thresholds.
 
 ### A8. No notification system
 
@@ -216,13 +220,13 @@ These are deferred in architecture-context.md. For v0, don't create their tables
 
 ## C. Database schema (v0 subset)
 
-24 tables. No partitioning, no DLQ, no auth, no cold storage dispatch.
+25 tables. No partitioning, no DLQ, no auth, no cold storage dispatch.
 
 ### Reference data
 - `parameters` — as designed (canonical parameter names, units, aggregation methods). Seeded via Alembic migration with the 10 canonical parameters defined in `architecture-context.md`.
 
 ### Core entities
-- `stations` — as designed (without override columns); includes `network`, `ownership`, `wigos_id`, `gauging_status` columns; unique constraint is `(network, code)`
+- `stations` — as designed (without override columns); includes `network`, `ownership`, `wigos_id`, `gauging_status` columns; unique constraint is `(network, code)`; `forecast_targets` is JSONB nullable (NULL for weather stations; e.g. `["discharge"]` or `["discharge","water_level"]`)
 - `basins` — as designed; includes `network` column; unique constraint is `(network, code)`
 - `station_thresholds` — as designed
 - `flow_regime_configs` — as designed
@@ -234,8 +238,9 @@ These are deferred in architecture-context.md. For v0, don't create their tables
 - `models` — as designed
 - `station_groups` — as designed
 - `station_group_members` — as designed
-- `model_artifacts` — as designed but status enum reduced to `training | active | superseded` (no `pending_approval` or `rejected` — approval gate deferred)
+- `model_artifacts` — as designed; status enum has all 5 values (`training | pending_approval | active | superseded | rejected`) for forward compatibility, v0 wires 3 transition paths only (see §A7); includes `sha256_hash TEXT NOT NULL` column (OWASP A08 integrity control — see `security.md`)
 - `model_assignments` — as designed
+- `group_model_assignments` — as designed; records (`group_id`, `model_id`, `time_step`, `status`, `priority`, `created_at`); unique on `(group_id, model_id)`
 - `model_states` — as designed
 - `station_weather_sources` — as designed
 
@@ -361,6 +366,7 @@ Full forecast cycle runs in seconds using recorded data — no network, no waiti
 | Threshold exceedance | Alert raised at correct level |
 | Empty ensemble | Skip threshold check, metadata flag |
 | Full onboarding → forecast | End-to-end init → operational path |
+| Model onboarding (Flow 13) | Register → compatibility → smoke test → train → hindcast → skill gate → promote → assign. Cover: incompatible unit skipped (SKIPPED_COMPAT), smoke test failure (FAILED_SMOKE_TEST), gate rejection (GATE_REJECTED), insufficient eval data (SKIPPED_INSUFFICIENT_EVAL), successful promotion (PROMOTED). |
 
 ### E4. Test database
 
@@ -451,10 +457,10 @@ Phase 3: Adapters (production + replay)                           ├─ paralle
 Phase 3b: Record reference test dataset from public APIs          │
 Phase 4: Services (QC, threshold, alert, skill, forecast input)  ─┘
           │
-Phase 5: Station onboarding (simplified)           ─┐
+Phase 5: Station onboarding (simplified)           ─┐ ✓ partial (steps 1–5)
 Phase 6: Observation ingest (Flow 2)               ├─ parallel
-Phase 7: Model framework + training                │
-Phase 7b: Model onboarding (Flow 13) + sample model─┤
+Phase 7: Model framework + training                │  ✓ done
+Phase 7b: Model onboarding (Flow 13) + sample model─┤  ✓ done
 Phase 9: FastAPI REST API                          ─┘
           │
 Phase 8: Forecast cycle (Flow 1) + scenario tests

@@ -231,10 +231,13 @@ All exceptions inherit from `SapphireError`. Authoritative class definitions in
 | `SapphireError` | Base for all domain errors | — |
 | `InsufficientDataError` | Not enough input data | Try fallback model |
 | `SanityCheckFailure` | Model output implausible | Try fallback model |
-| `ModelLoadError` | Failed to load model artifact | Try fallback model |
+| `ModelLoadError` | Failed to deserialize or load a model artifact | Try fallback model |
+| `ModelOutputError` | Model ran but produced zero convertible ensembles | Try fallback model |
 | `ConflictError` | Optimistic locking conflict | Return 409 Conflict |
 | `AdapterError` | External source error/timeout | Retry, then fallback |
 | `ConfigurationError` | Invalid/missing config | Fail fast at startup |
+| `ModelSmokeTestError` | Model raised exception during smoke test | Flow 13: unit outcome = `FAILED_SMOKE_TEST`; continue other units |
+| `ArtifactIntegrityError` | SHA-256 hash mismatch on fetched artifact bytes | Do not deserialize; task failure |
 | `PartitionMissingError` | DB partition doesn't exist | Write to dead letter queue, alert ops. **v0: not needed (no partitioning, see v0-scope.md § A1)** |
 
 > **`InsufficientDataError` — Flow 13 exception**: In model onboarding (and other multi-phase initialization flows), there is no fallback model. Exception mapping is phase-based, not type-based: `InsufficientDataError` before training maps to `SKIPPED_NO_DATA`; once training begins, any `SapphireError` subclass maps to the `FAILED_*` variant for the current phase (e.g., `FAILED_TRAINING`, `FAILED_HINDCAST`, `FAILED_SKILL`, `FAILED_ASSIGNMENT`). True unexpected exceptions (`TypeError`, `AttributeError`) propagate to Prefect as task-level failures per the standard rule.
@@ -409,8 +412,8 @@ All status/enum columns store TEXT matching the Python enum `.value` (lowercase)
 | `ForeignForecastStatus` | `published` | `published` | v0+v1 |
 | `FlowRunState` | `pending`, `running`, `completed`, `failed`, `crashed`, `cancelling`, `cancelled` | — | v0+v1 |
 | `ForcingProvenance` | `nwp_direct`, `observed`, `interpolated`, `gap_filled_climatology`, `gap_filled_persistence`, `reanalysis`, `derived`, `unknown` | — | v0+v1 |
-| `model_assignments.status` / `ModelAssignmentStatus` | `active`, `suspended` | `suspended` | v0+v1 |
-| `OnboardingOutcome` (in-memory only) | `promoted`, `gate_rejected`, `skipped_compat`, `skipped_no_data`, `failed_training`, `failed_hindcast`, `failed_skill`, `failed_assignment` | all terminal | v0+v1 |
+| `model_assignments.status` / `ModelAssignmentStatus` | `active`, `inactive` | `inactive` | v0+v1 |
+| `OnboardingOutcome` (in-memory only) | `promoted`, `gate_rejected`, `skipped_compat`, `skipped_no_data`, `skipped_insufficient_eval`, `failed_smoke_test`, `failed_training`, `failed_hindcast`, `failed_skill`, `failed_assignment` | all terminal | v0+v1 |
 | Forecast QC rule IDs (string, not enum) | `negative_value`, `range_check`, `flat_ensemble`, `ensemble_spread`, `climatology_outlier`, `temporal_consistency`, `quantile_crossing` | — | v0+v1 |
 
 ---

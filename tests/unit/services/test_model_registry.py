@@ -136,7 +136,7 @@ class TestRegisterIdempotent:
 
 
 class TestDiscoverModels:
-    def test_no_entry_points_returns_empty_dict(self) -> None:
+    def test_discovers_registered_entry_points(self) -> None:
         result = discover_models()
         assert isinstance(result, dict)
-        assert len(result) == 0
+        assert "linear_regression_daily" in result

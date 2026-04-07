@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
+from sapphire_flow.types.enums import ModelArtifactStatus
+
 # Convention: all range queries use half-open intervals [start, end).
 # SQL: WHERE timestamp >= start AND timestamp < end
 # Fakes must match: start <= x < end (not start <= x <= end).
@@ -30,7 +32,6 @@ if TYPE_CHECKING:
         FlowRegime,
         ForcingType,
         ForecastStatus,
-        ModelArtifactStatus,
         ObservationSource,
         PipelineCheckType,
         QcStatus,
@@ -68,6 +69,7 @@ if TYPE_CHECKING:
     from sapphire_flow.types.rating_curve import RatingCurve
     from sapphire_flow.types.skill import FlowRegimeConfig, SkillDiagram, SkillScore
     from sapphire_flow.types.station import (
+        GroupModelAssignment,
         ModelAssignment,
         StationConfig,
         StationGroup,
@@ -323,6 +325,14 @@ class SkillStore(Protocol):
     ) -> list[SkillScore]:
         raise NotImplementedError
 
+    def fetch_skill_scores(
+        self,
+        model_id: ModelId,
+        model_artifact_id: ArtifactId,
+        parameter: str | None = None,
+    ) -> tuple[SkillScore, ...]:
+        raise NotImplementedError
+
     def mark_stale(
         self,
         station_id: StationId,
@@ -349,7 +359,8 @@ class ModelArtifactStore(Protocol):
         *,
         station_id: StationId | None = None,
         group_id: StationGroupId | None = None,
-    ) -> ArtifactId:
+        status: ModelArtifactStatus = ModelArtifactStatus.TRAINING,
+    ) -> tuple[ArtifactId, str]:
         raise NotImplementedError
 
     def fetch_artifact(
@@ -499,6 +510,18 @@ class StationGroupStore(Protocol):
     def remove_station_from_group(
         self, group_id: StationGroupId, station_id: StationId
     ) -> None:
+        raise NotImplementedError
+
+    def store_group_model_assignment(
+        self,
+        assignment: GroupModelAssignment,
+    ) -> None:
+        raise NotImplementedError
+
+    def fetch_group_model_assignments(
+        self,
+        group_id: StationGroupId,
+    ) -> tuple[GroupModelAssignment, ...]:
         raise NotImplementedError
 
 

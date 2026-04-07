@@ -1,6 +1,7 @@
 # pyright: reportUnknownMemberType=false, reportUnknownArgumentType=false
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
@@ -8,6 +9,7 @@ from uuid import UUID, uuid4
 import sqlalchemy as sa
 
 from sapphire_flow.db.metadata import model_artifacts, station_group_members
+from sapphire_flow.exceptions import ArtifactIntegrityError
 from sapphire_flow.store._helpers import utc_from_row, utc_or_none
 from sapphire_flow.types.enums import ModelArtifactStatus
 from sapphire_flow.types.ids import ArtifactId, ModelId, StationGroupId, StationId
@@ -32,8 +34,10 @@ class PgModelArtifactStore:
         *,
         station_id: StationId | None = None,
         group_id: StationGroupId | None = None,
-    ) -> ArtifactId:
+        status: ModelArtifactStatus = ModelArtifactStatus.TRAINING,
+    ) -> tuple[ArtifactId, str]:
         aid = ArtifactId(uuid4())
+        sha256 = hashlib.sha256(artifact_bytes).hexdigest()
         artifact_path = self._artifact_dir / model_id / f"{aid}.bin"
         artifact_path.parent.mkdir(parents=True, exist_ok=True)
         artifact_path.write_bytes(artifact_bytes)
@@ -44,8 +48,9 @@ class PgModelArtifactStore:
                 model_id=model_id,
                 station_id=station_id,
                 group_id=group_id,
-                status=ModelArtifactStatus.TRAINING.value,
+                status=status.value,
                 artifact_path=str(artifact_path),
+                sha256_hash=sha256,
                 training_period_start=training_period_start,
                 training_period_end=training_period_end,
                 trained_at=trained_at,
@@ -54,23 +59,31 @@ class PgModelArtifactStore:
                 superseded_at=None,
             )
         )
-        return aid
+        return aid, sha256
 
     def fetch_artifact(
         self, artifact_id: ArtifactId
     ) -> tuple[ArtifactId, bytes] | None:
         row = (
             self._conn.execute(
-                sa.select(model_artifacts.c.artifact_path).where(
-                    model_artifacts.c.id == artifact_id
-                )
+                sa.select(
+                    model_artifacts.c.artifact_path,
+                    model_artifacts.c.sha256_hash,
+                ).where(model_artifacts.c.id == artifact_id)
             )
             .mappings()
             .one_or_none()
         )
         if row is None:
             return None
-        return (artifact_id, Path(row["artifact_path"]).read_bytes())
+        stored = Path(row["artifact_path"]).read_bytes()
+        actual = hashlib.sha256(stored).hexdigest()
+        if actual != row["sha256_hash"]:
+            raise ArtifactIntegrityError(
+                f"SHA-256 mismatch for artifact {artifact_id}: "
+                f"expected {row['sha256_hash']}, got {actual}"
+            )
+        return artifact_id, stored
 
     def fetch_active_artifact(
         self,
@@ -217,6 +230,7 @@ def _row_to_record(row: sa.engine.row.RowMapping) -> ModelArtifactRecord:
         ),
         status=ModelArtifactStatus(row["status"]),
         artifact_path=row["artifact_path"],
+        sha256_hash=row["sha256_hash"],
         training_period_start=utc_from_row(row["training_period_start"]),
         training_period_end=utc_from_row(row["training_period_end"]),
         trained_at=utc_from_row(row["trained_at"]),

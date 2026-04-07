@@ -274,7 +274,7 @@ QC runs in two stages with different purposes. This follows established practice
   - **Open question**: The correction parameter from DHM and how it modifies the hQ conversion are not yet defined. This will be resolved during Flow 5 design (rating curve ingestion) and DHM data discussions.
 
 - **2.6 — Stage 2 QC (conversion validation)** *(v1+, conditional — runs only when 2.5 ran)*: Operates on derived values. Catches rating curve problems, not sensor problems:
-  - **Extrapolation flag**: water level exceeded the maximum calibrated point of the rating curve. The derived discharge is flagged as `'extrapolated'`, not rejected — extrapolated flood values are operationally important even when uncertain. The calibration range is stored on the `rating_curves` record.
+  - **Extrapolation flag**: water level exceeded the maximum calibrated point of the rating curve. The derived discharge is flagged as `'extrapolated'`, not rejected — extrapolated flood values are operationally important even when uncertain. The flag includes the extrapolation magnitude (percentage beyond the maximum calibrated point), distinguishing minor extrapolation from extreme extrapolation. The calibration range is stored on the `rating_curves` record.
   - **Discharge range check**: derived Q against historical flow statistics (monthly Q1/Q99). Catches gross rating curve errors (e.g. wrong curve applied, order-of-magnitude extrapolation).
   - **Cross-station consistency** (v1+, later): discharge at a downstream station should be >= sum of upstream stations (minus known diversions) within a lag window. Only possible in discharge space — water levels are not comparable across stations.
   - Stage 2 flags are stored separately from Stage 1 flags. A value can be `stage1_qc = 'qc_passed', stage2_qc = 'extrapolated'` — downstream consumers (forecast models, alert logic) decide their own quality thresholds.
@@ -645,7 +645,7 @@ Stations enter with `station_status = 'onboarding'`. They become visible in Flow
 
 - **5.2**: Fetches static catchment attributes for each station's basin. These are required as input features for ML models (EA-LSTM, delta-HBV) and for transfer learning to new sites. See `basins.attributes` JSONB column. **Primary source: local cache prepared by Flow 0 (deployment onboarding)**. When Flow 0 has run, step 5.2 extracts basin-level attributes from the cached area-wide datasets — no remote downloads needed. If Flow 0 has not run or the basin falls outside the cached AOI, falls back to direct fetch from global datasets (HydroATLAS, MERIT DEM) or national GIS data (swisstopo for v0, Nepal DHM GIS for v1).
 
-- **5.3**: Maps the station to its NWP forcing source(s) and extraction type. Basin geometry for basin-average extraction comes from `basins.geometry`; elevation-band definitions are computed here and stored in `basins.band_geometries`. For point extraction: station coordinates are used directly. Determines what Flow 1 steps 1.1/1.3 fetch for this station.
+- **5.3**: Maps the station to its NWP forcing source(s) and extraction type. Basin geometry for basin-average extraction comes from `basins.geometry`. For elevation-band extraction, band definitions are stored in `basins.band_geometries` — these can be provided in two ways: (a) uploaded as shapefiles with pre-defined band polygons, or (b) generated automatically from a DEM using standard band widths (200, 500, 1000, or 2000 m). Models may declare which band resolution they expect; this step validates that the configured bands satisfy the model's requirements. For point extraction: station coordinates are used directly. Determines what Flow 1 steps 1.1/1.3 fetch for this station.
 
 - **5.4**: Bulk import — could be large (decades of hourly data). Adapter-specific: CSV upload, API fetch, or database migration. Handles source-specific parameter name mapping to canonical names. **Idempotent**: re-importing the same date range upserts rather than duplicates (keyed on station + timestamp + parameter). Observation source is configured at the adapter level in `config.toml [adapters.observation]`, not per-station — the adapter knows how to map station codes to external source identifiers. CSV imports during onboarding use the same validation/ingestion logic as Flow 12 Branch B: `source = 'manual_import'` for CSV uploads, `source = 'measured'` for API adapter fetches.
   - **Historical–operational gap**: There will typically be a gap between the end of historical data and the start of real-time ingest (Flow 2). This is accepted — the gap is inconsequential for training and the real-time pipeline will fill forward from its start time.
@@ -2586,10 +2586,15 @@ basins:
                                            #   Populated during station onboarding (Flow 5 step 5.2).
                                            #   Schema: deployment-specific — v0 uses HydroATLAS/MERIT DEM attributes,
                                            #   v1 adds Nepal DHM GIS data. Validated at model training time.
+  regional_basin: TEXT NULL                # optional grouping label (e.g. "Karnali", "Gandaki") for display;
+                                           #   does not affect modelling — each station is modelled using its
+                                           #   own catchment geometry, not the regional basin.
   band_geometries: JSONB NULL              # for elevation-band extraction: list of
                                            #   {"band_id": int, "geometry": GeoJSON,
                                            #    "min_elevation_m": float, "max_elevation_m": float}
-                                           #   Computed during station onboarding (Flow 5 step 5.3).
+                                           #   Source: uploaded shapefiles or auto-generated from DEM
+                                           #   using standard band widths (200, 500, 1000, or 2000 m).
+                                           #   Stored during station onboarding (Flow 5 step 5.3).
   created_at: TIMESTAMPTZ
 ```
 

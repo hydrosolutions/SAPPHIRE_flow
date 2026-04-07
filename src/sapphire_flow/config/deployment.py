@@ -4,7 +4,7 @@ import os
 import re
 import tomllib
 from datetime import timedelta
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Self
 
 from pydantic import BaseModel, field_validator, model_validator
 
@@ -15,6 +15,10 @@ from sapphire_flow.types.domain import (
     SkillInterpretationScheme,
 )
 from sapphire_flow.types.enums import AlertModelStrategy, ThresholdDirection
+from sapphire_flow.types.model_onboarding import (
+    SUPPORTED_SKILL_METRICS,
+    SkillGateMetric,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -78,6 +82,11 @@ class DeploymentConfig(BaseModel):
 
     infer_missing_thresholds: bool = False
 
+    skill_gate_thresholds: dict[str, SkillGateMetric] = {}
+    available_nwp_parameters: frozenset[str] = frozenset(
+        {"precipitation", "temperature"}
+    )
+
     min_skill_samples: int = 100
     min_skill_seasons: int = 2
 
@@ -109,11 +118,21 @@ class DeploymentConfig(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def _validate_retention(self) -> DeploymentConfig:
+    def _validate_retention(self) -> Self:
         if self.max_retention_days <= self.forecast_hot_days:
             raise ValueError(
                 f"max_retention_days ({self.max_retention_days}) must be > "
                 f"forecast_hot_days ({self.forecast_hot_days})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_skill_gate_keys(self) -> Self:
+        unknown = set(self.skill_gate_thresholds.keys()) - SUPPORTED_SKILL_METRICS
+        if unknown:
+            raise ValueError(
+                f"Unknown skill gate metric(s): {sorted(unknown)}. "
+                f"Valid: {sorted(SUPPORTED_SKILL_METRICS)}"
             )
         return self
 

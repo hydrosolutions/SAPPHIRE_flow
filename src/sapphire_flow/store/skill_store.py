@@ -103,6 +103,22 @@ class PgSkillStore:
         rows = self._conn.execute(stmt).mappings().all()
         return [_row_to_score(row) for row in rows]
 
+    def fetch_skill_scores(
+        self,
+        model_id: ModelId,
+        model_artifact_id: ArtifactId,
+        parameter: str | None = None,
+    ) -> tuple[SkillScore, ...]:
+        filters = [
+            ss.c.model_id == model_id,
+            ss.c.model_artifact_id == model_artifact_id,
+        ]
+        if parameter is not None:
+            filters.append(ss.c.parameter == parameter)
+        stmt = sa.select(ss).where(*filters)
+        rows = self._conn.execute(stmt).mappings().all()
+        return tuple(_row_to_score(row) for row in rows)
+
     def mark_stale(
         self,
         station_id: StationId,

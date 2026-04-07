@@ -5,13 +5,15 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from sapphire_flow.db.metadata import (
+    group_model_assignments,
     model_assignments,
     station_group_members,
     station_groups,
 )
 from sapphire_flow.store._helpers import utc_from_row
+from sapphire_flow.types.enums import ModelAssignmentStatus
 from sapphire_flow.types.ids import ModelId, StationGroupId, StationId
-from sapphire_flow.types.station import StationGroup
+from sapphire_flow.types.station import GroupModelAssignment, StationGroup
 
 
 class PgStationGroupStore:
@@ -133,6 +135,55 @@ class PgStationGroupStore:
                 )
             )
         )
+
+    def store_group_model_assignment(self, assignment: GroupModelAssignment) -> None:
+        self._conn.execute(
+            pg_insert(group_model_assignments)
+            .values(
+                group_id=assignment.group_id,
+                model_id=assignment.model_id,
+                time_step=assignment.time_step,
+                status=assignment.status.value,
+                priority=assignment.priority,
+                created_at=assignment.created_at,
+            )
+            .on_conflict_do_update(
+                index_elements=["group_id", "model_id"],
+                set_={
+                    "time_step": assignment.time_step,
+                    "status": assignment.status.value,
+                    "priority": assignment.priority,
+                    "created_at": assignment.created_at,
+                },
+            )
+        )
+
+    def fetch_group_model_assignments(
+        self, group_id: StationGroupId
+    ) -> tuple[GroupModelAssignment, ...]:
+        rows = (
+            self._conn.execute(
+                sa.select(group_model_assignments).where(
+                    group_model_assignments.c.group_id == group_id
+                )
+            )
+            .mappings()
+            .all()
+        )
+        return tuple(_row_to_group_assignment(row) for row in rows)
+
+
+def _row_to_group_assignment(
+    row: sa.engine.row.RowMapping,
+) -> GroupModelAssignment:
+    return GroupModelAssignment(
+        group_id=StationGroupId(row["group_id"]),
+        model_id=ModelId(row["model_id"]),
+        time_step=row["time_step"],
+        status=ModelAssignmentStatus(row["status"]),
+        priority=row["priority"],
+        created_at=utc_from_row(row["created_at"]),
+    )
 
 
 def _fetch_member_ids(

@@ -466,6 +466,7 @@ model_artifacts = sa.Table(
         nullable=False,
     ),
     sa.Column("artifact_path", sa.Text, nullable=False),
+    sa.Column("sha256_hash", sa.Text, nullable=False, server_default=""),
     sa.Column("training_period_start", sa.DateTime(timezone=True), nullable=False),
     sa.Column("training_period_end", sa.DateTime(timezone=True), nullable=False),
     sa.Column("trained_at", sa.DateTime(timezone=True), nullable=False),
@@ -532,6 +533,34 @@ model_assignments = sa.Table(
         server_default=sa.func.now(),
     ),
     sa.PrimaryKeyConstraint("station_id", "model_id"),
+)
+
+group_model_assignments = sa.Table(
+    "group_model_assignments",
+    metadata,
+    sa.Column(
+        "group_id",
+        UUID(as_uuid=True),
+        sa.ForeignKey("station_groups.id"),
+        nullable=False,
+    ),
+    sa.Column("model_id", sa.Text, sa.ForeignKey("models.id"), nullable=False),
+    sa.Column("time_step", INTERVAL, nullable=False),
+    sa.Column(
+        "status",
+        sa.Text,
+        sa.CheckConstraint("status IN ('active', 'inactive')"),
+        nullable=False,
+        server_default="active",
+    ),
+    sa.Column("priority", sa.Integer, nullable=False, server_default="0"),
+    sa.Column(
+        "created_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+    ),
+    sa.PrimaryKeyConstraint("group_id", "model_id"),
 )
 
 model_states = sa.Table(

@@ -6,8 +6,9 @@ from datetime import UTC, datetime, timedelta
 import sqlalchemy as sa
 
 from sapphire_flow.store.station_group_store import PgStationGroupStore
+from sapphire_flow.types.enums import ModelAssignmentStatus
 from sapphire_flow.types.ids import ModelId, StationGroupId, StationId
-from sapphire_flow.types.station import StationGroup
+from sapphire_flow.types.station import GroupModelAssignment, StationGroup
 from tests.conftest import make_station_config
 
 _NOW = datetime(2025, 1, 1, tzinfo=UTC)
@@ -224,3 +225,100 @@ class TestFetchNonexistent:
         store = PgStationGroupStore(db_connection)
         result = store.fetch_group_by_name("ghost-group")
         assert result is None
+
+
+def _make_group_model_assignment(
+    group_id: StationGroupId,
+    model_id: ModelId,
+    *,
+    status: ModelAssignmentStatus = ModelAssignmentStatus.ACTIVE,
+    priority: int = 0,
+    time_step: timedelta = timedelta(hours=1),
+) -> GroupModelAssignment:
+    return GroupModelAssignment(
+        group_id=group_id,
+        model_id=model_id,
+        time_step=time_step,
+        status=status,
+        priority=priority,
+        created_at=_NOW,
+    )
+
+
+class TestStoreGroupModelAssignment:
+    def test_happy_path(self, db_connection: sa.Connection) -> None:
+        group = _make_group("gma-happy")
+        _seed_model(db_connection, "gma-model-1")
+        store = PgStationGroupStore(db_connection)
+        store.store_group(group)
+
+        assignment = _make_group_model_assignment(group.id, ModelId("gma-model-1"))
+        store.store_group_model_assignment(assignment)
+
+        results = store.fetch_group_model_assignments(group.id)
+        assert len(results) == 1
+        fetched = results[0]
+        assert fetched.group_id == group.id
+        assert fetched.model_id == ModelId("gma-model-1")
+        assert fetched.time_step == timedelta(hours=1)
+        assert fetched.status == ModelAssignmentStatus.ACTIVE
+        assert fetched.priority == 0
+
+    def test_upsert_second_write_wins(self, db_connection: sa.Connection) -> None:
+        group = _make_group("gma-upsert")
+        _seed_model(db_connection, "gma-model-2")
+        store = PgStationGroupStore(db_connection)
+        store.store_group(group)
+
+        first = _make_group_model_assignment(
+            group.id,
+            ModelId("gma-model-2"),
+            status=ModelAssignmentStatus.ACTIVE,
+            priority=0,
+            time_step=timedelta(hours=1),
+        )
+        store.store_group_model_assignment(first)
+
+        second = _make_group_model_assignment(
+            group.id,
+            ModelId("gma-model-2"),
+            status=ModelAssignmentStatus.INACTIVE,
+            priority=5,
+            time_step=timedelta(hours=6),
+        )
+        store.store_group_model_assignment(second)
+
+        results = store.fetch_group_model_assignments(group.id)
+        assert len(results) == 1
+        fetched = results[0]
+        assert fetched.status == ModelAssignmentStatus.INACTIVE
+        assert fetched.priority == 5
+        assert fetched.time_step == timedelta(hours=6)
+
+    def test_empty_fetch_returns_empty_tuple(
+        self, db_connection: sa.Connection
+    ) -> None:
+        store = PgStationGroupStore(db_connection)
+        results = store.fetch_group_model_assignments(StationGroupId(uuid.uuid4()))
+        assert results == ()
+
+    def test_fetch_only_returns_assignments_for_group(
+        self, db_connection: sa.Connection
+    ) -> None:
+        g1 = _make_group("gma-filter-g1")
+        g2 = _make_group("gma-filter-g2")
+        _seed_model(db_connection, "gma-model-3")
+        store = PgStationGroupStore(db_connection)
+        store.store_group(g1)
+        store.store_group(g2)
+
+        store.store_group_model_assignment(
+            _make_group_model_assignment(g1.id, ModelId("gma-model-3"))
+        )
+        store.store_group_model_assignment(
+            _make_group_model_assignment(g2.id, ModelId("gma-model-3"))
+        )
+
+        results = store.fetch_group_model_assignments(g1.id)
+        assert len(results) == 1
+        assert results[0].group_id == g1.id

@@ -23,6 +23,7 @@ Prefect 3 replaces a patchwork of Luigi, bash scripts, and cron jobs with a sing
 | 8/10 — Skill computation | `compute_skills_flow` (deployment) / `compute_skills_task` (fan-out) | `hindcast` | Subflow or on-demand | — | v0+v1 |
 | 11 — NWP gap recovery | `recover_nwp_gaps` | `ops` | Event-triggered (from Flow 4) | — | **v0c+** (§D5) |
 | 12 — Observation reprocessing | `reprocess_observations` | `ops` | Event-triggered / on-demand | Per-station (see below) | v0+v1 |
+| 13 — Model onboarding | `onboard_model_flow` | `training` (v0: `default`) | On-demand | 1 | v0+v1 |
 | Backup | `backup_database` | `ops` | Cron (daily) | — | v0+v1 |
 | DLQ drain | `drain_dlq` | `ops` | Cron (hourly) | — | **v1** (§A1) |
 | Data archival | `archive_cold_data` | `ops` | Cron (monthly) | — | **v1** (§A2) |
@@ -138,6 +139,11 @@ Flow 5 (onboard_station)
        ├→ Flow 7 (run_hindcast) [hindcast pool]
        └→ Flows 8/10 (compute_skills) [hindcast pool]
 
+Flow 13 (onboard_model_flow) [training pool]
+  ├→ services/training.py (reused from Flow 6, not the train_models flow)
+  ├→ services/hindcast.py (reused from Flow 7, not run_hindcast flow)
+  └→ services/skill/ (reused from Flow 8, not compute_skills flow)
+
 Flow 4 (monitor_pipeline)
   └→ Flow 11 (recover_nwp_gaps) [ops pool]
 
@@ -184,7 +190,7 @@ The `init` service (see cicd.md § First-boot sequence) registers all Prefect de
 - Concurrency limit (where applicable)
 - Default parameters (e.g. `mode` for `train_models`)
 
-Deployment names follow conventions.md kebab-case convention: `run-forecast-cycle`, `ingest-observations`, `monitor-pipeline`, `onboard-station`, `onboard-weather-stations`, `train-models`, `run-hindcast`, `compute-skills`, `recover-nwp-gaps`, `reprocess-observations`, `backup-database`, `drain-dlq`, `archive-cold-data`, `rehearse-backup-restore`.
+Deployment names follow conventions.md kebab-case convention: `run-forecast-cycle`, `ingest-observations`, `monitor-pipeline`, `onboard-station`, `onboard-weather-stations`, `train-models`, `onboard-model`, `run-hindcast`, `compute-skills`, `recover-nwp-gaps`, `reprocess-observations`, `backup-database`, `drain-dlq`, `archive-cold-data`, `rehearse-backup-restore`.
 
 Deployment names for v1-only flows: `drain-dlq`, `archive-cold-data`, `rehearse-backup-restore`.
 

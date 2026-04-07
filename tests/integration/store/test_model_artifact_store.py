@@ -84,7 +84,7 @@ class TestPgModelArtifactStore:
         store = PgModelArtifactStore(db_connection, tmp_path)
         payload = b"\xde\xad\xbe\xef"
 
-        aid = store.store_artifact(
+        aid, _ = store.store_artifact(
             model_id,
             payload,
             _T0,
@@ -113,7 +113,7 @@ class TestPgModelArtifactStore:
         store = PgModelArtifactStore(db_connection, tmp_path)
         payload = b"active_bytes"
 
-        aid = store.store_artifact(
+        aid, _ = store.store_artifact(
             model_id, payload, _T0, _T1, _T2, station_id=station_id
         )
         store.transition_artifact_status(aid, ModelArtifactStatus.ACTIVE)
@@ -131,7 +131,7 @@ class TestPgModelArtifactStore:
         store = PgModelArtifactStore(db_connection, tmp_path)
         payload = b"direct_station_bytes"
 
-        aid = store.store_artifact(
+        aid, _ = store.store_artifact(
             model_id, payload, _T0, _T1, _T2, station_id=station_id
         )
         store.transition_artifact_status(aid, ModelArtifactStatus.ACTIVE)
@@ -150,7 +150,9 @@ class TestPgModelArtifactStore:
         store = PgModelArtifactStore(db_connection, tmp_path)
         payload = b"group_artifact_bytes"
 
-        aid = store.store_artifact(model_id, payload, _T0, _T1, _T2, group_id=group_id)
+        aid, _ = store.store_artifact(
+            model_id, payload, _T0, _T1, _T2, group_id=group_id
+        )
         store.transition_artifact_status(aid, ModelArtifactStatus.ACTIVE)
         result = store.fetch_active_artifact_for_station(station_id, model_id)
 
@@ -167,13 +169,13 @@ class TestPgModelArtifactStore:
         store = PgModelArtifactStore(db_connection, tmp_path)
 
         # Store group-level artifact, promote, then supersede; add station-level
-        group_aid = store.store_artifact(
+        group_aid, _ = store.store_artifact(
             model_id, b"group_bytes", _T0, _T1, _T2, group_id=group_id
         )
         store.transition_artifact_status(group_aid, ModelArtifactStatus.ACTIVE)
         store.transition_artifact_status(group_aid, ModelArtifactStatus.SUPERSEDED)
 
-        station_aid = store.store_artifact(
+        station_aid, _ = store.store_artifact(
             model_id, b"station_bytes", _T0, _T1, _T2, station_id=station_id
         )
         store.transition_artifact_status(station_aid, ModelArtifactStatus.ACTIVE)
@@ -191,7 +193,7 @@ class TestPgModelArtifactStore:
         model_id = _seed_model(db_connection)
         store = PgModelArtifactStore(db_connection, tmp_path)
 
-        aid = store.store_artifact(
+        aid, _ = store.store_artifact(
             model_id, b"record_bytes", _T0, _T1, _T2, station_id=station_id
         )
         record = store.fetch_artifact_record(aid)
@@ -222,13 +224,13 @@ class TestPgModelArtifactStore:
         model_id = _seed_model(db_connection)
         store = PgModelArtifactStore(db_connection, tmp_path)
 
-        aid1 = store.store_artifact(
+        aid1, _ = store.store_artifact(
             model_id, b"a1", _T0, _T1, _T2, station_id=station_id
         )
         store.transition_artifact_status(aid1, ModelArtifactStatus.ACTIVE)
         # Supersede aid1 before promoting aid2 (partial unique index)
         store.transition_artifact_status(aid1, ModelArtifactStatus.SUPERSEDED)
-        aid2 = store.store_artifact(
+        aid2, _ = store.store_artifact(
             model_id, b"a2", _T0, _T1, _T2, station_id=station_id
         )
         store.transition_artifact_status(aid2, ModelArtifactStatus.ACTIVE)
@@ -252,7 +254,7 @@ class TestPgModelArtifactStore:
         model_id = _seed_model(db_connection)
         store = PgModelArtifactStore(db_connection, tmp_path)
 
-        aid = store.store_artifact(
+        aid, _ = store.store_artifact(
             model_id, b"supersede_me", _T0, _T1, _T2, station_id=station_id
         )
         store.transition_artifact_status(aid, ModelArtifactStatus.SUPERSEDED)
@@ -282,6 +284,7 @@ class TestPgModelArtifactStore:
                 group_id=None,
                 status="training",
                 artifact_path=str(artifact_path),
+                sha256_hash="",
                 training_period_start=_T0,
                 training_period_end=_T1,
                 trained_at=_T2,

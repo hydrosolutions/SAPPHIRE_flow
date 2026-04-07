@@ -474,6 +474,56 @@ class TestPgSkillStore:
         all_scores = store.fetch_latest_scores(sid, mid, parameter=None)
         assert all(r.freshness == SkillFreshness.STALE for r in all_scores)
 
+    def test_fetch_skill_scores_happy_path(self, db_connection: sa.Connection) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgSkillStore(db_connection)
+
+        s1 = _make_score(sid, mid, aid, metric="crps", lead_time_hours=24)
+        s2 = _make_score(sid, mid, aid, metric="bias", lead_time_hours=48)
+        store.store_skill_scores([s1, s2])
+
+        results = store.fetch_skill_scores(mid, aid)
+        assert len(results) == 2
+        ids = {r.id for r in results}
+        assert ids == {s1.id, s2.id}
+        assert all(r.model_id == mid for r in results)
+        assert all(r.model_artifact_id == aid for r in results)
+
+    def test_fetch_skill_scores_with_parameter_filter(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgSkillStore(db_connection)
+
+        discharge = _make_score(sid, mid, aid, parameter="discharge", metric="crps")
+        water_level = _make_score(sid, mid, aid, parameter="water_level", metric="crps")
+        store.store_skill_scores([discharge, water_level])
+
+        results = store.fetch_skill_scores(mid, aid, parameter="discharge")
+        assert len(results) == 1
+        assert results[0].parameter == "discharge"
+        assert results[0].id == discharge.id
+
+    def test_fetch_skill_scores_empty_when_no_match(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgSkillStore(db_connection)
+
+        other_aid = ArtifactId(uuid.uuid4())
+        score = _make_score(sid, mid, aid, metric="crps")
+        store.store_skill_scores([score])
+
+        # Different artifact_id — no match
+        results = store.fetch_skill_scores(mid, other_aid)
+        assert results == ()
+
     def test_store_diagrams_idempotent(self, db_connection: sa.Connection) -> None:
         sid = _seed_station(db_connection)
         mid = _seed_model(db_connection)

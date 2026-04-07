@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import replace
 from typing import Literal
 from uuid import UUID, uuid4
 
 import polars as pl
 
-from sapphire_flow.exceptions import ConflictError
+from sapphire_flow.exceptions import ArtifactIntegrityError, ConflictError
 from sapphire_flow.types.alert import Alert  # noqa: TC001
 from sapphire_flow.types.basin import Basin  # noqa: TC001
 from sapphire_flow.types.datetime import UtcDatetime  # noqa: TC001
@@ -69,6 +70,7 @@ from sapphire_flow.types.skill import (  # noqa: TC001
     SkillScore,
 )
 from sapphire_flow.types.station import (  # noqa: TC001
+    GroupModelAssignment,
     ModelAssignment,
     StationConfig,
     StationGroup,
@@ -475,6 +477,20 @@ class FakeSkillStore:
             and (parameter is None or s.parameter == parameter)
         ]
 
+    def fetch_skill_scores(
+        self,
+        model_id: ModelId,
+        model_artifact_id: ArtifactId,
+        parameter: str | None = None,
+    ) -> tuple[SkillScore, ...]:
+        return tuple(
+            s
+            for s in self._scores
+            if s.model_id == model_id
+            and s.model_artifact_id == model_artifact_id
+            and (parameter is None or s.parameter == parameter)
+        )
+
     def mark_stale(
         self,
         station_id: StationId,
@@ -513,15 +529,18 @@ class FakeModelArtifactStore:
         *,
         station_id: StationId | None = None,
         group_id: StationGroupId | None = None,
-    ) -> ArtifactId:
+        status: ModelArtifactStatus = ModelArtifactStatus.TRAINING,
+    ) -> tuple[ArtifactId, str]:
         aid = ArtifactId(uuid4())
+        sha256 = hashlib.sha256(artifact_bytes).hexdigest()
         record = ModelArtifactRecord(
             id=aid,
             model_id=model_id,
             station_id=station_id,
             group_id=group_id,
-            status=ModelArtifactStatus.TRAINING,
+            status=status,
             artifact_path=f"artifacts/{aid}.bin",
+            sha256_hash=sha256,
             training_period_start=training_period_start,
             training_period_end=training_period_end,
             trained_at=trained_at,
@@ -532,14 +551,22 @@ class FakeModelArtifactStore:
         )
         self._records[aid] = record
         self._bytes[aid] = artifact_bytes
-        return aid
+        return aid, sha256
 
     def fetch_artifact(
         self, artifact_id: ArtifactId
     ) -> tuple[ArtifactId, bytes] | None:
-        if artifact_id in self._bytes:
-            return (artifact_id, self._bytes[artifact_id])
-        return None
+        if artifact_id not in self._bytes:
+            return None
+        stored = self._bytes[artifact_id]
+        rec = self._records[artifact_id]
+        actual = hashlib.sha256(stored).hexdigest()
+        if actual != rec.sha256_hash:
+            raise ArtifactIntegrityError(
+                f"SHA-256 mismatch for artifact {artifact_id}: "
+                f"expected {rec.sha256_hash}, got {actual}"
+            )
+        return artifact_id, stored
 
     def fetch_active_artifact(
         self,
@@ -739,12 +766,17 @@ class FakeStationStore:
 class FakeStationGroupStore:
     def __init__(self) -> None:
         self._groups: dict[StationGroupId, StationGroup] = {}
-        self._group_model_assignments: dict[ModelId, set[StationGroupId]] = {}
+        self._group_model_assignments: dict[
+            tuple[StationGroupId, ModelId], GroupModelAssignment
+        ] = {}
 
     def seed_group_model_assignment(
-        self, group_id: StationGroupId, model_id: ModelId
+        self,
+        group_id: StationGroupId,
+        model_id: ModelId,
+        assignment: GroupModelAssignment,
     ) -> None:
-        self._group_model_assignments.setdefault(model_id, set()).add(group_id)
+        self._group_model_assignments[(group_id, model_id)] = assignment
 
     def store_group(self, group: StationGroup) -> None:
         self._groups[group.id] = group
@@ -759,8 +791,12 @@ class FakeStationGroupStore:
         return [g for g in self._groups.values() if station_id in g.station_ids]
 
     def fetch_groups_for_model(self, model_id: ModelId) -> list[StationGroup]:
-        assigned_ids = self._group_model_assignments.get(model_id, set())
-        return [g for g in self._groups.values() if g.id in assigned_ids]
+        assigned_group_ids = {
+            group_id
+            for (group_id, mid) in self._group_model_assignments
+            if mid == model_id
+        }
+        return [g for g in self._groups.values() if g.id in assigned_group_ids]
 
     def add_station_to_group(
         self, group_id: StationGroupId, station_id: StationId
@@ -773,6 +809,20 @@ class FakeStationGroupStore:
     ) -> None:
         g = self._groups[group_id]
         self._groups[group_id] = replace(g, station_ids=g.station_ids - {station_id})
+
+    def store_group_model_assignment(self, assignment: GroupModelAssignment) -> None:
+        key = (assignment.group_id, assignment.model_id)
+        self._group_model_assignments[key] = assignment
+
+    def fetch_group_model_assignments(
+        self,
+        group_id: StationGroupId,
+    ) -> tuple[GroupModelAssignment, ...]:
+        return tuple(
+            a
+            for (gid, _), a in self._group_model_assignments.items()
+            if gid == group_id
+        )
 
 
 class FakePipelineHealthStore:

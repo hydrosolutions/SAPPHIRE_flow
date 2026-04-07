@@ -23,6 +23,11 @@ class TrainingUnit:
     def __post_init__(self) -> None:
         if (self.station_id is None) == (self.group_id is None):
             raise ValueError("Exactly one of station_id or group_id must be set")
+        expected = frozenset({self.station_id}) if self.station_id is not None else None
+        if expected is not None and self.station_ids != expected:
+            raise ValueError("station-scoped: station_ids must equal {station_id}")
+        if self.group_id is not None and len(self.station_ids) == 0:
+            raise ValueError("group-scoped unit must have at least one station_id")
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

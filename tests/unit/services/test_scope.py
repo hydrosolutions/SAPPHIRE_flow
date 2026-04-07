@@ -12,7 +12,11 @@ from sapphire_flow.types.enums import (
 )
 from sapphire_flow.types.ids import ModelId, StationGroupId, StationId
 from sapphire_flow.types.model import ModelRecord
-from sapphire_flow.types.station import ModelAssignment, StationGroup
+from sapphire_flow.types.station import (
+    GroupModelAssignment,
+    ModelAssignment,
+    StationGroup,
+)
 from tests.conftest import make_station_config
 from tests.fakes.fake_stores import (
     FakeModelStore,
@@ -211,7 +215,18 @@ class TestGroupScoped:
         station_store = FakeStationStore()
         group_store = FakeStationGroupStore()
         group_store.store_group(group)
-        group_store.seed_group_model_assignment(gid, mid)
+        group_store.seed_group_model_assignment(
+            gid,
+            mid,
+            GroupModelAssignment(
+                group_id=gid,
+                model_id=mid,
+                time_step=_STEP,
+                status=ModelAssignmentStatus.ACTIVE,
+                priority=1,
+                created_at=_EPOCH,
+            ),
+        )
 
         scope = _call(model_store, station_store, group_store)
 
@@ -247,8 +262,30 @@ class TestGroupScoped:
         group_store = FakeStationGroupStore()
         group_store.store_group(g1)
         group_store.store_group(g2)
-        group_store.seed_group_model_assignment(g1_id, mid)
-        group_store.seed_group_model_assignment(g2_id, mid)
+        group_store.seed_group_model_assignment(
+            g1_id,
+            mid,
+            GroupModelAssignment(
+                group_id=g1_id,
+                model_id=mid,
+                time_step=_STEP,
+                status=ModelAssignmentStatus.ACTIVE,
+                priority=1,
+                created_at=_EPOCH,
+            ),
+        )
+        group_store.seed_group_model_assignment(
+            g2_id,
+            mid,
+            GroupModelAssignment(
+                group_id=g2_id,
+                model_id=mid,
+                time_step=_STEP,
+                status=ModelAssignmentStatus.ACTIVE,
+                priority=1,
+                created_at=_EPOCH,
+            ),
+        )
 
         scope = _call(model_store, station_store, group_store, group_ids=[g1_id])
 

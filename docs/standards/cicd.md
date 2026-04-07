@@ -32,7 +32,7 @@ One Dockerfile for `prefect-worker-ops`, `prefect-worker-hindcast`, `prefect-wor
 | Volume | Mount path | Used by | Purpose | Scope |
 |--------|-----------|---------|---------|-------|
 | `pg_data` | `/var/lib/postgresql/data` | postgres | PostgreSQL data directory | v0+v1 |
-| `model_artifacts` | `/data/artifacts` | prefect-worker-ops (ro), prefect-worker-hindcast (ro), prefect-worker-training (rw), api (ro) | Trained model files | v0+v1 |
+| `model_artifacts` | `/data/artifacts` | prefect-worker (rw) [v0], prefect-worker-ops (ro), prefect-worker-hindcast (ro), prefect-worker-training (rw), api (ro) | Trained model files | v0+v1 |
 | `cold_storage` | `/data/cold` | prefect-worker-ops (rw), prefect-worker-hindcast (ro), api (ro) | Parquet archive | **v1** (§A2) |
 | `prefect_data` | `/data/prefect` | prefect-server | Prefect server state | v0+v1 |
 
@@ -102,10 +102,12 @@ The `init` service runs before `api` and workers start:
 4. Run `alembic upgrade head` — creates all tables, indexes, constraints
 5. > **v1-only** (v0-scope.md §A1)
 Run `SELECT partman.run_maintenance_proc()` — creates initial partitions
-6. If `deployments` table is empty: run bootstrap import from `config.toml` (danger levels, season definitions, skill interpretation schemes)
+6. Load configuration from `config.toml`:
+   - **Deployment-level bootstrap** (danger levels, season definitions, skill interpretation schemes): only runs if `deployments` table is empty (first boot). Subsequent reruns skip this — deployment-level config is managed through the application after initial setup.
+   - **Station and threshold config**: upsert semantics — new entries are added, existing entries are updated if the config has changed, entries present in the database but absent from `config.toml` are left untouched (never deleted). This means re-running `init` after an upgrade will not overwrite station configurations, thresholds, or user accounts that were modified through the dashboard.
 7. Scan model entry points and populate `models` table
 
-Steps are idempotent — safe to rerun on container restart.
+Steps are idempotent — safe to rerun on container restart. Re-running `init` on an existing database is the expected path during upgrades (step 3 of the upgrade procedure).
 
 ### Upgrade procedure
 
@@ -126,11 +128,12 @@ All containers: `json-file` with `max-size: 50m`, `max-file: 5`. Set in `docker-
 
 ### Application logging
 
-See [`docs/standards/logging.md`](logging.md) for the full logging strategy: framework configuration, mandatory context fields, event naming taxonomy, log levels, and security constraints. Summary:
+See [`docs/standards/logging.md`](logging.md) for the full logging strategy: framework configuration, mandatory context fields (including `model_id` and `group_id` for Flow 13), event naming taxonomy, log levels, and security constraints. Summary:
 
 - Framework: `structlog` (JSON in prod, console in dev)
 - Logger per module: `structlog.get_logger(__name__)`
 - No `print()` — enforced by ruff rule `T201`
+- Prefect log level: `PREFECT_LOGGING_LEVEL=WARNING` in production (see `logging.md` § Prefect-specific settings for rationale)
 
 ### Caddy access logs
 

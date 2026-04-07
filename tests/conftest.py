@@ -49,6 +49,11 @@ if TYPE_CHECKING:
         RawHistoricalForcing,
     )
     from sapphire_flow.types.model import ModelArtifactRecord
+    from sapphire_flow.types.model_onboarding import (
+        CompatibilityReport,
+        OnboardingUnitResult,
+        SkillGateResult,
+    )
     from sapphire_flow.types.observation import Observation
     from sapphire_flow.types.station import StationConfig
     from sapphire_flow.types.training import TrainingUnit
@@ -374,6 +379,7 @@ def make_model_artifact_record(
         group_id=None,
         status=status,
         artifact_path="artifacts/test.bin",
+        sha256_hash="",
         training_period_start=_utc(2020, 1, 1),
         training_period_end=_utc(2024, 12, 31),
         trained_at=_EPOCH,
@@ -441,6 +447,79 @@ def make_training_unit(
         training_period_end=_EPOCH,
         time_step=timedelta(days=1),
     )
+
+
+def make_compatibility_report(
+    *,
+    model_id: ModelId | None = None,
+    station_id: StationId | None = None,
+    rng: random.Random | None = None,
+    **overrides: object,
+) -> CompatibilityReport:
+    from sapphire_flow.types.model_onboarding import CompatibilityReport
+
+    rng = rng or random.Random(_RNG_SEED)
+    defaults: dict[str, object] = {
+        "model_id": model_id or ModelId("test_model"),
+        "station_id": station_id or StationId(_uuid(rng)),
+        "group_id": None,
+        "protocol_conforms": True,
+        "missing_target_parameters": frozenset(),
+        "missing_past_dynamic": frozenset(),
+        "missing_future_dynamic": frozenset(),
+        "missing_static_features": frozenset(),
+        "time_step_compatible": True,
+    }
+    defaults.update(overrides)
+    return CompatibilityReport(**defaults)  # type: ignore[arg-type]
+
+
+def make_skill_gate_result(
+    *,
+    rng: random.Random | None = None,
+    **overrides: object,
+) -> SkillGateResult:
+    from sapphire_flow.types.model_onboarding import SkillGateResult
+
+    rng = rng or random.Random(_RNG_SEED)
+    defaults: dict[str, object] = {
+        "model_artifact_id": ArtifactId(_uuid(rng)),
+        "metric_scores": (("nse", 0.85), ("kge", 0.80)),
+        "thresholds": (("nse", 0.5, True), ("kge", 0.5, True)),
+        "failing_metrics": frozenset(),
+    }
+    defaults.update(overrides)
+    return SkillGateResult(**defaults)  # type: ignore[arg-type]
+
+
+def make_onboarding_unit_result(
+    *,
+    model_id: ModelId | None = None,
+    station_id: StationId | None = None,
+    rng: random.Random | None = None,
+    **overrides: object,
+) -> OnboardingUnitResult:
+    from sapphire_flow.types.enums import OnboardingOutcome
+    from sapphire_flow.types.model_onboarding import OnboardingUnitResult
+
+    rng = rng or random.Random(_RNG_SEED)
+    unit = make_training_unit(model_id=model_id, station_id=station_id, rng=rng)
+    compat = make_compatibility_report(
+        model_id=unit.model_id, station_id=unit.station_id, rng=rng
+    )
+    gate = make_skill_gate_result(rng=rng)
+    artifact_id = ArtifactId(_uuid(rng))
+    defaults: dict[str, object] = {
+        "unit": unit,
+        "outcome": OnboardingOutcome.PROMOTED,
+        "compatibility": compat,
+        "artifact_id": artifact_id,
+        "hindcast_steps": (),
+        "skill_gate": gate,
+        "error": None,
+    }
+    defaults.update(overrides)
+    return OnboardingUnitResult(**defaults)  # type: ignore[arg-type]
 
 
 def make_raw_historical_forcing(

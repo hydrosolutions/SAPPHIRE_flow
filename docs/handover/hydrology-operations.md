@@ -37,7 +37,7 @@ Triggered after each data delivery from the Sapphire Data Gateway, approximately
 4. Runs all assigned models for every operational station.
 5. Checks each ensemble against configured flood thresholds, computing exceedance probabilities.
 6. Raises, updates, or resolves alerts as thresholds are crossed.
-7. Optionally dispatches notifications (webhook, email, or SMS — see section 14, question 3).
+7. Optionally dispatches notifications (webhook, email, or SMS — see section 14, question 7).
 
 Target: all stations complete within 15 minutes per cycle.
 
@@ -86,7 +86,11 @@ Pipeline alerts go to the IT and operations team, not to flood forecasters. They
 
 **Snow data**: In addition to DHM-provided data, SAPPHIRE Flow ingests snow water equivalent (SWE) and snowmelt forecasts from SnowMapper via the Sapphire Data Gateway. This data is available as model input for snow-influenced catchments — snow observations will be ingested into the SnowMapper model directly, not into the forecast models. 
 
-**Station metadata minimum fields required for onboarding**: station code, name, geographic coordinates, station type (river/weather/lake), IANA timezone identifier (e.g. `Asia/Kathmandu`), list of parameters measured. Basin is implied by station identity (one station = one basin).
+**Station metadata minimum fields required for onboarding**: station code, name, geographic coordinates, station type (river/weather/lake), IANA timezone identifier (e.g. `Asia/Kathmandu`), list of parameters measured.
+
+**Basins and catchments**: Each gauging station is associated with its own catchment area — the specific drainage area upstream of that gauge. This is the unit used for weather forcing extraction and hydrological modelling. Multiple stations on the same river (e.g. Karnali at Benighat and Karnali at Chisapani) each have their own catchment and are modelled independently. A regional basin name (e.g. "Karnali") can optionally be stored for grouping and display purposes, but it does not affect the modelling — each station's forecast is based on its own catchment forcing.
+
+**Data transfer**: SAPPHIRE Flow polls DHM's existing data system (WISKI) via an agreed API to fetch real-time observations. DHM does not need to push data to a new endpoint — the existing telemetry infrastructure remains unchanged.
 
 ---
 
@@ -100,6 +104,13 @@ ECMWF IFS ENS provides 51 ensemble members at approximately 9 km resolution over
 
 Nepal's basins span 1,000–6,000 m elevation. A single basin-average temperature or precipitation value is inadequate — it destroys the elevation signal that controls snowmelt, rain-snow partitioning, and runoff timing. SAPPHIRE Flow divides each basin into elevation bands and extracts separate NWP values for each band. Temperature lapse-rate correction is applied across bands. This is the recommended starting approach; a gridded spatial input with a convolutional neural network front-end is a research extension if elevation bands prove insufficient.
 
+Elevation bands are defined in one of two ways:
+
+- **From shapefiles**: DHM uploads basin shapefiles with pre-defined elevation band polygons during station onboarding.
+- **Standard band widths**: If shapefiles are not available, bands can be specified using standard widths of 200, 500, 1000, or 2000 metres, derived automatically from a DEM.
+
+Models may declare which elevation band resolution they expect. The system validates that the configured bands for a station satisfy the model's requirements before training or forecasting.
+
 ### Model types
 
 | Model | Description | When used |
@@ -108,9 +119,18 @@ Nepal's basins span 1,000–6,000 m elevation. A single basin-average temperatur
 | LSTM neural network | Long short-term memory model trained on 1–5 years of history | Assigned after successful training; higher accuracy during monsoon and flood events |
 | Conceptual (HBV/airGR) | Process-based model with snow, soil moisture, groundwater stores | Supported by the architecture but not planned for the initial Nepal deployment. Possible future contribution from university students (e.g. TU bachelor/master thesis work) — quality cannot be guaranteed in that case. |
 
-The neural network model requires a warm-up period of historical weather data (typically 365 days) concatenated with the forecast to fill its memory window. For Nepal, this historical forcing will come from ERA5-Land reanalysis (a gap-free gridded archive from the European Centre for Medium-Range Weather Forecasts), consistent between training and operational use.
+Some models — particularly the LSTM neural network — require a warm-up period of historical weather data (typically 365 days) concatenated with the forecast to fill their memory window. The system supports model-declared warm-up requirements: each model specifies the length of historical context it needs, and the pipeline assembles the warm-up data automatically before each forecast cycle. For Nepal, warm-up forcing comes from ERA5-Land reanalysis (a gap-free gridded archive from the European Centre for Medium-Range Weather Forecasts).
 
-**Downscaling**: Both ERA5-Land reanalysis and ECMWF weather forecasts will be downscaled using DHM station observation data to improve local representativeness — particularly important in Nepal's complex terrain where coarse-resolution gridded products can have significant biases.
+Short gaps in the warm-up data (e.g. from delayed ERA5-Land updates) are interpolated automatically. If a gap exceeds the configurable maximum interpolation window, the forecast cycle for that station is skipped with a warning rather than producing a forecast from incomplete state.
+
+**Downscaling**: Both ERA5-Land reanalysis and ECMWF weather forecasts are downscaled using the same methods, ensuring consistency between training data and operational forcing. The downscaling approach is an active research area — several methods are being evaluated:
+
+- **Elevation-dependent downscaling** using DHM station observations (temperature, precipitation) to correct for local biases in coarse-resolution gridded products.
+- **Pressure level data** from ERA5/ECMWF may be used as additional forcing variables where surface-level fields are insufficient in complex terrain.
+- **Topographic downscaling** for temperature, building on SnowMapper's existing approach (Joel Fiddes' methodology).
+- **Precipitation**: downscaling follows established methods from the literature; no proprietary approach is applied.
+
+The key design constraint is that whatever downscaling is applied to ERA5-Land for training must also be applied identically to ECMWF forecasts for operational use. This prevents a systematic mismatch between the data the model learned from and the data it receives in production.
 
 **Future NWP sources**: The architecture supports adding new weather forecast sources. Once WARF (Weather and Research Forecasting) forecasts are mature enough for operational use in hydrological forecasting, SAPPHIRE can be configured to ingest them. Note that switching or adding a new weather forcing source requires retraining all ML models on the new data — models trained on ECMWF cannot be used directly with WARF forcing. This would depend on project status and resource availability at the time.
 
@@ -165,7 +185,7 @@ SAPPHIRE Flow includes a minimal forecast review dashboard. In the initial deplo
 
 - **Viewing** model outputs, ensemble spread, and alert status
 - **Changing forecast status** (raw → published) — the minimum step needed before bulletin production
-- **Alert management** (if SAPPHIRE handles alerting — see section 14, question 3): list active alerts, acknowledge alerts, view resolution status
+- **Alert management** (if SAPPHIRE handles alerting — see section 14, question 7): list active alerts, acknowledge alerts, view resolution status
 
 Forecast value editing (shift, scale, cap, floor adjustments with audit trail) is not included in the initial deployment and is planned for a later phase.
 
@@ -175,7 +195,7 @@ We understand DHM has developed its own forecast dashboard. If DHM's dashboard c
 
 ### Alert timing
 
-Threshold checks run on raw forecasts immediately after each model cycle. Whether SAPPHIRE sends alert notifications directly or DHM handles alerting from their own systems is an open question (see section 14, question 3).
+Threshold checks run on raw forecasts immediately after each model cycle. Whether SAPPHIRE sends alert notifications directly or DHM handles alerting from their own systems is an open question (see section 14, question 7).
 
 ---
 
@@ -220,7 +240,7 @@ raised ──→ acknowledged ──→ resolved
 - **Acknowledged**: an operator has noted the alert; suppresses repeat notifications.
 - **Resolved**: probability or value has fallen back below the resolve threshold for the required duration; auto-resolved by the system.
 
-### Notifications (open question — see section 14, question 3)
+### Notifications (open question — see section 14, question 7)
 
 Whether SAPPHIRE sends notifications directly or DHM handles alert distribution from their own systems is an open question. Three channels are technically available:
 
@@ -301,7 +321,7 @@ Key points for DHM operations:
 
 - Each station holds a versioned history of rating curves with valid-from dates.
 - When a curve is updated (e.g. after a major flood that shifts channel geometry), the new curve is uploaded and becomes active from its valid date. Historical observations are not retroactively recalculated with the new curve — the version used at the time is recorded permanently on each derived value.
-- If water level exceeds the maximum calibrated point of the curve (extrapolation), the derived discharge value is flagged as extrapolated rather than rejected. Flood-peak values are retained with their flag — they are operationally important even when uncertain.
+- If water level exceeds the maximum calibrated point of the curve (extrapolation), the derived discharge value is flagged as extrapolated rather than rejected. The flag includes the extrapolation magnitude — how far beyond the maximum calibrated point the value lies (as a percentage). This distinguishes minor extrapolation (5% beyond the curve) from extreme extrapolation (100%+ beyond), which are very different operational situations. Flood-peak values are retained with their flag — they are operationally important even when uncertain.
 - Updated curves should be uploaded at the start of each season or after major channel surveys. DHM hydromet operations staff will have access to the upload interface.
 
 ---
@@ -386,7 +406,41 @@ Questions are grouped by urgency. Numbered for point-by-point response.
 
 These questions need confirmed answers early, as the answers influence architectural decisions that are costly to change later.
 
-**1. Water level first — confirmation**
+**1. Flood threshold system — which is authoritative?**
+
+We understand that Nepal uses two separate threshold systems: the official MoHA warning levels (normal, alert, danger, extreme — four levels) and internal DHM operational monitoring thresholds. SAPPHIRE needs to implement one authoritative set. Questions:
+
+- Which threshold system should SAPPHIRE use — the MoHA official levels, the internal DHM operational thresholds, or both (with clear labelling)?
+- When an external consumer (DRRMA, Bipad, hydropower operators) sees a "danger" alert from the SAPPHIRE API, should that correspond to the official MoHA level or to DHM's internal operational level?
+
+*Why we are asking*: The threshold values, the number of levels, and the semantic meaning of each level affect the alert schema design. Mixing two systems without clear labelling creates confusion during flood events.
+
+**2. Seasonal thresholds**
+
+Our initial plan is to use thresholds that are valid year-round (same values for monsoon and dry season). However, we are aware that during monsoon season, baseline flows are elevated at many stations, which could cause persistent low-level alerts that do not represent actual flood risk.
+
+Does DHM require seasonally varying thresholds (e.g. different values for June–September vs. October–May)? If yes, how many seasonal periods, and are the seasonal threshold values already defined?
+
+*Why we are asking*: Year-round thresholds are simpler and our preferred starting point. If seasonal variation is required, the threshold schema needs a validity period — a design decision that should be made before implementation. We will verify during the AWS testing phase whether year-round thresholds produce acceptable alert behaviour for Nepal's stations.
+
+**3. QC-suppressed observation alerts**
+
+During a real flood event, station sensors are often submerged, fouled, or reading erratically — exactly when real-time data matters most. If the observation QC flags a value as `qc_failed`, the observation-based alert check is suppressed (the system will not raise an alert based on a value it considers invalid).
+
+Should SAPPHIRE notify the forecaster when an observation-based alert check was suppressed due to QC failure? This would be a distinct notification: "Station X observation exceeded the danger threshold but was QC-failed — review the raw value manually." Without this, the forecaster might assume a station is safe when in fact the sensor was simply malfunctioning.
+
+*Why we are asking*: This requires a "suppressed alert" state or notification type in the alert pipeline. If DHM wants this, it needs to be designed into the alert system.
+
+**4. Degraded forecast quality flagging**
+
+If key input data is missing or stale (e.g. an upstream station goes offline, ERA5-Land is delayed, or the warm-up data has large interpolated gaps), the model can still produce a forecast, but its quality is degraded. Should SAPPHIRE:
+
+- Flag each forecast with a confidence/quality indicator (e.g. "full data", "partial data — upstream station X missing", "degraded — warm-up data interpolated")?
+- Notify the forecaster when a forecast was produced under degraded conditions?
+
+*Why we are asking*: A quality/confidence field in the forecast output schema must be designed in. If DHM does not need this, we can simplify the schema. If they do, we need it before implementation.
+
+**5. Water level first — confirmation**
 
 Our plan for the initial deployment is to forecast water level directly and add discharge conversion as a follow-up. Water level is more directly observable and avoids compounding uncertainty from rating curve errors.
 
@@ -394,7 +448,7 @@ Is water-level-only forecasting operationally acceptable for DHM's flood warning
 
 Do we have any information about which cross-sections are immutable (e.g. major river stations) versus which are more likely to have rating curve updates after major floods? 
 
-**2. Forecast frequency during flood events**
+**6. Forecast frequency during flood events**
 
 The Sapphire Data Gateway delivers weather and snow forecasts every six hours (following the ECMWF cycle). Our standard schedule runs one forecast cycle after each delivery.
 
@@ -402,7 +456,7 @@ During active flood events, does DHM need more frequent forecast updates — for
 
 *Why we are asking*: More frequent updates are possible in principle but require additional engineering work. If this is a firm requirement for the initial deployment, we need to design for it now.
 
-**3. Alerting — scope and notification channels**
+**7. Alerting — scope and notification channels**
 
 SAPPHIRE Flow computes threshold exceedances and raises alerts internally. The question is how those alerts reach people. Three notification channels are available:
 
@@ -424,31 +478,30 @@ We need to clarify:
 
 These questions are important but do not block system design. They can be addressed while the system is running on AWS for validation.
 
-**4. Flood threshold definitions**
+**8. Flood threshold definitions**
 
 How are flood thresholds defined at DHM?
 
 - Units: water level (m) or discharge (m³/s)?
 - Reference datum: metres above sea level, metres above gauge zero, or other?
-- Are thresholds constant year-round, or do they vary seasonally?
 - How many stations currently have defined thresholds?
 - Are thresholds available via API or only as a spreadsheet?
 
 *Context*: Thresholds must be in the same units and datum as the forecast variable. The system is designed to accept thresholds in any format — this question determines configuration, not architecture.
 
-**5. Alert timing (if SAPPHIRE sends alerts)**
+**9. Alert timing (if SAPPHIRE sends alerts)**
 
-If DHM does want SAPPHIRE to send notifications directly (see question 3):
+If DHM does want SAPPHIRE to send notifications directly (see question 7):
 
 - Should alerts go out immediately on raw model output, only after forecaster review, or both (preliminary + confirmed)?
 
-**6. Retroactive observation corrections**
+**10. Retroactive observation corrections**
 
 Does DHM retroactively correct observation values in their source database after initial transmission? If so, how frequently (daily, weekly, rarely)?
 
 *Context*: The system currently treats each transmission as final. If DHM does apply retroactive corrections, we can add correction detection — this is an adapter-level change, not an architectural one.
 
-**7. Flood threshold format**
+**11. Flood threshold format**
 
 For flood thresholds: will these be available via the same API as station metadata, or provided as CSV/spreadsheet?
 

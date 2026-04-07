@@ -214,3 +214,16 @@ class ForcingProvenance(Enum):
     REANALYSIS = "reanalysis"
     DERIVED = "derived"
     UNKNOWN = "unknown"
+
+
+class OnboardingOutcome(Enum):
+    PROMOTED = "promoted"
+    GATE_REJECTED = "gate_rejected"
+    SKIPPED_COMPAT = "skipped_compat"
+    SKIPPED_NO_DATA = "skipped_no_data"
+    SKIPPED_INSUFFICIENT_EVAL = "skipped_insufficient_eval"
+    FAILED_SMOKE_TEST = "failed_smoke_test"
+    FAILED_TRAINING = "failed_training"
+    FAILED_HINDCAST = "failed_hindcast"
+    FAILED_SKILL = "failed_skill"
+    FAILED_ASSIGNMENT = "failed_assignment"

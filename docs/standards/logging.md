@@ -171,6 +171,8 @@ Ruff rule `T201` bans `print()` — no exceptions.
 | Field | Bound at | Description |
 |---|---|---|
 | `parameter` | `bind_contextvars(parameter=...)` in `compute_skills_task` | The forecast parameter being scored (e.g., `discharge`, `water_level`). Not mandatory globally — most flows operate on a single implicit parameter. |
+| `model_id` | `bind_contextvars(model_id=str(model_id))` at flow entry in `onboard_model_flow` | Model being onboarded. Bound for the duration of the flow run so all per-unit events include it automatically. |
+| `group_id` | `bound_contextvars(group_id=str(group_id))` in per-unit loop (group-scoped units) | Station group being processed. Scoped to the per-unit iteration. |
 
 ## Context binding protocol
 
@@ -221,6 +223,25 @@ Examples:
 | `station` | `onboarding_started`, `status_changed` |
 | `pipeline` | `health_check_completed` |
 | `request` | `started`, `completed` |
+
+### Canonical model onboarding events (Flow 13)
+
+All `*_completed` / `*_failed` events include `duration_ms`. Fast sub-steps (compatibility, smoke test, skill gate) emit only `_completed`/`_failed` — `_started` omitted since these complete in <1s.
+
+| Event | Level | Notes |
+|---|---|---|
+| `model.onboarding_started` | INFO | Flow entry; bind `model_id` at this point |
+| `model.onboarding_unit_started` | INFO | Per-unit; with `station_id` (station-scoped) or `group_id` (group-scoped) |
+| `model.onboarding_unit_completed` | INFO | Per-unit timing summary |
+| `model.compatibility_completed` | INFO | Expected outcome; include `is_compatible` field |
+| `model.compatibility_failed` | INFO | Expected per-unit skip (incompatible station) — not an error condition |
+| `model.smoke_test_completed` | INFO | Function returned normally |
+| `model.smoke_test_failed` | ERROR | Unexpected exception; use `error=str(exc)` — not `passed=False` |
+| `model.skill_gate_completed` | INFO if `passed=True`, WARNING if `passed=False` | Include `passed`, `failing_metrics` |
+| `model.skill_gate_failed` | ERROR | Unexpected exception during gate evaluation; use `error=str(exc)` |
+| `model.promotion_completed` | INFO | Artifact transitioned TRAINING → ACTIVE |
+| `model.assignment_skipped_inactive` | WARNING | Operator deliberately disabled this model for station/group |
+| `model.onboarding_completed` | INFO | Flow exit; include `promoted_count`, `failed_count`, `skipped_count` |
 
 Rules:
 

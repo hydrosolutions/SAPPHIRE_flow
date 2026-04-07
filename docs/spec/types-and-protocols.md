@@ -292,6 +292,8 @@ class OnboardingOutcome(Enum):                           # in-memory only, no DB
     GATE_REJECTED = "gate_rejected"
     SKIPPED_COMPAT = "skipped_compat"
     SKIPPED_NO_DATA = "skipped_no_data"
+    SKIPPED_INSUFFICIENT_EVAL = "skipped_insufficient_eval"  # zero strata with >= min_skill_samples valid pairs
+    FAILED_SMOKE_TEST = "failed_smoke_test"              # model raised exception on random-data predict() call
     FAILED_TRAINING = "failed_training"
     FAILED_HINDCAST = "failed_hindcast"
     FAILED_SKILL = "failed_skill"
@@ -1103,9 +1105,10 @@ class GroupModelInputs:
 (Utf8) prepended as the first column. Column order: `station_id`, `timestamp`, then parameter
 columns with companion provenance columns. For `static`: `station_id`, then attribute columns
 (no timestamp). `parameter_columns(df)` excludes both `timestamp` and `station_id`.
-`stack_model_inputs()` (in `types/model.py`) constructs `GroupModelInputs` from
-`dict[StationId, ModelInputs]` by splitting forcing on `issue_time` into `past_dynamic`
-(≤ issue_time) / `future_dynamic` (> issue_time) and mapping observations to `past_targets`.
+**P9 target state**: `stack_model_inputs()` (in `types/model.py`) currently constructs
+`GroupModelInputs` from `dict[StationId, ModelInputs]` — the old pre-P9 input type.
+In P9 this function will be removed or replaced: `GroupModelInputs` will be assembled
+directly from `dict[StationId, StationModelInputs]` (the renamed input container).
 
 ### StationTrainingData / GroupTrainingData
 
@@ -1237,6 +1240,7 @@ class ModelArtifactRecord:
     group_id: StationGroupId | None    # non-null for group-scoped models
     status: ModelArtifactStatus
     artifact_path: str                 # relative path to serialized artifact file
+    sha256_hash: str                   # hex digest of artifact bytes (OWASP A08 integrity control)
     training_period_start: UtcDatetime
     training_period_end: UtcDatetime
     trained_at: UtcDatetime
@@ -1550,12 +1554,18 @@ Result types for Flow 13 model onboarding.
 @dataclass(frozen=True, kw_only=True, slots=True)
 class CompatibilityReport:
     model_id: ModelId
+    station_id: StationId | None        # non-null for station-scoped compatibility checks
+    group_id: StationGroupId | None     # non-null for group-scoped compatibility checks
     protocol_conforms: bool
     missing_target_parameters: frozenset[str]   # params station needs but model can't provide
     missing_past_dynamic: frozenset[str]         # features model needs but station lacks
     missing_future_dynamic: frozenset[str]
     missing_static_features: frozenset[str]
     time_step_compatible: bool
+
+    def __post_init__(self) -> None:
+        if (self.station_id is None) == (self.group_id is None):
+            raise ValueError("Exactly one of station_id or group_id must be set")
 
     @property
     def is_compatible(self) -> bool:
@@ -1607,6 +1617,7 @@ class OnboardingUnitResult:
 
 
 ONBOARDING_FAILED_OUTCOMES = frozenset({
+    OnboardingOutcome.FAILED_SMOKE_TEST,
     OnboardingOutcome.FAILED_TRAINING,
     OnboardingOutcome.FAILED_HINDCAST,
     OnboardingOutcome.FAILED_SKILL,
@@ -1615,6 +1626,7 @@ ONBOARDING_FAILED_OUTCOMES = frozenset({
 ONBOARDING_SKIPPED_OUTCOMES = frozenset({
     OnboardingOutcome.SKIPPED_COMPAT,
     OnboardingOutcome.SKIPPED_NO_DATA,
+    OnboardingOutcome.SKIPPED_INSUFFICIENT_EVAL,
 })
 
 
@@ -1688,6 +1700,14 @@ class AdapterError(SapphireError):
 class ConfigurationError(SapphireError):
     """Invalid or missing configuration.
     Startup-level handling: fail fast with clear message."""
+
+class ModelSmokeTestError(SapphireError):
+    """Model raised an exception during smoke test (predict() on random-shaped data).
+    Flow 13 handling: unit outcome = FAILED_SMOKE_TEST; remaining units continue."""
+
+class ArtifactIntegrityError(SapphireError):
+    """SHA-256 hash of fetched artifact bytes does not match stored hash.
+    Flow-level handling: do not deserialize; raise to trigger task failure."""
 ```
 
 #### ObservationStore
@@ -1866,6 +1886,16 @@ class SkillStore(Protocol):
         flow_regime: FlowRegime,
         parameter: str | None = None,
     ) -> list[SkillScore]: ...
+    def fetch_skill_scores(
+        self,
+        model_id: ModelId,
+        model_artifact_id: ArtifactId,
+        parameter: str | None = None,  # None = all parameters
+    ) -> list[SkillScore]: ...
+        # Artifact-scoped query — returns all skill scores for a specific artifact.
+        # Distinct from fetch_latest_scores (station-scoped by computation_version) and
+        # fetch_scores_by_regime (station + regime scoped). Used by Flow 13 skill gate
+        # to evaluate scores produced for the just-trained artifact.
     def mark_stale(
         self,
         station_id: StationId,
@@ -1893,8 +1923,10 @@ class ModelArtifactStore(Protocol):
         *,
         station_id: StationId | None = None,   # for station-scoped models
         group_id: StationGroupId | None = None, # for group-scoped models
+        status: ModelArtifactStatus = ModelArtifactStatus.TRAINING,  # explicit default; callers may pass TRAINING
     ) -> ArtifactId: ...
         # Exactly one of station_id or group_id must be provided.
+        # Computes and stores sha256_hash from artifact_bytes.
     def fetch_artifact(self, artifact_id: ArtifactId) -> tuple[ArtifactId, bytes] | None: ...
     def fetch_active_artifact(
         self,
@@ -2331,6 +2363,10 @@ class DeploymentConfig(BaseModel):
 
     # --- Model onboarding ---
     skill_gate_thresholds: dict[str, float] = {}  # metric_name → minimum value; empty = pass-through (auto-promote)
+    available_nwp_parameters: frozenset[str] = frozenset({"precipitation", "temperature"})
+        # NWP parameters available in this deployment's NWP source. Used by model
+        # onboarding compatibility check (M.2) to validate future_dynamic_features.
+        # v0 default: ICON-CH2-EPS provides precipitation and temperature.
 
     # --- NWP lateness ---
     nwp_max_wait_hours: float = 3.0            # max wait for expected NWP delivery
