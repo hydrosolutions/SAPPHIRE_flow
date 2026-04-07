@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from sapphire_flow.types.historical_forcing import RawHistoricalForcing
+from sapphire_flow.types.ids import StationId
 
 if TYPE_CHECKING:
     from sapphire_flow.protocols.stores import HistoricalForcingStore
@@ -38,7 +39,7 @@ class StoreBackedReanalysisSource:
             )
             results.extend(
                 RawHistoricalForcing(
-                    station_id=r.station_id,
+                    station_id=StationId(str(r.station_id)),
                     source=r.source,
                     version=r.version,
                     valid_time=r.valid_time,
