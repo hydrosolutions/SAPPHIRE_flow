@@ -246,7 +246,7 @@ def main() -> int:
             deployment_config = (
                 load_config(config_path)
                 if config_path
-                else DeploymentConfig(max_retention_days=365)
+                else DeploymentConfig(max_retention_days=730)
             )
 
             result = onboard_from_camelsch(
