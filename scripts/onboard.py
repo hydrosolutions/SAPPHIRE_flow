@@ -89,6 +89,9 @@ def _print_result(result) -> None:  # type: ignore[no-untyped-def]
     print(f"QC suspect:        {result.observations_qc_suspect:,}")
     print(f"Baselines:         {result.baselines_computed:,}")
     print(f"Flow regimes:      {result.flow_regimes_computed:,}")
+    print(f"Model assignments: {result.model_assignments_created:,}")
+    print(f"Models trained:    {result.models_trained:,}")
+    print(f"Stations operational: {result.stations_marked_operational:,}")
     print(f"Errors:            {len(result.errors):,}")
 
 
@@ -220,6 +223,29 @@ def main() -> int:
             baseline_store = PgClimBaselineStore(conn)
             flow_regime_store = PgFlowRegimeConfigStore(conn)
 
+            # Model infrastructure for steps 6-8
+            from sapphire_flow.adapters.store_backed_reanalysis import (
+                StoreBackedReanalysisSource,
+            )
+            from sapphire_flow.config.deployment import DeploymentConfig, load_config
+            from sapphire_flow.store.hindcast_store import PgHindcastStore
+            from sapphire_flow.store.model_artifact_store import PgModelArtifactStore
+            from sapphire_flow.store.model_store import PgModelStore
+            from sapphire_flow.store.skill_store import PgSkillStore
+            from sapphire_flow.store.station_group_store import PgStationGroupStore
+
+            model_store = PgModelStore(conn)
+            artifact_store = PgModelArtifactStore(conn)
+            group_store = PgStationGroupStore(conn)
+            hindcast_store = PgHindcastStore(conn)
+            skill_store = PgSkillStore(conn)
+            forcing_source = StoreBackedReanalysisSource(forcing_store)
+
+            config_path = os.environ.get("SAPPHIRE_CONFIG")
+            deployment_config = (
+                load_config(config_path) if config_path else DeploymentConfig()
+            )
+
             result = onboard_from_camelsch(
                 data_dir=data_dir,
                 basin_store=basin_store,
@@ -233,6 +259,13 @@ def main() -> int:
                 basin_ids=basin_ids,
                 start_date=start_date,
                 end_date=end_date,
+                model_store=model_store,
+                artifact_store=artifact_store,
+                group_store=group_store,
+                hindcast_store=hindcast_store,
+                skill_store=skill_store,
+                forcing_source=forcing_source,
+                deployment_config=deployment_config,
             )
     except Exception as exc:
         log.error("onboarding_failed", error=str(exc))

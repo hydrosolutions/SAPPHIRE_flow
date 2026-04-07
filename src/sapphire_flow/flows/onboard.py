@@ -110,6 +110,22 @@ def onboard_stations_flow(
         hindcast_store = stores["hindcast_store"]
         skill_store = stores["skill_store"]
 
+    # Build store-backed forcing source for training (CAMELS-CH data)
+    if forcing_source is None and forcing_store is not None:
+        from sapphire_flow.adapters.store_backed_reanalysis import (
+            StoreBackedReanalysisSource,
+        )
+
+        forcing_source = StoreBackedReanalysisSource(forcing_store)
+
+    # Load deployment config for skill gate thresholds (production path only)
+    if deployment_config is None and forcing_source is not None:
+        config_path = os.environ.get("SAPPHIRE_CONFIG")
+        if config_path is not None:
+            from sapphire_flow.config.deployment import load_config
+
+            deployment_config = load_config(config_path)
+
     if qc_rules is None:
         qc_rules = _load_qc_rules()
 
@@ -156,6 +172,9 @@ def onboard_stations_flow(
         observations_qc_suspect=result.observations_qc_suspect,
         baselines_computed=result.baselines_computed,
         flow_regimes_computed=result.flow_regimes_computed,
+        model_assignments_created=result.model_assignments_created,
+        models_trained=result.models_trained,
+        stations_marked_operational=result.stations_marked_operational,
         errors=len(result.errors),
     )
 
