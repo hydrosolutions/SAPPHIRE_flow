@@ -244,7 +244,9 @@ def main() -> int:
 
             config_path = os.environ.get("SAPPHIRE_CONFIG")
             deployment_config = (
-                load_config(config_path) if config_path else DeploymentConfig()
+                load_config(config_path)
+                if config_path
+                else DeploymentConfig(max_retention_days=365)
             )
 
             result = onboard_from_camelsch(
