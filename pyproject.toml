@@ -1,6 +1,6 @@
 [project]
 name = "sapphire-flow"
-version = "0.1.160"
+version = "0.1.161"
 description = "Add your description here"
 readme = "README.md"
 license = "MIT"
@@ -13,12 +13,14 @@ dependencies = [
     "camelsch>=0.2.0",
     "forecastinterface",
     "geoalchemy2>=0.18.4",
+    "numpy>=2.4.3",
     "orjson",
     "platformdirs>=4.0",
     "polars",
     "prefect>=3.0",
     "psycopg[binary]>=3.3.3",
     "pydantic>=2.12.5",
+    "scikit-learn>=1.8.0",
     "shapely",
     "sqlalchemy>=2.0",
     "structlog>=24.1.0",
@@ -56,7 +58,7 @@ select = ["E", "F", "I", "N", "UP", "B", "A", "SIM", "TCH", "T20"]
 testpaths = ["tests"]
 
 [tool.bumpversion]
-current_version = "0.1.160"
+current_version = "0.1.161"
 commit = false
 tag = false
 allow_dirty = true
@@ -70,6 +72,9 @@ replace = 'version = "{new_version}"'
 filename = "src/sapphire_flow/__init__.py"
 search = '__version__ = "{current_version}"'
 replace = '__version__ = "{new_version}"'
+
+[project.entry-points."sapphire_flow.models"]
+linear_regression_daily = "sapphire_flow.models.linear_regression_daily:LinearRegressionDaily"
 
 [tool.uv.sources]
 forecastinterface = { path = "../ForecastInterface", editable = true }
