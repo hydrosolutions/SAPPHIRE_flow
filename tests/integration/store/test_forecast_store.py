@@ -65,6 +65,7 @@ def _seed_artifact(
             group_id=None,
             status="active",
             artifact_path="artifacts/test.bin",
+            sha256_hash="",
             training_period_start=ensure_utc(datetime(2020, 1, 1, tzinfo=UTC)),
             training_period_end=ensure_utc(datetime(2024, 12, 31, tzinfo=UTC)),
             trained_at=_NOW,

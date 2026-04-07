@@ -67,6 +67,7 @@ def _seed_artifact(
             group_id=None,
             status="active",
             artifact_path=f"artifacts/{aid}.bin",
+            sha256_hash="",
             training_period_start=_T0,
             training_period_end=_T1,
             trained_at=_T1,
