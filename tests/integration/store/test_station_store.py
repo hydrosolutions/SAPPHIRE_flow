@@ -14,6 +14,7 @@ from sapphire_flow.types.enums import (
     SpatialRepresentation,
     StationKind,
     StationOwnership,
+    StationStatus,
     ThresholdSource,
     WeatherSourceStatus,
 )
@@ -464,3 +465,44 @@ class TestStoreAndFetchWeatherSource:
         )
         store.store_station(station)
         assert store.fetch_weather_sources(station.id) == []
+
+
+class TestUpdateStationStatus:
+    def test_transitions_onboarding_to_operational(
+        self, db_connection: sa.Connection
+    ) -> None:
+        store = PgStationStore(db_connection)
+        station = make_station_config(
+            station_id=StationId(uuid.uuid4()),
+            code="UPD-001",
+            network="bafu",
+            station_status=StationStatus.ONBOARDING,
+        )
+        store.store_station(station)
+
+        store.update_station_status(station.id, StationStatus.OPERATIONAL)
+
+        fetched = store.fetch_station(station.id)
+        assert fetched is not None
+        assert fetched.station_status == StationStatus.OPERATIONAL
+
+    def test_transition_is_idempotent(self, db_connection: sa.Connection) -> None:
+        store = PgStationStore(db_connection)
+        station = make_station_config(
+            station_id=StationId(uuid.uuid4()),
+            code="UPD-002",
+            network="bafu",
+            station_status=StationStatus.OPERATIONAL,
+        )
+        store.store_station(station)
+
+        store.update_station_status(station.id, StationStatus.OPERATIONAL)
+
+        fetched = store.fetch_station(station.id)
+        assert fetched is not None
+        assert fetched.station_status == StationStatus.OPERATIONAL
+
+    def test_update_missing_station_is_noop(self, db_connection: sa.Connection) -> None:
+        store = PgStationStore(db_connection)
+        # Should not raise — missing station is silently ignored
+        store.update_station_status(StationId(uuid.uuid4()), StationStatus.OPERATIONAL)

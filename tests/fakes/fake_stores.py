@@ -31,6 +31,7 @@ from sapphire_flow.types.enums import (
     SkillSource,
     StationKind,
     StationOwnership,
+    StationStatus,
 )
 from sapphire_flow.types.forecast import (  # noqa: TC001
     ForecastAdjustment,
@@ -761,6 +762,13 @@ class FakeStationStore:
             )
         ]
         self._weather_sources.append(source)
+
+    def update_station_status(
+        self, station_id: StationId, new_status: StationStatus
+    ) -> None:
+        station = self._stations.get(station_id)
+        if station is not None:
+            self._stations[station_id] = replace(station, station_status=new_status)
 
 
 class FakeStationGroupStore:

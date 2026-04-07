@@ -1,22 +1,39 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 from uuid import uuid4
 
 from sapphire_flow.services.onboarding import _run_onboarding
 from sapphire_flow.types.basin import Basin
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.domain import QcRuleParams, QcRuleSet
-from sapphire_flow.types.enums import ObservationSource, QcStatus, StationKind
-from sapphire_flow.types.ids import BasinId, StationId
+from sapphire_flow.types.enums import (
+    ModelArtifactStatus,
+    ObservationSource,
+    QcStatus,
+    StationKind,
+    StationStatus,
+)
+from sapphire_flow.types.ids import BasinId, ModelId, StationId
 from sapphire_flow.types.observation import RawObservation
-from tests.conftest import make_raw_historical_forcing, make_station_config
+from tests.conftest import (
+    make_deployment_config,
+    make_raw_historical_forcing,
+    make_station_config,
+)
+from tests.fakes.fake_adapters import FakeWeatherReanalysisSource
 from tests.fakes.fake_stores import (
     FakeBasinStore,
     FakeClimBaselineStore,
     FakeFlowRegimeConfigStore,
+    FakeHindcastStore,
     FakeHistoricalForcingStore,
+    FakeModelArtifactStore,
+    FakeModelStore,
     FakeObservationStore,
+    FakeSkillStore,
+    FakeStationGroupStore,
     FakeStationStore,
 )
 
@@ -128,6 +145,18 @@ class _Stores:
         self.forcing = FakeHistoricalForcingStore()
         self.baseline = FakeClimBaselineStore()
         self.regime = FakeFlowRegimeConfigStore()
+        self.model: FakeModelStore | None = None
+        self.artifact: FakeModelArtifactStore | None = None
+        self.group: FakeStationGroupStore | None = None
+        self.hindcast: FakeHindcastStore | None = None
+        self.skill: FakeSkillStore | None = None
+
+    def wire_model_stores(self) -> None:
+        self.model = FakeModelStore()
+        self.group = FakeStationGroupStore()
+        self.artifact = FakeModelArtifactStore(group_store=self.group)
+        self.hindcast = FakeHindcastStore()
+        self.skill = FakeSkillStore()
 
 
 def _run(
@@ -139,6 +168,8 @@ def _run(
     *,
     start_utc: UtcDatetime = _START,
     end_utc: UtcDatetime = _END,
+    forcing_source: object = None,
+    deployment_config: object = None,
 ):
     return _run_onboarding(
         stations=stations,
@@ -155,6 +186,13 @@ def _run(
         clock=_fixed_clock,
         start_utc=start_utc,
         end_utc=end_utc,
+        model_store=s.model,
+        artifact_store=s.artifact,
+        group_store=s.group,
+        hindcast_store=s.hindcast,
+        skill_store=s.skill,
+        forcing_source=forcing_source,  # type: ignore[arg-type]
+        deployment_config=deployment_config,  # type: ignore[arg-type]
     )
 
 
@@ -379,3 +417,193 @@ class TestLakeStationOnboarding:
         regime = s.regime.fetch_latest(sid, "water_level")
         assert regime is not None
         assert regime.station_id == sid
+
+
+_FAKE_MODEL_ID = ModelId("fake_station_model")
+
+
+class TestOnboardingSteps6Through8:
+    def test_steps6_8_skipped_when_model_store_none(self) -> None:
+        sid = StationId(uuid4())
+        station = make_station_config(station_id=sid, code="S001")
+        basin = _make_basin("S001")
+        s = _Stores()
+
+        result = _run(
+            s,
+            stations=[station],
+            basins=[basin],
+            obs_by_station={sid: _make_raw_obs(sid, 10)},
+            forcing_by_station={sid: _make_forcing(sid, 10)},
+        )
+
+        assert result.model_assignments_created == 0
+        assert result.models_trained == 0
+        assert result.stations_marked_operational == 0
+        assert result.errors == []
+
+    def test_weather_stations_marked_operational(self) -> None:
+        sid = StationId(uuid4())
+        station = make_station_config(
+            station_id=sid,
+            code="W001",
+            station_kind=StationKind.WEATHER,
+            network="meteoswiss",
+            forecast_targets=None,
+            measured_parameters=frozenset({"temperature"}),
+        )
+        basin = _make_basin("W001")
+        s = _Stores()
+        s.wire_model_stores()
+
+        with patch(
+            "sapphire_flow.services.model_registry.discover_models",
+            return_value={},
+        ):
+            result = _run(
+                s,
+                stations=[station],
+                basins=[basin],
+                obs_by_station={},
+                forcing_by_station={},
+                forcing_source=FakeWeatherReanalysisSource(),
+                deployment_config=make_deployment_config(),
+            )
+
+        assert result.stations_marked_operational == 1
+        assert result.model_assignments_created == 0
+        assert result.models_trained == 0
+        fetched = s.station.fetch_station(sid)
+        assert fetched is not None
+        assert fetched.station_status == StationStatus.OPERATIONAL
+
+    def test_no_models_registered_no_errors(self) -> None:
+        sid = StationId(uuid4())
+        station = make_station_config(station_id=sid, code="NM001")
+        basin = _make_basin("NM001")
+        s = _Stores()
+        s.wire_model_stores()
+
+        with patch(
+            "sapphire_flow.services.model_registry.discover_models",
+            return_value={},
+        ):
+            result = _run(
+                s,
+                stations=[station],
+                basins=[basin],
+                obs_by_station={sid: _make_raw_obs(sid, 10)},
+                forcing_by_station={sid: _make_forcing(sid, 10)},
+                forcing_source=FakeWeatherReanalysisSource(),
+                deployment_config=make_deployment_config(),
+            )
+
+        assert result.model_assignments_created == 0
+        assert result.models_trained == 0
+        assert result.errors == []
+        # Non-weather station without any active artifact stays non-operational
+        assert result.stations_marked_operational == 0
+
+    def test_station_scoped_model_assigned_and_trained(self) -> None:
+        from sapphire_flow.types.enums import SpatialRepresentation, WeatherSourceStatus
+        from sapphire_flow.types.station import StationWeatherSource
+        from tests.fakes.fake_models import FakeStationForecastModel
+
+        sid = StationId(uuid4())
+        station = make_station_config(station_id=sid, code="TR001")
+        basin = _make_basin("TR001")
+        s = _Stores()
+        s.wire_model_stores()
+        assert s.model is not None
+
+        # Seed weather source so training_data can proceed
+        weather_source = StationWeatherSource(
+            station_id=sid,
+            nwp_source="camels_ch",
+            extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+            status=WeatherSourceStatus.ACTIVE,
+        )
+        s.station.store_weather_source(weather_source)
+
+        # Build reanalysis forcing with required parameters for the training window
+        reanalysis_records = [
+            make_raw_historical_forcing(
+                station_id=sid,
+                parameter=param,
+                valid_time=datetime.fromtimestamp(
+                    _START.timestamp() + i * 86400, tz=UTC
+                ),
+                value=float(i % 10),
+            )
+            for i in range(400)
+            for param in ("precipitation", "temperature")
+        ]
+        forcing_source = FakeWeatherReanalysisSource(records=reanalysis_records)
+
+        fake_model = FakeStationForecastModel()
+        discovered = {_FAKE_MODEL_ID: fake_model}
+
+        with patch(
+            "sapphire_flow.services.model_registry.discover_models",
+            return_value=discovered,
+        ):
+            result = _run(
+                s,
+                stations=[station],
+                basins=[basin],
+                obs_by_station={sid: _make_raw_obs(sid, 400)},
+                forcing_by_station={sid: _make_forcing(sid, 10)},
+                forcing_source=forcing_source,
+                deployment_config=make_deployment_config(),
+            )
+
+        assert result.model_assignments_created >= 1
+        assignments = s.station.fetch_model_assignments(sid)
+        assert any(a.model_id == _FAKE_MODEL_ID for a in assignments)
+
+        assert result.models_trained >= 1
+        active = s.artifact.fetch_artifacts_by_status(  # type: ignore[union-attr]
+            model_id=_FAKE_MODEL_ID,
+            status=ModelArtifactStatus.ACTIVE,
+            station_id=sid,
+        )
+        assert len(active) >= 1
+
+        assert result.stations_marked_operational == 1
+        fetched = s.station.fetch_station(sid)
+        assert fetched is not None
+        assert fetched.station_status == StationStatus.OPERATIONAL
+
+    def test_station_stays_onboarding_without_active_artifact(self) -> None:
+
+        sid = StationId(uuid4())
+        station = make_station_config(
+            station_id=sid,
+            code="NOART001",
+            station_status=StationStatus.ONBOARDING,
+        )
+        basin = _make_basin("NOART001")
+        s = _Stores()
+        s.wire_model_stores()
+
+        # Wire model stores but do NOT patch discover_models — empty registry
+        # means step 6 creates no assignments and step 7 trains nothing.
+        with patch(
+            "sapphire_flow.services.model_registry.discover_models",
+            return_value={},
+        ):
+            result = _run(
+                s,
+                stations=[station],
+                basins=[basin],
+                obs_by_station={sid: _make_raw_obs(sid, 10)},
+                forcing_by_station={sid: _make_forcing(sid, 10)},
+                forcing_source=FakeWeatherReanalysisSource(),
+                deployment_config=make_deployment_config(),
+            )
+
+        assert result.stations_marked_operational == 0
+        fetched = s.station.fetch_station(sid)
+        assert fetched is not None
+        # Status should not have been promoted (still whatever it was stored as)
+        assert fetched.station_status != StationStatus.OPERATIONAL

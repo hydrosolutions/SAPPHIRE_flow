@@ -38,6 +38,7 @@ if TYPE_CHECKING:
         SkillSource,
         StationKind,
         StationOwnership,
+        StationStatus,
     )
     from sapphire_flow.types.forecast import (
         ForecastAdjustment,
@@ -481,6 +482,10 @@ class StationStore(Protocol):
 
     def store_weather_source(self, source: StationWeatherSource) -> None:
         raise NotImplementedError
+
+    def update_station_status(
+        self, station_id: StationId, new_status: StationStatus
+    ) -> None: ...
 
 
 @runtime_checkable

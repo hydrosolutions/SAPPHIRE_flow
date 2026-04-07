@@ -17,3 +17,6 @@ class OnboardingResult:
     baselines_computed: int
     flow_regimes_computed: int
     errors: list[str]
+    model_assignments_created: int = 0
+    models_trained: int = 0
+    stations_marked_operational: int = 0

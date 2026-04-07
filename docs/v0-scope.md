@@ -457,7 +457,7 @@ Phase 3: Adapters (production + replay)                           ├─ paralle
 Phase 3b: Record reference test dataset from public APIs          │
 Phase 4: Services (QC, threshold, alert, skill, forecast input)  ─┘
           │
-Phase 5: Station onboarding (simplified)           ─┐ ✓ partial (steps 1–5)
+Phase 5: Station onboarding (simplified)           ─┐ ✓ done
 Phase 6: Observation ingest (Flow 2)               ├─ parallel
 Phase 7: Model framework + training                │  ✓ done
 Phase 7b: Model onboarding (Flow 13) + sample model─┤  ✓ done

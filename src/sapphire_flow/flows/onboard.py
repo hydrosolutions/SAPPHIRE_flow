@@ -76,6 +76,13 @@ def onboard_stations_flow(
     forcing_store: object = None,
     baseline_store: object = None,
     flow_regime_store: object = None,
+    model_store: object = None,
+    artifact_store: object = None,
+    group_store: object = None,
+    hindcast_store: object = None,
+    skill_store: object = None,
+    forcing_source: object = None,
+    deployment_config: object = None,
     qc_rules: object = None,
     clock: object = None,
 ) -> object:
@@ -97,6 +104,11 @@ def onboard_stations_flow(
         forcing_store = stores["forcing_store"]
         baseline_store = stores["baseline_store"]
         flow_regime_store = stores["flow_regime_store"]
+        model_store = stores["model_store"]
+        artifact_store = stores["artifact_store"]
+        group_store = stores["group_store"]
+        hindcast_store = stores["hindcast_store"]
+        skill_store = stores["skill_store"]
 
     if qc_rules is None:
         qc_rules = _load_qc_rules()
@@ -122,6 +134,13 @@ def onboard_stations_flow(
         basin_ids=basin_ids,
         start_date=start_date,
         end_date=end_date,
+        model_store=model_store,
+        artifact_store=artifact_store,
+        group_store=group_store,
+        hindcast_store=hindcast_store,
+        skill_store=skill_store,
+        forcing_source=forcing_source,
+        deployment_config=deployment_config,
     )
 
     log.info(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random as _random
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -11,19 +12,32 @@ from sapphire_flow.services.flow_regime import compute_flow_regime
 from sapphire_flow.services.qc import Stage1QualityChecker
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.domain import aggregate_qc_status
-from sapphire_flow.types.enums import QcStatus
+from sapphire_flow.types.enums import (
+    ArtifactScope,
+    ModelArtifactStatus,
+    QcStatus,
+    StationKind,
+    StationStatus,
+)
 from sapphire_flow.types.onboarding import OnboardingResult
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
+    from sapphire_flow.config.deployment import DeploymentConfig
+    from sapphire_flow.protocols.adapters import WeatherReanalysisSource
     from sapphire_flow.protocols.stores import (
         BasinStore,
         ClimBaselineStore,
         FlowRegimeConfigStore,
+        HindcastStore,
         HistoricalForcingStore,
+        ModelArtifactStore,
+        ModelStore,
         ObservationStore,
+        SkillStore,
+        StationGroupStore,
         StationStore,
     )
     from sapphire_flow.types.basin import Basin
@@ -55,6 +69,13 @@ def _run_onboarding(
     clock: Callable[[], UtcDatetime],
     start_utc: UtcDatetime,
     end_utc: UtcDatetime,
+    model_store: ModelStore | None = None,
+    artifact_store: ModelArtifactStore | None = None,
+    group_store: StationGroupStore | None = None,
+    hindcast_store: HindcastStore | None = None,
+    skill_store: SkillStore | None = None,
+    forcing_source: WeatherReanalysisSource | None = None,
+    deployment_config: DeploymentConfig | None = None,
 ) -> OnboardingResult:
     errors: list[str] = []
     stations_created = 0
@@ -68,6 +89,9 @@ def _run_onboarding(
     observations_qc_suspect = 0
     baselines_computed = 0
     flow_regimes_computed = 0
+    model_assignments_created = 0
+    models_trained = 0
+    stations_marked_operational = 0
 
     # Build basin lookup by code for cross-referencing stations
     basin_code_to_id = {b.code: b.id for b in basins}
@@ -192,7 +216,7 @@ def _run_onboarding(
             log.error("qc_error", station_id=str(station_id), error=str(exc))
             errors.append(msg)
 
-    # Step 6: Compute climatological baselines (per station's target parameter)
+    # Step 5b: Compute climatological baselines (per station's target parameter)
     for station_id in resolved_station_ids:
         parameter = station_target.get(station_id)
         if parameter is None:
@@ -221,7 +245,7 @@ def _run_onboarding(
             log.error("baseline_error", station_id=str(station_id), error=str(exc))
             errors.append(msg)
 
-    # Step 7: Compute flow regimes (per station's target parameter)
+    # Step 5c: Compute flow regimes (per station's target parameter)
     for station_id in resolved_station_ids:
         parameter = station_target.get(station_id)
         if parameter is None:
@@ -249,6 +273,162 @@ def _run_onboarding(
             log.error("flow_regime_error", station_id=str(station_id), error=str(exc))
             errors.append(msg)
 
+    # Step 6: Configure model assignments
+    # Skipped if model infrastructure not wired
+    discovered: dict = {}
+    if model_store is not None:
+        from sapphire_flow.services.model_onboarding import create_station_assignment
+        from sapphire_flow.services.model_registry import discover_models
+
+        discovered = discover_models()
+        for station_id in resolved_station_ids:
+            station = station_store.fetch_station(station_id)
+            if station is None or station.station_kind == StationKind.WEATHER:
+                continue
+            for model_id, model in discovered.items():
+                if model.artifact_scope == ArtifactScope.GROUP:
+                    continue
+                try:
+                    time_step = next(iter(model.data_requirements.supported_time_steps))
+                    create_station_assignment(
+                        station_id=station_id,
+                        model_id=model_id,
+                        time_step=time_step,
+                        priority=0,
+                        station_store=station_store,
+                        clock=clock,
+                    )
+                    model_assignments_created += 1
+                except Exception as exc:
+                    errors.append(
+                        f"Model assignment failed for {station_id}/{model_id}: {exc}"
+                    )
+                    log.error(
+                        "onboarding.assignment_error",
+                        station_id=str(station_id),
+                        error=str(exc),
+                    )
+
+    # Step 7: Trigger training via onboard_model service
+    # Skipped if artifact_store or forcing_source is None
+    if (
+        model_store is not None
+        and artifact_store is not None
+        and group_store is not None
+        and hindcast_store is not None
+        and skill_store is not None
+        and forcing_source is not None
+        and deployment_config is not None
+    ):
+        from sapphire_flow.services.model_onboarding import (
+            determine_onboarding_scope,
+            onboard_model,
+        )
+
+        if not discovered:
+            from sapphire_flow.services.model_registry import discover_models
+
+            discovered = discover_models()
+
+        non_weather_ids = frozenset(
+            sid
+            for sid in resolved_station_ids
+            if (s := station_store.fetch_station(sid)) is not None
+            and s.station_kind != StationKind.WEATHER
+        )
+        for model_id, model in discovered.items():
+            if model.artifact_scope == ArtifactScope.GROUP:
+                continue
+            if not non_weather_ids:
+                continue
+            try:
+                time_step = next(iter(model.data_requirements.supported_time_steps))
+                units = determine_onboarding_scope(
+                    model_id=model_id,
+                    model=model,
+                    station_ids=non_weather_ids,
+                    group_ids=None,
+                    station_store=station_store,
+                    group_store=group_store,
+                    training_period_start=start_utc,
+                    training_period_end=end_utc,
+                    time_step=time_step,
+                )
+                result_mo = onboard_model(
+                    model_id=model_id,
+                    model=model,
+                    units=units,
+                    model_store=model_store,
+                    station_store=station_store,
+                    group_store=group_store,
+                    artifact_store=artifact_store,
+                    obs_store=obs_store,
+                    basin_store=basin_store,
+                    hindcast_store=hindcast_store,
+                    skill_store=skill_store,
+                    flow_regime_store=flow_regime_store,
+                    forcing_source=forcing_source,
+                    config=deployment_config,
+                    clock=clock,
+                    rng=_random.Random(42),
+                )
+                models_trained += result_mo.promoted_count()
+            except Exception as exc:
+                errors.append(f"Training failed for model {model_id}: {exc}")
+                log.error(
+                    "onboarding.training_error",
+                    model_id=str(model_id),
+                    error=str(exc),
+                )
+
+    # Step 8: Mark stations operational
+    # Weather stations: operational after QC (steps 1-5 complete)
+    # Non-weather: operational if ≥1 ACTIVE model artifact exists
+    for station_id in resolved_station_ids:
+        station = station_store.fetch_station(station_id)
+        if station is None:
+            continue
+        if station.station_kind == StationKind.WEATHER:
+            try:
+                station_store.update_station_status(
+                    station_id, StationStatus.OPERATIONAL
+                )
+                stations_marked_operational += 1
+            except Exception as exc:
+                errors.append(
+                    f"Failed to mark weather station {station_id} operational: {exc}"
+                )
+        elif artifact_store is not None:
+            has_active = any(
+                len(
+                    artifact_store.fetch_artifacts_by_status(
+                        model_id=mid,
+                        status=ModelArtifactStatus.ACTIVE,
+                        station_id=station_id,
+                    )
+                )
+                > 0
+                for mid in discovered
+            )
+            if has_active:
+                try:
+                    station_store.update_station_status(
+                        station_id, StationStatus.OPERATIONAL
+                    )
+                    stations_marked_operational += 1
+                    log.info(
+                        "onboarding.station_operational", station_id=str(station_id)
+                    )
+                except Exception as exc:
+                    errors.append(
+                        f"Failed to mark station {station_id} operational: {exc}"
+                    )
+            else:
+                log.warning(
+                    "onboarding.station_no_active_artifact",
+                    station_id=str(station_id),
+                )
+
     return OnboardingResult(
         stations_created=stations_created,
         stations_skipped=stations_skipped,
@@ -262,6 +442,9 @@ def _run_onboarding(
         baselines_computed=baselines_computed,
         flow_regimes_computed=flow_regimes_computed,
         errors=errors,
+        model_assignments_created=model_assignments_created,
+        models_trained=models_trained,
+        stations_marked_operational=stations_marked_operational,
     )
 
 
@@ -278,6 +461,13 @@ def onboard_from_camelsch(
     basin_ids: list[str] | None = None,
     start_date: str | None = None,
     end_date: str | None = None,
+    model_store: ModelStore | None = None,
+    artifact_store: ModelArtifactStore | None = None,
+    group_store: StationGroupStore | None = None,
+    hindcast_store: HindcastStore | None = None,
+    skill_store: SkillStore | None = None,
+    forcing_source: WeatherReanalysisSource | None = None,
+    deployment_config: DeploymentConfig | None = None,
 ) -> OnboardingResult:
     from sapphire_flow.adapters.camelsch_adapter import (
         load_forcing,
@@ -328,6 +518,13 @@ def onboard_from_camelsch(
         clock=clock,
         start_utc=start_utc,
         end_utc=end_utc,
+        model_store=model_store,
+        artifact_store=artifact_store,
+        group_store=group_store,
+        hindcast_store=hindcast_store,
+        skill_store=skill_store,
+        forcing_source=forcing_source,
+        deployment_config=deployment_config,
     )
 
     log.info(

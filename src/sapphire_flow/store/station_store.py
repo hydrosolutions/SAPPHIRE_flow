@@ -226,6 +226,15 @@ class PgStationStore:
         )
         self._conn.execute(stmt)
 
+    def update_station_status(
+        self, station_id: StationId, new_status: StationStatus
+    ) -> None:
+        self._conn.execute(
+            sa.update(stations)
+            .where(stations.c.id == station_id)
+            .values(station_status=new_status.value)
+        )
+
 
 def _row_to_station(row: sa.engine.row.RowMapping) -> StationConfig:
     basin_raw = row["basin_id"]

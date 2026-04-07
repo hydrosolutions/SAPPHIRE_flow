@@ -28,8 +28,13 @@ def make_pg_stores(conn: sa.Connection) -> dict[str, object]:
     from sapphire_flow.store.basin_store import PgBasinStore
     from sapphire_flow.store.clim_baseline_store import PgClimBaselineStore
     from sapphire_flow.store.flow_regime_config_store import PgFlowRegimeConfigStore
+    from sapphire_flow.store.hindcast_store import PgHindcastStore
     from sapphire_flow.store.historical_forcing_store import PgHistoricalForcingStore
+    from sapphire_flow.store.model_artifact_store import PgModelArtifactStore
+    from sapphire_flow.store.model_store import PgModelStore
     from sapphire_flow.store.observation_store import PgObservationStore
+    from sapphire_flow.store.skill_store import PgSkillStore
+    from sapphire_flow.store.station_group_store import PgStationGroupStore
     from sapphire_flow.store.station_store import PgStationStore
 
     return {
@@ -39,4 +44,9 @@ def make_pg_stores(conn: sa.Connection) -> dict[str, object]:
         "forcing_store": PgHistoricalForcingStore(conn),
         "baseline_store": PgClimBaselineStore(conn),
         "flow_regime_store": PgFlowRegimeConfigStore(conn),
+        "model_store": PgModelStore(conn),
+        "artifact_store": PgModelArtifactStore(conn),
+        "group_store": PgStationGroupStore(conn),
+        "hindcast_store": PgHindcastStore(conn),
+        "skill_store": PgSkillStore(conn),
     }
