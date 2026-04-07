@@ -252,9 +252,12 @@ def smoke_test_model(model: ForecastModel, rng: random.Random) -> None:
     rng.seed(seed)
 
     try:
+        # Enough rows for lookback + horizon + margin
+        n_rows = max(req.lookback_steps * 3, 50)
+
         if model.artifact_scope == ArtifactScope.GROUP:
             assert isinstance(model, GroupForecastModel)
-            data = _make_synthetic_group_training_data(req, rng)
+            data = _make_synthetic_group_training_data(req, rng, n_rows=n_rows)
             artifact = model.train(data, {}, rng)
             raw_bytes = model.serialize_artifact(artifact)
             reloaded = model.deserialize_artifact(raw_bytes)
@@ -271,7 +274,9 @@ def smoke_test_model(model: ForecastModel, rng: random.Random) -> None:
                 future_dynamic=data.future_dynamic,
                 static=data.static,
                 issue_time=_utc_now(),
-                forecast_horizon_steps=5,
+                forecast_horizon_steps=min(
+                    req.lookback_steps, len(data.future_dynamic)
+                ),
                 time_step=time_step,
             )
             results = model.predict_batch(reloaded, inputs, rng)
@@ -279,7 +284,7 @@ def smoke_test_model(model: ForecastModel, rng: random.Random) -> None:
                 _validate_ensemble_dict(ensembles, req.target_parameters)
         else:
             assert isinstance(model, StationForecastModel)
-            data = _make_synthetic_station_training_data(req, rng)
+            data = _make_synthetic_station_training_data(req, rng, n_rows=n_rows)
             artifact = model.train(data, {}, rng)
             raw_bytes = model.serialize_artifact(artifact)
             reloaded = model.deserialize_artifact(raw_bytes)
@@ -296,7 +301,9 @@ def smoke_test_model(model: ForecastModel, rng: random.Random) -> None:
                     static=data.static,
                 ),
                 issue_time=_utc_now(),
-                forecast_horizon_steps=5,
+                forecast_horizon_steps=min(
+                    req.lookback_steps, len(data.future_dynamic)
+                ),
                 time_step=time_step,
             )
             ensembles, _ = model.predict(reloaded, inputs, rng)
