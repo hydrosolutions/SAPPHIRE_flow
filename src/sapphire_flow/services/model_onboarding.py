@@ -567,6 +567,7 @@ def onboard_model(
     assignment_priority: int = 0,
     run_hindcast_fn: Callable[..., list] | None = None,
     compute_skill_fn: Callable[..., None] | None = None,
+    skip_smoke_test: bool = False,
 ) -> ModelOnboardingResult:
     from sapphire_flow.services.training import (
         promote_artifact,
@@ -644,35 +645,47 @@ def onboard_model(
             is_compatible=True,
         )
 
-        # Step 1b: Smoke test
-        try:
-            smoke_test_model(model, rng)
+        # Step 1b: Smoke test (skipped when called from station onboarding)
+        smoke_failed = False
+        if skip_smoke_test:
             log.info(
-                "model.smoke_test_completed",
+                "model.smoke_test_skipped",
                 model_id=str(model_id),
                 station_id=sid_str,
                 group_id=gid_str,
-                passed=True,
             )
-        except ModelSmokeTestError as exc:
-            log.error(
-                "model.smoke_test_failed",
-                model_id=str(model_id),
-                station_id=sid_str,
-                group_id=gid_str,
-                error=str(exc),
-            )
-            unit_results.append(
-                OnboardingUnitResult(
-                    unit=unit,
-                    outcome=OnboardingOutcome.FAILED_SMOKE_TEST,
-                    compatibility=compat,
-                    artifact_id=None,
-                    hindcast_steps=(),
-                    skill_gate=None,
+        else:
+            try:
+                smoke_test_model(model, rng)
+                log.info(
+                    "model.smoke_test_completed",
+                    model_id=str(model_id),
+                    station_id=sid_str,
+                    group_id=gid_str,
+                    passed=True,
+                )
+            except ModelSmokeTestError as exc:
+                log.error(
+                    "model.smoke_test_failed",
+                    model_id=str(model_id),
+                    station_id=sid_str,
+                    group_id=gid_str,
                     error=str(exc),
                 )
-            )
+                smoke_failed = True
+                unit_results.append(
+                    OnboardingUnitResult(
+                        unit=unit,
+                        outcome=OnboardingOutcome.FAILED_SMOKE_TEST,
+                        compatibility=compat,
+                        artifact_id=None,
+                        hindcast_steps=(),
+                        skill_gate=None,
+                        error=str(exc),
+                    )
+                )
+                continue
+        if smoke_failed:
             continue
 
         # Step 2: Assemble training data

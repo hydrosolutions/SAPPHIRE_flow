@@ -376,6 +376,7 @@ def _run_onboarding(
                     config=deployment_config,
                     clock=clock,
                     rng=_random.Random(42),
+                    skip_smoke_test=True,
                 )
                 models_trained += result_mo.promoted_count()
             except Exception as exc:
