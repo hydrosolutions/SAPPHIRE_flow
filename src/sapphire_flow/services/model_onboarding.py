@@ -158,7 +158,8 @@ def validate_compatibility_for_unit(
 def _make_synthetic_station_training_data(
     req: ModelDataRequirements,
     rng: random.Random,
-    n_rows: int = 10,
+    n_past_rows: int = 50,
+    n_future_rows: int = 10,
 ) -> StationTrainingData:
     from datetime import datetime
 
@@ -166,17 +167,24 @@ def _make_synthetic_station_training_data(
 
     time_step = next(iter(req.supported_time_steps))
     base = datetime(2000, 1, 1, tzinfo=UTC)
-    timestamps = [base + i * time_step for i in range(n_rows)]
+    past_ts = [base + i * time_step for i in range(n_past_rows)]
+    future_ts = [base + (n_past_rows + i) * time_step for i in range(n_future_rows)]
 
-    def _rand_df(cols: frozenset[str]) -> pl.DataFrame:
-        data: dict[str, object] = {"timestamp": timestamps}
-        for col in cols:
-            data[col] = [max(0.0, rng.gauss(1.0, 0.5)) for _ in range(n_rows)]
-        return pl.DataFrame(data)
+    def _rand_col(n: int) -> list[float]:
+        return [max(0.0, rng.gauss(1.0, 0.5)) for _ in range(n)]
 
-    past_targets = _rand_df(req.target_parameters)
-    past_dynamic = _rand_df(req.past_dynamic_features)
-    future_dynamic = _rand_df(req.future_dynamic_features)
+    past_targets = pl.DataFrame(
+        {"timestamp": past_ts}
+        | {col: _rand_col(n_past_rows) for col in req.target_parameters}
+    )
+    past_dynamic = pl.DataFrame(
+        {"timestamp": past_ts}
+        | {col: _rand_col(n_past_rows) for col in req.past_dynamic_features}
+    )
+    future_dynamic = pl.DataFrame(
+        {"timestamp": future_ts}
+        | {col: _rand_col(n_future_rows) for col in req.future_dynamic_features}
+    )
     static: pl.DataFrame | None = None
     if req.static_features:
         static = pl.DataFrame({col: [rng.random()] for col in req.static_features})
@@ -195,7 +203,8 @@ def _make_synthetic_group_training_data(
     req: ModelDataRequirements,
     rng: random.Random,
     n_stations: int = 3,
-    n_rows: int = 10,
+    n_past_rows: int = 50,
+    n_future_rows: int = 10,
 ) -> GroupTrainingData:
     from datetime import datetime
 
@@ -204,10 +213,14 @@ def _make_synthetic_group_training_data(
 
     time_step = next(iter(req.supported_time_steps))
     base = datetime(2000, 1, 1, tzinfo=UTC)
-    timestamps = [base + i * time_step for i in range(n_rows)]
+    past_ts = [base + i * time_step for i in range(n_past_rows)]
+    future_ts = [base + (n_past_rows + i) * time_step for i in range(n_future_rows)]
     station_ids = tuple(StationId(f"synthetic_{i}") for i in range(n_stations))
 
-    def _stacked_df(cols: frozenset[str]) -> pl.DataFrame:
+    def _stacked_df(
+        cols: frozenset[str],
+        timestamps: list,
+    ) -> pl.DataFrame:
         rows: list[dict] = []
         for sid in station_ids:
             for ts in timestamps:
@@ -230,9 +243,9 @@ def _make_synthetic_group_training_data(
     return GroupTrainingData(
         group_id=StationGroupId("synthetic_group"),
         station_ids=station_ids,
-        past_targets=_stacked_df(req.target_parameters),
-        past_dynamic=_stacked_df(req.past_dynamic_features),
-        future_dynamic=_stacked_df(req.future_dynamic_features),
+        past_targets=_stacked_df(req.target_parameters, past_ts),
+        past_dynamic=_stacked_df(req.past_dynamic_features, past_ts),
+        future_dynamic=_stacked_df(req.future_dynamic_features, future_ts),
         static=static,
         time_step=time_step,
         val_start=None,
@@ -252,12 +265,16 @@ def smoke_test_model(model: ForecastModel, rng: random.Random) -> None:
     rng.seed(seed)
 
     try:
-        # Enough rows for lookback + horizon + margin
-        n_rows = max(req.lookback_steps * 3, 50)
+        # Past needs lookback + horizon rows; future IS the horizon.
+        smoke_horizon = max(req.lookback_steps, 10)
+        n_past = req.lookback_steps + smoke_horizon + 10
+        n_future = smoke_horizon
 
         if model.artifact_scope == ArtifactScope.GROUP:
             assert isinstance(model, GroupForecastModel)
-            data = _make_synthetic_group_training_data(req, rng, n_rows=n_rows)
+            data = _make_synthetic_group_training_data(
+                req, rng, n_past_rows=n_past, n_future_rows=n_future
+            )
             artifact = model.train(data, {}, rng)
             raw_bytes = model.serialize_artifact(artifact)
             reloaded = model.deserialize_artifact(raw_bytes)
@@ -284,7 +301,9 @@ def smoke_test_model(model: ForecastModel, rng: random.Random) -> None:
                 _validate_ensemble_dict(ensembles, req.target_parameters)
         else:
             assert isinstance(model, StationForecastModel)
-            data = _make_synthetic_station_training_data(req, rng, n_rows=n_rows)
+            data = _make_synthetic_station_training_data(
+                req, rng, n_past_rows=n_past, n_future_rows=n_future
+            )
             artifact = model.train(data, {}, rng)
             raw_bytes = model.serialize_artifact(artifact)
             reloaded = model.deserialize_artifact(raw_bytes)
