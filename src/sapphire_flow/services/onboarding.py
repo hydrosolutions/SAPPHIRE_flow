@@ -56,6 +56,128 @@ _WIDE_START = ensure_utc(datetime(1980, 1, 1, tzinfo=UTC))
 _WIDE_END = ensure_utc(datetime(2030, 1, 1, tzinfo=UTC))
 
 
+def _make_hindcast_fn():  # type: ignore[no-untyped-def]
+    """Build the hindcast callback for onboard_model()."""
+    from uuid import uuid4
+
+    from sapphire_flow.services.hindcast import run_station_hindcast
+
+    def _run_hindcast(
+        *,
+        unit,
+        model,
+        artifact_id,
+        artifact_store,
+        obs_store,
+        hindcast_store,
+        forcing_source,
+        station_store,
+        basin_store,
+        clock,
+        rng,
+    ):  # type: ignore[no-untyped-def]
+        result = artifact_store.fetch_artifact(artifact_id)
+        if result is None:
+            return []
+        _, artifact_bytes = result
+        artifact = model.deserialize_artifact(artifact_bytes)
+        return run_station_hindcast(
+            model=model,
+            artifact=artifact,
+            station_id=unit.station_id,
+            model_id=unit.model_id,
+            artifact_id=artifact_id,
+            period_start=unit.training_period_start,
+            period_end=unit.training_period_end,
+            time_step=unit.time_step,
+            forcing_source=forcing_source,
+            obs_store=obs_store,
+            hindcast_store=hindcast_store,
+            station_store=station_store,
+            basin_store=basin_store,
+            clock=clock,
+            rng=rng,
+            hindcast_run_id=uuid4(),
+        )
+
+    return _run_hindcast
+
+
+def _make_skill_fn():  # type: ignore[no-untyped-def]
+    """Build the skill computation callback for onboard_model()."""
+    from uuid import uuid4
+
+    from sapphire_flow.services.skill.service import compute_skill_for_station
+    from sapphire_flow.types.enums import ForcingType
+
+    def _compute_skill(
+        *,
+        unit,
+        model_id,
+        artifact_id,
+        hindcast_store,
+        obs_store,
+        skill_store,
+        flow_regime_store,
+        config,
+    ):  # type: ignore[no-untyped-def]
+        station_id = unit.station_id
+        if station_id is None:
+            return  # group-scoped: skip for now
+
+        # Fetch hindcasts for this station/model over training period
+        hindcasts = hindcast_store.fetch_hindcasts(
+            station_id=station_id,
+            model_id=model_id,
+            start=unit.training_period_start,
+            end=unit.training_period_end,
+        )
+        if not hindcasts:
+            return
+
+        # Fetch observations for the training period
+        from sapphire_flow.types.enums import QcStatus
+
+        observations = obs_store.fetch_observations(
+            station_id=station_id,
+            parameter="discharge",
+            start=unit.training_period_start,
+            end=unit.training_period_end,
+            qc_status=QcStatus.QC_PASSED,
+        )
+
+        # Fetch thresholds and flow regime
+        thresholds = []  # no thresholds in v0 onboarding
+        flow_regime = flow_regime_store.fetch_latest(
+            station_id=station_id,
+            parameter="discharge",
+        )
+
+        from sapphire_flow.types.enums import SkillSource
+
+        scores, diagrams = compute_skill_for_station(
+            station_id=station_id,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            hindcasts=hindcasts,
+            observations=observations,
+            thresholds=thresholds,
+            flow_regime_config=flow_regime,
+            seasons=[],
+            skill_source=SkillSource.HINDCAST,
+            forcing_type=ForcingType.REANALYSIS,
+            clock=lambda: ensure_utc(datetime.now(UTC)),
+            uuid_factory=uuid4,
+            parameter="discharge",
+        )
+        if scores:
+            skill_store.store_skill_scores(scores)
+        if diagrams:
+            skill_store.store_skill_diagrams(diagrams)
+
+    return _compute_skill
+
+
 def _run_onboarding(
     stations: list[StationConfig],
     basins: list[Basin],
@@ -401,6 +523,8 @@ def _run_onboarding(
                     clock=clock,
                     rng=_random.Random(42),
                     skip_smoke_test=True,
+                    run_hindcast_fn=_make_hindcast_fn(),
+                    compute_skill_fn=_make_skill_fn(),
                 )
                 models_trained += result_mo.promoted_count()
             except Exception as exc:
