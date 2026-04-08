@@ -215,7 +215,8 @@ class TestOnboardFlowWithFakes:
             )
 
         assert result.stations_created == 0
-        assert result.stations_skipped == 1
+        assert result.stations_updated == 1
+        assert result.stations_skipped == 0
         assert result.errors == []
 
 

@@ -163,6 +163,7 @@ def onboard_stations_flow(
         "onboarding_flow_complete",
         stations_created=result.stations_created,
         stations_skipped=result.stations_skipped,
+        stations_updated=result.stations_updated,
         basins_created=result.basins_created,
         basins_skipped=result.basins_skipped,
         observations_imported=result.observations_imported,

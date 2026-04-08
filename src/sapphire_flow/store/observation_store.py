@@ -54,8 +54,9 @@ class PgObservationStore:
         ids: list[ObservationId] = []
         for raw in obs_list:
             oid = ObservationId(uuid4())
-            self._conn.execute(
-                sa.insert(observations).values(
+            stmt = (
+                pg_insert(observations)
+                .values(
                     id=oid,
                     station_id=raw.station_id,
                     timestamp=raw.timestamp,
@@ -66,8 +67,15 @@ class PgObservationStore:
                     qc_flags=None,
                     qc_rule_version=None,
                 )
+                .on_conflict_do_nothing(
+                    index_elements=["station_id", "timestamp", "parameter", "source"],
+                )
+                .returning(observations.c.id)
             )
-            ids.append(oid)
+            result = self._conn.execute(stmt)
+            row = result.fetchone()
+            if row is not None:
+                ids.append(oid)
         return ids
 
     def update_qc(

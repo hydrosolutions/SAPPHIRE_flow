@@ -20,3 +20,4 @@ class OnboardingResult:
     model_assignments_created: int = 0
     models_trained: int = 0
     stations_marked_operational: int = 0
+    stations_updated: int = 0

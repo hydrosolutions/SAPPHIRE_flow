@@ -93,6 +93,13 @@ class FakeObservationStore:
     ) -> list[ObservationId]:
         ids = []
         for raw in observations:
+            # Skip duplicate natural key (matches ON CONFLICT DO NOTHING)
+            natural_key = (raw.station_id, raw.timestamp, raw.parameter, raw.source)
+            if any(
+                (o.station_id, o.timestamp, o.parameter, o.source) == natural_key
+                for o in self._observations.values()
+            ):
+                continue
             oid = ObservationId(uuid4())
             obs = Observation(
                 id=oid,
@@ -717,6 +724,10 @@ class FakeStationStore:
     def store_station(self, station: StationConfig) -> StationId:
         self._stations[station.id] = station
         return station.id
+
+    def update_station(self, station: StationConfig) -> None:
+        if station.id in self._stations:
+            self._stations[station.id] = station
 
     def fetch_thresholds(self, station_id: StationId) -> list[StationThreshold]:
         return [t for t in self._thresholds if t.station_id == station_id]

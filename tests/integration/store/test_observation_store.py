@@ -277,3 +277,27 @@ class TestStoreObservationsUpsert:
         )
         assert len(fetched) == 1
         assert fetched[0].qc_status == QcStatus.QC_PASSED
+
+
+class TestStoreRawDuplicateSkip:
+    def test_second_insert_returns_empty_and_no_new_rows(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection, rng_seed=12)
+        store = PgObservationStore(db_connection)
+
+        obs = _raw(sid, hour=0)
+
+        first_ids = store.store_raw_observations([obs])
+        assert len(first_ids) == 1
+
+        second_ids = store.store_raw_observations([obs])
+        assert second_ids == []
+
+        fetched = store.fetch_observations(
+            station_id=sid,
+            parameter="discharge",
+            start=_utc(hour=0),
+            end=_utc(hour=1),
+        )
+        assert len(fetched) == 1

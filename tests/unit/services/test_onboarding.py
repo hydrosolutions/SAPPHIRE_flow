@@ -249,7 +249,8 @@ class TestDedupExistingStation:
         )
 
         assert result.stations_created == 0
-        assert result.stations_skipped == 1
+        assert result.stations_updated == 1
+        assert result.stations_skipped == 0
         assert len(s.station.fetch_all_stations()) == 1
 
 
@@ -607,3 +608,48 @@ class TestOnboardingSteps6Through8:
         assert fetched is not None
         # Status should not have been promoted (still whatever it was stored as)
         assert fetched.station_status != StationStatus.OPERATIONAL
+
+
+class TestRerunIdempotency:
+    def test_second_run_is_idempotent(self) -> None:
+        sid = StationId(uuid4())
+        basin = _make_basin("RERUN001")
+        station = make_station_config(station_id=sid, code="RERUN001")
+        obs = _make_raw_obs(sid, 50)
+        forcing = _make_forcing(sid, 50)
+        s = _Stores()
+
+        # First run: everything is created
+        result1 = _run(
+            s,
+            stations=[station],
+            basins=[basin],
+            obs_by_station={sid: obs},
+            forcing_by_station={sid: forcing},
+        )
+        assert result1.stations_created == 1
+        assert result1.stations_skipped == 0
+        assert result1.observations_imported == 50
+        assert result1.errors == []
+
+        # Second run: same data — stations updated, observations skipped
+        result2 = _run(
+            s,
+            stations=[station],
+            basins=[basin],
+            obs_by_station={sid: obs},
+            forcing_by_station={sid: forcing},
+        )
+        assert result2.stations_created == 0
+        assert result2.stations_updated == 1
+        assert result2.stations_skipped == 0
+        assert result2.observations_imported == 0  # all skipped by natural key
+        assert result2.basins_created == 0
+        assert result2.basins_skipped == 1
+        assert result2.errors == []
+        # QC only processes RAW obs; on second run, all obs are already QC'd
+        assert result2.observations_qc_passed == 0
+        assert result2.observations_qc_failed == 0
+        # No duplicate baselines or flow regimes
+        assert result2.baselines_computed == result1.baselines_computed
+        assert result2.flow_regimes_computed == result1.flow_regimes_computed

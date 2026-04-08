@@ -1546,6 +1546,35 @@ Module: `protocols/alert_strategy.py`
 
 ---
 
+### Station onboarding types
+
+Result type for Flow 5 station onboarding.
+
+```python
+@dataclass(frozen=True, kw_only=True, slots=True)
+class OnboardingResult:
+    stations_created: int
+    stations_skipped: int
+    basins_created: int
+    basins_skipped: int
+    observations_imported: int
+    forcing_records_imported: int
+    observations_qc_passed: int
+    observations_qc_failed: int
+    observations_qc_suspect: int
+    baselines_computed: int
+    flow_regimes_computed: int
+    errors: list[str]
+    model_assignments_created: int = 0
+    models_trained: int = 0
+    stations_marked_operational: int = 0
+    stations_updated: int = 0          # stations whose mutable metadata was updated (idempotent re-runs)
+```
+
+Module: `types/onboarding.py`
+
+---
+
 ### Model onboarding types
 
 Result types for Flow 13 model onboarding.
@@ -1716,7 +1745,9 @@ class ArtifactIntegrityError(SapphireError):
 class ObservationStore(Protocol):
     def store_observations(self, observations: list[Observation]) -> None: ...
     def store_raw_observations(self, observations: list[RawObservation]) -> list[ObservationId]: ...
-        # Inserts raw observations (pre-QC) with qc_status=RAW. Returns assigned IDs.
+        # Inserts raw observations (pre-QC) with qc_status=RAW. Returns IDs of newly inserted
+        # rows; rows matching an existing natural key (station_id, timestamp, parameter, source)
+        # are silently skipped via ON CONFLICT DO NOTHING.
     def update_qc(self, observation_id: ObservationId, qc_status: QcStatus, qc_flags: list[QcFlag]) -> None: ...
     def fetch_observations(
         self,
@@ -2004,6 +2035,9 @@ class StationStore(Protocol):
         self, ownership: StationOwnership, kind: StationKind | None = None,
     ) -> list[StationConfig]: ...
     def store_station(self, station: StationConfig) -> StationId: ...
+    def update_station(self, station: StationConfig) -> None: ...
+        # Updates mutable metadata fields (name, location, measured_parameters, forecast_targets)
+        # for an existing station. Identity fields (id, code, network) are not modified.
     def fetch_thresholds(self, station_id: StationId) -> list[StationThreshold]: ...
     def store_thresholds(self, thresholds: list[StationThreshold]) -> None: ...
         # Upsert keyed on (station_id, danger_level, parameter).
@@ -2503,6 +2537,7 @@ src/sapphire_flow/
 │   │                       #   ModelRecord, ModelRegistryEntry, ModelArtifactRecord,
 │   │                       #   stack_model_inputs()
 │   ├── training.py         # TrainingUnit, HindcastStepResult
+│   ├── onboarding.py       # OnboardingResult
 │   ├── model_onboarding.py # CompatibilityReport, SkillGateResult,
 │   │                       #   OnboardingUnitResult, ModelOnboardingResult,
 │   │                       #   ONBOARDING_FAILED_OUTCOMES, ONBOARDING_SKIPPED_OUTCOMES

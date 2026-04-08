@@ -463,6 +463,9 @@ class StationStore(Protocol):
     def store_station(self, station: StationConfig) -> StationId:
         raise NotImplementedError
 
+    def update_station(self, station: StationConfig) -> None:
+        raise NotImplementedError
+
     def fetch_thresholds(self, station_id: StationId) -> list[StationThreshold]:
         raise NotImplementedError
 

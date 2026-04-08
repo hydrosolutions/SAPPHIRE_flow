@@ -123,6 +123,25 @@ class PgStationStore:
         )
         return station.id
 
+    def update_station(self, station: StationConfig) -> None:
+        self._conn.execute(
+            sa.update(stations)
+            .where(stations.c.id == station.id)
+            .values(
+                name=station.name,
+                location=sa.func.ST_SetSRID(
+                    sa.func.ST_MakePoint(station.location.lon, station.location.lat),
+                    4326,
+                ),
+                altitude_masl=station.location.altitude_masl,
+                measured_parameters=list(station.measured_parameters),
+                forecast_targets=list(station.forecast_targets)
+                if station.forecast_targets
+                else None,
+                updated_at=station.updated_at,
+            )
+        )
+
     def fetch_thresholds(self, station_id: StationId) -> list[StationThreshold]:
         rows = (
             self._conn.execute(

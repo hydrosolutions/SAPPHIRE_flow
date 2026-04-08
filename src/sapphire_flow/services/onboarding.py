@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random as _random
+import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -205,6 +206,7 @@ def _run_onboarding(
     errors: list[str] = []
     stations_created = 0
     stations_skipped = 0
+    stations_updated = 0
     basins_created = 0
     basins_skipped = 0
     observations_imported = 0
@@ -249,12 +251,21 @@ def _run_onboarding(
                 station.code, station.network
             )
             if existing is not None:
-                stations_skipped += 1
                 station_map[station.code] = existing.id
                 if existing.forecast_targets:
                     ft = existing.forecast_targets
                     station_target[existing.id] = next(iter(ft), "discharge")
-                log.info("station_already_exists", code=station.code)
+                t0 = time.perf_counter()
+                station_store.update_station(station)
+                duration_ms = round((time.perf_counter() - t0) * 1000, 1)
+                stations_updated += 1
+                log.info(
+                    "station.metadata_updated",
+                    station_id=str(existing.id),
+                    code=station.code,
+                    network=station.network,
+                    duration_ms=duration_ms,
+                )
             else:
                 station_store.store_station(station)
                 station_map[station.code] = station.id
@@ -276,8 +287,15 @@ def _run_onboarding(
         if station_id not in resolved_station_ids:
             continue
         try:
-            obs_store.store_raw_observations(raw_obs)
-            observations_imported += len(raw_obs)
+            inserted_ids = obs_store.store_raw_observations(raw_obs)
+            observations_imported += len(inserted_ids)
+            skipped = len(raw_obs) - len(inserted_ids)
+            if skipped:
+                log.debug(
+                    "observation.duplicate_skipped",
+                    station_id=str(station_id),
+                    skipped_count=skipped,
+                )
             log.debug(
                 "observations_stored",
                 station_id=str(station_id),
@@ -493,6 +511,18 @@ def _run_onboarding(
                 continue
             if not non_weather_ids:
                 continue
+            all_have_active = all(
+                artifact_store.fetch_active_artifact_for_station(sid, model_id)
+                is not None
+                for sid in non_weather_ids
+            )
+            if all_have_active:
+                log.debug(
+                    "onboarding.training_skipped",
+                    model_id=str(model_id),
+                    reason="all_stations_have_active_artifact",
+                )
+                continue
             try:
                 time_step = next(iter(model.data_requirements.supported_time_steps))
                 units = determine_onboarding_scope(
@@ -600,6 +630,7 @@ def _run_onboarding(
         model_assignments_created=model_assignments_created,
         models_trained=models_trained,
         stations_marked_operational=stations_marked_operational,
+        stations_updated=stations_updated,
     )
 
 
@@ -651,7 +682,10 @@ def onboard_from_camelsch(
 
     stations, basins = load_stations(data_dir, clock, basin_ids)
 
-    station_map: dict[str, StationId] = {s.code: s.id for s in stations}
+    station_map: dict[str, StationId] = {}
+    for s in stations:
+        existing = station_store.fetch_station_by_code(s.code, s.network)
+        station_map[s.code] = existing.id if existing is not None else s.id
 
     obs_by_station = load_observations(
         data_dir, station_map, clock, start_date, end_date
@@ -686,6 +720,7 @@ def onboard_from_camelsch(
         "onboarding_complete",
         stations_created=result.stations_created,
         stations_skipped=result.stations_skipped,
+        stations_updated=result.stations_updated,
         observations_imported=result.observations_imported,
         errors=len(result.errors),
     )
