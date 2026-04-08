@@ -36,24 +36,23 @@
 </div>
 
 {% if station.parameters %}
-<div style="margin-bottom: 1rem;">
-  <label for="param-select"><strong>Parameter:</strong></label>
-  <select id="param-select" onchange="loadCharts()">
-    {% for p in station.parameters %}
-    <option value="{{ p }}">{{ p }}</option>
-    {% endfor %}
-  </select>
-  <label for="year-select" style="margin-left:1rem;"><strong>Year:</strong></label>
-  <select id="year-select" onchange="loadCharts()">
-    <option value="2025">2025</option>
-    <option value="2024">2024</option>
-    <option value="2023">2023</option>
-    <option value="2020">2020</option>
-    <option value="2015">2015</option>
-    <option value="2010">2010</option>
-    <option value="2000">2000</option>
-    <option value="1990">1990</option>
-  </select>
+<div style="display:flex; flex-wrap:wrap; gap:1rem; align-items:end; margin-bottom:1rem;">
+  <div>
+    <label for="param-select"><strong>Parameter</strong></label>
+    <select id="param-select" onchange="loadCharts()">
+      {% for p in station.parameters %}
+      <option value="{{ p }}">{{ p }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div>
+    <label for="start-date"><strong>From</strong></label>
+    <input type="date" id="start-date" value="2019-01-01" onchange="loadCharts()">
+  </div>
+  <div>
+    <label for="end-date"><strong>To</strong></label>
+    <input type="date" id="end-date" value="2020-12-31" onchange="loadCharts()">
+  </div>
 </div>
 
 <h3>Observations</h3>
@@ -73,33 +72,40 @@ const stationId = "{{ station.id }}";
 
 function loadCharts() {
   const param = document.getElementById("param-select").value;
-  const year = document.getElementById("year-select").value;
-  const start = year + "-01-01T00:00:00";
-  const end = (parseInt(year) + 1) + "-01-01T00:00:00";
+  const start = document.getElementById("start-date").value + "T00:00:00";
+  const end = document.getElementById("end-date").value + "T23:59:59";
+  const label = document.getElementById("start-date").value + " to " + document.getElementById("end-date").value;
 
-  // Observations
+  // Observations — show all QC statuses as visible traces
   fetch(`/api/v1/stations/${stationId}/observations.json?parameter=${param}&start=${start}&end=${end}`)
     .then(r => r.json())
     .then(data => {
       if (data.timestamps.length === 0) {
-        Plotly.newPlot("obs-chart", [], {title: "No observations for " + param + " in " + year});
+        Plotly.newPlot("obs-chart", [], {title: "No observations for " + param});
         return;
       }
-      const passed = {x: [], y: []};
-      const suspect = {x: [], y: []};
-      const other = {x: [], y: []};
+      const groups = {};
       for (let i = 0; i < data.timestamps.length; i++) {
-        const t = data.timestamps[i], v = data.values[i], q = data.qc_statuses[i];
-        if (q === "qc_passed") { passed.x.push(t); passed.y.push(v); }
-        else if (q === "qc_suspect") { suspect.x.push(t); suspect.y.push(v); }
-        else { other.x.push(t); other.y.push(v); }
+        const q = data.qc_statuses[i] || "unknown";
+        if (!groups[q]) groups[q] = {x: [], y: []};
+        groups[q].x.push(data.timestamps[i]);
+        groups[q].y.push(data.values[i]);
       }
+      const styles = {
+        "qc_passed": {mode: "lines", line: {color: "#2196F3", width: 1.5}},
+        "raw":       {mode: "lines", line: {color: "#333", width: 1}},
+        "qc_suspect":{mode: "lines", line: {color: "#FF9800", width: 1}},
+        "qc_failed": {mode: "lines", line: {color: "#F44336", width: 1, dash: "dot"}},
+      };
       const traces = [];
-      if (passed.x.length) traces.push({x: passed.x, y: passed.y, mode: "lines", name: "QC passed", line: {color: "#2196F3"}});
-      if (other.x.length) traces.push({x: other.x, y: other.y, mode: "lines", name: "Raw/other", line: {color: "#9E9E9E", dash: "dot"}});
-      if (suspect.x.length) traces.push({x: suspect.x, y: suspect.y, mode: "markers", name: "QC suspect", marker: {color: "#FF9800", size: 4}});
+      // Show raw and passed first (lines), then suspect/failed (markers) on top
+      for (const q of ["raw", "qc_passed", "qc_suspect", "qc_failed", "unknown"]) {
+        if (!groups[q]) continue;
+        const style = styles[q] || {mode: "lines", line: {color: "#999"}};
+        traces.push({x: groups[q].x, y: groups[q].y, name: q, ...style});
+      }
       Plotly.newPlot("obs-chart", traces, {
-        title: param + " — " + year,
+        title: param + " — " + label,
         xaxis: {title: "Date"},
         yaxis: {title: param},
         margin: {t: 40, r: 20},
@@ -118,7 +124,7 @@ function loadCharts() {
       const lower = data.rolling_mean.map((m, i) => m - 2 * data.rolling_std[i]);
       Plotly.newPlot("baseline-chart", [
         {x: data.day_of_year, y: upper, mode: "lines", line: {width: 0}, showlegend: false},
-        {x: data.day_of_year, y: lower, mode: "lines", line: {width: 0}, fill: "tonexty", fillcolor: "rgba(33,150,243,0.15)", name: "&#177;2&sigma;"},
+        {x: data.day_of_year, y: lower, mode: "lines", line: {width: 0}, fill: "tonexty", fillcolor: "rgba(33,150,243,0.15)", name: "\u00b12\u03c3"},
         {x: data.day_of_year, y: data.rolling_mean, mode: "lines", name: "Rolling mean", line: {color: "#2196F3"}},
       ], {
         title: "Climatological baseline — " + param,
@@ -144,11 +150,11 @@ function loadCharts() {
         });
       }
       if (traces.length === 0) {
-        Plotly.newPlot("forcing-chart", [], {title: "No forcing data for " + year});
+        Plotly.newPlot("forcing-chart", [], {title: "No forcing data for this range"});
         return;
       }
       Plotly.newPlot("forcing-chart", traces, {
-        title: "Forcing — " + year,
+        title: "Forcing — " + label,
         xaxis: {title: "Date"},
         margin: {t: 40, r: 20},
       });
