@@ -216,15 +216,15 @@ def station_forcing_json(
 
     rows = (
         conn.execute(
-            sa.select(forcing.c.timestamp, forcing.c.parameter, forcing.c.value)
+            sa.select(forcing.c.valid_time, forcing.c.parameter, forcing.c.value)
             .where(
                 sa.and_(
                     forcing.c.station_id == station_id,
-                    forcing.c.timestamp >= start_dt,
-                    forcing.c.timestamp < end_dt,
+                    forcing.c.valid_time >= start_dt,
+                    forcing.c.valid_time < end_dt,
                 )
             )
-            .order_by(forcing.c.timestamp)
+            .order_by(forcing.c.valid_time)
         )
         .mappings()
         .all()
@@ -236,7 +236,7 @@ def station_forcing_json(
         param = r["parameter"]
         if param not in series:
             series[param] = {"timestamps": [], "values": []}
-        series[param]["timestamps"].append(r["timestamp"].isoformat())
+        series[param]["timestamps"].append(r["valid_time"].isoformat())
         series[param]["values"].append(r["value"])
 
     return JSONResponse({"series": series})
