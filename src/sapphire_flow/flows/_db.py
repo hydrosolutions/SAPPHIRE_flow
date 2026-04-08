@@ -22,6 +22,7 @@ def run_migrations(engine: sa.Engine) -> None:
 
 def make_pg_stores(conn: sa.Connection) -> dict[str, object]:
     from sapphire_flow.config.paths import resolve_artifact_dir
+    from sapphire_flow.store.alert_store import PgAlertStore
     from sapphire_flow.store.basin_store import PgBasinStore
     from sapphire_flow.store.clim_baseline_store import PgClimBaselineStore
     from sapphire_flow.store.flow_regime_config_store import PgFlowRegimeConfigStore
@@ -37,6 +38,7 @@ def make_pg_stores(conn: sa.Connection) -> dict[str, object]:
     artifact_dir = resolve_artifact_dir()
 
     return {
+        "alert_store": PgAlertStore(conn),
         "basin_store": PgBasinStore(conn),
         "station_store": PgStationStore(conn),
         "obs_store": PgObservationStore(conn),
