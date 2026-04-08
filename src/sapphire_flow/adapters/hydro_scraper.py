@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import time
 from datetime import datetime
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import httpx
 import structlog
@@ -117,7 +117,7 @@ class HydroScraperAdapter:
         )
 
     def _parse_bindings(
-        self, bindings: list[dict], station_id: StationId
+        self, bindings: list[dict[str, Any]], station_id: StationId
     ) -> list[RawObservation]:
         prefix = f"{_DIMENSION_URL}/"
         timestamp_str: str | None = None

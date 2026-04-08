@@ -421,6 +421,7 @@ expected_interval_hours = 0.17        # SMN: every 10 min
 
 [adapters.river_stations]
 type = "hydro_scraper"                # maps to HydroScraperAdapter class
+endpoint = "https://lindas.admin.ch/query"  # LINDAS SPARQL endpoint (public, no auth)
 max_cache_age_hours = 24
 
 [adapters.river_stations.monitoring]
