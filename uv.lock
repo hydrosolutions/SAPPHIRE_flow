@@ -3638,7 +3638,7 @@ wheels = [
 
 [[package]]
 name = "sapphire-flow"
-version = "0.1.171"
+version = "0.1.173"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
@@ -3646,6 +3646,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "forecastinterface" },
     { name = "geoalchemy2" },
+    { name = "httpx" },
     { name = "jinja2" },
     { name = "numpy" },
     { name = "orjson" },
@@ -3685,6 +3686,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.135.2" },
     { name = "forecastinterface", editable = "../ForecastInterface" },
     { name = "geoalchemy2", specifier = ">=0.18.4" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "numpy", specifier = ">=2.4.3" },
     { name = "orjson" },

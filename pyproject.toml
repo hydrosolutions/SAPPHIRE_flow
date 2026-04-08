@@ -1,6 +1,6 @@
 [project]
 name = "sapphire-flow"
-version = "0.1.172"
+version = "0.1.173"
 description = "Add your description here"
 readme = "README.md"
 license = "MIT"
@@ -14,6 +14,7 @@ dependencies = [
     "fastapi>=0.135.2",
     "forecastinterface",
     "geoalchemy2>=0.18.4",
+    "httpx>=0.28.1",
     "jinja2>=3.1.6",
     "numpy>=2.4.3",
     "orjson",
@@ -64,7 +65,7 @@ select = ["E", "F", "I", "N", "UP", "B", "A", "SIM", "TCH", "T20"]
 testpaths = ["tests"]
 
 [tool.bumpversion]
-current_version = "0.1.172"
+current_version = "0.1.173"
 commit = false
 tag = false
 allow_dirty = true
