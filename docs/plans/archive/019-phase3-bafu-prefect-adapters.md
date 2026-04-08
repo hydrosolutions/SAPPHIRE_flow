@@ -1,5 +1,5 @@
 ---
-status: READY
+status: DONE
 created: 2026-04-08
 scope: Phase 3a — BAFU river observation adapter + Prefect status adapter
 depends_on: []
