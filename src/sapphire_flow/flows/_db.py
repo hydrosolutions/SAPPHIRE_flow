@@ -1,17 +1,13 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
-import sqlalchemy as sa
+import sqlalchemy as sa  # noqa: TCH002 — used in function bodies via typed params
+
+from sapphire_flow.db.engine import create_engine_from_env as create_engine_from_env
 
 # _db.py → flows/ → sapphire_flow/ → src/ → repo_root
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-
-
-def create_engine_from_env() -> sa.Engine:
-    url = os.environ["DATABASE_URL"]
-    return sa.create_engine(url)
 
 
 def run_migrations(engine: sa.Engine) -> None:

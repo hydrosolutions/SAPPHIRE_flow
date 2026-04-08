@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Models — SAPPHIRE Flow{% endblock %}
+{% block content %}
+<h2>Models</h2>
+{% if models %}
+<p class="muted">{{ models | length }} registered models.</p>
+<table>
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Scope</th>
+      <th>Time Step</th>
+      <th>Description</th>
+      <th style="text-align:right">Artifacts</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for m in models %}
+    <tr>
+      <td><a href="/models/{{ m.id }}/">{{ m.display_name }}</a></td>
+      <td>{{ m.artifact_scope }}</td>
+      <td>{{ m.time_step }}</td>
+      <td>{{ m.description or "" }}</td>
+      <td style="text-align:right">{{ m.artifact_count }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No models registered yet.</p>
+{% endif %}
+{% endblock %}

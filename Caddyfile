@@ -6,16 +6,12 @@
         -Server
     }
 
-    handle /api/* {
-        reverse_proxy api:8000
-    }
-
     handle /prefect/* {
         uri strip_prefix /prefect
         reverse_proxy prefect-server:4200
     }
 
     handle {
-        respond "SAPPHIRE Flow v0" 200
+        reverse_proxy api:8000
     }
 }

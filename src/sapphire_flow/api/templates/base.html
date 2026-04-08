@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}SAPPHIRE Flow{% endblock %}</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <script src="https://cdn.plot.ly/plotly-3.0.1.min.js" charset="utf-8"></script>
+  <style>
+    nav ul { list-style: none; display: flex; gap: 1rem; margin: 0; padding: 0; }
+    nav a { text-decoration: none; }
+    nav a.active { font-weight: bold; border-bottom: 2px solid var(--pico-primary-color); }
+    .table-container { overflow-x: auto; }
+    table { font-size: 0.85rem; }
+    td, th { white-space: nowrap; max-width: 300px; overflow: hidden; text-overflow: ellipsis; }
+    .card { border: 1px solid var(--pico-muted-border-color); border-radius: 8px; padding: 1rem; }
+    .card h3 { margin-top: 0; }
+    .grid-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem; }
+    .muted { color: var(--pico-muted-color); font-size: 0.85rem; }
+    .badge { display: inline-block; padding: 0.15em 0.5em; border-radius: 4px; font-size: 0.8rem; }
+    .badge-green { background: #d4edda; color: #155724; }
+    .badge-yellow { background: #fff3cd; color: #856404; }
+    .badge-red { background: #f8d7da; color: #721c24; }
+    .badge-blue { background: #cce5ff; color: #004085; }
+  </style>
+</head>
+<body>
+  <header class="container">
+    <nav>
+      <ul>
+        <li><strong>SAPPHIRE Flow</strong></li>
+      </ul>
+      <ul>
+        <li><a href="/" {% if active_nav == "dashboard" %}class="active"{% endif %}>Dashboard</a></li>
+        <li><a href="/stations/" {% if active_nav == "stations" %}class="active"{% endif %}>Stations</a></li>
+        <li><a href="/forecasts/" {% if active_nav == "forecasts" %}class="active"{% endif %}>Forecasts</a></li>
+        <li><a href="/models/" {% if active_nav == "models" %}class="active"{% endif %}>Models</a></li>
+        <li><a href="/tables/" {% if active_nav == "tables" %}class="active"{% endif %}>Tables</a></li>
+        <li><a href="/prefect/" target="_blank">Prefect UI &#8599;</a></li>
+      </ul>
+    </nav>
+  </header>
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="container">
+    <small class="muted">SAPPHIRE Flow Developer Dashboard</small>
+  </footer>
+</body>
+</html>

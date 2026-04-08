@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — SAPPHIRE Flow{% endblock %}
+{% block content %}
+<h2>SAPPHIRE Flow Dashboard</h2>
+
+<div class="grid-cards">
+  <div class="card">
+    <h3>Stations</h3>
+    <p style="font-size:2rem; margin:0;">{{ station_count }}</p>
+    {% for k in station_kinds %}
+    <span class="badge {% if k.kind == 'river' %}badge-blue{% elif k.kind == 'lake' %}badge-green{% elif k.kind == 'weather' %}badge-yellow{% endif %}">{{ k.kind }}: {{ k.count }}</span>
+    {% endfor %}
+    <p><a href="/stations/">View all &rarr;</a></p>
+  </div>
+
+  <div class="card">
+    <h3>Observations</h3>
+    <p style="font-size:2rem; margin:0;">{{ "{:,}".format(obs_count) }}</p>
+    <p class="muted">total records</p>
+  </div>
+
+  <div class="card">
+    <h3>Forcing</h3>
+    <p style="font-size:2rem; margin:0;">{{ "{:,}".format(forcing_count) }}</p>
+    <p class="muted">historical forcing records</p>
+  </div>
+
+  <div class="card">
+    <h3>Baselines</h3>
+    <p style="font-size:2rem; margin:0;">{{ "{:,}".format(baseline_count) }}</p>
+    <p class="muted">climatological entries</p>
+  </div>
+
+  <div class="card">
+    <h3>Models</h3>
+    <p style="font-size:2rem; margin:0;">{{ model_count }}</p>
+    <p class="muted">{{ active_artifacts }} active artifact{{ "s" if active_artifacts != 1 }}</p>
+    <p><a href="/models/">View all &rarr;</a></p>
+  </div>
+
+  <div class="card">
+    <h3>Forecasts</h3>
+    <p style="font-size:2rem; margin:0;">{{ "{:,}".format(forecast_count) }}</p>
+    <p class="muted">{{ "{:,}".format(hindcast_count) }} hindcasts</p>
+    <p><a href="/forecasts/">View all &rarr;</a></p>
+  </div>
+
+  <div class="card">
+    <h3>Skill Scores</h3>
+    <p style="font-size:2rem; margin:0;">{{ "{:,}".format(skill_count) }}</p>
+    <p class="muted">evaluation records</p>
+  </div>
+
+  <div class="card">
+    <h3>Active Alerts</h3>
+    <p style="font-size:2rem; margin:0;">
+      {% if active_alerts > 0 %}<span style="color:var(--pico-del-color);">{{ active_alerts }}</span>
+      {% else %}{{ active_alerts }}{% endif %}
+    </p>
+    <p class="muted">raised alerts</p>
+  </div>
+</div>
+
+<h3 style="margin-top:2rem;">Quick Links</h3>
+<ul>
+  <li><a href="/tables/">Browse all database tables</a></li>
+  <li><a href="/prefect/" target="_blank">Prefect UI (flow runs, task states, logs) &#8599;</a></li>
+  <li><a href="/api/v1/health">API health check (JSON)</a></li>
+</ul>
+{% endblock %}

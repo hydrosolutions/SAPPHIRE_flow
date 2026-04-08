@@ -1,0 +1,53 @@
+from __future__ import annotations
+
+from collections.abc import AsyncGenerator, Generator
+from contextlib import asynccontextmanager
+from typing import Any
+
+import sqlalchemy as sa
+from fastapi import FastAPI, Request
+
+from sapphire_flow.db.engine import create_engine_from_env
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    app.state.engine = create_engine_from_env()
+    yield
+    app.state.engine.dispose()
+
+
+def get_connection(request: Request) -> Generator[sa.Connection, None, None]:
+    engine: sa.Engine = request.app.state.engine
+    with engine.connect() as conn:
+        yield conn
+
+
+def get_stores(request: Request) -> Generator[dict[str, Any], None, None]:
+    engine: sa.Engine = request.app.state.engine
+    with engine.connect() as conn:
+        from sapphire_flow.store.clim_baseline_store import PgClimBaselineStore
+        from sapphire_flow.store.flow_regime_config_store import PgFlowRegimeConfigStore
+        from sapphire_flow.store.forecast_store import PgForecastStore
+        from sapphire_flow.store.hindcast_store import PgHindcastStore
+        from sapphire_flow.store.historical_forcing_store import (
+            PgHistoricalForcingStore,
+        )
+        from sapphire_flow.store.model_store import PgModelStore
+        from sapphire_flow.store.observation_store import PgObservationStore
+        from sapphire_flow.store.skill_store import PgSkillStore
+        from sapphire_flow.store.station_group_store import PgStationGroupStore
+        from sapphire_flow.store.station_store import PgStationStore
+
+        yield {
+            "station_store": PgStationStore(conn),
+            "obs_store": PgObservationStore(conn),
+            "forcing_store": PgHistoricalForcingStore(conn),
+            "baseline_store": PgClimBaselineStore(conn),
+            "flow_regime_store": PgFlowRegimeConfigStore(conn),
+            "model_store": PgModelStore(conn),
+            "group_store": PgStationGroupStore(conn),
+            "hindcast_store": PgHindcastStore(conn),
+            "skill_store": PgSkillStore(conn),
+            "forecast_store": PgForecastStore(conn),
+        }

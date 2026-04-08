@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}{{ model.display_name }} — SAPPHIRE Flow{% endblock %}
+{% block content %}
+<h2>{{ model.display_name }}</h2>
+
+<div class="card" style="margin-bottom:2rem;">
+  <table>
+    <tr><td><strong>ID</strong></td><td>{{ model.id }}</td></tr>
+    <tr><td><strong>Scope</strong></td><td>{{ model.artifact_scope }}</td></tr>
+    <tr><td><strong>Time Step</strong></td><td>{{ model.time_step }}</td></tr>
+    <tr><td><strong>Class Path</strong></td><td><code>{{ model.class_path }}</code></td></tr>
+    <tr><td><strong>Description</strong></td><td>{{ model.description or "—" }}</td></tr>
+  </table>
+</div>
+
+<h3>Artifacts ({{ artifacts | length }})</h3>
+{% if artifacts %}
+<table>
+  <thead>
+    <tr>
+      <th>Status</th>
+      <th>Training Period</th>
+      <th>Station / Group</th>
+      <th>Created</th>
+      <th>SHA256</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for a in artifacts %}
+    <tr>
+      <td>
+        {% if a.status == "active" %}<span class="badge badge-green">active</span>
+        {% elif a.status == "training" %}<span class="badge badge-yellow">training</span>
+        {% elif a.status == "superseded" %}<span class="badge">superseded</span>
+        {% else %}<span class="badge badge-red">{{ a.status }}</span>{% endif %}
+      </td>
+      <td>{{ a.training_start }} — {{ a.training_end }}</td>
+      <td>{{ a.station_id or a.group_id or "—" }}</td>
+      <td>{{ a.created_at }}</td>
+      <td title="{{ a.sha256_hash }}">{{ (a.sha256_hash or "")[:12] }}...</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="muted">No artifacts yet.</p>
+{% endif %}
+
+{% if assignments %}
+<h3>Station Assignments ({{ assignments | length }})</h3>
+<table>
+  <thead>
+    <tr><th>Station</th><th>Priority</th><th>Status</th><th>Time Step</th></tr>
+  </thead>
+  <tbody>
+    {% for a in assignments %}
+    <tr>
+      <td><a href="/stations/{{ a.station_id }}/">{{ a.station_id | string | truncate(8, True, '...') }}</a></td>
+      <td>{{ a.priority }}</td>
+      <td>{{ a.status }}</td>
+      <td>{{ a.time_step }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if skill_scores %}
+<h3>Skill Scores (active artifact)</h3>
+<table>
+  <thead>
+    <tr><th>Station</th><th>Parameter</th><th>Metric</th><th>Score</th><th>Lead (h)</th><th>Season</th><th>Regime</th><th>N</th></tr>
+  </thead>
+  <tbody>
+    {% for s in skill_scores %}
+    <tr>
+      <td>{{ s.station_id | string | truncate(8, True, '...') }}</td>
+      <td>{{ s.parameter }}</td>
+      <td>{{ s.metric }}</td>
+      <td>{{ "%.4f" | format(s.score) if s.score is not none else "—" }}</td>
+      <td>{{ s.lead_time_hours }}</td>
+      <td>{{ s.season }}</td>
+      <td>{{ s.flow_regime }}</td>
+      <td>{{ s.sample_size }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if skill_diagrams %}
+<h3>Skill Diagrams</h3>
+{% for d in skill_diagrams %}
+<h4>{{ d.diagram_type }} — {{ d.parameter }} ({{ d.station_id | string | truncate(8, True, '...') }})</h4>
+<div id="diagram-{{ loop.index }}" style="height:300px;"></div>
+{% endfor %}
+<script>
+{% for d in skill_diagrams %}
+(function() {
+  const data = {{ d.data | tojson }};
+  if (data && data.traces) {
+    Plotly.newPlot("diagram-{{ loop.index }}", data.traces, data.layout || {});
+  } else if (data && data.x && data.y) {
+    Plotly.newPlot("diagram-{{ loop.index }}", [{x: data.x, y: data.y, type: "scatter"}], {title: "{{ d.diagram_type }}"});
+  }
+})();
+{% endfor %}
+</script>
+{% endif %}
+{% endblock %}

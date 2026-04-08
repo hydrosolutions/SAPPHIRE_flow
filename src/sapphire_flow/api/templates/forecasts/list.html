@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Forecasts — SAPPHIRE Flow{% endblock %}
+{% block content %}
+<h2>Forecasts</h2>
+
+{% if not has_forecasts %}
+<p class="muted">No forecasts table found. Forecast cycle has not run yet.</p>
+{% else %}
+<p class="muted">{{ total }} forecasts{% if station_id %} for station {{ station_id }}{% endif %}. {{ hindcast_count }} hindcasts in the database.</p>
+
+<form method="get" action="/forecasts/" style="display:flex; gap:0.5rem; margin-bottom:1rem;">
+  <input type="text" name="station_id" placeholder="Filter by station ID..." value="{{ station_id }}" style="max-width:400px;">
+  <button type="submit">Filter</button>
+  {% if station_id %}<a href="/forecasts/" role="button" class="outline">Clear</a>{% endif %}
+</form>
+
+{% if forecasts %}
+<table>
+  <thead>
+    <tr>
+      <th>Issued At</th>
+      <th>Station</th>
+      <th>Model</th>
+      <th>Parameter</th>
+      <th>Status</th>
+      <th>Representation</th>
+      <th>QC</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for f in forecasts %}
+    <tr>
+      <td><a href="/forecasts/{{ f.id }}/">{{ f.issued_at }}</a></td>
+      <td><a href="/stations/{{ f.station_id }}/">{{ f.station_id | string | truncate(8, True, '...') }}</a></td>
+      <td>{{ f.model_id | string | truncate(8, True, '...') if f.model_id else '' }}</td>
+      <td>{{ f.parameter }}</td>
+      <td>
+        {% if f.status == "published" %}<span class="badge badge-green">{{ f.status }}</span>
+        {% elif f.status == "raw" %}<span class="badge badge-yellow">{{ f.status }}</span>
+        {% else %}<span class="badge">{{ f.status }}</span>{% endif %}
+      </td>
+      <td>{{ f.representation }}</td>
+      <td>{{ f.qc_status }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<div style="display:flex; gap:1rem;">
+  {% if page > 0 %}<a href="/forecasts/?page={{ page - 1 }}{% if station_id %}&station_id={{ station_id }}{% endif %}" role="button" class="outline">&#8592; Previous</a>{% endif %}
+  {% if has_next %}<a href="/forecasts/?page={{ page + 1 }}{% if station_id %}&station_id={{ station_id }}{% endif %}" role="button" class="outline">Next &#8594;</a>{% endif %}
+  <span class="muted" style="align-self:center;">Page {{ page + 1 }}</span>
+</div>
+{% else %}
+<p class="muted">No forecasts found{% if station_id %} for this station{% endif %}.</p>
+{% endif %}
+{% endif %}
+{% endblock %}

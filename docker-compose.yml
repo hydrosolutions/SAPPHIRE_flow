@@ -97,8 +97,9 @@ services:
     image: sapphire-flow:${VERSION:-latest}
     command: uvicorn sapphire_flow.api:app --host 0.0.0.0 --port 8000
     environment:
-      DATABASE_URL_TEMPLATE: postgresql+asyncpg://${DB_USER:-sapphire}@postgres:5432/sapphire
+      DATABASE_URL_TEMPLATE: postgresql+psycopg://${DB_USER:-sapphire}@postgres:5432/sapphire
       PREFECT_API_URL: http://prefect-server:4200/api
+      SAPPHIRE_DATA_DIR: /data
     depends_on:
       postgres:
         condition: service_healthy

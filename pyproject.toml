@@ -1,6 +1,6 @@
 [project]
 name = "sapphire-flow"
-version = "0.1.168"
+version = "0.1.169"
 description = "Add your description here"
 readme = "README.md"
 license = "MIT"
@@ -11,8 +11,10 @@ requires-python = ">=3.11"
 dependencies = [
     "alembic",
     "camelsch>=0.2.0",
+    "fastapi>=0.135.2",
     "forecastinterface",
     "geoalchemy2>=0.18.4",
+    "jinja2>=3.1.6",
     "numpy>=2.4.3",
     "orjson",
     "platformdirs>=4.0",
@@ -24,6 +26,7 @@ dependencies = [
     "shapely",
     "sqlalchemy>=2.0",
     "structlog>=24.1.0",
+    "uvicorn[standard]>=0.42.0",
     "xarray",
 ]
 
@@ -54,11 +57,14 @@ line-length = 88
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "UP", "B", "A", "SIM", "TCH", "T20"]
 
+[tool.ruff.lint.per-file-ignores]
+"src/sapphire_flow/api/**/*.py" = ["B008", "TCH002", "TCH003"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
 [tool.bumpversion]
-current_version = "0.1.168"
+current_version = "0.1.169"
 commit = false
 tag = false
 allow_dirty = true

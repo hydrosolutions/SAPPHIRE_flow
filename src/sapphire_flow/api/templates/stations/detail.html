@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block title %}{{ station.code }} — {{ station.name }}{% endblock %}
+{% block content %}
+<h2>{{ station.code }} — {{ station.name }}</h2>
+
+<div class="grid" style="grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 2rem;">
+  <div class="card">
+    <h3>Metadata</h3>
+    <table>
+      <tr><td><strong>ID</strong></td><td>{{ station.id }}</td></tr>
+      <tr><td><strong>Kind</strong></td><td>{{ station.station_kind }}</td></tr>
+      <tr><td><strong>Status</strong></td><td>{{ station.station_status }}</td></tr>
+      <tr><td><strong>Network</strong></td><td>{{ station.network }}</td></tr>
+      <tr><td><strong>Location</strong></td><td>{{ station.lon }}, {{ station.lat }} ({{ station.altitude_masl }} m)</td></tr>
+      <tr><td><strong>Timezone</strong></td><td>{{ station.timezone }}</td></tr>
+      <tr><td><strong>Parameters</strong></td><td>{{ station.parameters | join(", ") }}</td></tr>
+    </table>
+  </div>
+  {% if thresholds %}
+  <div class="card">
+    <h3>Thresholds</h3>
+    <table>
+      <thead><tr><th>Parameter</th><th>Level</th><th>Value</th></tr></thead>
+      <tbody>
+        {% for t in thresholds %}
+        <tr>
+          <td>{{ t.parameter }}</td>
+          <td>{{ t.danger_level }}</td>
+          <td>{{ t.value }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</div>
+
+{% if station.parameters %}
+<div style="margin-bottom: 1rem;">
+  <label for="param-select"><strong>Parameter:</strong></label>
+  <select id="param-select" onchange="loadCharts()">
+    {% for p in station.parameters %}
+    <option value="{{ p }}">{{ p }}</option>
+    {% endfor %}
+  </select>
+  <label for="year-select" style="margin-left:1rem;"><strong>Year:</strong></label>
+  <select id="year-select" onchange="loadCharts()">
+    <option value="2025">2025</option>
+    <option value="2024">2024</option>
+    <option value="2023">2023</option>
+    <option value="2020">2020</option>
+    <option value="2015">2015</option>
+    <option value="2010">2010</option>
+    <option value="2000">2000</option>
+    <option value="1990">1990</option>
+  </select>
+</div>
+
+<h3>Observations</h3>
+<div id="obs-chart" style="height:350px;"></div>
+
+<h3>Climatological Baseline</h3>
+<div id="baseline-chart" style="height:300px;"></div>
+
+<h3>Forcing (precipitation & temperature)</h3>
+<div id="forcing-chart" style="height:350px;"></div>
+{% else %}
+<p class="muted">No observation data available for this station yet.</p>
+{% endif %}
+
+<script>
+const stationId = "{{ station.id }}";
+
+function loadCharts() {
+  const param = document.getElementById("param-select").value;
+  const year = document.getElementById("year-select").value;
+  const start = year + "-01-01T00:00:00";
+  const end = (parseInt(year) + 1) + "-01-01T00:00:00";
+
+  // Observations
+  fetch(`/api/v1/stations/${stationId}/observations.json?parameter=${param}&start=${start}&end=${end}`)
+    .then(r => r.json())
+    .then(data => {
+      if (data.timestamps.length === 0) {
+        Plotly.newPlot("obs-chart", [], {title: "No observations for " + param + " in " + year});
+        return;
+      }
+      const passed = {x: [], y: []};
+      const suspect = {x: [], y: []};
+      const other = {x: [], y: []};
+      for (let i = 0; i < data.timestamps.length; i++) {
+        const t = data.timestamps[i], v = data.values[i], q = data.qc_statuses[i];
+        if (q === "qc_passed") { passed.x.push(t); passed.y.push(v); }
+        else if (q === "qc_suspect") { suspect.x.push(t); suspect.y.push(v); }
+        else { other.x.push(t); other.y.push(v); }
+      }
+      const traces = [];
+      if (passed.x.length) traces.push({x: passed.x, y: passed.y, mode: "lines", name: "QC passed", line: {color: "#2196F3"}});
+      if (other.x.length) traces.push({x: other.x, y: other.y, mode: "lines", name: "Raw/other", line: {color: "#9E9E9E", dash: "dot"}});
+      if (suspect.x.length) traces.push({x: suspect.x, y: suspect.y, mode: "markers", name: "QC suspect", marker: {color: "#FF9800", size: 4}});
+      Plotly.newPlot("obs-chart", traces, {
+        title: param + " — " + year,
+        xaxis: {title: "Date"},
+        yaxis: {title: param},
+        margin: {t: 40, r: 20},
+      });
+    });
+
+  // Baselines
+  fetch(`/api/v1/stations/${stationId}/baselines.json?parameter=${param}`)
+    .then(r => r.json())
+    .then(data => {
+      if (data.day_of_year.length === 0) {
+        Plotly.newPlot("baseline-chart", [], {title: "No baseline data"});
+        return;
+      }
+      const upper = data.rolling_mean.map((m, i) => m + 2 * data.rolling_std[i]);
+      const lower = data.rolling_mean.map((m, i) => m - 2 * data.rolling_std[i]);
+      Plotly.newPlot("baseline-chart", [
+        {x: data.day_of_year, y: upper, mode: "lines", line: {width: 0}, showlegend: false},
+        {x: data.day_of_year, y: lower, mode: "lines", line: {width: 0}, fill: "tonexty", fillcolor: "rgba(33,150,243,0.15)", name: "&#177;2&sigma;"},
+        {x: data.day_of_year, y: data.rolling_mean, mode: "lines", name: "Rolling mean", line: {color: "#2196F3"}},
+      ], {
+        title: "Climatological baseline — " + param,
+        xaxis: {title: "Day of year", range: [1, 366]},
+        yaxis: {title: param},
+        margin: {t: 40, r: 20},
+      });
+    });
+
+  // Forcing
+  fetch(`/api/v1/stations/${stationId}/forcing.json?start=${start}&end=${end}`)
+    .then(r => r.json())
+    .then(data => {
+      const traces = [];
+      const colors = {"precipitation": "#1976D2", "temperature": "#E53935", "snow_depth": "#7B1FA2"};
+      for (const [param_name, series] of Object.entries(data.series)) {
+        traces.push({
+          x: series.timestamps,
+          y: series.values,
+          mode: "lines",
+          name: param_name,
+          line: {color: colors[param_name] || "#666"},
+        });
+      }
+      if (traces.length === 0) {
+        Plotly.newPlot("forcing-chart", [], {title: "No forcing data for " + year});
+        return;
+      }
+      Plotly.newPlot("forcing-chart", traces, {
+        title: "Forcing — " + year,
+        xaxis: {title: "Date"},
+        margin: {t: 40, r: 20},
+      });
+    });
+}
+
+// Load on page ready
+loadCharts();
+</script>
+{% endblock %}

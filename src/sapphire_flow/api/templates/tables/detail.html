@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}{{ table_name }} — SAPPHIRE Flow{% endblock %}
+{% block content %}
+<h2>{{ table_name }}</h2>
+<p class="muted">{{ total_rows | int }} rows total. Showing {{ offset + 1 }}–{{ offset + row_count }}.</p>
+<div class="table-container" id="table-wrapper">
+  {% include "tables/_rows.html" %}
+</div>
+{% endblock %}

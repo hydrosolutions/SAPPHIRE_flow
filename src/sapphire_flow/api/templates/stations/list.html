@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Stations — SAPPHIRE Flow{% endblock %}
+{% block content %}
+<h2>Stations</h2>
+<p class="muted">{{ stations | length }} stations.</p>
+<table>
+  <thead>
+    <tr>
+      <th>Code</th>
+      <th>Name</th>
+      <th>Kind</th>
+      <th>Status</th>
+      <th>Network</th>
+      <th>Lon</th>
+      <th>Lat</th>
+      <th style="text-align:right">Observations</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for s in stations %}
+    <tr>
+      <td><a href="/stations/{{ s.id }}/">{{ s.code }}</a></td>
+      <td>{{ s.name }}</td>
+      <td>
+        {% if s.kind == "river" %}<span class="badge badge-blue">river</span>
+        {% elif s.kind == "lake" %}<span class="badge badge-green">lake</span>
+        {% elif s.kind == "weather" %}<span class="badge badge-yellow">weather</span>
+        {% else %}{{ s.kind }}{% endif %}
+      </td>
+      <td>{{ s.status }}</td>
+      <td>{{ s.network }}</td>
+      <td>{{ s.lon }}</td>
+      <td>{{ s.lat }}</td>
+      <td style="text-align:right">{{ "{:,}".format(s.obs_count) }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

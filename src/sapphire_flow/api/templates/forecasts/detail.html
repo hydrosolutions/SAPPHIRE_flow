@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}Forecast {{ forecast.id | string | truncate(8, True, '...') }}{% endblock %}
+{% block content %}
+<h2>Forecast Detail</h2>
+
+<div class="card" style="margin-bottom:2rem;">
+  <table>
+    <tr><td><strong>ID</strong></td><td>{{ forecast.id }}</td></tr>
+    <tr><td><strong>Station</strong></td><td><a href="/stations/{{ forecast.station_id }}/">{{ forecast.station_id }}</a></td></tr>
+    <tr><td><strong>Model</strong></td><td>{{ forecast.model_id }}</td></tr>
+    <tr><td><strong>Parameter</strong></td><td>{{ forecast.parameter }}</td></tr>
+    <tr><td><strong>Issued At</strong></td><td>{{ forecast.issued_at }}</td></tr>
+    <tr><td><strong>Status</strong></td><td>{{ forecast.status }}</td></tr>
+    <tr><td><strong>Representation</strong></td><td>{{ forecast.representation }}</td></tr>
+    <tr><td><strong>QC Status</strong></td><td>{{ forecast.qc_status }}</td></tr>
+    <tr><td><strong>Horizon Hours</strong></td><td>{{ forecast.horizon_hours }}</td></tr>
+  </table>
+</div>
+
+{% if values %}
+<h3>Ensemble Chart</h3>
+<div id="ensemble-chart" style="height:400px;"></div>
+
+<h3>Values ({{ values | length }} points)</h3>
+<div class="table-container">
+<table>
+  <thead>
+    <tr>
+      <th>Lead Time (h)</th>
+      <th>Member / Quantile</th>
+      <th>Value</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for v in values[:200] %}
+    <tr>
+      <td>{{ v.lead_time_hours }}</td>
+      <td>{{ v.member_id }}</td>
+      <td>{{ "%.3f" | format(v.value) if v.value is not none else "" }}</td>
+    </tr>
+    {% endfor %}
+    {% if values | length > 200 %}
+    <tr><td colspan="3" class="muted">... and {{ values | length - 200 }} more</td></tr>
+    {% endif %}
+  </tbody>
+</table>
+</div>
+
+<script>
+fetch("/api/v1/forecasts/{{ forecast.id }}/data.json")
+  .then(r => r.json())
+  .then(data => {
+    const traces = [];
+    if (data.representation === "members" && data.members) {
+      const memberKeys = Object.keys(data.members);
+      memberKeys.forEach((m, i) => {
+        const series = data.members[m];
+        traces.push({
+          x: series.lead_times,
+          y: series.values,
+          mode: "lines",
+          name: "Member " + m,
+          line: {width: 1, color: `hsl(${(i * 360 / memberKeys.length)}, 70%, 50%)`},
+          opacity: 0.6,
+        });
+      });
+    } else if (data.representation === "quantiles" && data.quantiles) {
+      const qKeys = Object.keys(data.quantiles).sort((a, b) => parseFloat(a) - parseFloat(b));
+      qKeys.forEach(q => {
+        const series = data.quantiles[q];
+        const isMedian = parseFloat(q) === 0.5;
+        traces.push({
+          x: series.lead_times,
+          y: series.values,
+          mode: "lines",
+          name: "Q" + q,
+          line: {width: isMedian ? 2 : 1, dash: isMedian ? "solid" : "dash"},
+        });
+      });
+    }
+    Plotly.newPlot("ensemble-chart", traces, {
+      title: "{{ forecast.parameter }} — {{ forecast.representation }}",
+      xaxis: {title: "Lead time (hours)"},
+      yaxis: {title: "{{ forecast.parameter }}"},
+      margin: {t: 40, r: 20},
+    });
+  });
+</script>
+{% else %}
+<p class="muted">No forecast values found.</p>
+{% endif %}
+{% endblock %}
