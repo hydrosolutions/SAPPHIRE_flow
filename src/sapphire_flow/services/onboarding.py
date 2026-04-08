@@ -165,7 +165,7 @@ def _make_skill_fn():  # type: ignore[no-untyped-def]
             thresholds=thresholds,
             flow_regime_config=flow_regime,
             seasons=[],
-            skill_source=SkillSource.HINDCAST,
+            skill_source=SkillSource.HINDCAST_REANALYSIS,
             forcing_type=ForcingType.REANALYSIS,
             clock=lambda: ensure_utc(datetime.now(UTC)),
             uuid_factory=uuid4,
