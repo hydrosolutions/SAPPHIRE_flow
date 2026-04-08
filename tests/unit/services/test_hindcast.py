@@ -233,19 +233,21 @@ class TestNoFutureLeakage:
                 )
 
             # Forcing: past_dynamic covers [lookback_start, issue_time],
-            # future_dynamic covers (issue_time, horizon_end) — teacher forcing
+            # future_dynamic covers (issue_time, horizon_end] — teacher forcing
+            # (+1 step fetched to ensure enough future rows after split)
             import polars as pl
 
             forcing_df = pl.concat(
                 [inputs.data.past_dynamic, inputs.data.future_dynamic]
             ).sort("timestamp")
             forcing_timestamps = forcing_df["timestamp"].to_list()
+            extended_end = ensure_utc(horizon_end + _STEP)
             for ts in forcing_timestamps:
                 assert ts >= lookback_start, (
                     f"forcing timestamp {ts} < lookback_start {lookback_start}"
                 )
-                assert ts < horizon_end, (
-                    f"forcing timestamp {ts} >= horizon_end {horizon_end}"
+                assert ts < extended_end, (
+                    f"forcing timestamp {ts} >= extended_end {extended_end}"
                 )
 
 

@@ -94,7 +94,8 @@ def _assemble_hindcast_inputs(
     parameter: str = "discharge",
 ) -> StationModelInputs | None:
     lookback_start = ensure_utc(issue_time - lookback_steps * time_step)
-    horizon_end = ensure_utc(issue_time + forecast_horizon_steps * time_step)
+    # +1 because the fetch end is exclusive
+    horizon_end = ensure_utc(issue_time + (forecast_horizon_steps + 1) * time_step)
 
     raw_forcing = forcing_source.fetch_reanalysis(
         station_configs=weather_sources,
