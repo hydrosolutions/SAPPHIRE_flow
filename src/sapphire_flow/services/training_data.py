@@ -36,7 +36,7 @@ def _raw_forcing_to_dataframe(
     rows = [
         {"timestamp": r.valid_time, r.parameter: r.value}
         for r in raw_records
-        if r.station_id == station_id and r.parameter in parameters
+        if str(r.station_id) == str(station_id) and r.parameter in parameters
     ]
     if not rows:
         return None
