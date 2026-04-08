@@ -44,13 +44,17 @@ def _build_feature_vector(
     past_dynamic: pl.DataFrame,
     future_dynamic: pl.DataFrame,
     horizon: int,
-) -> np.ndarray:
+) -> np.ndarray | None:
     past_arr = (
         past_dynamic.tail(_LOOKBACK).select(list(_PAST_FEATURES)).to_numpy()
     )  # (_LOOKBACK, 2)
+    if past_arr.shape[0] < _LOOKBACK:
+        return None  # insufficient lookback data
     future_arr = (
         future_dynamic.head(horizon).select(list(_FUTURE_FEATURES)).to_numpy()
     )  # (horizon, 2)
+    if future_arr.shape[0] < horizon:
+        return None  # insufficient future data
     return np.concatenate([past_arr.ravel(), future_arr.ravel()])
 
 
@@ -177,6 +181,11 @@ class LinearRegressionDaily:
         future_dyn = inputs.data.future_dynamic.sort("timestamp").head(horizon)
 
         x_vec = _build_feature_vector(past_dyn, future_dyn, horizon)
+        if x_vec is None:
+            raise ValueError(
+                f"Insufficient data: need {_LOOKBACK} lookback rows and "
+                f"{horizon} future rows"
+            )
 
         coef = art.coefficients[:horizon]  # (horizon, n_features)
         intercept = art.intercepts[:horizon]  # (horizon,)
