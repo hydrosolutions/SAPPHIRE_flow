@@ -210,6 +210,62 @@ thresholds = { k_sigma = 5.0 }
 [[qc_rules.rules]]
 rule_id = "range_check"
 rule_version = "1.0.0"
+parameter = "discharge"
+time_step_seconds = 86400
+thresholds = { value_min = 0.0, value_max = 5000.0 }
+
+[[qc_rules.rules]]
+rule_id = "rate_of_change"
+rule_version = "1.0.0"
+parameter = "discharge"
+time_step_seconds = 86400
+thresholds = { max_rate = 500.0 }
+
+[[qc_rules.rules]]
+rule_id = "spike"
+rule_version = "1.0.0"
+parameter = "discharge"
+time_step_seconds = 86400
+thresholds = { tolerance = 0.5 }
+
+[[qc_rules.rules]]
+rule_id = "gross_outlier"
+rule_version = "1.0.0"
+parameter = "discharge"
+time_step_seconds = 86400
+thresholds = { k_sigma = 5.0 }
+
+[[qc_rules.rules]]
+rule_id = "range_check"
+rule_version = "1.0.0"
+parameter = "water_level"
+time_step_seconds = 86400
+thresholds = { value_min = -5.0, value_max = 30.0 }
+
+[[qc_rules.rules]]
+rule_id = "rate_of_change"
+rule_version = "1.0.0"
+parameter = "water_level"
+time_step_seconds = 86400
+thresholds = { max_rate = 2.0 }
+
+[[qc_rules.rules]]
+rule_id = "spike"
+rule_version = "1.0.0"
+parameter = "water_level"
+time_step_seconds = 86400
+thresholds = { tolerance = 0.5 }
+
+[[qc_rules.rules]]
+rule_id = "gross_outlier"
+rule_version = "1.0.0"
+parameter = "water_level"
+time_step_seconds = 86400
+thresholds = { k_sigma = 5.0 }
+
+[[qc_rules.rules]]
+rule_id = "range_check"
+rule_version = "1.0.0"
 parameter = "water_temperature"
 time_step_seconds = 600
 thresholds = { value_min = -2.0, value_max = 40.0 }
@@ -285,6 +341,7 @@ expected_interval_hours = 0.17
 
 [adapters.river_stations]
 type = "hydro_scraper"
+endpoint = "https://lindas.admin.ch/query"
 max_cache_age_hours = 24
 
 [adapters.river_stations.monitoring]
