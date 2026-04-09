@@ -117,28 +117,154 @@ All observations, forecasts, and weather data reference these standard parameter
 
 ---
 
-## Entity Relationship Diagram
+## Entity Relationship Diagrams
 
-The diagram below shows how the major entities relate to each other. Read as: "one station has many observations", "one model has many artifacts", etc.
+Each diagram below shows one domain. Read as: "one station has many observations", "one model has many artifacts", etc. Tables from other domains appear in grey where they connect across domains.
+
+### Station and Reference Domain
+
+Stations, their catchment basins, flood thresholds, weather source configuration, and grouping.
 
 ```mermaid
 erDiagram
-    %% STATION DOMAIN
     basins ||--o{ stations : "catchment"
     stations ||--o{ station_thresholds : "flood levels"
     stations ||--o{ station_weather_sources : "NWP config"
     stations ||--o{ station_group_members : "membership"
     station_groups ||--o{ station_group_members : "members"
 
-    %% OBSERVATION DOMAIN
+    basins {
+        UUID id PK
+        TEXT name
+        GEOMETRY geometry "catchment polygon"
+        DOUBLE area_km2
+        JSONB attributes "catchment characteristics"
+        JSONB band_geometries "elevation bands"
+    }
+
+    stations {
+        UUID id PK
+        TEXT code "unique per network"
+        TEXT name
+        GEOMETRY location "point"
+        TEXT station_kind "river or weather"
+        TEXT timezone "IANA"
+        TEXT_ARRAY measured_parameters
+        TEXT station_status "onboarding or operational"
+        TEXT network
+    }
+
+    station_thresholds {
+        UUID station_id FK
+        TEXT danger_level
+        TEXT parameter
+        DOUBLE value
+        TEXT source "authority or inferred"
+    }
+
+    station_weather_sources {
+        UUID station_id FK
+        TEXT nwp_source
+        TEXT extraction_type "point or basin_average or elevation_band"
+    }
+
+    station_groups {
+        UUID id PK
+        TEXT name
+    }
+
+    station_group_members {
+        UUID group_id FK
+        UUID station_id FK
+    }
+```
+
+### Observation Domain
+
+Real-time and historical observations with QC flags. Rating curves for water level to discharge conversion.
+
+```mermaid
+erDiagram
     stations ||--o{ observations : "measured values"
     stations ||--o{ rating_curves : "hQ tables"
+    rating_curves ||--o{ observations : "used for derivation"
 
-    %% WEATHER DOMAIN
+    stations {
+        UUID id PK
+        TEXT code
+        TEXT name
+    }
+
+    observations {
+        UUID id PK
+        UUID station_id FK
+        TIMESTAMPTZ timestamp
+        TEXT parameter
+        DOUBLE value
+        TEXT source "measured or derived or manual_import"
+        TEXT qc_status "raw or passed or failed or suspect or missing"
+        JSONB qc_flags "detailed check results"
+        UUID rating_curve_id FK "which curve was used"
+    }
+
+    rating_curves {
+        UUID id PK
+        UUID station_id FK
+        INT version
+        TIMESTAMPTZ valid_from
+        TIMESTAMPTZ valid_to "NULL if active"
+        JSONB points "water level vs discharge pairs"
+        TEXT interpolation "linear or log-linear"
+    }
+```
+
+### Weather Domain
+
+Archived weather forecast data and historical forcing for model training. Values are stored per station as extracted spatial averages, not raw gridded files.
+
+```mermaid
+erDiagram
     stations ||--o{ weather_forecasts : "NWP archive"
     stations ||--o{ historical_forcing : "training data"
 
-    %% MODEL DOMAIN
+    stations {
+        UUID id PK
+        TEXT code
+        TEXT name
+    }
+
+    weather_forecasts {
+        UUID id PK
+        UUID station_id FK
+        TEXT nwp_source
+        TIMESTAMPTZ cycle_time "NWP issue time"
+        TIMESTAMPTZ valid_time
+        TEXT parameter
+        TEXT spatial_type "point or basin_average or elevation_band"
+        INT band_id "elevation band index"
+        INT member_id "ensemble member"
+        DOUBLE value
+    }
+
+    historical_forcing {
+        UUID id PK
+        UUID station_id FK
+        TEXT source "ERA5-Land etc"
+        TEXT version
+        TIMESTAMPTZ valid_time
+        TEXT parameter
+        TEXT spatial_type
+        INT band_id
+        DOUBLE value
+    }
+```
+
+### Model Domain
+
+Model definitions, trained artifacts, station assignments, and runtime state snapshots. Models can be scoped per station or per station group.
+
+```mermaid
+erDiagram
     models ||--o{ model_artifacts : "trained versions"
     models ||--o{ model_assignments : "station config"
     stations ||--o{ model_assignments : "assigned models"
@@ -146,27 +272,284 @@ erDiagram
     station_groups ||--o{ model_artifacts : "group-scoped"
     stations ||--o{ model_states : "warm-start state"
 
-    %% FORECAST DOMAIN
+    stations {
+        UUID id PK
+        TEXT code
+        TEXT name
+    }
+
+    station_groups {
+        UUID id PK
+        TEXT name
+    }
+
+    models {
+        TEXT id PK "entry point name"
+        TEXT display_name
+        TEXT artifact_scope "station or group"
+    }
+
+    model_artifacts {
+        UUID id PK
+        TEXT model_id FK
+        UUID station_id FK "NULL if group-scoped"
+        UUID group_id FK "NULL if station-scoped"
+        TEXT status "training or pending_approval or active or superseded"
+        TEXT artifact_path
+        TIMESTAMPTZ training_period_start
+        TIMESTAMPTZ training_period_end
+    }
+
+    model_assignments {
+        UUID station_id FK
+        TEXT model_id FK
+        INTERVAL time_step
+        BOOL is_active
+        INT priority "fallback order"
+    }
+
+    model_states {
+        UUID id PK
+        UUID station_id FK
+        TEXT model_id FK
+        TIMESTAMPTZ issue_time
+        BYTEA state_bytes
+    }
+```
+
+### Forecast Domain
+
+Operational forecasts and historical simulations (hindcasts). Each forecast contains an ensemble of time series values (members or quantiles). Forecaster adjustments are tracked with full audit trail.
+
+```mermaid
+erDiagram
     stations ||--o{ forecasts : "predictions"
     models ||--o{ forecasts : "produced by"
     model_artifacts ||--o{ forecasts : "artifact used"
     forecasts ||--o{ forecast_values : "time series"
     forecasts ||--o{ forecast_adjustments : "edits"
+    users ||--o{ forecast_adjustments : "who edited"
     stations ||--o{ hindcast_forecasts : "historical runs"
+    model_artifacts ||--o{ hindcast_forecasts : "artifact used"
     hindcast_forecasts ||--o{ hindcast_values : "time series"
 
-    %% SKILL DOMAIN
+    stations {
+        UUID id PK
+        TEXT code
+        TEXT name
+    }
+
+    models {
+        TEXT id PK
+        TEXT display_name
+    }
+
+    model_artifacts {
+        UUID id PK
+        TEXT status
+    }
+
+    users {
+        UUID id PK
+        TEXT display_name
+    }
+
+    forecasts {
+        UUID id PK
+        UUID station_id FK
+        TEXT model_id FK
+        UUID model_artifact_id FK
+        TIMESTAMPTZ issued_at
+        TEXT representation "members or quantiles"
+        TEXT status "raw or reviewed or published"
+        INT version
+    }
+
+    forecast_values {
+        UUID id PK
+        UUID forecast_id FK
+        TIMESTAMPTZ valid_time
+        INT lead_time_hours
+        INT member_id "NULL if quantile"
+        DOUBLE quantile "NULL if member"
+        DOUBLE value
+    }
+
+    forecast_adjustments {
+        UUID id PK
+        UUID forecast_id FK
+        UUID forecaster_id FK
+        TIMESTAMPTZ adjusted_at
+        TEXT rationale
+        JSONB adjustments
+    }
+
+    hindcast_forecasts {
+        UUID id PK
+        UUID station_id FK
+        TEXT model_id FK
+        TIMESTAMPTZ hindcast_step "simulated issue time"
+        TEXT forcing_type "nwp_archive or reanalysis"
+    }
+
+    hindcast_values {
+        UUID id PK
+        UUID hindcast_forecast_id FK
+        TIMESTAMPTZ valid_time
+        INT lead_time_hours
+        INT member_id
+        DOUBLE quantile
+        DOUBLE value
+    }
+```
+
+### Skill Domain
+
+Verification metrics and diagnostic diagrams, broken down by lead time, season, and flow regime. Scores are marked stale when underlying data changes.
+
+```mermaid
+erDiagram
     stations ||--o{ skill_scores : "verification"
+    model_artifacts ||--o{ skill_scores : "which artifact"
+    flow_regime_configs ||--o{ skill_scores : "regime context"
     stations ||--o{ skill_diagrams : "diagnostics"
+    model_artifacts ||--o{ skill_diagrams : "which artifact"
+    flow_regime_configs ||--o{ skill_diagrams : "regime context"
     stations ||--o{ flow_regime_configs : "regime thresholds"
 
-    %% OPS DOMAIN
-    stations ||--o{ alerts : "flood + pipeline"
+    stations {
+        UUID id PK
+        TEXT code
+        TEXT name
+    }
 
-    %% AUTH DOMAIN
+    model_artifacts {
+        UUID id PK
+        TEXT status
+    }
+
+    skill_scores {
+        UUID id PK
+        UUID station_id FK
+        TEXT model_id
+        INT lead_time_hours
+        TEXT season "NULL if all-season"
+        TEXT flow_regime "NULL if all-regime"
+        TEXT metric "CRPS or NSE or KGE etc"
+        DOUBLE score
+        INT sample_size
+        BOOLEAN is_stale
+    }
+
+    skill_diagrams {
+        UUID id PK
+        UUID station_id FK
+        TEXT model_id
+        TEXT diagram_type "reliability or ROC or rank_histogram"
+        TEXT threshold_level
+        JSONB data
+    }
+
+    flow_regime_configs {
+        UUID id PK
+        UUID station_id FK
+        DOUBLE p50 "median flow"
+        DOUBLE p90 "high flow threshold"
+        INT observation_count
+    }
+```
+
+### Operations Domain
+
+Flood alerts, observation alerts, and pipeline health monitoring. Alert lifecycle: raised, acknowledged, resolved.
+
+```mermaid
+erDiagram
+    stations ||--o{ alerts : "flood and pipeline"
+
+    stations {
+        UUID id PK
+        TEXT code
+        TEXT name
+    }
+
+    alerts {
+        UUID id PK
+        UUID station_id FK "NULL for system-wide"
+        TEXT source "forecast or observation or pipeline"
+        TEXT alert_level
+        TEXT status "raised or acknowledged or resolved"
+        DOUBLE trigger_probability "for forecast alerts"
+        DOUBLE trigger_value "for observation alerts"
+        TIMESTAMPTZ triggered_at
+        TIMESTAMPTZ acknowledged_at
+        TIMESTAMPTZ resolved_at
+        TIMESTAMPTZ notified_at
+    }
+
+    pipeline_health {
+        BIGSERIAL id PK
+        TEXT check_type
+        TEXT status "ok or warning or critical"
+        TEXT subject
+        JSONB detail
+    }
+
+    dead_letter_queue {
+        BIGSERIAL id PK
+        TEXT source_table
+        JSONB payload
+        TEXT error
+        TEXT resolution "replayed or discarded"
+    }
+```
+
+### Auth Domain
+
+User accounts with role-based access, scoped API keys for external consumers, and a full audit log.
+
+```mermaid
+erDiagram
     users ||--o{ access_tokens : "API keys"
     users ||--o{ refresh_tokens : "sessions"
-    users ||--o{ forecast_adjustments : "audit"
+    users ||--o{ forecast_adjustments : "edits"
+
+    users {
+        UUID id PK
+        TEXT username "email"
+        TEXT display_name
+        TEXT role "org_admin or it_admin or model_admin or forecaster"
+        BOOLEAN is_active
+    }
+
+    access_tokens {
+        UUID id PK
+        TEXT consumer_name "e.g. DRRMA or hydropower operator"
+        JSONB scope "station and parameter restrictions"
+        UUID created_by FK
+    }
+
+    refresh_tokens {
+        UUID id PK
+        UUID user_id FK
+        TIMESTAMPTZ expires_at
+    }
+
+    forecast_adjustments {
+        UUID id PK
+        UUID forecaster_id FK
+        TEXT rationale
+    }
+
+    audit_log {
+        BIGSERIAL id PK
+        TEXT event_type
+        UUID actor_id
+        TEXT actor_type "user or api_key or system"
+        TEXT target_type
+        TEXT target_id
+        JSONB detail
+    }
 ```
 
 ---
