@@ -1,0 +1,69 @@
+[[stations]]
+code = "2004"
+name = "Bern, Schönau (Aare)"
+lon = 7.4513
+lat = 46.9321
+station_kind = "river"
+network = "BAFU"
+ownership = "foreign"
+measured_parameters = ["discharge", "water_level"]
+
+[[stations]]
+code = "2009"
+name = "Brugg (Aare)"
+lon = 8.2077
+lat = 47.4862
+station_kind = "river"
+network = "BAFU"
+ownership = "foreign"
+measured_parameters = ["discharge", "water_level"]
+
+[[stations]]
+code = "2033"
+name = "Andermatt (Reuss)"
+lon = 8.5948
+lat = 46.6324
+station_kind = "river"
+network = "BAFU"
+ownership = "foreign"
+measured_parameters = ["discharge"]
+
+[[stations]]
+code = "2044"
+name = "Hagneck (Aarezufluss zum Bielersee)"
+lon = 7.1737
+lat = 47.0542
+station_kind = "river"
+network = "BAFU"
+ownership = "foreign"
+measured_parameters = ["discharge"]
+
+[[stations]]
+code = "2091"
+name = "Brienzwiler (Aare)"
+lon = 8.0810
+lat = 46.7499
+station_kind = "river"
+network = "BAFU"
+ownership = "foreign"
+measured_parameters = ["discharge", "water_level"]
+
+[[stations]]
+code = "2159"
+name = "Basel, Rheinhalle (Rhein)"
+lon = 7.6170
+lat = 47.5596
+station_kind = "river"
+network = "BAFU"
+ownership = "foreign"
+measured_parameters = ["discharge", "water_level"]
+
+[[stations]]
+code = "2085"
+name = "Bellinzona (Ticino)"
+lon = 9.0207
+lat = 46.1928
+station_kind = "river"
+network = "BAFU"
+ownership = "foreign"
+measured_parameters = ["discharge", "water_level"]

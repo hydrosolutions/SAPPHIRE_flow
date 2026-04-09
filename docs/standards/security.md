@@ -413,7 +413,7 @@ Retention: permanent. Included in database backup.
 | A07 Auth Failures | MFA mandatory. Account lockout. Short-lived JWTs. Refresh token rotation. |
 | A08 Data Integrity Failures | Append-only audit log. Forecast adjustments are immutable records. Model artifacts verified by SHA-256 hash. |
 | A09 Logging Failures | All auth events logged. Structured JSON logging. Audit log is permanent. |
-| A10 SSRF | No user-supplied URLs in adapter calls. NWP source URLs are deployment config only. |
+| A10 SSRF | No user-supplied URLs in adapter calls. All adapter endpoint URLs (NWP sources, BAFU LINDAS, MeteoSwiss STAC) are deployment config only — read from `config.toml` at startup, never from user input or request parameters. |
 
 ## Threat model: host compromise
 

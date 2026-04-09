@@ -2934,7 +2934,8 @@ src/sapphire_flow/
 ├── api/            # FastAPI routes (JSON + CSV export)              — not yet implemented
 ├── bulletin/       # Excel bulletin generation                      — not yet implemented
 ├── dashboard/      # HTMX review dashboard                         — not yet implemented
-└── preprocessing/  # NWP spatial extraction (GridExtractor)         — not yet implemented
+├── preprocessing/  # NWP spatial extraction (GridExtractor)         — not yet implemented
+└── tools/          # CLI utilities (fixture recording, data inspection)
 ```
 
 `SAPPHIRE_CONFIG` environment variable enables deployment profile switching. `load_config()` reads this env var when no explicit path is provided. Default profile: `config.toml` (Swiss). Other profiles in `config/` directory.
@@ -2945,6 +2946,11 @@ src/sapphire_flow/
 flows/ and api/  →  services/  →  store/
                  →  adapters/
                  →  preprocessing/
+
+tools/  →  adapters/
+        →  config/
+        →  types/
+        →  protocols/
 ```
 
 - **flows/ and api/**: orchestration and HTTP. No business logic. May call `services/`, `adapters/`, and `preprocessing/` directly.
@@ -2952,6 +2958,7 @@ flows/ and api/  →  services/  →  store/
 - **store/**: data access behind Protocols. No business logic.
 - **adapters/**: external data source I/O. Does not call services or stores — returns domain types to the caller.
 - **preprocessing/**: transforms adapter output (e.g. GridExtractor). Same constraints as adapters.
+- **tools/**: CLI utilities (fixture recording, data inspection). May import from `adapters/`, `config/`, `types/`, and `protocols/`. May not import from `services/`, `store/`, or `flows/`.
 - **models/**: pure functions. No DB, no I/O. Model artifact loading/saving is handled by the flow or service layer — models receive a pre-loaded artifact object (for inference) or return an artifact object (from training). The I/O is external to the model package.
 
 ### Test layer mapping
@@ -2965,7 +2972,7 @@ Follows from the layering rule. See CLAUDE.md for test writing conventions.
 | `preprocessing/` | Unit | Pure spatial transforms. Known-answer tests with synthetic `xr.Dataset` inputs: (1) uniform grid → basin average equals constant, (2) gradient grid → analytically verifiable average for rectangular basins, (3) elevation-band extraction with 2-3 bands summing to full basin. No real NWP files needed. |
 | `services/` | Unit | Bulk of test coverage. Fake stores injected via Protocols. No DB, no I/O. |
 | `store/` | Integration | Thin tests against real PostgreSQL (test container). Verify SQL correctness, not business logic. |
-| `adapters/` | Integration | Recorded responses (VCR-style) for external APIs. Contract tests to detect upstream format changes. |
+| `adapters/` | Integration | Recorded responses (VCR-style) for external APIs. Contract tests to detect upstream format changes. **Exception**: replay fixture tests (e.g., `test_reference_dataset.py`) are classified as unit tests — they read local Parquet files with no network or DB I/O. |
 | `flows/` | Integration | Lightweight orchestration tests. Verify task wiring, not business logic (already covered in `services/`). |
 | `api/` | Integration | FastAPI test client. Verify routing, serialization, status codes. Business logic tested via `services/`. |
 | End-to-end | E2E | Small reference dataset through full ingest → forecast → alert cycle. Few tests, slow, run in CI not locally. |

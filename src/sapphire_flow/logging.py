@@ -20,13 +20,16 @@ def _shared_processors() -> list[structlog.types.Processor]:
 
 
 def _apply_structlog_config(
-    processors: list[structlog.types.Processor], config_level: str
+    processors: list[structlog.types.Processor],
+    config_level: str,
+    renderer: structlog.types.Processor | None = None,
 ) -> None:
-    renderer: structlog.types.Processor = (
-        structlog.dev.ConsoleRenderer()
-        if os.environ.get("SAPPHIRE_ENV") == "dev"
-        else structlog.processors.JSONRenderer()
-    )
+    if renderer is None:
+        renderer = (
+            structlog.dev.ConsoleRenderer()
+            if os.environ.get("SAPPHIRE_ENV") == "dev"
+            else structlog.processors.JSONRenderer()
+        )
 
     wrap = structlog.stdlib.ProcessorFormatter.wrap_for_formatter
     structlog.configure(
@@ -84,6 +87,12 @@ def configure_prefect_logging(config_level: str = "INFO") -> None:
 
 def configure_api_logging(config_level: str = "INFO") -> None:
     _apply_structlog_config(_shared_processors(), config_level)
+
+
+def configure_cli_logging(config_level: str = "INFO") -> None:
+    shared = _shared_processors()
+    renderer = structlog.dev.ConsoleRenderer()
+    _apply_structlog_config(shared, config_level, renderer=renderer)
 
 
 def configure_test_logging() -> None:

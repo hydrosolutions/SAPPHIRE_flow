@@ -72,6 +72,17 @@ def configure_api_logging(config_level: str = "INFO") -> None:
     _apply_structlog_config(_shared_processors(), config_level)
 ```
 
+### `configure_cli_logging()`
+
+Called once at entry in CLI tools (e.g., `record_fixtures.py`). No Prefect processor. Uses `_apply_structlog_config()` with the shared renderer selection (JSON in prod, console in dev).
+
+```python
+def configure_cli_logging(config_level: str = "INFO") -> None:
+    _apply_structlog_config(_shared_processors(), config_level)
+```
+
+Functionally identical to `configure_api_logging()` — both delegate to `_apply_structlog_config()` with the shared processor chain. Kept as a separate entry point for semantic clarity (CLI tools vs API server). `configure_test_logging()` is intentionally excluded from this refactor — it hardcodes `ConsoleRenderer` and `DEBUG` level without going through `_apply_structlog_config()`.
+
 ### `configure_test_logging()`
 
 Called in test fixtures or `conftest.py`. Uses shared processors (no Prefect), always console, DEBUG level.
@@ -220,7 +231,8 @@ Examples:
 | `forecast` | `run_started`, `run_completed`, `stored`, `qc_passed`, `qc_failed`, `qc_suspect` |
 | `alert` | `raised`, `resolved`, `suppressed` |
 | `model` | `loaded`, `prediction_completed` |
-| `station` | `onboarding_started`, `status_changed` |
+| `station` | `onboarding_started`, `status_changed`, `fetch_completed` |
+| `fixture` | `loaded`, `recording_started`, `fetch_completed`, `file_written`, `recording_failed` |
 | `pipeline` | `health_check_completed` |
 | `request` | `started`, `completed` |
 
