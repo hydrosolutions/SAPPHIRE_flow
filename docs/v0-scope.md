@@ -347,10 +347,10 @@ Target per-step budgets (~170 Swiss stations; scale linearly for larger deployme
 
 ### E2. Replay adapters
 
-Every external dependency goes through an adapter Protocol. Test replay adapters serve recorded data with `simulated_time` parameter:
-- `ReplayNwpAdapter` → recorded GRIB2/Parquet from fixtures
-- `ReplayStationAdapter` → recorded observation Parquet from fixtures
-- `ReplayForecastInterfaceLoader` → recorded `ModelOutput` fixtures (Parquet + JSON sidecar) for FI-wrapped model testing (test utility, not a Protocol implementor — see Plan 020 Step 4)
+Every external dependency goes through an adapter Protocol. Test replay adapters serve recorded data (gating mechanism is adapter-specific: `ReplayStationAdapter` uses a `simulated_time` callback for upper-bound filtering; `ReplayNwpAdapter` uses presence-based gating — if no fixture exists for the requested `cycle_time`, it raises `AdapterError`):
+- `ReplayNwpAdapter` → recorded Zarr fixtures (`GriddedForecast` path only — v0 has only gridded NWP; matches "each adapter returns one concrete type" principle). Plan 021.
+- `ReplayStationAdapter` → recorded observation Parquet from fixtures. Plan 020.
+- `ReplayForecastInterfaceLoader` → recorded `ModelOutput` fixtures (Parquet + JSON sidecar) for FI-wrapped model testing (test utility, not a Protocol implementor — see Plan 020 Step 3)
 
 Full forecast cycle runs in seconds using recorded data — no network, no waiting.
 

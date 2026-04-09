@@ -121,32 +121,52 @@ All observations, forecasts, and weather data reference these standard parameter
 
 The diagram below shows how the major entities relate to each other. Read as: "one station has many observations", "one model has many artifacts", etc.
 
-```
-                    parameters
-                        |
-    ┌───────────────────┼───────────────────┐
-    |                   |                   |
- basins             stations            station_groups
-    |            /    |    \                 |
-    └──→ basin_id  thresholds  weather    group_members
-              |    assignments  sources       |
-              |        |                     |
-         observations  |              model_artifacts
-              |    model_states              |
-         rating_curves                   forecasts
-                                       /    |    \
-                              forecast   hindcast  forecast
-                              _values  _forecasts  _adjustments
-                                          |
-                                    hindcast_values
-                                          
-                              skill_scores   skill_diagrams
-                                    |              |
-                              flow_regime_configs ─┘
-                              
-              alerts    pipeline_health    dead_letter_queue
-              
-              users ──→ access_tokens / refresh_tokens / audit_log
+```mermaid
+erDiagram
+    %% STATION DOMAIN
+    basins ||--o{ stations : "catchment"
+    stations ||--o{ station_thresholds : "flood levels"
+    stations ||--o{ station_weather_sources : "NWP config"
+    stations ||--o{ station_group_members : "membership"
+    station_groups ||--o{ station_group_members : "members"
+
+    %% OBSERVATION DOMAIN
+    stations ||--o{ observations : "measured values"
+    stations ||--o{ rating_curves : "hQ tables"
+
+    %% WEATHER DOMAIN
+    stations ||--o{ weather_forecasts : "NWP archive"
+    stations ||--o{ historical_forcing : "training data"
+
+    %% MODEL DOMAIN
+    models ||--o{ model_artifacts : "trained versions"
+    models ||--o{ model_assignments : "station config"
+    stations ||--o{ model_assignments : "assigned models"
+    stations ||--o{ model_artifacts : "station-scoped"
+    station_groups ||--o{ model_artifacts : "group-scoped"
+    stations ||--o{ model_states : "warm-start state"
+
+    %% FORECAST DOMAIN
+    stations ||--o{ forecasts : "predictions"
+    models ||--o{ forecasts : "produced by"
+    model_artifacts ||--o{ forecasts : "artifact used"
+    forecasts ||--o{ forecast_values : "time series"
+    forecasts ||--o{ forecast_adjustments : "edits"
+    stations ||--o{ hindcast_forecasts : "historical runs"
+    hindcast_forecasts ||--o{ hindcast_values : "time series"
+
+    %% SKILL DOMAIN
+    stations ||--o{ skill_scores : "verification"
+    stations ||--o{ skill_diagrams : "diagnostics"
+    stations ||--o{ flow_regime_configs : "regime thresholds"
+
+    %% OPS DOMAIN
+    stations ||--o{ alerts : "flood + pipeline"
+
+    %% AUTH DOMAIN
+    users ||--o{ access_tokens : "API keys"
+    users ||--o{ refresh_tokens : "sessions"
+    users ||--o{ forecast_adjustments : "audit"
 ```
 
 ---
