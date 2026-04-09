@@ -601,6 +601,42 @@ When a new static attribute or historical dynamic predictor is introduced (e.g. 
 
 This ensures that adding new features does not require re-downloading existing data, and all stations receive the same new feature from the same dataset version.
 
+#### Sequencing
+
+```
+0.1 → (0.2 ∥ 0.3) → 0.4 → 0.5
+        0.6 (parallel — reads deployment TOML only, independent of downloads)
+```
+
+0.2 and 0.3 are independent downloads — run in parallel after AOI is defined. 0.4 verifies both. 0.5 registers datasets in catalog. 0.6 registers parameters from deployment TOML — independent of downloads, runs in parallel from 0.1.
+
+```mermaid
+flowchart TD
+    trigger["👤 System admin<br/>(one-time per deployment)"]
+
+    s0_1["0.1 Define area of interest<br/>(bounding box or watershed union)"]
+
+    subgraph Downloads ["0.2 + 0.3 — parallel downloads"]
+        direction LR
+        s0_2["0.2 Download static<br/>attribute datasets"]
+        s0_3["0.3 Download historical<br/>dynamic datasets"]
+    end
+
+    s0_4["0.4 Verify completeness<br/>(spatial + temporal coverage)"]
+    s0_5["0.5 Register datasets in catalog"]
+    s0_6["0.6 Register parameters<br/>(from deployment TOML)"]
+
+    flow5["Flow 5 — Station onboarding"]
+
+    trigger --> s0_1
+    s0_1 --> Downloads
+    s0_1 --> s0_6
+    Downloads --> s0_4
+    s0_4 --> s0_5
+    s0_5 -.-> flow5
+    s0_6 -.-> flow5
+```
+
 #### v0 implementation
 
 For v0, CAMELS-CH already bundles static attributes and historical forcing in a single ZIP download from Zenodo. The current `scripts/onboard.py --download` effectively performs steps 0.2 + 0.3 combined. Formalizing this as Flow 0 is a design-level change that prepares the architecture for v1 without requiring immediate code changes — the existing download step is retroactively recognized as a deployment onboarding step.
@@ -1310,26 +1346,34 @@ Dependencies: Requires station onboarding (Flow 5) to have completed for target 
 
 Registers a new model type, validates its compatibility with the system, runs the full training + verification pipeline, evaluates a skill gate, and assigns the model to stations or groups. Reuses services from Flows 6/7/8 — does NOT call `train_models` flow; it composes the same underlying service layer directly to interpose the skill gate between training and promotion. Distinct from Flow 5 step 5.11 (which handles the model readiness branch for a specific station during station onboarding) — Flow 13 handles onboarding the model type itself before any station assignment can occur.
 
-M.0 Scope determination (flow-layer preamble — resolves station_ids/group_ids to TrainingUnits)
+```mermaid
+flowchart TD
+    trigger["👤 Model admin<br/>(on-demand)"]
 
-```
-┌─────────────────────────────────────────────────────┐
-│  Flow 13 — Model onboarding (per unit)              │
-│                                                     │
-│  M.1 Registration                                   │
-│    ↓                                                │
-│  M.2 Compatibility validation                       │
-│    ↓                                                │
-│  M.3 Initial training → Flow 6 (T.1–T.3)           │
-│    ↓                                                │
-│  M.4 Hindcast verification → Flow 7                 │
-│    ↓                                                │
-│  M.5 Skill gate → Flow 8                            │
-│    ↓                                                │
-│  M.6 Promotion decision                             │
-│    ↓                                                │
-│  M.7 Station/group assignment                       │
-└─────────────────────────────────────────────────────┘
+    m0["M.0 Determine scope<br/>(stations/groups → TrainingUnits)"]
+    m1["M.1 Register model<br/>(discover + persist ModelRecord)"]
+    m2["M.2 Compatibility validation<br/>(protocol, features, time step)<br/><i>per-unit skip on failure</i>"]
+    m2b["M.2b Smoke test<br/>(synthetic train → predict round-trip)<br/><i>per-unit skip on failure</i>"]
+
+    subgraph Training ["Reuses Flow 6/7/8 services"]
+        direction TB
+        m3["M.3 Initial training<br/>(T.1–T.3 → artifact in TRAINING)"]
+        m4["M.4 Hindcast verification<br/>(→ Flow 7)"]
+        m5["M.5 Skill gate<br/>(→ Flow 8, worst-across-strata)"]
+        m3 --> m4 --> m5
+    end
+
+    m6["M.6 Promotion decision<br/>(v0: auto-promote to ACTIVE;<br/>v1: PENDING_APPROVAL if champion)"]
+    m7["M.7 Station/group assignment<br/>(create ModelAssignment records)"]
+
+    trigger --> m0
+    m0 --> m1
+    m1 --> m2
+    m2 --> m2b
+    m2b --> m3
+    m5 -- "gate passed" --> m6
+    m5 -. "gate failed" .-> stop["Manual retry<br/>or discard"]
+    m6 --> m7
 ```
 
 #### Steps
