@@ -16,17 +16,32 @@ SAPPHIRE Flow processes data through approximately 13 data flows organised in th
 
 **System boundary.** SAPPHIRE ingests weather and station data, runs forecast models, stores results, and serves them via a REST API. Dashboard presentation, threshold-based alerting, and bulletin distribution are DHM's responsibility — DHM systems consume the REST API. Pipeline health monitoring is inside the SAPPHIRE boundary and reports to IT/operations staff.
 
-```
-┌───────────────────────────────────────────────────────────────────────────────────┐
-│                              SAPPHIRE Flow                                        │
-│                                                                                   │
-│  SAPPHIRE Data Gateway ──→  Weather Ingest ──→ Forecast Models ──→ Store ──→ API ──→ DHM systems
-│    (ECMWF IFS)          │                                               │         │  (dashboard,
-│                         │                                               │         │   alerting,
-│  DHM Stations      ─────→  Obs Ingest ──→ QC ──→ Store ──────────→ API ──→         bulletins)
-│                         │                                               │         │
-│                         │  Pipeline Watchdog (every 10 min) ──→ IT/Ops │         │
-└───────────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph LR
+    subgraph External Sources
+        GW["SAPPHIRE Data Gateway<br/>(ECMWF IFS)"]
+        DHM["DHM Stations"]
+    end
+
+    subgraph SAPPHIRE Flow
+        WI["Weather<br/>Ingest"] --> FM["Forecast<br/>Models"] --> ST["Store"]
+        OI["Obs Ingest"] --> QC["QC"] --> ST
+        ST --> API["REST API"]
+        PW["Pipeline Watchdog<br/>(every 10 min)"]
+    end
+
+    subgraph DHM Systems
+        DB["Dashboard"]
+        AL["Alerting"]
+        BU["Bulletins"]
+    end
+
+    GW --> WI
+    DHM --> OI
+    API --> DB
+    API --> AL
+    API --> BU
+    PW --> ITOPS["IT / Operations"]
 ```
 
 ---
