@@ -57,10 +57,7 @@ graph LR
 
 | Step | What happens | Input | Output |
 |------|-------------|-------|--------|
-| 1.1 | Fetch NWP forcing | NWP source config, cycle time | Gridded forecast grid, or per-station pre-extracted weather values |
-| 1.2 | Archive raw NWP grid (conditional) | Gridded forecast from 1.1 | Raw gridded data persisted to storage |
-| 1.3 | Extract spatial averages (conditional) | Raw grid + station basin geometries | Per-station basin-average or elevation-band weather values |
-| 1.4 | Archive NWP extractions (conditional) | All per-station extractions for this source | Extracted values persisted to store |
+| 1.1 | Fetch NWP forcing from Data Gateway | NWP source config, cycle time | Pre-extracted per-station weather values |
 | 1.5 | Post-process NWP | Extracted weather values + historical archive | Bias-corrected / calibrated per-station weather values (pass-through initially) |
 | 1.6 | Fetch recent QC'd observations | Station configs, lookback window | Recent quality-controlled river and weather observations from store |
 | 1.7 | Prepare model inputs | Post-processed weather values, observations, station configs | Validated input bundles grouped by model and station or station group |
@@ -69,13 +66,13 @@ graph LR
 | 1.10 | Forecast QC | Forecast ensembles, QC rule set | QC flags per ensemble; QC_FAILED triggers model fallback |
 | 1.11 | Store forecast results | Forecast ensembles + model artefact version | Forecasts persisted to store; immediately available via REST API |
 
-Steps 1.2, 1.3, 1.4, and 1.9 are conditional — see notes below.
+Step 1.9 is conditional — pass-through until sufficient forecast archive exists for bias correction.
 
 > **Forecasts and observations are available via the REST API. Threshold checking and alerting are handled by DHM's systems.**
 
 #### Notes
 
-**Nepal v1 — Data Gateway.** ECMWF IFS data arrives pre-extracted at station level from the SAPPHIRE Data Gateway. Steps 1.2, 1.3, and 1.4 are therefore skipped in the Nepal deployment — archiving is handled upstream by the Gateway. Step 1.1 receives pre-extracted per-station weather values directly.
+**Data Gateway.** ECMWF IFS data arrives pre-extracted at basin level from the SAPPHIRE Data Gateway — gridded archiving and spatial extraction are handled upstream by the Gateway. In deployments without a Data Gateway (e.g. the Swiss deployment using ICON-CH2-EPS), three additional steps run between 1.1 and 1.5: archive the raw NWP grid, extract spatial averages per basin, and archive the extractions.
 
 **NWP lateness fallback.** When an expected NWP delivery is late:
 1. Wait up to 3 hours (configurable) with exponential backoff.
@@ -87,7 +84,7 @@ Every stored forecast record carries the NWP cycle reference time used as forcin
 **Multi-model fallback.** Each station can have multiple forecast models assigned in priority order. If a model fails at runtime (step 1.8) or its output fails QC (step 1.10), the flow automatically tries the next model by priority. The fallback model's identifier is recorded on the stored forecast for traceability.
 
 **Sequencing.** The cycle runs in three phases:
-- **Phase A** (per NWP source, parallel across sources): steps 1.1 → 1.2 → 1.3 → 1.4 → 1.5
+- **Phase A** (per NWP source, parallel across sources): steps 1.1 → 1.5
 - **Step 1.6** (observation fetch) runs in parallel with Phase A
 - **Phase B** (per model and station or group, parallel across units): steps 1.7 → 1.8 → 1.9 → 1.10 → 1.11 — starts only after both Phase A and step 1.6 complete
 
