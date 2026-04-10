@@ -34,7 +34,10 @@ One Dockerfile for `prefect-worker-ops`, `prefect-worker-hindcast`, `prefect-wor
 | `pg_data` | `/var/lib/postgresql/data` | postgres | PostgreSQL data directory | v0+v1 |
 | `model_artifacts` | `/data/artifacts` | prefect-worker (rw) [v0], prefect-worker-ops (ro), prefect-worker-hindcast (ro), prefect-worker-training (rw), api (ro) | Trained model files | v0+v1 |
 | `cold_storage` | `/data/cold` | prefect-worker-ops (rw), prefect-worker-hindcast (ro), api (ro) | Parquet archive | **v1** (§A2) |
+| `nwp_grids` | `/data/nwp_grids` | prefect-worker (rw, v0) | NWP Zarr archive hot tier | v0+ |
 | `prefect_data` | `/data/prefect` | prefect-server | Prefect server state | v0+v1 |
+
+tmpfs mount: `/tmp/sapphire_nwp` (size=4g) on prefect-worker — scratch space for NWP GRIB2-to-Zarr conversion.
 
 Config bind mount: `./config.toml:/app/config.toml:ro` on api and all three workers.
 

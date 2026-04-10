@@ -309,6 +309,8 @@ CMD ["python", "-m", "sapphire_flow"]
 # entrypoint.sh — runs as root, then drops to app user
 set -e
 chown -R app:app /run/secrets 2>/dev/null || true
+chown app:app /data/nwp_grids 2>/dev/null || true
+mkdir -p /tmp/sapphire_nwp && chown app:app /tmp/sapphire_nwp
 exec gosu app "$@"
 ```
 
@@ -333,6 +335,7 @@ The entrypoint pattern above handles secrets access: `chown` makes `/run/secrets
 ### Volume permissions
 
 - `/data/artifacts/` — read-only for `api` container, read-write for `prefect-worker-training` only; read-only for `prefect-worker-ops` and `prefect-worker-hindcast`
+- `/data/nwp_grids/` — read-write for `prefect-worker` (v0); not mounted in `api` container (no direct NWP grid access via API)
 - `/data/cold/` — read-only for `api` container, read-write for `prefect-worker-ops` (archival task) *(v1, §A2)*; read-only for `prefect-worker-hindcast`
 
 ## Model code trust boundary

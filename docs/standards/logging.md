@@ -214,7 +214,7 @@ Ruff rule `T201` bans `print()` — no exceptions.
    )
    ```
    The sub-flow's own `flow_run_id` is set by the auto-processor.
-6. **Services/stores**: Do NOT bind context. They inherit context from the calling flow/task/request. Service code calls `log.info(...)` with event-specific keyword args only.
+6. **Services/stores/adapters**: Do NOT bind context. They inherit context from the calling flow/task/request. Service code calls `log.info(...)` with event-specific keyword args only.
 
 ## Event naming
 
@@ -226,7 +226,8 @@ Examples:
 
 | Entity | Example events |
 |---|---|
-| `nwp` | `fetch_started`, `fetch_completed`, `fetch_failed`, `extraction_completed` |
+| `nwp` | `fetch_started`, `fetch_completed`, `fetch_failed`, `archive_started`, `archive_completed`, `archive_loaded`, `archive_not_found` |
+| `extraction` | `started`, `completed`, `station_skipped` |
 | `observation` | `ingested`, `qc_passed`, `qc_failed`, `qc_suspect` |
 | `forecast` | `run_started`, `run_completed`, `stored`, `qc_passed`, `qc_failed`, `qc_suspect` |
 | `alert` | `raised`, `resolved`, `suppressed` |

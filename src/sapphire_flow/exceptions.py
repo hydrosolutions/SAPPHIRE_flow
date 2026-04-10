@@ -36,3 +36,11 @@ class ModelSmokeTestError(SapphireError):
 
 class ArtifactIntegrityError(SapphireError):
     """SHA-256 hash verification failed on artifact deserialization."""
+
+
+class ExtractionError(SapphireError):
+    """Preprocessing/extraction failure (e.g. GridExtractor)."""
+
+
+class StoreError(SapphireError):
+    """Store data retrieval failure (archive not found, corrupt data)."""

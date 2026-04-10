@@ -9,6 +9,7 @@ from sapphire_flow.types.enums import ModelArtifactStatus
 # Fakes must match: start <= x < end (not start <= x <= end).
 
 if TYPE_CHECKING:
+    from pathlib import Path
     from uuid import UUID
 
     import polars as pl
@@ -76,7 +77,7 @@ if TYPE_CHECKING:
         StationGroup,
         StationWeatherSource,
     )
-    from sapphire_flow.types.weather import WeatherForecastRecord
+    from sapphire_flow.types.weather import GriddedForecast, WeatherForecastRecord
 
 
 @runtime_checkable
@@ -679,3 +680,14 @@ class ForecastQualityChecker(Protocol):
         overrides: list[StationForecastQcOverride],
         baselines: list[ClimBaseline],
     ) -> list[QcFlag]: ...
+
+
+@runtime_checkable
+class NwpGridStore(Protocol):
+    def archive(self, forecast: GriddedForecast, base_path: Path) -> Path:
+        raise NotImplementedError
+
+    def load(
+        self, base_path: Path, nwp_source: str, cycle_time: UtcDatetime
+    ) -> GriddedForecast:
+        raise NotImplementedError

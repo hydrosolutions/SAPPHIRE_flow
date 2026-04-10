@@ -85,16 +85,16 @@ River station parameters use canonical names:
 Weather station parameters use canonical names mapped from adapter-specific
 names at ingest:
 
-| Canonical name | Unit | SMN shortname |
-|---------------|------|---------------|
-| `precipitation` | mm | `rre150h0` |
-| `temperature` | °C | `tre200h0` |
-| `humidity` | % | `ure200h0` |
-| `radiation` | W/m² | `gre000h0` |
-| `wind_speed` | m/s | `fkl010h0` |
-| `snow_depth` | cm | `htoauths` |
-| `reference_et` | mm/h | `erefaoh0` |
-| `swe` | mm | (if available) |
+| Canonical name | Unit | SMN shortname (informational) | NWP shortname (ICON-CH2-EPS) |
+|---------------|------|-------------------------------|------------------------------|
+| `precipitation` | mm | `rre150h0` | `tp` |
+| `temperature` | °C | `tre200h0` | `t_2m` |
+| `humidity` | % | `ure200h0` | `relhum_2m` |
+| `radiation` | W/m² | `gre000h0` | deferred |
+| `wind_speed` | m/s | `fkl010h0` | `u_10m` / `v_10m` |
+| `snow_depth` | cm | `htoauths` | `sd` |
+| `reference_et` | mm/h | `erefaoh0` | — |
+| `swe` | mm | (if available) | — |
 
 Each adapter maps its source-specific parameter names to these canonical
 names. The `parameters` table stores the canonical names.
@@ -158,7 +158,7 @@ max_cache_age_hours = 24
 Each adapter class lives in `adapters/{type}.py` and satisfies the
 corresponding Protocol (`WeatherForecastSource`, `StationDataSource`,
 or `WeatherReanalysisSource`). `WeatherReanalysisSource` is retained for v1 (Nepal)
-but not implemented in v0 — training uses station observations. Config loading
+but not implemented in v0 — training uses basin-averaged gridded data (CAMELS-CH). Config loading
 resolves `${VAR}` references from `os.environ` at startup; unresolved references
 raise immediately.
 
@@ -218,7 +218,7 @@ def fetch_weather_forecasts(adapter, ...):
 ```
 
 - Prefect `@task` handles retry with exponential backoff.
-- Circuit breaker at adapter level: after 5 consecutive failures, pause 30 min.
+- Circuit breaker in the calling flow/task: after 5 consecutive failures, pause 30 min. Circuit breakers track state across invocations (consecutive failure count, pause timer); adapters are stateless data-fetching components, so the breaker logic belongs in the orchestration layer.
 - Stale data beyond `max_cache_age_hours` is flagged but still used for forecasting.
 
 ### Custom exceptions
@@ -238,6 +238,8 @@ All exceptions inherit from `SapphireError`. Authoritative class definitions in
 | `ConfigurationError` | Invalid/missing config | Fail fast at startup |
 | `ModelSmokeTestError` | Model raised exception during smoke test | Flow 13: unit outcome = `FAILED_SMOKE_TEST`; continue other units |
 | `ArtifactIntegrityError` | SHA-256 hash mismatch on fetched artifact bytes | Do not deserialize; task failure |
+| `ExtractionError` | Preprocessing/extraction failure (GridExtractor) | Log, skip station or fail cycle depending on scope |
+| `StoreError` | Store data retrieval failure (archive not found, corrupt data) | Log, raise to caller |
 | `PartitionMissingError` | DB partition doesn't exist | Write to dead letter queue, alert ops. **v0: not needed (no partitioning, see v0-scope.md § A1)** |
 
 > **`InsufficientDataError` — Flow 13 exception**: In model onboarding (and other multi-phase initialization flows), there is no fallback model. Exception mapping is phase-based, not type-based: `InsufficientDataError` before training maps to `SKIPPED_NO_DATA`; once training begins, any `SapphireError` subclass maps to the `FAILED_*` variant for the current phase (e.g., `FAILED_TRAINING`, `FAILED_HINDCAST`, `FAILED_SKILL`, `FAILED_ASSIGNMENT`). True unexpected exceptions (`TypeError`, `AttributeError`) propagate to Prefect as task-level failures per the standard rule.

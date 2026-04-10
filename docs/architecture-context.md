@@ -79,7 +79,7 @@ Layer:    flows/ — orchestration only, delegates to services/adapters
 | # | Step | Grain | Layer | Input | Output |
 |---|------|-------|-------|-------|--------|
 | 1.1 | Fetch NWP forcing | per NWP source | `adapters/` | NWP source config, cycle time | `GriddedForecast` or `dict[StationId, WeatherForecastResult]` |
-| 1.2 | Archive gridded NWP | per NWP source | `store/` | `GriddedForecast` | Persisted raw gridded data (e.g. GRIB2) to object store |
+| 1.2 | Archive gridded NWP | per NWP source | `store/` | `GriddedForecast` | Persisted raw gridded data (Zarr) to named volume (`/data/nwp_grids/`) |
 | 1.3 | Extract spatial averages | per NWP source (bulk) | `preprocessing/` | Raw grid + all station geometries | `dict[StationId, BasinAverageForecast \| ElevationBandForecast]` |
 | 1.4 | Archive NWP extractions | per NWP source (bulk) | `store/` | All extractions for this source | Persisted to `weather_forecasts` |
 | 1.5 | Post-process NWP | per NWP source (bulk) | `flows/` → `services/` + `preprocessing/` | Full dict + historical archive | Bias-corrected / calibrated `dict[StationId, ...]` |
@@ -98,8 +98,8 @@ Steps 1.2, 1.3, 1.4, and 1.9 are **conditional** — see notes.
 #### Notes
 
 - **1.1**: One fetch per NWP source. Gridded sources (e.g. ICON-CH2-EPS, ECMWF IFS) return a single `GriddedForecast`; pre-extracted sources (Data Gateway, point stations) return `dict[StationId, WeatherForecastResult]`. See "Weather forecast data flows" section and `WeatherForecastSource` Protocol in types-and-protocols.md.
-- **1.2** *(conditional)*: Archives the raw gridded NWP data (e.g. GRIB2 files) to object storage before any extraction or post-processing. Only applies when 1.1 returns a `GriddedForecast` (i.e. gridded source, not pre-extracted). Skipped when the SAPPHIRE Data Gateway handles NWP archiving upstream. Enables reprocessing (re-extraction with changed station geometries, new variables) without re-fetching from the NWP provider. **Tiered retention**: raw grids stay in hot storage (local disk / object store, original format) for `weather_hot_days` (default 180). After that, a scheduled Prefect task compresses them (zstd) and moves them to cold storage (`cold/nwp_grids/{nwp_source}/{cycle_date}/`). Cold grids are deleted at `max_retention_days`. The archival task is idempotent (compress → verify → move → verify → delete hot copy).
-- **1.3** *(conditional)*: Bulk extraction via `GridExtractor` Protocol. Receives the full grid + `StationWeatherSource` configs + `basins` dict (geometry resolved from `basins` table via station→basin FK), returns `dict[StationId, BasinAverageForecast | ElevationBandForecast]`. Mixed extraction types (basin-average and elevation-band) handled in one grid read. Skipped when 1.1 returns a pre-extracted dict. v0a: skipped entirely (point weather data only — see v0-scope.md §A11). v0b+: GridExtractor on ICON-CH2-EPS.
+- **1.2** *(conditional)*: Archives the raw gridded NWP data (e.g. GRIB2 files) to object storage before any extraction or post-processing. Only applies when 1.1 returns a `GriddedForecast` (i.e. gridded source, not pre-extracted). Skipped when the SAPPHIRE Data Gateway handles NWP archiving upstream. Enables reprocessing (re-extraction with changed station geometries, new variables) without re-fetching from the NWP provider. **Tiered retention**: raw grids stay in hot storage (local disk / object store, Zarr format) for `weather_hot_days` (default 180). After that, a scheduled Prefect task moves them to cold storage (`cold/nwp_grids/{nwp_source}/{cycle_date}/`) — Zarr is already zstd-compressed internally. Cold grids are deleted at `max_retention_days`. The archival task is idempotent (move → verify → delete hot copy).
+- **1.3** *(conditional)*: Bulk extraction via `GridExtractor` Protocol. Receives the full grid + `StationWeatherSource` configs + `basins` dict (geometry resolved from `basins` table via station→basin FK), returns `dict[StationId, BasinAverageForecast | ElevationBandForecast]`. Mixed extraction types (basin-average and elevation-band) handled in one grid read. Skipped when 1.1 returns a pre-extracted dict. Active from v0 onwards (GridExtractor on ICON-CH2-EPS).
 - **1.4** *(conditional)*: Only needed when no upstream gateway handles archiving. Archives the full `dict[StationId, ...]` per NWP source in bulk. Archive happens *before* post-processing so raw extracted values are preserved. Tiered retention: hot (PostgreSQL) for `weather_hot_days` → cold (Parquet) → deleted at `max_retention_days`. Each archived row records `spatial_type` at archival time (from the adapter's spatial representation) — this is denormalized from `station_weather_sources.extraction_type` so archived data remains self-describing if a station's extraction config changes later.
 - **1.5**: NWP post-processing. Operates on the full `dict[StationId, ...]` per NWP source. May include bias correction (quantile mapping), ensemble calibration, downscaling — configured per model per deployment. Preserves or transforms the spatial representation (see "Weather forecast data flows"). Pass-through until sufficient archive (6–12 months) for bias correction. Distinct from forecast output correction in 1.9.
 - **1.6**: Reads QC'd observations from the store. Flow 2 (observation ingest + QC) runs on its own schedule (e.g. every 30 min) — this step reads the *result*, not raw station feeds. The two flows are decoupled. Future option: add a top-up QC call at the start of Flow 1 to guarantee freshness (trivial — reuses the same QC service function). **Staleness guard**: if the most recent observation for a station is older than a deployment-configurable threshold (e.g. 6h), the forecast proceeds with a warning flag on the forecast record (`observation_staleness_hours`) visible to forecasters in the API and dashboard. Flow 4 detects prolonged staleness independently.
@@ -1213,7 +1213,7 @@ flowchart TD
 - **11.5**: Unrecoverable gaps are permanently flagged. They affect hindcast quality (Flow 7 step H.2) and post-processing calibration (Flow 1 step 1.5). Skill computation (Flows 8/10) should account for gap periods.
 - **11.6 — Notification**: Unrecoverable gaps are fed back to Flow 4's ops alerting (step 4.6) as pipeline alerts (`alert_level = "nwp_gap_unrecoverable"`). Recovered gaps are logged but do not generate alerts.
 - **Idempotency**: Flow 11 is safe to re-trigger for the same gaps. Step 11.1 checks the `weather_forecasts` table — cycles that already have rows (either `gap_status='recovered'` or `gap_status='unrecoverable'`) are skipped. No duplicate writes.
-- **Tiered retention**: Extracted NWP values follow `weather_hot_days` (hot) → Parquet (cold) → delete at `max_retention_days`. Raw gridded NWP follows the same lifecycle (compressed with zstd in cold). Gap recovery (step 11.2) must complete well before data ages out — NWP providers retain data for days/weeks, so recovery is already time-sensitive.
+- **Tiered retention**: Extracted NWP values follow `weather_hot_days` (hot) → Parquet (cold) → delete at `max_retention_days`. Raw gridded NWP follows the same lifecycle (Zarr, already zstd-compressed internally). Gap recovery (step 11.2) must complete well before data ages out — NWP providers retain data for days/weeks, so recovery is already time-sensitive.
 - **Batch scope**: Each flow run processes all outstanding gaps for a single NWP source. If Flow 4 detects gaps across multiple sources, it triggers one Flow 11 run per source (enables source-specific retry config and avoids one failing source blocking others).
 
 #### Sequencing
@@ -2699,7 +2699,7 @@ All time-series data follows a unified tiered lifecycle: **hot (PostgreSQL / obj
 |---|---|---|---|---|
 | Observations | `forecast_hot_days` (548) | Parquet | `max_retention_days` | `observations` |
 | Extracted NWP values | `weather_hot_days` (180) | Parquet | `max_retention_days` | `weather_forecasts` |
-| Raw gridded NWP | `weather_hot_days` (180) | zstd-compressed GRIB2 | `max_retention_days` | `/data/nwp_grids/` → `cold/nwp_grids/` |
+| Raw gridded NWP | `weather_hot_days` (180) | Zarr (zstd-compressed internally) | `max_retention_days` | `/data/nwp_grids/` → `cold/nwp_grids/` |
 | Runoff forecasts | `forecast_hot_days` (548) | Parquet | `max_retention_days` | `forecasts` + `forecast_values` |
 | Hindcast forecasts | `forecast_hot_days` (548) | Parquet | `max_retention_days` | `hindcast_forecasts` + `hindcast_values` |
 | Daily aggregates | **permanent** (PostgreSQL) | — | **never** | in-place |
@@ -2716,7 +2716,7 @@ Observations are sourced from permanent external databases (BAFU, DHM). They do 
 
 One scheduled Prefect task (monthly) with two sweeps:
 
-1. **Hot → cold**: Per table, export rows older than the data class's hot window to Parquet, verify file integrity, then delete from PostgreSQL. For raw grids: compress (zstd), move to cold path (`cold/nwp_grids/{nwp_source}/{cycle_date}/`), verify, delete hot copy.
+1. **Hot → cold**: Per table, export rows older than the data class's hot window to Parquet, verify file integrity, then delete from PostgreSQL. For raw grids: move to cold path (`cold/nwp_grids/{nwp_source}/{cycle_date}/`), verify, delete hot copy (Zarr is already zstd-compressed internally).
 2. **Cold → delete**: Scan cold directories, delete Parquet/compressed files where data age > `max_retention_days`.
 3. **Ops cleanup**: Delete `pipeline_health` rows older than `pipeline_health_retention_days`. Delete `alerts` rows where `status = 'resolved'` and `resolved_at` older than `alerts_retention_days`.
 
@@ -2922,7 +2922,7 @@ Per-alert-category channel selection and per-recipient configuration. Schema wil
 ```
 src/sapphire_flow/
 ├── types/          # Domain dataclasses (frozen)
-├── protocols/      # Store, adapter, model, notification Protocols
+├── protocols/      # Store (including NwpGridStore), adapter, model, notification, grid extractor Protocols
 ├── adapters/       # External data source implementations
 ├── store/          # PostgreSQL store implementations
 ├── services/       # Business logic (alerting, QC, skill, forecast prep)
@@ -2934,7 +2934,7 @@ src/sapphire_flow/
 ├── api/            # FastAPI routes (JSON + CSV export)              — not yet implemented
 ├── bulletin/       # Excel bulletin generation                      — not yet implemented
 ├── dashboard/      # HTMX review dashboard                         — not yet implemented
-├── preprocessing/  # NWP spatial extraction (GridExtractor)         — not yet implemented
+├── preprocessing/  # NWP spatial extraction (GridExtractor)
 └── tools/          # CLI utilities (fixture recording, data inspection)
 ```
 

@@ -325,11 +325,16 @@ thresholds = { k_sigma = 4.0 }
 type = "meteoswiss_nwp"
 archive = true
 max_cache_age_hours = 12
+stac_base_url = "https://data.geo.admin.ch/api/stac/v1"
+stac_collection = "ch.meteoschweiz.ogd-forecasting-icon-ch2"
+archive_format = "zarr"
+archive_base_path = "/data/nwp_grids"
+scratch_path = "/tmp/sapphire_nwp"
 
 [adapters.weather_forecast.monitoring]
 expected_delivery_offset_hours = 5.0
 expected_cycles_per_day = 4
-provider_retention_days = 7
+provider_retention_days = 1
 recovery_max_attempts = 3
 
 [adapters.weather_stations]

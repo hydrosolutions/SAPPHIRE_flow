@@ -104,7 +104,7 @@ Maps to: overall architecture validation, pipeline monitoring (Flow 4), Nepal v1
 |----------|---------------|
 | WMO-1364 | Verification metrics for skill computation (`compute_skills` flow). Implement CRPS, Brier Score, rank histograms. |
 | WMO-1091 | Ensemble interpretation: derive probability forecasts from ICON-CH2-EPS members in the forecast cycle. |
-| WMO-1254 | Tier 1 bias correction when NWP archive is sufficient. Tier 1 pass-through is acceptable for v0a. |
+| WMO-1254 | Tier 1 bias correction when NWP archive is sufficient. Tier 1 pass-through is acceptable for v0. |
 | WMO-168 Vol I | QC flag vocabulary and automated checks for SMN and BAFU observation ingest. |
 | WMO-1072 | Reference for validating overall system design — read at architecture review points. |
 

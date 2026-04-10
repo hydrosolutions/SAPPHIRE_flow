@@ -165,7 +165,7 @@ def main() -> None:
     parser.add_argument(
         "--source",
         required=True,
-        choices=["bafu"],
+        choices=["bafu", "nwp"],
         help="Data source to record from.",
     )
     parser.add_argument(
@@ -177,14 +177,20 @@ def main() -> None:
     parser.add_argument(
         "--start",
         type=str,
-        required=True,
-        help="Start date (ISO 8601).",
+        default=None,
+        help="Start date (ISO 8601, required for --source bafu).",
     )
     parser.add_argument(
         "--end",
         type=str,
-        required=True,
-        help="End date (ISO 8601).",
+        default=None,
+        help="End date (ISO 8601, required for --source bafu).",
+    )
+    parser.add_argument(
+        "--cycles",
+        type=int,
+        default=None,
+        help="Number of NWP cycles to record (required for --source nwp).",
     )
     parser.add_argument(
         "--output",
@@ -198,7 +204,17 @@ def main() -> None:
     configure_cli_logging()
 
     if args.source == "bafu":
+        if not args.start or not args.end:
+            parser.error("--start and --end are required for --source bafu")
+        if args.cycles is not None:
+            parser.error("--cycles is not valid for --source bafu")
         _run_bafu(args)
+    elif args.source == "nwp":
+        if args.cycles is None:
+            parser.error("--cycles is required for --source nwp")
+        if args.start or args.end:
+            parser.error("--start and --end are not valid for --source nwp")
+        _run_nwp(args)
 
 
 def _run_bafu(args: argparse.Namespace) -> None:
@@ -236,6 +252,48 @@ def _run_bafu(args: argparse.Namespace) -> None:
             start=start_dt,
             end=end_dt,
             output_dir=args.output,
+        )
+
+
+def _run_nwp(args: argparse.Namespace) -> None:
+    import httpx
+
+    from sapphire_flow.adapters.meteoswiss_nwp import MeteoSwissNwpAdapter
+    from sapphire_flow.store.zarr_nwp_grid_store import ZarrNwpGridStore
+
+    try:
+        with open("config.toml", "rb") as f:
+            data = tomllib.load(f)
+        wf = data["adapters"]["weather_forecast"]
+        stac_base_url: str = wf["stac_base_url"]
+        stac_collection: str = wf["stac_collection"]
+        scratch_path = Path(wf.get("scratch_path", "/tmp/sapphire_nwp"))
+    except (FileNotFoundError, tomllib.TOMLDecodeError, KeyError) as exc:
+        raise ConfigurationError(
+            f"Cannot read NWP config from config.toml: {exc}"
+        ) from exc
+
+    scratch_path.mkdir(parents=True, exist_ok=True)
+    output_dir: Path = args.output
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    log.info("fixture.recording_started", source="nwp", cycles=args.cycles)
+
+    _store = ZarrNwpGridStore()
+
+    with httpx.Client(
+        timeout=httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=5.0)
+    ) as client:
+        _adapter = MeteoSwissNwpAdapter(
+            stac_base_url=stac_base_url,
+            stac_collection=stac_collection,
+            scratch_path=scratch_path,
+            http_client=client,
+        )
+        # Cycle discovery requires querying the STAC API; the developer
+        # runs this interactively and the adapter discovers available cycles.
+        log.warning(
+            "nwp recording requires manual cycle time specification — not yet automated"
         )
 
 
