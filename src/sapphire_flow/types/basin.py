@@ -16,6 +16,7 @@ class Basin:
     geometry: Any  # shapely MultiPolygon
     area_km2: float | None
     attributes: dict[str, Any] | None
+    regional_basin: str | None = None
     band_geometries: list[dict] | None  # type: ignore[type-arg]
     created_at: UtcDatetime
     network: str

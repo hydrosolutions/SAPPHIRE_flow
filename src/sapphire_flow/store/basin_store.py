@@ -49,6 +49,7 @@ class PgBasinStore:
                 geometry=from_shape(basin.geometry, srid=4326),
                 area_km2=basin.area_km2,
                 attributes=basin.attributes,
+                regional_basin=basin.regional_basin,
                 band_geometries=json.dumps(basin.band_geometries)
                 if basin.band_geometries is not None
                 else None,
@@ -66,6 +67,7 @@ def _row_to_domain(row: sa.engine.row.RowMapping) -> Basin:
         geometry=to_shape(row["geometry"]),
         area_km2=row["area_km2"],
         attributes=row["attributes"],
+        regional_basin=row["regional_basin"],
         band_geometries=row["band_geometries"],
         created_at=utc_from_row(row["created_at"]),
         network=row["network"],

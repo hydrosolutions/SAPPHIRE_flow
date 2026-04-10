@@ -52,6 +52,7 @@ basins = sa.Table(
     ),
     sa.Column("area_km2", sa.Float, nullable=True),
     sa.Column("attributes", JSONB, nullable=True),
+    sa.Column("regional_basin", sa.Text, nullable=True),
     sa.Column("band_geometries", JSONB, nullable=True),
     sa.Column(
         "created_at",

@@ -4,11 +4,14 @@ import uuid
 from typing import TYPE_CHECKING
 
 import pytest
-from shapely.geometry import MultiPolygon, Polygon
+from geoalchemy2.shape import from_shape
+from shapely.geometry import MultiPolygon, Point, Polygon
+from sqlalchemy.exc import IntegrityError
 
 if TYPE_CHECKING:
     import sqlalchemy as sa
 
+from sapphire_flow.db.metadata import stations
 from sapphire_flow.store.basin_store import PgBasinStore
 from sapphire_flow.types.basin import Basin
 from sapphire_flow.types.ids import BasinId
@@ -23,6 +26,7 @@ def _make_basin(
     code: str = "TEST-01",
     network: str = "ch-bafu",
     name: str = "Test Basin",
+    regional_basin: str | None = None,
 ) -> Basin:
     return Basin(
         id=BasinId(uuid.uuid4()),
@@ -31,6 +35,7 @@ def _make_basin(
         geometry=_GEOM,
         area_km2=123.4,
         attributes={"source": "test"},
+        regional_basin=regional_basin,
         band_geometries=None,
         created_at=__import__("datetime").datetime(
             2024, 1, 1, tzinfo=__import__("datetime").timezone.utc
@@ -56,6 +61,7 @@ class TestPgBasinStore:
         assert fetched.area_km2 == pytest.approx(123.4)
         assert fetched.attributes == {"source": "test"}
         assert fetched.band_geometries is None
+        assert fetched.regional_basin is None
         assert fetched.geometry.geom_type == "MultiPolygon"
         assert fetched.geometry.equals_exact(_GEOM, tolerance=1e-6)
 
@@ -86,3 +92,50 @@ class TestPgBasinStore:
         ids = {b.id for b in all_basins}
         assert b1.id in ids
         assert b2.id in ids
+
+    def test_regional_basin_round_trip(self, db_connection: sa.Connection) -> None:
+        store = PgBasinStore(db_connection)
+
+        with_region = _make_basin(code="RB-01", regional_basin="Aare")
+        store.store_basin(with_region)
+        fetched = store.fetch_basin(with_region.id)
+        assert fetched is not None
+        assert fetched.regional_basin == "Aare"
+
+        without_region = _make_basin(code="RB-02")
+        store.store_basin(without_region)
+        fetched_none = store.fetch_basin(without_region.id)
+        assert fetched_none is not None
+        assert fetched_none.regional_basin is None
+
+    def test_unique_station_basin_id(self, db_connection: sa.Connection) -> None:
+        store = PgBasinStore(db_connection)
+        basin = _make_basin(code="UQ-01")
+        store.store_basin(basin)
+
+        _point = from_shape(Point(7.5, 46.5), srid=4326)
+        import datetime
+
+        now = datetime.datetime.now(datetime.UTC)
+
+        def _station_row(code: str) -> dict:
+            return {
+                "id": uuid.uuid4(),
+                "code": code,
+                "name": f"Station {code}",
+                "location": _point,
+                "station_kind": "river",
+                "basin_id": basin.id,
+                "timezone": "Europe/Zurich",
+                "measured_parameters": ["discharge"],
+                "station_status": "operational",
+                "network": "ch-bafu",
+                "ownership": "foreign",
+                "created_at": now,
+                "updated_at": now,
+            }
+
+        db_connection.execute(stations.insert().values(**_station_row("S-UQ-01")))
+
+        with pytest.raises(IntegrityError):
+            db_connection.execute(stations.insert().values(**_station_row("S-UQ-02")))
