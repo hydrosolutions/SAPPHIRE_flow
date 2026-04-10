@@ -768,6 +768,7 @@ class Basin:
     geometry: Any                        # shapely MultiPolygon
     area_km2: float | None
     attributes: dict[str, Any] | None    # from JSONB — static catchment descriptors
+    regional_basin: str | None = None    # display grouping label (e.g. "Karnali", "Aare")
     band_geometries: list[dict] | None   # elevation band definitions (computed in Flow 5 step 5.3)
     created_at: UtcDatetime
     network: str

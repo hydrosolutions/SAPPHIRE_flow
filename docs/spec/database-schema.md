@@ -44,6 +44,7 @@ erDiagram
         GEOMETRY geometry "MULTIPOLYGON 4326"
         DOUBLE_PRECISION area_km2 "NULL"
         JSONB attributes "NULL — catchment attrs"
+        TEXT regional_basin "NULL — display grouping"
         JSONB band_geometries "NULL — elevation bands"
         TIMESTAMPTZ created_at
     }
@@ -469,6 +470,7 @@ erDiagram
         GEOMETRY geometry "MULTIPOLYGON 4326"
         DOUBLE_PRECISION area_km2 "NULL"
         JSONB attributes "NULL — catchment attrs"
+        TEXT regional_basin "NULL — display grouping"
         JSONB band_geometries "NULL — elevation bands"
         TIMESTAMPTZ created_at
     }

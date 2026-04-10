@@ -1,7 +1,9 @@
 # SAPPHIRE Flow — Data Model Overview
 
-**Audience**: DHM technical staff — hydrologists, IT, and integration partners.
+**Audience**: DHM technical staff — hydrologists, IT, and integration partners.  
+
 **Document version**: 0.1-draft (April 2026)
+
 **Status**: DRAFT — subject to change. This document describes the intended design; implementation is ongoing.
 
 ---
@@ -119,7 +121,20 @@ All observations, forecasts, and weather data reference these standard parameter
 
 ## Entity Relationship Diagrams
 
-Each diagram below shows one domain. Read as: "one station has many observations", "one model has many artifacts", etc. Tables from other domains appear in grey where they connect across domains.
+Each diagram below shows one domain. Tables from other domains appear in grey where they connect across domains.
+
+### How to read the diagrams
+
+The lines between tables use **crow's foot notation** to show how records relate:
+
+| Symbol | Meaning | Example |
+|--------|---------|---------|
+| `\|\|` (two lines) | **Exactly one** | Each observation belongs to exactly one station |
+| `o{` (circle + fork) | **Zero or more** | A station can have zero, one, or many observations |
+
+A line reading `stations ||--o{ observations` means: **one station has zero or more observations, and each observation belongs to exactly one station**. This is a one-to-many relationship.
+
+All relationships in this schema are one-to-many. The `||` side is always the "one" (parent), and the `o{` side is always the "many" (child). The circle (`o`) indicates that having zero children is valid — for example, a newly onboarded station may not yet have any observations.
 
 ### Station and Reference Domain
 
@@ -139,6 +154,7 @@ erDiagram
         GEOMETRY geometry "catchment polygon"
         DOUBLE area_km2
         JSONB attributes "catchment characteristics"
+        TEXT regional_basin "display grouping"
         JSONB band_geometries "elevation bands"
     }
 
