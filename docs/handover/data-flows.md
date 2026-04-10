@@ -175,7 +175,7 @@ Raw observations are never overwritten. QC results are stored as metadata on the
 | Step | What happens | Input | Output |
 |------|-------------|-------|--------|
 | 0.1 | Define area of interest | Country bounding box or union of watershed geometries | AOI polygon stored in deployment configuration |
-| 0.2 | Download static attribute datasets (parallel with 0.3) | AOI, dataset catalogue | Local cache of static catchment data (HydroATLAS, MERIT DEM, Nepal DHM GIS) |
+| 0.2 | Download static attribute datasets (parallel with 0.3) | AOI, dataset catalogue | Local cache of static catchment data (global DEM, catchment attributes, national GIS where available) |
 | 0.3 | Download historical dynamic datasets (parallel with 0.2) | AOI, date range, variable list | Local cache of historical forcing data (ERA5-Land reanalysis for v1) |
 | 0.4 | Verify completeness | Local cache, expected coverage | Completeness report — spatial gaps and missing time steps identified |
 | 0.5 | Register datasets in catalogue | Dataset metadata (source, version, local path, variables) | Dataset registry records for use by Flow 5 |
@@ -509,10 +509,9 @@ All data produced by the SAPPHIRE system is served through a REST API at `/api/v
 |--------|-----------|---------------|---------|
 | SAPPHIRE Data Gateway | SAPPHIRE pulls | ERA5-Land reanalysis (historical), ECMWF IFS NWP (operational, pre-extracted per basin) | Flow 0, Flow 1 |
 | DHM stations | SAPPHIRE pulls | Real-time water level observations | Flow 2 |
-| DHM GIS data | One-time import | Static catchment geometries and attributes | Flow 0 |
+| Global DEM | One-time download | Elevation data for basin delineation and band geometry generation | Flow 0 |
+| Global/national catchment attributes | One-time download or import | Catchment characteristics (area, slope, soil, climate indices) — exact sources TBD | Flow 0 |
 | DHM rating tables | Uploaded annually or on update | hQ tables for discharge derivation | Flow 2, Flow 5 step 5.6 |
-| HydroATLAS | One-time download | Global catchment attributes (area, slope, climate indices) | Flow 0 |
-| MERIT DEM | One-time download | 90 m elevation data for band geometry generation | Flow 0 |
 | DHM forecast dashboard | Consumer pulls API | Forecasts, observations, station metadata, skill scores | REST API |
 | Other consumers (DRRMA, hydropower, neighbouring countries, etc.) | Consumer pulls API | Forecasts and alerts, scoped by API key | REST API |
 
