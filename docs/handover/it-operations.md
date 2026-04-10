@@ -10,7 +10,7 @@
 | Testing & validation | AWS (managed by SAPPHIRE team) | ~6–12 months | Model training, pipeline validation, skill evaluation using DHM data. DHM accesses the system remotely for review and feedback. |
 | Production | DHM VM (Ubuntu, on-site or DHM-managed) | Permanent | Full operational deployment under DHM's control. |
 
-During the AWS stage, the SAPPHIRE team manages infrastructure and security. The sections below describe the requirements for the production DHM deployment — DHM IT should use this time to prepare the VM environment and resolve the open questions in section 8.
+During the AWS stage, the SAPPHIRE team manages infrastructure and security. The sections below describe the requirements for the production DHM deployment which will only take place in Q1 2028 (earlier if project progress is faster).
 
 ---
 
@@ -20,17 +20,17 @@ SAPPHIRE Flow ingests processed weather and snow forecast data from the Sapphire
 
 ```
 [Sapphire Data Gateway]  ──→ ┌─────────────────────────────────────┐
-  (ECMWF + SnowMapper)      │         SAPPHIRE Flow (VM)           │
+  (ECMWF + SnowMapper)       │         SAPPHIRE Flow (VM)          │
 [DHM Station Data]   ──→     │  ┌──────────┐  ┌──────────────────┐ │ ──→ [REST API :443]
-                          │  │ Database │  │ Worker processes │ │ ──→ [Flood alerts / SMS]
-                          │  └──────────┘  └──────────────────┘ │
-                          │  ┌──────────┐  ┌──────────────────┐ │
-                          │  │   API    │  │   Scheduler      │ │
-                          │  └──────────┘  └──────────────────┘ │
-                          │  ┌──────────┐                        │
-                          │  │  Proxy   │  (Caddy, handles TLS)  │
-                          │  └──────────┘                        │
-                          └─────────────────────────────────────┘
+                             │  │ Database │  │ Worker processes │ │ ──→ [Flood alerts / SMS]
+                             │  └──────────┘  └──────────────────┘ │
+                             │  ┌──────────┐  ┌──────────────────┐ │
+                             │  │   API    │  │   Scheduler      │ │
+                             │  └──────────┘  └──────────────────┘ │
+                             │  ┌──────────┐                       │
+                             │  │  Proxy   │  (Caddy, handles TLS) │
+                             │  └──────────┘                       │
+                             └─────────────────────────────────────┘
 ```
 
 The system recovers automatically from crashes and reboots via a systemd service. No manual intervention is required for normal restarts.
@@ -39,15 +39,19 @@ The system recovers automatically from crashes and reboots via a systemd service
 
 ## 2. Infrastructure Requirements
 
-### VM Specifications
+### VM Specifications (for Runoff Forecasting alone)
 
 | Resource | Minimum | Notes |
 |---|---|---|
 | OS | Ubuntu 24.04 LTS | 26.04 LTS support will be tested after its release but support cannot be guaranteed at this point |
-| CPU | 4 cores | 8 cores recommended for training workloads |
-| RAM | 16 GB | 32 GB recommended |
+| CPU | 16 cores | 16 cores recommended |
+| RAM | 32 GB | 32 GB recommended |
 | Disk | 1 TB SSD | Reviewed quarterly; plan upgrade to 2 TB before reaching 70% utilization |
 | Network | Stable internet | Outbound HTTPS required (see below) |
+
+Please note that backup volumes are not included in the storage resources needs for the VM running the runoff forecasting.
+
+Resource estimates for all separate modules being developed and deployed in this project have been shared in January 2026 for the first time and are re-shared together with this document.
 
 ### Software Requirements
 
@@ -96,6 +100,8 @@ All internal service communication happens inside Docker's private network and i
 | `cold_storage` | Long-term historical data archive (Parquet files) | Yes — daily |
 | `prefect_data` | Scheduler run history and logs | No — reconstructible |
 
+Backup volumes are extra, see backup section further below.
+
 ### Startup Order
 
 Services start in dependency order. Docker Compose handles this automatically.
@@ -116,7 +122,7 @@ All services are configured with `restart: unless-stopped` — they restart auto
 
 **PostgreSQL and power cuts**: PostgreSQL uses write-ahead logging (WAL) with `fsync` enabled by default. If power is cut mid-write, the database recovers automatically on restart by replaying the WAL — no data corruption occurs. The Docker volume mount uses default filesystem settings (ext4 with journaling), which provides additional protection. **A UPS (uninterruptible power supply) is strongly recommended** for the VM to allow clean shutdown during extended power cuts, but the system is designed to survive hard power loss without corruption.
 
-**PostgreSQL crash while pipelines are running**: If the database container crashes or restarts while a forecast pipeline is in progress, the pipeline run will fail with a database connection error. Prefect marks the run as failed. The pipeline does **not** leave orphaned state — each pipeline run is atomic at the database level (individual transactions, not one large transaction). On the next scheduled cycle, the pipeline runs normally. No manual cleanup is required.
+**PostgreSQL crash while pipelines are running**: If the database container crashes or restarts while a forecast pipeline is in progress, the pipeline run will fail with a database connection error. Prefect marks the run as failed. The pipeline does not leave orphaned state — each pipeline run is atomic at the database level (individual transactions, not one large transaction). On the next scheduled cycle, the pipeline runs normally. No manual cleanup is required. A system or model admin can manually re-trigger a failed pipeline run.
 
 **Cold restart after power failure**: After the VM reboots, the systemd service starts all containers automatically. Typical time from boot to healthy API: **2–3 minutes** (PostgreSQL recovery + service startup). If the `pg_data` volume is intact (normal case), no manual intervention is needed. The only scenario requiring manual intervention is physical disk failure — which requires the full recovery procedure (section 7).
 
@@ -140,14 +146,12 @@ Security for this deployment is a shared responsibility. The table below defines
 
 ### What SAPPHIRE Flow handles (application level)
 
-- User login with two-factor authentication (TOTP authenticator app — mandatory for all staff). To be validated, see open questions
 - Role-based access control — each user sees only what their role permits
 - API key management for external consumers (scoped per agency)
 - All passwords and secrets stored encrypted — never in plain text
 - Database encrypted at rest
 - Full audit log of all login events, forecast changes, and model promotions
 - Rate limiting and brute-force protection on all API endpoints
-- Automatic flood alerts via SMS and email. To be validated, see open questions
 
 ### What DHM IT must configure (infrastructure level)
 
@@ -184,6 +188,8 @@ Secrets are stored as Docker secrets — mounted as files inside containers, nev
 ---
 
 ## 5. Deployment & Operations
+
+**Implementation status**: The procedures in this section describe the target production deployment. The system service, host-level watchdog, upgrade procedure and init container bootstrap do not exist yet for the Central Asia deployment and will be built during the AWS testing phase before DHM handover. Actual workflow may change slightly when implemented.
 
 ### First Boot — Step by Step
 
@@ -266,7 +272,7 @@ The file `/etc/cron.d/sapphire-watchdog` is installed during deployment:
     /opt/sapphire/scripts/alert.sh "SAPPHIRE health check failed"
 ```
 
-The `alert.sh` script runs independently of the application — it uses a simple `curl` webhook call from the host OS to notify DHM's systems (e.g. the same DHM endpoint used for application alerts). This is cost-free and requires no SMS or email provider. It works even when the entire Docker stack is down, as long as the VM has outbound internet connectivity.
+The `alert.sh` script runs independently of the application — it uses a simple `curl` webhook call from the host OS to notify DHM's systems. It works even when the entire Docker stack is down, as long as the VM has outbound internet connectivity.
 
 ### Layered Monitoring — Who Watches the Watchdog
 
@@ -278,6 +284,8 @@ SAPPHIRE uses two independent monitoring layers to avoid a single point of failu
 | **Host-level cron watchdog** (above) | No — runs on the VM OS | Whether the API health endpoint responds | Infrastructure-level problems (Docker crash, Prefect crash, PostgreSQL crash, VM resource exhaustion) |
 
 If Prefect itself crashes, Flow 4 stops running — but the host-level cron watchdog continues independently and will detect the failure within 5 minutes (the API health endpoint reports `degraded` or `down` when workers are unresponsive). This layered design ensures that no single component failure goes undetected.
+
+Please note, the name Flow 4 refers to the naming that will become clear in a separate document (currently being written) detailing the data flows of the forecast system.
 
 ### Monitoring Endpoints
 
@@ -384,7 +392,7 @@ Two copies, stored separately:
 | Copy 1 | Local external disk attached to the VM | DHM IT |
 | Copy 2 | SFTP on a second server (or equivalent off-site target) | DHM IT or SAPPHIRE team |
 
-**Storage sizing**: The backup tool (restic) uses deduplication — daily backups share most data, so the repository grows slowly. Estimated backup storage after 18 months of operation at Nepal scale (~170 stations):
+**Storage sizing**: The backup tool (restic) uses deduplication — daily backups share most data, so the repository grows slowly. Estimated backup storage after 18 months of operation at Nepal scale:
 
 | What | Size |
 |---|---|
@@ -451,40 +459,54 @@ Questions are grouped by urgency. Numbered for point-by-point response.
 
 These questions need confirmed answers early, as the answers influence architectural decisions or provider integrations.
 
-1. **Flood alert notifications — scope and channels** — SAPPHIRE can push flood alerts via three channels: **webhook** (free — sends a structured message to DHM's own systems), **email** (low cost — requires SMTP provider), and **SMS** (highest cost — requires SMS gateway with per-message fees, but reaches phones without internet). If DHM already handles alert distribution from their own dashboard, webhook alone may be sufficient — no external provider needed. Questions: (a) Does DHM want SAPPHIRE to send notifications at all, or will DHM poll the API and handle alerting independently? (b) If yes: is webhook to Bipad/DHM dashboard sufficient, or are SMS/email also needed? (c) If SMS or email: which providers, and who bears the ongoing per-message costs?
+**1. Internet outage tolerance — accepted offline duration**
 
-2. **Two-factor authentication method** — SAPPHIRE requires two-factor authentication for all staff logins. Our current design uses a TOTP authenticator app (such as Google Authenticator or Authy) on each user's smartphone. The advantage is that it works even when internet or email is unreliable — important during flood events. The alternative would be sending a one-time code via email at each login, which is simpler to set up but fails if email is down. Can DHM staff be expected to install and use an authenticator app on their phones? Or would email-based codes be preferred?
+Nepal may experience multi-day internet outages, particularly during monsoon season — exactly when the forecasting system is most critical. SAPPHIRE requires outbound internet to fetch weather forecasts from the Sapphire Data Gateway. When connectivity drops:
 
-3. **Internet outage tolerance — accepted offline duration** — Nepal experiences multi-day internet outages, particularly during monsoon season — exactly when the forecasting system is most critical. SAPPHIRE requires outbound internet to fetch weather forecasts from the Sapphire Data Gateway. When connectivity drops:
+- **First 3 hours**: the system waits for the next Data Gateway delivery.
+- **3–12 hours**: falls back to the most recent available forecast cycle (forecasts become progressively stale but are still produced).
+- **Beyond 12 hours**: no new forecasts can be produced. Observation-based alerts (from DHM stations transmitting via GPRS/GSM directly to WISKI on the local network) continue to function. The API continues serving the most recent forecasts with a staleness warning.
 
-   - **First 3 hours**: the system waits for the next Data Gateway delivery.
-   - **3–12 hours**: falls back to the most recent available forecast cycle (forecasts become progressively stale but are still produced).
-   - **Beyond 12 hours**: no new forecasts can be produced. Observation-based alerts (from DHM stations transmitting via GPRS/GSM directly to WISKI on the local network) continue to function. The API continues serving the most recent forecasts with a staleness warning.
+We need to understand DHM's connectivity situation: (a) How frequent are internet outages at the DHM office where the VM will be hosted, and what is the typical duration? (b) Is there a backup internet connection (e.g. a second ISP or mobile data failover)? (c) What is the maximum acceptable duration without new forecasts before DHM considers the system non-operational?
 
-   We need to understand DHM's connectivity situation: (a) How frequent are internet outages at the DHM office where the VM will be hosted, and what is the typical duration? (b) Is there a backup internet connection (e.g. a second ISP or mobile data failover)? (c) What is the maximum acceptable duration without new forecasts before DHM considers the system non-operational?
+*Why we are asking*: If multi-day outages are common during monsoon, we may need to explore architectural changes or forecast model alternatives.
 
-   *Why we are asking*: If multi-day outages are common during monsoon, we may need to explore architectural changes — for example, co-locating a Data Gateway cache on the local network, or pre-fetching multiple forecast cycles ahead. These are significant design decisions that affect deployment topology.
+**2. Recovery time objective (RTO) — accepted downtime after hardware failure**
 
-4. **Recovery time objective (RTO) — accepted downtime after hardware failure** — If the VM's hardware fails (disk failure, motherboard failure, etc.), the full recovery procedure (section 7) requires provisioning a new VM, restoring from backup, and restarting all services. Estimated recovery time: **30–60 minutes** minimum, assuming a trained IT administrator is available and backups are accessible.
+If the VM's hardware fails (disk failure, motherboard failure, etc.), the full recovery procedure (section 7) requires provisioning a new VM, restoring from backup, and restarting all services. Estimated recovery time: **60 minutes** minimum, assuming a trained IT administrator is available and backups are accessible.
 
-   During this recovery window, no forecasts are produced, no alerts are raised, and no API data is served. Questions: (a) Is 30–60 minutes of downtime acceptable during monsoon season? (b) If not: does DHM have the infrastructure to run a second standby VM (warm spare) that can be activated quickly? A warm spare significantly reduces recovery time but requires a second server and additional configuration.
+During this recovery window, no forecasts are produced, no alerts are raised, and no API data is served. Questions: (a) Is 60 minutes of downtime acceptable during monsoon season? (b) If not: does DHM have the infrastructure to run a second standby VM (warm spare) that can be activated quickly? A warm spare significantly reduces recovery time but requires a second server and additional configuration.
 
-   *Why we are asking*: If the accepted RTO is shorter than 30 minutes, we need to design a high-availability setup (automatic failover to a standby VM). This requires additional infrastructure from DHM and additional engineering work from the SAPPHIRE team. The decision should be made before deployment planning.
+*Why we are asking*: If the accepted RTO is shorter than 60 minutes, we need to design a high-availability setup (automatic failover to a standby VM). This requires additional infrastructure from DHM and additional engineering work from the SAPPHIRE team. The decision should be made before deployment planning.
 
 ### Can be resolved during the AWS testing phase
 
 These questions are important for the production deployment but do not block system design. They can be addressed while the system is running on AWS for validation.
 
-5. **Outbound HTTPS access** — Are there firewall restrictions on outbound HTTPS connections (port 443) from the VM to the internet? SAPPHIRE requires outbound access to the Sapphire Data Gateway for weather and snow forecast data.
+**3. Outbound HTTPS access**
 
-6. **TLS certificates** — Who manages TLS certificates for the SAPPHIRE API domain name? Caddy (the reverse proxy) can obtain certificates automatically via Let's Encrypt if the VM has a public DNS name and outbound internet access. If DHM uses an internal CA or a different certificate management process, we need to configure this manually.
+Are there firewall restrictions on outbound HTTPS connections (port 443) from the VM to the internet? SAPPHIRE requires outbound access to the Sapphire Data Gateway for weather and snow forecast data.
 
-7. **Existing monitoring infrastructure** — Does DHM have existing monitoring tools (such as Grafana, Nagios, Zabbix, or similar)? If so, we can integrate SAPPHIRE's health endpoint into your existing dashboards.
+**4. TLS certificates**
 
-8. **Backup storage — second server** — Is a second server or a dedicated external disk available for off-site backup storage? Backups should not be stored on the same physical machine as the live data.
+Who manages TLS certificates for the SAPPHIRE API domain name? Caddy (the reverse proxy) can obtain certificates automatically via Let's Encrypt if the VM has a public DNS name and outbound internet access. If DHM uses an internal CA or a different certificate management process, we need to configure this manually.
 
-9. **Network bandwidth** — What is the expected network bandwidth between the VM and the internet? Weather and snow forecast data is downloaded from the Sapphire Data Gateway on a schedule; we need to confirm this fits within available bandwidth without affecting other systems.
+**5. Existing monitoring infrastructure**
 
-10. **OS patching schedule** — Does DHM have a standard OS patching window (e.g. monthly maintenance window)? We should coordinate SAPPHIRE upgrades and restarts with your patching schedule to minimize disruption.
+Does DHM have existing monitoring tools (such as Grafana, Nagios, Zabbix, or similar)? If so, we can integrate SAPPHIRE's health endpoint into your existing dashboards.
 
-11. **Designated IT contact** — Who will be the primary DHM IT contact for SAPPHIRE operations? This person will receive pipeline alert notifications and will be the point of contact for the SAPPHIRE team during incidents. We have Mr Santa K. Maharjan: santakumarmaharjan.dhm@gmail.com — please confirm if this is correct and if there are additional contacts to include.
+**6. Backup storage — second server**
+
+Is a second server or a dedicated external disk available for off-site backup storage? Backups should not be stored on the same physical machine as the live data.
+
+**7. Network bandwidth**
+
+What is the expected network bandwidth between the VM and the internet? Weather and snow forecast data is downloaded from the Sapphire Data Gateway on a schedule; we need to confirm this fits within available bandwidth without affecting other systems.
+
+**8. OS patching schedule**
+
+Does DHM have a standard OS patching window (e.g. monthly maintenance window)? We should coordinate SAPPHIRE upgrades and restarts with your patching schedule to minimize disruption.
+
+**9. Designated IT contact**
+
+Who will be the primary DHM IT contact for SAPPHIRE operations? This person will receive pipeline alert notifications and will be the point of contact for the SAPPHIRE team during incidents. We have Mr Santa K. Maharjan: santakumarmaharjan.dhm@gmail.com — please confirm if this is correct and if there are additional contacts to include.
