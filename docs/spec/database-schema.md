@@ -5,7 +5,7 @@ Derived from table definitions in `architecture-context.md` and scoping rules in
 
 ---
 
-## v0 Schema (23 tables)
+## v0 Schema (24 tables)
 
 Swiss public data, up to ~170 stations (LINDAS-available BAFU gauges), single VM. Architecture supports ~1000 stations across deployments. No partitioning, no auth, no rating curves,
 no forecast adjustments, no DLQ, no cold storage. See `v0-scope.md` §A–C for rationale and plan 013 for scale re-evaluation.
@@ -99,7 +99,7 @@ erDiagram
         TIMESTAMPTZ created_at
     }
 
-    basins ||--o{ stations : "basin_id"
+    stations ||--o| basins : "basin_id"
     stations ||--o{ station_thresholds : "station_id"
     stations ||--o{ station_weather_sources : "station_id"
     stations ||--o{ station_group_members : "station_id"
@@ -189,6 +189,7 @@ erDiagram
         UUID group_id FK "NULL — group-scoped"
         TEXT status "v0: training | active | superseded"
         TEXT artifact_path
+        TEXT artifact_sha256 "integrity check"
         TIMESTAMPTZ training_period_start
         TIMESTAMPTZ training_period_end
         TIMESTAMPTZ trained_at
@@ -202,7 +203,16 @@ erDiagram
         UUID station_id PK, FK
         TEXT model_id PK, FK
         INTERVAL time_step
-        BOOL is_active "default TRUE"
+        TEXT status "active | inactive"
+        INT priority "default 0"
+        TIMESTAMPTZ created_at
+    }
+
+    group_model_assignments {
+        UUID group_id PK, FK
+        TEXT model_id PK, FK
+        INTERVAL time_step
+        TEXT status "active | inactive"
         INT priority "default 0"
         TIMESTAMPTZ created_at
     }
@@ -218,10 +228,12 @@ erDiagram
 
     models ||--o{ model_artifacts : "model_id"
     models ||--o{ model_assignments : "model_id"
+    models ||--o{ group_model_assignments : "model_id"
     models ||--o{ model_states : "model_id"
     stations ||--o{ model_artifacts : "station_id"
     station_groups ||--o{ model_artifacts : "group_id"
     stations ||--o{ model_assignments : "station_id"
+    station_groups ||--o{ group_model_assignments : "group_id"
     stations ||--o{ model_states : "station_id"
 
     %% ──────────────────────────────────────────────
@@ -237,13 +249,17 @@ erDiagram
         UUID model_artifact_id FK
         TIMESTAMPTZ issued_at
         TIMESTAMPTZ nwp_cycle_reference_time
-        BOOL nwp_cycle_is_fallback "default FALSE"
+        TEXT nwp_cycle_source "primary | fallback"
+        TEXT parameter
+        TEXT units
         TEXT representation "members | quantiles"
         TEXT status "default raw"
         INT version "default 1"
         TEXT warm_up_source "NULL"
         DOUBLE_PRECISION warm_up_state_age_hours "NULL"
         DOUBLE_PRECISION observation_staleness_hours "NULL"
+        TEXT qc_status "default raw"
+        JSONB qc_flags "default empty"
         TIMESTAMPTZ created_at
         TIMESTAMPTZ updated_at
     }
@@ -268,6 +284,8 @@ erDiagram
         TEXT forcing_type "nwp_archive | reanalysis"
         TEXT representation "members | quantiles"
         UUID hindcast_run_id
+        TEXT qc_status "default raw"
+        JSONB qc_flags "default empty"
         TIMESTAMPTZ created_at
     }
 
@@ -391,7 +409,7 @@ erDiagram
     stations ||--o{ alerts : "station_id"
 ```
 
-### v0 table inventory (21 tables)
+### v0 table inventory (22 tables)
 
 | # | Table | PK | Domain |
 |---|-------|----|--------|
@@ -408,22 +426,23 @@ erDiagram
 | 11 | `models` | TEXT | Model |
 | 12 | `model_artifacts` | UUID | Model |
 | 13 | `model_assignments` | composite | Model |
-| 14 | `model_states` | UUID | Model |
-| 15 | `forecasts` | UUID | Forecast |
-| 16 | `forecast_values` | UUID | Forecast |
-| 17 | `hindcast_forecasts` | UUID | Forecast |
-| 18 | `hindcast_values` | UUID | Forecast |
-| 19 | `skill_scores` | UUID | Skill |
-| 20 | `skill_diagrams` | UUID | Skill |
-| 21 | `flow_regime_configs` | UUID | Skill |
+| 14 | `group_model_assignments` | composite | Model |
+| 15 | `model_states` | UUID | Model |
+| 16 | `forecasts` | UUID | Forecast |
+| 17 | `forecast_values` | UUID | Forecast |
+| 18 | `hindcast_forecasts` | UUID | Forecast |
+| 19 | `hindcast_values` | UUID | Forecast |
+| 20 | `skill_scores` | UUID | Skill |
+| 21 | `skill_diagrams` | UUID | Skill |
+| 22 | `flow_regime_configs` | UUID | Skill |
 | — | `alerts` | UUID | Ops |
 | — | `pipeline_health` | BIGSERIAL | Ops |
 
-**Note**: `alerts` and `pipeline_health` bring the total to 23 if counted.
+**Note**: `alerts` and `pipeline_health` bring the total to 24 if counted.
 `v0-scope.md` §C lists 23 tables (including alerts and pipeline_health) — the count depends on whether `alerts` + `pipeline_health`
 are included (alerting is optional in v0, controlled by per-source alert flags (see v0-scope.md §A8c)).
 
-### Not in v0 (9 tables added in v1)
+### Not in v0 (7 tables added in v1)
 
 | Table | Why deferred | Reference |
 |-------|-------------|-----------|
@@ -437,7 +456,7 @@ are included (alerting is optional in v0, controlled by per-source alert flags (
 
 ---
 
-## Full Schema (30 tables)
+## Full Schema (31 tables)
 
 The complete v1 schema. Adds partitioning, auth, rating curves, forecast adjustments,
 DLQ, and gap recovery fields. See `architecture-context.md` for column details, CHECK
@@ -525,7 +544,7 @@ erDiagram
         TIMESTAMPTZ created_at
     }
 
-    basins ||--o{ stations : "basin_id"
+    stations ||--o| basins : "basin_id"
     stations ||--o{ station_thresholds : "station_id"
     stations ||--o{ station_weather_sources : "station_id"
     stations ||--o{ station_group_members : "station_id"
@@ -627,6 +646,7 @@ erDiagram
         UUID group_id FK "NULL — group-scoped"
         TEXT status "training | pending_approval | active | superseded | rejected"
         TEXT artifact_path
+        TEXT artifact_sha256 "integrity check"
         TIMESTAMPTZ training_period_start
         TIMESTAMPTZ training_period_end
         TIMESTAMPTZ trained_at
@@ -640,7 +660,16 @@ erDiagram
         UUID station_id PK, FK
         TEXT model_id PK, FK
         INTERVAL time_step
-        BOOL is_active "default TRUE"
+        TEXT status "active | inactive"
+        INT priority "default 0"
+        TIMESTAMPTZ created_at
+    }
+
+    group_model_assignments {
+        UUID group_id PK, FK
+        TEXT model_id PK, FK
+        INTERVAL time_step
+        TEXT status "active | inactive"
         INT priority "default 0"
         TIMESTAMPTZ created_at
     }
@@ -656,10 +685,12 @@ erDiagram
 
     models ||--o{ model_artifacts : "model_id"
     models ||--o{ model_assignments : "model_id"
+    models ||--o{ group_model_assignments : "model_id"
     models ||--o{ model_states : "model_id"
     stations ||--o{ model_artifacts : "station_id"
     station_groups ||--o{ model_artifacts : "group_id"
     stations ||--o{ model_assignments : "station_id"
+    station_groups ||--o{ group_model_assignments : "group_id"
     stations ||--o{ model_states : "station_id"
 
     %% ──────────────────────────────────────────────
@@ -673,13 +704,17 @@ erDiagram
         UUID model_artifact_id FK
         TIMESTAMPTZ issued_at
         TIMESTAMPTZ nwp_cycle_reference_time
-        BOOL nwp_cycle_is_fallback "default FALSE"
+        TEXT nwp_cycle_source "primary | fallback"
+        TEXT parameter
+        TEXT units
         TEXT representation "members | quantiles"
         TEXT status "default raw"
         INT version "default 1"
         TEXT warm_up_source "NULL"
         DOUBLE_PRECISION warm_up_state_age_hours "NULL"
         DOUBLE_PRECISION observation_staleness_hours "NULL"
+        TEXT qc_status "default raw"
+        JSONB qc_flags "default empty"
         TIMESTAMPTZ created_at
         TIMESTAMPTZ updated_at
     }
@@ -704,6 +739,8 @@ erDiagram
         TEXT forcing_type "nwp_archive | reanalysis"
         TEXT representation "members | quantiles"
         UUID hindcast_run_id
+        TEXT qc_status "default raw"
+        JSONB qc_flags "default empty"
         TIMESTAMPTZ created_at
     }
 
@@ -899,7 +936,7 @@ erDiagram
     users ||--o{ forecast_adjustments : "forecaster_id"
 ```
 
-### Full table inventory (30 tables)
+### Full table inventory (31 tables)
 
 | # | Table | PK type | Partitioned | Domain |
 |---|-------|---------|-------------|--------|
@@ -917,22 +954,23 @@ erDiagram
 | 12 | `models` | TEXT | no | Model |
 | 13 | `model_artifacts` | UUID | no | Model |
 | 14 | `model_assignments` | composite | no | Model |
-| 15 | `model_states` | UUID | no | Model |
-| 16 | `forecasts` | UUID | no | Forecast |
-| 17 | `forecast_values` | UUID | monthly by `issued_at` | Forecast |
-| 18 | `hindcast_forecasts` | UUID | no | Forecast |
-| 19 | `hindcast_values` | UUID | monthly by `hindcast_step` | Forecast |
-| 20 | `forecast_adjustments` | UUID | no | Forecast |
-| 21 | `skill_scores` | UUID | no | Skill |
-| 22 | `skill_diagrams` | UUID | no | Skill |
-| 23 | `flow_regime_configs` | UUID | no | Skill |
-| 24 | `alerts` | UUID | no | Ops |
-| 25 | `pipeline_health` | BIGSERIAL | no | Ops |
-| 26 | `dead_letter_queue` | BIGSERIAL | no | Ops |
-| 27 | `users` | UUID | no | Auth |
-| 28 | `access_tokens` | UUID | no | Auth |
-| 29 | `refresh_tokens` | UUID | no | Auth |
-| 30 | `audit_log` | BIGSERIAL | no | Auth |
+| 15 | `group_model_assignments` | composite | no | Model |
+| 16 | `model_states` | UUID | no | Model |
+| 17 | `forecasts` | UUID | no | Forecast |
+| 18 | `forecast_values` | UUID | monthly by `issued_at` | Forecast |
+| 19 | `hindcast_forecasts` | UUID | no | Forecast |
+| 20 | `hindcast_values` | UUID | monthly by `hindcast_step` | Forecast |
+| 21 | `forecast_adjustments` | UUID | no | Forecast |
+| 22 | `skill_scores` | UUID | no | Skill |
+| 23 | `skill_diagrams` | UUID | no | Skill |
+| 24 | `flow_regime_configs` | UUID | no | Skill |
+| 25 | `alerts` | UUID | no | Ops |
+| 26 | `pipeline_health` | BIGSERIAL | no | Ops |
+| 27 | `dead_letter_queue` | BIGSERIAL | no | Ops |
+| 28 | `users` | UUID | no | Auth |
+| 29 | `access_tokens` | UUID | no | Auth |
+| 30 | `refresh_tokens` | UUID | no | Auth |
+| 31 | `audit_log` | BIGSERIAL | no | Auth |
 
 Column details, CHECK constraints, indexes, and retention policies
 are defined in `architecture-context.md`.
