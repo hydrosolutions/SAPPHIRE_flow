@@ -1,5 +1,5 @@
 ---
-status: READY
+status: DONE
 created: 2026-04-10
 scope: Add regional_basin column to basins table, enforce 1:1 station-basin relationship
 depends_on: []
