@@ -1,5 +1,5 @@
 ---
-status: READY
+status: DONE
 created: 2026-04-08
 scope: Phase 3c — MeteoSwiss NWP adapter (ICON-CH2-EPS) + GridExtractor + Zarr archive
 depends_on: ["019", "020"]
