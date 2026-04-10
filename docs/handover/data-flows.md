@@ -16,6 +16,8 @@ SAPPHIRE Flow processes data through approximately 13 data flows organised in th
 
 **System boundary.** SAPPHIRE ingests weather and station data, runs forecast models, stores results, and serves them via a REST API. Dashboard presentation, threshold-based alerting, and bulletin distribution are DHM's responsibility — DHM systems consume the REST API. Pipeline health monitoring is inside the SAPPHIRE boundary and reports to IT/operations staff.
 
+**Alerting integration.** SAPPHIRE stores alerts in the database and serves them via `GET /api/v1/alerts`. The base assumption is that DHM's existing alerting system polls this endpoint to pick up new and changed alerts, and handles downstream distribution (SMS, email, field staff notifications). This question has been shared with DHM. If polling is not feasible, SAPPHIRE can implement webhook push notifications as additional scope. See `hydrology-operations.md` §6 for alert design and danger level definitions.
+
 ```mermaid
 graph LR
     subgraph External Sources
@@ -31,14 +33,15 @@ graph LR
     end
 
     subgraph DHM Systems
-        DB["Dashboard"]
-        AL["Alerting"]
+        DB["Dashboard<br/>(review + publish)"]
+        AL["Alerting<br/>(polls API)"]
         BU["Bulletins"]
     end
 
     GW --> WI
     DHM --> OI
     API --> DB
+    DB -->|"publish via API"| ST
     API --> AL
     API --> BU
     PW --> ITOPS["IT / Operations"]
@@ -68,7 +71,6 @@ graph LR
 
 Step 1.9 is conditional — pass-through until sufficient forecast archive exists for bias correction.
 
-> **Forecasts and observations are available via the REST API. Threshold checking and alerting are handled by DHM's systems.**
 
 #### Notes
 
@@ -111,7 +113,6 @@ Every stored forecast record carries the NWP cycle reference time used as forcin
 
 Steps 2.5, 2.6, and 2.7 are conditional — they run only when a station has an active rating curve.
 
-> **Forecasts and observations are available via the REST API. Threshold checking and alerting are handled by DHM's systems.**
 
 #### Notes
 
@@ -123,9 +124,49 @@ Raw observations are never overwritten. QC results are stored as metadata on the
 
 **Nepal v1 — rating curve conversion.** DHM provides real-time water level. Discharge must be derived using DHM's hQ rating tables plus a correction parameter (correction method to be confirmed with DHM hydromet operations during Flow 5 design). Rating tables are updated yearly by DHM. Steps 2.5–2.7 are therefore active in the Nepal deployment. Both the original water level and the derived discharge are stored, with a reference to the rating curve version used — this allows reprocessing through updated curves without re-running Stage 1 QC.
 
+**Rating curve updates.** The expected mechanism is CSV upload of hQ tables by DHM hydromet operations staff. Exact format, upload workflow, and the handling of transition periods (e.g. mid-monsoon curve updates) are to be confirmed with DHM during the AWS testing phase. See `hydrology-operations.md` §9 for rating curve versioning and operational guidance.
+
 **Sequencing.** Steps are sequential at the pipeline level. Within step 2.1, river and weather fetches run in parallel. Steps 2.2–2.7 are parallelisable across stations.
 
 **v0 (Switzerland).** BAFU provides discharge directly from well-maintained rating curves — steps 2.5, 2.6, and 2.7 are skipped. Step 2.0 is a pass-through (all Swiss stations are gauged).
+
+---
+
+### Flow 3 — Forecast Review and Publication
+
+**Trigger**: Manual — initiated by the duty forecaster after each forecast cycle.
+
+**Purpose:** Ensures that automated model output is reviewed by a human forecaster before it becomes visible to external consumers (government agencies, hydropower operators, neighbouring countries).
+
+#### Forecast status lifecycle
+
+```
+Raw (model output) ──→ Reviewed ──→ Published
+```
+
+| Status | Meaning | Visible to external API consumers? |
+|--------|---------|-------------------------------------|
+| Raw | Automated model output; no human review | No |
+| Reviewed | Forecaster has examined and optionally adjusted the forecast | No |
+| Published | Forecaster has approved for release | Yes |
+
+#### Steps
+
+| Step | What happens | Input | Output |
+|------|-------------|-------|--------|
+| 3.1 | Forecaster reviews raw forecast | Raw ensemble output, recent observations, model skill context | Forecaster assessment |
+| 3.2 | Adjust forecast values (optional) | Raw forecast, forecaster judgment | Adjusted values (shift, scale, cap, floor) with audit trail |
+| 3.3 | Publish forecast | Reviewed forecast | Status set to `published`; forecast becomes visible via REST API |
+
+#### Notes
+
+**Forecast review happens in DHM's dashboard, not in SAPPHIRE's.** SAPPHIRE provides the API endpoints for status transitions (`raw → reviewed → published`) and value adjustments, with full audit trail (forecaster identity, timestamp, rationale). SAPPHIRE's own dashboard is a development and monitoring tool — it is not designed for the operational forecaster workflow.
+
+**Open question for DHM**: Can DHM's existing or planned dashboard support the forecast approval and publication step (i.e. call the SAPPHIRE API to change forecast status)? See `hydrology-operations.md` §5 for the full forecast workflow description.
+
+**Adjustment traceability.** Every manual adjustment is recorded: the original model value, the adjusted value, the type of adjustment (shift, scale, cap, floor), the forecaster who made it, and the reason. The original raw forecast is never overwritten — adjustments are stored as a separate layer.
+
+**Alert timing.** Threshold checks run on raw forecasts immediately after the forecast cycle (Flow 1), so that time-critical alerts are not delayed by the review process. Published forecasts carry the same alert status — publication does not re-trigger threshold checks.
 
 ---
 
@@ -237,6 +278,8 @@ Raw observations are never overwritten. QC results are stored as metadata on the
 - Step 5.12 requires at least one model artifact with `active` status. The model administrator can promote to `operational` with optional items (alert thresholds, rating curve) missing — the system warns but does not block.
 - For **calculated stations** (v1): step 5.C3 derives observations as a weighted sum of component stations (Q_virtual = Σ(wᵢ × Qᵢ)); steps 5.4–5.7 are skipped.
 - All data-writing steps are idempotent — re-running after failure resumes without duplicating data.
+
+**Typical timelines.** Steps 5.1–5.9 (metadata registration, historical import, QC, baselines) complete in minutes to hours per station. Step 5.11 (model training + hindcast + skill computation) takes hours to days depending on model type and training data volume. End-to-end from station registration to `operational` status: approximately one week, including model administrator review at step 5.12. Stations should be batched for onboarding — the flow is designed for batch operation, and ML model training benefits from group processing.
 
 **Sequencing:**
 ```
@@ -466,7 +509,7 @@ S.1 → S.2 ─┐
 
 **Notes**
 
-- **Branch A** (v1+): When a new rating curve is uploaded, all derived discharge values within the old curve's validity period are recomputed. Original measured water level observations are never modified. Historical operational forecasts are not retroactively reprocessed — they are immutable.
+- **Branch A** (v1+): When a new rating curve is uploaded (expected as a CSV hQ table — exact format TBD with DHM), all derived discharge values within the old curve's validity period are recomputed. Original measured water level observations are never modified. Historical operational forecasts are not retroactively reprocessed — they are immutable.
 - **Branch B** (v0+): CSV format is fixed (`station_code, timestamp, parameter, value`). Duplicate handling is controlled by an explicit `overwrite` flag in the API request — if `overwrite = false` and conflicts exist, the request is rejected with a list of conflicting rows.
 - **Branch C** (future): Re-runs QC rules on an existing time window using the current rule version. Does not re-derive rating curve values.
 - Flow 12 must not overlap with Flow 2 (observation ingest) for the same station and time period. This is enforced by concurrency controls.
@@ -530,12 +573,36 @@ Flow 0 (deployment onboarding)
 Flow 13 (model onboarding) → reuses Flow 6/7/8 services
 
 Flow 1 (forecast cycle) ← requires: stations onboarded, models trained, NWP available
+Flow 3 (forecast review) ← follows Flow 1; DHM dashboard calls SAPPHIRE API
 Flow 4 (pipeline watchdog) ← independent, always running
 Flow 4 ──→ Flow 11 (NWP gap recovery, when applicable)
 
 Flow 9 (retraining) → Flow 7 → Flow 10 (skill recomputation)
 Flow 12 (observation reprocessing) → marks skill scores stale → Flow 10
 ```
+
+---
+
+## Data Retention and Archiving
+
+Raw observations, QC metadata, forecasts, hindcasts, and skill scores are never deleted or overwritten — they accumulate over the system's lifetime. DHM requires a minimum retention period of 6 months; longer is preferred and bounded only by infrastructure capacity.
+
+Disk utilisation is monitored by Flow 4 step 4.9, with warnings at 80% and critical alerts at 90%. Storage capacity is reviewed quarterly.
+
+For backup schedule, encryption, retention policy, storage sizing, and disaster recovery procedures, see `it-operations.md` §7.
+
+---
+
+## Degraded-Mode Operations
+
+SAPPHIRE is designed to continue producing forecasts under partial failure. The key degradation scenarios and their responses are documented across two companion documents:
+
+- **NWP lateness and data gaps** — Flow 1 describes the fallback sequence (wait → use previous cycle → skip). `hydrology-operations.md` §2 describes this from the forecaster's perspective.
+- **Observation staleness** — Flow 1 runs forecasts with stale observations but attaches a warning flag visible via the API.
+- **Model failure** — Flow 1 falls back to the next model in priority order per station.
+- **Infrastructure failure** (Docker crash, database restart, power loss, internet outage) — `it-operations.md` §3 (crash behaviour), §5 (host-level watchdog), and §8 questions 1–2 (internet outage tolerance and recovery time objective).
+
+A consolidated degraded-mode standard operating procedure — defining who does what when the system is partially down — should be developed during the AWS testing phase once DHM has provided answers to the open infrastructure questions in `it-operations.md` §8.
 
 ---
 

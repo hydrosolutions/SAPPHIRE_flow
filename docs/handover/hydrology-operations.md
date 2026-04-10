@@ -39,7 +39,7 @@ Triggered after each data delivery from the Sapphire Data Gateway, approximately
 4. Runs all assigned models for every operational station.
 5. Checks each ensemble against configured flood thresholds, computing exceedance probabilities.
 6. Raises, updates, or resolves alerts as thresholds are crossed.
-7. Could be designed to dispatch notifications in case DHM wishes to add this (webhook, email, or SMS — see section 14, question 7).
+7. Stores alerts in the database, queryable via the REST API. DHM's alerting system polls the API to pick up new and changed alerts.
 
 Target: all stations complete within 15 minutes per cycle.
 
@@ -195,7 +195,7 @@ DHM has its own forecast dashboard under development or recently completed. DHM'
 
 ### Alert timing
 
-Threshold checks run on raw forecasts immediately after each model cycle. Whether SAPPHIRE sends alert notifications (webhooks) directly or DHM handles alerting from their own systems is an open question (see section 14, question 7).
+Threshold checks run on raw forecasts immediately after each model cycle. Alerts are stored and queryable via the REST API (`GET /api/v1/alerts`). DHM's alerting system polls this endpoint to pick up new and changed alerts and handles distribution to forecasters and downstream agencies.
 
 ---
 
@@ -240,15 +240,11 @@ raised ──→ acknowledged ──→ resolved
 - **Acknowledged**: an operator has noted the alert; suppresses repeat notifications.
 - **Resolved**: probability or value has fallen back below the resolve threshold for the required duration; auto-resolved by the system.
 
-### Notifications (open question — see section 14, question 7)
+### Notifications
 
-Generally, we assume that DHM handles alert distribution from their own systems. If it is not possible for the existing alert system to poll our API for alerts, we need to discuss options and may have to deprioritize forecast functionality to be able to support that within the frame of the project. Three channels are technically possible whereby we planned to only support the webhook channel:
+DHM's alerting system polls the SAPPHIRE REST API (`GET /api/v1/alerts`) to pick up new and changed alerts. DHM is responsible for downstream distribution (SMS, email, etc.) to forecasters, field staff, and partner agencies.
 
-| Channel | Cost | Use |
-|---------|------|-----|
-| Webhook | Free | Machine-to-machine push to DHM dashboard or other systems |
-| Email | Low ongoing cost | Delivery to individual recipients |
-| SMS | Highest ongoing cost | Field staff in low-connectivity areas |
+If DHM's existing systems cannot poll the API, SAPPHIRE can implement webhook push notifications as an alternative — this would need to be agreed as additional scope. See section 14, question 6.
 
 ---
 
@@ -445,11 +441,12 @@ During active flood events, does DHM need more frequent forecast updates — for
 
 *Why we are asking*: More frequent updates are possible in principle but require additional engineering work. If this is a firm requirement for the initial deployment, we need to design for it now.
 
-**6. Alerting — scope and notification channels**
+**6. Alerting integration**
 
-SAPPHIRE Flow computes threshold exceedances and raises alerts internally. The alerts will be queryable through the API and can thus be integrated into the existing alerts system at DHM. If it is not possible to integrate the alerts within DHM:
+SAPPHIRE stores alerts in the database and serves them via the REST API (`GET /api/v1/alerts`). Our base assumption is that DHM's existing alerting system polls this endpoint to pick up new and changed alerts, and handles downstream distribution (SMS, email, field staff notifications).
 
-- How does the existing alerting system look like & how much would it cost a local IT partner to implement support for the alerts of the forecast tools?
+- What alerting system does DHM currently use, and can it poll a REST API on a schedule?
+- If polling is not feasible, SAPPHIRE can implement webhook push notifications as additional scope — what would integration on DHM's side require?
 
 ### Can be resolved during the AWS testing phase
 
