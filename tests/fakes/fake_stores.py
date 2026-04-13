@@ -586,9 +586,9 @@ class FakeModelArtifactStore:
         for aid, rec in self._records.items():
             if rec.model_id == model_id and rec.status == ModelArtifactStatus.ACTIVE:
                 if station_id is not None and rec.station_id == station_id:
-                    return (aid, self._bytes[aid])
+                    return self.fetch_artifact(aid)
                 if group_id is not None and rec.group_id == group_id:
-                    return (aid, self._bytes[aid])
+                    return self.fetch_artifact(aid)
         return None
 
     def fetch_active_artifact_for_station(

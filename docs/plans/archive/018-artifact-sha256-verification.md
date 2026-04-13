@@ -1,6 +1,7 @@
 ---
-status: DRAFT
+status: DONE
 created: 2026-04-04
+completed: 2026-04-13
 scope: implementation — SHA-256 hash verification for model artifacts
 depends_on: []
 ---
@@ -22,14 +23,14 @@ Neither is implemented. There is no `artifact_hash` column in `model_artifacts`,
 
 Add SHA-256 hash-on-write / verify-on-read to the model artifact storage path.
 
-### What to implement
+### What was implemented
 
-1. **Alembic migration**: add `artifact_sha256 TEXT NOT NULL` column to `model_artifacts`.
-2. **`PgModelArtifactStore.store_artifact`**: compute `hashlib.sha256(artifact_bytes).hexdigest()` before writing to disk, store in DB alongside the artifact record.
-3. **`PgModelArtifactStore.fetch_artifact` / `fetch_active_artifact_for_station`**: after `read_bytes()`, recompute hash and compare to stored value. Raise `StorageIntegrityError` (new exception, subclass of `SapphireError`) on mismatch.
-4. **`ModelArtifactRecord`**: add `artifact_sha256: str` field.
-5. **`FakeModelArtifactStore`**: compute and verify hash in-memory (same contract).
-6. **Tests**: verify hash is stored, verify tampered bytes raise `StorageIntegrityError`.
+1. **Alembic migration 0022**: added `sha256_hash TEXT NOT NULL` column to `model_artifacts`.
+2. **`PgModelArtifactStore.store_artifact`**: computes `hashlib.sha256(artifact_bytes).hexdigest()` before writing to disk, stores in DB alongside the artifact record.
+3. **`PgModelArtifactStore._read_and_verify`**: private helper extracts the hash-on-read pattern. Used by all three fetch methods: `fetch_artifact`, `fetch_active_artifact`, and `fetch_active_artifact_for_station`. Raises `ArtifactIntegrityError` (subclass of `SapphireError`) on mismatch.
+4. **`ModelArtifactRecord`**: `sha256_hash: str` field.
+5. **`FakeModelArtifactStore`**: `fetch_active_artifact` delegates to `fetch_artifact` (which verifies). `fetch_active_artifact_for_station` delegates transitively.
+6. **Tests**: `test_tampered_artifact_raises_integrity_error` (fetch_artifact), `test_tampered_active_artifact_raises_integrity_error` (fetch_active_artifact), `test_tampered_active_artifact_for_station_raises_integrity_error` (direct path), `test_tampered_active_artifact_for_station_group_raises_integrity_error` (group fallback path).
 
 ### What NOT to implement
 
@@ -41,4 +42,4 @@ Add SHA-256 hash-on-write / verify-on-read to the model artifact storage path.
 
 - The hash protects against filesystem-level tampering between training and next load (the threat scenario security.md describes). It does not protect against in-process attacks (covered by the entry-point trust model).
 - Cost: one `hashlib.sha256()` call per store and per fetch. Artifact sizes are small (< 100 KB for linear regression, < 50 MB for large ML models). Negligible overhead.
-- `StorageIntegrityError` should be added to the exception hierarchy in `exceptions.py` and to `conventions.md`.
+- `ArtifactIntegrityError` is defined in `exceptions.py` and documented in `conventions.md`.

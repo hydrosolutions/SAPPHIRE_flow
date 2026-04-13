@@ -24,6 +24,18 @@ class PgModelArtifactStore:
         self._conn = conn
         self._artifact_dir = artifact_dir
 
+    def _read_and_verify(
+        self, aid: ArtifactId, artifact_path: str, sha256_hash: str
+    ) -> bytes:
+        stored = Path(artifact_path).read_bytes()
+        actual = hashlib.sha256(stored).hexdigest()
+        if actual != sha256_hash:
+            raise ArtifactIntegrityError(
+                f"SHA-256 mismatch for artifact {aid}: "
+                f"expected {sha256_hash}, got {actual}"
+            )
+        return stored
+
     def store_artifact(
         self,
         model_id: ModelId,
@@ -76,13 +88,9 @@ class PgModelArtifactStore:
         )
         if row is None:
             return None
-        stored = Path(row["artifact_path"]).read_bytes()
-        actual = hashlib.sha256(stored).hexdigest()
-        if actual != row["sha256_hash"]:
-            raise ArtifactIntegrityError(
-                f"SHA-256 mismatch for artifact {artifact_id}: "
-                f"expected {row['sha256_hash']}, got {actual}"
-            )
+        stored = self._read_and_verify(
+            artifact_id, row["artifact_path"], row["sha256_hash"]
+        )
         return artifact_id, stored
 
     def fetch_active_artifact(
@@ -103,9 +111,11 @@ class PgModelArtifactStore:
 
         row = (
             self._conn.execute(
-                sa.select(model_artifacts.c.id, model_artifacts.c.artifact_path).where(
-                    sa.and_(*conditions)
-                )
+                sa.select(
+                    model_artifacts.c.id,
+                    model_artifacts.c.artifact_path,
+                    model_artifacts.c.sha256_hash,
+                ).where(sa.and_(*conditions))
             )
             .mappings()
             .one_or_none()
@@ -113,7 +123,8 @@ class PgModelArtifactStore:
         if row is None:
             return None
         aid = ArtifactId(row["id"])
-        return (aid, Path(row["artifact_path"]).read_bytes())
+        stored = self._read_and_verify(aid, row["artifact_path"], row["sha256_hash"])
+        return (aid, stored)
 
     def fetch_active_artifact_for_station(
         self,
@@ -124,6 +135,7 @@ class PgModelArtifactStore:
         direct = sa.select(
             model_artifacts.c.id,
             model_artifacts.c.artifact_path,
+            model_artifacts.c.sha256_hash,
             sa.literal(0).label("priority"),
         ).where(
             sa.and_(
@@ -140,6 +152,7 @@ class PgModelArtifactStore:
         via_group = sa.select(
             model_artifacts.c.id,
             model_artifacts.c.artifact_path,
+            model_artifacts.c.sha256_hash,
             sa.literal(1).label("priority"),
         ).where(
             sa.and_(
@@ -151,7 +164,11 @@ class PgModelArtifactStore:
 
         union_stmt = sa.union_all(direct, via_group).subquery()
         stmt = (
-            sa.select(union_stmt.c.id, union_stmt.c.artifact_path)
+            sa.select(
+                union_stmt.c.id,
+                union_stmt.c.artifact_path,
+                union_stmt.c.sha256_hash,
+            )
             .order_by(union_stmt.c.priority)
             .limit(1)
         )
@@ -160,7 +177,8 @@ class PgModelArtifactStore:
         if row is None:
             return None
         aid = ArtifactId(row["id"])
-        return (aid, Path(row["artifact_path"]).read_bytes())
+        stored = self._read_and_verify(aid, row["artifact_path"], row["sha256_hash"])
+        return (aid, stored)
 
     def fetch_artifact_record(
         self, artifact_id: ArtifactId

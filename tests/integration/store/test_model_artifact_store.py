@@ -4,6 +4,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+import pytest
 import sqlalchemy as sa
 
 if TYPE_CHECKING:
@@ -16,6 +17,7 @@ from sapphire_flow.db.metadata import (
     station_groups,
     stations,
 )
+from sapphire_flow.exceptions import ArtifactIntegrityError
 from sapphire_flow.store.model_artifact_store import PgModelArtifactStore
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import ModelArtifactStatus
@@ -301,3 +303,67 @@ class TestPgModelArtifactStore:
         assert record.status == ModelArtifactStatus.ACTIVE
         assert record.promoted_at is not None
         assert record.superseded_at is None
+
+    def test_tampered_active_artifact_raises_integrity_error(
+        self, db_connection: sa.Connection, tmp_path: Path
+    ) -> None:
+        station_id = _seed_station(db_connection)
+        model_id = _seed_model(db_connection)
+        store = PgModelArtifactStore(db_connection, tmp_path)
+
+        aid, _ = store.store_artifact(
+            model_id, b"clean_bytes", _T0, _T1, _T2, station_id=station_id
+        )
+        store.transition_artifact_status(aid, ModelArtifactStatus.ACTIVE)
+
+        db_connection.execute(
+            sa.update(model_artifacts)
+            .where(model_artifacts.c.id == aid)
+            .values(sha256_hash="0" * 64)
+        )
+
+        with pytest.raises(ArtifactIntegrityError):
+            store.fetch_active_artifact(model_id, station_id=station_id)
+
+    def test_tampered_active_artifact_for_station_raises_integrity_error(
+        self, db_connection: sa.Connection, tmp_path: Path
+    ) -> None:
+        station_id = _seed_station(db_connection)
+        model_id = _seed_model(db_connection)
+        store = PgModelArtifactStore(db_connection, tmp_path)
+
+        aid, _ = store.store_artifact(
+            model_id, b"clean_bytes", _T0, _T1, _T2, station_id=station_id
+        )
+        store.transition_artifact_status(aid, ModelArtifactStatus.ACTIVE)
+
+        db_connection.execute(
+            sa.update(model_artifacts)
+            .where(model_artifacts.c.id == aid)
+            .values(sha256_hash="0" * 64)
+        )
+
+        with pytest.raises(ArtifactIntegrityError):
+            store.fetch_active_artifact_for_station(station_id, model_id)
+
+    def test_tampered_active_artifact_for_station_group_raises_integrity_error(
+        self, db_connection: sa.Connection, tmp_path: Path
+    ) -> None:
+        station_id = _seed_station(db_connection)
+        group_id = _seed_group(db_connection, station_id)
+        model_id = _seed_model(db_connection, scope="group")
+        store = PgModelArtifactStore(db_connection, tmp_path)
+
+        aid, _ = store.store_artifact(
+            model_id, b"group_bytes", _T0, _T1, _T2, group_id=group_id
+        )
+        store.transition_artifact_status(aid, ModelArtifactStatus.ACTIVE)
+
+        db_connection.execute(
+            sa.update(model_artifacts)
+            .where(model_artifacts.c.id == aid)
+            .values(sha256_hash="0" * 64)
+        )
+
+        with pytest.raises(ArtifactIntegrityError):
+            store.fetch_active_artifact_for_station(station_id, model_id)
