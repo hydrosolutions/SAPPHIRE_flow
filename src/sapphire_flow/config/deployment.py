@@ -52,6 +52,14 @@ class _SkillInterpretationInput(BaseModel):
     bands: list[_SkillBandInput]
 
 
+class InputQualityConfig(BaseModel):
+    obs_degraded_hours: float = 12.0
+    nwp_age_partial_hours: float = 9.0
+    nwp_age_degraded_hours: float = 11.0
+    warmup_snapshot_age_partial_hours: float = 24.0
+    warmup_snapshot_age_degraded_hours: float = 42.0
+
+
 class DeploymentConfig(BaseModel):
     danger_levels: list[_DangerLevelInput] = []
     seasons: list[_SeasonInput] = []
@@ -95,6 +103,8 @@ class DeploymentConfig(BaseModel):
 
     paths_data_dir: str | None = None
 
+    input_quality: InputQualityConfig = InputQualityConfig()
+
     @field_validator("min_operational_ensemble_size")
     @classmethod
     def _validate_min_ensemble_size(cls, v: int) -> int:
@@ -133,6 +143,51 @@ class DeploymentConfig(BaseModel):
             raise ValueError(
                 f"Unknown skill gate metric(s): {sorted(unknown)}. "
                 f"Valid: {sorted(SUPPORTED_SKILL_METRICS)}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_input_quality_thresholds(self) -> Self:
+        iq = self.input_quality
+        sw = self.observation_staleness_warning_hours
+        if iq.obs_degraded_hours <= sw:
+            raise ValueError(
+                f"obs_degraded_hours ({iq.obs_degraded_hours}) must be > "
+                f"observation_staleness_warning_hours ({sw})"
+            )
+        nwp_gate = self.nwp_max_fallback_age_hours
+        if iq.nwp_age_degraded_hours > nwp_gate:
+            raise ValueError(
+                f"nwp_age_degraded_hours ({iq.nwp_age_degraded_hours}) must be <= "
+                f"nwp_max_fallback_age_hours ({nwp_gate})"
+            )
+        if iq.nwp_age_partial_hours > nwp_gate:
+            raise ValueError(
+                f"nwp_age_partial_hours ({iq.nwp_age_partial_hours}) must be <= "
+                f"nwp_max_fallback_age_hours ({nwp_gate})"
+            )
+        wu_gate = self.warm_up_snapshot_max_age_hours
+        if iq.warmup_snapshot_age_degraded_hours > wu_gate:
+            raise ValueError(
+                f"warmup_snapshot_age_degraded_hours "
+                f"({iq.warmup_snapshot_age_degraded_hours}) must be <= "
+                f"warm_up_snapshot_max_age_hours ({wu_gate})"
+            )
+        if iq.warmup_snapshot_age_partial_hours > wu_gate:
+            raise ValueError(
+                f"warmup_snapshot_age_partial_hours "
+                f"({iq.warmup_snapshot_age_partial_hours}) must be <= "
+                f"warm_up_snapshot_max_age_hours ({wu_gate})"
+            )
+        if iq.nwp_age_partial_hours >= iq.nwp_age_degraded_hours:
+            raise ValueError("nwp_age_partial_hours must be < nwp_age_degraded_hours")
+        if (
+            iq.warmup_snapshot_age_partial_hours
+            >= iq.warmup_snapshot_age_degraded_hours
+        ):
+            raise ValueError(
+                "warmup_snapshot_age_partial_hours must be"
+                " < warmup_snapshot_age_degraded_hours"
             )
         return self
 

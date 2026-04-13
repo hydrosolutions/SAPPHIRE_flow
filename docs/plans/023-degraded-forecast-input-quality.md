@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-04-10
 scope: Degraded forecast input quality flagging — types, assessment logic, pipeline integration, API exposure
 depends_on: []
@@ -332,6 +332,18 @@ choice depends on how many subsystems need seasonal variation (warm-up
 thresholds, alert levels, NWP tolerances) — that scope is clearer at Phase 8
 time than now.
 
+**Phase 8 bounding invariant**: The resolver must ensure that resolved
+thresholds do not exceed the active seasonal pipeline gate. Concretely:
+`warmup_degraded_hours <= warm_up_snapshot_max_age_monsoon_hours` when the
+current month falls within a monsoon season, and
+`warmup_degraded_hours <= warm_up_snapshot_max_age_hours` otherwise (same for
+`warmup_partial_hours`). Without this cap, the assessment function could label
+a forecast as PARTIAL at a warm-up age where the pipeline should have already
+cold-started — a misleading quality label. The assessment function's own
+call-site validation (`warmup_partial_hours < warmup_degraded_hours`) catches
+ordering inversions but cannot enforce the gate cap without knowing the current
+season.
+
 ### Pipeline integration
 
 The assessment runs as a **sub-step within step 1.7** (input preparation).
@@ -436,11 +448,12 @@ All three assessment categories are **exercisable from v0**:
   `issued_at - nwp_cycle_reference_time` exceeds the configured thresholds.
 - **Warm-up state**: Depends on the model type, not the NWP source.
   `LinearRegressionDaily` (the initial operational model) has
-  `warm_up_source = None` (ML models have no warm-up state — see
-  `OperationalForecast.warm_up_source` type: `WarmUpSource | None`), so
-  the warm-up path is unreachable for this specific model. It becomes
-  reachable when conceptual models are onboarded (a model-onboarding gate,
-  not an NWP-related v0a/v0b gate).
+  `warm_up_source = None` (statistical and ML models have no warm-up
+  state — only conceptual models with internal routing state like GR4J/HBV
+  use warm-up; see `OperationalForecast.warm_up_source` type:
+  `WarmUpSource | None`), so the warm-up path is unreachable for this
+  specific model. It becomes reachable when conceptual models are onboarded
+  (a model-onboarding gate, not an NWP-related v0a/v0b gate).
 
 ### Forecaster notification
 
@@ -541,6 +554,19 @@ resolution). Easy to test — pass floats, get flags.
 `DeploymentConfig`'s cross-model validator is not in the loop, and also
 catches season-resolution bugs where the caller passes inconsistent overrides.
 
+**Bare-float convention note**: `warmup_partial_hours` and
+`warmup_degraded_hours` are adjacent bare `float` parameters that could be
+silently swapped. Per CLAUDE.md's NewType guidelines ("wrap where confusion is
+plausible"), these would normally warrant `NewType` wrappers or a grouping
+dataclass. Here, the keyword-only signature, unambiguous names (`partial` vs
+`degraded`), and the call-site ordering validation provide sufficient runtime
+protection. The parameters are caller-resolved values that may not correspond
+to any single config field (they may be season-overridden), making a `NewType`
+on `InputQualityConfig` fields insufficient — the wrapper would need to live
+on the function boundary itself, adding ceremony for a two-parameter pair that
+is always constructed and consumed in the same call. Accepted as a pragmatic
+deviation.
+
 **`None` handling across all categories**:
 
 - `observation_staleness_hours is None`: No observation flag. Covers stations
@@ -584,13 +610,16 @@ catches season-resolution bugs where the caller passes inconsistent overrides.
   locations: the forecast type descriptions and the data traceability section);
   fix stale name `nwp_cycle_is_fallback` → `nwp_cycle_source` in
   `HindcastForecast` exclusion notes
-- `docs/spec/database-schema.md` — fix two remaining `nwp_cycle_is_fallback`
-  references (the old bool column name; the Python type and architecture DDL
-  already use `nwp_cycle_source TEXT` — the Mermaid ER diagrams in
-  database-schema.md have not been updated)
+- `docs/spec/config-reference.toml` — add annotated `[input_quality]` section
+  with inline comments noting the coupling between warm-up thresholds and
+  seasonal pipeline gates (e.g. `warmup_snapshot_age_degraded_hours` must not
+  exceed `warm_up_snapshot_max_age_monsoon_hours` during monsoon — important
+  for Nepal deployers)
 - `docs/standards/logging.md` — add `forecast.input_quality_assessed` event
-  with level-conditional rule (INFO if PARTIAL, WARNING if DEGRADED), using
-  "Notes" column to match existing table format. Also document the
+  with level-conditional rule (INFO if PARTIAL, WARNING if DEGRADED). The
+  existing canonical event table is headed "Flow 13 model onboarding events" —
+  add a new subsection "Flow 1 forecast cycle events" for this entry, using
+  the same "Notes" column format. Also document the
   `model.skill_gate_completed` precedent as the canonical example of
   level-conditional events.
 - `docs/standards/wmo.md` — add entry to gap analysis table for WMO-1072

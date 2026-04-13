@@ -227,3 +227,15 @@ class OnboardingOutcome(Enum):
     FAILED_HINDCAST = "failed_hindcast"
     FAILED_SKILL = "failed_skill"
     FAILED_ASSIGNMENT = "failed_assignment"
+
+
+class InputQualityLevel(Enum):
+    FULL = "full"
+    PARTIAL = "partial"
+    DEGRADED = "degraded"
+
+
+class InputQualityCategory(Enum):
+    OBSERVATION = "observation"
+    NWP = "nwp"
+    WARM_UP = "warm_up"

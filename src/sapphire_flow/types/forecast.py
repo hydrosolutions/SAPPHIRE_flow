@@ -3,13 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from sapphire_flow.types.enums import QcStatus
+from sapphire_flow.types.enums import InputQualityLevel, QcStatus
 
 if TYPE_CHECKING:
     from uuid import UUID
 
     from sapphire_flow.types.datetime import UtcDatetime
-    from sapphire_flow.types.domain import QcFlag
+    from sapphire_flow.types.domain import InputQualityFlag, QcFlag
     from sapphire_flow.types.ensemble import ForecastEnsemble
     from sapphire_flow.types.enums import (
         EnsembleRepresentation,
@@ -50,6 +50,8 @@ class OperationalForecast:
     updated_at: UtcDatetime
     qc_status: QcStatus = QcStatus.RAW
     qc_flags: tuple[QcFlag, ...] = ()
+    input_quality: InputQualityLevel = InputQualityLevel.FULL
+    input_quality_flags: tuple[InputQualityFlag, ...] = ()
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

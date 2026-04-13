@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, Literal
 from sapphire_flow.types.enums import (
     AggregationMethod,
     AlertModelStrategy,
+    InputQualityCategory,
+    InputQualityLevel,
     ParameterDomain,
     QcStatus,
     ThresholdDirection,
@@ -105,6 +107,31 @@ def aggregate_qc_status(flags: list[QcFlag]) -> QcStatus:
     severity = {QcStatus.QC_PASSED: 0, QcStatus.QC_SUSPECT: 1, QcStatus.QC_FAILED: 2}
     worst = max(flags, key=lambda f: severity[f.status])
     return worst.status
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class InputQualityFlag:
+    category: InputQualityCategory
+    level: InputQualityLevel
+    detail: str
+
+    def __post_init__(self) -> None:
+        if self.level == InputQualityLevel.FULL:
+            raise ValueError(
+                "InputQualityFlag must not be FULL — only record actual issues"
+            )
+
+
+def aggregate_input_quality(flags: list[InputQualityFlag]) -> InputQualityLevel:
+    if not flags:
+        return InputQualityLevel.FULL
+    severity = {
+        InputQualityLevel.FULL: 0,
+        InputQualityLevel.PARTIAL: 1,
+        InputQualityLevel.DEGRADED: 2,
+    }
+    worst = max(flags, key=lambda f: severity[f.level])
+    return worst.level
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
