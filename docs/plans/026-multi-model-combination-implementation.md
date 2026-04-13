@@ -16,7 +16,7 @@ Plan 025 established the design for multi-model combination forecasting (decisio
 - All assigned models run per station every cycle (Flow 1 Phase B)
 - `run_station_forecast()` uses **fallback mode**: iterates models by priority, stops at first success, returns one `StationForecastResult`
 - `all_ensembles` accumulator in the flow stores **one model per station**: `all_ensembles[sid] = {fc_result.model_id: dict(fc_result.ensembles)}`
-- The alert checker (`check_station_alerts`) already accepts `dict[StationId, dict[ModelId, ...]]` and dispatches on `AlertModelStrategy` — but currently only receives one model per station
+- The alert checker (`check_station_alerts`) already accepts `dict[StationId, dict[ModelId, ...]]` and dispatches on `ModelCombinationStrategy` — but currently only receives one model per station
 - `forecast_store` writes `model_id` and `model_artifact_id` as NOT NULL, no combination columns
 - `skill_scores.model_artifact_id` is NOT NULL
 - `PgHindcastStore.fetch_hindcasts()` always filters by a single `model_id`
@@ -24,7 +24,7 @@ Plan 025 established the design for multi-model combination forecasting (decisio
 
 ### What Needs to Change
 
-1. **Run all models per station** — not just the first success. Individual results stored separately. The fallback chain still determines which model is the "primary" (for `primary` strategy and for cases where combination fails), but all models run regardless.
+1. **Run all models per station** — not just the first success. Individual results stored separately. The fallback chain still determines which model is the "primary" (for `primary` strategy and for cases where combination fails), but all models run regardless. Fallback models (priority >= 90) are excluded from combination but still available for primary fallback.
 
 2. **Combine ensembles** — new service that takes multiple models' ensembles and produces a combined `ForecastEnsemble` using the configured strategy (pooled, then BMA).
 
@@ -86,13 +86,24 @@ Plan 025 established the design for multi-model combination forecasting (decisio
 class MultiModelForecastResult:
     station_id: StationId
     results: dict[ModelId, StationForecastResult]  # all successful models
+    priorities: dict[ModelId, int]                  # model_id → assignment priority
     primary_model_id: ModelId | None               # highest-priority success (for fallback)
     failed_models: dict[ModelId, str]              # model_id → error message
+
+    @property
+    def combinable_results(self) -> dict[ModelId, StationForecastResult]:
+        """Results from non-fallback models only (priority < FALLBACK_PRIORITY_THRESHOLD)."""
+        return {
+            mid: r for mid, r in self.results.items()
+            if self.priorities.get(mid, 0) < FALLBACK_PRIORITY_THRESHOLD
+        }
 ```
 
 3. **Keep** `run_station_forecast()` as a thin wrapper that calls `run_all_station_forecasts()` and returns only the primary model's result (backward compatible — the flow uses this in `primary` mode).
 
 **Key behaviour**: Every model runs regardless of earlier successes/failures. A model that fails prediction or QC is recorded in `failed_models` but does not stop the loop. The `primary_model_id` is the highest-priority model that succeeded (same as current fallback logic).
+
+**Fallback model exclusion from combination**: `MultiModelForecastResult` exposes a `combinable_results` property that returns only results from models with priority < `FALLBACK_PRIORITY_THRESHOLD` (constant = 90, from `docs/conventions.md`). Fallback models (climatology at 90, persistence at 99) are excluded from combination to prevent diluting real model output with naive baselines. They remain available in `results` for the primary fallback chain. The threshold constant lives in `src/sapphire_flow/types/ids.py` alongside the sentinel `ModelId` constants (e.g., `FALLBACK_PRIORITY_THRESHOLD: int = 90`).
 
 **Out of scope**: No combination logic. No flow changes.  
 **Files**: `src/sapphire_flow/services/run_station_forecast.py`, `tests/unit/services/test_run_station_forecast.py`  
@@ -104,11 +115,13 @@ class MultiModelForecastResult:
 
 1. `combine_ensembles_pooled(ensembles: dict[ModelId, dict[str, ForecastEnsemble]]) -> dict[str, ForecastEnsemble]`
    - For each parameter: merge all models' member ensembles into a single grand ensemble.
-   - All input ensembles must have `representation = MEMBERS` (pooling quantile ensembles is not meaningful). If any ensemble is quantile-only, skip that model for pooling and log a warning.
+   - All input ensembles must have `representation = MEMBERS` (pooling quantile ensembles is not meaningful). If any ensemble is quantile-only, skip that model for pooling and log a warning. **Note**: Plan 025's fallback models (climatology, persistence) produce `QUANTILES` representation and are excluded from combination by two mechanisms: (a) `MultiModelForecastResult.combinable_results` filters by priority threshold, and (b) this representation check as a safety net.
    - The resulting ensemble has `model_id = POOLED_MODEL_ID` (sentinel from `types/ids.py`), `representation = MEMBERS`, and member count = sum of all models' members.
    - Member IDs are remapped to avoid collision: `model_a_member_0`, `model_a_member_1`, ... or simply sequential integers.
 
-2. `build_combined_forecasts(station_id, multi_result: MultiModelForecastResult, strategy: AlertModelStrategy, nwp_metadata, clock, uuid_factory) -> list[OperationalForecast]`
+2. `build_combined_forecasts(station_id, multi_result: MultiModelForecastResult, strategy: ModelCombinationStrategy, nwp_metadata, clock, uuid_factory) -> list[OperationalForecast]`
+   - Uses `multi_result.combinable_results` (not `multi_result.results`) — excludes fallback models from combination
+   - If `combinable_results` has fewer than 2 models, skip combination and return empty list (caller falls back to primary)
    - Dispatches on strategy (v0b: only `POOLED` implemented; others raise `NotImplementedError`)
    - Constructs `OperationalForecast` objects with `combination_strategy` and `source_model_ids` set
    - Uses sentinel `model_id` and `model_artifact_id = None`
@@ -130,7 +143,7 @@ class MultiModelForecastResult:
 
 **Fallback**: If combination fails (e.g., only one model succeeded, incompatible representations), fall back to `primary` — store only the primary model's forecast, log a warning.
 
-**Input assembly for multiple models**: The current flow calls `assemble_station_operational_inputs()` using the highest-priority model's `data_requirements`. In combination mode, each model may have different requirements (lookback, features). Strategy: assemble inputs using the **most demanding** model's requirements (max lookback, union of features). Each model's `predict()` receives the same `StationModelInputs` — models that need fewer features simply ignore extras. This matches the current single-model behavior (the Protocol does not enforce that models consume all supplied features). If a fallback model (climatology/persistence) is included, its minimal requirements are a subset and naturally satisfied.
+**Input assembly for multiple models**: The current flow calls `assemble_station_operational_inputs()` using the highest-priority model's `data_requirements`. In combination mode, each model may have different requirements (lookback, features). Strategy: add a `merge_data_requirements(requirements: list[ModelDataRequirements]) -> ModelDataRequirements` helper to `src/sapphire_flow/types/model.py` that computes the superset requirement (`lookback_steps = max(...)`, `past_dynamic_features = union(...)`, etc.). The flow calls this once per station, then passes the merged requirement to `assemble_station_operational_inputs()`. Each model's `predict()` receives the same `StationModelInputs` — models that need fewer features simply ignore extras. This matches the current single-model behavior (the Protocol does not enforce that models consume all supplied features). If a fallback model (climatology/persistence) is included, its minimal requirements are a subset and naturally satisfied.
 
 **Out of scope**: No alert checker changes (it already supports multi-model). No new Prefect tasks (combination runs inline in Phase B per-station loop).  
 **Files**: `src/sapphire_flow/flows/run_forecast_cycle.py`, `tests/unit/flows/test_run_forecast_cycle.py`  
@@ -150,7 +163,7 @@ The existing `fetch_hindcasts(station_id, model_id, ...)` stays unchanged.
 
 **Scope**: Create `src/sapphire_flow/services/skill/combined_skill.py` with:
 
-`compute_combined_skill(station_id, parameter, strategy: AlertModelStrategy, hindcasts_by_model: dict[ModelId, list[HindcastForecast]], observations, thresholds, flow_regime_config, seasons, skill_source, clock, uuid_factory) -> tuple[list[SkillScore], list[SkillDiagram]]`
+`compute_combined_skill(station_id, parameter, strategy: ModelCombinationStrategy, hindcasts_by_model: dict[ModelId, list[HindcastForecast]], observations, thresholds, flow_regime_config, seasons, skill_source, clock, uuid_factory) -> tuple[list[SkillScore], list[SkillDiagram]]`
 
 1. For each hindcast time step, construct the combined ensemble from all models' hindcast ensembles at that step (using the same combination logic from Task 4).
 2. Pass the combined hindcast series to the existing `compute_skill_for_station()` — but with `model_id = POOLED_MODEL_ID` (sentinel) and `artifact_id = None`.
@@ -225,18 +238,30 @@ Update the skill computation flow (Task 8 wiring) to pass BMA weights when `stra
 **Files**: `src/sapphire_flow/services/skill/combined_skill.py`, skill flow file, corresponding test files  
 **Verification**: `uv run pytest tests/ -x -q`
 
-### Task 12: Documentation updates
+### Task 8b: v0b documentation updates
 
-**Scope**: Update docs to reflect the implemented combination machinery:
+**Scope**: Update docs to reflect the v0b combination machinery (Tasks 1–8):
 
 - `docs/architecture-context.md`: Update Flow 1 to document step 1.8b implementation, multi-model execution mode, and the `MultiModelForecastResult` data flow. Update Flows 8/10 to document step S.4b.
 - `docs/handover/data-flows.md`: Update Flow 1 steps table to include 1.8b. Update skill computation steps to include S.4b.
-- `docs/v0-scope.md`: Update §A8e to reflect v0b/v0c implementation status. Update deferred table.
+- `docs/v0-scope.md`: Update §A8e to reflect v0b implementation status.
 - `docs/spec/database-schema.md`: Update `forecasts` table (new columns `combination_strategy`, `source_model_ids`; nullable `model_artifact_id`). Update `skill_scores` and `skill_diagrams` tables (nullable `model_artifact_id`). Add sentinel model entries to `models` table diagram. Update ER relationships.
 - `docs/spec/types-and-protocols.md`: Update `ArtifactScope` enum (add `VIRTUAL`). Update `OperationalForecast` (new fields + nullable `model_artifact_id`). Update `SkillScore` and `SkillDiagram` (nullable `model_artifact_id`). Update `compute_skill_for_station()` signature.
 
-**Out of scope**: No code changes.  
+**Out of scope**: No code changes. BMA docs are in Task 12.  
 **Files**: `docs/architecture-context.md`, `docs/handover/data-flows.md`, `docs/v0-scope.md`, `docs/spec/database-schema.md`, `docs/spec/types-and-protocols.md`  
+**Verification**: `uv run pytest tests/ -x -q` (confirms no code breakage from doc-only changes)
+
+### Task 12: v0c documentation updates
+
+**Scope**: Update docs to reflect the v0c BMA machinery (Tasks 9–11):
+
+- `docs/architecture-context.md`: Document BMA weight computation and cross-validated skill evaluation.
+- `docs/v0-scope.md`: Update §A8e to reflect v0c implementation status. Update deferred table.
+- `docs/spec/types-and-protocols.md`: Document BMA weight computation signature.
+
+**Out of scope**: No code changes.  
+**Files**: `docs/architecture-context.md`, `docs/v0-scope.md`, `docs/spec/types-and-protocols.md`  
 **Verification**: `uv run pytest tests/ -x -q` (confirms no code breakage from doc-only changes)
 
 ---
@@ -276,9 +301,9 @@ Update the skill computation flow (Task 8 wiring) to pass BMA weights when `stra
     },
     {
       "id": "v0b-skill-flow",
-      "label": "v0b — Skill flow wiring",
-      "tasks": ["8"],
-      "parallel": false,
+      "label": "v0b — Skill flow wiring + docs",
+      "tasks": ["8", "8b"],
+      "parallel": true,
       "depends_on": ["v0b-wiring"]
     },
     {
@@ -296,8 +321,8 @@ Update the skill computation flow (Task 8 wiring) to pass BMA weights when `stra
       "depends_on": ["v0c-bma"]
     },
     {
-      "id": "docs",
-      "label": "Documentation",
+      "id": "v0c-docs",
+      "label": "v0c — Documentation",
       "tasks": ["12"],
       "parallel": false,
       "depends_on": ["v0c-bma-skill"]
@@ -310,15 +335,17 @@ Update the skill computation flow (Task 8 wiring) to pass BMA weights when `stra
 
 1. **Run all models, not just first success**: `run_all_station_forecasts()` runs every assigned model regardless of prior successes. This is needed for both combination forecasting AND multi-model alerting (the alert checker already expects multi-model input). The existing `run_station_forecast()` becomes a thin wrapper for `primary` mode backward compatibility.
 
-2. **Pooled combination requires MEMBERS representation**: Merging quantile ensembles is statistically unsound — you cannot pool quantiles from different distributions. Models producing quantile-only output are excluded from pooling with a warning. BMA has the same constraint. This is an important operational consideration: models should produce member ensembles, not just quantiles, if they want to participate in combination.
+2. **Fallback models excluded from combination**: Models at priority >= `FALLBACK_PRIORITY_THRESHOLD` (90) are excluded from combination via `MultiModelForecastResult.combinable_results`. This prevents naive baselines (climatology, persistence) from diluting real model output in pooled/BMA ensembles. Fallback models still participate in the primary fallback chain. Two mechanisms enforce this: (a) priority threshold filtering, and (b) representation check (fallback models produce QUANTILES, combination requires MEMBERS).
 
-3. **BMA weights are ephemeral, not stored**: Computed on the fly from `skill_scores` using inverse-CRPS normalisation. No new table. If this becomes a performance concern, add a lightweight cache later.
+3. **Pooled combination requires MEMBERS representation**: Merging quantile ensembles is statistically unsound — you cannot pool quantiles from different distributions. Models producing quantile-only output are excluded from pooling with a warning. BMA has the same constraint. This is an important operational consideration: models should produce member ensembles, not just quantiles, if they want to participate in combination.
 
-4. **Combined skill uses intersection of hindcast steps**: Only time steps where ALL models have hindcast results contribute to combined skill. This avoids bias from models that cover different periods. Coverage statistics are logged.
+4. **BMA weights are ephemeral, not stored**: Computed on the fly from `skill_scores` using inverse-CRPS normalisation. No new table. If this becomes a performance concern, add a lightweight cache later.
 
-5. **Sentinel models have `artifact_scope = 'virtual'`**: New `VIRTUAL` value added to `ArtifactScope` enum. Virtual model entries have no training, no artifacts, no entry point. The CHECK constraint on `models.artifact_scope` is updated to include `'virtual'`.
+5. **Combined skill uses intersection of hindcast steps**: Only time steps where ALL models have hindcast results contribute to combined skill. This avoids bias from models that cover different periods. Coverage statistics are logged.
 
-6. **Combined forecast stored alongside individual forecasts**: One combined `OperationalForecast` per (station, parameter, cycle), plus individual forecasts from each model. The API can filter by `combination_strategy IS NOT NULL` to return only combined forecasts, or `IS NULL` for individual models.
+6. **Sentinel models have `artifact_scope = 'virtual'`**: New `VIRTUAL` value added to `ArtifactScope` enum. Virtual model entries have no training, no artifacts, no entry point. The CHECK constraint on `models.artifact_scope` is updated to include `'virtual'`.
+
+7. **Combined forecast stored alongside individual forecasts**: One combined `OperationalForecast` per (station, parameter, cycle), plus individual forecasts from each model. The API can filter by `combination_strategy IS NOT NULL` to return only combined forecasts, or `IS NULL` for individual models.
 
 ## Not In Scope (v1 follow-up)
 

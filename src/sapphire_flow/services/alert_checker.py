@@ -10,10 +10,10 @@ from sapphire_flow.services.alert_strategy import (
     PrimaryModelStrategy,
 )
 from sapphire_flow.types.enums import (
-    AlertModelStrategy,
     AlertSource,
     AlertStatus,
     EnsembleRepresentation,
+    ModelCombinationStrategy,
     ThresholdDirection,
 )
 
@@ -38,7 +38,7 @@ _FORECAST_PARAMETERS: set[ForecastParameter] = {"discharge", "water_level"}
 
 # Tracks strategies that have already logged an unimplemented-fallback warning.
 # Keyed on (preferred, actual) to avoid log pollution at scale.
-_STRATEGY_FALLBACK_WARNED: set[tuple[AlertModelStrategy, str]] = set()
+_STRATEGY_FALLBACK_WARNED: set[tuple[ModelCombinationStrategy, str]] = set()
 
 
 def check_station_alerts(
@@ -199,7 +199,7 @@ def _ensemble_size_adequate(
 
 
 def _resolve_strategy_and_filter(
-    preferred: AlertModelStrategy,
+    preferred: ModelCombinationStrategy,
     param_ensembles: dict[ModelId, ForecastEnsemble],
     representations: set[EnsembleRepresentation],
     priorities: dict[ModelId, int],
@@ -222,19 +222,19 @@ def _resolve_strategy_and_filter(
         return {primary_id: param_ensembles[primary_id]}
 
     match preferred:
-        case AlertModelStrategy.BMA:
+        case ModelCombinationStrategy.BMA:
             actual = "pooled" if is_homogeneous_members else "primary"
             _warn_fallback_once(preferred, actual, "bma_not_implemented")
             if not is_homogeneous_members:
                 return PrimaryModelStrategy(), _select_primary_ensemble()
             return PooledEnsembleStrategy(), param_ensembles
-        case AlertModelStrategy.CONSENSUS:
+        case ModelCombinationStrategy.CONSENSUS:
             actual = "pooled" if is_homogeneous_members else "primary"
             _warn_fallback_once(preferred, actual, "consensus_not_implemented")
             if not is_homogeneous_members:
                 return PrimaryModelStrategy(), _select_primary_ensemble()
             return PooledEnsembleStrategy(), param_ensembles
-        case AlertModelStrategy.POOLED:
+        case ModelCombinationStrategy.POOLED:
             if not is_homogeneous_members:
                 log.warning(
                     "alert.strategy_degraded",
@@ -244,14 +244,14 @@ def _resolve_strategy_and_filter(
                 )
                 return PrimaryModelStrategy(), _select_primary_ensemble()
             return PooledEnsembleStrategy(), param_ensembles
-        case AlertModelStrategy.PRIMARY:
+        case ModelCombinationStrategy.PRIMARY:
             return PrimaryModelStrategy(), _select_primary_ensemble()
         case _:
             raise ValueError(f"Unhandled strategy: {preferred}")
 
 
 def _warn_fallback_once(
-    preferred: AlertModelStrategy,
+    preferred: ModelCombinationStrategy,
     actual: str,
     reason: str,
 ) -> None:
@@ -290,7 +290,7 @@ def _process_results(
 
     # Accumulate model_ids per danger level as union across parameters
     exceeded_models: dict[str, set[ModelId]] = {}
-    exceeded_strategy: dict[str, AlertModelStrategy] = {}
+    exceeded_strategy: dict[str, ModelCombinationStrategy] = {}
 
     for result in results:
         if result.exceeded:

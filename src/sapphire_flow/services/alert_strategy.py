@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 import structlog
 
-from sapphire_flow.types.enums import AlertModelStrategy, EnsembleRepresentation
+from sapphire_flow.types.enums import EnsembleRepresentation, ModelCombinationStrategy
 
 if TYPE_CHECKING:
     from sapphire_flow.types.domain import (
@@ -179,7 +179,7 @@ class PrimaryModelStrategy:
                     observed_value=None,
                     exceeded=exceeded,
                     model_ids=(primary_model_id,),
-                    strategy=AlertModelStrategy.PRIMARY,
+                    strategy=ModelCombinationStrategy.PRIMARY,
                 )
             )
         return results
@@ -229,7 +229,7 @@ class PooledEnsembleStrategy:
                     observed_value=None,
                     exceeded=exceeded,
                     model_ids=all_model_ids,
-                    strategy=AlertModelStrategy.POOLED,
+                    strategy=ModelCombinationStrategy.POOLED,
                 )
             )
         return results

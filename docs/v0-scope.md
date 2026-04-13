@@ -111,6 +111,18 @@ Flow 13 (model onboarding) uses the same auto-promote path: `training` → `acti
 
 **`SKIPPED_INSUFFICIENT_EVAL`**: If **zero** strata survive the `min_skill_samples` filter (i.e. no stratum has enough pairs to be evaluated), the unit outcome is `SKIPPED_INSUFFICIENT_EVAL` rather than `GATE_REJECTED`. This distinguishes "model failed quality bar" from "insufficient observation data to evaluate the model." `GATE_REJECTED` is reserved for cases where scores exist but fall below thresholds.
 
+**v0 model inventory**: The following model types are active or planned in v0:
+
+| Model | Type | Priority | Phase |
+|-------|------|----------|-------|
+| `LinearRegressionDaily` | `StationForecastModel` | 0 | v0a |
+| ML model (ForecastInterface-wrapped) | `StationForecastModel` or `GroupForecastModel` | 1 | v0b |
+| Conceptual (HBV, etc.) | `StationForecastModel` | 2 | v1 |
+| `ClimatologyFallbackModel` | `StationForecastModel` | 90 | v0 |
+| `PersistenceFallbackModel` | `StationForecastModel` | 99 | v0 |
+
+`ClimatologyFallbackModel` and `PersistenceFallbackModel` are real `StationForecastModel` implementations — they train, predict, pass QC, and accumulate skill. They are assigned to all stations as guaranteed last-resort fallbacks. Models with priority ≥ `FALLBACK_PRIORITY_THRESHOLD` (= 90) are excluded from multi-model combination (§A8e).
+
 ### A8. No notification system
 
 **Full design**: 3 channels (email, SMS, webhook), routing config, recipient management, retry sweep.
@@ -149,6 +161,18 @@ Rationale: per-source flags allow incremental activation during testing — pipe
 **v0b**: `pooled` strategy implemented when second model is onboarded per station. Deployers with multiple models per station switch config to `pooled`.
 
 **v1**: `bma` strategy implemented with weight training pipeline (linked to Flow 8/10 skill recomputation). Deployers switch config to `bma` once weights are trained. `consensus` strategy implemented if stakeholder demand exists.
+
+### A8e. Multi-model forecast combination strategy
+
+**Full design**: A `forecast_combination_strategy` config field (reusing the `ModelCombinationStrategy` enum, independent from `alert_model_strategy`) controls whether a blended combined forecast is stored alongside individual model forecasts. The four strategies mirror the alert enum: `PRIMARY` (no combination), `POOLED` (grand ensemble), `BMA` (skill-weighted), `CONSENSUS` (vote-based). Combined forecasts are stored in the same `forecasts` table with sentinel `model_id` values (`_pooled`, `_bma`, `_consensus`) and discriminator columns (`combination_strategy`, `source_model_ids`). Combined skill is computed via step S.4b using the same verification metrics as individual models.
+
+**v0**: `forecast_combination_strategy` config field exists with default `PRIMARY`. No combination step runs. Schema columns for `combination_strategy` and `source_model_ids` exist to support future migration.
+
+**v0b**: `POOLED` strategy implemented. Step 1.8b added to the forecast cycle: after all individual model forecasts are stored, a pooled combined forecast is constructed and stored. DB migration adds `combination_strategy` and `source_model_ids` columns to `forecasts`. Fallback models (priority ≥ `FALLBACK_PRIORITY_THRESHOLD` = 90) are excluded from combination. Phase 9 (API) updated to handle sentinel `model_id` values in query filters and responses.
+
+**v0c**: `BMA` strategy implemented with skill-weighted averaging and cross-validated evaluation.
+
+**v1**: `CONSENSUS` strategy implemented if stakeholder demand exists. Flow 3 (forecast review UI) integration for combined forecast display.
 
 ### A9. No forecast adjustments
 

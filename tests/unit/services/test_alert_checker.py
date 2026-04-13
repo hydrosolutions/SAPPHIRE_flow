@@ -18,10 +18,10 @@ from sapphire_flow.services.alert_strategy import (
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.domain import DangerLevelDefinition, StationThreshold
 from sapphire_flow.types.enums import (
-    AlertModelStrategy,
     AlertSource,
     AlertStatus,
     EnsembleRepresentation,
+    ModelCombinationStrategy,
     ThresholdDirection,
     ThresholdSource,
 )
@@ -97,7 +97,7 @@ class TestResolveStrategyAndFilter:
         representations = {EnsembleRepresentation.MEMBERS}
 
         strategy, effective = _resolve_strategy_and_filter(
-            preferred=AlertModelStrategy.BMA,
+            preferred=ModelCombinationStrategy.BMA,
             param_ensembles=param_ensembles,
             representations=representations,
             priorities={},
@@ -124,7 +124,7 @@ class TestResolveStrategyAndFilter:
         representations = {EnsembleRepresentation.MEMBERS}
 
         strategy, effective = _resolve_strategy_and_filter(
-            preferred=AlertModelStrategy.CONSENSUS,
+            preferred=ModelCombinationStrategy.CONSENSUS,
             param_ensembles=param_ensembles,
             representations=representations,
             priorities={},
@@ -144,7 +144,7 @@ class TestResolveStrategyAndFilter:
         representations = {EnsembleRepresentation.MEMBERS}
 
         strategy, effective = _resolve_strategy_and_filter(
-            preferred=AlertModelStrategy.POOLED,
+            preferred=ModelCombinationStrategy.POOLED,
             param_ensembles=param_ensembles,
             representations=representations,
             priorities={},
@@ -165,7 +165,7 @@ class TestResolveStrategyAndFilter:
         representations = {EnsembleRepresentation.MEMBERS}
 
         strategy, _ = _resolve_strategy_and_filter(
-            preferred=AlertModelStrategy.CONSENSUS,
+            preferred=ModelCombinationStrategy.CONSENSUS,
             param_ensembles=param_ensembles,
             representations=representations,
             priorities={},
@@ -194,7 +194,7 @@ class TestResolveStrategyAndFilter:
         }
 
         strategy, effective = _resolve_strategy_and_filter(
-            preferred=AlertModelStrategy.CONSENSUS,
+            preferred=ModelCombinationStrategy.CONSENSUS,
             param_ensembles=param_ensembles,
             representations=representations,
             priorities={mid_a: 0, mid_b: 1},
@@ -224,7 +224,7 @@ class TestResolveStrategyAndFilter:
         }
 
         strategy, effective = _resolve_strategy_and_filter(
-            preferred=AlertModelStrategy.POOLED,
+            preferred=ModelCombinationStrategy.POOLED,
             param_ensembles=param_ensembles,
             representations=representations,
             priorities={mid_a: 0, mid_b: 1},
@@ -254,7 +254,7 @@ class TestResolveStrategyAndFilter:
         }
 
         strategy, effective = _resolve_strategy_and_filter(
-            preferred=AlertModelStrategy.BMA,
+            preferred=ModelCombinationStrategy.BMA,
             param_ensembles=param_ensembles,
             representations=representations,
             priorities={mid_a: 0, mid_b: 1},
@@ -273,7 +273,7 @@ class TestResolveStrategyAndFilter:
         representations = {EnsembleRepresentation.MEMBERS}
 
         strategy, effective = _resolve_strategy_and_filter(
-            preferred=AlertModelStrategy.PRIMARY,
+            preferred=ModelCombinationStrategy.PRIMARY,
             param_ensembles=param_ensembles,
             representations=representations,
             priorities={mid_a: 0, mid_b: 1},
@@ -291,7 +291,7 @@ class TestResolveStrategyAndFilter:
         representations = {EnsembleRepresentation.MEMBERS}
 
         _, effective = _resolve_strategy_and_filter(
-            preferred=AlertModelStrategy.PRIMARY,
+            preferred=ModelCombinationStrategy.PRIMARY,
             param_ensembles=param_ensembles,
             representations=representations,
             priorities={mid_a: 0, mid_b: 1},
@@ -320,13 +320,13 @@ class TestResolveStrategyAndFilter:
 
         with structlog.testing.capture_logs() as cap:
             _resolve_strategy_and_filter(
-                preferred=AlertModelStrategy.BMA,
+                preferred=ModelCombinationStrategy.BMA,
                 param_ensembles=param_ensembles,
                 representations=representations,
                 priorities={},
             )
             _resolve_strategy_and_filter(
-                preferred=AlertModelStrategy.BMA,
+                preferred=ModelCombinationStrategy.BMA,
                 param_ensembles=param_ensembles,
                 representations=representations,
                 priorities={},
@@ -370,13 +370,13 @@ class TestResolveStrategyAndFilter:
 
         with structlog.testing.capture_logs() as cap:
             _resolve_strategy_and_filter(
-                preferred=AlertModelStrategy.BMA,
+                preferred=ModelCombinationStrategy.BMA,
                 param_ensembles=members_ensembles,
                 representations={EnsembleRepresentation.MEMBERS},
                 priorities={mid_a: 0, mid_b: 1},
             )
             _resolve_strategy_and_filter(
-                preferred=AlertModelStrategy.BMA,
+                preferred=ModelCombinationStrategy.BMA,
                 param_ensembles=mixed_ensembles,
                 representations={
                     EnsembleRepresentation.MEMBERS,
@@ -641,7 +641,7 @@ class TestProcessResults:
             observed_value=None,
             exceeded=True,
             model_ids=(mid,),
-            strategy=AlertModelStrategy.PRIMARY,
+            strategy=ModelCombinationStrategy.PRIMARY,
         )
         threshold = _make_threshold(
             danger_level="DL1", parameter="discharge", value=100.0
@@ -712,7 +712,7 @@ class TestProcessResults:
             observed_value=None,
             exceeded=True,
             model_ids=(mid,),
-            strategy=AlertModelStrategy.PRIMARY,
+            strategy=ModelCombinationStrategy.PRIMARY,
         )
 
         _process_results(
@@ -782,7 +782,7 @@ class TestProcessResults:
                 observed_value=None,
                 exceeded=True,
                 model_ids=(mid_a, mid_b),
-                strategy=AlertModelStrategy.POOLED,
+                strategy=ModelCombinationStrategy.POOLED,
             ),
             ExceedanceResult(
                 station_id=_STATION,
@@ -793,7 +793,7 @@ class TestProcessResults:
                 observed_value=None,
                 exceeded=True,
                 model_ids=(mid_b, mid_c),
-                strategy=AlertModelStrategy.POOLED,
+                strategy=ModelCombinationStrategy.POOLED,
             ),
         ]
 
@@ -827,7 +827,7 @@ class TestProcessResults:
             observed_value=None,
             exceeded=True,
             model_ids=(mid,),
-            strategy=AlertModelStrategy.PRIMARY,
+            strategy=ModelCombinationStrategy.PRIMARY,
         )
         threshold = _make_threshold(
             danger_level=danger_level_name, parameter="discharge", value=100.0
@@ -859,7 +859,7 @@ class TestProcessResults:
             observed_value=None,
             exceeded=True,
             model_ids=(mid_c, mid_a, mid_b),
-            strategy=AlertModelStrategy.POOLED,
+            strategy=ModelCombinationStrategy.POOLED,
         )
 
         _process_results([result], _STATION, {"discharge"}, [threshold], store, _clock)

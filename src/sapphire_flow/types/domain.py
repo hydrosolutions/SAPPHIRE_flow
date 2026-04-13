@@ -6,9 +6,9 @@ from typing import TYPE_CHECKING, Literal
 
 from sapphire_flow.types.enums import (
     AggregationMethod,
-    AlertModelStrategy,
     InputQualityCategory,
     InputQualityLevel,
+    ModelCombinationStrategy,
     ParameterDomain,
     QcStatus,
     ThresholdDirection,
@@ -216,7 +216,7 @@ class ExceedanceResult:
     observed_value: float | None
     exceeded: bool
     model_ids: tuple[ModelId, ...] = ()
-    strategy: AlertModelStrategy = AlertModelStrategy.PRIMARY
+    strategy: ModelCombinationStrategy = ModelCombinationStrategy.PRIMARY
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

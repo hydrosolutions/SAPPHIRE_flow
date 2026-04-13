@@ -26,11 +26,11 @@ Both models are onboarded via Flow 13 like any other model. They receive the low
 
 **Why not just extend `ClimBaseline`?** Baselines are statistical summaries used as skill reference denominators (CRPSss against climatology, BSS against persistence). Fallback models are operational forecast producers — they go through the same predict/QC/store pipeline. Keeping them separate avoids coupling the baseline computation to the model Protocol and makes their skill independently verifiable.
 
-### D2. Forecast combination strategy — reusing `AlertModelStrategy`
+### D2. Forecast combination strategy — rename `AlertModelStrategy` → `ModelCombinationStrategy`
 
-**Decision**: Reuse the existing `AlertModelStrategy` enum (values: `PRIMARY`, `POOLED`, `BMA`, `CONSENSUS`) for the new `forecast_combination_strategy` config field in `DeploymentConfig`. This controls how the **published forecast product** is assembled from individual model outputs.
+**Decision**: Rename the existing `AlertModelStrategy` enum to `ModelCombinationStrategy` (values: `PRIMARY`, `POOLED`, `BMA`, `CONSENSUS`). Both `alert_model_strategy` and the new `forecast_combination_strategy` config field on `DeploymentConfig` use this type. This controls how models' ensembles are combined — for alerting and for the **published forecast product** respectively.
 
-**Why one enum, not two?** The four combination strategies are the same concept — how to combine multiple models' ensembles — applied to different concerns (alerting vs forecast product). The values are identical and will evolve in lockstep. A duplicate enum adds maintenance burden with no type-safety benefit. Both config fields (`alert_model_strategy` and `forecast_combination_strategy`) use `AlertModelStrategy` as their type. If the name becomes misleading, a rename to `ModelCombinationStrategy` is a trivial refactor — but not worth doing now since `AlertModelStrategy` is already used across the codebase.
+**Why rename now?** The project's type-driven development principles (CLAUDE.md) require types to be self-documenting. An enum named `AlertModelStrategy` used for forecast combination violates this — it communicates "alerting" when the concept is "multi-model combination." The rename is a find-and-replace across the codebase; deferring it only increases the surface area.
 
 The combination strategies applied to forecasts:
 
@@ -58,6 +58,8 @@ The `model_id` column for combined forecasts uses a well-known sentinel: `ModelI
 
 **Why not a separate table?** The combined forecast is a forecast — same schema, same API endpoints, same review/publish lifecycle. A separate table would duplicate the entire forecast query surface. Using the same table with a discriminator column (`combination_strategy`) is the standard pattern for type hierarchies in a single table.
 
+**API note**: Combined forecasts will appear with sentinel `model_id` values (`_pooled`, `_bma`, `_consensus`). Phase 9 (FastAPI API) must be aware of this — API responses should distinguish combined from individual forecasts (e.g., via `combination_strategy` field in the response schema). This is not in scope for Plan 025/026 but must be addressed when Phase 9 resumes.
+
 ### D4. Skill metrics for combined forecasts
 
 **Decision**: Extend Flows 8/10 with a new step **S.4b** that runs after per-model skill computation (S.4):
@@ -71,7 +73,7 @@ The `model_id` column for combined forecasts uses a well-known sentinel: `ModelI
 
 This enables direct comparison: "Is the BMA combination better than the best individual model at this station?" — the answer is in the same table, queryable with the same API.
 
-**Schema note**: `SkillScore.model_artifact_id` is currently non-nullable (`ArtifactId`, not `ArtifactId | None`). Combined forecasts have no single artifact. When S.4b is implemented (v0b+), the type must be relaxed to `ArtifactId | None` and the DB column made nullable via Alembic migration. This is a v0b schema change — not needed for v0.
+**Schema note**: `SkillScore.model_artifact_id` and `SkillDiagram.model_artifact_id` are currently non-nullable (`ArtifactId`, not `ArtifactId | None`). Combined forecasts have no single artifact. When S.4b is implemented (v0b+), both types must be relaxed to `ArtifactId | None` and the DB columns made nullable via Alembic migration. This is a v0b schema change — not needed for v0.
 
 **BMA weight training**: Design of cross-validation strategy (temporal split, hold-out, etc.) is deferred to the v0c plan. Not specified here.
 
@@ -96,9 +98,10 @@ This plan implements the **v0 slice**: fallback models and config scaffolding. C
 
 1. `ClimatologyFallbackModel` — `StationForecastModel` implementation
 2. `PersistenceFallbackModel` — `StationForecastModel` implementation
-3. `forecast_combination_strategy` config field on `DeploymentConfig` (reusing `AlertModelStrategy` enum)
-4. Sentinel `ModelId` constants in `types/ids.py`
-5. Documentation updates (architecture-context.md, data-flows.md, v0-scope.md, conventions.md)
+3. Rename `AlertModelStrategy` → `ModelCombinationStrategy` in `types/enums.py` + all references
+4. `forecast_combination_strategy` config field on `DeploymentConfig` (using renamed `ModelCombinationStrategy`)
+5. Sentinel `ModelId` constants in `types/ids.py`
+6. Documentation updates (architecture-context.md, data-flows.md, v0-scope.md, conventions.md)
 
 ---
 
@@ -140,7 +143,7 @@ This plan implements the **v0 slice**: fallback models and config scaffolding. C
   - `lookback_steps`: 1 (only the latest observation)
   - `spatial_input_type`: `SpatialRepresentation.POINT`
 - `train(self, data: StationTrainingData, params: ModelParams, rng: random.Random) -> ModelArtifact`: Return a minimal sentinel artifact dataclass (e.g., `PersistenceArtifact(parameter=...)`). No learned parameters — `data`, `params`, and `rng` are accepted but unused. The artifact exists so the model can be registered in the artifact store.
-- `predict(self, artifact: ModelArtifact, inputs: StationModelInputs, rng: random.Random, prior_state: bytes | None = None) -> tuple[dict[str, ForecastEnsemble], bytes | None]`: Extract the most recent observation from `inputs.data.past_targets` — this is a wide-format Polars DataFrame with columns `[timestamp, <parameter_name>, ...]`. Select the target parameter column (e.g., `"discharge"`) from `data_requirements.target_parameters` and take the last row by timestamp. Repeat the value across all forecast steps. Generate quantile spread that widens linearly with lead time (configurable base spread, e.g., ±5% per step). Construct `ForecastEnsemble` via `from_quantiles(station_id=inputs.station_id, issued_at=inputs.issue_time, parameter=..., units=..., time_step=inputs.time_step, ...)` with values DataFrame schema `[valid_time, quantile, value]` (exactly these three columns), at least 7 quantile levels (0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95). Return `(ensembles_dict, None)` — `rng` and `prior_state` unused.
+- `predict(self, artifact: ModelArtifact, inputs: StationModelInputs, rng: random.Random, prior_state: bytes | None = None) -> tuple[dict[str, ForecastEnsemble], bytes | None]`: Extract the most recent observation from `inputs.data.past_targets` — this is a wide-format Polars DataFrame with columns `[timestamp, <parameter_name>, ...]`. Select the target parameter column (e.g., `"discharge"`) from `data_requirements.target_parameters` and take the last row by timestamp. Repeat the value across all forecast steps. Generate quantile spread that widens linearly with lead time. The base spread percentage per step is a constructor parameter (e.g., `spread_pct_per_step: float = 0.05` meaning ±5% of the observed value per step). Construct `ForecastEnsemble` via `from_quantiles(station_id=inputs.station_id, issued_at=inputs.issue_time, parameter=..., units=..., time_step=inputs.time_step, ...)` with values DataFrame schema `[valid_time, quantile, value]` (exactly these three columns), at least 7 quantile levels (0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95). Return `(ensembles_dict, None)` — `rng` and `prior_state` unused.
 - `serialize_artifact()` / `deserialize_artifact()`: JSON (artifact is a small metadata dict). **No pickle.**
 
 **Out of scope**: Anything beyond trivial persistence.  
@@ -148,15 +151,19 @@ This plan implements the **v0 slice**: fallback models and config scaffolding. C
 **Entry point**: Register as `persistence_fallback` in `pyproject.toml` under `[project.entry-points."sapphire_flow.models"]`.  
 **Verification**: `uv run pytest tests/unit/models/test_persistence_fallback.py -x -q`
 
-### Task 3: Config scaffolding — `forecast_combination_strategy` + sentinel constants
+### Task 3: Rename enum + config scaffolding + sentinel constants
 
-**Scope**: Add `forecast_combination_strategy: AlertModelStrategy` field to `DeploymentConfig` (`src/sapphire_flow/config/deployment.py`) with default `AlertModelStrategy.PRIMARY`. No new enum — reuses existing `AlertModelStrategy`. Add sentinel `ModelId` constants to `src/sapphire_flow/types/ids.py`: `POOLED_MODEL_ID = ModelId("_pooled")`, `BMA_MODEL_ID = ModelId("_bma")`, `CONSENSUS_MODEL_ID = ModelId("_consensus")`.
+**Scope**: Three changes:
+
+1. **Rename `AlertModelStrategy` → `ModelCombinationStrategy`** in `src/sapphire_flow/types/enums.py`. Update all imports and references across the codebase (`config/deployment.py`, `services/alert_checker.py`, `flows/run_forecast_cycle.py`, tests, etc.). The enum values (`PRIMARY`, `POOLED`, `BMA`, `CONSENSUS`) are unchanged.
+2. **Add `forecast_combination_strategy: ModelCombinationStrategy`** field to `DeploymentConfig` (`src/sapphire_flow/config/deployment.py`) with default `ModelCombinationStrategy.PRIMARY`.
+3. **Add sentinel `ModelId` constants** to `src/sapphire_flow/types/ids.py`: `POOLED_MODEL_ID = ModelId("_pooled")`, `BMA_MODEL_ID = ModelId("_bma")`, `CONSENSUS_MODEL_ID = ModelId("_consensus")`.
 
 **Note**: The sentinel constants exist in Python from v0 onwards, but the corresponding rows in the `models` DB table are not inserted until v0b (Plan 026 Task 1). This is intentional — the constants are needed for type-safe references in code, but no combined forecast is stored in v0 so no FK lookup occurs.
 
 **Out of scope**: No combination logic, no DB migration, no sentinel model table entries (v0b).  
-**Files**: `src/sapphire_flow/config/deployment.py`, `src/sapphire_flow/types/ids.py`  
-**Verification**: `uv run pyright --strict src/sapphire_flow/config/deployment.py src/sapphire_flow/types/ids.py && uv run pytest tests/ -x -q`
+**Files**: `src/sapphire_flow/types/enums.py`, `src/sapphire_flow/config/deployment.py`, `src/sapphire_flow/types/ids.py`, all files importing `AlertModelStrategy`  
+**Verification**: `uv run pyright --strict src/sapphire_flow/ && uv run pytest tests/ -x -q`
 
 ### Task 4: Documentation updates
 
@@ -197,7 +204,7 @@ This plan implements the **v0 slice**: fallback models and config scaffolding. C
 
 1. **Fallback models are real models**: They go through the full model Protocol — train, artifact, predict, QC, skill — not a special-case hack in the forecast cycle. This means they're automatically covered by existing hindcast and skill computation flows.
 
-2. **Forecast combination reuses `AlertModelStrategy` enum**: One enum for both concerns. Both config fields are independently settable. Avoids duplication. Rename to `ModelCombinationStrategy` is a trivial future refactor if needed.
+2. **Rename `AlertModelStrategy` → `ModelCombinationStrategy`**: One enum for both concerns (alerting + forecast combination). Both config fields are independently settable. The rename aligns with type-driven development principles — the enum name describes its actual purpose.
 
 3. **Combined forecasts in the same table**: No schema duplication. Discriminator column (`combination_strategy`) plus sentinel `model_id`. Same API, same review lifecycle.
 

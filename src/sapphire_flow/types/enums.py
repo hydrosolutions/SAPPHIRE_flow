@@ -86,7 +86,7 @@ class ThresholdDirection(Enum):
     BELOW = "below"
 
 
-class AlertModelStrategy(Enum):
+class ModelCombinationStrategy(Enum):
     PRIMARY = "primary"
     POOLED = "pooled"
     BMA = "bma"

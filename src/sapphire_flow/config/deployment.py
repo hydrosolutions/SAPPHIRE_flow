@@ -14,7 +14,7 @@ from sapphire_flow.types.domain import (
     SkillInterpretationBand,
     SkillInterpretationScheme,
 )
-from sapphire_flow.types.enums import AlertModelStrategy, ThresholdDirection
+from sapphire_flow.types.enums import ModelCombinationStrategy, ThresholdDirection
 from sapphire_flow.types.model_onboarding import (
     SUPPORTED_SKILL_METRICS,
     SkillGateMetric,
@@ -84,7 +84,10 @@ class DeploymentConfig(BaseModel):
     enable_pipeline_alerts: bool = False
     threshold_check_mode: Literal["raw", "published", "both"] = "raw"
 
-    alert_model_strategy: AlertModelStrategy = AlertModelStrategy.PRIMARY
+    alert_model_strategy: ModelCombinationStrategy = ModelCombinationStrategy.PRIMARY
+    forecast_combination_strategy: ModelCombinationStrategy = (
+        ModelCombinationStrategy.PRIMARY
+    )
     min_operational_ensemble_size: int = 20
     min_operational_quantile_levels: int = 7
 

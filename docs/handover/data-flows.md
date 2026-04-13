@@ -104,7 +104,9 @@ Step 1.9 is conditional — pass-through until sufficient forecast archive exist
 
 Every stored forecast record carries the NWP cycle reference time used as forcing — the API and dashboard can display which NWP cycle produced each forecast, not just the forecast issue time.
 
-**Multi-model fallback.** Each station can have multiple forecast models assigned in priority order. If a model fails at runtime (step 1.8) or its output fails QC (step 1.10), the flow automatically tries the next model by priority. The fallback model's identifier is recorded on the stored forecast for traceability.
+**Multi-model fallback (error recovery).** Each station can have multiple forecast models assigned in priority order. If a model fails at runtime (step 1.8) or its output fails QC (step 1.10), the flow automatically tries the next model by priority. The fallback model's identifier is recorded on the stored forecast for traceability. Two sentinel fallback models serve as guaranteed last-resort fallbacks: `ClimatologyFallbackModel` (priority 90) and `PersistenceFallbackModel` (priority 99). Both are real `StationForecastModel` implementations — they train, predict, pass QC, and accumulate skill — not special-case hacks. They ensure a forecast is always producible even when all configured models fail.
+
+**Multi-model forecast combination (step 1.8b, v0b+).** Distinct from error fallback, combination merges multiple models' ensembles into a blended forecast. After all individual model forecasts are stored (step 1.11), step 1.8b runs if `forecast_combination_strategy != primary`. The combined forecast is stored in the same `forecasts` table alongside individual forecasts, identified by sentinel `model_id` values (`_pooled`, `_bma`, `_consensus`) and discriminator columns (`combination_strategy`, `source_model_ids`). Fallback models (priority ≥ 90) are excluded from combination. Combined forecast skill is computed separately via step S.4b.
 
 **Sequencing.** The cycle runs in three phases:
 - **Phase A** (per NWP source, parallel across sources): steps 1.1 → 1.5

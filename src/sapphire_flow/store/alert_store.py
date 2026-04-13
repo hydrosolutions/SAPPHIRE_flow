@@ -9,7 +9,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sapphire_flow.db.metadata import alerts
 from sapphire_flow.store._helpers import utc_from_row, utc_or_none
 from sapphire_flow.types.alert import Alert
-from sapphire_flow.types.enums import AlertModelStrategy, AlertSource, AlertStatus
+from sapphire_flow.types.enums import AlertSource, AlertStatus, ModelCombinationStrategy
 from sapphire_flow.types.ids import AlertId, ModelId, StationId
 
 if TYPE_CHECKING:
@@ -180,7 +180,7 @@ def _row_to_domain(row: sa.engine.row.RowMapping) -> Alert:
         notified_at=utc_or_none(row["notified_at"]),
         created_at=utc_from_row(row["created_at"]),
         model_ids=tuple(ModelId(mid) for mid in (row["model_ids"] or [])),  # type: ignore[arg-type]
-        alert_model_strategy=AlertModelStrategy(row["alert_model_strategy"])
+        alert_model_strategy=ModelCombinationStrategy(row["alert_model_strategy"])
         if row["alert_model_strategy"] is not None
         else None,
     )

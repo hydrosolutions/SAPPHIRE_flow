@@ -430,9 +430,12 @@ drives alert decisions when all models succeed).
 | 0 | Linear regression / primary | Fastest fallback; alert-selection primary |
 | 1 | ML (LSTM, etc.) | |
 | 2 | Conceptual (HBV, etc.) | |
+| 90 | `ClimatologyFallbackModel` | Guaranteed last-resort; excluded from combination |
+| 99 | `PersistenceFallbackModel` | Absolute last-resort; excluded from combination |
 
 - DB default: `server_default="0"` on `model_assignments.priority` and `group_model_assignments.priority`.
 - Alert strategy dispatches via `min(priority)` — lowest integer wins.
+- Priorities 90–99 are reserved for fallback models. `FALLBACK_PRIORITY_THRESHOLD = 90` — models at or above this threshold are excluded from multi-model combination (`pooled`, `bma`, `consensus` strategies). They participate in error-recovery fallback only.
 - v1 may add a separate `alert_priority` column to decouple fallback order from alert selection (see `architecture-context.md` §I3).
 
 ---
