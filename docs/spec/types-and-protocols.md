@@ -2637,6 +2637,38 @@ def combine_ensembles_pooled(
     Only MEMBERS-representation ensembles are included; QUANTILES ensembles are skipped
     with a warning. Member IDs are remapped sequentially to avoid collision."""
 
+def compute_bma_weights(
+    skill_scores: dict[ModelId, float],  # model_id → mean CRPS (lower is better)
+) -> dict[ModelId, float]:
+    """Derive per-model BMA weights from skill scores via inverse-CRPS normalization.
+    Weight_i = (1/CRPS_i) / sum(1/CRPS_j). Returns weights summing to 1.0.
+    Models with missing or non-positive CRPS are excluded (weight = 0)."""
+
+def combine_ensembles_bma(
+    ensembles: dict[ModelId, dict[str, ForecastEnsemble]],
+    weights: dict[ModelId, float],
+    n_members: int = 100,
+) -> dict[str, ForecastEnsemble]:
+    """Weight-proportional member sampling: draw n_members from the pooled set with
+    probability proportional to each model's BMA weight. Only MEMBERS-representation
+    ensembles are included. Falls back to pooled if weights are absent."""
+
+def compute_bma_skill_cross_validated(
+    station_id: StationId,
+    parameter: str,
+    hindcasts_by_model: dict[ModelId, list[HindcastForecast]],
+    observations: list[Observation],
+    thresholds: ...,
+    flow_regime_config: ...,
+    seasons: ...,
+    skill_source: SkillSource,
+    clock: Callable[[], UtcDatetime],
+    uuid_factory: Callable[[], UUID],
+) -> tuple[list[SkillScore], list[SkillDiagram]]:
+    """Two-fold temporal cross-validation: split hindcast period in half, train BMA weights
+    on each half, evaluate on the other half, average the resulting skill scores.
+    Yields an out-of-sample BMA skill estimate stored with model_id = BMA_MODEL_ID."""
+
 def build_combined_forecasts(
     station_id: StationId,
     multi_result: MultiModelForecastResult,
@@ -2644,10 +2676,13 @@ def build_combined_forecasts(
     nwp_metadata: ...,
     clock: Callable[[], UtcDatetime],
     uuid_factory: Callable[[], UUID],
+    weights: dict[ModelId, float] | None = None,  # BMA weights; None → pooled fallback
 ) -> list[OperationalForecast]:
     """Construct combined OperationalForecast records from multi_result.combinable_results.
     Returns empty list if fewer than 2 combinable models succeeded (caller falls back to primary).
-    Sets combination_strategy, source_model_ids, model_artifact_id=None, and sentinel model_id."""
+    Sets combination_strategy, source_model_ids, model_artifact_id=None, and sentinel model_id.
+    When strategy=BMA and weights are provided, delegates to combine_ensembles_bma();
+    falls back to combine_ensembles_pooled() if weights are absent."""
 ```
 
 ### Combined skill computation service

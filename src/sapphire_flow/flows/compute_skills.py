@@ -5,7 +5,10 @@ from uuid import UUID, uuid4
 import structlog
 from prefect import flow, task
 
-from sapphire_flow.services.skill.combined_skill import compute_combined_skill
+from sapphire_flow.services.skill.combined_skill import (
+    compute_bma_skill_cross_validated,
+    compute_combined_skill,
+)
 from sapphire_flow.services.skill.service import compute_skill_for_station
 from sapphire_flow.types.enums import ForcingType, ModelCombinationStrategy, SkillSource
 from sapphire_flow.types.ids import ArtifactId, ModelId, StationId  # noqa: TC001
@@ -206,20 +209,36 @@ def compute_combined_skills_task(
     if deployment_config is not None:
         seasons = deployment_config.get_season_definitions()
 
-    scores, diagrams = compute_combined_skill(
-        station_id=station_id,
-        parameter=parameter,
-        strategy=strategy,
-        hindcasts_by_model=hindcasts_by_model,
-        observations=observations,
-        thresholds=thresholds,
-        flow_regime_config=flow_regime_config,
-        seasons=seasons,
-        skill_source=SkillSource.HINDCAST_REANALYSIS,
-        forcing_type=ForcingType.REANALYSIS,
-        clock=clock,
-        uuid_factory=uuid4,
-    )
+    if strategy == ModelCombinationStrategy.BMA:
+        scores, diagrams = compute_bma_skill_cross_validated(
+            station_id=station_id,
+            parameter=parameter,
+            hindcasts_by_model=hindcasts_by_model,
+            observations=observations,
+            thresholds=thresholds,
+            flow_regime_config=flow_regime_config,
+            seasons=seasons,
+            skill_source=SkillSource.HINDCAST_REANALYSIS,
+            forcing_type=ForcingType.REANALYSIS,
+            clock=clock,
+            uuid_factory=uuid4,
+            skill_store=skill_store,
+        )
+    else:
+        scores, diagrams = compute_combined_skill(
+            station_id=station_id,
+            parameter=parameter,
+            strategy=strategy,
+            hindcasts_by_model=hindcasts_by_model,
+            observations=observations,
+            thresholds=thresholds,
+            flow_regime_config=flow_regime_config,
+            seasons=seasons,
+            skill_source=SkillSource.HINDCAST_REANALYSIS,
+            forcing_type=ForcingType.REANALYSIS,
+            clock=clock,
+            uuid_factory=uuid4,
+        )
 
     _store_skill_results(skill_store, scores, diagrams)
 

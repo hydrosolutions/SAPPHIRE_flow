@@ -7,7 +7,10 @@ from uuid import UUID, uuid4
 import polars as pl
 import pytest
 
-from sapphire_flow.services.skill.combined_skill import compute_combined_skill
+from sapphire_flow.services.skill.combined_skill import (
+    compute_bma_skill_cross_validated,
+    compute_combined_skill,
+)
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.domain import SeasonDefinition
 from sapphire_flow.types.enums import (
@@ -19,6 +22,7 @@ from sapphire_flow.types.enums import (
     SkillSource,
 )
 from sapphire_flow.types.ids import (
+    BMA_MODEL_ID,
     POOLED_MODEL_ID,
     ArtifactId,
     HindcastForecastId,
@@ -472,3 +476,242 @@ class TestCoverageLogging:
         ]
         assert len(coverage_events) == 1
         assert coverage_events[0]["intersection_steps"] == 2
+
+
+class TestBmaStrategy:
+    def test_bma_without_weights_raises(
+        self,
+        station_id: StationId,
+        model_a: ModelId,
+        model_b: ModelId,
+        artifact_id_a: ArtifactId,
+        artifact_id_b: ArtifactId,
+        clock: object,
+        seasons: list[SeasonDefinition],
+    ) -> None:
+        steps = [_utc(2025, 1, i + 1) for i in range(5)]
+        hindcasts_a = [
+            _make_hindcast(
+                station_id=station_id,
+                model_id=model_a,
+                artifact_id=artifact_id_a,
+                hindcast_step=s,
+                n_steps=1,
+            )
+            for s in steps
+        ]
+        hindcasts_b = [
+            _make_hindcast(
+                station_id=station_id,
+                model_id=model_b,
+                artifact_id=artifact_id_b,
+                hindcast_step=s,
+                n_steps=1,
+            )
+            for s in steps
+        ]
+
+        with pytest.raises(ValueError, match="BMA strategy requires weights"):
+            compute_combined_skill(
+                station_id=station_id,
+                parameter="discharge",
+                strategy=ModelCombinationStrategy.BMA,
+                hindcasts_by_model={model_a: hindcasts_a, model_b: hindcasts_b},
+                observations=[],
+                thresholds=[],
+                flow_regime_config=None,
+                seasons=seasons,
+                skill_source=SkillSource.HINDCAST_REANALYSIS,
+                forcing_type=ForcingType.REANALYSIS,
+                clock=clock,  # type: ignore[arg-type]
+                uuid_factory=uuid4,
+            )
+
+    def test_bma_with_weights_uses_bma_model_id(
+        self,
+        station_id: StationId,
+        model_a: ModelId,
+        model_b: ModelId,
+        artifact_id_a: ArtifactId,
+        artifact_id_b: ArtifactId,
+        clock: object,
+        seasons: list[SeasonDefinition],
+    ) -> None:
+        steps = [_utc(2025, 1, i + 1) for i in range(5)]
+        hindcasts_a = [
+            _make_hindcast(
+                station_id=station_id,
+                model_id=model_a,
+                artifact_id=artifact_id_a,
+                hindcast_step=s,
+                n_steps=1,
+            )
+            for s in steps
+        ]
+        hindcasts_b = [
+            _make_hindcast(
+                station_id=station_id,
+                model_id=model_b,
+                artifact_id=artifact_id_b,
+                hindcast_step=s,
+                n_steps=1,
+            )
+            for s in steps
+        ]
+        observations = [
+            _make_observation(
+                station_id=station_id,
+                timestamp=ensure_utc(
+                    datetime.fromtimestamp(s.timestamp() + 3600, tz=UTC)
+                ),
+            )
+            for s in steps
+        ]
+        weights = {model_a: 0.6, model_b: 0.4}
+
+        scores, diagrams = compute_combined_skill(
+            station_id=station_id,
+            parameter="discharge",
+            strategy=ModelCombinationStrategy.BMA,
+            hindcasts_by_model={model_a: hindcasts_a, model_b: hindcasts_b},
+            observations=observations,
+            thresholds=[],
+            flow_regime_config=None,
+            seasons=seasons,
+            skill_source=SkillSource.HINDCAST_REANALYSIS,
+            forcing_type=ForcingType.REANALYSIS,
+            clock=clock,  # type: ignore[arg-type]
+            uuid_factory=uuid4,
+            weights=weights,
+        )
+
+        assert len(scores) > 0
+        assert all(s.model_id == BMA_MODEL_ID for s in scores)
+
+
+class TestBmaCrossValidation:
+    def test_cross_validation_splits_into_halves(
+        self,
+        station_id: StationId,
+        model_a: ModelId,
+        model_b: ModelId,
+        artifact_id_a: ArtifactId,
+        artifact_id_b: ArtifactId,
+        clock: object,
+        seasons: list[SeasonDefinition],
+    ) -> None:
+        # 10 steps → two folds of 5
+        steps = [_utc(2025, 1, i + 1) for i in range(10)]
+        hindcasts_a = [
+            _make_hindcast(
+                station_id=station_id,
+                model_id=model_a,
+                artifact_id=artifact_id_a,
+                hindcast_step=s,
+                n_steps=1,
+                value=10.0,
+            )
+            for s in steps
+        ]
+        hindcasts_b = [
+            _make_hindcast(
+                station_id=station_id,
+                model_id=model_b,
+                artifact_id=artifact_id_b,
+                hindcast_step=s,
+                n_steps=1,
+                value=12.0,
+            )
+            for s in steps
+        ]
+        observations = [
+            _make_observation(
+                station_id=station_id,
+                timestamp=ensure_utc(
+                    datetime.fromtimestamp(s.timestamp() + 3600, tz=UTC)
+                ),
+                value=11.0,
+            )
+            for s in steps
+        ]
+
+        scores, _ = compute_bma_skill_cross_validated(
+            station_id=station_id,
+            parameter="discharge",
+            hindcasts_by_model={model_a: hindcasts_a, model_b: hindcasts_b},
+            observations=observations,
+            thresholds=[],
+            flow_regime_config=None,
+            seasons=seasons,
+            skill_source=SkillSource.HINDCAST_REANALYSIS,
+            forcing_type=ForcingType.REANALYSIS,
+            clock=clock,  # type: ignore[arg-type]
+            uuid_factory=uuid4,
+            skill_store=None,
+        )
+
+        assert len(scores) > 0
+        assert all(s.model_id == BMA_MODEL_ID for s in scores)
+
+    def test_cross_validation_returns_averaged_scores(
+        self,
+        station_id: StationId,
+        model_a: ModelId,
+        model_b: ModelId,
+        artifact_id_a: ArtifactId,
+        artifact_id_b: ArtifactId,
+        clock: object,
+        seasons: list[SeasonDefinition],
+    ) -> None:
+        steps = [_utc(2025, 1, i + 1) for i in range(8)]
+        hindcasts_a = [
+            _make_hindcast(
+                station_id=station_id,
+                model_id=model_a,
+                artifact_id=artifact_id_a,
+                hindcast_step=s,
+                n_steps=1,
+                value=10.0,
+            )
+            for s in steps
+        ]
+        hindcasts_b = [
+            _make_hindcast(
+                station_id=station_id,
+                model_id=model_b,
+                artifact_id=artifact_id_b,
+                hindcast_step=s,
+                n_steps=1,
+                value=12.0,
+            )
+            for s in steps
+        ]
+        observations = [
+            _make_observation(
+                station_id=station_id,
+                timestamp=ensure_utc(
+                    datetime.fromtimestamp(s.timestamp() + 3600, tz=UTC)
+                ),
+                value=11.0,
+            )
+            for s in steps
+        ]
+
+        scores, diagrams = compute_bma_skill_cross_validated(
+            station_id=station_id,
+            parameter="discharge",
+            hindcasts_by_model={model_a: hindcasts_a, model_b: hindcasts_b},
+            observations=observations,
+            thresholds=[],
+            flow_regime_config=None,
+            seasons=seasons,
+            skill_source=SkillSource.HINDCAST_REANALYSIS,
+            forcing_type=ForcingType.REANALYSIS,
+            clock=clock,  # type: ignore[arg-type]
+            uuid_factory=uuid4,
+            skill_store=None,
+        )
+
+        assert isinstance(scores, list)
+        assert isinstance(diagrams, list)
+        assert all(s.model_id == BMA_MODEL_ID for s in scores)

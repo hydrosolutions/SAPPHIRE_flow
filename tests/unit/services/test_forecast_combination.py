@@ -6,7 +6,9 @@ from uuid import UUID, uuid4
 import pytest
 
 from sapphire_flow.services.forecast_combination import (
+    _BMA_TARGET_MEMBERS,
     build_combined_forecasts,
+    combine_ensembles_bma,
     combine_ensembles_pooled,
 )
 from sapphire_flow.services.run_station_forecast import (
@@ -19,12 +21,19 @@ from sapphire_flow.types.enums import (
     ModelCombinationStrategy,
     NwpCycleSource,
 )
-from sapphire_flow.types.ids import POOLED_MODEL_ID, ArtifactId, ModelId, StationId
+from sapphire_flow.types.ids import (
+    BMA_MODEL_ID,
+    POOLED_MODEL_ID,
+    ArtifactId,
+    ModelId,
+    StationId,
+)
 from tests.conftest import make_forecast_ensemble
 
 _STATION = StationId(uuid4())
 _MODEL_A = ModelId("model-a")
 _MODEL_B = ModelId("model-b")
+_MODEL_C = ModelId("model-c")
 _NOW = ensure_utc(datetime(2025, 6, 1, 6, 0, tzinfo=UTC))
 
 
@@ -187,6 +196,131 @@ class TestCombineEnsemblesPooled:
         assert result == {}
 
 
+class TestCombineEnsemblesBma:
+    def test_two_models_weighted(self) -> None:
+        ens_a = make_forecast_ensemble(
+            station_id=_STATION,
+            representation=EnsembleRepresentation.MEMBERS,
+            n_members=50,
+            n_steps=10,
+            model_id=_MODEL_A,
+        )
+        ens_b = make_forecast_ensemble(
+            station_id=_STATION,
+            representation=EnsembleRepresentation.MEMBERS,
+            n_members=50,
+            n_steps=10,
+            model_id=_MODEL_B,
+        )
+        result = combine_ensembles_bma(
+            {_MODEL_A: {"discharge": ens_a}, _MODEL_B: {"discharge": ens_b}},
+            weights={_MODEL_A: 0.7, _MODEL_B: 0.3},
+        )
+
+        assert "discharge" in result
+        combined = result["discharge"]
+        assert combined.model_id == BMA_MODEL_ID
+        assert combined.member_count == _BMA_TARGET_MEMBERS
+
+    def test_member_count_equals_target(self) -> None:
+        ens_a = make_forecast_ensemble(
+            station_id=_STATION,
+            representation=EnsembleRepresentation.MEMBERS,
+            n_members=50,
+            n_steps=5,
+            model_id=_MODEL_A,
+        )
+        ens_b = make_forecast_ensemble(
+            station_id=_STATION,
+            representation=EnsembleRepresentation.MEMBERS,
+            n_members=50,
+            n_steps=5,
+            model_id=_MODEL_B,
+        )
+        result = combine_ensembles_bma(
+            {_MODEL_A: {"discharge": ens_a}, _MODEL_B: {"discharge": ens_b}},
+            weights={_MODEL_A: 0.6, _MODEL_B: 0.4},
+        )
+
+        assert result["discharge"].member_count == _BMA_TARGET_MEMBERS
+
+    def test_zero_weight_model_excluded(self) -> None:
+        ens_a = make_forecast_ensemble(
+            station_id=_STATION,
+            representation=EnsembleRepresentation.MEMBERS,
+            n_members=50,
+            n_steps=10,
+            model_id=_MODEL_A,
+        )
+        ens_b = make_forecast_ensemble(
+            station_id=_STATION,
+            representation=EnsembleRepresentation.MEMBERS,
+            n_members=50,
+            n_steps=10,
+            model_id=_MODEL_B,
+        )
+        ens_c = make_forecast_ensemble(
+            station_id=_STATION,
+            representation=EnsembleRepresentation.MEMBERS,
+            n_members=50,
+            n_steps=10,
+            model_id=_MODEL_C,
+        )
+        result = combine_ensembles_bma(
+            {
+                _MODEL_A: {"discharge": ens_a},
+                _MODEL_B: {"discharge": ens_b},
+                _MODEL_C: {"discharge": ens_c},
+            },
+            weights={_MODEL_A: 0.6, _MODEL_B: 0.4, _MODEL_C: 0.0},
+        )
+
+        assert "discharge" in result
+        # Total still equals target, model C excluded
+        assert result["discharge"].member_count == _BMA_TARGET_MEMBERS
+
+    def test_all_zero_weight_returns_empty(self) -> None:
+        ens_a = make_forecast_ensemble(
+            station_id=_STATION,
+            representation=EnsembleRepresentation.MEMBERS,
+            n_members=5,
+            n_steps=5,
+            model_id=_MODEL_A,
+        )
+        result = combine_ensembles_bma(
+            {_MODEL_A: {"discharge": ens_a}},
+            weights={_MODEL_A: 0.0},
+        )
+        assert result == {}
+
+    def test_quantiles_model_skipped(self) -> None:
+        ens_members = make_forecast_ensemble(
+            station_id=_STATION,
+            representation=EnsembleRepresentation.MEMBERS,
+            n_members=50,
+            n_steps=10,
+            model_id=_MODEL_A,
+        )
+        ens_quantiles = make_forecast_ensemble(
+            station_id=_STATION,
+            representation=EnsembleRepresentation.QUANTILES,
+            n_members=9,
+            n_steps=10,
+            model_id=_MODEL_B,
+        )
+        # model_b has non-zero weight but only quantiles — should be skipped
+        result = combine_ensembles_bma(
+            {
+                _MODEL_A: {"discharge": ens_members},
+                _MODEL_B: {"discharge": ens_quantiles},
+            },
+            weights={_MODEL_A: 0.7, _MODEL_B: 0.3},
+        )
+
+        assert "discharge" in result
+        assert result["discharge"].model_id == BMA_MODEL_ID
+
+
 class TestBuildCombinedForecasts:
     def test_pooled_two_models_returns_forecasts(self) -> None:
         result_a = _make_result(_MODEL_A, n_members=5)
@@ -245,12 +379,34 @@ class TestBuildCombinedForecasts:
 
         assert forecasts == []
 
-    def test_bma_strategy_raises(self) -> None:
+    def test_bma_strategy_returns_forecasts(self) -> None:
+        result_a = _make_result(_MODEL_A, n_members=50)
+        result_b = _make_result(_MODEL_B, n_members=50)
+        multi = _make_multi({_MODEL_A: result_a, _MODEL_B: result_b})
+
+        forecasts = build_combined_forecasts(
+            station_id=_STATION,
+            multi_result=multi,
+            strategy=ModelCombinationStrategy.BMA,
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            clock=_clock,  # type: ignore[arg-type]
+            uuid_factory=_uuid_seq(),  # type: ignore[arg-type]
+            weights={_MODEL_A: 0.7, _MODEL_B: 0.3},
+        )
+
+        assert len(forecasts) == 1
+        fc = forecasts[0]
+        assert fc.combination_strategy == "bma"
+        assert fc.model_id == BMA_MODEL_ID
+        assert fc.ensemble.member_count == _BMA_TARGET_MEMBERS
+
+    def test_bma_without_weights_raises(self) -> None:
         result_a = _make_result(_MODEL_A)
         result_b = _make_result(_MODEL_B)
         multi = _make_multi({_MODEL_A: result_a, _MODEL_B: result_b})
 
-        with pytest.raises(NotImplementedError, match="BMA"):
+        with pytest.raises(ValueError, match="BMA strategy requires weights"):
             build_combined_forecasts(
                 station_id=_STATION,
                 multi_result=multi,
