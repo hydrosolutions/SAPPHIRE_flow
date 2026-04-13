@@ -180,6 +180,7 @@ def ingest_observations_flow(
     station_store: object = None,
     obs_store: object = None,
     baseline_store: object = None,
+    alert_store: object = None,
     adapter: object = None,
     qc_rules: object = None,
     deployment_config: object = None,
@@ -198,6 +199,7 @@ def ingest_observations_flow(
         station_store = stores["station_store"]  # type: ignore[assignment]
         obs_store = stores["obs_store"]  # type: ignore[assignment]
         baseline_store = stores["baseline_store"]  # type: ignore[assignment]
+        alert_store = stores["alert_store"]  # type: ignore[assignment]
 
     if adapter is None:
         import httpx
@@ -321,7 +323,18 @@ def ingest_observations_flow(
 
     # --- Steps 2.8–2.10: Observation alerts (v0: disabled by default) ---
     if deployment_config is not None and deployment_config.enable_observation_alerts:
-        log.info("ingest.observation_alerts_not_implemented")
+        from sapphire_flow.services.observation_alert_checker import (
+            check_observation_alerts,
+        )
+
+        assert alert_store is not None
+        check_observation_alerts(
+            station_params=station_params,
+            obs_store=obs_store,
+            station_store=station_store,
+            alert_store=alert_store,
+            now=now,
+        )
     else:
         log.debug("ingest.observation_alerts_disabled")
 

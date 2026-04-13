@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 from tests.conftest import make_station_config
 from tests.fakes.fake_adapters import FakeStationDataSource
 from tests.fakes.fake_stores import (
+    FakeAlertStore,
     FakeClimBaselineStore,
     FakeObservationStore,
     FakeStationStore,
@@ -298,3 +299,106 @@ class TestIngestObservationsFlow:
 
         # Onboarding station excluded from polling
         assert result.stations_polled == 0
+
+    def test_observation_alert_raised_when_enabled(self) -> None:
+        from sapphire_flow.config.deployment import DeploymentConfig
+        from sapphire_flow.types.domain import StationThreshold
+        from sapphire_flow.types.enums import AlertSource, ThresholdSource
+
+        s1 = make_station_config(code="2135", name="Aare Bern", rng=random.Random(1))
+        station_store = FakeStationStore()
+        station_store.store_station(s1)
+        station_store.store_thresholds(
+            [
+                StationThreshold(
+                    station_id=s1.id,
+                    danger_level="yellow",
+                    parameter="discharge",
+                    value=100.0,
+                    source=ThresholdSource.AUTHORITY,
+                    created_at=_NOW,
+                    updated_at=_NOW,
+                ),
+            ]
+        )
+
+        obs_store = FakeObservationStore()
+        old_obs = _make_obs(s1.id, "discharge", 100.0, offset_minutes=10)
+        obs_store.store_raw_observations([old_obs])
+        for o in list(obs_store._observations.values()):
+            obs_store.update_qc(o.id, QcStatus.QC_PASSED, [])
+
+        # offset_minutes=1 so timestamp < now (exclusive upper bound in fetch)
+        above_obs = _make_obs(s1.id, "discharge", 150.0, offset_minutes=1)
+        alert_store = FakeAlertStore()
+
+        config = DeploymentConfig(
+            max_retention_days=600,
+            enable_observation_alerts=True,
+        )
+
+        result = ingest_observations_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            baseline_store=FakeClimBaselineStore(),
+            alert_store=alert_store,
+            adapter=FakeStationDataSource([above_obs]),
+            qc_rules=_QC_RULES,
+            deployment_config=config,
+            clock=_fixed_clock,
+        )
+
+        assert result.observations_stored == 1
+        alerts = alert_store.fetch_active_alerts(
+            station_id=s1.id, source=AlertSource.OBSERVATION
+        )
+        assert len(alerts) == 1
+        assert alerts[0].alert_level == "yellow"
+        assert alerts[0].trigger_value == 150.0
+
+    def test_observation_alerts_disabled_by_default(self) -> None:
+        from sapphire_flow.types.domain import StationThreshold
+        from sapphire_flow.types.enums import AlertSource, ThresholdSource
+
+        s1 = make_station_config(code="2135", name="Aare Bern", rng=random.Random(1))
+        station_store = FakeStationStore()
+        station_store.store_station(s1)
+        station_store.store_thresholds(
+            [
+                StationThreshold(
+                    station_id=s1.id,
+                    danger_level="yellow",
+                    parameter="discharge",
+                    value=100.0,
+                    source=ThresholdSource.AUTHORITY,
+                    created_at=_NOW,
+                    updated_at=_NOW,
+                ),
+            ]
+        )
+
+        obs_store = FakeObservationStore()
+        old_obs = _make_obs(s1.id, "discharge", 100.0, offset_minutes=10)
+        obs_store.store_raw_observations([old_obs])
+        for o in list(obs_store._observations.values()):
+            obs_store.update_qc(o.id, QcStatus.QC_PASSED, [])
+
+        above_obs = _make_obs(s1.id, "discharge", 150.0, offset_minutes=1)
+        alert_store = FakeAlertStore()
+
+        result = ingest_observations_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            baseline_store=FakeClimBaselineStore(),
+            alert_store=alert_store,
+            adapter=FakeStationDataSource([above_obs]),
+            qc_rules=_QC_RULES,
+            deployment_config=None,
+            clock=_fixed_clock,
+        )
+
+        assert result.observations_stored == 1
+        alerts = alert_store.fetch_active_alerts(
+            station_id=s1.id, source=AlertSource.OBSERVATION
+        )
+        assert len(alerts) == 0
