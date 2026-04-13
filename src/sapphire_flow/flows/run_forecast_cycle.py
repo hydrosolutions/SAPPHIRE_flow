@@ -22,9 +22,7 @@ from sapphire_flow.types.enums import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from sapphire_flow.config.deployment import DeploymentConfig
     from sapphire_flow.protocols.adapters import WeatherForecastSource
-    from sapphire_flow.protocols.forecast_model import ForecastModel
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.domain import ForecastQcRuleSet
     from sapphire_flow.types.ensemble import ForecastEnsemble
@@ -198,11 +196,11 @@ def run_forecast_cycle_flow(
     basin_store: object = None,
     forcing_store: object = None,
     adapter: object = None,
-    models: dict[ModelId, ForecastModel] | None = None,
-    config: DeploymentConfig | None = None,
-    qc_rules: ForecastQcRuleSet | None = None,
-    clock: Callable[[], UtcDatetime] | None = None,
-    rng: random.Random | None = None,
+    models: object | None = None,
+    config: object | None = None,
+    qc_rules: object | None = None,
+    clock: object | None = None,
+    rng: object | None = None,
     cycle_time: str | None = None,
 ) -> ForecastCycleResult:
     flow_t0 = time.perf_counter()

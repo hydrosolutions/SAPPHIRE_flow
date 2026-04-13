@@ -9,6 +9,9 @@ from uuid import UUID  # noqa: TC003
 import structlog
 
 from sapphire_flow.services.input_quality import assess_input_quality
+from sapphire_flow.services.operational_inputs import (
+    OperationalInputMetadata,  # noqa: TC001
+)
 from sapphire_flow.types.enums import ForecastStatus, QcStatus
 from sapphire_flow.types.forecast import OperationalForecast
 from sapphire_flow.types.ids import ArtifactId, ForecastId, ModelId, StationId
@@ -30,15 +33,6 @@ if TYPE_CHECKING:
     from sapphire_flow.types.station import ModelAssignment
 
 log = structlog.get_logger()
-
-
-@dataclass(frozen=True, kw_only=True, slots=True)
-class OperationalInputMetadata:
-    warm_up_source: object  # WarmUpSource | None
-    warm_up_state_age_hours: float | None
-    observation_staleness_hours: float | None
-    prior_state: bytes | None
-    nwp_age_hours: float
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

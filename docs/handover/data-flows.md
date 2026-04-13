@@ -113,6 +113,10 @@ Every stored forecast record carries the NWP cycle reference time used as forcin
 
 **Observation staleness.** If the most recent observation for a station is older than a configurable threshold (e.g. 6 hours), the forecast still runs but a staleness warning flag is attached to the forecast record and is visible via the API.
 
+#### Implementation status (v0a)
+
+**Implemented** (Plan 024): `flows/run_forecast_cycle.py` with three-phase orchestration. Services: `services/operational_inputs.py` (step 1.7 input assembly) and `services/run_station_forecast.py` (steps 1.8–1.10 with multi-model fallback). v0a uses pre-extracted point weather data (steps 1.2–1.4 skipped). Steps 1.5 and 1.9 are pass-through. Phase B runs as a sequential station loop (sufficient for ~170 Swiss stations within the 60s target). Phase C alert checking is gated by `enable_forecast_alerts` config flag. NWP lateness fallback deferred to v0b. Group model support (`predict_batch`) deferred until the first `GroupForecastModel` is onboarded.
+
 ---
 
 ### Flow 2 — Observation Ingest and QC
