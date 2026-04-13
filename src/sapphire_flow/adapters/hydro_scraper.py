@@ -10,7 +10,7 @@ import structlog
 from pydantic import BaseModel
 
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.enums import ObservationSource
+from sapphire_flow.types.enums import ObservationSource, StationKind
 from sapphire_flow.types.observation import RawObservation
 
 if TYPE_CHECKING:
@@ -32,6 +32,16 @@ class SparqlBinding(BaseModel):
 
 
 class HydroScraperAdapter:
+    _RIVER_PARAMS: ClassVar[list[str]] = [
+        "discharge",
+        "measurementTime",
+        "waterLevel",
+        "waterTemperature",
+    ]
+    _LAKE_PARAMS: ClassVar[list[str]] = [
+        "measurementTime",
+        "waterLevel",
+    ]
     _PARAM_MAP: ClassVar[dict[str, str]] = {
         "discharge": "discharge",
         "waterLevel": "water_level",
@@ -50,15 +60,23 @@ class HydroScraperAdapter:
         results: list[RawObservation] = []
         for station_config in station_configs:
             station_id = station_config.id
+            if station_config.station_kind == StationKind.WEATHER:
+                log.warning(
+                    "observation.skip_weather_station",
+                    station_id=str(station_id),
+                    reason="LINDAS does not serve weather stations",
+                )
+                continue
             try:
-                since_dt = since[station_id]
                 log.debug(
                     "observation.fetch_started",
                     station_id=str(station_id),
-                    since=since_dt.isoformat(),
+                    station_kind=station_config.station_kind.value,
                 )
                 t0 = time.perf_counter()
-                query = self._build_sparql_query(station_config.code, since_dt)
+                query = self._build_sparql_query(
+                    station_config.code, station_config.station_kind
+                )
                 response = self._http_client.post(
                     self._endpoint,
                     data={"query": query},
@@ -90,29 +108,24 @@ class HydroScraperAdapter:
                 )
         return results
 
-    def _build_sparql_query(self, site_code: str, since: UtcDatetime) -> str:
+    def _build_sparql_query(self, site_code: str, station_kind: StationKind) -> str:
         if not _SITE_CODE_RE.match(site_code):
             raise ValueError(f"Invalid site_code for SPARQL query: {site_code!r}")
-        subject_uri = f"{_BASE_URL}/river/observation/{site_code}"
-        predicates = ", ".join(
-            f"<{_DIMENSION_URL}/{name}>"
-            for name in [
-                "discharge",
-                "measurementTime",
-                "waterLevel",
-                "waterTemperature",
-            ]
+        kind_path = station_kind.value  # "river" or "lake"
+        subject_uri = f"{_BASE_URL}/{kind_path}/observation/{site_code}"
+        params = (
+            self._RIVER_PARAMS
+            if station_kind == StationKind.RIVER
+            else self._LAKE_PARAMS
         )
-        since_iso = since.isoformat()
+        predicates = ", ".join(f"<{_DIMENSION_URL}/{name}>" for name in params)
         return (
             f"SELECT ?predicate ?object\n"
             f"FROM <{_GRAPH_URI}>\n"
             f"WHERE {{\n"
             f"  BIND(<{subject_uri}> AS ?subject)\n"
             f"  ?subject ?predicate ?object .\n"
-            f"  ?subject <{_DIMENSION_URL}/measurementTime> ?measurementTime .\n"
             f"  FILTER (?predicate IN ({predicates}))\n"
-            f'  FILTER (?measurementTime >= "{since_iso}"^^xsd:dateTime)\n'
             f"}}"
         )
 

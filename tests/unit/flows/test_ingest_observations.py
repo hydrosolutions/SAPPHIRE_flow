@@ -10,7 +10,7 @@ from sapphire_flow.flows.ingest_observations import (
 )
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.domain import QcRuleParams, QcRuleSet
-from sapphire_flow.types.enums import ObservationSource, QcStatus
+from sapphire_flow.types.enums import ObservationSource, QcStatus, StationKind
 from sapphire_flow.types.observation import RawObservation
 
 if TYPE_CHECKING:
@@ -402,3 +402,86 @@ class TestIngestObservationsFlow:
             station_id=s1.id, source=AlertSource.OBSERVATION
         )
         assert len(alerts) == 0
+
+    def test_lake_stations_ingested(self) -> None:
+        lake = make_station_config(
+            code="9000",
+            name="Lake Zurich",
+            station_kind=StationKind.LAKE,
+            forecast_targets=frozenset({"water_level"}),
+            measured_parameters=frozenset({"water_level"}),
+            rng=random.Random(10),
+        )
+
+        station_store = FakeStationStore()
+        station_store.store_station(lake)
+
+        obs_store = FakeObservationStore()
+        # Pre-populate history for QC time_step inference
+        old = _make_obs(lake.id, "water_level", 400.0, offset_minutes=10)
+        obs_store.store_raw_observations([old])
+        for o in list(obs_store._observations.values()):
+            obs_store.update_qc(o.id, QcStatus.QC_PASSED, [])
+
+        raw_obs = [_make_obs(lake.id, "water_level", 405.0)]
+
+        result = ingest_observations_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            baseline_store=FakeClimBaselineStore(),
+            adapter=FakeStationDataSource(raw_obs),
+            qc_rules=_QC_RULES,
+            clock=_fixed_clock,
+        )
+
+        assert result.stations_polled == 1
+        assert result.observations_fetched == 1
+        assert result.observations_stored == 1
+        assert result.qc_passed == 1
+
+    def test_mixed_river_and_lake_stations(self) -> None:
+        river = make_station_config(code="2135", name="Aare Bern", rng=random.Random(1))
+        lake = make_station_config(
+            code="9001",
+            name="Lake Thun",
+            station_kind=StationKind.LAKE,
+            forecast_targets=frozenset({"water_level"}),
+            measured_parameters=frozenset({"water_level"}),
+            rng=random.Random(11),
+        )
+
+        station_store = FakeStationStore()
+        station_store.store_station(river)
+        station_store.store_station(lake)
+
+        obs_store = FakeObservationStore()
+        # Pre-populate history for both stations
+        history = {
+            (river.id, "discharge"): 110.0,
+            (lake.id, "water_level"): 500.0,
+        }
+        for (sid, param), val in history.items():
+            old = _make_obs(sid, param, val, offset_minutes=10)
+            obs_store.store_raw_observations([old])
+        for o in list(obs_store._observations.values()):
+            obs_store.update_qc(o.id, QcStatus.QC_PASSED, [])
+
+        raw_obs = [
+            _make_obs(river.id, "discharge", 115.0),
+            _make_obs(lake.id, "water_level", 505.0),
+        ]
+
+        result = ingest_observations_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            baseline_store=FakeClimBaselineStore(),
+            adapter=FakeStationDataSource(raw_obs),
+            qc_rules=_QC_RULES,
+            clock=_fixed_clock,
+        )
+
+        assert result.stations_polled == 2
+        assert result.observations_fetched == 2
+        assert result.observations_stored == 2
+        assert result.qc_passed == 2
+        assert result.qc_failed == 0

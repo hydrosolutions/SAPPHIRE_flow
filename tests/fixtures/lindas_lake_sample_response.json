@@ -1,0 +1,14 @@
+{
+  "results": {
+    "bindings": [
+      {
+        "predicate": {"type": "uri", "value": "https://environment.ld.admin.ch/foen/hydro/dimension/measurementTime"},
+        "object": {"type": "literal", "datatype": "http://www.w3.org/2001/XMLSchema#dateTime", "value": "2024-06-15T10:00:00+00:00"}
+      },
+      {
+        "predicate": {"type": "uri", "value": "https://environment.ld.admin.ch/foen/hydro/dimension/waterLevel"},
+        "object": {"type": "literal", "datatype": "http://www.w3.org/2001/XMLSchema#decimal", "value": "394.8"}
+      }
+    ]
+  }
+}

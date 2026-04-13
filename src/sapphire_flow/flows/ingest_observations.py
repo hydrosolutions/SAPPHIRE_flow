@@ -228,8 +228,10 @@ def ingest_observations_flow(
 
     now: UtcDatetime = clock()  # type: ignore[assignment]
 
-    # --- Step 2.0: Fetch eligible stations ---
-    all_stations = station_store.fetch_all_stations(kind=StationKind.RIVER)
+    # --- Step 2.0: Fetch eligible stations (RIVER + LAKE) ---
+    river_stations = station_store.fetch_all_stations(kind=StationKind.RIVER)
+    lake_stations = station_store.fetch_all_stations(kind=StationKind.LAKE)
+    all_stations = [*river_stations, *lake_stations]
     eligible = [
         s
         for s in all_stations
@@ -257,7 +259,10 @@ def ingest_observations_flow(
     default_since = ensure_utc(now - timedelta(hours=default_lookback_hours))
     since: dict[StationId, UtcDatetime] = {}
     for station in eligible:
-        latest = obs_store.fetch_latest_timestamp(station.id, "discharge")
+        param = (
+            "water_level" if station.station_kind == StationKind.LAKE else "discharge"
+        )
+        latest = obs_store.fetch_latest_timestamp(station.id, param)
         since[station.id] = latest if latest is not None else default_since
 
     # --- Step 2.1: Fetch observations ---
