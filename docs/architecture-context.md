@@ -107,6 +107,7 @@ Steps 1.2, 1.3, 1.4, and 1.9 are **conditional** — see notes.
   - *ML models*: concatenates historical weather with NWP forecast to fill the lookback window, which is typically longer than the NWP forecast horizon. The historical weather source is resolved — see "Resolved: ML model lookback window forcing source" below.
   - *Conceptual models*: runs the model over a warm-up period using observations to derive internal state (soil moisture, snow, groundwater), then switches to NWP forecast forcing at the issue time. State is always observation-derived, never carried forward from a previous forecast.
   - **Fallback for conceptual models**: if the warm-up run fails, (1) use the last successfully saved state snapshot (staleness threshold is deployment-configurable and season-dependent — shorter during wet/monsoon season when catchment state changes rapidly, longer during dry season), or (2) if too stale, cold-start with extended warm-up from observations. Any forecast produced from a snapshot or cold-start records `warm_up_source: WarmUpSource` and `warm_up_state_age_hours` in the forecast metadata — visible to forecasters in the API and dashboard, and flagged by Flow 4.
+  - **Input quality assessment**: after inputs are assembled, `assess_input_quality()` evaluates observation staleness, NWP cycle age, and warm-up state against deployment-configurable thresholds (see `InputQualityConfig`). The result is carried on `OperationalForecast.input_quality` (`InputQualityLevel`: `FULL`, `PARTIAL`, or `DEGRADED`) and `input_quality_flags` (one `InputQualityFlag` per degraded dimension). The forecast is never suppressed by input quality — it always proceeds. Quality is visible to forecasters in the API and dashboard.
 - **1.8**: Dispatches on `artifact_scope`: GROUP → single `predict_batch()` call per (model, group) with `GroupModelInputs`; STATION → `predict()` per station. Parallelizable across (model, group) and (model, station) units. On model failure, falls back to next assigned model by priority (detail in future iteration). **State persistence** (conceptual models only): after a successful `predict()`, the flow layer saves the warm-up state snapshot via `ModelStateStore.store_state()`. This is the write path that enables the snapshot fallback described in 1.7 — without it, no snapshot would exist to fall back to. ML models do not produce state; this step is a no-op for them. ML models wrapped via `ForecastInterface` go through the `ForecastInterfaceAdapter` at this step — the adapter translates inputs and outputs between SAPPHIRE Flow's internal types and FI's contract. FI-wrapped models are stateless; the adapter returns `None` for state bytes.
 - **1.9** *(conditional)*: Forecast *output* bias correction (discharge / water level). Distinct from NWP input correction in 1.5. Pass-through when not configured.
 - **1.10**: Forecast output QC. Runs `ForecastQualityChecker.check()` on each `ForecastEnsemble` per (station, model, parameter). `aggregate_qc_status()` derives the aggregate status. `QC_PASSED` or `QC_SUSPECT`: store the forecast with its `qc_status` and `qc_flags`. `QC_FAILED`: raise `SanityCheckFailure` → flow tries the next model by priority (same fallback path as runtime model failure). For `GroupForecastModel` batch predictions, QC-failed individual station results are stored with `QC_FAILED` status (no per-station fallback within a batch). QC rule set and overrides are batch pre-fetched at flow start; `ClimBaseline` records are batch pre-fetched alongside observation fetch (step 1.6). Always-on (not conditional). Active in v0.
@@ -1742,7 +1743,7 @@ For the rare case where a model needs mixed spatial types (e.g. gridded precipit
 
 Two distinct domain types with different metadata, storage tables, and lifecycles:
 
-**`OperationalForecast`** — produced in real time by Flow 1. Has a publication lifecycle (`raw → reviewed → published`), forecaster adjustments, and operational metadata (`warm_up_source`, `nwp_cycle_reference_time`, `observation_staleness_hours`). Stored in `forecasts` + `forecast_values`.
+**`OperationalForecast`** — produced in real time by Flow 1. Has a publication lifecycle (`raw → reviewed → published`), forecaster adjustments, and operational metadata (`warm_up_source`, `nwp_cycle_reference_time`, `nwp_cycle_source`, `observation_staleness_hours`, `input_quality`, `input_quality_flags`). Stored in `forecasts` + `forecast_values`.
 
 **`HindcastForecast`** — produced retroactively by Flow 7. No publication lifecycle. Carries `forcing_type` (`'nwp_archive'` or `'reanalysis'`) and `hindcast_step` (the simulated issue time). Stored in `hindcast_forecasts` + `hindcast_values`.
 
@@ -1773,6 +1774,8 @@ forecasts:
   units: TEXT NOT NULL                        # measurement units (e.g. "m³/s", "m")
   qc_status: TEXT NOT NULL DEFAULT 'raw'      # output QC status
   qc_flags: JSONB NOT NULL DEFAULT '[]'       # output QC flag details
+  input_quality: TEXT NOT NULL DEFAULT 'full'  # InputQualityLevel: full | partial | degraded
+  input_quality_flags: JSONB NOT NULL DEFAULT '[]'::jsonb  # list[InputQualityFlag]
   created_at: TIMESTAMPTZ
   updated_at: TIMESTAMPTZ
 ```
@@ -1816,6 +1819,15 @@ WarmUpSource enum (Python members → DB values):
 
 EnsembleRepresentation enum (Python members → DB values):
   MEMBERS → 'members' | QUANTILES → 'quantiles'
+
+NwpCycleSource enum (Python members → DB values):
+  PRIMARY → 'primary' | FALLBACK → 'fallback'
+
+InputQualityLevel enum (Python members → DB values):
+  FULL → 'full' | PARTIAL → 'partial' | DEGRADED → 'degraded'
+
+InputQualityCategory enum (in-memory only, stored in input_quality_flags JSONB):
+  OBSERVATION | NWP | WARM_UP
 ```
 
 ### Hindcast tables
@@ -1837,7 +1849,7 @@ hindcast_forecasts:
   created_at: TIMESTAMPTZ
 ```
 
-No `status`, `version`, `warm_up_source`, or `nwp_cycle_is_fallback` — hindcasts have no publication lifecycle or operational metadata.
+No `status`, `version`, `warm_up_source`, `nwp_cycle_source`, `input_quality`, or `input_quality_flags` — hindcasts have no publication lifecycle or operational metadata.
 
 Index: `(station_id, model_id, hindcast_step)`. Partitioned monthly by `hindcast_step`.
 
@@ -3043,7 +3055,7 @@ References (does not redefine): container log driver from cicd.md, audit_log sch
 | Hindcast forcing type tagged | Every hindcast carries `forcing_type` (`'nwp_archive'` or `'reanalysis'`). Operational skill metrics computed only on NWP-archive-forced hindcasts. |
 | Snow depth as required input | Snow depth (`H_SNOW`) extracted alongside P and T for snow-dominated catchments. Required for Alpine and high-elevation forecasting. |
 | Alert hysteresis | Separate trigger/resolve probability thresholds per danger level, with time-based duration parameters (`min_trigger_duration` / `min_resolve_duration`) that are schedule-independent. Prevents alert flapping from ensemble probability oscillation. |
-| Forecast metadata transparency | Every forecast records NWP cycle reference time, `warm_up_source`, and `observation_staleness_hours`. Visible to forecasters. |
+| Forecast metadata transparency | Every forecast records NWP cycle reference time, `nwp_cycle_source`, `warm_up_source`, `observation_staleness_hours`, `input_quality`, and `input_quality_flags`. Visible to forecasters. |
 | Envelope forecast adjustments | Forecasters adjust the ensemble envelope (shift, scale, cap, floor), not individual members. Preserves ensemble calibration and rank statistics. |
 | Minimum operational ensemble size | Storage allows 1-member ensembles; operational threshold evaluation requires `min_operational_ensemble_size` (default 20). Undersized ensembles skip alert logic. |
 | Bikram Sambat calendar support | Deployment-configurable calendar system. Nepal uses BS for official reporting; API, dashboard, and bulletins convert on display. Internal storage remains Gregorian UTC. |

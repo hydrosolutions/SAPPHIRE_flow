@@ -421,6 +421,40 @@ def aggregate_qc_status(flags: list[QcFlag]) -> QcStatus:
     return worst.status
 ```
 
+### InputQualityLevel, InputQualityCategory, InputQualityFlag
+
+```python
+class InputQualityLevel(Enum):
+    FULL = "full"
+    PARTIAL = "partial"
+    DEGRADED = "degraded"
+
+class InputQualityCategory(Enum):
+    OBSERVATION = "observation"
+    NWP = "nwp"
+    WARM_UP = "warm_up"
+```
+
+```python
+@dataclass(frozen=True, kw_only=True, slots=True)
+class InputQualityFlag:
+    category: InputQualityCategory
+    level: InputQualityLevel      # PARTIAL or DEGRADED (never FULL — FULL flags are not emitted)
+    detail: str
+```
+
+```python
+def aggregate_input_quality(flags: list[InputQualityFlag]) -> InputQualityLevel:
+    """Derive aggregate InputQualityLevel from individual flags.
+
+    Ordering: DEGRADED > PARTIAL > FULL.
+    Empty flags list → FULL.
+    """
+    ...
+```
+
+Module: `types/domain.py`
+
 ### QcRuleParams
 
 Per-rule threshold parameters. Each rule has a set of thresholds that may vary by
@@ -1279,6 +1313,8 @@ class OperationalForecast:
     updated_at: UtcDatetime
     qc_status: QcStatus = QcStatus.RAW            # aggregate forecast QC status
     qc_flags: tuple[QcFlag, ...] = ()              # individual rule results
+    input_quality: InputQualityLevel = InputQualityLevel.FULL
+    input_quality_flags: tuple[InputQualityFlag, ...] = ()
 ```
 
 ### HindcastForecast
@@ -2439,11 +2475,42 @@ class DeploymentConfig(BaseModel):
     # bulletin generation convert Gregorian dates to BS for display. Internal
     # storage remains UTC Gregorian.
 
+    # --- Input quality assessment ---
+    input_quality: InputQualityConfig = InputQualityConfig()
+
     # --- Multi-model alert strategy ---
     alert_model_strategy: AlertModelStrategy = AlertModelStrategy.PRIMARY
     min_operational_ensemble_size: int = 20
     min_operational_quantile_levels: int = 7
 ```
+
+### InputQualityConfig
+
+Thresholds used by `assess_input_quality()` (Flow 1 step 1.7) to assign `InputQualityLevel` per dimension.
+
+```python
+class InputQualityConfig(BaseModel):
+    obs_degraded_hours: float = 12.0
+        # observation staleness → DEGRADED (must be > observation_staleness_warning_hours)
+    nwp_age_partial_hours: float = 9.0
+        # NWP cycle age → PARTIAL
+    nwp_age_degraded_hours: float = 11.0
+        # NWP cycle age → DEGRADED (must be <= nwp_max_fallback_age_hours)
+    warmup_snapshot_age_partial_hours: float = 24.0
+        # warm-up snapshot age → PARTIAL (default; caller may override per season)
+    warmup_snapshot_age_degraded_hours: float = 42.0
+        # warm-up snapshot age → DEGRADED (must be <= warm_up_snapshot_max_age_hours;
+        # for monsoon deployments, must be <= warm_up_snapshot_max_age_monsoon_hours)
+```
+
+Cross-validators (enforced at `DeploymentConfig` load time):
+- `obs_degraded_hours > observation_staleness_warning_hours`
+- `nwp_age_partial_hours < nwp_age_degraded_hours`
+- `nwp_age_degraded_hours <= nwp_max_fallback_age_hours`
+- `warmup_snapshot_age_partial_hours < warmup_snapshot_age_degraded_hours`
+- `warmup_snapshot_age_degraded_hours <= warm_up_snapshot_max_age_hours`
+
+Module: `config/deployment.py`
 
 This is the deployment-wide config. Adapter-specific config (adapter types, cache ages,
 archive flags) lives in the `[adapters]` section of `config.toml` and is loaded separately

@@ -182,7 +182,7 @@ Ruff rule `T201` bans `print()` — no exceptions.
 | Field | Bound at | Description |
 |---|---|---|
 | `parameter` | `bind_contextvars(parameter=...)` in `compute_skills_task` | The forecast parameter being scored (e.g., `discharge`, `water_level`). Not mandatory globally — most flows operate on a single implicit parameter. |
-| `model_id` | `bind_contextvars(model_id=str(model_id))` at flow entry in `onboard_model_flow` | Model being onboarded. Bound for the duration of the flow run so all per-unit events include it automatically. |
+| `model_id` | `bind_contextvars(model_id=str(model_id))` at flow entry in `onboard_model_flow`, and per-station-per-model iteration in `run_forecast_cycle` | Model being processed. In Flow 13 (`onboard_model_flow`), bound at flow entry for the duration of the run. In Flow 1, bound within the per-station-per-model loop so all events in that iteration (including `forecast.input_quality_assessed`) include it automatically. |
 | `group_id` | `bound_contextvars(group_id=str(group_id))` in per-unit loop (group-scoped units) | Station group being processed. Scoped to the per-unit iteration. |
 
 ## Context binding protocol
@@ -250,7 +250,7 @@ All `*_completed` / `*_failed` events include `duration_ms`. Fast sub-steps (com
 | `model.compatibility_failed` | INFO | Expected per-unit skip (incompatible station) — not an error condition |
 | `model.smoke_test_completed` | INFO | Function returned normally |
 | `model.smoke_test_failed` | ERROR | Unexpected exception; use `error=str(exc)` — not `passed=False` |
-| `model.skill_gate_completed` | INFO if `passed=True`, WARNING if `passed=False` | Include `passed`, `failing_metrics` |
+| `model.skill_gate_completed` | INFO if `passed=True`, WARNING if `passed=False` | Level-conditional. Include `passed`, `failing_metrics` (list[str]) |
 | `model.skill_gate_failed` | ERROR | Unexpected exception during gate evaluation; use `error=str(exc)` |
 | `model.promotion_completed` | INFO | Artifact transitioned TRAINING → ACTIVE |
 | `model.assignment_skipped_inactive` | WARNING | Operator deliberately disabled this model for station/group |
@@ -261,6 +261,13 @@ Rules:
 - Past tense for completed events (`completed`, `stored`, `failed`). Use `_started` / `_completed` pairs.
 - Always use `{entity}.{action}` pattern — no f-string messages.
 - Additional context goes in keyword arguments, not the event string.
+- **List-of-dicts kwargs** are accepted when an event carries variable-length structured sub-items. Example: `forecast.input_quality_assessed` passes `flags` as `list[dict]` with keys `category`, `level`, and `detail`. Use this pattern sparingly — prefer flat kwargs for simple scalar context.
+
+### Canonical forecast cycle events (Flow 1)
+
+| Event | Level | Notes |
+|---|---|---|
+| `forecast.input_quality_assessed` | INFO if `input_quality == "partial"`, WARNING if `input_quality == "degraded"` | Level-conditional. Emitted when input quality is not FULL. Not emitted when quality is FULL. Kwargs: `input_quality` (str), `flags` (list of dicts: `{"category": str, "level": str, "detail": str}`). Bind `model_id` and `station_id` via `bind_contextvars` before this event so both appear automatically. |
 
 ```python
 # CORRECT

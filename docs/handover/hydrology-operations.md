@@ -474,3 +474,9 @@ Does DHM retroactively correct observation values in their source database after
 For flood thresholds: will these be available via the same API as station metadata, or provided as CSV/spreadsheet?
 
 *Context*: SAPPHIRE can ingest thresholds from either source. This determines configuration, not architecture.
+
+**10. Input quality flagging and forecaster notification**
+
+Should SAPPHIRE flag each forecast with an input quality indicator (FULL / PARTIAL / DEGRADED) based on observation staleness, NWP cycle age, and warm-up state? Should forecasters be notified when a forecast is produced under degraded input conditions?
+
+Yes to both. SAPPHIRE flags every operational forecast with an `InputQualityLevel` (FULL, PARTIAL, or DEGRADED) and a list of `InputQualityFlag` entries explaining what is degraded and why. The quality level is exposed in the API and displayed in the dashboard. In v0, there is no push notification — quality is visible in the API response and logged. In v1, a forecaster notification will be added when a station's forecast is DEGRADED, using the notification infrastructure (step 1.14).

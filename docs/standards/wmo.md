@@ -127,6 +127,7 @@ Maps to: overall architecture validation, pipeline monitoring (Flow 4), Nepal v1
 |-----|--------------|------------|
 | **QC "missing" status** | WMO-168 Vol I | Added `MISSING` to `QcStatus` enum. Expected-but-not-received observations are represented as explicit gap markers (`value = NULL`, `qc_status = 'missing'`). Aligns with WMO standard QC flag vocabulary (good, suspect, erroneous, missing). |
 | **Sharpness metric** | WMO-1364 (sharpness dimension) | Added explicit sharpness metrics to skill computation spec: mean prediction interval width (P10–P90, P25–P75), mean ensemble range. Computed per lead time alongside reliability diagnostics. |
+| **Forecasters informed when forecast produced under degraded input conditions** | WMO-1072, QMF-H | `InputQualityLevel` + `InputQualityFlag` on `OperationalForecast`; API exposes quality level and flags; dashboard displays at-a-glance indicator. (Plan 023) |
 
 ### Deferred to v1+
 

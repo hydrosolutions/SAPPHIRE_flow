@@ -360,7 +360,7 @@ Full forecast cycle runs in seconds using recorded data — no network, no waiti
 |----------|-----------|
 | Normal cycle | Happy path baseline |
 | Late NWP | Fallback to previous cycle |
-| Missing observations | Staleness warning, forecast proceeds |
+| Missing observations | Staleness warning, forecast proceeds (Plan 023 — `assess_input_quality()`) |
 | QC failures | Spikes flagged, excluded from model inputs |
 | Model failure | Fallback to next priority model |
 | Threshold exceedance | Alert raised at correct level |
@@ -456,7 +456,7 @@ Phase 2: Store implementations (PostgreSQL) + integration tests  ─┐
 Phase 3: Adapters (production + replay)                           ├─ parallel
           │                                                       │
 Phase 3b: Record reference test dataset from public APIs          │
-Phase 4: Services (QC, threshold, alert, skill, forecast input)  ─┘
+Phase 4: Services (QC, threshold, alert, skill, forecast input, input quality)  ─┘
           │
 Phase 5: Station onboarding (simplified)           ─┐ ✓ done
 Phase 6: Observation ingest (Flow 2)               ├─ parallel

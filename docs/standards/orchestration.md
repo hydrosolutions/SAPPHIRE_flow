@@ -62,7 +62,7 @@ Illustrative sketch for Flow 1 (not implementation):
 ```python
 # Illustrative only — not implementation
 nwp = fetch_nwp(cycle_time)                    # shared work, single task
-inputs = prepare_inputs.map(stations, nwp=nwp) # fan-out per station
+inputs = prepare_inputs.map(stations, nwp=nwp) # Step 1.7: Prepare model inputs (includes input quality assessment)
 
 # Structure: station → model → parameter_name → ForecastEnsemble
 all_ensembles: dict[StationId, dict[ModelId, dict[str, ForecastEnsemble]]] = defaultdict(dict)
@@ -93,6 +93,11 @@ for station_id, model_ensembles in all_ensembles.items():
 
 check_station_alerts(all_ensembles, all_thresholds, danger_levels, all_priorities, config, alert_store, clock)  # Phase C (plan 010) — QC-failed ensembles already filtered above
 ```
+
+**Phase 8 implementation notes for Flow 1:**
+
+- Step 1.7 (`prepare_inputs`) must wire input quality assessment as a sub-step: call `assess_input_quality()` from `services/input_quality.py` and attach the result to the prepared inputs so downstream steps and `forecast.input_quality_assessed` logging have access to it.
+- Phase 8 must also design season-aware threshold resolution — thresholds in `InputQualityConfig` may need to vary by season (e.g. stricter thresholds during monsoon). See Plan 023 §Season-aware threshold resolution for options and the bounding invariant.
 
 For group-scoped models, the artifact is deserialized once per model (not per station) and passed to all mapped tasks via Prefect's `unmapped()`. This eliminates deserialization overhead without changing the per-station `predict()` contract.
 
