@@ -298,6 +298,104 @@ class TestComputeCombinedSkillsTask:
         assert len(scores) > 0
         assert len(diagrams) > 0
 
+    def test_bma_strategy_computes_combined_skill(self) -> None:
+        from sapphire_flow.types.ensemble import ForecastEnsemble
+        from sapphire_flow.types.enums import (
+            EnsembleRepresentation,
+            ForcingType,
+            ModelCombinationStrategy,
+            ObservationSource,
+            QcStatus,
+        )
+        from sapphire_flow.types.forecast import HindcastForecast
+        from sapphire_flow.types.ids import HindcastForecastId, ObservationId
+        from sapphire_flow.types.observation import Observation
+
+        sid = StationId(_uuid())
+        mid1 = ModelId("bma-model-a")
+        mid2 = ModelId("bma-model-b")
+        aid1 = ArtifactId(_uuid())
+        aid2 = ArtifactId(_uuid())
+
+        hindcast_store = FakeHindcastStore()
+        obs_store = FakeObservationStore()
+        skill_store = FakeSkillStore()
+        station_store = FakeStationStore()
+        flow_regime_store = FakeFlowRegimeConfigStore()
+
+        time_step = timedelta(hours=1)
+        n_steps = 6
+        for i in range(n_steps):
+            step = ensure_utc(datetime(2025, 1, i + 1, tzinfo=UTC))
+            vt = ensure_utc(datetime(2025, 1, i + 1, 1, 0, tzinfo=UTC))
+
+            df = pl.DataFrame(
+                [
+                    {"valid_time": vt, "member_id": m, "value": 10.0 + m}
+                    for m in range(3)
+                ]
+            ).with_columns(
+                pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
+                pl.col("member_id").cast(pl.Int32),
+            )
+
+            for mid, val_offset in [(mid1, 0.0), (mid2, 1.0)]:
+                ensemble = ForecastEnsemble.from_members(
+                    station_id=sid,
+                    issued_at=step,
+                    parameter="discharge",
+                    units="m3/s",
+                    time_step=time_step,
+                    values=df.with_columns(
+                        (pl.col("value") + val_offset).alias("value")
+                    ),
+                )
+                aid = aid1 if mid == mid1 else aid2
+                hc = HindcastForecast(
+                    id=HindcastForecastId(_uuid()),
+                    station_id=sid,
+                    model_id=mid,
+                    model_artifact_id=aid,
+                    hindcast_step=step,
+                    forcing_type=ForcingType.REANALYSIS,
+                    representation=EnsembleRepresentation.MEMBERS,
+                    hindcast_run_id=_uuid(),
+                    ensemble=ensemble,
+                    created_at=step,
+                )
+                hindcast_store.store_hindcast(hc)
+
+            obs = Observation(
+                id=ObservationId(_uuid()),
+                station_id=sid,
+                timestamp=vt,
+                parameter="discharge",
+                value=10.5,
+                source=ObservationSource.MEASURED,
+                rating_curve_id=None,
+                rating_curve_correction_version=None,
+                qc_status=QcStatus.QC_PASSED,
+                qc_flags=[],
+                qc_rule_version=None,
+                created_at=step,
+            )
+            obs_store.store_observations([obs])
+
+        scores, diagrams = compute_combined_skills_task.fn(
+            station_id=sid,
+            parameter="discharge",
+            strategy=ModelCombinationStrategy.BMA,
+            hindcast_store=hindcast_store,
+            obs_store=obs_store,
+            skill_store=skill_store,
+            station_store=station_store,
+            flow_regime_store=flow_regime_store,
+            clock=lambda: _EPOCH,
+        )
+
+        assert len(scores) > 0
+        assert len(diagrams) > 0
+
     def test_flow_wrapper_delegates_to_task(self) -> None:
         from sapphire_flow.types.enums import ModelCombinationStrategy
 

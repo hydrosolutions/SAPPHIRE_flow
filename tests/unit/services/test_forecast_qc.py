@@ -20,6 +20,7 @@ from sapphire_flow.types.domain import (
     ClimBaseline,
     ForecastQcRuleParams,
     ForecastQcRuleSet,
+    StationForecastQcOverride,
 )
 from sapphire_flow.types.ensemble import ForecastEnsemble
 from sapphire_flow.types.enums import QcStatus
@@ -321,3 +322,69 @@ class TestForecastOutputQualityChecker:
         checker = ForecastOutputQualityChecker()
         flags = checker.check(ensemble, ruleset, [], [])
         assert flags == []
+
+
+class TestForecastQcOverrideMerging:
+    def test_override_tightens_threshold_causing_failure(self) -> None:
+        # Default max is 500 — value of 300 passes.
+        # Override lowers max to 200 — should fail.
+        ensemble = _make_members_ensemble(
+            [[300.0, 300.0, 300.0], [300.0, 300.0, 300.0]]
+        )
+        ruleset = _make_ruleset(
+            _make_rule("range_check", {"value_min": 0.0, "value_max": 500.0})
+        )
+        override = StationForecastQcOverride(
+            station_id=_STATION,
+            rule_id="range_check",
+            parameter="discharge",
+            time_step=_STEP,
+            thresholds={"value_max": 200.0},
+        )
+        checker = ForecastOutputQualityChecker()
+        flags = checker.check(ensemble, ruleset, [override], [])
+        assert len(flags) == 1
+        assert flags[0].rule_id == "range_check"
+        assert flags[0].status == QcStatus.QC_FAILED
+
+    def test_override_loosens_threshold_preventing_failure(self) -> None:
+        # Default max is 200 — value of 300 fails.
+        # Override raises max to 500 — should pass.
+        ensemble = _make_members_ensemble(
+            [[300.0, 300.0, 300.0], [300.0, 300.0, 300.0]]
+        )
+        ruleset = _make_ruleset(
+            _make_rule("range_check", {"value_min": 0.0, "value_max": 200.0})
+        )
+        override = StationForecastQcOverride(
+            station_id=_STATION,
+            rule_id="range_check",
+            parameter="discharge",
+            time_step=_STEP,
+            thresholds={"value_max": 500.0},
+        )
+        checker = ForecastOutputQualityChecker()
+        flags = checker.check(ensemble, ruleset, [override], [])
+        assert flags == []
+
+    def test_override_for_different_station_does_not_apply(self) -> None:
+        # Override targets a different station — default threshold of 200 should apply.
+        other_station = StationId(uuid4())
+        ensemble = _make_members_ensemble(
+            [[300.0, 300.0, 300.0], [300.0, 300.0, 300.0]]
+        )
+        ruleset = _make_ruleset(
+            _make_rule("range_check", {"value_min": 0.0, "value_max": 200.0})
+        )
+        override = StationForecastQcOverride(
+            station_id=other_station,
+            rule_id="range_check",
+            parameter="discharge",
+            time_step=_STEP,
+            thresholds={"value_max": 500.0},
+        )
+        checker = ForecastOutputQualityChecker()
+        flags = checker.check(ensemble, ruleset, [override], [])
+        assert len(flags) == 1
+        assert flags[0].rule_id == "range_check"
+        assert flags[0].status == QcStatus.QC_FAILED

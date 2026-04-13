@@ -14,6 +14,7 @@ from sapphire_flow.types.domain import ForecastQcRuleSet
 from sapphire_flow.types.enums import (
     ModelArtifactStatus,
     ModelAssignmentStatus,
+    ModelCombinationStrategy,
     SpatialRepresentation,
     StationKind,
     StationStatus,
@@ -371,6 +372,94 @@ class TestForecastCycle:
 
         assert result.stations_attempted == 0
         assert result.stations_succeeded == 0
+
+    def test_pooled_combination_stores_individual_and_combined(self) -> None:
+        sid = StationId(uuid4())
+        model_id_a = ModelId("fake_model_a")
+        model_id_b = ModelId("fake_model_b")
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        # Register the station with the first model (sets up all base data)
+        _build_station_and_stores(
+            sid,
+            model_id_a,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+        )
+
+        # Add a second model assignment (lower priority)
+        assignment_b = ModelAssignment(
+            station_id=sid,
+            model_id=model_id_b,
+            time_step=timedelta(hours=1),
+            status=ModelAssignmentStatus.ACTIVE,
+            priority=2,
+            created_at=_NOW,
+        )
+        station_store.store_model_assignment(assignment_b)
+
+        # Artifact for the second model
+        artifact_store.store_artifact(
+            model_id=model_id_b,
+            artifact_bytes=b"fake_artifact_b",
+            training_period_start=ensure_utc(datetime(2020, 1, 1, tzinfo=UTC)),
+            training_period_end=ensure_utc(datetime(2025, 12, 31, tzinfo=UTC)),
+            trained_at=_NOW,
+            station_id=sid,
+            status=ModelArtifactStatus.ACTIVE,
+        )
+
+        models = {model_id_a: _SmallFakeModel(), model_id_b: _SmallFakeModel()}
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=FakeWeatherForecastSource(result={}),
+            models=models,  # type: ignore[arg-type]
+            config=_make_config(
+                forecast_combination_strategy=ModelCombinationStrategy.POOLED
+            ),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+        )
+
+        assert result.stations_succeeded == 1
+
+        stored = list(forecast_store._forecasts.values())
+        # Two individual model forecasts + one combined
+        assert len(stored) >= 3
+
+        combined = [f for f in stored if f.combination_strategy == "pooled"]
+        assert len(combined) >= 1
+        assert combined[0].station_id == sid
+
+        individual_model_ids = {
+            f.model_id for f in stored if f.combination_strategy is None
+        }
+        assert model_id_a in individual_model_ids
+        assert model_id_b in individual_model_ids
 
     def test_alerts_checked_when_enabled(self) -> None:
         sid = StationId(uuid4())

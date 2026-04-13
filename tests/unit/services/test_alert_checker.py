@@ -614,7 +614,7 @@ class TestCheckStationAlerts:
         threshold = _make_threshold(danger_level="DL1", value=1.0)
         dl = _make_danger_level(name="DL1", trigger_prob=0.1)
 
-        # Should not raise — quantile path uses min_operational_quantile_levels, not member size
+        # Quantile path uses min_operational_quantile_levels, not member size
         check_station_alerts(
             all_ensembles=all_ensembles,
             all_thresholds={_STATION: [threshold]},
@@ -728,10 +728,9 @@ class TestProcessResults:
         assert any(a.alert_level == "DL3" for a in active)
 
     def test_partial_model_failure_preserves_alert(self) -> None:
-        """Only water_level evaluated (discharge absent) → discharge-keyed alert preserved."""
+        """water_level evaluated (discharge absent) → alert preserved."""
 
         store = FakeAlertStore()
-        mid = ModelId("m")
         existing = make_alert(
             station_id=_STATION,
             source=AlertSource.FORECAST,
@@ -744,8 +743,7 @@ class TestProcessResults:
         thresholds = [
             _make_threshold(danger_level="DL3", parameter="discharge", value=100.0),
         ]
-        # water_level was NOT evaluated (absent from evaluated_parameters)
-        # evaluated_parameters = {"water_level"} only — discharge missing → can't resolve
+        # water_level NOT evaluated — discharge missing → can't resolve
 
         # No results for DL3
         _process_results(
@@ -761,7 +759,7 @@ class TestProcessResults:
         assert any(a.alert_level == "DL3" for a in active)
 
     def test_model_ids_union_across_parameters(self) -> None:
-        """discharge models (A,B) + water_level models (B,C) → single upsert with (A,B,C)."""
+        """discharge (A,B) + water_level (B,C) → upsert with (A,B,C)."""
         from sapphire_flow.types.domain import ExceedanceResult
 
         store = FakeAlertStore()
@@ -866,3 +864,143 @@ class TestProcessResults:
 
         active = store.fetch_active_alerts(station_id=_STATION)
         assert active[0].model_ids == (mid_a, mid_b, mid_c)
+
+
+class TestResolveStrategyAndFilterPooled:
+    def test_pooled_two_models_homogeneous_members_uses_pooled_strategy(self) -> None:
+        mid_a = ModelId("model_a")
+        mid_b = ModelId("model_b")
+        param_ensembles = {
+            mid_a: make_forecast_ensemble(
+                station_id=_STATION,
+                representation=EnsembleRepresentation.MEMBERS,
+                model_id=mid_a,
+            ),
+            mid_b: make_forecast_ensemble(
+                station_id=_STATION,
+                representation=EnsembleRepresentation.MEMBERS,
+                model_id=mid_b,
+            ),
+        }
+        representations = {EnsembleRepresentation.MEMBERS}
+
+        strategy, effective = _resolve_strategy_and_filter(
+            preferred=ModelCombinationStrategy.POOLED,
+            param_ensembles=param_ensembles,
+            representations=representations,
+            priorities={mid_a: 0, mid_b: 1},
+        )
+
+        assert isinstance(strategy, PooledEnsembleStrategy)
+        assert set(effective.keys()) == {mid_a, mid_b}
+
+    def test_pooled_does_not_fall_back_to_primary_with_homogeneous_members(
+        self,
+    ) -> None:
+        mid_a = ModelId("model_a")
+        mid_b = ModelId("model_b")
+        param_ensembles = {
+            mid_a: make_forecast_ensemble(
+                station_id=_STATION,
+                representation=EnsembleRepresentation.MEMBERS,
+                model_id=mid_a,
+            ),
+            mid_b: make_forecast_ensemble(
+                station_id=_STATION,
+                representation=EnsembleRepresentation.MEMBERS,
+                model_id=mid_b,
+            ),
+        }
+        representations = {EnsembleRepresentation.MEMBERS}
+
+        strategy, _ = _resolve_strategy_and_filter(
+            preferred=ModelCombinationStrategy.POOLED,
+            param_ensembles=param_ensembles,
+            representations=representations,
+            priorities={},
+        )
+
+        assert not isinstance(strategy, PrimaryModelStrategy)
+
+
+class TestResolveStrategyAndFilterUnknown:
+    def test_unknown_strategy_raises_value_error(self) -> None:
+        mid = ModelId("model_a")
+        mid_b = ModelId("model_b")
+        param_ensembles = {
+            mid: make_forecast_ensemble(
+                station_id=_STATION,
+                representation=EnsembleRepresentation.MEMBERS,
+                model_id=mid,
+            ),
+            mid_b: make_forecast_ensemble(
+                station_id=_STATION,
+                representation=EnsembleRepresentation.MEMBERS,
+                model_id=mid_b,
+            ),
+        }
+        representations = {EnsembleRepresentation.MEMBERS}
+
+        with pytest.raises(ValueError, match="Unhandled strategy"):
+            _resolve_strategy_and_filter(
+                preferred=99,  # type: ignore[arg-type]
+                param_ensembles=param_ensembles,
+                representations=representations,
+                priorities={},
+            )
+
+
+class TestCheckStationAlertsMultiStation:
+    def test_multi_station_dispatch_checks_each_independently(self) -> None:
+        from pathlib import Path
+
+        from sapphire_flow.tools.record_fixtures import parse_stations_toml
+
+        station_configs = parse_stations_toml(
+            Path(__file__).parent.parent.parent / "fixtures/reference/stations.toml"
+        )
+        sid_a = station_configs[0].id
+        sid_b = station_configs[1].id
+
+        store = FakeAlertStore()
+        config = make_deployment_config(
+            enable_forecast_alerts=True,
+            threshold_check_mode="raw",
+            min_operational_ensemble_size=1,
+        )
+        mid = ModelId("m")
+
+        # Both stations have forecasts well above their thresholds (trigger_prob=0.1)
+        ens_a = make_forecast_ensemble(
+            station_id=sid_a, model_id=mid, n_members=21, n_steps=3
+        )
+        ens_b = make_forecast_ensemble(
+            station_id=sid_b, model_id=mid, n_members=21, n_steps=3
+        )
+        all_ensembles = {
+            sid_a: {mid: {"discharge": ens_a}},
+            sid_b: {mid: {"discharge": ens_b}},
+        }
+        # Thresholds set very low (1.0 m3/s) so all members exceed them
+        all_thresholds = {
+            sid_a: [_make_threshold(station_id=sid_a, danger_level="DL1", value=1.0)],
+            sid_b: [_make_threshold(station_id=sid_b, danger_level="DL1", value=1.0)],
+        }
+        dl = _make_danger_level(name="DL1", trigger_prob=0.1)
+
+        check_station_alerts(
+            all_ensembles=all_ensembles,
+            all_thresholds=all_thresholds,
+            danger_levels=[dl],
+            all_priorities={},
+            config=config,
+            alert_store=store,
+            clock=_clock,
+        )
+
+        active_a = store.fetch_active_alerts(station_id=sid_a)
+        active_b = store.fetch_active_alerts(station_id=sid_b)
+        assert len(active_a) == 1
+        assert len(active_b) == 1
+        assert active_a[0].station_id == sid_a
+        assert active_b[0].station_id == sid_b

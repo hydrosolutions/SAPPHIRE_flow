@@ -76,3 +76,32 @@ class TestMakeTrainingUnit:
         unit = make_training_unit(group_id=_GROUP)
         assert unit.group_id == _GROUP
         assert unit.station_id is None
+
+
+class TestTrainingUnitStationIdsValidation:
+    def test_station_scoped_mismatched_station_ids_raises(self) -> None:
+        other = StationId(uuid4())
+        with pytest.raises(ValueError, match="station-scoped"):
+            TrainingUnit(
+                model_id=_MODEL,
+                station_id=_STATION,
+                group_id=None,
+                station_ids=frozenset({other}),
+                training_period_start=_EPOCH,
+                training_period_end=_EPOCH,
+                time_step=timedelta(days=1),
+            )
+
+    def test_group_scoped_empty_station_ids_raises(self) -> None:
+        with pytest.raises(
+            ValueError, match="group-scoped unit must have at least one"
+        ):
+            TrainingUnit(
+                model_id=_MODEL,
+                station_id=None,
+                group_id=_GROUP,
+                station_ids=frozenset(),
+                training_period_start=_EPOCH,
+                training_period_end=_EPOCH,
+                time_step=timedelta(days=1),
+            )

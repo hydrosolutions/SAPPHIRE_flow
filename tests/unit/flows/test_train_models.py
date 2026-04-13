@@ -1,18 +1,40 @@
 from __future__ import annotations
 
+import hashlib
 import random
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import polars as pl
+import pytest
 
+from sapphire_flow.exceptions import ArtifactIntegrityError
 from sapphire_flow.flows.compute_skills import compute_skills_task
+from sapphire_flow.flows.train_models import train_models_flow
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.ids import ArtifactId, ModelId, StationId
+from sapphire_flow.types.enums import (
+    ModelAssignmentStatus,
+    SpatialRepresentation,
+    WeatherSourceStatus,
+)
+from sapphire_flow.types.ids import ArtifactId, ModelId, StationGroupId, StationId
+from sapphire_flow.types.station import (
+    ModelAssignment,
+    StationGroup,
+    StationWeatherSource,
+)
+from tests.conftest import make_observations, make_station_config
+from tests.fakes.fake_adapters import FakeWeatherReanalysisSource
+from tests.fakes.fake_models import FakeGroupForecastModel, FakeStationForecastModel
 from tests.fakes.fake_stores import (
+    FakeBasinStore,
+    FakeFlowRegimeConfigStore,
     FakeHindcastStore,
+    FakeModelArtifactStore,
+    FakeModelStore,
     FakeObservationStore,
     FakeSkillStore,
+    FakeStationGroupStore,
     FakeStationStore,
 )
 
@@ -92,6 +114,535 @@ def _seed_hindcasts_and_obs(
             created_at=step,
         )
         obs_store.store_observations([obs])
+
+
+_RNG_SEED = 42
+_EPOCH = ensure_utc(datetime(2025, 1, 1, tzinfo=UTC))
+_TRAINING_START = ensure_utc(datetime(2022, 1, 1, tzinfo=UTC))
+_TRAINING_END = ensure_utc(datetime(2024, 12, 31, tzinfo=UTC))
+_N_OBS_DAYS = 365 * 3 + 10
+
+
+def _make_forcing_records(
+    station_id: StationId,
+    start: object,
+    n_days: int,
+) -> list:
+    from sapphire_flow.types.historical_forcing import RawHistoricalForcing
+
+    records = []
+    for i in range(n_days):
+        ts = ensure_utc(datetime.fromtimestamp(start.timestamp() + i * 86400, tz=UTC))
+        for param in ("precipitation", "temperature"):
+            records.append(
+                RawHistoricalForcing(
+                    station_id=station_id,
+                    source="smn",
+                    version="1.0",
+                    valid_time=ts,
+                    parameter=param,
+                    spatial_type=SpatialRepresentation.POINT,
+                    band_id=None,
+                    member_id=None,
+                    value=5.0 if param == "precipitation" else 10.0,
+                )
+            )
+    return records
+
+
+def _setup_station_stores(
+    station_id: StationId,
+    model_id: ModelId,
+) -> tuple:
+    rng = random.Random(_RNG_SEED)
+    model_store = FakeModelStore()
+    station_store = FakeStationStore()
+    group_store = FakeStationGroupStore()
+    obs_store = FakeObservationStore()
+    basin_store = FakeBasinStore()
+    artifact_store = FakeModelArtifactStore()
+    hindcast_store = FakeHindcastStore()
+    skill_store = FakeSkillStore()
+    flow_regime_store = FakeFlowRegimeConfigStore()
+
+    station = make_station_config(station_id=station_id)
+    station_store.store_station(station)
+
+    assignment = ModelAssignment(
+        station_id=station_id,
+        model_id=model_id,
+        time_step=timedelta(days=1),
+        status=ModelAssignmentStatus.ACTIVE,
+        priority=1,
+        created_at=_EPOCH,
+    )
+    station_store.store_model_assignment(assignment)
+
+    weather_source = StationWeatherSource(
+        station_id=station_id,
+        nwp_source="smn",
+        extraction_type=SpatialRepresentation.POINT,
+        status=WeatherSourceStatus.ACTIVE,
+    )
+    station_store.store_weather_source(weather_source)
+
+    obs = make_observations(
+        n=_N_OBS_DAYS,
+        station_id=station_id,
+        parameter="discharge",
+        start=_TRAINING_START,
+        interval=timedelta(days=1),
+        rng=rng,
+    )
+    obs_store.store_observations(obs)
+
+    forcing_records = _make_forcing_records(station_id, _TRAINING_START, _N_OBS_DAYS)
+    forcing_source = FakeWeatherReanalysisSource(records=forcing_records)
+
+    return (
+        model_store,
+        station_store,
+        group_store,
+        obs_store,
+        basin_store,
+        artifact_store,
+        hindcast_store,
+        skill_store,
+        flow_regime_store,
+        forcing_source,
+    )
+
+
+def _flow_kwargs(
+    model_id: ModelId,
+    model: object,
+    model_store: object,
+    station_store: object,
+    group_store: object,
+    obs_store: object,
+    basin_store: object,
+    artifact_store: object,
+    hindcast_store: object,
+    skill_store: object,
+    flow_regime_store: object,
+    forcing_source: object,
+) -> dict:
+    return dict(
+        period_start=str(_TRAINING_START.isoformat()),
+        period_end=str(_TRAINING_END.isoformat()),
+        model_store=model_store,
+        station_store=station_store,
+        group_store=group_store,
+        obs_store=obs_store,
+        basin_store=basin_store,
+        artifact_store=artifact_store,
+        hindcast_store=hindcast_store,
+        skill_store=skill_store,
+        flow_regime_store=flow_regime_store,
+        forcing_source=forcing_source,
+        models={model_id: model},
+        clock=lambda: _EPOCH,
+        rng=random.Random(0),
+    )
+
+
+class TestTrainModelsFlowHappyPath:
+    def test_station_model_stores_artifact_and_computes_skill(self) -> None:
+        rng = random.Random(_RNG_SEED)
+        station_id = StationId(UUID(int=rng.getrandbits(128), version=4))
+        model_id = ModelId("fake_station_model")
+        model = FakeStationForecastModel()
+
+        (
+            model_store,
+            station_store,
+            group_store,
+            obs_store,
+            basin_store,
+            artifact_store,
+            hindcast_store,
+            skill_store,
+            flow_regime_store,
+            forcing_source,
+        ) = _setup_station_stores(station_id, model_id)
+
+        results = train_models_flow(
+            **_flow_kwargs(
+                model_id,
+                model,
+                model_store,
+                station_store,
+                group_store,
+                obs_store,
+                basin_store,
+                artifact_store,
+                hindcast_store,
+                skill_store,
+                flow_regime_store,
+                forcing_source,
+            )
+        )
+
+        assert len(results) == 1
+        result = results[0]
+        assert result.error is None
+        assert result.artifact_id is not None
+        assert result.skill_computed is True
+        assert len(hindcast_store._hindcasts) > 0
+        assert len(skill_store._scores) > 0
+
+
+class TestTrainModelsFlowModelNotFound:
+    def test_model_not_in_registry_returns_error_result(self) -> None:
+        rng = random.Random(_RNG_SEED + 1)
+        station_id = StationId(UUID(int=rng.getrandbits(128), version=4))
+        model_id = ModelId("fake_station_model")
+        ghost_model_id = ModelId("ghost_model_that_does_not_exist")
+
+        model_store = FakeModelStore()
+        station_store = FakeStationStore()
+        group_store = FakeStationGroupStore()
+        obs_store = FakeObservationStore()
+        basin_store = FakeBasinStore()
+        artifact_store = FakeModelArtifactStore()
+        hindcast_store = FakeHindcastStore()
+        skill_store = FakeSkillStore()
+        flow_regime_store = FakeFlowRegimeConfigStore()
+
+        station = make_station_config(station_id=station_id)
+        station_store.store_station(station)
+        assignment = ModelAssignment(
+            station_id=station_id,
+            model_id=model_id,
+            time_step=timedelta(days=1),
+            status=ModelAssignmentStatus.ACTIVE,
+            priority=1,
+            created_at=_EPOCH,
+        )
+        station_store.store_model_assignment(assignment)
+        station_store.store_weather_source(
+            StationWeatherSource(
+                station_id=station_id,
+                nwp_source="smn",
+                extraction_type=SpatialRepresentation.POINT,
+                status=WeatherSourceStatus.ACTIVE,
+            )
+        )
+
+        # Register model_id in the model_store so scope yields one unit for model_id,
+        # but pass models={ghost_model_id: ...} so the flow can't find model_id
+        # in the models dict → TrainingResult.error is set.
+        from sapphire_flow.services.model_registry import register_models
+
+        real_model = FakeStationForecastModel()
+        register_models({model_id: real_model}, model_store, lambda: _EPOCH)
+        forcing_source = FakeWeatherReanalysisSource()
+
+        results = train_models_flow(
+            period_start=str(_TRAINING_START.isoformat()),
+            period_end=str(_TRAINING_END.isoformat()),
+            model_store=model_store,
+            station_store=station_store,
+            group_store=group_store,
+            obs_store=obs_store,
+            basin_store=basin_store,
+            artifact_store=artifact_store,
+            hindcast_store=hindcast_store,
+            skill_store=skill_store,
+            flow_regime_store=flow_regime_store,
+            forcing_source=forcing_source,
+            models={ghost_model_id: real_model},
+            clock=lambda: _EPOCH,
+            rng=random.Random(0),
+        )
+
+        assert len(results) == 1
+        result = results[0]
+        assert result.error is not None
+        assert "not found" in result.error.lower()
+        assert result.artifact_id is None
+        assert result.skill_computed is False
+
+
+class TestTrainModelsFlowGroupModel:
+    def test_group_model_training_stores_artifact(self) -> None:
+        rng = random.Random(_RNG_SEED + 2)
+
+        def _next_uuid() -> UUID:
+            return UUID(int=rng.getrandbits(128), version=4)
+
+        station_id_1 = StationId(_next_uuid())
+        station_id_2 = StationId(_next_uuid())
+        group_id = StationGroupId(_next_uuid())
+        model_id = ModelId("fake_group_model")
+        model = FakeGroupForecastModel()
+
+        model_store = FakeModelStore()
+        inner_station_store = FakeStationStore()
+        group_store = FakeStationGroupStore()
+        obs_store = FakeObservationStore()
+        basin_store = FakeBasinStore()
+        artifact_store = FakeModelArtifactStore(group_store=group_store)
+        hindcast_store = FakeHindcastStore()
+        skill_store = FakeSkillStore()
+        flow_regime_store = FakeFlowRegimeConfigStore()
+
+        group = StationGroup(
+            id=group_id,
+            name="test-group",
+            station_ids=frozenset({station_id_1, station_id_2}),
+            created_at=_EPOCH,
+        )
+        group_store.store_group(group)
+
+        from sapphire_flow.services.model_registry import register_models
+        from sapphire_flow.types.station import GroupModelAssignment
+
+        register_models({model_id: model}, model_store, lambda: _EPOCH)
+
+        group_assignment = GroupModelAssignment(
+            group_id=group_id,
+            model_id=model_id,
+            time_step=timedelta(days=1),
+            status=ModelAssignmentStatus.ACTIVE,
+            priority=1,
+            created_at=_EPOCH,
+        )
+        group_store.store_group_model_assignment(group_assignment)
+        group_store.seed_group_model_assignment(group_id, model_id, group_assignment)
+
+        all_records = []
+        for sid in (station_id_1, station_id_2):
+            st = make_station_config(station_id=sid)
+            inner_station_store.store_station(st)
+            inner_station_store.store_weather_source(
+                StationWeatherSource(
+                    station_id=sid,
+                    nwp_source="smn",
+                    extraction_type=SpatialRepresentation.POINT,
+                    status=WeatherSourceStatus.ACTIVE,
+                )
+            )
+            obs = make_observations(
+                n=_N_OBS_DAYS,
+                station_id=sid,
+                parameter="discharge",
+                start=_TRAINING_START,
+                interval=timedelta(days=1),
+                rng=random.Random(_RNG_SEED),
+            )
+            obs_store.store_observations(obs)
+            all_records.extend(_make_forcing_records(sid, _TRAINING_START, _N_OBS_DAYS))
+
+        forcing_source = FakeWeatherReanalysisSource(records=all_records)
+
+        # run_hindcast_flow calls station_store.fetch_group() for group models.
+        # Wrap both stores so the combined object satisfies both protocols.
+        class _CombinedStore:
+            def __getattr__(self, name: str) -> object:
+                if hasattr(inner_station_store, name):
+                    return getattr(inner_station_store, name)
+                return getattr(group_store, name)
+
+        combined_store = _CombinedStore()
+
+        results = train_models_flow(
+            period_start=str(_TRAINING_START.isoformat()),
+            period_end=str(_TRAINING_END.isoformat()),
+            model_store=model_store,
+            station_store=combined_store,
+            group_store=group_store,
+            obs_store=obs_store,
+            basin_store=basin_store,
+            artifact_store=artifact_store,
+            hindcast_store=hindcast_store,
+            skill_store=skill_store,
+            flow_regime_store=flow_regime_store,
+            forcing_source=forcing_source,
+            models={model_id: model},
+            clock=lambda: _EPOCH,
+            rng=random.Random(0),
+        )
+
+        assert len(results) == 1
+        result = results[0]
+        assert result.error is None
+        assert result.artifact_id is not None
+        assert result.training_unit.group_id == group_id
+
+
+class TestTrainModelsFlowArtifactIntegrity:
+    def test_sha256_round_trip_stored_bytes_match(self) -> None:
+        rng = random.Random(_RNG_SEED + 3)
+        station_id = StationId(UUID(int=rng.getrandbits(128), version=4))
+        model_id = ModelId("fake_station_model")
+        model = FakeStationForecastModel()
+
+        (
+            model_store,
+            station_store,
+            group_store,
+            obs_store,
+            basin_store,
+            artifact_store,
+            hindcast_store,
+            skill_store,
+            flow_regime_store,
+            forcing_source,
+        ) = _setup_station_stores(station_id, model_id)
+
+        results = train_models_flow(
+            **_flow_kwargs(
+                model_id,
+                model,
+                model_store,
+                station_store,
+                group_store,
+                obs_store,
+                basin_store,
+                artifact_store,
+                hindcast_store,
+                skill_store,
+                flow_regime_store,
+                forcing_source,
+            )
+        )
+
+        assert len(results) == 1
+        artifact_id = results[0].artifact_id
+        assert artifact_id is not None
+
+        fetched = artifact_store.fetch_artifact(artifact_id)
+        assert fetched is not None
+        _, fetched_bytes = fetched
+
+        rec = artifact_store.fetch_artifact_record(artifact_id)
+        assert rec is not None
+        assert hashlib.sha256(fetched_bytes).hexdigest() == rec.sha256_hash
+
+    def test_store_layer_corrupted_bytes_raises_artifact_integrity_error(self) -> None:
+        rng = random.Random(_RNG_SEED + 4)
+        station_id = StationId(UUID(int=rng.getrandbits(128), version=4))
+        model_id = ModelId("fake_station_model")
+        model = FakeStationForecastModel()
+
+        (
+            model_store,
+            station_store,
+            group_store,
+            obs_store,
+            basin_store,
+            artifact_store,
+            hindcast_store,
+            skill_store,
+            flow_regime_store,
+            forcing_source,
+        ) = _setup_station_stores(station_id, model_id)
+
+        results = train_models_flow(
+            **_flow_kwargs(
+                model_id,
+                model,
+                model_store,
+                station_store,
+                group_store,
+                obs_store,
+                basin_store,
+                artifact_store,
+                hindcast_store,
+                skill_store,
+                flow_regime_store,
+                forcing_source,
+            )
+        )
+
+        artifact_id = results[0].artifact_id
+        assert artifact_id is not None
+
+        # Corrupt the stored bytes after the flow completes
+        artifact_store._bytes[artifact_id] = b"tampered_garbage"
+
+        with pytest.raises(ArtifactIntegrityError):
+            artifact_store.fetch_artifact(artifact_id)
+
+    def test_flow_layer_spy_store_sha256_mismatch_raises_value_error(self) -> None:
+        rng = random.Random(_RNG_SEED + 5)
+        station_id = StationId(UUID(int=rng.getrandbits(128), version=4))
+        model_id = ModelId("fake_station_model")
+        model = FakeStationForecastModel()
+
+        class _CorruptingArtifactStore:
+            def __init__(self, inner: FakeModelArtifactStore) -> None:
+                self._inner = inner
+
+            def store_artifact(self, *args: object, **kwargs: object) -> object:
+                return self._inner.store_artifact(*args, **kwargs)
+
+            def fetch_artifact(
+                self, artifact_id: ArtifactId
+            ) -> tuple[ArtifactId, bytes] | None:
+                result = self._inner.fetch_artifact(artifact_id)
+                if result is None:
+                    return None
+                aid, _ = result
+                return aid, b"silently_corrupted_bytes"
+
+            def fetch_active_artifact(self, *args: object, **kwargs: object) -> object:
+                return self._inner.fetch_active_artifact(*args, **kwargs)
+
+            def fetch_artifact_record(self, *args: object, **kwargs: object) -> object:
+                return self._inner.fetch_artifact_record(*args, **kwargs)
+
+            def fetch_artifacts_by_status(
+                self, *args: object, **kwargs: object
+            ) -> object:
+                return self._inner.fetch_artifacts_by_status(*args, **kwargs)
+
+            def transition_artifact_status(
+                self, *args: object, **kwargs: object
+            ) -> None:
+                self._inner.transition_artifact_status(*args, **kwargs)
+
+            def fetch_active_artifact_for_station(
+                self, *args: object, **kwargs: object
+            ) -> object:
+                return self._inner.fetch_active_artifact_for_station(*args, **kwargs)
+
+        inner_store = FakeModelArtifactStore()
+
+        (
+            model_store,
+            station_store,
+            group_store,
+            obs_store,
+            basin_store,
+            _,
+            hindcast_store,
+            skill_store,
+            flow_regime_store,
+            forcing_source,
+        ) = _setup_station_stores(station_id, model_id)
+
+        spy_store = _CorruptingArtifactStore(inner_store)
+
+        with pytest.raises(ValueError, match="SHA-256 mismatch"):
+            train_models_flow(
+                period_start=str(_TRAINING_START.isoformat()),
+                period_end=str(_TRAINING_END.isoformat()),
+                model_store=model_store,
+                station_store=station_store,
+                group_store=group_store,
+                obs_store=obs_store,
+                basin_store=basin_store,
+                artifact_store=spy_store,
+                hindcast_store=hindcast_store,
+                skill_store=skill_store,
+                flow_regime_store=flow_regime_store,
+                forcing_source=forcing_source,
+                models={model_id: model},
+                clock=lambda: _EPOCH,
+                rng=random.Random(0),
+            )
 
 
 class TestMultiParameterImport:

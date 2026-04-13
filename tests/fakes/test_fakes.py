@@ -13,16 +13,19 @@ from sapphire_flow.protocols.adapters import (
     WeatherForecastSource,
     WeatherReanalysisSource,
 )
+from sapphire_flow.protocols.alert_strategy import ModelAlertStrategy
 from sapphire_flow.protocols.forecast_model import (
     GroupForecastModel,
     StationForecastModel,
 )
+from sapphire_flow.protocols.notification import NotificationAdapter
 from sapphire_flow.protocols.stores import (
     AlertStore,
     BasinStore,
     ClimBaselineStore,
     FlowRegimeConfigStore,
     ForecastAdjustmentStore,
+    ForecastQualityChecker,
     ForecastStore,
     ForeignForecastStore,
     HindcastStore,
@@ -33,6 +36,7 @@ from sapphire_flow.protocols.stores import (
     ObservationStore,
     ParameterStore,
     PipelineHealthStore,
+    QualityChecker,
     RatingCurveStore,
     SkillStore,
     StationGroupStore,
@@ -41,13 +45,19 @@ from sapphire_flow.protocols.stores import (
 )
 from tests.fakes.fake_adapters import (
     FakeForeignForecastSource,
+    FakeNotificationAdapter,
     FakePipelineStatusSource,
     FakeStationDataSource,
     FakeWeatherForecastSource,
     FakeWeatherReanalysisSource,
 )
 from tests.fakes.fake_clock import FakeClock  # noqa: F401
-from tests.fakes.fake_models import FakeGroupForecastModel, FakeStationForecastModel
+from tests.fakes.fake_models import (
+    FakeGroupForecastModel,
+    FakeMultiTargetGroupForecastModel,
+    FakeMultiTargetStationForecastModel,
+    FakeStationForecastModel,
+)
 from tests.fakes.fake_stores import (
     FakeAlertStore,
     FakeBasinStore,
@@ -158,6 +168,41 @@ class TestFakeModelConformance:
     def test_group_forecast_model(self) -> None:
         assert isinstance(FakeGroupForecastModel(), GroupForecastModel)
 
+    def test_multi_target_station_forecast_model(self) -> None:
+        assert isinstance(FakeMultiTargetStationForecastModel(), StationForecastModel)
+
+    def test_multi_target_group_forecast_model(self) -> None:
+        assert isinstance(FakeMultiTargetGroupForecastModel(), GroupForecastModel)
+
+
+class TestFakeNotificationAdapterConformance:
+    def test_notification_adapter(self) -> None:
+        assert isinstance(FakeNotificationAdapter(), NotificationAdapter)
+
+
+class TestAlertStrategyConformance:
+    def test_primary_model_strategy(self) -> None:
+        from sapphire_flow.services.alert_strategy import PrimaryModelStrategy
+
+        assert isinstance(PrimaryModelStrategy(), ModelAlertStrategy)
+
+    def test_pooled_ensemble_strategy(self) -> None:
+        from sapphire_flow.services.alert_strategy import PooledEnsembleStrategy
+
+        assert isinstance(PooledEnsembleStrategy(), ModelAlertStrategy)
+
+
+class TestQualityCheckerConformance:
+    def test_stage1_quality_checker(self) -> None:
+        from sapphire_flow.services.qc import Stage1QualityChecker
+
+        assert isinstance(Stage1QualityChecker(), QualityChecker)
+
+    def test_forecast_output_quality_checker(self) -> None:
+        from sapphire_flow.services.forecast_qc import ForecastOutputQualityChecker
+
+        assert isinstance(ForecastOutputQualityChecker(), ForecastQualityChecker)
+
 
 _RNG = random.Random(99)
 _EPOCH = datetime(2025, 1, 15, 0, 0, tzinfo=UTC)
@@ -167,7 +212,7 @@ def _fake_uuid() -> UUID:
     return UUID(int=_RNG.getrandbits(128), version=4)
 
 
-def _build_hindcast(*, parameter: str = "discharge") -> HindcastForecast:
+def _build_hindcast(*, parameter: str = "discharge") -> HindcastForecast:  # noqa: F821
     from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
     from sapphire_flow.types.ensemble import ForecastEnsemble
     from sapphire_flow.types.enums import EnsembleRepresentation, ForcingType

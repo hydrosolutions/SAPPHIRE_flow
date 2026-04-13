@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from sapphire_flow.types.alert import Alert  # noqa: TC001
 from sapphire_flow.types.datetime import UtcDatetime  # noqa: TC001
+from sapphire_flow.types.enums import NotificationChannel  # noqa: TC001
 from sapphire_flow.types.forecast import ForeignForecast  # noqa: TC001
 from sapphire_flow.types.historical_forcing import RawHistoricalForcing  # noqa: TC001
 from sapphire_flow.types.ids import StationId  # noqa: TC001
@@ -71,6 +73,29 @@ class FakePipelineStatusSource:
         since: UtcDatetime,
     ) -> list[FlowRunStatus]:
         return [r for r in self._runs if r.flow_name in flow_names]
+
+
+class FakeNotificationAdapter:
+    def __init__(self) -> None:
+        self.sent: list[dict[str, object]] = []
+
+    def send(
+        self,
+        channel: NotificationChannel,
+        recipients: list[str],
+        subject: str,
+        body: str,
+        alert: Alert | None = None,
+    ) -> None:
+        self.sent.append(
+            {
+                "channel": channel,
+                "recipients": recipients,
+                "subject": subject,
+                "body": body,
+                "alert": alert,
+            }
+        )
 
 
 class FakeWeatherReanalysisSource:

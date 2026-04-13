@@ -306,3 +306,78 @@ class TestPooledEnsembleStrategy:
             PooledEnsembleStrategy().evaluate(
                 _STATION, "discharge", model_ensembles, [], [], {}
             )
+
+
+def _make_spread_quantiles_ensemble(
+    station_id: StationId = _STATION,
+    model_id: ModelId | None = None,
+    n_steps: int = 1,
+) -> ForecastEnsemble:
+    """Build a QUANTILES ensemble with realistic Swiss Aare discharge spread."""
+    # Quantile levels and corresponding values (m3/s) spanning 50–400 range.
+    # q=0.50 → 200 m3/s is the median.
+    quantile_levels = [0.02, 0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95, 0.98]
+    values_at_q = [50.0, 80.0, 110.0, 160.0, 200.0, 260.0, 320.0, 360.0, 400.0]
+    rows = [
+        {
+            "valid_time": ensure_utc(
+                datetime.fromtimestamp(_EPOCH.timestamp() + (s + 1) * 3600, tz=UTC)
+            ),
+            "quantile": q,
+            "value": v,
+        }
+        for s in range(n_steps)
+        for q, v in zip(quantile_levels, values_at_q, strict=True)
+    ]
+    df = pl.DataFrame(rows).with_columns(
+        pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
+    )
+    return ForecastEnsemble.from_quantiles(
+        station_id=station_id,
+        issued_at=_EPOCH,
+        parameter="discharge",
+        units="m3/s",
+        time_step=_TIME_STEP,
+        values=df,
+        model_id=model_id,
+    )
+
+
+class TestComputeExceedanceQuantiles:
+    def test_threshold_at_median_returns_approx_half(self) -> None:
+        from sapphire_flow.services.alert_strategy import _compute_exceedance
+
+        mid = ModelId("model_q")
+        ens = _make_spread_quantiles_ensemble(model_id=mid, n_steps=1)
+        # Threshold exactly at median value (200 m3/s → q=0.50) → P(X > 200) = 0.50
+        result = _compute_exceedance(ens, threshold_value=200.0)
+        assert result == pytest.approx(0.50, abs=0.01)
+
+    def test_threshold_below_min_quantile_returns_near_one(self) -> None:
+        from sapphire_flow.services.alert_strategy import _compute_exceedance
+
+        mid = ModelId("model_q")
+        ens = _make_spread_quantiles_ensemble(model_id=mid, n_steps=1)
+        # Threshold below lowest quantile value (50 m3/s) → exceedance ≈ 1 - q[0] = 0.98
+        result = _compute_exceedance(ens, threshold_value=40.0)
+        assert result == pytest.approx(1.0 - 0.02)
+
+    def test_threshold_above_max_quantile_returns_near_zero(self) -> None:
+        from sapphire_flow.services.alert_strategy import _compute_exceedance
+
+        mid = ModelId("model_q")
+        ens = _make_spread_quantiles_ensemble(model_id=mid, n_steps=1)
+        # Threshold above highest quantile (400 m3/s) → exceedance ≈ 1 - q[-1] = 0.02
+        result = _compute_exceedance(ens, threshold_value=450.0)
+        assert result == pytest.approx(1.0 - 0.98)
+
+    def test_multi_step_returns_max_across_timesteps(self) -> None:
+        from sapphire_flow.services.alert_strategy import _compute_exceedance
+
+        # n_steps=1 and n_steps=3 produce same fixed spread → max is the same value
+        mid = ModelId("model_q")
+        ens_1 = _make_spread_quantiles_ensemble(model_id=mid, n_steps=1)
+        ens_3 = _make_spread_quantiles_ensemble(model_id=mid, n_steps=3)
+        r1 = _compute_exceedance(ens_1, threshold_value=200.0)
+        r3 = _compute_exceedance(ens_3, threshold_value=200.0)
+        assert r1 == pytest.approx(r3, abs=0.01)
