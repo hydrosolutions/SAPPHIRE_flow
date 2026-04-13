@@ -8,11 +8,13 @@
 
 ## Overview
 
-SAPPHIRE Flow processes data through approximately 13 data flows organised in three categories:
+SAPPHIRE Flow processes data through 13 data flows organised in three categories:
 
-- **Operational** — run continuously on schedules (forecast cycle, observation ingest, pipeline watchdog)
-- **Initialisation** — run on-demand to set up deployments, stations, and models
-- **Maintenance** — run periodically to keep archives, models, and skill scores current
+- **Operational** (Flows 1–4) — run continuously on schedules (forecast cycle, observation ingest, forecast review, pipeline watchdog)
+- **Initialisation** (Flows 0, 5, 5w, 6, 7, 8, 13) — run on-demand to set up deployments, stations, and models
+- **Maintenance** (Flows 9, 10, 11, 12) — run periodically to keep archives, models, and skill scores current
+
+**Flow numbering.** Each data flow in the SAPPHIRE system has a permanent number that is used consistently across all project documents, code, and configuration. The numbers are not sequential because the flows were designed in the order they were needed during development — for example, Flow 0 (deployment onboarding) was designed after Flows 1–5 were already numbered. Combined references like "Flow 6/9" or "Flow 8/10" indicate flows that share the same implementation but differ in scope: Flow 6 is initial model training, Flow 9 is retraining; Flow 8 is skill computation for one model, Flow 10 is system-wide recomputation. Flow 5w is a simplified variant of Flow 5 for weather stations.
 
 **System boundary.** SAPPHIRE ingests weather and station data, runs forecast models, stores results, and serves them via a REST API. Dashboard presentation, threshold-based alerting, and bulletin distribution are DHM's responsibility — DHM systems consume the REST API. Pipeline health monitoring is inside the SAPPHIRE boundary and reports to IT/operations staff.
 
@@ -21,7 +23,7 @@ SAPPHIRE Flow processes data through approximately 13 data flows organised in th
 ```mermaid
 graph LR
     subgraph External Sources
-        GW["SAPPHIRE Data Gateway<br/>(ECMWF IFS)"]
+        GW["SAPPHIRE Data Gateway<br/>(ECMWF IFS + SnowMapper)"]
         DHM["DHM Stations"]
     end
 
@@ -46,6 +48,25 @@ graph LR
     API --> BU
     PW --> ITOPS["IT / Operations"]
 ```
+
+---
+
+## Forecast Specification
+
+| Parameter | Value |
+|-----------|-------|
+| **Primary NWP source** | ECMWF IFS ENS (51 members), delivered every 6 hours via the SAPPHIRE Data Gateway (~7–8 hour delay for open data) |
+| **Snow forcing** | SnowMapper SWE and snowmelt forecasts, delivered via the same Data Gateway |
+| **Sub-daily forecast horizon** | Up to 3 days, hourly or sub-hourly time steps |
+| **Daily forecast horizon** | Up to 10 days, daily time steps |
+| **Forecast cycles per day** | 4 (following ECMWF IFS 00/06/12/18 UTC cycles) |
+| **Forecast target variable** | Water level (primary). Discharge via rating curve where available. |
+
+**Model strategy.** Whether sub-daily and daily forecasts are produced by the same model or separate models is an open research question. Some deep learning architectures can forecast across multiple lead times and time steps in a single pass; alternatively, separate models may be trained for sub-daily (hourly, 3-day) and daily (10-day) horizons. The architecture supports both approaches — each station can have multiple models assigned at different time steps, with independent fallback chains.
+
+**Multi-parameter forecasting.** The system supports forecasting multiple parameters per station (e.g. water level and discharge simultaneously). This is experimental — multi-parameter models will be evaluated alongside single-parameter models and deployed only if they demonstrate competitive skill.
+
+**Additional NWP sources.** The architecture supports multiple NWP sources per station. If alternative weather forecast products (e.g. WRF) become operationally mature, they can be added without changing the pipeline — but ML models trained on ECMWF data must be retrained on the new source.
 
 ---
 
@@ -74,7 +95,7 @@ Step 1.9 is conditional — pass-through until sufficient forecast archive exist
 
 #### Notes
 
-**Data Gateway.** ECMWF IFS data arrives pre-extracted at basin level from the SAPPHIRE Data Gateway — gridded archiving and spatial extraction are handled upstream by the Gateway. In deployments without a Data Gateway (e.g. the Swiss deployment using ICON-CH2-EPS), three additional steps run between 1.1 and 1.5: archive the raw NWP grid, extract spatial averages per basin, and archive the extractions.
+**Data Gateway.** ECMWF IFS and SnowMapper data arrive pre-extracted at basin level from the SAPPHIRE Data Gateway — gridded archiving and spatial extraction are handled upstream by the Gateway. SnowMapper forecasts (SWE, snowmelt) are ingested through the same mechanism as NWP weather data and treated as additional forcing inputs. In deployments without a Data Gateway (e.g. the Swiss deployment using ICON-CH2-EPS), three additional steps run between 1.1 and 1.5: archive the raw NWP grid, extract spatial averages per basin, and archive the extractions.
 
 **NWP lateness fallback.** When an expected NWP delivery is late:
 1. Wait up to 3 hours (configurable) with exponential backoff.
@@ -165,6 +186,8 @@ Raw (model output) ──→ Reviewed ──→ Published
 **Open question for DHM**: Can DHM's existing or planned dashboard support the forecast approval and publication step (i.e. call the SAPPHIRE API to change forecast status)? See `hydrology-operations.md` §5 for the full forecast workflow description.
 
 **Adjustment traceability.** Every manual adjustment is recorded: the original model value, the adjusted value, the type of adjustment (shift, scale, cap, floor), the forecaster who made it, and the reason. The original raw forecast is never overwritten — adjustments are stored as a separate layer.
+
+**Bulletin production.** SAPPHIRE's responsibility ends at publication. Producing and distributing forecast bulletins from published data is DHM's responsibility — DHM's systems query the REST API for published forecasts and format them into bulletins for distribution.
 
 **Alert timing.** Threshold checks run on raw forecasts immediately after the forecast cycle (Flow 1), so that time-critical alerts are not delayed by the review process. Published forecasts carry the same alert status — publication does not re-trigger threshold checks.
 
@@ -276,6 +299,7 @@ Raw (model output) ──→ Reviewed ──→ Published
 - Baseline artifacts (5.8) and flow regime boundaries (5.9) are prerequisites for skill computation in Flows 8 and 10.
 - The model type must be registered via Flow 13 before it can be assigned to stations in step 5.10.
 - Step 5.12 requires at least one model artifact with `active` status. The model administrator can promote to `operational` with optional items (alert thresholds, rating curve) missing — the system warns but does not block.
+- **Flood thresholds** are loaded during station onboarding as part of the station metadata (step 5.1). Thresholds can be updated after onboarding via the REST API (`PUT /api/v1/stations/{id}/thresholds`). Only year-round thresholds are supported initially; seasonal thresholds may be added at a later stage if required.
 - For **calculated stations** (v1): step 5.C3 derives observations as a weighted sum of component stations (Q_virtual = Σ(wᵢ × Qᵢ)); steps 5.4–5.7 are skipped.
 - All data-writing steps are idempotent — re-running after failure resumes without duplicating data.
 
@@ -550,7 +574,7 @@ All data produced by the SAPPHIRE system is served through a REST API at `/api/v
 
 | System | Direction | Data exchanged | Used by |
 |--------|-----------|---------------|---------|
-| SAPPHIRE Data Gateway | SAPPHIRE pulls | ERA5-Land reanalysis (historical), ECMWF IFS NWP (operational, pre-extracted per basin) | Flow 0, Flow 1 |
+| SAPPHIRE Data Gateway | SAPPHIRE pulls | ERA5-Land reanalysis (historical), ECMWF IFS NWP (operational), SnowMapper SWE and snowmelt forecasts — all pre-extracted per basin | Flow 0, Flow 1 |
 | DHM stations | SAPPHIRE pulls | Real-time water level observations | Flow 2 |
 | Global DEM | One-time download | Elevation data for basin delineation and band geometry generation | Flow 0 |
 | Global/national catchment attributes | One-time download or import | Catchment characteristics (area, slope, soil, climate indices) — exact sources TBD | Flow 0 |
