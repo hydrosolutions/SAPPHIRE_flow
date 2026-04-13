@@ -47,14 +47,19 @@
   </div>
   <div>
     <label for="start-date"><strong>From</strong></label>
-    <input type="date" id="start-date" value="2019-01-01" onchange="loadCharts()">
+    <input type="date" id="start-date" onchange="loadCharts()" oninput="loadCharts()">
   </div>
   <div>
     <label for="end-date"><strong>To</strong></label>
-    <input type="date" id="end-date" value="2020-12-31" onchange="loadCharts()">
+    <input type="date" id="end-date" onchange="loadCharts()" oninput="loadCharts()">
+  </div>
+  <div>
+    <button type="button" onclick="loadCharts()" style="margin-top:1.5rem;">Reload</button>
   </div>
 </div>
 
+<div id="chart-status" style="font-size:0.85rem;color:#555;background:#f5f5f5;padding:4px 8px;border-radius:4px;margin-bottom:0.5rem;min-height:1.4em;"></div>
+<div id="chart-error" style="color:red;font-family:monospace;font-size:0.85rem;"></div>
 <h3>Observations</h3>
 <div id="obs-chart" style="height:350px;"></div>
 
@@ -70,18 +75,83 @@
 <script>
 const stationId = "{{ station.id }}";
 
-function loadCharts() {
-  const param = document.getElementById("param-select").value;
-  const start = document.getElementById("start-date").value + "T00:00:00";
-  const end = document.getElementById("end-date").value + "T23:59:59";
-  const label = document.getElementById("start-date").value + " to " + document.getElementById("end-date").value;
+// Immediate script-alive marker — visible without any button click
+(function () {
+  const el = document.getElementById("chart-status");
+  if (el) el.textContent = "JS alive — stationId=" + stationId;
+})();
 
-  // Observations — show all QC statuses as visible traces
-  fetch(`/api/v1/stations/${stationId}/observations.json?parameter=${param}&start=${start}&end=${end}`)
-    .then(r => r.json())
+// Verify Plotly loaded
+(function () {
+  const errDiv = document.getElementById("chart-error");
+  if (!errDiv) return;
+  if (typeof Plotly === "undefined") {
+    errDiv.textContent = "ERROR: Plotly failed to load from CDN. Charts will not work.";
+  }
+})();
+
+function toDateInput(d) {
+  return d.toISOString().slice(0, 10);
+}
+
+// Default: last 30 days → today
+(function () {
+  const s = document.getElementById("start-date");
+  const e = document.getElementById("end-date");
+  if (!s || !e) return;
+  const today = new Date();
+  const monthAgo = new Date(today);
+  monthAgo.setDate(today.getDate() - 30);
+  s.value = toDateInput(monthAgo);
+  e.value = toDateInput(today);
+})();
+
+function plot(divId, traces, layout) {
+  if (typeof Plotly === "undefined") return;
+  Plotly.newPlot(divId, traces, Object.assign({margin: {t: 40, r: 20}}, layout));
+}
+
+let _loadSeq = 0;
+
+function loadCharts() {
+  const errDiv = document.getElementById("chart-error");
+  const statusDiv = document.getElementById("chart-status");
+  const seq = ++_loadSeq;
+  if (statusDiv) statusDiv.textContent = "loadCharts() called #" + seq;
+
+  const paramEl = document.getElementById("param-select");
+  const startEl = document.getElementById("start-date");
+  const endEl = document.getElementById("end-date");
+
+  if (!paramEl || !startEl || !endEl) {
+    if (statusDiv) statusDiv.textContent = "ERROR: form elements missing";
+    return;
+  }
+
+  const param = paramEl.value;
+  const startVal = startEl.value;
+  const endVal = endEl.value;
+
+  if (!startVal || !endVal) {
+    if (statusDiv) statusDiv.textContent = "Waiting for dates (start=" + startVal + " end=" + endVal + ")";
+    return;
+  }
+
+  const start = startVal + "T00:00:00";
+  const end = endVal + "T23:59:59";
+  const label = startVal + " to " + endVal;
+
+  if (errDiv) errDiv.textContent = "";
+  if (statusDiv) statusDiv.textContent = "Loading #" + seq + "…";
+
+  // Observations
+  fetch(`/api/v1/stations/${stationId}/observations.json?parameter=${param}&start=${start}&end=${end}`, {cache: "no-store"})
+    .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
     .then(data => {
+      if (_loadSeq !== seq) return; // stale response
+      statusDiv.textContent = "#" + seq + " — " + label + " — " + data.timestamps.length + " observation(s)";
       if (data.timestamps.length === 0) {
-        Plotly.newPlot("obs-chart", [], {title: "No observations for " + param});
+        plot("obs-chart", [], {title: {text: "No observations for " + param + " in range"}});
         return;
       }
       const groups = {};
@@ -92,56 +162,56 @@ function loadCharts() {
         groups[q].y.push(data.values[i]);
       }
       const styles = {
-        "qc_passed": {mode: "lines", line: {color: "#2196F3", width: 1.5}},
-        "raw":       {mode: "lines", line: {color: "#333", width: 1}},
-        "qc_suspect":{mode: "lines", line: {color: "#FF9800", width: 1}},
-        "qc_failed": {mode: "lines", line: {color: "#F44336", width: 1, dash: "dot"}},
+        "qc_passed": {mode: "lines+markers", line: {color: "#2196F3", width: 1.5}, marker: {size: 4}},
+        "raw":       {mode: "lines+markers", line: {color: "#333", width: 1}, marker: {size: 4}},
+        "qc_suspect":{mode: "lines+markers", line: {color: "#FF9800", width: 1}, marker: {size: 4}},
+        "qc_failed": {mode: "markers", marker: {color: "#F44336", size: 6}},
       };
       const traces = [];
-      // Show raw and passed first (lines), then suspect/failed (markers) on top
       for (const q of ["raw", "qc_passed", "qc_suspect", "qc_failed", "unknown"]) {
         if (!groups[q]) continue;
-        const style = styles[q] || {mode: "lines", line: {color: "#999"}};
-        traces.push({x: groups[q].x, y: groups[q].y, name: q, ...style});
+        const style = styles[q] || {mode: "lines+markers", marker: {size: 4, color: "#999"}};
+        traces.push({type: "scatter", x: groups[q].x, y: groups[q].y, name: q, ...style});
       }
-      Plotly.newPlot("obs-chart", traces, {
-        title: param + " — " + label,
-        xaxis: {title: "Date"},
-        yaxis: {title: param},
-        margin: {t: 40, r: 20},
+      plot("obs-chart", traces, {
+        title: {text: param + " — " + label},
+        xaxis: {title: {text: "Date"}},
+        yaxis: {title: {text: param}},
       });
-    });
+    })
+    .catch(e => { errDiv.textContent = "Observations error: " + e; statusDiv.textContent = ""; });
 
   // Baselines
-  fetch(`/api/v1/stations/${stationId}/baselines.json?parameter=${param}`)
-    .then(r => r.json())
+  fetch(`/api/v1/stations/${stationId}/baselines.json?parameter=${param}`, {cache: "no-store"})
+    .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
     .then(data => {
       if (data.day_of_year.length === 0) {
-        Plotly.newPlot("baseline-chart", [], {title: "No baseline data"});
+        plot("baseline-chart", [], {title: {text: "No baseline data for " + param}});
         return;
       }
       const upper = data.rolling_mean.map((m, i) => m + 2 * data.rolling_std[i]);
       const lower = data.rolling_mean.map((m, i) => m - 2 * data.rolling_std[i]);
-      Plotly.newPlot("baseline-chart", [
-        {x: data.day_of_year, y: upper, mode: "lines", line: {width: 0}, showlegend: false},
-        {x: data.day_of_year, y: lower, mode: "lines", line: {width: 0}, fill: "tonexty", fillcolor: "rgba(33,150,243,0.15)", name: "\u00b12\u03c3"},
-        {x: data.day_of_year, y: data.rolling_mean, mode: "lines", name: "Rolling mean", line: {color: "#2196F3"}},
+      plot("baseline-chart", [
+        {type: "scatter", x: data.day_of_year, y: upper, mode: "lines", line: {width: 0}, showlegend: false},
+        {type: "scatter", x: data.day_of_year, y: lower, mode: "lines", line: {width: 0}, fill: "tonexty", fillcolor: "rgba(33,150,243,0.15)", name: "\u00b12\u03c3"},
+        {type: "scatter", x: data.day_of_year, y: data.rolling_mean, mode: "lines", name: "Rolling mean", line: {color: "#2196F3"}},
       ], {
-        title: "Climatological baseline — " + param,
-        xaxis: {title: "Day of year", range: [1, 366]},
-        yaxis: {title: param},
-        margin: {t: 40, r: 20},
+        title: {text: "Climatological baseline — " + param},
+        xaxis: {title: {text: "Day of year"}, range: [1, 366]},
+        yaxis: {title: {text: param}},
       });
-    });
+    })
+    .catch(e => { errDiv.textContent = "Baselines error: " + e; });
 
   // Forcing
-  fetch(`/api/v1/stations/${stationId}/forcing.json?start=${start}&end=${end}`)
-    .then(r => r.json())
+  fetch(`/api/v1/stations/${stationId}/forcing.json?start=${start}&end=${end}`, {cache: "no-store"})
+    .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
     .then(data => {
       const traces = [];
       const colors = {"precipitation": "#1976D2", "temperature": "#E53935", "snow_depth": "#7B1FA2"};
       for (const [param_name, series] of Object.entries(data.series)) {
         traces.push({
+          type: "scatter",
           x: series.timestamps,
           y: series.values,
           mode: "lines",
@@ -150,15 +220,15 @@ function loadCharts() {
         });
       }
       if (traces.length === 0) {
-        Plotly.newPlot("forcing-chart", [], {title: "No forcing data for this range"});
+        plot("forcing-chart", [], {title: {text: "No forcing data for this range"}});
         return;
       }
-      Plotly.newPlot("forcing-chart", traces, {
-        title: "Forcing — " + label,
-        xaxis: {title: "Date"},
-        margin: {t: 40, r: 20},
+      plot("forcing-chart", traces, {
+        title: {text: "Forcing — " + label},
+        xaxis: {title: {text: "Date"}},
       });
-    });
+    })
+    .catch(e => { errDiv.textContent = "Forcing error: " + e; });
 }
 
 // Load on page ready
