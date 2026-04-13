@@ -1,6 +1,6 @@
 # Plan 028 — Test Coverage Gap Remediation
 
-**Status**: READY  
+**Status**: DONE  
 **Phase**: Cross-cutting (test infrastructure)
 
 ## Problem
