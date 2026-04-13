@@ -294,6 +294,23 @@ class FakeHindcastStore:
             and (parameter is None or h.ensemble.parameter == parameter)
         ]
 
+    def fetch_hindcasts_by_station(
+        self,
+        station_id: StationId,
+        parameter: str,
+        period_start: UtcDatetime,
+        period_end: UtcDatetime,
+    ) -> dict[ModelId, list[HindcastForecast]]:
+        result: dict[ModelId, list[HindcastForecast]] = {}
+        for h in self._hindcasts.values():
+            if (
+                h.station_id == station_id
+                and h.ensemble.parameter == parameter
+                and period_start <= h.hindcast_step < period_end
+            ):
+                result.setdefault(h.model_id, []).append(h)
+        return result
+
 
 class FakeWeatherForecastStore:
     def __init__(self) -> None:

@@ -14,7 +14,13 @@ from sapphire_flow.services.operational_inputs import (
 )
 from sapphire_flow.types.enums import ForecastStatus, QcStatus
 from sapphire_flow.types.forecast import OperationalForecast
-from sapphire_flow.types.ids import ArtifactId, ForecastId, ModelId, StationId
+from sapphire_flow.types.ids import (
+    FALLBACK_PRIORITY_THRESHOLD,
+    ArtifactId,
+    ForecastId,
+    ModelId,
+    StationId,
+)
 
 if TYPE_CHECKING:
     from sapphire_flow.config.deployment import DeploymentConfig
@@ -45,6 +51,23 @@ class StationForecastResult:
     ensembles: dict[str, ForecastEnsemble]
 
 
+@dataclass(frozen=True, kw_only=True, slots=True)
+class MultiModelForecastResult:
+    station_id: StationId
+    results: dict[ModelId, StationForecastResult]
+    priorities: dict[ModelId, int]
+    primary_model_id: ModelId | None
+    failed_models: dict[ModelId, str]
+
+    @property
+    def combinable_results(self) -> dict[ModelId, StationForecastResult]:
+        return {
+            mid: r
+            for mid, r in self.results.items()
+            if self.priorities.get(mid, 0) < FALLBACK_PRIORITY_THRESHOLD
+        }
+
+
 def _worst_qc_status(flags: list) -> QcStatus:
     if not flags:
         return QcStatus.QC_PASSED
@@ -56,6 +79,189 @@ def _worst_qc_status(flags: list) -> QcStatus:
         QcStatus.MISSING: 0,
     }
     return max(flags, key=lambda f: priority.get(f.status, 0)).status
+
+
+def _run_single_model(
+    station_id: StationId,
+    assignment: ModelAssignment,
+    inputs: StationModelInputs,
+    input_metadata: OperationalInputMetadata,
+    models: dict[ModelId, ForecastModel],
+    artifact_store: ModelArtifactStore,
+    qc_checker: ForecastOutputQualityChecker,
+    qc_rules: ForecastQcRuleSet,
+    qc_overrides: list[StationForecastQcOverride],
+    baselines: list[ClimBaseline],
+    nwp_cycle_reference_time: UtcDatetime,
+    nwp_cycle_source: NwpCycleSource,
+    config: DeploymentConfig,
+    clock: Callable[[], UtcDatetime],
+    id_gen: Callable[[], UUID],
+    rng: random.Random,
+) -> StationForecastResult | str:
+    model = models.get(assignment.model_id)
+    if model is None:
+        log.warning(
+            "run_station_forecast.model_not_found",
+            station_id=str(station_id),
+            model_id=str(assignment.model_id),
+        )
+        return f"model {assignment.model_id} not found in registry"
+
+    artifact_result = artifact_store.fetch_active_artifact_for_station(
+        station_id, assignment.model_id
+    )
+    if artifact_result is None:
+        log.warning(
+            "run_station_forecast.no_active_artifact",
+            station_id=str(station_id),
+            model_id=str(assignment.model_id),
+        )
+        return f"no active artifact for model {assignment.model_id}"
+
+    artifact_id, artifact_bytes = artifact_result
+
+    try:
+        ensembles, new_state = model.predict(  # type: ignore[union-attr]
+            artifact_bytes,
+            inputs,
+            rng,
+            prior_state=input_metadata.prior_state,
+        )
+    except Exception as exc:
+        log.warning(
+            "run_station_forecast.predict_failed",
+            station_id=str(station_id),
+            model_id=str(assignment.model_id),
+            error=str(exc),
+        )
+        return f"predict failed: {exc}"
+
+    all_flags: dict[str, list] = {}
+    for param, ensemble in ensembles.items():
+        flags = qc_checker.check(ensemble, qc_rules, qc_overrides, baselines)
+        all_flags[param] = flags
+        worst = _worst_qc_status(flags)
+        if worst == QcStatus.QC_FAILED:
+            log.warning(
+                "run_station_forecast.qc_failed",
+                station_id=str(station_id),
+                model_id=str(assignment.model_id),
+                parameter=param,
+            )
+            return f"QC failed for parameter {param}"
+
+    iq_config = config.input_quality
+    input_quality, input_quality_flags = assess_input_quality(
+        observation_staleness_hours=input_metadata.observation_staleness_hours,
+        warm_up_source=input_metadata.warm_up_source,  # type: ignore[arg-type]
+        warm_up_state_age_hours=input_metadata.warm_up_state_age_hours,
+        nwp_cycle_source=nwp_cycle_source,
+        nwp_age_hours=input_metadata.nwp_age_hours,
+        obs_partial_hours=config.observation_staleness_warning_hours,
+        config=iq_config,
+        warmup_partial_hours=iq_config.warmup_snapshot_age_partial_hours,
+        warmup_degraded_hours=iq_config.warmup_snapshot_age_degraded_hours,
+    )
+
+    forecasts: list[OperationalForecast] = []
+    now = clock()
+    for param, ensemble in ensembles.items():
+        flags = all_flags[param]
+        qc_status = _worst_qc_status(flags)
+        forecast = OperationalForecast(
+            id=ForecastId(id_gen()),
+            station_id=station_id,
+            model_id=assignment.model_id,
+            model_artifact_id=artifact_id,
+            issued_at=inputs.issue_time,
+            nwp_cycle_reference_time=nwp_cycle_reference_time,
+            nwp_cycle_source=nwp_cycle_source,
+            representation=ensemble.representation,
+            status=ForecastStatus.RAW,
+            version=1,
+            warm_up_source=input_metadata.warm_up_source,  # type: ignore[arg-type]
+            warm_up_state_age_hours=input_metadata.warm_up_state_age_hours,
+            observation_staleness_hours=input_metadata.observation_staleness_hours,
+            ensemble=ensemble,
+            created_at=now,
+            updated_at=now,
+            qc_status=qc_status,
+            qc_flags=tuple(flags),
+            input_quality=input_quality,
+            input_quality_flags=input_quality_flags,
+        )
+        forecasts.append(forecast)
+
+    return StationForecastResult(
+        station_id=station_id,
+        model_id=assignment.model_id,
+        artifact_id=artifact_id,
+        forecasts=forecasts,
+        new_state=new_state,
+        ensembles=dict(ensembles),
+    )
+
+
+def run_all_station_forecasts(
+    station_id: StationId,
+    inputs: StationModelInputs,
+    input_metadata: OperationalInputMetadata,
+    assignments: list[ModelAssignment],
+    models: dict[ModelId, ForecastModel],
+    artifact_store: ModelArtifactStore,
+    qc_checker: ForecastOutputQualityChecker,
+    qc_rules: ForecastQcRuleSet,
+    qc_overrides: list[StationForecastQcOverride],
+    baselines: list[ClimBaseline],
+    nwp_cycle_reference_time: UtcDatetime,
+    nwp_cycle_source: NwpCycleSource,
+    config: DeploymentConfig,
+    clock: Callable[[], UtcDatetime],
+    id_gen: Callable[[], UUID],
+    rng: random.Random,
+) -> MultiModelForecastResult:
+    sorted_assignments = sorted(assignments, key=lambda a: a.priority)
+
+    results: dict[ModelId, StationForecastResult] = {}
+    priorities: dict[ModelId, int] = {}
+    failed_models: dict[ModelId, str] = {}
+    primary_model_id: ModelId | None = None
+
+    for assignment in sorted_assignments:
+        priorities[assignment.model_id] = assignment.priority
+        outcome = _run_single_model(
+            station_id=station_id,
+            assignment=assignment,
+            inputs=inputs,
+            input_metadata=input_metadata,
+            models=models,
+            artifact_store=artifact_store,
+            qc_checker=qc_checker,
+            qc_rules=qc_rules,
+            qc_overrides=qc_overrides,
+            baselines=baselines,
+            nwp_cycle_reference_time=nwp_cycle_reference_time,
+            nwp_cycle_source=nwp_cycle_source,
+            config=config,
+            clock=clock,
+            id_gen=id_gen,
+            rng=rng,
+        )
+        if isinstance(outcome, StationForecastResult):
+            results[assignment.model_id] = outcome
+            if primary_model_id is None:
+                primary_model_id = assignment.model_id
+        else:
+            failed_models[assignment.model_id] = outcome
+
+    return MultiModelForecastResult(
+        station_id=station_id,
+        results=results,
+        priorities=priorities,
+        primary_model_id=primary_model_id,
+        failed_models=failed_models,
+    )
 
 
 def run_station_forecast(
@@ -76,119 +282,27 @@ def run_station_forecast(
     id_gen: Callable[[], UUID],
     rng: random.Random,
 ) -> StationForecastResult | None:
-    sorted_assignments = sorted(assignments, key=lambda a: a.priority)
-
-    for assignment in sorted_assignments:
-        model = models.get(assignment.model_id)
-        if model is None:
-            log.warning(
-                "run_station_forecast.model_not_found",
-                station_id=str(station_id),
-                model_id=str(assignment.model_id),
-            )
-            continue
-
-        artifact_result = artifact_store.fetch_active_artifact_for_station(
-            station_id, assignment.model_id
-        )
-        if artifact_result is None:
-            log.warning(
-                "run_station_forecast.no_active_artifact",
-                station_id=str(station_id),
-                model_id=str(assignment.model_id),
-            )
-            continue
-
-        artifact_id, artifact_bytes = artifact_result
-
-        try:
-            ensembles, new_state = model.predict(  # type: ignore[union-attr]
-                artifact_bytes,
-                inputs,
-                rng,
-                prior_state=input_metadata.prior_state,
-            )
-        except Exception as exc:
-            log.warning(
-                "run_station_forecast.predict_failed",
-                station_id=str(station_id),
-                model_id=str(assignment.model_id),
-                error=str(exc),
-            )
-            continue
-
-        all_flags: dict[str, list] = {}
-        qc_failed = False
-        for param, ensemble in ensembles.items():
-            flags = qc_checker.check(ensemble, qc_rules, qc_overrides, baselines)
-            all_flags[param] = flags
-            worst = _worst_qc_status(flags)
-            if worst == QcStatus.QC_FAILED:
-                log.warning(
-                    "run_station_forecast.qc_failed",
-                    station_id=str(station_id),
-                    model_id=str(assignment.model_id),
-                    parameter=param,
-                )
-                qc_failed = True
-                break
-
-        if qc_failed:
-            continue
-
-        iq_config = config.input_quality
-        input_quality, input_quality_flags = assess_input_quality(
-            observation_staleness_hours=input_metadata.observation_staleness_hours,
-            warm_up_source=input_metadata.warm_up_source,  # type: ignore[arg-type]
-            warm_up_state_age_hours=input_metadata.warm_up_state_age_hours,
-            nwp_cycle_source=nwp_cycle_source,
-            nwp_age_hours=input_metadata.nwp_age_hours,
-            obs_partial_hours=config.observation_staleness_warning_hours,
-            config=iq_config,
-            warmup_partial_hours=iq_config.warmup_snapshot_age_partial_hours,
-            warmup_degraded_hours=iq_config.warmup_snapshot_age_degraded_hours,
-        )
-
-        forecasts: list[OperationalForecast] = []
-        now = clock()
-        for param, ensemble in ensembles.items():
-            flags = all_flags[param]
-            qc_status = _worst_qc_status(flags)
-            forecast = OperationalForecast(
-                id=ForecastId(id_gen()),
-                station_id=station_id,
-                model_id=assignment.model_id,
-                model_artifact_id=artifact_id,
-                issued_at=inputs.issue_time,
-                nwp_cycle_reference_time=nwp_cycle_reference_time,
-                nwp_cycle_source=nwp_cycle_source,
-                representation=ensemble.representation,
-                status=ForecastStatus.RAW,
-                version=1,
-                warm_up_source=input_metadata.warm_up_source,  # type: ignore[arg-type]
-                warm_up_state_age_hours=input_metadata.warm_up_state_age_hours,
-                observation_staleness_hours=input_metadata.observation_staleness_hours,
-                ensemble=ensemble,
-                created_at=now,
-                updated_at=now,
-                qc_status=qc_status,
-                qc_flags=tuple(flags),
-                input_quality=input_quality,
-                input_quality_flags=input_quality_flags,
-            )
-            forecasts.append(forecast)
-
-        return StationForecastResult(
-            station_id=station_id,
-            model_id=assignment.model_id,
-            artifact_id=artifact_id,
-            forecasts=forecasts,
-            new_state=new_state,
-            ensembles=dict(ensembles),
-        )
-
-    log.warning(
-        "run_station_forecast.all_models_failed",
-        station_id=str(station_id),
+    multi = run_all_station_forecasts(
+        station_id=station_id,
+        inputs=inputs,
+        input_metadata=input_metadata,
+        assignments=assignments,
+        models=models,
+        artifact_store=artifact_store,
+        qc_checker=qc_checker,
+        qc_rules=qc_rules,
+        qc_overrides=qc_overrides,
+        baselines=baselines,
+        nwp_cycle_reference_time=nwp_cycle_reference_time,
+        nwp_cycle_source=nwp_cycle_source,
+        config=config,
+        clock=clock,
+        id_gen=id_gen,
+        rng=rng,
     )
-    return None
+    if multi.primary_model_id is None:
+        log.warning(
+            "run_station_forecast.all_models_failed", station_id=str(station_id)
+        )
+        return None
+    return multi.results[multi.primary_model_id]

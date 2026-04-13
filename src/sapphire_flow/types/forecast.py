@@ -35,7 +35,7 @@ class OperationalForecast:
     id: ForecastId
     station_id: StationId
     model_id: ModelId
-    model_artifact_id: ArtifactId
+    model_artifact_id: ArtifactId | None
     issued_at: UtcDatetime
     nwp_cycle_reference_time: UtcDatetime
     nwp_cycle_source: NwpCycleSource
@@ -52,6 +52,8 @@ class OperationalForecast:
     qc_flags: tuple[QcFlag, ...] = ()
     input_quality: InputQualityLevel = InputQualityLevel.FULL
     input_quality_flags: tuple[InputQualityFlag, ...] = ()
+    combination_strategy: str | None = None
+    source_model_ids: list[ModelId] | None = None
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

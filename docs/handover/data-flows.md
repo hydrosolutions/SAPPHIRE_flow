@@ -106,7 +106,7 @@ Every stored forecast record carries the NWP cycle reference time used as forcin
 
 **Multi-model fallback (error recovery).** Each station can have multiple forecast models assigned in priority order. If a model fails at runtime (step 1.8) or its output fails QC (step 1.10), the flow automatically tries the next model by priority. The fallback model's identifier is recorded on the stored forecast for traceability. Two sentinel fallback models serve as guaranteed last-resort fallbacks: `ClimatologyFallbackModel` (priority 90) and `PersistenceFallbackModel` (priority 99). Both are real `StationForecastModel` implementations — they train, predict, pass QC, and accumulate skill — not special-case hacks. They ensure a forecast is always producible even when all configured models fail.
 
-**Multi-model forecast combination (step 1.8b, v0b+).** Distinct from error fallback, combination merges multiple models' ensembles into a blended forecast. After all individual model forecasts are stored (step 1.11), step 1.8b runs if `forecast_combination_strategy != primary`. The combined forecast is stored in the same `forecasts` table alongside individual forecasts, identified by sentinel `model_id` values (`_pooled`, `_bma`, `_consensus`) and discriminator columns (`combination_strategy`, `source_model_ids`). Fallback models (priority ≥ 90) are excluded from combination. Combined forecast skill is computed separately via step S.4b.
+**Multi-model forecast combination (step 1.8b, v0b+).** Distinct from error fallback, combination merges multiple models' ensembles into a blended forecast. After all individual model forecasts are stored (step 1.11), step 1.8b runs if `forecast_combination_strategy != primary`. `run_all_station_forecasts()` runs every assigned model and returns a `MultiModelForecastResult`; its `combinable_results` property excludes fallback models (priority ≥ 90). `build_combined_forecasts()` constructs the pooled ensemble and stores it with `combination_strategy="pooled"` and `source_model_ids` listing the contributing model IDs, using sentinel `model_id = "_pooled"` and `model_artifact_id = None`. If fewer than two combinable models succeeded, combination is skipped. Combined forecast skill is computed separately via step S.4b.
 
 **Sequencing.** The cycle runs in three phases:
 - **Phase A** (per NWP source, parallel across sources): steps 1.1 → 1.5
@@ -115,9 +115,11 @@ Every stored forecast record carries the NWP cycle reference time used as forcin
 
 **Observation staleness.** If the most recent observation for a station is older than a configurable threshold (e.g. 6 hours), the forecast still runs but a staleness warning flag is attached to the forecast record and is visible via the API.
 
-#### Implementation status (v0a)
+#### Implementation status (v0b)
 
-**Implemented** (Plan 024): `flows/run_forecast_cycle.py` with three-phase orchestration. Services: `services/operational_inputs.py` (step 1.7 input assembly) and `services/run_station_forecast.py` (steps 1.8–1.10 with multi-model fallback). v0a uses pre-extracted point weather data (steps 1.2–1.4 skipped). Steps 1.5 and 1.9 are pass-through. Phase B runs as a sequential station loop (sufficient for ~170 Swiss stations within the 60s target). Phase C alert checking is gated by `enable_forecast_alerts` config flag. NWP lateness fallback deferred to v0b. Group model support (`predict_batch`) deferred until the first `GroupForecastModel` is onboarded.
+**Implemented** (Plan 024 — v0a): `flows/run_forecast_cycle.py` with three-phase orchestration. Services: `services/operational_inputs.py` (step 1.7 input assembly) and `services/run_station_forecast.py` (steps 1.8–1.10 with multi-model fallback). v0a uses pre-extracted point weather data (steps 1.2–1.4 skipped). Steps 1.5 and 1.9 are pass-through. Phase B runs as a sequential station loop. Phase C alert checking is gated by `enable_forecast_alerts` config flag.
+
+**Implemented** (Plan 026 — v0b): Step 1.8b (multi-model combination). `run_all_station_forecasts()` runs every assigned model per station. `services/forecast_combination.py` provides `combine_ensembles_pooled()` and `build_combined_forecasts()`. The flow dispatches on `config.forecast_combination_strategy`: `PRIMARY` mode uses the existing single-model fallback path; `POOLED` mode runs all models, stores individual forecasts, then stores the combined forecast. NWP lateness fallback and group model support (`predict_batch`) remain deferred.
 
 ---
 
@@ -455,6 +457,7 @@ Both are the same flow with different scope. Skill is always evaluated per stati
 | S.2 | Fetch forecast results (parallel with S.3) | Scope from S.1 | Hindcast and/or operational forecast ensembles |
 | S.3 | Fetch corresponding observations (parallel with S.2) | Matching station and period pairs | QC-passed observed values |
 | S.4 | Compute verification metrics | Forecast ensembles and observations | Per-station, per-model, per-lead-time, per-season skill scores |
+| S.4b | Compute combined skill (conditional) | All models' hindcasts per station via `fetch_hindcasts_by_station()`; runs if `forecast_combination_strategy != PRIMARY` | Skill scores and diagrams for the combined ensemble, stored with sentinel `model_id = "_pooled"` and `model_artifact_id = NULL` |
 | S.5 | Aggregate metrics | Station-level scores | Cross-station summaries (by model, by region, overall) |
 | S.6 | Store skill results — versioned, never overwritten | Computed metrics | Persisted to skill tables; superseded rows marked `stale` |
 
@@ -480,7 +483,7 @@ Both are the same flow with different scope. Skill is always evaluated per stati
 **Sequencing:**
 ```
 S.1 → S.2 ─┐
-            ├→ S.4 → S.5 → S.6
+            ├→ S.4 → S.4b (if combination enabled) → S.5 → S.6
      S.3 ──┘
 ```
 

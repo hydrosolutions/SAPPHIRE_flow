@@ -66,6 +66,12 @@ class PgForecastStore:
                     }
                     for f in forecast.qc_flags
                 ],
+                combination_strategy=forecast.combination_strategy,
+                source_model_ids=(
+                    [str(mid) for mid in forecast.source_model_ids]
+                    if forecast.source_model_ids is not None
+                    else None
+                ),
             )
         )
         rows = _build_value_rows(forecast)
@@ -279,7 +285,11 @@ def _rows_to_domain(rows: list) -> OperationalForecast:  # type: ignore[type-arg
         id=ForecastId(header["id"]),
         station_id=station_id,
         model_id=ModelId(header["model_id"]),
-        model_artifact_id=ArtifactId(header["model_artifact_id"]),
+        model_artifact_id=(
+            ArtifactId(header["model_artifact_id"])
+            if header["model_artifact_id"] is not None
+            else None
+        ),
         issued_at=issued_at,
         nwp_cycle_reference_time=utc_from_row(header["nwp_cycle_reference_time"]),
         nwp_cycle_source=NwpCycleSource(header["nwp_cycle_source"]),
@@ -301,5 +311,11 @@ def _rows_to_domain(rows: list) -> OperationalForecast:  # type: ignore[type-arg
                 detail=f.get("detail"),
             )
             for f in (header["qc_flags"] or [])
+        ),
+        combination_strategy=header.get("combination_strategy"),
+        source_model_ids=(
+            [ModelId(mid) for mid in header["source_model_ids"]]
+            if header.get("source_model_ids") is not None
+            else None
         ),
     )

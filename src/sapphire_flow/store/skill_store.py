@@ -194,7 +194,11 @@ def _row_to_score(row: sa.engine.row.RowMapping) -> SkillScore:
         id=row["id"],
         station_id=StationId(row["station_id"]),
         model_id=ModelId(row["model_id"]),
-        model_artifact_id=ArtifactId(row["model_artifact_id"]),
+        model_artifact_id=(
+            ArtifactId(row["model_artifact_id"])
+            if row["model_artifact_id"] is not None
+            else None
+        ),
         parameter=row["parameter"],
         skill_source=SkillSource(row["skill_source"]),
         forcing_type=ForcingType(forcing_raw) if forcing_raw is not None else None,
@@ -222,7 +226,11 @@ def _row_to_diagram(row: sa.engine.row.RowMapping) -> SkillDiagram:
         id=row["id"],
         station_id=StationId(row["station_id"]),
         model_id=ModelId(row["model_id"]),
-        model_artifact_id=ArtifactId(row["model_artifact_id"]),
+        model_artifact_id=(
+            ArtifactId(row["model_artifact_id"])
+            if row["model_artifact_id"] is not None
+            else None
+        ),
         parameter=row["parameter"],
         skill_source=SkillSource(row["skill_source"]),
         computation_version=row["computation_version"],

@@ -10,8 +10,10 @@ import polars as pl
 from sapphire_flow.config.deployment import DeploymentConfig
 from sapphire_flow.services.forecast_qc import ForecastOutputQualityChecker
 from sapphire_flow.services.run_station_forecast import (
+    MultiModelForecastResult,
     OperationalInputMetadata,
     StationForecastResult,
+    run_all_station_forecasts,
     run_station_forecast,
 )
 from sapphire_flow.types.datetime import ensure_utc
@@ -467,3 +469,172 @@ class TestAllModelsFail:
         )
 
         assert result is None
+
+
+_MODEL_ID_C = ModelId("model-c")
+
+
+def _run_all(
+    assignments: list,
+    models: dict,
+    store: FakeModelArtifactStore,
+    qc_checker: object = None,
+) -> MultiModelForecastResult:
+    if qc_checker is None:
+        qc_checker = ForecastOutputQualityChecker()
+    return run_all_station_forecasts(
+        station_id=_STATION_ID,
+        inputs=_make_inputs(),
+        input_metadata=_make_metadata(),
+        assignments=assignments,
+        models=models,  # type: ignore[arg-type]
+        artifact_store=store,
+        qc_checker=qc_checker,  # type: ignore[arg-type]
+        qc_rules=_empty_qc_rules(),
+        qc_overrides=[],
+        baselines=[],
+        nwp_cycle_reference_time=_NOW,
+        nwp_cycle_source=NwpCycleSource.PRIMARY,
+        config=_make_config(),
+        clock=_fixed_clock(),  # type: ignore[arg-type]
+        id_gen=_sequential_id_gen(),  # type: ignore[arg-type]
+        rng=random.Random(42),
+    )
+
+
+class TestRunAllStationForecasts:
+    def test_all_models_succeed_returns_all_results(self) -> None:
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, _MODEL_ID_A)
+        _seed_artifact(store, _MODEL_ID_B)
+
+        result = _run_all(
+            assignments=[
+                _make_assignment(_MODEL_ID_A, priority=1),
+                _make_assignment(_MODEL_ID_B, priority=2),
+            ],
+            models={
+                _MODEL_ID_A: FakeStationForecastModel(),
+                _MODEL_ID_B: FakeStationForecastModel(),
+            },
+            store=store,
+        )
+
+        assert isinstance(result, MultiModelForecastResult)
+        assert _MODEL_ID_A in result.results
+        assert _MODEL_ID_B in result.results
+        assert len(result.failed_models) == 0
+        assert result.primary_model_id == _MODEL_ID_A
+
+    def test_primary_is_highest_priority_success(self) -> None:
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, _MODEL_ID_A)
+        _seed_artifact(store, _MODEL_ID_B)
+
+        result = _run_all(
+            assignments=[
+                _make_assignment(_MODEL_ID_B, priority=2),
+                _make_assignment(_MODEL_ID_A, priority=1),
+            ],
+            models={
+                _MODEL_ID_A: FakeStationForecastModel(),
+                _MODEL_ID_B: FakeStationForecastModel(),
+            },
+            store=store,
+        )
+
+        assert result.primary_model_id == _MODEL_ID_A
+
+    def test_first_model_fails_second_succeeds(self) -> None:
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, _MODEL_ID_A)
+        _seed_artifact(store, _MODEL_ID_B)
+
+        class _FailingModel:
+            artifact_scope = FakeStationForecastModel.artifact_scope
+            data_requirements = FakeStationForecastModel.data_requirements
+
+            def predict(self, *args: object, **kwargs: object) -> None:
+                raise RuntimeError("model crashed")
+
+            def serialize_artifact(self, artifact: object) -> bytes:
+                return b""
+
+            def deserialize_artifact(self, raw: bytes) -> object:
+                return raw
+
+        result = _run_all(
+            assignments=[
+                _make_assignment(_MODEL_ID_A, priority=1),
+                _make_assignment(_MODEL_ID_B, priority=2),
+            ],
+            models={
+                _MODEL_ID_A: _FailingModel(),
+                _MODEL_ID_B: FakeStationForecastModel(),
+            },
+            store=store,
+        )
+
+        assert _MODEL_ID_A in result.failed_models
+        assert _MODEL_ID_B in result.results
+        assert result.primary_model_id == _MODEL_ID_B
+
+    def test_all_models_fail_empty_results_primary_none(self) -> None:
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, _MODEL_ID_A)
+        _seed_artifact(store, _MODEL_ID_B)
+
+        class _AlwaysCrash:
+            artifact_scope = FakeStationForecastModel.artifact_scope
+            data_requirements = FakeStationForecastModel.data_requirements
+
+            def predict(self, *args: object, **kwargs: object) -> None:
+                raise ValueError("always crashes")
+
+            def serialize_artifact(self, artifact: object) -> bytes:
+                return b""
+
+            def deserialize_artifact(self, raw: bytes) -> object:
+                return raw
+
+        result = _run_all(
+            assignments=[
+                _make_assignment(_MODEL_ID_A, priority=1),
+                _make_assignment(_MODEL_ID_B, priority=2),
+            ],
+            models={
+                _MODEL_ID_A: _AlwaysCrash(),
+                _MODEL_ID_B: _AlwaysCrash(),
+            },
+            store=store,
+        )
+
+        assert len(result.results) == 0
+        assert result.primary_model_id is None
+        assert _MODEL_ID_A in result.failed_models
+        assert _MODEL_ID_B in result.failed_models
+
+    def test_combinable_results_excludes_high_priority_fallbacks(self) -> None:
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, _MODEL_ID_A)
+        _seed_artifact(store, _MODEL_ID_B)
+        _seed_artifact(store, _MODEL_ID_C)
+
+        result = _run_all(
+            assignments=[
+                _make_assignment(_MODEL_ID_A, priority=1),
+                _make_assignment(_MODEL_ID_B, priority=50),
+                _make_assignment(_MODEL_ID_C, priority=90),
+            ],
+            models={
+                _MODEL_ID_A: FakeStationForecastModel(),
+                _MODEL_ID_B: FakeStationForecastModel(),
+                _MODEL_ID_C: FakeStationForecastModel(),
+            },
+            store=store,
+        )
+
+        combinable = result.combinable_results
+        assert _MODEL_ID_A in combinable
+        assert _MODEL_ID_B in combinable
+        assert _MODEL_ID_C not in combinable

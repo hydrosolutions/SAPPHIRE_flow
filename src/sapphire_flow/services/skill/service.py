@@ -138,7 +138,7 @@ def _build_strata(
 def _compute_scores(
     station_id: StationId,
     model_id: ModelId,
-    artifact_id: ArtifactId,
+    artifact_id: ArtifactId | None,
     parameter: str,
     lead_hours: int,
     season: str | None,
@@ -234,7 +234,7 @@ def _compute_scores(
 def _compute_diagrams(
     station_id: StationId,
     model_id: ModelId,
-    artifact_id: ArtifactId,
+    artifact_id: ArtifactId | None,
     parameter: str,
     lead_hours: int,
     season: str | None,
@@ -311,7 +311,7 @@ def _compute_diagrams(
 def compute_skill_for_station(
     station_id: StationId,
     model_id: ModelId,
-    artifact_id: ArtifactId,
+    artifact_id: ArtifactId | None,
     hindcasts: list[HindcastForecast],
     observations: list[Observation],
     thresholds: list[StationThreshold],

@@ -22,7 +22,7 @@ class SkillScore:
     station_id: StationId
     model_id: ModelId
     parameter: str
-    model_artifact_id: ArtifactId
+    model_artifact_id: ArtifactId | None
     skill_source: SkillSource
     forcing_type: ForcingType | None
     computation_version: int
@@ -46,7 +46,7 @@ class SkillDiagram:
     station_id: StationId
     model_id: ModelId
     parameter: str
-    model_artifact_id: ArtifactId
+    model_artifact_id: ArtifactId | None
     skill_source: SkillSource
     computation_version: int
     lead_time_hours: int

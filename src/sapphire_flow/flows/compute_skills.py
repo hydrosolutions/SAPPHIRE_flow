@@ -5,8 +5,9 @@ from uuid import UUID, uuid4
 import structlog
 from prefect import flow, task
 
+from sapphire_flow.services.skill.combined_skill import compute_combined_skill
 from sapphire_flow.services.skill.service import compute_skill_for_station
-from sapphire_flow.types.enums import ForcingType, SkillSource
+from sapphire_flow.types.enums import ForcingType, ModelCombinationStrategy, SkillSource
 from sapphire_flow.types.ids import ArtifactId, ModelId, StationId  # noqa: TC001
 from sapphire_flow.types.skill import SkillDiagram, SkillScore  # noqa: TC001
 
@@ -138,6 +139,118 @@ def compute_skills_task(
     _store_skill_results(skill_store, scores, diagrams)
 
     return scores, diagrams
+
+
+@task(name="compute-combined-skills-task", log_prints=False)
+def compute_combined_skills_task(
+    station_id: StationId,
+    parameter: str,
+    strategy: ModelCombinationStrategy,
+    hindcast_store: object = None,
+    obs_store: object = None,
+    skill_store: object = None,
+    station_store: object = None,
+    flow_regime_store: object = None,
+    deployment_config: object = None,
+    clock: object = None,
+) -> tuple[list[SkillScore], list[SkillDiagram]]:
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from sapphire_flow.types.datetime import ensure_utc
+    from sapphire_flow.types.enums import SkillSource
+
+    if strategy == ModelCombinationStrategy.PRIMARY:
+        return [], []
+
+    structlog.contextvars.bind_contextvars(
+        station_id=str(station_id),
+        parameter=parameter,
+        strategy=strategy.value,
+    )
+
+    if clock is None:
+        clock = lambda: ensure_utc(datetime.now(UTC))  # noqa: E731
+
+    broad_start = ensure_utc(datetime(1970, 1, 1, tzinfo=UTC))
+    broad_end = ensure_utc(datetime(2100, 1, 1, tzinfo=UTC))
+
+    hindcasts_by_model = hindcast_store.fetch_hindcasts_by_station(
+        station_id=station_id,
+        parameter=parameter,
+        period_start=broad_start,
+        period_end=broad_end,
+    )
+
+    if len(hindcasts_by_model) < 2:
+        return [], []
+
+    all_steps = sorted(
+        {hc.hindcast_step for hcs in hindcasts_by_model.values() for hc in hcs}
+    )
+    period_start = min(all_steps)
+    period_end = max(all_steps)
+
+    observations = _fetch_observations(
+        obs_store, station_id, period_start, period_end, parameter=parameter
+    )
+
+    thresholds = station_store.fetch_thresholds(station_id) if station_store else []
+    flow_regime_config = (
+        flow_regime_store.fetch_latest(station_id, parameter)
+        if flow_regime_store
+        else None
+    )
+
+    seasons = []
+    if deployment_config is not None:
+        seasons = deployment_config.get_season_definitions()
+
+    scores, diagrams = compute_combined_skill(
+        station_id=station_id,
+        parameter=parameter,
+        strategy=strategy,
+        hindcasts_by_model=hindcasts_by_model,
+        observations=observations,
+        thresholds=thresholds,
+        flow_regime_config=flow_regime_config,
+        seasons=seasons,
+        skill_source=SkillSource.HINDCAST_REANALYSIS,
+        forcing_type=ForcingType.REANALYSIS,
+        clock=clock,
+        uuid_factory=uuid4,
+    )
+
+    _store_skill_results(skill_store, scores, diagrams)
+
+    return scores, diagrams
+
+
+@flow(name="compute-combined-skills", log_prints=False)
+def compute_combined_skills_flow(
+    station_id: StationId,
+    parameter: str,
+    strategy: ModelCombinationStrategy,
+    hindcast_store: object = None,
+    obs_store: object = None,
+    skill_store: object = None,
+    station_store: object = None,
+    flow_regime_store: object = None,
+    deployment_config: object = None,
+    clock: object = None,
+) -> tuple[list[SkillScore], list[SkillDiagram]]:
+    return compute_combined_skills_task(
+        station_id=station_id,
+        parameter=parameter,
+        strategy=strategy,
+        hindcast_store=hindcast_store,
+        obs_store=obs_store,
+        skill_store=skill_store,
+        station_store=station_store,
+        flow_regime_store=flow_regime_store,
+        deployment_config=deployment_config,
+        clock=clock,
+    )
 
 
 @flow(name="compute-skills", log_prints=False)

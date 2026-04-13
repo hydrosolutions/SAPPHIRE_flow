@@ -41,6 +41,7 @@ class AlertSource(Enum):
 class ArtifactScope(Enum):
     STATION = "station"
     GROUP = "group"
+    VIRTUAL = "virtual"
 
 
 class ModelArtifactStatus(Enum):

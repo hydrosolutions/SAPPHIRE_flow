@@ -104,6 +104,7 @@ class AlertSource(Enum):
 class ArtifactScope(Enum):
     STATION = "station"        # one artifact per (station, model) — conceptual models
     GROUP = "group"            # one artifact per (station_group, model) — ML models
+    VIRTUAL = "virtual"        # sentinel combination models (_pooled, _bma, _consensus) — no real artifact
 
 class ModelArtifactStatus(Enum):
     TRAINING = "training"
@@ -1298,7 +1299,7 @@ class OperationalForecast:
     id: ForecastId
     station_id: StationId
     model_id: ModelId
-    model_artifact_id: ArtifactId
+    model_artifact_id: ArtifactId | None   # NULL for combined forecasts (no single artifact)
     issued_at: UtcDatetime
     nwp_cycle_reference_time: UtcDatetime
     nwp_cycle_source: NwpCycleSource
@@ -1315,6 +1316,8 @@ class OperationalForecast:
     qc_flags: tuple[QcFlag, ...] = ()              # individual rule results
     input_quality: InputQualityLevel = InputQualityLevel.FULL
     input_quality_flags: tuple[InputQualityFlag, ...] = ()
+    combination_strategy: str | None = None        # NULL for individual; "pooled"|"bma"|"consensus" for combined
+    source_model_ids: list[ModelId] | None = None  # NULL for individual; contributing model IDs for combined
 ```
 
 ### HindcastForecast
@@ -1436,7 +1439,7 @@ class SkillScore:
     station_id: StationId
     model_id: ModelId
     parameter: str
-    model_artifact_id: ArtifactId
+    model_artifact_id: ArtifactId | None   # NULL for combined-model skill rows
     skill_source: SkillSource
     forcing_type: ForcingType | None       # NULL for operational
     computation_version: int
@@ -1463,7 +1466,7 @@ class SkillDiagram:
     station_id: StationId
     model_id: ModelId
     parameter: str
-    model_artifact_id: ArtifactId
+    model_artifact_id: ArtifactId | None   # NULL for combined-model skill rows
     skill_source: SkillSource
     computation_version: int
     lead_time_hours: int
@@ -1867,6 +1870,17 @@ class HindcastStore(Protocol):
         hindcast_run_id: UUID | None = None,       # None = all runs
         parameter: str | None = None,              # None = all parameters
     ) -> list[HindcastForecast]: ...
+    def fetch_hindcasts_by_station(
+        self,
+        station_id: StationId,
+        parameter: str,
+        start: UtcDatetime,
+        end: UtcDatetime,
+        forcing_type: ForcingType | None = None,
+    ) -> dict[ModelId, list[HindcastForecast]]: ...
+        # Returns all models' hindcasts for a station, grouped by model_id.
+        # Used by combined skill computation (step S.4b) to retrieve multi-model hindcasts.
+        # Excludes sentinel/virtual model IDs. None forcing_type = all types.
 ```
 
 #### WeatherForecastStore
@@ -2585,6 +2599,83 @@ Each fake has a test: `assert isinstance(FakeObservationStore(), ObservationStor
 
 ---
 
+## Multi-model combination types and services (v0b, Plan 026)
+
+### MultiModelForecastResult
+
+Returned by `run_all_station_forecasts()`. Carries all per-model results from a single forecast cycle run, including the `combinable_results` subset that excludes fallback models.
+
+Module: `services/run_station_forecast.py`
+
+```python
+@dataclass(frozen=True, kw_only=True, slots=True)
+class MultiModelForecastResult:
+    station_id: StationId
+    results: dict[ModelId, StationForecastResult]  # all successful models
+    priorities: dict[ModelId, int]                  # model_id → assignment priority
+    primary_model_id: ModelId | None               # highest-priority success (for fallback)
+    failed_models: dict[ModelId, str]              # model_id → error message
+
+    @property
+    def combinable_results(self) -> dict[ModelId, StationForecastResult]:
+        """Results from non-fallback models only (priority < FALLBACK_PRIORITY_THRESHOLD)."""
+        return {
+            mid: r for mid, r in self.results.items()
+            if self.priorities.get(mid, 0) < FALLBACK_PRIORITY_THRESHOLD
+        }
+```
+
+### Forecast combination service
+
+Module: `services/forecast_combination.py`
+
+```python
+def combine_ensembles_pooled(
+    ensembles: dict[ModelId, dict[str, ForecastEnsemble]],
+) -> dict[str, ForecastEnsemble]:
+    """Merge all models' member ensembles into a grand pooled ensemble per parameter.
+    Only MEMBERS-representation ensembles are included; QUANTILES ensembles are skipped
+    with a warning. Member IDs are remapped sequentially to avoid collision."""
+
+def build_combined_forecasts(
+    station_id: StationId,
+    multi_result: MultiModelForecastResult,
+    strategy: ModelCombinationStrategy,
+    nwp_metadata: ...,
+    clock: Callable[[], UtcDatetime],
+    uuid_factory: Callable[[], UUID],
+) -> list[OperationalForecast]:
+    """Construct combined OperationalForecast records from multi_result.combinable_results.
+    Returns empty list if fewer than 2 combinable models succeeded (caller falls back to primary).
+    Sets combination_strategy, source_model_ids, model_artifact_id=None, and sentinel model_id."""
+```
+
+### Combined skill computation service
+
+Module: `services/skill/combined_skill.py`
+
+```python
+def compute_combined_skill(
+    station_id: StationId,
+    parameter: str,
+    strategy: ModelCombinationStrategy,
+    hindcasts_by_model: dict[ModelId, list[HindcastForecast]],
+    observations: list[Observation],
+    thresholds: ...,
+    flow_regime_config: ...,
+    seasons: ...,
+    skill_source: SkillSource,
+    clock: Callable[[], UtcDatetime],
+    uuid_factory: Callable[[], UUID],
+) -> tuple[list[SkillScore], list[SkillDiagram]]:
+    """Construct the combined ensemble at each time step where ALL models have hindcasts
+    (intersection, not union), then run the standard verification suite with
+    model_id = POOLED_MODEL_ID and artifact_id = None.
+    Prefect task wrapper: compute_combined_skills_task."""
+```
+
+---
+
 ## Module map
 
 Summary of where each type and Protocol lives in the source tree:
@@ -2639,6 +2730,13 @@ src/sapphire_flow/
 │   │                       #   ForeignForecastSource, PipelineStatusSource
 │   ├── grid_extractor.py   # GridExtractor
 │   └── notification.py     # NotificationAdapter
+├── services/
+│   ├── run_station_forecast.py  # run_station_forecast(), run_all_station_forecasts(),
+│   │                            #   MultiModelForecastResult, FALLBACK_PRIORITY_THRESHOLD
+│   ├── forecast_combination.py  # combine_ensembles_pooled(), build_combined_forecasts()
+│   └── skill/
+│       ├── service.py           # compute_skill_for_station() (artifact_id: ArtifactId | None)
+│       └── combined_skill.py    # compute_combined_skill(), compute_combined_skills_task
 └── config/
     └── deployment.py       # DeploymentConfig
 ```

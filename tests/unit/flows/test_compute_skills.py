@@ -6,7 +6,12 @@ from uuid import UUID
 
 import polars as pl
 
-from sapphire_flow.flows.compute_skills import compute_skills_flow, compute_skills_task
+from sapphire_flow.flows.compute_skills import (
+    compute_combined_skills_flow,
+    compute_combined_skills_task,
+    compute_skills_flow,
+    compute_skills_task,
+)
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.ids import ArtifactId, ModelId, StationId
 from tests.fakes.fake_stores import (
@@ -165,3 +170,156 @@ class TestComputeSkillsTask:
 
         assert len(scores) > 0
         assert all(s.parameter == "discharge" for s in scores)
+
+
+class TestComputeCombinedSkillsTask:
+    def test_primary_strategy_returns_empty(self) -> None:
+        from sapphire_flow.types.enums import ModelCombinationStrategy
+
+        sid = StationId(_uuid())
+        mid = ModelId("test")
+        aid = ArtifactId(_uuid())
+        stores = _populate_stores(sid, mid, aid)
+        hindcast_store, obs_store, skill_store, station_store, flow_regime_store = (
+            stores
+        )
+
+        scores, diagrams = compute_combined_skills_task.fn(
+            station_id=sid,
+            parameter="discharge",
+            strategy=ModelCombinationStrategy.PRIMARY,
+            hindcast_store=hindcast_store,
+            obs_store=obs_store,
+            skill_store=skill_store,
+            station_store=station_store,
+            flow_regime_store=flow_regime_store,
+            clock=lambda: _EPOCH,
+        )
+
+        assert scores == []
+        assert diagrams == []
+
+    def test_single_model_returns_empty(self) -> None:
+        from sapphire_flow.types.enums import ModelCombinationStrategy
+
+        sid = StationId(_uuid())
+        mid = ModelId("only-model")
+        aid = ArtifactId(_uuid())
+        stores = _populate_stores(sid, mid, aid)
+        hindcast_store, obs_store, skill_store, station_store, flow_regime_store = (
+            stores
+        )
+
+        scores, diagrams = compute_combined_skills_task.fn(
+            station_id=sid,
+            parameter="discharge",
+            strategy=ModelCombinationStrategy.POOLED,
+            hindcast_store=hindcast_store,
+            obs_store=obs_store,
+            skill_store=skill_store,
+            station_store=station_store,
+            flow_regime_store=flow_regime_store,
+            clock=lambda: _EPOCH,
+        )
+
+        assert scores == []
+        assert diagrams == []
+
+    def test_two_models_computes_combined_skill(self) -> None:
+        from sapphire_flow.types.ensemble import ForecastEnsemble
+        from sapphire_flow.types.enums import (
+            EnsembleRepresentation,
+            ForcingType,
+            ModelCombinationStrategy,
+        )
+        from sapphire_flow.types.forecast import HindcastForecast
+        from sapphire_flow.types.ids import HindcastForecastId
+
+        sid = StationId(_uuid())
+        mid1 = ModelId("model-a")
+        mid2 = ModelId("model-b")
+        aid1 = ArtifactId(_uuid())
+        aid2 = ArtifactId(_uuid())
+
+        stores = _populate_stores(sid, mid1, aid1)
+        hindcast_store, obs_store, skill_store, station_store, flow_regime_store = (
+            stores
+        )
+
+        # Add hindcasts for a second model at the same steps
+        time_step = timedelta(hours=1)
+        for i in range(3):
+            step = ensure_utc(datetime(2025, 1, i + 1, tzinfo=UTC))
+            vt = ensure_utc(datetime(2025, 1, i + 1, 1, 0, tzinfo=UTC))
+
+            df = pl.DataFrame(
+                [
+                    {"valid_time": vt, "member_id": m, "value": 12.0 + m}
+                    for m in range(3)
+                ]
+            ).with_columns(
+                pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
+                pl.col("member_id").cast(pl.Int32),
+            )
+            ensemble = ForecastEnsemble.from_members(
+                station_id=sid,
+                issued_at=step,
+                parameter="discharge",
+                units="m3/s",
+                time_step=time_step,
+                values=df,
+            )
+            hc = HindcastForecast(
+                id=HindcastForecastId(_uuid()),
+                station_id=sid,
+                model_id=mid2,
+                model_artifact_id=aid2,
+                hindcast_step=step,
+                forcing_type=ForcingType.REANALYSIS,
+                representation=EnsembleRepresentation.MEMBERS,
+                hindcast_run_id=_uuid(),
+                ensemble=ensemble,
+                created_at=step,
+            )
+            hindcast_store.store_hindcast(hc)
+
+        scores, diagrams = compute_combined_skills_task.fn(
+            station_id=sid,
+            parameter="discharge",
+            strategy=ModelCombinationStrategy.POOLED,
+            hindcast_store=hindcast_store,
+            obs_store=obs_store,
+            skill_store=skill_store,
+            station_store=station_store,
+            flow_regime_store=flow_regime_store,
+            clock=lambda: _EPOCH,
+        )
+
+        assert len(scores) > 0
+        assert len(diagrams) > 0
+
+    def test_flow_wrapper_delegates_to_task(self) -> None:
+        from sapphire_flow.types.enums import ModelCombinationStrategy
+
+        sid = StationId(_uuid())
+        mid = ModelId("test")
+        aid = ArtifactId(_uuid())
+        stores = _populate_stores(sid, mid, aid)
+        hindcast_store, obs_store, skill_store, station_store, flow_regime_store = (
+            stores
+        )
+
+        scores, diagrams = compute_combined_skills_flow(
+            station_id=sid,
+            parameter="discharge",
+            strategy=ModelCombinationStrategy.PRIMARY,
+            hindcast_store=hindcast_store,
+            obs_store=obs_store,
+            skill_store=skill_store,
+            station_store=station_store,
+            flow_regime_store=flow_regime_store,
+            clock=lambda: _EPOCH,
+        )
+
+        assert scores == []
+        assert diagrams == []

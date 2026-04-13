@@ -149,6 +149,67 @@ class PgHindcastStore:
             )
         return result
 
+    def fetch_hindcasts_by_station(
+        self,
+        station_id: StationId,
+        parameter: str,
+        period_start: UtcDatetime,
+        period_end: UtcDatetime,
+    ) -> dict[ModelId, list[HindcastForecast]]:
+        q = sa.select(hindcast_forecasts).where(
+            sa.and_(
+                hindcast_forecasts.c.station_id == station_id,
+                hindcast_forecasts.c.parameter == parameter,
+                hindcast_forecasts.c.hindcast_step >= period_start,
+                hindcast_forecasts.c.hindcast_step < period_end,
+            )
+        )
+        header_rows = self._conn.execute(q).mappings().all()
+        if not header_rows:
+            return {}
+
+        forecast_ids = [row["id"] for row in header_rows]
+        vq = sa.select(hindcast_values).where(
+            hindcast_values.c.hindcast_forecast_id.in_(forecast_ids)
+        )
+        value_rows = self._conn.execute(vq).mappings().all()
+
+        values_by_id: dict[UUID, list[dict]] = {}
+        for row in value_rows:
+            fid = row["hindcast_forecast_id"]
+            values_by_id.setdefault(fid, []).append(dict(row))
+
+        result: dict[ModelId, list[HindcastForecast]] = {}
+        for header in header_rows:
+            fid = header["id"]
+            rows_for_id = values_by_id.get(fid, [])
+            ensemble = _reconstruct_ensemble(header, rows_for_id, station_id)
+            hindcast = HindcastForecast(
+                id=HindcastForecastId(fid),
+                station_id=StationId(header["station_id"]),
+                model_id=ModelId(header["model_id"]),
+                model_artifact_id=ArtifactId(header["model_artifact_id"]),
+                hindcast_step=utc_from_row(header["hindcast_step"]),
+                forcing_type=ForcingType(header["forcing_type"]),
+                representation=EnsembleRepresentation(header["representation"]),
+                hindcast_run_id=UUID(str(header["hindcast_run_id"])),
+                ensemble=ensemble,
+                created_at=utc_from_row(header["created_at"]),
+                qc_status=QcStatus(header["qc_status"]),
+                qc_flags=tuple(
+                    QcFlag(
+                        rule_id=f["rule_id"],
+                        rule_version=f["rule_version"],
+                        status=QcStatus(f["status"]),
+                        detail=f.get("detail"),
+                    )
+                    for f in (header["qc_flags"] or [])
+                ),
+            )
+            model_id = ModelId(header["model_id"])
+            result.setdefault(model_id, []).append(hindcast)
+        return result
+
 
 def _reconstruct_ensemble(
     header: sa.engine.row.RowMapping,

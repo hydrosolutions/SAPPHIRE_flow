@@ -265,3 +265,93 @@ class TestFetchEmpty:
 
         results = store.fetch_hindcasts(sid, mid, _utc(2024, 1, 1), _utc(2024, 12, 31))
         assert results == []
+
+
+class TestFetchHindcastsByStation:
+    def test_two_models_same_station(self, db_connection: sa.Connection) -> None:
+        sid = _seed_station(db_connection)
+        mid_a = _seed_model(db_connection)
+        mid_b = _seed_model(db_connection)
+        aid_a = _seed_artifact(db_connection, mid_a, sid)
+        aid_b = _seed_artifact(db_connection, mid_b, sid)
+        store = PgHindcastStore(db_connection)
+
+        step = _utc(2025, 3, 1)
+        store.store_hindcast(_make_hindcast(sid, mid_a, aid_a, hindcast_step=step))
+        store.store_hindcast(_make_hindcast(sid, mid_b, aid_b, hindcast_step=step))
+
+        result = store.fetch_hindcasts_by_station(
+            sid, "discharge", _utc(2025, 2, 28), _utc(2025, 3, 2)
+        )
+
+        assert set(result.keys()) == {mid_a, mid_b}
+        assert len(result[mid_a]) == 1
+        assert len(result[mid_b]) == 1
+
+    def test_filter_by_parameter(self, db_connection: sa.Connection) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, mid, sid)
+        store = PgHindcastStore(db_connection)
+
+        step = _utc(2025, 4, 1)
+        discharge_hc = _make_hindcast(sid, mid, aid, hindcast_step=step)
+
+        # build a water_level hindcast manually to vary parameter
+        wl_ensemble = make_forecast_ensemble(
+            station_id=sid,
+            representation=EnsembleRepresentation.MEMBERS,
+            parameter="water_level",
+        )
+        wl_hc = HindcastForecast(
+            id=HindcastForecastId(uuid4()),
+            station_id=sid,
+            model_id=mid,
+            model_artifact_id=aid,
+            hindcast_step=step,
+            forcing_type=ForcingType.NWP_ARCHIVE,
+            representation=EnsembleRepresentation.MEMBERS,
+            hindcast_run_id=uuid4(),
+            ensemble=wl_ensemble,
+            created_at=_T0,
+        )
+        store.store_hindcast(discharge_hc)
+        store.store_hindcast(wl_hc)
+
+        result = store.fetch_hindcasts_by_station(
+            sid, "discharge", _utc(2025, 3, 31), _utc(2025, 4, 2)
+        )
+
+        assert mid in result
+        assert all(h.ensemble.parameter == "discharge" for h in result[mid])
+        assert len(result[mid]) == 1
+
+    def test_filter_by_period(self, db_connection: sa.Connection) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, mid, sid)
+        store = PgHindcastStore(db_connection)
+
+        step_in = _utc(2025, 5, 10)
+        step_out = _utc(2025, 5, 20)
+        store.store_hindcast(_make_hindcast(sid, mid, aid, hindcast_step=step_in))
+        store.store_hindcast(_make_hindcast(sid, mid, aid, hindcast_step=step_out))
+
+        result = store.fetch_hindcasts_by_station(
+            sid, "discharge", _utc(2025, 5, 1), _utc(2025, 5, 15)
+        )
+
+        assert mid in result
+        fetched_steps = {h.hindcast_step for h in result[mid]}
+        assert step_in in fetched_steps
+        assert step_out not in fetched_steps
+
+    def test_empty_result(self, db_connection: sa.Connection) -> None:
+        sid = _seed_station(db_connection)
+        store = PgHindcastStore(db_connection)
+
+        result = store.fetch_hindcasts_by_station(
+            sid, "discharge", _utc(2024, 1, 1), _utc(2024, 12, 31)
+        )
+
+        assert result == {}

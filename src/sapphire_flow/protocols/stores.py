@@ -219,6 +219,15 @@ class HindcastStore(Protocol):
     ) -> list[HindcastForecast]:
         raise NotImplementedError
 
+    def fetch_hindcasts_by_station(
+        self,
+        station_id: StationId,
+        parameter: str,
+        period_start: UtcDatetime,
+        period_end: UtcDatetime,
+    ) -> dict[ModelId, list[HindcastForecast]]:
+        raise NotImplementedError
+
 
 @runtime_checkable
 class WeatherForecastStore(Protocol):

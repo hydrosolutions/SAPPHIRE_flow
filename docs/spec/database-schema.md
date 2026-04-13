@@ -14,6 +14,9 @@ no forecast adjustments, no DLQ, no cold storage. See `v0-scope.md` §A–C for 
 - `observations`: no `rating_curve_id`, no `rating_curve_correction_version` columns
 - `weather_forecasts`: no `is_gap`, no `gap_status` columns (Flow 11 deferred)
 - `model_artifacts.status`: only `training | active | superseded` (no approval gate)
+- `forecasts.model_artifact_id`: nullable (`UUID NULL`) — combined forecasts have no artifact. Also adds `combination_strategy TEXT NULL` and `source_model_ids JSONB NULL` (v0b, Plan 026)
+- `skill_scores.model_artifact_id` and `skill_diagrams.model_artifact_id`: nullable (`UUID NULL`) — combined-model skill rows use `NULL` (v0b, Plan 026)
+- `models.artifact_scope`: CHECK constraint includes `'virtual'` for sentinel combination models (`_pooled`, `_bma`, `_consensus`) (v0b, Plan 026)
 - No table partitioning anywhere
 - 9 tables removed entirely (see "Not in v0" below)
 
@@ -172,12 +175,13 @@ erDiagram
     %% ──────────────────────────────────────────────
     %% MODEL DOMAIN
     %% v0: model_artifacts.status = training | active | superseded only
+    %% v0b: models.artifact_scope includes 'virtual' for sentinel combination rows
     %% ──────────────────────────────────────────────
 
     models {
-        TEXT id PK "entry point name"
+        TEXT id PK "entry point name, or sentinel _pooled/_bma/_consensus"
         TEXT display_name
-        TEXT artifact_scope "station | group"
+        TEXT artifact_scope "station | group | virtual"
         TEXT description
         TIMESTAMPTZ created_at
     }
@@ -240,13 +244,14 @@ erDiagram
     %% FORECAST DOMAIN
     %% v0: not partitioned (plan 013: ~3.7B forecast_values rows/year at ~1000 stations; see v0-scope §A1 DECISION)
     %% v0: no forecast_adjustments table
+    %% v0b: forecasts.model_artifact_id nullable; combination_strategy + source_model_ids added (Plan 026)
     %% ──────────────────────────────────────────────
 
     forecasts {
         UUID id PK
         UUID station_id FK
         TEXT model_id FK
-        UUID model_artifact_id FK
+        UUID model_artifact_id FK "NULL for combined forecasts"
         TIMESTAMPTZ issued_at
         TIMESTAMPTZ nwp_cycle_reference_time
         TEXT nwp_cycle_source "primary | fallback"
@@ -260,6 +265,8 @@ erDiagram
         DOUBLE_PRECISION observation_staleness_hours "NULL"
         TEXT qc_status "default raw"
         JSONB qc_flags "default empty"
+        TEXT combination_strategy "NULL for individual; pooled|bma|consensus for combined"
+        JSONB source_model_ids "NULL for individual; [model_id, ...] for combined"
         TIMESTAMPTZ created_at
         TIMESTAMPTZ updated_at
     }
@@ -312,13 +319,14 @@ erDiagram
 
     %% ──────────────────────────────────────────────
     %% SKILL DOMAIN
+    %% v0b: model_artifact_id nullable (Plan 026); combined-model rows use NULL
     %% ──────────────────────────────────────────────
 
     skill_scores {
         UUID id PK
         UUID station_id FK
         TEXT model_id FK
-        UUID model_artifact_id FK
+        UUID model_artifact_id FK "NULL for combined-model skill rows"
         TEXT skill_source
         TEXT forcing_type "NULL"
         INT computation_version
@@ -338,7 +346,7 @@ erDiagram
         UUID id PK
         UUID station_id FK
         TEXT model_id FK
-        UUID model_artifact_id FK
+        UUID model_artifact_id FK "NULL for combined-model skill rows"
         TEXT skill_source
         INT computation_version
         INT lead_time_hours
@@ -373,6 +381,7 @@ erDiagram
     %% ──────────────────────────────────────────────
     %% OPS DOMAIN
     %% v0: alerts kept but notified_at always NULL (no notification system)
+    %% Note: skill_scores.model_artifact_id and skill_diagrams.model_artifact_id are nullable (v0b, Plan 026)
     %% Retention: pipeline_health rows deleted after 30 days;
     %%            resolved alerts deleted after 90 days
     %% Plan 013: growth rate increases ~20× at ~1000 stations vs ~50

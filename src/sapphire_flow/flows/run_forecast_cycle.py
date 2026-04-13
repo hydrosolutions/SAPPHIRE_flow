@@ -355,10 +355,15 @@ def run_forecast_cycle_flow(
     # --- Phase B: per-station forecast loop ---
     from datetime import timedelta
 
+    from sapphire_flow.services.forecast_combination import build_combined_forecasts
     from sapphire_flow.services.operational_inputs import (
         assemble_station_operational_inputs,
     )
-    from sapphire_flow.services.run_station_forecast import run_station_forecast
+    from sapphire_flow.services.run_station_forecast import (
+        run_all_station_forecasts,
+        run_station_forecast,
+    )
+    from sapphire_flow.types.enums import ModelCombinationStrategy
 
     stations_succeeded = 0
     stations_failed = 0
@@ -423,60 +428,159 @@ def run_forecast_cycle_flow(
         inputs, input_metadata = inputs_result
 
         try:
-            fc_result = run_station_forecast(
-                station_id=sid,
-                inputs=inputs,
-                input_metadata=input_metadata,
-                assignments=sorted_assignments,
-                models=models,
-                artifact_store=artifact_store,  # type: ignore[arg-type]
-                qc_checker=qc_checker,
-                qc_rules=qc_rules,
-                qc_overrides=[],
-                baselines=all_baselines[sid],
-                nwp_cycle_reference_time=resolved_cycle_time,
-                nwp_cycle_source=nwp_cycle_source,
-                config=config,
-                clock=clock,
-                id_gen=uuid4,
-                rng=rng,
-            )
+            if config.forecast_combination_strategy == ModelCombinationStrategy.PRIMARY:
+                # Existing behaviour: single model with fallback chain
+                fc_result = run_station_forecast(
+                    station_id=sid,
+                    inputs=inputs,
+                    input_metadata=input_metadata,
+                    assignments=sorted_assignments,
+                    models=models,
+                    artifact_store=artifact_store,  # type: ignore[arg-type]
+                    qc_checker=qc_checker,
+                    qc_rules=qc_rules,
+                    qc_overrides=[],
+                    baselines=all_baselines[sid],
+                    nwp_cycle_reference_time=resolved_cycle_time,
+                    nwp_cycle_source=nwp_cycle_source,
+                    config=config,
+                    clock=clock,
+                    id_gen=uuid4,
+                    rng=rng,
+                )
+
+                if fc_result is None:
+                    log.warning("forecast_cycle.all_models_failed")
+                    stations_failed += 1
+                    structlog.contextvars.unbind_contextvars("station_id")
+                    continue
+
+                for fc in fc_result.forecasts:
+                    try:
+                        forecast_store.store_forecast(fc)  # type: ignore[union-attr]
+                        forecasts_stored += 1
+                    except Exception as exc:
+                        log.warning(
+                            "forecast_cycle.store_forecast_failed", error=str(exc)
+                        )
+                        errors.append(f"Store failed for {sid}: {exc}")
+
+                if fc_result.new_state is not None:
+                    try:
+                        model_state_store.store_state(  # type: ignore[union-attr]
+                            sid,
+                            fc_result.model_id,
+                            resolved_cycle_time,
+                            fc_result.new_state,
+                        )
+                    except Exception as exc:
+                        log.warning("forecast_cycle.store_state_failed", error=str(exc))
+
+                all_ensembles[sid] = {fc_result.model_id: dict(fc_result.ensembles)}
+
+            else:
+                # Combination mode: run all models and produce a combined forecast.
+                # TODO: use merge_data_requirements() once models with different
+                #       requirements are added. For now all models share the same
+                #       forcing so first-model inputs are sufficient.
+                multi_result = run_all_station_forecasts(
+                    station_id=sid,
+                    inputs=inputs,
+                    input_metadata=input_metadata,
+                    assignments=sorted_assignments,
+                    models=models,
+                    artifact_store=artifact_store,  # type: ignore[arg-type]
+                    qc_checker=qc_checker,
+                    qc_rules=qc_rules,
+                    qc_overrides=[],
+                    baselines=all_baselines[sid],
+                    nwp_cycle_reference_time=resolved_cycle_time,
+                    nwp_cycle_source=nwp_cycle_source,
+                    config=config,
+                    clock=clock,
+                    id_gen=uuid4,
+                    rng=rng,
+                )
+
+                if multi_result.primary_model_id is None:
+                    log.warning("forecast_cycle.all_models_failed")
+                    stations_failed += 1
+                    structlog.contextvars.unbind_contextvars("station_id")
+                    continue
+
+                # Store all individual model forecasts
+                for mid, result in multi_result.results.items():
+                    for fc in result.forecasts:
+                        try:
+                            forecast_store.store_forecast(fc)  # type: ignore[union-attr]
+                            forecasts_stored += 1
+                        except Exception as exc:
+                            log.warning(
+                                "forecast_cycle.store_forecast_failed", error=str(exc)
+                            )
+                            errors.append(f"Store failed for {sid}: {exc}")
+
+                    # Persist warm-up state for primary model only
+                    if (
+                        mid == multi_result.primary_model_id
+                        and result.new_state is not None
+                    ):
+                        try:
+                            model_state_store.store_state(  # type: ignore[union-attr]
+                                sid,
+                                mid,
+                                resolved_cycle_time,
+                                result.new_state,
+                            )
+                        except Exception as exc:
+                            log.warning(
+                                "forecast_cycle.store_state_failed", error=str(exc)
+                            )
+
+                # Build and store combined forecast
+                combined_forecasts = build_combined_forecasts(
+                    station_id=sid,
+                    multi_result=multi_result,
+                    strategy=config.forecast_combination_strategy,
+                    nwp_cycle_reference_time=resolved_cycle_time,
+                    nwp_cycle_source=nwp_cycle_source,
+                    clock=clock,
+                    uuid_factory=uuid4,
+                )
+                if combined_forecasts:
+                    for fc in combined_forecasts:
+                        try:
+                            forecast_store.store_forecast(fc)  # type: ignore[union-attr]
+                            forecasts_stored += 1
+                        except Exception as exc:
+                            log.warning(
+                                "forecast_cycle.store_forecast_failed", error=str(exc)
+                            )
+                            errors.append(f"Store failed for {sid}: {exc}")
+                    log.info(
+                        "forecast_cycle.combined_forecast_stored",
+                        n_models=len(multi_result.combinable_results),
+                        strategy=config.forecast_combination_strategy.value,
+                    )
+                else:
+                    log.warning(
+                        "forecast_cycle.combined_forecast_skipped",
+                        reason="fewer than 2 combinable models",
+                        n_models=len(multi_result.combinable_results),
+                    )
+
+                # Accumulate all models' ensembles for Phase C alerting
+                all_ensembles[sid] = {
+                    mid: dict(result.ensembles)
+                    for mid, result in multi_result.results.items()
+                }
+
         except Exception as exc:
             log.warning("forecast_cycle.station_forecast_failed", error=str(exc))
             errors.append(f"Forecast failed for {sid}: {exc}")
             stations_failed += 1
             structlog.contextvars.unbind_contextvars("station_id")
             continue
-
-        if fc_result is None:
-            log.warning("forecast_cycle.all_models_failed")
-            stations_failed += 1
-            structlog.contextvars.unbind_contextvars("station_id")
-            continue
-
-        # Store forecasts
-        for fc in fc_result.forecasts:
-            try:
-                forecast_store.store_forecast(fc)  # type: ignore[union-attr]
-                forecasts_stored += 1
-            except Exception as exc:
-                log.warning("forecast_cycle.store_forecast_failed", error=str(exc))
-                errors.append(f"Store failed for {sid}: {exc}")
-
-        # Persist warm-up state
-        if fc_result.new_state is not None:
-            try:
-                model_state_store.store_state(  # type: ignore[union-attr]
-                    sid,
-                    fc_result.model_id,
-                    resolved_cycle_time,
-                    fc_result.new_state,
-                )
-            except Exception as exc:
-                log.warning("forecast_cycle.store_state_failed", error=str(exc))
-
-        # Accumulate ensembles for Phase C
-        all_ensembles[sid] = {fc_result.model_id: dict(fc_result.ensembles)}
 
         stations_succeeded += 1
         duration_ms = round((time.perf_counter() - station_t0) * 1000, 1)
