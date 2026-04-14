@@ -46,36 +46,45 @@ class PgObservationStore:
             )
             self._conn.execute(stmt)
 
+    _BATCH_SIZE = 5000  # same as PgHistoricalForcingStore; 9 cols × 5000 = 45K params
+
     def store_raw_observations(
         self, obs_list: list[RawObservation]
     ) -> list[ObservationId]:
         if not obs_list:
             return []
+
+        rows = [
+            {
+                "id": ObservationId(uuid4()),
+                "station_id": raw.station_id,
+                "timestamp": raw.timestamp,
+                "parameter": raw.parameter,
+                "value": raw.value,
+                "source": raw.source.value,
+                "qc_status": QcStatus.RAW.value,
+                "qc_flags": None,
+                "qc_rule_version": None,
+            }
+            for raw in obs_list
+        ]
+
         ids: list[ObservationId] = []
-        for raw in obs_list:
-            oid = ObservationId(uuid4())
+        for i in range(0, len(rows), self._BATCH_SIZE):
+            batch = rows[i : i + self._BATCH_SIZE]
             stmt = (
                 pg_insert(observations)
-                .values(
-                    id=oid,
-                    station_id=raw.station_id,
-                    timestamp=raw.timestamp,
-                    parameter=raw.parameter,
-                    value=raw.value,
-                    source=raw.source.value,
-                    qc_status=QcStatus.RAW.value,
-                    qc_flags=None,
-                    qc_rule_version=None,
-                )
+                .values(batch)
                 .on_conflict_do_nothing(
                     index_elements=["station_id", "timestamp", "parameter", "source"],
                 )
                 .returning(observations.c.id)
             )
-            result = self._conn.execute(stmt)
-            row = result.fetchone()
-            if row is not None:
-                ids.append(oid)
+            returned = {row[0] for row in self._conn.execute(stmt).fetchall()}
+            for row in batch:
+                if row["id"] in returned:
+                    ids.append(row["id"])
+
         return ids
 
     def update_qc(
