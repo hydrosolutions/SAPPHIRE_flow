@@ -16,39 +16,66 @@
   <div class="card">
     <h3>Observations</h3>
     <p style="font-size:2rem; margin:0;">{{ "{:,}".format(obs_count) }}</p>
-    <p class="muted">total records</p>
+    {% if obs_date_range.min %}
+    <p class="muted">{{ obs_date_range.min }} &mdash; {{ obs_date_range.max }}</p>
+    {% endif %}
+    {% for p in obs_params %}
+    <span class="badge badge-blue">{{ p.parameter }}: {{ "{:,}".format(p.count) }}</span>
+    {% endfor %}
   </div>
 
   <div class="card">
     <h3>Forcing</h3>
     <p style="font-size:2rem; margin:0;">{{ "{:,}".format(forcing_count) }}</p>
-    <p class="muted">historical forcing records</p>
+    {% if forcing_date_range.min %}
+    <p class="muted">{{ forcing_date_range.min }} &mdash; {{ forcing_date_range.max }}</p>
+    {% endif %}
+    {% for p in forcing_params %}
+    <span class="badge badge-blue">{{ p.parameter }}: {{ "{:,}".format(p.count) }}</span>
+    {% endfor %}
   </div>
 
   <div class="card">
     <h3>Baselines</h3>
     <p style="font-size:2rem; margin:0;">{{ "{:,}".format(baseline_count) }}</p>
     <p class="muted">climatological entries</p>
+    {% if baseline_station_count %}
+    <p class="muted">{{ baseline_station_count }} station{{ "s" if baseline_station_count != 1 }}</p>
+    {% endif %}
   </div>
 
   <div class="card">
     <h3>Models</h3>
     <p style="font-size:2rem; margin:0;">{{ model_count }}</p>
     <p class="muted">{{ active_artifacts }} active artifact{{ "s" if active_artifacts != 1 }}</p>
+    {% for s in model_scopes %}
+    <span class="badge badge-blue">{{ s.scope }}: {{ s.count }}</span>
+    {% endfor %}
     <p><a href="/models/">View all &rarr;</a></p>
   </div>
 
   <div class="card">
     <h3>Forecasts</h3>
     <p style="font-size:2rem; margin:0;">{{ "{:,}".format(forecast_count) }}</p>
-    <p class="muted">{{ "{:,}".format(hindcast_count) }} hindcasts</p>
+    {% if forecast_latest %}
+    <p class="muted">latest: {{ forecast_latest }}</p>
+    {% endif %}
+    {% for s in forecast_statuses %}
+    <span class="badge {% if s.status == 'published' %}badge-green{% elif s.status == 'reviewed' %}badge-yellow{% else %}badge-blue{% endif %}">{{ s.status }}: {{ "{:,}".format(s.count) }}</span>
+    {% endfor %}
+    <p class="muted">{{ "{:,}".format(hindcast_count) }} hindcasts{% if hindcast_latest %} (latest: {{ hindcast_latest }}, {{ hindcast_station_count }} stn{{ "s" if hindcast_station_count != 1 }}){% endif %}</p>
     <p><a href="/forecasts/">View all &rarr;</a></p>
   </div>
 
   <div class="card">
     <h3>Skill Scores</h3>
     <p style="font-size:2rem; margin:0;">{{ "{:,}".format(skill_count) }}</p>
-    <p class="muted">evaluation records</p>
+    {% for m in skill_metrics %}
+    <span class="badge badge-blue">{{ m.metric }}: {{ "{:,}".format(m.count) }}</span>
+    {% endfor %}
+    {% for f in skill_freshness %}
+    <span class="badge {% if f.freshness == 'current' %}badge-green{% else %}badge-yellow{% endif %}">{{ f.freshness }}: {{ "{:,}".format(f.count) }}</span>
+    {% endfor %}
   </div>
 
   <div class="card">
@@ -57,6 +84,9 @@
       {% if active_alerts > 0 %}<span style="color:var(--pico-del-color);">{{ active_alerts }}</span>
       {% else %}{{ active_alerts }}{% endif %}
     </p>
+    {% for a in alert_levels %}
+    <span class="badge badge-red">{{ a.level }}: {{ a.count }}</span>
+    {% endfor %}
     <p class="muted">raised alerts</p>
   </div>
 </div>

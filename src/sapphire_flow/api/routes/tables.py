@@ -10,8 +10,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
 from sapphire_flow.api.deps import get_connection
+from sapphire_flow.db.metadata import metadata as _app_metadata
 
 router = APIRouter(tags=["tables"])
+
+SAPPHIRE_TABLES: frozenset[str] = frozenset(
+    t.name for t in _app_metadata.tables.values()
+)
 
 PAGE_SIZE = 50
 
@@ -71,6 +76,8 @@ def table_list(
     reflected = _get_reflected(conn)
     tables_info = []
     for name in sorted(reflected.tables.keys()):
+        if name not in SAPPHIRE_TABLES:
+            continue
         table = reflected.tables[name]
         count = conn.execute(sa.select(sa.func.count()).select_from(table)).scalar_one()
         tables_info.append(
@@ -97,10 +104,11 @@ def table_detail(
 ) -> HTMLResponse:
     from sapphire_flow.api import templates
 
-    if table_name not in _get_reflected(conn).tables:
+    reflected = _get_reflected(conn)
+    if table_name not in SAPPHIRE_TABLES or table_name not in reflected.tables:
         raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
 
-    table = _get_reflected(conn).tables[table_name]
+    table = reflected.tables[table_name]
     total = conn.execute(sa.select(sa.func.count()).select_from(table)).scalar_one()
 
     cols = _build_select(table)
@@ -138,10 +146,11 @@ def table_rows_partial(
 ) -> HTMLResponse:
     from sapphire_flow.api import templates
 
-    if table_name not in _get_reflected(conn).tables:
+    reflected = _get_reflected(conn)
+    if table_name not in SAPPHIRE_TABLES or table_name not in reflected.tables:
         raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
 
-    table = _get_reflected(conn).tables[table_name]
+    table = reflected.tables[table_name]
     total = conn.execute(sa.select(sa.func.count()).select_from(table)).scalar_one()
 
     cols = _build_select(table)

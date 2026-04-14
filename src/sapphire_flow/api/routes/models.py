@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import Any
 
 import sqlalchemy as sa
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from sapphire_flow.api.deps import get_connection
 from sapphire_flow.api.routes.tables import _get_reflected
@@ -157,3 +157,85 @@ def model_detail(
             "active_nav": "models",
         },
     )
+
+
+@router.get("/api/v1/models/{model_id}/skill-chart.json")
+def model_skill_chart_json(
+    model_id: str,
+    artifact_id: str = Query(
+        "", description="Optional artifact ID; defaults to active"
+    ),
+    conn: sa.Connection = Depends(get_connection),
+) -> JSONResponse:
+    reflected = _get_reflected(conn)
+    skill_table = reflected.tables.get("skill_scores")
+    if skill_table is None:
+        return JSONResponse({"series": []})
+
+    # Resolve artifact_id — default to active artifact
+    if not artifact_id:
+        artifacts_table = reflected.tables.get("model_artifacts")
+        if artifacts_table is not None:
+            active = conn.execute(
+                sa.select(artifacts_table.c.id)
+                .where(
+                    sa.and_(
+                        artifacts_table.c.model_id == model_id,
+                        artifacts_table.c.status == "active",
+                    )
+                )
+                .limit(1)
+            ).scalar_one_or_none()
+            if active:
+                artifact_id = str(active)
+
+    if not artifact_id:
+        return JSONResponse({"series": []})
+
+    rows = (
+        conn.execute(
+            sa.select(
+                skill_table.c.metric,
+                skill_table.c.parameter,
+                skill_table.c.station_id,
+                skill_table.c.lead_time_hours,
+                skill_table.c.score,
+            )
+            .where(
+                sa.and_(
+                    skill_table.c.model_artifact_id == artifact_id,
+                    skill_table.c.freshness == "current",
+                )
+            )
+            .order_by(
+                skill_table.c.metric,
+                skill_table.c.parameter,
+                skill_table.c.station_id,
+                skill_table.c.lead_time_hours,
+            )
+        )
+        .mappings()
+        .all()
+    )
+
+    # Group by (metric, parameter, station_id)
+    groups: dict[tuple[str, str, str], list[dict[str, object]]] = {}
+    for r in rows:
+        key = (r["metric"], r["parameter"], str(r["station_id"]))
+        if key not in groups:
+            groups[key] = []
+        groups[key].append({"lead_time": r["lead_time_hours"], "score": r["score"]})
+
+    series = []
+    for (metric, parameter, station_id), points in groups.items():
+        series.append(
+            {
+                "metric": metric,
+                "parameter": parameter,
+                "station_id": station_id,
+                "lead_times": [p["lead_time"] for p in points],
+                "scores": [p["score"] for p in points],
+            }
+        )
+
+    return JSONResponse({"series": series})

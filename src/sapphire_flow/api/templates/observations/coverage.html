@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Observation Coverage — SAPPHIRE Flow{% endblock %}
+{% block content %}
+<h2>Observation Coverage</h2>
+<p class="muted">{{ rows | length }} station(s) &times; {{ parameters | length }} parameter(s)</p>
+
+{% if rows %}
+<div class="table-container">
+  <table>
+    <thead>
+      <tr>
+        <th>Station</th>
+        {% for p in parameters %}
+        <th>{{ p }}</th>
+        {% endfor %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td><a href="/stations/{{ row.id }}/">{{ row.code }} — {{ row.name }}</a></td>
+        {% for p in parameters %}
+        {% set cell = row.cells.get(p) %}
+        {% if cell %}
+        <td>
+          <span class="badge {% if cell.count > 1000 %}badge-green{% elif cell.count > 0 %}badge-yellow{% endif %}">{{ "{:,}".format(cell.count) }}</span>
+          <br><span class="muted">{{ cell.min_date }} &mdash; {{ cell.max_date }}</span>
+        </td>
+        {% else %}
+        <td><span class="badge badge-red">0</span></td>
+        {% endif %}
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<p class="muted">No observation data found.</p>
+{% endif %}
+{% endblock %}

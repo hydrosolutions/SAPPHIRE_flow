@@ -66,6 +66,9 @@
 {% endif %}
 
 {% if skill_scores %}
+<h3>Skill vs Lead Time</h3>
+<div id="skill-chart" style="height:400px;"></div>
+
 <h3>Skill Scores (active artifact)</h3>
 <table>
   <thead>
@@ -105,6 +108,35 @@
   }
 })();
 {% endfor %}
+</script>
+{% endif %}
+
+{% if skill_scores %}
+<script>
+(function() {
+  const modelId = "{{ model.id }}";
+  fetch(`/api/v1/models/${modelId}/skill-chart.json`, {cache: "no-store"})
+    .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+    .then(data => {
+      if (!data.series || data.series.length === 0) return;
+      const metricColors = {"nse": "#1976D2", "kge": "#E53935", "mae": "#43A047", "rmse": "#FB8C00", "crps": "#8E24AA", "bias": "#00ACC1"};
+      const traces = data.series.map(function(s) {
+        const label = s.metric + " / " + s.parameter + " / " + s.station_id.slice(0, 8);
+        return {
+          type: "scatter", x: s.lead_times, y: s.scores, mode: "lines+markers",
+          name: label, line: {color: metricColors[s.metric] || "#666", width: 1.5},
+          marker: {size: 5},
+        };
+      });
+      Plotly.newPlot("skill-chart", traces, {
+        title: {text: "Skill vs Lead Time"},
+        xaxis: {title: {text: "Lead Time (hours)"}},
+        yaxis: {title: {text: "Score"}},
+        margin: {t: 40, r: 20},
+      });
+    })
+    .catch(function(e) { console.error("Skill chart error:", e); });
+})();
 </script>
 {% endif %}
 {% endblock %}

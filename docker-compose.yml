@@ -75,6 +75,9 @@ services:
         condition: service_healthy
     cap_drop:
       - ALL
+    cap_add:
+      - SETUID
+      - SETGID
     secrets:
       - db_password
     read_only: true
@@ -110,6 +113,9 @@ services:
       retries: 3
     cap_drop:
       - ALL
+    cap_add:
+      - SETUID
+      - SETGID
     secrets:
       - db_password
     read_only: true
@@ -171,6 +177,9 @@ services:
         condition: service_healthy
     cap_drop:
       - ALL
+    cap_add:
+      - SETUID
+      - SETGID
     secrets:
       - db_password
     read_only: true
