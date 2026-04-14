@@ -219,10 +219,10 @@ def geometry_to_basin(
     name = str(attrs["gauge_name"]) if "gauge_name" in attrs.index else gauge_id
     area = float(attrs["area"]) if "area" in attrs.index else None
 
-    # Sanitise attributes: replace NaN with None (NaN is invalid JSON)
+    # Sanitise attributes: replace NaN/Inf with None (non-finite floats are invalid JSON)
     raw_attrs = attrs.to_dict()
     clean_attrs = {
-        k: (None if isinstance(v, float) and math.isnan(v) else v)
+        k: (None if isinstance(v, float) and not math.isfinite(v) else v)
         for k, v in raw_attrs.items()
     }
 
