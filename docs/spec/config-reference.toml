@@ -188,6 +188,21 @@ label = "excellent"
 
 
 # =============================================================================
+# Station onboarding — bootstrap configuration
+# Source: v0-scope.md § A4, architecture-context.md § Flow 5 step 5.1
+# Module: config/onboarding.py (loaded separately from DeploymentConfig)
+# NOT part of DeploymentConfig. Read by scripts/onboard.py and flows/onboard.py
+# when --basin-ids CLI arg is not provided.
+# =============================================================================
+
+[onboarding]
+data_source = "camels-ch"          # v0: CAMELS-CH; v1+: "manual", "api"
+basin_ids = [                      # BAFU gauge IDs to onboard
+    "2004", "2009", "2011",        # (167 EXACT_ID matches to LINDAS for v0 Swiss)
+]
+
+
+# =============================================================================
 # QC rule configuration — deployment-level defaults
 # Source: types-and-protocols.md § QcRuleSet, QcRuleParams
 # Three-layer hierarchy: deployment defaults → per-station overrides → rule versioning

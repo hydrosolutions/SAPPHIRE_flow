@@ -112,7 +112,7 @@ def _build_parser() -> argparse.ArgumentParser:
         nargs="+",
         metavar="ID",
         default=None,
-        help="Gauge IDs to onboard (default: all stations)",
+        help="Gauge IDs to onboard (default: from config.toml [onboarding], or all)",
     )
     parser.add_argument(
         "--start-date",
@@ -168,6 +168,19 @@ def main() -> int:
         data_dir = resolve_data_dir(config_data_dir) / "raw" / "CAMELS_CH"
 
     basin_ids: list[str] | None = args.basin_ids
+    if basin_ids is None:
+        config_path = os.environ.get("SAPPHIRE_CONFIG")
+        if config_path is not None:
+            from sapphire_flow.config.onboarding import load_onboarding_config
+
+            onboarding_cfg = load_onboarding_config(config_path)
+            if onboarding_cfg is not None:
+                basin_ids = list(onboarding_cfg.basin_ids)
+                log.info(
+                    "basin_ids_from_config",
+                    count=len(basin_ids),
+                    source=config_path,
+                )
     start_date: str | None = args.start_date
     end_date: str | None = args.end_date
 

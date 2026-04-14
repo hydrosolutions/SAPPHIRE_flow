@@ -259,6 +259,7 @@ def load_config(path: Path | str | None = None) -> DeploymentConfig:
     data.pop("monitoring", None)
     data.pop("models", None)
     data.pop("api", None)
+    data.pop("onboarding", None)
     paths_section = data.pop("paths", {})
     data["paths_data_dir"] = paths_section.get("data_dir")
     return DeploymentConfig.model_validate(data)

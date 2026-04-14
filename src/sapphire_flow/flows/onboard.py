@@ -126,6 +126,17 @@ def onboard_stations_flow(
 
             deployment_config = load_config(config_path)
 
+    # Read basin_ids from config if not provided via argument
+    if basin_ids is None:
+        config_path = os.environ.get("SAPPHIRE_CONFIG")
+        if config_path is not None:
+            from sapphire_flow.config.onboarding import load_onboarding_config
+
+            onboarding_cfg = load_onboarding_config(config_path)
+            if onboarding_cfg is not None:
+                basin_ids = list(onboarding_cfg.basin_ids)
+                log.info("basin_ids_from_config", count=len(basin_ids))
+
     if qc_rules is None:
         qc_rules = _load_qc_rules()
 
