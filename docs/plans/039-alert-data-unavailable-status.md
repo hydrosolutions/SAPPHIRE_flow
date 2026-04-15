@@ -1,8 +1,18 @@
-# Plan 039 — Alert DATA_UNAVAILABLE Status for Sensor/Model Failure
+# Plan 039 — Sensor/Model Failure Visibility for Operators
 
-**Status**: DRAFT
-**Phase**: Cross-cutting (alert lifecycle)
-**Depends on**: Plan 037 (security audit finding H-23c)
+**Status**: DEFERRED
+**Phase**: Flow 4 (pipeline monitoring)
+**Depends on**: Flow 4 implementation
+**Deferred reason**: Sensor-offline detection belongs to pipeline monitoring
+(Flow 4 / `AlertSource.PIPELINE` / `PipelineCheckType.OBSERVATION_FRESHNESS`),
+which is deferred to v0c/v1 per `docs/v0-scope.md`. Alerting is default-off
+during v0 (per-source flags in `DeploymentConfig`, §A8c) but can be enabled
+incrementally within v0 — the stale-alert hazard becomes live when
+`enable_observation_alerts` or `enable_forecast_alerts` is set to `true`. At
+that point operators see stale RAISED alerts on the dashboard
+(`dashboard.py:190,195`) with no indication the station is offline. This is
+acceptable risk for early v0 deployment but must be addressed before production
+use with human operators. Revisit when Flow 4 is scoped.
 
 ## Context
 
@@ -36,173 +46,161 @@ pre-implementation review identified this as **operationally dangerous**:
 > Auto-resolve fires. Operators see the alert cleared. They assume the flood is
 > over. It is not.
 
-This is a genuine safety hazard for an operational flood warning system.
+This is a genuine safety hazard for an operational flood warning system. The
+rejection of auto-resolve aligns with WMO-1150 (Guidelines on Multi-Hazard
+Impact-Based Forecast and Warning Services), which recommends that warnings be
+rescinded only when the hazard has demonstrably passed.
 
-### Current alert lifecycle
+### Current behaviour (v0)
 
-```
-       upsert_alert(RAISED)
-            │
-            v
-┌──────────────────────┐
-│       RAISED         │──────────► resolve_alert() ──► RESOLVED
-│                      │                                    │
-│  trigger_value > 0   │                                    │
-└──────────────────────┘                                    │
-            │                                               │
-     acknowledge_alert()                                    │
-            │                                               │
-            v                                               │
-┌──────────────────────┐                                    │
-│    ACKNOWLEDGED      │──────────► resolve_alert() ────────┘
-│                      │
-│  operator confirmed  │
-└──────────────────────┘
-```
+The deferred-resolution approach is **safe for early v0 deployment**: alerting is
+default-off (`enable_forecast_alerts: false`, `enable_observation_alerts: false`
+per `DeploymentConfig` §A8c), and the staged activation sequence (pipeline alerts
+first, then observation, then forecast) means operators control when alerts go
+live. The current guards in `observation_alert_checker.py` (line ~106,
+`configured.issubset(evaluated_parameters)`) and `alert_checker.py` (line ~138,
+`_ensemble_size_adequate`) correctly prevent false resolution.
 
-Status enum (`types/enums.py:29`):
-- `RAISED` — threshold exceeded, alert active
-- `ACKNOWLEDGED` — operator has seen the alert
-- `RESOLVED` — conditions returned below threshold
+Note: a dashboard (`dashboard.py`) exists in v0 and already renders active alert
+counts and breakdowns by level. It hardcodes `status == "raised"` at lines 190
+and 195. Stale alerts will appear as active on this dashboard once alerting is
+enabled.
 
-Missing: any representation of "we cannot evaluate this alert because data is
-unavailable."
+### Existing partial mitigations
 
-### Affected code paths
+The architecture already provides forecaster-facing signals for data degradation
+that partially address the visibility gap without touching the alert state machine:
 
-**Observation alerts** (`services/observation_alert_checker.py:96-107`):
-When `evaluated_parameters` is empty (all sensors offline), the deferred-resolution
-guard on line 100 (`configured.issubset(evaluated_parameters)` is `False`)
-prevents any resolution. Active alerts persist indefinitely.
+- `observation_staleness_hours` on forecast records — visible in the API and
+  dashboard, flags when the most recent observation is older than a configurable
+  threshold (Flow 1 note 1.6)
+- `InputQualityLevel: FULL | PARTIAL | DEGRADED` with `input_quality_flags` on
+  the `forecasts` table — visible to forecasters
 
-**Forecast alerts** (`services/alert_checker.py:136-139,239-244`):
-When a station has no ensembles (model failed), `_check_station` exits before
-calling `_process_results`. Active forecast alerts persist indefinitely.
+These do not address stale *alerts* specifically, but they provide context that
+helps operators interpret suspicious alert states.
 
-### Design
+### Architectural decision: pipeline alerts, not alert state mutation
 
-**New status**: `DATA_UNAVAILABLE = "data_unavailable"`
+`docs/architecture-context.md` Flow 4 (pipeline monitoring) owns detection of
+"data source outages, missing observations, stale forecasts" via
+`AlertSource.PIPELINE` — deliberately separate from flood alerts. The
+`pipeline_health` table already defines `PipelineCheckType.OBSERVATION_FRESHNESS`
+with per-station detail fields (`station_code`, `last_received`, `age_hours`,
+`expected_interval_hours`).
 
-This is NOT a resolution — it is a **suspension**. The alert remains active in
-a degraded state. The semantic is: "this alert was RAISED (or ACKNOWLEDGED) but
-we can no longer evaluate it because data is missing."
+An earlier design sketch proposed adding `DATA_UNAVAILABLE` as a fourth
+`AlertStatus` on flood alerts (a "suspension" state). This was rejected during
+review for the following reasons:
 
-```
-       upsert_alert(RAISED)
-            │
-            v
-┌──────────────────────┐
-│       RAISED         │──────► resolve_alert() ──► RESOLVED
-│                      │
-└──────┬───────────────┘
-       │           │
-       │    transition to
-       │    DATA_UNAVAILABLE
-       │           │
-       │           v
-       │   ┌──────────────────────┐
-       │   │  DATA_UNAVAILABLE    │──► fresh data arrives ──► re-evaluate
-       │   │                      │        │
-       │   │  sensor/model offline│        ├──► still exceeds → RAISED
-       │   └──────────────────────┘        └──► below threshold → RESOLVED
-       │
-     acknowledge_alert()
-       │
-       v
-┌──────────────────────┐
-│    ACKNOWLEDGED      │──────► same transitions as RAISED
-└──────────────────────┘
-```
+1. **Violates the architectural separation**: The architecture routes pipeline
+   concerns to the ops team via `AlertSource.PIPELINE` and flood alerts to
+   forecasters — different recipients, different channels, different urgency
+   models. Embedding pipeline-health semantics into the flood alert state machine
+   conflates these concerns.
 
-When fresh data arrives, the alert checker evaluates normally:
-- If the threshold is still exceeded → `upsert_alert(RAISED)` (re-raises)
-- If below threshold → `resolve_alert()` (resolves)
-- If still no data → stays `DATA_UNAVAILABLE`
+2. **No architectural precedent for suspension**: The alert state machine is
+   linear (`RAISED → ACKNOWLEDGED → RESOLVED`). A non-terminal, non-resolved
+   limbo state raises unanswered questions: Can it be acknowledged? Resolved
+   manually? What happens to deduplication when fresh data arrives?
 
-### Key design decisions
+3. **Breaks deduplication indexes**: The partial unique indexes
+   (`ix_alerts_station_level_source_active`,
+   `ix_alerts_level_source_system_active`) filter on
+   `status IN ('raised', 'acknowledged')`. A fourth active status would require
+   expanding these indexes, breaking the assumption that exactly two states are
+   "active."
 
-1. `DATA_UNAVAILABLE` is a **non-terminal state** — it can transition back to
-   `RAISED` or forward to `RESOLVED`. It is not a resolution.
+4. **Routes an ops concern to the wrong audience**: Forecasters receiving a
+   `DATA_UNAVAILABLE` flood alert cannot act on it — sensor recovery is an
+   infrastructure concern for the ops team.
 
-2. The `fetch_active_alerts` query currently filters `status != 'resolved'`.
-   `DATA_UNAVAILABLE` alerts ARE still "active" (they should appear on the
-   dashboard with a distinct visual treatment — e.g., greyed out with a
-   "data unavailable" badge).
+The correct approach is: **Flow 4 raises `AlertSource.PIPELINE` alerts for sensor
+outages; flood alerts retain their last-known state unchanged.** The
+deferred-resolution behavior is not a bug — it is the correct safety measure. The
+flood alert state machine remains three states.
 
-3. The dashboard must distinguish `DATA_UNAVAILABLE` from `RAISED`. A greyed-out
-   or hatched alert is safer than a bright red one — operators should see "we
-   don't know" rather than "flood in progress."
+## Design sketch (for Flow 4 implementation)
 
-4. A `DATA_UNAVAILABLE` alert should carry metadata: `data_unavailable_since`
-   timestamp (when the transition happened) and optionally `missing_parameters`
-   (which sensors are offline).
+When this plan is revisited, the following items must be addressed:
 
-## Tasks
+### Approach
 
-### Task 1: Add `DATA_UNAVAILABLE` to `AlertStatus` enum
+Flow 4 step 4.2 detects per-station observation staleness. When a station's
+observations are stale beyond a configurable threshold, Flow 4 step 4.6 raises
+an `AlertSource.PIPELINE` alert with check type `observation_freshness`, targeted
+at the ops team via the pipeline notification channel. The existing flood alert
+(RAISED or ACKNOWLEDGED) remains unchanged.
 
-**File**: `src/sapphire_flow/types/enums.py`
-Add `DATA_UNAVAILABLE = "data_unavailable"` to the `AlertStatus` enum.
+Operators learn about the offline station via the pipeline alert channel, not by
+inspecting flood alert statuses. The dashboard surfaces pipeline alerts separately
+from flood alerts.
 
-### Task 2: Add `data_unavailable_since` column to `alerts` table
+### Implementation requirements
 
-**Migration**: New Alembic migration `0025_add_data_unavailable_status.py`.
-- Add column `data_unavailable_since TIMESTAMPTZ NULL` to `alerts`
-- Add `'data_unavailable'` to the CHECK constraint on `alerts.status` (if one
-  exists; currently status is a plain Text column — verify)
+1. **Flow 4 steps 4.2 + 4.6**: Implement per-station observation freshness
+   checking and pipeline alert raising. The `pipeline_health` table and
+   `PipelineCheckType.OBSERVATION_FRESHNESS` already exist in the schema.
 
-### Task 3: Add `transition_to_data_unavailable` method to `PgAlertStore`
+2. **Pipeline alert upsert**: Use the existing `AlertStore.upsert_alert` with
+   `source=AlertSource.PIPELINE` and `alert_level="observation_freshness"`.
+   No new Protocol methods needed — pipeline alerts use the same store interface.
 
-**File**: `src/sapphire_flow/store/alert_store.py`
-New method that sets `status = 'data_unavailable'` and
-`data_unavailable_since = now()` on a given alert ID. Only valid for alerts
-currently in `RAISED` or `ACKNOWLEDGED` status.
+3. **Dashboard**: `dashboard.py:190,195` hardcodes `status == "raised"` for flood
+   alert counts. Add a separate section for pipeline alerts
+   (`source = 'pipeline'`), with distinct visual treatment. Do not mix pipeline
+   alerts into flood alert counts.
 
-### Task 4: Update `observation_alert_checker.py`
+4. **Logging**: Event names must follow `{entity}.{action}` past-tense convention
+   per `docs/standards/logging.md`. Use `pipeline_alert.raised` (not
+   `alert.data_unavailable_transitioned`). Log level: `WARNING` for a
+   degraded-state detection. The codebase uses `alert.*` for forecast-based and
+   `observation_alert.*` for observation-based events — pipeline alerts should use
+   `pipeline_alert.*` to maintain the entity namespace separation.
 
-**File**: `src/sapphire_flow/services/observation_alert_checker.py`
-When `evaluated_parameters` is empty for a station and there are active alerts,
-transition those alerts to `DATA_UNAVAILABLE` instead of deferring resolution.
-Log at WARNING level: `observation_alert.data_unavailable`.
+5. **Orchestration**: Per `docs/standards/orchestration.md`:
+   - The staleness check and alert raise must be wrapped in `@task` (DB writes
+     require task boundaries)
+   - Use `task.map()` for per-station fan-out
+   - Address write-concurrency with Flow 1 and Flow 2: if Flow 4 fires while
+     Flow 1/2 is mid-execution for the same station, a Prefect named-concurrency
+     slot or transaction isolation is needed to prevent interleaving
 
-### Task 5: Update `alert_checker.py` (forecast alerts)
+6. **DB user boundary**: `transition_to_data_unavailable` (if any store method
+   is added) must be called exclusively by `sapphire_worker` (Flow 4), not
+   `sapphire_api`. Enforce via the existing DB user privilege separation per
+   `docs/standards/security.md`.
 
-**File**: `src/sapphire_flow/services/alert_checker.py`
-When a station is absent from `all_ensembles` (no model output), check for active
-forecast alerts for that station and transition them to `DATA_UNAVAILABLE`.
+7. **CI/CD migration**: If any schema changes are needed (e.g. adding
+   `data_unavailable_since` to the alerts table as metadata), the migration must
+   be **additive-only** per `docs/standards/cicd.md` — the previous image tag
+   must be able to run against the new schema during the migration window. New
+   nullable columns are safe; enum expansion requires a two-phase deployment
+   (Phase 1: expand constraint, Phase 2: deploy code that writes new values).
 
-### Task 6: Handle re-evaluation on data return
+8. **WMO/CAP note**: When WMO-1109 CAP integration is implemented (v1/Nepal),
+   pipeline alerts must not be emitted as CAP alert messages. They are
+   operational, not public-facing warnings.
 
-When fresh data arrives and `evaluated_parameters` is non-empty, the existing
-`upsert_alert(RAISED)` or `resolve_alert()` paths should handle re-evaluation
-naturally — `DATA_UNAVAILABLE` alerts are still "active" (not resolved), so the
-existing logic of checking active alerts and resolving/updating them applies
-without changes.
+9. **Resolution of pipeline alerts**: When observation freshness recovers
+   (station comes back online), the pipeline alert should be auto-resolved.
+   Unlike flood alerts, auto-resolve is safe for pipeline alerts — the condition
+   being monitored (data availability) is directly observable.
 
-Verify: does `upsert_alert` with `on_conflict_do_update` correctly update a
-`DATA_UNAVAILABLE` alert back to `RAISED`? The conflict index is on
-`(station_id, alert_level, source)` where `status IN ('raised', 'acknowledged')`.
-A `DATA_UNAVAILABLE` alert would NOT match this conflict condition, causing a
-new row to be inserted. This must be fixed — either widen the conflict condition
-to include `'data_unavailable'`, or use a separate update path.
+10. **Tests**: Pipeline alert lifecycle (raise on staleness, resolve on recovery),
+    dashboard rendering of pipeline alerts separately from flood alerts,
+    concurrency with Flow 1/2 alert writes.
 
-### Task 7: Tests
+### Optional enhancement: staleness metadata on flood alerts
 
-- Unit test: observation checker transitions to DATA_UNAVAILABLE when all sensors
-  offline
-- Unit test: observation checker re-raises when data returns after
-  DATA_UNAVAILABLE
-- Unit test: forecast checker transitions when model fails
-- Integration test: full lifecycle RAISED → DATA_UNAVAILABLE → RESOLVED
+As a lower-priority addition, consider adding `last_evaluated_at: UtcDatetime |
+None` to the `Alert` dataclass and table. This gives the dashboard a way to show
+"last checked 3 days ago" on a stale flood alert without changing the alert's
+status. This is a nullable column addition (additive-only migration, no
+backwards-compatibility concern) and is independent of the pipeline alert work.
 
-## Open questions
+### Open question (to resolve during Flow 4 design)
 
-1. Should `DATA_UNAVAILABLE` have a maximum duration? E.g., after 7 days of no
-   data, auto-resolve to prevent indefinite accumulation? (This should be
-   configurable via `DeploymentConfig`.)
-
-2. Should `DATA_UNAVAILABLE` alerts trigger a separate notification to operators
-   (pipeline health alert vs. flood alert)?
-
-3. The `upsert_alert` conflict index needs careful review (Task 6) — this is the
-   highest-risk part of the implementation.
+1. Should pipeline alerts for observation staleness have a configurable
+   auto-escalation if the station remains offline beyond a second, longer
+   threshold? (e.g. WARNING after 6h, CRITICAL after 24h)
