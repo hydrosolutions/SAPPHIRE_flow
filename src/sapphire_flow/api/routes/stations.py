@@ -400,6 +400,10 @@ def station_observations_json(
 
     start_dt = datetime.fromisoformat(start).replace(tzinfo=UTC)
     end_dt = datetime.fromisoformat(end).replace(tzinfo=UTC)
+    if (end_dt - start_dt).days > 25 * 366:
+        raise HTTPException(
+            status_code=400, detail="Date range exceeds 25-year maximum"
+        )
 
     rows = (
         conn.execute(
@@ -441,6 +445,10 @@ def station_forcing_json(
 
     start_dt = datetime.fromisoformat(start).replace(tzinfo=UTC)
     end_dt = datetime.fromisoformat(end).replace(tzinfo=UTC)
+    if (end_dt - start_dt).days > 25 * 366:
+        raise HTTPException(
+            status_code=400, detail="Date range exceeds 25-year maximum"
+        )
 
     rows = (
         conn.execute(
@@ -533,6 +541,10 @@ def station_hindcasts_json(
 
     start_dt = datetime.fromisoformat(start).replace(tzinfo=UTC)
     end_dt = datetime.fromisoformat(end).replace(tzinfo=UTC)
+    if (end_dt - start_dt).days > 25 * 366:
+        raise HTTPException(
+            status_code=400, detail="Date range exceeds 25-year maximum"
+        )
 
     # Get hindcast forecasts for this station/parameter/range
     hf_rows = (

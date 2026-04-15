@@ -1,6 +1,7 @@
 # Plan 037 — Security Audit: Findings and Remediation
 
-**Status**: READY (partial — C-1 through H-13 reviewed; H-14+ pending)
+**Status**: READY (all HIGH findings reviewed; MEDIUM pending)
+**Deferred to dedicated plans**: H-21 (AUTOCOMMIT→transactions), H-23c (DATA_UNAVAILABLE alert status)
 **Phase**: Cross-cutting (all phases)
 **Scope**: v0 hardening before any network exposure; v1 prerequisites marked
 
@@ -85,9 +86,9 @@ planned for v0. TLS will be configured when a production domain is provisioned.
 **H-1 through H-5: API/infra hardening — DEFERRED TO v1**
 
 H-1 (CORS), H-2 (security headers), H-3 (rate limiting), H-4 (stored XSS in
-templates), H-5 (SRI hashes on CDN scripts) — all deferred to v1. v0 runs on
-localhost/internal network only; these are defense-in-depth measures that become
-relevant when the API is network-exposed with authentication.
+templates), H-5 (SRI hashes on CDN scripts) — all deferred to v1.
+
+**H-19. Schema validation after `np.load` — FIXED (in C-2)**
 
 ### Path Traversal
 
@@ -132,118 +133,112 @@ prefixed env var names. 72 tests pass.
 
 ### Unbounded Queries (DoS)
 
-**H-14. Multiple API endpoints return unbounded result sets**
-- `forecasts.py:137-145` — All forecast values for a forecast_id, no LIMIT
-- `stations.py:403-419` — All observations in a date range, no LIMIT
-- `stations.py:558-573` — Thousands of UUIDs in a single IN clause
-- `models.py:27-31` — All models, no pagination
-- `models.py:195-218` — All skill scores for an artifact, no LIMIT
-- `tables.py:143` — `page` parameter has no upper bound
+**H-14. Multiple API endpoints return unbounded result sets — REVIEWED**
+- `forecasts.py` — per-forecast values: **DEFER** (physically bounded ~2500 rows)
+- `stations.py` observations.json/forcing.json: **FIX** — add 25-year max date
+  range at route level (HTTP 400 if exceeded). Generous enough for any legitimate
+  dashboard use; prevents accidental epoch-to-now queries. Route-level only — no
+  store or flow changes.
+- `stations.py` hindcasts.json: **CAUTION** — cap range with HTTP 400, not silent
+  LIMIT; truncation would corrupt the chart.
+- `models.py` model list: **DEFER** (O(10) models operationally)
+- `models.py` skill-chart.json: **CAUTION** — DO NOT add row LIMIT (silently
+  truncates chart series). Needs query-level aggregation instead.
+- `tables.py` page param: **DEFER** (data always capped at 50 rows)
 
-Fix: Add `LIMIT` clauses, maximum date ranges, and `page` upper bounds.
-
-**H-15. Multiple store methods return unbounded result sets**
-- `forecast_store.py:151-194` — `_fetch_by_ids` with enormous IN lists
-- `hindcast_store.py:81-211` — All hindcast values, no LIMIT
-- `observation_store.py:107-171` — Unbounded observation fetch
-- `basin_store.py:39-41` — All basins with full geometry
-
-Fix: Add mandatory `limit` parameters with safe defaults.
+**H-15. Multiple store methods return unbounded result sets — REVIEWED**
+- **DO NOT ADD LIMIT to store methods.** Skill computation, training, and hindcast
+  callers explicitly need ALL data for their time ranges. A LIMIT silently
+  corrupts model outputs and skill scores.
+- `forecast_store._fetch_by_ids`: CAUTION — safe to chunk IN clause (50 IDs/batch)
+  as a perf optimization, but no LIMIT.
+- `hindcast_store` / `observation_store`: DEFER — callers pass bounded ranges by
+  design; the range is the constraint, not a row limit.
 
 ### Infrastructure
 
-**H-16. DB password in prefect-server shell command**
-`docker-compose.yml:39-41` — Password inlined via `$(cat /run/secrets/db_password)`
-into a shell `export`. Visible in process environment via `/proc/<pid>/environ`.
-Fix: Use the same `docker/entrypoint.sh` pattern as other services.
+**H-16. DB password in prefect-server shell command — CAUTION**
+Proposed fix (reuse `docker/entrypoint.sh`) will NOT work: Prefect image has no
+`gosu`, no `app` user, and needs `PREFECT_API_DATABASE_CONNECTION_URL` not
+`DATABASE_URL`. Requires a Prefect-specific wrapper script. Low urgency — password
+is visible in process env only, not in logs or API.
 
-**H-17. `sed` URL construction breaks on special characters**
-`docker/entrypoint.sh:15,21` — Uses `|` as sed delimiter. Password containing `|`
-produces a silently corrupted URL.
-Fix: Use Python to construct the URL with proper percent-encoding.
+**H-17. `sed` URL construction breaks on special characters — FIX (low urgency)**
+Current password is safe (`+` but no `|`). Replace two `sed` calls with a Python
+one-liner that percent-encodes the password. Both psycopg and asyncpg handle
+percent-encoded URLs correctly. `gosu` structure unchanged.
 
-**H-18. `logging.py` — env-var-controlled log levels with no validation**
-`logging.py:58-63` — `SAPPHIRE_LOG_*` env vars set logger levels. No validation
-that the value is a valid level. `getattr(logging, val.upper(), logging.INFO)`
-silently falls back to INFO.
-Fix: Validate against `{"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}`.
+**H-18. `logging.py` — env-var-controlled log levels — DEFER**
+INFO fallback is the correct safe default. Not a meaningful security finding.
+Making it raise would bring down production on a log-level typo.
 
 ### Model Safety
 
-**H-19. `linear_regression_daily.py` — no schema validation after `np.load`**
-`models/linear_regression_daily.py:249-256` — No shape/dtype validation on loaded
-arrays. Tampered artifact with mismatched shapes produces silently wrong forecasts
-via NumPy broadcasting.
-Fix: Validate all array shapes are consistent and all values are finite after load.
+**H-19. `linear_regression_daily.py` — schema validation — FIXED (in C-2)**
+Already addressed: `allow_pickle=False` + shape/ndim/finiteness validation.
 
-**H-20. `model_registry.py` — arbitrary code execution via entry points**
-`services/model_registry.py:30-41` — `discover_models()` loads and instantiates
-any class registered as a `sapphire_flow.models` entry point. A compromised
-package in the venv executes arbitrary code.
-Fix: Pin all deps in lockfile with hash verification. Log full entry-point path
-at INFO before loading.
+**H-20. `model_registry.py` — entry-point supply chain — DEFER**
+v0 has zero external model packages (all three entry points are internal). Document
+`uv sync --require-hashes` as a pre-v1 deployment gate. No code changes needed.
 
 ### Data Integrity
 
-**H-21. AUTOCOMMIT with no transactions across all flows**
-`flows/_db.py:19`, `flows/run_forecast_cycle.py:59`, `flows/ingest_observations.py:83`,
-`flows/onboard.py:62` — All connections use `AUTOCOMMIT`. Multi-statement writes
-(forecast header + values, model state + forecast) have no rollback on partial
-failure.
-Fix: Use explicit transactions for logically atomic operations.
+**H-21. AUTOCOMMIT with no transactions — FIX (logic change needed)**
+Only `store_forecast` and `store_hindcast` have two-phase inserts (header + values)
+that must be atomic. All other store methods are single-statement. **Minimal safe
+fix**: wrap those two methods in a savepoint (`with conn.begin_nested()`), keeping
+AUTOCOMMIT for everything else. DO NOT switch the whole connection to transactional
+— no store method calls `conn.commit()`, so all writes would silently roll back.
 
-**H-22. DDL privileges in application code**
-`flows/_db.py:13-20` — `run_migrations()` called at flow startup. Operational DB
-user needs DDL privileges to run Alembic.
-Fix: Run migrations via a separate deploy user/init container.
+**H-22. DDL privileges in application code — FIX (just logging)**
+The `init` service in docker-compose already runs `alembic upgrade head`. The
+in-flow `run_migrations()` calls are redundant. Remove from flows; add a read-only
+schema-version check (`SELECT version_num FROM alembic_version`) that warns or
+raises on mismatch. Flag for v1: init container needs
+`condition: service_completed_successfully` in depends_on.
 
 ### Alert Safety
 
-**H-23. Silent false negatives in alert checking**
-- `services/alert_strategy.py:76-83` — Division-by-zero edge case in exceedance
-  computation produces under-estimated probability when CDF is flat
-- `services/alert_strategy.py:49-50` — Empty ensemble returns 0 exceedance (false
-  negative) without warning
-- `services/observation_alert_checker.py:96-107` — Stale alerts never resolved
-  when a parameter has no QC-passed observations (sensor failure)
-- `services/alert_checker.py:136-139,239-244` — Station silently skipped when
-  ensemble is too small; no alert raised, no resolved alert emitted
-
-Fix: Add explicit logging for every skipped station/parameter. Add a staleness
-watchdog for unresolved alerts.
+**H-23. Silent false negatives in alert checking — REVIEWED**
+- H-23a (CDF flat): **DEFER** — already guarded; QUANTILES path not reachable in v0.
+- H-23b (empty ensemble → 0.0): **FIX (just logging)** — add `log.warning` when
+  `max()` returns None. The 0.0 fallback is the correct conservative choice.
+- H-23c (stale alerts on sensor failure): **FIX (logic change needed)** — alerts
+  persist forever when sensor goes offline. Both observation and forecast checkers
+  need a "data unavailable" resolve path when evaluated_parameters is empty.
+- H-23d (ensemble too small skip): **DEFER** — already logged at WARNING.
 
 ### Sensitive Data Leakage
 
-**H-24. Exception messages stored in result structs**
-`services/hindcast.py:287-299`, `services/model_onboarding.py:718-736`,
-`services/onboarding.py:239-609`, `flows/ingest_observations.py:313-320`,
-`flows/run_forecast_cycle.py:432-594` — Raw `str(exc)` embedded in result
-objects. May contain DB connection strings, file paths, SQL fragments. Results
-may be persisted by Prefect.
-Fix: Log full exception internally; store only sanitized error type + code in
-result structs.
+**H-24. Exception messages stored in result structs — DEFER**
+Result structs never reach API clients or external storage in v0. Prefect result
+storage is local. When Phase 9 exposes status APIs, create separate response schemas
+that omit/sanitize the `error` field.
 
-**H-25. `tools/record_fixtures.py` — CWD-relative config and world-writable /tmp**
-`tools/record_fixtures.py:231,265,270` — `open("config.toml", "rb")` is relative
-to CWD. A malicious `config.toml` in the working directory is used without
-validation. Default scratch path `/tmp/sapphire_nwp` is world-accessible.
-Fix: Use `load_config()`. Use `tempfile.mkdtemp()` for scratch.
+**H-25. `tools/record_fixtures.py` — CWD-relative config — DEFER**
+Developer-only CLI tool, not a production path. Public NWP data in `/tmp`.
 
 ### Timezone Handling
 
-**H-26. Timezone clobber in cycle time parsing**
-`flows/run_forecast_cycle.py:81` — `.replace(tzinfo=UTC)` silently discards an
-existing non-UTC timezone instead of converting. A `+05:30` input shifts the
-cycle time by 5.5 hours, producing wrong forecasts.
-Fix: Use `ensure_utc()` which converts rather than replaces.
+**H-26. Timezone clobber in cycle time parsing — CAUTION**
+Real bug but naive fix breaks existing callers. `ensure_utc()` raises on naive
+datetimes, which is the common Prefect input. Safe fix is two-step:
+```python
+parsed = datetime.fromisoformat(cycle_time_str)
+if parsed.tzinfo is None:
+    parsed = parsed.replace(tzinfo=UTC)  # convention: naive = UTC
+return ensure_utc(parsed)               # converts non-UTC aware to UTC
+```
+DO NOT simply replace `.replace(tzinfo=UTC)` with `ensure_utc()`.
 
 ### Reproducibility
 
-**H-27. Non-reproducible hash seeds**
-`services/forecast_combination.py:155`, `services/model_onboarding.py:264` —
-`hash(str(...))` used as RNG seed. Python's string hash is randomized by default
-(`PYTHONHASHSEED`). Smoke tests and BMA seeds differ across process restarts.
-Fix: Use `hashlib.sha256(str(...).encode()).digest()[:4]` for stable seeds.
+**H-27. Non-reproducible hash seeds — REVIEWED**
+- `model_onboarding.py:264` (smoke test): **FIX** — ephemeral synthetic data, nothing
+  persisted. `hashlib.sha256` makes CI reproducible. Zero risk.
+- `forecast_combination.py:155` (BMA): **CAUTION** — changes member labeling on
+  deployment. Schedule for a deployment boundary. Should also incorporate
+  `cycle_time` in the seed for per-run reproducibility.
 
 ---
 

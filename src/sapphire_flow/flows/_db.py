@@ -63,7 +63,8 @@ def setup_production_stores(
     database_url: str,
 ) -> tuple[sa.Connection, dict[str, object]]:
     engine = sa.create_engine(database_url)
-    run_migrations(engine)
+    # Migrations are handled by the init container (docker-compose).
+    # For local dev, run: alembic upgrade head
     conn = engine.connect().execution_options(isolation_level="AUTOCOMMIT")
     stores = make_pg_stores(conn)
     return conn, stores

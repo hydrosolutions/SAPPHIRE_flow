@@ -47,7 +47,15 @@ def _compute_exceedance(
             (pl.col("value") > threshold_value).mean().alias("exceedance")
         )
         max_val = per_time["exceedance"].max()
-        return float(max_val) if isinstance(max_val, (int, float)) else 0.0
+        if isinstance(max_val, (int, float)):
+            return float(max_val)
+        log.warning(
+            "alert.empty_exceedance",
+            station_id=str(ensemble.station_id),
+            parameter=ensemble.parameter,
+            threshold_value=threshold_value,
+        )
+        return 0.0
 
     # QUANTILES: per-timestep CDF interpolation
     valid_times = ensemble.values["valid_time"].unique().sort()

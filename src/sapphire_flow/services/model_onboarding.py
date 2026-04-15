@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import time
 import traceback
 from datetime import UTC
@@ -261,7 +262,7 @@ def smoke_test_model(model: ForecastModel, rng: random.Random) -> None:
     from sapphire_flow.types.ids import StationId
 
     req = model.data_requirements
-    seed = hash(str(req)) & 0xFFFFFFFF
+    seed = int(hashlib.sha256(str(req).encode()).hexdigest(), 16) & 0xFFFFFFFF
     rng.seed(seed)
 
     try:
