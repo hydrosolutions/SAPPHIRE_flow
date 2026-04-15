@@ -29,6 +29,7 @@ class FakeStationForecastModel:
         static_features=frozenset(),
         supported_time_steps=frozenset({timedelta(hours=1), timedelta(hours=24)}),
         lookback_steps=720,
+        forecast_horizon_steps=5,
         spatial_input_type=SpatialRepresentation.POINT,
     )
     parameter: str = "discharge"
@@ -158,6 +159,7 @@ class FakeGroupForecastModel:
         static_features=frozenset(),
         supported_time_steps=frozenset({timedelta(hours=1), timedelta(hours=24)}),
         lookback_steps=720,
+        forecast_horizon_steps=5,
         spatial_input_type=SpatialRepresentation.POINT,
     )
     parameter: str = "discharge"

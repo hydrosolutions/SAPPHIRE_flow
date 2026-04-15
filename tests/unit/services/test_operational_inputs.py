@@ -118,6 +118,7 @@ class _SmallModelRequirements:
         static_features=frozenset(),
         supported_time_steps=frozenset({timedelta(hours=1)}),
         lookback_steps=10,
+        forecast_horizon_steps=5,
         spatial_input_type=SpatialRepresentation.POINT,
     )
 
@@ -369,6 +370,7 @@ class TestAssembleStationOperationalInputs:
                 static_features=frozenset(),
                 supported_time_steps=frozenset({timedelta(hours=1)}),
                 lookback_steps=10,
+                forecast_horizon_steps=5,
                 spatial_input_type=SpatialRepresentation.POINT,
             )
 

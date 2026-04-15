@@ -28,6 +28,7 @@ log = structlog.get_logger(__name__)
 
 _N_MEMBERS = 50
 _LOOKBACK = 7
+_HORIZON = 5
 _PAST_FEATURES = ("precipitation", "temperature")
 _FUTURE_FEATURES = ("precipitation", "temperature")
 
@@ -67,6 +68,7 @@ class LinearRegressionDaily:
         static_features=frozenset(),
         supported_time_steps=frozenset({timedelta(hours=24)}),
         lookback_steps=_LOOKBACK,
+        forecast_horizon_steps=_HORIZON,
         spatial_input_type=SpatialRepresentation.POINT,
     )
 
@@ -82,8 +84,8 @@ class LinearRegressionDaily:
         future_ts = data.future_dynamic.sort("timestamp")
         n_steps = future_ts["timestamp"].n_unique()
         if n_steps == 0:
-            # Training data has no future split — default to lookback_steps
-            n_steps = _LOOKBACK
+            # Training data has no future split — default to declared horizon
+            n_steps = _HORIZON
 
         joined = past_dyn.join(
             targets.select(["timestamp", "discharge"]),
@@ -152,12 +154,22 @@ class LinearRegressionDaily:
             n_features=x_mat.shape[1],
         )
 
-        return LinearRegressionArtifact(
+        art = LinearRegressionArtifact(
             coefficients=coefficients,
             intercepts=intercepts,
             residuals=residuals,
             n_steps=n_steps,
         )
+
+        declared = self.data_requirements.forecast_horizon_steps
+        if art.n_steps < declared:
+            raise ValueError(
+                f"Trained artifact n_steps={art.n_steps} < declared "
+                f"forecast_horizon_steps={declared}. Training data may have "
+                f"insufficient future_dynamic rows."
+            )
+
+        return art
 
     def predict(
         self,

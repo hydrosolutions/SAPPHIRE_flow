@@ -47,7 +47,7 @@
 
 **Full design**: 4 tables partitioned (observations yearly, forecast_values monthly, hindcast_values monthly, weather_forecasts monthly) with pg_partman, pg_cron, dead letter queue, DLQ drain task.
 
-**v0**: Plain unpartitioned tables. **→ DECISION (plan 013)**: At the Swiss v0 ceiling of ~170 stations with 1 forecast parameter/station and 4 cycles/day, forecast_values grows at ~0.1 GB/day raw (~0.2–0.4 GB/day with PostgreSQL overhead). At the architectural ceiling of ~1000 stations across deployments: ~0.6 GB/day raw (~1.2–2.4 GB/day with overhead), producing ~3.7B forecast_values rows/year. Partitioning deferral remains defensible for Swiss v0 (~170 stations); revisit when a deployment exceeds ~300 stations or when cumulative forecast_values exceeds ~500M rows. Migration to partitioned tables is a one-time operation but no longer on "small data" at the 1000-station ceiling.
+**v0**: Plain unpartitioned tables. **→ DECISION (plan 013)**: At the Swiss v0 ceiling of ~170 stations with 1 forecast parameter/station and 4 cycles/day, forecast_values grows at ~0.1 GB/day raw (~0.2–0.4 GB/day with PostgreSQL overhead). At the architectural ceiling of ~1000 stations across deployments: ~0.6 GB/day raw (~1.2–2.4 GB/day with overhead) for 120-step hourly models (v0b+); ~25 MB/day raw (~50–100 MB/day with overhead) for v0a 5-step daily models, producing ~3.7B forecast_values rows/year (assuming 120-step hourly models; v0a daily models: ~153M rows/year). Partitioning deferral remains defensible for Swiss v0 (~170 stations); revisit when a deployment exceeds ~300 stations or when cumulative forecast_values exceeds ~500M rows. Migration to partitioned tables is a one-time operation but no longer on "small data" at the 1000-station ceiling.
 
 **Removes**: pg_partman, pg_cron extension, `dead_letter_queue` table, `drain_dlq` Prefect task, `PartitionMissingError` handling, all DLQ-related logic in stores.
 
@@ -304,7 +304,7 @@ Load model artifacts into memory at worker startup (or LRU cache on first use). 
 
 ### D2. Batch database operations
 
-- **Writes**: PostgreSQL `COPY` protocol (asyncpg `copy_to_table()` or Polars `write_database()`) for forecast_values. At ~170 Swiss stations: 170 × 21 members × 120 timesteps = ~429K rows/cycle. At ~1000-station ceiling: 1000 × 21 × 120 = 2.52M rows/cycle. **→ BENCHMARK (plan 013)**: COPY performance at 2.52M rows/cycle is untested; verify before deploying at >500 stations. COPY is 10-50x faster than INSERT.
+- **Writes**: PostgreSQL `COPY` protocol (asyncpg `copy_to_table()` or Polars `write_database()`) for forecast_values. At ~170 Swiss stations: 170 × 21 members × 120 timesteps = ~429K rows/cycle (hourly v0b+); 170 × 21 × 5 = ~17,850 rows/cycle (daily v0a). At ~1000-station ceiling: 1000 × 21 × 120 = 2.52M rows/cycle (hourly v0b+); 1000 × 21 × 5 = ~105K rows/cycle (daily v0a). **→ BENCHMARK (plan 013)**: COPY performance at 2.52M rows/cycle is untested; verify before deploying at >500 stations. COPY is 10-50x faster than INSERT.
 - **Reads**: `WHERE station_id = ANY($1)` for batch observation fetch. ConnectorX or Polars `read_database_uri()` for bulk reads into DataFrames.
 - **Pool**: asyncpg connection pool (5-10 connections) in the worker process.
 
@@ -342,7 +342,7 @@ Target per-step budgets (~170 Swiss stations; scale linearly for larger deployme
 | 1.7 Prepare inputs | 3s | 10-15s | In-memory | O(n) per station |
 | 1.8 Run models (all) | 10-30s | 10-30s | CPU (parallel) | Parallelized via `task.map()` — wall-clock ~ constant if threads available |
 | 1.10 Forecast QC | < 1s | 2-5s | In-memory | O(n) per station |
-| 1.11 Store results | 3s | 10-30s | DB write (COPY) | O(n) rows; **→ BENCHMARK**: 2.52M rows/cycle via COPY untested. Bottlenecked by `db_bulk_write` slot (see orchestration.md DECISION) |
+| 1.11 Store results | 3s | 10-30s | DB write (COPY) | O(n) rows; **→ BENCHMARK**: 2.52M rows/cycle (120-step hourly v0b+; ~105K rows/cycle for v0a daily) via COPY untested. Bottlenecked by `db_bulk_write` slot (see orchestration.md DECISION) |
 | 1.12–1.14 Alert checking | < 5s | 5-15s | In-memory | O(n) per station |
 | **Total** | **< 60s** | **~60-150s (pending benchmarks)** | | |
 
@@ -543,7 +543,7 @@ v0 operates exclusively with BAFU automatic gauging stations (`gauging_status = 
 
 | v1 feature | Why safe |
 |------------|----------|
-| Table partitioning | Additive migration — small data at Swiss v0 scale (~170 stations). At the ~1000-station architectural ceiling (~3.7B forecast_values rows/year), migration is no longer trivial; plan partitioning before exceeding ~500M cumulative rows. See §A1 DECISION (plan 013). |
+| Table partitioning | Additive migration — small data at Swiss v0 scale (~170 stations). At the ~1000-station architectural ceiling (~3.7B forecast_values rows/year assuming 120-step hourly models; v0a daily models produce ~153M rows/year — the 500M threshold is not approached until v0b hourly models are introduced), migration is no longer trivial; plan partitioning before exceeding ~500M cumulative rows. See §A1 DECISION (plan 013). |
 | Rating curve columns on observations | Nullable column addition (metadata-only in PostgreSQL) |
 | Stage 2 QC (2.5–2.7) | Independent flag set, does not change Stage 1 interface |
 | Notification dispatch | Reads alerts, does not change alert model |

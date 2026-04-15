@@ -209,12 +209,21 @@ def run_station_hindcast(
     clock: Callable[[], UtcDatetime],
     rng: random.Random,
     hindcast_run_id: UUID,
-    forecast_horizon_steps: int = 120,
+    forecast_horizon_steps: int | None = None,
     lookback_steps: int = 720,
 ) -> list[HindcastStepResult]:
     station_config = station_store.fetch_station(station_id)
     if station_config is None:
         raise ValueError(f"Station {station_id} not found")
+
+    if forecast_horizon_steps is None:
+        forecast_horizon_steps = model.data_requirements.forecast_horizon_steps
+    log.debug(
+        "hindcast.horizon_resolved",
+        forecast_horizon_steps=forecast_horizon_steps,
+        model_id=str(model_id),
+        station_id=str(station_id),
+    )
 
     weather_sources = station_store.fetch_weather_sources(station_id)
     static_df = _load_static_attributes(basin_store, station_config)
@@ -310,7 +319,7 @@ def run_group_hindcast(
     clock: Callable[[], UtcDatetime],
     rng: random.Random,
     hindcast_run_id: UUID,
-    forecast_horizon_steps: int = 120,
+    forecast_horizon_steps: int | None = None,
     lookback_steps: int = 720,
 ) -> dict[StationId, list[HindcastStepResult]]:
     station_configs = {
@@ -334,6 +343,15 @@ def run_group_hindcast(
         if cfg is not None
     }
     required_features = list(model.data_requirements.past_dynamic_features)
+
+    if forecast_horizon_steps is None:
+        forecast_horizon_steps = model.data_requirements.forecast_horizon_steps
+    log.debug(
+        "hindcast.horizon_resolved",
+        forecast_horizon_steps=forecast_horizon_steps,
+        model_id=str(model_id),
+        group_id=str(group.id),
+    )
 
     per_station: dict[StationId, list[HindcastStepResult]] = {
         sid: [] for sid in group.station_ids

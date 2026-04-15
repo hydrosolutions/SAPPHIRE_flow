@@ -49,6 +49,7 @@ class ClimatologyFallbackModel:
             static_features=frozenset(),
             supported_time_steps=frozenset({timedelta(hours=24)}),
             lookback_steps=1,
+            forecast_horizon_steps=5,
             spatial_input_type=SpatialRepresentation.POINT,
         )
 

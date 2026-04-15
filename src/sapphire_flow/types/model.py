@@ -264,7 +264,18 @@ class ModelDataRequirements:
     static_features: frozenset[str]
     supported_time_steps: frozenset[timedelta]
     lookback_steps: int
+    forecast_horizon_steps: int
     spatial_input_type: SpatialRepresentation
+
+    def __post_init__(self) -> None:
+        if self.lookback_steps < 1:
+            raise ValueError(
+                f"lookback_steps must be ≥ 1, got {self.lookback_steps}"
+            )
+        if self.forecast_horizon_steps < 1:
+            raise ValueError(
+                f"forecast_horizon_steps must be ≥ 1, got {self.forecast_horizon_steps}"
+            )
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

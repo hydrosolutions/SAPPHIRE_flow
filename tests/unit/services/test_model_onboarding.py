@@ -98,6 +98,7 @@ def _make_model_with_reqs(
                 supported_time_steps=supported_time_steps
                 or frozenset({timedelta(days=1)}),
                 lookback_steps=7,
+                forecast_horizon_steps=5,
                 spatial_input_type=SpatialRepresentation.POINT,
             )
         },

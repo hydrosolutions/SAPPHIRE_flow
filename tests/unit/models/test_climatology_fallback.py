@@ -60,6 +60,9 @@ def _make_predict_inputs(horizon: int = 5) -> StationModelInputs:
 
 
 class TestClimatologyFallbackModelTrain:
+    def test_forecast_horizon_declared(self) -> None:
+        assert ClimatologyFallbackModel().data_requirements.forecast_horizon_steps == 5
+
     def test_happy_path_produces_artifact(self) -> None:
         model = ClimatologyFallbackModel()
         artifact = model.train(_make_training_data(400), {}, _RNG)

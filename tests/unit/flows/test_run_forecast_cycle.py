@@ -198,6 +198,7 @@ class _SmallFakeModel(FakeStationForecastModel):
         static_features=frozenset(),
         supported_time_steps=frozenset({timedelta(hours=1)}),
         lookback_steps=20,
+        forecast_horizon_steps=5,
         spatial_input_type=SpatialRepresentation.POINT,
     )
 
@@ -460,6 +461,58 @@ class TestForecastCycle:
         }
         assert model_id_a in individual_model_ids
         assert model_id_b in individual_model_ids
+
+    def test_station_skipped_when_model_not_loaded(self) -> None:
+        sid = StationId(uuid4())
+        missing_model_id = ModelId("model_not_in_registry")
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        # Station is registered with an assignment pointing to a model_id
+        # that is absent from the models dict passed to run_forecast_cycle_flow.
+        _build_station_and_stores(
+            sid,
+            missing_model_id,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+        )
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=FakeWeatherForecastSource(result={}),
+            models={},  # deliberately empty — missing_model_id not present
+            config=_make_config(),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+        )
+
+        # Station attempted but skipped — no forecast produced
+        assert result.stations_failed >= 1
+        assert result.stations_succeeded == 0
+        assert result.forecasts_stored == 0
+        assert len(forecast_store._forecasts) == 0
 
     def test_alerts_checked_when_enabled(self) -> None:
         sid = StationId(uuid4())

@@ -99,7 +99,6 @@ def _make_hindcast_fn():  # type: ignore[no-untyped-def]
             clock=clock,
             rng=rng,
             hindcast_run_id=uuid4(),
-            forecast_horizon_steps=model.data_requirements.lookback_steps,
         )
 
     return _run_hindcast

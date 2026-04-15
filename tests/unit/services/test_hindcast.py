@@ -86,6 +86,104 @@ def _seed_observations(
     obs_store.store_observations(obs)
 
 
+class TestHorizonResolution:
+    def test_horizon_resolved_from_model_when_omitted(self) -> None:
+        rng = random.Random(0)
+        station = make_station_config()
+        sid = station.id
+        model_id = ModelId("test_model")
+        artifact_id = ArtifactId(uuid4())
+        run_id = uuid4()
+
+        obs_store = FakeObservationStore()
+        hindcast_store = FakeHindcastStore()
+        station_store = FakeStationStore()
+        basin_store = FakeBasinStore()
+        forcing_source = FakeWeatherReanalysisSource()
+
+        station_store.store_station(station)
+        station_store.store_weather_source(_make_weather_source(sid))
+
+        data_start = ensure_utc(datetime(2021, 1, 1, tzinfo=UTC))
+        _seed_observations(obs_store, sid, data_start, n_days=400)
+        _seed_forcing(forcing_source, sid, data_start, n_days=400)
+
+        model = FakeStationForecastModel()
+        # forecast_horizon_steps omitted — should resolve from model declaration (= 5)
+
+        results = run_station_hindcast(
+            model=model,
+            artifact=b"artifact",
+            station_id=sid,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            period_start=_PERIOD_START,
+            period_end=_PERIOD_END,
+            time_step=_STEP,
+            forcing_source=forcing_source,
+            obs_store=obs_store,
+            hindcast_store=hindcast_store,
+            station_store=station_store,
+            basin_store=basin_store,
+            clock=_fixed_clock,
+            rng=rng,
+            hindcast_run_id=run_id,
+        )
+
+        assert all(r.success for r in results)
+        for h in hindcast_store._hindcasts.values():
+            assert h.ensemble.forecast_horizon_steps == 5
+
+    def test_explicit_horizon_overrides_model_declaration(self) -> None:
+        rng = random.Random(0)
+        station = make_station_config()
+        sid = station.id
+        model_id = ModelId("test_model")
+        artifact_id = ArtifactId(uuid4())
+        run_id = uuid4()
+
+        obs_store = FakeObservationStore()
+        hindcast_store = FakeHindcastStore()
+        station_store = FakeStationStore()
+        basin_store = FakeBasinStore()
+        forcing_source = FakeWeatherReanalysisSource()
+
+        station_store.store_station(station)
+        station_store.store_weather_source(_make_weather_source(sid))
+
+        data_start = ensure_utc(datetime(2021, 1, 1, tzinfo=UTC))
+        _seed_observations(obs_store, sid, data_start, n_days=400)
+        _seed_forcing(forcing_source, sid, data_start, n_days=400)
+
+        model = FakeStationForecastModel()
+        # Model declares forecast_horizon_steps=5; caller explicitly requests 3.
+        explicit_horizon = 3
+
+        results = run_station_hindcast(
+            model=model,
+            artifact=b"artifact",
+            station_id=sid,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            period_start=_PERIOD_START,
+            period_end=_PERIOD_END,
+            time_step=_STEP,
+            forcing_source=forcing_source,
+            obs_store=obs_store,
+            hindcast_store=hindcast_store,
+            station_store=station_store,
+            basin_store=basin_store,
+            clock=_fixed_clock,
+            rng=rng,
+            hindcast_run_id=run_id,
+            forecast_horizon_steps=explicit_horizon,
+        )
+
+        assert all(r.success for r in results)
+        for h in hindcast_store._hindcasts.values():
+            assert h.ensemble.forecast_horizon_steps == explicit_horizon
+
+
 class TestBasicHindcast:
     def test_five_issue_times_all_succeed(self) -> None:
         rng = random.Random(0)

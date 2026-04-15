@@ -266,7 +266,7 @@ def smoke_test_model(model: ForecastModel, rng: random.Random) -> None:
 
     try:
         # Past needs lookback + horizon rows; future IS the horizon.
-        smoke_horizon = max(req.lookback_steps, 10)
+        smoke_horizon = max(req.forecast_horizon_steps, 10)
         n_past = req.lookback_steps + smoke_horizon + 10
         n_future = smoke_horizon
 
@@ -292,7 +292,7 @@ def smoke_test_model(model: ForecastModel, rng: random.Random) -> None:
                 static=data.static,
                 issue_time=_utc_now(),
                 forecast_horizon_steps=min(
-                    req.lookback_steps, len(data.future_dynamic)
+                    req.forecast_horizon_steps, len(data.future_dynamic)
                 ),
                 time_step=time_step,
             )
@@ -321,7 +321,7 @@ def smoke_test_model(model: ForecastModel, rng: random.Random) -> None:
                 ),
                 issue_time=_utc_now(),
                 forecast_horizon_steps=min(
-                    req.lookback_steps, len(data.future_dynamic)
+                    req.forecast_horizon_steps, len(data.future_dynamic)
                 ),
                 time_step=time_step,
             )

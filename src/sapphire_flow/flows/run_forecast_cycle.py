@@ -387,7 +387,21 @@ def run_forecast_cycle_flow(
         # Use time_step from first active assignment (priority-sorted)
         sorted_assignments = sorted(assignments, key=lambda a: a.priority)
         time_step: timedelta = sorted_assignments[0].time_step
-        forecast_horizon_steps: int = getattr(config, "forecast_horizon_steps", 120)
+        first_model = models.get(sorted_assignments[0].model_id)
+        if first_model is None:
+            log.error(
+                "forecast_cycle.station_skipped_model_not_loaded",
+                model_id=str(sorted_assignments[0].model_id),
+            )
+            errors.append(
+                f"Configured model {sorted_assignments[0].model_id} missing for {sid}"
+            )
+            stations_failed += 1
+            structlog.contextvars.unbind_contextvars("station_id")
+            continue
+        forecast_horizon_steps: int = (
+            first_model.data_requirements.forecast_horizon_steps
+        )
 
         # Determine nwp_source for this station
         weather_sources = station_store.fetch_weather_sources(sid)  # type: ignore[union-attr]
@@ -398,7 +412,7 @@ def run_forecast_cycle_flow(
         try:
             inputs_result = assemble_station_operational_inputs(
                 station_id=sid,
-                model=models.get(sorted_assignments[0].model_id),  # type: ignore[arg-type]
+                model=first_model,
                 model_id=sorted_assignments[0].model_id,
                 issue_time=resolved_cycle_time,
                 cycle_time=resolved_cycle_time,

@@ -73,6 +73,9 @@ def predict_inputs() -> StationModelInputs:
 
 
 class TestTrain:
+    def test_forecast_horizon_declared(self) -> None:
+        assert PersistenceFallbackModel().data_requirements.forecast_horizon_steps == 5
+
     def test_returns_persistence_artifact(
         self, model: PersistenceFallbackModel, training_data: StationTrainingData
     ) -> None:

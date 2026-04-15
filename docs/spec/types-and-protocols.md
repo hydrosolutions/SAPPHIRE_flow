@@ -1200,6 +1200,7 @@ class ModelDataRequirements:
     static_features: frozenset[str]            # empty frozenset if none needed
     supported_time_steps: frozenset[timedelta]
     lookback_steps: int
+    forecast_horizon_steps: int
     spatial_input_type: SpatialRepresentation
 ```
 

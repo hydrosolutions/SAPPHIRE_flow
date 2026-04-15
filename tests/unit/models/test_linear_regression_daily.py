@@ -145,7 +145,7 @@ class TestLinearRegressionDaily:
     def test_horizon_guard(self) -> None:
         rng = random.Random(40)
         model = LinearRegressionDaily()
-        data = _make_training_data(horizon_steps=3)
+        data = _make_training_data(horizon_steps=5)
         artifact = model.train(data, {}, rng)
 
         inputs = _make_predict_inputs(horizon=10)
@@ -155,14 +155,25 @@ class TestLinearRegressionDaily:
     def test_ensemble_members_count(self) -> None:
         rng = random.Random(50)
         model = LinearRegressionDaily()
-        data = _make_training_data(horizon_steps=3)
+        data = _make_training_data(horizon_steps=5)
         artifact = model.train(data, {}, rng)
-        inputs = _make_predict_inputs(horizon=3)
+        inputs = _make_predict_inputs(horizon=5)
         result, _ = model.predict(artifact, inputs, rng)
 
         ensemble = result["discharge"]
         member_ids = ensemble.values["member_id"].unique().to_list()
         assert len(member_ids) == 50
+
+    def test_train_rejects_insufficient_future_dynamic(self) -> None:
+        rng = random.Random(70)
+        model = LinearRegressionDaily()
+        # horizon_steps=3 → future_dynamic has 3 unique timestamps, less than declared 5
+        data = _make_training_data(horizon_steps=3)
+        with pytest.raises(ValueError, match="forecast_horizon_steps"):
+            model.train(data, {}, rng)
+
+    def test_data_requirements_forecast_horizon_steps(self) -> None:
+        assert LinearRegressionDaily().data_requirements.forecast_horizon_steps == 5
 
     def test_non_negative_predictions(self) -> None:
         rng = random.Random(60)
