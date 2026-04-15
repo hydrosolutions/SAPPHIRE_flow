@@ -136,12 +136,8 @@ prefixed env var names. 72 tests pass.
 
 **H-14. Multiple API endpoints return unbounded result sets — REVIEWED**
 - `forecasts.py` — per-forecast values: **DEFER** (physically bounded ~2500 rows)
-- `stations.py` observations.json/forcing.json: **FIX** — add 25-year max date
-  range at route level (HTTP 400 if exceeded). Generous enough for any legitimate
-  dashboard use; prevents accidental epoch-to-now queries. Route-level only — no
-  store or flow changes.
-- `stations.py` hindcasts.json: **CAUTION** — cap range with HTTP 400, not silent
-  LIMIT; truncation would corrupt the chart.
+- `stations.py` observations.json/forcing.json/hindcasts.json: **FIXED** — 25-year
+  max date range at route level (HTTP 400 if exceeded).
 - `models.py` model list: **DEFER** (O(10) models operationally)
 - `models.py` skill-chart.json: **CAUTION** — DO NOT add row LIMIT (silently
   truncates chart series). Needs query-level aggregation instead.
@@ -184,29 +180,24 @@ v0 has zero external model packages (all three entry points are internal). Docum
 
 ### Data Integrity
 
-**H-21. AUTOCOMMIT with no transactions — FIX (logic change needed)**
-Only `store_forecast` and `store_hindcast` have two-phase inserts (header + values)
-that must be atomic. All other store methods are single-statement. **Minimal safe
-fix**: wrap those two methods in a savepoint (`with conn.begin_nested()`), keeping
-AUTOCOMMIT for everything else. DO NOT switch the whole connection to transactional
-— no store method calls `conn.commit()`, so all writes would silently roll back.
+**H-21. AUTOCOMMIT with no transactions — DEFERRED TO Plan 038**
+Two-phase inserts (`store_forecast`, `store_hindcast`, `store_group`) need atomic
+wrapping. Investigation revealed `conn.begin()` on AUTOCOMMIT provides zero
+atomicity and `begin_nested()` requires a real transaction. Needs engine injection
++ per-method transactional connection. See Plan 038.
 
-**H-22. DDL privileges in application code — FIX (just logging)**
-The `init` service in docker-compose already runs `alembic upgrade head`. The
-in-flow `run_migrations()` calls are redundant. Remove from flows; add a read-only
-schema-version check (`SELECT version_num FROM alembic_version`) that warns or
-raises on mismatch. Flag for v1: init container needs
-`condition: service_completed_successfully` in depends_on.
+**H-22. DDL privileges in application code — FIXED**
+Removed `run_migrations()` from `setup_production_stores()`. Init container in
+docker-compose handles migrations. For local dev: `alembic upgrade head`.
 
 ### Alert Safety
 
 **H-23. Silent false negatives in alert checking — REVIEWED**
 - H-23a (CDF flat): **DEFER** — already guarded; QUANTILES path not reachable in v0.
-- H-23b (empty ensemble → 0.0): **FIX (just logging)** — add `log.warning` when
-  `max()` returns None. The 0.0 fallback is the correct conservative choice.
-- H-23c (stale alerts on sensor failure): **FIX (logic change needed)** — alerts
-  persist forever when sensor goes offline. Both observation and forecast checkers
-  need a "data unavailable" resolve path when evaluated_parameters is empty.
+- H-23b (empty ensemble → 0.0): **FIXED** — added `log.warning` when `max()`
+  returns None. The 0.0 fallback is the correct conservative choice.
+- H-23c (stale alerts on sensor failure): **DEFERRED TO Plan 039** — auto-resolve
+  would mask active floods. Needs new `DATA_UNAVAILABLE` alert status.
 - H-23d (ensemble too small skip): **DEFER** — already logged at WARNING.
 
 ### Sensitive Data Leakage
@@ -235,8 +226,8 @@ DO NOT simply replace `.replace(tzinfo=UTC)` with `ensure_utc()`.
 ### Reproducibility
 
 **H-27. Non-reproducible hash seeds — REVIEWED**
-- `model_onboarding.py:264` (smoke test): **FIX** — ephemeral synthetic data, nothing
-  persisted. `hashlib.sha256` makes CI reproducible. Zero risk.
+- `model_onboarding.py:264` (smoke test): **FIXED** — replaced `hash()` with
+  `hashlib.sha256` for deterministic, cross-process-stable seeding.
 - `forecast_combination.py:155` (BMA): **CAUTION** — changes member labeling on
   deployment. Schedule for a deployment boundary. Should also incorporate
   `cycle_time` in the seed for per-run reproducibility.
@@ -247,200 +238,167 @@ DO NOT simply replace `.replace(tzinfo=UTC)` with `ensure_utc()`.
 
 ### Infrastructure (M-1 through M-7)
 
-**M-1.** No `security_opt: [no-new-privileges:true]` on any container.
-`docker-compose.yml` — all services.
+**M-1.** CAUTION — `no-new-privileges` breaks `gosu` (SUID). Needs gosu
+replacement before enabling. Backlog item.
 
-**M-2.** No user-defined Docker network. All containers share default bridge.
-No segmentation between DB, API, and worker.
+**M-2.** FIXED — Added backend/frontend Docker network segmentation.
 
-**M-3.** Unpinned image tags: `caddy:2`, `prefecthq/prefect:3-python3.11`,
-`python:3.11-slim`, `ghcr.io/astral-sh/uv:latest`.
+**M-3.** FIXED — Pinned `python:3.11.12-slim`, `uv:0.7.3`, `caddy:2.9`.
 
-**M-4.** Stale orphaned `entrypoint.sh` at project root (Dockerfile uses
-`docker/entrypoint.sh`).
+**M-4.** FIXED — Deleted stale root-level `entrypoint.sh`.
 
-**M-5.** `DB_PASSWORD` env var fallback bypasses Docker secrets security benefit.
-`docker/entrypoint.sh:9`.
+**M-5.** DEFER — Env var fallback is intentional for local dev without Docker
+Secrets. Fails loudly if neither secret file nor env var is set.
 
-**M-6.** `literal_binds=True` in Alembic offline mode renders bind params as
-literal SQL strings. `alembic/env.py:23`.
+**M-6.** DEFER — False positive. `literal_binds=True` is required for offline
+Alembic mode. Migrations use only schema constants, never user input.
 
-**M-7.** No `Content-Security-Policy` header. `Caddyfile:1-18`.
+**M-7.** DEFER — CSP would break Prefect UI (React SPA with CDN + inline scripts).
+Needs path-scoped Caddy audit.
 
 ### API (M-8 through M-14)
 
-**M-8.** `PREFECT_UI_URL` from env injected into templates as trusted URL.
-`api/__init__.py:12-16`.
+**M-8.** DEFER — `PREFECT_UI_URL` is container-internal, not user-controlled.
 
-**M-9.** Dashboard issues ~20 DB queries per page load with no caching.
-`api/routes/dashboard.py:21-233`.
+**M-9.** DEFER — Dashboard queries are cheap aggregates. Caching changes freshness
+contract. Not a meaningful v0 risk.
 
-**M-10.** `forecast_detail` loads all values into memory, template limits to
-200 rows. Apply LIMIT at SQL level. `api/routes/forecasts.py:96-104`.
+**M-10.** DEFER — JSON endpoint truncation would break charts. Needs pagination
+design, not a naive LIMIT.
 
-**M-11.** Internal schema details leaked in HTTPException messages (e.g.,
-"Forecasts table not found"). `api/routes/forecasts.py:79`.
+**M-11.** FIXED — Replaced `"Forecasts table not found"` with generic `"Not found"`.
 
-**M-12.** `_get_reflected` global cache: race condition on concurrent init,
-never invalidated. `api/routes/tables.py:27-34`.
+**M-12.** DEFER — `MetaData.reflect()` is idempotent. Race produces identical
+results. Threading lock would be correct but low urgency.
 
-**M-13.** Unhandled `datetime.fromisoformat()` raises 500 with traceback.
-`api/routes/stations.py:401-402,443-444,534-535`.
+**M-13.** FIXED — Wrapped `fromisoformat()` in try/except, returns HTTP 400 on
+malformed datetime.
 
-**M-14.** No `X-Content-Type-Options: nosniff` at application layer.
+**M-14.** DEFER — Duplicate of Caddyfile header (already set there).
 
 ### Database/Store (M-15 through M-22)
 
-**M-15.** No connection pool limits, timeouts, or SSL enforcement on engine.
-`db/engine.py:9-10`.
+**M-15.** DEFER — Pool limits safe to add standalone; SSL needs coordinated
+postgres + engine change (separate infra work).
 
-**M-16.** `model_states.state_bytes` — no size limit (BYTEA), no hash
-verification (unlike artifacts). `db/metadata.py:576-583`.
+**M-16.** DEFER — v1 concern. v0 models have trivially small state (few KB).
 
-**M-17.** `model_assignments` ownership invariant enforced only at app layer.
-`db/metadata.py:511-513`.
+**M-17.** DEFER — Documented as v1. Needs `stations.ownership` column in same
+expression for a CHECK constraint.
 
-**M-18.** `model_states` table grows unbounded — no retention policy.
+**M-18.** DEFER — ~1000 rows/day, only latest read. Schedule purge in maintenance.
 
-**M-19.** `pipeline_health` table grows unbounded — no retention policy.
+**M-19.** DEFER — ~7 rows/day. Negligible growth.
 
-**M-20.** `alert_store.upsert_alert()` — resolved alerts bypass dedup.
-`store/alert_store.py:26-30`.
+**M-20.** DEFER — Related to Plan 039 alert lifecycle redesign.
 
-**M-21.** `alert_store.acknowledge_alert` — no FK on `acknowledged_by`.
-`store/alert_store.py:93-101`.
+**M-21.** DEFER — No `users` table in v0. FK waits for v1 auth.
 
-**M-22.** Zarr store atomic swap is not crash-safe. `store/zarr_nwp_grid_store.py:46-50`.
+**M-22.** DEFER — Orphan `.zarr.old` is wasted disk only, not corruption. Sweep
+in maintenance cron.
 
 ### Adapters (M-23 through M-27)
 
-**M-23.** No timeout enforcement contract in `hydro_scraper.py:51-53`.
+**M-23.** DEFER — `httpx.Client()` defaults to 5s timeout. Only risk is explicit
+`timeout=None` (infinite). Low priority.
 
-**M-24.** No response size limit on SPARQL JSON responses.
-`adapters/hydro_scraper.py:90-93`.
+**M-24.** DEFER — Legitimate SPARQL responses are <10 KB. Guard adds complexity
+with no real v0 risk.
 
-**M-25.** Unbounded pagination loop in `meteoswiss_nwp.py:134`.
+**M-25.** FIXED — Added 100-page cap on STAC pagination loop.
 
-**M-26.** No cap on total GRIB2 files downloaded.
-`adapters/meteoswiss_nwp.py:150-168`.
+**M-26.** FIXED — Added 500-file cap on GRIB2 downloads.
 
-**M-27.** `replay/station.py:31-39` — fixture path not restricted to expected
-directory. Parameter values from Parquet not validated.
+**M-27.** DEFER — Test-only replay adapter. Path traversal in a test component
+with no HTTP surface is not a risk.
 
 ### Services (M-28 through M-40)
 
-**M-28.** `assert` guards stripped by `python -O`. Used as runtime invariants in
-`flows/ingest_observations.py:225-227`, `flows/run_forecast_cycle.py:251-259`.
+**M-28.** FIXED — Replaced 13 `assert` guards with `ConfigurationError` raises
+in `run_forecast_cycle.py` and `ingest_observations.py`.
 
-**M-29.** `observation_alert_checker.py:65` — `latest.value` accessed without
-None guard after QC_PASSED assumption. TypeError crashes alert check.
+**M-29.** FIXED — Added None guard on `latest.value` in
+`observation_alert_checker.py`. Logs warning and skips instead of crashing.
 
-**M-30.** `forecast_combination.py:129-130` — Division by zero in BMA weight
-normalization when `total_weight == 0.0`.
+**M-30.** FIXED — Added `total_weight == 0.0` guard in BMA weight normalization.
+Returns empty dict (already handled by callers).
 
-**M-31.** `forecast_combination.py:132-141` — BMA member count can go negative
-for heaviest model.
+**M-31.** CAUTION — Clamping negative member count changes total count semantics.
+Needs careful design. Backlog item.
 
-**M-32.** `forecast_qc.py:29,68,113,170` — Unchecked `thresholds["key"]` access.
-KeyError crashes QC.
+**M-32.** DEFER — `KeyError` on misconfigured QC threshold keys. Low priority;
+QC rules come from validated TOML, not user input.
 
-**M-33.** `qc.py:148-152` — Spike detection divides by reference value; when
-`prev.value == 0`, any non-zero value is flagged as spike.
+**M-33.** FIXED — Spike QC logic bug: `ref == 0.0` now returns None (no flag)
+instead of false-flagging every non-zero reading after zero flow.
 
-**M-34.** `alert_strategy.py:124` — `assert` used for runtime invariant; stripped
-by `-O`.
+**M-34.** FIXED — Replaced `assert ref_ensemble is not None` with `raise
+ValueError` in `alert_strategy.py`.
 
-**M-35.** `climatology_fallback.py:182-184` — No schema validation on
-deserialized IPC DataFrame.
+**M-35.** FIXED — Added column presence check in climatology artifact
+deserialization. Raises descriptive ValueError on missing columns.
 
-**M-36.** `persistence_fallback.py:118-122` — No size or schema validation on
-`json.loads(raw)`.
+**M-36.** DEFER — JSON is trivially small. `.get()` fallback would silently hide
+corruption worse than `KeyError`.
 
-**M-37.** `linear_regression_daily.py:134` — Ridge `alpha` not validated as
-positive.
+**M-37.** DEFER — sklearn validates alpha itself with a clear error.
 
-**M-38.** `skill/service.py:207,221` — `np.stack` on unbounded ensemble lists
-can cause OOM.
+**M-38.** DEFER — Arrays are kilobytes at v0 scale (21 members, 5 steps).
 
-**M-39.** `skill/metrics.py` — NaN propagation: `compute_crps` on empty ensemble,
-`compute_kge` with zero-variance input, `compute_bss` with zero climatology.
-NaN scores leak to BMA weights via `bma_weights.py` (NaN > 0 → False → epsilon
-weight → maximum BMA influence for meaningless scores).
+**M-39.** FIXED — NaN scores now filtered in BMA weights via `math.isfinite()`.
+Previously NaN bypassed `> 0` guard and became weight `1e10`.
 
-**M-40.** `operational_inputs.py:204` — Negative `nwp_age_hours` (future-dated
-NWP cycle) silently passes quality assessment.
+**M-40.** FIXED — Negative `nwp_age_hours` clamped to 0.0 with warning log.
 
 ### Flows/Config (M-41 through M-45)
 
-**M-41.** `flows/onboard_model.py:296,326` — `model_id` raw string bound to
-structlog context without sanitization. Log injection risk.
+**M-41.** CAUTION — `model_id` bound to log context before UUID validation.
+Need to verify parsing order. Backlog item.
 
-**M-42.** `flows/onboard_model.py:334-346` — `period_start`/`period_end` have
-no bounds check. Year-1000 start triggers massive DB queries.
+**M-42.** FIXED — Added 1900–tomorrow bounds on `period_start`/`period_end`.
 
-**M-43.** `config/deployment.py:253-255` — Config file path from env not checked
-against trusted directory.
+**M-43.** DEFER — Container threat model: env control implies full compromise.
 
-**M-44.** `flows/compute_skills.py:69-70` — `parameter` string from Prefect not
-validated against allowlist.
+**M-44.** DEFER — Parameter values are DB-originating. Enum would break extensible
+parameter design.
 
-**M-45.** `config/paths.py:23` — `mkdir` without explicit `mode`, defaults to
-`0o777 & ~umask`.
+**M-45.** FIXED (in H-8) — `mode=0o750` already applied.
 
 ---
 
-## Remediation Roadmap
+## Implementation Summary
 
-### Before any non-localhost deployment (v0 gate)
+### Fixed (33 findings across 3 commits)
 
-| ID | Finding | Effort |
-|----|---------|--------|
-| C-1 | Add authentication to all API routes | M |
-| C-3 | Fix secrets file permissions | S |
-| C-4 | Add Prefect UI auth in Caddy | S |
-| C-5 | Enable HTTPS in Caddy | S |
-| H-1 | Add CORS middleware | S |
-| H-2 | Add security headers middleware | S |
-| H-3 | Add rate limiting | M |
-| H-4 | Fix stored XSS (`tojson` in templates) | S |
-| H-5 | Add SRI hashes to CDN resources | S |
-| H-14 | Add query limits to all API endpoints | M |
-| H-24 | Sanitize exception messages in result structs | M |
+| Commit | Findings | Files |
+|--------|----------|-------|
+| `0133fff` | C-2, C-3, H-6–H-13 | 13 |
+| `410658e` | H-14 (obs/forcing/hindcast), H-22, H-23b, H-27b | 7 |
+| `9f1760d` | M-2–M-4, M-11, M-13, M-25–M-26, M-28–M-30, M-33–M-35, M-39–M-40, M-42 | 21 |
 
-### Before v0 production (high priority)
+### Accepted risk / deferred to v1 (with rationale in each finding above)
 
-| ID | Finding | Effort |
-|----|---------|--------|
-| C-2 | `allow_pickle=False` + schema validation | S |
-| H-6,7 | Path traversal in zarr + artifact stores | S |
-| H-8 | Path validation in `config/paths.py` | S |
-| H-9 | Path traversal in NWP adapter | S |
-| H-10,11,12 | SSRF fixes in adapters | M |
-| H-13 | Env var allowlist in `_resolve_env_vars` | S |
-| H-15 | Unbounded store queries | M |
-| H-16 | DB password in prefect-server command | S |
-| H-17 | Fix sed URL construction | S |
-| H-21 | Add explicit transactions for atomic ops | L |
-| H-23 | Alert false-negative logging + watchdog | M |
-| H-26 | Fix timezone clobber | S |
-| M-15 | Connection pool + SSL on engine | S |
+C-1, C-4, C-5, H-1–H-5, H-15, H-18, H-20, H-24–H-25, M-5–M-10, M-12,
+M-14–M-22, M-23–M-24, M-27, M-32, M-36–M-38, M-43–M-44
 
-### Before v1 / Nepal deployment
+### Deferred to dedicated plans
 
-| ID | Finding | Effort |
-|----|---------|--------|
-| H-20 | Entry-point supply chain hardening | M |
-| H-22 | Separate migration user | M |
-| H-27 | Deterministic RNG seeds | S |
-| M-1 | `no-new-privileges` on containers | S |
-| M-2 | Docker network segmentation | M |
-| M-3 | Pin all image tags/digests | S |
-| M-16 | State bytes integrity + size limit | M |
-| M-18,19 | Retention policies for growing tables | M |
-| M-28 | Replace `assert` with explicit guards | S |
-| M-39 | NaN propagation → BMA weight safety | M |
+| Plan | Finding | Issue |
+|------|---------|-------|
+| 038 | H-21 | Store write atomicity (AUTOCOMMIT → transactions) |
+| 039 | H-23c | Alert DATA_UNAVAILABLE status for sensor/model failure |
 
-### Effort key: S = small (<1h), M = medium (1-4h), L = large (4h+)
+### CAUTION backlog (needs careful design before implementation)
+
+| ID | Issue | Risk if implemented naively |
+|----|-------|-----------------------------|
+| M-1 | `no-new-privileges` on containers | Breaks `gosu` SUID privilege drop |
+| M-31 | BMA negative member count clamp | Changes total member count semantics |
+| M-41 | Validate model_id as UUID before log binding | Must verify parsing order |
+| H-16 | Prefect-specific entrypoint wrapper | Prefect image has no gosu/app user |
+| H-17 | sed → Python URL construction | Low urgency; current password is safe |
+| H-26 | Timezone clobber two-step fix | Naive `ensure_utc()` breaks naive datetime inputs |
+| H-27a | BMA seed `hashlib.sha256` | Changes member labeling; schedule at deployment boundary |
 
 ---
 
