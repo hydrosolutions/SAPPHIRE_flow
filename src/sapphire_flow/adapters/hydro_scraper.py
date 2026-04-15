@@ -49,6 +49,8 @@ class HydroScraperAdapter:
     }
 
     def __init__(self, endpoint: str, http_client: httpx.Client) -> None:
+        if not endpoint.startswith("https://"):
+            raise ValueError(f"SPARQL endpoint must use HTTPS, got: {endpoint!r}")
         self._endpoint = endpoint
         self._http_client = http_client
 

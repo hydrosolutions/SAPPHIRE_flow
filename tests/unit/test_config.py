@@ -26,18 +26,18 @@ class TestDeploymentConfig:
     def test_env_var_resolution(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("MY_RETENTION", "5000")
+        monkeypatch.setenv("SAPPHIRE_MY_RETENTION", "5000")
         toml = tmp_path / "config.toml"
-        toml.write_text("max_retention_days = ${MY_RETENTION}\n")
+        toml.write_text("max_retention_days = ${SAPPHIRE_MY_RETENTION}\n")
         config = load_config(toml)
         assert config.max_retention_days == 5000
 
     def test_unset_env_var_raises(self, tmp_path: Path) -> None:
         toml = tmp_path / "config.toml"
-        content = 'default_display_timezone = "${NONEXISTENT_VAR}"\n'
+        content = 'default_display_timezone = "${SAPPHIRE_NONEXISTENT_VAR}"\n'
         content += "max_retention_days = 3650\n"
         toml.write_text(content)
-        with pytest.raises(ValueError, match="NONEXISTENT_VAR"):
+        with pytest.raises(ValueError, match="SAPPHIRE_NONEXISTENT_VAR"):
             load_config(toml)
 
     def test_danger_levels_conversion(self) -> None:
@@ -149,13 +149,13 @@ class TestDeploymentConfig:
     def test_paths_data_dir_env_var_interpolation(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setenv("MY_DATA_ROOT", "/opt/data")
+        monkeypatch.setenv("SAPPHIRE_DATA_ROOT", "/opt/data")
         toml = tmp_path / "config.toml"
         toml.write_text(
             textwrap.dedent("""\
             max_retention_days = 3650
             [paths]
-            data_dir = "${MY_DATA_ROOT}/sapphire"
+            data_dir = "${SAPPHIRE_DATA_ROOT}/sapphire"
         """)
         )
         config = load_config(toml)

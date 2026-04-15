@@ -93,13 +93,15 @@ class TestLoadConfig:
 
 class TestResolveEnvVars:
     def test_substitutes_set_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("MY_VAR", "hello")
-        assert _resolve_env_vars("prefix_${MY_VAR}_suffix") == "prefix_hello_suffix"
+        monkeypatch.setenv("SAPPHIRE_MY_VAR", "hello")
+        assert (
+            _resolve_env_vars("prefix_${SAPPHIRE_MY_VAR}_suffix") == "prefix_hello_suffix"
+        )
 
     def test_multiple_substitutions(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("A", "foo")
-        monkeypatch.setenv("B", "bar")
-        assert _resolve_env_vars("${A}/${B}") == "foo/bar"
+        monkeypatch.setenv("SAPPHIRE_A", "foo")
+        monkeypatch.setenv("SAPPHIRE_B", "bar")
+        assert _resolve_env_vars("${SAPPHIRE_A}/${SAPPHIRE_B}") == "foo/bar"
 
     def test_no_placeholders_unchanged(self) -> None:
         assert _resolve_env_vars("no placeholders here") == "no placeholders here"
@@ -107,9 +109,13 @@ class TestResolveEnvVars:
     def test_unset_env_var_raises_value_error(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.delenv("MISSING_VAR", raising=False)
-        with pytest.raises(ValueError, match=r"\$\{MISSING_VAR\} is not set"):
-            _resolve_env_vars("${MISSING_VAR}")
+        monkeypatch.delenv("SAPPHIRE_MISSING_VAR", raising=False)
+        with pytest.raises(ValueError, match=r"\$\{SAPPHIRE_MISSING_VAR\} is not set"):
+            _resolve_env_vars("${SAPPHIRE_MISSING_VAR}")
+
+    def test_non_sapphire_prefix_raises_value_error(self) -> None:
+        with pytest.raises(ValueError, match="not in the allowlist"):
+            _resolve_env_vars("${DATABASE_URL}")
 
 
 class TestGetDangerLevelDefinitions:

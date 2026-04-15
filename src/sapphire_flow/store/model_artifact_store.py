@@ -27,7 +27,12 @@ class PgModelArtifactStore:
     def _read_and_verify(
         self, aid: ArtifactId, artifact_path: str, sha256_hash: str
     ) -> bytes:
-        stored = Path(artifact_path).read_bytes()
+        resolved = Path(artifact_path).resolve()
+        if not resolved.is_relative_to(self._artifact_dir.resolve()):
+            raise ArtifactIntegrityError(
+                f"artifact path {artifact_path!r} is outside artifact_dir"
+            )
+        stored = resolved.read_bytes()
         actual = hashlib.sha256(stored).hexdigest()
         if actual != sha256_hash:
             raise ArtifactIntegrityError(
@@ -50,7 +55,8 @@ class PgModelArtifactStore:
     ) -> tuple[ArtifactId, str]:
         aid = ArtifactId(uuid4())
         sha256 = hashlib.sha256(artifact_bytes).hexdigest()
-        artifact_path = self._artifact_dir / model_id / f"{aid}.bin"
+        safe_model_dir = Path(str(model_id)).name
+        artifact_path = self._artifact_dir / safe_model_dir / f"{aid}.bin"
         artifact_path.parent.mkdir(parents=True, exist_ok=True)
         artifact_path.write_bytes(artifact_bytes)
 

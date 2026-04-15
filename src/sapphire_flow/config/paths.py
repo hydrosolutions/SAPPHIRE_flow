@@ -20,7 +20,7 @@ def resolve_data_dir(config_data_dir: str | None = None) -> Path:
     root = root.expanduser().resolve()
 
     for subdir in _SUBDIRS:
-        (root / subdir).mkdir(parents=True, exist_ok=True)
+        (root / subdir).mkdir(parents=True, exist_ok=True, mode=0o750)
     return root
 
 

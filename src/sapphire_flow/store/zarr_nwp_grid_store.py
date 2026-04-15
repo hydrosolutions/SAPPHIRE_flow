@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numcodecs
@@ -12,18 +13,22 @@ from sapphire_flow.exceptions import StoreError
 from sapphire_flow.types.weather import GriddedForecast
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from sapphire_flow.types.datetime import UtcDatetime
 
 log = structlog.get_logger(__name__)
 
 
+def _safe_zarr_path(base_path: Path, nwp_source: str, cycle_time: UtcDatetime) -> Path:
+    safe_source = Path(nwp_source).name
+    zarr_path = base_path / f"{safe_source}/{cycle_time:%Y%m%dT%H}.zarr"
+    if not zarr_path.resolve().is_relative_to(base_path.resolve()):
+        raise StoreError(f"Path traversal detected for nwp_source={nwp_source!r}")
+    return zarr_path
+
+
 class ZarrNwpGridStore:
     def archive(self, forecast: GriddedForecast, base_path: Path) -> Path:
-        zarr_path = (
-            base_path / f"{forecast.nwp_source}/{forecast.cycle_time:%Y%m%dT%H}.zarr"
-        )
+        zarr_path = _safe_zarr_path(base_path, forecast.nwp_source, forecast.cycle_time)
         tmp_path = zarr_path.with_suffix(".zarr.tmp")
         old_path = zarr_path.with_suffix(".zarr.old")
 
@@ -62,7 +67,7 @@ class ZarrNwpGridStore:
     def load(
         self, base_path: Path, nwp_source: str, cycle_time: UtcDatetime
     ) -> GriddedForecast:
-        zarr_path = base_path / f"{nwp_source}/{cycle_time:%Y%m%dT%H}.zarr"
+        zarr_path = _safe_zarr_path(base_path, nwp_source, cycle_time)
         if not zarr_path.exists():
             log.warning("nwp.archive_not_found", zarr_path=str(zarr_path))
             raise StoreError(f"NWP archive not found: {zarr_path}")

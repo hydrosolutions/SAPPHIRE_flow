@@ -234,6 +234,11 @@ _ENV_VAR_PATTERN = re.compile(r"\$\{(\w+)\}")
 def _resolve_env_vars(text: str) -> str:
     def _replace(match: re.Match[str]) -> str:
         var_name = match.group(1)
+        if not var_name.startswith("SAPPHIRE_"):
+            raise ValueError(
+                f"Environment variable ${{{var_name}}} is not in the allowlist; "
+                "only variables prefixed with SAPPHIRE_ may be referenced in config"
+            )
         value = os.environ.get(var_name)
         if value is None:
             raise ValueError(f"Environment variable ${{{var_name}}} is not set")

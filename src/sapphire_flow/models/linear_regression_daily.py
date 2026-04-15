@@ -247,10 +247,35 @@ class LinearRegressionDaily:
         return buf.getvalue()
 
     def deserialize_artifact(self, raw: bytes) -> ModelArtifact:
-        data = np.load(io.BytesIO(raw))
+        data = np.load(io.BytesIO(raw), allow_pickle=False)
+        expected = {"coefficients", "intercepts", "residuals", "n_steps"}
+        missing = expected - set(data.files)
+        if missing:
+            raise ValueError(f"artifact missing keys: {missing}")
+        n_steps = int(data["n_steps"][0])
+        if n_steps <= 0:
+            raise ValueError(f"n_steps must be positive, got {n_steps}")
+        coef = data["coefficients"]
+        if coef.ndim != 2 or coef.shape[0] != n_steps:
+            raise ValueError(
+                f"coefficients must be 2D with shape[0]={n_steps}, got {coef.shape}"
+            )
+        if data["intercepts"].shape != (n_steps,):
+            raise ValueError(
+                f"intercepts.shape={data['intercepts'].shape} != ({n_steps},)"
+            )
+        res = data["residuals"]
+        if res.ndim != 2 or res.shape[1] != n_steps or res.shape[0] == 0:
+            raise ValueError(
+                f"residuals must be 2D with shape[0]>0 and shape[1]={n_steps}, "
+                f"got {res.shape}"
+            )
+        for name in ("coefficients", "intercepts", "residuals"):
+            if not np.all(np.isfinite(data[name])):
+                raise ValueError(f"{name} contains non-finite values (NaN or Inf)")
         return LinearRegressionArtifact(
             coefficients=data["coefficients"],
             intercepts=data["intercepts"],
             residuals=data["residuals"],
-            n_steps=int(data["n_steps"][0]),
+            n_steps=n_steps,
         )

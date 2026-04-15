@@ -145,6 +145,10 @@ class MeteoSwissNwpAdapter:
             for link in data.get("links", []):
                 if link.get("rel") == "next":
                     url = link["href"]
+                    if not url.startswith(self._stac_base_url + "/"):
+                        raise AdapterError(
+                            f"STAC pagination URL {url!r} does not match base URL"
+                        )
                     break
 
         grib_files: list[Path] = []
@@ -171,8 +175,13 @@ class MeteoSwissNwpAdapter:
     def _download_asset(self, href: str, asset_key: str) -> Path:
         from pathlib import Path
 
+        if not href.startswith("https://"):
+            raise AdapterError(f"Refusing non-HTTPS asset URL: {href!r}")
         file_name = href.split("/")[-1] or f"{asset_key}.grib2"
+        file_name = Path(file_name).name
         dest = Path(self._scratch_path) / file_name
+        if not dest.resolve().is_relative_to(Path(self._scratch_path).resolve()):
+            raise AdapterError(f"Path traversal in asset href: {href!r}")
         try:
             with self._http_client.stream("GET", href) as resp:
                 resp.raise_for_status()
