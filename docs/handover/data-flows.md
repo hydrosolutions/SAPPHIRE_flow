@@ -547,12 +547,13 @@ S.1 → S.2 ─┐
 - **Branch C** (future): Re-runs QC rules on an existing time window using the current rule version. Does not re-derive rating curve values.
 - Flow 12 must not overlap with Flow 2 (observation ingest) for the same station and time period. This is enforced by concurrency controls.
 - Stale skill scores (12.5) are recomputed by the next Flow 10 run.
+- **Skill score integrity across rating curve changes:** Forecasts log the active rating curve at issuance, and superseded observation values are archived before reprocessing. Skill computation follows the WMO best-truth approach — verify against the most current observations — with rating curve transition counts exposed in the API so dashboards can annotate discontinuities at epoch boundaries.
 
 ---
 
 ## REST API
 
-All data produced by the SAPPHIRE system is served through a REST API at `/api/v1/`. External systems — dashboards, alert portals, hydropower operators — pull data from this API. There is no push-based export.
+All data produced by the SAPPHIRE system is served through a REST API at `/api/v1/`. External systems — dashboards, alert portals, hydropower operators — pull data from this API. There is no push-based data export. Alert notifications are push-based — step 1.14 dispatches via pluggable adapters (email, SMS, webhook) with async retry; the `GET /alerts` endpoint is for querying alert history, not the primary delivery path.
 
 **Key resource groups:**
 
@@ -572,8 +573,8 @@ All data produced by the SAPPHIRE system is served through a REST API at `/api/v
 **Temporal aggregation:** `?aggregate=pentadal` (5-day) or `?aggregate=dekadal` (10-day) for observation and forecast series.
 
 **Health endpoints:**
-- `GET /api/v1/health` — unauthenticated. Returns `{"status": "ok | degraded | down"}`. Used by uptime monitors. Returns HTTP 503 when degraded or down.
-- `GET /api/v1/health/detail` — authenticated (IT admin or organisation admin). Returns per-component status (database, Prefect worker, NWP ingest, observation ingest, forecast cycle, disk).
+- `GET /api/v1/health` — unauthenticated, lightweight (single `SELECT 1` DB liveness check, no table scans or Prefect API calls). Returns `{"status": "ok | degraded | down"}` with HTTP 200 when ok, HTTP 503 otherwise. Safe to poll at high frequency from external uptime monitors.
+- `GET /api/v1/health/detail` — authenticated (IT admin or organisation admin). Returns per-component status (database, Prefect worker, NWP ingest, observation ingest, forecast cycle, disk). This endpoint performs the expensive checks; the public endpoint does not.
 
 **Access control:** API keys are scoped per consumer. A key for the DRRMA Bipad portal, for example, can be restricted to alert data and border-relevant stations. DHM's own dashboard holds a full-access key.
 
@@ -618,11 +619,23 @@ Flow 12 (observation reprocessing) → marks skill scores stale → Flow 10
 
 ## Data Retention and Archiving
 
-Raw observations, QC metadata, forecasts, hindcasts, and skill scores are never deleted or overwritten — they accumulate over the system's lifetime. DHM requires a minimum retention period of 6 months; longer is preferred and bounded only by infrastructure capacity.
+All time-series data follows a tiered lifecycle: **hot (PostgreSQL) → cold (compressed Parquet) → delete at `max_retention_days`**. Each data class has its own hot window; after that, a daily scheduled Prefect task migrates data to cold storage (local Parquet files) and deletes data that exceeds `max_retention_days`.
 
-Disk utilisation is monitored by Flow 4 step 4.9, with warnings at 80% and critical alerts at 90%. Storage capacity is reviewed quarterly.
+| Data class | Hot window (PostgreSQL) | Cold format | Delete after |
+|------------|------------------------|-------------|-------------|
+| Observations | 548 days | Parquet | `max_retention_days` |
+| NWP extractions | 180 days | Parquet | `max_retention_days` |
+| Raw gridded NWP | 180 days | Zarr (zstd) | `max_retention_days` |
+| Forecasts | 548 days | Parquet | `max_retention_days` |
+| Hindcasts | 548 days | Parquet | `max_retention_days` |
+| Historical forcing | Permanent | — | Never |
+| Skill scores | Permanent | — | Never |
+| Pipeline health | 30 days | — | 30 days |
+| Resolved alerts | 90 days | — | 90 days |
 
-For backup schedule, encryption, retention policy, storage sizing, and disaster recovery procedures, see `it-operations.md` §7.
+Skill scores and historical forcing are permanent — they are never tiered or deleted. Observations can be re-ingested from external sources if data beyond `max_retention_days` is needed for retraining. Deleting hindcast data beyond retention prevents recomputation from scratch, but stored skill scores remain unaffected. All retention windows are deployment-configurable.
+
+Disk utilisation is monitored by Flow 4 step 4.9, with warnings at 80% and critical alerts at 90%. For backup schedule, encryption, and disaster recovery, see `it-operations.md` §7.
 
 ---
 
