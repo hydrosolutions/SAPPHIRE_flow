@@ -181,4 +181,8 @@ class ClimatologyFallbackModel:
 
     def deserialize_artifact(self, raw: bytes) -> ModelArtifact:
         df = pl.read_ipc(io.BytesIO(raw))
+        expected_cols = {"day_of_year", "quantile", "value", "parameter"}
+        missing = expected_cols - set(df.columns)
+        if missing:
+            raise ValueError(f"Climatology artifact missing columns: {missing}")
         return ClimatologyArtifact(quantiles=df)

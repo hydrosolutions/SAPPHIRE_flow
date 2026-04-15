@@ -398,8 +398,11 @@ def station_observations_json(
     if obs is None:
         return JSONResponse({"timestamps": [], "values": [], "qc_statuses": []})
 
-    start_dt = datetime.fromisoformat(start).replace(tzinfo=UTC)
-    end_dt = datetime.fromisoformat(end).replace(tzinfo=UTC)
+    try:
+        start_dt = datetime.fromisoformat(start).replace(tzinfo=UTC)
+        end_dt = datetime.fromisoformat(end).replace(tzinfo=UTC)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid datetime format") from exc
     if (end_dt - start_dt).days > 25 * 366:
         raise HTTPException(
             status_code=400, detail="Date range exceeds 25-year maximum"
@@ -443,8 +446,11 @@ def station_forcing_json(
     if forcing is None:
         return JSONResponse({"timestamps": [], "series": {}})
 
-    start_dt = datetime.fromisoformat(start).replace(tzinfo=UTC)
-    end_dt = datetime.fromisoformat(end).replace(tzinfo=UTC)
+    try:
+        start_dt = datetime.fromisoformat(start).replace(tzinfo=UTC)
+        end_dt = datetime.fromisoformat(end).replace(tzinfo=UTC)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid datetime format") from exc
     if (end_dt - start_dt).days > 25 * 366:
         raise HTTPException(
             status_code=400, detail="Date range exceeds 25-year maximum"
@@ -539,8 +545,11 @@ def station_hindcasts_json(
     if hf is None or hv is None:
         return JSONResponse(empty)
 
-    start_dt = datetime.fromisoformat(start).replace(tzinfo=UTC)
-    end_dt = datetime.fromisoformat(end).replace(tzinfo=UTC)
+    try:
+        start_dt = datetime.fromisoformat(start).replace(tzinfo=UTC)
+        end_dt = datetime.fromisoformat(end).replace(tzinfo=UTC)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid datetime format") from exc
     if (end_dt - start_dt).days > 25 * 366:
         raise HTTPException(
             status_code=400, detail="Date range exceeds 25-year maximum"

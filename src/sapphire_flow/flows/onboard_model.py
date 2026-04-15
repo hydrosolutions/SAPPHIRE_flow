@@ -344,6 +344,11 @@ def onboard_model_flow(
     else:
         parsed_end = clock()
 
+    if parsed_start.year < 1900:
+        raise ValueError(f"period_start year {parsed_start.year} is before 1900")
+    if parsed_end > clock() + timedelta(days=1):
+        raise ValueError("period_end is more than 1 day in the future")
+
     time_step = timedelta(hours=time_step_hours)
     typed_model_id = ModelId(model_id)
 

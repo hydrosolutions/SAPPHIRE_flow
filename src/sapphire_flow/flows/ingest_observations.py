@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 import structlog
 from prefect import flow, task
 
+from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.qc import Stage1QualityChecker
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import GaugingStatus, QcStatus, StationKind
@@ -210,9 +211,12 @@ def ingest_observations_flow(
 
             deployment_config = load_config(config_path)
 
-    assert station_store is not None
-    assert obs_store is not None
-    assert baseline_store is not None
+    if station_store is None:
+        raise ConfigurationError("station_store is required but was not provided")
+    if obs_store is None:
+        raise ConfigurationError("obs_store is required but was not provided")
+    if baseline_store is None:
+        raise ConfigurationError("baseline_store is required but was not provided")
 
     now: UtcDatetime = clock()  # type: ignore[assignment]
 
@@ -320,7 +324,8 @@ def ingest_observations_flow(
             check_observation_alerts,
         )
 
-        assert alert_store is not None
+        if alert_store is None:
+            raise ConfigurationError("alert_store is required but was not provided")
         check_observation_alerts(
             station_params=station_params,
             obs_store=obs_store,

@@ -61,8 +61,14 @@ def check_observation_alerts(
                     continue
 
                 latest = max(obs_list, key=lambda o: o.timestamp)
+                if latest.value is None:
+                    log.warning(
+                        "observation_alert.null_value_qc_passed",
+                        parameter=parameter,
+                    )
+                    continue
                 evaluated_parameters.add(parameter)
-                latest_value: float = latest.value  # type: ignore[assignment]  # QC_PASSED guarantees non-None
+                latest_value: float = latest.value
 
                 for t in thresholds:
                     if t.parameter == parameter and latest_value >= t.value:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 import structlog
@@ -38,10 +39,12 @@ def compute_bma_weights(
     if not best_scores:
         return {}
 
-    raw_weights: dict[ModelId, float] = {
-        model_id: 1.0 / (s.score if s.score > 0 else _EPSILON)
-        for model_id, s in best_scores.items()
-    }
+    raw_weights: dict[ModelId, float] = {}
+    for model_id, s in best_scores.items():
+        score = s.score
+        if not math.isfinite(score) or score <= 0:
+            score = _EPSILON
+        raw_weights[model_id] = 1.0 / score
 
     total = sum(raw_weights.values())
     weights: dict[ModelId, float] = {

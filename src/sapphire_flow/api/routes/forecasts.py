@@ -76,7 +76,7 @@ def forecast_detail(
     reflected = _get_reflected(conn)
     forecasts = reflected.tables.get("forecasts")
     if forecasts is None:
-        raise HTTPException(status_code=404, detail="Forecasts table not found")
+        raise HTTPException(status_code=404, detail="Not found")
 
     row = (
         conn.execute(sa.select(forecasts).where(forecasts.c.id == forecast_id))

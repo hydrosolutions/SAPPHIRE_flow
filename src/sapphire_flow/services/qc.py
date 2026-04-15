@@ -146,6 +146,8 @@ def _apply_spike(
         return None
     tolerance = thresholds["tolerance"]
     ref = abs(prev.value)
+    if ref == 0.0:
+        return None
     if (
         abs(obs.value - prev.value) > tolerance * ref
         and abs(obs.value - nxt.value) > tolerance * ref

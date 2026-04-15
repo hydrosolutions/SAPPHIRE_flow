@@ -129,7 +129,8 @@ def _pool_ensembles(
         frames.append(df)
         member_offset += len(unique_ids)
 
-    assert ref_ensemble is not None
+    if ref_ensemble is None:
+        raise ValueError("model_ensembles must not be empty")
     pooled_df = pl.concat(frames)
 
     return Ens.from_members(

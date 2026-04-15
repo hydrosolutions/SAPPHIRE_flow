@@ -202,6 +202,11 @@ def assemble_station_operational_inputs(
 
     future_dynamic = _pivot_nwp_records(nwp_records, reqs.future_dynamic_features)
     nwp_age_hours = (now - cycle_time).total_seconds() / 3600.0
+    if nwp_age_hours < 0:
+        log.warning(
+            "operational_inputs.nwp_cycle_in_future", nwp_age_hours=nwp_age_hours
+        )
+        nwp_age_hours = 0.0
 
     # --- static ---
     static_df: pl.DataFrame | None = None

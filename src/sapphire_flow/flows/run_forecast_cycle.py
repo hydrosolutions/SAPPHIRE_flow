@@ -12,6 +12,7 @@ import structlog
 import structlog.contextvars
 from prefect import flow, task
 
+from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
     NwpCycleSource,
@@ -238,15 +239,26 @@ def run_forecast_cycle_flow(
 
         models = discover_models()
 
-    assert station_store is not None
-    assert obs_store is not None
-    assert weather_forecast_store is not None
-    assert forecast_store is not None
-    assert model_state_store is not None
-    assert artifact_store is not None
-    assert baseline_store is not None
-    assert basin_store is not None
-    assert forcing_store is not None
+    if station_store is None:
+        raise ConfigurationError("station_store is required but was not provided")
+    if obs_store is None:
+        raise ConfigurationError("obs_store is required but was not provided")
+    if weather_forecast_store is None:
+        raise ConfigurationError(
+            "weather_forecast_store is required but was not provided"
+        )
+    if forecast_store is None:
+        raise ConfigurationError("forecast_store is required but was not provided")
+    if model_state_store is None:
+        raise ConfigurationError("model_state_store is required but was not provided")
+    if artifact_store is None:
+        raise ConfigurationError("artifact_store is required but was not provided")
+    if baseline_store is None:
+        raise ConfigurationError("baseline_store is required but was not provided")
+    if basin_store is None:
+        raise ConfigurationError("basin_store is required but was not provided")
+    if forcing_store is None:
+        raise ConfigurationError("forcing_store is required but was not provided")
 
     resolved_cycle_time: UtcDatetime = _resolve_cycle_time(cycle_time, clock)
 

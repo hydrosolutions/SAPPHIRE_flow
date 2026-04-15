@@ -131,7 +131,11 @@ class MeteoSwissNwpAdapter:
             f"?datetime={cycle_time.isoformat()}"
         )
         items: list[dict] = []  # type: ignore[type-arg]
+        page_count = 0
         while url:
+            page_count += 1
+            if page_count > 100:
+                raise AdapterError("STAC pagination exceeded 100 pages")
             try:
                 resp = self._http_client.get(url)
                 resp.raise_for_status()
@@ -166,6 +170,8 @@ class MeteoSwissNwpAdapter:
                         local_path=str(file_path),
                     )
 
+        if len(grib_files) > 500:
+            raise AdapterError(f"Too many GRIB2 files ({len(grib_files)}), maximum 500")
         if not grib_files:
             raise AdapterError(
                 f"No GRIB2 files found for cycle_time={cycle_time.isoformat()}"

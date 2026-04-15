@@ -27,6 +27,7 @@ services:
     secrets:
       - db_password
     restart: unless-stopped
+    networks: [backend]
     logging:
       driver: json-file
       options:
@@ -53,6 +54,7 @@ services:
     secrets:
       - db_password
     restart: unless-stopped
+    networks: [backend, frontend]
     volumes:
       - prefect_data:/data/prefect
     logging:
@@ -85,6 +87,7 @@ services:
       - /tmp
       - /data/cache
     restart: unless-stopped
+    networks: [backend]
     volumes:
       - model_artifacts:/data/artifacts:rw
       - sapphire_data:/data/raw:rw
@@ -122,6 +125,7 @@ services:
     tmpfs:
       - /tmp
     restart: unless-stopped
+    networks: [backend, frontend]
     volumes:
       - model_artifacts:/data/artifacts:ro
       - ./config.toml:/app/config.toml:ro
@@ -132,7 +136,7 @@ services:
         max-file: "5"
 
   caddy:
-    image: caddy:2
+    image: caddy:2.9
     ports:
       - "80:80"
       - "443:443"
@@ -153,6 +157,7 @@ services:
     tmpfs:
       - /tmp
     restart: unless-stopped
+    networks: [frontend]
     logging:
       driver: json-file
       options:
@@ -186,6 +191,7 @@ services:
     tmpfs:
       - /tmp
     restart: "no"
+    networks: [backend]
     volumes:
       - ./config.toml:/app/config.toml:ro
     logging:
@@ -205,3 +211,9 @@ volumes:
 secrets:
   db_password:
     file: ./secrets/db_password
+
+networks:
+  backend:
+    driver: bridge
+  frontend:
+    driver: bridge

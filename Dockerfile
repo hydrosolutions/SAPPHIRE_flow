@@ -1,6 +1,6 @@
-FROM python:3.11-slim AS builder
+FROM python:3.11.12-slim AS builder
 
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.7.3 /uv /usr/local/bin/uv
 
 WORKDIR /app
 
@@ -12,7 +12,7 @@ RUN uv sync --frozen --no-dev
 COPY src/ src/
 
 
-FROM python:3.11-slim
+FROM python:3.11.12-slim
 
 RUN groupadd -g 1000 app && useradd -u 1000 -g 1000 -m app
 

@@ -127,6 +127,8 @@ def combine_ensembles_bma(
     # Compute per-model sample counts
     eligible_weights = {mid: weights[mid] for mid in eligible}
     total_weight = sum(eligible_weights.values())
+    if total_weight == 0.0:
+        return {}
     normalised = {mid: w / total_weight for mid, w in eligible_weights.items()}
 
     raw_counts = {mid: round(w * _BMA_TARGET_MEMBERS) for mid, w in normalised.items()}
