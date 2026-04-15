@@ -1,7 +1,8 @@
 # Plan 037 — Security Audit: Findings and Remediation
 
-**Status**: READY (all HIGH findings reviewed; MEDIUM pending)
-**Deferred to dedicated plans**: H-21 (AUTOCOMMIT→transactions), H-23c (DATA_UNAVAILABLE alert status)
+**Status**: DONE (all findings reviewed; remaining items tracked in Plans 038/039 and CAUTION backlog)
+**Dedicated plans**: Plan 038 (store write atomicity), Plan 039 (alert DATA_UNAVAILABLE status)
+**CAUTION backlog**: M-1 (gosu/no-new-privileges), M-31 (BMA member count), M-41 (model_id UUID validation)
 **Phase**: Cross-cutting (all phases)
 **Scope**: v0 hardening before any network exposure; v1 prerequisites marked
 
