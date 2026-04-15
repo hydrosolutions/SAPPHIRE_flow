@@ -83,6 +83,7 @@ from sapphire_flow.types.weather import WeatherForecastRecord  # noqa: TC001
 class FakeObservationStore:
     def __init__(self) -> None:
         self._observations: dict[ObservationId, Observation] = {}
+        self.fetch_observations_call_count: int = 0
 
     def store_observations(self, observations: list[Observation]) -> None:
         for obs in observations:
@@ -140,6 +141,7 @@ class FakeObservationStore:
         qc_status: QcStatus | None = None,
         source: ObservationSource | None = None,
     ) -> list[Observation]:
+        self.fetch_observations_call_count += 1
         return [
             o
             for o in self._observations.values()

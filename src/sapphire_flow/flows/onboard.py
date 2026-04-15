@@ -69,6 +69,7 @@ def onboard_stations_flow(
     deployment_config: object = None,
     qc_rules: object = None,
     clock: object = None,
+    hindcast_days: int | None = None,
 ) -> object:
     if clock is None:
         clock = lambda: ensure_utc(datetime.now(UTC))  # noqa: E731
@@ -154,6 +155,7 @@ def onboard_stations_flow(
         skill_store=skill_store,
         forcing_source=forcing_source,
         deployment_config=deployment_config,
+        hindcast_days=hindcast_days,
     )
 
     log.info(

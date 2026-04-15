@@ -201,6 +201,7 @@ def _run_onboarding(
     skill_store: SkillStore | None = None,
     forcing_source: WeatherReanalysisSource | None = None,
     deployment_config: DeploymentConfig | None = None,
+    hindcast_days: int | None = None,
 ) -> OnboardingResult:
     errors: list[str] = []
     stations_created = 0
@@ -523,6 +524,45 @@ def _run_onboarding(
                 )
                 continue
             try:
+                if hindcast_days is not None and hindcast_days < 1:
+                    raise ValueError(f"hindcast_days must be >= 1, got {hindcast_days}")
+
+                if hindcast_days is not None:
+                    from datetime import timedelta
+
+                    hindcast_start = ensure_utc(
+                        max(start_utc, end_utc - timedelta(days=hindcast_days))
+                    )
+                else:
+                    hindcast_start = start_utc
+
+                narrowed = hindcast_start > start_utc
+                if narrowed:
+                    log.warning(
+                        "hindcast.period_narrowed",
+                        hindcast_start=str(hindcast_start),
+                        hindcast_end=str(end_utc),
+                        hindcast_days=(end_utc - hindcast_start).days,
+                        note="model trains AND evaluates on narrowed window — "
+                        "skill scores not comparable to full-period training",
+                    )
+                elif hindcast_days is not None:
+                    log.info(
+                        "hindcast.period_unchanged",
+                        hindcast_start=str(hindcast_start),
+                        hindcast_end=str(end_utc),
+                        hindcast_days_requested=hindcast_days,
+                        actual_days=(end_utc - start_utc).days,
+                        note="hindcast_days exceeds data range — full period",
+                    )
+                else:
+                    log.info(
+                        "hindcast.period_resolved",
+                        hindcast_start=str(hindcast_start),
+                        hindcast_end=str(end_utc),
+                        hindcast_days=(end_utc - hindcast_start).days,
+                    )
+
                 time_step = next(iter(model.data_requirements.supported_time_steps))
                 units = determine_onboarding_scope(
                     model_id=model_id,
@@ -531,7 +571,7 @@ def _run_onboarding(
                     group_ids=None,
                     station_store=station_store,
                     group_store=group_store,
-                    training_period_start=start_utc,
+                    training_period_start=hindcast_start,
                     training_period_end=end_utc,
                     time_step=time_step,
                 )
@@ -653,6 +693,7 @@ def onboard_from_camelsch(
     skill_store: SkillStore | None = None,
     forcing_source: WeatherReanalysisSource | None = None,
     deployment_config: DeploymentConfig | None = None,
+    hindcast_days: int | None = None,
 ) -> OnboardingResult:
     from sapphire_flow.adapters.camelsch_adapter import (
         load_forcing,
@@ -713,6 +754,7 @@ def onboard_from_camelsch(
         skill_store=skill_store,
         forcing_source=forcing_source,
         deployment_config=deployment_config,
+        hindcast_days=hindcast_days,
     )
 
     log.info(

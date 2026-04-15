@@ -5,8 +5,18 @@ from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 import polars as pl
+import psycopg
+import psycopg.errors
 import structlog
+from sqlalchemy.exc import (
+    DisconnectionError,
+    InterfaceError,
+    InternalError,
+    OperationalError,
+    PendingRollbackError,
+)
 
+from sapphire_flow.exceptions import StoreError
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.enums import EnsembleRepresentation, ForcingType, QcStatus
 from sapphire_flow.types.forecast import HindcastForecast
@@ -34,10 +44,45 @@ if TYPE_CHECKING:
         ObservationStore,
         StationStore,
     )
+    from sapphire_flow.types.historical_forcing import RawHistoricalForcing
     from sapphire_flow.types.model import ModelArtifact
+    from sapphire_flow.types.observation import Observation
     from sapphire_flow.types.station import StationGroup, StationWeatherSource
 
-log = structlog.get_logger()
+log = structlog.get_logger(__name__)
+
+_CONNECTION_FATAL_KEYWORDS = frozenset(
+    {
+        "adminshutdown",
+        "server closed",
+        "connection reset",
+        "connection refused",
+        "terminating connection",
+        "could not connect",
+    }
+)
+
+
+def _is_connection_fatal(exc: Exception) -> bool:
+    """Return True if the exception indicates the DB connection is dead."""
+    if isinstance(exc, (DisconnectionError, InterfaceError, PendingRollbackError)):
+        return True
+    if isinstance(exc, (OperationalError, InternalError)):
+        msg = str(exc).lower()
+        return any(kw in msg for kw in _CONNECTION_FATAL_KEYWORDS)
+    if isinstance(exc, psycopg.Error):
+        _fatal_psycopg = (
+            psycopg.errors.AdminShutdown,
+            psycopg.errors.CrashShutdown,
+            psycopg.errors.ConnectionFailure,
+            psycopg.errors.ConnectionDoesNotExist,
+            psycopg.errors.CannotConnectNow,
+        )
+        if isinstance(exc, _fatal_psycopg):
+            return True
+        msg = str(exc).lower()
+        return any(kw in msg for kw in _CONNECTION_FATAL_KEYWORDS)
+    return False
 
 
 def _issue_times(
@@ -87,8 +132,8 @@ def _assemble_hindcast_inputs(
     time_step: timedelta,
     forecast_horizon_steps: int,
     required_features: list[str],
-    forcing_source: WeatherReanalysisSource,
-    obs_store: ObservationStore,
+    all_forcing: list[RawHistoricalForcing],
+    all_observations: list[Observation],
     weather_sources: list[StationWeatherSource],
     static_attributes: pl.DataFrame | None,
     parameter: str = "discharge",
@@ -97,21 +142,24 @@ def _assemble_hindcast_inputs(
     # +1 because the fetch end is exclusive
     horizon_end = ensure_utc(issue_time + (forecast_horizon_steps + 1) * time_step)
 
-    raw_forcing = forcing_source.fetch_reanalysis(
-        station_configs=weather_sources,
-        start=lookback_start,
-        end=horizon_end,
-        parameters=required_features,
-    )
+    station_ids = {cfg.station_id for cfg in weather_sources}
+    raw_forcing = [
+        r
+        for r in all_forcing
+        if r.station_id in station_ids
+        and lookback_start <= r.valid_time < horizon_end
+        and r.parameter in required_features
+    ]
 
-    # NO-FUTURE-LEAKAGE: end=issue_time
-    observations = obs_store.fetch_observations(
-        station_id=station_id,
-        parameter=parameter,
-        start=lookback_start,
-        end=issue_time,
-        qc_status=QcStatus.QC_PASSED,
-    )
+    # NO-FUTURE-LEAKAGE: end=issue_time (unchanged from original).
+    observations = [
+        o
+        for o in all_observations
+        if o.station_id == station_id
+        and o.parameter == parameter
+        and o.qc_status == QcStatus.QC_PASSED
+        and lookback_start <= o.timestamp < issue_time
+    ]
 
     if not observations:
         log.warning(
@@ -231,6 +279,32 @@ def run_station_hindcast(
     targets = station_config.forecast_targets
     parameter = next(iter(targets), "discharge") if targets else "discharge"
 
+    # Pre-fetch all data for the full period (H.2 + H.3 from architecture).
+    full_start = ensure_utc(period_start - lookback_steps * time_step)
+    full_end = ensure_utc(period_end + (forecast_horizon_steps + 1) * time_step)
+
+    t0 = time.perf_counter()
+    all_forcing = forcing_source.fetch_reanalysis(
+        station_configs=weather_sources,
+        start=full_start,
+        end=full_end,
+        parameters=required_features,
+    )
+    all_observations = obs_store.fetch_observations(
+        station_id=station_id,
+        parameter=parameter,
+        start=full_start,
+        end=period_end,
+        qc_status=QcStatus.QC_PASSED,
+    )
+    log.info(
+        "hindcast.prefetch_completed",
+        station_id=str(station_id),
+        forcing_records=len(all_forcing),
+        observation_records=len(all_observations),
+        duration_ms=round((time.perf_counter() - t0) * 1000, 1),
+    )
+
     results: list[HindcastStepResult] = []
     for issue_time in _issue_times(period_start, period_end, time_step):
         try:
@@ -241,8 +315,8 @@ def run_station_hindcast(
                 time_step=time_step,
                 forecast_horizon_steps=forecast_horizon_steps,
                 required_features=required_features,
-                forcing_source=forcing_source,
-                obs_store=obs_store,
+                all_forcing=all_forcing,
+                all_observations=all_observations,
                 weather_sources=weather_sources,
                 static_attributes=static_df,
                 parameter=parameter,
@@ -285,17 +359,51 @@ def run_station_hindcast(
             results.append(HindcastStepResult(issue_time=issue_time, success=True))
 
         except Exception as exc:
+            if _is_connection_fatal(exc):
+                log.error(
+                    "hindcast.connection_failed",
+                    station_id=str(station_id),
+                    issue_time=str(issue_time),
+                    error_type=type(exc).__qualname__,
+                    successful_steps=sum(1 for r in results if r.success),
+                    remaining_steps=len(
+                        _issue_times(
+                            ensure_utc(issue_time + time_step), period_end, time_step
+                        )
+                    ),
+                    exc_info=True,
+                )
+                raise StoreError(
+                    f"Connection-fatal: {type(exc).__qualname__}"
+                ) from exc
+            # Guard against DSN leakage
+            if isinstance(
+                exc, (OperationalError, InterfaceError, InternalError, psycopg.Error)
+            ):
+                error_fields: dict[str, str] = {"error_type": type(exc).__qualname__}
+            else:
+                error_fields = {"error": str(exc)}
             log.warning(
                 "hindcast.step_failed",
                 station_id=str(station_id),
                 issue_time=str(issue_time),
-                error=str(exc),
+                **error_fields,
             )
             results.append(
                 HindcastStepResult(
                     issue_time=issue_time,
                     success=False,
-                    error=str(exc),
+                    error=type(exc).__qualname__
+                    if isinstance(
+                        exc,
+                        (
+                            OperationalError,
+                            InterfaceError,
+                            InternalError,
+                            psycopg.Error,
+                        ),
+                    )
+                    else str(exc),
                 )
             )
 
@@ -353,6 +461,42 @@ def run_group_hindcast(
         group_id=str(group.id),
     )
 
+    full_start = ensure_utc(period_start - lookback_steps * time_step)
+    full_end = ensure_utc(period_end + (forecast_horizon_steps + 1) * time_step)
+
+    fetchable_sids = [
+        sid for sid in group.station_ids if station_configs[sid] is not None
+    ]
+
+    # Single batch call for forcing across all stations.
+    all_weather_sources = [
+        ws for sid in fetchable_sids for ws in weather_sources_map[sid]
+    ]
+    all_forcing_flat = forcing_source.fetch_reanalysis(
+        station_configs=all_weather_sources,
+        start=full_start,
+        end=full_end,
+        parameters=required_features,
+    )
+    # Index by station_id for per-step lookup.
+    all_forcing_map: dict[StationId, list[RawHistoricalForcing]] = {
+        sid: [] for sid in fetchable_sids
+    }
+    for r in all_forcing_flat:
+        if r.station_id in all_forcing_map:
+            all_forcing_map[r.station_id].append(r)
+
+    # Per-station calls for observations (different parameters per station).
+    all_obs_map: dict[StationId, list[Observation]] = {}
+    for sid in fetchable_sids:
+        all_obs_map[sid] = obs_store.fetch_observations(
+            station_id=sid,
+            parameter=parameter_map.get(sid, "discharge"),
+            start=full_start,
+            end=period_end,
+            qc_status=QcStatus.QC_PASSED,
+        )
+
     per_station: dict[StationId, list[HindcastStepResult]] = {
         sid: [] for sid in group.station_ids
     }
@@ -374,8 +518,8 @@ def run_group_hindcast(
                     time_step=time_step,
                     forecast_horizon_steps=forecast_horizon_steps,
                     required_features=required_features,
-                    forcing_source=forcing_source,
-                    obs_store=obs_store,
+                    all_forcing=all_forcing_map.get(sid, []),
+                    all_observations=all_obs_map.get(sid, []),
                     weather_sources=weather_sources_map[sid],
                     static_attributes=static_map.get(sid),
                     parameter=parameter_map.get(sid, "discharge"),
@@ -385,13 +529,34 @@ def run_group_hindcast(
                 else:
                     inputs_batch[sid] = inputs
             except Exception as exc:
+                if _is_connection_fatal(exc):
+                    log.error(
+                        "hindcast.connection_failed",
+                        station_id=str(sid),
+                        issue_time=str(issue_time),
+                        error_type=type(exc).__qualname__,
+                        exc_info=True,
+                    )
+                    raise StoreError(
+                        f"Connection-fatal: {type(exc).__qualname__}"
+                    ) from exc
+                if isinstance(
+                    exc,
+                    (OperationalError, InterfaceError, InternalError, psycopg.Error),
+                ):
+                    error_fields_: dict[str, str] = {
+                        "error_type": type(exc).__qualname__
+                    }
+                    skipped[sid] = type(exc).__qualname__
+                else:
+                    error_fields_ = {"error": str(exc)}
+                    skipped[sid] = str(exc)
                 log.warning(
                     "hindcast.step_failed",
                     station_id=str(sid),
                     issue_time=str(issue_time),
-                    error=str(exc),
+                    **error_fields_,
                 )
-                skipped[sid] = str(exc)
 
         for sid, reason in skipped.items():
             per_station[sid].append(
@@ -429,12 +594,32 @@ def run_group_hindcast(
                 rng=rng,
             )
         except Exception as exc:
-            err = str(exc)
-            log.warning(
-                "hindcast.batch_predict_failed",
-                issue_time=str(issue_time),
-                error=err,
-            )
+            if _is_connection_fatal(exc):
+                log.error(
+                    "hindcast.connection_failed",
+                    issue_time=str(issue_time),
+                    error_type=type(exc).__qualname__,
+                    exc_info=True,
+                )
+                raise StoreError(
+                    f"Connection-fatal: {type(exc).__qualname__}"
+                ) from exc
+            if isinstance(
+                exc, (OperationalError, InterfaceError, InternalError, psycopg.Error)
+            ):
+                log.warning(
+                    "hindcast.batch_predict_failed",
+                    issue_time=str(issue_time),
+                    error_type=type(exc).__qualname__,
+                )
+                err = type(exc).__qualname__
+            else:
+                log.warning(
+                    "hindcast.batch_predict_failed",
+                    issue_time=str(issue_time),
+                    error=str(exc),
+                )
+                err = str(exc)
             for sid in inputs_batch:
                 per_station[sid].append(
                     HindcastStepResult(issue_time=issue_time, success=False, error=err)
@@ -467,19 +652,51 @@ def run_group_hindcast(
                     HindcastStepResult(issue_time=issue_time, success=True)
                 )
             except Exception as exc:
-                log.error(
-                    "hindcast.store_failed",
-                    station_id=str(sid),
-                    issue_time=str(issue_time),
-                    parameter=param_name or "<unknown>",
-                    exc_info=exc,
-                )
-                per_station[sid].append(
-                    HindcastStepResult(
-                        issue_time=issue_time,
-                        success=False,
-                        error=str(exc),
+                if _is_connection_fatal(exc):
+                    log.error(
+                        "hindcast.connection_failed",
+                        station_id=str(sid),
+                        issue_time=str(issue_time),
+                        parameter=param_name or "<unknown>",
+                        error_type=type(exc).__qualname__,
+                        exc_info=True,
                     )
-                )
+                    raise StoreError(
+                        f"Connection-fatal: {type(exc).__qualname__}"
+                    ) from exc
+                if isinstance(
+                    exc,
+                    (OperationalError, InterfaceError, InternalError, psycopg.Error),
+                ):
+                    log.error(
+                        "hindcast.store_failed",
+                        station_id=str(sid),
+                        issue_time=str(issue_time),
+                        parameter=param_name or "<unknown>",
+                        error_type=type(exc).__qualname__,
+                        exc_info=True,
+                    )
+                    per_station[sid].append(
+                        HindcastStepResult(
+                            issue_time=issue_time,
+                            success=False,
+                            error=type(exc).__qualname__,
+                        )
+                    )
+                else:
+                    log.error(
+                        "hindcast.store_failed",
+                        station_id=str(sid),
+                        issue_time=str(issue_time),
+                        parameter=param_name or "<unknown>",
+                        exc_info=True,
+                    )
+                    per_station[sid].append(
+                        HindcastStepResult(
+                            issue_time=issue_time,
+                            success=False,
+                            error=str(exc),
+                        )
+                    )
 
     return per_station

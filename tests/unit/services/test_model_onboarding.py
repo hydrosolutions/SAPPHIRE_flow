@@ -371,3 +371,161 @@ class TestCreateAssignment:
         assignments = station_store.fetch_model_assignments(station.id)
         assert len(assignments) == 1
         assert assignments[0].status == ModelAssignmentStatus.INACTIVE
+
+
+class TestHindcastDays:
+    """Verify the hindcast_days narrowing logic in _run_onboarding()."""
+
+    def test_hindcast_days_rejects_zero(self) -> None:
+        from unittest.mock import patch
+
+        from sapphire_flow.services.onboarding import _run_onboarding
+        from sapphire_flow.types.basin import Basin
+        from sapphire_flow.types.datetime import ensure_utc
+        from sapphire_flow.types.domain import QcRuleSet
+        from sapphire_flow.types.ids import BasinId, ModelId
+        from tests.conftest import make_deployment_config
+        from tests.fakes.fake_adapters import FakeWeatherReanalysisSource
+        from tests.fakes.fake_stores import (
+            FakeBasinStore,
+            FakeClimBaselineStore,
+            FakeFlowRegimeConfigStore,
+            FakeHindcastStore,
+            FakeHistoricalForcingStore,
+            FakeModelArtifactStore,
+            FakeModelStore,
+            FakeObservationStore,
+            FakeSkillStore,
+            FakeStationGroupStore,
+        )
+
+        start = ensure_utc(datetime(2020, 1, 1, tzinfo=UTC))
+        end = ensure_utc(datetime(2022, 1, 1, tzinfo=UTC))
+
+        sid = StationId(uuid4())
+        station = make_station_config(station_id=sid, code="HD001")
+        basin = Basin(
+            id=BasinId(uuid4()),
+            code="HD001",
+            name="HD001",
+            geometry=None,
+            area_km2=100.0,
+            attributes=None,
+            band_geometries=None,
+            created_at=start,
+            network="bafu",
+        )
+
+        group_store = FakeStationGroupStore()
+        s_station = FakeStationStore()
+        s_station.store_station(station)
+
+        fake_model_id = ModelId("fake_model")
+        fake_model = FakeStationForecastModel()
+
+        with patch(
+            "sapphire_flow.services.model_registry.discover_models",
+            return_value={fake_model_id: fake_model},
+        ):
+            result = _run_onboarding(
+                stations=[station],
+                basins=[basin],
+                obs_by_station={sid: []},
+                forcing_by_station={sid: []},
+                basin_store=FakeBasinStore(),
+                station_store=s_station,
+                obs_store=FakeObservationStore(),
+                forcing_store=FakeHistoricalForcingStore(),
+                baseline_store=FakeClimBaselineStore(),
+                flow_regime_store=FakeFlowRegimeConfigStore(),
+                qc_rules=QcRuleSet(version="test", rules=()),
+                clock=lambda: start,
+                start_utc=start,
+                end_utc=end,
+                model_store=FakeModelStore(),
+                artifact_store=FakeModelArtifactStore(group_store=group_store),
+                group_store=group_store,
+                hindcast_store=FakeHindcastStore(),
+                skill_store=FakeSkillStore(),
+                forcing_source=FakeWeatherReanalysisSource(),
+                deployment_config=make_deployment_config(),
+                hindcast_days=0,
+            )
+        assert any("hindcast_days must be >= 1" in e for e in result.errors)
+
+    def test_hindcast_days_rejects_negative(self) -> None:
+        from unittest.mock import patch
+
+        from sapphire_flow.services.onboarding import _run_onboarding
+        from sapphire_flow.types.basin import Basin
+        from sapphire_flow.types.datetime import ensure_utc
+        from sapphire_flow.types.domain import QcRuleSet
+        from sapphire_flow.types.ids import BasinId, ModelId
+        from tests.conftest import make_deployment_config
+        from tests.fakes.fake_adapters import FakeWeatherReanalysisSource
+        from tests.fakes.fake_stores import (
+            FakeBasinStore,
+            FakeClimBaselineStore,
+            FakeFlowRegimeConfigStore,
+            FakeHindcastStore,
+            FakeHistoricalForcingStore,
+            FakeModelArtifactStore,
+            FakeModelStore,
+            FakeObservationStore,
+            FakeSkillStore,
+            FakeStationGroupStore,
+        )
+
+        start = ensure_utc(datetime(2020, 1, 1, tzinfo=UTC))
+        end = ensure_utc(datetime(2022, 1, 1, tzinfo=UTC))
+
+        sid = StationId(uuid4())
+        station = make_station_config(station_id=sid, code="HD002")
+        basin = Basin(
+            id=BasinId(uuid4()),
+            code="HD002",
+            name="HD002",
+            geometry=None,
+            area_km2=100.0,
+            attributes=None,
+            band_geometries=None,
+            created_at=start,
+            network="bafu",
+        )
+
+        group_store = FakeStationGroupStore()
+        s_station = FakeStationStore()
+        s_station.store_station(station)
+
+        fake_model_id = ModelId("fake_model")
+        fake_model = FakeStationForecastModel()
+
+        with patch(
+            "sapphire_flow.services.model_registry.discover_models",
+            return_value={fake_model_id: fake_model},
+        ):
+            result = _run_onboarding(
+                stations=[station],
+                basins=[basin],
+                obs_by_station={sid: []},
+                forcing_by_station={sid: []},
+                basin_store=FakeBasinStore(),
+                station_store=s_station,
+                obs_store=FakeObservationStore(),
+                forcing_store=FakeHistoricalForcingStore(),
+                baseline_store=FakeClimBaselineStore(),
+                flow_regime_store=FakeFlowRegimeConfigStore(),
+                qc_rules=QcRuleSet(version="test", rules=()),
+                clock=lambda: start,
+                start_utc=start,
+                end_utc=end,
+                model_store=FakeModelStore(),
+                artifact_store=FakeModelArtifactStore(group_store=group_store),
+                group_store=group_store,
+                hindcast_store=FakeHindcastStore(),
+                skill_store=FakeSkillStore(),
+                forcing_source=FakeWeatherReanalysisSource(),
+                deployment_config=make_deployment_config(),
+                hindcast_days=-5,
+            )
+        assert any("hindcast_days must be >= 1" in e for e in result.errors)

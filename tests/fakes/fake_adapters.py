@@ -101,6 +101,7 @@ class FakeNotificationAdapter:
 class FakeWeatherReanalysisSource:
     def __init__(self, records: list[RawHistoricalForcing] | None = None) -> None:
         self._records = records or []
+        self.fetch_reanalysis_call_count: int = 0
 
     def fetch_reanalysis(
         self,
@@ -109,6 +110,7 @@ class FakeWeatherReanalysisSource:
         end: UtcDatetime,
         parameters: list[str],
     ) -> list[RawHistoricalForcing]:
+        self.fetch_reanalysis_call_count += 1
         station_ids = {cfg.station_id for cfg in station_configs}
         return [
             r

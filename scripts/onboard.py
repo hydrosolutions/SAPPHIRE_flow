@@ -138,6 +138,13 @@ def _build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Show what would be done without writing to the database",
     )
+    parser.add_argument(
+        "--hindcast-days",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Limit hindcast to last N days (default: full period)",
+    )
     return parser
 
 
@@ -205,7 +212,7 @@ def main() -> int:
         "database_connecting",
         url=database_url.split("@")[-1],  # omit credentials from log
     )
-    engine = sa.create_engine(database_url)
+    engine = sa.create_engine(database_url, pool_pre_ping=True)
 
     log.info("migrations_running")
     _run_migrations(engine)
@@ -282,6 +289,7 @@ def main() -> int:
                 skill_store=skill_store,
                 forcing_source=forcing_source,
                 deployment_config=deployment_config,
+                hindcast_days=args.hindcast_days,
             )
     except Exception as exc:
         log.error("onboarding_failed", error=str(exc))

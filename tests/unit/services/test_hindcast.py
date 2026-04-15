@@ -5,6 +5,8 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
+import pytest
+
 from sapphire_flow.services.hindcast import run_group_hindcast, run_station_hindcast
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.ensemble import ForecastEnsemble
@@ -820,6 +822,257 @@ class TestEmptyEnsembleDict:
 
         assert all(r.success for r in results)
         assert len(hindcast_store._hindcasts) == 0
+
+
+class TestPrefetchCallCount:
+    def test_fetch_reanalysis_called_once_per_station(self) -> None:
+        rng = random.Random(0)
+        station = make_station_config()
+        sid = station.id
+        model_id = ModelId("test_model")
+        artifact_id = ArtifactId(uuid4())
+        run_id = uuid4()
+
+        obs_store = FakeObservationStore()
+        hindcast_store = FakeHindcastStore()
+        station_store = FakeStationStore()
+        basin_store = FakeBasinStore()
+        forcing_source = FakeWeatherReanalysisSource()
+
+        station_store.store_station(station)
+        station_store.store_weather_source(_make_weather_source(sid))
+
+        data_start = ensure_utc(datetime(2021, 1, 1, tzinfo=UTC))
+        _seed_observations(obs_store, sid, data_start, n_days=400)
+        _seed_forcing(forcing_source, sid, data_start, n_days=400)
+
+        model = FakeStationForecastModel()
+
+        run_station_hindcast(
+            model=model,
+            artifact=b"artifact",
+            station_id=sid,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            period_start=_PERIOD_START,
+            period_end=_PERIOD_END,
+            time_step=_STEP,
+            forcing_source=forcing_source,
+            obs_store=obs_store,
+            hindcast_store=hindcast_store,
+            station_store=station_store,
+            basin_store=basin_store,
+            clock=_fixed_clock,
+            rng=rng,
+            hindcast_run_id=run_id,
+            forecast_horizon_steps=5,
+        )
+
+        assert forcing_source.fetch_reanalysis_call_count == 1
+        assert obs_store.fetch_observations_call_count == 1
+
+
+class TestConnectionFatalAbort:
+    def test_connection_fatal_aborts_station_hindcast(self) -> None:
+        from sqlalchemy.exc import OperationalError
+
+        from sapphire_flow.exceptions import StoreError
+
+        class BombHindcastStore:
+            def store_hindcast(self, hindcast: object) -> None:
+                raise OperationalError(
+                    "server closed the connection unexpectedly",
+                    params=None,
+                    orig=Exception("server closed the connection unexpectedly"),
+                )
+
+        rng = random.Random(0)
+        station = make_station_config()
+        sid = station.id
+        model_id = ModelId("test_model")
+        artifact_id = ArtifactId(uuid4())
+        run_id = uuid4()
+
+        obs_store = FakeObservationStore()
+        station_store = FakeStationStore()
+        basin_store = FakeBasinStore()
+        forcing_source = FakeWeatherReanalysisSource()
+
+        station_store.store_station(station)
+        station_store.store_weather_source(_make_weather_source(sid))
+
+        data_start = ensure_utc(datetime(2021, 1, 1, tzinfo=UTC))
+        _seed_observations(obs_store, sid, data_start, n_days=400)
+        _seed_forcing(forcing_source, sid, data_start, n_days=400)
+
+        with pytest.raises(StoreError, match="Connection-fatal"):
+            run_station_hindcast(
+                model=FakeStationForecastModel(),
+                artifact=b"artifact",
+                station_id=sid,
+                model_id=model_id,
+                artifact_id=artifact_id,
+                period_start=_PERIOD_START,
+                period_end=_PERIOD_END,
+                time_step=_STEP,
+                forcing_source=forcing_source,
+                obs_store=obs_store,
+                hindcast_store=BombHindcastStore(),  # type: ignore[arg-type]
+                station_store=station_store,
+                basin_store=basin_store,
+                clock=_fixed_clock,
+                rng=rng,
+                hindcast_run_id=run_id,
+                forecast_horizon_steps=5,
+            )
+
+    def test_transient_error_does_not_abort(self) -> None:
+        from sqlalchemy.exc import OperationalError
+
+        class TransientBombStore:
+            def __init__(self) -> None:
+                self._call_count = 0
+                self._stored: list[object] = []
+
+            def store_hindcast(self, hindcast: object) -> None:
+                self._call_count += 1
+                if self._call_count == 1:
+                    raise OperationalError(
+                        "deadlock detected",
+                        params=None,
+                        orig=Exception("deadlock detected"),
+                    )
+                self._stored.append(hindcast)
+
+        rng = random.Random(0)
+        station = make_station_config()
+        sid = station.id
+        model_id = ModelId("test_model")
+        artifact_id = ArtifactId(uuid4())
+        run_id = uuid4()
+
+        obs_store = FakeObservationStore()
+        station_store = FakeStationStore()
+        basin_store = FakeBasinStore()
+        forcing_source = FakeWeatherReanalysisSource()
+        bomb_store = TransientBombStore()
+
+        station_store.store_station(station)
+        station_store.store_weather_source(_make_weather_source(sid))
+
+        data_start = ensure_utc(datetime(2021, 1, 1, tzinfo=UTC))
+        _seed_observations(obs_store, sid, data_start, n_days=400)
+        _seed_forcing(forcing_source, sid, data_start, n_days=400)
+
+        # Must NOT raise — transient error is logged and skipped
+        results = run_station_hindcast(
+            model=FakeStationForecastModel(),
+            artifact=b"artifact",
+            station_id=sid,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            period_start=_PERIOD_START,
+            period_end=_PERIOD_END,
+            time_step=_STEP,
+            forcing_source=forcing_source,
+            obs_store=obs_store,
+            hindcast_store=bomb_store,  # type: ignore[arg-type]
+            station_store=station_store,
+            basin_store=basin_store,
+            clock=_fixed_clock,
+            rng=rng,
+            hindcast_run_id=run_id,
+            forecast_horizon_steps=5,
+        )
+
+        assert len(results) == 5
+        failed = [r for r in results if not r.success]
+        succeeded = [r for r in results if r.success]
+        assert len(failed) == 1
+        assert len(succeeded) == 4
+
+    def test_connection_fatal_aborts_group_hindcast(self) -> None:
+        from sqlalchemy.exc import OperationalError
+
+        from sapphire_flow.exceptions import StoreError
+        from tests.fakes.fake_models import FakeGroupForecastModel
+
+        class BombHindcastStore:
+            def store_hindcast(self, hindcast: object) -> None:
+                raise OperationalError(
+                    "server closed the connection unexpectedly",
+                    params=None,
+                    orig=Exception("server closed the connection unexpectedly"),
+                )
+
+        rng = random.Random(42)
+        station_a = make_station_config(
+            station_id=StationId(uuid4()),
+            code="A-001",
+            name="Station A",
+        )
+        station_b = make_station_config(
+            station_id=StationId(uuid4()),
+            code="B-002",
+            name="Station B",
+        )
+        sid_a = station_a.id
+        sid_b = station_b.id
+        model_id = ModelId("group_model")
+        artifact_id = ArtifactId(uuid4())
+        run_id = uuid4()
+
+        obs_store = FakeObservationStore()
+        station_store = FakeStationStore()
+        basin_store = FakeBasinStore()
+        forcing_source = FakeWeatherReanalysisSource()
+
+        for st in (station_a, station_b):
+            station_store.store_station(st)
+            station_store.store_weather_source(_make_weather_source(st.id))
+
+        data_start = ensure_utc(datetime(2021, 1, 1, tzinfo=UTC))
+        all_forcing: list = []
+        for i, sid in enumerate((sid_a, sid_b)):
+            obs = make_observations(
+                n=400 * 24,
+                station_id=sid,
+                start=data_start,
+                interval=timedelta(hours=1),
+                rng=random.Random(i),
+            )
+            obs_store.store_observations(obs)
+            _seed_forcing(forcing_source, sid, data_start, n_days=400)
+            all_forcing.extend(forcing_source._records)
+        forcing_source._records = all_forcing
+
+        group = StationGroup(
+            id=StationGroupId(uuid4()),
+            name="test-group",
+            station_ids=frozenset({sid_a, sid_b}),
+            created_at=_fixed_clock(),
+        )
+
+        with pytest.raises(StoreError, match="Connection-fatal"):
+            run_group_hindcast(
+                model=FakeGroupForecastModel(),
+                artifact=b"artifact",
+                group=group,
+                model_id=model_id,
+                artifact_id=artifact_id,
+                period_start=_PERIOD_START,
+                period_end=_PERIOD_END,
+                time_step=_STEP,
+                forcing_source=forcing_source,
+                obs_store=obs_store,
+                hindcast_store=BombHindcastStore(),  # type: ignore[arg-type]
+                station_store=station_store,
+                basin_store=basin_store,
+                clock=_fixed_clock,
+                rng=rng,
+                hindcast_run_id=run_id,
+                forecast_horizon_steps=5,
+            )
 
 
 class TestGroupHindcastUsesGroupModelInputs:
