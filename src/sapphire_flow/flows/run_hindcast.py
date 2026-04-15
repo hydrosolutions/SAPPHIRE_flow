@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import os
 import random
 from datetime import timedelta
 from typing import TYPE_CHECKING
@@ -114,6 +116,7 @@ def run_hindcast_flow(
     obs_store: object = None,
     hindcast_store: object = None,
     station_store: object = None,
+    group_store: object = None,
     basin_store: object = None,
     clock: object = None,
     rng: object = None,
@@ -135,11 +138,90 @@ def run_hindcast_flow(
     if period_end is None:
         period_end = clock()
 
-    if station_id is not None:
+    if station_id is None and group_id is None:
+        raise ValueError("Either station_id or group_id must be provided")
+
+    # --- Production setup ---
+    _conn: object = None
+    if station_store is None:
+        database_url = os.environ["DATABASE_URL"]
+
+        from sapphire_flow.flows._db import setup_production_stores
+
+        _conn, stores = setup_production_stores(database_url)
+        station_store = stores["station_store"]
+        group_store = stores["group_store"]
+        obs_store = stores["obs_store"]
+        hindcast_store = stores["hindcast_store"]
+        basin_store = stores["basin_store"]
+        artifact_store = stores["artifact_store"]
+        forcing_store = stores["forcing_store"]
+    else:
+        artifact_store = None  # not available when stores are caller-provided
+        forcing_store = None
+
+    if forcing_source is None and forcing_store is not None:
+        from sapphire_flow.adapters.store_backed_reanalysis import (
+            StoreBackedReanalysisSource,
+        )
+
+        forcing_source = StoreBackedReanalysisSource(forcing_store)
+
+    if model is None:
+        from sapphire_flow.services.model_registry import discover_models
+
+        all_models = discover_models()
+        model = all_models.get(model_id)
         if model is None:
-            raise ValueError("model must be provided for station hindcast")
-        if artifact is None:
-            raise ValueError("artifact must be provided for station hindcast")
+            raise ValueError(
+                f"Model {model_id} not found in registry. "
+                f"Available: {list(all_models.keys())}"
+            )
+
+    if artifact is None:
+        if artifact_store is None:
+            raise ValueError(
+                "Cannot resolve artifact: artifact_store is only available "
+                "when stores self-resolve from DATABASE_URL. Either pass "
+                "artifact explicitly or omit station_store to trigger "
+                "full self-resolution."
+            )
+        result = artifact_store.fetch_artifact(artifact_id)
+        if result is None:
+            raise ValueError(f"Artifact {artifact_id} not found in store")
+        _, artifact_bytes = result
+
+        # SHA-256 integrity verification
+        record = artifact_store.fetch_artifact_record(artifact_id)
+        if record is not None:
+            computed_hash = hashlib.sha256(artifact_bytes).hexdigest()
+            if computed_hash != record.sha256_hash:
+                raise ValueError(
+                    f"SHA-256 mismatch for artifact {artifact_id}: "
+                    f"computed={computed_hash[:8]}... "
+                    f"stored={record.sha256_hash[:8]}..."
+                )
+
+        artifact = model.deserialize_artifact(artifact_bytes)
+
+    _required = {
+        "station_store": station_store,
+        "obs_store": obs_store,
+        "hindcast_store": hindcast_store,
+        "basin_store": basin_store,
+        "forcing_source": forcing_source,
+    }
+    if group_id is not None:
+        _required["group_store"] = group_store
+    _missing = [k for k, v in _required.items() if v is None]
+    if _missing:
+        raise ValueError(
+            f"Required dependencies are None: {_missing}. "
+            "Either pass all stores explicitly or omit station_store to "
+            "trigger full self-resolution from DATABASE_URL."
+        )
+
+    if station_id is not None:
         return _run_station_hindcast_task(
             model=model,
             artifact=artifact,
@@ -159,11 +241,7 @@ def run_hindcast_flow(
             hindcast_run_id=hindcast_run_id,
         )
     elif group_id is not None:
-        if model is None:
-            raise ValueError("model must be provided for group hindcast")
-        if artifact is None:
-            raise ValueError("artifact must be provided for group hindcast")
-        group = station_store.fetch_group(group_id) if station_store else None
+        group = group_store.fetch_group(group_id) if group_store else None
         if group is None:
             raise ValueError(f"Group {group_id} not found")
         return _run_group_hindcast_task(
@@ -184,5 +262,3 @@ def run_hindcast_flow(
             rng=rng,
             hindcast_run_id=hindcast_run_id,
         )
-    else:
-        raise ValueError("Either station_id or group_id must be provided")

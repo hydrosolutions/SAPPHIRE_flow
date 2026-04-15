@@ -296,6 +296,7 @@ def train_models_flow(
             obs_store=obs_store,
             hindcast_store=hindcast_store,
             station_store=station_store,
+            group_store=group_store,
             basin_store=basin_store,
             clock=clock,
             rng=rng,

@@ -49,18 +49,6 @@ class ForecastCycleResult:
 # ---------------------------------------------------------------------------
 
 
-def _setup_production_stores(database_url: str) -> tuple[object, dict[str, object]]:
-    import sqlalchemy as sa
-
-    from sapphire_flow.flows._db import make_pg_stores, run_migrations
-
-    engine = sa.create_engine(database_url)
-    run_migrations(engine)
-    conn = engine.connect().execution_options(isolation_level="AUTOCOMMIT")
-    stores = make_pg_stores(conn)
-    return conn, stores
-
-
 def _load_forecast_qc_rules() -> ForecastQcRuleSet:
     from sapphire_flow.config.forecast_qc_rules import (
         _default_swiss_forecast_qc_rules,
@@ -213,8 +201,10 @@ def run_forecast_cycle_flow(
     # --- Production setup ---
     _conn: object = None
     if station_store is None:
+        from sapphire_flow.flows._db import setup_production_stores
+
         database_url = os.environ["DATABASE_URL"]
-        _conn, stores = _setup_production_stores(database_url)
+        _conn, stores = setup_production_stores(database_url)
         station_store = stores["station_store"]
         obs_store = stores["obs_store"]
         weather_forecast_store = stores["weather_forecast_store"]

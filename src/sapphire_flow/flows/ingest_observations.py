@@ -71,20 +71,6 @@ def _load_adapter_endpoint() -> str:
     )
 
 
-def _setup_production_stores(
-    database_url: str,
-) -> tuple[object, dict[str, object]]:
-    import sqlalchemy as sa
-
-    from sapphire_flow.flows._db import make_pg_stores, run_migrations
-
-    engine = sa.create_engine(database_url)
-    run_migrations(engine)
-    conn = engine.connect().execution_options(isolation_level="AUTOCOMMIT")
-    stores = make_pg_stores(conn)
-    return conn, stores
-
-
 def _aggregate_qc_status(flags: list[object]) -> QcStatus:
     if not flags:
         return QcStatus.QC_PASSED
@@ -194,8 +180,10 @@ def ingest_observations_flow(
     # --- Production setup ---
     _conn: object = None
     if station_store is None:
+        from sapphire_flow.flows._db import setup_production_stores
+
         database_url = os.environ["DATABASE_URL"]
-        _conn, stores = _setup_production_stores(database_url)
+        _conn, stores = setup_production_stores(database_url)
         station_store = stores["station_store"]  # type: ignore[assignment]
         obs_store = stores["obs_store"]  # type: ignore[assignment]
         baseline_store = stores["baseline_store"]  # type: ignore[assignment]

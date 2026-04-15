@@ -436,21 +436,11 @@ class TestTrainModelsFlowGroupModel:
 
         forcing_source = FakeWeatherReanalysisSource(records=all_records)
 
-        # run_hindcast_flow calls station_store.fetch_group() for group models.
-        # Wrap both stores so the combined object satisfies both protocols.
-        class _CombinedStore:
-            def __getattr__(self, name: str) -> object:
-                if hasattr(inner_station_store, name):
-                    return getattr(inner_station_store, name)
-                return getattr(group_store, name)
-
-        combined_store = _CombinedStore()
-
         results = train_models_flow(
             period_start=str(_TRAINING_START.isoformat()),
             period_end=str(_TRAINING_END.isoformat()),
             model_store=model_store,
-            station_store=combined_store,
+            station_store=inner_station_store,
             group_store=group_store,
             obs_store=obs_store,
             basin_store=basin_store,

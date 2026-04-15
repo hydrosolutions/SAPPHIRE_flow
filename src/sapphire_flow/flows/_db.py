@@ -57,3 +57,13 @@ def make_pg_stores(conn: sa.Connection) -> dict[str, object]:
         "forecast_store": PgForecastStore(conn),
         "model_state_store": PgModelStateStore(conn),
     }
+
+
+def setup_production_stores(
+    database_url: str,
+) -> tuple[sa.Connection, dict[str, object]]:
+    engine = sa.create_engine(database_url)
+    run_migrations(engine)
+    conn = engine.connect().execution_options(isolation_level="AUTOCOMMIT")
+    stores = make_pg_stores(conn)
+    return conn, stores

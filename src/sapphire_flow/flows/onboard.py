@@ -47,22 +47,6 @@ def _resolve_default_camels_dir() -> str:
     return str(resolve_data_dir(config_data_dir) / "raw" / "CAMELS_CH")
 
 
-def _setup_production_stores(
-    database_url: str,
-) -> tuple[object, dict[str, object]]:
-    import sqlalchemy as sa
-
-    from sapphire_flow.flows._db import make_pg_stores, run_migrations
-
-    engine = sa.create_engine(database_url)
-    log.info("migrations_running")
-    run_migrations(engine)
-    log.info("migrations_complete")
-    conn = engine.connect().execution_options(isolation_level="AUTOCOMMIT")
-    stores = make_pg_stores(conn)
-    return conn, stores
-
-
 @flow(name="onboard-stations", log_prints=False)
 def onboard_stations_flow(
     data_dir: str = "",
@@ -96,8 +80,10 @@ def onboard_stations_flow(
 
     _conn: object = None
     if basin_store is None:
+        from sapphire_flow.flows._db import setup_production_stores
+
         database_url = os.environ["DATABASE_URL"]
-        _conn, stores = _setup_production_stores(database_url)
+        _conn, stores = setup_production_stores(database_url)
         basin_store = stores["basin_store"]
         station_store = stores["station_store"]
         obs_store = stores["obs_store"]
