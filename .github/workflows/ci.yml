@@ -55,10 +55,15 @@ jobs:
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/sapphire_test
 
-  # Phase 11 stub — full end-to-end pipeline test (Docker Compose stack + live pipeline run).
-  # Will be implemented in Phase 11 once all pipeline flows are complete.
+  # Phase 11 — full end-to-end pipeline test (dedicated testcontainer, ~9 min).
+  # Requires Docker for testcontainers (available on ubuntu-latest by default).
   e2e:
     needs: [unit, integration]
     runs-on: ubuntu-latest
     steps:
-      - run: echo "e2e job is a Phase 11 stub — not yet implemented"
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.11"
+      - run: uv sync
+      - run: uv run pytest tests/integration/test_e2e_pipeline.py -v --timeout=600

@@ -3979,7 +3979,7 @@ wheels = [
 
 [[package]]
 name = "sapphire-flow"
-version = "0.1.288"
+version = "0.1.290"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
@@ -4024,6 +4024,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
+    { name = "pytest-timeout" },
     { name = "ruff" },
     { name = "testcontainers" },
 ]
@@ -4071,6 +4072,7 @@ dev = [
     { name = "pytest", specifier = ">=9.0.2" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov", specifier = ">=7.0.0" },
+    { name = "pytest-timeout", specifier = ">=2.4.0" },
     { name = "ruff", specifier = ">=0.15.5" },
     { name = "testcontainers", extras = ["postgres"] },
 ]

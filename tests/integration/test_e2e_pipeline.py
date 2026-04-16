@@ -775,7 +775,7 @@ class TestE2ePipeline:
         )
 
         # -----------------------------------------------------------------------
-        # Summary
+        # Summary + performance baseline (§A3 / §E7)
         # -----------------------------------------------------------------------
         total_ms = round((time.perf_counter() - t_setup) * 1000, 1)
         log.info(
@@ -788,3 +788,38 @@ class TestE2ePipeline:
             skill_scores=total_skill_scores,
             forecasts_stored=forecast_stored_count,
         )
+
+        # Performance baseline: write on first run, compare on subsequent
+        import json
+
+        baseline_path = Path("tests/fixtures/reference/performance_baseline.json")
+        current_timings = {
+            "step1_onboarding_ms": round((t2 - t1) * 1000, 1),
+            "step2_training_ms": round((t3 - t2) * 1000, 1),
+            "step3_hindcast_ms": round((t4 - t3) * 1000, 1),
+            "step4_skill_ms": round((t5 - t4) * 1000, 1),
+            "step5_forecast_ms": round((t6 - t5) * 1000, 1),
+            "total_ms": total_ms,
+        }
+
+        if not baseline_path.exists():
+            baseline_path.write_text(json.dumps(current_timings, indent=2) + "\n")
+            log.warning(
+                "e2e.baseline_created",
+                path=str(baseline_path),
+                message="Commit to repo before CI can compare",
+            )
+        else:
+            baseline = json.loads(baseline_path.read_text())
+            for step, current_val in current_timings.items():
+                base_val = baseline.get(step)
+                if base_val and base_val > 0:
+                    regression = (current_val - base_val) / base_val
+                    if regression > 0.5:
+                        log.warning(
+                            "e2e.performance_regression",
+                            step=step,
+                            baseline_ms=base_val,
+                            current_ms=current_val,
+                            regression_pct=round(regression * 100, 1),
+                        )
