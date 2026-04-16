@@ -114,17 +114,20 @@ Responsibilities are split across two stages:
 3. > **v1-only** (v0-scope.md §A1)
    Run `SELECT partman.run_maintenance_proc()` — creates initial partitions
 4. Register Prefect deployments (`python -m sapphire_flow.cli.register_deployments`) — idempotent, updates existing deployments
-5. Load configuration from `config.toml` at **worker/API runtime** (not during init):
-   - **Deployment-level bootstrap** (danger levels, season definitions, skill interpretation schemes): only runs if `deployments` table is empty (first boot). Subsequent reruns skip this — deployment-level config is managed through the application after initial setup.
-   - **Station and threshold config**: upsert semantics — new entries are added, existing entries are updated if the config has changed, entries present in the database but absent from `config.toml` are left untouched (never deleted). This means re-running `init` after an upgrade will not overwrite station configurations, thresholds, or user accounts that were modified through the dashboard.
-6. Scan model entry points and populate `models` table at **worker runtime** (not during init)
 
 `init` steps are idempotent — safe to rerun on container restart. Re-running `init` on an existing database is the expected path during upgrades (step 3 of the upgrade procedure).
+
+**Worker/API runtime** (happens at service startup, not during `init`):
+
+- **Configuration loading** (`config.toml`):
+  - **Deployment-level bootstrap** (danger levels, season definitions, skill interpretation schemes): only runs if `deployments` table is empty (first boot). Subsequent reruns skip this — deployment-level config is managed through the application after initial setup.
+  - **Station and threshold config**: upsert semantics — new entries are added, existing entries are updated if the config has changed, entries present in the database but absent from `config.toml` are left untouched (never deleted).
+- **Model entry-point scanning**: populates `models` table from `pyproject.toml` entry points at worker startup.
 
 ### Upgrade procedure
 
 1. Pull new image tag: `docker compose pull`
-2. Stop workers (graceful): `docker compose stop prefect-worker-ops prefect-worker-training`
+2. Stop workers (graceful): `docker compose stop prefect-worker` (v0 single worker; v1: `prefect-worker-ops prefect-worker-training`)
 3. Run init: `docker compose run --rm init` (applies migrations)
 4. Restart all: `docker compose up -d`
 
