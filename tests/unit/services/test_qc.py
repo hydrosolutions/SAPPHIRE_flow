@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+import pytest
+
 from sapphire_flow.services.qc import Stage1QualityChecker
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.domain import (
@@ -60,6 +62,30 @@ def _rule(rule_id: str, thresholds: dict[str, float]) -> QcRuleParams:
 
 def _rule_set(*rules: QcRuleParams) -> QcRuleSet:
     return QcRuleSet(version="1.0", rules=tuple(rules))
+
+
+class TestRangeCheckRealistic:
+    @pytest.mark.parametrize(
+        "value,expected_pass",
+        [
+            (15.0, True),  # normal flow for small Alpine river
+            (0.05, True),  # very low flow (valid)
+            (-0.1, False),  # negative (instrument error)
+            (5000.0, False),  # extreme outlier for small basin
+        ],
+    )
+    def test_range_check_realistic(self, value: float, expected_pass: bool) -> None:
+        checker = Stage1QualityChecker()
+        obs = _make_obs(value)
+        rs = _rule_set(_rule("range_check", {"value_min": 0.0, "value_max": 3000.0}))
+        result = checker.check([obs], rs, [], [])
+        flags = result[obs.id]
+        if expected_pass:
+            assert flags == []
+        else:
+            assert len(flags) == 1
+            assert flags[0].status == QcStatus.QC_FAILED
+            assert flags[0].rule_id == "range_check"
 
 
 class TestRangeCheck:

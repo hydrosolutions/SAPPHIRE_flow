@@ -653,6 +653,80 @@ class TestProcessResults:
         assert len(active) == 1
         assert active[0].alert_level == "DL1"
         assert active[0].status == AlertStatus.RAISED
+        assert active[0].trigger_probability == pytest.approx(0.8)
+
+    def test_trigger_probability_populated_from_exceedance(self) -> None:
+        from sapphire_flow.types.domain import ExceedanceResult
+
+        store = FakeAlertStore()
+        mid = ModelId("m")
+        # 17 out of 21 members exceed → exceedance_probability ≈ 0.810
+        exceedance_prob = 17 / 21
+        result = ExceedanceResult(
+            station_id=_STATION,
+            danger_level="DL2",
+            parameter="discharge",
+            threshold_value=50.0,
+            exceedance_probability=exceedance_prob,
+            observed_value=None,
+            exceeded=True,
+            model_ids=(mid,),
+            strategy=ModelCombinationStrategy.PRIMARY,
+        )
+        threshold = _make_threshold(
+            danger_level="DL2", parameter="discharge", value=50.0
+        )
+
+        _process_results([result], _STATION, {"discharge"}, [threshold], store, _clock)
+
+        active = store.fetch_active_alerts(station_id=_STATION)
+        assert len(active) == 1
+        assert active[0].trigger_probability == pytest.approx(exceedance_prob)
+
+    def test_trigger_probability_max_across_parameters(self) -> None:
+        """When two parameters exceed at different probabilities, trigger_probability
+        is the max across results for that danger level."""
+        from sapphire_flow.types.domain import ExceedanceResult
+
+        store = FakeAlertStore()
+        mid = ModelId("m")
+        thresholds = [
+            _make_threshold(danger_level="DL1", parameter="discharge", value=100.0),
+            _make_threshold(danger_level="DL1", parameter="water_level", value=2.0),
+        ]
+        results = [
+            ExceedanceResult(
+                station_id=_STATION,
+                danger_level="DL1",
+                parameter="discharge",
+                threshold_value=100.0,
+                exceedance_probability=0.6,
+                observed_value=None,
+                exceeded=True,
+                model_ids=(mid,),
+                strategy=ModelCombinationStrategy.PRIMARY,
+            ),
+            ExceedanceResult(
+                station_id=_STATION,
+                danger_level="DL1",
+                parameter="water_level",
+                threshold_value=2.0,
+                exceedance_probability=0.9,
+                observed_value=None,
+                exceeded=True,
+                model_ids=(mid,),
+                strategy=ModelCombinationStrategy.PRIMARY,
+            ),
+        ]
+
+        _process_results(
+            results, _STATION, {"discharge", "water_level"}, thresholds, store, _clock
+        )
+
+        active = store.fetch_active_alerts(station_id=_STATION)
+        assert len(active) == 1
+        # Max of 0.6 and 0.9 → 0.9
+        assert active[0].trigger_probability == pytest.approx(0.9)
 
     def test_previously_raised_alert_resolved_when_not_exceeded(self) -> None:
         store = FakeAlertStore()

@@ -72,9 +72,7 @@ class PgAlertStore:
 
     def fetch_alert(self, alert_id: AlertId) -> Alert | None:
         row = (
-            self._conn.execute(
-                sa.select(alerts).where(alerts.c.id == alert_id)
-            )
+            self._conn.execute(sa.select(alerts).where(alerts.c.id == alert_id))
             .mappings()
             .one_or_none()
         )

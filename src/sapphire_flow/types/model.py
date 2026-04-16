@@ -269,9 +269,7 @@ class ModelDataRequirements:
 
     def __post_init__(self) -> None:
         if self.lookback_steps < 1:
-            raise ValueError(
-                f"lookback_steps must be ≥ 1, got {self.lookback_steps}"
-            )
+            raise ValueError(f"lookback_steps must be ≥ 1, got {self.lookback_steps}")
         if self.forecast_horizon_steps < 1:
             raise ValueError(
                 f"forecast_horizon_steps must be ≥ 1, got {self.forecast_horizon_steps}"

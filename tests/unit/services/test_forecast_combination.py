@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -97,12 +98,15 @@ def _make_multi(
 
 class TestCombineEnsemblesPooled:
     def test_two_members_ensembles_merged(self) -> None:
+        rng_a = random.Random(1)
+        rng_b = random.Random(2)
         ens_a = make_forecast_ensemble(
             station_id=_STATION,
             representation=EnsembleRepresentation.MEMBERS,
             n_members=5,
             n_steps=10,
             model_id=_MODEL_A,
+            rng=rng_a,
         )
         ens_b = make_forecast_ensemble(
             station_id=_STATION,
@@ -110,6 +114,7 @@ class TestCombineEnsemblesPooled:
             n_members=3,
             n_steps=10,
             model_id=_MODEL_B,
+            rng=rng_b,
         )
         result = combine_ensembles_pooled(
             {_MODEL_A: {"discharge": ens_a}, _MODEL_B: {"discharge": ens_b}}
@@ -117,8 +122,27 @@ class TestCombineEnsemblesPooled:
 
         assert "discharge" in result
         combined = result["discharge"]
+
+        # Member count == sum of inputs
         assert combined.member_count == 8  # 5 + 3
         assert combined.model_id == POOLED_MODEL_ID
+
+        # Combined mean ≈ weighted average of input means (weighted by member count)
+        mean_a = ens_a.values["value"].mean()
+        mean_b = ens_b.values["value"].mean()
+        expected_mean = (5 * mean_a + 3 * mean_b) / 8
+        actual_mean = combined.values["value"].mean()
+        assert actual_mean == pytest.approx(expected_mean, rel=1e-6)
+
+        # Combined range spans both input ranges
+        min_a = ens_a.values["value"].min()
+        max_a = ens_a.values["value"].max()
+        min_b = ens_b.values["value"].min()
+        max_b = ens_b.values["value"].max()
+        combined_min = combined.values["value"].min()
+        combined_max = combined.values["value"].max()
+        assert combined_min <= min(min_a, min_b) + 1e-9
+        assert combined_max >= max(max_a, max_b) - 1e-9
 
     def test_quantiles_model_skipped(self) -> None:
         ens_members = make_forecast_ensemble(
@@ -198,12 +222,15 @@ class TestCombineEnsemblesPooled:
 
 class TestCombineEnsemblesBma:
     def test_two_models_weighted(self) -> None:
+        rng_a = random.Random(10)
+        rng_b = random.Random(20)
         ens_a = make_forecast_ensemble(
             station_id=_STATION,
             representation=EnsembleRepresentation.MEMBERS,
             n_members=50,
             n_steps=10,
             model_id=_MODEL_A,
+            rng=rng_a,
         )
         ens_b = make_forecast_ensemble(
             station_id=_STATION,
@@ -211,16 +238,27 @@ class TestCombineEnsemblesBma:
             n_members=50,
             n_steps=10,
             model_id=_MODEL_B,
+            rng=rng_b,
         )
+        weights = {_MODEL_A: 0.7, _MODEL_B: 0.3}
         result = combine_ensembles_bma(
             {_MODEL_A: {"discharge": ens_a}, _MODEL_B: {"discharge": ens_b}},
-            weights={_MODEL_A: 0.7, _MODEL_B: 0.3},
+            weights=weights,
         )
 
         assert "discharge" in result
         combined = result["discharge"]
         assert combined.model_id == BMA_MODEL_ID
+
+        # BMA member count == 100 (the _BMA_TARGET_MEMBERS constant)
         assert combined.member_count == _BMA_TARGET_MEMBERS
+
+        # BMA mean ≈ weighted sum of model means (within 10% relative tolerance)
+        mean_a = ens_a.values["value"].mean()
+        mean_b = ens_b.values["value"].mean()
+        expected_mean = 0.7 * mean_a + 0.3 * mean_b
+        actual_mean = combined.values["value"].mean()
+        assert actual_mean == pytest.approx(expected_mean, rel=0.1)
 
     def test_member_count_equals_target(self) -> None:
         ens_a = make_forecast_ensemble(

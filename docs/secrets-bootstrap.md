@@ -13,11 +13,14 @@ Compose as container secrets (see `docker-compose.yml`).
 
 ```bash
 mkdir -p secrets
-openssl rand -base64 32 > secrets/db_password
+openssl rand -base64 32 | tr -d '\n' > secrets/db_password
 sudo chown -R root:root secrets/
 sudo chmod 700 secrets/
 sudo chmod 600 secrets/*
 ```
+
+> **Important**: The `tr -d '\n'` strips the trailing newline. A newline in the
+> password file corrupts the `DATABASE_URL` constructed by `entrypoint.sh`.
 
 The `secrets/` directory is gitignored. Never commit secrets to version control.
 

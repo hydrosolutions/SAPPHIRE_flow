@@ -60,7 +60,7 @@ class TestReferenceDataset:
         assert df["value"].dtype == pl.Float64
 
     def test_reference_parquet_size_bound(self) -> None:
-        """Reference Parquet < 500 KB."""
+        """Reference Parquet < 5 MB (210K rows, 2 years hourly, 7 stations)."""
         if not PARQUET_PATH.exists():
             pytest.skip("Reference dataset not yet recorded")
-        assert PARQUET_PATH.stat().st_size < 500_000
+        assert PARQUET_PATH.stat().st_size < 5_000_000

@@ -120,8 +120,10 @@ def _raw_forcing_to_dataframe(
     return pl.DataFrame(list(pivot.values()))
 
 
-def _observations_to_dataframe(observations: list) -> pl.DataFrame:
-    rows = [{"timestamp": o.timestamp, "value": o.value} for o in observations]
+def _observations_to_dataframe(
+    observations: list, parameter: str = "discharge"
+) -> pl.DataFrame:
+    rows = [{"timestamp": o.timestamp, parameter: o.value} for o in observations]
     return pl.DataFrame(rows)
 
 
@@ -169,16 +171,21 @@ def _assemble_hindcast_inputs(
         )
         return None
 
-    forcing_df = _raw_forcing_to_dataframe(raw_forcing, station_id, required_features)
-    if forcing_df is None:
-        log.warning(
-            "hindcast.skip.no_forcing",
-            station_id=str(station_id),
-            issue_time=str(issue_time),
+    if required_features:
+        forcing_df = _raw_forcing_to_dataframe(
+            raw_forcing, station_id, required_features
         )
-        return None
+        if forcing_df is None:
+            log.warning(
+                "hindcast.skip.no_forcing",
+                station_id=str(station_id),
+                issue_time=str(issue_time),
+            )
+            return None
+    else:
+        forcing_df = pl.DataFrame(schema={"timestamp": pl.Datetime("us", "UTC")})
 
-    obs_df = _observations_to_dataframe(observations)
+    obs_df = _observations_to_dataframe(observations, parameter)
 
     # Split forcing into past (≤ issue_time) and future (> issue_time).
     # Reanalysis serves as teacher forcing in hindcast (v0-scope §A13).
@@ -284,12 +291,15 @@ def run_station_hindcast(
     full_end = ensure_utc(period_end + (forecast_horizon_steps + 1) * time_step)
 
     t0 = time.perf_counter()
-    all_forcing = forcing_source.fetch_reanalysis(
-        station_configs=weather_sources,
-        start=full_start,
-        end=full_end,
-        parameters=required_features,
-    )
+    if required_features:
+        all_forcing = forcing_source.fetch_reanalysis(
+            station_configs=weather_sources,
+            start=full_start,
+            end=full_end,
+            parameters=required_features,
+        )
+    else:
+        all_forcing = []
     all_observations = obs_store.fetch_observations(
         station_id=station_id,
         parameter=parameter,
@@ -373,9 +383,7 @@ def run_station_hindcast(
                     ),
                     exc_info=True,
                 )
-                raise StoreError(
-                    f"Connection-fatal: {type(exc).__qualname__}"
-                ) from exc
+                raise StoreError(f"Connection-fatal: {type(exc).__qualname__}") from exc
             # Guard against DSN leakage
             if isinstance(
                 exc, (OperationalError, InterfaceError, InternalError, psycopg.Error)
@@ -472,12 +480,15 @@ def run_group_hindcast(
     all_weather_sources = [
         ws for sid in fetchable_sids for ws in weather_sources_map[sid]
     ]
-    all_forcing_flat = forcing_source.fetch_reanalysis(
-        station_configs=all_weather_sources,
-        start=full_start,
-        end=full_end,
-        parameters=required_features,
-    )
+    if required_features:
+        all_forcing_flat = forcing_source.fetch_reanalysis(
+            station_configs=all_weather_sources,
+            start=full_start,
+            end=full_end,
+            parameters=required_features,
+        )
+    else:
+        all_forcing_flat = []
     # Index by station_id for per-step lookup.
     all_forcing_map: dict[StationId, list[RawHistoricalForcing]] = {
         sid: [] for sid in fetchable_sids
@@ -601,9 +612,7 @@ def run_group_hindcast(
                     error_type=type(exc).__qualname__,
                     exc_info=True,
                 )
-                raise StoreError(
-                    f"Connection-fatal: {type(exc).__qualname__}"
-                ) from exc
+                raise StoreError(f"Connection-fatal: {type(exc).__qualname__}") from exc
             if isinstance(
                 exc, (OperationalError, InterfaceError, InternalError, psycopg.Error)
             ):

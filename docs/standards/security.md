@@ -371,6 +371,7 @@ not a security boundary — it rejects implausible values but does not sandbox m
 
 ### Exposed ports (via Caddy)
 - 443 (HTTPS) — the only externally reachable port
+- **v0 exception**: Without `SAPPHIRE_DOMAIN`, Caddy serves plain HTTP on port 80. Set `SAPPHIRE_DOMAIN` to enable auto-TLS and restrict to 443-only.
 
 ### Internal only (Docker network, not exposed to host)
 - PostgreSQL: 5432

@@ -24,7 +24,7 @@ class TestLoadOnboardingConfig:
     def test_parses_section(self, tmp_path: Path) -> None:
         toml = tmp_path / "config.toml"
         toml.write_text(
-            '[onboarding]\n'
+            "[onboarding]\n"
             'data_source = "camels-ch"\n'
             'basin_ids = ["2004", "2009", "2135"]\n'
         )
@@ -49,9 +49,7 @@ class TestLoadOnboardingConfig:
         assert cfg is not None
         assert cfg.basin_ids == ("2004",)
 
-    def test_raises_without_path_or_env(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_raises_without_path_or_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("SAPPHIRE_CONFIG", raising=False)
         with pytest.raises(ValueError, match="SAPPHIRE_CONFIG"):
             load_onboarding_config()

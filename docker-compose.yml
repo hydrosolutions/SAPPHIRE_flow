@@ -157,8 +157,6 @@ services:
     depends_on:
       api:
         condition: service_healthy
-      prefect-server:
-        condition: service_healthy
     cap_drop:
       - ALL
     cap_add:

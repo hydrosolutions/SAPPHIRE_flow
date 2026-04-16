@@ -30,8 +30,12 @@ class TestBuildSpecs:
     def test_on_demand_flows_have_no_cron(self) -> None:
         specs = _build_specs()
         on_demand = {
-            "train-models", "run-hindcast", "compute-skills",
-            "compute-combined-skills", "onboard-stations", "onboard-model",
+            "train-models",
+            "run-hindcast",
+            "compute-skills",
+            "compute-combined-skills",
+            "onboard-stations",
+            "onboard-model",
         }
         for spec in specs:
             if spec.deployment_name in on_demand:
@@ -155,7 +159,9 @@ class TestRegisterOne:
             flow_attr="some_flow",
             deployment_name="bad-deploy",
         )
-        with patch("importlib.import_module", side_effect=ModuleNotFoundError("nonexistent")):
+        with patch(
+            "importlib.import_module", side_effect=ModuleNotFoundError("nonexistent")
+        ):
             with pytest.raises(ModuleNotFoundError):
                 await _register_one(spec)
 
@@ -182,7 +188,9 @@ class TestRegisterAll:
                 mock_register,
             ),
         ):
-            mock_get_client.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_get_client.return_value.__aenter__ = AsyncMock(
+                return_value=mock_client
+            )
             mock_get_client.return_value.__aexit__ = AsyncMock(return_value=False)
 
             await register_all()
@@ -210,7 +218,9 @@ class TestRegisterAll:
                 mock_register,
             ),
         ):
-            mock_get_client.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_get_client.return_value.__aenter__ = AsyncMock(
+                return_value=mock_client
+            )
             mock_get_client.return_value.__aexit__ = AsyncMock(return_value=False)
 
             # Should NOT raise — ObjectAlreadyExists is caught

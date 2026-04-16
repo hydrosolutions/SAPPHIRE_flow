@@ -18,7 +18,7 @@ See [secrets-bootstrap.md](secrets-bootstrap.md) for details.
 
 ```bash
 mkdir -p secrets && chmod 700 secrets
-openssl rand -base64 32 > secrets/db_password
+openssl rand -base64 32 | tr -d '\n' > secrets/db_password
 chmod 600 secrets/db_password
 ```
 
@@ -31,7 +31,7 @@ Create a `.env` file to override defaults:
 # DB_USER=sapphire
 # SAPPHIRE_DOMAIN=sapphire.example.ch   # enables auto-TLS via Let's Encrypt
 # SAPPHIRE_CORS_ORIGINS=https://sapphire.example.ch
-# SCHEDULE_INGEST_OBSERVATIONS=*/10 * * * *
+# SCHEDULE_INGEST_OBSERVATIONS=*/30 * * * *
 # SCHEDULE_FORECAST_CYCLE=0 */6 * * *
 # SCHEDULE_BACKUP_DATABASE=0 2 * * *
 ```
@@ -110,7 +110,7 @@ docker compose logs -f api
 curl http://localhost/api/v1/health
 ```
 
-Scheduled flows (observation ingest every 10 min, forecast cycle every 6h,
+Scheduled flows (observation ingest every 30 min, forecast cycle every 6h,
 backup daily at 02:00 UTC) start automatically after init completes.
 
 ## 8. Backup and restore
@@ -131,9 +131,17 @@ docker compose down
 # Start only postgres
 docker compose up -d postgres
 # Wait for healthy...
+docker compose exec postgres pg_isready -U sapphire
 
-# Copy dump from volume and restore
-docker compose exec postgres pg_restore -U sapphire -d sapphire /path/to/dump.dump
+# List available backups (backups volume is on prefect-worker, not postgres)
+docker compose run --rm prefect-worker ls -lt /data/backups/
+
+# Restore (run from prefect-worker which has pg_dump/pg_restore and the volume)
+docker compose run --rm prefect-worker pg_restore \
+  --clean --if-exists \
+  -h postgres -U sapphire -d sapphire \
+  /data/backups/sapphire_YYYYMMDD_HHMMSS.dump
+# Enter db password when prompted, or set PGPASSWORD
 
 # Restart all services
 docker compose up -d
@@ -144,6 +152,7 @@ docker compose up -d
 ```bash
 git pull
 docker compose build
-docker compose up -d init        # run migrations + re-register deployments
-docker compose up -d              # restart services with new image
+docker compose stop prefect-worker   # graceful stop — let running flows finish
+docker compose run --rm init         # run migrations + re-register deployments
+docker compose up -d                 # restart all services with new image
 ```

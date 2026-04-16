@@ -122,8 +122,9 @@ def _run_single_model(
     artifact_id, artifact_bytes = artifact_result
 
     try:
+        artifact = model.deserialize_artifact(artifact_bytes)  # type: ignore[union-attr]
         ensembles, new_state = model.predict(  # type: ignore[union-attr]
-            artifact_bytes,
+            artifact,
             inputs,
             rng,
             prior_state=input_metadata.prior_state,

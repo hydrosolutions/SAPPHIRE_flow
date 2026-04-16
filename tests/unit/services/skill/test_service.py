@@ -176,12 +176,15 @@ class TestComputeSkillBasic:
         uuid_factory: object,
         seasons: list[SeasonDefinition],
     ) -> None:
-        # 5 hindcasts in January, each with 3 lead steps
+        # 5 hindcasts in January, each with 3 lead steps.
+        # Observations VARY so NSE/KGE denominators are non-zero.
+        # Ensemble members match observation exactly → perfect forecast.
         hindcasts = []
         observations = []
 
         for i in range(5):
             step = _utc(2025, 1, i + 1)
+            obs_val = float(8 + i)  # varies: 8, 9, 10, 11, 12
             hindcasts.append(
                 _make_hindcast(
                     station_id=station_id,
@@ -189,7 +192,7 @@ class TestComputeSkillBasic:
                     artifact_id=artifact_id,
                     hindcast_step=step,
                     n_steps=3,
-                    value=10.0,
+                    value=obs_val,
                 )
             )
             for j in range(1, 4):
@@ -197,7 +200,9 @@ class TestComputeSkillBasic:
                     datetime.fromtimestamp(step.timestamp() + j * 3600, tz=UTC)
                 )
                 observations.append(
-                    _make_observation(station_id=station_id, timestamp=vt, value=10.0)
+                    _make_observation(
+                        station_id=station_id, timestamp=vt, value=obs_val
+                    )
                 )
 
         scores, diagrams = compute_skill_for_station(
@@ -236,6 +241,141 @@ class TestComputeSkillBasic:
         assert "kge" in metrics
         assert "mae" in metrics
         assert "sharpness_p10_p90" in metrics
+
+        # Value assertions for a near-perfect forecast (members cluster at obs value)
+        all_season_all_regime = [
+            s
+            for s in scores
+            if s.season is None and s.flow_regime is None and s.lead_time_hours == 1
+        ]
+        by_metric = {s.metric: s.score for s in all_season_all_regime}
+        # Members are at obs + m*0.1 (small spread) → near-perfect but not exact zero error
+        assert by_metric["crps"] < 0.15  # small, near-zero
+        assert by_metric["nse"] > 0.97  # high but not exactly 1.0 due to tiny spread
+        assert by_metric["kge"] > 0.97  # high but not exactly 1.0 due to tiny spread
+        assert by_metric["mae"] < 0.25  # small absolute error
+        assert by_metric["pbias"] == pytest.approx(0.0, abs=2.0)  # <2% bias
+
+    def test_imperfect_forecast_metrics(
+        self,
+        station_id: StationId,
+        model_id: ModelId,
+        artifact_id: ArtifactId,
+        clock: object,
+        uuid_factory: object,
+        seasons: list[SeasonDefinition],
+    ) -> None:
+        # Observations vary; members have spread around observation value
+        obs_values = [10.0, 12.0, 8.0, 15.0, 9.0]
+        hindcasts = []
+        observations = []
+
+        for i, obs_val in enumerate(obs_values):
+            step = _utc(2025, 1, i + 1)
+            # Forecast is biased high: members at obs + 3.0
+            forecast_val = obs_val + 3.0
+            hindcasts.append(
+                _make_hindcast(
+                    station_id=station_id,
+                    model_id=model_id,
+                    artifact_id=artifact_id,
+                    hindcast_step=step,
+                    n_steps=1,
+                    value=forecast_val,
+                )
+            )
+            vt = ensure_utc(datetime.fromtimestamp(step.timestamp() + 3600, tz=UTC))
+            observations.append(
+                _make_observation(station_id=station_id, timestamp=vt, value=obs_val)
+            )
+
+        scores, _ = compute_skill_for_station(
+            station_id=station_id,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            hindcasts=hindcasts,
+            observations=observations,
+            thresholds=[],
+            flow_regime_config=None,
+            seasons=seasons,
+            skill_source=SkillSource.HINDCAST_REANALYSIS,
+            forcing_type=ForcingType.REANALYSIS,
+            clock=clock,  # type: ignore[arg-type]
+            uuid_factory=uuid_factory,  # type: ignore[arg-type]
+            parameter="discharge",
+        )
+
+        by_metric = {
+            s.metric: s.score
+            for s in scores
+            if s.season is None and s.flow_regime is None and s.lead_time_hours == 1
+        }
+        # Biased forecast → CRPS > 0 and NSE < 1
+        assert by_metric["crps"] > 0.0
+        assert by_metric["nse"] < 1.0
+
+    def test_worse_than_climatology_nse_negative(
+        self,
+        station_id: StationId,
+        model_id: ModelId,
+        artifact_id: ArtifactId,
+        clock: object,
+        uuid_factory: object,
+        seasons: list[SeasonDefinition],
+    ) -> None:
+        import math
+
+        # Sinusoidal observations — must vary so SS_tot > 0
+        n = 10
+        obs_values = [10.0 + 5.0 * math.sin(i * math.pi / 5) for i in range(n)]
+        hindcasts = []
+        observations = []
+
+        for i, obs_val in enumerate(obs_values):
+            step = _utc(2025, 1, i + 1)
+            # Forecast is random noise far from observation (anti-correlated)
+            noise_val = 30.0 - obs_val  # inverted signal
+            hindcasts.append(
+                _make_hindcast(
+                    station_id=station_id,
+                    model_id=model_id,
+                    artifact_id=artifact_id,
+                    hindcast_step=step,
+                    n_steps=1,
+                    value=noise_val,
+                )
+            )
+            vt = ensure_utc(datetime.fromtimestamp(step.timestamp() + 3600, tz=UTC))
+            observations.append(
+                _make_observation(station_id=station_id, timestamp=vt, value=obs_val)
+            )
+
+        scores, _ = compute_skill_for_station(
+            station_id=station_id,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            hindcasts=hindcasts,
+            observations=observations,
+            thresholds=[],
+            flow_regime_config=None,
+            seasons=seasons,
+            skill_source=SkillSource.HINDCAST_REANALYSIS,
+            forcing_type=ForcingType.REANALYSIS,
+            clock=clock,  # type: ignore[arg-type]
+            uuid_factory=uuid_factory,  # type: ignore[arg-type]
+            parameter="discharge",
+        )
+
+        nse_scores = [
+            s
+            for s in scores
+            if s.metric == "nse"
+            and s.season is None
+            and s.flow_regime is None
+            and s.lead_time_hours == 1
+        ]
+        assert len(nse_scores) > 0
+        assert nse_scores[0].score < 0.0
 
     def test_scores_have_correct_sample_size(
         self,

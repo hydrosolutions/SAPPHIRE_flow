@@ -122,19 +122,35 @@ class TestPgDumpArgConstruction:
         [
             (
                 "postgresql+psycopg://user:s3cret@db:5432/sapphire",
-                "db", "5432", "user", "sapphire", "s3cret",
+                "db",
+                "5432",
+                "user",
+                "sapphire",
+                "s3cret",
             ),
             (
                 "postgresql+asyncpg://admin:p%40ss%23word@host:5433/mydb",
-                "host", "5433", "admin", "mydb", "p@ss#word",
+                "host",
+                "5433",
+                "admin",
+                "mydb",
+                "p@ss#word",
             ),
             (
                 "postgresql://user@host/db",
-                "host", "5432", "user", "db", "",
+                "host",
+                "5432",
+                "user",
+                "db",
+                "",
             ),
             (
                 "postgresql+psycopg://u:pass%3Dwith%3Dequals@h:5432/d",
-                "h", "5432", "u", "d", "pass=with=equals",
+                "h",
+                "5432",
+                "u",
+                "d",
+                "pass=with=equals",
             ),
         ],
         ids=["basic", "special-chars-in-password", "no-password", "equals-in-password"],
@@ -162,10 +178,14 @@ class TestDumpDatabaseTask:
     DB_URL = "postgresql+psycopg://user:s3cret@db.host:5433/sapphire"
 
     @patch("sapphire_flow.flows.backup.subprocess.run")
-    def test_happy_path(self, mock_run: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_happy_path(
+        self, mock_run: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setenv("DATABASE_URL", self.DB_URL)
 
-        def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        def fake_run(
+            cmd: list[str], **kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
             # Extract --file= arg to create the dump file
             for arg in cmd:
                 if arg.startswith("--file="):
@@ -197,10 +217,14 @@ class TestDumpDatabaseTask:
         assert env["PGPASSWORD"] == "s3cret"
 
     @patch("sapphire_flow.flows.backup.subprocess.run")
-    def test_file_permissions_0600(self, mock_run: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_file_permissions_0600(
+        self, mock_run: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setenv("DATABASE_URL", self.DB_URL)
 
-        def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        def fake_run(
+            cmd: list[str], **kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
             for arg in cmd:
                 if arg.startswith("--file="):
                     Path(arg.split("=", 1)[1]).write_bytes(b"dump")
@@ -214,25 +238,35 @@ class TestDumpDatabaseTask:
         assert mode == 0o600, f"Expected 0o600, got {oct(mode)}"
 
     @patch("sapphire_flow.flows.backup.subprocess.run")
-    def test_failure_raises_runtime_error(self, mock_run: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_failure_raises_runtime_error(
+        self, mock_run: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setenv("DATABASE_URL", self.DB_URL)
         mock_run.return_value = subprocess.CompletedProcess(
             [], returncode=1, stdout="", stderr="connection refused"
         )
 
-        with pytest.raises(RuntimeError, match="pg_dump failed.*exit 1.*connection refused"):
+        with pytest.raises(
+            RuntimeError, match="pg_dump failed.*exit 1.*connection refused"
+        ):
             dump_database_task.fn(str(tmp_path))
 
-    def test_missing_database_url_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_missing_database_url_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.delenv("DATABASE_URL", raising=False)
         with pytest.raises(KeyError, match="DATABASE_URL"):
             dump_database_task.fn(str(tmp_path))
 
     @patch("sapphire_flow.flows.backup.subprocess.run")
-    def test_default_port_when_omitted(self, mock_run: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_default_port_when_omitted(
+        self, mock_run: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@host/db")
 
-        def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        def fake_run(
+            cmd: list[str], **kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
             for arg in cmd:
                 if arg.startswith("--file="):
                     Path(arg.split("=", 1)[1]).write_bytes(b"dump")
@@ -245,10 +279,14 @@ class TestDumpDatabaseTask:
         assert "--port=5432" in cmd
 
     @patch("sapphire_flow.flows.backup.subprocess.run")
-    def test_no_password_in_url(self, mock_run: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_no_password_in_url(
+        self, mock_run: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setenv("DATABASE_URL", "postgresql://user@host/db")
 
-        def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        def fake_run(
+            cmd: list[str], **kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
             for arg in cmd:
                 if arg.startswith("--file="):
                     Path(arg.split("=", 1)[1]).write_bytes(b"dump")
@@ -261,12 +299,16 @@ class TestDumpDatabaseTask:
         assert env["PGPASSWORD"] == ""
 
     @patch("sapphire_flow.flows.backup.subprocess.run")
-    def test_creates_backup_dir_if_missing(self, mock_run: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_creates_backup_dir_if_missing(
+        self, mock_run: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setenv("DATABASE_URL", self.DB_URL)
         nested = tmp_path / "deep" / "path"
         assert not nested.exists()
 
-        def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        def fake_run(
+            cmd: list[str], **kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
             for arg in cmd:
                 if arg.startswith("--file="):
                     Path(arg.split("=", 1)[1]).write_bytes(b"dump")
@@ -284,7 +326,9 @@ class TestDumpDatabaseTask:
 
 class TestBackupDatabaseFlow:
     @patch("sapphire_flow.flows.backup.subprocess.run")
-    def test_dump_then_cleanup(self, mock_run: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_dump_then_cleanup(
+        self, mock_run: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@h/db")
 
         # Pre-create 8 old dumps
@@ -293,7 +337,9 @@ class TestBackupDatabaseFlow:
             f.write_bytes(b"old")
             os.utime(f, (100 + i, 100 + i))
 
-        def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        def fake_run(
+            cmd: list[str], **kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
             for arg in cmd:
                 if arg.startswith("--file="):
                     Path(arg.split("=", 1)[1]).write_bytes(b"new dump")

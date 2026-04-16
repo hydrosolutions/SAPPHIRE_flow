@@ -95,7 +95,8 @@ class TestResolveEnvVars:
     def test_substitutes_set_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SAPPHIRE_MY_VAR", "hello")
         assert (
-            _resolve_env_vars("prefix_${SAPPHIRE_MY_VAR}_suffix") == "prefix_hello_suffix"
+            _resolve_env_vars("prefix_${SAPPHIRE_MY_VAR}_suffix")
+            == "prefix_hello_suffix"
         )
 
     def test_multiple_substitutions(self, monkeypatch: pytest.MonkeyPatch) -> None:

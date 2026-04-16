@@ -4,12 +4,16 @@ import random
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+import polars as pl
+
 from sapphire_flow.services.training_data import (
     assemble_group_training_data,
     assemble_station_training_data,
+    resample_to_time_step,
 )
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
+    AggregationMethod,
     ObservationSource,
     QcStatus,
     SpatialRepresentation,
@@ -260,6 +264,58 @@ class TestAssembleStationTrainingDataNone:
         assert result is None
 
 
+class TestAssembleStationTrainingDataNoDynamicFeatures:
+    def test_assemble_station_training_data_no_dynamic_features(self) -> None:
+        """Model with empty past_dynamic_features skips forcing fetch."""
+        model = FakeStationForecastModel()  # noqa: F841
+        # Override data_requirements with empty past_dynamic_features
+        from sapphire_flow.types.enums import ArtifactScope, SpatialRepresentation
+        from sapphire_flow.types.model import ModelDataRequirements
+
+        class _AutoregressiveModel(FakeStationForecastModel):
+            artifact_scope = ArtifactScope.STATION
+            data_requirements = ModelDataRequirements(
+                target_parameters=frozenset({"discharge"}),
+                past_dynamic_features=frozenset(),
+                future_dynamic_features=frozenset(),
+                static_features=frozenset(),
+                supported_time_steps=frozenset(
+                    {timedelta(hours=1), timedelta(hours=24)}
+                ),
+                lookback_steps=720,
+                forecast_horizon_steps=5,
+                spatial_input_type=SpatialRepresentation.POINT,
+            )
+
+        station_id = _sid()
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        # Seed station with obs but no forcing registered; no weather source needed
+        station_store.store_station(make_station_config(station_id=station_id))
+        obs = make_observations(
+            n=10, station_id=station_id, start=_START, rng=random.Random(42)
+        )
+        obs_store.store_observations(obs)
+
+        fake_source = FakeWeatherReanalysisSource()  # empty, never called
+
+        result = assemble_station_training_data(
+            station_id=station_id,
+            model=_AutoregressiveModel(),
+            period_start=_START,
+            period_end=_END,
+            time_step=_STEP,
+            forcing_source=fake_source,
+            obs_store=obs_store,
+            basin_store=FakeBasinStore(),
+            station_store=station_store,
+        )
+
+        assert result is not None
+        assert set(result.past_dynamic.columns) <= {"timestamp"}
+        assert fake_source.fetch_reanalysis_call_count == 0
+
+
 class TestAssembleGroupTrainingData:
     def test_two_stations_both_with_data(self) -> None:
         sid1 = _sid()
@@ -381,3 +437,91 @@ class TestAssembleGroupTrainingData:
         )
 
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for resample_to_time_step
+# ---------------------------------------------------------------------------
+
+_BASE = ensure_utc(datetime(2024, 1, 1, tzinfo=UTC))
+
+
+def _hourly_discharge(n_hours: int, value: float = 2.0) -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "timestamp": [
+                ensure_utc(datetime.fromtimestamp(_BASE.timestamp() + i * 3600, tz=UTC))
+                for i in range(n_hours)
+            ],
+            "discharge": [value] * n_hours,
+        }
+    )
+
+
+def _hourly_precipitation(n_hours: int, value: float = 1.0) -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            "timestamp": [
+                ensure_utc(datetime.fromtimestamp(_BASE.timestamp() + i * 3600, tz=UTC))
+                for i in range(n_hours)
+            ],
+            "precipitation": [value] * n_hours,
+        }
+    )
+
+
+class TestResampleToTimeStep:
+    def test_hourly_to_daily_mean(self) -> None:
+        df = _hourly_discharge(48, value=3.0)
+        result = resample_to_time_step(df, timedelta(days=1))
+        assert result.height == 2
+        assert abs(result["discharge"].mean() - 3.0) < 1e-9  # type: ignore[operator]
+
+    def test_hourly_to_daily_sum(self) -> None:
+        df = _hourly_precipitation(24, value=1.0)
+        result = resample_to_time_step(df, timedelta(days=1))
+        assert result.height == 1
+        assert abs(result["precipitation"][0] - 24.0) < 1e-9
+
+    def test_already_daily_is_idempotent(self) -> None:
+        daily_timestamps = [
+            ensure_utc(datetime.fromtimestamp(_BASE.timestamp() + i * 86400, tz=UTC))
+            for i in range(5)
+        ]
+        df = pl.DataFrame({"timestamp": daily_timestamps, "discharge": [1.0] * 5})
+        result = resample_to_time_step(df, timedelta(days=1))
+        assert result.height == 5
+        assert result["discharge"].to_list() == [1.0] * 5
+
+    def test_mixed_parameters_mean_and_sum(self) -> None:
+        n = 24
+        base_ts = [
+            ensure_utc(datetime.fromtimestamp(_BASE.timestamp() + i * 3600, tz=UTC))
+            for i in range(n)
+        ]
+        df = pl.DataFrame(
+            {
+                "timestamp": base_ts,
+                "discharge": [2.0] * n,
+                "precipitation": [1.0] * n,
+            }
+        )
+        result = resample_to_time_step(df, timedelta(days=1))
+        assert result.height == 1
+        assert abs(result["discharge"][0] - 2.0) < 1e-9  # mean
+        assert abs(result["precipitation"][0] - 24.0) < 1e-9  # sum
+
+    def test_none_aggregation_methods_uses_fallback(self) -> None:
+        df = _hourly_discharge(24, value=5.0)
+        result = resample_to_time_step(df, timedelta(days=1), aggregation_methods=None)
+        assert result.height == 1
+        assert abs(result["discharge"][0] - 5.0) < 1e-9
+
+    def test_explicit_aggregation_methods_override(self) -> None:
+        df = _hourly_discharge(24, value=4.0)
+        methods = {"discharge": AggregationMethod.SUM}
+        result = resample_to_time_step(
+            df, timedelta(days=1), aggregation_methods=methods
+        )
+        assert result.height == 1
+        assert abs(result["discharge"][0] - 96.0) < 1e-9  # 24 * 4.0

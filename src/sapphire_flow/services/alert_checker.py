@@ -299,6 +299,15 @@ def _process_results(
                 exceeded_strategy[result.danger_level] = result.strategy
             exceeded_models[result.danger_level].update(result.model_ids)
 
+    # Build max exceedance probability per danger level
+    level_max_prob: dict[str, float] = {}
+    for result in results:
+        if result.exceeded:
+            current = level_max_prob.get(result.danger_level, 0.0)
+            level_max_prob[result.danger_level] = max(
+                current, result.exceedance_probability
+            )
+
     for level, model_id_set in exceeded_models.items():
         alert_store.upsert_alert(
             Alert(
@@ -307,7 +316,7 @@ def _process_results(
                 source=AlertSource.FORECAST,
                 alert_level=level,
                 status=AlertStatus.RAISED,
-                trigger_probability=None,
+                trigger_probability=level_max_prob.get(level),
                 trigger_value=None,
                 triggered_at=now,
                 acknowledged_at=None,

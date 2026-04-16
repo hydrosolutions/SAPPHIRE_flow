@@ -29,42 +29,32 @@ log = structlog.get_logger(__name__)
 _N_MEMBERS = 50
 _LOOKBACK = 7
 _HORIZON = 5
-_PAST_FEATURES = ("precipitation", "temperature")
-_FUTURE_FEATURES = ("precipitation", "temperature")
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class LinearRegressionArtifact:
-    coefficients: np.ndarray  # (n_steps, n_features)
-    intercepts: np.ndarray  # (n_steps,)
-    residuals: np.ndarray  # (n_train_samples, n_steps)
+    coefficients: np.ndarray  # (n_features,) — one set for all steps (autoregressive)
+    intercepts: np.ndarray  # (1,) — scalar intercept
+    residuals: np.ndarray  # (n_train_samples,) — one-step residuals
     n_steps: int
 
 
-def _build_feature_vector(
-    past_dynamic: pl.DataFrame,
-    future_dynamic: pl.DataFrame,
-    horizon: int,
-) -> np.ndarray | None:
-    past_arr = (
-        past_dynamic.tail(_LOOKBACK).select(list(_PAST_FEATURES)).to_numpy()
-    )  # (_LOOKBACK, 2)
-    if past_arr.shape[0] < _LOOKBACK:
-        return None  # insufficient lookback data
-    future_arr = (
-        future_dynamic.head(horizon).select(list(_FUTURE_FEATURES)).to_numpy()
-    )  # (horizon, 2)
-    if future_arr.shape[0] < horizon:
-        return None  # insufficient future data
-    return np.concatenate([past_arr.ravel(), future_arr.ravel()])
+def _extract_discharge(past_targets: pl.DataFrame) -> np.ndarray:
+    sorted_df = past_targets.sort("timestamp")
+    tail = sorted_df.tail(_LOOKBACK)
+    if len(tail) < _LOOKBACK:
+        raise ValueError(
+            f"Insufficient lookback: need {_LOOKBACK} rows, got {len(tail)}"
+        )
+    return tail["discharge"].to_numpy()
 
 
 class LinearRegressionDaily:
     artifact_scope: ArtifactScope = ArtifactScope.STATION
     data_requirements: ModelDataRequirements = ModelDataRequirements(
         target_parameters=frozenset({"discharge"}),
-        past_dynamic_features=frozenset(_PAST_FEATURES),
-        future_dynamic_features=frozenset(_FUTURE_FEATURES),
+        past_dynamic_features=frozenset(),
+        future_dynamic_features=frozenset(),
         static_features=frozenset(),
         supported_time_steps=frozenset({timedelta(hours=24)}),
         lookback_steps=_LOOKBACK,
@@ -78,98 +68,49 @@ class LinearRegressionDaily:
         params: ModelParams,
         rng: random.Random,
     ) -> ModelArtifact:
-        targets = data.past_targets.sort("timestamp")
-        past_dyn = data.past_dynamic.sort("timestamp")
+        discharge = data.past_targets.sort("timestamp")["discharge"].to_numpy()
 
-        future_ts = data.future_dynamic.sort("timestamp")
-        n_steps = future_ts["timestamp"].n_unique()
-        if n_steps == 0:
-            # Training data has no future split — default to declared horizon
-            n_steps = _HORIZON
-
-        joined = past_dyn.join(
-            targets.select(["timestamp", "discharge"]),
-            on="timestamp",
-            how="inner",
-        ).sort("timestamp")
-
-        n_total = len(joined)
-        min_samples = _LOOKBACK + n_steps
+        n_total = len(discharge)
+        min_samples = _LOOKBACK + 1
 
         if n_total < min_samples:
             raise ValueError(
-                f"Not enough training rows: need {min_samples} "
-                f"(lookback={_LOOKBACK} + horizon={n_steps}), got {n_total}"
+                f"Not enough training rows: need at least {min_samples} "
+                f"(lookback={_LOOKBACK} + 1), got {n_total}"
             )
 
-        precip = joined["precipitation"].to_numpy()
-        temp = joined["temperature"].to_numpy()
-        discharge = joined["discharge"].to_numpy()
+        x_rows = [discharge[i - _LOOKBACK : i] for i in range(_LOOKBACK, n_total)]
+        y_vals = discharge[_LOOKBACK:]
 
-        x_rows: list[np.ndarray] = []
-        y_rows: list[np.ndarray] = []
-
-        for i in range(_LOOKBACK, n_total - n_steps):
-            past_window = np.column_stack(
-                [
-                    precip[i - _LOOKBACK : i],
-                    temp[i - _LOOKBACK : i],
-                ]
-            )
-            future_window = np.column_stack(
-                [
-                    precip[i : i + n_steps],
-                    temp[i : i + n_steps],
-                ]
-            )
-            x_rows.append(np.concatenate([past_window.ravel(), future_window.ravel()]))
-            y_rows.append(discharge[i : i + n_steps])
-
-        if not x_rows:
-            raise ValueError("No valid training samples could be constructed.")
-
-        x_mat = np.stack(x_rows)  # (n_samples, n_features)
-        y_mat = np.stack(y_rows)  # (n_samples, n_steps)
+        x_mat = np.stack(x_rows)  # (n_samples, _LOOKBACK)
+        y_vec = y_vals  # (n_samples,)
 
         alpha = float(params.get("alpha", 1.0))
         seed = rng.randint(0, 2**31)
 
-        coefficients = np.zeros((n_steps, x_mat.shape[1]))
-        intercepts = np.zeros(n_steps)
-        predictions = np.zeros_like(y_mat)
+        ridge = Ridge(alpha=alpha, random_state=seed)
+        ridge.fit(x_mat, y_vec)
 
-        for s in range(n_steps):
-            ridge = Ridge(alpha=alpha, random_state=seed)
-            ridge.fit(x_mat, y_mat[:, s])
-            coefficients[s] = ridge.coef_
-            intercepts[s] = ridge.intercept_
-            predictions[:, s] = ridge.predict(x_mat)
+        predictions = ridge.predict(x_mat)
+        residuals = y_vec - predictions  # (n_samples,)
 
-        residuals = y_mat - predictions  # (n_samples, n_steps)
+        # Compute autoregressive rollout to determine n_steps from declared horizon.
+        # The artifact supports multi-step prediction via rollout at predict time.
+        n_steps = self.data_requirements.forecast_horizon_steps
 
         log.debug(
             "model.training_completed",
             n_samples=len(x_rows),
-            n_steps=n_steps,
             n_features=x_mat.shape[1],
-        )
-
-        art = LinearRegressionArtifact(
-            coefficients=coefficients,
-            intercepts=intercepts,
-            residuals=residuals,
             n_steps=n_steps,
         )
 
-        declared = self.data_requirements.forecast_horizon_steps
-        if art.n_steps < declared:
-            raise ValueError(
-                f"Trained artifact n_steps={art.n_steps} < declared "
-                f"forecast_horizon_steps={declared}. Training data may have "
-                f"insufficient future_dynamic rows."
-            )
-
-        return art
+        return LinearRegressionArtifact(
+            coefficients=ridge.coef_,  # (n_features,)
+            intercepts=np.array([ridge.intercept_]),  # (1,)
+            residuals=residuals,  # (n_samples,)
+            n_steps=n_steps,
+        )
 
     def predict(
         self,
@@ -189,28 +130,40 @@ class LinearRegressionDaily:
                 f"trained horizon n_steps={art.n_steps}"
             )
 
-        past_dyn = inputs.data.past_dynamic.sort("timestamp")
-        future_dyn = inputs.data.future_dynamic.sort("timestamp").head(horizon)
+        lags = _extract_discharge(inputs.data.past_targets)  # (_LOOKBACK,)
 
-        x_vec = _build_feature_vector(past_dyn, future_dyn, horizon)
-        if x_vec is None:
-            raise ValueError(
-                f"Insufficient data: need {_LOOKBACK} lookback rows and "
-                f"{horizon} future rows"
-            )
+        # Deterministic autoregressive rollout
+        det = np.zeros(horizon)
+        current_lags = lags.copy()
+        for step in range(horizon):
+            val = float(current_lags @ art.coefficients + art.intercepts[0])
+            det[step] = val
+            current_lags = np.roll(current_lags, -1)
+            current_lags[-1] = val
 
-        coef = art.coefficients[:horizon]  # (horizon, n_features)
-        intercept = art.intercepts[:horizon]  # (horizon,)
-        det = x_vec @ coef.T + intercept  # (horizon,)
-
-        n_residuals = art.residuals.shape[0]
+        # Bootstrap ensemble: sample residuals and build member rollouts
+        n_residuals = len(art.residuals)
         seed = rng.randint(0, 2**31)
         np_rng = np.random.default_rng(seed)
-        idx = np_rng.integers(0, n_residuals, size=_N_MEMBERS)
-        sampled = art.residuals[idx, :horizon]  # (_N_MEMBERS, horizon)
-        members = np.clip(det[None, :] + sampled, 0.0, None)  # (_N_MEMBERS, horizon)
 
-        valid_times = future_dyn["timestamp"].to_list()
+        members = np.zeros((_N_MEMBERS, horizon))
+        for m in range(_N_MEMBERS):
+            member_lags = lags.copy()
+            for step in range(horizon):
+                noise_idx = np_rng.integers(0, n_residuals)
+                val = float(
+                    member_lags @ art.coefficients
+                    + art.intercepts[0]
+                    + art.residuals[noise_idx]
+                )
+                val = max(0.0, val)
+                members[m, step] = val
+                member_lags = np.roll(member_lags, -1)
+                member_lags[-1] = val
+
+        valid_times = [
+            inputs.issue_time + (i + 1) * inputs.time_step for i in range(horizon)
+        ]
 
         rows: list[dict] = [
             {"valid_time": vt, "member_id": m_idx, "value": float(members[m_idx, step])}
@@ -256,19 +209,16 @@ class LinearRegressionDaily:
         if n_steps <= 0:
             raise ValueError(f"n_steps must be positive, got {n_steps}")
         coef = data["coefficients"]
-        if coef.ndim != 2 or coef.shape[0] != n_steps:
+        if coef.ndim != 1 or coef.shape[0] != _LOOKBACK:
             raise ValueError(
-                f"coefficients must be 2D with shape[0]={n_steps}, got {coef.shape}"
+                f"coefficients must be 1D with shape ({_LOOKBACK},), got {coef.shape}"
             )
-        if data["intercepts"].shape != (n_steps,):
-            raise ValueError(
-                f"intercepts.shape={data['intercepts'].shape} != ({n_steps},)"
-            )
+        if data["intercepts"].shape != (1,):
+            raise ValueError(f"intercepts.shape={data['intercepts'].shape} != (1,)")
         res = data["residuals"]
-        if res.ndim != 2 or res.shape[1] != n_steps or res.shape[0] == 0:
+        if res.ndim != 1 or res.shape[0] == 0:
             raise ValueError(
-                f"residuals must be 2D with shape[0]>0 and shape[1]={n_steps}, "
-                f"got {res.shape}"
+                f"residuals must be non-empty 1D array, got shape {res.shape}"
             )
         for name in ("coefficients", "intercepts", "residuals"):
             if not np.all(np.isfinite(data[name])):

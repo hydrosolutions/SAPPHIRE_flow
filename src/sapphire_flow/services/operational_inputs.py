@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 import structlog
 
+from sapphire_flow.services.training_data import resample_to_time_step
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import QcStatus, WarmUpSource
 from sapphire_flow.types.model import StationInputData, StationModelInputs
@@ -146,6 +147,9 @@ def assemble_station_operational_inputs(
         all_observations.extend(obs)
 
     past_targets = _observations_to_wide_dataframe(all_observations, target_parameters)
+    past_targets = resample_to_time_step(
+        past_targets, time_step, aggregation_methods=None
+    )
 
     latest_obs_ts = max((o.timestamp for o in all_observations), default=None)
     observation_staleness_hours: float | None = None
