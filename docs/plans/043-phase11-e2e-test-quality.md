@@ -30,26 +30,40 @@ only assert `len(scores) > 0` instead of `CRPS ≈ 0, NSE ≈ 1`.
 
 ## Part A: End-to-End Test
 
-### A1. Record real BAFU fixture data
+### A1. Build realistic fixture data
 
-The recording tool (`tools/record_fixtures.py`) works. The current Parquet
-is a synthetic placeholder. Record real data:
+**Constraint**: BAFU LINDAS serves only real-time observations (latest value
+per parameter). Historical time series are not available via the public API —
+that's exactly why we need the operational deployment running and ingesting
+data over time.
 
-```bash
-uv run python -m sapphire_flow.tools.record_fixtures \
-    --source bafu \
-    --start 2024-01-01T00:00:00+00:00 \
-    --end 2025-12-31T23:59:59+00:00 \
-    --output tests/fixtures/reference/
-```
+**Approach**: Generate deterministic, hydrologically realistic synthetic data
+for the 7 reference stations. This is NOT arbitrary random numbers — it uses
+real BAFU station characteristics (from `stations.toml`) with realistic:
+- **Seasonal discharge patterns**: sinusoidal base flow with snowmelt peak
+  (May-June for Alpine stations like Andermatt, flatter for lowland Basel)
+- **Diurnal variation**: ±5-10% of base flow
+- **Realistic magnitudes**: Andermatt/Reuss ~5-30 m³/s, Basel/Rhein ~500-1500 m³/s
+  (from published BAFU annual reports)
+- **Noise**: log-normal residuals scaled to each station's typical variability
+- **QC edge cases**: inject 2-3 known anomalies per station (spike, frozen
+  sensor, brief gap) for QC validation
 
-This produces `bafu_observations.parquet` with ~2 years of hourly discharge
-for 7 BAFU stations. ~120K rows, <5MB. Committed to the repo alongside the
-existing `stations.toml`.
+Create `tests/fixtures/reference/generate_fixtures.py` — a deterministic
+generator (seeded RNG) that produces `bafu_observations.parquet` with ~2
+years of hourly discharge for 7 stations. ~120K rows. Committed to repo.
 
-**Why 2 years**: The LinearRegressionDaily model needs a training period
-(default 1 year) plus a hindcast evaluation period (≥6 months for seasonal
-coverage). 2 years gives 1 year training + 1 year evaluation.
+**Why this works for the e2e test**: The model trains on the first year,
+hindcasts the second year. Since the data has a known seasonal pattern, we
+can assert that:
+- Skill scores are positive (model captures seasonality)
+- Forecasts track the seasonal signal
+- QC correctly flags the injected anomalies
+- Baselines match the seasonal mean/std
+
+**When real data arrives**: Once the deployment is running and has accumulated
+6+ months of observations, re-record the fixture with actual data. The e2e
+test assertions become tighter (real skill scores, real QC patterns).
 
 ### A2. E2e test: full pipeline chain
 
@@ -205,10 +219,12 @@ The current test trains on synthetic Gaussian data. Add a test that:
 
 ## Implementation steps
 
-### Layer 0 — Fixture recording (manual, one-time)
+### Layer 0 — Fixture generation (deterministic, one-time)
 
-**Step 0.1**: Record real BAFU data via the recording tool. Run locally.
-Commit the updated `bafu_observations.parquet` to the repo.
+**Step 0.1**: Create `tests/fixtures/reference/generate_fixtures.py` — a
+deterministic generator with realistic seasonal/diurnal discharge patterns
+for 7 BAFU stations. Generates `bafu_observations.parquet` (~120K rows,
+2 years hourly). Commit the Parquet and the generator script.
 
 ### Layer 1 — E2e test (depends on 0.1)
 
@@ -238,6 +254,7 @@ plausibility with known relationship.
 
 | File | Purpose |
 |---|---|
+| `tests/fixtures/reference/generate_fixtures.py` | Deterministic fixture generator with realistic seasonal patterns |
 | `tests/integration/test_e2e_pipeline.py` | Full pipeline chain test |
 
 ## Files to modify
@@ -260,9 +277,8 @@ plausibility with known relationship.
 ## Verification
 
 ```bash
-# Record real data (manual, run once)
-uv run python -m sapphire_flow.tools.record_fixtures --source bafu \
-    --start 2024-01-01T00:00:00+00:00 --end 2025-12-31T23:59:59+00:00
+# Generate fixture data (deterministic, run once)
+uv run python tests/fixtures/reference/generate_fixtures.py
 
 # Run e2e test
 uv run pytest tests/integration/test_e2e_pipeline.py -v --timeout=300
