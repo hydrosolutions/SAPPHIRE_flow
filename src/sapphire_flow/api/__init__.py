@@ -4,7 +4,6 @@ import os
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import ORJSONResponse
 from fastapi.templating import Jinja2Templates
 
 from sapphire_flow.api.deps import lifespan
@@ -16,7 +15,6 @@ _PREFECT_UI_URL = os.environ.get("PREFECT_UI_URL", "http://localhost:4200")
 app = FastAPI(
     title="SAPPHIRE Flow",
     lifespan=lifespan,
-    default_response_class=ORJSONResponse,
 )
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 templates.env.globals["prefect_ui_url"] = _PREFECT_UI_URL
