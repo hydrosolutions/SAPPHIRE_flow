@@ -36,8 +36,10 @@ be rewritten for v1 anyway (which adds JWT sessions, 5 roles, TOTP MFA).
 Adding auth later does not require redesigning the API. The architecture is
 already auth-ready:
 - Stores are auth-unaware (Plan 041's D2) — filtering is an API-layer concern
-- All endpoints go through `get_stores()` + Pydantic serialization — adding a
-  `Depends(get_current_api_key)` and a filter call is mechanical
+- The 7 REST API endpoints go through `get_stores()` + Pydantic serialization —
+  adding a `Depends(get_current_api_key)` and a filter call is mechanical. The
+  16+ legacy dashboard/table/JSON endpoints use `get_connection()` directly and
+  must also be protected (see auth bypass issue below).
 - The station filtering logic (a WHERE clause or list comprehension) is
   architecturally trivial
 
@@ -76,12 +78,14 @@ The critical review identified issues that must be resolved when this plan is
 activated:
 
 **Auth bypass via legacy `.json` endpoints (CRITICAL):** The existing
-`observations.json`, `forcing.json`, `baselines.json`, `hindcasts.json`,
-`forecasts/{id}/data.json`, and `models/{id}/skill-chart.json` endpoints are
-under `/api/v1/` and would remain unauthenticated if only the new route files
-get auth. Plan 042 must also add auth to these legacy endpoints, or move them
-behind Caddy path restrictions, or restructure the dashboard to use
-authenticated endpoints.
+`stations/{station_id}/observations.json`, `stations/{station_id}/forcing.json`,
+`stations/{station_id}/baselines.json`, `stations/{station_id}/hindcasts.json`,
+`forecasts/{forecast_id}/data.json`, and `models/{model_id}/skill-chart.json`
+endpoints are under `/api/v1/` and would remain unauthenticated if only the new
+route files get auth — these legacy routes use `get_connection()` directly, not
+`get_stores()`, so adding auth to `get_stores()` alone would not protect them.
+Plan 042 must also add auth to these legacy endpoints, or move them behind Caddy
+path restrictions, or restructure the dashboard to use authenticated endpoints.
 
 **Unauthenticated dashboard + table browser (HIGH):** The `/tables/` route
 is a full read-only database admin panel. If the API is internet-exposed, the
@@ -99,9 +103,12 @@ then check against the caller's allowed stations before returning data.
 Same pattern for alert acknowledge.
 
 **Connection lifecycle (HIGH):** Auth middleware (`get_current_api_key`)
-must use the same connection as `get_stores()` — not open a third connection.
-Plan 041's `deps.py` refactoring (D7) ensures FastAPI dependency caching
-provides a single connection, which makes this straightforward.
+must use the same connection as `get_stores()` — not open an additional
+connection. Plan 041's `deps.py` refactoring (D7) ensures FastAPI dependency
+caching reuses `get_connection` within a request, which makes this
+straightforward. Note: `acknowledge_alert` already uses two connections
+(`get_stores` → read, `get_connection_rw` → write) by design; the auth
+dependency should chain through `get_connection` (the read path).
 
 **Client SDK `list_alerts` params (MEDIUM):** Must include all filter
 parameters (`station_id`, `level`, `limit`, `offset`) not just `status`
