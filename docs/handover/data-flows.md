@@ -12,7 +12,7 @@
 |----------------|---------------|-----|
 | **Weather & observation ingest** | Fetches, QCs, and stores data | Provides station network and rating curves |
 | **Forecast models** | Trains, runs, and serves ensemble forecasts | — |
-| **Forecast review & publication** | Provides status-transition API (`raw → reviewed → published`) with audit trail | Operates the forecaster dashboard that calls the API |
+| **Forecast review & publication** | Provides status-transition API (`raw → reviewed → published`) with audit trail | Operates the existing DHM forecaster dashboard that calls the API |
 | **Alerts** | Generates threshold-based alerts, stores them, delivers via pluggable adapters (webhook) | Manages downstream distribution policy and recipient lists |
 | **REST API** | Serves all data (stations, observations, forecasts, alerts, skill, health) | Consumes API from dashboard, alert portal, and bulletin systems |
 | **Pipeline monitoring** | Watchdog flow, health endpoints, ops alerting to IT | — |
@@ -111,7 +111,7 @@ Step 1.9 is conditional — pass-through until sufficient forecast archive exist
 
 #### Notes
 
-**Data Gateway.** ECMWF IFS and SnowMapper data arrive pre-extracted at basin level from the SAPPHIRE Data Gateway — gridded archiving and spatial extraction are handled upstream by the Gateway. SnowMapper forecasts (SWE, snowmelt) are ingested through the same mechanism as NWP weather data and treated as additional forcing inputs. In deployments without a Data Gateway (e.g. the Swiss deployment using ICON-CH2-EPS), three additional steps run between 1.1 and 1.5: archive the raw NWP grid, extract spatial averages per basin, and archive the extractions.
+**Data Gateway.** ECMWF IFS and SnowMapper data arrive pre-extracted at basin level from the SAPPHIRE Data Gateway — gridded archiving and spatial extraction are handled upstream by the Gateway. SnowMapper forecasts (SWE, snowmelt) are ingested through the same mechanism as NWP weather data and treated as additional forcing inputs. In deployments without a Data Gateway, three additional steps run between 1.1 and 1.5: archive the raw NWP grid, extract spatial averages per basin, and archive the extractions.
 
 **NWP lateness fallback.** When an expected NWP delivery is late:
 1. Wait up to 3 hours (configurable) with exponential backoff.
@@ -120,9 +120,9 @@ Step 1.9 is conditional — pass-through until sufficient forecast archive exist
 
 Every stored forecast record carries the NWP cycle reference time used as forcing — the API and dashboard can display which NWP cycle produced each forecast, not just the forecast issue time.
 
-**Multi-model fallback (error recovery).** Each station can have multiple forecast models assigned in priority order. If a model fails at runtime (step 1.8) or its output fails QC (step 1.10), the flow automatically tries the next model by priority. The fallback model's identifier is recorded on the stored forecast for traceability. Two sentinel fallback models serve as guaranteed last-resort fallbacks: `ClimatologyFallbackModel` (priority 90) and `PersistenceFallbackModel` (priority 99). Both are real `StationForecastModel` implementations — they train, predict, pass QC, and accumulate skill — not special-case hacks. They ensure a forecast is always producible even when all configured models fail.
+**Multi-model fallback (error recovery).** Each station can have multiple forecast models assigned in priority order. If a model fails at runtime (step 1.8) or its output fails QC (step 1.10), the flow automatically tries the next model by priority. The fallback model's identifier is recorded on the stored forecast for traceability. Two built-in fallback models — climatology and persistence — serve as guaranteed last-resort fallbacks. They ensure a forecast is always producible even when all configured models fail.
 
-**Multi-model forecast combination (step 1.8b, v0b+).** Distinct from error fallback, combination merges multiple models' ensembles into a blended forecast. After all individual model forecasts are stored (step 1.11), step 1.8b runs if `forecast_combination_strategy != primary`. `run_all_station_forecasts()` runs every assigned model and returns a `MultiModelForecastResult`; its `combinable_results` property excludes fallback models (priority ≥ 90). `build_combined_forecasts()` constructs the pooled ensemble and stores it with `combination_strategy="pooled"` and `source_model_ids` listing the contributing model IDs, using sentinel `model_id = "_pooled"` and `model_artifact_id = None`. If fewer than two combinable models succeeded, combination is skipped. Combined forecast skill is computed separately via step S.4b.
+**Multi-model forecast combination (step 1.8b).** Distinct from error fallback, combination merges multiple models' ensembles into a blended forecast. After all individual model forecasts are stored (step 1.11), step 1.8b pools the ensembles from all non-fallback models into a single combined forecast. If fewer than two models succeeded, combination is skipped. Combined forecast skill is computed separately via step S.4b.
 
 **Sequencing.** The cycle runs in three phases:
 - **Phase A** (per NWP source, parallel across sources): steps 1.1 → 1.5
@@ -130,12 +130,6 @@ Every stored forecast record carries the NWP cycle reference time used as forcin
 - **Phase B** (per model and station or group, parallel across units): steps 1.7 → 1.8 → 1.9 → 1.10 → 1.11 — starts only after both Phase A and step 1.6 complete
 
 **Observation staleness.** If the most recent observation for a station is older than a configurable threshold (e.g. 6 hours), the forecast still runs but a staleness warning flag is attached to the forecast record and is visible via the API.
-
-#### Implementation status (v0b)
-
-**Implemented** (Plan 024 — v0a): `flows/run_forecast_cycle.py` with three-phase orchestration. Services: `services/operational_inputs.py` (step 1.7 input assembly) and `services/run_station_forecast.py` (steps 1.8–1.10 with multi-model fallback). v0a uses pre-extracted point weather data (steps 1.2–1.4 skipped). Steps 1.5 and 1.9 are pass-through. Phase B runs as a sequential station loop. Phase C alert checking is gated by `enable_forecast_alerts` config flag.
-
-**Implemented** (Plan 026 — v0b): Step 1.8b (multi-model combination). `run_all_station_forecasts()` runs every assigned model per station. `services/forecast_combination.py` provides `combine_ensembles_pooled()` and `build_combined_forecasts()`. The flow dispatches on `config.forecast_combination_strategy`: `PRIMARY` mode uses the existing single-model fallback path; `POOLED` mode runs all models, stores individual forecasts, then stores the combined forecast. NWP lateness fallback and group model support (`predict_batch`) remain deferred.
 
 ---
 
@@ -147,7 +141,7 @@ Every stored forecast record carries the NWP cycle reference time used as forcin
 
 | Step | What happens | Input | Output |
 |------|-------------|-------|--------|
-| 2.0 | Filter eligible stations | All station configs | Active gauged stations for Wave 1 ingest; calculated stations queued for Wave 2 |
+| 2.0 | Filter eligible stations | All station configs | Active gauged stations eligible for ingest |
 | 2.1 | Fetch latest station observations | Station configs, last-seen timestamp per station | Raw river and weather observations |
 | 2.2 | Store raw observations | Raw observations | Observations persisted to store (status = raw); raw values are never overwritten |
 | 2.3 | Stage 1 QC — sensor validation | Raw observations, QC rule config | QC flags: range, rate-of-change, frozen sensor, spike, gross outlier |
@@ -172,8 +166,6 @@ Raw observations are never overwritten. QC results are stored as metadata on the
 **Rating curve updates.** The expected mechanism is CSV upload of hQ tables by DHM hydromet operations staff. Exact format, upload workflow, and the handling of transition periods (e.g. mid-monsoon curve updates) are to be confirmed with DHM during the AWS testing phase. See `hydrology-operations.md` §9 for rating curve versioning and operational guidance.
 
 **Sequencing.** Steps are sequential at the pipeline level. Within step 2.1, river and weather fetches run in parallel. Steps 2.2–2.7 are parallelisable across stations.
-
-**v0 (Switzerland).** BAFU provides discharge directly from well-maintained rating curves — steps 2.5, 2.6, and 2.7 are skipped. Step 2.0 is a pass-through (all Swiss stations are gauged).
 
 ---
 
@@ -267,7 +259,7 @@ Raw (model output) ──→ Reviewed ──→ Published
 | 0.3 | Download historical dynamic datasets (parallel with 0.2) | AOI, date range, variable list | Local cache of historical forcing data (ERA5-Land reanalysis for v1) |
 | 0.4 | Verify completeness | Local cache, expected coverage | Completeness report — spatial gaps and missing time steps identified |
 | 0.5 | Register datasets in catalogue | Dataset metadata (source, version, local path, variables) | Dataset registry records for use by Flow 5 |
-| 0.6 | Register deployment parameters (independent of 0.2/0.3) | `[[parameters]]` section of deployment config | Parameter records in the database |
+| 0.6 | Register deployment parameters (independent of 0.2/0.3) | Deployment configuration file | Parameter records in the database |
 
 **Notes**
 
@@ -324,7 +316,6 @@ Raw (model output) ──→ Reviewed ──→ Published
 - The model type must be registered via Flow 13 before it can be assigned to stations in step 5.10.
 - Step 5.12 requires at least one model artifact with `active` status. The model administrator can promote to `operational` with optional items (alert thresholds, rating curve) missing — the system warns but does not block.
 - **Flood thresholds** are loaded during station onboarding as part of the station metadata (step 5.1). Thresholds can be updated after onboarding via the REST API (`PUT /api/v1/stations/{id}/thresholds`). Only year-round thresholds are supported initially; seasonal thresholds may be added at a later stage if required.
-- For **calculated stations** (v1): step 5.C3 derives observations as a weighted sum of component stations (Q_virtual = Σ(wᵢ × Qᵢ)); steps 5.4–5.7 are skipped.
 - All data-writing steps are idempotent — re-running after failure resumes without duplicating data.
 
 **Typical timelines.** Steps 5.1–5.9 (metadata registration, historical import, QC, baselines) complete in minutes to hours per station. Step 5.11 (model training + hindcast + skill computation) takes hours to days depending on model type and training data volume. End-to-end from station registration to `operational` status: approximately one week, including model administrator review at step 5.12. Stations should be batched for onboarding — the flow is designed for batch operation, and ML model training benefits from group processing.
@@ -342,7 +333,7 @@ Raw (model output) ──→ Reviewed ──→ Published
 
 | Step | What happens | Input | Output |
 |------|-------------|-------|--------|
-| 5w.1 | Register station metadata | Station definitions (code, name, location, timezone, parameters, `kind = weather`) | Station records in database with status `onboarding` |
+| 5w.1 | Register station metadata | Station definitions (code, name, location, timezone, parameters, weather station) | Station records in database with status `onboarding` |
 | 5w.2 | Import historical observations | Station, historical source config, date range | Raw historical observations persisted |
 | 5w.3 | Stage 1 QC on historical observations | Raw observations, QC rule configuration | QC flags per measured value |
 | 5w.4 | Model administrator confirms go-live (manual) | — | Station status transitions to `operational` |
@@ -351,7 +342,6 @@ Raw (model output) ──→ Reviewed ──→ Published
 
 - No rating curve conversion, no baseline artifacts, no flow regime boundaries, no model assignments — weather stations supply forcing data only.
 - Step 5w.4 has no model artifact precondition. A weather station is operational once it has QC'd historical data and the real-time adapter is configured.
-- Steps 5w.2 and 5w.3 use the same import and QC services as Flow 5 steps 5.4 and 5.5.
 - Steps are sequential per station and parallelised across stations in the batch.
 
 **Sequencing:**
@@ -368,24 +358,23 @@ Raw (model output) ──→ Reviewed ──→ Published
 | Step | What happens | Input | Output |
 |------|-------------|-------|--------|
 | M.0 | Determine scope | Model admin request (model type, target stations or groups) | List of training units (station–model or group–model pairs) |
-| M.1 | Register model | Model package, discovery via entry points | Model record written to the model registry |
+| M.1 | Register model | Model package | Model record written to the model registry |
 | M.2 | Compatibility validation (conditional — per-unit skip on failure) | Model declaration, deployment configuration | Each unit: compatible (continue) or skipped with reason |
 | M.2b | Smoke test — synthetic round-trip (conditional — per-unit skip on failure) | Synthetic training data shaped from model requirements | Each unit: pass (continue) or `FAILED_SMOKE_TEST` |
 | M.3 | Initial training | Training data, model hyperparameters, forcing source | New model artifact in `training` status |
 | M.4 | Hindcast verification | New artifact, validation period | Hindcast forecast ensembles (via Flow 7) |
 | M.5 | Skill gate — worst-across-strata evaluation | Hindcast results, configured thresholds | Gate passed (continue) or artifact stays in `training` (no auto-retry) |
-| M.6 | Promotion decision | Skill gate result; presence of existing champion artifact | v0: auto-promote to `active`. v1: `pending_approval` if a champion exists; model admin reviews |
+| M.6 | Promotion decision | Skill gate result; presence of existing champion artifact | Auto-promote if first model of this type; otherwise `pending_approval` for model admin review |
 | M.7 | Station and group assignment | Promoted artifact, target stations/groups | Model assignment records created with configured priority |
 
 **Notes**
 
-- M.2 checks three things: protocol satisfaction (the model implements the required interface), feature availability (all declared input features exist in the deployment's data), and time-step compatibility.
+- M.2 checks three things: interface compatibility, feature availability (all declared input features exist in the deployment's data), and time-step compatibility.
 - M.2b exercises the full train → serialise → deserialise → predict round-trip on synthetic data to catch shape errors and contract violations before any real training.
 - M.2 and M.2b failures are per-unit skips — incompatible units are skipped and the flow continues with remaining units.
 - The skill gate (M.5) evaluates the worst score across all strata (lead time × season × flow regime). A model must meet the threshold in every stratum to pass. If no thresholds are configured, the gate is a pass-through.
 - Skill gate failure keeps the artifact in `training` status. The model administrator can retry from M.3 or discard the artifact. The system does not auto-retry.
-- If no champion artifact exists (first onboarding of this model type), M.6 always auto-promotes regardless of deployment version.
-- Flow 13 composes the same underlying services as Flows 6, 7, and 8 directly — it does not call the training flow — so that the skill gate can be interposed between training and promotion.
+- If no champion artifact exists (first onboarding of this model type), M.6 always auto-promotes.
 
 **Sequencing:**
 ```
@@ -473,7 +462,7 @@ Both are the same flow with different scope. Skill is always evaluated per stati
 | S.2 | Fetch forecast results (parallel with S.3) | Scope from S.1 | Hindcast and/or operational forecast ensembles |
 | S.3 | Fetch corresponding observations (parallel with S.2) | Matching station and period pairs | QC-passed observed values |
 | S.4 | Compute verification metrics | Forecast ensembles and observations | Per-station, per-model, per-lead-time, per-season skill scores |
-| S.4b | Compute combined skill (conditional) | All models' hindcasts per station via `fetch_hindcasts_by_station()`; runs if `forecast_combination_strategy != PRIMARY` | Skill scores and diagrams for the combined ensemble, stored with sentinel `model_id = "_pooled"` and `model_artifact_id = NULL` |
+| S.4b | Compute combined skill (conditional) | All models' hindcasts per station; runs if multi-model combination is enabled | Skill scores and diagrams for the combined ensemble |
 | S.5 | Aggregate metrics | Station-level scores | Cross-station summaries (by model, by region, overall) |
 | S.6 | Store skill results — versioned, never overwritten | Computed metrics | Persisted to skill tables; superseded rows marked `stale` |
 
@@ -526,7 +515,6 @@ S.1 → S.2 ─┐
 
 - After step 11.2, the flow splits: recovered cycles proceed to 11.3 → 11.4; permanently failed cycles go to 11.5. Both paths join at 11.6.
 - A cycle is declared unrecoverable after exhausting retry attempts or when its age exceeds the provider's data retention window (configured per NWP source).
-- Step 11.3 uses the same extraction logic as Flow 1 step 1.3 — not a separate implementation.
 - Stale skill scores (11.4) are recomputed by the next Flow 10 run.
 - Each flow run processes gaps for a single NWP source. If gaps exist across multiple sources, Flow 4 triggers one Flow 11 run per source.
 - The flow is safe to re-trigger for the same gaps — step 11.1 skips cycles that already have a result record.
@@ -540,11 +528,11 @@ S.1 → S.2 ─┐
 | Step | What happens | Input | Output |
 |------|-------------|-------|--------|
 | 12.1 | Determine scope | Trigger event (branch type, station, time window) | Validated scope (station exists, period valid) |
-| **Branch A** | **Rating curve reprocessing (v1+)** | | |
+| **Branch A** | **Rating curve reprocessing** | | |
 | 12.2a | Fetch derived observations under old curve | Station, old curve's validity period | All rating-curve-derived observations in that time window |
 | 12.3a | Recompute with new curve | Old derived observations, new rating curve | New derived discharge values |
 | 12.4a | Upsert reprocessed observations | New derived values | Updated observation rows referencing new rating curve |
-| **Branch B** | **Manual CSV import (v0+)** | | |
+| **Branch B** | **Manual CSV import** | | |
 | 12.2b | Validate CSV format and content | CSV file, overwrite flag | Parsed and validated rows, or validation errors |
 | 12.3b | Ingest validated observations | Validated rows | Persisted with `source = manual_import` |
 | 12.4b | Run QC on imported observations | Newly ingested observations | QC flags applied |
@@ -558,8 +546,8 @@ S.1 → S.2 ─┐
 
 **Notes**
 
-- **Branch A** (v1+): When a new rating curve is uploaded (expected as a CSV hQ table — exact format TBD with DHM), all derived discharge values within the old curve's validity period are recomputed. Original measured water level observations are never modified. Historical operational forecasts are not retroactively reprocessed — they are immutable.
-- **Branch B** (v0+): CSV format is fixed (`station_code, timestamp, parameter, value`). Duplicate handling is controlled by an explicit `overwrite` flag in the API request — if `overwrite = false` and conflicts exist, the request is rejected with a list of conflicting rows.
+- **Branch A**: When a new rating curve is uploaded (expected as a CSV hQ table — exact format TBD with DHM), all derived discharge values within the old curve's validity period are recomputed. Original measured water level observations are never modified. Historical operational forecasts are not retroactively reprocessed — they are immutable.
+- **Branch B**: CSV format is fixed (`station_code, timestamp, parameter, value`). Duplicate handling is controlled by an explicit `overwrite` flag in the API request — if `overwrite = false` and conflicts exist, the request is rejected with a list of conflicting rows.
 - **Branch C** (future): Re-runs QC rules on an existing time window using the current rule version. Does not re-derive rating curve values.
 - Flow 12 must not overlap with Flow 2 (observation ingest) for the same station and time period. This is enforced by concurrency controls.
 - Stale skill scores (12.5) are recomputed by the next Flow 10 run.
@@ -569,7 +557,7 @@ S.1 → S.2 ─┐
 
 ## REST API
 
-All data produced by the SAPPHIRE system is served through a REST API at `/api/v1/`. External systems — dashboards, alert portals, hydropower operators — pull data from this API. There is no push-based data export. Alert notifications are push-based — step 1.14 dispatches via webhook with async retry; the `GET /alerts` endpoint is for querying alert history, not the primary delivery path.
+All data produced by the SAPPHIRE system is served through a REST API at `/api/v1/`. External systems — dashboards, alert portals, hydropower operators — pull data from this API. There is no push-based data export. Alert notifications are push-based via webhook with async retry; the `GET /alerts` endpoint is for querying alert history, not the primary delivery path.
 
 **Key resource groups:**
 
