@@ -6,6 +6,22 @@
 
 ---
 
+## Scope
+
+| Responsibility | SAPPHIRE Flow | DHM |
+|----------------|---------------|-----|
+| **Weather & observation ingest** | Fetches, QCs, and stores data | Provides station network and rating curves |
+| **Forecast models** | Trains, runs, and serves ensemble forecasts | — |
+| **Forecast review & publication** | Provides status-transition API (`raw → reviewed → published`) with audit trail | Operates the forecaster dashboard that calls the API |
+| **Alerts** | Generates threshold-based alerts, stores them, delivers via pluggable adapters (webhook) | Manages downstream distribution policy and recipient lists |
+| **REST API** | Serves all data (stations, observations, forecasts, alerts, skill, health) | Consumes API from dashboard, alert portal, and bulletin systems |
+| **Pipeline monitoring** | Watchdog flow, health endpoints, ops alerting to IT | — |
+| **Bulletins & public comms** | — | Produces and distributes bulletins from published forecast data |
+
+In short: SAPPHIRE owns the pipeline, the API, alert generation and delivery infrastructure, and the review/publication endpoints. DHM owns the forecaster dashboard, distribution policy, and public communications.
+
+---
+
 ## Overview
 
 SAPPHIRE Flow processes data through 13 data flows organised in three categories:
@@ -18,7 +34,7 @@ SAPPHIRE Flow processes data through 13 data flows organised in three categories
 
 **System boundary.** SAPPHIRE ingests weather and station data, runs forecast models, stores results, and serves them via a REST API. Dashboard presentation, threshold-based alerting, and bulletin distribution are DHM's responsibility — DHM systems consume the REST API. Pipeline health monitoring is inside the SAPPHIRE boundary and reports to IT/operations staff.
 
-**Alerting integration.** SAPPHIRE stores alerts in the database and serves them via `GET /api/v1/alerts`. The base assumption is that DHM's existing alerting system polls this endpoint to pick up new and changed alerts, and handles downstream distribution (SMS, email, field staff notifications). This question has been shared with DHM. If polling is not feasible, SAPPHIRE can implement webhook push notifications as additional scope. See `hydrology-operations.md` §6 for alert design and danger level definitions.
+**Alerting integration.** SAPPHIRE stores alerts in the database and serves them via `GET /api/v1/alerts`. The base assumption is that DHM's existing alerting system polls this endpoint to pick up new and changed alerts, and handles downstream distribution to field staff. This question has been shared with DHM. If polling is not feasible, SAPPHIRE can implement webhook push notifications as additional scope. See `hydrology-operations.md` §6 for alert design and danger level definitions.
 
 ```mermaid
 graph LR
@@ -553,7 +569,7 @@ S.1 → S.2 ─┐
 
 ## REST API
 
-All data produced by the SAPPHIRE system is served through a REST API at `/api/v1/`. External systems — dashboards, alert portals, hydropower operators — pull data from this API. There is no push-based data export. Alert notifications are push-based — step 1.14 dispatches via pluggable adapters (email, SMS, webhook) with async retry; the `GET /alerts` endpoint is for querying alert history, not the primary delivery path.
+All data produced by the SAPPHIRE system is served through a REST API at `/api/v1/`. External systems — dashboards, alert portals, hydropower operators — pull data from this API. There is no push-based data export. Alert notifications are push-based — step 1.14 dispatches via webhook with async retry; the `GET /alerts` endpoint is for querying alert history, not the primary delivery path.
 
 **Key resource groups:**
 
