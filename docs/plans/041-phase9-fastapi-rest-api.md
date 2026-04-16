@@ -1,6 +1,6 @@
 # Plan 041 — Phase 9: FastAPI REST API
 
-**Status**: READY
+**Status**: DONE
 **Phase**: 9 (API)
 **Depends on**: Phases 1-8 (all complete for v0a)
 
@@ -227,12 +227,9 @@ and summary when it becomes operationally needed (v0b NWP degradation tracking).
 
 ### Layer 0 — Infrastructure (no dependencies between steps)
 
-**Step 0.1: Pydantic response schemas** `api/schemas.py`
+**Step 0.1: Pydantic response schemas** `api/schemas.py` -- DONE
 
-All response models, derived from domain dataclasses. Explicit conversion
-functions in each route file (private `_to_*` helpers, not shared).
-
-Key schemas:
+16 Pydantic models. Key schemas:
 - `GeoCoordResponse` — lon, lat, altitude_masl
 - `StationSummary` — id, code, name, location, kind, status, network, ownership, measured_parameters
 - `StationDetail` — extends summary with thresholds, model_assignments, weather_sources, basin_id, forecast_targets, timestamps
@@ -248,33 +245,24 @@ Key schemas:
 - `PaginatedResponse[T]` — generic wrapper: items, total, limit, offset
 - `ErrorResponse` — error, detail
 
-**Step 0.2: Error handlers** `api/errors.py`
+**Step 0.2: Error handlers** `api/errors.py` -- DONE
 
-- Structured error response: `{"error": "not_found", "detail": "..."}`
-- Exception handlers for `HTTPException` and unhandled `Exception`
-- Returns `ORJSONResponse` with appropriate status codes
+Structured error response: `{"error": "not_found", "detail": "..."}`
 
 ### Layer 1 — Dependency + middleware wiring (depends on 0.x)
 
-**Step 1.1: Refactor `deps.py`**
+**Step 1.1: Refactor `deps.py`** -- DONE
 
-- **Fix connection lifecycle**: `get_stores()` uses `Depends(get_connection)`
-  instead of opening its own connection (decision D7)
-- Remove the generator wrapper from `get_stores()` — it becomes a plain
-  function returning a dict, using the injected connection
-- Add `PgAlertStore` to `get_stores()` dict
-- Add `get_connection_rw()` using `engine.begin()` (decision D6)
+Single connection per request. PgAlertStore added. `get_connection_rw()` with `engine.begin()`.
 
-**Step 1.2: Update `__init__.py`**
+**Step 1.2: Update `__init__.py`** -- DONE
 
-- Add CORS middleware (decision D9 — explicit origin list, not `*`)
-- Register error handlers from `errors.py`
-- Register new routers (after step 2.x)
-- Set `ORJSONResponse` as default response class
+CORS middleware (deny-all default), error handlers, new routers registered.
+ORJSONResponse dropped (deprecated in current FastAPI — native Pydantic serialization).
 
-### Layer 2 — Route implementations (depends on 0.x, 1.x; parallel with each other)
+### Layer 2 — Route implementations -- ALL DONE
 
-**Step 2.1: Station endpoints** `api/routes/api_stations.py`
+**Step 2.1: Station endpoints** `api/routes/api_stations.py` -- DONE
 
 | Endpoint | Store method | Notes |
 |---|---|---|
@@ -283,20 +271,20 @@ Key schemas:
 | `GET /api/v1/stations/{id}/observations` | `ObservationStore.fetch_observations()` | Required: `parameter`, `start`, `end`. Optional: `qc_status`. Returns `list[ObservationResponse]` (not paginated — bounded by time range). |
 | `GET /api/v1/stations/{id}/forecasts` | new `ForecastStore.fetch_forecast_summaries()` | Metadata-only query. Offset pagination. Optional `?model_id=`, `?parameter=`. Default last 7 days. |
 
-**Step 2.2: Forecast detail endpoint** `api/routes/api_forecasts.py`
+**Step 2.2: Forecast detail endpoint** `api/routes/api_forecasts.py` -- DONE
 
 | Endpoint | Store method | Notes |
 |---|---|---|
 | `GET /api/v1/forecasts/{id}` | `ForecastStore.fetch_forecast()` | Pivots `ForecastEnsemble.values` (Polars DF) to JSON. Handles sentinel model_ids (`_pooled`, `_bma`, `_consensus`). 404 if not found. |
 
-**Step 2.3: Alert endpoints** `api/routes/api_alerts.py`
+**Step 2.3: Alert endpoints** `api/routes/api_alerts.py` -- DONE
 
 | Endpoint | Store method | Notes |
 |---|---|---|
 | `GET /api/v1/alerts` | new `AlertStore.fetch_alerts()` | Filters: `?status=`, `?source=`, `?station_id=`, `?level=`. Offset pagination. |
 | `POST /api/v1/alerts/{id}/acknowledge` | `AlertStore.fetch_alert()` then `AlertStore.acknowledge_alert()` | Uses `get_connection_rw()`. Fetch first to check existence (404) and status (409 if resolved). Request body: `AcknowledgeRequest`. Response: `AcknowledgeResponse`. |
 
-**Step 2.4: Enhance health endpoint** in existing `api/routes/health.py`
+**Step 2.4: Enhance health endpoint** in existing `api/routes/health.py` -- DONE
 
 Enhance the existing `GET /api/v1/health` to include a Prefect heartbeat
 check (HTTP ping to `PREFECT_API_URL/health` via `httpx.Client`). Response
@@ -313,13 +301,9 @@ Implemented S1, S2, S3. All 1024 tests pass, zero regressions.
 - `ForecastSummaryRow` frozen dataclass created in `types/forecast_summary.py`
 - 24 new integration tests with full value assertions (enum identity, JSONB round-trip, UTC preservation, half-open intervals, deterministic ordering, pagination item identity)
 
-### Layer 3 — Router registration (depends on 2.x)
+### Layer 3 — Router registration -- DONE (included in Layer 1.2)
 
-**Step 3.1: Register new routers in `__init__.py`**
-
-Include each new router with the existing ones.
-
-### Layer 4 — Tests (depends on 0.x; can start in parallel with 2.x)
+### Layer 4 — Tests -- ALL DONE (31 unit tests + 24 integration tests)
 
 **Step 4.1: Test fixtures** `tests/unit/api/conftest.py`
 
