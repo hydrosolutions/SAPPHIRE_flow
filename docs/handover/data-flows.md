@@ -38,7 +38,7 @@ SAPPHIRE Flow processes data through 13 data flows organised in three categories
 
 **System boundary.** SAPPHIRE ingests weather and station data, runs forecast models, stores results, and serves them via a REST API. Dashboard presentation, threshold-based alerting, and bulletin distribution are DHM's responsibility — DHM systems consume the REST API. Pipeline health monitoring is inside the SAPPHIRE boundary and reports to IT/operations staff.
 
-**Alerting integration.** SAPPHIRE stores alerts in the database and serves them via `GET /api/v1/alerts`. The base assumption is that DHM's existing alerting system polls this endpoint to pick up new and changed alerts, and handles downstream distribution to field staff. This question has been shared with DHM. If polling is not feasible, SAPPHIRE can implement webhook push notifications as additional scope. See `hydrology-operations.md` §6 for alert design and danger level definitions.
+**Alerting integration.** SAPPHIRE stores alerts in the database and serves them via `GET /api/v1/alerts`. The base assumption is that DHM's existing alerting system polls this endpoint (i.e. checks it at regular intervals, e.g. every minute) to pick up new and changed alerts, and handles downstream distribution to field staff. This question has been shared with DHM. If polling is not feasible, SAPPHIRE can implement webhook push notifications as additional scope. See `hydrology-operations.md` §6 for alert design and danger level definitions.
 
 ```mermaid
 graph LR
@@ -101,6 +101,8 @@ graph LR
 
 #### Steps
 
+Steps 1.2–1.4 (NWP archiving and spatial extraction) are only needed in deployments without a Data Gateway — see Notes below.
+
 | Step | What happens | Input | Output |
 |------|-------------|-------|--------|
 | 1.1 | Fetch NWP forcing from Data Gateway | NWP source config, cycle time | Pre-extracted per-station weather values |
@@ -111,7 +113,7 @@ graph LR
 | 1.9 | Post-process forecast output (conditional) | Raw forecast ensembles, historical archive | Bias-corrected forecast ensembles |
 | 1.10 | Forecast QC | Forecast ensembles, QC rule set | QC flags per ensemble; QC_FAILED triggers model fallback |
 | 1.11 | Store forecast results | Forecast ensembles + model artefact version | Forecasts persisted to store; immediately available via REST API |
-| 1.8b | Combine model forecasts (conditional) | Individual forecast ensembles from all non-fallback models | Pooled combined ensemble forecast; skipped if fewer than two models succeeded |
+| 1.8b | Combine model forecasts (conditional; runs after 1.11) | Individual forecast ensembles from all non-fallback models | Pooled combined ensemble forecast; skipped if fewer than two models succeeded |
 
 Step 1.9 is conditional — pass-through until sufficient forecast archive exists for bias correction.
 
@@ -362,6 +364,8 @@ Raw (model output) ──→ Reviewed ──→ Published
 
 **When:** When a new model type is introduced to the system — run on-demand by a model administrator, and required before the model can be assigned to stations in Flow 5.
 
+Step prefixes in initialisation flows indicate the flow: **M** = Model onboarding (Flow 13), **T** = Training (Flow 6/9), **H** = Hindcast (Flow 7), **S** = Skill (Flow 8/10).
+
 | Step | What happens | Input | Output |
 |------|-------------|-------|--------|
 | M.0 | Determine scope | Model admin request (model type, target stations or groups) | List of training units (station–model or group–model pairs) |
@@ -558,7 +562,7 @@ S.1 → S.2 ─┐
 - **Branch C** (future): Re-runs QC rules on an existing time window using the current rule version. Does not re-derive rating curve values.
 - Flow 12 must not overlap with Flow 2 (observation ingest) for the same station and time period. The system prevents both flows from running simultaneously for the same station.
 - Stale skill scores (12.5) are recomputed by the next Flow 10 run.
-- **Skill score integrity across rating curve changes:** Forecasts log the active rating curve at issuance, and superseded observation values are archived before reprocessing. Skill computation follows the WMO best-truth approach — verify against the most current observations — with rating curve transition counts exposed in the API so dashboards can annotate discontinuities at epoch boundaries.
+- **Skill score integrity across rating curve changes:** Forecasts log the active rating curve at issuance, and superseded observation values are archived before reprocessing. Skill computation follows the WMO best-truth approach (always verify against the most up-to-date observations, even if they have been reprocessed since the forecast was issued) — with rating curve transition counts exposed in the API so dashboards can annotate discontinuities at epoch boundaries.
 
 ---
 
