@@ -18,7 +18,7 @@ FROM python:3.11.12-slim
 
 RUN groupadd -g 1000 app && useradd -u 1000 -g 1000 -m app
 
-RUN apt-get update && apt-get install -y --no-install-recommends gosu curl \
+RUN apt-get update && apt-get install -y --no-install-recommends gosu curl postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

@@ -15,7 +15,7 @@ from dataclasses import dataclass
 
 import structlog
 
-log = structlog.get_logger()
+log = structlog.get_logger(__name__)
 
 WORK_POOL = "default"
 
@@ -31,7 +31,7 @@ class DeploymentSpec:
 
 def _build_specs() -> list[DeploymentSpec]:
     """Build deployment specs with env-var-configurable schedules."""
-    cron_ingest = os.environ.get("SCHEDULE_INGEST_OBSERVATIONS", "*/10 * * * *")
+    cron_ingest = os.environ.get("SCHEDULE_INGEST_OBSERVATIONS", "*/30 * * * *")
     cron_forecast = os.environ.get("SCHEDULE_FORECAST_CYCLE", "0 */6 * * *")
     cron_backup = os.environ.get("SCHEDULE_BACKUP_DATABASE", "0 2 * * *")
 
@@ -123,6 +123,7 @@ async def register_all() -> None:
     """Register all v0 Prefect deployments. Idempotent."""
     from prefect.client.orchestration import get_client
     from prefect.client.schemas.actions import WorkPoolCreate
+    from prefect.exceptions import ObjectAlreadyExists
 
     async with get_client() as client:
         try:
@@ -130,7 +131,7 @@ async def register_all() -> None:
                 WorkPoolCreate(name=WORK_POOL, type="process")
             )
             log.info("workpool.created", name=WORK_POOL)
-        except Exception:
+        except ObjectAlreadyExists:
             log.info("workpool.exists", name=WORK_POOL)
 
     specs = _build_specs()
@@ -141,6 +142,9 @@ async def register_all() -> None:
 
 
 def main() -> None:
+    from sapphire_flow.logging import configure_cli_logging
+
+    configure_cli_logging()
     asyncio.run(register_all())
 
 

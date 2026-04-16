@@ -12,24 +12,25 @@ Prefect 3 replaces a patchwork of Luigi, bash scripts, and cron jobs with a sing
 
 | Flow | Prefect flow function | Work pool | Trigger | Concurrency limit | Scope |
 |------|-----------------------|-----------|---------|-------------------|-------|
-| 1 — Forecast cycle | `run_forecast_cycle` | `ops` | Cron | 1 | v0+v1 |
-| 2 — Observation ingest | `ingest_observations` | `ops` | Cron | — | v0+v1 |
+| 1 — Forecast cycle | `run_forecast_cycle_flow` | `ops` | Cron | 1 | v0+v1 |
+| 2 — Observation ingest | `ingest_observations_flow` | `ops` | Cron | — | v0+v1 |
 | 3 — Forecast review | *(not a Prefect flow — user-driven via API/dashboard)* | — | — | — | v0+v1 |
 | 4 — Pipeline monitoring | `monitor_pipeline` | `ops` | Cron | — | **v0c+** (§D5) |
-| 5 — River station onboarding | `onboard_station` | `ops` | On-demand | — | v0+v1 |
-| 5w — Weather station onboarding | `onboard_weather_stations` | `ops` | On-demand | — | v0+v1 |
-| 6/9 — Model training | `train_models` | `training` | On-demand or scheduled | 1 | v0+v1 |
-| 7 — Hindcast generation | `run_hindcast` | `hindcast` | Subflow or on-demand | — | v0+v1 |
+| 5 — River station onboarding | `onboard_stations_flow` | `ops` | On-demand | — | v0+v1 |
+| 5w — Weather station onboarding | *(not yet implemented — weather station onboarding is currently handled within `onboard_stations_flow` which processes all station kinds; a dedicated `onboard_weather_stations` flow is deferred)* | `ops` | On-demand | — | v0+v1 |
+| 6/9 — Model training | `train_models_flow` | `training` | On-demand or scheduled | 1 | v0+v1 |
+| 7 — Hindcast generation | `run_hindcast_flow` | `hindcast` | Subflow or on-demand | — | v0+v1 |
 | 8/10 — Skill computation | `compute_skills_flow` (deployment) / `compute_skills_task` (fan-out) | `hindcast` | Subflow or on-demand | — | v0+v1 |
+| 8/10 — Combined skill computation | `compute_combined_skills_flow` | `hindcast` | On-demand | — | v0+v1 |
 | 11 — NWP gap recovery | `recover_nwp_gaps` | `ops` | Event-triggered (from Flow 4) | — | **v0c+** (§D5) |
 | 12 — Observation reprocessing | `reprocess_observations` | `ops` | Event-triggered / on-demand | Per-station (see below) | v0+v1 |
 | 13 — Model onboarding | `onboard_model_flow` | `training` (v0: `default`) | On-demand | 1 | v0+v1 |
-| Backup | `backup_database` | `ops` | Cron (daily) | — | v0+v1 |
+| Backup | `backup_database_flow` | `ops` | Cron (daily) | — | v0+v1 |
 | DLQ drain | `drain_dlq` | `ops` | Cron (hourly) | — | **v1** (§A1) |
 | Data archival | `archive_cold_data` | `ops` | Cron (monthly) | — | **v1** (§A2) |
 | Backup restore rehearsal | `rehearse_backup_restore` | `ops` | Cron (monthly) | — | **v1** (§A10) |
 
-All cron schedules are deployment-configurable — set as `CronSchedule` parameters in each deployment definition, not hardcoded. **→ DECISION (plan 013)**: At ~1000 stations on a single `default` work pool (v0), staggering forecast cycles, observation ingest (48 runs/day), and backup flows is a recommended operational practice to reduce contention. Operators should offset cron schedules to avoid simultaneous heavy flows (e.g., stagger `run_forecast_cycle` and `train_models` by at least 10 minutes). See cicd.md § Prefect work pool separation for pool-level concurrency limits and container resource bounds.
+All cron schedules are deployment-configurable — set as `CronSchedule` parameters in each deployment definition, not hardcoded. **→ DECISION (plan 013)**: At ~1000 stations on a single `default` work pool (v0), staggering forecast cycles, observation ingest (48 runs/day), and backup flows is a recommended operational practice to reduce contention. Operators should offset cron schedules to avoid simultaneous heavy flows (e.g., stagger `run_forecast_cycle_flow` and `train_models_flow` by at least 10 minutes). See cicd.md § Prefect work pool separation for pool-level concurrency limits and container resource bounds.
 
 ## Task granularity
 
@@ -139,15 +140,15 @@ Four composition patterns are used across the 12 flows (plus Flow 5w):
 Composition graph:
 
 ```
-Flow 5 (onboard_station)
-  └→ Flows 6/9 (train_models) [training pool]
-       ├→ Flow 7 (run_hindcast) [hindcast pool]
-       └→ Flows 8/10 (compute_skills) [hindcast pool]
+Flow 5 (onboard_stations_flow)
+  └→ Flows 6/9 (train_models_flow) [training pool]
+       ├→ Flow 7 (run_hindcast_flow) [hindcast pool]
+       └→ Flows 8/10 (compute_skills_flow) [hindcast pool]
 
 Flow 13 (onboard_model_flow) [training pool]
-  ├→ services/training.py (reused from Flow 6, not the train_models flow)
-  ├→ services/hindcast.py (reused from Flow 7, not run_hindcast flow)
-  └→ services/skill/ (reused from Flow 8, not compute_skills flow)
+  ├→ services/training.py (reused from Flow 6, not the train_models_flow)
+  ├→ services/hindcast.py (reused from Flow 7, not run_hindcast_flow)
+  └→ services/skill/ (reused from Flow 8, not compute_skills_flow)
 
 Flow 4 (monitor_pipeline)
   └→ Flow 11 (recover_nwp_gaps) [ops pool]
@@ -162,7 +163,7 @@ Note: T.7–T.8 model approval is NOT a Prefect pause/resume. The `train_models`
 | Category | Mechanism | Flows | Scope |
 |----------|-----------|-------|-------|
 | Cron | Prefect `CronSchedule` | 1, 2, 4, backup, DLQ drain, data archival, backup restore rehearsal | 1, 2, backup: v0+v1; 4: **v0c+** (§D5); DLQ drain: **v1** (§A1); data archival: **v1** (§A2); backup restore rehearsal: **v1** (§A10) |
-| On-demand | API trigger or manual run from Prefect UI | 5, 5w, 6/9, 7, 8/10, 12 | v0+v1 |
+| On-demand | API trigger or manual run from Prefect UI | 5, 6/9, 7, 8/10, 12 | v0+v1 |
 | Subflow | Called by parent flow at runtime | 7 (from 6/9), 8/10 (from 6/9) | v0+v1 |
 | Event-triggered | Prefect automation or explicit `run_deployment()` call | 11 (from 4), 12 (from API) | 11: **v0c+** (§D5); 12: v0+v1 |
 
@@ -170,7 +171,7 @@ Flows 7 and 8/10 appear in both on-demand and subflow categories: they can be in
 
 ## Concurrency controls
 
-**Per-flow**: `run_forecast_cycle` (Flow 1) has a concurrency limit of 1 — two instances of the same cycle must not run simultaneously. This prevents double-writes on Prefect server restart or accidental duplicate triggers.
+**Per-flow**: `run_forecast_cycle_flow` (Flow 1) has a concurrency limit of 1 — two instances of the same cycle must not run simultaneously. This prevents double-writes on Prefect server restart or accidental duplicate triggers.
 
 **Shared resources**: Use Prefect's `concurrency()` context manager to guard shared resources within a flow. For example, flows that write to the DB in bulk should acquire a named concurrency slot to avoid saturating the connection pool:
 
@@ -195,10 +196,10 @@ The `init` service (see cicd.md § First-boot sequence) registers all Prefect de
 - Concurrency limit (where applicable)
 - Default parameters (e.g. `mode` for `train_models`)
 
-Deployment names follow conventions.md kebab-case convention: `run-forecast-cycle`, `ingest-observations`, `monitor-pipeline`, `onboard-station`, `onboard-weather-stations`, `train-models`, `onboard-model`, `run-hindcast`, `compute-skills`, `recover-nwp-gaps`, `reprocess-observations`, `backup-database`, `drain-dlq`, `archive-cold-data`, `rehearse-backup-restore`.
+Deployment names follow conventions.md kebab-case convention: `forecast-cycle`, `ingest-observations`, `monitor-pipeline`, `onboard-stations`, `onboard-weather-stations`, `train-models`, `onboard-model`, `run-hindcast`, `compute-skills`, `compute-combined-skills`, `recover-nwp-gaps`, `reprocess-observations`, `backup-database`, `drain-dlq`, `archive-cold-data`, `rehearse-backup-restore`.
 
 Deployment names for v1-only flows: `drain-dlq`, `archive-cold-data`, `rehearse-backup-restore`.
 
 Registration is idempotent — re-running `init` updates existing deployments rather than creating duplicates.
 
-v0 `init` registers only v0-scoped deployments. v1-only deployments (`drain-dlq`, `archive-cold-data`, `rehearse-backup-restore`) are registered when the corresponding features are enabled.
+v0 `init` registers only v0-scoped deployments whose flow functions are implemented. v1-only deployments (`drain-dlq`, `archive-cold-data`, `rehearse-backup-restore`) are registered when the corresponding features are enabled. v0-scoped deployments whose flows are not yet implemented (`onboard-weather-stations`, `reprocess-observations`) are added to the registration script when the flow code lands.

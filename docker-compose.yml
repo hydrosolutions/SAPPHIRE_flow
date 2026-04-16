@@ -48,7 +48,8 @@ services:
       test: ["CMD-SHELL", "curl -f http://localhost:4200/api/health || exit 1"]
       interval: 15s
       timeout: 10s
-      retries: 3
+      retries: 5
+      start_period: 90s
     cap_drop:
       - ALL
     secrets:
@@ -72,9 +73,12 @@ services:
       SAPPHIRE_CONFIG: /app/config.toml
       DATABASE_URL_TEMPLATE: postgresql+asyncpg://${DB_USER:-sapphire}@postgres:5432/sapphire
       PREFECT_API_URL: http://prefect-server:4200/api
+      PREFECT_LOGGING_LEVEL: WARNING
     depends_on:
       prefect-server:
         condition: service_healthy
+      init:
+        condition: service_completed_successfully
     cap_drop:
       - ALL
     cap_add:
@@ -107,10 +111,14 @@ services:
       DATABASE_URL_TEMPLATE: postgresql+psycopg://${DB_USER:-sapphire}@postgres:5432/sapphire
       PREFECT_API_URL: http://prefect-server:4200/api
       SAPPHIRE_DATA_DIR: /data
+      # v0 only: default * is acceptable (no auth, test server).
+      # Restrict to explicit origin list before v1 (security.md § CORS policy).
       SAPPHIRE_CORS_ORIGINS: ${SAPPHIRE_CORS_ORIGINS:-*}
     depends_on:
       postgres:
         condition: service_healthy
+      init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8000/api/v1/health || exit 1"]
       interval: 15s
@@ -178,7 +186,7 @@ services:
     environment:
       DATABASE_URL_TEMPLATE: postgresql+psycopg://${DB_USER:-sapphire}@postgres:5432/sapphire
       PREFECT_API_URL: http://prefect-server:4200/api
-      SCHEDULE_INGEST_OBSERVATIONS: ${SCHEDULE_INGEST_OBSERVATIONS:-*/10 * * * *}
+      SCHEDULE_INGEST_OBSERVATIONS: ${SCHEDULE_INGEST_OBSERVATIONS:-*/30 * * * *}
       SCHEDULE_FORECAST_CYCLE: ${SCHEDULE_FORECAST_CYCLE:-0 */6 * * *}
       SCHEDULE_BACKUP_DATABASE: ${SCHEDULE_BACKUP_DATABASE:-0 2 * * *}
     depends_on:

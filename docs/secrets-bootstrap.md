@@ -12,9 +12,11 @@ Compose as container secrets (see `docker-compose.yml`).
 ## Setup
 
 ```bash
-mkdir -p secrets && chmod 700 secrets
+mkdir -p secrets
 openssl rand -base64 32 > secrets/db_password
-chmod 600 secrets/db_password
+sudo chown -R root:root secrets/
+sudo chmod 700 secrets/
+sudo chmod 600 secrets/*
 ```
 
 The `secrets/` directory is gitignored. Never commit secrets to version control.

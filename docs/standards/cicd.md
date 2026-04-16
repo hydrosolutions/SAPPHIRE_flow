@@ -31,11 +31,15 @@ One Dockerfile for `prefect-worker-ops`, `prefect-worker-hindcast`, `prefect-wor
 
 | Volume | Mount path | Used by | Purpose | Scope |
 |--------|-----------|---------|---------|-------|
-| `pg_data` | `/var/lib/postgresql/data` | postgres | PostgreSQL data directory | v0+v1 |
+| `pgdata` | `/var/lib/postgresql/data` | postgres | PostgreSQL data directory | v0+v1 |
 | `model_artifacts` | `/data/artifacts` | prefect-worker (rw) [v0], prefect-worker-ops (ro), prefect-worker-hindcast (ro), prefect-worker-training (rw), api (ro) | Trained model files | v0+v1 |
 | `cold_storage` | `/data/cold` | prefect-worker-ops (rw), prefect-worker-hindcast (ro), api (ro) | Parquet archive | **v1** (§A2) |
 | `nwp_grids` | `/data/nwp_grids` | prefect-worker (rw, v0) | NWP Zarr archive hot tier | v0+ |
+| `sapphire_data` | `/data/raw` | prefect-worker (rw) | Observation and station data | v0+v1 |
+| `backups` | `/data/backups` | prefect-worker (rw) | pg_dump backup files (§A10) | v0+v1 |
 | `prefect_data` | `/data/prefect` | prefect-server | Prefect server state | v0+v1 |
+| `caddy_data` | Caddy internal | caddy | TLS certificates, OCSP staples | v0+v1 |
+| `caddy_config` | Caddy internal | caddy | Persisted Caddy configuration | v0+v1 |
 
 tmpfs mount: `/tmp/sapphire_nwp` (size=4g) on prefect-worker — scratch space for NWP GRIB2-to-Zarr conversion.
 
@@ -95,22 +99,27 @@ Flow 1 (forecast cycle) has an additional per-flow concurrency limit of 1 — pr
 
 ### First-boot sequence
 
-The `init` service runs before `api` and workers start:
+Responsibilities are split across two stages:
 
-1. Wait for PostgreSQL health check to pass
-2. Create database and extensions: `CREATE EXTENSION IF NOT EXISTS postgis;`
+**PostgreSQL container** (`docker-entrypoint-initdb.d/init-db.sh`, runs once on first `pgdata` volume creation):
+- Creates the `sapphire` database and installs PostGIS (and v1-only pg_partman, pg_cron extensions)
+- Creates DB service users (`sapphire_api`, `sapphire_worker`, `sapphire_prefect`) with permissions per conventions.md § Database connection patterns
+
 > **v1-only** (v0-scope.md §A1): pg_partman and pg_cron extensions are not used in v0.
-`CREATE EXTENSION IF NOT EXISTS pg_partman; CREATE EXTENSION IF NOT EXISTS pg_cron;`
-3. Create DB service users (`sapphire_api`, `sapphire_worker`, `sapphire_prefect`) with permissions per conventions.md § Database connection patterns
-4. Run `alembic upgrade head` — creates all tables, indexes, constraints
-5. > **v1-only** (v0-scope.md §A1)
-Run `SELECT partman.run_maintenance_proc()` — creates initial partitions
-6. Load configuration from `config.toml`:
+
+**`init` service** (runs before `api` and workers start, after PostgreSQL and Prefect Server are healthy):
+
+1. Wait for PostgreSQL and Prefect Server health checks to pass (implicit via `depends_on`)
+2. Run `alembic upgrade head` — creates all tables, indexes, constraints
+3. > **v1-only** (v0-scope.md §A1)
+   Run `SELECT partman.run_maintenance_proc()` — creates initial partitions
+4. Register Prefect deployments (`python -m sapphire_flow.cli.register_deployments`) — idempotent, updates existing deployments
+5. Load configuration from `config.toml` at **worker/API runtime** (not during init):
    - **Deployment-level bootstrap** (danger levels, season definitions, skill interpretation schemes): only runs if `deployments` table is empty (first boot). Subsequent reruns skip this — deployment-level config is managed through the application after initial setup.
    - **Station and threshold config**: upsert semantics — new entries are added, existing entries are updated if the config has changed, entries present in the database but absent from `config.toml` are left untouched (never deleted). This means re-running `init` after an upgrade will not overwrite station configurations, thresholds, or user accounts that were modified through the dashboard.
-7. Scan model entry points and populate `models` table
+6. Scan model entry points and populate `models` table at **worker runtime** (not during init)
 
-Steps are idempotent — safe to rerun on container restart. Re-running `init` on an existing database is the expected path during upgrades (step 3 of the upgrade procedure).
+`init` steps are idempotent — safe to rerun on container restart. Re-running `init` on an existing database is the expected path during upgrades (step 3 of the upgrade procedure).
 
 ### Upgrade procedure
 

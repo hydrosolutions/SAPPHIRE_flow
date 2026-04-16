@@ -263,7 +263,11 @@ Exceeded requests receive HTTP 429 with `Retry-After` header. Unauthenticated re
 
 ## CORS policy
 
-`allow_origins` is an explicit list — never `*`. Configured in `config.toml` under `[api.cors]`:
+`allow_origins` is an explicit list — never `*` in production. Configured in `config.toml` under `[api.cors]`:
+
+> **v0 exception** (v0-scope.md §J): v0 has no auth, no dashboard, and no sensitive consumers. `docker-compose.yml` defaults to `SAPPHIRE_CORS_ORIGINS=*` for development convenience. Operators deploying on a network with untrusted clients must override this via `.env`. Restrict to an explicit origin list before enabling auth (v1).
+
+Production (v1+) `allow_origins` must include:
 - Dashboard origin (same host)
 - Registered origins of known API consumers (Bipad portal, DHM dashboard)
 - API consumer endpoints using bearer token auth may use `allow_origins = ["*"]` only if explicitly configured per deployment

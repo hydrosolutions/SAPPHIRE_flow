@@ -36,6 +36,11 @@ Create a `.env` file to override defaults:
 # SCHEDULE_BACKUP_DATABASE=0 2 * * *
 ```
 
+> **⚠ v0 only**: The default `SAPPHIRE_CORS_ORIGINS=*` allows all origins.
+> This is acceptable for a test server with no authentication. Before any
+> public-facing or v1 deployment, set this to an explicit origin list
+> (e.g., `SAPPHIRE_CORS_ORIGINS=https://dashboard.example.ch`).
+
 Without `SAPPHIRE_DOMAIN`, Caddy serves plain HTTP on port 80.
 
 ## 4. Build and start

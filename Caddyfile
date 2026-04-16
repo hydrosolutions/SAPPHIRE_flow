@@ -1,15 +1,19 @@
+# v0 note: plain HTTP on :80 is the default (no SAPPHIRE_DOMAIN set).
+# When SAPPHIRE_DOMAIN=sapphire.example.ch, Caddy auto-provisions TLS
+# and HSTS is applied automatically. Port 80 HTTP is a v0 simplification;
+# production deployments (v1+) must set SAPPHIRE_DOMAIN for HTTPS-only.
 {$SAPPHIRE_DOMAIN::80} {
     header {
+        Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'"
         X-Content-Type-Options nosniff
         X-Frame-Options DENY
         Referrer-Policy strict-origin-when-cross-origin
         -Server
     }
 
-    handle /prefect/* {
-        uri strip_prefix /prefect
-        reverse_proxy prefect-server:4200
-    }
+    # Prefect UI is NOT routed through Caddy — it is internal-only
+    # (security.md § Network policy). Access via SSH tunnel:
+    #   ssh -L 4200:localhost:4200 user@vm
 
     handle {
         reverse_proxy api:8000

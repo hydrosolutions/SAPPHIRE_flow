@@ -1,6 +1,6 @@
 # Plan 044 — Deployment Readiness (v0 Test Server)
 
-**Status**: READY
+**Status**: DONE
 **Phase**: 10b (infrastructure hardening)
 **Depends on**: Phase 10 (Docker Compose, DONE), all flows (Phases 5-9, DONE)
 
@@ -98,6 +98,10 @@ def backup_database_flow(backup_dir: str = "/data/backups", keep_count: int = 7)
 - `dump_database_task`: `subprocess.run(["pg_dump", ...])`, reads `DATABASE_URL`
   from env. File: `sapphire_YYYYMMDD_HHMMSS.dump`.
 - `cleanup_old_backups_task`: list `*.dump`, sort by mtime, unlink oldest.
+
+> **v0c TODO**: When Flow 4 (pipeline monitoring) is implemented, add a marker
+> file write after successful dump (e.g. `/data/backups/.last_backup_ok`) so
+> step 4.10 (`check_type = 'backup_freshness'`) can verify backup recency.
 
 ### Step 5 — Docker Compose wiring
 

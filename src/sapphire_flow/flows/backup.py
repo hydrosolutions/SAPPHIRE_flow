@@ -3,13 +3,15 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import time
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 import structlog
 from prefect import flow, task
 
-log = structlog.get_logger()
+log = structlog.get_logger(__name__)
 
 
 def _to_libpq_url(url: str) -> str:
@@ -27,20 +29,35 @@ def dump_database_task(backup_dir: str) -> str:
     dump_file = backup_path / filename
 
     database_url = _to_libpq_url(os.environ["DATABASE_URL"])
+    parsed = urlparse(database_url)
+    cmd = [
+        "pg_dump",
+        "--format=custom",
+        f"--file={dump_file}",
+        f"--host={parsed.hostname}",
+        f"--port={parsed.port or 5432}",
+        f"--username={parsed.username}",
+        f"--dbname={parsed.path.lstrip('/')}",
+    ]
+    env = {**os.environ, "PGPASSWORD": parsed.password or ""}
 
-    result = subprocess.run(
-        ["pg_dump", "--format=custom", f"--file={dump_file}", database_url],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    start = time.perf_counter()
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
+    end = time.perf_counter()
 
     if result.returncode != 0:
         msg = f"pg_dump failed (exit {result.returncode}): {result.stderr.strip()}"
         raise RuntimeError(msg)
 
+    dump_file.chmod(0o600)
+
     size_mb = dump_file.stat().st_size / (1024 * 1024)
-    log.info("backup.completed", file=str(dump_file), size_mb=round(size_mb, 1))
+    log.info(
+        "backup.completed",
+        file=str(dump_file),
+        size_mb=round(size_mb, 1),
+        duration_ms=round((end - start) * 1000, 1),
+    )
     return str(dump_file)
 
 
