@@ -91,6 +91,7 @@ services:
     volumes:
       - model_artifacts:/data/artifacts:rw
       - sapphire_data:/data/raw:rw
+      - backups:/data/backups:rw
       - ./config.toml:/app/config.toml:ro
     logging:
       driver: json-file
@@ -106,6 +107,7 @@ services:
       DATABASE_URL_TEMPLATE: postgresql+psycopg://${DB_USER:-sapphire}@postgres:5432/sapphire
       PREFECT_API_URL: http://prefect-server:4200/api
       SAPPHIRE_DATA_DIR: /data
+      SAPPHIRE_CORS_ORIGINS: ${SAPPHIRE_CORS_ORIGINS:-*}
     depends_on:
       postgres:
         condition: service_healthy
@@ -170,11 +172,15 @@ services:
     command: >
       sh -c "
         alembic upgrade head &&
+        python -m sapphire_flow.cli.register_deployments &&
         echo 'Init complete'
       "
     environment:
-      DATABASE_URL_TEMPLATE: postgresql+asyncpg://${DB_USER:-sapphire}@postgres:5432/sapphire
+      DATABASE_URL_TEMPLATE: postgresql+psycopg://${DB_USER:-sapphire}@postgres:5432/sapphire
       PREFECT_API_URL: http://prefect-server:4200/api
+      SCHEDULE_INGEST_OBSERVATIONS: ${SCHEDULE_INGEST_OBSERVATIONS:-*/10 * * * *}
+      SCHEDULE_FORECAST_CYCLE: ${SCHEDULE_FORECAST_CYCLE:-0 */6 * * *}
+      SCHEDULE_BACKUP_DATABASE: ${SCHEDULE_BACKUP_DATABASE:-0 2 * * *}
     depends_on:
       postgres:
         condition: service_healthy
@@ -207,6 +213,7 @@ volumes:
   model_artifacts:
   prefect_data:
   sapphire_data:
+  backups:
 
 secrets:
   db_password:

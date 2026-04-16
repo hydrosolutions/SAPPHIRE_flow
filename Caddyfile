@@ -1,4 +1,4 @@
-:80 {
+{$SAPPHIRE_DOMAIN::80} {
     header {
         X-Content-Type-Options nosniff
         X-Frame-Options DENY

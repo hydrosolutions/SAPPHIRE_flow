@@ -10,6 +10,8 @@ RUN mkdir -p src/sapphire_flow && touch src/sapphire_flow/__init__.py
 RUN uv sync --frozen --no-dev
 
 COPY src/ src/
+COPY alembic.ini ./
+COPY alembic/ alembic/
 
 
 FROM python:3.11.12-slim
@@ -26,6 +28,8 @@ RUN chmod +x /entrypoint.sh
 
 COPY --from=builder --chown=app:app /app/.venv /app/.venv
 COPY --from=builder --chown=app:app /app/src /app/src
+COPY --from=builder --chown=app:app /app/alembic.ini /app/alembic.ini
+COPY --from=builder --chown=app:app /app/alembic /app/alembic
 
 ENV PATH="/app/.venv/bin:$PATH"
 
