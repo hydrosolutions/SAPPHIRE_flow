@@ -2,7 +2,11 @@
 
 **Audience**: DHM technical staff — hydrologists, IT, and integration partners.   
 **Document version**: 0.1-draft (April 2026)   
-**Status**: DRAFT — subject to change. 
+**Status**: DRAFT — subject to change.
+
+**Companion documents** (in the same folder):
+- `hydrology-operations.md` — Operational procedures for forecasters and model administrators
+- `it-operations.md` — IT infrastructure, backup, disaster recovery, and host-level monitoring
 
 ---
 
@@ -72,11 +76,13 @@ graph LR
 | Parameter | Value |
 |-----------|-------|
 | **Primary NWP source** | ECMWF IFS ENS (51 members), delivered every 6 hours via the SAPPHIRE Data Gateway (~7–8 hour delay for open data) |
-| **Snow forcing** | SnowMapper SWE and snowmelt forecasts, delivered via the same Data Gateway |
+| **Snow forcing** | SnowMapper (a gridded snow water equivalent and snowmelt forecast product developed by hydrosolutions) forecasts, delivered via the same Data Gateway |
 | **Sub-daily forecast horizon** | Up to 3 days, hourly or sub-hourly time steps |
 | **Daily forecast horizon** | Up to 10 days, daily time steps |
 | **Forecast cycles per day** | 4 (following ECMWF IFS 00/06/12/18 UTC cycles) |
 | **Forecast target variable** | Water level (primary). Discharge via rating curve where available. |
+
+**SAPPHIRE Data Gateway.** A companion service, developed by hydrosolutions, that fetches, extracts, and delivers NWP and reanalysis data to SAPPHIRE Flow — deployed and operated on DHM's local servers alongside SAPPHIRE Flow.
 
 **Model strategy.** Whether sub-daily and daily forecasts are produced by the same model or separate models is an open research question. Some deep learning architectures can forecast across multiple lead times and time steps in a single pass; alternatively, separate models may be trained for sub-daily (hourly, 3-day) and daily (10-day) horizons. The architecture supports both approaches — each station can have multiple models assigned at different time steps, with independent fallback chains.
 
@@ -90,7 +96,7 @@ graph LR
 
 ### Flow 1 — Forecast Cycle
 
-**Trigger**: Prefect schedule, every ~6 hours after NWP data becomes available.  
+**Trigger**: Scheduled (via Prefect, the workflow orchestration tool that runs and monitors all automated flows), every ~6 hours after NWP data becomes available.  
 **Target**: All stations complete within 15 minutes per cycle.
 
 #### Steps
@@ -105,6 +111,7 @@ graph LR
 | 1.9 | Post-process forecast output (conditional) | Raw forecast ensembles, historical archive | Bias-corrected forecast ensembles |
 | 1.10 | Forecast QC | Forecast ensembles, QC rule set | QC flags per ensemble; QC_FAILED triggers model fallback |
 | 1.11 | Store forecast results | Forecast ensembles + model artefact version | Forecasts persisted to store; immediately available via REST API |
+| 1.8b | Combine model forecasts (conditional) | Individual forecast ensembles from all non-fallback models | Pooled combined ensemble forecast; skipped if fewer than two models succeeded |
 
 Step 1.9 is conditional — pass-through until sufficient forecast archive exists for bias correction.
 
@@ -254,7 +261,7 @@ Raw (model output) ──→ Reviewed ──→ Published
 
 | Step | What happens | Input | Output |
 |------|-------------|-------|--------|
-| 0.1 | Define area of interest | Country bounding box or union of watershed geometries | AOI polygon stored in deployment configuration |
+| 0.1 | Define area of interest | Country bounding box or union of watershed geometries | AOI (area of interest) polygon stored in deployment configuration |
 | 0.2 | Download static attribute datasets (parallel with 0.3) | AOI, dataset catalogue | Local cache of static catchment data (global DEM, catchment attributes, national GIS where available) |
 | 0.3 | Download historical dynamic datasets (parallel with 0.2) | AOI, date range, variable list | Local cache of historical forcing data (ERA5-Land reanalysis for v1) |
 | 0.4 | Verify completeness | Local cache, expected coverage | Completeness report — spatial gaps and missing time steps identified |
@@ -265,7 +272,7 @@ Raw (model output) ──→ Reviewed ──→ Published
 
 - Steps 0.2 and 0.3 run in parallel immediately after 0.1. Step 0.6 is independent and runs in parallel from 0.1 onward — it reads only the deployment config file.
 - Gaps in static data (0.4) block station onboarding. Gaps in dynamic/reanalysis data produce warnings — stations can still onboard but with a shorter training window.
-- All download steps are resumable and idempotent. Re-running skips already-downloaded datasets (verified by checksum).
+- All download steps are resumable and safe to re-run — re-running skips already-downloaded datasets (verified by checksum).
 - For v1 Nepal, ERA5-Land reanalysis is sourced via the **SAPPHIRE Data Gateway**: SAPPHIRE uploads the AOI geometry, requests archive preparation, configures ongoing NWP extraction, and downloads the prepared data once the Gateway signals readiness.
 - Flow 0 is a prerequisite for Flow 5 step 5.2 (catchment attribute extraction) and for model training. Other station onboarding steps (5.1, 5.3, 5.4) can proceed without it.
 - If a new station's basin falls outside the existing AOI, the AOI must be expanded and steps 0.2–0.3 re-run for the new area (or the Data Gateway re-triggered).
@@ -303,7 +310,7 @@ Raw (model output) ──→ Reviewed ──→ Published
 
 | Branch | Scenario | Action |
 |--------|----------|--------|
-| A — Transfer learning | Station added to existing pre-trained group model | Validation hindcast run; skill computed with source `transfer_validation`; model admin reviews |
+| A — Transfer learning (applying a model trained on other stations) | Station added to existing pre-trained group model | Validation hindcast run; skill computed with source `transfer_validation`; model admin reviews |
 | B — New conceptual model | Station-scoped model (e.g. HBV) trained from scratch | Full training cycle via Flow 6; auto-promoted on completion |
 | C — New ML model or new group | No existing trained artifact exists | Full training cycle via Flow 6; auto-promoted on completion |
 | D — Group model needs retraining | New station changes group composition | Triggers Flow 9 (retraining); existing artifact continues serving other stations until new one is approved |
@@ -316,7 +323,7 @@ Raw (model output) ──→ Reviewed ──→ Published
 - The model type must be registered via Flow 13 before it can be assigned to stations in step 5.10.
 - Step 5.12 requires at least one model artifact with `active` status. The model administrator can promote to `operational` with optional items (alert thresholds, rating curve) missing — the system warns but does not block.
 - **Flood thresholds** are loaded during station onboarding as part of the station metadata (step 5.1). Thresholds can be updated after onboarding via the REST API (`PUT /api/v1/stations/{id}/thresholds`). Only year-round thresholds are supported initially; seasonal thresholds may be added at a later stage if required.
-- All data-writing steps are idempotent — re-running after failure resumes without duplicating data.
+- All data-writing steps are safe to re-run — resuming after failure does not duplicate data.
 
 **Typical timelines.** Steps 5.1–5.9 (metadata registration, historical import, QC, baselines) complete in minutes to hours per station. Step 5.11 (model training + hindcast + skill computation) takes hours to days depending on model type and training data volume. End-to-end from station registration to `operational` status: approximately one week, including model administrator review at step 5.12. Stations should be batched for onboarding — the flow is designed for batch operation, and ML model training benefits from group processing.
 
@@ -360,11 +367,11 @@ Raw (model output) ──→ Reviewed ──→ Published
 | M.0 | Determine scope | Model admin request (model type, target stations or groups) | List of training units (station–model or group–model pairs) |
 | M.1 | Register model | Model package | Model record written to the model registry |
 | M.2 | Compatibility validation (conditional — per-unit skip on failure) | Model declaration, deployment configuration | Each unit: compatible (continue) or skipped with reason |
-| M.2b | Smoke test — synthetic round-trip (conditional — per-unit skip on failure) | Synthetic training data shaped from model requirements | Each unit: pass (continue) or `FAILED_SMOKE_TEST` |
-| M.3 | Initial training | Training data, model hyperparameters, forcing source | New model artifact in `training` status |
+| M.2b | Smoke test — quick validation using synthetic data (conditional — per-unit skip on failure) | Synthetic training data shaped from model requirements | Each unit: pass (continue) or `FAILED_SMOKE_TEST` |
+| M.3 | Initial training | Training data, model hyperparameters, forcing source | New model artifact (the saved, versioned trained model) in `training` status |
 | M.4 | Hindcast verification | New artifact, validation period | Hindcast forecast ensembles (via Flow 7) |
 | M.5 | Skill gate — worst-across-strata evaluation | Hindcast results, configured thresholds | Gate passed (continue) or artifact stays in `training` (no auto-retry) |
-| M.6 | Promotion decision | Skill gate result; presence of existing champion artifact | Auto-promote if first model of this type; otherwise `pending_approval` for model admin review |
+| M.6 | Promotion decision | Skill gate result; presence of existing deployed model | Auto-promote if first model of this type; otherwise `pending_approval` for model admin review |
 | M.7 | Station and group assignment | Promoted artifact, target stations/groups | Model assignment records created with configured priority |
 
 **Notes**
@@ -374,7 +381,7 @@ Raw (model output) ──→ Reviewed ──→ Published
 - M.2 and M.2b failures are per-unit skips — incompatible units are skipped and the flow continues with remaining units.
 - The skill gate (M.5) evaluates the worst score across all strata (lead time × season × flow regime). A model must meet the threshold in every stratum to pass. If no thresholds are configured, the gate is a pass-through.
 - Skill gate failure keeps the artifact in `training` status. The model administrator can retry from M.3 or discard the artifact. The system does not auto-retry.
-- If no champion artifact exists (first onboarding of this model type), M.6 always auto-promotes.
+- If no existing deployed model exists (first onboarding of this model type), M.6 always auto-promotes.
 
 **Sequencing:**
 ```
@@ -549,7 +556,7 @@ S.1 → S.2 ─┐
 - **Branch A**: When a new rating curve is uploaded (expected as a CSV hQ table — exact format TBD with DHM), all derived discharge values within the old curve's validity period are recomputed. Original measured water level observations are never modified. Historical operational forecasts are not retroactively reprocessed — they are immutable.
 - **Branch B**: CSV format is fixed (`station_code, timestamp, parameter, value`). Duplicate handling is controlled by an explicit `overwrite` flag in the API request — if `overwrite = false` and conflicts exist, the request is rejected with a list of conflicting rows.
 - **Branch C** (future): Re-runs QC rules on an existing time window using the current rule version. Does not re-derive rating curve values.
-- Flow 12 must not overlap with Flow 2 (observation ingest) for the same station and time period. This is enforced by concurrency controls.
+- Flow 12 must not overlap with Flow 2 (observation ingest) for the same station and time period. The system prevents both flows from running simultaneously for the same station.
 - Stale skill scores (12.5) are recomputed by the next Flow 10 run.
 - **Skill score integrity across rating curve changes:** Forecasts log the active rating curve at issuance, and superseded observation values are archived before reprocessing. Skill computation follows the WMO best-truth approach — verify against the most current observations — with rating curve transition counts exposed in the API so dashboards can annotate discontinuities at epoch boundaries.
 
