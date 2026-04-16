@@ -483,12 +483,12 @@ Phase 3b: Record reference test dataset from public APIs          │
 Phase 4: Services (QC, threshold, alert, skill, forecast input, input quality)  ─┘
           │
 Phase 5: Station onboarding (simplified)           ─┐ ✓ done
-Phase 6: Observation ingest (Flow 2)               ├─ parallel
+Phase 6: Observation ingest (Flow 2)               ├─ parallel  ✓ done
 Phase 7: Model framework + training                │  ✓ done
 Phase 7b: Model onboarding (Flow 13) + sample model─┤  ✓ done
-Phase 9: FastAPI REST API                          ─┘
+Phase 9: FastAPI REST API                          ─┘  ✓ done (Plan 041)
           │
-Phase 8: Forecast cycle (Flow 1) + scenario tests
+Phase 8: Forecast cycle (Flow 1) + scenario tests  ✓ done (v0a)
           │
 Phase 11: End-to-end test (onboard → train → hindcast → skill → forecast → API)
 ```
@@ -561,18 +561,18 @@ derived from domain dataclasses at implementation time.
 ```
 # v0 API endpoints (no auth, no forecast adjustments)
 
-GET    /api/v1/stations                    # list stations (paginated)
-GET    /api/v1/stations/{id}               # station detail
-GET    /api/v1/stations/{id}/observations  # observations for station
-GET    /api/v1/stations/{id}/forecasts     # forecasts for station
+GET    /api/v1/stations                    # ✓ Plan 041 — paginated, kind/status filters
+GET    /api/v1/stations/{id}               # ✓ Plan 041 — detail with thresholds/assignments
+GET    /api/v1/stations/{id}/observations  # ✓ Plan 041 — by parameter and time range
+GET    /api/v1/stations/{id}/forecasts     # ✓ Plan 041 — metadata-only summaries, paginated
 
-GET    /api/v1/forecasts/{id}              # forecast detail with ensemble values
-GET    /api/v1/alerts                      # list alerts (filterable by status, source)
-POST   /api/v1/alerts/{id}/acknowledge     # acknowledge an alert
+GET    /api/v1/forecasts/{id}              # ✓ Plan 041 — detail with ensemble serialization
+GET    /api/v1/alerts                      # ✓ Plan 041 — filterable by status/source/level/station
+POST   /api/v1/alerts/{id}/acknowledge     # ✓ Plan 041 — 404/409 checks, RW transaction
 
-POST   /api/v1/flows/{flow}/trigger        # manually trigger a flow run
-GET    /api/v1/health                      # health check + pipeline status
-GET    /api/v1/health/detail               # detailed component status (no auth in v0)
+POST   /api/v1/flows/{flow}/trigger        # deferred to v0b (needs auth; users have Prefect CLI)
+GET    /api/v1/health                      # ✓ Plan 041 — DB ping + Prefect heartbeat
+GET    /api/v1/health/detail               # deferred to v0b (pipeline_health empty until Flow 4)
 # Health checks are live (DB ping, Prefect worker heartbeat) — independent of Flow 4
 
 # Deferred to v1:
