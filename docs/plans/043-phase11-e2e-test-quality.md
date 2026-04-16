@@ -1,6 +1,6 @@
 # Plan 043 — Phase 11: End-to-End Test + Test Quality
 
-**Status**: READY
+**Status**: DONE
 **Phase**: 11 (capstone) + cross-cutting test quality
 **Depends on**: Phase 9 (Plan 041, DONE), Phases 1-8 (all complete for v0a)
 
