@@ -22,6 +22,7 @@ from sapphire_flow.types.enums import (
     WarmUpSource,
 )
 from sapphire_flow.types.forecast import OperationalForecast
+from sapphire_flow.types.forecast_summary import ForecastSummaryRow
 from sapphire_flow.types.ids import ArtifactId, ForecastId, ModelId, StationId
 
 if TYPE_CHECKING:
@@ -172,6 +173,47 @@ class PgForecastStore:
         fids = [ForecastId(r[0]) for r in self._conn.execute(stmt).fetchall()]
         return self._fetch_by_ids(fids)
 
+    def fetch_forecast_summaries(
+        self,
+        station_id: StationId,
+        start: UtcDatetime,
+        end: UtcDatetime,
+        *,
+        model_id: ModelId | None = None,
+        parameter: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[ForecastSummaryRow], int]:
+        filters = [
+            forecasts.c.station_id == station_id,
+            forecasts.c.issued_at >= start,
+            forecasts.c.issued_at < end,
+        ]
+        if model_id is not None:
+            filters.append(forecasts.c.model_id == model_id)
+        if parameter is not None:
+            filters.append(forecasts.c.parameter == parameter)
+
+        where = sa.and_(*filters)
+
+        total: int = self._conn.execute(
+            sa.select(sa.func.count()).select_from(forecasts).where(where)
+        ).scalar_one()
+
+        rows = (
+            self._conn.execute(
+                sa.select(forecasts)
+                .where(where)
+                .order_by(forecasts.c.issued_at.desc(), forecasts.c.id.desc())
+                .limit(limit)
+                .offset(offset)
+            )
+            .mappings()
+            .all()
+        )
+
+        return [_row_to_summary(row) for row in rows], total
+
     def _fetch_by_ids(self, fids: list[ForecastId]) -> list[OperationalForecast]:
         if not fids:
             return []
@@ -318,4 +360,19 @@ def _rows_to_domain(rows: list) -> OperationalForecast:  # type: ignore[type-arg
             if header.get("source_model_ids") is not None
             else None
         ),
+    )
+
+
+def _row_to_summary(row: sa.engine.row.RowMapping) -> ForecastSummaryRow:
+    return ForecastSummaryRow(
+        id=ForecastId(row["id"]),
+        station_id=StationId(row["station_id"]),
+        model_id=ModelId(row["model_id"]),
+        issued_at=utc_from_row(row["issued_at"]),
+        parameter=row["parameter"],
+        representation=EnsembleRepresentation(row["representation"]),
+        status=ForecastStatus(row["status"]),
+        qc_status=QcStatus(row["qc_status"]),
+        nwp_cycle_source=NwpCycleSource(row["nwp_cycle_source"]),
+        created_at=utc_from_row(row["created_at"]),
     )

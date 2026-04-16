@@ -70,6 +70,16 @@ class PgAlertStore:
         row = self._conn.execute(stmt).scalar_one()
         return AlertId(row)
 
+    def fetch_alert(self, alert_id: AlertId) -> Alert | None:
+        row = (
+            self._conn.execute(
+                sa.select(alerts).where(alerts.c.id == alert_id)
+            )
+            .mappings()
+            .one_or_none()
+        )
+        return _row_to_domain(row) if row is not None else None
+
     def fetch_active_alerts(
         self,
         station_id: StationId | None = None,
@@ -100,6 +110,46 @@ class PgAlertStore:
                 acknowledged_by=acknowledged_by,
             )
         )
+
+    def fetch_alerts(
+        self,
+        *,
+        station_id: StationId | None = None,
+        source: AlertSource | None = None,
+        status: AlertStatus | None = None,
+        level: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[Alert], int]:
+        filters: list[sa.ColumnElement[bool]] = []
+        if station_id is not None:
+            filters.append(alerts.c.station_id == station_id)
+        if source is not None:
+            filters.append(alerts.c.source == source.value)
+        if status is not None:
+            filters.append(alerts.c.status == status.value)
+        if level is not None:
+            filters.append(alerts.c.alert_level == level)
+
+        where = sa.and_(*filters) if filters else sa.true()
+
+        total: int = self._conn.execute(
+            sa.select(sa.func.count()).select_from(alerts).where(where)
+        ).scalar_one()
+
+        rows = (
+            self._conn.execute(
+                sa.select(alerts)
+                .where(where)
+                .order_by(alerts.c.triggered_at.desc(), alerts.c.id.desc())
+                .limit(limit)
+                .offset(offset)
+            )
+            .mappings()
+            .all()
+        )
+
+        return [_row_to_domain(row) for row in rows], total
 
     def fetch_alert_history(
         self,

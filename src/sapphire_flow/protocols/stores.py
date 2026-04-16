@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from sapphire_flow.types.ensemble import ForecastEnsemble
     from sapphire_flow.types.enums import (
         AlertSource,
+        AlertStatus,
         FlowRegime,
         ForcingType,
         ForecastStatus,
@@ -47,6 +48,7 @@ if TYPE_CHECKING:
         HindcastForecast,
         OperationalForecast,
     )
+    from sapphire_flow.types.forecast_summary import ForecastSummaryRow
     from sapphire_flow.types.historical_forcing import (
         HistoricalForcingRecord,
         RawHistoricalForcing,
@@ -177,6 +179,19 @@ class ForecastStore(Protocol):
     ) -> list[OperationalForecast]:
         raise NotImplementedError
 
+    def fetch_forecast_summaries(
+        self,
+        station_id: StationId,
+        start: UtcDatetime,
+        end: UtcDatetime,
+        *,
+        model_id: ModelId | None = None,
+        parameter: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[ForecastSummaryRow], int]:
+        raise NotImplementedError
+
 
 @runtime_checkable
 class ForeignForecastStore(Protocol):
@@ -278,11 +293,26 @@ class AlertStore(Protocol):
     def upsert_alert(self, alert: Alert) -> AlertId:
         raise NotImplementedError
 
+    def fetch_alert(self, alert_id: AlertId) -> Alert | None:
+        raise NotImplementedError
+
     def fetch_active_alerts(
         self,
         station_id: StationId | None = None,
         source: AlertSource | None = None,
     ) -> list[Alert]:
+        raise NotImplementedError
+
+    def fetch_alerts(
+        self,
+        *,
+        station_id: StationId | None = None,
+        source: AlertSource | None = None,
+        status: AlertStatus | None = None,
+        level: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[Alert], int]:
         raise NotImplementedError
 
     def resolve_alert(self, alert_id: AlertId) -> None:

@@ -39,6 +39,7 @@ from sapphire_flow.types.forecast import (  # noqa: TC001
     HindcastForecast,
     OperationalForecast,
 )
+from sapphire_flow.types.forecast_summary import ForecastSummaryRow  # noqa: TC001
 from sapphire_flow.types.historical_forcing import (
     HistoricalForcingRecord,  # noqa: TC001
     RawHistoricalForcing,  # noqa: TC001
@@ -266,6 +267,40 @@ class FakeForecastStore:
             and (parameter is None or f.ensemble.parameter == parameter)
         ]
 
+    def fetch_forecast_summaries(
+        self,
+        station_id: StationId,
+        start: UtcDatetime,
+        end: UtcDatetime,
+        *,
+        model_id: ModelId | None = None,
+        parameter: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[ForecastSummaryRow], int]:
+        matches = [
+            ForecastSummaryRow(
+                id=f.id,
+                station_id=f.station_id,
+                model_id=f.model_id,
+                issued_at=f.issued_at,
+                parameter=f.ensemble.parameter,
+                representation=f.representation,
+                status=f.status,
+                qc_status=f.qc_status,
+                nwp_cycle_source=f.nwp_cycle_source,
+                created_at=f.created_at,
+            )
+            for f in self._forecasts.values()
+            if f.station_id == station_id
+            and start <= f.issued_at < end
+            and (model_id is None or f.model_id == model_id)
+            and (parameter is None or f.ensemble.parameter == parameter)
+        ]
+        matches.sort(key=lambda s: (s.issued_at, s.id), reverse=True)
+        total = len(matches)
+        return matches[offset : offset + limit], total
+
 
 class FakeHindcastStore:
     def __init__(self) -> None:
@@ -398,6 +433,9 @@ class FakeAlertStore:
         self._alerts[alert.id] = alert
         return alert.id
 
+    def fetch_alert(self, alert_id: AlertId) -> Alert | None:
+        return self._alerts.get(alert_id)
+
     def fetch_active_alerts(
         self,
         station_id: StationId | None = None,
@@ -410,6 +448,28 @@ class FakeAlertStore:
             and (station_id is None or a.station_id == station_id)
             and (source is None or a.source == source)
         ]
+
+    def fetch_alerts(
+        self,
+        *,
+        station_id: StationId | None = None,
+        source: AlertSource | None = None,
+        status: AlertStatus | None = None,
+        level: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[Alert], int]:
+        matches = [
+            a
+            for a in self._alerts.values()
+            if (station_id is None or a.station_id == station_id)
+            and (source is None or a.source == source)
+            and (status is None or a.status == status)
+            and (level is None or a.alert_level == level)
+        ]
+        matches.sort(key=lambda a: (a.triggered_at, a.id), reverse=True)
+        total = len(matches)
+        return matches[offset : offset + limit], total
 
     def resolve_alert(self, alert_id: AlertId) -> None:
         a = self._alerts[alert_id]
