@@ -6,7 +6,7 @@ import subprocess
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import structlog
 from prefect import flow, task
@@ -36,10 +36,10 @@ def dump_database_task(backup_dir: str) -> str:
         f"--file={dump_file}",
         f"--host={parsed.hostname}",
         f"--port={parsed.port or 5432}",
-        f"--username={parsed.username}",
+        f"--username={unquote(parsed.username or '')}",
         f"--dbname={parsed.path.lstrip('/')}",
     ]
-    env = {**os.environ, "PGPASSWORD": parsed.password or ""}
+    env = {**os.environ, "PGPASSWORD": unquote(parsed.password or "")}
 
     start = time.perf_counter()
     result = subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)
