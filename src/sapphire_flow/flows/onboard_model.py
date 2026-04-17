@@ -57,7 +57,14 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 
-@task(name="determine-onboarding-scope")
+def _unit_shard(unit: TrainingUnit) -> str:
+    return str(unit.station_id) if unit.station_id is not None else str(unit.group_id)
+
+
+@task(
+    name="determine-onboarding-scope",
+    task_run_name="determine-onboarding-scope-{model_id}",
+)
 def _determine_onboarding_scope_task(
     model_id: ModelId,
     model: object,
@@ -82,7 +89,7 @@ def _determine_onboarding_scope_task(
     )
 
 
-@task(name="register-model-class")
+@task(name="register-model-class", task_run_name="register-model-class-{model_id}")
 def _register_model_class_task(
     model_id: ModelId,
     model: object,
@@ -107,7 +114,79 @@ def _register_model_class_task(
     return entry
 
 
-@task(name="validate-compatibility", log_prints=False)
+def _render_validate_compat_name() -> str:
+    from prefect import runtime
+
+    params = runtime.task_run.parameters or {}
+    model_id = params.get("model_id", "unknown")
+    unit = params.get("unit")
+    shard = _unit_shard(unit) if unit is not None else "unknown"
+    return f"validate-compat-{model_id}-{shard}"
+
+
+def _render_assemble_onboarding_data_name() -> str:
+    from prefect import runtime
+
+    params = runtime.task_run.parameters or {}
+    unit = params.get("unit")
+    shard = _unit_shard(unit) if unit is not None else "unknown"
+    return f"assemble-onboarding-data-{shard}"
+
+
+def _render_train_onboarding_model_name() -> str:
+    from prefect import runtime
+
+    params = runtime.task_run.parameters or {}
+    unit = params.get("unit")
+    shard = _unit_shard(unit) if unit is not None else "unknown"
+    return f"train-onboarding-model-{shard}"
+
+
+def _render_promote_artifact_name() -> str:
+    from prefect import runtime
+
+    params = runtime.task_run.parameters or {}
+    unit = params.get("unit")
+    artifact_id = params.get("artifact_id", "unknown")
+    shard = _unit_shard(unit) if unit is not None else "unknown"
+    return f"promote-artifact-{shard}-{artifact_id}"
+
+
+def _render_create_assignment_name() -> str:
+    from prefect import runtime
+
+    params = runtime.task_run.parameters or {}
+    model_id = params.get("model_id", "unknown")
+    unit = params.get("unit")
+    shard = _unit_shard(unit) if unit is not None else "unknown"
+    return f"create-assignment-{model_id}-{shard}"
+
+
+def _render_onboard_model_flow_name() -> str:
+    from prefect import runtime
+
+    params = runtime.flow_run.parameters or {}
+    model_id = params.get("model_id", "unknown")
+    period_start = params.get("period_start")
+    if period_start:
+        from datetime import datetime
+
+        try:
+            dt = datetime.fromisoformat(period_start)
+            stamp = dt.strftime("%Y%m%d")
+        except ValueError:
+            stamp = str(period_start)
+    else:
+        scheduled = runtime.flow_run.scheduled_start_time
+        stamp = scheduled.strftime("%Y%m%d") if scheduled else "unknown"
+    return f"onboard-{model_id}-{stamp}"
+
+
+@task(
+    name="validate-compatibility",
+    log_prints=False,
+    task_run_name=_render_validate_compat_name,
+)
 def _validate_compatibility_task(
     model_id: ModelId,
     model: object,
@@ -142,12 +221,16 @@ def _validate_compatibility_task(
     )
 
 
-@task(name="smoke-test-model", log_prints=False)
+@task(name="smoke-test-model", log_prints=False, task_run_name="smoke-test-model")
 def _smoke_test_model_task(model: object, rng: random.Random) -> None:
     smoke_test_model(model=model, rng=rng)  # type: ignore[arg-type]
 
 
-@task(name="assemble-onboarding-data", log_prints=False)
+@task(
+    name="assemble-onboarding-data",
+    log_prints=False,
+    task_run_name=_render_assemble_onboarding_data_name,
+)
 def _assemble_onboarding_data_task(
     unit: TrainingUnit,
     model: object,
@@ -186,7 +269,11 @@ def _assemble_onboarding_data_task(
         )
 
 
-@task(name="train-onboarding-model", log_prints=False)
+@task(
+    name="train-onboarding-model",
+    log_prints=False,
+    task_run_name=_render_train_onboarding_model_name,
+)
 def _train_and_store_artifact_task(
     unit: TrainingUnit,
     model: object,
@@ -232,7 +319,11 @@ def _train_and_store_artifact_task(
     return artifact_id, artifact_bytes
 
 
-@task(name="evaluate-skill-gate", log_prints=False)
+@task(
+    name="evaluate-skill-gate",
+    log_prints=False,
+    task_run_name="evaluate-skill-gate-{model_id}-{artifact_id}",
+)
 def _evaluate_skill_gate_task(
     model_id: ModelId,
     artifact_id: ArtifactId,
@@ -247,7 +338,11 @@ def _evaluate_skill_gate_task(
     )
 
 
-@task(name="promote-artifact", log_prints=False)
+@task(
+    name="promote-artifact",
+    log_prints=False,
+    task_run_name=_render_promote_artifact_name,
+)
 def _promote_artifact_task(
     unit: TrainingUnit,
     artifact_id: ArtifactId,
@@ -262,7 +357,11 @@ def _promote_artifact_task(
     )
 
 
-@task(name="create-assignment", log_prints=False)
+@task(
+    name="create-assignment",
+    log_prints=False,
+    task_run_name=_render_create_assignment_name,
+)
 def _create_assignment_task(
     unit: TrainingUnit,
     model_id: ModelId,
@@ -291,7 +390,11 @@ def _create_assignment_task(
         )
 
 
-@flow(name="onboard-model", log_prints=False)
+@flow(
+    name="onboard-model",
+    log_prints=False,
+    flow_run_name=_render_onboard_model_flow_name,
+)
 def onboard_model_flow(
     model_id: str,
     station_ids: list[str] | None = None,

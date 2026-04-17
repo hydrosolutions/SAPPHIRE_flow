@@ -9,7 +9,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 import structlog
-from prefect import flow, task
+from prefect import flow, runtime, task
 
 log = structlog.get_logger(__name__)
 
@@ -19,7 +19,31 @@ def _to_libpq_url(url: str) -> str:
     return re.sub(r"^postgresql\+\w+://", "postgresql://", url)
 
 
-@task(name="dump-database", log_prints=False)
+def _resolve_dump_db_task_run_name() -> str:
+    scheduled = getattr(runtime.task_run, "scheduled_start_time", None)
+    if scheduled is None:
+        return "dump-db"
+    try:
+        return f"dump-db-{scheduled:%Y-%m-%dT%H%M}"
+    except (TypeError, ValueError):
+        return "dump-db"
+
+
+def _resolve_backup_flow_run_name() -> str:
+    scheduled = getattr(runtime.flow_run, "scheduled_start_time", None)
+    if scheduled is None:
+        return "backup"
+    try:
+        return f"backup-{scheduled:%Y-%m-%dT%H%M}"
+    except (TypeError, ValueError):
+        return "backup"
+
+
+@task(
+    name="dump-database",
+    log_prints=False,
+    task_run_name=_resolve_dump_db_task_run_name,
+)
 def dump_database_task(backup_dir: str) -> str:
     backup_path = Path(backup_dir)
     backup_path.mkdir(parents=True, exist_ok=True)
@@ -61,7 +85,11 @@ def dump_database_task(backup_dir: str) -> str:
     return str(dump_file)
 
 
-@task(name="cleanup-old-backups", log_prints=False)
+@task(
+    name="cleanup-old-backups",
+    log_prints=False,
+    task_run_name="cleanup-old-backups",
+)
 def cleanup_old_backups_task(backup_dir: str, keep_count: int) -> int:
     backup_path = Path(backup_dir)
     dumps = sorted(backup_path.glob("sapphire_*.dump"), key=lambda p: p.stat().st_mtime)
@@ -76,7 +104,11 @@ def cleanup_old_backups_task(backup_dir: str, keep_count: int) -> int:
     return removed
 
 
-@flow(name="backup-database", log_prints=False)
+@flow(
+    name="backup-database",
+    log_prints=False,
+    flow_run_name=_resolve_backup_flow_run_name,
+)
 def backup_database_flow(
     backup_dir: str = "/data/backups",
     keep_count: int = 7,

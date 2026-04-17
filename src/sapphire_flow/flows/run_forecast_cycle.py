@@ -12,6 +12,7 @@ from uuid import uuid4
 import structlog
 import structlog.contextvars
 from prefect import flow, task
+from prefect import runtime as prefect_runtime
 
 from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.types.datetime import ensure_utc
@@ -80,7 +81,12 @@ def _resolve_cycle_time(
 # ---------------------------------------------------------------------------
 
 
-@task(name="fetch-nwp-forcing", persist_result=False, log_prints=False)
+@task(
+    name="fetch-nwp-forcing",
+    persist_result=False,
+    log_prints=False,
+    task_run_name="fetch-nwp-{cycle_time:%Y-%m-%dT%H}",
+)
 def _fetch_nwp_task(
     adapter: WeatherForecastSource,
     station_configs: list[StationWeatherSource],
@@ -231,7 +237,11 @@ def _fetch_nwp_task(
 # ---------------------------------------------------------------------------
 
 
-@task(name="fetch-observation-timestamps", log_prints=False)
+@task(
+    name="fetch-observation-timestamps",
+    log_prints=False,
+    task_run_name="fetch-obs-ts",
+)
 def _fetch_obs_timestamps_task(
     obs_store: object,
     stations: list[StationConfig],
@@ -255,7 +265,19 @@ def _fetch_obs_timestamps_task(
 # ---------------------------------------------------------------------------
 
 
-@flow(name="forecast-cycle", log_prints=False)
+def _resolve_forecast_cycle_run_name() -> str:
+    params = prefect_runtime.flow_run.parameters or {}
+    cycle_time = params.get("cycle_time")
+    if cycle_time is None:
+        cycle_time = prefect_runtime.flow_run.scheduled_start_time
+    return f"forecast-{cycle_time:%Y-%m-%dT%H}"
+
+
+@flow(
+    name="forecast-cycle",
+    log_prints=False,
+    flow_run_name=_resolve_forecast_cycle_run_name,
+)
 def run_forecast_cycle_flow(
     station_store: object = None,
     obs_store: object = None,

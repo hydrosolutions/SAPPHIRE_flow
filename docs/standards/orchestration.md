@@ -203,3 +203,110 @@ Deployment names for v1-only flows: `drain-dlq`, `archive-cold-data`, `rehearse-
 Registration is idempotent — re-running `init` updates existing deployments rather than creating duplicates.
 
 v0 `init` registers only v0-scoped deployments whose flow functions are implemented. v1-only deployments (`drain-dlq`, `archive-cold-data`, `rehearse-backup-restore`) are registered when the corresponding features are enabled. v0-scoped deployments whose flows are not yet implemented (`onboard-weather-stations`, `reprocess-observations`) are added to the registration script when the flow code lands.
+
+## Run naming
+
+### Why
+
+Prefect assigns random slug names (`loyal-parakeet`, `jolly-octopus`) to every flow run and task run by default. On the dashboard this makes it impossible to tell which `forecast-cycle` run is the 06Z vs 12Z cycle, or which of a thousand fanned-out station tasks failed. Templating `flow_run_name` and `task_run_name` on each decorator makes runs self-identifying in the Prefect UI, searchable by text filter, and chronologically sortable.
+
+### Template shape (D1)
+
+Every run-name template follows:
+
+```
+<flow-kebab-name>-<time-or-shard>-<secondary-shard>
+```
+
+- **Lead with the flow's kebab-case name** so dashboard text-filter grouping still matches and existing saved filters keep working.
+- **Time axis** is formatted ISO-style `%Y-%m-%dT%H` (or `%Y%m%d` for date-only periods) so lexicographic sort equals chronological sort.
+- **Distinguishing shard key** last — `station_id`, `model_id`, `member_id`, `group_id`, `parameter`.
+- Target length **≤60 chars** so names survive dashboard truncation.
+
+### Syntax
+
+Two forms are supported. **Strings** for the common case where every placeholder is resolved by the time the run starts. **Callables** for flows where a templating parameter is `Optional` at the flow signature (e.g. `cycle_time=None` resolved from `clock()` inside the flow body) — a string template would stringify `None` as the literal `"None"`.
+
+**String template (tasks, and flows with non-Optional params):**
+
+```python
+@task(task_run_name="ingest-obs-{window_end:%Y-%m-%dT%H}")
+def _fetch_observations_task(window_end: UtcDatetime, ...): ...
+```
+
+**Callable template** (for `Optional` flow params; define one closure per flow):
+
+```python
+from prefect import runtime
+
+def _resolve_forecast_run_name() -> str:
+    params = runtime.flow_run.parameters or {}
+    cycle_time = params.get("cycle_time") or runtime.flow_run.scheduled_start_time
+    return f"forecast-{cycle_time:%Y-%m-%dT%H}"
+
+@flow(name="forecast-cycle", flow_run_name=_resolve_forecast_run_name)
+def run_forecast_cycle_flow(cycle_time: UtcDatetime | None = None, ...): ...
+```
+
+Task callables follow the same pattern using `runtime.task_run.parameters` and `runtime.task_run.scheduled_start_time`. All callables must be stateless — they may only read the runtime context, never close over mutable state.
+
+### Forbidden substitutions (D5)
+
+Only **scalar identifiers** may appear inside run-name templates. Do **not** substitute complex objects; their `__repr__` / `__format__` can render memory addresses, leak secrets from attribute trees, or change between library versions. The following parameter names are blacklisted as direct substitutions:
+
+- `store` (store handle — complex object)
+- `adapter` (adapter instance — complex object)
+- `unit` **when used as a bare substitution** (complex object). Attribute access such as `unit.station_id` or `unit.group_id` **is allowed** because those attributes are scalars; see the callable examples below.
+- `rng` (RNG instance)
+- `clock` (clock callable)
+- `model` (model instance — complex object)
+- `deployment_config` (config object — nested structure)
+
+Scalars that **are** always fine: `station_id`, `group_id`, `model_id`, `artifact_id`, `parameter`, `member_id`, `period_start`, `period_end`, `cycle_time`, `window_end`, `since`. Enums resolve via their `__str__` / `__format__`, which is stable — enum values such as `strategy` are allowed scalars even though they aren't primitives.
+
+### Canonical templates
+
+The table below fixes the run-name template for every `@flow` and `@task` site under `src/sapphire_flow/flows/`. Phase 2 subagents apply these verbatim. "callable" means a small stateless closure that reads `prefect.runtime.flow_run` (or `task_run`) to pick between a named parameter and the scheduled start time — follow the canonical closure shown above in the Syntax section.
+
+| Module | Decorator site | Kind | Run-name template |
+|---|---|---|---|
+| `run_forecast_cycle.py` | `run_forecast_cycle_flow` | @flow | callable → `forecast-{cycle_time or scheduled_start:%Y-%m-%dT%H}` |
+| `run_forecast_cycle.py` | `_fetch_nwp_task` | @task | `fetch-nwp-{cycle_time:%Y-%m-%dT%H}` |
+| `run_forecast_cycle.py` | `_fetch_obs_timestamps_task` | @task | `fetch-obs-ts` |
+| `ingest_observations.py` | `ingest_observations_flow` | @flow | callable → `ingest-obs-{scheduled_start:%Y-%m-%dT%H}` |
+| `ingest_observations.py` | `_fetch_observations_task` | @task | `fetch-observations-{since:%Y-%m-%dT%H}` — if `since` is a dict, use a callable that picks the earliest value, falling back to `runtime.task_run.scheduled_start_time` |
+| `ingest_observations.py` | `_store_raw_task` | @task | `store-raw-observations` |
+| `ingest_observations.py` | `_run_qc_task` | @task | `run-qc-{station_id}-{parameter}` |
+| `train_models.py` | `train_models_flow` | @flow | callable → `train-{period_start or scheduled_start:%Y%m%d}-{period_end:%Y%m%d}` (both may be `None`; callable handles) |
+| `train_models.py` | `_determine_scope_task` | @task | `determine-scope` |
+| `train_models.py` | `_assemble_data_task` | @task | callable → `assemble-data-{unit.station_id or unit.group_id}` [1] |
+| `train_models.py` | `_train_model_task` | @task | callable → `train-model-{unit.station_id or unit.group_id}` [1] |
+| `train_models.py` | `_store_artifact_task` | @task | callable → `store-artifact-{unit.station_id or unit.group_id}` [1] |
+| `onboard_model.py` | `onboard_model_flow` | @flow | callable → `onboard-{model_id}-{period_start or scheduled_start:%Y%m%d}` |
+| `onboard_model.py` | `_determine_onboarding_scope_task` | @task | `determine-onboarding-scope-{model_id}` |
+| `onboard_model.py` | `_register_model_class_task` | @task | `register-model-class-{model_id}` |
+| `onboard_model.py` | `_validate_compatibility_task` | @task | callable → `validate-compat-{model_id}-{unit.station_id or unit.group_id}` [1] |
+| `onboard_model.py` | `_smoke_test_model_task` | @task | `smoke-test-model` |
+| `onboard_model.py` | `_assemble_onboarding_data_task` | @task | callable → `assemble-onboarding-data-{unit.station_id or unit.group_id}` [1] |
+| `onboard_model.py` | `_train_and_store_artifact_task` | @task | callable → `train-onboarding-model-{unit.station_id or unit.group_id}` [1] |
+| `onboard_model.py` | `_evaluate_skill_gate_task` | @task | `evaluate-skill-gate-{model_id}-{artifact_id}` |
+| `onboard_model.py` | `_promote_artifact_task` | @task | callable → `promote-artifact-{unit.station_id or unit.group_id}-{artifact_id}` [1] |
+| `onboard_model.py` | `_create_assignment_task` | @task | callable → `create-assignment-{model_id}-{unit.station_id or unit.group_id}` [1] |
+| `run_hindcast.py` | `run_hindcast_flow` | @flow | callable → `hindcast-{model_id}-{period_start or scheduled_start:%Y%m%d}-{period_end:%Y%m%d}` |
+| `run_hindcast.py` | `_run_station_hindcast_task` | @task | `hindcast-station-{model_id}-{station_id}` |
+| `run_hindcast.py` | `_run_group_hindcast_task` | @task | `hindcast-group-{model_id}-{group.id}` |
+| `compute_skills.py` | `compute_skills_flow` | @flow | `compute-skills-{model_id}-{station_id}-{parameter}` |
+| `compute_skills.py` | `compute_combined_skills_flow` | @flow | `compute-combined-skills-{station_id}-{parameter}-{strategy.value}` |
+| `compute_skills.py` | `compute_skills_task` | @task | `compute-skills-{model_id}-{station_id}-{parameter}` |
+| `compute_skills.py` | `compute_combined_skills_task` | @task | `compute-combined-skills-{station_id}-{parameter}-{strategy.value}` |
+| `backup.py` | `backup_database_flow` | @flow | callable → `backup-{scheduled_start:%Y-%m-%dT%H%M}` |
+| `backup.py` | `dump_database_task` | @task | callable → `dump-db-{scheduled_start:%Y-%m-%dT%H%M}` |
+| `backup.py` | `cleanup_old_backups_task` | @task | `cleanup-old-backups` |
+| `onboard.py` | `onboard_stations_flow` | @flow | callable → `onboard-stations-{scheduled_start:%Y-%m-%dT%H%M}` |
+| `onboard.py` | `_download_task` | @task | `download-camels-ch` |
+
+[1] `TrainingUnit` (see `src/sapphire_flow/types/training.py`) carries both `station_id: StationId | None` and `group_id: StationGroupId | None`, with the `__post_init__` invariant that exactly one is set. Subagents implementing `train_models.py` and `onboard_model.py` must use `unit.station_id if unit.station_id is not None else unit.group_id` inside the callable — do **not** substitute the bare `unit` object (forbidden by D5). Enum values such as `strategy` in `compute_combined_skills_flow` render via their `__str__` and are allowed scalars.
+
+### Coverage rule
+
+Every run-name template must be covered by `tests/unit/flows/test_run_names.py` (see Plan 050 Task 2). A template that doesn't resolve against at least one real call-site parameter set will fail only at dashboard-render time in production — the unit test catches typos and missing params before deploy.

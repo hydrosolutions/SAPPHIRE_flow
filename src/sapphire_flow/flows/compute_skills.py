@@ -61,7 +61,11 @@ def _store_skill_results(
     skill_store.store_skill_diagrams(diagrams)
 
 
-@task(name="compute-skills-task", log_prints=False)
+@task(
+    name="compute-skills-task",
+    log_prints=False,
+    task_run_name="compute-skills-{model_id}-{station_id}-{parameter}",
+)
 def compute_skills_task(
     station_id: StationId,
     model_id: ModelId,
@@ -144,7 +148,11 @@ def compute_skills_task(
     return scores, diagrams
 
 
-@task(name="compute-combined-skills-task", log_prints=False)
+@task(
+    name="compute-combined-skills-task",
+    log_prints=False,
+    task_run_name="compute-combined-skills-{station_id}-{parameter}-{strategy.value}",
+)
 def compute_combined_skills_task(
     station_id: StationId,
     parameter: str,
@@ -245,7 +253,11 @@ def compute_combined_skills_task(
     return scores, diagrams
 
 
-@flow(name="compute-combined-skills", log_prints=False)
+@flow(
+    name="compute-combined-skills",
+    log_prints=False,
+    flow_run_name="compute-combined-skills-{station_id}-{parameter}-{strategy.value}",
+)
 def compute_combined_skills_flow(
     station_id: StationId,
     parameter: str,
@@ -272,7 +284,11 @@ def compute_combined_skills_flow(
     )
 
 
-@flow(name="compute-skills", log_prints=False)
+@flow(
+    name="compute-skills",
+    log_prints=False,
+    flow_run_name="compute-skills-{model_id}-{station_id}-{parameter}",
+)
 def compute_skills_flow(
     station_id: StationId,
     model_id: ModelId,

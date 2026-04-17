@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 from prefect import flow, task
+from prefect.runtime import flow_run, task_run
 
 from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.qc import Stage1QualityChecker
@@ -85,7 +86,19 @@ def _aggregate_qc_status(flags: list[object]) -> QcStatus:
 # ---------------------------------------------------------------------------
 
 
-@task(name="fetch-observations")
+def _resolve_fetch_observations_run_name() -> str:
+    params = task_run.parameters or {}
+    since = params.get("since") or {}
+    if since:
+        earliest = min(since.values())
+        return f"fetch-observations-{earliest:%Y-%m-%dT%H}"
+    scheduled = task_run.scheduled_start_time
+    if scheduled is not None:
+        return f"fetch-observations-{scheduled:%Y-%m-%dT%H}"
+    return "fetch-observations"
+
+
+@task(name="fetch-observations", task_run_name=_resolve_fetch_observations_run_name)
 def _fetch_observations_task(
     adapter: HydroScraperAdapter,
     station_configs: list[StationConfig],
@@ -94,7 +107,7 @@ def _fetch_observations_task(
     return adapter.fetch_observations(station_configs, since)
 
 
-@task(name="store-raw-observations")
+@task(name="store-raw-observations", task_run_name="store-raw-observations")
 def _store_raw_task(
     obs_store: PgObservationStore,
     observations: list[RawObservation],
@@ -103,7 +116,7 @@ def _store_raw_task(
     return len(ids)
 
 
-@task(name="run-qc-and-update")
+@task(name="run-qc-and-update", task_run_name="run-qc-{station_id}-{parameter}")
 def _run_qc_task(
     obs_store: PgObservationStore,
     baseline_store: PgClimBaselineStore,
@@ -162,7 +175,18 @@ def _run_qc_task(
 # ---------------------------------------------------------------------------
 
 
-@flow(name="ingest-observations", log_prints=False)
+def _resolve_ingest_observations_run_name() -> str:
+    scheduled = flow_run.scheduled_start_time
+    if scheduled is not None:
+        return f"ingest-obs-{scheduled:%Y-%m-%dT%H}"
+    return "ingest-obs"
+
+
+@flow(
+    name="ingest-observations",
+    log_prints=False,
+    flow_run_name=_resolve_ingest_observations_run_name,
+)
 def ingest_observations_flow(
     station_store: object = None,
     obs_store: object = None,

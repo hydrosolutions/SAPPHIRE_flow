@@ -23,7 +23,10 @@ if TYPE_CHECKING:
     from collections.abc import Callable  # noqa: TC003
 
 
-@task(name="run-station-hindcast-task")
+@task(
+    name="run-station-hindcast-task",
+    task_run_name="hindcast-station-{model_id}-{station_id}",
+)
 def _run_station_hindcast_task(
     model: object,
     artifact: object,
@@ -62,7 +65,10 @@ def _run_station_hindcast_task(
     )
 
 
-@task(name="run-group-hindcast-task")
+@task(
+    name="run-group-hindcast-task",
+    task_run_name="hindcast-group-{model_id}-{group.id}",
+)
 def _run_group_hindcast_task(
     model: object,
     artifact: object,
@@ -101,7 +107,24 @@ def _run_group_hindcast_task(
     )
 
 
-@flow(name="run-hindcast", log_prints=False)
+def _resolve_hindcast_run_name() -> str:
+    from prefect import runtime
+
+    params = runtime.flow_run.parameters or {}
+    model_id = params.get("model_id")
+    period_start = params.get("period_start") or runtime.flow_run.scheduled_start_time
+    period_end = params.get("period_end")
+    name = f"hindcast-{model_id}-{period_start:%Y%m%d}"
+    if period_end is not None:
+        name = f"{name}-{period_end:%Y%m%d}"
+    return name
+
+
+@flow(
+    name="run-hindcast",
+    log_prints=False,
+    flow_run_name=_resolve_hindcast_run_name,
+)
 def run_hindcast_flow(
     model_id: ModelId,
     artifact_id: ArtifactId,

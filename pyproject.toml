@@ -1,6 +1,6 @@
 [project]
 name = "sapphire-flow"
-version = "0.1.295"
+version = "0.1.296"
 description = "Add your description here"
 readme = "README.md"
 license = "MIT"
@@ -71,9 +71,14 @@ select = ["E", "F", "I", "N", "UP", "B", "A", "SIM", "TCH", "T20"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "deployment: requires a full compose stack; excluded by default",
+    "deployment_destructive: destructive compose tests; excluded by default",
+]
+addopts = "-m 'not deployment'"
 
 [tool.bumpversion]
-current_version = "0.1.295"
+current_version = "0.1.296"
 commit = false
 tag = false
 allow_dirty = true

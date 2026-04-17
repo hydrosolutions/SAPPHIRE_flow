@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import structlog
-from prefect import flow, task
+from prefect import flow, runtime, task
 
 from sapphire_flow.services.onboarding import onboard_from_camelsch
 from sapphire_flow.types.datetime import ensure_utc
@@ -13,7 +13,17 @@ from sapphire_flow.types.datetime import ensure_utc
 log = structlog.get_logger(__name__)
 
 
-@task(name="download-camels-ch")
+def _resolve_onboard_stations_flow_run_name() -> str:
+    scheduled = getattr(runtime.flow_run, "scheduled_start_time", None)
+    if scheduled is None:
+        return "onboard-stations"
+    try:
+        return f"onboard-stations-{scheduled:%Y-%m-%dT%H%M}"
+    except (TypeError, ValueError):
+        return "onboard-stations"
+
+
+@task(name="download-camels-ch", task_run_name="download-camels-ch")
 def _download_task(data_dir: str) -> str:
     import camelsch
 
@@ -47,7 +57,11 @@ def _resolve_default_camels_dir() -> str:
     return str(resolve_data_dir(config_data_dir) / "raw" / "CAMELS_CH")
 
 
-@flow(name="onboard-stations", log_prints=False)
+@flow(
+    name="onboard-stations",
+    log_prints=False,
+    flow_run_name=_resolve_onboard_stations_flow_run_name,
+)
 def onboard_stations_flow(
     data_dir: str = "",
     basin_ids: list[str] | None = None,

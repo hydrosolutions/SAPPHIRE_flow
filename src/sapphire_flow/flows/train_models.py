@@ -6,7 +6,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from prefect import flow, task
+from prefect import flow, runtime, task
 from prefect.utilities.annotations import unmapped
 
 from sapphire_flow.flows.compute_skills import compute_skills_task
@@ -35,7 +35,45 @@ if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
 
 
-@task(name="determine-scope")
+def _unit_shard(unit: TrainingUnit) -> str:
+    return str(unit.station_id) if unit.station_id is not None else str(unit.group_id)
+
+
+def _resolve_assemble_data_run_name() -> str:
+    params = runtime.task_run.parameters or {}
+    unit = params["unit"]
+    return f"assemble-data-{_unit_shard(unit)}"
+
+
+def _resolve_train_model_run_name() -> str:
+    params = runtime.task_run.parameters or {}
+    unit = params["unit"]
+    return f"train-model-{_unit_shard(unit)}"
+
+
+def _resolve_store_artifact_run_name() -> str:
+    params = runtime.task_run.parameters or {}
+    unit = params["unit"]
+    return f"store-artifact-{_unit_shard(unit)}"
+
+
+def _resolve_train_models_run_name() -> str:
+    from datetime import datetime
+
+    params = runtime.flow_run.parameters or {}
+    period_start = params.get("period_start")
+    period_end = params.get("period_end")
+    if period_start is None:
+        scheduled = runtime.flow_run.scheduled_start_time
+        return f"train-{scheduled:%Y%m%d}"
+    start_dt = datetime.fromisoformat(period_start)
+    if period_end is None:
+        return f"train-{start_dt:%Y%m%d}"
+    end_dt = datetime.fromisoformat(period_end)
+    return f"train-{start_dt:%Y%m%d}-{end_dt:%Y%m%d}"
+
+
+@task(name="determine-scope", task_run_name="determine-scope")
 def _determine_scope_task(
     model_ids: list[ModelId] | None,
     station_ids: list[StationId] | None,
@@ -60,7 +98,7 @@ def _determine_scope_task(
     )
 
 
-@task(name="assemble-training-data")
+@task(name="assemble-training-data", task_run_name=_resolve_assemble_data_run_name)
 def _assemble_data_task(
     unit: TrainingUnit,
     model: object,
@@ -99,7 +137,7 @@ def _assemble_data_task(
         )
 
 
-@task(name="train-model")
+@task(name="train-model", task_run_name=_resolve_train_model_run_name)
 def _train_model_task(
     unit: TrainingUnit,
     model: object,
@@ -113,7 +151,7 @@ def _train_model_task(
         return train_group_model(model=model, data=data, params=params, rng=rng)
 
 
-@task(name="store-artifact")
+@task(name="store-artifact", task_run_name=_resolve_store_artifact_run_name)
 def _store_artifact_task(
     unit: TrainingUnit,
     artifact_bytes: bytes,
@@ -132,7 +170,11 @@ def _store_artifact_task(
     )
 
 
-@flow(name="train-models", log_prints=False)
+@flow(
+    name="train-models",
+    log_prints=False,
+    flow_run_name=_resolve_train_models_run_name,
+)
 def train_models_flow(
     model_ids: list[str] | None = None,
     station_ids: list[str] | None = None,
