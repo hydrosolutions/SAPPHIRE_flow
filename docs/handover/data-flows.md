@@ -12,17 +12,64 @@
 
 ## Scope
 
+### Operator Roles
+
+The following roles are referenced throughout this document. Role assignments for Nepal v1 are as follows:
+
+| Role | Responsibilities | Held by (Nepal v1) |
+|------|------------------|---------------------|
+| **System administrator** | Runs Flow 0 (deployment onboarding); manages deployment configuration, AOI, and dataset registry | HSOL; DHM IT learns local deployment alongside HSOL |
+| **Model administrator** | Runs Flows 5, 5w, 6/9, 13; approves model promotion; reviews station go-live | HSOL |
+| **Duty forecaster** | Reviews, adjusts, and publishes forecasts via DHM dashboard (Flow 3) | DHM |
+| **IT / operations team** | Receives pipeline alerts; manages host infrastructure, backups, recovery | DHM IT (local hosting); HSOL supports during v1 |
+
+### SAPPHIRE / DHM Responsibilities
+
 | Responsibility | SAPPHIRE Flow | DHM |
 |----------------|---------------|-----|
-| **Weather & observation ingest** | Fetches, QCs, and stores data | Provides station network and rating curves |
+| **Weather & observation ingest** | Fetches, QCs, and stores data | Provides station network, historical observation sources, and real-time observation API |
+| **Station metadata & rating curves** | Ingests and versions metadata and rating tables | Provides and maintains station definitions, rating tables, and updates |
+| **Danger level thresholds** | Ingests thresholds, evaluates forecasts against them, generates alerts | Defines, approves, and maintains danger level threshold values per station |
 | **Forecast models** | Trains, runs, and serves ensemble forecasts | — |
 | **Forecast review & publication** | Provides status-transition API (`raw → reviewed → published`) with audit trail | Operates the existing DHM forecaster dashboard that calls the API |
-| **Alerts** | Generates threshold-based alerts, stores them, delivers via pluggable adapters (webhook) | Manages downstream distribution policy and recipient lists |
+| **Alerts** | Generates threshold-based alerts; stores and serves via `GET /api/v1/alerts` (polling) and webhook push subscriptions | Consumes via polling and/or webhook; manages downstream distribution and recipient lists |
 | **REST API** | Serves all data (stations, observations, forecasts, alerts, skill, health) | Consumes API from dashboard, alert portal, and bulletin systems |
-| **Pipeline monitoring** | Watchdog flow, health endpoints, ops alerting to IT | — |
+| **Pipeline monitoring** | Watchdog flow, health endpoints, ops alerting to IT | Receives and acts on pipeline alerts |
 | **Bulletins & public comms** | — | Produces and distributes bulletins from published forecast data |
 
-In short: SAPPHIRE owns the pipeline, the API, alert generation and delivery infrastructure, and the review/publication endpoints. DHM owns the forecaster dashboard, distribution policy, and public communications.
+In short: SAPPHIRE owns the pipeline, the API, alert generation and delivery (polling endpoint plus webhook dispatcher), and the review/publication endpoints. DHM owns the station network, threshold policy, the forecaster dashboard, distribution policy, and public communications. SMS and email delivery are not in scope for v1.
+
+### Nepal v1 — Committed Deliverables
+
+The following are committed for the Nepal v1 deployment:
+
+- Automated forecast cycle (4× daily, ECMWF IFS ENS via Data Gateway, SnowMapper snow forcing)
+- Water level forecasting (primary); discharge via rating curve where available
+- Observation ingest with two-stage QC and rating curve conversion
+- Forecast review and publication API (status lifecycle with audit trail)
+- Threshold-based alert generation, served via REST API for polling **and** via webhook push subscriptions (opt-in per consumer)
+- Pipeline health monitoring (watchdog, health endpoints, ops alerting)
+- Station and model onboarding (Flows 0, 5, 5w, 6, 7, 8, 13)
+- Model retraining with skill comparison and administrator approval (Flow 9)
+- Observation reprocessing: rating curve updates (Flow 12 Branch A) and manual CSV import (Flow 12 Branch B)
+- Core verification metrics: CRPS skill score, NSE, KGE, Brier Skill Score at configured danger levels, Probability of Detection and False Alarm Ratio per danger level
+- REST API with scoped access keys for DHM dashboard and agreed external consumers
+
+### Not Committed for Nepal v1
+
+The architecture described in this document supports capabilities beyond the Nepal v1 scope. The following are **not committed deliverables** — they are documented for architectural completeness and may be evaluated or added in future phases.
+
+| Item | Status |
+|------|--------|
+| Multi-model ensemble combination (step 1.12) | Experimental; may be evaluated during v1 but not a promised deliverable |
+| Multi-parameter forecasting (simultaneous water level + discharge models) | Exploratory; not committed |
+| Extended verification metrics (reliability diagrams, rank histograms, spread-skill ratio, ROC curves, peak timing error, sharpness metrics) | May be added if time allows; core metrics listed above are the baseline |
+| QC rule re-evaluation on historical observations (Flow 12 Branch C) | Deferred post-v1 |
+| Seasonal flood thresholds | Year-round thresholds only in v1 |
+| NWP gap recovery (Flow 11) | Not required — the Data Gateway manages the NWP archive |
+| Alternative NWP sources (e.g. WRF) | ECMWF IFS ENS is the sole source for v1 |
+| SMS and email alert delivery | Not in scope; webhook and polling are the v1 delivery channels |
+| Manual flow-trigger API endpoint (`POST /api/v1/flows/{flow}/trigger`) | Internal tooling only in v1; not part of the DHM-facing API |
 
 ---
 
@@ -38,7 +85,7 @@ SAPPHIRE Flow processes data through 13 data flows organised in three categories
 
 **System boundary.** SAPPHIRE ingests weather and station data, runs forecast models, stores results, and serves them via a REST API. Dashboard presentation, threshold-based alerting, and bulletin distribution are DHM's responsibility — DHM systems consume the REST API. Pipeline health monitoring is inside the SAPPHIRE boundary and reports to IT/operations staff.
 
-**Alerting integration.** SAPPHIRE stores alerts in the database and serves them via `GET /api/v1/alerts`. The base assumption is that DHM's existing alerting system polls this endpoint (i.e. checks it at regular intervals, e.g. every minute) to pick up new and changed alerts, and handles downstream distribution to field staff. This question has been shared with DHM. If polling is not feasible, SAPPHIRE can implement webhook push notifications as additional scope. See `hydrology-operations.md` §6 for alert design and danger level definitions.
+**Alerting integration.** SAPPHIRE stores alerts in the database and makes them available two ways: (a) polling via `GET /api/v1/alerts` — the primary integration path, suitable for any consumer that can make HTTPS calls on a schedule; and (b) webhook push subscriptions — opt-in per consumer, useful for low-latency delivery without polling overhead. SMS and email delivery are out of scope for v1. DHM handles downstream distribution to field staff. See `hydrology-operations.md` §6 for alert design and danger level definitions.
 
 ```mermaid
 graph LR
@@ -56,7 +103,7 @@ graph LR
 
     subgraph DHM Systems
         DB["Dashboard<br/>(review + publish)"]
-        AL["Alerting<br/>(polls API)"]
+        AL["Alerting<br/>(polls API / webhook)"]
         BU["Bulletins"]
     end
 
@@ -86,9 +133,9 @@ graph LR
 
 **Model strategy.** Whether sub-daily and daily forecasts are produced by the same model or separate models is an open research question. Some deep learning architectures can forecast across multiple lead times and time steps in a single pass; alternatively, separate models may be trained for sub-daily (hourly, 3-day) and daily (10-day) horizons. The architecture supports both approaches — each station can have multiple models assigned at different time steps, with independent fallback chains.
 
-**Multi-parameter forecasting.** The system supports forecasting multiple parameters per station (e.g. water level and discharge simultaneously). This is experimental — multi-parameter models will be evaluated alongside single-parameter models and deployed only if they demonstrate competitive skill.
+**Multi-parameter forecasting.** The architecture supports forecasting multiple parameters per station (e.g. water level and discharge simultaneously). This is not committed for Nepal v1 (see *Not Committed for Nepal v1* above) — multi-parameter models may be evaluated alongside single-parameter models but will only be deployed if they demonstrate competitive skill.
 
-**Additional NWP sources.** The architecture supports multiple NWP sources per station. If alternative weather forecast products (e.g. WRF) become operationally mature, they can be added without changing the pipeline — but ML models trained on ECMWF data must be retrained on the new source.
+**Additional NWP sources.** The architecture supports multiple NWP sources per station. ECMWF IFS ENS is the sole source for Nepal v1 (see *Not Committed for Nepal v1* above). If alternative products (e.g. WRF) become operationally mature in future, they can be added without changing the pipeline — but ML models trained on ECMWF data would need to be retrained on the new source.
 
 ---
 
@@ -109,13 +156,13 @@ Steps 1.2–1.4 (NWP archiving and spatial extraction) are only needed in deploy
 | 1.5 | Post-process NWP | Extracted weather values + historical archive | Bias-corrected / calibrated per-station weather values (pass-through initially) |
 | 1.6 | Fetch recent QC'd observations | Station configs, lookback window | Recent quality-controlled river and weather observations from store |
 | 1.7 | Prepare model inputs | Post-processed weather values, observations, station configs | Validated input bundles grouped by model and station or station group |
-| 1.8 | Run forecast models | Input bundles, model artefacts | Ensemble forecast values per station |
+| 1.8 | Run forecast models | Input bundles, model artifacts | Ensemble forecast values per station |
 | 1.9 | Post-process forecast output (conditional) | Raw forecast ensembles, historical archive | Bias-corrected forecast ensembles |
 | 1.10 | Forecast QC | Forecast ensembles, QC rule set | QC flags per ensemble; QC_FAILED triggers model fallback |
-| 1.11 | Store forecast results | Forecast ensembles + model artefact version | Forecasts persisted to store; immediately available via REST API |
-| 1.8b | Combine model forecasts (conditional; runs after 1.11) | Individual forecast ensembles from all non-fallback models | Pooled combined ensemble forecast; skipped if fewer than two models succeeded |
+| 1.11 | Store forecast results | Forecast ensembles + model artifact version | Forecasts persisted to store; immediately available via REST API |
+| 1.12 | Combine model forecasts (conditional) — *not committed for Nepal v1* | Individual forecast ensembles from all non-fallback models stored in 1.11 | Pooled combined ensemble forecast; skipped if fewer than two models succeeded |
 
-Step 1.9 is conditional — pass-through until sufficient forecast archive exists for bias correction.
+Step 1.9 is conditional — pass-through until sufficient forecast archive exists for bias correction. Step 1.12 runs only if multi-model combination is enabled for the deployment.
 
 
 #### Notes
@@ -131,7 +178,7 @@ Every stored forecast record carries the NWP cycle reference time used as forcin
 
 **Multi-model fallback (error recovery).** Each station can have multiple forecast models assigned in priority order. If a model fails at runtime (step 1.8) or its output fails QC (step 1.10), the flow automatically tries the next model by priority. The fallback model's identifier is recorded on the stored forecast for traceability. Two built-in fallback models — climatology and persistence — serve as guaranteed last-resort fallbacks. They ensure a forecast is always producible even when all configured models fail.
 
-**Multi-model forecast combination (step 1.8b).** Distinct from error fallback, combination merges multiple models' ensembles into a blended forecast. After all individual model forecasts are stored (step 1.11), step 1.8b pools the ensembles from all non-fallback models into a single combined forecast. If fewer than two models succeeded, combination is skipped. Combined forecast skill is computed separately via step S.4b.
+**Multi-model forecast combination (step 1.12 — not committed for Nepal v1; see *Not Committed for Nepal v1*).** Distinct from error fallback, combination merges multiple models' ensembles into a blended forecast. After all individual model forecasts are stored (step 1.11), step 1.12 pools the ensembles from all non-fallback models into a single combined forecast. If fewer than two models succeeded, combination is skipped. Combined forecast skill is computed separately via step S.4b.
 
 **Sequencing.** The cycle runs in three phases:
 - **Phase A** (per NWP source, parallel across sources): steps 1.1 → 1.5
@@ -243,7 +290,7 @@ Raw (model output) ──→ Reviewed ──→ Published
 
 **Step 4.1 and NWP gap recovery.** Step 4.1 also performs a retrospective audit of the NWP archive to detect gaps not caught in real time. When recoverable gaps are found, it triggers Flow 11 (NWP gap recovery) automatically.
 
-**Step 4.9 — disk monitoring.** Monitors all storage mount points used by SAPPHIRE (database, cold storage, model artefacts). Thresholds are deployment-configurable. Disk status is also exposed in the API health endpoint.
+**Step 4.9 — disk monitoring.** Monitors all storage mount points used by SAPPHIRE (database, cold storage, model artifacts). Thresholds are deployment-configurable. Disk status is also exposed in the API health endpoint.
 
 **Step 4.10 — backup monitoring.** Reads backup age from a metadata marker file written by the backup task — avoids a dependency on backup storage connectivity. Three-day critical threshold allows for one missed daily backup cycle before the alert escalates.
 
@@ -324,7 +371,8 @@ Raw (model output) ──→ Reviewed ──→ Published
 - Baseline artifacts (5.8) and flow regime boundaries (5.9) are prerequisites for skill computation in Flows 8 and 10.
 - The model type must be registered via Flow 13 before it can be assigned to stations in step 5.10.
 - Step 5.12 requires at least one model artifact with `active` status. The model administrator can promote to `operational` with optional items (alert thresholds, rating curve) missing — the system warns but does not block.
-- **Flood thresholds** are loaded during station onboarding as part of the station metadata (step 5.1). Thresholds can be updated after onboarding via the REST API (`PUT /api/v1/stations/{id}/thresholds`). Only year-round thresholds are supported initially; seasonal thresholds may be added at a later stage if required.
+- **Flood thresholds** are loaded during station onboarding as part of the station metadata (step 5.1). Thresholds can be updated after onboarding via the REST API (`PUT /api/v1/stations/{id}/thresholds`). Only year-round thresholds are supported in Nepal v1; seasonal thresholds are deferred (see *Not Committed for Nepal v1*).
+- **Regulation type** (step 5.1 metadata) records whether a station's flow is influenced by upstream regulation — typically `unregulated`, `regulated` (e.g. downstream of a hydropower dam or major reservoir), or `unknown`. This is used to stratify skill scores and, where appropriate, to exclude strongly regulated stations from group models trained on natural-flow catchments. If DHM cannot determine the status for a given station, `unknown` is an acceptable default and does not block onboarding.
 - All data-writing steps are safe to re-run — resuming after failure does not duplicate data.
 
 **Typical timelines.** Steps 5.1–5.9 (metadata registration, historical import, QC, baselines) complete in minutes to hours per station. Step 5.11 (model training + hindcast + skill computation) takes hours to days depending on model type and training data volume. End-to-end from station registration to `operational` status: approximately one week, including model administrator review at step 5.12. Stations should be batched for onboarding — the flow is designed for batch operation, and ML model training benefits from group processing.
@@ -473,21 +521,25 @@ Both are the same flow with different scope. Skill is always evaluated per stati
 | S.2 | Fetch forecast results (parallel with S.3) | Scope from S.1 | Hindcast and/or operational forecast ensembles |
 | S.3 | Fetch corresponding observations (parallel with S.2) | Matching station and period pairs | QC-passed observed values |
 | S.4 | Compute verification metrics | Forecast ensembles and observations | Per-station, per-model, per-lead-time, per-season skill scores |
-| S.4b | Compute combined skill (conditional) | All models' hindcasts per station; runs if multi-model combination is enabled | Skill scores and diagrams for the combined ensemble |
+| S.4b | Compute combined skill (conditional) — *not committed for Nepal v1* | All models' hindcasts per station; runs if multi-model combination is enabled | Skill scores and diagrams for the combined ensemble |
 | S.5 | Aggregate metrics | Station-level scores | Cross-station summaries (by model, by region, overall) |
 | S.6 | Store skill results — versioned, never overwritten | Computed metrics | Persisted to skill tables; superseded rows marked `stale` |
 
 **Notes**
 
 - S.2 and S.3 run in parallel. S.4 and S.5 are parallelisable across stations.
-- Verification metrics computed at S.4:
-  - **Ensemble metrics:** CRPS, CRPS skill score (CRPSss against climatology and persistence baselines), reliability diagram data, rank histogram, spread-skill ratio
-  - **Sharpness:** mean prediction interval width (P10–P90 and P25–P75), mean ensemble range
-  - **Threshold-specific:** Brier Skill Score (BSS) at each configured danger level threshold; ROC curve data per threshold
-  - **Event contingency (per danger level):** Probability of Detection, False Alarm Ratio, Critical Success Index
-  - **Peak timing:** mean peak timing error (hours early/late) for events exceeding Q90
-  - **Deterministic (on ensemble median):** NSE, KGE, PBIAS, MAE
-  - All metrics computed per lead time, per season (configurable — e.g. monsoon Jun–Sep and dry Oct–May for Nepal), and per flow regime (low flow below Q50, high flow Q50–Q90, flood above Q90)
+- Verification metrics computed at S.4. **Core metrics** (committed for Nepal v1):
+  - **Ensemble:** CRPS, CRPS skill score (CRPSss against climatology and persistence baselines)
+  - **Threshold-specific:** Brier Skill Score (BSS) at each configured danger level threshold
+  - **Event contingency (per danger level):** Probability of Detection, False Alarm Ratio
+  - **Deterministic (on ensemble median):** NSE, KGE
+  - All core metrics computed per lead time, per season (configurable — e.g. monsoon Jun–Sep and dry Oct–May for Nepal), and per flow regime (low flow below Q50, high flow Q50–Q90, flood above Q90)
+- **Extended metrics** (not committed for Nepal v1; may be added if time allows — see *Not Committed for Nepal v1*):
+  - Reliability diagram data, rank histogram, spread-skill ratio
+  - Sharpness: mean prediction interval width (P10–P90 and P25–P75), mean ensemble range
+  - ROC curve data per threshold; Critical Success Index
+  - Peak timing: mean peak timing error (hours early/late) for events exceeding Q90
+  - PBIAS, MAE
 - Skill scores carry a `skill_source` tag:
   - `hindcast_nwp_archive` — gold standard; reflects true operational conditions
   - `hindcast_reanalysis` — diagnostic; isolates hydrology model skill from NWP error; optimistic
@@ -547,10 +599,7 @@ S.1 → S.2 ─┐
 | 12.2b | Validate CSV format and content | CSV file, overwrite flag | Parsed and validated rows, or validation errors |
 | 12.3b | Ingest validated observations | Validated rows | Persisted with `source = manual_import` |
 | 12.4b | Run QC on imported observations | Newly ingested observations | QC flags applied |
-| **Branch C** | **QC rule re-evaluation (future)** | | |
-| 12.2c | Fetch observations in time window | Station, time window | All observations in range |
-| 12.3c | Re-run QC rules using current rule version | Fetched observations, current QC configuration | New QC flags per observation |
-| 12.4c | Update QC flags | New QC flags | QC status and rule version updated on existing rows |
+| **Branch C** | **QC rule re-evaluation — deferred post-v1** (see *Not Committed for Nepal v1*) | | |
 | **Common tail** | | | |
 | 12.5 | Mark affected skill scores stale | Station, affected time window | Overlapping skill score rows marked `stale` |
 | 12.6 | Write audit log | Reprocessing summary | Audit log entry (branch, station, time window, row count, actor) |
@@ -559,7 +608,7 @@ S.1 → S.2 ─┐
 
 - **Branch A**: When a new rating curve is uploaded (expected as a CSV hQ table — exact format TBD with DHM), all derived discharge values within the old curve's validity period are recomputed. Original measured water level observations are never modified. Historical operational forecasts are not retroactively reprocessed — they are immutable.
 - **Branch B**: CSV format is fixed (`station_code, timestamp, parameter, value`). Duplicate handling is controlled by an explicit `overwrite` flag in the API request — if `overwrite = false` and conflicts exist, the request is rejected with a list of conflicting rows.
-- **Branch C** (future): Re-runs QC rules on an existing time window using the current rule version. Does not re-derive rating curve values.
+- **Branch C** (deferred post-v1): Would re-run QC rules on an existing time window using the current rule version. Does not re-derive rating curve values.
 - Flow 12 must not overlap with Flow 2 (observation ingest) for the same station and time period. The system prevents both flows from running simultaneously for the same station.
 - Stale skill scores (12.5) are recomputed by the next Flow 10 run.
 - **Skill score integrity across rating curve changes:** Forecasts log the active rating curve at issuance, and superseded observation values are archived before reprocessing. Skill computation follows the WMO best-truth approach (always verify against the most up-to-date observations, even if they have been reprocessed since the forecast was issued) — with rating curve transition counts exposed in the API so dashboards can annotate discontinuities at epoch boundaries.
@@ -568,7 +617,7 @@ S.1 → S.2 ─┐
 
 ## REST API
 
-All data produced by the SAPPHIRE system is served through a REST API at `/api/v1/`. External systems — dashboards, alert portals, hydropower operators — pull data from this API. There is no push-based data export. Alert notifications are push-based via webhook with async retry; the `GET /alerts` endpoint is for querying alert history, not the primary delivery path.
+All data produced by the SAPPHIRE system is served through a REST API at `/api/v1/`. External systems — dashboards, alert portals, hydropower operators — pull data from this API. Alerts are available via `GET /api/v1/alerts` for polling (primary integration path) and via webhook push subscriptions (opt-in per consumer). SMS and email are not supported in v1 (see *Not Committed for Nepal v1*).
 
 **Key resource groups:**
 
@@ -584,8 +633,6 @@ All data produced by the SAPPHIRE system is served through a REST API at `/api/v
 **Response format:** JSON by default. CSV available via `?format=csv`.
 
 **Pagination:** Cursor-based using `limit` and `after` query parameters.
-
-**Temporal aggregation:** `?aggregate=pentadal` (5-day) or `?aggregate=dekadal` (10-day) for observation and forecast series.
 
 **Health endpoints:**
 - `GET /api/v1/health` — unauthenticated, lightweight (single `SELECT 1` DB liveness check, no table scans or Prefect API calls). Returns `{"status": "ok | degraded | down"}` with HTTP 200 when ok, HTTP 503 otherwise. Safe to poll at high frequency from external uptime monitors.
@@ -648,7 +695,7 @@ All time-series data follows a tiered lifecycle: **hot (PostgreSQL) → cold (co
 | Pipeline health | 30 days | — | 30 days |
 | Resolved alerts | 90 days | — | 90 days |
 
-Skill scores and historical forcing are permanent — they are never tiered or deleted. Observations can be re-ingested from external sources if data beyond `max_retention_days` is needed for retraining. Deleting hindcast data beyond retention prevents recomputation from scratch, but stored skill scores remain unaffected. All retention windows are deployment-configurable.
+Skill scores and historical forcing are permanent — they are never tiered or deleted. Observations older than `max_retention_days` are removed from the hot database but remain available in cold Parquet storage for the configured cold-tier lifetime; beyond that, they can be re-ingested from external sources (e.g. DHM archives where available) if required for retraining. In practice, training windows longer than the hot window are served from cold storage and the historical forcing archive, not from the live observations table. Deleting hindcast data beyond retention prevents recomputation from scratch, but stored skill scores remain unaffected. All retention windows are deployment-configurable.
 
 Disk utilisation is monitored by Flow 4 step 4.9, with warnings at 80% and critical alerts at 90%. For backup schedule, encryption, and disaster recovery, see `it-operations.md` §7.
 
