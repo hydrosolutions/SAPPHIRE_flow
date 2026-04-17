@@ -9,6 +9,7 @@ import httpx
 import structlog
 from pydantic import BaseModel
 
+from sapphire_flow.exceptions import AdapterError
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import ObservationSource, StationKind
 from sapphire_flow.types.observation import RawObservation
@@ -109,6 +110,65 @@ class HydroScraperAdapter:
                     error=str(exc),
                 )
         return results
+
+    def verify_gauge_reachable(self, site_code: str, station_kind: StationKind) -> bool:
+        log.info(
+            "observation.verify_gauge_started",
+            site_code=site_code,
+            station_kind=station_kind.value,
+        )
+        query = self._build_sparql_query(site_code, station_kind)
+        try:
+            response = self._http_client.post(
+                self._endpoint,
+                data={"query": query},
+                headers={"Accept": "application/sparql-results+json"},
+            )
+        except httpx.RequestError as exc:
+            log.error(
+                "observation.verify_gauge_failed",
+                site_code=site_code,
+                station_kind=station_kind.value,
+                error=str(exc),
+            )
+            raise AdapterError(
+                f"LINDAS probe network failure for {site_code!r}: {exc}"
+            ) from exc
+
+        status_code = response.status_code
+        if not (200 <= status_code < 300):
+            log.info(
+                "observation.verify_gauge_completed",
+                site_code=site_code,
+                station_kind=station_kind.value,
+                status_code=status_code,
+                reachable=False,
+            )
+            return False
+
+        try:
+            bindings = response.json()["results"]["bindings"]
+        except (ValueError, KeyError) as exc:
+            log.info(
+                "observation.verify_gauge_completed",
+                site_code=site_code,
+                station_kind=station_kind.value,
+                status_code=status_code,
+                reachable=False,
+                parse_error=str(exc),
+            )
+            return False
+
+        reachable = len(bindings) >= 1
+        log.info(
+            "observation.verify_gauge_completed",
+            site_code=site_code,
+            station_kind=station_kind.value,
+            status_code=status_code,
+            reachable=reachable,
+            binding_count=len(bindings),
+        )
+        return reachable
 
     def _build_sparql_query(self, site_code: str, station_kind: StationKind) -> str:
         if not _SITE_CODE_RE.match(site_code):
