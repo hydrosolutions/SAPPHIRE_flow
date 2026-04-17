@@ -105,6 +105,7 @@ class DeploymentConfig(BaseModel):
     calendar: Literal["gregorian", "bikram_sambat"] = "gregorian"
 
     paths_data_dir: str | None = None
+    nwp_grid_archive_base_path: str | None = None
 
     input_quality: InputQualityConfig = InputQualityConfig()
 
@@ -259,6 +260,16 @@ def load_config(path: Path | str | None = None) -> DeploymentConfig:
     raw_text = path.read_text()
     resolved_text = _resolve_env_vars(raw_text)
     data = tomllib.loads(resolved_text)
+    # Extract NWP grid archive path before popping adapters section
+    _adapters = data.get("adapters", {})
+    _weather_forecast = (
+        _adapters.get("weather_forecast", {}) if isinstance(_adapters, dict) else {}
+    )
+    nwp_grid_archive_base_path = (
+        _weather_forecast.get("archive_base_path")
+        if isinstance(_weather_forecast, dict)
+        else None
+    )
     # Remove adapter sections (not part of DeploymentConfig)
     data.pop("adapters", None)
     data.pop("monitoring", None)
@@ -267,4 +278,5 @@ def load_config(path: Path | str | None = None) -> DeploymentConfig:
     data.pop("onboarding", None)
     paths_section = data.pop("paths", {})
     data["paths_data_dir"] = paths_section.get("data_dir")
+    data["nwp_grid_archive_base_path"] = nwp_grid_archive_base_path
     return DeploymentConfig.model_validate(data)

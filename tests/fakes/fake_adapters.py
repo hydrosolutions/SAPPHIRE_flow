@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import xarray as xr  # noqa: TC002
+
 from sapphire_flow.types.alert import Alert  # noqa: TC001
+from sapphire_flow.types.basin import Basin  # noqa: TC001
 from sapphire_flow.types.datetime import UtcDatetime  # noqa: TC001
 from sapphire_flow.types.enums import NotificationChannel  # noqa: TC001
 from sapphire_flow.types.forecast import ForeignForecast  # noqa: TC001
@@ -13,6 +16,8 @@ from sapphire_flow.types.station import (  # noqa: TC001
     StationWeatherSource,
 )
 from sapphire_flow.types.weather import (  # noqa: TC001
+    BasinAverageForecast,
+    ElevationBandForecast,
     GriddedForecast,
     WeatherForecastResult,
 )
@@ -119,3 +124,31 @@ class FakeWeatherReanalysisSource:
             and start <= r.valid_time < end
             and r.parameter in parameters
         ]
+
+
+class FakeGridExtractor:
+    def __init__(
+        self,
+        *,
+        result: dict[StationId, BasinAverageForecast | ElevationBandForecast]
+        | None = None,
+        exception: Exception | None = None,
+    ) -> None:
+        self._result = result or {}
+        self._exception = exception
+        self.call_count: int = 0
+        self.last_configs: list[StationWeatherSource] = []
+
+    def extract(
+        self,
+        grid: xr.Dataset,
+        configs: list[StationWeatherSource],
+        basins: dict[StationId, Basin],
+        cycle_time: UtcDatetime,
+        nwp_source: str,
+    ) -> dict[StationId, BasinAverageForecast | ElevationBandForecast]:
+        if self._exception is not None:
+            raise self._exception
+        self.call_count += 1
+        self.last_configs = list(configs)
+        return self._result

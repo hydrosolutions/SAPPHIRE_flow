@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import replace
+from pathlib import Path
 from typing import Literal
 from uuid import UUID, uuid4
 
 import polars as pl
 
-from sapphire_flow.exceptions import ArtifactIntegrityError, ConflictError
+from sapphire_flow.exceptions import ArtifactIntegrityError, ConflictError, StoreError
 from sapphire_flow.types.alert import Alert  # noqa: TC001
 from sapphire_flow.types.basin import Basin  # noqa: TC001
 from sapphire_flow.types.datetime import UtcDatetime  # noqa: TC001
@@ -78,7 +79,10 @@ from sapphire_flow.types.station import (  # noqa: TC001
     StationGroup,
     StationWeatherSource,
 )
-from sapphire_flow.types.weather import WeatherForecastRecord  # noqa: TC001
+from sapphire_flow.types.weather import (  # noqa: TC001
+    GriddedForecast,
+    WeatherForecastRecord,
+)
 
 
 class FakeObservationStore:
@@ -1171,3 +1175,25 @@ class FakeClimBaselineStore:
         self, station_id: StationId, parameter: str, day_of_year: int
     ) -> ClimBaseline | None:
         return self._baselines.get((station_id, parameter, day_of_year))
+
+
+class FakeNwpGridStore:
+    def __init__(self, *, exception: Exception | None = None) -> None:
+        self._archives: dict[tuple[str, UtcDatetime], GriddedForecast] = {}
+        self.archive_count: int = 0
+        self._exception = exception
+
+    def archive(self, forecast: GriddedForecast, base_path: Path) -> Path:
+        if self._exception is not None:
+            raise self._exception
+        self._archives[(forecast.nwp_source, forecast.cycle_time)] = forecast
+        self.archive_count += 1
+        return Path(f"/fake/{forecast.nwp_source}/{forecast.cycle_time}")
+
+    def load(
+        self, base_path: Path, nwp_source: str, cycle_time: UtcDatetime
+    ) -> GriddedForecast:
+        key = (nwp_source, cycle_time)
+        if key not in self._archives:
+            raise StoreError(f"No archived forecast for {key}")
+        return self._archives[key]

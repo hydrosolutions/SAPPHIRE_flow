@@ -2238,6 +2238,23 @@ class ParameterStore(Protocol):
     # parameters absent from config (seed data is preserved).
 ```
 
+#### NwpGridStore
+
+Filesystem-backed store for gridded NWP archives (Zarr format). Used by Flow 1 steps 1.2 (archive) and 1.1-fallback (load previous cycle).
+
+```python
+@runtime_checkable
+class NwpGridStore(Protocol):
+    def archive(self, forecast: GriddedForecast, base_path: Path) -> Path: ...
+        # Writes the GriddedForecast to Zarr under base_path.
+        # Returns the path to the written Zarr store.
+    def load(
+        self, base_path: Path, nwp_source: str, cycle_time: UtcDatetime
+    ) -> GriddedForecast: ...
+        # Loads a previously archived GriddedForecast from Zarr.
+        # Raises AdapterError if no archive exists for the given nwp_source + cycle_time.
+```
+
 Module: `protocols/stores.py` (all store Protocols in one module — they share `ConflictError`).
 
 ---
@@ -2272,7 +2289,7 @@ Two return paths:
 class GriddedForecast:
     nwp_source: str
     cycle_time: UtcDatetime
-    values: xr.Dataset             # dimensions: time × parameter × y × x
+    values: xr.Dataset             # dimensions: member × valid_time × latitude × longitude; weather parameters are data variables, not a dimension coordinate
 ```
 
 `GriddedForecast` is the raw fetch output before extraction. It is not station-keyed —

@@ -5,6 +5,7 @@ import random
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -24,11 +25,14 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from sapphire_flow.protocols.adapters import WeatherForecastSource
+    from sapphire_flow.protocols.grid_extractor import GridExtractor
+    from sapphire_flow.protocols.stores import NwpGridStore
+    from sapphire_flow.types.basin import Basin
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.domain import ForecastQcRuleSet
     from sapphire_flow.types.ensemble import ForecastEnsemble
     from sapphire_flow.types.ids import ModelId, StationId
-    from sapphire_flow.types.station import StationConfig
+    from sapphire_flow.types.station import StationConfig, StationWeatherSource
 
 log = structlog.get_logger(__name__)
 
@@ -79,10 +83,14 @@ def _resolve_cycle_time(
 @task(name="fetch-nwp-forcing", persist_result=False, log_prints=False)
 def _fetch_nwp_task(
     adapter: WeatherForecastSource,
-    station_configs: list[StationConfig],
+    station_configs: list[StationWeatherSource],
     cycle_time: UtcDatetime,
     weather_forecast_store: object,
     clock: Callable[[], UtcDatetime],
+    grid_store: NwpGridStore | None = None,
+    grid_extractor: GridExtractor | None = None,
+    station_basins: dict[StationId, Basin] | None = None,
+    grid_archive_base_path: str | None = None,
 ) -> UtcDatetime | None:
     from sapphire_flow.preprocessing.converters import (
         basin_avg_to_records,
@@ -96,16 +104,95 @@ def _fetch_nwp_task(
 
     t0 = time.perf_counter()
     try:
-        result = adapter.fetch_forecasts(
-            [s for sc in station_configs for s in _station_weather_sources(sc)],
-            cycle_time,
-        )
+        result = adapter.fetch_forecasts(station_configs, cycle_time)
     except Exception as exc:
         log.error("nwp.fetch_failed", error=str(exc))
         return None
 
     if isinstance(result, GriddedForecast):
-        raise NotImplementedError("v0b grid path not yet wired")
+        # Step 1.2: Archive raw grid to Zarr (non-fatal — archiving is auxiliary)
+        if grid_store is not None and grid_archive_base_path is not None:
+            archive_t0 = time.perf_counter()
+            try:
+                grid_store.archive(result, Path(grid_archive_base_path))
+            except Exception as exc:
+                log.warning(
+                    "nwp.archive_failed",
+                    nwp_source=result.nwp_source,
+                    cycle_time=str(cycle_time),
+                    error=str(exc),
+                )
+            else:
+                log.info(
+                    "nwp.archive_completed",
+                    nwp_source=result.nwp_source,
+                    duration_ms=round((time.perf_counter() - archive_t0) * 1000, 1),
+                )
+
+        # Step 1.3: Extract basin averages
+        if grid_extractor is None:
+            log.warning(
+                "nwp.extraction_skipped", reason="grid_extractor_not_configured"
+            )
+            return None
+
+        # Filter configs to only those matching this grid's NWP source
+        configs_for_source = [
+            ws for ws in station_configs if ws.nwp_source == result.nwp_source
+        ]
+        if not configs_for_source:
+            log.warning(
+                "nwp.extraction_skipped",
+                reason="no_matching_sources",
+                nwp_source=result.nwp_source,
+            )
+            return None
+
+        extract_t0 = time.perf_counter()
+        try:
+            extracted = grid_extractor.extract(
+                grid=result.values,
+                configs=configs_for_source,
+                basins=station_basins or {},
+                cycle_time=cycle_time,
+                nwp_source=result.nwp_source,
+            )
+        except Exception as exc:
+            log.error(
+                "extraction.failed",
+                nwp_source=result.nwp_source,
+                cycle_time=str(cycle_time),
+                error=str(exc),
+            )
+            return None
+
+        # Step 1.4: Convert to records and store
+        all_records = []
+        for station_id, forecast in extracted.items():
+            if isinstance(forecast, BasinAverageForecast):
+                all_records.extend(
+                    basin_avg_to_records(station_id, forecast, clock, uuid4)
+                )
+            else:
+                # ElevationBandForecast — deferred to v1 (Nepal)
+                log.warning(
+                    "nwp.unknown_forecast_type",
+                    station_id=str(station_id),
+                    type=type(forecast).__name__,
+                )
+
+        if all_records:
+            weather_forecast_store.store_weather_forecasts(all_records)  # type: ignore[union-attr]
+
+        duration_ms = round((time.perf_counter() - t0) * 1000, 1)
+        log.info(
+            "nwp.fetch_completed",
+            records_stored=len(all_records),
+            stations=len(extracted),
+            extraction_duration_ms=round((time.perf_counter() - extract_t0) * 1000, 1),
+            duration_ms=duration_ms,
+        )
+        return cycle_time
 
     if not isinstance(result, dict):
         log.error("nwp.unexpected_return_type", type=type(result).__name__)
@@ -137,10 +224,6 @@ def _fetch_nwp_task(
         duration_ms=duration_ms,
     )
     return cycle_time
-
-
-def _station_weather_sources(station: StationConfig) -> list:
-    return []
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +273,8 @@ def run_forecast_cycle_flow(
     qc_rules: object | None = None,
     clock: object | None = None,
     rng: object | None = None,
+    grid_store: object | None = None,
+    grid_extractor: object | None = None,
     cycle_time: str | None = None,
 ) -> ForecastCycleResult:
     flow_t0 = time.perf_counter()
@@ -238,6 +323,17 @@ def run_forecast_cycle_flow(
         from sapphire_flow.services.model_registry import discover_models
 
         models = discover_models()
+
+    if grid_store is None:
+        from sapphire_flow.store.zarr_nwp_grid_store import ZarrNwpGridStore
+
+        grid_store = ZarrNwpGridStore()
+    if grid_extractor is None:
+        from sapphire_flow.preprocessing.exact_extract_grid_extractor import (
+            ExactExtractGridExtractor,
+        )
+
+        grid_extractor = ExactExtractGridExtractor()
 
     if station_store is None:
         raise ConfigurationError("station_store is required but was not provided")
@@ -306,6 +402,25 @@ def run_forecast_cycle_flow(
         for s in operational
     }
 
+    # Batch pre-fetch weather sources (eliminates per-station queries in Phase B)
+    all_weather_sources: dict[StationId, list] = {
+        s.id: station_store.fetch_weather_sources(s.id)  # type: ignore[union-attr]
+        for s in operational
+    }
+    flat_weather_configs = [
+        ws for sources in all_weather_sources.values() for ws in sources
+    ]
+
+    # Build station→basin map for GridExtractor
+    station_basins: dict[StationId, object] = {}
+    for s in operational:
+        if s.basin_id is not None:
+            basin = basin_store.fetch_basin(s.basin_id)  # type: ignore[union-attr]
+            if basin is not None:
+                station_basins[s.id] = basin
+            else:
+                log.warning("nwp.basin_not_found", station_id=s.id, basin_id=s.basin_id)
+
     # Instantiate reanalysis source for past_dynamic
     from sapphire_flow.adapters.store_backed_reanalysis import (
         StoreBackedReanalysisSource,
@@ -321,10 +436,14 @@ def run_forecast_cycle_flow(
     # --- Phase A: fetch NWP forcing (submit as task) ---
     nwp_future = _fetch_nwp_task.submit(
         adapter=adapter,
-        station_configs=operational,
+        station_configs=flat_weather_configs,
         cycle_time=resolved_cycle_time,
         weather_forecast_store=weather_forecast_store,
         clock=clock,
+        grid_store=grid_store,
+        grid_extractor=grid_extractor,
+        station_basins=station_basins,
+        grid_archive_base_path=config.nwp_grid_archive_base_path,
     )
 
     # --- Step 1.6: observation timestamps (parallel with Phase A) ---
@@ -406,7 +525,7 @@ def run_forecast_cycle_flow(
         )
 
         # Determine nwp_source for this station
-        weather_sources = station_store.fetch_weather_sources(sid)  # type: ignore[union-attr]
+        weather_sources = all_weather_sources.get(sid, [])
         nwp_source: str = (
             weather_sources[0].nwp_source if weather_sources else "icon-ch2-eps"
         )

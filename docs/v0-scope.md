@@ -22,7 +22,7 @@
 | 2 | **Flow 2** — Observation ingest + QC | Stage 1 QC only. No rating curves (BAFU provides Q directly). Alerting steps optional (`enable_observation_alerts`). |
 | 3 | **Flow 6 → 7 → 8** — Train → hindcast → skill | Auto-promote (no approval gate). Full skill metric suite (CRPS, CRPSss, BSS, POD/FAR/CSI, peak timing, NSE, KGE, PBIAS, MAE, diagrams). |
 | 3 | **Flow 13** — Model onboarding | Register + validate + smoke test + train + hindcast + skill gate + auto-promote. Sample model (LinearRegressionDaily). No approval gate (auto-promote). Reuses services from Flows 6/7/8 directly (does NOT call `train_models` flow — composes the underlying service layer to interpose the skill gate). |
-| 4 | **Flow 1** — Forecast cycle | **v0a**: point weather forecast data (pre-extracted); steps 1.2, 1.3, 1.4 skipped entirely. **v0b+**: gridded NWP (ICON-CH2-EPS) with GridExtractor. Steps 1.5 (NWP post-process) and 1.9 (forecast post-process) are pass-through throughout v0. Step 1.10 (forecast QC) is active throughout v0. Alerting (1.12-1.14) controlled by `enable_forecast_alerts` (default `false`). |
+| 4 | **Flow 1** — Forecast cycle | Gridded NWP (ICON-CH2-EPS) via STAC API; steps 1.2–1.4 active from v0 onwards. Steps 1.5 (NWP post-process) and 1.9 (forecast post-process) are pass-through throughout v0. Step 1.10 (forecast QC) is active throughout v0. Alerting (1.12-1.14) controlled by `enable_forecast_alerts` (default `false`). |
 | — | **API** | FastAPI with basic CRUD for stations, observations, forecasts, alerts. No auth. Health endpoint. |
 | — | **Flow 12B** — Manual CSV import | Branch B only (validate CSV, ingest with `source = 'manual_import'`, run QC). Branches A (rating curve reprocessing) and C (QC re-evaluation) deferred. |
 
@@ -36,7 +36,7 @@
 | Flow 10 — Skill recomputation (broad) | v1 | Flow 8 (narrow) covers v0 |
 | Flow 11 — NWP gap recovery | v0c or v1 | Gaps accepted and logged |
 | Flow 12 — Observation reprocessing | Branch B ad-hoc only | Branch A (rating curves) requires v1 |
-| NWP lateness fallback | v0b or v1 | Manual monitoring suffices; three-stage strategy (wait → fallback cycle → skip) implemented when gridded NWP is added |
+| NWP lateness fallback | v1 | Manual monitoring suffices for initial v0 deployment; **high priority** — revisit before production scaling. Three-stage strategy (wait → fallback cycle → skip) is the target design. |
 | Flow 13 approval gate | v1 | Auto-promote sufficient for v0; PENDING_APPROVAL + human review added in v1 |
 
 ---
@@ -63,7 +63,7 @@
 
 **Full design**: PgBouncer in transaction mode, separate `DATABASE_URL_DIRECT` for migrations.
 
-**v0**: Direct PostgreSQL connections. One API process + one Prefect worker = no connection pooling needed. Use asyncpg's built-in pool or SQLAlchemy's pool. **→ DECISION (plan 013)**: PgBouncer deferral remains safe for v0. At ~1000 stations with sub-daily ingest, connection pressure increases (particularly v0b's GridExtractor subflow concurrency), but asyncpg's built-in pool with 5-10 connections is sufficient for a single worker process. Revisit if connection pool exhaustion is observed or if multiple worker processes are introduced.
+**v0**: Direct PostgreSQL connections. One API process + one Prefect worker = no connection pooling needed. Use asyncpg's built-in pool or SQLAlchemy's pool. **→ DECISION (plan 013)**: PgBouncer deferral remains safe for v0. At ~1000 stations with sub-daily ingest, connection pressure increases (particularly GridExtractor subflow concurrency), but asyncpg's built-in pool with 5-10 connections is sufficient for a single worker process. Revisit if connection pool exhaustion is observed or if multiple worker processes are introduced.
 
 **Removes**: PgBouncer container, dual connection string config, transaction-mode gotchas.
 
@@ -186,21 +186,21 @@ Rationale: per-source flags allow incremental activation during testing — pipe
 
 **v0**: `pg_dump` to local disk (cron or Prefect task). No restic, no encrypted backup chain, no restore rehearsal. Document a manual restore procedure.
 
-### A11. Point weather data first, gridded later
+### A11. Gridded NWP with basin-average extraction
 
 **Full design**: `WeatherForecastSource` returns either `GriddedForecast` (raw NWP grid) or `dict[StationId, WeatherForecastResult]` (pre-extracted). Gridded sources go through `GridExtractor` for bulk spatial extraction (steps 1.2–1.4).
 
-**v0a**: Use pre-extracted point weather forecast data only. Steps 1.2 (grid archive), 1.3 (spatial extraction), and 1.4 (extraction archive) are skipped entirely — the adapter returns `dict[StationId, PointForecast]` directly. This simplifies initial development: no GRIB2 parsing, no xarray dependency, no basin geometry processing.
+**v0**: Use ICON-CH2-EPS gridded NWP (GRIB2 via STAC API) with `GridExtractor` for basin-average extraction. Steps 1.2 (grid archive), 1.3 (spatial extraction), and 1.4 (extraction archive) are active from v0 onwards. This is consistent with training forcing (CAMELS-CH basin-averaged gridded data — see §A12): both training and operational inference use basin-averaged spatial representation. The `eccodes`/`cfgrib` and `exactextract` libraries ship pre-built wheels — no build-time obstacles.
 
-**v0b+**: Add gridded NWP support (ICON-CH2-EPS GRIB2 via STAC API) with `GridExtractor` for basin-average extraction. Steps 1.2–1.4 become active. The `WeatherForecastSource` Protocol already supports both return types — this is an adapter swap, not an architecture change.
+The v0a/v0b distinction for NWP is collapsed by Plan 021. Remaining v0a/v0b references in this document are model-onboarding gates, not NWP-related.
 
-**Compatibility**: Service and flow signatures accept `WeatherForecastResult` (the full union type) from day one. Only the adapter implementation changes between v0a and v0b.
+**Compatibility**: Service and flow signatures accept `WeatherForecastResult` (the full union type) from day one. Only the adapter implementation changes between deployment targets (Swiss v0 vs Nepal v1).
 
-### A12. ML lookback forcing: SMN station observations
+### A12. ML lookback forcing: CAMELS-CH basin-averaged gridded data
 
 **Full design**: Configurable forcing source for ML model lookback windows — station observations, gridded reanalysis, or archived NWP (see architecture-context.md).
 
-**v0**: Use SMN station observations (hourly, 1981-present) co-located with BAFU river gauges. Simple, immediately available, sufficient for Swiss v0 scale (~170 LINDAS-available BAFU gauges). **→ DECISION (plan 013)**: The binding constraint is how many BAFU gauges have co-located SMN weather stations with sufficient hourly history (1981–present) for ML training — this is a subset of ~170. "~1000 stations" is the multi-deployment architectural ceiling (including non-Swiss deployments where SMN is irrelevant). Swiss v0 is SMN-bounded; non-Swiss v1 deployments use ERA5-Land. The forcing source is injected via adapter dependency, not hardcoded — `prepare_model_inputs()` and training data assembly accept a forcing source parameter (see §I2). **v1**: Switch to ERA5-Land via `WeatherReanalysisSource` Protocol for Nepal.
+**v0**: Use basin-averaged forcing extracted from gridded data — CAMELS-CH for training, ICON-CH2-EPS (via GridExtractor) for operational inference. Both training and operational inference use consistent basin-averaged spatial representation. **→ DECISION (plan 021)**: Supersedes plan 013 decision. Training forcing switched from SMN point observations to CAMELS-CH basin-averaged gridded data for consistency with operational NWP spatial representation. SMN co-location is no longer the binding constraint. The forcing source is injected via adapter dependency, not hardcoded — `prepare_model_inputs()` and training data assembly accept a forcing source parameter (see §I2). **v1**: Switch to ERA5-Land via `WeatherReanalysisSource` Protocol for Nepal.
 
 ### A13. Generalized model input container
 
@@ -477,9 +477,9 @@ Phase 1b: Test infra (testcontainers, conftest, replay Protocols, CI) ├─ par
 Phase 10: Docker Compose (simplified)                                 ─┘
           │
 Phase 2: Store implementations (PostgreSQL) + integration tests  ─┐
-Phase 3: Adapters (production + replay)                           ├─ parallel
-          │                                                       │
-Phase 3b: Record reference test dataset from public APIs          │
+Phase 3: Adapters (production + replay, includes recording tool +  ├─ parallel
+          reference dataset — obs fixtures: Plan 020, NWP fixtures:│
+          Plan 021)                                                 │
 Phase 4: Services (QC, threshold, alert, skill, forecast input, input quality)  ─┘
           │
 Phase 5: Station onboarding (simplified)           ─┐ ✓ done
@@ -488,7 +488,7 @@ Phase 7: Model framework + training                │  ✓ done
 Phase 7b: Model onboarding (Flow 13) + sample model─┤  ✓ done
 Phase 9: FastAPI REST API                          ─┘  ✓ done (Plan 041)
           │
-Phase 8: Forecast cycle (Flow 1) + scenario tests  ✓ done (v0a)
+Phase 8: Forecast cycle (Flow 1) + scenario tests  ✓ done
           │
 Phase 11: End-to-end test (onboard → train → hindcast → skill → forecast → API)
 ```
@@ -507,13 +507,13 @@ v0 is deliberately scoped down from `architecture-context.md`. The Protocol-firs
 
 ### I1. Keep spatial type unions in service signatures
 
-v0a starts with point weather forecast data (pre-extracted). v0b+ adds basin-average extraction from gridded NWP (ICON-CH2-EPS via GridExtractor). Nepal v1 needs elevation-band extraction (ECMWF IFS). The `GridExtractor` Protocol already returns `BasinAverageForecast | ElevationBandForecast`, but implementations may be tempted to narrow signatures to just one concrete type.
+v0 uses basin-average extraction from gridded NWP (ICON-CH2-EPS via GridExtractor) from the start. Nepal v1 needs elevation-band extraction (ECMWF IFS). The `GridExtractor` Protocol already returns `BasinAverageForecast | ElevationBandForecast`, but implementations may be tempted to narrow signatures to just one concrete type.
 
 **Rule**: Any service or flow function that handles weather forecast data must accept the full `WeatherForecastResult` union type (`PointForecast | BasinAverageForecast | ElevationBandForecast`), even if the current v0 phase only produces one variant. Test fakes should exercise multiple variants where feasible.
 
 ### I2. Keep forcing source injectable in training and inference
 
-v0 uses SMN station observations for ML model lookback windows (resolved — see §A12). Nepal v1 will use ERA5-Land via `WeatherReanalysisSource`. If `prepare_model_inputs()` or training data assembly hardcodes "fetch from co-located weather station," the entire training/inference pipeline needs rework for v1.
+v0 uses basin-averaged gridded forcing for ML model lookback windows — CAMELS-CH for training, ICON-CH2-EPS via GridExtractor for operational inference (resolved — see §A12). Nepal v1 will use ERA5-Land via `WeatherReanalysisSource`. If `prepare_model_inputs()` or training data assembly hardcodes a specific data source rather than accepting a forcing source dependency, the entire training/inference pipeline needs rework for v1.
 
 **Rule**: Training data gathering (Flow 6 step T.2) and forecast input preparation (Flow 1 step 1.7) must accept a forcing source dependency (adapter), not directly query a specific data source. The `WeatherReanalysisSource` Protocol exists but is not implemented in v0 — the injection point must still be present.
 

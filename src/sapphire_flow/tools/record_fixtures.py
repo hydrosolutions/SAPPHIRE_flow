@@ -187,10 +187,11 @@ def main() -> None:
         help="End date (ISO 8601, required for --source bafu).",
     )
     parser.add_argument(
-        "--cycles",
-        type=int,
+        "--cycle-time",
+        type=str,
+        action="append",
         default=None,
-        help="Number of NWP cycles to record (required for --source nwp).",
+        help="NWP cycle time(s) to record (ISO 8601, repeatable, required for --source nwp).",  # noqa: E501
     )
     parser.add_argument(
         "--output",
@@ -206,12 +207,12 @@ def main() -> None:
     if args.source == "bafu":
         if not args.start or not args.end:
             parser.error("--start and --end are required for --source bafu")
-        if args.cycles is not None:
-            parser.error("--cycles is not valid for --source bafu")
+        if args.cycle_time is not None:
+            parser.error("--cycle-time is not valid for --source bafu")
         _run_bafu(args)
     elif args.source == "nwp":
-        if args.cycles is None:
-            parser.error("--cycles is required for --source nwp")
+        if not args.cycle_time:
+            parser.error("--cycle-time is required for --source nwp (repeatable)")
         if args.start or args.end:
             parser.error("--start and --end are not valid for --source nwp")
         _run_nwp(args)
@@ -277,24 +278,42 @@ def _run_nwp(args: argparse.Namespace) -> None:
     output_dir: Path = args.output
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    log.info("fixture.recording_started", source="nwp", cycles=args.cycles)
+    log.info("fixture.recording_started", source="nwp", cycle_times=args.cycle_time)
 
-    _store = ZarrNwpGridStore()
+    store = ZarrNwpGridStore()
 
     with httpx.Client(
         timeout=httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=5.0)
     ) as client:
-        _adapter = MeteoSwissNwpAdapter(
+        adapter = MeteoSwissNwpAdapter(
             stac_base_url=stac_base_url,
             stac_collection=stac_collection,
             scratch_path=scratch_path,
             http_client=client,
         )
-        # Cycle discovery requires querying the STAC API; the developer
-        # runs this interactively and the adapter discovers available cycles.
-        log.warning(
-            "nwp recording requires manual cycle time specification — not yet automated"
-        )
+
+        for ct_str in args.cycle_time:
+            ct = ensure_utc(datetime.fromisoformat(ct_str).replace(tzinfo=UTC))
+            log.info("nwp.recording_cycle", cycle_time=str(ct))
+            try:
+                # MeteoSwissNwpAdapter returns the full grid regardless of
+                # station_configs — passing [] is intentional and specific to
+                # this adapter. Point-based adapters would silently no-op.
+                forecast = adapter.fetch_forecasts([], ct)
+            except Exception as exc:
+                log.error("nwp.recording_failed", cycle_time=str(ct), error=str(exc))
+                continue
+
+            try:
+                archived_path = store.archive(forecast, output_dir)
+                log.info(
+                    "nwp.recording_archived",
+                    cycle_time=str(ct),
+                    nwp_source=forecast.nwp_source,
+                    path=str(archived_path),
+                )
+            except Exception as exc:
+                log.error("nwp.archive_failed", cycle_time=str(ct), error=str(exc))
 
 
 if __name__ == "__main__":

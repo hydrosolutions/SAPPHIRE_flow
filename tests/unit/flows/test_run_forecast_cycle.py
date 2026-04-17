@@ -4,11 +4,17 @@ import random
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+import numpy as np
+import polars as pl
+import xarray as xr
+
 from sapphire_flow.config.deployment import DeploymentConfig
+from sapphire_flow.exceptions import ExtractionError, StoreError
 from sapphire_flow.flows.run_forecast_cycle import (
     ForecastCycleResult,
     run_forecast_cycle_flow,
 )
+from sapphire_flow.types.basin import Basin
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.domain import ForecastQcRuleSet
 from sapphire_flow.types.enums import (
@@ -20,11 +26,16 @@ from sapphire_flow.types.enums import (
     StationStatus,
     WeatherSourceStatus,
 )
-from sapphire_flow.types.ids import ModelId, StationId
+from sapphire_flow.types.ids import BasinId, ModelId, StationId
 from sapphire_flow.types.station import ModelAssignment, StationWeatherSource
-from sapphire_flow.types.weather import WeatherForecastRecord
+from sapphire_flow.types.weather import (
+    BasinAverageForecast,
+    ElevationBandForecast,
+    GriddedForecast,
+    WeatherForecastRecord,
+)
 from tests.conftest import make_observations, make_station_config
-from tests.fakes.fake_adapters import FakeWeatherForecastSource
+from tests.fakes.fake_adapters import FakeGridExtractor, FakeWeatherForecastSource
 from tests.fakes.fake_models import FakeStationForecastModel
 from tests.fakes.fake_stores import (
     FakeAlertStore,
@@ -34,6 +45,7 @@ from tests.fakes.fake_stores import (
     FakeHistoricalForcingStore,
     FakeModelArtifactStore,
     FakeModelStateStore,
+    FakeNwpGridStore,
     FakeObservationStore,
     FakeStationStore,
     FakeWeatherForecastStore,
@@ -89,6 +101,66 @@ def _make_nwp_records(
     return records
 
 
+def _make_gridded_forecast(
+    cycle_time: UtcDatetime | None = None,
+    nwp_source: str = _NWP_SOURCE,
+) -> GriddedForecast:
+    ct = cycle_time or _NOW
+    ds = xr.Dataset(
+        {
+            "precipitation": (
+                ["member", "valid_time", "latitude", "longitude"],
+                np.random.rand(3, 5, 4, 4),
+            ),
+            "temperature": (
+                ["member", "valid_time", "latitude", "longitude"],
+                np.random.rand(3, 5, 4, 4),
+            ),
+        },
+        coords={
+            "member": [0, 1, 2],
+            "valid_time": [
+                ensure_utc(datetime.fromtimestamp(ct.timestamp() + i * 3600, tz=UTC))
+                for i in range(5)
+            ],
+            "latitude": [46.0, 46.5, 47.0, 47.5],
+            "longitude": [7.0, 7.5, 8.0, 8.5],
+        },
+    )
+    return GriddedForecast(nwp_source=nwp_source, cycle_time=ct, values=ds)
+
+
+def _make_basin_avg_result(
+    station_ids: list[StationId],
+    n_steps: int = 10,
+    n_members: int = 3,
+) -> dict[StationId, BasinAverageForecast]:
+    result = {}
+    for sid in station_ids:
+        rows = []
+        for step in range(n_steps):
+            vt = ensure_utc(
+                datetime.fromtimestamp(_NOW.timestamp() + (step + 1) * 3600, tz=UTC)
+            )
+            for param in ["precipitation", "temperature"]:
+                for m in range(n_members):
+                    rows.append(
+                        {
+                            "valid_time": vt,
+                            "parameter": param,
+                            "member_id": m,
+                            "value": float(step + m),
+                        }
+                    )
+        df = pl.DataFrame(rows)
+        result[sid] = BasinAverageForecast(
+            nwp_source=_NWP_SOURCE,
+            cycle_time=_NOW,
+            values=df,
+        )
+    return result
+
+
 def _build_station_and_stores(
     station_id: StationId,
     model_id: ModelId,
@@ -100,14 +172,35 @@ def _build_station_and_stores(
     *,
     n_obs: int = 30,
     seed_nwp: bool = True,
+    extraction_type: SpatialRepresentation = SpatialRepresentation.POINT,
+    basin_store: FakeBasinStore | None = None,
 ) -> None:
-    """Register a station with all required data in the fakes."""
+    basin_id: BasinId | None = None
+    if extraction_type == SpatialRepresentation.BASIN_AVERAGE:
+        if basin_store is None:
+            raise ValueError("basin_store required for BASIN_AVERAGE extraction_type")
+        basin_id = BasinId(uuid4())
+        basin = Basin(
+            id=basin_id,
+            code=f"basin_{basin_id}",
+            name="Test Basin",
+            geometry=None,
+            area_km2=100.0,
+            attributes=None,
+            band_geometries=None,
+            created_at=_NOW,
+            network="test",
+        )
+        basin_store.store_basin(basin)
+        seed_nwp = False
+
     station = make_station_config(
         station_id=station_id,
         station_kind=StationKind.RIVER,
         station_status=StationStatus.OPERATIONAL,
         measured_parameters=frozenset({"discharge"}),
         forecast_targets=frozenset({"discharge"}),
+        basin_id=basin_id,
     )
     station_store.store_station(station)
 
@@ -124,7 +217,7 @@ def _build_station_and_stores(
     source = StationWeatherSource(
         station_id=station_id,
         nwp_source=_NWP_SOURCE,
-        extraction_type=SpatialRepresentation.POINT,
+        extraction_type=extraction_type,
         status=WeatherSourceStatus.ACTIVE,
     )
     station_store.store_weather_source(source)
@@ -560,3 +653,563 @@ class TestForecastCycle:
 
         assert result.stations_succeeded == 1
         assert result.alerts_checked is True
+
+    def test_gridded_nwp_happy_path(self) -> None:
+        sid = StationId(uuid4())
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+            extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+            basin_store=basin_store,
+        )
+
+        adapter = FakeWeatherForecastSource(result=_make_gridded_forecast())
+        grid_store = FakeNwpGridStore()
+        grid_extractor = FakeGridExtractor(result=_make_basin_avg_result([sid]))
+        config = _make_config(nwp_grid_archive_base_path="/tmp/test_grids")
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=adapter,
+            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+            config=config,
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+            grid_store=grid_store,
+            grid_extractor=grid_extractor,
+        )
+
+        assert grid_store.archive_count == 1
+        assert grid_extractor.call_count == 1
+        assert len(grid_extractor.last_configs) == 1
+        assert grid_extractor.last_configs[0].nwp_source == _NWP_SOURCE
+        assert len(nwp_store._records) > 0
+        assert result.stations_succeeded >= 1
+
+    def test_gridded_nwp_no_grid_extractor(self) -> None:
+        sid = StationId(uuid4())
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+            extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+            basin_store=basin_store,
+        )
+
+        adapter = FakeWeatherForecastSource(result=_make_gridded_forecast())
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=FakeAlertStore(),
+            baseline_store=FakeClimBaselineStore(),
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=adapter,
+            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+            config=_make_config(),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+            grid_store=FakeNwpGridStore(),
+            grid_extractor=None,
+        )
+
+        assert result.stations_attempted == 0
+        assert "NWP fetch failed" in result.errors
+
+    def test_gridded_nwp_extraction_error(self) -> None:
+        sid = StationId(uuid4())
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+            extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+            basin_store=basin_store,
+        )
+
+        adapter = FakeWeatherForecastSource(result=_make_gridded_forecast())
+        grid_extractor = FakeGridExtractor(exception=ExtractionError("test"))
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=FakeAlertStore(),
+            baseline_store=FakeClimBaselineStore(),
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=adapter,
+            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+            config=_make_config(nwp_grid_archive_base_path="/tmp/test_grids"),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+            grid_store=FakeNwpGridStore(),
+            grid_extractor=grid_extractor,
+        )
+
+        assert "NWP fetch failed" in result.errors
+
+    def test_gridded_nwp_archive_failure_non_fatal(self) -> None:
+        sid = StationId(uuid4())
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+            extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+            basin_store=basin_store,
+        )
+
+        adapter = FakeWeatherForecastSource(result=_make_gridded_forecast())
+        grid_store = FakeNwpGridStore(exception=StoreError("archive broken"))
+        grid_extractor = FakeGridExtractor(result=_make_basin_avg_result([sid]))
+        config = _make_config(nwp_grid_archive_base_path="/tmp/test_grids")
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=adapter,
+            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+            config=config,
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+            grid_store=grid_store,
+            grid_extractor=grid_extractor,
+        )
+
+        assert grid_extractor.call_count == 1
+        assert len(nwp_store._records) > 0
+        assert result.stations_succeeded >= 1
+
+    def test_gridded_nwp_point_path_unchanged(self) -> None:
+        sid_a = StationId(uuid4())
+        sid_b = StationId(uuid4())
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        for sid in (sid_a, sid_b):
+            _build_station_and_stores(
+                sid,
+                _MODEL_ID,
+                station_store,
+                obs_store,
+                nwp_store,
+                artifact_store,
+                forcing_store,
+            )
+
+        adapter = FakeWeatherForecastSource(result={})
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=adapter,
+            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+            config=_make_config(),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+        )
+
+        assert result.stations_succeeded == 2
+
+    def test_gridded_nwp_elevation_band_skipped(self) -> None:
+        sid = StationId(uuid4())
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+            extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+            basin_store=basin_store,
+        )
+
+        elev_df = pl.DataFrame(
+            {
+                "valid_time": [_NOW],
+                "parameter": ["precipitation"],
+                "member_id": [0],
+                "value": [5.0],
+            }
+        )
+        elev_result: dict[StationId, ElevationBandForecast] = {
+            sid: ElevationBandForecast(
+                nwp_source=_NWP_SOURCE,
+                cycle_time=_NOW,
+                values=elev_df,
+            )
+        }
+        adapter = FakeWeatherForecastSource(result=_make_gridded_forecast())
+        grid_extractor = FakeGridExtractor(result=elev_result)  # type: ignore[arg-type]
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=adapter,
+            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+            config=_make_config(nwp_grid_archive_base_path="/tmp/test_grids"),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+            grid_store=FakeNwpGridStore(),
+            grid_extractor=grid_extractor,
+        )
+
+        assert len(nwp_store._records) == 0
+        # Task returned cycle_time (not None) — Phase B ran (no early abort)
+        assert "NWP fetch failed" not in result.errors
+
+    def test_gridded_nwp_source_filtering(self) -> None:
+        sid = StationId(uuid4())
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+            extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+            basin_store=basin_store,
+        )
+
+        # Add a second weather source with a different nwp_source
+        other_source = StationWeatherSource(
+            station_id=sid,
+            nwp_source="other_source",
+            extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+            status=WeatherSourceStatus.ACTIVE,
+        )
+        station_store.store_weather_source(other_source)
+
+        adapter = FakeWeatherForecastSource(
+            result=_make_gridded_forecast(nwp_source=_NWP_SOURCE)
+        )
+        grid_extractor = FakeGridExtractor(result=_make_basin_avg_result([sid]))
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=adapter,
+            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+            config=_make_config(nwp_grid_archive_base_path="/tmp/test_grids"),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+            grid_store=FakeNwpGridStore(),
+            grid_extractor=grid_extractor,
+        )
+
+        assert len(grid_extractor.last_configs) == 1
+        assert grid_extractor.last_configs[0].nwp_source == _NWP_SOURCE
+        assert result.stations_succeeded >= 1
+
+    def test_gridded_nwp_archive_skipped_when_no_path(self) -> None:
+        sid = StationId(uuid4())
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+            extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+            basin_store=basin_store,
+        )
+
+        adapter = FakeWeatherForecastSource(result=_make_gridded_forecast())
+        grid_store = FakeNwpGridStore()
+        grid_extractor = FakeGridExtractor(result=_make_basin_avg_result([sid]))
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=adapter,
+            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+            config=_make_config(),  # no nwp_grid_archive_base_path
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+            grid_store=grid_store,
+            grid_extractor=grid_extractor,
+        )
+
+        assert grid_store.archive_count == 0
+        assert len(nwp_store._records) > 0
+        assert result.stations_succeeded >= 1
+
+    def test_gridded_nwp_no_matching_sources(self) -> None:
+        sid = StationId(uuid4())
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        # Station has weather source with "other_source", not icon_ch2_eps
+        basin_id = BasinId(uuid4())
+        basin_id = BasinId(uuid4())
+        basin_store.store_basin(
+            Basin(
+                id=basin_id,
+                code=f"basin_{basin_id}",
+                name="Test Basin",
+                geometry=None,
+                area_km2=100.0,
+                attributes=None,
+                band_geometries=None,
+                created_at=_NOW,
+                network="test",
+            )
+        )
+
+        station = make_station_config(
+            station_id=sid,
+            station_kind=StationKind.RIVER,
+            station_status=StationStatus.OPERATIONAL,
+            measured_parameters=frozenset({"discharge"}),
+            forecast_targets=frozenset({"discharge"}),
+            basin_id=basin_id,
+        )
+        station_store.store_station(station)
+
+        assignment = ModelAssignment(
+            station_id=sid,
+            model_id=_MODEL_ID,
+            time_step=timedelta(hours=1),
+            status=ModelAssignmentStatus.ACTIVE,
+            priority=1,
+            created_at=_NOW,
+        )
+        station_store.store_model_assignment(assignment)
+
+        # Weather source with different nwp_source than the grid
+        other_source = StationWeatherSource(
+            station_id=sid,
+            nwp_source="other_source",
+            extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+            status=WeatherSourceStatus.ACTIVE,
+        )
+        station_store.store_weather_source(other_source)
+
+        obs_start = ensure_utc(
+            datetime.fromtimestamp(_NOW.timestamp() - 30 * 3600, tz=UTC)
+        )
+        obs_store = FakeObservationStore()
+        observations = make_observations(
+            n=30,
+            station_id=sid,
+            parameter="discharge",
+            start=obs_start,
+            interval=timedelta(hours=1),
+        )
+        obs_store.store_observations(observations)
+
+        artifact_store.store_artifact(
+            model_id=_MODEL_ID,
+            artifact_bytes=b"fake_artifact",
+            training_period_start=ensure_utc(datetime(2020, 1, 1, tzinfo=UTC)),
+            training_period_end=ensure_utc(datetime(2025, 12, 31, tzinfo=UTC)),
+            trained_at=_NOW,
+            station_id=sid,
+            status=ModelArtifactStatus.ACTIVE,
+        )
+
+        # GriddedForecast has icon_ch2_eps but station has other_source — no match
+        adapter = FakeWeatherForecastSource(
+            result=_make_gridded_forecast(nwp_source=_NWP_SOURCE)
+        )
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=FakeForecastStore(),
+            model_state_store=FakeModelStateStore(),
+            artifact_store=artifact_store,
+            alert_store=FakeAlertStore(),
+            baseline_store=FakeClimBaselineStore(),
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=adapter,
+            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+            config=_make_config(nwp_grid_archive_base_path="/tmp/test_grids"),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+            grid_store=FakeNwpGridStore(),
+            grid_extractor=FakeGridExtractor(result={}),
+        )
+
+        assert "NWP fetch failed" in result.errors

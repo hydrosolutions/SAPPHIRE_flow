@@ -18,6 +18,7 @@ from sapphire_flow.protocols.forecast_model import (
     GroupForecastModel,
     StationForecastModel,
 )
+from sapphire_flow.protocols.grid_extractor import GridExtractor
 from sapphire_flow.protocols.notification import NotificationAdapter
 from sapphire_flow.protocols.stores import (
     AlertStore,
@@ -33,6 +34,7 @@ from sapphire_flow.protocols.stores import (
     ModelArtifactStore,
     ModelStateStore,
     ModelStore,
+    NwpGridStore,
     ObservationStore,
     ParameterStore,
     PipelineHealthStore,
@@ -45,6 +47,7 @@ from sapphire_flow.protocols.stores import (
 )
 from tests.fakes.fake_adapters import (
     FakeForeignForecastSource,
+    FakeGridExtractor,
     FakeNotificationAdapter,
     FakePipelineStatusSource,
     FakeStationDataSource,
@@ -71,6 +74,7 @@ from tests.fakes.fake_stores import (
     FakeModelArtifactStore,
     FakeModelStateStore,
     FakeModelStore,
+    FakeNwpGridStore,
     FakeObservationStore,
     FakeParameterStore,
     FakePipelineHealthStore,
@@ -143,6 +147,9 @@ class TestFakeStoreConformance:
     def test_clim_baseline_store(self) -> None:
         assert isinstance(FakeClimBaselineStore(), ClimBaselineStore)
 
+    def test_nwp_grid_store(self) -> None:
+        assert isinstance(FakeNwpGridStore(), NwpGridStore)
+
 
 class TestFakeAdapterConformance:
     def test_weather_forecast_source(self) -> None:
@@ -159,6 +166,9 @@ class TestFakeAdapterConformance:
 
     def test_weather_reanalysis_source(self) -> None:
         assert isinstance(FakeWeatherReanalysisSource(), WeatherReanalysisSource)
+
+    def test_grid_extractor(self) -> None:
+        assert isinstance(FakeGridExtractor(), GridExtractor)
 
 
 class TestFakeModelConformance:
