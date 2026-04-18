@@ -785,7 +785,7 @@ class TestForecastCycle:
         assert grid_extractor.call_count == 1
         assert len(grid_extractor.last_configs) == 1
         assert grid_extractor.last_configs[0].nwp_source == _NWP_SOURCE
-        assert len(nwp_store._records) > 0
+        assert nwp_store.record_count() > 0
         assert result.stations_succeeded >= 1
 
     def test_gridded_nwp_no_grid_extractor(self) -> None:
@@ -941,7 +941,7 @@ class TestForecastCycle:
         )
 
         assert grid_extractor.call_count == 1
-        assert len(nwp_store._records) > 0
+        assert nwp_store.record_count() > 0
         assert result.stations_succeeded >= 1
 
     def test_gridded_nwp_point_path_unchanged(self) -> None:
@@ -1058,7 +1058,7 @@ class TestForecastCycle:
             grid_extractor=grid_extractor,
         )
 
-        assert len(nwp_store._records) == 0
+        assert nwp_store.record_count() == 0
         # Task returned cycle_time (not None) — Phase B ran (no early abort)
         assert "NWP fetch failed" not in result.errors
 
@@ -1179,7 +1179,7 @@ class TestForecastCycle:
         )
 
         assert grid_store.archive_count == 0
-        assert len(nwp_store._records) > 0
+        assert nwp_store.record_count() > 0
         assert result.stations_succeeded >= 1
 
     def test_gridded_nwp_no_matching_sources(self) -> None:
