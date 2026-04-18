@@ -94,7 +94,7 @@ class TestIngestObservationsFlow:
         for (sid, param), val in history.items():
             old = _make_obs(sid, param, val, offset_minutes=10)
             obs_store.store_raw_observations([old])
-        for o in list(obs_store._observations.values()):
+        for o in obs_store.observations():
             obs_store.update_qc(o.id, QcStatus.QC_PASSED, [])
 
         raw_obs = [
@@ -164,7 +164,7 @@ class TestIngestObservationsFlow:
         obs_store = FakeObservationStore()
         # Pre-populate with same observation and mark as QC'd
         obs_store.store_raw_observations([obs])
-        stored = list(obs_store._observations.values())[0]
+        stored = obs_store.observations()[0]
         obs_store.update_qc(stored.id, QcStatus.QC_PASSED, [])
 
         result = ingest_observations_flow(
@@ -191,7 +191,7 @@ class TestIngestObservationsFlow:
         # Pre-populate with history so QC time_step is inferred as 600s
         old_obs = _make_obs(s1.id, "discharge", 100.0, offset_minutes=10)
         obs_store.store_raw_observations([old_obs])
-        stored = list(obs_store._observations.values())[0]
+        stored = obs_store.observations()[0]
         obs_store.update_qc(stored.id, QcStatus.QC_PASSED, [])
 
         # Discharge of -10 violates range_check (min=0)
@@ -220,7 +220,7 @@ class TestIngestObservationsFlow:
         old_obs = _make_obs(s1.id, "discharge", 100.0, offset_minutes=10)
         obs_store.store_raw_observations([old_obs])
         # Mark old obs as QC passed so it's part of the context window but not re-QC'd
-        stored_obs = list(obs_store._observations.values())[0]
+        stored_obs = obs_store.observations()[0]
         obs_store.update_qc(stored_obs.id, QcStatus.QC_PASSED, [])
 
         # New observation with extreme rate of change (jump of 200, max_rate=50)
@@ -325,7 +325,7 @@ class TestIngestObservationsFlow:
         obs_store = FakeObservationStore()
         old_obs = _make_obs(s1.id, "discharge", 100.0, offset_minutes=10)
         obs_store.store_raw_observations([old_obs])
-        for o in list(obs_store._observations.values()):
+        for o in obs_store.observations():
             obs_store.update_qc(o.id, QcStatus.QC_PASSED, [])
 
         # offset_minutes=1 so timestamp < now (exclusive upper bound in fetch)
@@ -380,7 +380,7 @@ class TestIngestObservationsFlow:
         obs_store = FakeObservationStore()
         old_obs = _make_obs(s1.id, "discharge", 100.0, offset_minutes=10)
         obs_store.store_raw_observations([old_obs])
-        for o in list(obs_store._observations.values()):
+        for o in obs_store.observations():
             obs_store.update_qc(o.id, QcStatus.QC_PASSED, [])
 
         above_obs = _make_obs(s1.id, "discharge", 150.0, offset_minutes=1)
@@ -420,7 +420,7 @@ class TestIngestObservationsFlow:
         # Pre-populate history for QC time_step inference
         old = _make_obs(lake.id, "water_level", 400.0, offset_minutes=10)
         obs_store.store_raw_observations([old])
-        for o in list(obs_store._observations.values()):
+        for o in obs_store.observations():
             obs_store.update_qc(o.id, QcStatus.QC_PASSED, [])
 
         raw_obs = [_make_obs(lake.id, "water_level", 405.0)]
@@ -463,7 +463,7 @@ class TestIngestObservationsFlow:
         for (sid, param), val in history.items():
             old = _make_obs(sid, param, val, offset_minutes=10)
             obs_store.store_raw_observations([old])
-        for o in list(obs_store._observations.values()):
+        for o in obs_store.observations():
             obs_store.update_qc(o.id, QcStatus.QC_PASSED, [])
 
         raw_obs = [
