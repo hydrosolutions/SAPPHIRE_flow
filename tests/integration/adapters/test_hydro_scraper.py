@@ -211,28 +211,23 @@ class TestHydroScraperAdapter:
 
         assert obs == []
 
-    def test_invalid_station_code_raises_valueerror(self) -> None:
-        adapter = HydroScraperAdapter(
-            endpoint=_ENDPOINT,
-            http_client=httpx.Client(
-                transport=httpx.MockTransport(lambda r: httpx.Response(200))
-            ),
-        )
-        with pytest.raises(ValueError, match="Invalid site_code"):
-            adapter._build_sparql_query("'; DROP TABLE", StationKind.RIVER)
-
-    def test_contract_lindas_response(self) -> None:
+    def test_fetch_returns_expected_records_from_fixture_response(self) -> None:
         fixture_path = _FIXTURES_DIR / "lindas_sample_response.json"
-        raw = json.loads(fixture_path.read_text())
-        bindings = raw["results"]["bindings"]
+        fixture_body = fixture_path.read_bytes()
+        station = _make_station(_STATION_1_ID, "2044")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                content=fixture_body,
+                headers={"content-type": "application/sparql-results+json"},
+            )
 
         adapter = HydroScraperAdapter(
             endpoint=_ENDPOINT,
-            http_client=httpx.Client(
-                transport=httpx.MockTransport(lambda r: httpx.Response(200))
-            ),
+            http_client=httpx.Client(transport=httpx.MockTransport(handler)),
         )
-        obs = adapter._parse_bindings(bindings, _STATION_1_ID)
+        obs = adapter.fetch_observations([station], {_STATION_1_ID: _SINCE})
 
         assert len(obs) == 3
         params = {o.parameter: o.value for o in obs}
@@ -243,55 +238,142 @@ class TestHydroScraperAdapter:
         for o in obs:
             assert o.station_id == _STATION_1_ID
             assert o.source == ObservationSource.MEASURED
-            assert o.timestamp == ensure_utc(
-                datetime(2024, 6, 15, 10, 0, 0, tzinfo=UTC)
-            )
+            assert o.timestamp == ensure_utc(datetime(2024, 6, 15, 10, 0, 0, tzinfo=UTC))
 
-    def test_contract_lindas_lake_response(self) -> None:
+    def test_fetch_returns_expected_lake_records_from_fixture_response(self) -> None:
         fixture_path = _FIXTURES_DIR / "lindas_lake_sample_response.json"
-        raw = json.loads(fixture_path.read_text())
-        bindings = raw["results"]["bindings"]
+        fixture_body = fixture_path.read_bytes()
+        station = _make_station(_STATION_1_ID, "2500", station_kind=StationKind.LAKE)
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                content=fixture_body,
+                headers={"content-type": "application/sparql-results+json"},
+            )
 
         adapter = HydroScraperAdapter(
             endpoint=_ENDPOINT,
-            http_client=httpx.Client(
-                transport=httpx.MockTransport(lambda r: httpx.Response(200))
-            ),
+            http_client=httpx.Client(transport=httpx.MockTransport(handler)),
         )
-        obs = adapter._parse_bindings(bindings, _STATION_1_ID)
+        obs = adapter.fetch_observations([station], {_STATION_1_ID: _SINCE})
 
         assert len(obs) == 1
         assert obs[0].parameter == "water_level"
         assert obs[0].value == pytest.approx(394.8)
         assert obs[0].station_id == _STATION_1_ID
         assert obs[0].source == ObservationSource.MEASURED
-        assert obs[0].timestamp == ensure_utc(
-            datetime(2024, 6, 15, 10, 0, 0, tzinfo=UTC)
-        )
+        assert obs[0].timestamp == ensure_utc(datetime(2024, 6, 15, 10, 0, 0, tzinfo=UTC))
 
-    def test_lake_station_uri_and_params(self) -> None:
-        station = _make_station(_STATION_1_ID, "2500", station_kind=StationKind.LAKE)
+    def test_fetch_logs_warning_and_returns_partial_on_http_error(self) -> None:
+        import structlog.testing
+
+        station_1 = _make_station(_STATION_1_ID, "2044")
+        station_2 = _make_station(_STATION_2_ID, "2160")
+
         client = _make_client(
             {
-                "2500": _sparql_response(
-                    _make_bindings(
-                        "2024-06-15T10:00:00+00:00",
-                        water_level="394.8",
-                    )
+                "2044": httpx.Response(503),
+                "2160": _sparql_response(
+                    _make_bindings("2024-06-15T10:00:00+00:00", discharge="77.0")
                 ),
             }
         )
         adapter = HydroScraperAdapter(endpoint=_ENDPOINT, http_client=client)
 
-        query = adapter._build_sparql_query("2500", StationKind.LAKE)
-        assert "lake/observation/2500" in query
-        assert "river/observation/2500" not in query
+        with structlog.testing.capture_logs() as captured:
+            obs = adapter.fetch_observations(
+                [station_1, station_2],
+                {_STATION_1_ID: _SINCE, _STATION_2_ID: _SINCE},
+            )
+
+        warning_events = [
+            e for e in captured if e.get("event") == "observation.fetch_failed"
+        ]
+        assert len(warning_events) == 1
+        assert warning_events[0]["log_level"] == "warning"
+
+        station_ids = {o.station_id for o in obs}
+        assert _STATION_1_ID not in station_ids
+        assert _STATION_2_ID in station_ids
+
+    def test_fetch_handles_empty_bindings(self) -> None:
+        station = _make_station(_STATION_1_ID, "2044")
+        client = _make_client({"2044": _sparql_response([])})
+        adapter = HydroScraperAdapter(endpoint=_ENDPOINT, http_client=client)
 
         obs = adapter.fetch_observations([station], {_STATION_1_ID: _SINCE})
 
-        assert len(obs) == 1
-        assert obs[0].parameter == "water_level"
-        assert obs[0].value == pytest.approx(394.8)
+        assert obs == []
+
+    def test_fetch_lake_station_uses_lake_uri_path(self) -> None:
+        station = _make_station(_STATION_1_ID, "2500", station_kind=StationKind.LAKE)
+        captured: list[httpx.Request] = []
+        empty_envelope = json.dumps({"results": {"bindings": []}}).encode()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.append(request)
+            return httpx.Response(
+                200,
+                content=empty_envelope,
+                headers={"content-type": "application/sparql-results+json"},
+            )
+
+        adapter = HydroScraperAdapter(
+            endpoint=_ENDPOINT,
+            http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        )
+        adapter.fetch_observations([station], {_STATION_1_ID: _SINCE})
+
+        assert len(captured) == 1
+        query = parse_qs(captured[0].content.decode())["query"][0]
+        assert "lake/observation/2500" in query
+        assert "river/observation/2500" not in query
+
+    def test_fetch_does_not_embed_since_in_sparql_query(self) -> None:
+        station = _make_station(_STATION_1_ID, "2044")
+        captured: list[httpx.Request] = []
+        empty_envelope = json.dumps({"results": {"bindings": []}}).encode()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured.append(request)
+            return httpx.Response(
+                200,
+                content=empty_envelope,
+                headers={"content-type": "application/sparql-results+json"},
+            )
+
+        adapter = HydroScraperAdapter(
+            endpoint=_ENDPOINT,
+            http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        )
+        adapter.fetch_observations([station], {_STATION_1_ID: _SINCE})
+
+        assert len(captured) == 1
+        query = parse_qs(captured[0].content.decode())["query"][0]
+        assert "xsd:dateTime" not in query
+        assert "FILTER (?measurementTime" not in query
+        assert "2024-01-01" not in query
+
+    def test_fetch_rejects_invalid_station_code(self) -> None:
+        import structlog.testing
+
+        station = _make_station(_STATION_1_ID, "'; DROP TABLE")
+        adapter = HydroScraperAdapter(
+            endpoint=_ENDPOINT,
+            http_client=httpx.Client(
+                transport=httpx.MockTransport(lambda r: httpx.Response(200))
+            ),
+        )
+
+        with structlog.testing.capture_logs() as captured:
+            obs = adapter.fetch_observations([station], {_STATION_1_ID: _SINCE})
+
+        assert obs == []
+        failed = [e for e in captured if e.get("event") == "observation.fetch_failed"]
+        assert len(failed) == 1
+        assert failed[0]["log_level"] == "warning"
+        assert "Invalid site_code" in failed[0]["error"]
 
     def test_mixed_river_and_lake_stations(self) -> None:
         river_station = _make_station(
@@ -358,15 +440,3 @@ class TestHydroScraperAdapter:
             e.get("event") == "observation.skip_weather_station" for e in captured
         )
 
-    def test_since_not_in_sparql_query(self) -> None:
-        adapter = HydroScraperAdapter(
-            endpoint=_ENDPOINT,
-            http_client=httpx.Client(
-                transport=httpx.MockTransport(lambda r: httpx.Response(200))
-            ),
-        )
-        query = adapter._build_sparql_query("2044", StationKind.RIVER)
-
-        assert "xsd:dateTime" not in query
-        assert "2024-01-01" not in query
-        assert "FILTER (?measurementTime" not in query
