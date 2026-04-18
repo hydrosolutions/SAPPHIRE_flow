@@ -1,9 +1,10 @@
 # Plan 046 — Mac Mini Staging Deployment + Edge-Case Test Suite
 
 **Status**: READY
+**Revision**: 5 — A2 first-boot surfaced four deployment-infra findings, one requiring a detour plan: (a) `prefecthq/prefect:3-python3.11` healthcheck used `curl` which the image does not ship → fixed in commit `a668959` by switching to a python `urllib.request.urlopen` probe (both `prefect-server` and `api`); (b) stale `sapphire_flow_pgdata` named volume from prior runs retained the old postgres password → runbook must include a `down -v` / password-drift guard; (c) `ForecastInterfaceAdapter` editable sibling dep `../ForecastInterface` broke the Docker build context → dormant adapter removed in commit `2173052` as a net-positive simplification (zero production callers); (d) `numcodecs 0.15.1` has no linux/arm64 wheel and the paired `zarr<3` pin blocked the bump → **Plan 056 DONE** (commits `3fd5348` feat + `c9b37a2` archive, tag `v0.1.306`) bringing `zarr>=3.0`, `numcodecs>=0.16.1`, `xarray>=2026.04.0` while retaining zarr-v2 on-disk format; A2 Docker build now succeeds clean on linux/arm64 without `gcc`. All four findings will also be recorded in the A5 dress-rehearsal report (2026-04-18)
 **Revision**: 4 — reconcile with Plan 050 (Prefect run naming) which landed between A1 and A2.5: update `run_forecast_cycle.py` line refs (`:722` → `:744`, `:721` → `:743`, `:499` → `:521`); A1 station 2004 recorded as lake (not river) after live LINDAS probe; add explicit `staging-5-stations` rebase-onto-main step before A3 (2026-04-17)
 **Phase**: 10c (staging infrastructure + deployment validation)
-**Depends on**: Plan 043 (e2e test, DONE, archived), Plan 044 (deployment readiness, DONE, archived), Plan 045 (gridded NWP forecast cycle, DONE, archived).
+**Depends on**: Plan 043 (e2e test, DONE, archived), Plan 044 (deployment readiness, DONE, archived), Plan 045 (gridded NWP forecast cycle, DONE, archived), Plan 056 (zarr-python 3 migration, DONE, archived — unblocked A2 Docker build on arm64).
 **Scope**: Validate the gridded NWP forecast cycle on real Swiss data on a Mac mini staging host. This is the first real-data run of the gridded path; v0a point-weather has never been wired and is not planned. Access is LAN-only via SSH tunnel; public HTTPS access via Cloudflare Tunnel is Plan 049.
 
 ---
