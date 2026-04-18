@@ -190,7 +190,7 @@ Rationale: per-source flags allow incremental activation during testing — pipe
 
 **Full design**: `WeatherForecastSource` returns either `GriddedForecast` (raw NWP grid) or `dict[StationId, WeatherForecastResult]` (pre-extracted). Gridded sources go through `GridExtractor` for bulk spatial extraction (steps 1.2–1.4).
 
-**v0**: Use ICON-CH2-EPS gridded NWP (GRIB2 via STAC API) with `GridExtractor` for basin-average extraction. Steps 1.2 (grid archive), 1.3 (spatial extraction), and 1.4 (extraction archive) are active from v0 onwards. This is consistent with training forcing (CAMELS-CH basin-averaged gridded data — see §A12): both training and operational inference use basin-averaged spatial representation. The `eccodes`/`cfgrib` and `exactextract` libraries ship pre-built wheels — no build-time obstacles.
+**v0**: Use ICON-CH2-EPS gridded NWP (GRIB2 via STAC API) with `GridExtractor` for basin-average extraction. Steps 1.2 (grid archive), 1.3 (spatial extraction), and 1.4 (extraction archive) are active from v0 onwards. This is consistent with training forcing (CAMELS-CH basin-averaged gridded data — see §A12): both training and operational inference use basin-averaged spatial representation. The `eccodes`/`cfgrib` libraries ship pre-built wheels. `numcodecs>=0.16.1` is also required for its linux/arm64 wheel; earlier versions fall back to sdist. `exactextract` publishes no linux/arm64 wheel at any version, so on arm64 the Dockerfile builder stage installs `build-essential`, `cmake`, and `libgeos-dev` to compile the sdist — the runtime image copies only the compiled `.venv` and stays slim (see Plan 056 D3).
 
 The v0a/v0b distinction for NWP is collapsed by Plan 021. Remaining v0a/v0b references in this document are model-onboarding gates, not NWP-related.
 
@@ -549,6 +549,7 @@ v0 operates exclusively with BAFU automatic gauging stations (`gauging_status = 
 | Notification dispatch | Reads alerts, does not change alert model |
 | Forecast adjustments / Flow 3 | New table + service + API endpoints, no v0 schema conflicts |
 | Tiered retention / cold storage | Additive archival task, no schema changes |
+| Zarr on-disk format migration (v2→v3) | Additive migration via read-v2/write-v3 pass (zarr-python 3 supports both); plan before Nepal v1 if sharding or variable-length chunks become useful. See Plan 056 §D1/D4. |
 
 ---
 

@@ -4,6 +4,13 @@ COPY --from=ghcr.io/astral-sh/uv:0.7.3 /uv /usr/local/bin/uv
 
 WORKDIR /app
 
+# Build tooling for sdist-only deps on linux/arm64 (exactextract publishes no
+# linux/aarch64 wheel; see Plan 056 D3). Builder stage only — the final image
+# copies .venv and excludes these packages.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential cmake libgeos-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY pyproject.toml uv.lock README.md ./
 RUN mkdir -p src/sapphire_flow && touch src/sapphire_flow/__init__.py
 

@@ -105,3 +105,15 @@ class TestZarrNwpGridStore:
 
         loaded = store.load(tmp_path, "icon_ch2_eps", ct)  # type: ignore[arg-type]
         xr.testing.assert_equal(loaded.values, forecast2.values)
+
+    def test_archive_is_zarr_format_v2(self, tmp_path: object) -> None:
+        """Archive is written in zarr v2 on-disk format (zarr_format=2)."""
+        store = ZarrNwpGridStore()
+        ct = ensure_utc(datetime(2026, 4, 1, 6, tzinfo=UTC))
+        forecast = _make_forecast(ct)
+        path = store.archive(forecast, tmp_path)  # type: ignore[arg-type]
+        assert (path / ".zgroup").exists(), "v2 format marker missing"
+        assert not (path / "zarr.json").exists(), "v3 format marker should not appear"
+        zarray = json.loads((path / "precipitation" / ".zarray").read_text())
+        assert zarray["zarr_format"] == 2
+        assert zarray["compressor"]["id"] == "zstd"

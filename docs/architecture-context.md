@@ -1223,6 +1223,9 @@ flowchart TD
 - **11.6 — Notification**: Unrecoverable gaps are fed back to Flow 4's ops alerting (step 4.6) as pipeline alerts (`alert_level = "nwp_gap_unrecoverable"`). Recovered gaps are logged but do not generate alerts.
 - **Idempotency**: Flow 11 is safe to re-trigger for the same gaps. Step 11.1 checks the `weather_forecasts` table — cycles that already have rows (either `gap_status='recovered'` or `gap_status='unrecoverable'`) are skipped. No duplicate writes.
 - **Tiered retention**: Extracted NWP values follow `weather_hot_days` (hot) → Parquet (cold) → delete at `max_retention_days`. Raw gridded NWP follows the same lifecycle (Zarr, already zstd-compressed internally). Gap recovery (step 11.2) must complete well before data ages out — NWP providers retain data for days/weeks, so recovery is already time-sensitive.
+
+The Zarr archive uses the v2 on-disk format under the zarr-python 3 runtime (Plan 056). v2-format archives are fully supported by zarr-python 3; format v3 will be adopted when a v3-only feature (sharding, variable-length chunks) becomes useful. See Plan 056 §D1/D4 for rationale.
+
 - **Batch scope**: Each flow run processes all outstanding gaps for a single NWP source. If Flow 4 detects gaps across multiple sources, it triggers one Flow 11 run per source (enables source-specific retry config and avoids one failing source blocking others).
 
 #### Sequencing

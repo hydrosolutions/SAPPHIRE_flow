@@ -25,7 +25,7 @@ Single VM deployment. All services in one `docker-compose.yml`. Swiss v0 targets
 
 ### Custom image
 
-One Dockerfile for `prefect-worker-ops`, `prefect-worker-hindcast`, `prefect-worker-training`, `api`, and `init`. Different entrypoints select the role. Base: `python:3.11-slim`.
+One Dockerfile for `prefect-worker-ops`, `prefect-worker-hindcast`, `prefect-worker-training`, `api`, and `init`. Different entrypoints select the role. Base: `python:3.11-slim`. Dependency constraints: `numcodecs>=0.16.1` is required for its linux/arm64 wheel (earlier versions fall back to sdist and fail). `exactextract` publishes no linux/arm64 wheel at any version, so the builder stage installs `build-essential`, `cmake`, and `libgeos-dev` to compile it from sdist; the runtime stage copies only `.venv` and remains slim (see Plan 056 D3).
 
 ### Named volumes
 

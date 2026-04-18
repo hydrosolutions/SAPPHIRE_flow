@@ -36,6 +36,8 @@ class ZarrNwpGridStore:
         log.info("nwp.archive_started", zarr_path=str(zarr_path))
 
         ds = forecast.values
+        # zarr v2 on-disk format under zarr-python 3 runtime (Plan 056 D1); migrate
+        # to v3 when sharding or variable chunks become useful.
         encoding: dict[str, dict[str, object]] = {
             str(v): {
                 "chunks": (1, *ds[v].shape[1:]),
@@ -45,7 +47,13 @@ class ZarrNwpGridStore:
         }
 
         zarr_path.parent.mkdir(parents=True, exist_ok=True)
-        ds.to_zarr(tmp_path, mode="w", consolidated=True, encoding=encoding)  # pyright: ignore[reportUnknownMemberType, reportArgumentType]
+        ds.to_zarr(
+            tmp_path,
+            mode="w",
+            consolidated=True,
+            encoding=encoding,
+            zarr_format=2,  # load-bearing: zarr-python 3 defaults to v3 on-disk
+        )  # pyright: ignore[reportUnknownMemberType, reportArgumentType]
 
         # Three-phase atomic swap
         if zarr_path.exists():
