@@ -79,7 +79,7 @@ def _seed_data(
                     value=float(i % 20),
                 )
             )
-    forcing_source._records = forcing_source._records + records
+    forcing_source.set_records(forcing_source.records() + records)
 
 
 def _build_station_stores(
