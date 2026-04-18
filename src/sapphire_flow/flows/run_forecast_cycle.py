@@ -741,7 +741,26 @@ def run_forecast_cycle_flow(
 
         stations_succeeded += 1
         duration_ms = round((time.perf_counter() - station_t0) * 1000, 1)
-        log.info("forecast.station_completed", duration_ms=duration_ms)
+        for mid, param_ensembles in all_ensembles.get(sid, {}).items():
+            if not param_ensembles:
+                continue
+            primary_ensemble = next(iter(param_ensembles.values()))
+            ensemble_size = primary_ensemble.member_count
+            lead_time_hours = (
+                primary_ensemble.forecast_horizon_steps
+                * primary_ensemble.time_step.total_seconds()
+                / 3600
+            )
+            structlog.contextvars.bind_contextvars(model_id=str(mid))
+            try:
+                log.info(
+                    "forecast.run_completed",
+                    duration_ms=duration_ms,
+                    ensemble_size=ensemble_size,
+                    lead_time_hours=lead_time_hours,
+                )
+            finally:
+                structlog.contextvars.unbind_contextvars("model_id")
         structlog.contextvars.unbind_contextvars("station_id")
 
     # --- Phase C: alert checking ---

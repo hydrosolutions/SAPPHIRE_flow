@@ -355,6 +355,81 @@ class TestForecastCycle:
         assert (sid_a, _MODEL_ID) in state_store._states
         assert (sid_b, _MODEL_ID) in state_store._states
 
+    def test_emits_forecast_run_completed_event(self) -> None:
+        """Per-(station, model) run_completed with ensemble_size and lead_time_hours."""
+        import structlog.testing
+
+        sid_a = StationId(uuid4())
+        sid_b = StationId(uuid4())
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        model = _SmallFakeModel()
+        models = {_MODEL_ID: model}
+
+        for sid in (sid_a, sid_b):
+            _build_station_and_stores(
+                sid,
+                _MODEL_ID,
+                station_store,
+                obs_store,
+                nwp_store,
+                artifact_store,
+                forcing_store,
+            )
+
+        adapter = FakeWeatherForecastSource(result={})
+
+        with structlog.testing.capture_logs() as captured:
+            run_forecast_cycle_flow(
+                station_store=station_store,
+                obs_store=obs_store,
+                weather_forecast_store=nwp_store,
+                forecast_store=forecast_store,
+                model_state_store=state_store,
+                artifact_store=artifact_store,
+                alert_store=alert_store,
+                baseline_store=baseline_store,
+                basin_store=basin_store,
+                forcing_store=forcing_store,
+                adapter=adapter,
+                models=models,  # type: ignore[arg-type]
+                config=_make_config(),
+                qc_rules=_empty_qc_rules(),
+                clock=_clock,
+                rng=random.Random(42),
+            )
+
+        run_events = [e for e in captured if e.get("event") == "forecast.run_completed"]
+
+        # One event per (station, model). Two stations, one model each.
+        assert len(run_events) == 2
+
+        # Old event name is gone.
+        assert not any(e.get("event") == "forecast.station_completed" for e in captured)
+
+        # All events carry the new kwargs but never station_id as an explicit
+        # kwarg — station_id is bound via structlog.contextvars.bind_contextvars
+        # in run_forecast_cycle and arrives through the contextvars merge
+        # processor in production, not via capture_logs's stripped chain.
+        for event in run_events:
+            assert event["ensemble_size"] == 21  # FakeStationForecastModel n_members
+            # _SmallFakeModel: 5-step horizon * 1h time_step = 5.0 hours.
+            assert event["lead_time_hours"] == 5.0
+            assert isinstance(event["duration_ms"], float)
+            assert event["duration_ms"] >= 0
+            # Do NOT expect station_id as a kwarg — it is context-bound.
+            # (capture_logs does not render contextvars into the captured dict.)
+
     def test_nwp_fetch_failure(self) -> None:
         sid = StationId(uuid4())
 
