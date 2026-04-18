@@ -18,6 +18,7 @@ import structlog
 log = structlog.get_logger(__name__)
 
 WORK_POOL = "default"
+FLOW_SOURCE_ROOT = "/app"
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +98,12 @@ async def _register_one(spec: DeploymentSpec) -> None:
     module = importlib.import_module(spec.flow_module)
     flow_fn = getattr(module, spec.flow_attr)
 
+    entrypoint = f"src/{spec.flow_module.replace('.', '/')}.py:{spec.flow_attr}"
+    sourced_flow = flow_fn.from_source(
+        source=FLOW_SOURCE_ROOT,
+        entrypoint=entrypoint,
+    )
+
     deploy_kwargs: dict[str, object] = {
         "name": spec.deployment_name,
         "work_pool_name": WORK_POOL,
@@ -109,7 +116,7 @@ async def _register_one(spec: DeploymentSpec) -> None:
     if spec.concurrency_limit is not None:
         deploy_kwargs["concurrency_limit"] = spec.concurrency_limit
 
-    deployment_id = await flow_fn.adeploy(**deploy_kwargs)
+    deployment_id = await sourced_flow.adeploy(**deploy_kwargs)
     log.info(
         "deployment.registered",
         name=spec.deployment_name,

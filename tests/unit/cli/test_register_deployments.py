@@ -12,7 +12,6 @@ from sapphire_flow.cli.register_deployments import (
     register_all,
 )
 
-
 # ---------------------------------------------------------------------------
 # _build_specs — pure function (env-var driven)
 # ---------------------------------------------------------------------------
@@ -113,8 +112,10 @@ class TestRegisterOne:
             cron="0 2 * * *",
         )
 
+        mock_sourced_flow = MagicMock()
+        mock_sourced_flow.adeploy = AsyncMock(return_value="deploy-id-123")
         mock_flow = MagicMock()
-        mock_flow.adeploy = AsyncMock(return_value="deploy-id-123")
+        mock_flow.from_source = MagicMock(return_value=mock_sourced_flow)
         mock_module = MagicMock()
         mock_module.backup_database_flow = mock_flow
 
@@ -122,8 +123,15 @@ class TestRegisterOne:
             await _register_one(spec)
 
         mock_import.assert_called_once_with("sapphire_flow.flows.backup")
-        mock_flow.adeploy.assert_awaited_once()
-        call_kwargs = mock_flow.adeploy.call_args[1]
+        mock_flow.from_source.assert_called_once()
+        from_source_kwargs = mock_flow.from_source.call_args[1]
+        assert from_source_kwargs["source"] == "/app"
+        assert (
+            from_source_kwargs["entrypoint"]
+            == "src/sapphire_flow/flows/backup.py:backup_database_flow"
+        )
+        mock_sourced_flow.adeploy.assert_awaited_once()
+        call_kwargs = mock_sourced_flow.adeploy.call_args[1]
         assert call_kwargs["name"] == "backup-database"
         assert call_kwargs["work_pool_name"] == WORK_POOL
         assert call_kwargs["cron"] == "0 2 * * *"
@@ -140,15 +148,17 @@ class TestRegisterOne:
             concurrency_limit=1,
         )
 
+        mock_sourced_flow = MagicMock()
+        mock_sourced_flow.adeploy = AsyncMock(return_value="deploy-id-456")
         mock_flow = MagicMock()
-        mock_flow.adeploy = AsyncMock(return_value="deploy-id-456")
+        mock_flow.from_source = MagicMock(return_value=mock_sourced_flow)
         mock_module = MagicMock()
         mock_module.train_models_flow = mock_flow
 
         with patch("importlib.import_module", return_value=mock_module):
             await _register_one(spec)
 
-        call_kwargs = mock_flow.adeploy.call_args[1]
+        call_kwargs = mock_sourced_flow.adeploy.call_args[1]
         assert "cron" not in call_kwargs
         assert call_kwargs["concurrency_limit"] == 1
 
@@ -159,11 +169,14 @@ class TestRegisterOne:
             flow_attr="some_flow",
             deployment_name="bad-deploy",
         )
-        with patch(
-            "importlib.import_module", side_effect=ModuleNotFoundError("nonexistent")
+        with (
+            patch(
+                "importlib.import_module",
+                side_effect=ModuleNotFoundError("nonexistent"),
+            ),
+            pytest.raises(ModuleNotFoundError),
         ):
-            with pytest.raises(ModuleNotFoundError):
-                await _register_one(spec)
+            await _register_one(spec)
 
 
 # ---------------------------------------------------------------------------
