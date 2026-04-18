@@ -145,7 +145,7 @@ class ThresholdDirection(Enum):
     ABOVE = "above"  # alert when value > threshold (flood)
     BELOW = "below"  # alert when value < threshold (low-flow)
 
-class AlertModelStrategy(Enum):
+class ModelCombinationStrategy(Enum):
     PRIMARY = "primary"      # highest-priority model only
     POOLED = "pooled"        # grand ensemble from all models
     BMA = "bma"              # Bayesian Model Averaging (skill-weighted)
@@ -197,26 +197,6 @@ class NotificationChannel(Enum):
     SMS = "sms"
     WEBHOOK = "webhook"
 
-class DlqResolution(Enum):
-    REPLAYED = "replayed"
-    DISCARDED = "discarded"
-
-class AdjustmentType(Enum):
-    SHIFT = "shift"
-    SCALE = "scale"
-    CAP = "cap"
-    FLOOR = "floor"
-
-class Calendar(Enum):
-    GREGORIAN = "gregorian"
-    BIKRAM_SAMBAT = "bikram_sambat"
-
-class UserRole(Enum):
-    ORG_ADMIN = "org_admin"
-    IT_ADMIN = "it_admin"
-    MODEL_ADMIN = "model_admin"
-    FORECASTER = "forecaster"
-
 class StationStatus(Enum):
     ONBOARDING = "onboarding"
     OPERATIONAL = "operational"
@@ -232,23 +212,6 @@ class ObservationSource(Enum):
     MEASURED = "measured"                          # direct sensor reading
     RATING_CURVE_DERIVED = "rating_curve_derived"  # derived via rating curve conversion (Flow 2 step 2.5)
     MANUAL_IMPORT = "manual_import"                # CSV upload (Flow 12 Branch B, Flow 5 step 5.4)
-
-class AuditEventType(Enum):
-    LOGIN = "login"
-    LOGOUT = "logout"
-    LOGIN_FAILED = "login_failed"
-    PASSWORD_CHANGED = "password_changed"
-    USER_CREATED = "user_created"
-    USER_DEACTIVATED = "user_deactivated"
-    API_KEY_CREATED = "api_key_created"
-    API_KEY_REVOKED = "api_key_revoked"
-    API_KEY_REQUEST = "api_key_request"
-    FORECAST_STATUS_CHANGE = "forecast_status_change"
-    FORECAST_ADJUSTED = "forecast_adjusted"
-    MODEL_PROMOTED = "model_promoted"
-    MODEL_REJECTED = "model_rejected"
-    STATION_STATUS_CHANGE = "station_status_change"
-    OBSERVATION_REPROCESSED = "observation_reprocessed"  # Flow 12 reprocessing event
 
 class AuditActorType(Enum):
     USER = "user"
@@ -299,6 +262,52 @@ class OnboardingOutcome(Enum):                           # in-memory only, no DB
     FAILED_HINDCAST = "failed_hindcast"
     FAILED_SKILL = "failed_skill"
     FAILED_ASSIGNMENT = "failed_assignment"
+```
+
+---
+
+## Enums — v1 / deferred (not implemented in v0)
+
+These enums appear in v1 design but are not implemented in `src/sapphire_flow/types/enums.py`.
+Deferred per `docs/v0-scope.md:464` (UserRole, AuditEventType, AdjustmentType, Calendar) and by lack of consumer infrastructure (DlqResolution). Implementers must not import them from `sapphire_flow.types.enums` — the symbols do not exist at runtime.
+
+```python
+class DlqResolution(Enum):
+    REPLAYED = "replayed"
+    DISCARDED = "discarded"
+
+class AdjustmentType(Enum):
+    SHIFT = "shift"
+    SCALE = "scale"
+    CAP = "cap"
+    FLOOR = "floor"
+
+class Calendar(Enum):
+    GREGORIAN = "gregorian"
+    BIKRAM_SAMBAT = "bikram_sambat"
+
+class UserRole(Enum):
+    ORG_ADMIN = "org_admin"
+    IT_ADMIN = "it_admin"
+    MODEL_ADMIN = "model_admin"
+    FORECASTER = "forecaster"
+
+class AuditEventType(Enum):
+    LOGIN = "login"
+    LOGOUT = "logout"
+    LOGIN_FAILED = "login_failed"
+    PASSWORD_CHANGED = "password_changed"
+    USER_CREATED = "user_created"
+    USER_DEACTIVATED = "user_deactivated"
+    API_KEY_CREATED = "api_key_created"
+    API_KEY_REVOKED = "api_key_revoked"
+    API_KEY_REQUEST = "api_key_request"
+    FORECAST_STATUS_CHANGE = "forecast_status_change"
+    FORECAST_ADJUSTED = "forecast_adjusted"
+    MODEL_PROMOTED = "model_promoted"
+    MODEL_REJECTED = "model_rejected"
+    STATION_STATUS_CHANGE = "station_status_change"
+    OBSERVATION_REPROCESSED = "observation_reprocessed"  # Flow 12 reprocessing event
 ```
 
 ---
@@ -675,7 +684,7 @@ class ExceedanceResult:
     observed_value: float | None   # observed value, NULL for forecast alerts
     exceeded: bool                 # whether the threshold was crossed in the configured direction
     model_ids: tuple[ModelId, ...] = ()                        # models that contributed
-    strategy: AlertModelStrategy = AlertModelStrategy.PRIMARY   # which strategy produced this result
+    strategy: ModelCombinationStrategy = ModelCombinationStrategy.PRIMARY   # which strategy produced this result
 ```
 
 Module: `types/domain.py`
@@ -832,7 +841,7 @@ class Alert:
     notified_at: UtcDatetime | None  # NULL = notification pending
     created_at: UtcDatetime
     model_ids: tuple[ModelId, ...] = ()                        # models that contributed; () for observation/pipeline alerts
-    alert_model_strategy: AlertModelStrategy | None = None      # strategy; None for observation/pipeline alerts
+    alert_model_strategy: ModelCombinationStrategy | None = None      # strategy; None for observation/pipeline alerts
 ```
 
 Module: `types/alert.py`
@@ -863,7 +872,7 @@ from pydantic import BaseModel
 class ForecastAdjustmentItem(BaseModel):
     valid_time: str                                              # ISO 8601 UTC
     lead_time_hours: int
-    adjustment_type: Literal["shift", "scale", "cap", "floor"]  # envelope operation; AdjustmentType enum provides the canonical values; Literal is used here for Pydantic boundary compatibility
+    adjustment_type: Literal["shift", "scale", "cap", "floor"]  # envelope operation; Literal is used here for Pydantic boundary compatibility; AdjustmentType enum is the v1 canonical form (see *Enums — v1 / deferred*)
     value: float                                                 # delta for shift, factor for scale,
                                                                  # threshold for cap/floor
 ```
@@ -935,7 +944,7 @@ Module: `types/pipeline.py`
 Enum representing the state of a Prefect flow run.
 
 ```python
-class FlowRunState(str, Enum):
+class FlowRunState(StrEnum):
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -944,6 +953,8 @@ class FlowRunState(str, Enum):
     CANCELLING = "cancelling"
     CANCELLED = "cancelled"
 ```
+
+Uses `StrEnum` (Python 3.11+). Members compare equal to their string value via `==` and `in`; `isinstance(v, str)` is `True`.
 
 Module: `types/enums.py`
 
@@ -1007,6 +1018,8 @@ class AuditEntry:
 ```
 
 Module: `types/auth.py`
+
+**Status**: v1 — deferred per Plan 042. Not implemented in v0. Types below are design intent only; do not import them.
 
 ---
 
@@ -1567,7 +1580,7 @@ Module: `protocols/forecast_model.py`
 ### ModelAlertStrategy Protocol
 
 Pluggable strategy for combining or selecting model ensembles before threshold evaluation.
-Implementations correspond to `AlertModelStrategy` enum values. Registered via `DeploymentConfig.alert_model_strategy`.
+Implementations correspond to `ModelCombinationStrategy` enum values. Registered via `DeploymentConfig.alert_model_strategy`.
 
 ```python
 @runtime_checkable
@@ -2274,6 +2287,7 @@ class WeatherForecastSource(Protocol):
     ) -> GriddedForecast | dict[StationId, WeatherForecastResult]: ...
         # Gridded sources return a single GriddedForecast (passed to GridExtractor for bulk extraction).
         # Pre-extracted sources (Data Gateway, point stations) return station-keyed dict (also fetched in bulk).
+        # Callers discriminate via isinstance(result, GriddedForecast).
 ```
 
 Two return paths:
@@ -2281,6 +2295,8 @@ Two return paths:
   passes this to `GridExtractor.extract()` which bulk-extracts all stations from one grid read.
 - **Pre-extracted** (e.g. Data Gateway, point weather stations): returns
   `dict[StationId, WeatherForecastResult]`. Already station-keyed; no extraction step needed.
+
+Callers discriminate between the two return types using `isinstance(result, GriddedForecast)` — the canonical pattern used in `run_forecast_cycle.py`.
 
 **Raw NWP grid** (pre-extraction, not per-station):
 
@@ -2511,7 +2527,7 @@ class DeploymentConfig(BaseModel):
     input_quality: InputQualityConfig = InputQualityConfig()
 
     # --- Multi-model alert strategy ---
-    alert_model_strategy: AlertModelStrategy = AlertModelStrategy.PRIMARY
+    alert_model_strategy: ModelCombinationStrategy = ModelCombinationStrategy.PRIMARY
     min_operational_ensemble_size: int = 20
     min_operational_quantile_levels: int = 7
 ```

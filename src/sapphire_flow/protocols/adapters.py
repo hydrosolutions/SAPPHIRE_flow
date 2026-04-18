@@ -20,6 +20,16 @@ class WeatherForecastSource(Protocol):
         station_configs: list[StationWeatherSource],
         cycle_time: UtcDatetime,
     ) -> GriddedForecast | dict[StationId, WeatherForecastResult]:
+        """Fetch weather forecasts for the given stations and NWP cycle.
+
+        Return type depends on the implementation path:
+        - Gridded-NWP sources (ICON-CH2-EPS, ECMWF IFS) return ``GriddedForecast``.
+          The flow layer passes this to ``GridExtractor.extract()`` for bulk extraction.
+        - Per-station / pre-extracted sources (Data Gateway, point stations) return
+          ``dict[StationId, WeatherForecastResult]``, already station-keyed.
+
+        Callers discriminate via ``isinstance(result, GriddedForecast)``.
+        """
         raise NotImplementedError
 
 

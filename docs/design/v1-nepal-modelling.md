@@ -139,7 +139,7 @@ proven at Google scale, one forward pass, no ensemble bookkeeping.
 ### Architecture readiness
 
 Fully ready. The `ForecastModel` Protocol returns `ForecastEnsemble` (members
-or quantiles) regardless of paradigm. `AlertModelStrategy` handles multi-model
+or quantiles) regardless of paradigm. `ModelCombinationStrategy` handles multi-model
 combination. The architecture is paradigm-agnostic by design.
 
 ### Related: MC-ALD is not worth pursuing
