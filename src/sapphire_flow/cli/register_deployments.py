@@ -99,7 +99,7 @@ async def _register_one(spec: DeploymentSpec) -> None:
     flow_fn = getattr(module, spec.flow_attr)
 
     entrypoint = f"src/{spec.flow_module.replace('.', '/')}.py:{spec.flow_attr}"
-    sourced_flow = flow_fn.from_source(
+    sourced_flow = await flow_fn.afrom_source(
         source=FLOW_SOURCE_ROOT,
         entrypoint=entrypoint,
     )

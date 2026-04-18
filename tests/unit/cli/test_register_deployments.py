@@ -115,7 +115,7 @@ class TestRegisterOne:
         mock_sourced_flow = MagicMock()
         mock_sourced_flow.adeploy = AsyncMock(return_value="deploy-id-123")
         mock_flow = MagicMock()
-        mock_flow.from_source = MagicMock(return_value=mock_sourced_flow)
+        mock_flow.afrom_source = AsyncMock(return_value=mock_sourced_flow)
         mock_module = MagicMock()
         mock_module.backup_database_flow = mock_flow
 
@@ -123,8 +123,8 @@ class TestRegisterOne:
             await _register_one(spec)
 
         mock_import.assert_called_once_with("sapphire_flow.flows.backup")
-        mock_flow.from_source.assert_called_once()
-        from_source_kwargs = mock_flow.from_source.call_args[1]
+        mock_flow.afrom_source.assert_awaited_once()
+        from_source_kwargs = mock_flow.afrom_source.call_args[1]
         assert from_source_kwargs["source"] == "/app"
         assert (
             from_source_kwargs["entrypoint"]
@@ -151,7 +151,7 @@ class TestRegisterOne:
         mock_sourced_flow = MagicMock()
         mock_sourced_flow.adeploy = AsyncMock(return_value="deploy-id-456")
         mock_flow = MagicMock()
-        mock_flow.from_source = MagicMock(return_value=mock_sourced_flow)
+        mock_flow.afrom_source = AsyncMock(return_value=mock_sourced_flow)
         mock_module = MagicMock()
         mock_module.train_models_flow = mock_flow
 
