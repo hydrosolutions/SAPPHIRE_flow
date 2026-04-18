@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import random
 from datetime import timedelta
 from typing import TYPE_CHECKING
@@ -11,6 +12,7 @@ from prefect import flow, task
 from prefect.concurrency.sync import concurrency
 from prefect.utilities.annotations import unmapped
 
+from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.flows.compute_skills import compute_skills_task
 from sapphire_flow.flows.run_hindcast import run_hindcast_flow
 from sapphire_flow.protocols.forecast_model import (
@@ -427,6 +429,56 @@ def onboard_model_flow(
     from sapphire_flow.types.datetime import ensure_utc
 
     structlog.contextvars.bind_contextvars(model_id=model_id)
+
+    # --- Production setup ---
+    _conn: object = None  # noqa: F841 — GC anchor for bootstrapped DB connection
+    if station_store is None:
+        from sapphire_flow.flows._db import setup_production_stores
+
+        database_url = os.environ["DATABASE_URL"]
+        _conn, stores = setup_production_stores(database_url)
+        model_store = stores["model_store"]
+        station_store = stores["station_store"]
+        group_store = stores["group_store"]
+        obs_store = stores["obs_store"]
+        basin_store = stores["basin_store"]
+        artifact_store = stores["artifact_store"]
+        hindcast_store = stores["hindcast_store"]
+        skill_store = stores["skill_store"]
+        flow_regime_store = stores["flow_regime_store"]
+
+    if deployment_config is None:
+        config_path = os.environ.get("SAPPHIRE_CONFIG")
+        if config_path is not None:
+            from sapphire_flow.config.deployment import load_config
+
+            deployment_config = load_config(config_path)
+        else:
+            from sapphire_flow.config.deployment import DeploymentConfig
+
+            deployment_config = DeploymentConfig(max_retention_days=600)
+
+    # forcing_source is passed through as-is. None is allowed for empty-scope
+    # (register-only) runs; the per-unit loop only dereferences it when the scope
+    # is non-empty. If a future plan wires deployment-triggerable adapter
+    # injection, revisit.
+
+    if model_store is None:
+        raise ConfigurationError("model_store is required but was not provided")
+    if group_store is None:
+        raise ConfigurationError("group_store is required but was not provided")
+    if obs_store is None:
+        raise ConfigurationError("obs_store is required but was not provided")
+    if basin_store is None:
+        raise ConfigurationError("basin_store is required but was not provided")
+    if artifact_store is None:
+        raise ConfigurationError("artifact_store is required but was not provided")
+    if hindcast_store is None:
+        raise ConfigurationError("hindcast_store is required but was not provided")
+    if skill_store is None:
+        raise ConfigurationError("skill_store is required but was not provided")
+    if flow_regime_store is None:
+        raise ConfigurationError("flow_regime_store is required but was not provided")
 
     if clock is None:
         clock = lambda: ensure_utc(datetime.now(UTC))  # noqa: E731

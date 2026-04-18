@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 from uuid import UUID, uuid4
 
+import pytest
 import structlog.testing
 
 from sapphire_flow.flows.onboard_model import onboard_model_flow
@@ -45,16 +46,18 @@ def _make_stores(station_id: StationId | None = None) -> dict:
     if station_id is not None:
         station = make_station_config(station_id=station_id)
         station_store.store_station(station)
+    # Non-None placeholders satisfy the defensive None-check block added in
+    # Plan 059; downstream tasks are patched so the stores are never called.
     return {
         "model_store": FakeModelStore(),
         "station_store": station_store,
         "group_store": FakeStationGroupStore(),
-        "obs_store": None,
-        "basin_store": None,
+        "obs_store": MagicMock(),
+        "basin_store": MagicMock(),
         "artifact_store": FakeModelArtifactStore(),
-        "hindcast_store": None,
+        "hindcast_store": MagicMock(),
         "skill_store": FakeSkillStore(),
-        "flow_regime_store": None,
+        "flow_regime_store": MagicMock(),
         "forcing_source": None,
         "deployment_config": make_deployment_config(max_retention_days=3650),
     }
@@ -177,8 +180,6 @@ class TestHappyPath:
         mock_assign.assert_called_once()
 
     def test_model_not_found_raises_value_error(self) -> None:
-        import pytest
-
         stores = _make_stores()
 
         with (
@@ -323,3 +324,60 @@ class TestStructuredLogging:
         warning_logs = [e for e in gate_logs if e.get("log_level") == "warning"]
         assert warning_logs, "Expected model.skill_gate_completed at WARNING level"
         assert warning_logs[0].get("passed") is False
+
+
+class TestBootstrapPath:
+    def test_bootstrap_resolves_stores_when_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stores_dict = {
+            "model_store": MagicMock(),
+            "station_store": MagicMock(),
+            "group_store": MagicMock(),
+            "obs_store": MagicMock(),
+            "basin_store": MagicMock(),
+            "artifact_store": MagicMock(),
+            "hindcast_store": MagicMock(),
+            "skill_store": MagicMock(),
+            "flow_regime_store": MagicMock(),
+        }
+        captured: dict[str, object] = {}
+
+        def fake_setup(url: str) -> tuple[object, dict]:
+            captured["url"] = url
+            return (MagicMock(), stores_dict)
+
+        monkeypatch.setenv("DATABASE_URL", "sqlite://")
+        monkeypatch.setattr(
+            "sapphire_flow.flows._db.setup_production_stores", fake_setup
+        )
+        monkeypatch.setattr(
+            "sapphire_flow.services.model_registry.discover_models",
+            lambda: {ModelId(_MODEL_ID): FakeStationForecastModel()},
+        )
+
+        with (
+            patch(
+                "sapphire_flow.flows.onboard_model.concurrency",
+                side_effect=lambda *a, **kw: _noop_concurrency(),
+            ),
+            patch("prefect.runtime.flow_run", MagicMock(id=uuid4())),
+            patch(
+                "sapphire_flow.flows.onboard_model._determine_onboarding_scope_task",
+                return_value=[],
+            ),
+            patch("sapphire_flow.flows.onboard_model.register_models") as mock_register,
+        ):
+            onboard_model_flow.fn(
+                model_id=_MODEL_ID,
+                period_start="2023-01-01T00:00:00+00:00",
+                period_end="2025-01-01T00:00:00+00:00",
+                clock=_fixed_clock,
+                rng=random.Random(0),
+            )
+
+        assert captured["url"] == "sqlite://"
+        # register_models was called with the bootstrapped model_store
+        assert mock_register.called
+        args, _ = mock_register.call_args
+        assert args[1] is stores_dict["model_store"]

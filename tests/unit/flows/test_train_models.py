@@ -693,3 +693,57 @@ class TestMultiParameterSkillComputation:
 
         assert stored_params == target_parameters
         assert stored_stations == set(station_ids)
+
+
+class TestBootstrapPath:
+    def test_bootstrap_resolves_stores_when_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from sapphire_flow.types.training import TrainingScope
+
+        stores_dict = {
+            "model_store": MagicMock(),
+            "station_store": MagicMock(),
+            "group_store": MagicMock(),
+            "obs_store": MagicMock(),
+            "basin_store": MagicMock(),
+            "artifact_store": MagicMock(),
+            "hindcast_store": MagicMock(),
+            "skill_store": MagicMock(),
+            "flow_regime_store": MagicMock(),
+        }
+        captured: dict[str, object] = {}
+
+        def fake_setup(url: str) -> tuple[object, dict]:
+            captured["url"] = url
+            return (MagicMock(), stores_dict)
+
+        monkeypatch.setenv("DATABASE_URL", "sqlite://")
+        monkeypatch.setattr(
+            "sapphire_flow.flows._db.setup_production_stores", fake_setup
+        )
+
+        with (
+            patch(
+                "sapphire_flow.flows.train_models.discover_models",
+                return_value={},
+            ),
+            patch("sapphire_flow.flows.train_models.register_models") as mock_register,
+            patch(
+                "sapphire_flow.flows.train_models._determine_scope_task",
+                return_value=TrainingScope(units=()),
+            ),
+        ):
+            results = train_models_flow.fn(
+                clock=lambda: _EPOCH,
+                rng=random.Random(0),
+            )
+
+        assert captured["url"] == "sqlite://"
+        assert results == []
+        # register_models was called with the bootstrapped model_store
+        assert mock_register.called
+        args, _ = mock_register.call_args
+        assert args[1] is stores_dict["model_store"]

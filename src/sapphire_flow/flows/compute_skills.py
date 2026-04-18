@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import os
 from uuid import UUID, uuid4
 
 import structlog
 from prefect import flow, task
 
+from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.skill.combined_skill import (
     compute_bma_skill_cross_validated,
     compute_combined_skill,
@@ -270,6 +272,39 @@ def compute_combined_skills_flow(
     deployment_config: object = None,
     clock: object = None,
 ) -> tuple[list[SkillScore], list[SkillDiagram]]:
+    # --- Production setup ---
+    _conn: object = None  # noqa: F841 — GC anchor for bootstrapped DB connection
+    if station_store is None:
+        from sapphire_flow.flows._db import setup_production_stores
+
+        database_url = os.environ["DATABASE_URL"]
+        _conn, stores = setup_production_stores(database_url)
+        station_store = stores["station_store"]
+        hindcast_store = stores["hindcast_store"]
+        obs_store = stores["obs_store"]
+        skill_store = stores["skill_store"]
+        flow_regime_store = stores["flow_regime_store"]
+
+    if deployment_config is None:
+        config_path = os.environ.get("SAPPHIRE_CONFIG")
+        if config_path is not None:
+            from sapphire_flow.config.deployment import load_config
+
+            deployment_config = load_config(config_path)
+        else:
+            from sapphire_flow.config.deployment import DeploymentConfig
+
+            deployment_config = DeploymentConfig(max_retention_days=600)
+
+    if hindcast_store is None:
+        raise ConfigurationError("hindcast_store is required but was not provided")
+    if obs_store is None:
+        raise ConfigurationError("obs_store is required but was not provided")
+    if skill_store is None:
+        raise ConfigurationError("skill_store is required but was not provided")
+    if flow_regime_store is None:
+        raise ConfigurationError("flow_regime_store is required but was not provided")
+
     return compute_combined_skills_task(
         station_id=station_id,
         parameter=parameter,
@@ -303,6 +338,39 @@ def compute_skills_flow(
     deployment_config: object = None,
     clock: object = None,
 ) -> tuple[list[SkillScore], list[SkillDiagram]]:
+    # --- Production setup ---
+    _conn: object = None  # noqa: F841 — GC anchor for bootstrapped DB connection
+    if station_store is None:
+        from sapphire_flow.flows._db import setup_production_stores
+
+        database_url = os.environ["DATABASE_URL"]
+        _conn, stores = setup_production_stores(database_url)
+        station_store = stores["station_store"]
+        hindcast_store = stores["hindcast_store"]
+        obs_store = stores["obs_store"]
+        skill_store = stores["skill_store"]
+        flow_regime_store = stores["flow_regime_store"]
+
+    if deployment_config is None:
+        config_path = os.environ.get("SAPPHIRE_CONFIG")
+        if config_path is not None:
+            from sapphire_flow.config.deployment import load_config
+
+            deployment_config = load_config(config_path)
+        else:
+            from sapphire_flow.config.deployment import DeploymentConfig
+
+            deployment_config = DeploymentConfig(max_retention_days=600)
+
+    if hindcast_store is None:
+        raise ConfigurationError("hindcast_store is required but was not provided")
+    if obs_store is None:
+        raise ConfigurationError("obs_store is required but was not provided")
+    if skill_store is None:
+        raise ConfigurationError("skill_store is required but was not provided")
+    if flow_regime_store is None:
+        raise ConfigurationError("flow_regime_store is required but was not provided")
+
     return compute_skills_task(
         station_id=station_id,
         model_id=model_id,

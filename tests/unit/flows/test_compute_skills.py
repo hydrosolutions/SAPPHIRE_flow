@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import polars as pl
+import pytest  # noqa: TC002 — used at runtime for monkeypatch type annotation
 
 from sapphire_flow.flows.compute_skills import (
     compute_combined_skills_flow,
@@ -421,3 +422,106 @@ class TestComputeCombinedSkillsTask:
 
         assert scores == []
         assert diagrams == []
+
+
+class TestBootstrapPath:
+    def test_compute_skills_flow_bootstrap_resolves_stores_when_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from unittest.mock import MagicMock, patch
+
+        stores_dict = {
+            "station_store": MagicMock(),
+            "hindcast_store": MagicMock(),
+            "obs_store": MagicMock(),
+            "skill_store": MagicMock(),
+            "flow_regime_store": MagicMock(),
+            "model_store": MagicMock(),
+            "group_store": MagicMock(),
+            "basin_store": MagicMock(),
+            "artifact_store": MagicMock(),
+        }
+        captured: dict[str, object] = {}
+
+        def fake_setup(url: str) -> tuple[object, dict]:
+            captured["url"] = url
+            return (MagicMock(), stores_dict)
+
+        monkeypatch.setenv("DATABASE_URL", "sqlite://")
+        monkeypatch.setattr(
+            "sapphire_flow.flows._db.setup_production_stores", fake_setup
+        )
+
+        with patch(
+            "sapphire_flow.flows.compute_skills.compute_skills_task",
+            return_value=([], []),
+        ) as mock_task:
+            scores, diagrams = compute_skills_flow.fn(
+                station_id=StationId(_uuid()),
+                model_id=ModelId("fake_model"),
+                artifact_id=ArtifactId(_uuid()),
+                parameter="discharge",
+                clock=lambda: _EPOCH,
+            )
+
+        assert captured["url"] == "sqlite://"
+        assert scores == []
+        assert diagrams == []
+        assert mock_task.called
+        call_kwargs = mock_task.call_args.kwargs
+        assert call_kwargs["hindcast_store"] is stores_dict["hindcast_store"]
+        assert call_kwargs["obs_store"] is stores_dict["obs_store"]
+        assert call_kwargs["skill_store"] is stores_dict["skill_store"]
+        assert call_kwargs["station_store"] is stores_dict["station_store"]
+        assert call_kwargs["flow_regime_store"] is stores_dict["flow_regime_store"]
+
+    def test_compute_combined_skills_flow_bootstrap_resolves_stores_when_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from sapphire_flow.types.enums import ModelCombinationStrategy
+
+        stores_dict = {
+            "station_store": MagicMock(),
+            "hindcast_store": MagicMock(),
+            "obs_store": MagicMock(),
+            "skill_store": MagicMock(),
+            "flow_regime_store": MagicMock(),
+            "model_store": MagicMock(),
+            "group_store": MagicMock(),
+            "basin_store": MagicMock(),
+            "artifact_store": MagicMock(),
+        }
+        captured: dict[str, object] = {}
+
+        def fake_setup(url: str) -> tuple[object, dict]:
+            captured["url"] = url
+            return (MagicMock(), stores_dict)
+
+        monkeypatch.setenv("DATABASE_URL", "sqlite://")
+        monkeypatch.setattr(
+            "sapphire_flow.flows._db.setup_production_stores", fake_setup
+        )
+
+        with patch(
+            "sapphire_flow.flows.compute_skills.compute_combined_skills_task",
+            return_value=([], []),
+        ) as mock_task:
+            scores, diagrams = compute_combined_skills_flow.fn(
+                station_id=StationId(_uuid()),
+                parameter="discharge",
+                strategy=ModelCombinationStrategy.POOLED,
+                clock=lambda: _EPOCH,
+            )
+
+        assert captured["url"] == "sqlite://"
+        assert scores == []
+        assert diagrams == []
+        assert mock_task.called
+        call_kwargs = mock_task.call_args.kwargs
+        assert call_kwargs["hindcast_store"] is stores_dict["hindcast_store"]
+        assert call_kwargs["obs_store"] is stores_dict["obs_store"]
+        assert call_kwargs["skill_store"] is stores_dict["skill_store"]
+        assert call_kwargs["station_store"] is stores_dict["station_store"]
+        assert call_kwargs["flow_regime_store"] is stores_dict["flow_regime_store"]
