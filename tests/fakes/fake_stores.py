@@ -181,6 +181,9 @@ class FakeObservationStore:
             for sid in station_ids
         }
 
+    def observations(self) -> list[Observation]:
+        return list(self._observations.values())
+
     def fetch_derived_observations_by_curve(
         self,
         station_id: StationId,
@@ -417,6 +420,9 @@ class FakeWeatherForecastStore:
         cycles = [r.cycle_time for r in self._records if r.nwp_source == nwp_source]
         return max(cycles) if cycles else None
 
+    def record_count(self) -> int:
+        return len(self._records)
+
 
 class FakeAlertStore:
     def __init__(self) -> None:
@@ -484,6 +490,9 @@ class FakeAlertStore:
         self._alerts[alert_id] = replace(
             a, status=AlertStatus.ACKNOWLEDGED, acknowledged_by=acknowledged_by
         )
+
+    def alerts(self) -> list[Alert]:
+        return list(self._alerts.values())
 
     def fetch_alert_history(
         self,
@@ -856,6 +865,9 @@ class FakeStationStore:
             )
         ]
         self._weather_sources.append(source)
+
+    def stations(self) -> dict[StationId, StationConfig]:
+        return dict(self._stations)
 
     def update_station_status(
         self, station_id: StationId, new_status: StationStatus

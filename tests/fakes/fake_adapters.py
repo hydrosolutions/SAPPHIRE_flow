@@ -108,6 +108,15 @@ class FakeWeatherReanalysisSource:
         self._records = records or []
         self.fetch_reanalysis_call_count: int = 0
 
+    def records(self) -> list[RawHistoricalForcing]:
+        return list(self._records)
+
+    def set_records(self, records: list[RawHistoricalForcing]) -> None:
+        self._records = list(records)
+
+    def extend_records(self, records: list[RawHistoricalForcing]) -> None:
+        self._records.extend(records)
+
     def fetch_reanalysis(
         self,
         station_configs: list[StationWeatherSource],
