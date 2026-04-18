@@ -62,7 +62,7 @@ def _store_qc_obs(
         source=ObservationSource.MEASURED,
     )
     obs_store.store_raw_observations([raw])
-    oid = list(obs_store._observations.keys())[-1]
+    oid = obs_store.observations()[-1].id
     obs_store.update_qc(oid, QcStatus.QC_PASSED, [])
 
 
@@ -160,7 +160,7 @@ class TestCheckObservationAlerts:
             station_id=sid, source=AlertSource.OBSERVATION
         )
         assert len(active) == 0
-        all_alerts = list(alert_store._alerts.values())
+        all_alerts = alert_store.alerts()
         assert all(a.status == AlertStatus.RESOLVED for a in all_alerts)
 
     def test_no_thresholds_no_alerts(self) -> None:
