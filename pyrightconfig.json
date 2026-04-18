@@ -2,6 +2,5 @@
   "include": ["src"],
   "typeCheckingMode": "strict",
   "pythonVersion": "3.11",
-  "reportMissingTypeStubs": false,
-  "extraPaths": ["../ForecastInterface"]
+  "reportMissingTypeStubs": false
 }
