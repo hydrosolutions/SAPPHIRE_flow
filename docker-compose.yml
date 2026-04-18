@@ -71,7 +71,7 @@ services:
     environment:
       SAPPHIRE_DATA_DIR: /data
       SAPPHIRE_CONFIG: /app/config.toml
-      DATABASE_URL_TEMPLATE: postgresql+asyncpg://${DB_USER:-sapphire}@postgres:5432/sapphire
+      DATABASE_URL_TEMPLATE: postgresql+psycopg://${DB_USER:-sapphire}@postgres:5432/sapphire
       PREFECT_API_URL: http://prefect-server:4200/api
       PREFECT_LOGGING_LEVEL: WARNING
     depends_on:
