@@ -1,8 +1,8 @@
 # Reference dataset
 
-This directory holds recorded observation data from the Swiss BAFU LINDAS SPARQL
-endpoint. The dataset drives the `ReplayStationAdapter` used in replay adapter
-tests, integration tests, and the end-to-end forecast cycle test.
+This directory holds observation data for the Swiss BAFU LINDAS stations used
+by the `ReplayStationAdapter` in replay adapter tests, integration tests, and
+the end-to-end forecast cycle test.
 
 ## Station selection
 
@@ -26,8 +26,44 @@ discharge and water level, exercising the multi-parameter ingest path.
 ## Files
 
 - `stations.toml` — station metadata for the recording tool and replay tests
-- `bafu_observations.parquet` — observation data (synthetic placeholder until
-  recorded from live BAFU LINDAS — see Known limitations below)
+- `bafu_observations.parquet` — synthetic stand-in observation data (see
+  [Synthetic fixture — by design](#synthetic-fixture--by-design) below)
+
+## Synthetic fixture — by design
+
+`bafu_observations.parquet` is a **deliberately synthetic** stand-in, not a
+recording from the live BAFU LINDAS endpoint. This is a known, intentional
+design choice — not a bug or a gap waiting to be fixed today.
+
+**Why re-recording is not possible now.**
+The BAFU LINDAS SPARQL endpoint is real-time only. The adapter
+(`hydro_scraper.py:173-192`) binds a single current-reading subject URI and
+ignores any time range — there is no way to request historical observations
+through this endpoint or this adapter. Every call returns the reading at the
+moment of the request.
+
+Building a fixture that represents real BAFU data therefore requires
+*collecting the current reading repeatedly over time* — not issuing a
+one-off recording command. Until a scheduled collection pipeline
+(see `docs/plans/058-bafu-lindas-archive-collection.md`) accumulates ≥6
+months of real readings (the gate defined in `docs/v0-scope.md` §E1), the
+synthetic fixture is the right stand-in.
+
+**What the synthetic fixture guarantees.**
+The current `bafu_observations.parquet` passes full schema and structural
+tests (`tests/unit/adapters/test_reference_dataset.py`): correct columns,
+correct dtypes, valid `RawObservation` values, correct `ObservationSource`
+enum, and file-size bounds. It gives the replay adapter and the e2e test a
+valid, schema-conformant input to exercise the pipeline — which is all
+Tier 2 fixtures are required to do at this stage.
+
+**When to replace it.**
+Per `docs/v0-scope.md` §E1: once the archive-collection pipeline (Plan 058)
+has accumulated ≥6 months of real readings, promote the archive to
+`bafu_observations.parquet` and update this note to reflect the real
+recording window. See [Recording BAFU observations](#recording-bafu-observations)
+and [Refreshing the dataset](#refreshing-the-dataset) below for the
+commands to run at that point.
 
 ## Prerequisites
 
@@ -36,6 +72,13 @@ discharge and water level, exercising the multi-parameter ingest path.
 - Run commands from the project root (the tool reads `config.toml` from the cwd)
 
 ## Recording BAFU observations
+
+> **Note**: the commands below require the LINDAS archive-collection pipeline
+> (Plan 058) to have promoted ≥6 months of real readings first. They do not
+> work today because the LINDAS endpoint is real-time only — see
+> [Synthetic fixture — by design](#synthetic-fixture--by-design).
+
+Once the archive is ready, record a reference window with:
 
 ```bash
 uv run python -m sapphire_flow.tools.record_fixtures \
@@ -73,7 +116,7 @@ without writing any file. NWP fixture recording will be added in Phase 3 v0b.
 
 ## Verifying the dataset
 
-After recording, run the reference dataset tests:
+After recording (or after any change to the Parquet), run the reference dataset tests:
 
 ```bash
 uv run pytest tests/unit/adapters/test_reference_dataset.py -v
@@ -101,7 +144,12 @@ passes even before the first recording.
 
 ## Refreshing the dataset
 
-Re-record when:
+> **Note**: the triggers below assume the archive-collection pipeline (Plan 058)
+> has promoted ≥6 months of real readings to this directory. Until then, the
+> synthetic fixture stands in by design — see
+> [Synthetic fixture — by design](#synthetic-fixture--by-design).
+
+Once real data is available, re-record when:
 
 - `stations.toml` adds, removes, or changes a station
 - A longer time window is needed (e.g. to cover a flood event)
@@ -113,9 +161,6 @@ that states the recording window (e.g. `chore: re-record BAFU fixture 2026-04-01
 
 ## Known limitations
 
-- **Synthetic placeholder**: the current `bafu_observations.parquet` was generated
-  synthetically. It passes schema and structural tests but does not contain real
-  hydrological time series. Replace it by running the recording command above.
 - **No golden answers**: no expected forecast outputs are tied to this dataset yet.
 - **NWP not recorded**: the `--source nwp` path is a stub. NWP reference fixtures
   (ICON-CH2-EPS cycles as Zarr) will be added in Phase 3 v0b.
