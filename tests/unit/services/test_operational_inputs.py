@@ -100,7 +100,7 @@ def _seed_forcing(
                     value=float(i % 10),
                 )
             )
-    source._records = records
+    source.set_records(records)
 
 
 class _SmallModelRequirements:
@@ -156,10 +156,10 @@ def _make_stores_and_sources(
     reanalysis = FakeWeatherReanalysisSource()
 
     station_cfg = make_station_config(station_id=station_id)
-    station_store._stations[station_id] = station_cfg
+    station_store.store_station(station_cfg)
     from sapphire_flow.types.station import StationWeatherSource
 
-    station_store._weather_sources.append(
+    station_store.store_weather_source(
         StationWeatherSource(
             station_id=station_id,
             nwp_source=_NWP_SOURCE,
