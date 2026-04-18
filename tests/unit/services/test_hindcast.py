@@ -70,7 +70,7 @@ def _seed_forcing(
                     value=float(i % 20),
                 )
             )
-    source._records = records
+    source.set_records(records)
 
 
 def _seed_observations(
@@ -708,9 +708,9 @@ class TestMultiParameterGroup:
             )
             obs_store.store_observations(obs)
             _seed_forcing(forcing_source, sid, data_start, n_days=400)
-            all_forcing.extend(forcing_source._records)
+            all_forcing.extend(forcing_source.records())
         # _seed_forcing overwrites _records each call; restore combined records
-        forcing_source._records = all_forcing
+        forcing_source.set_records(all_forcing)
 
         group = StationGroup(
             id=StationGroupId(uuid4()),
@@ -1043,8 +1043,8 @@ class TestConnectionFatalAbort:
             )
             obs_store.store_observations(obs)
             _seed_forcing(forcing_source, sid, data_start, n_days=400)
-            all_forcing.extend(forcing_source._records)
-        forcing_source._records = all_forcing
+            all_forcing.extend(forcing_source.records())
+        forcing_source.set_records(all_forcing)
 
         group = StationGroup(
             id=StationGroupId(uuid4()),
@@ -1119,8 +1119,8 @@ class TestGroupHindcastUsesGroupModelInputs:
             )
             obs_store.store_observations(obs)
             _seed_forcing(forcing_source, sid, data_start, n_days=400)
-            all_forcing.extend(forcing_source._records)
-        forcing_source._records = all_forcing
+            all_forcing.extend(forcing_source.records())
+        forcing_source.set_records(all_forcing)
 
         group = StationGroup(
             id=StationGroupId(uuid4()),
