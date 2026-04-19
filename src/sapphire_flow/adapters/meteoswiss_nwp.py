@@ -165,7 +165,19 @@ class MeteoSwissNwpAdapter:
             for asset_key, asset in assets.items():
                 media_type = asset.get("type", "")
                 href = asset.get("href", "")
-                if media_type == "application/x-grib2" or href.endswith(".grib2"):
+                # Accept MeteoSwiss's `application/grib` media type as well as the
+                # spec `application/x-grib2`. For href-based detection, parse the
+                # URL path — asset hrefs carry signed-URL query params (e.g.
+                # `?AWSAccessKeyId=…&Signature=…&Expires=…`) so `.endswith(".grib2")`
+                # on the raw href fails. Use urllib to strip the query.
+                from urllib.parse import urlparse
+                href_path = urlparse(href).path
+                is_grib = (
+                    media_type in ("application/x-grib2", "application/grib")
+                    or href_path.endswith(".grib2")
+                    or asset_key.endswith(".grib2")
+                )
+                if is_grib:
                     file_path = self._download_asset(href, asset_key)
                     grib_files.append(file_path)
                     log.debug(
