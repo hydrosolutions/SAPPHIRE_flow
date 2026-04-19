@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from prefect import flow, runtime, task
+from prefect.cache_policies import NO_CACHE
 from prefect.utilities.annotations import unmapped
 
 from sapphire_flow.exceptions import ConfigurationError
@@ -75,7 +76,7 @@ def _resolve_train_models_run_name() -> str:
     return f"train-{start_dt:%Y%m%d}-{end_dt:%Y%m%d}"
 
 
-@task(name="determine-scope", task_run_name="determine-scope")
+@task(name="determine-scope", task_run_name="determine-scope", cache_policy=NO_CACHE)
 def _determine_scope_task(
     model_ids: list[ModelId] | None,
     station_ids: list[StationId] | None,
@@ -100,7 +101,11 @@ def _determine_scope_task(
     )
 
 
-@task(name="assemble-training-data", task_run_name=_resolve_assemble_data_run_name)
+@task(
+    name="assemble-training-data",
+    task_run_name=_resolve_assemble_data_run_name,
+    cache_policy=NO_CACHE,
+)
 def _assemble_data_task(
     unit: TrainingUnit,
     model: object,
@@ -139,7 +144,11 @@ def _assemble_data_task(
         )
 
 
-@task(name="train-model", task_run_name=_resolve_train_model_run_name)
+@task(
+    name="train-model",
+    task_run_name=_resolve_train_model_run_name,
+    cache_policy=NO_CACHE,
+)
 def _train_model_task(
     unit: TrainingUnit,
     model: object,
@@ -153,7 +162,11 @@ def _train_model_task(
         return train_group_model(model=model, data=data, params=params, rng=rng)
 
 
-@task(name="store-artifact", task_run_name=_resolve_store_artifact_run_name)
+@task(
+    name="store-artifact",
+    task_run_name=_resolve_store_artifact_run_name,
+    cache_policy=NO_CACHE,
+)
 def _store_artifact_task(
     unit: TrainingUnit,
     artifact_bytes: bytes,

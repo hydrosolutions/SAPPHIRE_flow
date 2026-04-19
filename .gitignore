@@ -19,3 +19,4 @@ secrets/
 
 # Downloaded data (never commit)
 data/
+.data/

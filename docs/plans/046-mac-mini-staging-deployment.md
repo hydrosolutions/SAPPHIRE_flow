@@ -1,6 +1,8 @@
 # Plan 046 — Mac Mini Staging Deployment + Edge-Case Test Suite
 
 **Status**: READY
+**Revision**: 9 — Plan 060 DONE (2026-04-19) resolves A3 step-4 through step-8 compat gaps: (a) blanket `cache_policy=NO_CACHE` on all 25 lifecycle-flow @tasks (fixes the Prefect 3 HashError on store-typed inputs that silently zeroed `train-models`); (b) `CHOWN` + `FOWNER` cap_add landed (via commit `289c5f8`) and documented in `security.md § Capabilities` (fixes `/data/artifacts` + `/data/backups` permission-denied); (c) `/data/raw` migrated from `sapphire_data` named volume to a `CAMELS_CH_HOST_DIR`-driven bind-mount in `docker-compose.dev.yml` (fixes the empty-volume bootstrap); (d) §A3 step-4 gains a trigger-command example with `model_ids` list form; (e) §A3 step-8 redirected to a direct-invoke of `run_forecast_cycle_flow.fn(...)` with an explicitly-constructed `MeteoSwissNwpAdapter` (deferred the adapter-registry design to a future plan per Plan 060 D4); (f) §A1 commit-ordering step added for a second rebase of `staging-5-stations` onto main to pick up Plan 060's 25 @task edits + cap_add + dev-overlay changes before resuming A3 step 5; (g) Stream C4 runbook requires a "Flows that require direct-invoke rather than Prefect UI trigger" section; (h) Stream C2 mac-mini overlay must now spec a `/data/raw` mount (bind-mount or named volume) since Plan 060 removed the base-compose `sapphire_data:/data/raw:rw` entry.
+
 **Revision**: 8 — A3 step 1 surfaced two more deployment-infra findings plus one Plan-044 completeness gap that warranted a detour plan: (a) Prefect 3 dispatches `Flow.from_source` to `afrom_source` in async context, returning a coroutine — needed `await flow_fn.afrom_source(...)` explicitly. Fixed in `c0d7fd8`; 13 CLI tests updated to `AsyncMock`. (b) `docker-compose.yml:74` (prefect-worker) had `DATABASE_URL_TEMPLATE: postgresql+asyncpg://...` (copy-paste from prefect-server's legit async URL), but flow code uses sync SQLAlchemy → all 8 deployment-triggerable flows crashed with `MissingGreenlet` at `_db.py:68`. One-line fix: `+asyncpg` → `+psycopg`. (c) Plan 044 wired the production bootstrap into only 4 of 9 flows; the 4 model-lifecycle flows (onboard-model, train-models, compute-skills, compute-combined-skills) crashed with `'NoneType'.register_model` — **Plan 059 DONE** (`d484f0d` feat + `0630e30` archive + `566c5db` chore, tag `v0.1.323`) replicates the `setup_production_stores` bootstrap with correct `deployment_config` load and defensive None-checks. Post-fix: `onboard-model` deployment trigger reaches `COMPLETED` in ~8s (empty-scope register-only path). Ready to resume A3 step 2 onwards (2026-04-18)
 
 **Revision**: 7 — A2.5 landed (`4f42244`, `v0.1.309`). Renamed `forecast.station_completed` → `forecast.run_completed` and added `ensemble_size` + `lead_time_hours` fields. Implementation surfaced that the plan's §A2.5 pseudocode referenced non-existent attributes `.ensemble.members` / `.ensemble.timesteps`; corrected to the real `ForecastEnsemble` surface (`member_count`, `forecast_horizon_steps`, `time_step`). Implementation also added `model_id` context binding so combination-mode produces one event per `(station, model)` pair. 1 new unit test added; 17/17 green. Ready for A3 dress rehearsal (2026-04-18)
@@ -84,7 +86,7 @@ Goal: every gap between "CI green" and "runs with real Swiss data on macOS" surf
   - Verify all five gauges are reachable on LINDAS before committing: call the new public method `HydroScraperAdapter.verify_gauge_reachable(site_code: str, station_kind: StationKind) -> bool` (see Files to modify). The method issues a live HTTP SPARQL probe against LINDAS (built via `_build_sparql_query`) and returns `True` on HTTP 2xx with at least one binding, `False` on 4xx/5xx or empty response, and raises `AdapterError` on network failure. Document the invocation in the runbook.
   - Verify all five have CAMELS-CH attributes via the `camelsch` package.
   - If any fails these checks, replace with a substitute from the same river/lake system and flag the hydrologist (**hydrologist sign-off required**).
-- **Transient config change (branch only, never pushed, never opens a PR)** — create a `staging-5-stations` branch off the commit that adds 2033 and 2085 to `config.toml`. On that branch, trim `[onboarding].basin_ids` to the 5-station A1 set. Commit ordering: (1) commit the permanent 2033/2085 addition to main; (2) branch `staging-5-stations` off that commit; (3) **before running A3, rebase `staging-5-stations` onto the current `main`** so it picks up any intervening landed work (e.g. Plan 050's Prefect run-name templates, A2.5's `forecast.run_completed` rename, any post-A1 hotfixes). Resolve any `config.toml` conflicts by keeping the 5-station subset from the branch; (4) run A3 on the rebased branch; (5) merge or discard; (6) before A4 runs on main: `pg_dump` checkpoint (see V below), then `docker compose down -v && docker compose up -d` — wipes stations/hindcasts/skills/model artifacts from the 5-station A3 run so A4 starts from a clean DB; (7) A4 runs on main.
+- **Transient config change (branch only, never pushed, never opens a PR)** — create a `staging-5-stations` branch off the commit that adds 2033 and 2085 to `config.toml`. On that branch, trim `[onboarding].basin_ids` to the 5-station A1 set. Commit ordering: (1) commit the permanent 2033/2085 addition to main; (2) branch `staging-5-stations` off that commit; (3) **before running A3, rebase `staging-5-stations` onto the current `main`** so it picks up any intervening landed work (e.g. Plan 050's Prefect run-name templates, A2.5's `forecast.run_completed` rename, any post-A1 hotfixes). Resolve any `config.toml` conflicts by keeping the 5-station subset from the branch; (4) run A3 on the rebased branch; (5) merge or discard; (6) before A4 runs on main: `pg_dump` checkpoint (see V below), then `docker compose down -v && docker compose up -d` — wipes stations/hindcasts/skills/model artifacts from the 5-station A3 run so A4 starts from a clean DB; (7) A4 runs on main; (8) **after Plan 060 archives, re-rebase `staging-5-stations` onto main to pick up the cache_policy / cap_add / dev-overlay changes before resuming A3 step 5.** Plan 060 landed during A3 execution (train-models crashed silently on the Prefect 3 HashError at step 4, triggering the detour plan); the rebase is required before the per-station `run-hindcast` loop can succeed.
   Four river systems (Aare headwater → mid → lower, Reuss high-alpine snowmelt, Ticino southern-alpine) plus one lake. Both discharge-only and discharge+water_level parameter sets covered.
 
 ### A2 — First compose up (all services healthy)
@@ -126,11 +128,32 @@ Trigger flows in sequence through the Prefect UI. Each must complete without man
 1. `onboard-model` — register `LinearRegressionDaily`, `ClimatologyFallbackModel`, `PersistenceFallbackModel` via Flow 13 (auto-promote path). Required before `onboard-stations` can assign models (see v0-scope.md §A4 step 6).
 2. `onboard-stations` — 5 stations (four rivers + one lake) from `config.toml`
 3. `ingest-observations` (manually triggered, 1 cycle). Assertion: at least 1 observation per station with `timestamp > T0` (where `T0` is the wall-clock start of this step) appears in the DB — verifies the real-time LINDAS poll path rather than silently no-oping. Observation fetch must be sequential (rate-limited) per BAFU LINDAS conventions; a minimum-rows-per-station floor must be respected — if any station returns zero rows for a non-first-run ingest, raise (do not silently continue).
-4. `train-models` — linear regression, 5 stations
-5. `run-hindcast`
-6. `compute-skills`
+4. `train-models` — linear regression, 5 stations. Trigger params: `{"model_ids": ["linear_regression_daily"]}` (note: `model_ids` is a plural **list** per the flow signature at `src/sapphire_flow/flows/train_models.py`). Plan 060 landed `cache_policy=NO_CACHE` across all lifecycle @tasks — prior to Plan 060 this step silently trained zero models because Prefect 3 crashed on store-typed hash inputs.
+5. `run-hindcast` — **per-station loop**. `run_hindcast_flow` raises `ValueError("Either station_id or group_id must be provided")` when both are None, so the trigger is issued once per onboarded station. Pull `(station_id, artifact_id)` tuples from `model_artifacts WHERE model_id = 'linear_regression_daily' AND status = 'active'` (lowercase enum value). Pass UUIDs as `str` — Prefect deployment params JSON-serialise and raw `uuid.UUID(...)` objects raise `TypeError`.
+6. `compute-skills` — pulls `(station_id, model_id, artifact_id, parameter)` from the DB; trigger with those four values.
 7. `compute-combined-skills` — trigger once after `compute-skills` to validate registration and execution. In v0a with no pooled combinations this is a no-op but must run cleanly (Prefect run reaches `COMPLETED`).
-8. `forecast-cycle` — one full cycle (gridded NWP path via `MeteoSwissNwpAdapter`)
+8. `forecast-cycle` — one full cycle (gridded NWP path via `MeteoSwissNwpAdapter`). **Per Plan 060 D4**, `forecast-cycle` is triggered via **direct Python invocation** (not the Prefect UI deployment trigger) because `MeteoSwissNwpAdapter` is not JSON-serialisable and cannot be passed as a deployment parameter. The adapter-registry design is deferred to a future plan. Canonical template:
+
+    ```bash
+    docker compose -f docker-compose.yml -f docker-compose.dev.yml exec -T prefect-worker \
+      python -c "
+    from pathlib import Path
+    import httpx
+    from sapphire_flow.adapters.meteoswiss_nwp import MeteoSwissNwpAdapter
+    from sapphire_flow.flows.run_forecast_cycle import run_forecast_cycle_flow
+
+    adapter = MeteoSwissNwpAdapter(
+        stac_base_url='https://data.geo.admin.ch/api/stac/v1',
+        stac_collection='ch.meteoschweiz.ogd-forecasting-icon-ch2',
+        scratch_path=Path('/tmp/sapphire_nwp'),
+        http_client=httpx.Client(timeout=60),
+    )
+    result = run_forecast_cycle_flow.fn(adapter=adapter)
+    print('forecast-cycle result:', result)
+    "
+    ```
+
+    The flow body uses Plan 059's production-bootstrap to resolve every store from `DATABASE_URL`; only `adapter` needs explicit injection. `run_forecast_cycle_flow` is sync — do **not** wrap in `asyncio.run(...)`.
 9. API spot checks: `GET /api/v1/stations`, `GET /api/v1/stations/{station_id}/forecasts?limit=1`, `GET /api/v1/alerts`
 
 **Exit**: all 9 steps green, forecast appears in DB, API returns it. structlog contains `forecast.run_completed` events with `duration_ms` and `station_id` for each station — confirms per-step instrumentation from v0-scope.md §D6 is active.
@@ -336,6 +359,7 @@ Streams renamed from the original draft. Current stream mapping:
 - Pre-flight in `backup_database_flow`: if `<backup_dir>/.sapphire-backup-volume` (default `/data/backups/.sapphire-backup-volume`, container-side) is absent, raise `BackupRefusedError("USB backup disk not mounted")` before invoking `pg_dump`.
 - Nightly `backup-database` at 02:00 UTC (as wired by Plan 044). No additional configuration.
 - No restore rehearsal in v0; defer to Plan 048.
+- **BLOCKING for D2 — add `/data/raw` mount to `docker-compose.macmini.yml`** (Plan 060 prerequisite): Plan 060 removed the base-compose `sapphire_data:/data/raw:rw` mount from `prefect-worker`, so the mac-mini overlay now has no `/data/raw` mount at all unless C2 adds one. Without this, D2's `onboard-stations` will fail with "CAMELS-CH not found" (the same class of error dev hit before A3 step 2). Options: (a) declare a new named volume `sapphire_data_macmini` and stage CAMELS-CH via `docker cp` at provisioning time, or (b) bind-mount a host path on the Mac mini where the operator pre-stages the dataset (mirrors the dev-overlay pattern, read-only). Choice is C2 implementer's call; either is compatible with Plan 060.
 
 ### C3 — Watchdog LaunchAgent
 
@@ -427,6 +451,11 @@ Streams renamed from the original draft. Current stream mapping:
 - Mac mini is dedicated to SAPPHIRE staging; no other tenants permitted.
 - Troubleshooting: container won't start, Docker Desktop resource exhaustion, disk full, SSH tunnel won't connect, backup disk unmounted.
 - Upgrade procedure: `docker compose pull && docker compose stop prefect-worker && docker compose run --rm init && docker compose up -d`.
+- **Flows that require direct-invoke rather than Prefect UI trigger** (Plan 060 D4): `forecast-cycle`, non-empty `onboard-model`, and non-empty `train-models` cannot be triggered through the Prefect deployment UI because their inputs (`MeteoSwissNwpAdapter`, `forcing_source`, model Python objects) are not JSON-serialisable deployment parameters. The adapter-registry design is deferred to a future plan. Until it lands, operators invoke these flows via:
+  ```bash
+  docker compose -f docker-compose.yml -f docker-compose.macmini.yml exec -T prefect-worker python -c "<flow_invocation>"
+  ```
+  See Plan 060 §T4 for the canonical `forecast-cycle` template. Document each flow's exact invocation in the runbook so operators are not reverse-engineering adapter constructors at 2 a.m.
 
 ### C5 — LAN access verification
 

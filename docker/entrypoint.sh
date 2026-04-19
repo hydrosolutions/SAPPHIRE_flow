@@ -23,8 +23,8 @@ fi
 # Fix secret file permissions for non-root user
 chown -R app:app /run/secrets 2>/dev/null || true
 
-# Fix writable data directory ownership (Docker named volumes default to root)
-chown app:app /data/backups /data/artifacts /data/raw 2>/dev/null || true
+# Fix writable data directory ownership (backups + artifacts only — /data/raw is operator-staged, read-only in dev)
+chown app:app /data/backups /data/artifacts 2>/dev/null || true
 
 # Drop to app user
 exec gosu app "$@"

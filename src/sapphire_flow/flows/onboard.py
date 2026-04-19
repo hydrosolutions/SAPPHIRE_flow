@@ -6,6 +6,7 @@ from pathlib import Path
 
 import structlog
 from prefect import flow, runtime, task
+from prefect.cache_policies import NO_CACHE
 
 from sapphire_flow.services.onboarding import onboard_from_camelsch
 from sapphire_flow.types.datetime import ensure_utc
@@ -23,8 +24,20 @@ def _resolve_onboard_stations_flow_run_name() -> str:
         return "onboard-stations"
 
 
-@task(name="download-camels-ch", task_run_name="download-camels-ch")
+@task(
+    name="download-camels-ch",
+    task_run_name="download-camels-ch",
+    cache_policy=NO_CACHE,
+)
 def _download_task(data_dir: str) -> str:
+    """Download CAMELS-CH dataset to ``data_dir``.
+
+    NOTE: The dev compose overlay (``docker-compose.dev.yml``) bind-mounts
+    ``/data/raw`` read-only from ``CAMELS_CH_HOST_DIR``, so ``download=True`` is
+    incompatible with the dev overlay — pre-stage the dataset host-side via the
+    env var. Production/staging overlays must likewise provide a writable
+    ``/data/raw`` if this task is to run.
+    """
     import camelsch
 
     dest = Path(data_dir)

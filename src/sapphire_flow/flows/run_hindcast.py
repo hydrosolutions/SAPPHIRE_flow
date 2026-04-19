@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 from prefect import flow, task
+from prefect.cache_policies import NO_CACHE
 
 from sapphire_flow.services.hindcast import run_group_hindcast, run_station_hindcast
 from sapphire_flow.types.datetime import UtcDatetime  # noqa: TC001
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
 @task(
     name="run-station-hindcast-task",
     task_run_name="hindcast-station-{model_id}-{station_id}",
+    cache_policy=NO_CACHE,
 )
 def _run_station_hindcast_task(
     model: object,
@@ -68,6 +70,7 @@ def _run_station_hindcast_task(
 @task(
     name="run-group-hindcast-task",
     task_run_name="hindcast-group-{model_id}-{group.id}",
+    cache_policy=NO_CACHE,
 )
 def _run_group_hindcast_task(
     model: object,

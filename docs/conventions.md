@@ -111,6 +111,7 @@ groundwater (`groundwater_level`), and soil (`soil_moisture`). See `architecture
 - API keys: `SAPPHIRE_DG_API_KEY`, `IEASYHYDRO_API_KEY`
 - Connection strings: `DATABASE_URL` (via PgBouncer) *(v1)*, `DATABASE_URL_DIRECT` (admin/migrations). v0: `DATABASE_URL` connects directly to PostgreSQL (no PgBouncer).
 - Log overrides: `SAPPHIRE_LOG_<MODULE>=<LEVEL>`. Single `_` maps to `.` (package separator); double `__` maps to literal `_` (e.g. `SAPPHIRE_LOG_ADAPTERS_FORECAST__INTERFACE=DEBUG`).
+- Dev-only reference data: `CAMELS_CH_HOST_DIR` — host path bind-mounted read-only into the `prefect-worker` container's `/data/raw` via `docker-compose.dev.yml`. Target must contain an uppercase `CAMELS_CH/` subdirectory. See `.env.example` for the authoritative doc block.
 
 ### Network identifiers
 

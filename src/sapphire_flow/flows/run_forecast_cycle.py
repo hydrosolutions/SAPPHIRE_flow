@@ -13,6 +13,7 @@ import structlog
 import structlog.contextvars
 from prefect import flow, task
 from prefect import runtime as prefect_runtime
+from prefect.cache_policies import NO_CACHE
 
 from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.types.datetime import ensure_utc
@@ -86,6 +87,7 @@ def _resolve_cycle_time(
     persist_result=False,
     log_prints=False,
     task_run_name="fetch-nwp-{cycle_time:%Y-%m-%dT%H}",
+    cache_policy=NO_CACHE,
 )
 def _fetch_nwp_task(
     adapter: WeatherForecastSource,
@@ -241,6 +243,7 @@ def _fetch_nwp_task(
     name="fetch-observation-timestamps",
     log_prints=False,
     task_run_name="fetch-obs-ts",
+    cache_policy=NO_CACHE,
 )
 def _fetch_obs_timestamps_task(
     obs_store: object,

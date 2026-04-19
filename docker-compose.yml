@@ -96,7 +96,6 @@ services:
     networks: [backend]
     volumes:
       - model_artifacts:/data/artifacts:rw
-      - sapphire_data:/data/raw:rw
       - backups:/data/backups:rw
       - ./config.toml:/app/config.toml:ro
     logging:
@@ -224,7 +223,6 @@ volumes:
   caddy_config:
   model_artifacts:
   prefect_data:
-  sapphire_data:
   backups:
 
 secrets:

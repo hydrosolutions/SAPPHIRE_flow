@@ -186,6 +186,14 @@ with concurrency("db_bulk_write", occupy=1):  # from prefect.concurrency.sync im
 
 **Pool-level**: See cicd.md § Prefect work pool separation for per-pool default concurrency limits and container resource bounds (`mem_limit`, `cpus`). All limits are deployment-configurable.
 
+## Caching posture
+
+All lifecycle-flow `@task` decorators default to `cache_policy=NO_CACHE` (imported from `prefect.cache_policies`). Prefect 3's default cache policy attempts to hash every task input to compute a cache key; SAPPHIRE stores (PgStore subclasses) hold SQLAlchemy `Connection` references that are neither JSON nor pickle serialisable, so default caching crashes with `HashError`. Operational pipelines rarely hit cache anyway (each run carries distinct `cycle_time` / `period_start` / `station_id` parameters).
+
+A targeted `cache_key_fn` excluding stores is only justified for a pure-compute `@task` with a small, hashable input set and a demonstrated recompute cost — add on a per-task basis with review.
+
+Convention landed via Plan 060 (`docs/plans/archive/060-a3-prefect-deployment-compat-sweep.md`).
+
 ## Deployment registration
 
 The `init` service (see cicd.md § First-boot sequence) registers all Prefect deployments on first boot after migrations complete. Each deployment specifies:

@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import structlog
 from prefect import flow, task
+from prefect.cache_policies import NO_CACHE
 from prefect.concurrency.sync import concurrency
 from prefect.utilities.annotations import unmapped
 
@@ -66,6 +67,7 @@ def _unit_shard(unit: TrainingUnit) -> str:
 @task(
     name="determine-onboarding-scope",
     task_run_name="determine-onboarding-scope-{model_id}",
+    cache_policy=NO_CACHE,
 )
 def _determine_onboarding_scope_task(
     model_id: ModelId,
@@ -91,7 +93,11 @@ def _determine_onboarding_scope_task(
     )
 
 
-@task(name="register-model-class", task_run_name="register-model-class-{model_id}")
+@task(
+    name="register-model-class",
+    task_run_name="register-model-class-{model_id}",
+    cache_policy=NO_CACHE,
+)
 def _register_model_class_task(
     model_id: ModelId,
     model: object,
@@ -188,6 +194,7 @@ def _render_onboard_model_flow_name() -> str:
     name="validate-compatibility",
     log_prints=False,
     task_run_name=_render_validate_compat_name,
+    cache_policy=NO_CACHE,
 )
 def _validate_compatibility_task(
     model_id: ModelId,
@@ -223,7 +230,12 @@ def _validate_compatibility_task(
     )
 
 
-@task(name="smoke-test-model", log_prints=False, task_run_name="smoke-test-model")
+@task(
+    name="smoke-test-model",
+    log_prints=False,
+    task_run_name="smoke-test-model",
+    cache_policy=NO_CACHE,
+)
 def _smoke_test_model_task(model: object, rng: random.Random) -> None:
     smoke_test_model(model=model, rng=rng)  # type: ignore[arg-type]
 
@@ -232,6 +244,7 @@ def _smoke_test_model_task(model: object, rng: random.Random) -> None:
     name="assemble-onboarding-data",
     log_prints=False,
     task_run_name=_render_assemble_onboarding_data_name,
+    cache_policy=NO_CACHE,
 )
 def _assemble_onboarding_data_task(
     unit: TrainingUnit,
@@ -275,6 +288,7 @@ def _assemble_onboarding_data_task(
     name="train-onboarding-model",
     log_prints=False,
     task_run_name=_render_train_onboarding_model_name,
+    cache_policy=NO_CACHE,
 )
 def _train_and_store_artifact_task(
     unit: TrainingUnit,
@@ -325,6 +339,7 @@ def _train_and_store_artifact_task(
     name="evaluate-skill-gate",
     log_prints=False,
     task_run_name="evaluate-skill-gate-{model_id}-{artifact_id}",
+    cache_policy=NO_CACHE,
 )
 def _evaluate_skill_gate_task(
     model_id: ModelId,
@@ -344,6 +359,7 @@ def _evaluate_skill_gate_task(
     name="promote-artifact",
     log_prints=False,
     task_run_name=_render_promote_artifact_name,
+    cache_policy=NO_CACHE,
 )
 def _promote_artifact_task(
     unit: TrainingUnit,
@@ -363,6 +379,7 @@ def _promote_artifact_task(
     name="create-assignment",
     log_prints=False,
     task_run_name=_render_create_assignment_name,
+    cache_policy=NO_CACHE,
 )
 def _create_assignment_task(
     unit: TrainingUnit,

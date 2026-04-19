@@ -18,3 +18,10 @@ services:
   api:
     ports:
       - "8010:8000"
+
+  # Dev-only CAMELS-CH reference data: bind-mount host contents (read-only) into
+  # the prefect-worker's /data/raw. The host path must contain an uppercase
+  # `CAMELS_CH/` subdir. See .env.example / docs/conventions.md for the env var.
+  prefect-worker:
+    volumes:
+      - "${CAMELS_CH_HOST_DIR:-./.data/camels_ch}:/data/raw:ro"

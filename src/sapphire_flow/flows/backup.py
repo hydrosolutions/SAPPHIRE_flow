@@ -10,6 +10,7 @@ from urllib.parse import unquote, urlparse
 
 import structlog
 from prefect import flow, runtime, task
+from prefect.cache_policies import NO_CACHE
 
 log = structlog.get_logger(__name__)
 
@@ -43,6 +44,7 @@ def _resolve_backup_flow_run_name() -> str:
     name="dump-database",
     log_prints=False,
     task_run_name=_resolve_dump_db_task_run_name,
+    cache_policy=NO_CACHE,
 )
 def dump_database_task(backup_dir: str) -> str:
     backup_path = Path(backup_dir)
@@ -89,6 +91,7 @@ def dump_database_task(backup_dir: str) -> str:
     name="cleanup-old-backups",
     log_prints=False,
     task_run_name="cleanup-old-backups",
+    cache_policy=NO_CACHE,
 )
 def cleanup_old_backups_task(backup_dir: str, keep_count: int) -> int:
     backup_path = Path(backup_dir)

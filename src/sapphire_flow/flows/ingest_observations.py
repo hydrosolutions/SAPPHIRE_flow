@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 from prefect import flow, task
+from prefect.cache_policies import NO_CACHE
 from prefect.runtime import flow_run, task_run
 
 from sapphire_flow.exceptions import ConfigurationError
@@ -98,7 +99,11 @@ def _resolve_fetch_observations_run_name() -> str:
     return "fetch-observations"
 
 
-@task(name="fetch-observations", task_run_name=_resolve_fetch_observations_run_name)
+@task(
+    name="fetch-observations",
+    task_run_name=_resolve_fetch_observations_run_name,
+    cache_policy=NO_CACHE,
+)
 def _fetch_observations_task(
     adapter: HydroScraperAdapter,
     station_configs: list[StationConfig],
@@ -107,7 +112,11 @@ def _fetch_observations_task(
     return adapter.fetch_observations(station_configs, since)
 
 
-@task(name="store-raw-observations", task_run_name="store-raw-observations")
+@task(
+    name="store-raw-observations",
+    task_run_name="store-raw-observations",
+    cache_policy=NO_CACHE,
+)
 def _store_raw_task(
     obs_store: PgObservationStore,
     observations: list[RawObservation],
@@ -116,7 +125,11 @@ def _store_raw_task(
     return len(ids)
 
 
-@task(name="run-qc-and-update", task_run_name="run-qc-{station_id}-{parameter}")
+@task(
+    name="run-qc-and-update",
+    task_run_name="run-qc-{station_id}-{parameter}",
+    cache_policy=NO_CACHE,
+)
 def _run_qc_task(
     obs_store: PgObservationStore,
     baseline_store: PgClimBaselineStore,

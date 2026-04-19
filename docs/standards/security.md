@@ -292,6 +292,25 @@ All service containers:
 - Read-only root filesystem where possible (`read_only: true`), with explicit `tmpfs` for writable paths
 - Docker socket is never mounted in application containers
 
+### Capabilities
+
+All service containers start from `cap_drop: [ALL]` and add back only the narrow capabilities each service needs. The entrypoint pattern (see below) starts as root, fixes permissions on mounted volumes / secrets, then `gosu app`-drops to UID 1000 — the few `cap_add` entries below are what keeps that boot sequence functional while preserving the least-privilege invariant.
+
+Accepted per-service `cap_add` set (see `docker-compose.yml`):
+
+| Capability | Services | Justification |
+|---|---|---|
+| `SETUID` | postgres, prefect-worker, api, init | Required for the entrypoint's `gosu app` user drop. Without SETUID the process cannot change UID even from root. |
+| `SETGID` | postgres, prefect-worker, api, init | Same rationale — `gosu` sets both UID and GID. |
+| `CHOWN` | postgres, prefect-worker, api, init | Required to `chown app:app` named-volume mount points at first boot. Named volumes are root-owned by Docker; without CHOWN the entrypoint cannot transfer ownership to the non-root `app` user. `init` technically mounts only `config.toml` today, but keeps CHOWN for service-set parity and forward-proofing. |
+| `FOWNER` | postgres, prefect-worker, api, init | Once volumes accumulate state, the entrypoint's `chown` must succeed over files with arbitrary non-root owners — FOWNER lets root perform chmod/chown irrespective of file UID. Pairs with CHOWN. |
+| `DAC_OVERRIDE` | postgres | Postgres-specific: allows bypassing file read/write/execute permission checks during init-db bootstrapping (pre-existing, inherited from the upstream `postgres` image). |
+| `NET_BIND_SERVICE` | caddy | Lets a non-root caddy process bind ports 80/443 (privileged ports < 1024). |
+
+All other capabilities remain dropped. Any new `cap_add` entry requires a justification row here plus a corresponding cross-reference from the service's `docker-compose.yml` block.
+
+Documentation landed via Plan 060 (`docs/plans/archive/060-a3-prefect-deployment-compat-sweep.md`). The `CHOWN` + `FOWNER` additions themselves landed via commit `289c5f8` (Plan 058 scope-creep into infra).
+
 ### Entrypoint pattern
 
 Containers start as root only during the entrypoint, then drop privileges before running the application. This is necessary because Docker Compose secrets `uid`/`gid`/`mode` options only work in Swarm mode — they are silently ignored in standalone Compose ([compose#9648](https://github.com/docker/compose/issues/9648), [compose#13287](https://github.com/docker/compose/issues/13287)). The actual mount mode may be `0400` (root-only) instead of the documented `0444`, breaking non-root access.
@@ -327,7 +346,7 @@ Docker Desktop for Mac runs containers in a Linux VM with a VirtioFS translation
 Rules to ensure Mac/Linux consistency:
 - **Hardcode UID 1000:1000 in the Dockerfile** — do not use runtime `user:` overrides in `docker-compose.yml`
 - **Create a named user** (`app`), not just a numeric UID — some tools require an entry in `/etc/passwd`
-- **Use named volumes** (not bind mounts) for persistent data to avoid host UID conflicts
+- **Use named volumes** (not bind mounts) for persistent data to avoid host UID conflicts. Exception: dev-only overlays may bind-mount read-only static reference datasets (e.g. CAMELS-CH via `CAMELS_CH_HOST_DIR`) — the `:ro` mode sidesteps UID-write collisions. Production and staging overlays use named volumes or controlled host paths per the Mac-mini runbook.
 - **Use the entrypoint pattern** above to fix permissions at startup, regardless of how Docker mounted them
 - **Do not use** `uid`/`gid`/`mode` in Docker Compose secrets definitions — they only work in Swarm mode
 - **Test in Linux CI** (GitHub Actions) — Mac development will hide permission bugs

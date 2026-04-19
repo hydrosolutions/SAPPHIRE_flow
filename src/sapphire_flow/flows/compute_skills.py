@@ -5,6 +5,7 @@ from uuid import UUID, uuid4
 
 import structlog
 from prefect import flow, task
+from prefect.cache_policies import NO_CACHE
 
 from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.skill.combined_skill import (
@@ -67,6 +68,7 @@ def _store_skill_results(
     name="compute-skills-task",
     log_prints=False,
     task_run_name="compute-skills-{model_id}-{station_id}-{parameter}",
+    cache_policy=NO_CACHE,
 )
 def compute_skills_task(
     station_id: StationId,
@@ -154,6 +156,7 @@ def compute_skills_task(
     name="compute-combined-skills-task",
     log_prints=False,
     task_run_name="compute-combined-skills-{station_id}-{parameter}-{strategy.value}",
+    cache_policy=NO_CACHE,
 )
 def compute_combined_skills_task(
     station_id: StationId,
