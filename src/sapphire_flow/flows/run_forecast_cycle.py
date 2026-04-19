@@ -273,6 +273,13 @@ def _resolve_forecast_cycle_run_name() -> str:
     cycle_time = params.get("cycle_time")
     if cycle_time is None:
         cycle_time = prefect_runtime.flow_run.scheduled_start_time
+    if isinstance(cycle_time, str):
+        try:
+            cycle_time = datetime.fromisoformat(cycle_time)
+        except ValueError:
+            return "forecast-cycle"
+    if cycle_time is None:
+        return "forecast-cycle"
     return f"forecast-{cycle_time:%Y-%m-%dT%H}"
 
 
