@@ -196,13 +196,20 @@ class MeteoSwissNwpAdapter:
 
     def _download_asset(self, href: str, asset_key: str) -> Path:
         from pathlib import Path
+        from urllib.parse import urlparse
 
         if not href.startswith("https://"):
             raise AdapterError(f"Refusing non-HTTPS asset URL: {href!r}")
-        file_name = href.split("/")[-1] or f"{asset_key}.grib2"
+        # Strip query params from the URL before deriving the filename — S3
+        # signed URLs carry `?AWSAccessKeyId=…&Signature=…&Expires=…` which
+        # would otherwise end up in the filename and make the path unusable.
+        url_path = urlparse(href).path
+        file_name = url_path.rsplit("/", 1)[-1] or f"{asset_key}.grib2"
         file_name = Path(file_name).name
-        dest = Path(self._scratch_path) / file_name
-        if not dest.resolve().is_relative_to(Path(self._scratch_path).resolve()):
+        scratch = Path(self._scratch_path)
+        scratch.mkdir(parents=True, exist_ok=True)
+        dest = scratch / file_name
+        if not dest.resolve().is_relative_to(scratch.resolve()):
             raise AdapterError(f"Path traversal in asset href: {href!r}")
         try:
             with self._http_client.stream("GET", href) as resp:
