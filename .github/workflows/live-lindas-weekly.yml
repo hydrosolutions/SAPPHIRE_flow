@@ -1,0 +1,26 @@
+name: Live LINDAS weekly schema check
+
+on:
+  schedule:
+    # Every Monday at 06:00 UTC
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  live-lindas-schema:
+    name: Check LINDAS live schema
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run live LINDAS schema check
+        run: uv run pytest -m live_lindas -v
