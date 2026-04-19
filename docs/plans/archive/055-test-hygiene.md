@@ -1,6 +1,6 @@
 # Plan 055 — Test hygiene (synthetic reference fixture, private-attr drift, missing route tests)
 
-**Status**: READY
+**Status**: DONE (archived 2026-04-18 — tags v0.1.316 → v0.1.330, 1167/1167 tests green)
 **Date**: 2026-04-18
 **Revision**: 8 — sixth-round review (2026-04-18) caught T4 stub-list gap, fixture rename confusion, and a Files-to-modify row contradicting T4 prose.
 
