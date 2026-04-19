@@ -37,8 +37,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      gosu curl postgresql-client-16 \
+      gosu curl postgresql-client-16 libexpat1 \
     && rm -rf /var/lib/apt/lists/*
+# libexpat1: runtime dependency of rasterio's binary extensions (via rioxarray in the
+# gridded-NWP extractor). Added 2026-04-19 as an A3 step-8 finding.
 
 WORKDIR /app
 
