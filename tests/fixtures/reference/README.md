@@ -159,6 +159,71 @@ Once real data is available, re-record when:
 Re-recording overwrites the existing file. Commit the new Parquet with a message
 that states the recording window (e.g. `chore: re-record BAFU fixture 2026-04-01..08`).
 
+## Gap budget and no-catchup property
+
+This section documents the constraints that govern how and when `bafu_observations.parquet`
+can be promoted from synthetic to real data. It exists to prevent silent incorrect
+assumptions during the 6-month accumulation phase.
+
+### LINDAS is real-time only
+
+The BAFU LINDAS SPARQL endpoint serves only the **current reading** at query time.
+`hydro_scraper.py:173-192` binds a single current-reading subject URI; there is no
+historical-window parameter, no pagination, and no replay capability. A call at
+09:15 returns the 09:15 reading — the 09:10 reading is permanently unretrievable.
+
+### Every minute of downtime is permanent data loss
+
+There is no catchup mechanism. If the Prefect worker, the network, or the database is
+unavailable during a polling window, the observations for that window are **gone**.
+Gap causes include:
+
+- Prefect worker outage (restart, deploy, crash)
+- Network partition between the Mac Mini and `lindas.admin.ch`
+- PostgreSQL downtime (migration, vacuum, backup lock)
+- LINDAS endpoint downtime (maintenance, rate-limiting)
+
+**Action during the accumulation phase**: log all known downtime events in an ops journal
+(date, time, duration, cause). This allows the team to correlate archive gaps to known
+outages and distinguish systematic adapter bugs from one-off events.
+
+### 95% interval coverage threshold
+
+A candidate 6-month promotion window is accepted only when **every (station, parameter)
+pair** achieves ≥95% interval coverage over the window.
+
+Coverage formula:
+
+```
+coverage = actual_observation_count / expected_observation_count
+expected = window_hours × (60 / cadence_minutes)
+```
+
+At 10-minute cadence over 6 months (~4380 hours): expected ≈ 26 280 observations per
+(station, parameter) pair. A 95% threshold allows ≈1314 missed polls — roughly 9 days of
+total downtime spread across 6 months.
+
+Windows that fall below the threshold are skipped — the synthetic placeholder stays in
+place. There is no "good enough" relaxation: a sub-threshold fixture would introduce
+silent gaps into integration tests and replay-adapter runs that depend on a continuous
+time series.
+
+### Gap detection during accumulation
+
+Until Flow 4 (pipeline monitoring) is implemented, gaps accumulate silently.
+Two band-aid mechanisms are active during the accumulation phase:
+
+- **Weekly schema-drift check** (`tests/integration/live/test_lindas_live_schema.py`,
+  `live_lindas` marker, `.github/workflows/live-lindas-weekly.yml`) — confirms the LINDAS
+  response structure is still parseable. Failure = schema drift = potential silent
+  data corruption since the last green run.
+- **Daily coverage summary** (`sapphire_flow.tools.observation_coverage_summary`) —
+  queries the `observations` table for the last 24 h and emits per-station gap
+  percentages to structlog. If any station falls below 90% coverage for two consecutive
+  days, an ops check is due.
+
+Both are described in `docs/plans/058-bafu-lindas-archive-collection.md` (T5 and T6).
+
 ## Known limitations
 
 - **No golden answers**: no expected forecast outputs are tied to this dataset yet.

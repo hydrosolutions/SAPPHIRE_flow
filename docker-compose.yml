@@ -84,6 +84,8 @@ services:
     cap_add:
       - SETUID
       - SETGID
+      - CHOWN
+      - FOWNER
     secrets:
       - db_password
     read_only: true
@@ -129,6 +131,8 @@ services:
     cap_add:
       - SETUID
       - SETGID
+      - CHOWN
+      - FOWNER
     secrets:
       - db_password
     read_only: true
@@ -197,6 +201,8 @@ services:
     cap_add:
       - SETUID
       - SETGID
+      - CHOWN
+      - FOWNER
     secrets:
       - db_password
     read_only: true
