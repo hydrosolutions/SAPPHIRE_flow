@@ -183,6 +183,20 @@ interface is stable.
    so future readers understand what "re-record when operational
    deployment accumulates 6+ months" actually entails.
 
+**Post-hoc scope-creep note on commit `289c5f8`**: the T4 implementation
+agent (landed 2026-04-19 on `main` as `289c5f8 docs(plan-058/T4): …`)
+also scooped up pre-existing uncommitted `CHOWN` + `FOWNER` `cap_add`
+changes in `docker-compose.yml` that were sitting in the working tree
+from earlier Plan 060 T2 work. Those cap_add additions are **Plan 060 T2
+scope**, not Plan 058 T4, and are documented as such in Plan 060 T2
+(see `docs/plans/060-*.md` line 76 — "commit `289c5f8` already merged
+the CHOWN + FOWNER cap_add additions into main") and in Plan 046
+revision 9 (which correctly attributes the cap_add landing to Plan 060,
+not to this plan). Nothing in the docker-compose diff in `289c5f8`
+belongs to Plan 058 T4 — T4 is only the `tests/fixtures/reference/README.md`
+and `docs/v0-scope.md` changes in that commit. Left as-is rather than
+amended; the attributions in Plans 046 and 060 are authoritative.
+
 ### T5 — Schema-drift watch against live LINDAS
 
 1. `test_fetch_returns_expected_records_from_fixture_response` in
