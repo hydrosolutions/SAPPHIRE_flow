@@ -126,9 +126,13 @@ class MeteoSwissNwpAdapter:
             raise AdapterError(f"NWP fetch failed: {exc}") from exc
 
     def _fetch_grib_files(self, cycle_time: UtcDatetime) -> list[Path]:
+        # STAC datetime filter: use Z-suffix UTC form. The default `isoformat()`
+        # emits `+00:00` which contains a `+` that gets URL-decoded as a space
+        # server-side, producing a 400 Bad Request.
+        datetime_q = cycle_time.strftime("%Y-%m-%dT%H:%M:%SZ")
         url = (
             f"{self._stac_base_url}/collections/{self._stac_collection}/items"
-            f"?datetime={cycle_time.isoformat()}"
+            f"?datetime={datetime_q}"
         )
         items: list[dict] = []  # type: ignore[type-arg]
         page_count = 0
