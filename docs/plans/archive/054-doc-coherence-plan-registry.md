@@ -1,7 +1,7 @@
 # Plan 054 — Doc coherence sweep + plan-registry cleanup
 
-**Status**: READY
-**Date**: 2026-04-18 (flipped to READY 2026-04-20)
+**Status**: DONE (2026-04-20, implemented in commit 8e615f8, tag v0.1.368)
+**Date**: 2026-04-18 (flipped to READY 2026-04-20; archived 2026-04-20)
 **Depends on**: none (documentation-only; no code change). Coordinates with
 Plan 046 in-flight (Plan 046 frontmatter update is one task in this plan).
 **Scope**: Bring project-level documentation back into sync with shipped
