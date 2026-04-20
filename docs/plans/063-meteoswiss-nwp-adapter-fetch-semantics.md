@@ -304,7 +304,7 @@ result = adapter.fetch_forecasts(station_configs=station_configs, cycle_time=cyc
 elapsed = time.monotonic() - t0
 free_after = shutil.disk_usage(SCRATCH).free
 
-downloaded = list((SCRATCH / cycle.isoformat()).rglob("*.grib2"))
+downloaded = list((SCRATCH / cycle.strftime("%Y%m%dT%H%M")).rglob("*.grib2"))
 allowlist = {tok for tok, _, _ in adapter.PARAM_GROUPS}
 
 # (a) file count within budget: 2 vars × 2 types × 121 steps = 484 max
@@ -318,8 +318,8 @@ assert not bad, f"non-allowlisted files: {bad[:5]}"
 consumed_gb = (free_before - free_after) / 1024**3
 assert consumed_gb <= 4.0, f"scratch consumed {consumed_gb:.1f} GB"
 
-# (d) resolved cycle_time in output paths
-cycle_dir = SCRATCH / cycle.isoformat()
+# (d) resolved cycle_time in output paths — per-cycle dir uses %Y%m%dT%H%M
+cycle_dir = SCRATCH / cycle.strftime("%Y%m%dT%H%M")
 assert cycle_dir.exists(), f"expected per-cycle dir {cycle_dir}"
 
 # (e) wall time
