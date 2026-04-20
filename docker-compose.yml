@@ -66,7 +66,7 @@ services:
 
   prefect-worker:
     build: .
-    image: sapphire-flow:${VERSION:-latest}
+    image: sapphire-flow:${VERSION:?VERSION is required; set in .env or export before compose up}
     command: prefect worker start --pool default --type process
     environment:
       SAPPHIRE_DATA_DIR: /data
@@ -97,7 +97,13 @@ services:
     volumes:
       - model_artifacts:/data/artifacts:rw
       - backups:/data/backups:rw
+      - nwp_grids:/data/nwp_grids:rw
       - ./config.toml:/app/config.toml:ro
+      - type: tmpfs
+        target: /tmp/sapphire_nwp
+        tmpfs:
+          size: 4294967296
+          mode: 1023
     logging:
       driver: json-file
       options:
@@ -106,11 +112,12 @@ services:
 
   api:
     build: .
-    image: sapphire-flow:${VERSION:-latest}
+    image: sapphire-flow:${VERSION:?VERSION is required; set in .env or export before compose up}
     command: uvicorn sapphire_flow.api:app --host 0.0.0.0 --port 8000
     environment:
       DATABASE_URL_TEMPLATE: postgresql+psycopg://${DB_USER:-sapphire}@postgres:5432/sapphire
       PREFECT_API_URL: http://prefect-server:4200/api
+      PREFECT_UI_URL: http://prefect-server:4200
       SAPPHIRE_DATA_DIR: /data
       # v0 only: default * is acceptable (no auth, test server).
       # Restrict to explicit origin list before v1 (security.md § CORS policy).
@@ -160,6 +167,12 @@ services:
     depends_on:
       api:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-s", "-o", "/dev/null", "--max-time", "5", "http://localhost:80/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     cap_drop:
       - ALL
     cap_add:
@@ -177,7 +190,7 @@ services:
 
   init:
     build: .
-    image: sapphire-flow:${VERSION:-latest}
+    image: sapphire-flow:${VERSION:?VERSION is required; set in .env or export before compose up}
     command: >
       sh -c "
         alembic upgrade head &&
@@ -224,6 +237,7 @@ volumes:
   model_artifacts:
   prefect_data:
   backups:
+  nwp_grids: {}
 
 secrets:
   db_password:

@@ -10,6 +10,7 @@ from sapphire_flow.api.deps import lifespan
 from sapphire_flow.api.errors import http_exception_handler, unhandled_exception_handler
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
+# localhost fallback is for local dev; production sets PREFECT_UI_URL in compose (Plan 053 D4).
 _PREFECT_UI_URL = os.environ.get("PREFECT_UI_URL", "http://localhost:4200")
 
 app = FastAPI(

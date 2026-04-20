@@ -361,6 +361,14 @@ The entrypoint pattern above handles secrets access: `chown` makes `/run/secrets
 - `/data/nwp_grids/` — read-write for `prefect-worker` (v0); not mounted in `api` container (no direct NWP grid access via API)
 - `/data/cold/` — read-only for `api` container, read-write for `prefect-worker-ops` (archival task) *(v1, §A2)*; read-only for `prefect-worker-hindcast`
 
+### Upstream images running as root
+
+`prefect-server` uses `prefecthq/prefect:3-python3.11`, which has no `USER` directive (verified 2026-04-20 via `docker run --rm prefecthq/prefect:3-python3.11 id` → `uid=0(root)`). The Prefect project ships no non-root image tag.
+
+Compensating controls already in place: `cap_drop: [ALL]`, no host port binding in the base compose file, `backend`-only network after Plan 049 C1.
+
+Do **not** add a `user:` override in `docker-compose.yml` — this is forbidden by the rule above. Re-evaluate after Plan 062 establishes the full write-path footprint (currently unknown because `PREFECT_HOME` is not set), or if a `-nonroot` upstream tag or community non-root image appears.
+
 ## Model code trust boundary
 
 Forecast models — including FI-wrapped ML models via `ForecastInterfaceAdapter` — execute
