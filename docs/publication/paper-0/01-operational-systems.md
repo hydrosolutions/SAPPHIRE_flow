@@ -1,7 +1,7 @@
 # 1. Operational Ensemble Flood Forecasting Systems
 
 Literature review for Section 1 of the Paper 0 outline.
-Last updated: 2026-03-30.
+Last updated: 2026-04-20 (AIFL preprint v1 read in full).
 
 ## Key Findings
 
@@ -247,22 +247,103 @@ NWP ensemble spread. This is Paradigm B (learned distribution), not Paradigm A
   https://doi.org/10.1038/s41586-024-07145-1
   (Global system, daily, matches/exceeds GloFAS nowcast in ungauged basins.)
 
-### ECMWF AIFL (AI for Flood Forecasting)
+### ECMWF AIFL (Artificial Intelligence for Floods)
 
-**Pre-operational** LSTM-based global streamflow model [preprint]. Pre-trained
-on ERA5-Land, fine-tuned on IFS. Delivers up to 10-day streamflow predictions.
-Successfully predicted a 20-year flood signal 6 days ahead during Storm Henk
-(Jan 2024). Not yet replacing LISFLOOD but being integrated. Claims below are
-from an arXiv preprint and have not yet undergone peer review.
+**Pre-operational** LSTM-based global daily streamflow model (Taccari et al.,
+2026 — arXiv preprint, not yet peer-reviewed). Claims below are from the
+preprint (v1, 18 Feb 2026).
 
-**SEED-FD project** (started Feb 2024, 3-year): Developing LSTM error models to
-improve GloFAS forecasts using ML and satellite data.
+**Architecture**: Single-layer LSTM, 1,024 hidden units, dropout 0.4.
+Three-layer MLP embeddings (sizes 30, 20, 64, tanh) for static and dynamic
+inputs fed into a shared LSTM core. **180-day hindcast window → 10-day
+forecast output**. Built on NeuralHydrology framework.
+
+**Training data**: **18,588 basins** curated from CARAVAN v1.5 + MultiMet
+extension, after deduplication (basin polygon overlap ≥ 0.7 + KGE ≥ 0.95) and
+quality control. 2,003 basins retained for 2021–2024 temporal test.
+
+**Inputs**: 5 dynamic meteorological drivers (surface net solar radiation
+SSR, surface net thermal radiation STR, surface pressure SP, 2-m temperature
+T2M, total precipitation TP) + 203 static catchment attributes (HydroATLAS
+physiography, soil, geology, land cover, climatology, anthropogenic). Target:
+**specific discharge (mm d⁻¹)**, not raw discharge — aligns units with
+precipitation.
+
+**Training strategy** (central novelty): **Two-stage transfer learning** that
+resolves the reanalysis-to-forecast domain shift.
+1. **Pre-train** on ERA5-Land reanalysis, 1980–2019 (40 years), all 18,588
+   basins. Normalised MSE loss, Adam, cosine annealing, 100 epochs.
+2. **Fine-tune** on **IFS Control forecasts at 1-day lead time** (LT1),
+   2016–2019, with reduced learning rate 1×10⁻⁴ over 30 epochs.
+Both stages use the same 180-day sequence and 10-day output horizon. The
+ERA5-Land input scaler is reused on IFS through one-to-one variable mapping.
+
+The paper quantifies the forcing drift driving this strategy:
+**normalised Wasserstein distance** between ERA5-Land and IFS LT1 daily
+precipitation over 2,003 basins has median 0.045, upper decile > 0.119, max
+0.638 — substantial in parts of Africa, Oceania, and Central America.
+Fine-tuning primarily improves the lower tail: mean KGE′ rises from 0.21
+(pre-trained) to 0.44 (fine-tuned), with gains in 44.7 % of basins and slight
+declines (ΔKGE′ < −0.1) in 22.7 %. Net effect is stabilisation of
+operationally-noisy basins at the cost of minor degradation in already-well-
+calibrated ones.
+
+**Performance** (2,003 basins, 2021–2024, driven by IFS Control LT1):
+- Median **KGE′ = 0.66**, NSE = 0.53, Pearson r = 0.81, variability α = 0.93,
+  bias β = 1.00.
+- GloFAS v4 reference: median KGE′ = 0.70 at 1,995 calibrated stations (but
+  evaluated against ERA5-forced reanalysis, not operational forecasts).
+- vs Google global flood model (Nearing et al., 2024) on 1,218 shared
+  stations: Google median KGE′ = 0.678, NSE = 0.624; AIFL median KGE′ = 0.636,
+  NSE = 0.518. **AIFL matches or exceeds Google at 42.9 % of stations**,
+  outperforms Google in small catchments (<1,000 km²) at 55 % of stations,
+  underperforms in larger basins (62 % of stations >10,000 km²). Paper
+  attributes Google's advantage to its multi-source precipitation forcing
+  (ERA5-Land + IFS + NOAA CPC + IMERG) and asymmetric-Laplace distributional
+  training objective.
+
+**Flood event detection** (exact-day matching, return periods 1.5–50 years):
+**global precision = 1.00 across all return periods (zero false alarms)**,
+but recall drops with event rarity: 0.54 (1.5y) → 0.51 (2y) → 0.43 (5y) →
+0.39 (10y) → 0.36 (20y) → 0.32 (50y). Conservative detection profile —
+prioritises precision over sensitivity, mitigates false-alarm fatigue at the
+cost of missed rare extremes.
+
+**Storm Henk case study** (Straimont, Belgium, GRDC 6221570, 182 km²,
+~1-in-20-year flood Jan 2024): AIFL detected the peak signal **6 days ahead**.
+Forecast peak magnitudes 50–80 m³ s⁻¹ (observed ~55 m³ s⁻¹), timing errors
+~1 day driven by underlying IFS precipitation forecast errors.
+
+**Key limitations** (acknowledged by authors):
+- **Deterministic** — no uncertainty quantification. No CMAL, no ensemble,
+  no MDN.
+- **Daily** — no sub-daily output. Input limited to basin-averaged means
+  (no spatial variability statistics).
+- **LT1 evaluation only** — training/validation focused on 1-day lead; the
+  10-day operational extension is reported but lead-time-specific error
+  structure not analysed.
+- **Temporal test skewed to large basins** — operational-forcing-period
+  station availability biases the 2,003-basin subset toward larger catchments.
+- **Model weights not yet public** — intended for huggingface.co/ecmwf but
+  "repository still under preparation" as of the preprint.
+
+**Explicitly named future work** (Section 5): (i) transition to
+**distributional objectives** for inherent uncertainty quantification,
+(ii) **probabilistic ensemble forcing** to refine event detection and support
+risk-based decisions, (iii) multi-source precipitation products to improve
+rare-event recall. These are effectively the three paradigms (B, A, multi-
+source post-processing) discussed in §1.5–1.6 below — ECMWF has publicly
+flagged intent to close these gaps. See §1.8 for implications on timing.
+
+**SEED-FD project** (started Feb 2024, 3-year): separately, ECMWF is
+developing LSTM error models to improve GloFAS forecasts using ML and
+satellite data.
 
 **Reference**: Taccari, M. L., Tazi, K., Morrison, O. M., Grafberger, A.,
 Colonese, J., Carton de Wiart, C., Prudhomme, C., Mazzetti, C., Chantry, M.,
 and Pappenberger, F.: AIFL: A global daily streamflow forecasting model using
 deterministic LSTM pre-trained on ERA5-Land and fine-tuned on IFS, arXiv
-preprint, arXiv:2602.16579, 2026.
+preprint, arXiv:2602.16579v1, 2026.
 https://arxiv.org/abs/2602.16579
 
 ### NASA SPoRT Streamflow-AI
@@ -290,7 +371,7 @@ externally. China, India: active research but not operationalised nationally.
 | System | Operator | Temporal Res. | NWP Input | Ensemble? | Uncertainty | Status |
 |--------|----------|--------------|-----------|-----------|-------------|--------|
 | Google Flood Hub | Google | Daily (global), hourly (India) | ECMWF HRES + GraphCast (det.) | No | CMAL (learned) | Operational |
-| AIFL | ECMWF | Daily | IFS (det.) | No | Deterministic | Pre-operational |
+| AIFL | ECMWF | Daily (10-day horizon) | IFS Control LT1 (det.) | No | Deterministic (point) | Pre-operational (preprint 2026, weights not yet released) |
 | SPoRT Streamflow-AI | NASA/NWS | Daily | QPF (det.) | No | Deterministic | Near-operational |
 | Errorcastnet | NOAA | Hourly | NWM output (post-processing) | No | No | Research |
 
@@ -518,6 +599,18 @@ The closest work to bridging this gap:
   the paper; the same group's 2022 review covers QRF for NWP post-processing
   separately).
 
+**The gap has now been publicly acknowledged by ECMWF.** Taccari et al.
+(2026) — the AIFL paper — close their §5 with three named future directions:
+"transition toward distributional objectives to enable inherent uncertainty
+quantification," "integration of probabilistic ensemble forcing [to] further
+refine event detection," and investigation of "multi-source precipitation
+products." These map exactly onto Paradigms B, A, and statistical post-
+processing as discussed above. ECMWF has therefore publicly signalled intent
+to attack the same question — deterministic-to-probabilistic, single-source
+to ensemble — that this review identifies as open. The gap is real, but the
+window between "open" and "closed by ECMWF" is narrower than it was before
+this preprint.
+
 **Reference for Dong et al.**: Dong, N., Hao, H., Yang, M., Wei, J., Xu, S.,
 and Kunstmann, H.: Deep-learning-based sub-seasonal precipitation and
 streamflow ensemble forecasting over the source region of the Yangtze River,
@@ -532,19 +625,24 @@ https://doi.org/10.1016/j.jhydrol.2023.130176
 
 ---
 
-## AIFS Integration Status (as of Sep 2025)
+## AIFS Integration Status (as of Feb 2026)
 
 Important context for future work:
 - **AIFS Single** (deterministic, graph neural network + sliding window
   transformer, trained on ERA5, ~28 km): operational since Feb 2025
-- **AIFS ENS** (51 members, ~31 km): **operational for weather since Jul 2025**
+- **AIFS ENS** (51 members, ~31 km): operational for weather since Jul 2025
 - AIFS Single integrated into EFAS v5.5 and GloFAS v4.4 (Sep 2025)
 - **AIFS ENS is NOT yet integrated into GloFAS/EFAS** — only AIFS Single
-  (deterministic) feeds the hydrological models
-- This means AI-generated ensemble weather forecasts exist but are not yet
-  coupled with hydrological models operationally — a publication window exists
-  for demonstrating ML hydrology + ensemble NWP before ECMWF couples AIFS ENS
-  to LISFLOOD/GloFAS
+  (deterministic) feeds the process-based hydrological models
+- **ECMWF's own ML hydrology model (AIFL)** is driven by **IFS Control LT1
+  (deterministic physics-based NWP)**, not AIFS and not ensemble — confirmed
+  by Taccari et al. (2026). So although ECMWF has both an ML weather ensemble
+  (AIFS ENS) and an ML hydrology model (AIFL), **the two have not yet been
+  coupled**, and neither has been coupled to ensemble NWP.
+- This leaves two open publication windows: (a) ML hydrology + physics-based
+  ensemble NWP (ICON-CH2-EPS for v0, IFS ENS for v1), and (b) ML hydrology +
+  AI ensemble NWP (AIFS ENS). Taccari et al.'s §5 flags (b) as intended
+  future work; (a) remains less explicitly claimed.
 
 ### NWP Ensemble Data Availability for Research
 
@@ -625,12 +723,25 @@ tried ensemble NWP. This is a well-scoped research question for Master's theses
 operational system on. SAPPHIRE Flow implements CMAL; the theses test whether
 ensemble propagation would have been better.
 
-**5. The AIFS ENS window is real but narrow.**
+**5. The AIFS ENS window is real but narrowing.**
 AIFS ENS has been operational for weather since July 2025 but is not yet
-coupled to any hydrological model. ECMWF will eventually feed AIFS ENS into
-GloFAS/EFAS (likely with LISFLOOD, not ML). If SAPPHIRE Flow or the Master's
-theses can demonstrate ML + ensemble NWP before that happens, the contribution
-is sharper. This motivates starting NWP archiving as early as possible in v0.
+coupled to any hydrological model. ECMWF now has a deterministic ML
+hydrology baseline (AIFL, Taccari et al., 2026 preprint) and has **publicly
+named ensemble probabilistic forcing and distributional training objectives
+as intended future work**. The window for first-mover demonstrations of ML +
+ensemble NWP for streamflow is therefore narrower than it appeared in the
+Sep 2025 landscape: ECMWF is the most likely group to close the gap and has
+now told the community it intends to. SAPPHIRE Flow and the Master's theses
+retain two structural advantages ECMWF does not plan to exploit —
+**sub-daily resolution** (AIFL is daily only, and CARAVAN has no sub-daily
+target variable at global scale) and **regional operational context**
+(Nepal DHM is not in CARAVAN, so AIFL cannot be directly operationalised
+there). This motivates: (i) accelerating NWP archiving in v0 so the thesis
+experiments can start on real data, (ii) committing to sub-hourly as the
+differentiator — not just deterministic daily ML on IFS, which ECMWF has
+now occupied, and (iii) citing AIFL's ERA5-Land → IFS Control fine-tuning
+result as *prior validation* of our planned ERA5-Land → IFS ENS strategy
+for Nepal, rather than as an independent experimental claim.
 
 ### What this means in practice
 
@@ -659,7 +770,8 @@ For the SAPPHIRE Flow codebase, these conclusions translate to:
 ## Reference Verification Status
 
 Verified 2026-03-09 via DOI resolution and web search; updated 2026-03-30 via
-CRAAB review.
+CRAAB review; updated 2026-04-20 against AIFL preprint v1 (18 Feb 2026) for
+full architectural, training, and benchmark detail.
 
 - [x] Busker et al. (2025) — full 14-author list added, DOI confirmed.
   **Preprint** (EGUsphere) — flagged in text.
