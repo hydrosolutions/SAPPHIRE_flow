@@ -31,13 +31,20 @@ attributable, scannable, and upgradable under review. The audit on
 1. **Base images are tag-pinned, not digest-pinned.** `Dockerfile` pulls
    `python:3.11.12-slim`; `docker-compose.yml` pulls
    `postgis/postgis:16-3.4`, `prefecthq/prefect:3-python3.11`, and
-   `caddy:2.9`. Any of these tags can be re-pushed upstream, silently
-   changing what ships. Plan 053 D2 explicitly deferred digest pinning to
-   "a future security-hardening plan" — this is that plan.
+   `caddy:2.9`. Additionally, `.github/workflows/ci.yml` uses
+   `postgis/postgis:16-3.4` as a GitHub Actions `services.image` in the
+   integration job — a fourth unpinned external-image pull outside
+   compose. Any of these tags can be re-pushed upstream, silently
+   changing what ships. Plan 053's `## Future work` section explicitly
+   deferred digest pinning to "a future security-hardening plan" — this
+   is that plan.
 2. **GitHub Actions are tag-pinned, not SHA-pinned.** `.github/workflows/ci.yml`
-   references `actions/checkout@v4` and `astral-sh/setup-uv@v4`. Action
-   tags are mutable; a compromise of a popular action (precedent: `tj-actions/changed-files`, Mar 2025) can
-   inject steps into every CI run.
+   references `actions/checkout@v4` and `astral-sh/setup-uv@v4`;
+   `.github/workflows/live-lindas-weekly.yml` references
+   `actions/checkout@v4` and `astral-sh/setup-uv@v5` (mixed major —
+   unifying would be a separate decision outside this plan). Action tags
+   are mutable; a compromise of a popular action (precedent:
+   `tj-actions/changed-files`, Mar 2025) can inject steps into every CI run.
 3. **No CVE scanning.** Neither `pip-audit`, `trivy`, nor any equivalent
    runs in CI. We learn about vulnerable dependencies by accident.
 4. **No automated dependency review.** `dependabot.yml` and
@@ -77,20 +84,25 @@ identifier, (b) scanned for known vulnerabilities on every CI run, and
 
 ### Inputs
 
-- `Dockerfile` — two-stage, `python:3.11.12-slim` base, `uv sync --frozen`
-- `docker-compose.yml` — four services with tag-pinned external images
-- `.github/workflows/ci.yml` — lint/unit/integration/e2e tiers, tag-pinned actions
-- `pyproject.toml` / `uv.lock` — 38 direct deps, lockfile committed
-- `docs/standards/security.md` — container hardening, secrets, auth (no supply-chain section today)
-- `docs/standards/cicd.md` — compose topology, volumes, health checks
+- `Dockerfile` — two-stage, `python:3.11.12-slim` base, `uv sync --frozen --no-dev`; uv already installed via `COPY --from=ghcr.io/astral-sh/uv:0.7.3` (tag-only, no digest)
+- `docker-compose.yml` — four services with tag-pinned external images (postgis, prefect-server, caddy, plus the locally-built `sapphire-flow:${VERSION}` image used by worker/api/init)
+- `.github/workflows/ci.yml` — lint/unit/integration/e2e tiers, tag-pinned actions; integration job declares `postgis/postgis:16-3.4` as a `services.image` (unpinned, outside compose)
+- `.github/workflows/live-lindas-weekly.yml` — tag-pinned actions, uses `astral-sh/setup-uv@v5` (different major from `ci.yml`)
+- `pyproject.toml` / `uv.lock` — 39 direct deps (26 runtime + 13 dev), lockfile committed
+- `docs/standards/security.md` — container hardening, secrets, auth (no `## Supply chain` section today; OWASP A06 row already mentions "Dependabot/Renovate for update alerts" as if configured — stale)
+- `docs/standards/cicd.md` — compose topology, volumes, health checks (has a weak "never uses `:latest` in production" rule; no image-build tier documented)
 
 ---
 
 ## Architecture decisions
 
+> Naming: decisions are numbered D1–D12 in this table. Task codes use
+> stream-letter + number (A1, B1, C1, D1 doc task). "Decision D1" and
+> "Task D1" share a label; context disambiguates.
+
 | # | Decision | Rationale |
 |---|---|---|
-| D1 | **Dependabot, not Renovate**, for dependency update PRs, scoped to `pip` (via `pyproject.toml`), `docker` (compose + Dockerfile), and `github-actions`. | Dependabot is first-party on GitHub, needs no external app install, and the config surface (`.github/dependabot.yml`) is small. Renovate is more powerful but the extra power (grouping, custom managers, schedules) is not needed at 38 direct deps. Revisit if we outgrow it. |
+| D1 | **Dependabot, not Renovate**, for dependency update PRs, scoped to `pip` (via `pyproject.toml`), `docker` (compose + Dockerfile), and `github-actions`. | Dependabot is first-party on GitHub, needs no external app install, and the config surface (`.github/dependabot.yml`) is small. Renovate is more powerful but the extra power (grouping, custom managers, schedules) is not needed at 39 direct deps. Revisit if we outgrow it. |
 | D2 | **Pin every external image by the manifest-list digest** (`image@sha256:...`) in `Dockerfile` and `docker-compose.yml`, not a platform-specific digest. Dependabot's `docker` ecosystem keeps digests current under PR review. | Tags are mutable. A digest pin makes the image a fixed input. The manifest-list digest is what `docker buildx imagetools inspect <tag>` returns — it resolves per-arch on pull, so the same pin works for both amd64 (CI) and arm64 (Mac mini). A platform-specific digest would break cross-arch pulls. Dependabot removes the "manual upgrade is painful" objection by producing the PR for us. |
 | D3 | **Pin every GitHub Action by commit SHA**, with the version tag retained as a trailing comment (`uses: actions/checkout@<sha>  # v4.2.2`). | Action tags are mutable. SHAs are immutable. The comment preserves human-readable versioning for review. GitHub's own security guidance and Dependabot's `github-actions` ecosystem both assume this pattern. |
 | D4 | **Single CVE scanner, two layers**: `trivy fs .` in the lint tier (scans `uv.lock` + `pyproject.toml` without building the image — fast feedback on dep-only PRs) and `trivy image <tag>` after the build (catches OS-level CVEs). Both fail CI on HIGH+ unfixed. | Earlier draft had `pip-audit` + `trivy`. Trivy already reads `uv.lock` in `fs` mode, so `pip-audit` duplicates ~80% of coverage with negligible Python-advisory edge. One tool means one config, one ignore-list (`.trivyignore`), and one set of CI steps to reason about. Drop the duplication. |
@@ -100,7 +112,8 @@ identifier, (b) scanned for known vulnerabilities on every CI run, and
 | D8 | **Runtime egress allowlist (Stream F)** is also OPTIONAL and deferred to the Mac-mini staging plan (Plan 046) or a dedicated follow-up. | Egress controls depend on the host network topology (bridge vs host networking, Caddy reverse-proxy layout) and are better designed once staging is real. |
 | D9 | **Document the new posture in `docs/standards/security.md` §Supply Chain** as part of the last task, not sprinkled across each change. | Matches the convention used by Plan 054 T6 — doc change lands as the capstone, not scattered edits. |
 | D10 | **Pin the `uv` toolchain itself in the `Dockerfile`** by copying the binary from a digest-pinned `ghcr.io/astral-sh/uv:<version>` image (`COPY --from=ghcr.io/astral-sh/uv:0.x.y@sha256:... /uv /usr/local/bin/uv`). | `uv` is the tool that enforces `uv.lock`. If the `uv` binary itself is swapped at build time, `uv sync --frozen` guarantees nothing. Pinning uv by image digest closes the loop. Dependabot's `docker` ecosystem will keep it current under PR review. |
-| D11 | **apt packages in the builder stage (`build-essential`, `cmake`, `libgeos-dev` for the `exactextract` arm64 sdist) inherit pinning transitively from the digest-pinned base image** — no separate stream. | The Debian repo snapshot reachable from a given `python:3.11.12-slim@sha256:...` is effectively frozen because the base image's apt sources and index are frozen with it. Explicitly pinning individual apt packages would be fragile (versions move with Debian point releases) and redundant. |
+| D11 | **apt packages in the builder stage (`build-essential`, `cmake`, `libgeos-dev` for the `exactextract` arm64 sdist) are an accepted residual risk** — not pinned, not snapshotted. | The builder stage runs `apt-get update && apt-get install`, which hits the live Debian mirror at build time — package versions can drift between builds. BUT: the builder is transient. Only the compiled `.venv` is copied into the runtime image; no apt-installed package reaches the deployed artifact surface. Version drift affects the wheel built, not the shipped image. Explicit apt snapshots (snapshot.debian.org, apt preferences) are fragile and high-maintenance for a builder-only concern. Accepted; revisit if a build-reproducibility incident occurs or if requirements tighten. |
+| D12 | **SBOM (per-image CycloneDX) and `model_artifacts.sha256_hash` (per-artifact runtime integrity) are complementary, not duplicative.** The new `## Supply chain` section in `security.md` must cross-reference both. | `sha256_hash` (existing, `security.md` §Model code trust) protects the runtime integrity of a specific model artifact at load time. SBOM answers "which historical image contains library X?" when a future CVE lands. Different mechanisms, different purposes. Documenting the relationship prevents readers from treating one as a substitute for the other. |
 
 ---
 
@@ -135,7 +148,7 @@ indexes referenced in the repo.
 2. Create `.trivyignore` at repo root for known-accepted CVEs. Each entry must carry a dated comment explaining why it is ignored and when to re-review. No undated entries.
 3. Use the `aquasecurity/trivy-action` (SHA-pinned per C1) with advisory-DB caching enabled.
 
-**Exit**: CI fails on a HIGH/CRITICAL Python CVE with an available fix; `trivy fs .` passes locally on a clean tree.
+**Exit**: CI fails on a HIGH/CRITICAL Python CVE with an available fix (verified once via a throwaway branch that introduces a known-vulnerable dep, confirms CI failure, then reverts — verification artifact recorded in the PR); `trivy fs .` passes locally on a clean tree.
 
 #### A3 — Dependabot for `pip`, `docker`, and `github-actions`
 
@@ -148,10 +161,20 @@ indexes referenced in the repo.
    separate for review attention.
 3. Assign the SAPPHIRE Flow maintainer(s) as reviewers.
 
-**Exit**: Dependabot enabled in the repo settings (manual step after merge);
-first scan produces PRs that build cleanly.
+**Exit**: `.github/dependabot.yml` merged (activation is config-driven — no separate repo-settings toggle is required); first scheduled run is visible under Insights → Dependency graph → Dependabot; initial PRs build cleanly.
 
 ### Stream B — Container image pinning and scanning
+
+#### B0 — Add an image-build step to CI
+
+**File**: `.github/workflows/ci.yml`
+
+1. Add a `build` job that runs `docker build -t sapphire-flow:ci-${{ github.sha }} .` on every PR. The current CI has no `docker build` step (e2e uses testcontainers directly), so B3 (`trivy image`) and B4 (`syft <image-tag>`) have nothing to scan without this.
+2. Reuse the multi-stage `Dockerfile` as-is; no Dockerfile changes required by B0.
+3. Cache layers via `docker/build-push-action` with its built-in cache, or `actions/cache` — both must be SHA-pinned per C1 when added.
+4. Gate the e2e tier on the build job succeeding.
+
+**Exit**: `docker build` runs on every PR; the built image tag is available as a downstream input for B3/B4.
 
 #### B1 — Pin Dockerfile base image by digest
 
@@ -160,10 +183,10 @@ first scan produces PRs that build cleanly.
 1. Resolve the current **manifest-list** digest for `python:3.11.12-slim` via `docker buildx imagetools inspect python:3.11.12-slim` — this is the top-level `Digest:` field, not any per-platform entry. Pin:
    `FROM python:3.11.12-slim@sha256:<manifest-list-digest>  # python:3.11.12-slim`.
 2. Apply to both build stages (builder and runtime).
-3. Rebuild locally on **both** architectures (amd64 and arm64) to confirm the pin resolves correctly per-platform and the `exactextract` sdist compilation still works on arm64. A platform-specific digest would pass one build and silently fail the other — explicit dual-arch check catches the mistake.
+3. Rebuild on **both** architectures (amd64 and arm64) to confirm the pin resolves correctly per-platform and the `exactextract` sdist compilation still works on arm64. A platform-specific digest would pass one build and silently fail the other — explicit dual-arch check catches the mistake. Enforcement point: CI covers amd64 (via B0); arm64 must be rebuilt locally on the Mac mini before merge. Record the arm64 build output in the PR description.
 
 **Exit**: `docker build` succeeds on both architectures with digest-pinned
-base.
+base (amd64 in CI, arm64 on Mac mini — both attested in the PR).
 
 #### B2 — Pin docker-compose images by digest
 
@@ -183,36 +206,36 @@ base.
 
 **File**: `.github/workflows/ci.yml`
 
-1. After the image build step, run `trivy fs --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed .` (or `trivy image` against the built tag).
+1. After the B0 build step, run `trivy image --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed <built-tag>`. Prefer `trivy image` over `trivy fs` here — fs coverage is already provided by A2; the post-build scan's added value is OS-level layers, which only `image` mode sees. Depends on B0.
 2. Upload the Trivy SARIF output as a workflow artifact for audit.
 3. Gate the e2e tier on Trivy passing.
 
-**Exit**: CI fails on a HIGH/CRITICAL OS-level CVE with a fix available;
-SARIF artifact is produced.
+**Exit**: CI fails on a HIGH/CRITICAL OS-level CVE with a fix available (one-shot verification procedure as for A2); SARIF artifact is produced.
 
 #### B4 — SBOM generation with `syft`
 
 **File**: `.github/workflows/ci.yml`
 
-1. After image build, run `syft <image-tag> -o cyclonedx-json > sbom.cdx.json`.
+1. After the B0 build step, run `syft <image-tag> -o cyclonedx-json > sbom.cdx.json`. Depends on B0.
 2. Upload `sbom.cdx.json` as a workflow artifact on every run; attach to
    the GitHub Release on **every** tagged build (`v*`), including patch
-   releases — cadence per D5.
+   releases — cadence per D5. Prerequisite: a release-creation step must exist on tag push. If no such step exists today, add `softprops/action-gh-release` (SHA-pinned per C1) as part of this task — confirm during implementation.
 3. Retention: workflow artifacts 90 days; release-attached SBOMs
    retained indefinitely with the release record.
 
 **Exit**: Every CI run produces an SBOM artifact; tagged releases carry
-an attached `sbom.cdx.json`.
+an attached `sbom.cdx.json` (release-creation step in place and SHA-pinned).
 
 #### B5 — Pin the `uv` toolchain in the Dockerfile
 
 **File**: `Dockerfile`
 
-1. Replace the current `uv` install (whatever its form — `curl | sh`, `pip install uv`, or similar) with a digest-pinned `COPY --from`:
+1. The Dockerfile already installs uv via `COPY --from=ghcr.io/astral-sh/uv:0.7.3 /uv /usr/local/bin/uv` (tag-pinned, no digest). Append the manifest-list digest to this existing line:
    ```
-   COPY --from=ghcr.io/astral-sh/uv:0.x.y@sha256:<digest> /uv /usr/local/bin/uv
+   COPY --from=ghcr.io/astral-sh/uv:0.7.3@sha256:<digest> /uv /usr/local/bin/uv
    ```
-2. Pick the `uv` version that matches the one used to generate `uv.lock` locally — `uv --version` on a dev machine is the reference. Recording it here prevents silent toolchain drift between dev and CI.
+   Resolve the digest via `docker buildx imagetools inspect ghcr.io/astral-sh/uv:0.7.3`. This is an edit to an existing line, not a replacement of an `install` method — the task is ONLY to add the digest.
+2. Pin to uv `0.7.3` (the version currently in `Dockerfile:3`, which generated the committed `uv.lock`). Any future uv bump must be a deliberate, reviewed PR — Dependabot's `docker` ecosystem (A3) will raise these under review.
 3. Apply to both build stages if `uv` is used in both.
 4. Dependabot's `docker` ecosystem keeps the digest current under PR review.
 
@@ -227,33 +250,42 @@ version.
 **File**: `.github/workflows/ci.yml` (and any other workflow files)
 
 1. Replace every `uses: <org>/<action>@<tag>` with
-   `uses: <org>/<action>@<sha>  # <tag>` for each action currently referenced
-   (`actions/checkout`, `astral-sh/setup-uv`, plus any added by Streams A/B).
+   `uses: <org>/<action>@<sha>  # <tag>` in **all** workflow files under `.github/workflows/`:
+   - `ci.yml`: `actions/checkout@v4` (4 occurrences), `astral-sh/setup-uv@v4` (4 occurrences)
+   - `live-lindas-weekly.yml`: `actions/checkout@v4`, `astral-sh/setup-uv@v5`
+   - Plus any action added by Streams A/B/C (e.g. `aquasecurity/trivy-action`, `anchore/sbom-action`, `docker/build-push-action`, `softprops/action-gh-release`).
+
+   Pin each tag separately — the `@v4` vs `@v5` split for `setup-uv` is a pre-existing state; unifying would be a separate decision outside this plan.
 2. Resolve the SHA from the tag at the current release: `gh api repos/<org>/<action>/git/refs/tags/<tag>`.
 3. Dependabot's `github-actions` ecosystem (A3) will keep these current
    under PR review going forward.
 
-**Exit**: `grep -E 'uses: [^@]+@v[0-9]' .github/workflows/*.yml` returns
-zero matches.
+**Exit**: `grep -nE '^\s*-?\s*uses:\s*[^@#]+@v[0-9]' .github/workflows/*.yml` returns zero matches. The regex is anchored to the `uses:` directive and stops at `@` before any comment, so inline `# v4.2.2` trailing comments on SHA-pinned entries are tolerated and not misreported.
+
+#### C2 — Pin service-container images in CI workflows
+
+**File**: `.github/workflows/ci.yml` (and any other workflow file with a `services:` block)
+
+1. Replace the `integration` job's `image: postgis/postgis:16-3.4` (line ~36) with `image: postgis/postgis:16-3.4@sha256:<manifest-list-digest>`, retaining the tag as an inline comment per the B2 pattern.
+2. Resolve the digest the same way as B2 — `docker buildx imagetools inspect postgis/postgis:16-3.4` (top-level `Digest:` field).
+3. This service image must match the compose `postgis` digest (B2) to avoid silent integration/prod drift. If the two diverge, one must intentionally lag; document the reason.
+4. Dependabot's `docker` ecosystem (A3) keeps this current under PR review going forward.
+
+**Exit**: `grep -nE '^\s*image:\s*[^@#]+\s*$' .github/workflows/*.yml` returns zero matches (all service images are digest-pinned).
 
 ### Stream D — Documentation
 
-#### D1 — Add `## Supply chain` to `docs/standards/security.md`
+#### D1 — Supply-chain documentation sweep
 
-**File**: `docs/standards/security.md`
+**Files**: `docs/standards/security.md`, `docs/standards/cicd.md`
 
-1. Add a `## Supply chain` section covering: Python dependency policy
-   (uv lockfile + `pip-audit` + Dependabot), image pinning (digest, not
-   tag), CI action pinning (SHA), CVE scanning layers (pip-audit + trivy),
-   SBOM generation (syft → CycloneDX), and the index policy from A1.
-2. Point `docs/standards/cicd.md` at the new section for CI-surface
-   details rather than duplicating.
-3. Cross-reference Plan 053 D2 (which deferred digest pinning to this plan)
-   and Plan 064 (this plan) as the implementation record.
+1. Add a `## Supply chain` section to `security.md` covering: Python dependency policy (uv lockfile + Dependabot), image pinning (digest, not tag — base images, compose services, and CI service images), CI action pinning (SHA), CVE scanning layers (`trivy fs` in lint + `trivy image` post-build), SBOM generation (syft → CycloneDX), the PyPI-only index policy (A1), the uv toolchain pin (B5), and the accepted-risk note on builder-stage apt (D11).
+2. Update the existing OWASP A06 row in `security.md` (line ~447) to reflect Dependabot-only (drop "Renovate") and name the three ecosystems (`pip`, `docker`, `github-actions`).
+3. Cross-reference `model_artifacts.sha256_hash` (existing, §Model code trust) from the new `## Supply chain` section — note that SBOM and `sha256_hash` are complementary per D12 (per-image CVE recoverability vs per-artifact runtime integrity), not substitutes.
+4. Update `docs/standards/cicd.md`: supersede the weak "never uses `:latest` in production" rule (line ~229) with a pointer to the digest-pinning rule in `security.md`; document the new CI image-build tier added by B0 (between integration and e2e).
+5. Cross-reference Plan 053's `## Future work` section (which deferred digest pinning to this plan) and Plan 064 (this plan) as the implementation record.
 
-**Exit**: `docs/standards/security.md` has a Supply chain section; a
-search for "digest" / "SBOM" / "pip-audit" returns results there and only
-there.
+**Exit**: `docs/standards/security.md` has a `## Supply chain` section; a search for "digest" / "SBOM" in `security.md` returns results there (and the existing §Model code trust section for `sha256_hash`). `pip-audit` appears **nowhere** in shipped docs (it was never adopted — D4 dropped it). `docs/standards/cicd.md` no longer contains the bare `:latest` rule in isolation; its CI tier list documents the new build step.
 
 ### Stream E — Image signing (OPTIONAL, gated on user decision)
 
@@ -295,25 +327,26 @@ independent and can run in parallel.
 
 | Rank | Task | Effect | Effort | Why |
 |------|------|--------|--------|-----|
-| 1 | **C1** — SHA-pin GitHub Actions | High | Low (~30 min) | Closes the `tj-actions/changed-files` (Mar 2025) class of attack. Mutable-tag exposure is the single largest uncontrolled input today. |
-| 2 | **A3** — Dependabot config | High (compounding) | Low (one YAML file) | Unlocks automated upgrade PRs for all three ecosystems (`pip`, `docker`, `github-actions`). Every later task benefits: Dependabot maintains the digests B1/B2/B5 introduce. Do this early so it is ready when digests land. |
-| 3 | **B1 + B2** — Digest-pin Dockerfile and compose images | Medium-high | Low (~1 h, including dual-arch rebuild) | Removes silent base-image swaps. Pair them — same pattern, same verification cycle. |
-| 4 | **B5** — Pin `uv` toolchain | High (leverage) | Low | `uv` enforces `uv.lock`. An unpinned `uv` makes the locked environment only as trustworthy as wherever `uv` was fetched from. |
+| 1 | **C1** — SHA-pin GitHub Actions | High | Low (~30 min) | Closes the `tj-actions/changed-files` (Mar 2025) class of attack. Mutable-tag exposure is the single largest uncontrolled input today. Scope now includes both `ci.yml` and `live-lindas-weekly.yml`. |
+| 2 | **A3** — Dependabot config | High (compounding) | Low (one YAML file) | Unlocks automated upgrade PRs for all three ecosystems (`pip`, `docker`, `github-actions`). Ranked early for readiness — the `docker` ecosystem produces zero PRs until digests land, so A3's effective coverage starts when B1/B2/B5/C2 merge. |
+| 3 | **B1 + B2 + C2** — Digest-pin Dockerfile, compose, and CI service images | Medium-high | Low (~1 h, including dual-arch rebuild) | Removes silent base-image swaps across all three locations. Group them — same pattern, same verification cycle. C2 is new in this revision (covers `ci.yml:36` postgis service image). |
+| 4 | **B5** — Pin `uv` toolchain (append digest to existing `COPY --from`) | High (leverage) | Low | `uv` enforces `uv.lock`. An unpinned `uv` makes the locked environment only as trustworthy as wherever `uv` was fetched from. Today the Dockerfile already uses `COPY --from=ghcr.io/astral-sh/uv:0.7.3` — B5 just appends the digest. |
 
 ### Tier 2 — Medium effect, medium effort
 
 | Rank | Task | Effect | Effort | Why |
 |------|------|--------|--------|-----|
 | 5 | **A2** — `trivy fs` in lint tier | Medium-high | Medium (CI wiring + `.trivyignore` discipline) | Continuous visibility into Python CVEs. Value is recurring, not one-shot. |
-| 6 | **B3** — `trivy image` post-build | Medium | Medium | Catches OS-level CVEs the fs scan misses. Runs after build so slower, but gated before e2e. |
-| 7 | **B4** — SBOM generation | Medium (recoverability) | Low-medium | Zero value today; high value the first time a CVE lands and we need to know which historical image is affected. Cheap insurance. |
+| 6 | **B0** — Add image-build step to CI | Medium (enabler) | Medium | Prerequisite for B3 and B4. Without a built image, `trivy image` and `syft <image-tag>` have nothing to scan. Today's CI has no `docker build` step. |
+| 7 | **B3** — `trivy image` post-build | Medium | Medium | Catches OS-level CVEs the fs scan misses. Depends on B0. Gated before e2e. |
+| 8 | **B4** — SBOM generation | Medium (recoverability) | Low-medium | Zero value today; high value the first time a CVE lands and we need to know which historical image is affected. Cheap insurance. Depends on B0. |
 
 ### Tier 3 — Lower effect or narrower scope
 
 | Rank | Task | Effect | Effort | Why |
 |------|------|--------|--------|-----|
-| 8 | **A1** — Pin PyPI as sole index | Low-medium | Trivial | Narrow scope per D6 (constrains future `uv add`, not `uv sync`). Do it because it's trivial, not because it's urgent. |
-| 9 | **D1** — Standards doc update | Low (doc hygiene) | Low | Capstone — must come last so the doc reflects shipped reality. |
+| 9 | **A1** — Pin PyPI as sole index | Low-medium | Trivial | Narrow scope per D6 (constrains future `uv add`, not `uv sync`). Do it because it's trivial, not because it's urgent. |
+| 10 | **D1** — Standards doc sweep (security.md + cicd.md) | Low (doc hygiene) | Low-medium | Capstone — must come last so the doc reflects shipped reality. Now covers `cicd.md` as well (supersede `:latest` rule; document the new build tier) and the OWASP A06 row in `security.md`. |
 
 ### Deferred / optional (do not schedule)
 
@@ -322,29 +355,23 @@ independent and can run in parallel.
 
 ## Sequencing notes
 
-- Within each tier, tasks are independent and can run in parallel.
-- Tier 1 → Tier 2 → Tier 3 is a hard ordering: Tier 2 scanners assume
-  Tier 1 Actions pinning is already in place (otherwise the scanner's
-  own action is itself an unpinned liability).
-- Stream D (D1 doc task) runs after every other streamed task lands so
-  the standards doc reflects what shipped, not what was planned.
-- Stream E is gated on an explicit user decision (E1).
+- Within each tier, tasks are independent and can run in parallel **except**: B3 and B4 both depend on B0 (image build step).
+- Tier 1 → Tier 2 → Tier 3 is a hard ordering: Tier 2 scanners assume Tier 1 Actions pinning is already in place (otherwise the scanner's own action is itself an unpinned liability).
+- C2 (new) pairs with B1/B2 in Tier 1 — same pattern, same verification cycle, same Dependabot maintenance story.
+- Arm64 verification for B1/B2 is a manual rebuild on the Mac mini; CI is amd64-only. Arm64 build output must be recorded in the PR description before merge.
+- Stream D (D1 doc task) runs after every other streamed task lands so the standards doc reflects what shipped, not what was planned. D1 now covers both `security.md` (new `## Supply chain` section + A06 row refresh) and `cicd.md` (supersede `:latest` rule, document new build tier).
+- Stream E is gated on an explicit user decision (E1); if accepted, E2 must annotate the signing workflow with `permissions: id-token: write, contents: read` (keyless Sigstore OIDC requirement). Unpinned `permissions:` blocks are themselves a supply-chain surface.
 - Stream F is gated on Plan 046 completing.
 
 ## Open questions for user review
 
-1. ~~**Dependabot vs Renovate** (D1).~~ **Resolved 2026-04-20**: Dependabot. Free, already familiar, sufficient at 38 direct deps.
-2. **CVE severity gate** (D4). Fail CI on HIGH+ or CRITICAL-only? HIGH+
-   catches more but will occasionally block PRs on transitive deps
-   without an available fix — `--ignore-unfixed` in the trivy command
-   already skips these, but judgment calls on HIGH-with-fix will appear.
+1. ~~**Dependabot vs Renovate** (D1).~~ **Resolved 2026-04-20**: Dependabot. Free, already familiar, sufficient at 39 direct deps.
+2. ~~**CVE severity gate** (D4).~~ **Resolved 2026-04-20**: HIGH+ with `--ignore-unfixed`. Catches more than CRITICAL-only; `--ignore-unfixed` already suppresses transitive-dep noise without a fix. Judgment calls on HIGH-with-fix are handled via `.trivyignore` with dated comments per A2.2.
 3. **Image signing** (Stream E). Adopt now, or wait until the registry
    story is decided? My recommendation: wait.
 4. **Runtime egress allowlist** (Stream F). Fold into this plan or keep
    as a separate follow-up? My recommendation: separate, gated on Plan 046.
-5. **Plan 053 D2 reference** — should this plan be linked from the Plan
-   053 archive record as the discharge of that deferral? (Convention
-   check — not all deferrals are back-linked today.)
+5. ~~**Plan 053 back-link** — should this plan be linked from the Plan 053 archive record as the discharge of that deferral?~~ **Resolved 2026-04-20**: Not required by any convention. Leave Plan 053 archive as-is; rely on this plan's §Context.1 forward-pointer.
 
 ## Changelog
 
@@ -356,3 +383,26 @@ independent and can run in parallel.
   toolchain). D11 added (apt transitivity note). B5 task added. B1/B2
   updated with manifest-list-digest caveat. Priority-order section
   added. Non-goal: secret scanning out of scope.
+- **2026-04-20** — Critical-review feedback applied (three parallel
+  Sonnet agents + synthesis). Factual corrections: B5 rewritten — uv is
+  already installed via `COPY --from=ghcr.io/astral-sh/uv:0.7.3`, the
+  task is to append the digest, not replace the install method; Plan 053
+  citation corrected to `## Future work` (no "D2" label existed);
+  direct-dep count corrected (39, not 38). Scope expansions: added
+  `.github/workflows/live-lindas-weekly.yml` (uses `setup-uv@v5`) to
+  C1; added new task C2 for the `postgis/postgis:16-3.4` service image
+  in `ci.yml:36`. New task B0 added (CI image build step — prerequisite
+  for B3 and B4; today's CI has no `docker build` step). D1 extended to
+  cover `cicd.md` (supersede the `:latest` rule, document the new build
+  tier) and the OWASP A06 row in `security.md`. D11 reframed as
+  accepted residual risk (builder-stage apt is transient; does not
+  reach runtime image). D12 added (SBOM vs `sha256_hash`
+  complementarity). Open Q2 resolved (HIGH+ with `--ignore-unfixed`).
+  Open Q5 resolved (no back-link required). Exit gates tightened:
+  A2/B3 one-shot verification procedure; C1/C2 regex anchored to
+  tolerate trailing `# v4.2.2` comments; A3 gate corrected (no manual
+  repo-settings step — activation is config-driven). Stream E gains
+  explicit `permissions: id-token: write, contents: read` note for
+  keyless OIDC. B4 gains a release-creation prerequisite note.
+  Disambiguation note added to the Architecture decisions header
+  (Decision D1 vs Task D1 collision).
