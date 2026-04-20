@@ -1,4 +1,4 @@
-# ruff: noqa: T201, S101, E501
+# ruff: noqa: S101, E501
 """Plan 063 end-to-end fetch-path verification.
 
 Runs the MeteoSwissNwpAdapter against the live STAC endpoint and asserts
@@ -16,6 +16,7 @@ Usage (dev Docker Compose stack):
     docker compose exec -T \
         -e DATABASE_URL="postgresql+psycopg://sapphire:${DB_PASSWORD}@postgres:5432/sapphire" \
         -e SAPPHIRE_CONFIG=/app/config.toml \
+        -e SAPPHIRE_DATA_DIR=/data \
         -e PREFECT_API_URL=http://prefect-server:4200/api \
         prefect-worker uv run python scripts/063_e2e_verify.py
 
@@ -29,69 +30,94 @@ from __future__ import annotations
 import pathlib
 import shutil
 import sys
+import tempfile
 import time
 from datetime import UTC, datetime
 
 import httpx
+import structlog
 
 from sapphire_flow.adapters.meteoswiss_nwp import MeteoSwissNwpAdapter
+from sapphire_flow.logging import configure_cli_logging
+from sapphire_flow.types.datetime import ensure_utc
+from sapphire_flow.types.weather import GriddedForecast
+
+log = structlog.get_logger(__name__)
 
 
 def main() -> int:
-    scratch = pathlib.Path("/tmp/meteoswiss_nwp_e2e")
-    scratch.mkdir(parents=True, exist_ok=True)
+    configure_cli_logging()
+    scratch = pathlib.Path(tempfile.mkdtemp(prefix="meteoswiss_nwp_e2e_"))
+    log.info("nwp.e2e_started", scratch=str(scratch))
 
-    adapter = MeteoSwissNwpAdapter(
-        stac_base_url="https://data.geo.admin.ch/api/stac/v1",
-        stac_collection="ch.meteoschweiz.ogd-forecasting-icon-ch2",
-        scratch_path=scratch,
-        http_client=httpx.Client(
-            timeout=httpx.Timeout(connect=10.0, read=300.0, write=None, pool=5.0)
-        ),
-    )
+    try:
+        adapter = MeteoSwissNwpAdapter(
+            stac_base_url="https://data.geo.admin.ch/api/stac/v1",
+            stac_collection="ch.meteoschweiz.ogd-forecasting-icon-ch2",
+            scratch_path=scratch,
+            http_client=httpx.Client(
+                timeout=httpx.Timeout(connect=10.0, read=300.0, write=None, pool=5.0)
+            ),
+        )
 
-    t0 = time.monotonic()
-    now = datetime.now(UTC)
-    cycle = adapter.resolve_cycle_time(now)
-    print(f"resolved cycle: {cycle.isoformat()}")
+        t0 = time.monotonic()
+        now = ensure_utc(datetime.now(UTC))
+        cycle = adapter.resolve_cycle_time(now)
+        log.info("nwp.e2e_cycle_resolved", cycle=cycle.isoformat())
 
-    free_before = shutil.disk_usage(scratch).free
-    result = adapter.fetch_forecasts(station_configs=[], cycle_time=cycle)
-    elapsed = time.monotonic() - t0
-    free_after = shutil.disk_usage(scratch).free
+        free_before = shutil.disk_usage(scratch).free
+        result = adapter.fetch_forecasts(station_configs=[], cycle_time=cycle)
+        elapsed = time.monotonic() - t0
+        free_after = shutil.disk_usage(scratch).free
 
-    cycle_dir = scratch / cycle.strftime("%Y%m%dT%H%M")
-    downloaded = list(cycle_dir.rglob("*.grib2"))
-    allowlist = {tok for tok, _, _ in adapter.PARAM_GROUPS}
+        cycle_dir = scratch / cycle.strftime("%Y%m%dT%H%M")
+        downloaded = list(cycle_dir.rglob("*.grib2"))
+        allowlist = {tok for tok, _, _ in adapter.PARAM_GROUPS}
 
-    # (a) file count within budget: 2 vars × 2 types × 121 steps = 484 max
-    assert len(downloaded) <= 484, f"too many files: {len(downloaded)}"
-    # (b) every filename contains an allowlisted stac_token
-    bad = [f for f in downloaded if not any(f"-{tok}-" in f.name for tok in allowlist)]
-    assert not bad, f"non-allowlisted files: {bad[:5]}"
-    # (c) scratch usage within cap (must not have consumed > 4 GB)
-    consumed_gb = (free_before - free_after) / 1024**3
-    assert consumed_gb <= 4.0, f"scratch consumed {consumed_gb:.1f} GB"
-    # (d) per-cycle directory present
-    assert cycle_dir.exists(), f"expected per-cycle dir {cycle_dir}"
-    # (e) wall time
-    assert elapsed < 600, f"fetch took {elapsed:.0f}s, expected < 600s"
+        # (a) file count within budget: 2 vars × 2 types × 121 steps = 484 max
+        assert len(downloaded) <= 484, f"too many files: {len(downloaded)}"
+        # (b) every filename contains an allowlisted stac_token
+        bad = [
+            f for f in downloaded if not any(f"-{tok}-" in f.name for tok in allowlist)
+        ]
+        assert not bad, f"non-allowlisted files: {bad[:5]}"
+        # (c) scratch usage within cap (must not have consumed > 4 GB)
+        consumed_gb = (free_before - free_after) / 1024**3
+        assert consumed_gb <= 4.0, f"scratch consumed {consumed_gb:.1f} GB"
+        # (d) per-cycle directory present
+        assert cycle_dir.exists(), f"expected per-cycle dir {cycle_dir}"
+        # (e) wall time
+        assert elapsed < 600, f"fetch took {elapsed:.0f}s, expected < 600s"
 
-    # (f) GriddedForecast contract
-    ds = result.values  # type: ignore[union-attr]
-    expected_vars = {"precipitation", "temperature"}
-    assert expected_vars.issubset(set(ds.data_vars)), (
-        f"expected {expected_vars}, got {set(ds.data_vars)}"
-    )
-    assert "member" in ds.dims and ds.sizes["member"] >= 20, (
-        f"expected member dim ≥ 20, got {ds.sizes.get('member')}"
-    )
+        # (f) GriddedForecast contract
+        assert isinstance(result, GriddedForecast), (
+            f"expected GriddedForecast, got {type(result).__name__}"
+        )
+        ds = result.values
+        expected_vars = {"precipitation", "temperature"}
+        assert expected_vars.issubset(set(ds.data_vars)), (
+            f"expected {expected_vars}, got {set(ds.data_vars)}"
+        )
+        assert "member" in ds.dims and ds.sizes["member"] >= 20, (
+            f"expected member dim ≥ 20, got {ds.sizes.get('member')}"
+        )
 
-    print(
-        f"PASS: {len(downloaded)} files, {consumed_gb:.2f} GB, "
-        f"{elapsed:.0f}s, members={ds.sizes['member']}"
-    )
-    return 0
+        log.info(
+            "nwp.e2e_passed",
+            file_count=len(downloaded),
+            consumed_gb=round(consumed_gb, 2),
+            elapsed_s=round(elapsed, 0),
+            members=ds.sizes["member"],
+        )
+        return 0
+    finally:
+        try:
+            shutil.rmtree(scratch)
+            log.info("nwp.e2e_scratch_removed", scratch=str(scratch))
+        except OSError as exc:
+            log.warning(
+                "nwp.e2e_scratch_cleanup_failed", scratch=str(scratch), error=str(exc)
+            )
 
 
 if __name__ == "__main__":
