@@ -18,10 +18,10 @@ The following roles are referenced throughout this document. Role assignments fo
 
 | Role | Responsibilities | Held by (Nepal v1) |
 |------|------------------|---------------------|
-| **System administrator** | Runs Flow 0 (deployment onboarding); manages deployment configuration, AOI, and dataset registry | HSOL; DHM IT learns local deployment alongside HSOL |
-| **Model administrator** | Runs Flows 5, 5w, 6/9, 13; approves model promotion; reviews station go-live | HSOL |
+| **System administrator** | Runs Flow 0 (deployment onboarding); manages deployment configuration, AOI, and dataset registry | HSOL on testing server; DHM deployment locally with support from HSOL |
+| **Model administrator** | Runs Flows 5, 5w, 6/9, 13; approves model promotion; reviews station go-live | HSOL on testing server; DHM deployment locally with support from HSOL |
 | **Duty forecaster** | Reviews, adjusts, and publishes forecasts via DHM dashboard (Flow 3) | DHM |
-| **IT / operations team** | Receives pipeline alerts; manages host infrastructure, backups, recovery | DHM IT (local hosting); HSOL supports during v1 |
+| **IT / operations team** | Receives pipeline alerts; manages host infrastructure, backups, recovery | DHM IT (local hosting); HSOL supports during deployment and first months |
 
 ### SAPPHIRE / DHM Responsibilities
 
