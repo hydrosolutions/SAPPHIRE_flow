@@ -2,22 +2,27 @@
 # pyright: reportUnknownArgumentType=false
 from __future__ import annotations
 
+import shutil
 import time
+from datetime import timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
+from urllib.parse import urlparse
 
+import httpx
 import numpy as np
 import structlog
 import xarray as xr
 
-from sapphire_flow.exceptions import AdapterError
+from sapphire_flow.exceptions import (
+    AdapterError,
+    BudgetExceededError,
+    NoCycleAvailableError,
+)
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.weather import GriddedForecast
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
-    import httpx
-
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.ids import StationId
     from sapphire_flow.types.station import StationWeatherSource
@@ -27,14 +32,46 @@ log = structlog.get_logger(__name__)
 
 _MIN_ENSEMBLE_MEMBERS = 20
 
-PARAM_GROUPS: list[tuple[str, str]] = [
-    ("tp", "surface"),
-    ("t_2m", "heightAboveGround"),
-    ("relhum_2m", "heightAboveGround"),
-    ("u_10m", "heightAboveGround"),
-    ("v_10m", "heightAboveGround"),
-    ("sd", "surface"),
+_CYCLE_HOURS: tuple[int, ...] = (0, 3, 6, 9, 12, 15, 18, 21)
+_MAX_FALLBACK_STEPS: int = 3  # hard-coded per Plan 063 D4; non-configurable in v0
+
+# Three-column: (STAC item-ID token, cfgrib shortName, typeOfLevel).
+# Column 0 drives the STAC allowlist (client-side substring match on `-{token}-`).
+# Columns 1-2 drive cfgrib `filter_by_keys` in `_parse_grib_files`.
+# v0 minimum: 2 variables. Additional variables are one row each when a downstream
+# model requires them (see project_nwp_v0_variable_allowlist memory):
+#   ("h_snow", "sd", "surface"),
+#   ("td_2m", "td_2m", "heightAboveGround"),
+#   ("u_10m", "u_10m", "heightAboveGround"),
+#   ("v_10m", "v_10m", "heightAboveGround"),
+PARAM_GROUPS: list[tuple[str, str, str]] = [
+    ("tot_prec", "tp", "surface"),
+    ("t_2m", "t_2m", "heightAboveGround"),
 ]
+
+_DEFAULT_MAX_DOWNLOAD_BYTES: int = 4 * 1024 * 1024 * 1024  # 4 GB
+_ASSET_SIZE_ESTIMATE_BYTES: int = 2 * 1024 * 1024  # 2 MB fallback
+_MAX_FILE_COUNT: int = 500
+_GRIB_MAGIC: bytes = b"GRIB"
+
+
+def _is_grib_asset(asset_key: str, asset: dict[str, object]) -> bool:
+    media_type = str(asset.get("type", ""))
+    href = str(asset.get("href", ""))
+    href_path = urlparse(href).path
+    return (
+        media_type in ("application/x-grib2", "application/grib")
+        or href_path.endswith(".grib2")
+        or asset_key.endswith(".grib2")
+    )
+
+
+def _verify_grib_magic(path: Path) -> None:
+    with path.open("rb") as f:
+        head = f.read(4)
+    if head != _GRIB_MAGIC:
+        log.error("nwp.download_truncated", path=str(path), head=head.hex())
+        raise AdapterError(f"truncated or non-GRIB2 download: {path}")
 
 
 def _deaccumulate_precipitation(ds: xr.Dataset) -> xr.Dataset:
@@ -76,9 +113,16 @@ def convert_raw_dataset(ds: xr.Dataset) -> xr.Dataset:
 
 
 class MeteoSwissNwpAdapter:
+    """ICON-CH2-EPS adapter.
+
+    Caller contract: `http_client` must carry an explicit timeout, e.g.
+    ``httpx.Client(timeout=httpx.Timeout(
+        connect=10.0, read=300.0, write=None, pool=5.0))``.
+    """
+
     NWP_SOURCE: ClassVar[str] = "icon_ch2_eps"
 
-    PARAM_GROUPS: ClassVar[list[tuple[str, str]]] = PARAM_GROUPS
+    PARAM_GROUPS: ClassVar[list[tuple[str, str, str]]] = PARAM_GROUPS
 
     def __init__(
         self,
@@ -87,25 +131,83 @@ class MeteoSwissNwpAdapter:
         stac_collection: str,
         scratch_path: Path,
         http_client: httpx.Client,
+        max_download_bytes: int = _DEFAULT_MAX_DOWNLOAD_BYTES,
+        cleanup_scratch_on_fetch: bool = True,
     ) -> None:
         self._stac_base_url = stac_base_url.rstrip("/")
         self._stac_collection = stac_collection
         self._scratch_path = scratch_path
         self._http_client = http_client
+        self._max_download_bytes = max_download_bytes
+        self._cleanup_scratch_on_fetch = cleanup_scratch_on_fetch
+
+    def resolve_cycle_time(self, now_utc: UtcDatetime) -> UtcDatetime:
+        if now_utc.tzinfo is None:
+            raise ValueError(
+                f"resolve_cycle_time requires tz-aware input, got {now_utc!r}"
+            )
+        snapped = self._snap_to_cycle(now_utc)
+        candidate = snapped
+        for step in range(_MAX_FALLBACK_STEPS + 1):
+            if self._cycle_is_published(candidate):
+                if step > 0:
+                    log.warning(
+                        "nwp.cycle_fallback_used",
+                        snapped_cycle=snapped.isoformat(),
+                        resolved_cycle=candidate.isoformat(),
+                        fallback_steps=step,
+                    )
+                return candidate
+            candidate = ensure_utc(candidate - timedelta(hours=3))
+        raise NoCycleAvailableError(
+            f"No cycle available within {_MAX_FALLBACK_STEPS} fallback steps "
+            f"from {snapped.isoformat()}"
+        )
+
+    @staticmethod
+    def _snap_to_cycle(now_utc: UtcDatetime) -> UtcDatetime:
+        cycle_hour = max(h for h in _CYCLE_HOURS if h <= now_utc.hour)
+        return ensure_utc(
+            now_utc.replace(hour=cycle_hour, minute=0, second=0, microsecond=0)
+        )
+
+    def _cycle_is_published(self, cycle: UtcDatetime) -> bool:
+        datetime_q = cycle.strftime("%Y-%m-%dT%H:%M:%SZ")
+        url = (
+            f"{self._stac_base_url}/collections/{self._stac_collection}/items"
+            f"?datetime={datetime_q}&limit=100"
+        )
+        try:
+            resp = self._http_client.get(url)
+            resp.raise_for_status()
+        except Exception as exc:
+            raise AdapterError(f"STAC availability probe failed: {exc}") from exc
+        data = resp.json()
+        features = data.get("features", [])
+        if not features:
+            return False
+        prefix = cycle.strftime("%m%d%Y-%H%M-0-")
+        return any(f.get("id", "").startswith(prefix) for f in features)
 
     def fetch_forecasts(
         self,
-        station_configs: list[StationWeatherSource],
+        station_configs: list[StationWeatherSource],  # noqa: ARG002
         cycle_time: UtcDatetime,
     ) -> GriddedForecast | dict[StationId, WeatherForecastResult]:
+        resolved_cycle = self.resolve_cycle_time(cycle_time)
+        log.info(
+            "nwp.cycle_resolved",
+            requested_cycle=cycle_time.isoformat(),
+            resolved_cycle=resolved_cycle.isoformat(),
+        )
         log.info(
             "nwp.fetch_started",
             nwp_source=self.NWP_SOURCE,
-            cycle_time=str(cycle_time),
+            cycle_time=resolved_cycle.isoformat(),
         )
         t0 = time.perf_counter()
         try:
-            grib_files = self._fetch_grib_files(cycle_time)
+            grib_files = self._fetch_grib_files(resolved_cycle)
             ds = self._parse_grib_files(grib_files)
             duration_ms = int((time.perf_counter() - t0) * 1000)
             log.info(
@@ -116,7 +218,7 @@ class MeteoSwissNwpAdapter:
             )
             return GriddedForecast(
                 nwp_source=self.NWP_SOURCE,
-                cycle_time=ensure_utc(cycle_time),
+                cycle_time=resolved_cycle,
                 values=ds,
             )
         except AdapterError:
@@ -126,15 +228,23 @@ class MeteoSwissNwpAdapter:
             raise AdapterError(f"NWP fetch failed: {exc}") from exc
 
     def _fetch_grib_files(self, cycle_time: UtcDatetime) -> list[Path]:
-        # STAC datetime filter: use Z-suffix UTC form. The default `isoformat()`
-        # emits `+00:00` which contains a `+` that gets URL-decoded as a space
-        # server-side, producing a 400 Bad Request.
-        datetime_q = cycle_time.strftime("%Y-%m-%dT%H:%M:%SZ")
-        url = (
+        scratch_dir = self._scratch_path / cycle_time.strftime("%Y%m%dT%H%M")
+        if self._cleanup_scratch_on_fetch:
+            shutil.rmtree(scratch_dir, ignore_errors=True)
+        scratch_dir.mkdir(parents=True, exist_ok=True)
+
+        cycle_prefix = cycle_time.strftime("%m%d%Y-%H%M-")
+        allow_tokens: list[str] = [row[0] for row in self.PARAM_GROUPS]
+
+        window_end = cycle_time + timedelta(hours=120)
+        datetime_q = f"{cycle_time:%Y-%m-%dT%H:%M:%SZ}/{window_end:%Y-%m-%dT%H:%M:%SZ}"
+        url: str = (
             f"{self._stac_base_url}/collections/{self._stac_collection}/items"
-            f"?datetime={datetime_q}"
+            f"?datetime={datetime_q}&limit=100"
         )
-        items: list[dict] = []  # type: ignore[type-arg]
+
+        grib_files: list[Path] = []
+        accumulated_bytes = 0
         page_count = 0
         while url:
             page_count += 1
@@ -143,73 +253,85 @@ class MeteoSwissNwpAdapter:
             try:
                 resp = self._http_client.get(url)
                 resp.raise_for_status()
+            except httpx.TimeoutException as exc:
+                raise AdapterError(f"STAC request timed out: {exc}") from exc
             except Exception as exc:
                 raise AdapterError(f"STAC request failed: {exc}") from exc
 
             data = resp.json()
-            items.extend(data.get("features", []))
+            for item in data.get("features", []):
+                item_id = str(item.get("id", ""))
+                if not item_id.startswith(cycle_prefix):
+                    continue
+                if not any(f"-{t}-" in item_id for t in allow_tokens):
+                    log.debug(
+                        "nwp.variable_skipped",
+                        item_id=item_id,
+                        reason="not_in_allowlist",
+                    )
+                    continue
+                for asset_key, asset in item.get("assets", {}).items():
+                    if not _is_grib_asset(asset_key, asset):
+                        continue
+                    asset_size = asset.get("size")
+                    bytes_add = (
+                        int(asset_size)
+                        if isinstance(asset_size, int)
+                        else _ASSET_SIZE_ESTIMATE_BYTES
+                    )
+                    if accumulated_bytes + bytes_add > self._max_download_bytes:
+                        log.error(
+                            "nwp.size_cap_exceeded",
+                            accumulated_bytes=accumulated_bytes,
+                            max_download_bytes=self._max_download_bytes,
+                            item_id=item_id,
+                        )
+                        raise BudgetExceededError(
+                            f"Download size cap exceeded: "
+                            f"{accumulated_bytes + bytes_add} "
+                            f"> {self._max_download_bytes}"
+                        )
+                    href = str(asset.get("href", ""))
+                    file_path = self._download_asset(href, asset_key, scratch_dir)
+                    _verify_grib_magic(file_path)
+                    grib_files.append(file_path)
+                    accumulated_bytes += bytes_add
+                    log.debug(
+                        "nwp.file_downloaded",
+                        href=href,
+                        local_path=str(file_path),
+                    )
+                    if len(grib_files) > _MAX_FILE_COUNT:
+                        raise BudgetExceededError(
+                            f"GRIB file count exceeded: "
+                            f"{len(grib_files)} > {_MAX_FILE_COUNT}"
+                        )
 
             url = ""
             for link in data.get("links", []):
                 if link.get("rel") == "next":
-                    url = link["href"]
+                    url = str(link["href"])
                     if not url.startswith(self._stac_base_url + "/"):
                         raise AdapterError(
                             f"STAC pagination URL {url!r} does not match base URL"
                         )
                     break
 
-        grib_files: list[Path] = []
-        for item in items:
-            assets = item.get("assets", {})
-            for asset_key, asset in assets.items():
-                media_type = asset.get("type", "")
-                href = asset.get("href", "")
-                # Accept MeteoSwiss's `application/grib` media type as well as the
-                # spec `application/x-grib2`. For href-based detection, parse the
-                # URL path — asset hrefs carry signed-URL query params (e.g.
-                # `?AWSAccessKeyId=…&Signature=…&Expires=…`) so `.endswith(".grib2")`
-                # on the raw href fails. Use urllib to strip the query.
-                from urllib.parse import urlparse
-                href_path = urlparse(href).path
-                is_grib = (
-                    media_type in ("application/x-grib2", "application/grib")
-                    or href_path.endswith(".grib2")
-                    or asset_key.endswith(".grib2")
-                )
-                if is_grib:
-                    file_path = self._download_asset(href, asset_key)
-                    grib_files.append(file_path)
-                    log.debug(
-                        "nwp.file_downloaded",
-                        href=href,
-                        local_path=str(file_path),
-                    )
-
-        if len(grib_files) > 500:
-            raise AdapterError(f"Too many GRIB2 files ({len(grib_files)}), maximum 500")
         if not grib_files:
             raise AdapterError(
-                f"No GRIB2 files found for cycle_time={cycle_time.isoformat()}"
+                f"No matching GRIB2 files for cycle_time={cycle_time.isoformat()} "
+                f"(allowlist tokens: {allow_tokens})"
             )
         return grib_files
 
-    def _download_asset(self, href: str, asset_key: str) -> Path:
-        from pathlib import Path
-        from urllib.parse import urlparse
-
+    def _download_asset(self, href: str, asset_key: str, scratch_dir: Path) -> Path:
         if not href.startswith("https://"):
             raise AdapterError(f"Refusing non-HTTPS asset URL: {href!r}")
-        # Strip query params from the URL before deriving the filename — S3
-        # signed URLs carry `?AWSAccessKeyId=…&Signature=…&Expires=…` which
-        # would otherwise end up in the filename and make the path unusable.
         url_path = urlparse(href).path
         file_name = url_path.rsplit("/", 1)[-1] or f"{asset_key}.grib2"
         file_name = Path(file_name).name
-        scratch = Path(self._scratch_path)
-        scratch.mkdir(parents=True, exist_ok=True)
-        dest = scratch / file_name
-        if not dest.resolve().is_relative_to(scratch.resolve()):
+        dest = scratch_dir / file_name
+        if not dest.resolve().is_relative_to(scratch_dir.resolve()):
             raise AdapterError(f"Path traversal in asset href: {href!r}")
         try:
             with self._http_client.stream("GET", href) as resp:
@@ -217,6 +339,8 @@ class MeteoSwissNwpAdapter:
                 with dest.open("wb") as f:
                     for chunk in resp.iter_bytes(chunk_size=8192):
                         f.write(chunk)
+        except httpx.TimeoutException as exc:
+            raise AdapterError(f"Download timed out for {href}: {exc}") from exc
         except Exception as exc:
             raise AdapterError(f"Download failed for {href}: {exc}") from exc
         return dest
@@ -224,7 +348,7 @@ class MeteoSwissNwpAdapter:
     def _parse_grib_files(self, grib_files: list[Path]) -> xr.Dataset:
         datasets: list[xr.Dataset] = []
         str_paths = [str(p) for p in grib_files]
-        for short_name, type_of_level in self.PARAM_GROUPS:
+        for _stac_token, short_name, type_of_level in self.PARAM_GROUPS:
             try:
                 ds = xr.open_mfdataset(
                     str_paths,

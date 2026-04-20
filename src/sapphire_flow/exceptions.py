@@ -26,6 +26,14 @@ class AdapterError(SapphireError):
     """External data source returned an error or timed out."""
 
 
+class NoCycleAvailableError(AdapterError):
+    """NWP cycle is not published and no fallback succeeded within the fallback cap."""
+
+
+class BudgetExceededError(AdapterError):
+    """Local size or file-count guard tripped; not a retriable external-source error."""
+
+
 class ConfigurationError(SapphireError):
     """Invalid or missing configuration."""
 
