@@ -31,7 +31,7 @@ The following roles are referenced throughout this document. Role assignments fo
 | **Station metadata & rating curves** | Ingests and versions metadata and rating tables | Provides and maintains station definitions, rating tables, and updates |
 | **Danger level thresholds** | Ingests thresholds, evaluates forecasts against them, generates alerts | Defines, approves, and maintains danger level threshold values per station |
 | **Forecast models** | Trains, runs, and serves ensemble forecasts | — |
-| **Forecast review & publication** | Provides status-transition API (`raw → reviewed → published`) with audit trail | Operates the existing DHM forecaster dashboard that calls the API |
+| **Forecast review & publication** | Provides status-transition API (`raw → reviewed → published`) with audit trail | Operates the existing or planned DHM forecaster dashboard that calls the API |
 | **Alerts** | Generates threshold-based alerts; stores and serves via `GET /api/v1/alerts` (polling) and webhook push subscriptions | Consumes via polling and/or webhook; manages downstream distribution and recipient lists |
 | **REST API** | Serves all data (stations, observations, forecasts, alerts, skill, health) | Consumes API from dashboard, alert portal, and bulletin systems |
 | **Pipeline monitoring** | Watchdog flow, health endpoints, ops alerting to IT | Receives and acts on pipeline alerts |
@@ -161,8 +161,9 @@ Steps 1.2–1.4 (NWP archiving and spatial extraction) are only needed in deploy
 | 1.10 | Forecast QC | Forecast ensembles, QC rule set | QC flags per ensemble; QC_FAILED triggers model fallback |
 | 1.11 | Store forecast results | Forecast ensembles + model artifact version | Forecasts persisted to store; immediately available via REST API |
 | 1.12 | Combine model forecasts (conditional) — *not committed for Nepal v1* | Individual forecast ensembles from all non-fallback models stored in 1.11 | Pooled combined ensemble forecast; skipped if fewer than two models succeeded |
+| 1.13 | Evaluate thresholds and generate alerts | Stored forecast ensembles, station danger level thresholds | Threshold-based alert records persisted and served via `GET /api/v1/alerts` and webhook dispatch |
 
-Step 1.9 is conditional — pass-through until sufficient forecast archive exists for bias correction. Step 1.12 runs only if multi-model combination is enabled for the deployment.
+Step 1.9 is conditional — pass-through until sufficient forecast archive exists for bias correction. Step 1.12 runs only if multi-model combination is enabled for the deployment. Step 1.13 runs on raw (pre-review) forecasts so that time-critical alerts are not delayed by Flow 3.
 
 
 #### Notes
@@ -627,7 +628,6 @@ All data produced by the SAPPHIRE system is served through a REST API at `/api/v
 | Observations | `GET /api/v1/stations/{id}/observations` | Time-series observations for a station |
 | Forecasts | `GET /api/v1/stations/{id}/forecasts`, `GET /api/v1/forecasts/{id}` | Forecast list and full ensemble detail per forecast |
 | Alerts | `GET /api/v1/alerts` | Active and historical alerts, filterable by status and source |
-| Operations | `POST /api/v1/flows/{flow}/trigger` | Manually trigger a flow run |
 | Health | `GET /api/v1/health`, `GET /api/v1/health/detail` | System health status |
 
 **Response format:** JSON by default. CSV available via `?format=csv`.
@@ -652,6 +652,7 @@ All data produced by the SAPPHIRE system is served through a REST API at `/api/v
 | Global/national catchment attributes | One-time download or import | Catchment characteristics (area, slope, soil, climate indices) — exact sources TBD | Flow 0 |
 | DHM rating tables | Uploaded annually or on update | hQ tables for discharge derivation | Flow 2, Flow 5 step 5.6 |
 | DHM forecast dashboard | Consumer pulls API | Forecasts, observations, station metadata, skill scores | REST API |
+| DHM alerting system | SAPPHIRE pushes via webhook (or consumer polls) | Threshold-based flood alerts | REST API + webhook dispatcher |
 | Other consumers (DRRMA, hydropower, neighbouring countries, etc.) | Consumer pulls API | Forecasts and alerts, scoped by API key | REST API |
 
 ---
