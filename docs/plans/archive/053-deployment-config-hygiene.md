@@ -1,7 +1,7 @@
 # Plan 053 — Deployment config hygiene (compose + standards alignment)
 
-**Status**: READY (2026-04-20, after three review rounds)
-**Date**: 2026-04-18 (original); 2026-04-20 (revisions 1–3)
+**Status**: DONE (2026-04-20, implemented in commit 07cbacf, tag v0.1.365)
+**Date**: 2026-04-18 (original); 2026-04-20 (revisions 1–3 + implementation)
 **Depends on**: Plan 046 (status: READY) — no file-level conflict; Plan
 046's sole compose change is `PREFECT_API_DATABASE_PRUNE_OLDER_THAN=30` on
 `prefect-server`, and it does not touch `docker/entrypoint.sh` despite
