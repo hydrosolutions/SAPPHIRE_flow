@@ -1288,3 +1288,65 @@ class TestForecastCycle:
         )
 
         assert "NWP fetch failed" in result.errors
+
+    def test_grid_components_skipped_when_archive_path_none(self) -> None:
+        from unittest.mock import patch
+
+        sid = StationId(uuid4())
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+        )
+
+        adapter = FakeWeatherForecastSource(result={})
+
+        boom = RuntimeError(
+            "grid component must not be constructed when archive path is None"
+        )
+        with (
+            patch(
+                "sapphire_flow.store.zarr_nwp_grid_store.ZarrNwpGridStore",
+                side_effect=boom,
+            ),
+            patch(
+                "sapphire_flow.preprocessing.exact_extract_grid_extractor.ExactExtractGridExtractor",
+                side_effect=boom,
+            ),
+        ):
+            result = run_forecast_cycle_flow(
+                station_store=station_store,
+                obs_store=obs_store,
+                weather_forecast_store=nwp_store,
+                forecast_store=forecast_store,
+                model_state_store=state_store,
+                artifact_store=artifact_store,
+                alert_store=alert_store,
+                baseline_store=baseline_store,
+                basin_store=basin_store,
+                forcing_store=forcing_store,
+                adapter=adapter,
+                models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+                config=_make_config(),
+                qc_rules=_empty_qc_rules(),
+                clock=_clock,
+                rng=random.Random(42),
+            )
+
+        assert isinstance(result, ForecastCycleResult)

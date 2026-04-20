@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 from typing import TYPE_CHECKING, Any, cast
 
@@ -29,9 +30,14 @@ log = structlog.get_logger(__name__)
 
 
 def _to_utc_datetime(vt: Any) -> UtcDatetime:
+    # NOTE: Plan 063 owns the MeteoSwiss adapter's tz-aware emission contract;
+    # this guard asserts only at the extractor boundary. Do not silently coerce —
+    # naive datetimes past the v0 boundary are a project-wide anti-pattern.
     ts = pd.Timestamp(vt)
     if ts.tzinfo is None:
-        ts = ts.tz_localize("UTC")
+        raise ValueError(
+            f"valid_time {vt!r} is naive; GridExtractor requires tz-aware datetimes"
+        )
     return ensure_utc(ts.to_pydatetime())  # type: ignore[arg-type]
 
 
@@ -126,6 +132,38 @@ class ExactExtractGridExtractor:
                                 "value": float(extracted.iloc[row_idx]["mean"]),  # type: ignore[reportUnknownArgumentType]
                             }
                         )
+
+        out_of_extent: list[str] = []
+        for cfg in valid_configs:
+            rows = rows_by_station[cfg.station_id]
+            member_ids = {r["member_id"] for r in rows}
+            missing_members: set[int] = {
+                m
+                for m in member_ids
+                if all(math.isnan(r["value"]) for r in rows if r["member_id"] == m)
+            }
+            if missing_members and len(missing_members) == len(member_ids):
+                out_of_extent.append(str(cfg.station_id))
+                continue
+            for m in sorted(missing_members):
+                log.info(
+                    "extraction.member_skipped",
+                    polygon_id=str(cfg.station_id),
+                    member_id=m,
+                    cycle_time=str(cycle_time),
+                )
+            if missing_members:
+                rows_by_station[cfg.station_id] = [
+                    r for r in rows if r["member_id"] not in missing_members
+                ]
+
+        if out_of_extent:
+            log.error(
+                "extraction.polygon_outside_extent",
+                polygon_ids=out_of_extent,
+                cycle_time=str(cycle_time),
+            )
+            raise ExtractionError(f"polygon(s) outside grid extent: {out_of_extent}")
 
         output: dict[StationId, BasinAverageForecast | ElevationBandForecast] = {}
         for cfg in valid_configs:

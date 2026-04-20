@@ -356,16 +356,17 @@ def run_forecast_cycle_flow(
 
         models = discover_models()
 
-    if grid_store is None:
-        from sapphire_flow.store.zarr_nwp_grid_store import ZarrNwpGridStore
+    if config.nwp_grid_archive_base_path is not None:
+        if grid_store is None:
+            from sapphire_flow.store.zarr_nwp_grid_store import ZarrNwpGridStore
 
-        grid_store = ZarrNwpGridStore()
-    if grid_extractor is None:
-        from sapphire_flow.preprocessing.exact_extract_grid_extractor import (
-            ExactExtractGridExtractor,
-        )
+            grid_store = ZarrNwpGridStore()
+        if grid_extractor is None:
+            from sapphire_flow.preprocessing.exact_extract_grid_extractor import (
+                ExactExtractGridExtractor,
+            )
 
-        grid_extractor = ExactExtractGridExtractor()
+            grid_extractor = ExactExtractGridExtractor()
 
     if station_store is None:
         raise ConfigurationError("station_store is required but was not provided")

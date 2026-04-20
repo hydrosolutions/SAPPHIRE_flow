@@ -198,3 +198,63 @@ class TestExactExtractGridExtractor:
         df = result[sid].values
         expected_rows = n_members * n_times * n_params
         assert len(df) == expected_rows
+
+
+def _make_out_of_extent_basin(station_id: StationId) -> Basin:
+    return Basin(
+        id=BasinId(uuid.uuid4()),
+        code="out_of_extent",
+        name="Out of Extent",
+        geometry=box(29.9, 59.9, 30.1, 60.1),
+        area_km2=100.0,
+        attributes=None,
+        band_geometries=None,
+        created_at=ensure_utc(datetime(2026, 1, 1, tzinfo=UTC)),
+        network="test",
+    )
+
+
+class TestOutOfExtent:
+    def test_polygon_outside_grid_extent_raises(self) -> None:
+        extractor = ExactExtractGridExtractor()
+        grid = _make_grid()
+        sid = StationId(uuid.uuid4())
+        ct = ensure_utc(datetime(2026, 4, 1, tzinfo=UTC))
+        with pytest.raises(ExtractionError, match="outside grid extent"):
+            extractor.extract(
+                grid,
+                [_make_config(sid)],
+                {sid: _make_out_of_extent_basin(sid)},
+                ct,
+                "icon_ch2_eps",
+            )
+
+    def test_out_of_extent_message_lists_all_offenders(self) -> None:
+        extractor = ExactExtractGridExtractor()
+        grid = _make_grid()
+        sid_a = StationId(uuid.uuid4())
+        sid_b = StationId(uuid.uuid4())
+        ct = ensure_utc(datetime(2026, 4, 1, tzinfo=UTC))
+        with pytest.raises(ExtractionError) as exc_info:
+            extractor.extract(
+                grid,
+                [_make_config(sid_a), _make_config(sid_b)],
+                {
+                    sid_a: _make_out_of_extent_basin(sid_a),
+                    sid_b: _make_out_of_extent_basin(sid_b),
+                },
+                ct,
+                "icon_ch2_eps",
+            )
+        msg = str(exc_info.value)
+        assert str(sid_a) in msg and str(sid_b) in msg
+
+
+class TestNaiveDatetimeRejection:
+    def test_naive_valid_time_raises(self) -> None:
+        from sapphire_flow.preprocessing.exact_extract_grid_extractor import (
+            _to_utc_datetime,
+        )
+
+        with pytest.raises(ValueError, match="naive"):
+            _to_utc_datetime(datetime(2026, 4, 1, 0, 0))
