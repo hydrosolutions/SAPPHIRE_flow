@@ -5,11 +5,11 @@
 **Depends on**: none (documentation-only; no code change). Coordinates with
 Plan 046 in-flight (Plan 046 frontmatter update is one task in this plan).
 **Scope**: Bring project-level documentation back into sync with shipped
-reality. Covers six stale claims surfaced by the 2026-04-18 audit and five
-plan-registry irregularities (duplicated 029, unarchived 036/037, non-standard
-`DEFERRED` status on 039/042, stale Plan 046 status, missing Plan 047 stub,
-absent plan index). Strictly doc edits and file moves — no code, no behaviour
-change.
+reality. Covers five stale claims surfaced by the 2026-04-18 audit and six
+plan-registry irregularities (duplicated 029, unarchived 036/037,
+undocumented `DEFERRED` status on 039/042, stale Plan 046 status, missing
+Plan 047 stub, absent plan index). Strictly doc edits and file moves — no
+code, no behaviour change.
 
 ---
 
@@ -25,31 +25,34 @@ subagents read these docs as ground truth. Specifically:
    a task will waste cycles trying to "finish" work that is already done.
 2. **docs/v0-scope.md §H** (line ~480) does not show Phase 3 with `✓ done`.
    Same consequence.
-3. **docs/architecture-context.md:144, 575, 1406** still describe SMN
-   (SwissMetNet) station observations as the v0 training-forcing source.
-   Plan 021 (2026-04-08) superseded this with CAMELS-CH basin-averaged grids.
-   `v0-scope.md` §A12 is current; architecture-context.md lags.
-4. **docs/architecture-context.md:3094** defines v0a/v0b as separate NWP
+3. **docs/architecture-context.md:140, 144, 575, 1398, 1409** still describe
+   or imply SMN (SwissMetNet) station observations as the v0
+   training-forcing source. Plan 021 (2026-04-08) superseded this with
+   CAMELS-CH basin-averaged grids. `v0-scope.md` §A12 is current;
+   architecture-context.md lags.
+4. **docs/architecture-context.md:3097** defines v0a/v0b as separate NWP
    phases. Plan 021 collapsed that split. v0-scope.md:195 is current.
 5. **docs/standards/security.md:153–154** lists `notification_smtp_password`
    and `notification_sms_api_key` as v1 secrets. `handover/data-flows.md:40,
-   71` says "SMS and email delivery are not in scope for v1." Webhook-only
-   v1 is the canonical decision.
+   71` says "SMS and email delivery are not in scope for v1." Polling plus
+   webhook are the canonical v1 alert-delivery channels; only webhook
+   delivery is owned on the SAPPHIRE side.
 6. **docs/plans/029-lindas-adapter-fix.md** exists in both `docs/plans/` AND
    `docs/plans/archive/` with identical content.
 7. **docs/plans/036-hindcast-flow-standalone.md** and
    **docs/plans/037-security-audit.md** are both `status: DONE` but not
-   archived (every other DONE plan is moved to `docs/plans/archive/`).
+   archived, which is out of line with the current archive convention for
+   completed plans.
 8. **docs/plans/039-alert-data-unavailable-status.md** and
-   **docs/plans/042-api-auth-client-sdk.md** use `status: DEFERRED` —
-   not one of the workflow-defined values (`DRAFT / READY / IN_PROGRESS /
-   DONE / ARCHIVED`).
+   **docs/plans/042-api-auth-client-sdk.md** use `status: DEFERRED`, but
+   **docs/workflow.md** does not yet codify a plan-status vocabulary or define
+   where deferred plans live.
 9. **docs/plans/046-mac-mini-staging-deployment.md** frontmatter still reads
    `Status: READY` despite the plan being actively implemented in another
    session.
 10. **No `docs/plans/047-*.md` exists** — Plan 046 references "Plan 047+" for
     Nepal v1 data sources. No stub means the reference dangles.
-11. **No `docs/plans/README.md`** index — 13 active plans and 38 archived,
+11. **No `docs/plans/README.md`** index — 17 active plans and 46 archived,
     with no single file mapping IDs to titles and statuses.
 
 ### Principle
@@ -73,10 +76,10 @@ explaining the current state in prompts.
 | # | Decision | Rationale |
 |---|---|---|
 | D1 | **Update CLAUDE.md, v0-scope.md, architecture-context.md in a single coordinated sweep**. Do not split across sessions. | These docs reference each other; a partial update leaves one of them temporarily wrong and the next subagent will see the wrong version. |
-| D2 | **Add `DEFERRED` to the workflow status vocabulary** (in `docs/workflow.md`), rather than rewriting 039/042. | `DEFERRED` is semantically distinct from `DRAFT` (not planned yet) and `ARCHIVED` (abandoned). It means "scope-validated, intentionally postponed to a future version." Two plans already use it; formalising is lower churn than rewriting. |
-| D3 | **Create a minimal `docs/plans/README.md` index** generated once and updated by hand on plan status changes. Not auto-generated. | Auto-generation adds infra; 13 active plans is small enough to maintain by hand. Subagents benefit most from a one-file lookup table. |
+| D2 | **Codify the active-plan status vocabulary in `docs/workflow.md`, explicitly including `DEFERRED`, rather than rewriting 039/042.** | `DEFERRED` is semantically distinct from `DRAFT` (not planned yet) and `ARCHIVED` (abandoned). It means "scope-validated, intentionally postponed to a future version." `docs/workflow.md` currently covers readiness, not the full vocabulary. Historical archive-only labels are out of scope for this sweep. |
+| D3 | **Create a minimal `docs/plans/README.md` index** generated once and updated by hand on plan status changes. Not auto-generated. | Auto-generation adds infra; even the current 17 active plan files (15 post-cleanup if this plan lands) are small enough to maintain by hand. Subagents benefit most from a one-file lookup table. |
 | D4 | **Create a stub Plan 047 (Nepal v1 data sources)** with `status: DRAFT (stub)`, matching the pattern of Plan 048. | Fills the dangling reference from Plan 046 without committing to scope. Future work can expand the stub. |
-| D5 | **Move plans 036 and 037 to the archive**; delete the duplicate 029 from `docs/plans/`. | Matches the established convention: every `status: DONE` plan lives in `archive/` only. |
+| D5 | **Move plans 036 and 037 to the archive**; delete the duplicate 029 from `docs/plans/`. | Matches the current convention that completed plans are archived once their root-level bookkeeping is complete. |
 | D6 | **Update Plan 046 status to `IN_PROGRESS`**. Coordinate with the in-flight session — the running session is the source of truth for when this flips to `DONE`. | Frontmatter accuracy. Skipped because Plan 046 is active; a small coordination cost. |
 
 ---
@@ -87,44 +90,65 @@ explaining the current state in prompts.
 
 **File**: `CLAUDE.md`
 
-1. Line 5 — replace "Phase 3 (adapters) is ~30% (protocols + fakes + converters;
-   no production or replay adapters)." with "Phase 3 (adapters) complete for
-   v0 (plans 019 BAFU, 020 replay/recording, 021 MeteoSwiss NWP, 045 NWP
-   wiring all DONE)."
-2. Line 5 — replace "Next up: Phase 3 remainder (production + replay adapters),
-   then Phase 6..." with "Next up: Phase 8 v0b remainders (task.map
-   parallelisation, GroupForecastModel support, pooled combination)."
-3. Verify no other CLAUDE.md reference contradicts.
+1. Line 5 — replace the stale Phase 3 fragment ("Phase 3 (adapters) is ~30%...")
+   with text that describes Phase 3 as complete for v0. Ground truth:
+   Plans 019, 020, 021, and 045 are DONE; Plan 063 is later adapter hardening,
+   not evidence that Phase 3 is incomplete.
+2. Rewrite the stale "Next up: Phase 3 remainder..., then Phase 6..." fragment
+   to point at current post-v0 follow-on work. An acceptable replacement is:
+   "Next up: remaining v0b/v0c follow-ons and staging hardening (for example
+   forecast-cycle parallelisation, operational GroupForecastModel support,
+   and Plan 046 validation)." Do **not** name pooled combination as future work;
+   it is already implemented in code and reflected in `v0-scope.md` §A8e.
+3. If the resulting sentence still reads awkwardly as "mid-implementation",
+   rewrite the full line 5 summary so it stays coherent after the two content
+   updates above.
+4. Verify no other CLAUDE.md reference contradicts.
 
-**Exit**: CLAUDE.md describes Phase 3 as complete and points Next-up at v0b.
+**Exit**: CLAUDE.md describes Phase 3 as complete and no longer points
+Next-up at already-shipped work.
 
 ### T2 — v0-scope.md §H phase ladder
 
 **File**: `docs/v0-scope.md`
 
-1. In §H phase ladder (line ~480), add `✓ done` marker to Phase 3 row.
+1. In §H phase ladder (lines ~480–482), add `✓ done` marker to Phase 3 row.
 2. If the phase ladder has a textual summary below, update it to match.
+   Do not add wording that implies Phase 11 is shipped unless §E5 / nearby
+   capstone text is reconciled in the same edit.
 3. Verify other §H entries (5, 6, 7, 7b, 8, 9) are also up to date.
+   Treat Phase 11 separately: Plan 043 is DONE, but §H / §E5 still frame
+   Phase 11 in terms of "golden answers". Do not mark Phase 11 done unless
+   the surrounding acceptance text is updated to match shipped reality too.
 
-**Exit**: §H phase ladder reflects shipped state.
+**Exit**: §H reflects the corrected shipped status for Phase 3 without
+introducing new contradictions around Phase 11.
 
 ### T3 — architecture-context.md forcing-source supersession
 
 **File**: `docs/architecture-context.md`
 
-1. Line ~144 — replace the SMN-observations paragraph with:
+1. In the resolved forcing-source subsection (lines ~140–149), remove wording
+   that presents SMN as the chosen v0 training-forcing source. Replace the
+   decision paragraph at line ~144 with:
    "v0 training-forcing: CAMELS-CH basin-averaged gridded data (per Plan 021,
    2026-04-08 — supersedes Plan 013). SMN station observations remain used for
    real-time observation ingest (Flow 2) but are no longer the training
    forcing source."
-2. Line ~575 — remove "SMN station observations (hourly, fetched via
-   adapter)" from the v0 dynamic-dataset list. Replace with "CAMELS-CH
-   basin-averaged grids; ICON-CH2-EPS for operational forecast."
-3. Line ~1406 (M.3) — replace "v0: SMN observation adapter (used as
-   pseudo-reanalysis). v1: ERA5-Land via WeatherReanalysisSource." with
-   "v0: CAMELS-CH basin-averaged gridded data. v1: ERA5-Land via
-   WeatherReanalysisSource (Nepal)."
-4. `WeatherReanalysisSource` Protocol reference remains correct for v1.
+2. Update the surrounding source-options prose if needed so it reads as a
+   generic design discussion, not as a statement that v0 currently uses SMN
+   for training forcing.
+3. Line ~575 — remove "SMN station observations (hourly, fetched via
+   adapter)" from the v0 dynamic-dataset list. Replace with wording that
+   reflects historical/training forcing as CAMELS-CH and operational forecast
+   forcing as ICON-CH2-EPS.
+4. Line ~1398 (M.3 table row) and line ~1409 (M.3 note) — replace the v0
+   SMN/WeatherReanalysisSource wording with CAMELS-CH-based v0 wording and
+   ERA5-Land-for-Nepal v1 wording.
+5. `WeatherReanalysisSource` Protocol reference remains correct for v1.
+6. Verify any remaining SMN mentions in this area are intentionally about
+   observation ingest or generic source-type taxonomy, not the chosen v0
+   training-forcing decision.
 
 **Exit**: every reference to forcing source in architecture-context.md
 matches Plan 021 decision.
@@ -133,7 +157,7 @@ matches Plan 021 decision.
 
 **File**: `docs/architecture-context.md`
 
-1. Line ~3094 — replace the v0a-as-SMN-phase / v0b-as-sub-daily description
+1. Line ~3097 — replace the v0a-as-SMN-phase / v0b-as-sub-daily description
    with: "v0a: daily operational pipeline. v0b: sub-daily R&D (NWP path is
    unified across v0a/v0b per Plan 021 — no separate NWP phase). v0c:
    sub-daily validation."
@@ -149,7 +173,8 @@ matches Plan 021 decision.
    `notification_sms_api_key` from the secrets list.
 2. Add a one-line note to the §Secrets management intro:
    "Email and SMS notifications are out of scope through v1 (see
-   `docs/handover/data-flows.md`). Only webhook delivery is supported."
+   `docs/handover/data-flows.md`). Alert consumers can poll the API; outbound
+   delivery on the SAPPHIRE side is webhook-only."
 3. Verify no other section of security.md implies email/SMS support.
 
 **Exit**: security.md does not list email/SMS secrets for v1.
@@ -182,18 +207,25 @@ archive copy only).
 
 **Exit**: `docs/plans/036*` and `docs/plans/037*` live only in `archive/`.
 
-### T8 — Formalise `DEFERRED` status
+### T8 — Codify plan status vocabulary (including `DEFERRED`)
 
 **File**: `docs/workflow.md`
 
-1. Add `DEFERRED` to the status enum: "scope-validated, intentionally
-   postponed to a future version (v0b, v1, etc.). Distinct from `DRAFT`
-   (unplanned) and `ARCHIVED` (abandoned or superseded)."
-2. Document the transition rules: `DEFERRED` plans stay in `docs/plans/`
+1. Add a short "Plan status vocabulary" subsection to `docs/workflow.md`
+   covering active-plan states `DRAFT / READY / IN_PROGRESS / DEFERRED / DONE`
+   plus `ARCHIVED` for moved plans.
+2. Define `DEFERRED` as "scope-validated, intentionally postponed to a
+   future version (v0b, v1, etc.)." Distinguish it from `DRAFT`
+   (unplanned/not ready) and `ARCHIVED` (closed historical record).
+3. Document the transition rules: `DEFERRED` plans stay in `docs/plans/`
    (not archive) until they are re-promoted or archived.
-3. No change to plans 039 or 042 — they already use `DEFERRED` correctly.
+4. Clarify that this plan does **not** backfill legacy archive-only labels
+   such as `COMPLETE`, `RESOLVED`, or archived `READY`; that is separate
+   historical cleanup, out of scope here.
+5. No change to plans 039 or 042 — they already use `DEFERRED` correctly.
 
-**Exit**: workflow.md lists `DEFERRED` as a recognised status.
+**Exit**: workflow.md documents the current plan-status vocabulary,
+including `DEFERRED`.
 
 ### T9 — Plan 046 frontmatter: READY → IN_PROGRESS
 
@@ -215,10 +247,13 @@ archive copy only).
    - **Active** (DRAFT / READY / IN_PROGRESS) — one line per plan with ID,
      title, status, one-sentence summary.
    - **Deferred** (DEFERRED) — same format.
+   - **Done in root** (DONE, not yet archived) — rare/temporary; include only
+     if any such plans still exist in `docs/plans/` when the index is written.
    - **Archived** — collapsed list pointing at `archive/`.
 2. Keep the file strictly under ~200 lines; linebreak for readability.
 3. Add a maintenance note at the top: "Update this index whenever a plan's
-   status changes or a new plan is added. Do not auto-generate."
+   status changes or a new plan is added. List every plan file currently under
+   `docs/plans/`. Do not auto-generate."
 
 **Exit**: `docs/plans/README.md` exists and lists every plan currently in
 `docs/plans/`.
@@ -250,7 +285,7 @@ dangles.
 {
   "stream-1-content": {
     "tasks": ["T1", "T2", "T3", "T4", "T5"],
-    "parallel": "all five in parallel — independent files",
+    "parallel": "T1, T2, and T5 can run in parallel; T3 and T4 touch the same file and should run together",
     "depends_on": []
   },
   "stream-2-registry": {
@@ -261,13 +296,13 @@ dangles.
   "stream-3-index": {
     "tasks": ["T10"],
     "sequential": true,
-    "depends_on": ["T6", "T7", "T11"]
+    "depends_on": ["T6", "T7", "T9", "T11"]
   }
 }
 ```
 
 T10 runs last so the index reflects the post-cleanup state (029 gone, 036/037
-moved, 047 added).
+moved, 047 added, 046 status synced).
 
 ---
 
@@ -275,11 +310,11 @@ moved, 047 added).
 
 | Path | Task | Change |
 |---|---|---|
-| `CLAUDE.md` | T1 | Phase 3 → complete; Next-up → v0b |
+| `CLAUDE.md` | T1 | Phase 3 → complete; Next-up → current post-v0 follow-ons |
 | `docs/v0-scope.md` | T2 | §H — Phase 3 ✓ done |
-| `docs/architecture-context.md` | T3, T4 | Forcing source (3 sites); v0a/v0b split |
-| `docs/standards/security.md` | T5 | Remove SMS/email secrets; add webhook-only note |
-| `docs/workflow.md` | T8 | Add `DEFERRED` to status vocabulary |
+| `docs/architecture-context.md` | T3, T4 | Forcing-source sweep (resolved subsection + Flow 0 + M.3); v0a/v0b split |
+| `docs/standards/security.md` | T5 | Remove SMS/email secrets; add polling+webhook scope note |
+| `docs/workflow.md` | T8 | Codify plan-status vocabulary including `DEFERRED` |
 | `docs/plans/046-mac-mini-staging-deployment.md` | T9 | Status → IN_PROGRESS (if not already) |
 
 ## Files to create
@@ -307,7 +342,8 @@ moved, 047 added).
 3. `docs/plans/029-lindas-adapter-fix.md` does not exist; archive copy
    present.
 4. `docs/plans/036*` and `docs/plans/037*` live only in `archive/`.
-5. `docs/workflow.md` lists `DEFERRED` as a recognised status.
+5. `docs/workflow.md` documents the current plan-status vocabulary,
+   including `DEFERRED`.
 6. `docs/plans/README.md` exists and lists every plan under ~200 lines.
 7. `docs/plans/047-*.md` exists as a DRAFT stub.
 8. Plan 046 frontmatter reflects the running-session state.
@@ -326,7 +362,7 @@ moved, 047 added).
 | T10 index goes stale the moment a new plan is added | Maintenance note at the top of `README.md` (T10 step 3). Future plans must update the index as part of their own exit gates. |
 | T7 loses cross-references from plans that link at `docs/plans/036-*.md` | Before moving, `Grep -l "plans/036\|plans/037"` across `docs/` and archive. Update any in-repo link to use the archive path. |
 | T3 edits conflict with a parallel doc change in another session | Doc sweep is contained to architecture-context.md; low traffic. If conflict, re-apply the same changes. |
-| T8 adding `DEFERRED` to workflow.md confuses existing agents that cached the older enum | Acceptable — next read picks up the new status. |
+| T8 codifying the plan-status vocabulary in workflow.md confuses existing agents that cached the older guidance | Acceptable — next read picks up the clarified vocabulary. |
 
 ---
 
@@ -341,4 +377,5 @@ Not blocking DRAFT → READY:
    by ID for stability; status in the line-label handles the rest.)
 3. If the running Plan 046 session flips status to `DONE` before T9 runs,
    should this plan still edit the frontmatter? (Recommendation: no — just
-   skip T9.)
+   skip T9. If it remains in `docs/plans/`, T10 lists it under `Done in root`;
+   if it is already archived by then, T10 just reflects the archived state.)
