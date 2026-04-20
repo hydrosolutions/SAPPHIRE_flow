@@ -13,7 +13,7 @@ Per `v0-scope.md` § A5 and § A7:
 | Artifact lifecycle | 5 statuses (training → pending_approval → active → superseded → rejected) | 3 statuses: `TRAINING` → `ACTIVE` (auto-promote). `ACTIVE` → `SUPERSEDED` when replaced. |
 | Retraining comparison | T.6–T.8 (compare, request approval, promote/reject) | Skipped — auto-promote on initial training. Flow 9 deferred. |
 | Work pools | 3 pools (ops, training, hindcast) | Single `default` pool |
-| Forcing source | Configurable (station obs, reanalysis, NWP archive) | SMN station observations as pseudo-perfect forcing, tagged `ForcingType.REANALYSIS` |
+| Forcing source | Configurable (station obs, reanalysis, NWP archive) | CAMELS-CH basin-averaged gridded forcing (per Plan 021 — supersedes Plan 013), tagged `ForcingType.REANALYSIS`. Nepal v1: ERA5-Land via `WeatherReanalysisSource`. |
 | Skill metrics | Full suite | Full suite — kept as designed (pure computation, high research value) |
 | `freshness` field | Set STALE on data change, reset to CURRENT by recomputation | Not exercised in v0 — no observation correction or NWP recovery flows. Field exists in schema. |
 | Model params | Config-based override per model | Empty dict `{}` default. Models define internal defaults. |
@@ -124,7 +124,7 @@ class TrainingResult:
 
 ### 4a. `WeatherReanalysisSource` concrete adapter (protocols/adapters.py)
 
-The `WeatherReanalysisSource` Protocol already exists in `protocols/adapters.py`. What v0 needs is the **concrete adapter implementation**. In v0, this wraps co-located SMN weather station observations; v1 swaps to ERA5-Land. The Protocol returns `list[RawHistoricalForcing]` — a flat list of raw forcing records that callers group by station_id and convert to a `pl.DataFrame` as needed.
+The `WeatherReanalysisSource` Protocol already exists in `protocols/adapters.py`. What v0 needs is the **concrete adapter implementation**. In v0, this wraps CAMELS-CH basin-averaged forcing (per Plan 021 — supersedes Plan 013); v1 swaps to ERA5-Land. The Protocol returns `list[RawHistoricalForcing]` — a flat list of raw forcing records that callers group by station_id and convert to a `pl.DataFrame` as needed.
 
 ```python
 class WeatherReanalysisSource(Protocol):
@@ -137,11 +137,11 @@ class WeatherReanalysisSource(Protocol):
     ) -> list[RawHistoricalForcing]: ...
 ```
 
-**Persistence layer**: `HistoricalForcingStore` (defined in `protocols/stores.py`) is the complementary store Protocol. Forcing data is ingested once (during station onboarding or a separate ingest step) via `HistoricalForcingStore.store_forcing()` and retained permanently. The v0 concrete `SmNObservationForcingSource` adapter wraps `HistoricalForcingStore.fetch_forcing_as_dataframe()` internally — its `fetch_reanalysis()` reads from the DB, not from a live API. This means services take only `WeatherReanalysisSource` (the adapter) as a dependency; they do not need `HistoricalForcingStore` directly.
+**Persistence layer**: `HistoricalForcingStore` (defined in `protocols/stores.py`) is the complementary store Protocol. Forcing data is ingested once (during station onboarding or a separate ingest step) via `HistoricalForcingStore.store_forcing()` and retained permanently. The v0 concrete CAMELS-CH basin-averaged forcing adapter wraps `HistoricalForcingStore.fetch_forcing_as_dataframe()` internally — its `fetch_reanalysis()` reads from the DB, not from a live API. This means services take only `WeatherReanalysisSource` (the adapter) as a dependency; they do not need `HistoricalForcingStore` directly.
 
 **v0 note**: v0 always produces the `pl.DataFrame` variant of forcing. The `xr.Dataset` path in `ModelInputs.forcing` is reserved for v1 gridded reanalysis.
 
-**v0 implementation**: `FakeWeatherReanalysisSource` (canned `list[RawHistoricalForcing]` keyed by station_id). Production adapter wraps SMN observation queries — fetches co-located weather station data for the requested parameters and time range.
+**v0 implementation**: `FakeWeatherReanalysisSource` (canned `list[RawHistoricalForcing]` keyed by station_id). Production adapter wraps CAMELS-CH basin-averaged forcing queries — fetches basin-averaged gridded forcing for the requested parameters and time range.
 
 **v1 swap**: ERA5-Land adapter implementing the same Protocol — returns basin-average reanalysis as `list[RawHistoricalForcing]`.
 

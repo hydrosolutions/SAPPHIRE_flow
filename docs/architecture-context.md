@@ -136,18 +136,17 @@ Cascading fallback: `bma` → `pooled` → `primary` (if weights missing or sing
 
 #### Resolved: ML model lookback window forcing source
 
-ML models (e.g. LSTM) require a lookback window (typically 365 days) of historical weather forcing concatenated with the NWP forecast. The historical portion can come from:
-- **Station observations** (SMN for v0) — co-located weather stations. Simple, available, but introduces a train/operational mismatch if training uses the same source.
-- **Gridded reanalysis** (ERA5-Land for v1) — spatially consistent, gap-free, but daily-only for some Swiss products.
+ML models (e.g. LSTM) require a lookback window (typically 365 days) of historical weather forcing concatenated with the NWP forecast. Candidate historical sources considered:
+- **Basin-averaged gridded reanalysis/forcing** (CAMELS-CH for v0, ERA5-Land for v1) — spatially consistent, gap-free, matches the spatial representation used operationally after NWP basin-averaging.
+- **Co-located station observations** — simple and immediately available, but introduces a spatial-representation mismatch with basin-average operational forcing.
 - **Archived NWP extractions** — from the NWP archive (step 1.4). Only covers the operational period, not the full lookback window.
 
-**Decision (v0)**: Use SMN station observations (hourly, 1981-present) co-located with BAFU river gauges. Simple, sufficient for Swiss v0 scale (~170 LINDAS-available BAFU gauges), and immediately available. **→ DECISION (plan 013)**: The binding constraint is co-located SMN/BAFU pairs with sufficient hourly history (1981–present) for ML training — a subset of ~170. "~1000 stations" is the multi-deployment architectural ceiling; non-Swiss deployments use ERA5-Land, not SMN. **v1**: Switch to ERA5-Land via `WeatherReanalysisSource` Protocol for Nepal (better spatial consistency, gap-free). The forcing source must remain injectable in `prepare_model_inputs()` and training data assembly — see v0-scope.md §I2.
+**Decision (v0)**: v0 training-forcing: CAMELS-CH basin-averaged gridded data (per Plan 021, 2026-04-08 — supersedes Plan 013). SMN station observations remain used for real-time observation ingest (Flow 2) but are no longer the training forcing source. **v1**: Switch to ERA5-Land via `WeatherReanalysisSource` Protocol for Nepal (same basin-average spatial representation, better coverage). The forcing source must remain injectable in `prepare_model_inputs()` and training data assembly — see v0-scope.md §I2.
 
 This choice affects model skill and must be consistent between training (Flows 6/9) and operational inference.
 
 **ForcingType mapping**: Regardless of which source is chosen, it must map to one of the two `ForcingType` values for hindcast tagging (Flow 7 step H.2):
-- Station observations (SMN) → categorized as `'reanalysis'` (pseudo-perfect forcing)
-- Gridded reanalysis (ERA5-Land) → `'reanalysis'`
+- Basin-averaged reanalysis / forcing (CAMELS-CH, ERA5-Land) → `'reanalysis'`
 - Archived NWP extractions → `'nwp_archive'`
 
 #### Resolved: NWP lateness fallback
@@ -572,7 +571,7 @@ Deployment onboarding prepares area-wide datasets **before** individual stations
   Downloads are resumable and cached. Re-running step 0.2 skips already-downloaded datasets (verified by checksum).
 
 - **0.3**: Historical dynamic datasets are time-varying gridded or point data needed for model training and hindcast generation. Sources by deployment:
-  - **v0 (Switzerland)**: CAMELS-CH forcing (daily precipitation + temperature, bundled with 0.2), SMN station observations (hourly, fetched via adapter)
+  - **v0 (Switzerland)**: CAMELS-CH basin-averaged forcing (daily precipitation + temperature, bundled with 0.2 — the sole v0 historical training-forcing source per Plan 021)
   - **v1 (Nepal)**: ERA5-Land reanalysis (hourly, multi-variable, fetched via **SAPPHIRE Data Gateway** — see below)
 
   For large reanalysis archives (ERA5-Land), this step may take hours. It runs in the background and can be monitored via Flow 4.
@@ -1395,7 +1394,7 @@ flowchart TD
 | M.1 | Registration | Model package installed (via `uv add`). `discover_models()` scans entry points and finds the new model class. `register_models()` writes a `ModelRecord` to the `models` table. Idempotent — re-registering an existing model_id is a no-op unless the class attributes changed. |
 | M.2 | Compatibility validation | (a) Protocol satisfaction: runtime `isinstance(model_cls, StationForecastModel \| GroupForecastModel)` check. (b) Feature availability: each feature slot declared in `ModelDataRequirements` is verified against the deployment's `available_nwp_parameters` (past/future dynamic) and `basins.attributes` (static columns) for target stations. (c) Time step compatibility: declared `supported_time_steps` checked against deployment configuration. Fails fast — incompatible units are skipped, not terminal. |
 | M.2b | Smoke test | Generates synthetic `StationTrainingData` / `GroupTrainingData` shaped from `model.data_requirements` (random floats, correct column names, 10 rows per slot, correct `time_step`), then exercises the full round-trip: `train()` → `serialize_artifact()` → `deserialize_artifact()` → `predict()`. Validates result shape and that each dict key equals its `ForecastEnsemble.parameter`. Catches serialization bugs, shape errors, and contract violations in under 1 second. Raises `ModelSmokeTestError` on failure. |
-| M.3 | Initial training | Reuses services from Flow 6 (T.1–T.3). Artifact lands in `TRAINING` status. Forcing source is injected (v0: SMN observations via `WeatherReanalysisSource`-compatible adapter; v1: ERA5-Land). Store-and-promote separation: `store_artifact()` is called directly (TRAINING status); `promote_artifact()` is called separately at M.6 after skill gate. v0: auto-promotes to `ACTIVE` at M.6 (after skill gate pass-through). v1: transitions to `PENDING_APPROVAL` at M.6 if a champion already exists. |
+| M.3 | Initial training | Reuses services from Flow 6 (T.1–T.3). Artifact lands in `TRAINING` status. Forcing source is injected (v0: CAMELS-CH basin-averaged forcing via `WeatherReanalysisSource`-compatible adapter; v1: ERA5-Land). Store-and-promote separation: `store_artifact()` is called directly (TRAINING status); `promote_artifact()` is called separately at M.6 after skill gate. v0: auto-promotes to `ACTIVE` at M.6 (after skill gate pass-through). v1: transitions to `PENDING_APPROVAL` at M.6 if a champion already exists. |
 | M.4 | Hindcast verification | Reuses services from Flow 7. Runs hindcast over the configured validation period for all target stations. |
 | M.5 | Skill gate | Reuses services from Flow 8 (skill computation). Evaluates resulting scores against `skill_gate_thresholds` (`dict[str, SkillGateMetric]`): for each metric, computes worst score across valid strata (`min()` for `higher_is_better`, `max()` for `lower_is_better`). A model must meet the threshold in every stratum (lead time × season × flow regime) to pass. If zero strata survive `min_skill_samples`, outcome is `SKIPPED_INSUFFICIENT_EVAL` rather than `GATE_REJECTED`. Failing the gate keeps the artifact in `TRAINING` status — the run does not auto-retry. |
 | M.6 | Promotion decision | v0: auto-promote (`TRAINING → ACTIVE`). v1: if a champion model exists for any target station/group, transition to `PENDING_APPROVAL` and notify the model admin for human review. The model admin can approve (`ACTIVE`) or reject (`REJECTED`). |
@@ -1406,7 +1405,7 @@ flowchart TD
 - **M.1 — Entry point discovery**: Model classes are registered via Python entry points under the `sapphire_flow.models` group (see `docs/conventions.md` model discovery). The entry point name becomes the stable `models.id` key.
 - **M.2 — Compatibility check**: Per-unit skip, not terminal. An incompatible unit (station or group) is skipped with outcome `SKIPPED_COMPAT`; remaining units continue. The flow does not abort.
 - **M.2b — Smoke test data**: Synthetic data is generated from `model.data_requirements` (correct column names, random float values, 10 rows per slot). Uses `model.data_requirements`-shaped random data — not station metadata — so the smoke test is a pure interface contract check, not a mini-integration test. Raises `ModelSmokeTestError` on failure; the unit outcome is `FAILED_SMOKE_TEST`.
-- **M.3 — Forcing source injection**: `onboard_model` accepts a `forcing_source` parameter. v0: SMN observation adapter (used as pseudo-reanalysis). v1: ERA5-Land via `WeatherReanalysisSource`. Store/promote separation is critical: `store_artifact()` is called with `TRAINING` status; `promote_artifact()` is called separately at M.6 after the skill gate.
+- **M.3 — Forcing source injection**: `onboard_model` accepts a `forcing_source` parameter. v0: CAMELS-CH basin-averaged forcing adapter (per Plan 021 — supersedes Plan 013). v1: ERA5-Land via `WeatherReanalysisSource`. Store/promote separation is critical: `store_artifact()` is called with `TRAINING` status; `promote_artifact()` is called separately at M.6 after the skill gate.
 - **M.5 — Skill gate thresholds**: All thresholds are in `DeploymentConfig.skill_gate_thresholds` (`dict[str, SkillGateMetric]`, default `{}`). `SkillGateMetric` carries `threshold: float` and `higher_is_better: bool`. Worst-across-strata: `min(scores)` for `higher_is_better`, `max(scores)` for not. With the default empty dict, the gate is a pass-through (auto-promote). Configuring thresholds activates blocking.
 - **M.6 — Champion comparison**: "Champion" = the current `ACTIVE` artifact for the same model_id and scope. If no champion exists (first onboarding of this model type), M.6 always auto-promotes regardless of v0/v1.
 - **Failure handling**: M.0 failures (`ConfigurationError`) are terminal — provide explicit group IDs and re-run. M.2 incompatibility is a per-unit skip (not terminal). M.2b failure is a per-unit `FAILED_SMOKE_TEST` (not terminal). M.3–M.5 failures leave the artifact in `TRAINING` status. Artifacts in `TRAINING` that never reach M.6 are harmless (never selected for operational forecasts). The model admin can retry from M.3 or discard. Flow 13 does not auto-retry.
@@ -3094,9 +3093,9 @@ v0 defers auth — single-user, no access control.
 
 Swiss public data. Three sub-phases:
 
-- **v0a**: Core daily pipeline — CAMELS-CH catchments as reference basins, SwissMetNet weather observations, ICON-CH2-EPS NWP forecasts, BAFU river observations
-- **v0b**: Sub-daily algorithm R&D (CAMELS generic, LSTM/transformer models)
-- **v0c**: Swiss sub-daily operational validation
+- **v0a**: daily operational pipeline.
+- **v0b**: sub-daily R&D (NWP path is unified across v0a/v0b per Plan 021 — no separate NWP phase).
+- **v0c**: sub-daily validation.
 
 Between v0 and v1, the pipeline will be validated with additional public datasets (candidates: UK, Germany, US, New Zealand — not yet defined) to stress-test adapter generality before Nepal deployment.
 

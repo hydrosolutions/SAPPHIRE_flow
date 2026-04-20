@@ -22,7 +22,7 @@ SAPPHIRE Flow ingests processed weather and snow forecast data from the Sapphire
 [Sapphire Data Gateway]  ──→ ┌─────────────────────────────────────┐
   (ECMWF + SnowMapper)       │         SAPPHIRE Flow (VM)          │
 [DHM Station Data]   ──→     │  ┌──────────┐  ┌──────────────────┐ │ ──→ [REST API :443]
-                             │  │ Database │  │ Worker processes │ │ ──→ [Flood alerts / SMS]
+                             │  │ Database │  │ Worker processes │ │ ──→ [Flood alert webhooks]
                              │  └──────────┘  └──────────────────┘ │
                              │  ┌──────────┐  ┌──────────────────┐ │
                              │  │   API    │  │   Scheduler      │ │
@@ -64,8 +64,7 @@ Resource estimates for all separate modules being developed and deployed in this
 | Direction | Destination | Port | Purpose |
 |---|---|---|---|
 | Outbound | Sapphire Data Gateway | 443 (HTTPS) | Weather forecasts (ECMWF) and snow forecasts (SnowMapper) |
-| Outbound | SMTP provider | 587 or 465 | Email notifications |
-| Outbound | SMS gateway provider | 443 (HTTPS) | Flood alert SMS (provider TBD — see §8) |
+| Outbound | Alert webhook consumers | 443 (HTTPS) | Flood alert webhook delivery |
 | Inbound | DHM dashboard, other authorized consumers | 443 (HTTPS) | REST API access |
 | Inbound | Operations team | 22 (SSH) | Server administration |
 
@@ -173,14 +172,14 @@ These are the IT team's responsibility for the production DHM deployment. SAPPHI
 
 Secrets are stored as Docker secrets — mounted as files inside containers, never passed as environment variables in production. The secrets file directory (`./secrets/`) on the VM must be owned by root and readable only by root (`chmod 600`).
 
+Alert delivery is webhook-only; email and SMS integrations are out of scope for this release.
+
 | Secret name | What it is |
 |---|---|
 | `db_password` | PostgreSQL database password |
 | `secret_key` | JWT signing key (session tokens) |
 | `totp_encryption_key` | Encryption key for two-factor authentication seeds |
 | `sapphire_dg_api_key` | Sapphire Data Gateway API key |
-| `notification_smtp_password` | Email notification credentials |
-| `notification_sms_api_key` | SMS gateway credentials (Nepal) |
 | `backup_repo_password` | Backup encryption password (see §7) |
 
 **Secret rotation schedule**: `db_password` and `secret_key` annually, or immediately if compromise is suspected. Rotation requires a coordinated restart of all containers. The SAPPHIRE team coordinates rotation with DHM IT.

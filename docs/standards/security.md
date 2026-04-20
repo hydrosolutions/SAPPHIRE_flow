@@ -141,6 +141,8 @@ Role-to-endpoint mapping. Enforced via FastAPI dependency injection (`Depends(re
 
 ## Secrets management
 
+Email and SMS notifications are out of scope through v1 (see `docs/handover/data-flows.md`). Alert consumers can poll the API; outbound delivery on the SAPPHIRE side is webhook-only.
+
 ### Production (Docker Compose)
 
 All secrets use Docker secrets (`secrets:` block in `docker-compose.yml`). Mounted as files at `/run/secrets/` and read at startup. Application code reads secrets from file paths, never from environment variables in production.
@@ -150,8 +152,6 @@ Required secrets:
 - `secret_key` — JWT signing key (read from `/run/secrets/secret_key`, referenced as `SECRET_KEY` in application config) *(v1)*
 - `totp_encryption_key` — Fernet key for encrypting TOTP seeds at rest (see § TOTP secret encryption) *(v1)*
 - `sapphire_dg_api_key` — Data Gateway API key (v1)
-- `notification_smtp_password` — email notification credentials *(v1)*
-- `notification_sms_api_key` — SMS provider credentials (v1 Nepal)
 - `backup_repo_password` — restic repository password *(v1)*
 
 ### Development
@@ -217,15 +217,15 @@ Available actions: revoke, regenerate (rotate), edit scope.
 
 ### Automated alerts
 
-A scheduled Prefect task (daily, low priority) checks API key health and sends administrative alerts to the org admin via EMAIL. Alert triggers:
+A scheduled Prefect task (daily, low priority) checks API key health and records administrative alerts for the org admin via the webhook notification channel and/or `pipeline_health`. Alert triggers:
 
 | Trigger | Condition | Action |
 |---|---|---|
-| Unused key | `last_used_at` is NULL or >90 days ago | Email: "API key for *{consumer}* has not been used in 90 days. Review?" |
-| Key age | `created_at` >1 year ago AND not regenerated | Email: "API key for *{consumer}* is over 1 year old. Consider rotation." |
-| Usage spike | Requests in last 24h >10x the 30-day daily average | Email: "API key for *{consumer}* made {n} requests today (normal: ~{avg}/day)." |
+| Unused key | `last_used_at` is NULL or >90 days ago | Webhook / pipeline_health: "API key for *{consumer}* has not been used in 90 days. Review?" |
+| Key age | `created_at` >1 year ago AND not regenerated | Webhook / pipeline_health: "API key for *{consumer}* is over 1 year old. Consider rotation." |
+| Usage spike | Requests in last 24h >10x the 30-day daily average | Webhook / pipeline_health: "API key for *{consumer}* made {n} requests today (normal: ~{avg}/day)." |
 
-These use the existing notification infrastructure (EMAIL channel, notification adapters). See architecture-context.md § Notification channels → Alert categories.
+These use the existing notification infrastructure (webhook channel, notification adapters). See architecture-context.md § Notification channels → Alert categories.
 
 > **v1-only** (v0-scope.md §A10): v0 uses simple pg_dump backups. restic encryption is deferred to v1.
 

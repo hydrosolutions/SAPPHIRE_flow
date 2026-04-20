@@ -67,6 +67,32 @@ extremely good reason.** The architecture and flow designs represent deliberate 
 - A second review round is required only if the user requests changes.
 - Do not present a plan as ready without user confirmation.
 
+### Plan status vocabulary
+
+Active plans in `docs/plans/` use one of the following statuses in their
+frontmatter:
+
+- **DRAFT** — plan is being written or has not yet been confirmed by the user.
+  Not ready for implementation. No subagent runs from a DRAFT plan.
+- **READY** — plan is confirmed and ready to execute. Subagents may be
+  dispatched.
+- **IN_PROGRESS** — plan is actively being implemented. Used while a session
+  is mid-execution.
+- **DEFERRED** — scope-validated, intentionally postponed to a future version
+  (v0b, v1, etc.). Distinct from `DRAFT` (unplanned / not ready) and from
+  `ARCHIVED` (closed historical record). Deferred plans stay in `docs/plans/`
+  (not `archive/`) until they are re-promoted (flipped back to `DRAFT` or
+  `READY`) or archived.
+- **DONE** — plan is complete. Typically archived promptly; see below.
+
+Plans that have been moved to `docs/plans/archive/` are collectively referred
+to as **ARCHIVED**. Archive is the terminal state: closed historical records
+that are no longer part of the active registry.
+
+Note: this codification does **not** backfill legacy archive-only labels such
+as `COMPLETE`, `RESOLVED`, or archived `READY`. Historical plan records in
+`docs/plans/archive/` keep whatever status they were archived with.
+
 ## Task Exit Gate
 
 After each subagent completes, the orchestrator verifies:

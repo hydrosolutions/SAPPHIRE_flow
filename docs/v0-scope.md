@@ -476,11 +476,11 @@ Phase 1a: Types, Protocols, config loading, DB schema (Alembic)     ─┐
 Phase 1b: Test infra (testcontainers, conftest, replay Protocols, CI) ├─ parallel
 Phase 10: Docker Compose (simplified)                                 ─┘
           │
-Phase 2: Store implementations (PostgreSQL) + integration tests  ─┐
-Phase 3: Adapters (production + replay, includes recording tool +  ├─ parallel
+Phase 2: Store implementations (PostgreSQL) + integration tests  ─┐  ✓ done
+Phase 3: Adapters (production + replay, includes recording tool +  ├─ parallel  ✓ done
           reference dataset — obs fixtures: Plan 020, NWP fixtures:│
           Plan 021)                                                 │
-Phase 4: Services (QC, threshold, alert, skill, forecast input, input quality)  ─┘
+Phase 4: Services (QC, threshold, alert, skill, forecast input, input quality)  ─┘  ✓ done
           │
 Phase 5: Station onboarding (simplified)           ─┐ ✓ done
 Phase 6: Observation ingest (Flow 2)               ├─ parallel  ✓ done
