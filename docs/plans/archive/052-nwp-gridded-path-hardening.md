@@ -1,6 +1,6 @@
 # Plan 052 — Flow 1 gridded-NWP path hardening
 
-**Status**: READY
+**Status**: DONE (archived 2026-04-20, commit ff18118, tag v0.1.357)
 **Date**: 2026-04-18
 **Depends on**: Plan 045 DONE (gridded NWP integration landed 2026-04-17).
 **Prerequisite**: Plan 063 (MeteoSwiss NWP adapter tz-aware emission contract) must

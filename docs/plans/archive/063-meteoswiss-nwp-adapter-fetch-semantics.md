@@ -1,6 +1,6 @@
 # Plan 063 — MeteoSwissNwpAdapter fetch semantics redesign
 
-**Status**: READY
+**Status**: DONE (archived 2026-04-20, core commit 992d3a6, tag v0.1.358; T4 live-STAC test d94ebab v0.1.359; T5 e2e script f856c2f v0.1.360)
 **Date**: 2026-04-20
 **Depends on**: Plan 045 DONE (ICON-CH2-EPS adapter landed), Plan 060 DONE (cache_policy + bootstrap).
 **Blocks**: Plan 046 Stream A A3 step 8 (forecast-cycle direct-invoke) and all downstream D-stream validation.
