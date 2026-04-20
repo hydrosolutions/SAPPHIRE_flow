@@ -1,6 +1,6 @@
 [project]
 name = "sapphire-flow"
-version = "0.1.358"
+version = "0.1.359"
 description = "Add your description here"
 readme = "README.md"
 license = "MIT"
@@ -74,11 +74,12 @@ markers = [
     "deployment: requires a full compose stack; excluded by default",
     "deployment_destructive: destructive compose tests; excluded by default",
     "live_lindas: calls live LINDAS endpoint; excluded by default, run by weekly workflow",
+    "live_stac: calls live MeteoSwiss STAC endpoint; excluded by default, run manually or on a schedule",
 ]
-addopts = "-m 'not deployment and not live_lindas'"
+addopts = "-m 'not deployment and not live_lindas and not live_stac'"
 
 [tool.bumpversion]
-current_version = "0.1.358"
+current_version = "0.1.359"
 commit = false
 tag = false
 allow_dirty = true
