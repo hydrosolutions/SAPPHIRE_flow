@@ -20,3 +20,9 @@ secrets/
 # Downloaded data (never commit)
 data/
 .data/
+
+# Claude Code — track shared settings.json, ignore machine-local state
+# (settings.local.json is also in the global gitignore)
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+.claude/worktrees/
