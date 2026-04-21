@@ -1,13 +1,13 @@
 [project]
 name = "sapphire-flow"
-version = "0.1.384"
+version = "0.1.385"
 description = "Add your description here"
 readme = "README.md"
 license = "MIT"
 authors = [
     { name = "Beatrice Marti", email = "mabesa@users.noreply.github.com" }
 ]
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "alembic",
     "camelsch>=0.2.0",
@@ -88,7 +88,7 @@ markers = [
 addopts = "-m 'not deployment and not live_lindas and not live_stac'"
 
 [tool.bumpversion]
-current_version = "0.1.384"
+current_version = "0.1.385"
 commit = false
 tag = false
 allow_dirty = true

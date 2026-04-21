@@ -1,5 +1,5 @@
-# python:3.11.15-slim (manifest-list digest pinned 2026-04-21 per Plan 064 B1)
-FROM python:3.11.15-slim@sha256:233de06753d30d120b1a3ce359d8d3be8bda78524cd8f520c99883bfe33964cf AS builder
+# python:3.12.13-slim (manifest-list digest pinned 2026-04-21 per Plan 064 B1)
+FROM python:3.12.13-slim@sha256:804ddf3251a60bbf9c92e73b7566c40428d54d0e79d3428194edf40da6521286 AS builder
 
 # ghcr.io/astral-sh/uv:0.11.7 (manifest-list digest pinned 2026-04-21 per Plan 064 B5)
 COPY --from=ghcr.io/astral-sh/uv:0.11.7@sha256:240fb85ab0f263ef12f492d8476aa3a2e4e1e333f7d67fbdd923d00a506a516a /uv /usr/local/bin/uv
@@ -23,8 +23,8 @@ COPY alembic.ini ./
 COPY alembic/ alembic/
 
 
-# python:3.11.15-slim (manifest-list digest pinned 2026-04-21 per Plan 064 B1)
-FROM python:3.11.15-slim@sha256:233de06753d30d120b1a3ce359d8d3be8bda78524cd8f520c99883bfe33964cf
+# python:3.12.13-slim (manifest-list digest pinned 2026-04-21 per Plan 064 B1)
+FROM python:3.12.13-slim@sha256:804ddf3251a60bbf9c92e73b7566c40428d54d0e79d3428194edf40da6521286
 
 RUN groupadd -g 1000 app && useradd -u 1000 -g 1000 -m app
 
