@@ -3,7 +3,7 @@
 #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
 services:
   postgres:
-    image: postgis/postgis:16-3.4
+    image: postgis/postgis:16-3.4@sha256:44126d872ac91993766c341e369c539e8196614321765d36a6f1bab0419a5fa5  # postgis/postgis:16-3.4
     environment:
       POSTGRES_USER: ${DB_USER:-sapphire}
       POSTGRES_PASSWORD_FILE: /run/secrets/db_password
@@ -35,7 +35,7 @@ services:
         max-file: "5"
 
   prefect-server:
-    image: prefecthq/prefect:3-python3.11
+    image: prefecthq/prefect:3-python3.11@sha256:21faa645ac710fdaf8a80245975eba411e916c040740c81e2982df7feaad38c0  # prefecthq/prefect:3-python3.11
     command: >
       sh -c "
         export PREFECT_API_DATABASE_CONNECTION_URL=\"postgresql+asyncpg://${DB_USER:-sapphire}:$$(cat /run/secrets/db_password)@postgres:5432/prefect\" &&
@@ -156,7 +156,7 @@ services:
         max-file: "5"
 
   caddy:
-    image: caddy:2.9
+    image: caddy:2.9@sha256:748016f285ed8c43a9ce6e3aed6d92d3009d90ca41157950880f40beaf3ff62b  # caddy:2.9
     ports:
       - "80:80"
       - "443:443"

@@ -1,0 +1,45 @@
+version: 2
+updates:
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      uv-patch:
+        patterns: ["*"]
+        update-types: ["patch"]
+    reviewers:
+      - "mabesa"
+
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      docker-patch:
+        patterns: ["*"]
+        update-types: ["patch"]
+    reviewers:
+      - "mabesa"
+
+  - package-ecosystem: "docker-compose"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      docker-compose-patch:
+        patterns: ["*"]
+        update-types: ["patch"]
+    reviewers:
+      - "mabesa"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      github-actions-patch:
+        patterns: ["*"]
+        update-types: ["patch"]
+    reviewers:
+      - "mabesa"
