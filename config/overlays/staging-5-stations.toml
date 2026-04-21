@@ -1,0 +1,5 @@
+# Staging dress rehearsal — 5-station subset.
+# Overlay for config.toml; select via SAPPHIRE_CONFIG_OVERLAY.
+# Deep-merged into [onboarding] — base's data_source is preserved.
+[onboarding]
+basin_ids = ["2004", "2009", "2033", "2085", "2091"]

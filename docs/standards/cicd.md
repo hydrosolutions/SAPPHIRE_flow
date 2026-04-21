@@ -229,6 +229,58 @@ Workers do not have Docker-level health checks — their liveness is monitored b
 - CI builds and tags images on every merge to `main`
 - Deployment updates the tag in `docker-compose.yml` and runs the upgrade procedure above
 
+## Config overlays
+
+A deployment can run from `main` with small config variants (staging subsets, per-region tweaks) without forking a branch. One base `config.toml` stays canonical; overlays patch only the keys they need; all loaders consume the merged result through a shared helper.
+
+### Mechanism
+
+- **Base file**: `config.toml` (pointed at by `SAPPHIRE_CONFIG`). Absolute path in Docker/production.
+- **Overlay files**: zero or more TOML files listed in `SAPPHIRE_CONFIG_OVERLAY`, comma-separated. Paths applied left-to-right; rightmost wins on key collisions. Absolute paths in Docker/production.
+- **Merge helper**: `load_merged_toml` in `src/sapphire_flow/config/_overlay.py`. All config loaders (`load_config`, `load_onboarding_config`, `load_qc_rules`, `load_forecast_qc_rules`, plus the adapter-endpoint read in `flows/ingest_observations.py`) route through this helper, so no loader sees an overlay-less view.
+- **No overlay**: `SAPPHIRE_CONFIG_OVERLAY` unset or empty → identical behaviour to reading the base alone.
+
+### Directory convention
+
+- `config/overlays/*.toml` — version-controlled canonical overlays shared across operators (e.g. `staging-5-stations.toml`).
+- `config/overlays/local/*.toml` — gitignored operator-only tweaks (ad-hoc debugging, per-host overrides). `.gitkeep` preserves the directory.
+
+### Merge semantics
+
+- **Dicts** deep-merge recursively — keys absent from the overlay inherit the base value.
+- **Lists replace wholesale** — no append. An overlay that sets `basin_ids = ["2004", "2009"]` fully replaces the base's list; there is no way to extend the base list through an overlay. This applies to TOML array-of-tables (`[[danger_levels]]`, `[[seasons]]`) as well.
+- Validation runs on the merged result via existing Pydantic models; overlays are not separately schema-checked.
+
+### Failure mode
+
+A missing overlay file raises `FileNotFoundError` at startup. There is no silent fallback to the base alone — a staging deployment with a typoed overlay path fails loud rather than silently running against the full operational config.
+
+### Docker Compose pattern
+
+Compose overlays select config overlays. `docker-compose.staging.yml` bind-mounts `config/overlays/staging-5-stations.toml` and sets `SAPPHIRE_CONFIG_OVERLAY` on the services that read config (`prefect-worker`, `api`, `init`). Operators run:
+
+```
+docker compose -f docker-compose.yml -f docker-compose.staging.yml up
+```
+
+### Minimal example
+
+Overlay (`config/overlays/staging-5-stations.toml`):
+
+```toml
+# Trim onboarding to the 5-station A1 subset; base's data_source is preserved.
+[onboarding]
+basin_ids = ["2004", "2009", "2033", "2085", "2091"]
+```
+
+Selection (outside Docker):
+
+```
+SAPPHIRE_CONFIG=config.toml \
+SAPPHIRE_CONFIG_OVERLAY=config/overlays/staging-5-stations.toml \
+uv run python -m sapphire_flow.cli.register_deployments
+```
+
 ## Host-level watchdog
 
 Independent of Docker and Prefect. A cron job on the host VM:

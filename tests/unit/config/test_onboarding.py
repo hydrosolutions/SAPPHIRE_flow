@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-import os
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from sapphire_flow.config.onboarding import OnboardingConfig, load_onboarding_config
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class TestOnboardingConfig:
@@ -74,4 +76,25 @@ class TestLoadOnboardingConfig:
         toml.write_text('[onboarding]\nbasin_ids = ["2004"]\n')
         cfg = load_onboarding_config(toml)
         assert cfg is not None
+        assert cfg.data_source == "camels-ch"
+
+    def test_overlay_replaces_basin_ids(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        base = tmp_path / "config.toml"
+        base.write_text(
+            "[onboarding]\n"
+            'data_source = "camels-ch"\n'
+            'basin_ids = ["2004", "2009", "2033", "2085", "2091", "2100"]\n'
+        )
+        overlay = tmp_path / "overlay.toml"
+        overlay.write_text('[onboarding]\nbasin_ids = ["2004", "2009"]\n')
+        monkeypatch.setenv("SAPPHIRE_CONFIG_OVERLAY", str(overlay))
+
+        cfg = load_onboarding_config(base)
+
+        assert cfg is not None
+        # overlay list replaces the base list wholesale
+        assert cfg.basin_ids == ("2004", "2009")
+        # unpatched keys preserved from base
         assert cfg.data_source == "camels-ch"

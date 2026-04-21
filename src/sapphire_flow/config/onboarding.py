@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import os
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, cast
 
-from sapphire_flow.config.deployment import _resolve_env_vars
+from sapphire_flow.config._overlay import (
+    _resolve_overlay_paths,  # pyright: ignore[reportPrivateUsage]
+    load_merged_toml,
+)
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -23,9 +26,9 @@ def load_onboarding_config(
             raise ValueError("No config path provided and SAPPHIRE_CONFIG is not set")
         config_path = env_path
     path = Path(config_path)
-    raw_text = path.read_text()
-    resolved_text = _resolve_env_vars(raw_text)
-    data = tomllib.loads(resolved_text)
+    # Cast to dict[str, Any] — post-parse code treats TOML values loosely
+    # (same behaviour as the prior tomllib.loads return type).
+    data = cast("dict[str, Any]", load_merged_toml(path, _resolve_overlay_paths()))
 
     section = data.get("onboarding")
     if section is None:

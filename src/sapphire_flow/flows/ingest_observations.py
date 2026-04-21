@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import tomllib
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -60,13 +59,22 @@ def _load_qc_rules() -> QcRuleSet:
 
 
 def _load_adapter_endpoint() -> str:
+    from typing import Any, cast
+
     config_path = os.environ.get("SAPPHIRE_CONFIG")
     if config_path is None:
         return "https://lindas.admin.ch/query"
-    from sapphire_flow.config.qc_rules import _resolve_env_vars
+    from sapphire_flow.config._overlay import (
+        _resolve_overlay_paths,  # pyright: ignore[reportPrivateUsage]
+        load_merged_toml,
+    )
 
-    raw_text = Path(config_path).read_text()
-    data = tomllib.loads(_resolve_env_vars(raw_text))
+    # Cast to dict[str, Any] — post-parse code treats TOML values loosely
+    # (same behaviour as the prior tomllib.loads return type).
+    data = cast(
+        "dict[str, Any]",
+        load_merged_toml(Path(config_path), _resolve_overlay_paths()),
+    )
     return (
         data.get("adapters", {})
         .get("river_stations", {})

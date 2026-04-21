@@ -155,3 +155,20 @@ class TestMissingQcSectionReturnsDefault:
         finally:
             if env_backup is not None:
                 os.environ["SAPPHIRE_CONFIG"] = env_backup
+
+
+class TestOverlaySupport:
+    def test_overlay_patches_qc_version(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        base = tmp_path / "config.toml"
+        base.write_text(_MINIMAL_TOML)
+        overlay = tmp_path / "overlay.toml"
+        overlay.write_text('[qc_rules]\nversion = "3.5.0"\n')
+        monkeypatch.setenv("SAPPHIRE_CONFIG_OVERLAY", str(overlay))
+
+        result = load_qc_rules(base)
+
+        # overlay deep-merged into qc_rules, so version changed but rules preserved
+        assert result.version == "3.5.0"
+        assert len(result.rules) == 2

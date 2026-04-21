@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from sapphire_flow.flows.ingest_observations import (
     IngestResult,
+    _load_adapter_endpoint,
     ingest_observations_flow,
 )
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
@@ -14,6 +15,10 @@ from sapphire_flow.types.enums import ObservationSource, QcStatus, StationKind
 from sapphire_flow.types.observation import RawObservation
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
+    import pytest
+
     from sapphire_flow.types.ids import StationId
 from tests.conftest import make_station_config
 from tests.fakes.fake_adapters import FakeStationDataSource
@@ -485,3 +490,39 @@ class TestIngestObservationsFlow:
         assert result.observations_stored == 2
         assert result.qc_passed == 2
         assert result.qc_failed == 0
+
+
+class TestLoadAdapterEndpoint:
+    def test_default_when_no_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("SAPPHIRE_CONFIG", raising=False)
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+
+        assert _load_adapter_endpoint() == "https://lindas.admin.ch/query"
+
+    def test_reads_endpoint_from_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(
+            '[adapters.river_stations]\nendpoint = "https://base.example/query"\n'
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config_file))
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+
+        assert _load_adapter_endpoint() == "https://base.example/query"
+
+    def test_overlay_patches_endpoint(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_file = tmp_path / "config.toml"
+        config_file.write_text(
+            '[adapters.river_stations]\nendpoint = "https://base.example/query"\n'
+        )
+        overlay_file = tmp_path / "overlay.toml"
+        overlay_file.write_text(
+            '[adapters.river_stations]\nendpoint = "https://overlay.example/query"\n'
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config_file))
+        monkeypatch.setenv("SAPPHIRE_CONFIG_OVERLAY", str(overlay_file))
+
+        assert _load_adapter_endpoint() == "https://overlay.example/query"

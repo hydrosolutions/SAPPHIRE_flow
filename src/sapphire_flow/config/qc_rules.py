@@ -1,30 +1,15 @@
 from __future__ import annotations
 
 import os
-import re
-import tomllib
 from datetime import timedelta
 from pathlib import Path
+from typing import Any, cast
 
+from sapphire_flow.config._overlay import (
+    _resolve_overlay_paths,  # pyright: ignore[reportPrivateUsage]
+    load_merged_toml,
+)
 from sapphire_flow.types.domain import QcRuleParams, QcRuleSet
-
-_ENV_VAR_PATTERN = re.compile(r"\$\{(\w+)\}")
-
-
-def _resolve_env_vars(text: str) -> str:
-    def _replace(match: re.Match[str]) -> str:
-        var_name = match.group(1)
-        if not var_name.startswith("SAPPHIRE_"):
-            raise ValueError(
-                f"Environment variable ${{{var_name}}} is not in the allowlist; "
-                "only variables prefixed with SAPPHIRE_ may be referenced in config"
-            )
-        value = os.environ.get(var_name)
-        if value is None:
-            raise ValueError(f"Environment variable ${{{var_name}}} is not set")
-        return value
-
-    return _ENV_VAR_PATTERN.sub(_replace, text)
 
 
 def _parse_rule(raw: dict) -> QcRuleParams:
@@ -255,9 +240,9 @@ def load_qc_rules(config_path: Path | str | None = None) -> QcRuleSet:
             raise ValueError("No config path provided and SAPPHIRE_CONFIG is not set")
         config_path = env_path
     path = Path(config_path)
-    raw_text = path.read_text()
-    resolved_text = _resolve_env_vars(raw_text)
-    data = tomllib.loads(resolved_text)
+    # Cast to dict[str, Any] — post-parse code treats TOML values loosely
+    # (same behaviour as the prior tomllib.loads return type).
+    data = cast("dict[str, Any]", load_merged_toml(path, _resolve_overlay_paths()))
 
     qc_section = data.get("qc_rules")
     if qc_section is None:

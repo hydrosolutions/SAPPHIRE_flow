@@ -26,3 +26,7 @@ data/
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
 .claude/worktrees/
+
+# Config overlays — ignore gitignored local operator tweaks, keep .gitkeep tracked
+config/overlays/local/*
+!config/overlays/local/.gitkeep

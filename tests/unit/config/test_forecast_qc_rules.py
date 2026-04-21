@@ -141,3 +141,20 @@ class TestRulesForFilter:
     def test_default_version(self) -> None:
         rules = _default_swiss_forecast_qc_rules()
         assert rules.version == "1.0.0"
+
+
+class TestOverlaySupport:
+    def test_overlay_patches_forecast_qc_version(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        base = tmp_path / "config.toml"
+        base.write_text(_MINIMAL_TOML)
+        overlay = tmp_path / "overlay.toml"
+        overlay.write_text('[forecast_qc_rules]\nversion = "4.2.0"\n')
+        monkeypatch.setenv("SAPPHIRE_CONFIG_OVERLAY", str(overlay))
+
+        result = load_forecast_qc_rules(base)
+
+        # overlay deep-merged — version changed, rules preserved
+        assert result.version == "4.2.0"
+        assert len(result.rules) == 3

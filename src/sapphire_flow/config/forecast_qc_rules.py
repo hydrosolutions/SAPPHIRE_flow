@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import os
-import tomllib
 from datetime import timedelta
 from pathlib import Path
+from typing import Any, cast
 
-from sapphire_flow.config.qc_rules import _resolve_env_vars
+from sapphire_flow.config._overlay import (
+    _resolve_overlay_paths,  # pyright: ignore[reportPrivateUsage]
+    load_merged_toml,
+)
 from sapphire_flow.types.domain import ForecastQcRuleParams, ForecastQcRuleSet
 
 
@@ -232,9 +235,9 @@ def load_forecast_qc_rules(config_path: Path | str | None = None) -> ForecastQcR
             raise ValueError("No config path provided and SAPPHIRE_CONFIG is not set")
         config_path = env_path
     path = Path(config_path)
-    raw_text = path.read_text()
-    resolved_text = _resolve_env_vars(raw_text)
-    data = tomllib.loads(resolved_text)
+    # Cast to dict[str, Any] — post-parse code treats TOML values loosely
+    # (same behaviour as the prior tomllib.loads return type).
+    data = cast("dict[str, Any]", load_merged_toml(path, _resolve_overlay_paths()))
 
     qc_section = data.get("forecast_qc_rules")
     if qc_section is None:

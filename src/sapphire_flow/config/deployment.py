@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import os
 import re
-import tomllib
 from datetime import timedelta
-from typing import TYPE_CHECKING, Literal, Self
+from typing import TYPE_CHECKING, Any, Literal, Self, cast
 
 from pydantic import BaseModel, field_validator, model_validator
 
@@ -232,7 +231,9 @@ class DeploymentConfig(BaseModel):
 _ENV_VAR_PATTERN = re.compile(r"\$\{(\w+)\}")
 
 
-def _resolve_env_vars(text: str) -> str:
+def _resolve_env_vars(text: str) -> str:  # pyright: ignore[reportUnusedFunction]
+    # Called cross-module by config._overlay; pyright's reportUnusedFunction
+    # doesn't track external callers of private-prefixed module functions.
     def _replace(match: re.Match[str]) -> str:
         var_name = match.group(1)
         if not var_name.startswith("SAPPHIRE_"):
@@ -251,15 +252,20 @@ def _resolve_env_vars(text: str) -> str:
 def load_config(path: Path | str | None = None) -> DeploymentConfig:
     from pathlib import Path as _Path
 
+    from sapphire_flow.config._overlay import (
+        _resolve_overlay_paths,  # pyright: ignore[reportPrivateUsage]
+        load_merged_toml,
+    )
+
     if path is None:
         env_path = os.environ.get("SAPPHIRE_CONFIG")
         if env_path is None:
             raise ValueError("No config path provided and SAPPHIRE_CONFIG is not set")
         path = env_path
     path = _Path(path)
-    raw_text = path.read_text()
-    resolved_text = _resolve_env_vars(raw_text)
-    data = tomllib.loads(resolved_text)
+    # Cast to dict[str, Any] — post-parse code treats TOML values loosely
+    # (same behaviour as the prior tomllib.loads return type).
+    data = cast("dict[str, Any]", load_merged_toml(path, _resolve_overlay_paths()))
     # Extract NWP grid archive path before popping adapters section
     _adapters = data.get("adapters", {})
     _weather_forecast = (

@@ -19,6 +19,7 @@ by hand.
 - **058** — BAFU LINDAS archive via operational collection on Mac Mini v0 — `DRAFT` — Build a BAFU LINDAS archive by running the v0 ingest on the Mac mini after Plan 046 is DONE.
 - **062** — Prefect state persistence (`PREFECT_HOME` ↔ `prefect_data` volume) — `DRAFT` — Set `PREFECT_HOME` so SQLite DB, deployments, and flow-run history persist on the named volume.
 - **064** — Supply-chain hardening — `DRAFT` — Pin third-party inputs, add CVE scanning and SBOMs, document the new posture.
+- **065** — Config overlays for environment variants (retire staging branches) — `READY` — Introduces `SAPPHIRE_CONFIG_OVERLAY` + `config/overlays/` so staging dress rehearsals run from main instead of a branch.
 
 ## Deferred
 

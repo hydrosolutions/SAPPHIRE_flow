@@ -90,6 +90,19 @@ class TestLoadConfig:
         with pytest.raises(ValueError, match="SAPPHIRE_CONFIG is not set"):
             load_config()
 
+    def test_overlay_patches_scalar(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg_file = tmp_path / "deployment.toml"
+        cfg_file.write_text(_MINIMAL_TOML)
+        overlay_file = tmp_path / "overlay.toml"
+        overlay_file.write_text("max_retention_days = 5000\n")
+        monkeypatch.setenv("SAPPHIRE_CONFIG_OVERLAY", str(overlay_file))
+
+        config = load_config(cfg_file)
+
+        assert config.max_retention_days == 5000
+
 
 class TestResolveEnvVars:
     def test_substitutes_set_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:
