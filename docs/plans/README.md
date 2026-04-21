@@ -20,7 +20,7 @@ by hand.
 - **062** — Prefect state persistence (`PREFECT_HOME` ↔ `prefect_data` volume) — `DRAFT` — Set `PREFECT_HOME` so SQLite DB, deployments, and flow-run history persist on the named volume.
 - **064** — Supply-chain hardening — `DRAFT` — Pin third-party inputs, add CVE scanning and SBOMs, document the new posture.
 - **066** — Train-models retrain strategy (configurable) — `DRAFT` — Framework so retrain data-window is selectable; default restores dress-rehearsal A3 step 4 (F3).
-- **067** — MeteoSwiss STAC adapter investigation + configurability — `DRAFT` — Root-cause the "cycle late" signal (F4), then move `_MAX_FALLBACK_STEPS` into config and decide pagination-cap fate (F5).
+- **067** — MeteoSwiss STAC adapter investigation + configurability — `READY` — Root-cause the "cycle late" signal (F4), then move `_MAX_FALLBACK_STEPS` into config and decide pagination-cap fate (F5). Four review rounds.
 - **068** — `onboard-stations` parallelization + decouple historical hindcast — `DRAFT` — Cut 38 min onboarding to seconds; move historical hindcast to new async `backfill-hindcasts` flow with `task.map`. Depends on Plans 038 + 040.
 
 ## Deferred

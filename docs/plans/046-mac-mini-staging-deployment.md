@@ -1,6 +1,8 @@
 # Plan 046 — Mac Mini Staging Deployment + Edge-Case Test Suite
 
 **Status**: IN_PROGRESS
+**Revision**: 12 — Plan 067 DONE (commit `<pending>`). Findings F4 and F5 from the 2026-04-21 dress rehearsal are resolved: F4 (availability probe "no cycle available within 3 fallback steps") — H-B confirmed; the prefix-based probe was ordering-fragile and is replaced by T2a's property-based `forecast:reference_datetime` check. F5 (`STAC pagination exceeded 100 pages`) — H-C + H-D confirmed; the `datetime=<cycle>/<cycle+120h>` filter over-fetches ≈4 cycles, and even one cycle exceeds the cap, so T2b adds a client-side `forecast:reference_datetime` filter and T4a raises `_MAX_PAGINATION_PAGES` to 800 (552-page full-window walk × 1.5 safety). Bonus latent bug caught and fixed via T3.d: `_CYCLE_HOURS` was 3-hourly but MeteoSwiss publishes ICON-CH2-EPS at 6 h cadence per the collection description — corrected to `(0, 6, 12, 18)` with the fallback-step count derived as `ceil(nwp_max_fallback_age_hours / 6.0)` (Plan 067 D2). §A3 step 8 is reinstated and uses the canonical direct-invoke template already documented under Rev 11 (now updated by T3.c to pass the derived `max_fallback_steps` kwarg). (2026-04-22)
+
 **Revision**: 11 — A3 dress-rehearsal on 2026-04-21 (5-station, on main with `docker-compose.staging.yml` per Plan 065) completed steps 1, 2, 3, 5, 6, 7, 9 and surfaced issues on steps 4 and 8. See `docs/deployment/dress-rehearsal-2026-04-21.md` for the full report. Rev 11 folds the rehearsal findings back into the plan text — no code or procedure change in Rev 11 itself; substantive fixes are spawned as detour plans: (a) §A1 "validates multi-parameter pipeline (discharge + water_level)" softened — Murten (lake) is correctly ingestion-only under the current discharge-target model lineup, multi-parameter forecast coverage deferred to v0b per finding F7. (b) §A2 gets explicit `docker compose down -v` as first-run-from-main prerequisite (F1) plus a `VERSION` env-var note for operators (Mac-specific gotcha). (c) §A3 steps 5 and 6 add JSON-string quoting examples for UUID deployment params (`-p 'station_id="..."'` not `-p station_id=...`) per finding F2 — raw UUIDs fail Prefect CLI's JSON-value parsing. (d) §A3 step 8 direct-invoke template adds `DATABASE_URL` construction boilerplate (`PW=$(cat /run/secrets/db_password); export DATABASE_URL=...`) — `docker compose exec` does not inherit the entrypoint-built env. (e) §A3 step 4 gets a pointer to **Plan 066** (train-models retrain strategy — under research; should be configurable, not a single hard-coded data-window policy) per finding F3. (f) §A3 step 8 gets a pointer to **Plan 067** (MeteoSwiss STAC adapter investigation — the "cycle late" signal is almost certainly our query implementation, not MeteoSwiss's publication — plus `_MAX_FALLBACK_STEPS` configurability and pagination-cap removal) per findings F4 + F5. (g) §A4 gets a pointer to **Plan 068** (`onboard-stations` parallelization + decoupling historical-hindcast phase) — 38 min at 5 stations projects to ~26 h at 169, blocking v0 scale-up. (h) Mac-mini watch note: F6 compute-skills transient OOM under parallel load — monitor during A4. (2026-04-21)
 
 **Revision**: 10 — Plan 065 DONE (2026-04-21, commit `4cf6d32`, tag `v0.1.376`, archived `b0ce875`) introduces the config-overlay mechanism and supersedes the `staging-5-stations` branch workflow: (a) §A1 "Transient config change" paragraph is marked SUPERSEDED (strikethrough retained for historical context) — A3 runs from `main` with `-f docker-compose.staging.yml` selecting `config/overlays/staging-5-stations.toml`. (b) §A1 "Cross-reference (Plan 065)" placeholder commit hash filled in. (c) §A2 adds a preliminary `docker compose build` step because the cached `sapphire-flow:latest` image predates Plan 065 and does not contain the overlay loader; the up command adds `-f docker-compose.staging.yml` as the third overlay. (d) §A3 step-8 direct-invoke `docker compose exec` command similarly adds `-f docker-compose.staging.yml` for consistency. (e) §A4 scale-up no longer restores a "full 169-station [onboarding] list" — instead, drop `-f docker-compose.staging.yml` from the compose command and re-up to revert to 169. (f) Files-to-modify table row for `config.toml` (A1 transient, branch-only) marked SUPERSEDED. (g) Open question #4 about `staging-5-stations` branch management collapsed — branch deprecated, operator may `git branch -D staging-5-stations` after A3 completes. No code changes in Rev 10 — pure doc revision. (2026-04-21)
@@ -163,27 +165,37 @@ Trigger flows in sequence through the Prefect UI. Each must complete without man
       PW=$(cat /run/secrets/db_password)
       export DATABASE_URL="postgresql+psycopg://sapphire:${PW}@postgres:5432/sapphire"
       cd /app && python -c "
+    import math
     from pathlib import Path
     import httpx
     from sapphire_flow.adapters.meteoswiss_nwp import MeteoSwissNwpAdapter
+    from sapphire_flow.config.deployment import load_config
     from sapphire_flow.flows.run_forecast_cycle import run_forecast_cycle_flow
+
+    # Plan 067 D2: derive fallback-step count from the deployment config
+    # policy. MeteoSwiss publishes ICON-CH2-EPS cycles at 6 h cadence, so
+    # ceil(nwp_max_fallback_age_hours / 6.0) turns the age-hours policy
+    # into an integer step count the adapter can use directly.
+    cfg = load_config(\"/app/config.toml\")
+    max_fallback_steps = math.ceil(cfg.nwp_max_fallback_age_hours / 6.0)
 
     adapter = MeteoSwissNwpAdapter(
         stac_base_url=\"https://data.geo.admin.ch/api/stac/v1\",
         stac_collection=\"ch.meteoschweiz.ogd-forecasting-icon-ch2\",
         scratch_path=Path(\"/tmp/sapphire_nwp\"),
         http_client=httpx.Client(timeout=60),
+        max_fallback_steps=max_fallback_steps,
     )
     result = run_forecast_cycle_flow(adapter=adapter)
     print(\"forecast-cycle result:\", result)
     "'
     ```
 
-    **Rev 11 notes on step 8 (findings F4 + F5):**
+    **Notes on step 8 (from Rev 11 + Rev 12 — F4/F5 resolved):**
     - **`DATABASE_URL` construction boilerplate is required** — `docker compose exec` does not inherit the entrypoint-built env, so `DATABASE_URL` must be constructed inline from `/run/secrets/db_password` + the `DATABASE_URL_TEMPLATE`. Earlier Rev-9 template omitted this and failed with `KeyError: 'DATABASE_URL'`.
     - **Call as `run_forecast_cycle_flow(adapter=adapter)`** (real Prefect flow invocation), NOT `.fn(adapter=adapter)`. The flow internally calls `_fetch_nwp_task.submit(...)` which requires a task-runner context — `.fn` bypasses Prefect runtime and the `.submit` call raises `RuntimeError: Unable to determine task runner`. Rev 9's reference to `.fn(...)` is superseded.
-    - **MeteoSwiss cycle "late" signal needs adapter investigation (Plan 067).** During the 2026-04-21 rehearsal the adapter aborted with "No cycle available within 3 fallback steps". MeteoSwiss is reliable; the signal is almost certainly a query-implementation issue in `MeteoSwissNwpAdapter` (wrong datetime-filter semantics, wrong sort order, or pagination bug). Plan 067 investigates before assuming anything about MeteoSwiss publication lag.
-    - **Adapter has a hardcoded `_MAX_FALLBACK_STEPS=3` and a 100-page STAC pagination cap** — both need to become configurable (or the cap removed via server-side filtering). Plan 067 covers the configurability work once the root cause is understood.
+    - **Plan 067 resolved the "cycle late" signal (Rev 12).** The 2026-04-21 rehearsal's `"No cycle available within 3 fallback steps"` abort was a query-implementation bug in `MeteoSwissNwpAdapter`, not a MeteoSwiss outage. Plan 067 Phase 1 confirmed the availability probe was ordering-fragile (H-B) and the fetch loop over-fetched by ≈4× (H-C) while one cycle alone exceeded the 100-page cap (H-D). T2a rewrote the probe to use `properties.forecast:reference_datetime`, T2b added a client-side reference-datetime filter to the fetch loop, and T4a raised `_MAX_PAGINATION_PAGES` to 800. A latent cadence bug (ICON-CH2-EPS is 6-hourly, not 3-hourly) was corrected via T3.d.
+    - **`_MAX_FALLBACK_STEPS` is no longer a constant.** Per Plan 067 D2 the adapter now accepts `max_fallback_steps: int` as a ctor kwarg; the caller derives it from `DeploymentConfig` as `math.ceil(cfg.nwp_max_fallback_age_hours / 6.0)`. The direct-invoke template above already computes and passes this value — use it verbatim.
 
     The flow body uses Plan 059's production-bootstrap to resolve every store from `DATABASE_URL`; only `adapter` needs explicit injection. `run_forecast_cycle_flow` is sync — do **not** wrap in `asyncio.run(...)`.
 9. API spot checks: `GET /api/v1/stations`, `GET /api/v1/stations/{station_id}/forecasts?limit=1`, `GET /api/v1/alerts`

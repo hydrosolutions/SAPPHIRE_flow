@@ -27,6 +27,7 @@ files for the v0 allowlist (precipitation + temperature). Not a CI test
 
 from __future__ import annotations
 
+import math
 import pathlib
 import shutil
 import sys
@@ -38,6 +39,7 @@ import httpx
 import structlog
 
 from sapphire_flow.adapters.meteoswiss_nwp import MeteoSwissNwpAdapter
+from sapphire_flow.config.deployment import load_config
 from sapphire_flow.logging import configure_cli_logging
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.weather import GriddedForecast
@@ -51,6 +53,11 @@ def main() -> int:
     log.info("nwp.e2e_started", scratch=str(scratch))
 
     try:
+        # Plan 067 D2: derive fallback-step count from the deployment
+        # policy; ICON-CH2-EPS cycles publish every 6 h (T1.b).
+        cfg = load_config()
+        max_fallback_steps = math.ceil(cfg.nwp_max_fallback_age_hours / 6.0)
+
         adapter = MeteoSwissNwpAdapter(
             stac_base_url="https://data.geo.admin.ch/api/stac/v1",
             stac_collection="ch.meteoschweiz.ogd-forecasting-icon-ch2",
@@ -58,6 +65,7 @@ def main() -> int:
             http_client=httpx.Client(
                 timeout=httpx.Timeout(connect=10.0, read=300.0, write=None, pool=5.0)
             ),
+            max_fallback_steps=max_fallback_steps,
         )
 
         t0 = time.monotonic()

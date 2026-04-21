@@ -32,8 +32,12 @@ log = structlog.get_logger(__name__)
 
 _MIN_ENSEMBLE_MEMBERS = 20
 
-_CYCLE_HOURS: tuple[int, ...] = (0, 3, 6, 9, 12, 15, 18, 21)
-_MAX_FALLBACK_STEPS: int = 3  # hard-coded per Plan 063 D4; non-configurable in v0
+# ICON-CH2-EPS cycles publish every 6 h per the MeteoSwiss collection
+# description (Plan 067 T1.b, D7). The old 3-hourly tuple caused
+# _snap_to_cycle to snap to phantom slots (e.g. 21:00Z), burning a
+# fallback step before reaching a real cycle.
+_CYCLE_HOURS: tuple[int, ...] = (0, 6, 12, 18)
+_CYCLE_INTERVAL_HOURS: int = 6
 
 # Three-column: (STAC item-ID token, cfgrib shortName, typeOfLevel).
 # Column 0 drives the STAC allowlist (client-side substring match on `-{token}-`).
@@ -53,6 +57,15 @@ _DEFAULT_MAX_DOWNLOAD_BYTES: int = 4 * 1024 * 1024 * 1024  # 4 GB
 _ASSET_SIZE_ESTIMATE_BYTES: int = 2 * 1024 * 1024  # 2 MB fallback
 _MAX_FILE_COUNT: int = 500
 _GRIB_MAGIC: bytes = b"GRIB"
+
+# Pagination cap for _fetch_grib_files's 120 h-window walk.
+# Plan 067 T1.f measured 552 pages for the current 4-cycle overlap at
+# MeteoSwiss's 24 h retention; cap is sized at ~1.5x for safety margin.
+# Server-side narrowing (CQL filter=forecast:reference_datetime=...) is NOT
+# supported by MeteoSwiss (T1.e), so we always walk the full window.
+# Raising this cap requires re-benchmarking pages observed at implementation
+# time.
+_MAX_PAGINATION_PAGES: int = 800
 
 
 def _is_grib_asset(asset_key: str, asset: dict[str, object]) -> bool:
@@ -133,13 +146,26 @@ class MeteoSwissNwpAdapter:
         http_client: httpx.Client,
         max_download_bytes: int = _DEFAULT_MAX_DOWNLOAD_BYTES,
         cleanup_scratch_on_fetch: bool = True,
+        max_fallback_steps: int = 2,
     ) -> None:
+        # Plan 067 D2: max_fallback_steps is derived by the caller from
+        # ``DeploymentConfig.nwp_max_fallback_age_hours`` as
+        # ``math.ceil(age / 6.0)`` (ICON-CH2-EPS publishes every 6 h; see
+        # Plan 067 T1.b). Default of 2 matches the default
+        # ``nwp_max_fallback_age_hours=12.0`` policy (12 / 6 = 2) and exists
+        # only for test convenience — production callers must pass the derived
+        # value explicitly.
         self._stac_base_url = stac_base_url.rstrip("/")
         self._stac_collection = stac_collection
         self._scratch_path = scratch_path
         self._http_client = http_client
         self._max_download_bytes = max_download_bytes
         self._cleanup_scratch_on_fetch = cleanup_scratch_on_fetch
+        self._max_fallback_steps = max_fallback_steps
+
+    @property
+    def max_fallback_steps(self) -> int:
+        return self._max_fallback_steps
 
     def resolve_cycle_time(self, now_utc: UtcDatetime) -> UtcDatetime:
         if now_utc.tzinfo is None:
@@ -148,7 +174,7 @@ class MeteoSwissNwpAdapter:
             )
         snapped = self._snap_to_cycle(now_utc)
         candidate = snapped
-        for step in range(_MAX_FALLBACK_STEPS + 1):
+        for step in range(self._max_fallback_steps + 1):
             if self._cycle_is_published(candidate):
                 if step > 0:
                     log.warning(
@@ -158,9 +184,9 @@ class MeteoSwissNwpAdapter:
                         fallback_steps=step,
                     )
                 return candidate
-            candidate = ensure_utc(candidate - timedelta(hours=3))
+            candidate = ensure_utc(candidate - timedelta(hours=_CYCLE_INTERVAL_HOURS))
         raise NoCycleAvailableError(
-            f"No cycle available within {_MAX_FALLBACK_STEPS} fallback steps "
+            f"No cycle available within {self._max_fallback_steps} fallback steps "
             f"from {snapped.isoformat()}"
         )
 
@@ -172,6 +198,13 @@ class MeteoSwissNwpAdapter:
         )
 
     def _cycle_is_published(self, cycle: UtcDatetime) -> bool:
+        # T2a (Plan 067): property-based match on forecast:reference_datetime.
+        # The old prefix-based check was ordering-fragile (Phase 1 H-B): MeteoSwiss
+        # sorts items by reference_datetime ascending, so older cycles' forward-step
+        # items occupied the first 100 positions and occluded newer cycles' step-0
+        # items. Property-based matching is robust to ordering. Per D4, no step-0
+        # check — cycle publication at MeteoSwiss is atomic, so a single feature
+        # with a matching reference_datetime is sufficient evidence of publication.
         datetime_q = cycle.strftime("%Y-%m-%dT%H:%M:%SZ")
         url = (
             f"{self._stac_base_url}/collections/{self._stac_collection}/items"
@@ -186,8 +219,11 @@ class MeteoSwissNwpAdapter:
         features = data.get("features", [])
         if not features:
             return False
-        prefix = cycle.strftime("%m%d%Y-%H%M-0-")
-        return any(f.get("id", "").startswith(prefix) for f in features)
+        cycle_iso = cycle.strftime("%Y-%m-%dT%H:%M:%SZ")
+        return any(
+            f.get("properties", {}).get("forecast:reference_datetime") == cycle_iso
+            for f in features
+        )
 
     def fetch_forecasts(
         self,
@@ -233,7 +269,7 @@ class MeteoSwissNwpAdapter:
             shutil.rmtree(scratch_dir, ignore_errors=True)
         scratch_dir.mkdir(parents=True, exist_ok=True)
 
-        cycle_prefix = cycle_time.strftime("%m%d%Y-%H%M-")
+        target_ref_dt = cycle_time.strftime("%Y-%m-%dT%H:%M:%SZ")
         allow_tokens: list[str] = [row[0] for row in self.PARAM_GROUPS]
 
         window_end = cycle_time + timedelta(hours=120)
@@ -243,13 +279,22 @@ class MeteoSwissNwpAdapter:
             f"?datetime={datetime_q}&limit=100"
         )
 
+        # T4b (Plan 067): server-side variable-name CQL filter
+        # (e.g. filter=id LIKE '%-t_2m-%') would reduce per-cycle item count ~20x
+        # (2 allowlisted variables vs ~40 total) but MeteoSwiss does not advertise
+        # CQL-2 conformance and silently ignores filter= on /items (Phase 1 T1.e).
+        # Allowlist stays client-side (see _is_grib_asset at line ~58 and
+        # PARAM_GROUPS at line ~47). No behaviour change; this comment is the
+        # T4b deliverable.
         grib_files: list[Path] = []
         accumulated_bytes = 0
         page_count = 0
         while url:
             page_count += 1
-            if page_count > 100:
-                raise AdapterError("STAC pagination exceeded 100 pages")
+            if page_count > _MAX_PAGINATION_PAGES:
+                raise AdapterError(
+                    f"STAC pagination exceeded {_MAX_PAGINATION_PAGES} pages"
+                )
             try:
                 resp = self._http_client.get(url)
                 resp.raise_for_status()
@@ -261,7 +306,21 @@ class MeteoSwissNwpAdapter:
             data = resp.json()
             for item in data.get("features", []):
                 item_id = str(item.get("id", ""))
-                if not item_id.startswith(cycle_prefix):
+                # T2b (Plan 067): filter by forecast:reference_datetime property,
+                # not ID prefix. MeteoSwiss STAC does not support CQL (Phase 1
+                # T1.e confirmed: `filter=` is silently ignored on /items and
+                # POST /search returns HTTP 400 "non-queriable parameter: filter"),
+                # so the `?datetime=<cycle>/<cycle+120h>` range returns items
+                # from every cycle whose forecast horizon overlaps that window.
+                # Phase 1 H-C confirmed: 4 distinct ref_dts observed; only ~27.6%
+                # belong to the target cycle. Drop the rest here — the server
+                # won't do it for us. Property-based match also removes the
+                # latent coupling to the undocumented item-ID convention
+                # (Phase 1 T1.d).
+                feature_ref_dt = item.get("properties", {}).get(
+                    "forecast:reference_datetime"
+                )
+                if feature_ref_dt != target_ref_dt:
                     continue
                 if not any(f"-{t}-" in item_id for t in allow_tokens):
                     log.debug(

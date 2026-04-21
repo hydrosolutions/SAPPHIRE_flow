@@ -257,9 +257,12 @@ def _run_bafu(args: argparse.Namespace) -> None:
 
 
 def _run_nwp(args: argparse.Namespace) -> None:
+    import math
+
     import httpx
 
     from sapphire_flow.adapters.meteoswiss_nwp import MeteoSwissNwpAdapter
+    from sapphire_flow.config.deployment import load_config
     from sapphire_flow.store.zarr_nwp_grid_store import ZarrNwpGridStore
 
     try:
@@ -273,6 +276,13 @@ def _run_nwp(args: argparse.Namespace) -> None:
         raise ConfigurationError(
             f"Cannot read NWP config from config.toml: {exc}"
         ) from exc
+
+    # Plan 067 D2: derive fallback-step count from deployment policy.
+    # ICON-CH2-EPS cycles publish every 6 h (T1.b), so
+    # ceil(nwp_max_fallback_age_hours / 6.0) maps the age-hours policy
+    # onto an integer step count.
+    cfg = load_config("config.toml")
+    max_fallback_steps = math.ceil(cfg.nwp_max_fallback_age_hours / 6.0)
 
     scratch_path.mkdir(parents=True, exist_ok=True)
     output_dir: Path = args.output
@@ -290,6 +300,7 @@ def _run_nwp(args: argparse.Namespace) -> None:
             stac_collection=stac_collection,
             scratch_path=scratch_path,
             http_client=client,
+            max_fallback_steps=max_fallback_steps,
         )
 
         for ct_str in args.cycle_time:
