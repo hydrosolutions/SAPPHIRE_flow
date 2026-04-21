@@ -30,7 +30,11 @@ jobs:
       # or CRITICAL vulnerabilities that have an available fix; unfixed CVEs
       # are ignored to avoid blocking on upstream work we cannot action.
       # Known-accepted CVEs live in .trivyignore with dated comments.
-      # Equivalent CLI: trivy fs --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed --scanners vuln .
+      # `skip-dirs: .venv` because `uv sync` ran earlier in this job and
+      # trivy would otherwise descend into Prefect's bundled JS UI assets
+      # (lodash, vega, ...) — those live inside an installed package and
+      # are the image-scan tier's responsibility, not the fs-scan tier's.
+      # Equivalent CLI: trivy fs --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed --scanners vuln --skip-dirs .venv .
       - name: Trivy filesystem scan
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1  # v0.35.0
         with:
@@ -40,6 +44,7 @@ jobs:
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           scanners: vuln
+          skip-dirs: .venv
           cache: "true"
 
   unit:
