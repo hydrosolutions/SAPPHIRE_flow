@@ -1,6 +1,8 @@
 # Plan 046 — Mac Mini Staging Deployment + Edge-Case Test Suite
 
 **Status**: IN_PROGRESS
+**Revision**: 11 — A3 dress-rehearsal on 2026-04-21 (5-station, on main with `docker-compose.staging.yml` per Plan 065) completed steps 1, 2, 3, 5, 6, 7, 9 and surfaced issues on steps 4 and 8. See `docs/deployment/dress-rehearsal-2026-04-21.md` for the full report. Rev 11 folds the rehearsal findings back into the plan text — no code or procedure change in Rev 11 itself; substantive fixes are spawned as detour plans: (a) §A1 "validates multi-parameter pipeline (discharge + water_level)" softened — Murten (lake) is correctly ingestion-only under the current discharge-target model lineup, multi-parameter forecast coverage deferred to v0b per finding F7. (b) §A2 gets explicit `docker compose down -v` as first-run-from-main prerequisite (F1) plus a `VERSION` env-var note for operators (Mac-specific gotcha). (c) §A3 steps 5 and 6 add JSON-string quoting examples for UUID deployment params (`-p 'station_id="..."'` not `-p station_id=...`) per finding F2 — raw UUIDs fail Prefect CLI's JSON-value parsing. (d) §A3 step 8 direct-invoke template adds `DATABASE_URL` construction boilerplate (`PW=$(cat /run/secrets/db_password); export DATABASE_URL=...`) — `docker compose exec` does not inherit the entrypoint-built env. (e) §A3 step 4 gets a pointer to **Plan 066** (train-models retrain strategy — under research; should be configurable, not a single hard-coded data-window policy) per finding F3. (f) §A3 step 8 gets a pointer to **Plan 067** (MeteoSwiss STAC adapter investigation — the "cycle late" signal is almost certainly our query implementation, not MeteoSwiss's publication — plus `_MAX_FALLBACK_STEPS` configurability and pagination-cap removal) per findings F4 + F5. (g) §A4 gets a pointer to **Plan 068** (`onboard-stations` parallelization + decoupling historical-hindcast phase) — 38 min at 5 stations projects to ~26 h at 169, blocking v0 scale-up. (h) Mac-mini watch note: F6 compute-skills transient OOM under parallel load — monitor during A4. (2026-04-21)
+
 **Revision**: 10 — Plan 065 DONE (2026-04-21, commit `4cf6d32`, tag `v0.1.376`, archived `b0ce875`) introduces the config-overlay mechanism and supersedes the `staging-5-stations` branch workflow: (a) §A1 "Transient config change" paragraph is marked SUPERSEDED (strikethrough retained for historical context) — A3 runs from `main` with `-f docker-compose.staging.yml` selecting `config/overlays/staging-5-stations.toml`. (b) §A1 "Cross-reference (Plan 065)" placeholder commit hash filled in. (c) §A2 adds a preliminary `docker compose build` step because the cached `sapphire-flow:latest` image predates Plan 065 and does not contain the overlay loader; the up command adds `-f docker-compose.staging.yml` as the third overlay. (d) §A3 step-8 direct-invoke `docker compose exec` command similarly adds `-f docker-compose.staging.yml` for consistency. (e) §A4 scale-up no longer restores a "full 169-station [onboarding] list" — instead, drop `-f docker-compose.staging.yml` from the compose command and re-up to revert to 169. (f) Files-to-modify table row for `config.toml` (A1 transient, branch-only) marked SUPERSEDED. (g) Open question #4 about `staging-5-stations` branch management collapsed — branch deprecated, operator may `git branch -D staging-5-stations` after A3 completes. No code changes in Rev 10 — pure doc revision. (2026-04-21)
 
 **Revision**: 9 — Plan 060 DONE (2026-04-19) resolves A3 step-4 through step-8 compat gaps: (a) blanket `cache_policy=NO_CACHE` on all 25 lifecycle-flow @tasks (fixes the Prefect 3 HashError on store-typed inputs that silently zeroed `train-models`); (b) `CHOWN` + `FOWNER` cap_add landed (via commit `289c5f8`) and documented in `security.md § Capabilities` (fixes `/data/artifacts` + `/data/backups` permission-denied); (c) `/data/raw` migrated from `sapphire_data` named volume to a `CAMELS_CH_HOST_DIR`-driven bind-mount in `docker-compose.dev.yml` (fixes the empty-volume bootstrap); (d) §A3 step-4 gains a trigger-command example with `model_ids` list form; (e) §A3 step-8 redirected to a direct-invoke of `run_forecast_cycle_flow.fn(...)` with an explicitly-constructed `MeteoSwissNwpAdapter` (deferred the adapter-registry design to a future plan per Plan 060 D4); (f) §A1 commit-ordering step added for a second rebase of `staging-5-stations` onto main to pick up Plan 060's 25 @task edits + cap_add + dev-overlay changes before resuming A3 step 5; (g) Stream C4 runbook requires a "Flows that require direct-invoke rather than Prefect UI trigger" section; (h) Stream C2 mac-mini overlay must now spec a `/data/raw` mount (bind-mount or named volume) since Plan 060 removed the base-compose `sapphire_data:/data/raw:rw` entry.
@@ -83,7 +85,7 @@ Goal: every gap between "CI green" and "runs with real Swiss data on macOS" surf
 ### A1 — Secrets + config for 5-station run
 
 - Create `./secrets/db_password` (`openssl rand -hex 32`, `chmod 600`).
-- **5-station set: four rivers + one lake.** Live LINDAS + CAMELS-CH probing during A1 showed that **2004 is Lake Murten, not a river** (CAMELS-CH `water_body_type == "lake"`; LINDAS returns 2 bindings under the `LAKE` query path and 0 under `RIVER`). The four rivers are therefore `{2091, 2009, 2033, 2085}` and the lake is `2004`. All five are LINDAS-verified and already carry CAMELS-CH attributes (2033 and 2085 become part of the permanent 169-station list; 2004/2009/2091 were already in the 167-station list). Hydrologist sign-off originally required for the lake pick is no longer applicable because no substitution was needed. Rationale: validates multi-parameter pipeline (discharge + water_level) as specified in v0-scope.md §Research-friendly and §A13.
+- **5-station set: four rivers + one lake.** Live LINDAS + CAMELS-CH probing during A1 showed that **2004 is Lake Murten, not a river** (CAMELS-CH `water_body_type == "lake"`; LINDAS returns 2 bindings under the `LAKE` query path and 0 under `RIVER`). The four rivers are therefore `{2091, 2009, 2033, 2085}` and the lake is `2004`. All five are LINDAS-verified and already carry CAMELS-CH attributes (2033 and 2085 become part of the permanent 169-station list; 2004/2009/2091 were already in the 167-station list). Hydrologist sign-off originally required for the lake pick is no longer applicable because no substitution was needed. Rationale: exercises four rivers + one lake for station-onboarding coverage. **Multi-parameter forecast coverage (discharge + water_level) is NOT validated by this subset in v0** — all three v0 models target discharge, and Murten (lake) has only `water_level` observations, so M.2 compatibility correctly skips artifact creation and Murten remains in `onboarding` state (ingestion-only path blocked by operational-gating). Water-level-target forecast coverage is deferred to v0b per dress-rehearsal finding F7 (2026-04-21).
 - **Permanent config change** — add basin_ids `2033` (Reuss at Andermatt) and `2085` (Ticino at Bellinzona) to `config.toml` `[onboarding].basin_ids`. The full list grows from 167 to 169.
   - Verify all five gauges are reachable on LINDAS before committing: call the new public method `HydroScraperAdapter.verify_gauge_reachable(site_code: str, station_kind: StationKind) -> bool` (see Files to modify). The method issues a live HTTP SPARQL probe against LINDAS (built via `_build_sparql_query`) and returns `True` on HTTP 2xx with at least one binding, `False` on 4xx/5xx or empty response, and raises `AdapterError` on network failure. Document the invocation in the runbook.
   - Verify all five have CAMELS-CH attributes via the `camelsch` package.
@@ -96,7 +98,9 @@ Goal: every gap between "CI green" and "runs with real Swiss data on macOS" surf
 ### A2 — First compose up (all services healthy)
 
 - **First run after Rev 10**: rebuild the `sapphire-flow` image. The cached `sapphire-flow:latest` predates Plan 065 and does not contain the overlay loader code. Run `docker compose build` once before the first up. For iterative runs (restarting after a container exits), skip this step unless source changed. Alternatively pass `--build` inline to the up command below — at the cost of rebuilding every time.
-- `docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.staging.yml up -d`. The `docker-compose.staging.yml` overlay (Plan 065) selects the 5-station A1 subset via `SAPPHIRE_CONFIG_OVERLAY`; the base `config.toml` on main stays at 169 stations and is re-used in A4.
+- **First run from main (Rev 11 note, per F1):** `docker compose down -v` is mandatory if the DB contains state from prior A3 attempts (including from the now-deprecated `staging-5-stations` branch). Pre-existing stations route `onboard-model` into the full training + hindcast + skill-gate path instead of Rev 8's documented "empty-scope register-only" path, which can fail on partial data. A completely clean slate is the canonical starting point — if you want to preserve observations, `pg_dump` first.
+- **`VERSION` env-var gotcha (Rev 11 note):** the compose file references `sapphire-flow:${VERSION}` with no default, so every `docker compose ...` invocation must set `VERSION=<tag>` or fail with "required variable VERSION is missing a value". The least-friction fix is a repo-root `.env` with `VERSION=<current-tag>` or `${VERSION:-latest}` default in `docker-compose.yml`. Until that hygiene patch lands, every invocation in this runbook must be prefixed `VERSION=<tag>`.
+- `VERSION=<tag> docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.staging.yml up -d`. The `docker-compose.staging.yml` overlay (Plan 065) selects the 5-station A1 subset via `SAPPHIRE_CONFIG_OVERLAY`; the base `config.toml` on main stays at 169 stations and is re-used in A4.
 - Wait for healthchecks: postgres, prefect-server, prefect-worker, api, caddy (max **5 min** on first boot, 3 min on warm restart). Verify `init` container exited 0: `docker compose logs init | tail`.
 - Verify **9 deployments** registered (all by name): `forecast-cycle`, `ingest-observations`, `backup-database`, `train-models`, `run-hindcast`, `compute-skills`, `compute-combined-skills`, `onboard-stations`, `onboard-model`. Check via Prefect UI at `http://localhost:4200`.
 - Record image pull time, first-boot time, resource usage at idle.
@@ -133,30 +137,53 @@ Trigger flows in sequence through the Prefect UI. Each must complete without man
 1. `onboard-model` — register `LinearRegressionDaily`, `ClimatologyFallbackModel`, `PersistenceFallbackModel` via Flow 13 (auto-promote path). Required before `onboard-stations` can assign models (see v0-scope.md §A4 step 6).
 2. `onboard-stations` — 5 stations (four rivers + one lake) from `config.toml`
 3. `ingest-observations` (manually triggered, 1 cycle). Assertion: at least 1 observation per station with `timestamp > T0` (where `T0` is the wall-clock start of this step) appears in the DB — verifies the real-time LINDAS poll path rather than silently no-oping. Observation fetch must be sequential (rate-limited) per BAFU LINDAS conventions; a minimum-rows-per-station floor must be respected — if any station returns zero rows for a non-first-run ingest, raise (do not silently continue).
-4. `train-models` — linear regression, 5 stations. Trigger params: `{"model_ids": ["linear_regression_daily"]}` (note: `model_ids` is a plural **list** per the flow signature at `src/sapphire_flow/flows/train_models.py`). Plan 060 landed `cache_policy=NO_CACHE` across all lifecycle @tasks — prior to Plan 060 this step silently trained zero models because Prefect 3 crashed on store-typed hash inputs.
-5. `run-hindcast` — **per-station loop**. `run_hindcast_flow` raises `ValueError("Either station_id or group_id must be provided")` when both are None, so the trigger is issued once per onboarded station. Pull `(station_id, artifact_id)` tuples from `model_artifacts WHERE model_id = 'linear_regression_daily' AND status = 'active'` (lowercase enum value). Pass UUIDs as `str` — Prefect deployment params JSON-serialise and raw `uuid.UUID(...)` objects raise `TypeError`.
-6. `compute-skills` — pulls `(station_id, model_id, artifact_id, parameter)` from the DB; trigger with those four values.
+4. `train-models` — linear regression, 5 stations. Trigger params: `{"model_ids": ["linear_regression_daily"]}` (note: `model_ids` is a plural **list** per the flow signature at `src/sapphire_flow/flows/train_models.py`). Plan 060 landed `cache_policy=NO_CACHE` across all lifecycle @tasks — prior to Plan 060 this step silently trained zero models because Prefect 3 crashed on store-typed hash inputs. **Rev 11 finding F3:** the retrain flow currently assembles training data only from observations ingested *after* initial onboarding; at A3 time that is typically 1 row per parameter per station, which fails the lookback≥8 check. Initial training already produced active artifacts inside `onboard-stations` (step 2), so step 4 can be **skipped in A3 pending Plan 066** (train-models retrain strategy — configurable, still under research). Do **not** block A3 on step 4 until Plan 066 lands; record in A5 as "skipped per F3".
+5. `run-hindcast` — **per-station loop**. `run_hindcast_flow` raises `ValueError("Either station_id or group_id must be provided")` when both are None, so the trigger is issued once per onboarded station. Pull `(station_id, artifact_id)` tuples from `model_artifacts WHERE model_id = 'linear_regression_daily' AND status = 'active'` (lowercase enum value). **Rev 11 finding F2:** pass UUIDs in JSON-string form, not as bare tokens — Prefect CLI tries to JSON-parse the value of `-p key=value` and a raw UUID is not a valid JSON token, producing parameter-validation errors (empty string / trailing-space). Use `-p 'station_id="..."'` with double quotes **inside** the single quotes. Canonical example:
+
+    ```bash
+    VERSION=<tag> docker compose exec -T prefect-worker prefect deployment run run-hindcast/run-hindcast \
+      -p 'station_id="a7ac3be7-ed74-4106-a3aa-5c676c1dc769"' \
+      -p 'artifact_id="b95f0fd8-1046-4ade-b797-d989439d56a6"' \
+      -p 'model_id="linear_regression_daily"'
+    ```
+
+    The `model_id` param is required by the deployment schema (was not called out in Rev 9).
+6. `compute-skills` — pulls `(station_id, model_id, artifact_id, parameter)` from the DB; trigger with those four values. Same JSON-string quoting as step 5 applies. Canonical example:
+
+    ```bash
+    VERSION=<tag> docker compose exec -T prefect-worker prefect deployment run compute-skills/compute-skills \
+      -p 'station_id="..."' -p 'artifact_id="..."' \
+      -p 'model_id="linear_regression_daily"' -p 'parameter="discharge"'
+    ```
 7. `compute-combined-skills` — trigger once after `compute-skills` to validate registration and execution. In v0a with no pooled combinations this is a no-op but must run cleanly (Prefect run reaches `COMPLETED`).
 8. `forecast-cycle` — one full cycle (gridded NWP path via `MeteoSwissNwpAdapter`). **Per Plan 060 D4**, `forecast-cycle` is triggered via **direct Python invocation** (not the Prefect UI deployment trigger) because `MeteoSwissNwpAdapter` is not JSON-serialisable and cannot be passed as a deployment parameter. The adapter-registry design is deferred to a future plan. Canonical template:
 
     ```bash
-    docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.staging.yml exec -T prefect-worker \
-      python -c "
+    VERSION=<tag> docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.staging.yml exec -T prefect-worker sh -c '
+      PW=$(cat /run/secrets/db_password)
+      export DATABASE_URL="postgresql+psycopg://sapphire:${PW}@postgres:5432/sapphire"
+      cd /app && python -c "
     from pathlib import Path
     import httpx
     from sapphire_flow.adapters.meteoswiss_nwp import MeteoSwissNwpAdapter
     from sapphire_flow.flows.run_forecast_cycle import run_forecast_cycle_flow
 
     adapter = MeteoSwissNwpAdapter(
-        stac_base_url='https://data.geo.admin.ch/api/stac/v1',
-        stac_collection='ch.meteoschweiz.ogd-forecasting-icon-ch2',
-        scratch_path=Path('/tmp/sapphire_nwp'),
+        stac_base_url=\"https://data.geo.admin.ch/api/stac/v1\",
+        stac_collection=\"ch.meteoschweiz.ogd-forecasting-icon-ch2\",
+        scratch_path=Path(\"/tmp/sapphire_nwp\"),
         http_client=httpx.Client(timeout=60),
     )
-    result = run_forecast_cycle_flow.fn(adapter=adapter)
-    print('forecast-cycle result:', result)
-    "
+    result = run_forecast_cycle_flow(adapter=adapter)
+    print(\"forecast-cycle result:\", result)
+    "'
     ```
+
+    **Rev 11 notes on step 8 (findings F4 + F5):**
+    - **`DATABASE_URL` construction boilerplate is required** — `docker compose exec` does not inherit the entrypoint-built env, so `DATABASE_URL` must be constructed inline from `/run/secrets/db_password` + the `DATABASE_URL_TEMPLATE`. Earlier Rev-9 template omitted this and failed with `KeyError: 'DATABASE_URL'`.
+    - **Call as `run_forecast_cycle_flow(adapter=adapter)`** (real Prefect flow invocation), NOT `.fn(adapter=adapter)`. The flow internally calls `_fetch_nwp_task.submit(...)` which requires a task-runner context — `.fn` bypasses Prefect runtime and the `.submit` call raises `RuntimeError: Unable to determine task runner`. Rev 9's reference to `.fn(...)` is superseded.
+    - **MeteoSwiss cycle "late" signal needs adapter investigation (Plan 067).** During the 2026-04-21 rehearsal the adapter aborted with "No cycle available within 3 fallback steps". MeteoSwiss is reliable; the signal is almost certainly a query-implementation issue in `MeteoSwissNwpAdapter` (wrong datetime-filter semantics, wrong sort order, or pagination bug). Plan 067 investigates before assuming anything about MeteoSwiss publication lag.
+    - **Adapter has a hardcoded `_MAX_FALLBACK_STEPS=3` and a 100-page STAC pagination cap** — both need to become configurable (or the cap removed via server-side filtering). Plan 067 covers the configurability work once the root cause is understood.
 
     The flow body uses Plan 059's production-bootstrap to resolve every store from `DATABASE_URL`; only `adapter` needs explicit injection. `run_forecast_cycle_flow` is sync — do **not** wrap in `asyncio.run(...)`.
 9. API spot checks: `GET /api/v1/stations`, `GET /api/v1/stations/{station_id}/forecasts?limit=1`, `GET /api/v1/alerts`
@@ -164,6 +191,8 @@ Trigger flows in sequence through the Prefect UI. Each must complete without man
 **Exit**: all 9 steps green, forecast appears in DB, API returns it. structlog contains `forecast.run_completed` events with `duration_ms` and `station_id` for each station — confirms per-step instrumentation from v0-scope.md §D6 is active.
 
 ### A4 — 169-station scale-up
+
+**⚠ Rev 11 blocker (Plan 068):** the 2026-04-21 A3 rehearsal took **38 minutes** for `onboard-stations` at 5 stations — sequential per-station per-model historical-hindcast phase. Linear extrapolation to 169 stations is ~26 hours, which is operationally prohibitive for a Mac-mini staging cutover and a Nepal production cutover both. **Do not attempt A4 until Plan 068 lands** (decouple initial historical-hindcast from `onboard-stations` into an asynchronous `backfill-hindcasts` flow, and/or parallelise the per-station loop via Prefect `task.map`). Instrument `docker stats --no-stream` polling during the A4 run to capture peak RSS (finding F6 — compute-skills transient OOM under parallel load on a 16 GiB Docker Desktop allocation).
 
 **Pre-`down -v` checkpoint**: before wiping the 5-station run, run:
 ```bash
