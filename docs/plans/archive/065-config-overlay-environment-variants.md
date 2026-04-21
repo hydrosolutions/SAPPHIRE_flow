@@ -1,7 +1,7 @@
 # Plan 065 — Config overlays for environment variants (retire staging branches)
 
-**Status**: READY
-**Date**: 2026-04-20 (flipped to READY 2026-04-20 after two review rounds)
+**Status**: DONE (2026-04-21, implemented in commit 4cf6d32, tag v0.1.376)
+**Date**: 2026-04-20 (flipped to READY 2026-04-20 after two review rounds; archived 2026-04-21)
 **Depends on**: none at the code level. Observes Plan 046 A3 progress — this
 plan aims to retire the `staging-5-stations` branch workflow that Plan 046
 currently relies on, so ideally lands during a lull between A3 dress
