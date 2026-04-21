@@ -29,7 +29,6 @@ from sapphire_flow.store.forecast_store import PgForecastStore
 from sapphire_flow.store.hindcast_store import PgHindcastStore
 from sapphire_flow.store.historical_forcing_store import PgHistoricalForcingStore
 from sapphire_flow.store.model_artifact_store import PgModelArtifactStore
-from sapphire_flow.store.model_state_store import PgModelStateStore
 from sapphire_flow.store.model_store import PgModelStore
 from sapphire_flow.store.observation_store import PgObservationStore
 from sapphire_flow.store.skill_store import PgSkillStore
@@ -38,7 +37,6 @@ from sapphire_flow.store.station_store import PgStationStore
 from sapphire_flow.tools.record_fixtures import parse_stations_toml
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
-    ModelArtifactStatus,
     NwpCycleSource,
     QcStatus,
     StationStatus,
@@ -75,9 +73,10 @@ def _clock() -> object:
 @pytest.fixture(scope="function")
 def e2e_engine(tmp_path: Path):
     """Dedicated PostGIS container for e2e test — commits persist across steps."""
-    from alembic import command
     from alembic.config import Config
     from testcontainers.postgres import PostgresContainer
+
+    from alembic import command
 
     with PostgresContainer(
         image="postgis/postgis:16-3.4",
@@ -139,6 +138,9 @@ def _load_raw_observations(station_configs):
 
 @pytest.mark.timeout(600)
 class TestE2ePipeline:
+    # Slow in GitHub-hosted CI (>10 min); runs on nightly schedule.
+    # See run 24733223436 for 2026-04-21 timeout.
+    @pytest.mark.slow
     def test_full_pipeline(self, e2e_engine, tmp_path: Path) -> None:  # type: ignore[override]
         engine, artifact_dir = e2e_engine
 
@@ -760,7 +762,7 @@ class TestE2ePipeline:
                     },
                 )
                 assert resp.status_code == 200, f"List forecasts failed: {resp.text}"
-                forecast_data = resp.json()
+                resp.json()
                 # At least one of the stations should have a forecast
                 # (test the station that actually had observations + a trained model)
 

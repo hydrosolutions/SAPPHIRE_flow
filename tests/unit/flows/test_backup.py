@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import stat
 import subprocess
-import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -15,7 +14,6 @@ from sapphire_flow.flows.backup import (
     cleanup_old_backups_task,
     dump_database_task,
 )
-
 
 # ---------------------------------------------------------------------------
 # _to_libpq_url — pure function

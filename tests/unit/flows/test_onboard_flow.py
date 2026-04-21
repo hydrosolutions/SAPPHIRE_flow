@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 from uuid import uuid4
-
-import pytest
 
 from sapphire_flow.flows.onboard import onboard_stations_flow
 from sapphire_flow.types.basin import Basin
@@ -23,6 +22,9 @@ from tests.fakes.fake_stores import (
     FakeObservationStore,
     FakeStationStore,
 )
+
+if TYPE_CHECKING:
+    import pytest
 
 _EPOCH = ensure_utc(datetime(2000, 1, 1, tzinfo=UTC))
 _START = ensure_utc(datetime(1980, 1, 1, tzinfo=UTC))

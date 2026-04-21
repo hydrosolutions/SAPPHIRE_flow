@@ -238,7 +238,9 @@ class TestHydroScraperAdapter:
         for o in obs:
             assert o.station_id == _STATION_1_ID
             assert o.source == ObservationSource.MEASURED
-            assert o.timestamp == ensure_utc(datetime(2024, 6, 15, 10, 0, 0, tzinfo=UTC))
+            assert o.timestamp == ensure_utc(
+                datetime(2024, 6, 15, 10, 0, 0, tzinfo=UTC)
+            )
 
     def test_fetch_returns_expected_lake_records_from_fixture_response(self) -> None:
         fixture_path = _FIXTURES_DIR / "lindas_lake_sample_response.json"
@@ -263,7 +265,9 @@ class TestHydroScraperAdapter:
         assert obs[0].value == pytest.approx(394.8)
         assert obs[0].station_id == _STATION_1_ID
         assert obs[0].source == ObservationSource.MEASURED
-        assert obs[0].timestamp == ensure_utc(datetime(2024, 6, 15, 10, 0, 0, tzinfo=UTC))
+        assert obs[0].timestamp == ensure_utc(
+            datetime(2024, 6, 15, 10, 0, 0, tzinfo=UTC)
+        )
 
     def test_fetch_logs_warning_and_returns_partial_on_http_error(self) -> None:
         import structlog.testing
@@ -439,4 +443,3 @@ class TestHydroScraperAdapter:
         assert any(
             e.get("event") == "observation.skip_weather_station" for e in captured
         )
-

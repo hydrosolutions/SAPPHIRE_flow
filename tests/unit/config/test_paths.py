@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
-
-import pytest
+from typing import TYPE_CHECKING
 
 from sapphire_flow.config.paths import resolve_artifact_dir, resolve_data_dir
+
+if TYPE_CHECKING:
+    import pytest
 
 
 class TestTierPrecedence:

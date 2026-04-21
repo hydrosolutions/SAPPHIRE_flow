@@ -158,7 +158,7 @@ def main() -> None:
         rows = build_station_rows(rng, code, timestamps, base_flow, is_alpine, a, b)
         all_rows.extend(rows)
         n_params = 2 if code not in DISCHARGE_ONLY else 1
-        print(
+        print(  # noqa: T201
             f"  {code}: {len(timestamps)} rows × {n_params} param(s) = {len(rows)} rows"
         )
 
@@ -171,15 +171,15 @@ def main() -> None:
     )
 
     df.write_parquet(OUTPUT_PATH)
-    print(f"\nWrote {len(df):,} rows to {OUTPUT_PATH}")
+    print(f"\nWrote {len(df):,} rows to {OUTPUT_PATH}")  # noqa: T201
 
     summary = (
         df.group_by(["station_code", "parameter"])
         .agg(pl.len().alias("n_rows"))
         .sort(["station_code", "parameter"])
     )
-    print("\nSummary:")
-    print(summary)
+    print("\nSummary:")  # noqa: T201
+    print(summary)  # noqa: T201
 
 
 if __name__ == "__main__":

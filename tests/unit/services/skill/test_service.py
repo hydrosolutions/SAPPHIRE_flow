@@ -249,7 +249,8 @@ class TestComputeSkillBasic:
             if s.season is None and s.flow_regime is None and s.lead_time_hours == 1
         ]
         by_metric = {s.metric: s.score for s in all_season_all_regime}
-        # Members are at obs + m*0.1 (small spread) → near-perfect but not exact zero error
+        # Members are at obs + m*0.1 (small spread)
+        # → near-perfect but not exact zero error
         assert by_metric["crps"] < 0.15  # small, near-zero
         assert by_metric["nse"] > 0.97  # high but not exactly 1.0 due to tiny spread
         assert by_metric["kge"] > 0.97  # high but not exactly 1.0 due to tiny spread

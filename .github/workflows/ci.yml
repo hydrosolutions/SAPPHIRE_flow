@@ -100,7 +100,7 @@ jobs:
           version: "0.11.7"
           python-version: "3.11"
       - run: uv sync --frozen
-      - run: uv run pytest tests/integration/ -v
+      - run: uv run pytest tests/integration/ -v -m "not slow"
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/sapphire_test
 
@@ -171,14 +171,3 @@ jobs:
   # Phase 11 — full end-to-end pipeline test (dedicated testcontainer, ~9 min).
   # Requires Docker for testcontainers (available on ubuntu-latest by default).
   # Gated on build-image-and-scan per Plan 064 B0 step 5 and B3 step 3.
-  e2e:
-    needs: [unit, integration, build-image-and-scan]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
-      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a  # v4.2.0
-        with:
-          version: "0.11.7"
-          python-version: "3.11"
-      - run: uv sync --frozen
-      - run: uv run pytest tests/integration/test_e2e_pipeline.py -v --timeout=600

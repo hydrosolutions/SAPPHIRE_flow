@@ -161,7 +161,8 @@ class TestLinearRegressionDaily:
 
     def test_forecast_plausibility_on_rising_ramp(self) -> None:
         # Train on a slowly rising ramp: 10, 11, 12, ..., 10+n-1
-        # Predict 5 days; assert mean within plausible range, all non-negative, spread > 0
+        # Predict 5 days; assert mean within plausible range,
+        # all non-negative, spread > 0
         rng = random.Random(99)
         model = LinearRegressionDaily()
 
