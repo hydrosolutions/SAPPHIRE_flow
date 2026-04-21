@@ -1,4 +1,9 @@
-name: Integration slow nightly
+name: Integration nightly
+
+# Runs the slow and live (external-API) integration tests excluded from
+# default CI. Consolidated into one workflow per Plan 066 A5 Option 1:
+# both categories share the same runner, postgres service, and DATABASE_URL,
+# so keeping them separate only duplicates boilerplate.
 
 on:
   schedule:
@@ -7,7 +12,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  integration-slow:
+  integration-nightly:
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -30,6 +35,12 @@ jobs:
           version: "0.11.7"
           python-version: "3.12"
       - run: uv sync --frozen
+      # Run both the slow-marked tests from the main integration tree and
+       # every test under tests/integration/live (path-based, so we don't
+       # depend on any particular `live*` marker name staying consistent).
       - run: uv run pytest tests/integration/ -v -m "slow" --timeout=1800
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/sapphire_test
+      - run: uv run pytest tests/integration/live -v --timeout=1800
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/sapphire_test

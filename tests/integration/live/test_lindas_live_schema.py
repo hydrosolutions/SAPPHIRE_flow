@@ -1,7 +1,10 @@
+# All tests in this module call external APIs (MeteoSwiss STAC / BAFU LINDAS).
+# Excluded from default CI; runs via integration-nightly workflow.
 """Weekly live-LINDAS schema-drift check.
 
-Gated behind the ``live_lindas`` marker — skipped in normal CI.
-Run by .github/workflows/live-lindas-weekly.yml on a weekly schedule.
+Gated behind the ``live`` / ``live_lindas`` markers — skipped in normal CI.
+Run by .github/workflows/live-lindas-weekly.yml on a weekly schedule and by
+the integration-nightly workflow via the unified ``live`` marker.
 
 Failure = schema drift or endpoint outage = potential silent corruption of
 observations accumulated since the last green run.  Halt the accumulation
@@ -27,6 +30,8 @@ from sapphire_flow.types.enums import (
 )
 from sapphire_flow.types.ids import StationId
 from sapphire_flow.types.station import StationConfig
+
+pytestmark = pytest.mark.live
 
 _ENDPOINT = "https://lindas.admin.ch/query"
 _LIVE_TIMEOUT_S = 30
