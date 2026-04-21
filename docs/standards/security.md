@@ -369,6 +369,86 @@ Compensating controls already in place: `cap_drop: [ALL]`, no host port binding 
 
 Do **not** add a `user:` override in `docker-compose.yml` — this is forbidden by the rule above. Re-evaluate after Plan 062 establishes the full write-path footprint (currently unknown because `PREFECT_HOME` is not set), or if a `-nonroot` upstream tag or community non-root image appears.
 
+## Supply chain
+
+This section is the **canonical policy source** for supply-chain controls across third-party inputs that ship into the built image or run in CI. `docs/standards/cicd.md` summarises the operational workflow and points back here rather than duplicating the policy surface.
+
+The goal is *attributable* risk — when a CVE lands or a build breaks, `git log` should answer "what changed and when?" for every high-leverage external input. The controls below pin what we can pin by immutable identifier, scan what we cannot, and document the residual risk where live feeds remain unavoidable.
+
+### Python dependency policy
+
+- `uv.lock` is committed. Resolver output is reproducible; `uv sync --frozen` is used in every CI workflow step that installs dependencies.
+- `pyproject.toml` declares `[tool.uv] required-version = "==0.11.7"` so local `uv` binaries that drift from the repo-standard version fail fast rather than silently re-resolving.
+- `pyproject.toml` also declares an explicit `[[tool.uv.index]]` block naming PyPI as the default index. This is informational / future-proofing — not a restrictive control — ahead of any private-index introduction.
+- Dependabot raises reviewed upgrade PRs across four ecosystems: `uv` (Python deps), `docker` (Dockerfile base images and `COPY --from=` stages), `docker-compose` (compose services), and `github-actions` (workflow `uses:` entries). Configuration lives at `.github/dependabot.yml`.
+
+### Wheel-only dependency-update guard
+
+A dedicated CI job runs `uv sync --frozen --no-build --no-cache --no-install-project`. This makes GitHub-hosted CI the first execution environment for dependency-update installs and fails if a new package version requires Python build-backend / sdist execution on the CI platform.
+
+`--no-install-project` is required because the SAPPHIRE Flow root package is editable-only and has no published wheel — the project itself is never installed from an index. This does **not** weaken the guard: the third-party dependencies (the real concern for install-time code execution) are still exercised end-to-end.
+
+**Documented source-build exception**: `exactextract` may require a source build on `linux/arm64` in the Dockerfile builder stage. GitHub-hosted amd64 CI stays wheel-only. Any new source-build exception must be recorded in the implementation PR and in this section before merge.
+
+### Image pinning
+
+Every externally-pulled image is pinned by **manifest-list digest** (not per-platform digest — the manifest-list resolves per-arch on pull, so the same pin works for both amd64 CI and arm64 Mac mini):
+
+- `Dockerfile` (builder + runtime stages): `python:3.11.12-slim@sha256:...` and `ghcr.io/astral-sh/uv:0.11.7@sha256:...`
+- `docker-compose.yml`: `postgis/postgis:16-3.4@sha256:...`, `prefecthq/prefect:3-python3.11@sha256:...`, `caddy:2.9@sha256:...`
+- `.github/workflows/ci.yml` integration-job `services.image`: `postgis/postgis:16-3.4@sha256:...` (must match the compose postgis digest to avoid silent integration/prod drift)
+
+The locally-built `sapphire-flow:${VERSION}` image used by the `worker`, `api`, and `init` services is **not** digest-pinned — it is built in this repo, not pulled.
+
+Dependabot's Docker-related ecosystems raise digest-update PRs under review.
+
+### CI action pinning
+
+Every `uses:` entry in `.github/workflows/*.yml` is pinned by commit SHA with the version tag preserved as a trailing comment:
+
+```yaml
+uses: actions/checkout@<sha>  # v4.2.2
+```
+
+This closes the `tj-actions/changed-files` (Mar 2025) class of attack: action tags are mutable, SHAs are not. Dependabot's `github-actions` ecosystem keeps these current.
+
+### uv toolchain pin
+
+The repo-standard `uv` version is `0.11.7`. It is declared in **three places that must stay synchronised**:
+
+1. `[tool.uv] required-version = "==0.11.7"` in `pyproject.toml` (local guardrail).
+2. `COPY --from=ghcr.io/astral-sh/uv:0.11.7@sha256:... /uv /usr/local/bin/uv` in `Dockerfile` (both build stages).
+3. `with: version: "0.11.7"` in every `astral-sh/setup-uv` step across `ci.yml` and `live-lindas-weekly.yml`.
+
+Any `uv` bump must flow through all three; Dependabot's `docker` ecosystem raises the digest-update PR and the project-level `required-version` is updated in the same PR.
+
+### CVE scanning layers
+
+Two Trivy scans run in CI. Both fail the build on `HIGH,CRITICAL` with `--ignore-unfixed`:
+
+- **`trivy fs`** in the lint tier — scans `uv.lock` and `pyproject.toml` without building the image. Fast feedback on dep-only PRs.
+- **`trivy image`** post-build — scans the `sapphire-flow:ci-${{ github.sha }}` image produced by the CI build job. Catches OS-level CVEs (Debian + PGDG package layers) that `fs` mode cannot see.
+
+Known-accepted CVEs live in `.trivyignore`. Every entry must carry a dated comment explaining why it is ignored and when to re-review — no undated entries.
+
+### SBOM generation
+
+`syft` runs after the CI image build and emits a CycloneDX JSON SBOM (`sbom.cdx.json`) uploaded as a workflow artifact on every run. SBOM gives the repo immediate recoverability value: when a future CVE lands, the artifact answers "which historical image contains the affected library?".
+
+Release attachment and registry attestation are future controls — deliberately deferred until an image-publish workflow exists. The SBOM artifact on every CI run is the v0 baseline.
+
+**SBOM and `model_artifacts.sha256_hash` are complementary, not substitutes.** The per-image CycloneDX SBOM answers "which image ships library X?" when a CVE lands; the per-artifact `sha256_hash` (see §Model code trust boundary) protects the runtime integrity of a specific model artifact at load time. Different mechanisms, different purposes — neither replaces the other.
+
+### Vendored PGDG signing key
+
+The PostgreSQL Global Development Group signing key is vendored in the repo at `docker/keys/apt.postgresql.org.asc` (fingerprint `B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8`). The runtime stage of `Dockerfile` `COPY`s this file instead of fetching the key over the network at build time. Rotations are a deliberate reviewed change, not a trust-on-first-use fetch.
+
+### Accepted residual risk — live OS-package feeds
+
+`apt-get install` in the runtime stage still pulls from the live Debian and PGDG apt indexes. No snapshot pinning or internal mirror is attempted in v0 — the maintenance cost would be disproportionate to the marginal benefit at current scale. This residual drift is explicit and monitored via the post-build `trivy image` scan, which catches OS-level CVEs in whatever package set the build happens to pull.
+
+If staging or Nepal deployment surfaces concrete drift-driven breakage, snapshot mirroring can be revisited as a follow-up plan.
+
 ## Model code trust boundary
 
 Forecast models — including FI-wrapped ML models via `ForecastInterfaceAdapter` — execute
@@ -444,7 +524,7 @@ Retention: permanent. Included in database backup.
 | A03 Injection | All DB queries use parameterized queries via SQLAlchemy/asyncpg. `StationCode` NewType at Protocol boundary. |
 | A04 Insecure Design | Protocol-based store interfaces prevent direct SQL. Layering rule enforces separation. |
 | A05 Security Misconfiguration | Caddy auto-HTTPS. Container non-root. Capability drop. Read-only filesystems. |
-| A06 Vulnerable Components | `uv` lockfile pins all dependencies. Dependabot/Renovate for update alerts. |
+| A06 Vulnerable Components | Python deps: `uv.lock` commits resolver output; Dependabot raises reviewed updates across `uv`, `docker`, `docker-compose`, and `github-actions` ecosystems. Images and CI actions digest/SHA-pinned; CI scans with `trivy fs` (lint) and `trivy image` (post-build) on HIGH/CRITICAL. See §Supply chain. |
 | A07 Auth Failures | MFA mandatory. Account lockout. Short-lived JWTs. Refresh token rotation. |
 | A08 Data Integrity Failures | Append-only audit log. Forecast adjustments are immutable records. Model artifacts verified by SHA-256 hash. |
 | A09 Logging Failures | All auth events logged. Structured JSON logging. Audit log is permanent. |

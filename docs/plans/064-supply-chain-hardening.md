@@ -143,7 +143,7 @@ one `git log`.
 | D10 | **Pin the `uv` toolchain itself wherever this repo runs it**: digest-pin the `ghcr.io/astral-sh/uv:<version>` image in the `Dockerfile`, declare the repo-standard uv version in `pyproject.toml` via `[tool.uv] required-version`, make CI install that same version explicitly in `setup-uv`, and use `uv sync --frozen` in workflows. | `uv` is the tool that enforces `uv.lock`. If the `uv` binary or its invocation semantics drift between Docker and CI, the lockfile guarantees weaken. A repo-level `required-version` gives local development a guardrail and documents the source of truth. Explicit CI `version:` inputs are still needed while this repo mixes `setup-uv@v4` and `@v5`, because their default version-discovery behaviour differs. |
 | D11 | **Do not attempt Debian/PGDG snapshot pinning in v0; vendor the PGDG signing key, but accept live OS-package feeds as residual risk.** | Both builder and runtime stages use live apt indexes, and the runtime stage ships Debian/PGDG packages into the final image. Vendoring the PGDG signing key removes one unnecessary live trust-on-first-use fetch cheaply. Full apt snapshotting or internal mirrors would materially increase maintenance for modest benefit at current scale. Residual OS-package drift remains explicit and is monitored via `trivy image`. |
 | D12 | **SBOM (per-image CycloneDX) and `model_artifacts.sha256_hash` (per-artifact runtime integrity) are complementary, not duplicative.** The new `## Supply chain` section in `security.md` must cross-reference both. | `sha256_hash` (existing, `security.md` §Model code trust) protects the runtime integrity of a specific model artifact at load time. SBOM answers "which historical image contains library X?" when a future CVE lands. Different mechanisms, different purposes. Documenting the relationship prevents readers from treating one as a substitute for the other. |
-| D13 | **Use GitHub-hosted CI as the first execution environment for dependency-update installs, via a wheel-only guard (`uv sync --frozen --no-build --no-cache`) on dependency updates.** Document and review any accepted source-build exceptions instead of pretending they do not exist. | `uv --no-build` prevents running arbitrary Python build code from sdists, but cached built wheels can mask that requirement, so `--no-cache` is needed for a reliable guard. Running this on GitHub-hosted runners means new package versions are exercised on an ephemeral machine before a developer is expected to sync an updated lockfile locally. This reduces, but does not eliminate, platform-specific install-time code risk. |
+| D13 | **Use GitHub-hosted CI as the first execution environment for dependency-update installs, via a wheel-only guard (`uv sync --frozen --no-build --no-cache`) on dependency updates.** Document and review any accepted source-build exceptions instead of pretending they do not exist. | `uv --no-build` prevents running arbitrary Python build code from sdists, but cached built wheels can mask that requirement, so `--no-cache` is needed for a reliable guard. Running this on GitHub-hosted runners means new package versions are exercised on an ephemeral machine before a developer is expected to sync an updated lockfile locally. This reduces, but does not eliminate, platform-specific install-time code risk. **Deviation recorded 2026-04-21 (A4 / D1a capstone)**: the shipped CI job adds `--no-install-project` because the root package is editable-only with no published wheel; the guard still exercises third-party deps (the real concern). |
 
 ---
 
@@ -206,6 +206,14 @@ one `git log`.
    execution environment for dependency-update installs and fails if a
    new package version requires Python build-backend / sdist execution on
    the CI platform.
+   **Deviation recorded 2026-04-21 (D1a capstone)**: CI actually runs
+   `uv sync --frozen --no-build --no-cache --no-install-project`. The
+   `--no-install-project` flag is required because the SAPPHIRE Flow root
+   package is editable-only and has no published wheel — the project itself
+   is never installed from an index, so there is nothing to build for it
+   at sync time. This does not weaken the guard: third-party dependencies
+   (the real concern for install-time code execution) are still exercised
+   end-to-end. See D13 rationale.
 2. Prefer to run the guard on PRs that modify `pyproject.toml` or
    `uv.lock`; running it on every PR is also acceptable if it stays fast.
    The key requirement is that dependency-update PRs hit this guard
@@ -673,3 +681,10 @@ Notes on the graph:
   eliminate the Decision-D1 / Task-D1 collision. Repo-standard uv
   version (0.7.3) declared once at the top of the Task list; B5 and C3
   placeholders replaced with explicit references.
+- **2026-04-21** — A4 deviation recorded during D1a capstone. The shipped
+  tier-2 CI job runs `uv sync --frozen --no-build --no-cache
+  --no-install-project` rather than the plan's original three-flag form.
+  The extra `--no-install-project` is required because the SAPPHIRE Flow
+  root package is editable-only and has no published wheel; the guard
+  still exercises third-party deps, which is the real concern. Recorded
+  inline in the A4 task spec and in the D13 rationale row.

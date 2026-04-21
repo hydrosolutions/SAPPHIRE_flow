@@ -224,10 +224,62 @@ Workers do not have Docker-level health checks — their liveness is monitored b
 
 ## Image tagging and versioning
 
-- Image tags match the Python package version (from `pyproject.toml`)
-- `docker-compose.yml` pins the image tag — never uses `:latest` in production
-- CI builds and tags images on every merge to `main`
-- Deployment updates the tag in `docker-compose.yml` and runs the upgrade procedure above
+> Supply-chain policy — digest pinning, CI action SHA pins, CVE scanning, SBOM generation, and dependency-update automation — is defined in [`docs/standards/security.md`](security.md) § Supply chain. This subsection describes the **operational workflow** around those rules. It does not duplicate the normative policy; consult `security.md` for the authoritative controls.
+
+Three distinct concepts live under "image tagging" in this repo. They are not interchangeable, and only the first is an operator-managed tag-bump workflow.
+
+### Locally built `sapphire-flow` app image — version tags
+
+- Tag format: `sapphire-flow:${VERSION}`, where `${VERSION}` matches the Python package version in `pyproject.toml` / `src/sapphire_flow/__init__.py`.
+- `${VERSION}` is bumped by `bump-my-version` on every commit per the `CLAUDE.md` version-bumping rule.
+- Operators set the `${VERSION}` env var (via `.env` or compose overrides) when deploying a new build, then run the upgrade procedure above.
+- This is the only image reference in the stack that moves on a normal deploy cadence.
+
+### Third-party image references — digest pins, not version tags
+
+Third-party images are pinned by **manifest-list digest** (`image:tag@sha256:...`) rather than by a floating tag. The full list and policy live in `security.md` § Supply chain → Image pinning; the operational shape is:
+
+- `Dockerfile` builder + runtime stages — `python:3.11.12-slim@sha256:...` and `ghcr.io/astral-sh/uv:0.11.7@sha256:...`.
+- `docker-compose.yml` — `postgis/postgis`, `prefecthq/prefect`, `caddy` all digest-pinned.
+- `.github/workflows/ci.yml` integration-services block — `postgis/postgis` digest-pinned, kept in sync with the compose digest.
+
+Digest pins are **reviewed immutable references**, not operational version tags. They move only through Dependabot PRs under review (Dependabot's `docker` and `docker-compose` ecosystems), never by operators at deploy time. The `bump-my-version` workflow that governs the local `sapphire-flow:${VERSION}` tag does **not** apply to these external images.
+
+### `:latest` — forbidden, superseded by digest pinning
+
+`:latest` (or any other floating tag) continues to be forbidden in any compose file or Dockerfile. The stronger rule since Plan 064 is **digest pinning** for all externally-pulled images, documented in [`security.md`](security.md) § Supply chain → Image pinning. Digest pinning supersedes the bare `:latest` prohibition: a digest reference is immutable by construction, whereas a non-`:latest` tag (e.g. `postgis:16-3.4`) is still a mutable pointer to whatever the upstream publisher currently serves.
+
+### CI validation builds vs a publish / release workflow
+
+CI builds the `sapphire-flow` image on every pull request under the `build-image-and-scan` job (see § CI workflow tiers below). The tag format there is `sapphire-flow:ci-${{ github.sha }}` — purely local to the CI runner, used to exercise the Dockerfile, run `trivy image`, and feed `syft` for SBOM generation. The image is discarded when the runner terminates; it is never pushed, tagged for release, or attached to a registry.
+
+**No image publish / release workflow is shipped today.** CI does not build and push on merges to `main`; the `${VERSION}` tag on the compose `sapphire-flow` image is set by the operator at deploy time (from `pyproject.toml`), not produced by CI. A future plan may add a registry-publish workflow — at which point this section will gain a "published release images" subsection. Until then, treat any claim that CI produces deployable image tags as out of date.
+
+(Plan 053's `## Future work` section deferred base-image digest pinning to a dedicated plan; [Plan 064](../plans/064-supply-chain-hardening.md) is the implementation record for the pins, CI build/scan tier, and SBOM artifact described here and in `security.md`.)
+
+## CI workflow tiers
+
+This subsection describes the operational topology of `.github/workflows/ci.yml`. Policy rationale (why each scan exists, what severity thresholds apply, what the `.trivyignore` discipline is) lives in [`security.md`](security.md) § Supply chain.
+
+| Tier | Job | Purpose | Depends on |
+|------|-----|---------|-----------|
+| 1 | `lint` | Ruff format + check; `trivy fs` scan of `uv.lock` + `pyproject.toml` | — |
+| 2 | `unit` | `uv run pytest` unit suite on a wheel-only environment | — |
+| 2 | `wheel-only-guard` | `uv sync --frozen --no-build --no-cache --no-install-project` — fails if any dependency update needs source-build execution on CI | — |
+| 3 | `integration` | Integration suite against a `postgis` service container (digest-pinned, synced with compose) | `unit` |
+| 4 | `build-image-and-scan` | `docker build` against the multi-stage `Dockerfile` → `trivy image` scan → `syft` CycloneDX SBOM artifact | `unit` |
+| 5 | `e2e` | End-to-end capstone suite | `unit`, `integration`, `build-image-and-scan` |
+
+### `build-image-and-scan`
+
+The image-build-and-scan tier added by Plan 064 sits between `integration` and `e2e`. Operational shape:
+
+- Runs `docker build` against the multi-stage `Dockerfile`, tagging the result `sapphire-flow:ci-${{ github.sha }}` local to the runner.
+- Runs `trivy image` against the locally built image (`HIGH,CRITICAL`, `--ignore-unfixed`) to catch OS-level CVEs the `trivy fs` scan in the `lint` tier cannot see.
+- Runs `syft` (via `anchore/sbom-action`) to produce a CycloneDX JSON SBOM, uploaded as the `sbom-cyclonedx` workflow artifact on every run.
+- `e2e` gates on this job succeeding (`needs: [unit, integration, build-image-and-scan]`) — a failing CVE scan or SBOM step blocks the capstone suite.
+
+All three steps share a runner context because images built in one GitHub Actions job are not visible to another job without an explicit image-tarball hand-off.
 
 ## Config overlays
 
