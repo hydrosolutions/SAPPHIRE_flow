@@ -30,11 +30,11 @@ RUN groupadd -g 1000 app && useradd -u 1000 -g 1000 -m app
 
 # Add the PostgreSQL Global Development Group (PGDG) apt source + GPG key for versioned client packages.
 # Debian's default repo ships postgresql-client-15, which can't dump a postgres 16 server.
+# PGDG apt signing key, vendored 2026-04-21. Fingerprint: B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8.
+# Source key id ACCC4CF8 (PostgreSQL Debian Repository). Rotate deliberately per Plan 064 B6 / D11.
+COPY docker/keys/apt.postgresql.org.asc /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates gnupg curl \
-    && install -d /usr/share/postgresql-common/pgdg \
-    && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
-       -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
     && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(. /etc/os-release; echo $VERSION_CODENAME)-pgdg main" \
        > /etc/apt/sources.list.d/pgdg.list \
     && rm -rf /var/lib/apt/lists/*

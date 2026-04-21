@@ -19,6 +19,22 @@ jobs:
       - run: uv run ruff check src/ tests/
       - run: uv run ruff format --check src/ tests/
       - run: uv run pyright --strict src/
+      # A2 — Trivy filesystem scan. Reads uv.lock + pyproject.toml without
+      # building the image, so dep-only PRs get fast feedback. Fails on HIGH
+      # or CRITICAL vulnerabilities that have an available fix; unfixed CVEs
+      # are ignored to avoid blocking on upstream work we cannot action.
+      # Known-accepted CVEs live in .trivyignore with dated comments.
+      # Equivalent CLI: trivy fs --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed --scanners vuln .
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1  # v0.35.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          scanners: vuln
+          cache: "true"
 
   unit:
     runs-on: ubuntu-latest
@@ -30,6 +46,36 @@ jobs:
           python-version: "3.11"
       - run: uv sync --frozen
       - run: uv run pytest tests/unit/ --cov=src/sapphire_flow --cov-report=term-missing -v
+
+  # A4 — Wheel-only guard for dependency-update installs.
+  #
+  # Runs `uv sync --frozen --no-build --no-cache --no-install-project` on
+  # GitHub-hosted amd64 to make CI the first execution environment for new
+  # dependency versions and to fail if an update introduces new Python
+  # build-backend / sdist source execution on this platform. `--no-cache`
+  # is required because cached pre-built wheels would otherwise mask a
+  # newly-required source build. `--no-install-project` skips the local
+  # editable root package (which has no binary distribution by design) so
+  # the guard only checks third-party dependencies — the actual target of
+  # this control.
+  #
+  # Runs on every PR and push; the guard is fast enough that scoping to
+  # pyproject.toml / uv.lock changes is not necessary. Any merged
+  # dependency change is therefore guaranteed to have exercised the guard.
+  #
+  # Known source-build exception: `exactextract` may require a source build
+  # in the linux/arm64 Docker builder path. GitHub-hosted amd64 CI is
+  # expected to remain wheel-only; any new exception must be documented in
+  # docs/standards/security.md per Plan 064 A4 step 3.
+  wheel-only-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a  # v4.2.0
+        with:
+          version: "0.11.7"
+          python-version: "3.11"
+      - run: uv sync --frozen --no-build --no-cache --no-install-project
 
   integration:
     runs-on: ubuntu-latest
@@ -58,10 +104,75 @@ jobs:
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/sapphire_test
 
+  # B0 + B3 + B4 — Build the app image in CI and scan it in the same job.
+  #
+  # Why one job: GitHub-hosted jobs run on fresh VMs. A local docker image
+  # built in one job is NOT available in another job. So build, trivy image,
+  # and syft must share a runner context (or an image tarball must be
+  # explicitly uploaded as an artifact and re-loaded). We keep all three
+  # steps in this single job for simplicity.
+  #
+  # The e2e job gates on this job succeeding (see `needs:` below).
+  build-image-and-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4.0.0
+      # B0 — Build the image and load it into the local docker daemon so the
+      # later trivy and syft steps in this same job can reference the tag.
+      - name: Build app image
+        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
+        with:
+          context: .
+          file: ./Dockerfile
+          tags: sapphire-flow:ci-${{ github.sha }}
+          load: true
+          push: false
+      # B3 — Trivy image scan. Covers OS-level layers the fs scan (A2) does
+      # not see. Fails CI on HIGH/CRITICAL unfixed CVEs; SARIF is uploaded
+      # as a workflow artifact for audit.
+      # Equivalent CLI: trivy image --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed sapphire-flow:ci-${{ github.sha }}
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1  # v0.35.0
+        with:
+          image-ref: sapphire-flow:ci-${{ github.sha }}
+          format: sarif
+          output: trivy-image.sarif
+          exit-code: "1"
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          cache: "true"
+      - name: Upload Trivy SARIF
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: trivy-image-sarif
+          path: trivy-image.sarif
+          if-no-files-found: warn
+      # B4 — SBOM generation. anchore/sbom-action wraps syft; emits
+      # CycloneDX JSON for the built image. Uploaded as an artifact on every
+      # run so a future CVE landing has a recoverable "which image contains
+      # library X?" trail.
+      # Equivalent CLI: syft sapphire-flow:ci-${{ github.sha }} -o cyclonedx-json > sbom.cdx.json
+      - name: Generate SBOM with syft
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0.24.0
+        with:
+          image: sapphire-flow:ci-${{ github.sha }}
+          format: cyclonedx-json
+          output-file: sbom.cdx.json
+          upload-artifact: false
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: sbom-cyclonedx
+          path: sbom.cdx.json
+          if-no-files-found: error
+
   # Phase 11 — full end-to-end pipeline test (dedicated testcontainer, ~9 min).
   # Requires Docker for testcontainers (available on ubuntu-latest by default).
+  # Gated on build-image-and-scan per Plan 064 B0 step 5 and B3 step 3.
   e2e:
-    needs: [unit, integration]
+    needs: [unit, integration, build-image-and-scan]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
