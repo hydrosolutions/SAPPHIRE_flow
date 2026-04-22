@@ -10,6 +10,8 @@ Operational hydrological forecasting system. Ingests weather and station data, r
 
 ## Quick start
 
+The quick start deploys SAPPHIRE Flow as a **demo** using publicly available Swiss data (CAMELS-CH stations, MeteoSwiss ICON-CH2-EPS forecasts, BAFU observations). This is the default configuration in v0 and is intended to showcase the pipeline end-to-end. Instructions for configuring the system against other areas of interest (custom station networks, alternative NWP sources, regional data) will be published as part of v1.
+
 ### 1. Create secrets
 
 Secrets live outside the repository at `~/.config/sapphire-flow/secrets/` (dev). A gitignored symlink in the repo lets Docker Compose find them. In production, Docker secrets mount files at `/run/secrets/<name>` — see [security standards](docs/standards/security.md) for the full model.
