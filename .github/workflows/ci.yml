@@ -86,6 +86,12 @@ jobs:
         with:
           version: "0.11.7"
           python-version: "3.12"
+          # Disable setup-uv's cache feature in this job: the wheel-only
+          # guard uses `uv sync --no-cache`, so no cache directory is
+          # populated. setup-uv v8+ errors on missing cache at post-run;
+          # explicitly disabling here makes the job v4/v8 compatible
+          # (Dependabot PR #4 surfaced this).
+          enable-cache: false
       - run: uv sync --frozen --no-build --no-cache --no-install-project
 
   integration:
