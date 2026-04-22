@@ -4,6 +4,12 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      # 48-hour soak: do not raise a PR for any new release until the version
+      # has been published for at least 2 days. Protects against post-release
+      # CVE disclosure, yanked releases, and supply-chain attacks that are
+      # often caught and corrected within the first 24-48 hours.
+      default-days: 2
     groups:
       uv-patch:
         patterns: ["*"]
@@ -15,6 +21,8 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 2
     groups:
       docker-patch:
         patterns: ["*"]
@@ -26,6 +34,8 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 2
     groups:
       docker-compose-patch:
         patterns: ["*"]
@@ -37,6 +47,8 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 2
     groups:
       github-actions-patch:
         patterns: ["*"]
