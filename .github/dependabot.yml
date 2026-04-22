@@ -1,3 +1,28 @@
+# Pre-release policy
+# -------------------
+# We do not pull pre-releases (alpha / beta / rc / dev) automatically. The
+# defense is layered:
+#
+#   1. Dependabot defaults — for pip/docker/docker-compose/github-actions,
+#      Dependabot only proposes a pre-release if the current pin already
+#      references a pre-release. Our pyproject.toml constraints use only
+#      `>=` against stable versions, so this guard is active.
+#   2. uv / pip resolution — `uv sync` (and pip) skip pre-releases unless
+#      the constraint references one or `--pre` is passed. We never pass
+#      `--pre`. CI runs `uv sync --frozen`, which locks installs to
+#      `uv.lock` content exclusively.
+#   3. `uv.lock` content — currently zero pre-release versions. If this
+#      ever changes, the assumption above breaks and this policy needs
+#      explicit re-evaluation.
+#
+# There is no `dependabot.yml` flag that toggles pre-release inclusion
+# directly — the policy is enforced via the layered defense above. If a
+# future dependency forces us onto a pre-release pin, revisit this header
+# and consider whether per-package `ignore` rules are needed.
+#
+# Cooldown policy: 48 hours per ecosystem (set on each entry below). See
+# Plan 064 D1 for rationale.
+
 version: 2
 updates:
   - package-ecosystem: "uv"
