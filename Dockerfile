@@ -40,12 +40,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      gosu curl postgresql-client-16 libexpat1 libgeos-c1v5 \
+      gosu curl postgresql-client-16 libexpat1 libgeos-c1v5 libeccodes0 \
     && rm -rf /var/lib/apt/lists/*
 # libexpat1: runtime dependency of rasterio's binary extensions (via rioxarray in the
 # gridded-NWP extractor). Added 2026-04-19 as an A3 step-8 finding.
 # libgeos-c1v5: provides libgeos_c.so.1 required by exactextract (used by
 # ExactExtractGridExtractor for basin-average extraction from NWP grids).
+# libeccodes0: ecCodes C library that cfgrib / xarray use to parse GRIB2
+# files from MeteoSwiss ICON-CH2-EPS. The Python eccodes wheel is a thin
+# ctypes wrapper; the system shared library must be present at runtime.
+# Added 2026-04-23 after Sprint 1.3 forecast-cycle live run surfaced
+# "Cannot find the ecCodes library" from cfgrib.
 
 WORKDIR /app
 
