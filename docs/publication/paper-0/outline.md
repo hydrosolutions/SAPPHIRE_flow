@@ -1,240 +1,271 @@
-# Literature Review: Sub-Daily Ensemble Flood Forecasting with ML
+# Scoping Review: Machine Learning for Operational Sub-Daily Flood Forecasting
 
-**Purpose**: Working literature review that serves two roles:
-1. **Immediate**: Sharpens the experimental design for Paper 2 and validates
-   that our research questions target genuine gaps
-2. **Later**: Becomes the introduction/background for Paper 2, or a standalone
-   WRR Commentary (~2,000 words), or both
+**Purpose**: This review now serves two linked roles:
+1. **Research design**: build a defensible evidence base for Paper 2
+2. **Publication asset**: mature into a publishable review-style manuscript,
+   commentary, or introduction section once the evidence base is complete
 
-**Central question**: What is missing for operational sub-daily ensemble flood
-forecasting with machine learning?
+**Review objective**: Map and synthesise the current evidence on machine
+learning approaches relevant to operational sub-daily flood and streamflow
+forecasting, with emphasis on uncertainty representation, temporal resolution,
+transferability, and data readiness.
 
-**Thesis**: ML can scale ensemble streamflow forecasting to sub-hourly
-resolution where process-based models cannot, but the community has not answered
-the critical question of *where forecast uncertainty should come from* when
-coupling ML with ensemble NWP at sub-daily timescales.
-
----
-
-## Review Structure
-
-Each section below is a research thread. For each: summarise the state of
-knowledge, identify what's missing, and note how it connects to our experimental
-design. Cite everything — this is the reference base for all papers.
-
-### 1. Operational Ensemble Flood Forecasting Systems
-
-> **Research**: [01-operational-systems.md](01-operational-systems.md) ✅
-
-**Question**: What operational systems exist, and where does ML fit?
-
-**Key findings**:
-- All major operational ensemble systems use process-based models (LISFLOOD,
-  WRF-Hydro, GR4H). Ensemble propagation is purely Paradigm A (NWP members →
-  deterministic hydro model → ensemble streamflow).
-- Google Flood Hub is the only global operational ML streamflow system, but uses
-  deterministic NWP + learned CMAL uncertainty (Paradigm B), not ensemble NWP.
-- ECMWF developing AIFL (LSTM-based global streamflow, pre-operational).
-- AIFS ENS (51 members) operational for weather since Jul 2025 but **not yet
-  coupled to hydrology** — the door is open.
-- Post-2021 European floods: all NW European countries invested in
-  probabilistic forecasting (Busker et al., 2025 preprint).
-- **Gap confirmed**: no system combines ML hydrology + ensemble NWP propagation.
-- **Correction**: Nature 2024 paper is Nearing et al., not Nevo et al.
-
-**Deliverables in research file**: Two summary tables (process-based systems,
-ML-based systems), full citations, verification TODOs.
-
-### 2. ML Architectures for Sub-Daily Streamflow
-
-> **Research**: [02-ml-architectures.md](02-ml-architectures.md) ✅
-
-**Question**: Which architectures can handle sub-daily resolution with coarse
-NWP forcing?
-
-**Key findings**:
-- LSTM wins benchmarks for regression/short-term forecasting (Liu et al., HESS
-  2025: 13 architectures). Transformers win only for long-horizon autoregression
-  and extremes.
-- **MTS-LSTM** is the only architecture with native multi-resolution support.
-  MF-LSTM (2025) simplifies to single cell with per-frequency embeddings, 5x
-  faster, supports 3 frequencies.
-- TFT and FutureTST offer architectural advantages for future forcing
-  (variable selection, cross-attention), but neither tested at sub-hourly or
-  for NWP temporal mismatch.
-- **RiverMamba** (NeurIPS 2025): first SSM for hydrology, outperforms GloFAS
-  globally, but daily/global grid only.
-- **Differentiable hydrology (delta-HBV)**: state of the art for physics-ML.
-  Outperforms LSTM on extremes (Song et al., WRR 2026). Hard constraints
-  (MC-LSTM) hurt extremes (Frame et al., HESS 2022).
-- **Temporal mismatch** (coarse NWP → fine streamflow): under-discussed. No
-  paper uses attention to handle it. MTS-LSTM handles daily+hourly natively
-  but not 3-hourly NWP + 15-min streamflow.
-- ML-based temporal disaggregation emerging: LSTM for daily→half-hourly precip
-  (Oates et al. 2025), SpateGAN for ERA5→2km/10min (Glawion et al. 2025).
-- **No architecture tested at sub-hourly with ensemble NWP** — confirmed gap.
-
-### 3. Uncertainty Paradigms (intellectual core)
-
-> **Research**: [03-uncertainty-paradigms.md](03-uncertainty-paradigms.md) ✅
-
-**Question**: Where should forecast uncertainty come from when coupling ML with
-ensemble NWP?
-
-**Key findings**:
-- Three paradigms (A: NWP pass-through, B: learned distribution, C: deep
-  ensembles) have never been compared head-to-head for ML streamflow.
-- Paradigm A has never been applied to a pure ML streamflow model. Dong et al.
-  (HESS 2025) used a hybrid; Modi et al. (JAMES 2025) used historical
-  resampling, not NWP.
-- CMAL is the best-performing learned distribution (Klotz et al., HESS 2022)
-  but tested only with observed forcing. QRF is comparable, 50% faster
-  (Zhang et al., HESS 2023 — note: outline originally said "Huo et al.",
-  corrected).
-- Sabzipour et al. (J. Hydrol., 2023): deep ensemble LSTM showed poor
-  spread-skill vs process-based model — seed diversity ≠ forcing uncertainty.
-- AIFS-CRPS (Lang et al., 2024): CRPS as direct training loss for ensemble
-  weather. Transferable to streamflow but not yet applied.
-- Diffusion models (DRUM, HydroDiffusion) represent emerging Paradigm D.
-- Permutation-invariant NN for ensemble NWP input (Hohlein et al., AIES 2024)
-  demonstrated for weather but not streamflow.
-
-**Key gap**: No head-to-head comparison of A vs B vs C for streamflow. This is
-the central open question.
-
-### 4. Sub-Hourly Resolution: Value and Limits
-
-> **Research**: [04-sub-hourly-resolution.md](04-sub-hourly-resolution.md) ✅
-
-**Question**: When does sub-hourly resolution add value over hourly/daily?
-
-**Key findings**:
-- Sub-hourly ML streamflow forecasting is virtually unexplored. No large-sample
-  study tests ML at 15-min or finer resolution. The hourly-to-sub-hourly
-  transition is a genuine research gap.
-- Catchment size determines where sub-hourly adds value: below ~25 km² (T_c
-  < 1 h) sub-hourly is essential; 25-100 km² catchment-specific; > 100 km²
-  hourly generally sufficient (Ficchi et al., J. Hydrol., 2016).
-- No rigorous evidence supports "15-min doubles effective lead time" — plausible
-  from first principles but unquantified in the literature.
-- Rating curve uncertainty at high flows (15-40%, up to 43% in mountains) may
-  mask the benefit of fine-resolution discharge forecasting — argues for
-  predicting stage directly.
-- No large-sample ML comparison of stage vs discharge prediction exists.
-  CAMELSH (2025) enables one (5,188+ basins with both variables at hourly).
-- No sub-hourly benchmark dataset exists anywhere. CAMELS-CH is daily only.
-- ML temporal disaggregation emerging (SpateGAN, LSTM) but untested on NWP
-  forecast fields or coupled to hydrology.
-- The NWP temporal mismatch is under-discussed: MTS-LSTM handles daily+hourly
-  but only tested in simulation mode. Autoregressive discharge interpolation of
-  sub-NWP-timestep dynamics is empirically untested.
-- **Gap confirmed**: sub-hourly ML streamflow forecasting is unexplored, and the
-  interaction between temporal resolution and uncertainty paradigm is unknown.
-
-**Deliverables in research file**: Catchment size threshold table, NWP mismatch
-analysis, rating curve uncertainty synthesis, dataset inventory, CRAAB analysis
-per sub-topic, verification TODOs.
-
-### 5. Transfer Learning at Sub-Daily Resolution
-
-> **Research**: [05-transfer-learning.md](05-transfer-learning.md) ✅
-
-**Question**: Can sub-daily ML models transfer across regions?
-
-**Key findings**:
-- Daily transfer is well-established: multi-basin training always outperforms
-  single-basin (Kratzert et al., HESS 2024). Global LSTM on 5,680+ gauges
-  matches operational systems for ungauged flood prediction (Nearing et al.,
-  Nature 2024). Cross-continental transfer works with fine-tuning (Ma et al.,
-  WRR 2021).
-- Sub-daily transfer is virtually untested. Only one published result: Lee
-  et al. (2025) achieved 10-min PUB (NSE 0.59) on 35 South Korean basins —
-  notably lower than daily PUB baselines (0.69-0.78).
-- Entity awareness questioned: static attributes may serve as basin identifiers
-  rather than encoding generalisable physics (Heudorfer et al., GRL 2025).
-- Reanalysis-to-forecast domain shift is substantial: AIFL showed NSE drops
-  from 0.58 to 0.33 without NWP fine-tuning (Taccari et al., 2026). Two-stage
-  training essential for operational systems.
-- Climate dissimilarity degrades transfer, but process mismatch (absent runoff
-  generation mechanisms) matters more than geographic distance. No quantitative
-  distance framework exists.
-- No foundation model operates at sub-daily resolution. All three frontier
-  global models (Google, AIFL, RiverMamba) are daily-only.
-- Probabilistic transfer is unexplored — unknown whether CMAL/quantile
-  calibration survives transfer.
-- Minimum fine-tuning data at sub-daily resolution is unknown.
-- **Gap confirmed**: sub-daily transfer learning is unexplored. The interaction
-  between temporal resolution, climate dissimilarity, and uncertainty
-  calibration under transfer is entirely open.
-
-**Deliverables in research file**: Daily baseline synthesis, global transfer
-analysis, climate dissimilarity evidence, entity awareness critique,
-foundation model inventory, sub-daily gap analysis, CRAAB per sub-topic,
-verification TODOs.
-
-### 6. Datasets and NWP Ensemble Products
-
-> **Research**: [06-datasets-and-nwp.md](06-datasets-and-nwp.md) ✅
-> **See also**: [precipitation_products.md](precipitation_products.md)
-
-**Question**: What data exists to run these experiments?
-
-**Key findings**:
-- Four curated hourly datasets exist: CAMELSH (5,188+ US), LamaH-CE (859
-  Central Europe), CAMELS-GB v2 (671 UK), CAMELS-SPAT (1,426 US/Canada). All
-  stop at hourly — no sub-hourly benchmark exists.
-- Only CAMELS-GB v2 provides hourly water level alongside discharge.
-- CAMELS-CH is daily only (331 Swiss catchments). No hourly extension published.
-- Two NWP ensemble reforecast archives: GEFSv12 (5/11 members, 3h, 2000-2019,
-  free) and ECMWF ENS (11 members, 6h, rolling 20 yr, restricted). No AI
-  weather model reforecast archive publicly available.
-- ICON-CH2-EPS (SAPPHIRE v0 primary NWP) has no public reforecast — must use
-  reanalysis→NWP domain adaptation strategy.
-- ERA5-Land is the only viable global hourly reanalysis but has systematic
-  precipitation biases in mountains. Bias correction mandatory.
-- AIFL showed reanalysis→NWP domain shift drops NSE from 0.58 to 0.33 without
-  fine-tuning. Two-stage training essential.
-- No dataset exists for Nepal/Himalayan catchments at any resolution.
-- Ensemble member count mismatch strategies emerging (fair CRPS, per-member
-  processing, 4 members suffice for training) but unvalidated for hydrology.
-- **Gap confirmed**: no sub-hourly benchmark, no NWP ensemble forcing in any
-  dataset, no Nepal data.
-
-**Deliverables in research file**: Streamflow dataset inventory table, NWP
-ensemble product comparison, reanalysis quality synthesis, train/eval split
-strategies, member count mismatch strategies, CRAAB per sub-topic, verification
-TODOs.
+**Review type**: Structured scoping review. The aim is not to prove a thesis or
+identify a single "best" model. The aim is to document what has been studied,
+how it has been studied, where evidence is strong or weak, and which open
+questions remain after a transparent search and synthesis process.
 
 ---
 
-## Publication Options (decide later)
+## Primary Review Question
 
-| Option | Format | Cost | When to decide |
-|--------|--------|------|----------------|
-| Paper 2 introduction | ~3,000 words, integrated into methods paper | $0 (part of Paper 2) | When writing Paper 2 |
-| WRR Commentary | ~2,000 words, 1–2 figures, standalone | $0 (free for commentaries) | After review is complete |
-| Both | Commentary establishes framing; Paper 2 intro provides depth | $0 | After review is complete |
+What is the current state of evidence on machine-learning approaches relevant to
+operational sub-daily flood and streamflow forecasting?
+
+## Sub-Questions
+
+1. What operational flood and streamflow forecasting systems currently exist,
+   and what modelling paradigms do they use?
+2. Which ML architectures have been tested for hydrological forecasting at
+   daily, hourly, or sub-hourly resolution, and how do they handle forcing
+   mismatch across timescales?
+3. How is predictive uncertainty represented in ML-based streamflow
+   forecasting, especially when ensemble NWP is available?
+4. What evidence exists on the value and limits of hourly versus sub-hourly
+   prediction for operational forecasting?
+5. What is known about transfer learning, domain shift, and generalisation at
+   sub-daily timescales?
+6. What datasets, benchmark resources, and NWP/reforecast products exist to
+   support this line of work?
 
 ---
 
-## Research Process
+## Scope Boundaries
 
-For each section above:
-1. **Systematic search**: Google Scholar, Scopus, Web of Science. Keywords
-   per section. Focus on 2018–2026 (post-Shen et al.).
-2. **Read and annotate**: Key findings, limitations, what's missing.
-3. **Synthesise**: Write the section narrative with full citations.
-4. **Gap validation**: Confirm each claimed gap is real (no paper fills it).
-5. **Update experimental design**: Feed findings back into Paper 2's
-   publication plan.
+| Dimension | In scope | Out of scope |
+|---|---|---|
+| Task | Flood or streamflow forecasting; operational or operationally relevant forecasting; benchmark studies that inform forecasting design | Pure simulation papers with no forecasting relevance; inundation mapping without discharge/forecast relevance |
+| Methods | ML or hybrid process-ML methods; uncertainty methods; post-processing methods; operational ensemble handling approaches | Purely process-based method papers unless needed for operational context or comparison |
+| Temporal focus | Daily, hourly, and sub-hourly studies, with emphasis on sub-daily and temporal mismatch problems | Long-term climate-impact studies without forecast setting |
+| Data products | Hydrological benchmark datasets, reanalysis, NWP ensembles, reforecasts, stage/discharge archives | Generic Earth-system datasets with no clear relevance to streamflow forecasting |
+| Evidence types | Peer-reviewed papers, major dataset papers, operational system documentation, highly relevant preprints clearly labelled as such | Informal blog posts, slides, or unsupported claims without traceable source |
+| Time window | Primary focus: 2018-2026; older foundational papers included when they define the field or methods | Exhaustive historical reconstruction of pre-deep-learning hydrology |
 
-### Search Strategy
+---
 
-| Section | Primary keywords | Secondary filters |
-|---------|-----------------|-------------------|
-| 1. Operational systems | ensemble flood forecasting, operational, FEWS, GloFAS, EFAS | 2018+ |
-| 2. Architectures | LSTM streamflow, transformer hydrology, MTS-LSTM, sub-daily, sub-hourly | ML/DL only |
-| 3. Uncertainty | probabilistic streamflow, ensemble, CMAL, deep ensemble, MDN, CRPS | ML only |
-| 4. Sub-hourly | sub-hourly streamflow, 15-minute, flash flood, temporal resolution | ML + process |
-| 5. Transfer | transfer learning hydrology, ungauged, regionalization | sub-daily focus |
-| 6. Data | CAMELSH, LamaH, GEFS, TIGGE, USGS NWIS | hourly or finer |
+## Working Principles
+
+1. **Evidence before interpretation**: each section first describes what the
+   literature covers before drawing implications for SAPPHIRE or Paper 2.
+2. **No gap statements without search coverage**: use "no evidence found in the
+   current search" unless a claim has been explicitly checked and verified.
+3. **Separate evidence from advocacy**: the review can motivate Paper 2, but it
+   should not be written as a justification memo for a preselected design.
+4. **Make uncertainty visible**: label preprints, contested findings, and
+   unverified numbers clearly.
+5. **Treat null coverage carefully**: absence of evidence in the reviewed
+   literature is not the same as proof that no such work exists.
+
+---
+
+## Planned Manuscript Structure
+
+### 1. Introduction and Rationale
+
+- Why sub-daily flood forecasting matters operationally
+- Why ML is entering operational hydrology now
+- Why a scoping review is needed: the literature is fragmented across
+  operational systems, ML architectures, uncertainty methods, transfer, and
+  data infrastructure
+
+### 2. Review Methods
+
+- Review type and rationale
+- Eligibility criteria
+- Information sources and search strategy
+- Screening process
+- Data charting process
+- Synthesis approach
+- Review limitations
+
+### 3. Operational Forecasting Landscape
+
+**Question**: What operational systems exist, and where does ML currently fit?
+
+**Evidence to capture**:
+- major operational ensemble systems and their modelling paradigm
+- whether forecasts are deterministic or probabilistic
+- whether uncertainty comes from NWP, learned distributions, post-processing, or
+  other sources
+- which systems operate at daily, hourly, or finer resolutions
+
+**Primary evidence base**:
+- [01-operational-systems.md](source-reviews/01-operational-systems.md)
+
+### 4. ML Architectures and Temporal Representation
+
+**Question**: Which ML architectures are relevant to sub-daily hydrology, and
+how do they represent multi-timescale inputs and outputs?
+
+**Evidence to capture**:
+- architecture families (LSTM, multi-timescale variants, transformers, SSMs,
+  physics-informed hybrids, spatial models)
+- support for future forcing, multi-resolution input, and spatiotemporal data
+- whether studies use observed forcing, reanalysis, deterministic NWP, or
+  ensemble NWP
+- where evidence stops at daily or hourly resolution
+
+**Primary evidence base**:
+- [02-ml-architectures.md](source-reviews/02-ml-architectures.md)
+- relevant temporal-resolution material from
+  [04-sub-hourly-resolution.md](source-reviews/04-sub-hourly-resolution.md)
+
+### 5. Uncertainty Representation and Ensemble Handling
+
+**Question**: How is predictive uncertainty represented in ML-based streamflow
+forecasting, and what evidence exists for different uncertainty paradigms?
+
+**Evidence to capture**:
+- NWP pass-through, learned distributions, deep ensembles, post-processing, and
+  generative approaches
+- whether uncertainty arises from forcing, model stochasticity, or residual
+  error modelling
+- how studies evaluate calibration, sharpness, and spread-skill
+- whether any studies compare paradigms on common data and tasks
+
+**Primary evidence base**:
+- [03-uncertainty-paradigms.md](source-reviews/03-uncertainty-paradigms.md)
+
+### 6. Temporal Resolution: Value, Limits, and Measurement Constraints
+
+**Question**: What evidence exists on when hourly or sub-hourly prediction adds
+operational value, and what limits that value?
+
+**Evidence to capture**:
+- catchment response time and scale effects
+- whether sub-hourly outputs are supported by the input forcing and observation
+  systems
+- stage versus discharge as operational targets
+- rating-curve uncertainty and its consequences for evaluation
+- temporal disaggregation approaches and their evidential status
+
+**Primary evidence base**:
+- [04-sub-hourly-resolution.md](source-reviews/04-sub-hourly-resolution.md)
+- relevant architecture material from [02-ml-architectures.md](source-reviews/02-ml-architectures.md)
+
+### 7. Transferability, Domain Shift, and Generalisation
+
+**Question**: What is known about transferring ML hydrology models across
+basins, climates, and forcing domains, especially at sub-daily timescales?
+
+**Evidence to capture**:
+- multi-basin versus single-basin training
+- out-of-region and cross-climate transfer
+- entity awareness and static attributes
+- reanalysis-to-NWP shift
+- uncertainty calibration under transfer
+
+**Primary evidence base**:
+- [05-transfer-learning.md](source-reviews/05-transfer-learning.md)
+
+### 8. Data Ecosystem and Benchmark Readiness
+
+**Question**: What datasets and forecast products make this research feasible,
+and where are the structural data bottlenecks?
+
+**Evidence to capture**:
+- curated streamflow/stage datasets by temporal resolution and geography
+- reanalysis and NWP ensemble/reforecast products
+- access constraints, member count mismatch, and data quality issues
+- countries or hydroclimates that remain unrepresented
+
+**Primary evidence base**:
+- [06-datasets-and-nwp.md](source-reviews/06-datasets-and-nwp.md)
+- [precipitation_products.md](source-reviews/precipitation_products.md)
+
+### 9. Cross-Cutting Synthesis
+
+This section should answer:
+- where evidence is mature
+- where evidence is thin but suggestive
+- where direct comparison studies are missing
+- which claims are currently hypotheses rather than findings
+- what this means for Paper 2's experimental design
+
+### 10. Review Limitations
+
+- search limitations
+- reliance on preprints in fast-moving areas
+- potential language and database bias
+- difficulty comparing studies across different basins, targets, and metrics
+
+### 11. Conclusion and Research Agenda
+
+- concise summary of the mapped evidence
+- high-confidence gaps
+- medium-confidence open questions
+- immediate implications for SAPPHIRE / Paper 2
+
+---
+
+## How the Existing Support Documents Should Evolve
+
+The six support files are now best treated as **evidence memos**, not draft
+manuscript sections. Each memo should eventually follow a common structure:
+
+1. Scope of the memo
+2. Search coverage and any caveats
+3. Evidence tables
+4. Narrative synthesis
+5. Limits and counterevidence
+6. Claims supported by the memo
+7. Open verification items
+
+This will make it easier to merge them into a single review without carrying
+over repeated claims, inconsistent wording, or unresolved numbers.
+
+---
+
+## Evidence Language Policy
+
+Use the following labels consistently in the outline, support docs, and later
+manuscript draft:
+
+- **Established finding**: supported by multiple verified sources
+- **Promising but limited evidence**: supported by one or a few studies with
+  clear constraints
+- **No evidence found in current search**: current search did not identify a
+  study addressing the question
+- **Provisional claim**: plausible but not yet fully verified
+- **Open question**: important issue for which the literature remains unclear
+
+Avoid:
+- "gap confirmed" unless the search coverage and verification status justify it
+- "first", "only", or "no study" claims unless specifically checked
+- strong design prescriptions based on a single paper or unverified preprint
+
+---
+
+## Peer-Review Readiness Criteria
+
+Before this review is written as a paper-quality manuscript, the following
+should be complete:
+
+1. Protocol finalised and followed
+2. Search log completed with dates and exact strings
+3. Screening decisions recorded with exclusion reasons
+4. Evidence extraction completed for all included cornerstone studies
+5. Critical factual claims either verified, softened, or removed
+6. Preprints clearly separated from peer-reviewed evidence
+7. Manuscript sections rewritten to separate evidence, interpretation, and
+   research agenda
+
+---
+
+## Next Execution Steps
+
+1. Build a search log and claim ledger from the protocol
+2. Rework the six support documents into evidence memos with a shared structure
+3. Chart the cornerstone studies using the evidence extraction template
+4. Resolve the highest-risk verification items before drafting prose
+5. Draft the manuscript from the synthesised evidence, not from the old thesis
