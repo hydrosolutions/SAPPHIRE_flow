@@ -1,6 +1,6 @@
 [project]
 name = "sapphire-flow"
-version = "0.1.406"
+version = "0.1.407"
 description = "Add your description here"
 readme = "README.md"
 license = "MIT"
@@ -13,6 +13,7 @@ dependencies = [
     "camelsch>=0.2.0",
     "cfgrib>=0.9.15.1",
     "cryptography>=46.0.7",
+    "dask[array]>=2024.1.0",
     "eccodes>=2.46.0",
     "exactextract>=0.3",
     "fastapi>=0.135.2",
@@ -95,7 +96,7 @@ markers = [
 addopts = "-m 'not deployment and not live and not live_lindas and not live_stac and not slow'"
 
 [tool.bumpversion]
-current_version = "0.1.406"
+current_version = "0.1.407"
 commit = false
 tag = false
 allow_dirty = true
