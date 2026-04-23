@@ -41,6 +41,10 @@ jobs:
       - run: uv run pytest tests/integration/ -v -m "slow" --timeout=3600
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/sapphire_test
-      - run: uv run pytest tests/integration/live -v --timeout=3600
+      # Path-based selection under tests/integration/live/ — override the
+      # default addopts marker exclusion (which strips live/live_lindas/
+      # live_stac) so every test under that directory runs regardless of
+      # which live* marker it carries.
+      - run: uv run pytest tests/integration/live -v --timeout=3600 --override-ini "addopts="
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/sapphire_test

@@ -42,42 +42,42 @@ and then cleanly extend it. Not a plan document (plans live in
 
 ## Sprint 1 — Deploy v0 to Mac Mini (target: ~1–2 weeks)
 
-### 1.1 Housekeeping (half-day)
+### 1.1 Housekeeping — DONE (2026-04-23)
 
-- [ ] Commit Plans 071/072 drafts (currently untracked).
-- [ ] Decide fate of uncommitted `pyproject.toml` / `uv.lock` change
-      (exploratory pyright executionEnvironment for `flows/`) — likely
-      supersede by the live `pyrightconfig.json`, so revert the
-      pyproject.toml hunk.
-- [ ] Investigate `tests/fixtures/reference/performance_baseline.json`
-      (orphan from a prior session) — delete or integrate.
-- [ ] Implement D2 hybrid: add `@pytest.mark.slow` marker +
-      `pyproject.toml` `addopts = ["-m", "not slow"]`; mark
-      `tests/integration/test_e2e_pipeline.py::test_full_pipeline` as
-      slow; raise `integration-nightly.yml` `pytest-timeout` to 3600s.
-- [ ] Ensure `workflow_dispatch:` trigger on both
-      `integration-nightly.yml` and `live-lindas-weekly.yml` (add if
-      absent).
-- [ ] Document the "Before major merges to main" ritual in
-      `docs/standards/cicd.md` — `gh workflow run
-      integration-nightly.yml --ref <branch>`.
-- [ ] Manually fire `live-lindas-weekly.yml` via `gh workflow run` to
-      establish it can execute (never run in history).
-- [ ] Manually fire `integration-nightly.yml` via `gh workflow run`
-      after the slow-marker + timeout changes land, confirming it runs
-      green.
+- [x] Commit Plans 071/072 drafts (v0.1.396).
+- [x] Uncommitted `pyproject.toml` hunk resolved — was already folded
+      into commit `515fc68` (pyright flows/ carve-out). No drift.
+- [x] `tests/fixtures/reference/performance_baseline.json` → gitignored
+      per-environment artifact; local copy deleted.
+- [x] D2 hybrid implemented (v0.1.397): `slow` in default addopts
+      exclusion, class-level 600s timeout removed from
+      `TestE2ePipeline`, nightly `--timeout=3600`.
+- [x] `workflow_dispatch:` triggers confirmed present on both
+      scheduled workflows.
+- [x] "Before major merges to main" ritual documented in
+      `docs/standards/cicd.md`.
+- [x] Live LINDAS weekly fired manually → **SUCCESS** (first-ever run).
+- [x] Integration nightly fired manually → first run with 3600s
+      timeout surfaced a separate pre-existing bug (second pytest step
+      collects 0 tests because default addopts marker-exclusion was
+      inherited). Patched with `--override-ini "addopts="` in a
+      follow-up commit.
+- [x] 17 pre-existing ruff errors cleaned up (v0.1.399):
+      `scripts/` excluded from T201, `notebooks/` excluded entirely,
+      two trivial tweaks in `check_readiness.py`.
+- [x] `uv.lock` drift reconciled (v0.1.400).
 
-### 1.2 Land Plan 067 (1–2 days)
+### 1.2 Land Plan 067 (already done — discovered 2026-04-23)
 
-- [ ] Implement Plan 067 Phase 2 (T2a probe rewrite, T2b client-side
+- [x] Implement Plan 067 Phase 2 (T2a probe rewrite, T2b client-side
       filter, T3.d `_CYCLE_HOURS = (0,6,12,18)`, T4a pagination cap
-      raise, D2 config-derived `max_fallback_steps`).
-- [ ] Commit + push (patch-version bump + tag per CLAUDE.md).
+      raise → 800, D2 config-derived `max_fallback_steps`). Landed
+      at commit `1318451` on 2026-04-21; 53/53 unit tests green.
+- [x] Plan 046 Rev 12 present; Plan 067 Appendix (STAC checklist for
+      Plan 047) appended.
 - [ ] Verify with a fresh manual forecast-cycle invocation against
-      live MeteoSwiss STAC.
-
-**Gate**: `uv run python -m sapphire_flow.cli run-flow forecast-cycle`
-succeeds end-to-end against real MeteoSwiss data.
+      live MeteoSwiss STAC (deferred to step 1.3 below — same
+      invocation).
 
 ### 1.3 Re-run Plan 046 A3 step 8 (half-day)
 
