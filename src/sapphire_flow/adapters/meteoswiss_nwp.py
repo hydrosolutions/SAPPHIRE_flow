@@ -424,6 +424,7 @@ class MeteoSwissNwpAdapter:
         str_paths = [str(p) for p in grib_files]
         for _stac_token, short_name, type_of_level in self.PARAM_GROUPS:
             try:
+                # coords=minimal pairs with compat=override per xarray kwarg rules
                 ds = xr.open_mfdataset(
                     str_paths,
                     engine="cfgrib",
@@ -431,6 +432,7 @@ class MeteoSwissNwpAdapter:
                     concat_dim="valid_time",
                     compat="override",
                     data_vars="minimal",
+                    coords="minimal",  # pyright: ignore[reportArgumentType]
                     filter_by_keys={
                         "shortName": short_name,
                         "typeOfLevel": type_of_level,
