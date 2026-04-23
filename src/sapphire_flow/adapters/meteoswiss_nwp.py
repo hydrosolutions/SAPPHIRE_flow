@@ -23,6 +23,8 @@ from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.weather import GriddedForecast
 
 if TYPE_CHECKING:
+    from collections.abc import Hashable
+
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.ids import StationId
     from sapphire_flow.types.station import StationWeatherSource
@@ -130,6 +132,70 @@ def convert_raw_dataset(ds: xr.Dataset) -> xr.Dataset:
     if "number" in ds.dims:
         ds = ds.rename({"number": "member"})
     return ds
+
+
+def _combine_cfgrib_datasets(per_file: list[xr.Dataset]) -> xr.Dataset:
+    """Combine per-file cfgrib datasets into a (number, valid_time, lat, lon) dataset.
+
+    Each input dataset represents one GRIB message from MeteoSwiss
+    ICON-CH2-EPS: scalar ``number``, scalar ``step``, scalar ``valid_time``,
+    one variable, 2D grid. We group by member, concat along ``valid_time``
+    within each group (sorted monotonic), then concat members along
+    ``number``. The ensemble-member dim is kept as ``number`` (cfgrib's
+    ECMWF convention); downstream ``convert_raw_dataset`` renames it to
+    ``member`` to match the extractor's expectation.
+    """
+    by_member: dict[Hashable, list[xr.Dataset]] = {}
+    for d in per_file:
+        member_coord = d.coords.get("number")
+        if member_coord is None:
+            member_coord = d.coords.get("member")
+        member_key: Hashable = (
+            member_coord.values.item() if member_coord is not None else "_default"
+        )
+        by_member.setdefault(member_key, []).append(d)
+
+    # Pass A: for each member, drop the scalar `number`/`member` coord on
+    # each file (so concat along valid_time doesn't broadcast it into a
+    # valid_time-dependent coord), concat along valid_time in sorted order,
+    # then re-attach the member value as a size-1 `number` dim.
+    per_member: list[xr.Dataset] = []
+    for member_key, datasets in by_member.items():
+        stripped = [
+            d.drop_vars([c for c in ("number", "member") if c in d.coords])
+            for d in datasets
+        ]
+        order_keys = [d.coords["valid_time"].values.item() for d in datasets]
+        datasets_sorted = [
+            s
+            for _, s in sorted(
+                zip(order_keys, stripped, strict=True), key=lambda pair: pair[0]
+            )
+        ]
+        combined_member = xr.concat(
+            datasets_sorted,
+            dim="valid_time",
+            coords="all",
+            compat="override",
+            data_vars="all",
+        )
+        combined_member = combined_member.expand_dims({"number": [member_key]})
+        per_member.append(combined_member)
+
+    if len(per_member) == 1:
+        return per_member[0]
+
+    per_member_sorted = sorted(
+        per_member,
+        key=lambda d: d.coords["number"].values[0],
+    )
+    return xr.concat(
+        per_member_sorted,
+        dim="number",
+        coords="all",
+        compat="override",
+        data_vars="all",
+    )
 
 
 class MeteoSwissNwpAdapter:
@@ -420,25 +486,53 @@ class MeteoSwissNwpAdapter:
         return dest
 
     def _parse_grib_files(self, grib_files: list[Path]) -> xr.Dataset:
+        # MeteoSwiss ICON-CH2-EPS publishes one GRIB message per file (one
+        # member × one step × one variable × one 2D grid). `xr.open_mfdataset`
+        # with combine="nested"/concat_dim="valid_time" is not the right tool:
+        # its compat/coords/data_vars kwarg semantics collide when scalar
+        # coords (member, step, valid_time) vary per file. We open each file
+        # individually, group matched datasets by member, concat each group
+        # along valid_time (sorted), then concat members.
         datasets: list[xr.Dataset] = []
         str_paths = [str(p) for p in grib_files]
         for _stac_token, short_name, type_of_level in self.PARAM_GROUPS:
-            try:
-                # coords=minimal pairs with compat=override per xarray kwarg rules
-                ds = xr.open_mfdataset(
-                    str_paths,
-                    engine="cfgrib",
-                    combine="nested",
-                    concat_dim="valid_time",
-                    compat="override",
-                    data_vars="minimal",
-                    coords="minimal",  # pyright: ignore[reportArgumentType]
-                    filter_by_keys={
-                        "shortName": short_name,
-                        "typeOfLevel": type_of_level,
-                    },
+            per_file: list[xr.Dataset] = []
+            for p in str_paths:
+                try:
+                    d = xr.open_dataset(
+                        p,
+                        engine="cfgrib",
+                        backend_kwargs={
+                            "filter_by_keys": {
+                                "shortName": short_name,
+                                "typeOfLevel": type_of_level,
+                            },
+                            # Disable cfgrib .idx cache: the scratch path is a
+                            # container-local /tmp and index files must not
+                            # persist (read-only FS can fail the open).
+                            "indexpath": "",
+                        },
+                    )
+                except Exception:
+                    # File doesn't contain this var/level — cfgrib raises.
+                    continue
+                # Filter may match metadata-only with empty data_vars — skip.
+                if not d.data_vars:
+                    d.close()
+                    continue
+                per_file.append(d)
+
+            if not per_file:
+                log.debug(
+                    "nwp.param_parse_skipped",
+                    short_name=short_name,
+                    type_of_level=type_of_level,
+                    error="no files matched filter",
                 )
-                datasets.append(ds)
+                continue
+
+            try:
+                combined = _combine_cfgrib_datasets(per_file)
             except Exception as exc:
                 log.debug(
                     "nwp.param_parse_skipped",
@@ -446,12 +540,16 @@ class MeteoSwissNwpAdapter:
                     type_of_level=type_of_level,
                     error=str(exc),
                 )
+                for d in per_file:
+                    d.close()
                 continue
+
+            datasets.append(combined)
 
         if not datasets:
             raise AdapterError("No parameter groups could be parsed from GRIB2 files")
 
-        merged = xr.merge(datasets)
+        merged = xr.merge(datasets, compat="override")
         merged = convert_raw_dataset(merged)
 
         if "member" in merged.dims:

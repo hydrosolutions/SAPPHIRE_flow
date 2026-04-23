@@ -10,6 +10,7 @@ import xarray as xr
 
 from sapphire_flow.adapters.meteoswiss_nwp import (
     MeteoSwissNwpAdapter,
+    _combine_cfgrib_datasets,
     _compute_wind_speed,
     _convert_units,
     _deaccumulate_precipitation,
@@ -1022,3 +1023,89 @@ class TestPaginationCap:
         adapter = _make_adapter(httpx.MockTransport(handler), tmp_path)
         with pytest.raises(AdapterError, match="exceeded 800 pages"):
             adapter._fetch_grib_files(cycle)
+
+
+def _per_file_ds(
+    *,
+    member: int,
+    step_hours: int,
+    var: str,
+) -> xr.Dataset:
+    # Simulate the shape cfgrib produces for a single MeteoSwiss GRIB message:
+    # scalar `number` (ensemble index), scalar `valid_time`, one variable,
+    # 2D grid. Dims are (latitude, longitude); member/time are scalar coords.
+    base = datetime(2026, 4, 23, 0, 0, tzinfo=UTC)
+    valid_time = np.datetime64(base.replace(tzinfo=None), "ns") + np.timedelta64(
+        step_hours, "h"
+    )
+    return xr.Dataset(
+        {
+            var: xr.DataArray(
+                np.full((2, 2), float(member * 100 + step_hours), dtype=np.float32),
+                dims=["latitude", "longitude"],
+            )
+        },
+        coords={
+            "number": member,
+            "valid_time": valid_time,
+            "latitude": [46.0, 46.1],
+            "longitude": [7.0, 7.1],
+        },
+    )
+
+
+class TestCombineCfgribDatasets:
+    """_combine_cfgrib_datasets: member-then-valid_time stacking from per-file.
+
+    Each input represents one GRIB message (scalar member, scalar valid_time,
+    one 2D grid). Output must be (number, valid_time, latitude, longitude)
+    with valid_time monotonic within each member.
+    """
+
+    def test_single_member_concats_along_valid_time(self) -> None:
+        ds = _combine_cfgrib_datasets(
+            [
+                _per_file_ds(member=0, step_hours=3, var="tp"),
+                _per_file_ds(member=0, step_hours=0, var="tp"),
+                _per_file_ds(member=0, step_hours=6, var="tp"),
+            ]
+        )
+        assert "valid_time" in ds.dims
+        assert ds.sizes["valid_time"] == 3
+        # Sorted within-member → monotonic time axis.
+        times = ds.coords["valid_time"].values
+        assert list(times) == sorted(times)
+
+    def test_multi_member_concats_along_number(self) -> None:
+        ds = _combine_cfgrib_datasets(
+            [
+                _per_file_ds(member=1, step_hours=0, var="tp"),
+                _per_file_ds(member=0, step_hours=0, var="tp"),
+                _per_file_ds(member=1, step_hours=3, var="tp"),
+                _per_file_ds(member=0, step_hours=3, var="tp"),
+            ]
+        )
+        assert "number" in ds.dims
+        assert ds.sizes["number"] == 2
+        assert ds.sizes["valid_time"] == 2
+        # Member dim sorted for determinism.
+        assert list(ds.coords["number"].values) == [0, 1]
+
+    def test_output_rename_through_convert_raw_dataset(self) -> None:
+        # Downstream extractor expects `member`, not `number`.
+        # The adapter pipeline is: _combine_cfgrib_datasets → xr.merge →
+        # convert_raw_dataset (which renames number → member).
+        ds = _combine_cfgrib_datasets(
+            [
+                _per_file_ds(member=0, step_hours=0, var="t_2m"),
+                _per_file_ds(member=1, step_hours=0, var="t_2m"),
+            ]
+        )
+        # Inside the helper the dim is still "number" (cfgrib convention).
+        assert "number" in ds.dims
+        # convert_raw_dataset is responsible for the rename.
+        renamed = convert_raw_dataset(
+            ds.assign({"t_2m": ds["t_2m"].astype(np.float32) + 273.15})
+        )
+        assert "member" in renamed.dims
+        assert "number" not in renamed.dims
