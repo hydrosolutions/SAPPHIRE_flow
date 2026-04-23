@@ -136,7 +136,6 @@ def _load_raw_observations(station_configs):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.timeout(600)
 class TestE2ePipeline:
     # Slow in GitHub-hosted CI (>10 min); runs on nightly schedule.
     # See run 24733223436 for 2026-04-21 timeout.

@@ -281,6 +281,33 @@ The image-build-and-scan tier added by Plan 064 sits between `integration` and `
 
 All three steps share a runner context because images built in one GitHub Actions job are not visible to another job without an explicit image-tarball hand-off.
 
+### Slow + live test tiers
+
+Not every test runs in default CI. Two pytest markers partition the suite:
+
+- **`@pytest.mark.slow`** — tests exceeding ~1 minute of wall time (full-pipeline e2e, large-fixture integration paths). Excluded from default `uv run pytest` via `pyproject.toml` `addopts`. Run by `.github/workflows/integration-nightly.yml` (nightly at 03:00 UTC, `--timeout=3600`).
+- **`@pytest.mark.live` / `@pytest.mark.live_lindas` / `@pytest.mark.live_stac`** — tests that hit external APIs (MeteoSwiss STAC, BAFU LINDAS). Excluded from default CI. Run by `integration-nightly.yml` (nightly) or `live-lindas-weekly.yml` (Mondays at 06:00 UTC).
+
+Both scheduled workflows also accept `workflow_dispatch`, so they can be fired manually via `gh workflow run` for out-of-cycle verification.
+
+### Before major merges to main
+
+The default `unit` + `integration` jobs catch fast-to-spot regressions. Large changes — new adapters, flow-wiring, model framework touches, or anything that could plausibly affect the slow/live paths — should run the nightly tier manually before merging:
+
+```bash
+# Fire the nightly suite against the branch currently being merged
+gh workflow run integration-nightly.yml --ref <branch>
+# Optionally also the weekly LINDAS schema check
+gh workflow run live-lindas-weekly.yml --ref <branch>
+
+# Watch the run
+gh run watch
+```
+
+This is a convention, not a hard merge gate — branch protection does not require it. The discipline is: **if your change touches adapters, flows, or the e2e path, run the nightly manually before merging**. If it's cosmetic (docs, typo fixes, trivially-scoped refactors), the default CI is enough.
+
+Rationale: slow/live tests take 10-30 minutes and hit rate-limited external APIs. Running them on every PR would burn runner time and external-API quota. Running them on merge to main is after-the-fact (a failure forces a revert). The manual-trigger-before-merge ritual catches regressions at the latest point where a fix is still cheap.
+
 ## Config overlays
 
 A deployment can run from `main` with small config variants (staging subsets, per-region tweaks) without forking a branch. One base `config.toml` stays canonical; overlays patch only the keys they need; all loaders consume the merged result through a shared helper.

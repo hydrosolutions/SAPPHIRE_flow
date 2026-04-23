@@ -30,3 +30,6 @@ data/
 # Config overlays — ignore gitignored local operator tweaks, keep .gitkeep tracked
 config/overlays/local/*
 !config/overlays/local/.gitkeep
+
+# Per-environment performance baseline (Plan 043 §E7) — each env owns its own
+tests/fixtures/reference/performance_baseline.json

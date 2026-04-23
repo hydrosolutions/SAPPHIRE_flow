@@ -38,9 +38,9 @@ jobs:
       # Run both the slow-marked tests from the main integration tree and
        # every test under tests/integration/live (path-based, so we don't
        # depend on any particular `live*` marker name staying consistent).
-      - run: uv run pytest tests/integration/ -v -m "slow" --timeout=1800
+      - run: uv run pytest tests/integration/ -v -m "slow" --timeout=3600
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/sapphire_test
-      - run: uv run pytest tests/integration/live -v --timeout=1800
+      - run: uv run pytest tests/integration/live -v --timeout=3600
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/sapphire_test
