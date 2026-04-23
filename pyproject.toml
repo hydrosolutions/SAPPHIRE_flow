@@ -1,6 +1,6 @@
 [project]
 name = "sapphire-flow"
-version = "0.1.395"
+version = "0.1.396"
 description = "Add your description here"
 readme = "README.md"
 license = "MIT"
@@ -90,10 +90,10 @@ markers = [
     "live_stac: calls live MeteoSwiss STAC endpoint; excluded by default, run manually or on a schedule",
     "slow: long-running tests excluded from default CI integration job (runs nightly)",
 ]
-addopts = "-m 'not deployment and not live and not live_lindas and not live_stac'"
+addopts = "-m 'not deployment and not live and not live_lindas and not live_stac and not slow'"
 
 [tool.bumpversion]
-current_version = "0.1.395"
+current_version = "0.1.396"
 commit = false
 tag = false
 allow_dirty = true
