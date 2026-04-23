@@ -1,6 +1,17 @@
 {
   "include": ["src"],
   "typeCheckingMode": "strict",
-  "pythonVersion": "3.11",
-  "reportMissingTypeStubs": false
+  "pythonVersion": "3.12",
+  "reportMissingTypeStubs": false,
+  "executionEnvironments": [
+    {
+      "root": "src/sapphire_flow/flows",
+      "reportUnknownMemberType": "none",
+      "reportUnknownArgumentType": "none",
+      "reportUnknownVariableType": "none",
+      "reportUnknownParameterType": "none",
+      "reportMissingTypeArgument": "none",
+      "reportUnknownLambdaType": "none"
+    }
+  ]
 }
