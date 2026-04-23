@@ -60,7 +60,7 @@ def parse_review_table(section: str) -> list[dict[str, str]]:
         cells = [c.strip() for c in line.strip("|").split("|")]
         if len(cells) != len(headers):
             continue
-        rows.append(dict(zip(headers, cells)))
+        rows.append(dict(zip(headers, cells, strict=True)))
     return rows
 
 
@@ -79,7 +79,7 @@ def check_readiness(path: Path) -> tuple[bool, str, dict[str, str]]:
     """Run all readiness checks on the document at path.
 
     Returns (is_ready, reason, report_fields).
-    report_fields contains keys: status, rounds, blocking, latest_status, verdict, reason.
+    report_fields keys: status, rounds, blocking, latest_status, verdict, reason.
     """
     if not path.is_file():
         return (
