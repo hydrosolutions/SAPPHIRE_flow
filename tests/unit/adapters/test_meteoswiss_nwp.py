@@ -402,6 +402,153 @@ class TestCycleIsPublishedPropertyBased:
             adapter._cycle_is_published(cycle)
 
 
+class TestCycleIsPublishedPagination:
+    """Probe pagination (post-Sprint-1.3 fix, 2026-04-23).
+
+    Phase 1 H-B established that MeteoSwiss sorts items by
+    ``forecast:reference_datetime`` ascending. A single-page property match
+    is therefore insufficient: newer cycles' items don't land on page 1, so
+    the probe reported False for cycles that were in fact published. The
+    probe now walks ``rel=next`` pagination with an early exit, capped at
+    ``_MAX_PROBE_PAGES``.
+    """
+
+    def test_cycle_is_published_finds_cycle_on_later_page(self, tmp_path: Path) -> None:
+        # Simulate MeteoSwiss's ref_dt-ascending ordering: the first N pages
+        # are filled with an older cycle's items; the target cycle's items
+        # only show up on page N+1. The probe must keep walking rel=next
+        # until it finds a match.
+        cycle = ensure_utc(datetime(2026, 4, 23, 0, 0, tzinfo=UTC))
+        cycle_iso = "2026-04-23T00:00:00Z"
+        older_ref_dt = "2026-04-22T18:00:00Z"
+        pages_served = 3  # three older-cycle pages before the match
+        next_url_template = (
+            f"{_STAC_BASE}/collections/{_STAC_COLLECTION}/items"
+            f"?datetime={cycle_iso}&limit=100&page={{n}}"
+        )
+
+        page_hits: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            q = str(request.url)
+            page_hits.append(q)
+            if "page=" not in q:
+                # Page 1: older cycle items, with rel=next → page=2
+                return httpx.Response(
+                    200,
+                    json=_make_page(
+                        [
+                            {
+                                "id": f"04222026-1800-{s}-tot_prec-ctrl-a",
+                                "properties": {
+                                    "forecast:reference_datetime": older_ref_dt
+                                },
+                            }
+                            for s in range(3)
+                        ],
+                        next_url=next_url_template.format(n=2),
+                    ),
+                )
+            # Extract page number from the URL.
+            page_n = int(q.rsplit("page=", 1)[1])
+            if page_n < pages_served + 1:
+                return httpx.Response(
+                    200,
+                    json=_make_page(
+                        [
+                            {
+                                "id": f"04222026-1800-{page_n}-t_2m-ctrl-b",
+                                "properties": {
+                                    "forecast:reference_datetime": older_ref_dt
+                                },
+                            }
+                        ],
+                        next_url=next_url_template.format(n=page_n + 1),
+                    ),
+                )
+            # Page N+1: target-cycle items surface.
+            return httpx.Response(
+                200,
+                json=_make_page(
+                    [
+                        {
+                            "id": "04232026-0000-0-tot_prec-ctrl-target",
+                            "properties": {"forecast:reference_datetime": cycle_iso},
+                        },
+                    ]
+                ),
+            )
+
+        adapter = _make_adapter(httpx.MockTransport(handler), tmp_path)
+        assert adapter._cycle_is_published(cycle) is True
+        # Must have walked through all older-cycle pages plus the match page.
+        assert len(page_hits) == pages_served + 1
+
+    def test_cycle_is_published_exhausts_pages_returns_false(
+        self, tmp_path: Path
+    ) -> None:
+        # Every page carries a rel=next link pointing back to a non-terminating
+        # URL, and no page ever matches the target ref_dt. The probe must abort
+        # once pages_walked reaches _MAX_PROBE_PAGES and return False.
+        from sapphire_flow.adapters.meteoswiss_nwp import _MAX_PROBE_PAGES
+
+        cycle = ensure_utc(datetime(2026, 4, 23, 0, 0, tzinfo=UTC))
+        older_ref_dt = "2026-04-22T18:00:00Z"
+        never_terminating_url = (
+            f"{_STAC_BASE}/collections/{_STAC_COLLECTION}/items"
+            "?datetime=2026-04-23T00:00:00Z&limit=100&page=next"
+        )
+        page_count = 0
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            nonlocal page_count
+            page_count += 1
+            return httpx.Response(
+                200,
+                json=_make_page(
+                    [
+                        {
+                            "id": "04222026-1800-0-tot_prec-ctrl-old",
+                            "properties": {"forecast:reference_datetime": older_ref_dt},
+                        }
+                    ],
+                    next_url=never_terminating_url,
+                ),
+            )
+
+        adapter = _make_adapter(httpx.MockTransport(handler), tmp_path)
+        assert adapter._cycle_is_published(cycle) is False
+        # Cap must bound the walk at exactly _MAX_PROBE_PAGES pages.
+        assert page_count == _MAX_PROBE_PAGES
+
+    def test_cycle_is_published_stops_at_empty_next(self, tmp_path: Path) -> None:
+        # Single page, non-matching items, and NO rel=next link. The probe
+        # must terminate after one HTTP call and return False.
+        cycle = ensure_utc(datetime(2026, 4, 23, 0, 0, tzinfo=UTC))
+        older_ref_dt = "2026-04-22T18:00:00Z"
+        page_count = 0
+
+        def handler(_request: httpx.Request) -> httpx.Response:
+            nonlocal page_count
+            page_count += 1
+            return httpx.Response(
+                200,
+                json=_make_page(
+                    [
+                        {
+                            "id": "04222026-1800-0-tot_prec-ctrl-old",
+                            "properties": {"forecast:reference_datetime": older_ref_dt},
+                        }
+                    ],
+                    next_url=None,
+                ),
+            )
+
+        adapter = _make_adapter(httpx.MockTransport(handler), tmp_path)
+        assert adapter._cycle_is_published(cycle) is False
+        assert page_count == 1
+
+
 class TestMaxFallbackStepsKwarg:
     """Plan 067 T3.b: ``max_fallback_steps`` is an instance kwarg.
 

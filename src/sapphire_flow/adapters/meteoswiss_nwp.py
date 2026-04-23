@@ -67,6 +67,13 @@ _GRIB_MAGIC: bytes = b"GRIB"
 # time.
 _MAX_PAGINATION_PAGES: int = 800
 
+# Probe pagination cap: the availability probe walks up to this many pages
+# to defeat MeteoSwiss's ref_dt-ascending item ordering (Phase 1 H-B).
+# Newer cycles' step-0 items only surface after older cycles' items are
+# exhausted, which at 100/page can be 40+ pages deep. 50 is a safe cap
+# that keeps probe latency under ~10 s.
+_MAX_PROBE_PAGES: int = 50
+
 
 def _is_grib_asset(asset_key: str, asset: dict[str, object]) -> bool:
     media_type = str(asset.get("type", ""))
@@ -198,32 +205,40 @@ class MeteoSwissNwpAdapter:
         )
 
     def _cycle_is_published(self, cycle: UtcDatetime) -> bool:
-        # T2a (Plan 067): property-based match on forecast:reference_datetime.
-        # The old prefix-based check was ordering-fragile (Phase 1 H-B): MeteoSwiss
-        # sorts items by reference_datetime ascending, so older cycles' forward-step
-        # items occupied the first 100 positions and occluded newer cycles' step-0
-        # items. Property-based matching is robust to ordering. Per D4, no step-0
-        # check — cycle publication at MeteoSwiss is atomic, so a single feature
-        # with a matching reference_datetime is sufficient evidence of publication.
-        datetime_q = cycle.strftime("%Y-%m-%dT%H:%M:%SZ")
-        url = (
-            f"{self._stac_base_url}/collections/{self._stac_collection}/items"
-            f"?datetime={datetime_q}&limit=100"
-        )
-        try:
-            resp = self._http_client.get(url)
-            resp.raise_for_status()
-        except Exception as exc:
-            raise AdapterError(f"STAC availability probe failed: {exc}") from exc
-        data = resp.json()
-        features = data.get("features", [])
-        if not features:
-            return False
+        # T2a (Plan 067, revised 2026-04-23 post-Sprint-1.3 finding):
+        # property-based match on forecast:reference_datetime, paginated up
+        # to _MAX_PROBE_PAGES. The property check alone is NOT sufficient
+        # — MeteoSwiss sorts items ref_dt-ascending so newer cycles' items
+        # don't land on page 1; single-page check was returning False for
+        # published cycles. Walk the rel=next chain until we see the target
+        # ref_dt or exhaust the cap.
         cycle_iso = cycle.strftime("%Y-%m-%dT%H:%M:%SZ")
-        return any(
-            f.get("properties", {}).get("forecast:reference_datetime") == cycle_iso
-            for f in features
+        url: str | None = (
+            f"{self._stac_base_url}/collections/{self._stac_collection}/items"
+            f"?datetime={cycle_iso}&limit=100"
         )
+        pages_walked = 0
+        while url and pages_walked < _MAX_PROBE_PAGES:
+            pages_walked += 1
+            try:
+                resp = self._http_client.get(url)
+                resp.raise_for_status()
+            except Exception as exc:
+                raise AdapterError(f"STAC availability probe failed: {exc}") from exc
+            data = resp.json()
+            features = data.get("features", [])
+            if any(
+                f.get("properties", {}).get("forecast:reference_datetime") == cycle_iso
+                for f in features
+            ):
+                return True
+            next_links = [
+                link["href"]
+                for link in data.get("links", [])
+                if link.get("rel") == "next"
+            ]
+            url = next_links[0] if next_links else None
+        return False
 
     def fetch_forecasts(
         self,
