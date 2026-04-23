@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ch.hydrosolutions.sapphire-watchdog</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/uv</string>
+        <string>run</string>
+        <string>python</string>
+        <string>-m</string>
+        <string>sapphire_flow.ops.watchdog</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>300</integer>
+    <key>WorkingDirectory</key>
+    <string>/Users/sapphire/SAPPHIRE_flow</string>
+    <key>StandardOutPath</key>
+    <string>/Users/sapphire/Library/Logs/sapphire-watchdog.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/sapphire/Library/Logs/sapphire-watchdog.log</string>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>UserName</key>
+    <string>sapphire</string>
+</dict>
+</plist>

@@ -105,20 +105,45 @@ milestone later.
 - [ ] If B: document the 5-station scope in Plan 046 Stream A close-out
       and move on to Stream C.
 
-### 1.5 Plan 046 Stream C — Mac Mini glue (~1 week)
+### 1.5 Plan 046 Stream C — Mac Mini glue + one-command bootstrap (~1 week)
 
-This is the bulk of remaining work; none of it exists yet.
+Split into two coordinated deliverables:
 
-- [ ] Write `scripts/launchd/*.plist` files + install script.
-- [ ] Write `docker-compose.macmini.yml` overlay (USB bind-mount,
-      caddy `tls internal`).
-- [ ] Write `src/sapphire_flow/ops/watchdog.py`.
-- [ ] Write `tests/deployment/` harness covering the compose-stack
-      bring-up (Plan 046 Stream B — can land concurrently).
+#### 1.5a — Building blocks
 
-**Gate**: a fresh `docker compose up` on the actual Mac Mini brings
-the full stack online; watchdog loop runs; TLS certificate valid on
-LAN.
+- [ ] `scripts/launchd/ch.hydrosolutions.sapphire.plist` — main-stack LaunchAgent.
+- [ ] `scripts/launchd/ch.hydrosolutions.sapphire-watchdog.plist` — watchdog LaunchAgent.
+- [ ] `scripts/launchd/start-sapphire.sh` — wait-for-Docker-Desktop + `compose up -d` wrapper.
+- [ ] `scripts/launchd/watchdog.sh` — watchdog runner.
+- [ ] `scripts/launchd/install-launchd.sh` — copies plists + `launchctl bootstrap`.
+- [ ] `docker-compose.macmini.yml` — overlay (USB backup bind-mount, CAMELS-CH host bind-mount, caddy TLS).
+- [ ] `src/sapphire_flow/ops/__init__.py` + `src/sapphire_flow/ops/watchdog.py` — watchdog logic (health probe, backup-staleness check, hysteresis, Slack-if-present-else-log-only).
+- [ ] `/etc/newsyslog.d/sapphire-watchdog.conf` template (version-controlled under `scripts/launchd/`).
+- [ ] `docs/deployment/mac-mini-staging.md` — runbook (primarily points at the bootstrap script; covers the few unavoidable manual steps + troubleshooting).
+
+#### 1.5b — One-command bootstrap
+
+- [ ] `scripts/bootstrap-mac-mini.sh` — detects missing prereqs (Homebrew, uv, Docker CLI), creates `secrets/db_password` if absent, detects optional `secrets/slack_webhook_url`, verifies USB backup disk at `/Volumes/sapphire-backup`, brings up `docker compose -f docker-compose.yml -f docker-compose.macmini.yml up -d`, calls `install-launchd.sh`, loops on health-check until `ok`, prints final report with any remaining manual steps (Docker Desktop install if absent; System Settings if auto-login/auto-update not configured).
+
+**Operator flow on the Mac Mini** (tomorrow morning):
+```bash
+# Physical: attach USB SSD. Install Docker Desktop GUI + accept license.
+# Enable auto-login for 'sapphire' user.
+
+cd ~ && git clone https://github.com/hydrosolutions/SAPPHIRE_flow.git
+cd SAPPHIRE_flow
+./scripts/bootstrap-mac-mini.sh
+```
+
+Script handles the rest; prints clear guidance if it can't continue.
+
+**Decisions locked** (2026-04-23):
+- Hostname: `sapphire-staging.local`. User: `sapphire`. Repo path: `/Users/sapphire/SAPPHIRE_flow`.
+- Slack webhook: skipped at install; watchdog log-only until added.
+- CAMELS-CH: host bind-mount of pre-staged `~/camels-ch/`.
+- Cross-platform (Linux): out of scope for v0; v1/Nepal follow-up.
+
+**Gate**: `./scripts/bootstrap-mac-mini.sh` on a fresh Mac Mini (with Docker Desktop installed + USB attached) brings up the stack, installs LaunchAgents, and reports "ready" with `/api/v1/health` returning `ok`.
 
 ### 1.6 Plan 046 Stream D — operational validation (~1 week)
 

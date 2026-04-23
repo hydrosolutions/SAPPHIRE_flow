@@ -1,0 +1,28 @@
+# docker-compose.macmini.yml — Mac-mini staging overlay.
+# Layers on top of docker-compose.yml for single-host Mac-mini deployments.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.macmini.yml up -d
+#
+# What this overlay does:
+#   * Binds /Volumes/sapphire-backup/pg_dumps (USB SSD) into the
+#     prefect-worker's /data/backups. Shadows the named `backups`
+#     volume so nightly pg_dumps land on the removable disk.
+#   * Binds /Users/sapphire/camels-ch (pre-staged host directory) into
+#     /data/raw read-only. Required by onboard-stations after Plan 060
+#     removed the sapphire_data:/data/raw mount from the base compose.
+#   * Exposes the API on the host (port 8000) so the watchdog on the
+#     host can probe http://localhost:8000/api/v1/health, and so
+#     team laptops can SSH-tunnel into the LAN-side API.
+#
+# Spec: docs/plans/046-mac-mini-staging-deployment.md §C2, §C3.
+
+services:
+  prefect-worker:
+    volumes:
+      - /Volumes/sapphire-backup/pg_dumps:/data/backups:rw
+      - /Users/sapphire/camels-ch:/data/raw:ro
+
+  api:
+    ports:
+      - "8000:8000"

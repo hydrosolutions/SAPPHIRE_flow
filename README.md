@@ -1,6 +1,23 @@
 # SAPPHIRE Flow
 
+[![CI](https://github.com/hydrosolutions/SAPPHIRE_flow/actions/workflows/ci.yml/badge.svg)](https://github.com/hydrosolutions/SAPPHIRE_flow/actions/workflows/ci.yml)
+[![Integration (nightly)](https://github.com/hydrosolutions/SAPPHIRE_flow/actions/workflows/integration-nightly.yml/badge.svg)](https://github.com/hydrosolutions/SAPPHIRE_flow/actions/workflows/integration-nightly.yml)
+[![Python](https://img.shields.io/badge/python-%E2%89%A53.12-blue)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
+[![Managed with uv](https://img.shields.io/badge/managed%20with-uv-261230.svg)](https://docs.astral.sh/uv/)
+
+<!-- Uncomment when the repository becomes public (these badges require shields.io to query the GitHub API, which fails on private repos):
+[![GitHub release](https://img.shields.io/github/v/release/hydrosolutions/SAPPHIRE_flow)](https://github.com/hydrosolutions/SAPPHIRE_flow/releases)
+[![Last commit](https://img.shields.io/github/last-commit/hydrosolutions/SAPPHIRE_flow)](https://github.com/hydrosolutions/SAPPHIRE_flow/commits/main)
+[![Open issues](https://img.shields.io/github/issues/hydrosolutions/SAPPHIRE_flow)](https://github.com/hydrosolutions/SAPPHIRE_flow/issues)
+-->
+
 Operational hydrological forecasting system. Ingests weather and station data, runs ensemble forecast models, checks alert thresholds, and will serve results via a REST API (in progress).
+
+## Maintenance Status
+
+🟢 **Active** – Developed & maintained by [hydrosolutions](https://github.com/hydrosolutions)
 
 ## Requirements
 
