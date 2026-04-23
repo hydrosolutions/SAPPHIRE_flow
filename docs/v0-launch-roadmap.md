@@ -1,0 +1,245 @@
+# v0 Launch Roadmap
+
+**Purpose**: the ordered punch-list to get v0 running on the Mac Mini
+and then cleanly extend it. Not a plan document (plans live in
+`docs/plans/`); this is a tracker that references them.
+
+**Last updated**: 2026-04-23
+
+**Decisions locked**:
+- **D1 = B**: 5-station scope for initial Mac Mini deploy; Plan 068
+  (onboard-stations parallelisation) runs in parallel for the
+  169-station scale-up milestone.
+- **D2 = C (hybrid)**: `@pytest.mark.slow` marker; `pyproject.toml`
+  defaults `pytest` to `-m "not slow"`; nightly CI runs the full suite
+  (timeout raised to 3600s); `workflow_dispatch` on both scheduled
+  workflows for manual pre-merge runs; ritual documented in
+  `docs/standards/cicd.md` — `gh workflow run integration-nightly.yml
+  --ref <branch>` before merging major changes.
+
+---
+
+## Where we are
+
+- **Phase ladder complete** (`docs/v0-scope.md` §H): Phases 1a/1b, 2,
+  3, 4, 5, 6, 7, 7b, 8, 9, 10, 11 all done.
+- **Dress rehearsal** 2026-04-21: 7 of 9 A3 steps green on MacBook Pro
+  (report at `docs/deployment/dress-rehearsal-2026-04-21.md`).
+  Blocker = step 8 forecast-cycle (MeteoSwiss STAC pagination / probe
+  bugs).
+- **Plan 067** (MeteoSwiss STAC fix) — READY, fixes designed, awaiting
+  commit. This unblocks dress-rehearsal step 8.
+- **Plan 046** (Mac Mini deploy) — IN_PROGRESS; Streams A/B/C/D still
+  have significant work.
+- **Pyright** — disabled in CI; 675 errors under `flows/` carve-out.
+  Plans 069/070/073 will bring it back. Not a deploy blocker.
+- **Weather-history (Plans 071/072)** — drafted, four review rounds,
+  zero blockers. v0b scope; not a deploy blocker.
+- **Integration-nightly CI** — failing with `Timeout >600s` (same root
+  cause as sequential onboard-stations). Alarm-fatigue risk.
+
+---
+
+## Sprint 1 — Deploy v0 to Mac Mini (target: ~1–2 weeks)
+
+### 1.1 Housekeeping (half-day)
+
+- [ ] Commit Plans 071/072 drafts (currently untracked).
+- [ ] Decide fate of uncommitted `pyproject.toml` / `uv.lock` change
+      (exploratory pyright executionEnvironment for `flows/`) — likely
+      supersede by the live `pyrightconfig.json`, so revert the
+      pyproject.toml hunk.
+- [ ] Investigate `tests/fixtures/reference/performance_baseline.json`
+      (orphan from a prior session) — delete or integrate.
+- [ ] Implement D2 hybrid: add `@pytest.mark.slow` marker +
+      `pyproject.toml` `addopts = ["-m", "not slow"]`; mark
+      `tests/integration/test_e2e_pipeline.py::test_full_pipeline` as
+      slow; raise `integration-nightly.yml` `pytest-timeout` to 3600s.
+- [ ] Ensure `workflow_dispatch:` trigger on both
+      `integration-nightly.yml` and `live-lindas-weekly.yml` (add if
+      absent).
+- [ ] Document the "Before major merges to main" ritual in
+      `docs/standards/cicd.md` — `gh workflow run
+      integration-nightly.yml --ref <branch>`.
+- [ ] Manually fire `live-lindas-weekly.yml` via `gh workflow run` to
+      establish it can execute (never run in history).
+- [ ] Manually fire `integration-nightly.yml` via `gh workflow run`
+      after the slow-marker + timeout changes land, confirming it runs
+      green.
+
+### 1.2 Land Plan 067 (1–2 days)
+
+- [ ] Implement Plan 067 Phase 2 (T2a probe rewrite, T2b client-side
+      filter, T3.d `_CYCLE_HOURS = (0,6,12,18)`, T4a pagination cap
+      raise, D2 config-derived `max_fallback_steps`).
+- [ ] Commit + push (patch-version bump + tag per CLAUDE.md).
+- [ ] Verify with a fresh manual forecast-cycle invocation against
+      live MeteoSwiss STAC.
+
+**Gate**: `uv run python -m sapphire_flow.cli run-flow forecast-cycle`
+succeeds end-to-end against real MeteoSwiss data.
+
+### 1.3 Re-run Plan 046 A3 step 8 (half-day)
+
+- [ ] Execute the direct-invoke forecast-cycle step per Plan 046
+      §A3.8 on MacBook Pro (or whatever machine is rehearsing).
+- [ ] Update `docs/deployment/dress-rehearsal-2026-04-21.md` with the
+      new result, OR create a fresh report if results diverge materially.
+
+**Gate**: all 9 A3 steps green on the rehearsal machine.
+
+### 1.4 Decision point — Plan 068 or 5-station scope? (half-day to 1 week)
+
+**Choice A**: Land Plan 068 (onboard-stations parallelisation) before
+deploy. Effort ~3–5 days. Enables 169-station scale-up.
+
+**Choice B**: Scope v0 initial deploy to ≤10 stations; defer 169-scale
+to v0b. Effort ~0 days for deploy, but commits to a second "scale-up"
+milestone later.
+
+- [ ] **Decide A vs B** — flag it on this line. My recommendation: **B**
+      (deploy earlier; scale-up as a later milestone). Rationale: 5-10
+      stations is already a working Swiss-data demo; the 169 number is
+      operational breadth, not architectural validation.
+- [ ] If A: implement Plan 068, commit, re-run 046 A4.
+- [ ] If B: document the 5-station scope in Plan 046 Stream A close-out
+      and move on to Stream C.
+
+### 1.5 Plan 046 Stream C — Mac Mini glue (~1 week)
+
+This is the bulk of remaining work; none of it exists yet.
+
+- [ ] Write `scripts/launchd/*.plist` files + install script.
+- [ ] Write `docker-compose.macmini.yml` overlay (USB bind-mount,
+      caddy `tls internal`).
+- [ ] Write `src/sapphire_flow/ops/watchdog.py`.
+- [ ] Write `tests/deployment/` harness covering the compose-stack
+      bring-up (Plan 046 Stream B — can land concurrently).
+
+**Gate**: a fresh `docker compose up` on the actual Mac Mini brings
+the full stack online; watchdog loop runs; TLS certificate valid on
+LAN.
+
+### 1.6 Plan 046 Stream D — operational validation (~1 week)
+
+- [ ] 7-day continuous run on the Mac Mini with full flow cadence.
+- [ ] Daily health-check reports (watchdog output + Prefect run list).
+- [ ] Write go/no-go report at `docs/deployment/v0-launch-report.md`.
+
+**Gate**: ≥ 95% of expected runs succeed; no operator intervention for
+7 days; report committed.
+
+### 1.7 v0 live 🎉
+
+- [ ] Tag `v0.1.0` (first non-internal release) — bump minor, not patch.
+- [ ] Update CLAUDE.md + MEMORY.md to reflect v0 deployed status.
+- [ ] Communicate to stakeholders (hydrosolutions team, Nepal DHM
+      contacts).
+
+---
+
+## Sprint 2 — Type / CI hygiene after deploy (target: ~1 week)
+
+Independent of Sprint 1; can parallelise if someone picks it up while
+Sprint 1's Mac-Mini glue is being built. Merge order is
+**070 → 073 → 069** (all three plans agree on this).
+
+### 2.1 Plan 070 — pre-commit + `uv run check` (½ day)
+
+- [ ] Land Plan 070 Phase A (pre-commit config + hooks).
+- [ ] Land Phase B (`uv run check` helper).
+- [ ] Land Phase C (gate-parity audit + first-fire of scheduled
+      workflows).
+
+### 2.2 Plan 073 — fix 64 concrete pyright violations (2–4 days)
+
+- [ ] Tier 1 (11 latent crashes). These are real bugs; fix with tests.
+- [ ] Tier 2 (40 domain-type gaps).
+- [ ] Tier 3 (13 cleanup).
+
+**Gate**: `uv run pyright src/` reports ~611 errors (all
+`flows/`-scoped or Unknown-cluster).
+
+### 2.3 Plan 069 Phase 1 — ratchet + re-enable pyright in CI (~1 day)
+
+- [ ] Capture baseline at `tools/pyright_baseline.json`.
+- [ ] Ratchet CI script.
+- [ ] Re-enable `uv run pyright src/` in `.github/workflows/ci.yml`.
+
+**Gate**: `lint` CI job runs pyright again; baseline is equal to
+current; any new PR adding errors fails CI.
+
+### 2.4 Plan 069 Phase 2+ — drain under ratchet (ongoing)
+
+File-by-file drain, each PR ratchets the baseline down. Can run
+alongside feature work. No hard deadline; treat as background hygiene.
+
+---
+
+## Sprint 3 — v0b extensions (target: ~2 weeks)
+
+Weather-history + retrain. Depends on Sprint 1 complete (real
+operational data flowing).
+
+### 3.1 Flip Plans 071/072 to READY (0 days)
+
+- [ ] Review both plans one more time (you've been through 4 rounds;
+      this is a final read-through).
+- [ ] Set `Status: READY` on both.
+
+### 3.2 Implement Plan 071 — MeteoSwiss open-data adapter (~1 week)
+
+- [ ] Phase 1 (registry + supersession filter + converters guard).
+- [ ] Phase 2 (adapter + recording tool + unit tests).
+- [ ] Phase 3 (flows + deployment registration).
+- [ ] Phase 4 (integration + docs).
+
+### 3.3 Implement Plan 072 — hybrid resolver (~3 days)
+
+- [ ] PerSourceStoreReader + HybridForcingSource + factory.
+- [ ] Wire `DeploymentConfig.reanalysis_source` flag.
+- [ ] Integration test + docs.
+
+### 3.4 Plan 066 — retrain strategy (scope separately)
+
+Plan 066 consumes 071/072. Pick up after 071/072 land.
+
+---
+
+## Open decisions
+
+| # | Decision | Status |
+|---|---|---|
+| D1 | Land Plan 068 (A) or 5-station scope (B)? | **Locked: B** — 5-station deploy; Plan 068 in parallel for 169-station scale-up milestone. |
+| D2 | Test-tier gating? | **Locked: C (hybrid)** — marker + default exclude + nightly + `workflow_dispatch` + documented pre-merge ritual. |
+| D3 | Plan 049 (Cloudflare public URL) — include in v0 launch, or LAN-only? | Default: LAN-only (per Plan 046 D1). |
+| D4 | Who runs the Sprint 2 hygiene? | Open; default: same operator as Sprint 1 unless parallelised. |
+
+---
+
+## Watch-items (risks that could derail the schedule)
+
+- **Plan 067 re-run surfaces new STAC issues**. If MeteoSwiss's
+  API has changed shape since the dress rehearsal, 067's Phase 2 may
+  need further iteration. Mitigation: Plan 067 Phase 1 investigation
+  already happened; Phase 2 design is evidence-based. Low risk.
+- **Mac Mini hardware issues**. USB disk for bind-mount, network
+  stability, power management. Mitigation: Plan 046 Stream D
+  explicitly monitors these.
+- **169-station scope creep**. If the operator insists on 169
+  stations at launch (D1 = A), add ~1 week for Plan 068 + A4 rerun.
+- **Nightly CI noise**. Unaddressed `integration-nightly.yml`
+  failures erode signal. Sprint 1 step 1.1 handles the immediate
+  fix; Plan 070 / Plan 068 are the longer-term solutions.
+
+---
+
+## How to use this doc
+
+- Check items off as you land them.
+- When a sprint completes, write a one-line note in the sprint
+  header ("Sprint 1 done 2026-05-XX; v0 live").
+- When reality diverges (it will), edit this doc rather than
+  creating a new one. Keep it to one page of actual reading.
+- For anything beyond this doc's scope, spawn a new plan in
+  `docs/plans/` and link to it here.
