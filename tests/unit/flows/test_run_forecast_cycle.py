@@ -835,8 +835,12 @@ class TestForecastCycle:
             grid_extractor=None,
         )
 
-        assert result.stations_attempted == 0
-        assert "NWP fetch failed" in result.errors
+        # Missing grid_extractor is a no-op NWP phase, NOT a flow-fatal abort.
+        # The flow must proceed to per-station forecasting even when the NWP
+        # extraction phase performs no work (v0 models may consume zero NWP
+        # features). "NWP fetch failed" is reserved for true failures.
+        assert "NWP fetch failed" not in result.errors
+        assert result.stations_attempted >= 1
 
     def test_gridded_nwp_extraction_error(self) -> None:
         sid = StationId(uuid4())
@@ -1287,7 +1291,12 @@ class TestForecastCycle:
             grid_extractor=FakeGridExtractor(result={}),
         )
 
-        assert "NWP fetch failed" in result.errors
+        # No station requested this grid's NWP source (no_matching_sources)
+        # is a no-op NWP phase, NOT a flow-fatal abort. The flow must proceed
+        # to per-station forecasting. "NWP fetch failed" is reserved for true
+        # failures (adapter raise, extraction raise, store raise).
+        assert "NWP fetch failed" not in result.errors
+        assert result.stations_attempted >= 1
 
     def test_grid_components_skipped_when_archive_path_none(self) -> None:
         from unittest.mock import patch

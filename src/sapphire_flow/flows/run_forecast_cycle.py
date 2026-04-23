@@ -100,6 +100,17 @@ def _fetch_nwp_task(
     station_basins: dict[StationId, Basin] | None = None,
     grid_archive_base_path: str | None = None,
 ) -> UtcDatetime | None:
+    """Fetch NWP forecast and store weather records.
+
+    Returns ``cycle_time`` on success OR when no extraction occurred (no
+    matching sources / no extractor configured — both considered successful
+    no-op NWP phases, because the downstream per-station forecast step does
+    not require NWP input for models with zero NWP features).
+
+    Returns ``None`` only when a true failure occurred (adapter raise,
+    extraction raise, store raise, unexpected return type). The caller
+    treats ``None`` as a flow-fatal abort condition.
+    """
     from sapphire_flow.preprocessing.converters import (
         basin_avg_to_records,
         point_forecast_to_records,
@@ -142,7 +153,7 @@ def _fetch_nwp_task(
             log.warning(
                 "nwp.extraction_skipped", reason="grid_extractor_not_configured"
             )
-            return None
+            return cycle_time
 
         # Filter configs to only those matching this grid's NWP source
         configs_for_source = [
@@ -154,7 +165,7 @@ def _fetch_nwp_task(
                 reason="no_matching_sources",
                 nwp_source=result.nwp_source,
             )
-            return None
+            return cycle_time
 
         extract_t0 = time.perf_counter()
         try:

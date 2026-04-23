@@ -429,6 +429,8 @@ class MeteoSwissNwpAdapter:
                     engine="cfgrib",
                     combine="nested",
                     concat_dim="valid_time",
+                    compat="override",
+                    data_vars="minimal",
                     filter_by_keys={
                         "shortName": short_name,
                         "typeOfLevel": type_of_level,
