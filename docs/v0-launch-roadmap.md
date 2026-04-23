@@ -88,22 +88,21 @@ and then cleanly extend it. Not a plan document (plans live in
 
 **Gate**: all 9 A3 steps green on the rehearsal machine.
 
-### 1.4 Decision point — Plan 068 or 5-station scope? (half-day to 1 week)
+### 1.4 Decision point — Plan 068 or 5-station scope? (LOCKED — B + defer 068)
 
-**Choice A**: Land Plan 068 (onboard-stations parallelisation) before
-deploy. Effort ~3–5 days. Enables 169-station scale-up.
+**Locked 2026-04-23**: **Choice B** + defer Plan 068 to post-v0.
 
-**Choice B**: Scope v0 initial deploy to ≤10 stations; defer 169-scale
-to v0b. Effort ~0 days for deploy, but commits to a second "scale-up"
-milestone later.
-
-- [ ] **Decide A vs B** — flag it on this line. My recommendation: **B**
-      (deploy earlier; scale-up as a later milestone). Rationale: 5-10
-      stations is already a working Swiss-data demo; the 169 number is
-      operational breadth, not architectural validation.
-- [ ] If A: implement Plan 068, commit, re-run 046 A4.
-- [ ] If B: document the 5-station scope in Plan 046 Stream A close-out
-      and move on to Stream C.
+- [x] 5-station scope for initial Mac Mini deploy.
+- [ ] Document the 5-station scope in Plan 046 Stream A close-out
+      (A5 rehearsal report amendment).
+- [ ] **Plan 068 DEFERRED** to post-v0 milestone. Rationale: Plan 068
+      depends on Plans 038 (store write atomicity) + 040 (hindcast
+      dedup constraint), both currently DRAFT. Shipping 068 without
+      its dependencies risks silent DB corruption at 169-station
+      scale. Landing 038 + 040 + 068 as a bundle is ~1 week of work
+      that is not on the v0 critical path (5-station deploy doesn't
+      stress parallelism). Revisit the dependency bundle after v0
+      is live on the Mac Mini.
 
 ### 1.5 Plan 046 Stream C — Mac Mini glue + one-command bootstrap (~1 week)
 
