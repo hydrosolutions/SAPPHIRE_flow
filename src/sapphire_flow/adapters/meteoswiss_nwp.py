@@ -52,7 +52,10 @@ _CYCLE_INTERVAL_HOURS: int = 6
 #   ("v_10m", "v_10m", "heightAboveGround"),
 PARAM_GROUPS: list[tuple[str, str, str]] = [
     ("tot_prec", "tp", "surface"),
-    ("t_2m", "t_2m", "heightAboveGround"),
+    # ICON-CH2-EPS 2-m temperature: WMO shortName is `2t`, cfgrib exposes
+    # the data variable as `t2m` (CF convention). MeteoSwiss labels the
+    # STAC item id with `-t_2m-` — that token lives in column 0.
+    ("t_2m", "2t", "heightAboveGround"),
 ]
 
 _DEFAULT_MAX_DOWNLOAD_BYTES: int = 4 * 1024 * 1024 * 1024  # 4 GB
@@ -105,9 +108,11 @@ def _deaccumulate_precipitation(ds: xr.Dataset) -> xr.Dataset:
 
 
 def _convert_units(ds: xr.Dataset) -> xr.Dataset:
-    if "t_2m" in ds:
-        ds["temperature"] = ds["t_2m"] - 273.15
-        ds = ds.drop_vars(["t_2m"])
+    # cfgrib exposes 2-m temperature as data var `t2m` (CF convention), not
+    # `t_2m` — the latter is only the MeteoSwiss STAC item-id token.
+    if "t2m" in ds:
+        ds["temperature"] = ds["t2m"] - 273.15
+        ds = ds.drop_vars(["t2m"])
     if "sd" in ds:
         ds["snow_depth"] = ds["sd"] * 100
         ds = ds.drop_vars(["sd"])
@@ -134,67 +139,95 @@ def convert_raw_dataset(ds: xr.Dataset) -> xr.Dataset:
     return ds
 
 
-def _combine_cfgrib_datasets(per_file: list[xr.Dataset]) -> xr.Dataset:
-    """Combine per-file cfgrib datasets into a (number, valid_time, lat, lon) dataset.
+def _normalise_number_dim(ds: xr.Dataset) -> xr.Dataset:
+    """Ensure ``number`` is a 1-D dim (not a scalar coord).
 
-    Each input dataset represents one GRIB message from MeteoSwiss
-    ICON-CH2-EPS: scalar ``number``, scalar ``step``, scalar ``valid_time``,
-    one variable, 2D grid. We group by member, concat along ``valid_time``
-    within each group (sorted monotonic), then concat members along
-    ``number``. The ensemble-member dim is kept as ``number`` (cfgrib's
-    ECMWF convention); downstream ``convert_raw_dataset`` renames it to
+    MeteoSwiss ICON-CH2-EPS publishes one file per GRIB message.
+    Ctrl files expose ``number`` as a *scalar* coord (value 0). Perturb
+    files expose ``number`` as a 1-D dim (length 20, values 1..20).
+    For uniform concatenation we promote scalars to size-1 dims.
+    """
+    if "number" not in ds.coords:
+        return ds
+    if "number" in ds.dims:
+        return ds
+    # Scalar coord → promote to size-1 `number` dim.
+    return ds.expand_dims("number")
+
+
+def _combine_cfgrib_datasets(per_file: list[xr.Dataset]) -> xr.Dataset:
+    """Combine per-file cfgrib datasets into a ``(number, valid_time, …)`` dataset.
+
+    Each input dataset is one MeteoSwiss ICON-CH2-EPS GRIB message. Ctrl
+    files have a scalar ``number`` coord; perturb files already carry a
+    1-D ``number`` dim with 20 members. We normalise each file to a 1-D
+    ``number`` dim, group by ``valid_time`` (which is scalar per file),
+    concat each group along ``number``, then concat those groups along
+    ``valid_time`` in monotonic order.
+
+    The ensemble-member dim stays as ``number`` (cfgrib's ECMWF
+    convention); downstream ``convert_raw_dataset`` renames it to
     ``member`` to match the extractor's expectation.
     """
-    by_member: dict[Hashable, list[xr.Dataset]] = {}
-    for d in per_file:
-        member_coord = d.coords.get("number")
-        if member_coord is None:
-            member_coord = d.coords.get("member")
-        member_key: Hashable = (
-            member_coord.values.item() if member_coord is not None else "_default"
-        )
-        by_member.setdefault(member_key, []).append(d)
+    normalised = [_normalise_number_dim(d) for d in per_file]
 
-    # Pass A: for each member, drop the scalar `number`/`member` coord on
-    # each file (so concat along valid_time doesn't broadcast it into a
-    # valid_time-dependent coord), concat along valid_time in sorted order,
-    # then re-attach the member value as a size-1 `number` dim.
-    per_member: list[xr.Dataset] = []
-    for member_key, datasets in by_member.items():
-        stripped = [
-            d.drop_vars([c for c in ("number", "member") if c in d.coords])
-            for d in datasets
-        ]
-        order_keys = [d.coords["valid_time"].values.item() for d in datasets]
-        datasets_sorted = [
-            s
-            for _, s in sorted(
-                zip(order_keys, stripped, strict=True), key=lambda pair: pair[0]
+    by_valid_time: dict[Hashable, list[xr.Dataset]] = {}
+    for d in normalised:
+        vt = d.coords["valid_time"].values.item()
+        by_valid_time.setdefault(vt, []).append(d)
+
+    per_time: list[xr.Dataset] = []
+    for vt in sorted(by_valid_time.keys()):
+        group = by_valid_time[vt]
+        if len(group) == 1:
+            combined = group[0]
+        else:
+            # Sort by first member value so the concat produces a monotonic
+            # `number` axis (ctrl=0, perturb=1..20). Drop the scalar
+            # `valid_time` / `step` / `time` coords from each file first:
+            # they are identical across the group (we just grouped by
+            # valid_time) and xr.concat would otherwise broadcast them into
+            # 1-D coords indexed by `number`, which blocks the subsequent
+            # `expand_dims("valid_time")`.
+            scalar_drop = [
+                c for c in ("valid_time", "step", "time") if c in group[0].coords
+            ]
+            # Preserve dtype-correct DataArrays (timedelta64 for `step`,
+            # datetime64 for `valid_time`/`time`). Using `.values.item()`
+            # would collapse timedelta64 to int, which later confuses
+            # xarray's dtype promotion.
+            shared_coords = {c: group[0].coords[c] for c in scalar_drop}
+            stripped = [d.drop_vars(scalar_drop) for d in group]
+            stripped_sorted = sorted(
+                stripped, key=lambda d: int(d.coords["number"].values[0])
             )
-        ]
-        combined_member = xr.concat(
-            datasets_sorted,
-            dim="valid_time",
-            coords="all",
-            compat="override",
-            data_vars="all",
-        )
-        combined_member = combined_member.expand_dims({"number": [member_key]})
-        per_member.append(combined_member)
+            combined = xr.concat(
+                stripped_sorted,
+                dim="number",
+                coords="all",
+                compat="override",
+                data_vars="all",
+                join="outer",
+            )
+            # Re-attach the shared scalar coords.
+            combined = combined.assign_coords(shared_coords)
+        # Promote `valid_time` from a scalar coord to a size-1 dim so the
+        # outer concat can extend along it without colliding with the
+        # existing coord name.
+        if "valid_time" not in combined.dims:
+            combined = combined.expand_dims("valid_time")
+        per_time.append(combined)
 
-    if len(per_member) == 1:
-        return per_member[0]
+    if len(per_time) == 1:
+        return per_time[0]
 
-    per_member_sorted = sorted(
-        per_member,
-        key=lambda d: d.coords["number"].values[0],
-    )
     return xr.concat(
-        per_member_sorted,
-        dim="number",
+        per_time,
+        dim="valid_time",
         coords="all",
         compat="override",
         data_vars="all",
+        join="outer",
     )
 
 

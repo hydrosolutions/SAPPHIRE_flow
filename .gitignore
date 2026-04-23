@@ -33,3 +33,7 @@ config/overlays/local/*
 
 # Per-environment performance baseline (Plan 043 §E7) — each env owns its own
 tests/fixtures/reference/performance_baseline.json
+
+# cfgrib index sidecars — never committed next to GRIB fixtures
+tests/fixtures/meteoswiss_nwp/**/*.idx
+tests/fixtures/meteoswiss_nwp/**/*.grib2.*.idx

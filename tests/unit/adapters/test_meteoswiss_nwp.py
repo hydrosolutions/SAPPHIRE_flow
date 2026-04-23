@@ -66,9 +66,12 @@ class TestDeaccumulatePrecipitation:
 
 class TestConvertUnits:
     def test_temperature_kelvin_to_celsius(self) -> None:
+        # cfgrib exposes ICON-CH2-EPS 2-m temperature as data var `t2m`
+        # (CF convention), not `t_2m` — the latter is only the MeteoSwiss
+        # STAC item-id token. See `_convert_units` in the adapter.
         ds = xr.Dataset(
             {
-                "t_2m": xr.DataArray(
+                "t2m": xr.DataArray(
                     np.full((3, 5, 2, 2), 293.15, dtype=np.float32),
                     dims=["member", "valid_time", "latitude", "longitude"],
                 )
@@ -76,7 +79,7 @@ class TestConvertUnits:
         )
         result = _convert_units(ds)
         np.testing.assert_allclose(result["temperature"].values, 20.0, atol=0.01)
-        assert "t_2m" not in result
+        assert "t2m" not in result
 
     def test_snow_depth_meters_to_cm(self) -> None:
         ds = xr.Dataset(
@@ -145,7 +148,7 @@ class TestConvertRawDataset:
     def test_renames_number_to_member(self) -> None:
         ds = xr.Dataset(
             {
-                "t_2m": xr.DataArray(
+                "t2m": xr.DataArray(
                     np.full((3, 2, 2, 2), 300.0, dtype=np.float32),
                     dims=["number", "valid_time", "latitude", "longitude"],
                 )
@@ -166,7 +169,7 @@ class TestConvertRawDataset:
                     .repeat(n_members, axis=0),
                     dims=["number", "valid_time", "latitude", "longitude"],
                 ),
-                "t_2m": xr.DataArray(
+                "t2m": xr.DataArray(
                     np.full((n_members, n_times, 1, 1), 273.15, dtype=np.float32),
                     dims=["number", "valid_time", "latitude", "longitude"],
                 ),
@@ -1097,15 +1100,15 @@ class TestCombineCfgribDatasets:
         # convert_raw_dataset (which renames number → member).
         ds = _combine_cfgrib_datasets(
             [
-                _per_file_ds(member=0, step_hours=0, var="t_2m"),
-                _per_file_ds(member=1, step_hours=0, var="t_2m"),
+                _per_file_ds(member=0, step_hours=0, var="t2m"),
+                _per_file_ds(member=1, step_hours=0, var="t2m"),
             ]
         )
         # Inside the helper the dim is still "number" (cfgrib convention).
         assert "number" in ds.dims
         # convert_raw_dataset is responsible for the rename.
         renamed = convert_raw_dataset(
-            ds.assign({"t_2m": ds["t_2m"].astype(np.float32) + 273.15})
+            ds.assign({"t2m": ds["t2m"].astype(np.float32) + 273.15})
         )
         assert "member" in renamed.dims
         assert "number" not in renamed.dims
