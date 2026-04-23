@@ -13,8 +13,8 @@ import sys
 from pathlib import Path
 
 
-def parse_frontmatter(text: str) -> dict[str, str]:
-    """Extract YAML frontmatter fields from text between --- delimiters."""
+def _parse_yaml_frontmatter(text: str) -> dict[str, str]:
+    """Extract fields from YAML frontmatter (--- delimited block)."""
     match = re.match(r"^---\s*\n(.*?)\n---", text, re.DOTALL)
     if not match:
         return {}
@@ -24,6 +24,38 @@ def parse_frontmatter(text: str) -> dict[str, str]:
         if len(kv) == 2:
             fields[kv[0].strip()] = kv[1].strip()
     return fields
+
+
+def _parse_markdown_body_frontmatter(text: str) -> dict[str, str]:
+    """Extract **Key**: value pairs from the first ~30 non-empty lines."""
+    pattern = re.compile(r"^\*\*(?P<key>[^*]+)\*\*:\s*(?P<value>.+?)$")
+    fields: dict[str, str] = {}
+    non_empty = 0
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        non_empty += 1
+        if non_empty > 30:
+            break
+        m = pattern.match(line.strip())
+        if m:
+            fields[m.group("key").strip().lower()] = m.group("value").strip()
+    return fields
+
+
+def parse_frontmatter(text: str) -> dict[str, str]:
+    """Extract frontmatter fields from text.
+
+    YAML frontmatter (--- delimited) takes priority. For any key not present
+    in YAML, falls back to **Key**: value pairs in the first ~30 non-empty
+    lines of the markdown body.
+    """
+    yaml_fields = _parse_yaml_frontmatter(text)
+    if yaml_fields.get("status"):
+        return yaml_fields
+    md_fields = _parse_markdown_body_frontmatter(text)
+    # Merge: YAML wins for any key present in both
+    return {**md_fields, **yaml_fields}
 
 
 def find_review_history_section(text: str) -> str | None:
