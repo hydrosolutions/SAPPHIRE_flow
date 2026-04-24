@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 import httpx
 import numpy as np
 import pytest
+import structlog
 import xarray as xr
 
 from sapphire_flow.adapters.meteoswiss_nwp import (
@@ -1112,3 +1113,144 @@ class TestCombineCfgribDatasets:
         )
         assert "member" in renamed.dims
         assert "number" not in renamed.dims
+
+
+def _make_paged_items(count: int) -> list[dict[str, object]]:
+    # Build N tp items spread across the implicit server pagination. Each has
+    # a unique step so the asset filenames differ (required by
+    # _download_asset's scratch-dir path-traversal check).
+    return [_make_item("tot_prec", step=s) for s in range(count)]
+
+
+class TestMaxFilesCap:
+    """``max_files`` scope-limiter: caps per-cycle GRIB fetches with a graceful stop.
+
+    Distinct from ``max_download_bytes`` (safety cap, raises) — ``max_files``
+    is a scope-limiter for smoke tests / sampled runs. Default ``None``
+    preserves unlimited production behaviour.
+    """
+
+    @staticmethod
+    def _paged_handler(
+        features: list[dict[str, object]], page_size: int = 10
+    ) -> object:
+        """Serve `features` split into pages of `page_size`, linked via rel=next."""
+        base = f"{_STAC_BASE}/collections/{_STAC_COLLECTION}/items"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            q = str(request.url)
+            if ".grib2" in q:
+                return httpx.Response(200, content=b"GRIB" + b"\x00" * 50)
+            # Extract offset from query string (default 0).
+            offset = 0
+            if "offset=" in q:
+                offset = int(q.rsplit("offset=", 1)[1].split("&")[0])
+            chunk = features[offset : offset + page_size]
+            next_offset = offset + page_size
+            next_url: str | None = None
+            if next_offset < len(features):
+                next_url = f"{base}?datetime=x&offset={next_offset}"
+            return httpx.Response(200, json=_make_page(chunk, next_url=next_url))
+
+        return handler
+
+    def test_max_files_stops_fetch_gracefully(self, tmp_path: Path) -> None:
+        cycle = ensure_utc(datetime(2026, 4, 19, 12, 0, tzinfo=UTC))
+        features = _make_paged_items(100)
+        handler = self._paged_handler(features, page_size=10)
+
+        client = httpx.Client(
+            transport=httpx.MockTransport(handler),  # type: ignore[arg-type]
+            base_url="https://dummy",
+        )
+        adapter = MeteoSwissNwpAdapter(
+            stac_base_url=_STAC_BASE,
+            stac_collection=_STAC_COLLECTION,
+            scratch_path=tmp_path,
+            http_client=client,
+            max_files=5,
+        )
+
+        with structlog.testing.capture_logs() as captured:
+            files = adapter._fetch_grib_files(cycle)
+
+        assert len(files) == 5
+        cap_events = [e for e in captured if e.get("event") == "nwp.fetch_cap_reached"]
+        assert len(cap_events) == 1
+        assert cap_events[0]["files_fetched"] == 5
+        assert cap_events[0]["max_files_cap"] == 5
+
+    def test_max_files_none_preserves_unlimited(self, tmp_path: Path) -> None:
+        cycle = ensure_utc(datetime(2026, 4, 19, 12, 0, tzinfo=UTC))
+        features = _make_paged_items(100)
+        handler = self._paged_handler(features, page_size=10)
+
+        client = httpx.Client(
+            transport=httpx.MockTransport(handler),  # type: ignore[arg-type]
+            base_url="https://dummy",
+        )
+        adapter = MeteoSwissNwpAdapter(
+            stac_base_url=_STAC_BASE,
+            stac_collection=_STAC_COLLECTION,
+            scratch_path=tmp_path,
+            http_client=client,
+            # max_files defaults to None = unlimited.
+        )
+
+        with structlog.testing.capture_logs() as captured:
+            files = adapter._fetch_grib_files(cycle)
+
+        # All 100 items are allowlisted (tp) and below _MAX_FILE_COUNT=500.
+        assert len(files) == 100
+        cap_events = [e for e in captured if e.get("event") == "nwp.fetch_cap_reached"]
+        assert cap_events == []
+
+    def test_max_files_larger_than_available(self, tmp_path: Path) -> None:
+        cycle = ensure_utc(datetime(2026, 4, 19, 12, 0, tzinfo=UTC))
+        features = _make_paged_items(3)
+        handler = self._paged_handler(features, page_size=10)
+
+        client = httpx.Client(
+            transport=httpx.MockTransport(handler),  # type: ignore[arg-type]
+            base_url="https://dummy",
+        )
+        adapter = MeteoSwissNwpAdapter(
+            stac_base_url=_STAC_BASE,
+            stac_collection=_STAC_COLLECTION,
+            scratch_path=tmp_path,
+            http_client=client,
+            max_files=1000,
+        )
+
+        with structlog.testing.capture_logs() as captured:
+            files = adapter._fetch_grib_files(cycle)
+
+        assert len(files) == 3
+        cap_events = [e for e in captured if e.get("event") == "nwp.fetch_cap_reached"]
+        assert cap_events == []
+
+    def test_max_files_zero_fetches_nothing(self, tmp_path: Path) -> None:
+        cycle = ensure_utc(datetime(2026, 4, 19, 12, 0, tzinfo=UTC))
+        features = _make_paged_items(10)
+        handler = self._paged_handler(features, page_size=10)
+
+        client = httpx.Client(
+            transport=httpx.MockTransport(handler),  # type: ignore[arg-type]
+            base_url="https://dummy",
+        )
+        adapter = MeteoSwissNwpAdapter(
+            stac_base_url=_STAC_BASE,
+            stac_collection=_STAC_COLLECTION,
+            scratch_path=tmp_path,
+            http_client=client,
+            max_files=0,
+        )
+
+        with structlog.testing.capture_logs() as captured:
+            files = adapter._fetch_grib_files(cycle)
+
+        assert files == []
+        cap_events = [e for e in captured if e.get("event") == "nwp.fetch_cap_reached"]
+        assert len(cap_events) == 1
+        assert cap_events[0]["files_fetched"] == 0
+        assert cap_events[0]["max_files_cap"] == 0

@@ -253,6 +253,7 @@ class MeteoSwissNwpAdapter:
         max_download_bytes: int = _DEFAULT_MAX_DOWNLOAD_BYTES,
         cleanup_scratch_on_fetch: bool = True,
         max_fallback_steps: int = 2,
+        max_files: int | None = None,
     ) -> None:
         # Plan 067 D2: max_fallback_steps is derived by the caller from
         # ``DeploymentConfig.nwp_max_fallback_age_hours`` as
@@ -261,6 +262,15 @@ class MeteoSwissNwpAdapter:
         # ``nwp_max_fallback_age_hours=12.0`` policy (12 / 6 = 2) and exists
         # only for test convenience — production callers must pass the derived
         # value explicitly.
+        #
+        # max_files: Optional hard cap on the number of GRIB files fetched per
+        #     cycle. When the cap is reached, the adapter stops iterating STAC
+        #     pages gracefully and returns whatever has been downloaded; it
+        #     does NOT raise. Distinct from max_download_bytes, which is a
+        #     safety cap that raises BudgetExceededError on overflow.
+        #
+        #     Default None = unlimited (production behaviour). Set in tests or
+        #     scope-limited deployments (e.g., smoke tests, sampled runs).
         self._stac_base_url = stac_base_url.rstrip("/")
         self._stac_collection = stac_collection
         self._scratch_path = scratch_path
@@ -268,6 +278,7 @@ class MeteoSwissNwpAdapter:
         self._max_download_bytes = max_download_bytes
         self._cleanup_scratch_on_fetch = cleanup_scratch_on_fetch
         self._max_fallback_steps = max_fallback_steps
+        self._max_files = max_files
 
     @property
     def max_fallback_steps(self) -> int:
@@ -403,7 +414,16 @@ class MeteoSwissNwpAdapter:
         grib_files: list[Path] = []
         accumulated_bytes = 0
         page_count = 0
-        while url:
+        # Graceful stop flag for the `max_files` scope-limiter. Python lacks
+        # labeled breaks, so we set this inside the asset loop and check it
+        # after each page to unwind to the `return grib_files` path without
+        # raising.
+        max_files_reached = False
+        # Early-exit for the edge case `max_files=0`: nothing to fetch, skip
+        # the STAC walk entirely and emit the cap-reached log below.
+        if self._max_files is not None and self._max_files <= 0:
+            max_files_reached = True
+        while url and not max_files_reached:
             page_count += 1
             if page_count > _MAX_PAGINATION_PAGES:
                 raise AdapterError(
@@ -419,6 +439,8 @@ class MeteoSwissNwpAdapter:
 
             data = resp.json()
             for item in data.get("features", []):
+                if max_files_reached:
+                    break
                 item_id = str(item.get("id", ""))
                 # T2b (Plan 067): filter by forecast:reference_datetime property,
                 # not ID prefix. MeteoSwiss STAC does not support CQL (Phase 1
@@ -479,7 +501,21 @@ class MeteoSwissNwpAdapter:
                             f"GRIB file count exceeded: "
                             f"{len(grib_files)} > {_MAX_FILE_COUNT}"
                         )
+                    if (
+                        self._max_files is not None
+                        and len(grib_files) >= self._max_files
+                    ):
+                        # Scope-limiter cap reached. Stop gracefully — break
+                        # out of the asset loop; the outer `while url` loop
+                        # sees ``max_files_reached`` and unwinds to the
+                        # `return grib_files` path without raising.
+                        max_files_reached = True
+                        break
+                if max_files_reached:
+                    break
 
+            if max_files_reached:
+                break
             url = ""
             for link in data.get("links", []):
                 if link.get("rel") == "next":
@@ -490,7 +526,14 @@ class MeteoSwissNwpAdapter:
                         )
                     break
 
-        if not grib_files:
+        if max_files_reached:
+            log.info(
+                "nwp.fetch_cap_reached",
+                files_fetched=len(grib_files),
+                max_files_cap=self._max_files,
+                cycle_time=str(cycle_time),
+            )
+        if not grib_files and not max_files_reached:
             raise AdapterError(
                 f"No matching GRIB2 files for cycle_time={cycle_time.isoformat()} "
                 f"(allowlist tokens: {allow_tokens})"

@@ -52,9 +52,17 @@ def skip_if_meteoswiss_unreachable() -> None:
 
 @pytest.fixture
 def live_adapter(tmp_path: Path) -> MeteoSwissNwpAdapter:
-    # Plan 067 D2: max_fallback_steps=2 = ceil(12.0 / 6.0), matching the
-    # default DeploymentConfig.nwp_max_fallback_age_hours=12.0 policy.
-    # ICON-CH2-EPS publishes every 6 h (Plan 067 T1.b).
+    """Smoke-scope MeteoSwiss adapter.
+
+    Plan 067 D2: max_fallback_steps=2 = ceil(12.0 / 6.0), matching the
+    default DeploymentConfig.nwp_max_fallback_age_hours=12.0 policy.
+    ICON-CH2-EPS publishes every 6 h (Plan 067 T1.b).
+
+    The HTTP timeout (read=300 s) is sized for the smoke-scope workload
+    (``max_files=4`` below, ~25-30 MB). Production callers construct their
+    own client with longer timeouts to accommodate the full 489-file fetch
+    per cycle.
+    """
     return MeteoSwissNwpAdapter(
         stac_base_url=STAC_BASE_URL,
         stac_collection=STAC_COLLECTION,
@@ -63,6 +71,7 @@ def live_adapter(tmp_path: Path) -> MeteoSwissNwpAdapter:
             timeout=httpx.Timeout(connect=10.0, read=300.0, write=None, pool=5.0),
         ),
         max_fallback_steps=2,
+        max_files=4,
     )
 
 
@@ -70,19 +79,26 @@ def live_adapter(tmp_path: Path) -> MeteoSwissNwpAdapter:
 class TestMeteoSwissLiveFetch:
     """Exercises the real MeteoSwiss endpoint with the current adapter."""
 
-    def test_resolve_and_fetch_latest_cycle(
+    def test_fetch_and_parse_smoke(
         self,
         skip_if_meteoswiss_unreachable: None,
         live_adapter: MeteoSwissNwpAdapter,
     ) -> None:
-        """Plan 067 T5: full fetch path happy-or-raise.
+        """Smoke-scope live test: probe → resolve → fetch 4 files → parse → convert.
 
-        Contract: resolve_cycle_time returns a within-policy cycle OR raises
-        NoCycleAvailableError cleanly. If it returns, fetch_forecasts returns
-        a GriddedForecast with the allowlisted variables (post-conversion:
-        tp -> precipitation, t_2m -> temperature per
-        ``meteoswiss_nwp.convert_raw_dataset``) and at least one finite value
-        per variable.
+        Scope: max_files=4 covers 1 step × 2 variables (tp, t_2m) × 2 variants
+        (ctrl, perturb) on MeteoSwiss's current iteration order. Verifies the
+        live STAC endpoint still responds with the expected schema and that
+        the full fetch+parse+convert chain works end-to-end against real data.
+
+        Does NOT guarantee full-cycle correctness — that's covered by
+        tests/unit/adapters/test_meteoswiss_nwp_real.py against committed
+        ICON-CH2-EPS fixtures. Production validation is via the forecast-cycle
+        invocation in Plan 046 §A3 step 8 (dress rehearsal).
+
+        If MeteoSwiss changes item iteration order and this test becomes flaky,
+        bump max_files to 8 (covers 2 steps → tolerates any single-step order
+        oddity) before considering any deeper refactor.
         """
         now_utc = ensure_utc(datetime.now(tz=UTC))
 

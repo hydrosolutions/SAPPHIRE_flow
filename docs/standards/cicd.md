@@ -308,6 +308,24 @@ This is a convention, not a hard merge gate — branch protection does not requi
 
 Rationale: slow/live tests take 10-30 minutes and hit rate-limited external APIs. Running them on every PR would burn runner time and external-API quota. Running them on merge to main is after-the-fact (a failure forces a revert). The manual-trigger-before-merge ritual catches regressions at the latest point where a fix is still cheap.
 
+### live_stac test scope
+
+`tests/integration/live/test_meteoswiss_nwp_live.py::test_fetch_and_parse_smoke`
+is scoped to a 4-file smoke test (`max_files=4` on the adapter) to
+stay within GitHub Actions runner limits. Its purpose is to detect
+MeteoSwiss STAC endpoint drift (schema, URL format, paramId), NOT
+to validate full-cycle correctness.
+
+Full-cycle live validation happens in two places:
+- **Unit tests** against committed ICON-CH2-EPS fixtures
+  (`tests/unit/adapters/test_meteoswiss_nwp_real.py`).
+- **Production dress rehearsals** (Plan 046 §A3 step 8).
+
+If deeper live validation is needed (e.g., before a major adapter
+change), temporarily raise `max_files` on a branch and run `gh
+workflow run integration-nightly.yml --ref <branch>` per the ritual
+above — revert before merging.
+
 ## Config overlays
 
 A deployment can run from `main` with small config variants (staging subsets, per-region tweaks) without forking a branch. One base `config.toml` stays canonical; overlays patch only the keys they need; all loaders consume the merged result through a shared helper.
