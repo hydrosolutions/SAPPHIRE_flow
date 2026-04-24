@@ -173,3 +173,76 @@ Ordered by priority for the next A3 attempt:
 The A3 dress rehearsal validated the Plan 065 overlay path end-to-end through step 7 (seven of nine steps). The remaining gaps (steps 4, 8) surface latent issues — one design question (train-models data window), one external outage (MeteoSwiss), two adapter configurability limits (fallback steps, pagination). None are regressions from Plan 065 or Plan 046 Rev 10.
 
 **Signal for v0 readiness**: the 26-hour extrapolation for `onboard-stations` at 169 stations is the strongest operational blocker surfaced today. Worth resolving before A4 is attempted.
+
+---
+
+## 2026-04-23 re-run — step 8 forecast-cycle: PASS
+
+**Trigger**: v0.1.412, the culmination of 10 commits today addressing
+live-path gaps revealed by the first real forecast-cycle attempt since
+Plan 045 landed. Rebuild sequence: rebuild prefect-worker image → `up
+-d` → direct-invoke `run_forecast_cycle_flow(adapter=...)` against live
+MeteoSwiss STAC.
+
+**Result**: **PASS**.
+`stations_attempted=4  stations_succeeded=4  stations_failed=0
+forecasts_stored=4  alerts_checked=False  errors=()`. Wall-clock
+~30 min total (1831890 ms); NWP fetch of ~2.9 GB dominates the
+critical path.
+
+**Behaviour notes**:
+- `linear_regression_daily` failed predict for every station with
+  "Insufficient lookback: need 7 rows, got 2" — lookback gap from
+  the earlier 2026-04-21 rehearsal's thin observation ingest. The
+  per-station fallback to `climatology_fallback` worked as designed
+  and produced ensemble forecasts (ensemble_size=7,
+  lead_time_hours=120.0). This is expected v0 behaviour, not a
+  regression.
+- `alerts_checked=False` — no alert thresholds configured in the
+  current dress-rehearsal DB. Expected.
+- Archive step logged a permission warning on `/data/nwp_grids/icon_ch2_eps`
+  (Errno 13). Non-fatal; follow-up item.
+
+**Bugs fixed in the 2026-04-23 live-path excavation**:
+1. v0.1.405 — probe pagination (T2a's single-page check missed
+   published cycles due to MeteoSwiss ref_dt-ascending ordering).
+2. v0.1.406 — Dockerfile `libeccodes0` added; cfgrib couldn't load.
+3. v0.1.407 — `dask[array]` added as runtime dep for
+   `xr.open_mfdataset`.
+4. v0.1.408-410 — three failed `open_mfdataset` kwarg-combo fixes
+   that cascaded through xarray validation errors.
+5. v0.1.409 — forecast-cycle no longer aborts when no station
+   requests the NWP source (v0 models consume zero NWP features).
+6. v0.1.411 — rewrote `_parse_grib_files` as explicit per-file loop
+   (xr.open_mfdataset is the wrong tool for MeteoSwiss's one-message-
+   per-file shape).
+7. v0.1.412 — committed real ICON-CH2-EPS fixtures + integration
+   test; drove the parse code against real data in 5 iterations,
+   fixing scalar-vs-vector `number` coord handling, `t2m` vs `t_2m`
+   shortName/data-var naming, scalar time-coord broadcast conflicts
+   on `expand_dims`.
+
+**Cross-plan impact**:
+- Plan 046 A3 is now GREEN end-to-end. Stream C (Mac Mini glue) is
+  ready to execute.
+- Plan 067 Phase 2's T2a probe rewrite was necessary but not
+  sufficient; the full fix required probe pagination (v0.1.405) on
+  top. Plan 067's Appendix for Plan 047 should incorporate "paginate
+  the availability probe" as a first-class requirement.
+- The new `tests/unit/adapters/test_meteoswiss_nwp_real.py` with
+  committed ICON-CH2-EPS fixtures (~12 MB) now gates any future
+  parse-code regressions against real library semantics — closes
+  the class of mock-gap bug this session exposed.
+
+**Follow-ups (non-blocking)**:
+- `/data/nwp_grids/icon_ch2_eps` volume permission (container-side
+  perms or docker-compose mount).
+- Consider bumping `libeccodes0` from Debian's 2.41.0 to 2.42.0+
+  (cfgrib prefers it; currently a UserWarning only).
+- Consider a `forecast_cycle.py` pre-check that skips NWP fetch
+  entirely when no station requests the NWP source (currently we
+  fetch 2.9 GB and discard most of it).
+
+Plan 046 A4 (169-station scale-up) is still deferred to the
+post-v0-deploy Plan-068 workstream per the v0-launch-roadmap D1
+decision.
