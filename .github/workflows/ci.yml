@@ -55,6 +55,11 @@ jobs:
         with:
           version: "0.11.7"
           python-version: "3.12"
+      - name: Install system deps for cfgrib / rioxarray / exactextract
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libeccodes0 libexpat1 libgeos-c1v5
       - run: uv sync --frozen
       - run: uv run pytest tests/unit/ --cov=src/sapphire_flow --cov-report=term-missing -v
 
@@ -116,6 +121,11 @@ jobs:
         with:
           version: "0.11.7"
           python-version: "3.12"
+      - name: Install system deps for cfgrib / rioxarray / exactextract
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libeccodes0 libexpat1 libgeos-c1v5
       - run: uv sync --frozen
       - run: uv run pytest tests/integration/ --ignore=tests/integration/live -v -m "not slow"
         env:

@@ -34,6 +34,11 @@ jobs:
         with:
           version: "0.11.7"
           python-version: "3.12"
+      - name: Install system deps for cfgrib / rioxarray / exactextract
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libeccodes0 libexpat1 libgeos-c1v5
       - run: uv sync --frozen
       # Run both the slow-marked tests from the main integration tree and
        # every test under tests/integration/live (path-based, so we don't
