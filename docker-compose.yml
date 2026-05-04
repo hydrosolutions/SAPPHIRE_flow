@@ -35,7 +35,7 @@ services:
         max-file: "5"
 
   prefect-server:
-    image: prefecthq/prefect:3-python3.11@sha256:21faa645ac710fdaf8a80245975eba411e916c040740c81e2982df7feaad38c0  # prefecthq/prefect:3-python3.11
+    image: prefecthq/prefect:3-python3.11@sha256:369d8f0bb1fbf84c28b90d9af62dea8ef1b90d261fbc321f211dbba96883613c  # prefecthq/prefect:3-python3.11
     command: >
       sh -c "
         export PREFECT_API_DATABASE_CONNECTION_URL=\"postgresql+asyncpg://${DB_USER:-sapphire}:$$(cat /run/secrets/db_password)@postgres:5432/prefect\" &&
