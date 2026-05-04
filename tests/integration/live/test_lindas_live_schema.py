@@ -70,28 +70,31 @@ def _make_reference_stations() -> list[StationConfig]:
     the hydrological classification in the TOML — notably 2004 is LAKE here.
     """
     # (code, name, lon, lat, station_kind, measured_parameters)
+    # name/lon/lat sourced from tests/fixtures/reference/stations.toml.
+    # station_kind reflects live LINDAS probe (2026-05-04): 2004 served only
+    # under the lake URI path despite the TOML classifying it as "river".
     roster: list[tuple[str, str, float, float, StationKind, frozenset[str]]] = [
         (
             "2004",
             "Bern, Schönau (Aare)",
-            7.4459,
-            46.9448,
+            7.4513,
+            46.9321,
             StationKind.LAKE,
             frozenset({"water_level"}),
         ),
         (
             "2009",
-            "Thun (Aare)",
-            7.6280,
-            46.7503,
+            "Brugg (Aare)",
+            8.2077,
+            47.4862,
             StationKind.RIVER,
             frozenset({"discharge", "water_level", "water_temperature"}),
         ),
         (
             "2033",
-            "Murgenthal (Aare)",
-            7.8468,
-            47.2692,
+            "Andermatt (Reuss)",
+            8.5948,
+            46.6324,
             StationKind.RIVER,
             frozenset({"discharge", "water_level", "water_temperature"}),
         ),
@@ -105,25 +108,25 @@ def _make_reference_stations() -> list[StationConfig]:
         ),
         (
             "2091",
-            "Brugg (Aare)",
-            8.2097,
-            47.4844,
+            "Brienzwiler (Aare)",
+            8.0810,
+            46.7499,
             StationKind.RIVER,
             frozenset({"discharge", "water_level", "water_temperature"}),
         ),
         (
             "2159",
-            "Untersiggenthal (Aare)",
-            8.2253,
-            47.5256,
+            "Basel, Rheinhalle (Rhein)",
+            7.6170,
+            47.5596,
             StationKind.RIVER,
             frozenset({"discharge", "water_level", "water_temperature"}),
         ),
         (
             "2085",
-            "Biel/Bienne (Schüss)",
-            7.2439,
-            47.1436,
+            "Bellinzona (Ticino)",
+            9.0207,
+            46.1928,
             StationKind.RIVER,
             frozenset({"discharge", "water_level", "water_temperature"}),
         ),
