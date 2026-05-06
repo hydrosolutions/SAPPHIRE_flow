@@ -23,3 +23,6 @@ CVE-2026-28387
 # latest at build time, weakening reproducibility, and is out of scope for Plan 064 D11.
 CVE-2025-8869
 CVE-2026-1703
+# CVE-2026-6357 added 2026-05-06: same pip 25.0.1 from the base image, fix in pip 26.1.
+# Clears when a python:3.12.x-slim refresh bundles pip >= 26.1 (Dependabot A3).
+CVE-2026-6357

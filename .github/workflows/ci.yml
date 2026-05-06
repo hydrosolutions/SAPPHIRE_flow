@@ -159,6 +159,11 @@ jobs:
       # not see. Fails CI on HIGH/CRITICAL unfixed CVEs; SARIF is uploaded
       # as a workflow artifact for audit.
       # Equivalent CLI: trivy image --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed sapphire-flow:ci-${{ github.sha }}
+      # `limit-severities-for-sarif: true` is required on trivy-action >= v0.36.0:
+      # without it the action unsets TRIVY_SEVERITY when writing SARIF (so the SARIF
+      # captures all severities for audit), which means `exit-code: 1` fires on any
+      # severity instead of just HIGH/CRITICAL. With this flag the SARIF — and the
+      # exit-code gate — both honor the configured severity filter.
       - name: Trivy image scan
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
         with:
@@ -168,6 +173,7 @@ jobs:
           exit-code: "1"
           severity: HIGH,CRITICAL
           ignore-unfixed: true
+          limit-severities-for-sarif: true
           cache: "true"
       - name: Upload Trivy SARIF
         if: always()
