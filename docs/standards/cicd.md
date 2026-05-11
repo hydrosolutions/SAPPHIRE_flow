@@ -270,6 +270,32 @@ This subsection describes the operational topology of `.github/workflows/ci.yml`
 | 4 | `build-image-and-scan` | `docker build` against the multi-stage `Dockerfile` → `trivy image` scan → `syft` CycloneDX SBOM artifact | `unit` |
 | 5 | `e2e` | End-to-end capstone suite | `unit`, `integration`, `build-image-and-scan` |
 
+### Local gate helper — `uv run check`
+
+The `[project.scripts]` entry `check = "sapphire_flow.cli.check:main"`
+(declared in `pyproject.toml`) provides a one-command developer-side
+mirror of the CI `lint` job's ruff steps:
+
+~~~bash
+uv run check       # runs `ruff format --check src/ tests/` then `ruff check src/ tests/`
+~~~
+
+It does NOT invoke `uv sync`: developers typically have a synced venv
+when invoking it, and CI's lint job runs `uv sync --frozen` at the
+workflow level before the ruff steps.
+
+It does NOT invoke pytest: the `unit` and `integration` CI jobs are
+CI-only because they require system deps (`libeccodes0`, `libgeos-c1v5`)
+and a postgres service that a local-helper invocation should not assume.
+For pre-merge confidence developers can run `uv run pytest tests/unit`
+manually.
+
+`uv run check` is the developer ergonomics counterpart to the
+`pre-commit` developer-tier gate (see `CLAUDE.md` §Pre-commit hooks and
+`docs/plans/070-precommit-and-gate-parity.md` for the full design).
+The CI `lint` job keeps its own standalone ruff steps; this helper does
+not modify CI behaviour.
+
 ### `build-image-and-scan`
 
 The image-build-and-scan tier added by Plan 064 sits between `integration` and `e2e`. Operational shape:
