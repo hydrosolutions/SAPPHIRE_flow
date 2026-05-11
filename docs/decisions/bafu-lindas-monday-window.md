@@ -103,6 +103,39 @@ Monday-schedule has succeeded).
   failure) before alarming. Deferred until/unless the failure pattern
   recurs a third time.
 
+## Automation: auto-retry workflow
+
+On 2026-05-11, after the third observed Monday-morning failure pattern
+recurred, we added an automatic-retry workflow at
+`.github/workflows/live-lindas-weekly-autoretry.yml`.
+
+**Trigger**: fires on `workflow_run` completion of
+`live-lindas-weekly.yml` when conclusion = `failure` and event =
+`schedule`. Manual `workflow_dispatch` failures do NOT trigger an
+auto-retry (those are intentional human signals, not transients).
+
+**Behaviour**: sleeps 30 minutes (gives BAFU's LINDAS upstream time to
+republish), then re-dispatches `live-lindas-weekly.yml`. Caps at **3
+retries per day** to prevent runaway retries if BAFU stays broken.
+
+**Cost**: ~$0.24 per retry × max 3/day = ~$0.72 per Monday incident.
+
+**Why 30 minutes**: BAFU's recovery window has been observed at 15:58 UTC
+(after 07:02 UTC failure on 2026-05-04) and 14:41 UTC (after 07:12 UTC
+failure on 2026-05-11) — both ~7–9 hours after the morning failure. A
+30-minute retry cadence with 3 attempts probes at roughly 30 min, 1 h,
+1.5 h after the original failure — well-spaced to catch a fast recovery
+but not so slow as to wait the full empirical 7+ hour window. If all
+3 retries fail, the next manual triage step is to confirm with BAFU
+support (`abfragezentrale@bafu.admin.ch`) per the §Implications section
+above.
+
+**Edge cases handled**:
+- Manual reruns by operators don't trigger the auto-retry chain.
+- 3-retry cap prevents runaway behaviour on extended outages.
+- Retry workflow itself does not retry on its own failures (avoids
+  infinite loops).
+
 ## References
 
 - `.github/workflows/live-lindas-weekly.yml` — the workflow under

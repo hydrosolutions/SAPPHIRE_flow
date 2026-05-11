@@ -351,6 +351,10 @@ This subsection describes the operational topology of `.github/workflows/ci.yml`
 | **live-lindas-weekly.yml** | | | | | |
 | W | `live-lindas-schema` | `uv sync --frozen` (Install dependencies) | — | `uv sync` | No |
 | W | `live-lindas-schema` | `uv run pytest -m live_lindas -v` (Run live LINDAS schema check) | — | `uv run pytest -m live_lindas -v` (live external API) | No (but requires network + BAFU LINDAS up) |
+| **live-lindas-weekly-autoretry.yml** | | | | | |
+| Scheduled (event-driven) | `retry` | `gh run list ...` (Cap retries at 3 per day) | live-lindas-weekly.yml failure | n/a (event-triggered automation) | Yes — automation responding to a workflow event |
+| Scheduled (event-driven) | `retry` | `sleep 1800` (Wait 30 minutes for BAFU LINDAS to recover) | n/a | n/a (event-triggered automation) | Yes — bounded wait for upstream recovery |
+| Scheduled (event-driven) | `retry` | `gh workflow run live-lindas-weekly.yml` (Re-dispatch live-lindas-weekly.yml) | sleep | n/a (event-triggered automation) | Yes — automation responding to a workflow event |
 
 ### Local gate helper — `uv run check`
 

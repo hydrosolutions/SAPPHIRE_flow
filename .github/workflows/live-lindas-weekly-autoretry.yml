@@ -1,0 +1,67 @@
+name: LINDAS weekly auto-retry
+
+# Auto-retry policy for live-lindas-weekly.yml:
+# - Fires only when the parent workflow's SCHEDULED run failed (not manual dispatches).
+# - Sleeps 30 minutes to give BAFU's LINDAS upstream time to republish.
+# - Re-dispatches via gh workflow run.
+# - Caps at 3 retries per day to avoid runaway retries if BAFU stays broken.
+#
+# Background: BAFU's LINDAS hydro publishing pipeline has an intermittent
+# Monday-morning failure window (2026-04-27 succeeded; 2026-05-04 + 2026-05-11
+# failed at ~07 UTC, both recovered by ~14 UTC same day). See
+# docs/decisions/bafu-lindas-monday-window.md for evidence + triage.
+#
+# Cost: ubuntu-latest at ~$0.008/min × 30 min sleep = ~$0.24 per retry,
+# max 3 retries/day = ~$0.72 per Monday incident.
+
+on:
+  workflow_run:
+    workflows: ["Live LINDAS weekly schema check"]
+    types: [completed]
+
+jobs:
+  retry:
+    name: Retry if scheduled run failed
+    runs-on: ubuntu-latest
+    # Only retry SCHEDULED failures, not manual workflow_dispatch failures
+    # (a manual rerun that fails is an explicit signal, not a transient).
+    if: >
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.event == 'schedule'
+    permissions:
+      actions: write
+    timeout-minutes: 35
+    steps:
+      - name: Cap retries at 3 per day
+        id: cap
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          today=$(date -u +%Y-%m-%d)
+          retries=$(gh run list \
+                      --workflow=live-lindas-weekly.yml \
+                      --event=workflow_dispatch \
+                      --limit 10 \
+                      --json createdAt \
+                    --repo "${{ github.repository }}" \
+                  | jq "[.[] | select(.createdAt | startswith(\"$today\"))] | length")
+          echo "retries_today=$retries"
+          if [ "$retries" -lt 3 ]; then
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Already retried $retries times today (cap = 3); giving up."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Wait 30 minutes for BAFU LINDAS to recover
+        if: steps.cap.outputs.go == 'true'
+        run: sleep 1800
+
+      - name: Re-dispatch live-lindas-weekly.yml
+        if: steps.cap.outputs.go == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run live-lindas-weekly.yml \
+            --ref main \
+            --repo "${{ github.repository }}"

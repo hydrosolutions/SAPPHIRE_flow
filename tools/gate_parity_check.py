@@ -63,6 +63,16 @@ CI_ONLY_ALLOWLIST: dict[tuple[str, str], str] = {
         "run locally as 'uv run pytest -m live_lindas -v' "
         "(requires network + BAFU LINDAS up)"
     ),
+    # ── live-lindas-weekly-autoretry.yml ────────────────────────────────────
+    ("live-lindas-weekly-autoretry", "Cap retries at 3 per day"): (
+        "automation: count today's dispatches via gh API"
+    ),
+    ("live-lindas-weekly-autoretry", "Wait 30 minutes for BAFU LINDAS to recover"): (
+        "automation: bounded sleep awaiting upstream recovery"
+    ),
+    ("live-lindas-weekly-autoretry", "Re-dispatch live-lindas-weekly.yml"): (
+        "automation: re-dispatch parent workflow"
+    ),
 }
 
 
