@@ -257,6 +257,66 @@ CI builds the `sapphire-flow` image on every pull request under the `build-image
 
 (Plan 053's `## Future work` section deferred base-image digest pinning to a dedicated plan; [Plan 064](../plans/064-supply-chain-hardening.md) is the implementation record for the pins, CI build/scan tier, and SBOM artifact described here and in `security.md`.)
 
+## Gate lifecycle: developer edit → CI → merge
+
+<!-- Added by Plan 070 §D-Final-Pass — consolidates A3 (CLAUDE.md pre-commit section),
+     B2 (uv run check subsection), and C1 (extended tiers table) into one narrative. -->
+
+Two gates protect every change before it reaches `main`:
+
+1. **Developer-tier gate (pre-commit)** — fast, local, fires automatically before `git commit` completes. Catches lint, format, and secret-pattern issues the moment they are written, before they reach a branch.
+2. **CI gate (GitHub Actions)** — thorough, remote, fires on push and PR. Catches what pre-commit misses: integration tests (require postgres + system deps), image builds, Trivy CVE scans, SBOM generation, and the wheel-only guard.
+
+**The parity invariant**: a developer should never push a commit that CI will reject for a reason their local environment could not have surfaced first.
+
+### Full lifecycle flow
+
+```
+developer edits file
+        │
+        ▼
+[pre-commit hooks — on git commit]
+  • trailing-whitespace / end-of-file-fixer (mutating hygiene)
+  • ruff format --check  (check-only, no auto-fix)
+  • ruff check           (check-only, no auto-fix)
+  • gitleaks             (secret-pattern scan)
+        │ blocks commit on failure
+        ▼
+developer runs uv run check  (optional, pre-push confidence)
+  • ruff format --check src/ tests/
+  • ruff check src/ tests/
+        │ mirrors the CI lint job's ruff steps
+        ▼
+git push / open PR
+        │
+        ▼
+[CI gate — GitHub Actions ci.yml]
+  Tier 1 lint     → ruff format --check, ruff check, trivy fs
+  Tier 2 unit     → pytest tests/unit/ (system deps + postgres service)
+  Tier 2 wheel    → wheel-only-guard (no-build uv sync)
+  Tier 3 integration → pytest tests/integration/ (postgres service)
+  Tier 4 build    → docker buildx build, trivy image, syft SBOM
+  (Tier 5 e2e)    → not yet implemented
+        │ all tiers green → PR is mergeable
+        ▼
+merge to main
+```
+
+Scheduled workflows run outside this push/PR path: `integration-nightly.yml` (03:00 UTC daily) covers `@pytest.mark.slow` and live-API tests; `live-lindas-weekly.yml` (Mondays 06:00 UTC) runs the BAFU LINDAS schema check. Both accept `workflow_dispatch` for out-of-cycle runs. First-fire run IDs are recorded in workflow header comments; see `.github/workflows/integration-nightly.yml` and `live-lindas-weekly.yml` headers.
+
+### Known external-dependency caveats
+
+The `live-lindas-weekly.yml` Monday 06:00 UTC schedule has exhibited intermittent failures (2 of 3 observed Monday-schedule runs failed as of 2026-05-11). Root cause is an upstream BAFU LINDAS publishing-pipeline issue, not a workflow defect — BAFU republishes the dataset later in the day, after which the same test passes. See [`docs/decisions/bafu-lindas-monday-window.md`](../decisions/bafu-lindas-monday-window.md) for the per-run evidence record. BAFU support contact: `abfragezentrale@bafu.admin.ch`.
+
+### Cross-references
+
+- `CLAUDE.md` §Pre-commit hooks — per-contributor install instructions, hook policy, and the check-only rationale.
+- [`docs/plans/070-precommit-and-gate-parity.md`](../plans/070-precommit-and-gate-parity.md) — the plan that introduced the developer-tier gate and `uv run check`. Also defines the deferred A4 task (pyright ratchet as a pre-commit hook, triggers when Plan 069 Phase 1 lands).
+- [`docs/plans/064-supply-chain-hardening.md`](../plans/064-supply-chain-hardening.md) — predecessor plan that surfaced the "wired but unrun" gate problem this plan fixes. Introduced Trivy image scan, SBOM generation, and CI action SHA pinning.
+- [`docs/plans/069-pyright-backlog-cleanup.md`](../plans/069-pyright-backlog-cleanup.md) — DRAFT follow-on that re-enables pyright as a pre-commit ratchet (Plan 070 task A4, deferred until Phase 1 of Plan 069 lands).
+
+See the CI workflow tiers table below for the full per-step breakdown of every `run:` command across all three workflow files, including local equivalents and CI-only reasons.
+
 ## CI workflow tiers
 
 This subsection describes the operational topology of `.github/workflows/ci.yml`. Policy rationale (why each scan exists, what severity thresholds apply, what the `.trivyignore` discipline is) lives in [`security.md`](security.md) § Supply chain.
