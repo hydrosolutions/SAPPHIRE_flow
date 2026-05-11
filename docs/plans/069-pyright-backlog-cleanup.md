@@ -463,8 +463,8 @@ into the same `tools/pyright_baseline.json` so they serialize on merge.
 - **2026-04-22 (rewrite)** — Rescoped based on 2026-04-22 pyright
   configuration experiment (1078 → 675 via flows/ carve-out) and sibling
   Plan 073 DRAFT (concrete violations outside flows/). Key changes: T1
-  replaced with verify+document task (no config rewrite, per P1 decision);
-  Phase 2 scoped to flows/-only (per P2 decision); added T1b for
-  workflow.md stale-flag fix (per P6 decision); baseline numbers corrected
+  replaced with verify+document task (no config rewrite, per D1);
+  Phase 2 scoped to flows/-only (per D4); added T1b for
+  workflow.md stale-flag fix (per T1b — workflow.md stale-flag fix); baseline numbers corrected
   to 675 pre-073 / ~611 post-073; added Cross-plan coordination section
-  with binding merge order (per P3 decision).
+  with binding merge order (per the §Cross-plan coordination merge order).
