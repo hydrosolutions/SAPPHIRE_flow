@@ -1,6 +1,6 @@
 # Plan 028 — Test Coverage Gap Remediation
 
-**Status**: DONE  
+**Status**: DONE
 **Phase**: Cross-cutting (test infrastructure)
 
 ## Problem
@@ -33,8 +33,8 @@ Tests to write:
 - `artifact=None` for group path raises `ValueError("artifact must be provided for group hindcast")`
 - Group not found (fake store returns `None` for `group_id`) raises `ValueError(f"Group {group_id} not found")`
 
-**Out of scope**: Real database. Real Prefect server.  
-**Files**: `tests/unit/flows/test_run_hindcast.py`  
+**Out of scope**: Real database. Real Prefect server.
+**Files**: `tests/unit/flows/test_run_hindcast.py`
 **Verification**: `uv run pytest tests/unit/flows/test_run_hindcast.py -x -q`
 
 ### Task 2: Flow tests — `train_models.py`
@@ -50,8 +50,8 @@ Tests to write:
   - (a) **Store-layer integrity**: Corrupt bytes in `FakeModelArtifactStore._bytes` after `store_artifact()`, then call `fetch_artifact()` → verify `ArtifactIntegrityError`.
   - (b) **Flow-layer defense-in-depth**: The flow's own SHA-256 re-check (lines 268–278 of `train_models.py`) is a second line of defense. To test it independently of (a), create a thin spy store that wraps `FakeModelArtifactStore` and returns silently corrupted bytes from `fetch_artifact()` *without* raising `ArtifactIntegrityError` itself (simulating a store implementation that lacks integrity checks). Verify the flow raises `ValueError("SHA-256 mismatch...")`.
 
-**Out of scope**: Real database. Full fan-out with `task.map`.  
-**Files**: `tests/unit/flows/test_train_models.py`  
+**Out of scope**: Real database. Full fan-out with `task.map`.
+**Files**: `tests/unit/flows/test_train_models.py`
 **Verification**: `uv run pytest tests/unit/flows/test_train_models.py -x -q`
 
 ### Task 3: Flow tests — `onboard_model.py`
@@ -68,8 +68,8 @@ Tests to write:
 - Model already assigned — idempotent (no duplicate assignment)
 - Structured log assertion: use `structlog.testing.capture_logs()` to verify `model.skill_gate_completed` is emitted at WARNING level when `passed=False`
 
-**Out of scope**: Real database. Download/adapter logic.  
-**Files**: `tests/unit/flows/test_onboard_model_flow.py`  
+**Out of scope**: Real database. Download/adapter logic.
+**Files**: `tests/unit/flows/test_onboard_model_flow.py`
 **Verification**: `uv run pytest tests/unit/flows/test_onboard_model_flow.py -x -q`
 
 ### Task 4: Skill service — flow regime stratification + threshold metrics
@@ -83,8 +83,8 @@ Tests to write:
 - **QUANTILES hindcasts**: Run `compute_skill_for_station` with quantile-representation hindcasts instead of members.
 - **`artifact_id=None`**: Verify combined-model path works (scores have `model_artifact_id=None`).
 
-**Out of scope**: BMA cross-validation (already tested in `test_combined_skill.py`).  
-**Files**: `tests/unit/services/skill/test_service.py`  
+**Out of scope**: BMA cross-validation (already tested in `test_combined_skill.py`).
+**Files**: `tests/unit/services/skill/test_service.py`
 **Verification**: `uv run pytest tests/unit/services/skill/test_service.py -x -q`
 
 ### Task 5: Alert strategy — QUANTILES exceedance + pooled normal path
@@ -97,8 +97,8 @@ Tests to write:
 - **Multi-station dispatch** in `check_station_alerts()`: Pass `all_ensembles` with 2+ stations (use real station IDs from `stations.toml` via `parse_stations_toml()`). Provide a `DeploymentConfig` with `enable_forecast_alerts=True` and `threshold_check_mode="raw"` — without these the function silently returns without checking anything. Verify alerts are checked for each station independently.
 - **Unknown strategy** in `_resolve_strategy_and_filter()`: Verify raises `ValueError`.
 
-**Out of scope**: BMA alert strategy (not yet implemented).  
-**Files**: `tests/unit/services/test_alert_strategy.py`, `tests/unit/services/test_alert_checker.py`  
+**Out of scope**: BMA alert strategy (not yet implemented).
+**Files**: `tests/unit/services/test_alert_strategy.py`, `tests/unit/services/test_alert_checker.py`
 **Verification**: `uv run pytest tests/unit/services/test_alert_strategy.py tests/unit/services/test_alert_checker.py -x -q`
 
 ### Task 6: Forecast QC overrides + `_qc_helpers.merge_thresholds`
@@ -109,8 +109,8 @@ Tests to write:
 - **`merge_thresholds` for forecast QC**: Create a `ForecastQcRuleSet` with default thresholds, plus a `StationForecastQcOverride` that overrides one rule's threshold for a specific station/parameter. Call `ForecastOutputQualityChecker.check()` with the override. Verify the overridden threshold takes effect (e.g., a value that passes with default but fails with override, or vice versa).
 - **No matching override**: Override for a different station. Verify default threshold applies.
 
-**Out of scope**: Observation QC overrides (already tested in `test_qc.py`).  
-**Files**: `tests/unit/services/test_forecast_qc.py`  
+**Out of scope**: Observation QC overrides (already tested in `test_qc.py`).
+**Files**: `tests/unit/services/test_forecast_qc.py`
 **Verification**: `uv run pytest tests/unit/services/test_forecast_qc.py -x -q`
 
 ### Task 7: Forecast cycle combination mode + remaining service gaps
@@ -121,8 +121,8 @@ Tests to write:
 - **Forecast cycle POOLED mode**: Set `forecast_combination_strategy = ModelCombinationStrategy.POOLED` on the config. Provide 2 models per station. Verify individual forecasts stored for both models, plus a combined forecast with `combination_strategy="pooled"`.
 - **`compute_combined_skills_task` BMA branch**: In `tests/unit/flows/test_compute_skills.py`, add a test with `strategy=ModelCombinationStrategy.BMA` and 2 models with member-representation hindcasts.
 
-**Out of scope**: Full end-to-end pipeline test.  
-**Files**: `tests/unit/flows/test_run_forecast_cycle.py`, `tests/unit/flows/test_compute_skills.py`  
+**Out of scope**: Full end-to-end pipeline test.
+**Files**: `tests/unit/flows/test_run_forecast_cycle.py`, `tests/unit/flows/test_compute_skills.py`
 **Verification**: `uv run pytest tests/unit/flows/ -x -q`
 
 ### Task 8: Type validators + Protocol conformance
@@ -134,8 +134,8 @@ Tests to write:
 - **`types/training.py`**: Station-scoped with mismatched `station_ids`, group-scoped with empty `station_ids`.
 - **Protocol conformance**: Add `isinstance` checks for `NotificationAdapter` (create a minimal `FakeNotificationAdapter` in `fake_adapters.py`), `ModelAlertStrategy` (check concrete `PrimaryModelStrategy` and `PooledEnsembleStrategy`), `QualityChecker` (check `Stage1QualityChecker`), and `ForecastQualityChecker` (check `ForecastOutputQualityChecker`). Add conformance `isinstance` checks for existing `FakeMultiTargetStationForecastModel` and `FakeMultiTargetGroupForecastModel` (already in `fake_models.py`).
 
-**Out of scope**: Tests for plain dataclasses with no validators.  
-**Files**: `tests/unit/types/test_model_onboarding.py`, `tests/unit/types/test_training.py`, `tests/fakes/test_fakes.py`, `tests/fakes/fake_adapters.py`  
+**Out of scope**: Tests for plain dataclasses with no validators.
+**Files**: `tests/unit/types/test_model_onboarding.py`, `tests/unit/types/test_training.py`, `tests/fakes/test_fakes.py`, `tests/fakes/fake_adapters.py`
 **Verification**: `uv run pytest tests/unit/types/test_model_onboarding.py tests/unit/types/test_training.py tests/fakes/test_fakes.py -x -q`
 
 ### Task 9: `config/deployment.py` — `load_config` + derived methods
@@ -149,8 +149,8 @@ Tests to write:
 - **`get_season_definitions()`**: Config with 2 seasons, verify list of `SeasonDefinition`.
 - **`_validate_retention`**: `max_retention_days <= forecast_hot_days` raises `pydantic.ValidationError`.
 
-**Out of scope**: Full production TOML parsing with all sections.  
-**Files**: `tests/unit/config/test_deployment.py`  
+**Out of scope**: Full production TOML parsing with all sections.
+**Files**: `tests/unit/config/test_deployment.py`
 **Verification**: `uv run pytest tests/unit/config/test_deployment.py -x -q`
 
 ---

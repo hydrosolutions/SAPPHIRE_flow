@@ -1,7 +1,7 @@
 # Plan 036 — Make `run_hindcast_flow` Standalone-Triggerable
 
-**Status**: DONE  
-**Phase**: 8 (Forecast Cycle)  
+**Status**: DONE
+**Phase**: 8 (Forecast Cycle)
 **Depends on**: Plan 034 (forecast_horizon_steps — merged)
 
 ## Context

@@ -1,7 +1,7 @@
 # Plan 026 — Multi-Model Combination: Implementation
 
-**Status**: READY  
-**Phase**: Cross-cutting (extends Flows 1, 8/10; touches services, stores, types, DB schema)  
+**Status**: READY
+**Phase**: Cross-cutting (extends Flows 1, 8/10; touches services, stores, types, DB schema)
 **Depends on**: Plan 025 (fallback models + config scaffolding)
 
 ## Context
@@ -52,8 +52,8 @@ Plan 025 established the design for multi-model combination forecasting (decisio
    - `id = '_bma'`, `display_name = 'BMA Ensemble'`, `description = 'Bayesian Model Averaging weighted ensemble'`, `artifact_scope = 'virtual'`
    - `id = '_consensus'`, `display_name = 'Consensus Forecast'`, `description = 'Consensus across models'`, `artifact_scope = 'virtual'`
 
-**Out of scope**: No Python type changes beyond `ArtifactScope` enum (remaining type changes are Task 2). No combination logic.  
-**Files**: `src/sapphire_flow/types/enums.py` (ArtifactScope), `alembic/versions/XXXX_add_combination_columns.py`, `src/sapphire_flow/db/metadata.py` (update table definitions)  
+**Out of scope**: No Python type changes beyond `ArtifactScope` enum (remaining type changes are Task 2). No combination logic.
+**Files**: `src/sapphire_flow/types/enums.py` (ArtifactScope), `alembic/versions/XXXX_add_combination_columns.py`, `src/sapphire_flow/db/metadata.py` (update table definitions)
 **Verification**: `uv run alembic upgrade head && uv run alembic downgrade -1 && uv run alembic upgrade head` (round-trip)
 
 ### Task 2: Type and store updates for combination forecasts
@@ -70,8 +70,8 @@ Plan 025 established the design for multi-model combination forecasting (decisio
 6. Update `PgSkillScoreStore` (and `PgSkillDiagramStore` if separate) to handle nullable `model_artifact_id` in both write and read paths.
 7. Update `compute_skill_for_station()` in `src/sapphire_flow/services/skill/service.py` to accept `artifact_id: ArtifactId | None` (was `ArtifactId`) — needed for Task 7 (combined skill passes `None`). Also update private helpers `_compute_scores()` and `_compute_diagrams()` which receive and pass through `artifact_id` — they must also accept `ArtifactId | None` for pyright to pass.
 
-**Out of scope**: No new service logic beyond signature changes. No flow changes.  
-**Files**: `src/sapphire_flow/types/skill.py`, `src/sapphire_flow/types/forecast.py`, `src/sapphire_flow/store/forecast_store.py`, `src/sapphire_flow/store/skill_store.py` (if exists), `src/sapphire_flow/services/skill/service.py`, corresponding test files  
+**Out of scope**: No new service logic beyond signature changes. No flow changes.
+**Files**: `src/sapphire_flow/types/skill.py`, `src/sapphire_flow/types/forecast.py`, `src/sapphire_flow/store/forecast_store.py`, `src/sapphire_flow/store/skill_store.py` (if exists), `src/sapphire_flow/services/skill/service.py`, corresponding test files
 **Verification**: `uv run pyright --strict src/sapphire_flow/types/skill.py src/sapphire_flow/types/forecast.py && uv run pytest tests/ -x -q`
 
 ### Task 3: Service — run all station models (refactor `run_station_forecast`)
@@ -105,8 +105,8 @@ class MultiModelForecastResult:
 
 **Fallback model exclusion from combination**: `MultiModelForecastResult` exposes a `combinable_results` property that returns only results from models with priority < `FALLBACK_PRIORITY_THRESHOLD` (constant = 90, from `docs/conventions.md`). Fallback models (climatology at 90, persistence at 99) are excluded from combination to prevent diluting real model output with naive baselines. They remain available in `results` for the primary fallback chain. The threshold constant lives in `src/sapphire_flow/types/ids.py` alongside the sentinel `ModelId` constants (e.g., `FALLBACK_PRIORITY_THRESHOLD: int = 90`).
 
-**Out of scope**: No combination logic. No flow changes.  
-**Files**: `src/sapphire_flow/services/run_station_forecast.py`, `tests/unit/services/test_run_station_forecast.py`  
+**Out of scope**: No combination logic. No flow changes.
+**Files**: `src/sapphire_flow/services/run_station_forecast.py`, `tests/unit/services/test_run_station_forecast.py`
 **Verification**: `uv run pytest tests/unit/services/test_run_station_forecast.py -x -q`
 
 ### Task 4: Service — pooled ensemble combination
@@ -127,8 +127,8 @@ class MultiModelForecastResult:
    - Uses sentinel `model_id` and `model_artifact_id = None`
    - Sets `input_quality = InputQualityLevel.FULL` and `input_quality_flags = ()` (combined forecast quality is derived from individual models, not reassessed)
 
-**Out of scope**: BMA and consensus strategies (v0c/v1). No flow changes.  
-**Files**: `src/sapphire_flow/services/forecast_combination.py`, `tests/unit/services/test_forecast_combination.py`  
+**Out of scope**: BMA and consensus strategies (v0c/v1). No flow changes.
+**Files**: `src/sapphire_flow/services/forecast_combination.py`, `tests/unit/services/test_forecast_combination.py`
 **Verification**: `uv run pytest tests/unit/services/test_forecast_combination.py -x -q`
 
 ### Task 5: Wire combination into forecast cycle flow
@@ -145,8 +145,8 @@ class MultiModelForecastResult:
 
 **Input assembly for multiple models**: The current flow calls `assemble_station_operational_inputs()` using the highest-priority model's `data_requirements`. In combination mode, each model may have different requirements (lookback, features). Strategy: add a `merge_data_requirements(requirements: list[ModelDataRequirements]) -> ModelDataRequirements` helper to `src/sapphire_flow/types/model.py` that computes the superset requirement (`lookback_steps = max(...)`, `past_dynamic_features = union(...)`, etc.). The flow calls this once per station, then passes the merged requirement to `assemble_station_operational_inputs()`. Each model's `predict()` receives the same `StationModelInputs` — models that need fewer features simply ignore extras. This matches the current single-model behavior (the Protocol does not enforce that models consume all supplied features). If a fallback model (climatology/persistence) is included, its minimal requirements are a subset and naturally satisfied.
 
-**Out of scope**: No alert checker changes (it already supports multi-model). No new Prefect tasks (combination runs inline in Phase B per-station loop).  
-**Files**: `src/sapphire_flow/flows/run_forecast_cycle.py`, `tests/unit/flows/test_run_forecast_cycle.py`  
+**Out of scope**: No alert checker changes (it already supports multi-model). No new Prefect tasks (combination runs inline in Phase B per-station loop).
+**Files**: `src/sapphire_flow/flows/run_forecast_cycle.py`, `tests/unit/flows/test_run_forecast_cycle.py`
 **Verification**: `uv run pytest tests/unit/flows/test_run_forecast_cycle.py -x -q`
 
 ### Task 6: Extend hindcast store for multi-model retrieval
@@ -155,8 +155,8 @@ class MultiModelForecastResult:
 
 The existing `fetch_hindcasts(station_id, model_id, ...)` stays unchanged.
 
-**Out of scope**: No skill computation logic.  
-**Files**: `src/sapphire_flow/store/hindcast_store.py`, `tests/unit/store/test_hindcast_store.py` (or integration tests)  
+**Out of scope**: No skill computation logic.
+**Files**: `src/sapphire_flow/store/hindcast_store.py`, `tests/unit/store/test_hindcast_store.py` (or integration tests)
 **Verification**: `uv run pytest tests/ -k hindcast -x -q`
 
 ### Task 7: Service — combined skill computation (step S.4b)
@@ -171,8 +171,8 @@ The existing `fetch_hindcasts(station_id, model_id, ...)` stays unchanged.
 
 **Alignment**: Must filter to time steps where ALL models have hindcast results (intersection, not union). Log and report coverage: "combined skill computed on N of M total hindcast steps."
 
-**Out of scope**: BMA weight training (v0c). No flow wiring (Task 8).  
-**Files**: `src/sapphire_flow/services/skill/combined_skill.py`, `tests/unit/services/skill/test_combined_skill.py`  
+**Out of scope**: BMA weight training (v0c). No flow wiring (Task 8).
+**Files**: `src/sapphire_flow/services/skill/combined_skill.py`, `tests/unit/services/skill/test_combined_skill.py`
 **Verification**: `uv run pytest tests/unit/services/skill/test_combined_skill.py -x -q`
 
 ### Task 8: Wire combined skill into skill computation flow
@@ -183,8 +183,8 @@ The existing `fetch_hindcasts(station_id, model_id, ...)` stays unchanged.
 2. If not `PRIMARY`: for each station, call `fetch_hindcasts_by_station()` (Task 6) to get all models' hindcasts, then call `compute_combined_skill()` (Task 7).
 3. Store the resulting `SkillScore` and `SkillDiagram` records.
 
-**Out of scope**: BMA cross-validation (v0c).  
-**Files**: Skill computation flow file (find in `src/sapphire_flow/flows/`), corresponding test file  
+**Out of scope**: BMA cross-validation (v0c).
+**Files**: Skill computation flow file (find in `src/sapphire_flow/flows/`), corresponding test file
 **Verification**: `uv run pytest tests/ -x -q`
 
 ### Task 9: Service — BMA weight computation (v0c)
@@ -200,8 +200,8 @@ The existing `fetch_hindcasts(station_id, model_id, ...)` stays unchanged.
 
 **Weight storage**: BMA weights are ephemeral — computed on the fly from `skill_scores`. No new table needed. If weight computation becomes expensive, caching can be added later.
 
-**Out of scope**: Cross-validated weight training (see D4 note in Plan 025 — deferred design). No flow wiring.  
-**Files**: `src/sapphire_flow/services/skill/bma_weights.py`, `tests/unit/services/skill/test_bma_weights.py`  
+**Out of scope**: Cross-validated weight training (see D4 note in Plan 025 — deferred design). No flow wiring.
+**Files**: `src/sapphire_flow/services/skill/bma_weights.py`, `tests/unit/services/skill/test_bma_weights.py`
 **Verification**: `uv run pytest tests/unit/services/skill/test_bma_weights.py -x -q`
 
 ### Task 10: Service — BMA ensemble combination
@@ -216,8 +216,8 @@ The existing `fetch_hindcasts(station_id, model_id, ...)` stays unchanged.
 
 Update `build_combined_forecasts()` to dispatch to `combine_ensembles_bma()` when `strategy = BMA`.
 
-**Out of scope**: Consensus strategy (v1).  
-**Files**: `src/sapphire_flow/services/forecast_combination.py`, `tests/unit/services/test_forecast_combination.py`  
+**Out of scope**: Consensus strategy (v1).
+**Files**: `src/sapphire_flow/services/forecast_combination.py`, `tests/unit/services/test_forecast_combination.py`
 **Verification**: `uv run pytest tests/unit/services/test_forecast_combination.py -x -q`
 
 ### Task 11: Combined skill for BMA + cross-validation (v0c)
@@ -234,8 +234,8 @@ Update `build_combined_forecasts()` to dispatch to `combine_ensembles_bma()` whe
 
 Update the skill computation flow (Task 8 wiring) to pass BMA weights when `strategy = BMA`.
 
-**Out of scope**: Consensus strategy.  
-**Files**: `src/sapphire_flow/services/skill/combined_skill.py`, skill flow file, corresponding test files  
+**Out of scope**: Consensus strategy.
+**Files**: `src/sapphire_flow/services/skill/combined_skill.py`, skill flow file, corresponding test files
 **Verification**: `uv run pytest tests/ -x -q`
 
 ### Task 8b: v0b documentation updates
@@ -248,8 +248,8 @@ Update the skill computation flow (Task 8 wiring) to pass BMA weights when `stra
 - `docs/spec/database-schema.md`: Update `forecasts` table (new columns `combination_strategy`, `source_model_ids`; nullable `model_artifact_id`). Update `skill_scores` and `skill_diagrams` tables (nullable `model_artifact_id`). Add sentinel model entries to `models` table diagram. Update ER relationships.
 - `docs/spec/types-and-protocols.md`: Update `ArtifactScope` enum (add `VIRTUAL`). Update `OperationalForecast` (new fields + nullable `model_artifact_id`). Update `SkillScore` and `SkillDiagram` (nullable `model_artifact_id`). Update `compute_skill_for_station()` signature.
 
-**Out of scope**: No code changes. BMA docs are in Task 12.  
-**Files**: `docs/architecture-context.md`, `docs/handover/data-flows.md`, `docs/v0-scope.md`, `docs/spec/database-schema.md`, `docs/spec/types-and-protocols.md`  
+**Out of scope**: No code changes. BMA docs are in Task 12.
+**Files**: `docs/architecture-context.md`, `docs/handover/data-flows.md`, `docs/v0-scope.md`, `docs/spec/database-schema.md`, `docs/spec/types-and-protocols.md`
 **Verification**: `uv run pytest tests/ -x -q` (confirms no code breakage from doc-only changes)
 
 ### Task 12: v0c documentation updates
@@ -260,8 +260,8 @@ Update the skill computation flow (Task 8 wiring) to pass BMA weights when `stra
 - `docs/v0-scope.md`: Update §A8e to reflect v0c implementation status. Update deferred table.
 - `docs/spec/types-and-protocols.md`: Document BMA weight computation signature.
 
-**Out of scope**: No code changes.  
-**Files**: `docs/architecture-context.md`, `docs/v0-scope.md`, `docs/spec/types-and-protocols.md`  
+**Out of scope**: No code changes.
+**Files**: `docs/architecture-context.md`, `docs/v0-scope.md`, `docs/spec/types-and-protocols.md`
 **Verification**: `uv run pytest tests/ -x -q` (confirms no code breakage from doc-only changes)
 
 ---

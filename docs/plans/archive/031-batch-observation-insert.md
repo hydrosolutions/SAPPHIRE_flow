@@ -1,6 +1,6 @@
 # Plan 031 — Batch INSERT for Observation Store
 
-**Status**: READY  
+**Status**: READY
 **Phase**: 2 (Stores)
 
 ## Context

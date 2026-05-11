@@ -1,7 +1,7 @@
 # Evidence Memo 05: Transfer And Domain Shift
 
 **Primary legacy review**:
-[05-transfer-learning.md](../source-reviews/05-transfer-learning.md)  
+[05-transfer-learning.md](../source-reviews/05-transfer-learning.md)
 **Focused top-up date**: `2026-04-23`
 
 ## Scope

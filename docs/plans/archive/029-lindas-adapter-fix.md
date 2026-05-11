@@ -1,6 +1,6 @@
 # Plan 029 — LINDAS Adapter Fix (Lake Stations + Since Removal)
 
-**Status**: DONE  
+**Status**: DONE
 **Phase**: 3 (Adapters) / 6 (Observation Ingest)
 
 ## Context

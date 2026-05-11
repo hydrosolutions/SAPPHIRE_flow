@@ -1,7 +1,7 @@
 # Evidence Memo 01: Operational Forecasting Landscape
 
 **Primary legacy review**:
-[01-operational-systems.md](../source-reviews/01-operational-systems.md)  
+[01-operational-systems.md](../source-reviews/01-operational-systems.md)
 **Focused top-up date**: `2026-04-23`
 
 ## Scope

@@ -1,7 +1,7 @@
 # Evidence Memo 02: Architectures And Temporal Representation
 
 **Primary legacy review**:
-[02-ml-architectures.md](../source-reviews/02-ml-architectures.md)  
+[02-ml-architectures.md](../source-reviews/02-ml-architectures.md)
 **Focused top-up date**: `2026-04-23`
 
 ## Scope

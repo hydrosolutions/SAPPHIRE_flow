@@ -1,6 +1,6 @@
 # Plan 024 — Flow 1: Forecast Cycle
 
-**Status**: COMPLETE  
+**Status**: COMPLETE
 **Phase**: 8 (Forecast cycle)
 
 ## Context
@@ -60,10 +60,10 @@ Every ~6 hours: fetch NWP weather → prepare model inputs → run models → QC
 
 ### Task 1: Add missing stores to `make_pg_stores` + point forecast converter
 
-**Scope**: Add `weather_forecast_store`, `forecast_store`, `model_state_store` to `make_pg_stores()`. Add `point_forecast_to_records()` converter to `preprocessing/converters.py` (mirrors `basin_avg_to_records` but for `PointForecast`).  
-**Out of scope**: No new store implementations, no schema changes.  
-**Note**: `PointForecast.values` DataFrame schema is undocumented in the type definition. Implementer must check `MeteoSwissNwpAdapter` output (or `BasinAverageForecast` tests) to confirm columns are `[valid_time, parameter, member_id, value]` before writing the converter.  
-**Files**: `flows/_db.py`, `preprocessing/converters.py`, `tests/unit/preprocessing/test_converters.py`  
+**Scope**: Add `weather_forecast_store`, `forecast_store`, `model_state_store` to `make_pg_stores()`. Add `point_forecast_to_records()` converter to `preprocessing/converters.py` (mirrors `basin_avg_to_records` but for `PointForecast`).
+**Out of scope**: No new store implementations, no schema changes.
+**Note**: `PointForecast.values` DataFrame schema is undocumented in the type definition. Implementer must check `MeteoSwissNwpAdapter` output (or `BasinAverageForecast` tests) to confirm columns are `[valid_time, parameter, member_id, value]` before writing the converter.
+**Files**: `flows/_db.py`, `preprocessing/converters.py`, `tests/unit/preprocessing/test_converters.py`
 **Verification**: `uv run pytest tests/unit/preprocessing/test_converters.py -x -q`
 
 ### Task 2: Service — assemble operational model inputs
@@ -79,9 +79,9 @@ Every ~6 hours: fetch NWP weather → prepare model inputs → run models → QC
 - Define `OperationalInputMetadata` frozen dataclass in this module: `warm_up_source`, `warm_up_state_age_hours`, `observation_staleness_hours`, `prior_state: bytes | None`, `nwp_age_hours: float`.
 - Skip `past_dynamic` fetch entirely if model's `data_requirements.past_dynamic_features` is empty.
 
-**Out of scope**: No Prefect decorators. No group input stacking (deferred with group models).  
-**Files**: `services/operational_inputs.py`, `tests/unit/services/test_operational_inputs.py`  
-**Key pattern**: Follow `_assemble_hindcast_inputs()` in `hindcast.py` for the past_dynamic fetch pattern via `WeatherReanalysisSource`. Follow `training_data.py` for pivot logic. `future_dynamic` comes from `WeatherForecastStore` (WeatherForecastRecord rows → wide DataFrame).  
+**Out of scope**: No Prefect decorators. No group input stacking (deferred with group models).
+**Files**: `services/operational_inputs.py`, `tests/unit/services/test_operational_inputs.py`
+**Key pattern**: Follow `_assemble_hindcast_inputs()` in `hindcast.py` for the past_dynamic fetch pattern via `WeatherReanalysisSource`. Follow `training_data.py` for pivot logic. `future_dynamic` comes from `WeatherForecastStore` (WeatherForecastRecord rows → wide DataFrame).
 **Verification**: `uv run pytest tests/unit/services/test_operational_inputs.py -x -q`
 
 ### Task 3: Service — run single station forecast with multi-model fallback
@@ -95,9 +95,9 @@ Every ~6 hours: fetch NWP weather → prepare model inputs → run models → QC
 
 Calls `assess_input_quality()` — note this function requires caller-supplied threshold params (`obs_partial_hours`, `warmup_partial_hours`, `warmup_degraded_hours`) in addition to `InputQualityConfig`. These come from `DeploymentConfig.input_quality`.
 
-Returns result dataclass with: `station_id`, `model_id`, `artifact_id`, `forecasts: list[OperationalForecast]`, `new_state: bytes | None`, `ensembles: dict[str, ForecastEnsemble]` (for alert checking). Include unit tests using fakes.  
-**Out of scope**: No storing (caller stores), no state persistence (caller does), no alert checking (caller does), no Prefect decorators.  
-**Files**: `services/run_station_forecast.py`, `tests/unit/services/test_run_station_forecast.py`  
+Returns result dataclass with: `station_id`, `model_id`, `artifact_id`, `forecasts: list[OperationalForecast]`, `new_state: bytes | None`, `ensembles: dict[str, ForecastEnsemble]` (for alert checking). Include unit tests using fakes.
+**Out of scope**: No storing (caller stores), no state persistence (caller does), no alert checking (caller does), no Prefect decorators.
+**Files**: `services/run_station_forecast.py`, `tests/unit/services/test_run_station_forecast.py`
 **Verification**: `uv run pytest tests/unit/services/test_run_station_forecast.py -x -q`
 
 ### Task 4: Prefect flow — `run_forecast_cycle_flow`
@@ -149,8 +149,8 @@ Returns result dataclass with: `station_id`, `model_id`, `artifact_id`, `forecas
 - `forecast.input_quality_assessed` at INFO (partial) or WARNING (degraded), per logging standard
 - `station_id` and `model_id` bound via `bind_contextvars` in per-station loop
 
-**Out of scope**: v0b grid extraction path, `task.map()` parallelisation (conscious deviation from §D3 — justified: 170 × ~200ms ≈ 34s station loop + ~20-30s fixed costs ≈ 54-64s total, at the edge of the 60s budget; accepted risk, rework to task.map if benchmarks show overrun or station count exceeds ~300), step 1.9 forecast post-processing (pass-through).  
-**Files**: `flows/run_forecast_cycle.py`  
+**Out of scope**: v0b grid extraction path, `task.map()` parallelisation (conscious deviation from §D3 — justified: 170 × ~200ms ≈ 34s station loop + ~20-30s fixed costs ≈ 54-64s total, at the edge of the 60s budget; accepted risk, rework to task.map if benchmarks show overrun or station count exceeds ~300), step 1.9 forecast post-processing (pass-through).
+**Files**: `flows/run_forecast_cycle.py`
 **Verification**: `uv run pytest tests/unit/flows/test_run_forecast_cycle.py -x -q`
 
 ### Task 5: Flow-level unit test
@@ -164,14 +164,14 @@ Test cases:
 - NWP fetch failure: cycle skips gracefully, no forecasts stored
 - Empty station list: returns zero-count result
 
-**Out of scope**: Integration tests, performance benchmarks.  
-**Files**: `tests/unit/flows/test_run_forecast_cycle.py`  
+**Out of scope**: Integration tests, performance benchmarks.
+**Files**: `tests/unit/flows/test_run_forecast_cycle.py`
 **Verification**: `uv run pytest tests/unit/flows/test_run_forecast_cycle.py -x -q`
 
 ### Task 6: Documentation updates
 
-**Scope**: Update `docs/handover/data-flows.md` Flow 1 section to note implementation status. Light updates to `docs/v0-scope.md` Phase 8 row if needed.  
-**Out of scope**: No architecture doc changes, no API docs.  
+**Scope**: Update `docs/handover/data-flows.md` Flow 1 section to note implementation status. Light updates to `docs/v0-scope.md` Phase 8 row if needed.
+**Out of scope**: No architecture doc changes, no API docs.
 **Verification**: `uv run pytest tests/ -x -q`
 
 ---

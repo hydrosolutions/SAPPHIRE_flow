@@ -86,6 +86,51 @@ Not all content in Claude's context window is equally trustworthy. Treat sources
 
 ---
 
+## Pre-commit hooks (developer-tier gate)
+
+This repo uses `pre-commit` as the developer-tier gate that catches
+lint, format, and secret-pattern issues before they reach a branch.
+CI is the secondary gate (push + PR).
+
+**One-time setup** (per contributor):
+
+```bash
+uv sync                       # installs pre-commit as a dev dep
+uv run pre-commit install     # registers .git/hooks/pre-commit
+```
+
+**Hooks run automatically on `git commit`**. To run them manually
+across all files (useful after a rebase or when bisecting):
+
+```bash
+uv run pre-commit run --all-files
+```
+
+**Why hooks are check-only (no auto-fix)**: the mandatory
+`bump-my-version bump patch` workflow (see §Version Bumping) must
+stage the version files at commit time. An auto-fixing hook would
+mutate already-staged files between staging and commit, breaking
+that sequence. The ruff hooks therefore run with `--check` only —
+developers run `uv run ruff format` and `uv run ruff check --fix`
+manually BEFORE staging.
+
+**Exception — basic hygiene hooks** (`trailing-whitespace`,
+`end-of-file-fixer`): these upstream hooks have no `--check`-only
+mode. They mutate files in place. If they fire on a commit:
+1. The hook auto-fixes the file and exits non-zero (commit refused).
+2. Run `git add <fixed-files>` to stage the auto-fix.
+3. Re-commit. The hook now passes.
+
+**Emergency bypass**: `git commit --no-verify` skips the hooks.
+Use sparingly; CI is the backstop. Do NOT make `--no-verify` part
+of a normal workflow.
+
+See `docs/standards/cicd.md` for the CI-tier gate documentation
+and `docs/plans/070-precommit-and-gate-parity.md` for the plan
+that introduced this setup.
+
+---
+
 ## Ad-hoc Analyses and One-Time Scripts
 
 - **Use shell heredoc syntax** for one-time data analyses and exploratory work.

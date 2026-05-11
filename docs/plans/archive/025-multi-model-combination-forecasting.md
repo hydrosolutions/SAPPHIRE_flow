@@ -1,6 +1,6 @@
 # Plan 025 — Multi-Model Combination Forecasting
 
-**Status**: READY  
+**Status**: READY
 **Phase**: Cross-cutting (extends Flows 1, 3, 7, 8/10; touches types, services, stores)
 
 ## Problem
@@ -124,9 +124,9 @@ This plan implements the **v0 slice**: fallback models and config scaffolding. C
 - `predict(self, artifact: ModelArtifact, inputs: StationModelInputs, rng: random.Random, prior_state: bytes | None = None) -> tuple[dict[str, ForecastEnsemble], bytes | None]`: For each forecast step, compute the valid_time from `inputs.issue_time + step * inputs.time_step`, look up that day-of-year's quantile distribution from the artifact. Construct `ForecastEnsemble` via `from_quantiles(station_id=inputs.station_id, issued_at=inputs.issue_time, parameter=..., units=..., time_step=inputs.time_step, ...)` with values DataFrame schema `[valid_time, quantile, value]` (exactly these three columns — no `member_id`). Return `(ensembles_dict, None)` — no prior state, `rng` and `prior_state` unused, `past_targets` not read.
 - `serialize_artifact()` / `deserialize_artifact()`: Use Polars IPC (`write_ipc` / `read_ipc`) for the quantile DataFrame. **No pickle** (project convention — see existing test `test_no_pickle_in_serialization`).
 
-**Out of scope**: BMA weighting, NWP forcing, warm-up state, sub-daily time steps.  
-**Files**: `src/sapphire_flow/models/climatology_fallback.py`, `tests/unit/models/test_climatology_fallback.py`  
-**Entry point**: Register as `climatology_fallback` in `pyproject.toml` under `[project.entry-points."sapphire_flow.models"]`.  
+**Out of scope**: BMA weighting, NWP forcing, warm-up state, sub-daily time steps.
+**Files**: `src/sapphire_flow/models/climatology_fallback.py`, `tests/unit/models/test_climatology_fallback.py`
+**Entry point**: Register as `climatology_fallback` in `pyproject.toml` under `[project.entry-points."sapphire_flow.models"]`.
 **Verification**: `uv run pytest tests/unit/models/test_climatology_fallback.py -x -q`
 
 ### Task 2: Fallback model — `PersistenceFallbackModel`
@@ -146,9 +146,9 @@ This plan implements the **v0 slice**: fallback models and config scaffolding. C
 - `predict(self, artifact: ModelArtifact, inputs: StationModelInputs, rng: random.Random, prior_state: bytes | None = None) -> tuple[dict[str, ForecastEnsemble], bytes | None]`: Extract the most recent observation from `inputs.data.past_targets` — this is a wide-format Polars DataFrame with columns `[timestamp, <parameter_name>, ...]`. Select the target parameter column (e.g., `"discharge"`) from `data_requirements.target_parameters` and take the last row by timestamp. Repeat the value across all forecast steps. Generate quantile spread that widens linearly with lead time. The base spread percentage per step is a constructor parameter (e.g., `spread_pct_per_step: float = 0.05` meaning ±5% of the observed value per step). Construct `ForecastEnsemble` via `from_quantiles(station_id=inputs.station_id, issued_at=inputs.issue_time, parameter=..., units=..., time_step=inputs.time_step, ...)` with values DataFrame schema `[valid_time, quantile, value]` (exactly these three columns), at least 7 quantile levels (0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95). Return `(ensembles_dict, None)` — `rng` and `prior_state` unused.
 - `serialize_artifact()` / `deserialize_artifact()`: JSON (artifact is a small metadata dict). **No pickle.**
 
-**Out of scope**: Anything beyond trivial persistence.  
-**Files**: `src/sapphire_flow/models/persistence_fallback.py`, `tests/unit/models/test_persistence_fallback.py`  
-**Entry point**: Register as `persistence_fallback` in `pyproject.toml` under `[project.entry-points."sapphire_flow.models"]`.  
+**Out of scope**: Anything beyond trivial persistence.
+**Files**: `src/sapphire_flow/models/persistence_fallback.py`, `tests/unit/models/test_persistence_fallback.py`
+**Entry point**: Register as `persistence_fallback` in `pyproject.toml` under `[project.entry-points."sapphire_flow.models"]`.
 **Verification**: `uv run pytest tests/unit/models/test_persistence_fallback.py -x -q`
 
 ### Task 3: Rename enum + config scaffolding + sentinel constants
@@ -161,8 +161,8 @@ This plan implements the **v0 slice**: fallback models and config scaffolding. C
 
 **Note**: The sentinel constants exist in Python from v0 onwards, but the corresponding rows in the `models` DB table are not inserted until v0b (Plan 026 Task 1). This is intentional — the constants are needed for type-safe references in code, but no combined forecast is stored in v0 so no FK lookup occurs.
 
-**Out of scope**: No combination logic, no DB migration, no sentinel model table entries (v0b).  
-**Files**: `src/sapphire_flow/types/enums.py`, `src/sapphire_flow/config/deployment.py`, `src/sapphire_flow/types/ids.py`, all files importing `AlertModelStrategy`  
+**Out of scope**: No combination logic, no DB migration, no sentinel model table entries (v0b).
+**Files**: `src/sapphire_flow/types/enums.py`, `src/sapphire_flow/config/deployment.py`, `src/sapphire_flow/types/ids.py`, all files importing `AlertModelStrategy`
 **Verification**: `uv run pyright --strict src/sapphire_flow/ && uv run pytest tests/ -x -q`
 
 ### Task 4: Documentation updates
@@ -174,8 +174,8 @@ This plan implements the **v0 slice**: fallback models and config scaffolding. C
 - `docs/v0-scope.md`: Add §A8e documenting the `forecast_combination_strategy` phased rollout (parallel to §A8d). Add fallback models to the v0 model list.
 - `docs/conventions.md`: Add fallback priority tier (90–99) to the model assignment priority convention.
 
-**Out of scope**: No code changes.  
-**Files**: `docs/architecture-context.md`, `docs/handover/data-flows.md`, `docs/v0-scope.md`, `docs/conventions.md`  
+**Out of scope**: No code changes.
+**Files**: `docs/architecture-context.md`, `docs/handover/data-flows.md`, `docs/v0-scope.md`, `docs/conventions.md`
 **Verification**: `uv run pytest tests/ -x -q` (confirms no code breakage from doc-only changes)
 
 ---

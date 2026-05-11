@@ -1,8 +1,8 @@
 # Plan 034 — Add `forecast_horizon_steps` to Model Interface
 
-**Status**: DONE  
-**Phase**: 7 + 8 (Model Framework + Forecast Cycle)  
-**Unblocks**: Plan 032 (hindcast predictions — currently 100% failure rate due to horizon mismatch)  
+**Status**: DONE
+**Phase**: 7 + 8 (Model Framework + Forecast Cycle)
+**Unblocks**: Plan 032 (hindcast predictions — currently 100% failure rate due to horizon mismatch)
 **Note**: Execute this plan BEFORE Plan 032. Plan 032 Task 1 becomes a no-op after this plan's Task 4.
 
 ## Context

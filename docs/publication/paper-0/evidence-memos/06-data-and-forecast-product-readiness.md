@@ -1,7 +1,7 @@
 # Evidence Memo 06: Data And Forecast Product Readiness
 
 **Primary legacy review**:
-[06-datasets-and-nwp.md](../source-reviews/06-datasets-and-nwp.md)  
+[06-datasets-and-nwp.md](../source-reviews/06-datasets-and-nwp.md)
 **Focused top-up date**: `2026-04-23`
 
 ## Scope

@@ -1,11 +1,11 @@
 # Dress-rehearsal report — 2026-04-21
 
-**Plan**: 046 Stream A (Mac Mini Staging Deployment — dress rehearsal on MacBook Pro).  
-**Run window**: ~08:33–11:46 UTC.  
-**HEAD at start**: `c205d20` (Plan 046 Rev 10, v0.1.378).  
-**Config**: `main` branch with `docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.staging.yml up -d` — overlay selects 5-station A1 subset per Plan 065.  
-**Operator**: Beatrice (IT specialist); orchestration driven via CLI (no Prefect UI).  
-**Host**: MacBook Pro, Apple Silicon, Docker Desktop 16 GiB RAM allocation.  
+**Plan**: 046 Stream A (Mac Mini Staging Deployment — dress rehearsal on MacBook Pro).
+**Run window**: ~08:33–11:46 UTC.
+**HEAD at start**: `c205d20` (Plan 046 Rev 10, v0.1.378).
+**Config**: `main` branch with `docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.staging.yml up -d` — overlay selects 5-station A1 subset per Plan 065.
+**Operator**: Beatrice (IT specialist); orchestration driven via CLI (no Prefect UI).
+**Host**: MacBook Pro, Apple Silicon, Docker Desktop 16 GiB RAM allocation.
 
 ---
 

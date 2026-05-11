@@ -1,7 +1,7 @@
 # Evidence Memo 04: Temporal Resolution And Measurement Constraints
 
 **Primary legacy review**:
-[04-sub-hourly-resolution.md](../source-reviews/04-sub-hourly-resolution.md)  
+[04-sub-hourly-resolution.md](../source-reviews/04-sub-hourly-resolution.md)
 **Focused top-up date**: `2026-04-23`
 
 ## Scope

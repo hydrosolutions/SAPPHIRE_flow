@@ -156,4 +156,3 @@ Choose one:
   individual paper)
 - `provisional claim`
 - `open question`
-

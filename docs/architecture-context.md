@@ -6,7 +6,7 @@ Full v1 architecture reference. For v0 implementation, read `v0-scope.md` first 
 
 Operational hydrological forecasting system. Ingests historical and real-time weather forecasts and
 weather station as well as river observations, runs ensemble forecast models, checks alert thresholds, and
-serves results via REST API. Forecasters review and publish forecasts multiple 
+serves results via REST API. Forecasters review and publish forecasts multiple
 times a day. Runs on Docker Compose on a single VM. Swiss v0 targets up to ~170 stations (LINDAS-available BAFU gauges); the architecture supports scaling to ~1000 stations across deployments.
 
 ## Data flows

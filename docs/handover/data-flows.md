@@ -1,7 +1,7 @@
 # SAPPHIRE Flow — Data Flows
 
-**Audience**: DHM technical staff — hydrologists, IT, and integration partners.   
-**Document version**: 0.1-draft (April 2026)   
+**Audience**: DHM technical staff — hydrologists, IT, and integration partners.
+**Document version**: 0.1-draft (April 2026)
 **Status**: DRAFT — subject to change.
 
 **Companion documents** (in the same folder):
@@ -143,7 +143,7 @@ graph LR
 
 ### Flow 1 — Forecast Cycle
 
-**Trigger**: Scheduled (via Prefect, the workflow orchestration tool that runs and monitors all automated flows), every ~6 hours after NWP data becomes available.  
+**Trigger**: Scheduled (via Prefect, the workflow orchestration tool that runs and monitors all automated flows), every ~6 hours after NWP data becomes available.
 **Target**: All stations complete within 15 minutes per cycle.
 
 #### Steps

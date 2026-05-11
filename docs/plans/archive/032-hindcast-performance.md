@@ -1,7 +1,7 @@
 # Plan 032 — Hindcast Performance: Configurable Period, In-Memory Pre-fetch, Connection Resilience
 
-**Status**: READY  
-**Phase**: Bug fix & performance (against Phase 5/7 code)  
+**Status**: READY
+**Phase**: Bug fix & performance (against Phase 5/7 code)
 **Depends on**: Plan 034 (implemented — commit 31432b3). Plan 034 added `forecast_horizon_steps` to `ModelDataRequirements` and removed the mis-wired override in `_make_hindcast_fn()`. The original Task 1 of this plan is therefore already resolved.
 
 ## Context

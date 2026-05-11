@@ -1,7 +1,7 @@
 # Evidence Memo 03: Uncertainty And Ensemble Handling
 
 **Primary legacy review**:
-[03-uncertainty-paradigms.md](../source-reviews/03-uncertainty-paradigms.md)  
+[03-uncertainty-paradigms.md](../source-reviews/03-uncertainty-paradigms.md)
 **Focused top-up date**: `2026-04-23`
 
 ## Scope

@@ -1,6 +1,6 @@
 [project]
 name = "sapphire-flow"
-version = "0.1.421"
+version = "0.1.422"
 description = "Add your description here"
 readme = "README.md"
 license = "MIT"
@@ -54,6 +54,7 @@ dev = [
     "nbformat>=5.10.4",
     "notebook>=7.5.5",
     "plotly>=6.6.0",
+    "pre-commit>=4.6.0",
     "pyright",
     "pytest>=9.0.2",
     "pytest-asyncio",
@@ -96,7 +97,7 @@ markers = [
 addopts = "-m 'not deployment and not live and not live_lindas and not live_stac and not slow'"
 
 [tool.bumpversion]
-current_version = "0.1.421"
+current_version = "0.1.422"
 commit = false
 tag = false
 allow_dirty = true

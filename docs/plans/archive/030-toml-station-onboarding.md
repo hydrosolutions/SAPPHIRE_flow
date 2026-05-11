@@ -1,6 +1,6 @@
 # Plan 030 — TOML-Driven Station Onboarding Configuration
 
-**Status**: READY  
+**Status**: READY
 **Phase**: 5 (Station Onboarding)
 
 ## Context

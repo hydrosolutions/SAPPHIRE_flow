@@ -1,9 +1,9 @@
 # BSc/MSc Thesis: Sub-Daily Precipitation Product Evaluation for Operational Flood Forecasting in Nepal
 
-**Institution**: Tribhuvan University, Kathmandu  
-**Setting**: Nepali catchments across the HKH elevation gradient (supports SAPPHIRE Flow v1 + SnowMapper)  
-**Duration**: 3-6 months (BSc or MSc)  
-**Supervisors**: [TU supervisor], with scientific co-mentoring from Dr. Joel Fiddes (hydrosolutions / SLF) and Dr. Beatrice Marti (hydrosolutions / ETH Zurich) via the BARHKH network  
+**Institution**: Tribhuvan University, Kathmandu
+**Setting**: Nepali catchments across the HKH elevation gradient (supports SAPPHIRE Flow v1 + SnowMapper)
+**Duration**: 3-6 months (BSc or MSc)
+**Supervisors**: [TU supervisor], with scientific co-mentoring from Dr. Joel Fiddes (hydrosolutions / SLF) and Dr. Beatrice Marti (hydrosolutions / ETH Zurich) via the BARHKH network
 
 ## Research Question
 

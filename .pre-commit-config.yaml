@@ -1,0 +1,51 @@
+# Pre-commit hook configuration for SAPPHIRE Flow.
+#
+# Pin revisions: mutable tags are a supply-chain risk (same reasoning as
+# GitHub Actions pins in ci.yml). Update quarterly until Dependabot or
+# Renovate gains pre-commit support.
+#
+# Pins chosen 2026-05-11:
+#   ruff-pre-commit         v0.15.12  (astral-sh/ruff-pre-commit)
+#   pre-commit-hooks        v6.0.0    (pre-commit/pre-commit-hooks)
+#   gitleaks                v8.30.1   (gitleaks/gitleaks)
+#
+# Hooks are restricted to tracked source paths via per-hook `files:`
+# patterns. Pre-commit defaults scan all changed files; explicit patterns
+# avoid surprises on notebooks/, data/, etc.
+#
+# All ruff hooks are CHECK-ONLY (no auto-fix). See D8 in
+# docs/plans/070-precommit-and-gate-parity.md for the rationale
+# (auto-fix conflicts with the mandatory bump-my-version commit sequence
+# documented in CLAUDE.md §Version Bumping).
+
+repos:
+  # ── ruff: lint + format check (fastest; check-only per D8) ──────────────
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.12
+    hooks:
+      - id: ruff
+        args: []
+        files: ^(src|tests|docs|\.github|scripts|tools)/
+      - id: ruff-format
+        args: [--check]
+        files: ^(src|tests|docs|\.github|scripts|tools)/
+
+  # ── basic hygiene (trailing whitespace, EOF newline, merge conflicts) ────
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        files: ^(src|tests|docs|\.github|scripts|tools)/
+      - id: end-of-file-fixer
+        files: ^(src|tests|docs|\.github|scripts|tools)/
+      - id: check-merge-conflict
+        files: ^(src|tests|docs|\.github|scripts|tools)/
+      - id: check-added-large-files
+        files: ^(src|tests|docs|\.github|scripts|tools)/
+
+  # ── gitleaks: secret pattern detection (belt-and-suspenders) ────────────
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+        files: ^(src|tests|docs|\.github|scripts|tools)/
