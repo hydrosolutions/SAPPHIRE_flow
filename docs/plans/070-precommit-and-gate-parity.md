@@ -1,7 +1,7 @@
 # Plan 070 — Pre-commit hooks + CI/local gate parity
 
-**Status**: READY
-**Date**: 2026-04-22 (DRAFT) → 2026-05-11 (READY → DRAFT → READY, post four review rounds)
+**Status**: DONE (Phases 1–4 implemented 2026-05-11; A4 deferred pending Plan 069 Phase 1)
+**Date**: 2026-04-22 (DRAFT) → 2026-05-11 (READY → DRAFT → READY → DONE, four review rounds + four implementation phases in one day)
 **Depends on**: none (independent of Plan 069 but intentionally lands first:
 stops new lint/format/secret regressions from leaking in while Plan 069
 drains the pyright backlog under a ratchet).
@@ -662,3 +662,36 @@ All resolved 2026-05-11 at READY promotion:
   applied today; approximately 50 surgical edits. The plan is
   implementation-ready. Implementation is gated on a separate
   go-ahead from the orchestrator.
+
+- **2026-05-11 (DONE — Phases 1–4 landed)** — All four phases
+  implemented and committed in the same day. Each phase was
+  delegated to a Sonnet 4.6 subagent; each commit ran through the
+  newly-installed pre-commit gate (developer-tier gate
+  self-validating). Phase 1 also caught one P1 latent bug during
+  the second review round: A4's deferred pyright-ratchet hook
+  originally used `&&` to chain pyright to the ratchet script;
+  pyright exits non-zero on any error, so the ratchet would never
+  fire. Fixed to `|| true; ` before READY promotion.
+
+  | Phase | Tasks | Commit | Tag |
+  |---|---|---|---|
+  | 1 | A1 pre-commit framework + A2 install + A3 CLAUDE.md docs | `0223e8e` | v0.1.422 |
+  | 2 | B1 `uv run check` helper + B2 cicd.md doc | `804ac59` | v0.1.426 |
+  | 3 | C1 cicd.md tier-table extension + C2 first-fire registers + C3 `tools/gate_parity_check.py` | `0677c0e` | v0.1.427 |
+  | 4 | D-Final-Pass cicd.md consolidating gate-lifecycle section | `b94d393` | v0.1.429 |
+
+  Auxiliary commits landed alongside (not numbered phases):
+  - `b645796` v0.1.423 — cosmetic `ruff` → `ruff-check` modern hook id
+  - `aed6666` v0.1.424 — README §3 pre-commit install instruction
+  - `c36e8e7` v0.1.425 + `ed83dad` v0.1.428 — uv.lock alignment (the
+    recurring `bump-my-version` rebuild-step drift)
+
+  **A4 remains deferred** — the pyright-ratchet pre-commit hook is
+  blocked on Plan 069 Phase 1 landing the `tools/pyright_baseline.json`
+  + `tools/pyright_ratchet.py` artifacts. When Plan 069 Phase 1 merges,
+  reactivate A4 from this plan's task list and add the local hook
+  per the spec already embedded in A4.
+
+  Plan kept at its current (non-archived) path so future-Claude can
+  pick up A4 from `docs/plans/070-…md` rather than digging through
+  `docs/plans/archive/`. Move to archive only after A4 lands.
