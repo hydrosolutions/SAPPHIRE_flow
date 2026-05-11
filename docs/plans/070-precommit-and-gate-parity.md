@@ -35,8 +35,8 @@ Plan 069 T3 begins to avoid ci.yml concurrent edits.
 
 **Baseline numbers (for context):**
 - 1078 = pre-experiment (no carve-out). Historical reference only.
-- 675 = post-experiment, pre-Plan-073 (flows/ carve-out active).
-- ~611 = post-Plan-073 (Plan 069's ratchet floor).
+- 676 = live baseline at 2026-05-11, pre-Plan-073 (flows/ carve-out active; includes `meteoswiss_nwp.py:180`).
+- ≤609 = post-Plan-073 (Plan 069's ratchet floor; verified consistent with Plan 073 §Baseline numbers as of 2026-05-11).
 
 **Config location:** `pyrightconfig.json` at repo root is
 authoritative. `[tool.pyright]` in `pyproject.toml` is NOT used.

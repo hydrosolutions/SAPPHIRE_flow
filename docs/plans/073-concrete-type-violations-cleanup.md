@@ -147,7 +147,7 @@ validator boundaries, Protocol/implementation divergence.
   `OnboardingUnit` to encode "exactly one of station_id / group_id
   is set"), it becomes a separate plan with its own spec review.
 - **Not Plan 069.** Plan 069 handles the 445 non-flows Unknown-cluster
-  errors under a ratchet. This plan fixes the 64 concrete errors. The
+  errors under a ratchet. This plan fixes the 65+ concrete errors. The
   two plans share no file-level ordering constraint but serialize on
   the same `pyrightconfig.json` if we decide to also trim the
   Unknown-cluster carve-out in services/ later.
