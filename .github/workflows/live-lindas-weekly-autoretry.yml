@@ -2,17 +2,22 @@ name: LINDAS weekly auto-retry
 
 # Auto-retry policy for live-lindas-weekly.yml:
 # - Fires only when the parent workflow's SCHEDULED run failed (not manual dispatches).
-# - Sleeps 30 minutes to give BAFU's LINDAS upstream time to republish.
+# - Sleeps 5 minutes between retries (matches BAFU's ~10 min publish cadence —
+#   5 min catches each publish cycle twice).
 # - Re-dispatches via gh workflow run.
-# - Caps at 3 retries per day to avoid runaway retries if BAFU stays broken.
+# - Caps at 12 retries per day (= ~1 hour of monitoring = ~6 BAFU publish cycles).
+#   If BAFU is broken for longer than that, escalate manually.
 #
 # Background: BAFU's LINDAS hydro publishing pipeline has an intermittent
 # Monday-morning failure window (2026-04-27 succeeded; 2026-05-04 + 2026-05-11
-# failed at ~07 UTC, both recovered by ~14 UTC same day). See
+# failed at ~07 UTC, both recovered by ~14 UTC same day). LINDAS publishes new
+# observations every ~10 minutes, so most incomplete-publish failures should
+# self-correct within 1–6 publish cycles. See
 # docs/decisions/bafu-lindas-monday-window.md for evidence + triage.
 #
-# Cost: ubuntu-latest at ~$0.008/min × 30 min sleep = ~$0.24 per retry,
-# max 3 retries/day = ~$0.72 per Monday incident.
+# Cost: ubuntu-latest at ~$0.008/min × ~6 min per cycle (5 min sleep +
+# dispatch + workflow run) × max 12 retries/day = ~$0.58 of retry-job time
+# + ~$0.84 of dispatched live-lindas-weekly runs = ~$1.42 per Monday incident.
 
 on:
   workflow_run:
@@ -30,9 +35,9 @@ jobs:
       github.event.workflow_run.event == 'schedule'
     permissions:
       actions: write
-    timeout-minutes: 35
+    timeout-minutes: 10
     steps:
-      - name: Cap retries at 3 per day
+      - name: Cap retries at 12 per day
         id: cap
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -41,21 +46,21 @@ jobs:
           retries=$(gh run list \
                       --workflow=live-lindas-weekly.yml \
                       --event=workflow_dispatch \
-                      --limit 10 \
+                      --limit 30 \
                       --json createdAt \
                     --repo "${{ github.repository }}" \
                   | jq "[.[] | select(.createdAt | startswith(\"$today\"))] | length")
           echo "retries_today=$retries"
-          if [ "$retries" -lt 3 ]; then
+          if [ "$retries" -lt 12 ]; then
             echo "go=true" >> "$GITHUB_OUTPUT"
           else
-            echo "Already retried $retries times today (cap = 3); giving up."
+            echo "Already retried $retries times today (cap = 12); giving up."
             echo "go=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Wait 30 minutes for BAFU LINDAS to recover
+      - name: Wait 5 minutes for BAFU LINDAS to recover
         if: steps.cap.outputs.go == 'true'
-        run: sleep 1800
+        run: sleep 300
 
       - name: Re-dispatch live-lindas-weekly.yml
         if: steps.cap.outputs.go == 'true'

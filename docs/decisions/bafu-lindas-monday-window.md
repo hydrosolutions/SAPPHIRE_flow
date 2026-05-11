@@ -114,25 +114,33 @@ recurred, we added an automatic-retry workflow at
 `schedule`. Manual `workflow_dispatch` failures do NOT trigger an
 auto-retry (those are intentional human signals, not transients).
 
-**Behaviour**: sleeps 30 minutes (gives BAFU's LINDAS upstream time to
-republish), then re-dispatches `live-lindas-weekly.yml`. Caps at **3
-retries per day** to prevent runaway retries if BAFU stays broken.
+**Behaviour**: sleeps 5 minutes (matches BAFU's ~10-minute publish
+cadence — a 5-min retry catches each publish cycle twice), then
+re-dispatches `live-lindas-weekly.yml`. Caps at **12 retries per day**
+(= ~1 hour of monitoring = ~6 BAFU publish cycles). If BAFU is broken
+for longer than that, the next manual triage step is to confirm with
+BAFU support (`abfragezentrale@bafu.admin.ch`) per the §Implications
+section above.
 
-**Cost**: ~$0.24 per retry × max 3/day = ~$0.72 per Monday incident.
+**Cost**: ~$0.048 of retry-job time per cycle (5-min sleep × $0.008/min
+on ubuntu-latest) + ~$0.07 per dispatched live-lindas-weekly run × max
+12 retries/day = ~$1.42 per Monday incident.
 
-**Why 30 minutes**: BAFU's recovery window has been observed at 15:58 UTC
-(after 07:02 UTC failure on 2026-05-04) and 14:41 UTC (after 07:12 UTC
-failure on 2026-05-11) — both ~7–9 hours after the morning failure. A
-30-minute retry cadence with 3 attempts probes at roughly 30 min, 1 h,
-1.5 h after the original failure — well-spaced to catch a fast recovery
-but not so slow as to wait the full empirical 7+ hour window. If all
-3 retries fail, the next manual triage step is to confirm with BAFU
-support (`abfragezentrale@bafu.admin.ch`) per the §Implications section
-above.
+**Why 5 minutes**: LINDAS publishes new observations every ~10 minutes.
+A 5-minute retry cadence catches each publish cycle at least once, so
+the first BAFU republish that lands a complete dataset is detected
+promptly. 12 retries × 5 min = 60 min coverage = up to 6 BAFU publish
+cycles — well above the typical "next publish fixes it" case while
+bounded enough to stop a runaway retry chain when BAFU is genuinely
+broken. Today's empirical recovery times (7+ hours from morning failure
+to a successful manual rerun) suggest that if the 12-retry chain
+exhausts without success, the failure is likely a multi-hour upstream
+outage — escalate manually rather than keep retrying.
 
 **Edge cases handled**:
 - Manual reruns by operators don't trigger the auto-retry chain.
-- 3-retry cap prevents runaway behaviour on extended outages.
+- 12-retry/day cap prevents runaway behaviour on extended outages
+  (~1 hour of monitoring covers up to 6 BAFU publish cycles).
 - Retry workflow itself does not retry on its own failures (avoids
   infinite loops).
 
