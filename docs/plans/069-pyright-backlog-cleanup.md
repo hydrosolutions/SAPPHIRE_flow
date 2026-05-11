@@ -36,8 +36,8 @@ what remains.
 
 **Baseline numbers:**
 - 1078 = pre-experiment (no carve-out). Historical reference only.
-- 675 = post-experiment, pre-Plan-073 (flows/ carve-out active).
-- ~611 = post-Plan-073 (this plan's ratchet floor).
+- 676 = live baseline at 2026-05-11, pre-Plan-073 (flows/ carve-out active).
+- ≤609 = post-Plan-073 (this plan's ratchet floor).
 
 **Config location:** `pyrightconfig.json` at repo root is
 authoritative. `[tool.pyright]` in `pyproject.toml` is NOT used —
@@ -77,7 +77,7 @@ Leaving it off indefinitely erodes that investment.
 
 ### The shape of the backlog (measured 2026-04-22, post-carve-out)
 
-**Total: 675 errors pre-Plan-073 (expected ~611 post-Plan-073)**
+**Total: 676 errors pre-Plan-073 at 2026-05-11 (expected ≤609 post-Plan-073)**
 
 | Count | Pyright rule | Category |
 |---|---|---|
@@ -160,7 +160,8 @@ at a time.
 - `src/sapphire_flow/flows/`, `.../services/` — where the backlog
   concentrates.
 - `/tmp/pyright_rewrite.json` — 675-error baseline captured
-  2026-04-22 (pre-Plan-073).
+  2026-04-22 (pre-Plan-073; historical context only — generate a fresh
+  `uv run pyright --outputjson src/` at execution time).
 
 ---
 
@@ -186,8 +187,8 @@ at a time.
 
 1. Run `uv run pyright` (no flags). Confirm it reads `pyrightconfig.json`
    from the repo root (pyright prints which config it finds).
-   - If Plan 073 has landed: expect ~611 errors.
-   - If Plan 073 has not yet landed: expect ~675 errors.
+   - If Plan 073 has landed: expect ≤609 errors.
+   - If Plan 073 has not yet landed: expect ~676 errors.
    Either is acceptable; T2 captures the live number.
 2. Document the carve-out rationale in `docs/standards/pyright.md` (new
    file, short — under 40 lines). Cover: `typeCheckingMode: "strict"`
@@ -254,7 +255,7 @@ This is a reusable CI utility (not a one-time script), so it is written as a
    ```
    Include only files with ≥1 error. The `total` is the live measured count.
 2. Run the script to produce `tools/pyright_baseline.json`.
-   The total will be ~611 (if Plan 073 has landed) or ~675 (if not).
+   The total will be ≤609 (if Plan 073 has landed) or ~676 (if not).
    The agent running T2 must measure the live count at execution time
    and commit that number — do not hard-code 611.
 3. Commit both files.
@@ -360,6 +361,23 @@ Agents must measure live counts at execution time for files shared with Plan 073
 The remaining errors across files not covered by T7–T14 (roughly 20 files,
 ~100 errors). Same pattern, but batch files by "similar fix shape" where
 possible (e.g., all `store/*` files sharing a DataFrame-shape issue).
+
+**Guard**: Do NOT modify any file listed in Plan 073's §Cross-plan
+coordination section. The full list of Plan 073-owned files is:
+`services/model_onboarding.py`, `services/forecast_qc.py`,
+`services/hindcast.py`, `services/alert_checker.py`,
+`store/observation_store.py`, `store/forecast_store.py`,
+`tools/record_fixtures.py`, `tools/observation_coverage_summary.py`,
+`api/routes/tables.py`, `api/routes/dashboard.py`,
+`api/routes/forecasts.py`, `api/routes/models.py`,
+`api/routes/stations.py`, `api/routes/api_stations.py`,
+`services/baselines.py`, `services/qc.py`,
+`services/training_data.py`, `api/__init__.py`,
+`config/forecast_qc_rules.py`, `config/qc_rules.py`,
+`adapters/meteoswiss_nwp.py`, `types/domain.py`.
+If T15 sweeps one of these files and finds residual Unknown-cluster errors
+after Plan 073 has landed, proceed — but do not re-fix sites that Plan 073
+already addressed.
 
 **Exit**: Total pyright error count ≤ 100. All surviving entries have
 dated ignore comments per D6.
