@@ -61,6 +61,18 @@ Dev overlay port mapping (to avoid conflicts with other local services):
 uv sync
 ```
 
+Then register the pre-commit hooks so lint/format/secret checks run
+on every `git commit`:
+
+```bash
+uv run pre-commit install
+```
+
+If `pre-commit install` errors with `Cowardly refusing to install hooks
+with core.hooksPath set`, run `git config --unset-all core.hooksPath`
+first — some IDEs (and tools like `husky`) set that key automatically.
+See `CLAUDE.md` §Pre-commit hooks for the full hook policy.
+
 ### 4. Run database migrations
 
 ```bash
