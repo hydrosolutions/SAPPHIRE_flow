@@ -1,6 +1,6 @@
 [project]
 name = "sapphire-flow"
-version = "0.1.430"
+version = "0.1.431"
 description = "Add your description here"
 readme = "README.md"
 license = "MIT"
@@ -101,10 +101,18 @@ markers = [
 addopts = "-m 'not deployment and not live and not live_lindas and not live_stac and not slow'"
 
 [tool.bumpversion]
-current_version = "0.1.430"
+current_version = "0.1.431"
 commit = false
 tag = false
 allow_dirty = true
+# pre_commit_hooks runs after the bumped files are written and before
+# bump-my-version's (disabled) commit step. With commit = false, this is
+# effectively a "post-bump" hook: re-resolve the lockfile so the
+# sapphire-flow self-entry in uv.lock matches the new pyproject.toml
+# version. Prevents the recurring "uv.lock stamped at version N-1 while
+# pyproject is at N" drift that produced v0.1.425 and v0.1.428 alignment
+# commits.
+pre_commit_hooks = ["uv lock"]
 
 [[tool.bumpversion.files]]
 filename = "pyproject.toml"
