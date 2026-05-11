@@ -1,3 +1,8 @@
+# First-fire register (Plan 070 §C2):
+#   First successful run (any trigger):  24825587484  (2026-04-23 08:39 UTC, workflow_dispatch)
+#   First successful scheduled run:      24922121174  (2026-04-25 04:02 UTC)
+#   As of 2026-05-11, 17 consecutive scheduled successes 2026-04-25 → 2026-05-11.
+# See docs/standards/cicd.md for the gate-parity table; do not duplicate run IDs there.
 name: Integration nightly
 
 # Runs the slow and live (external-API) integration tests excluded from

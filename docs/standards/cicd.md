@@ -261,14 +261,36 @@ CI builds the `sapphire-flow` image on every pull request under the `build-image
 
 This subsection describes the operational topology of `.github/workflows/ci.yml`. Policy rationale (why each scan exists, what severity thresholds apply, what the `.trivyignore` discipline is) lives in [`security.md`](security.md) § Supply chain.
 
-| Tier | Job | Purpose | Depends on |
-|------|-----|---------|-----------|
-| 1 | `lint` | Ruff format + check; `trivy fs` scan of `uv.lock` + `pyproject.toml` | — |
-| 2 | `unit` | `uv run pytest` unit suite on a wheel-only environment | — |
-| 2 | `wheel-only-guard` | `uv sync --frozen --no-build --no-cache --no-install-project` — fails if any dependency update needs source-build execution on CI | — |
-| 3 | `integration` | Integration suite against a `postgis` service container (digest-pinned, synced with compose) | `unit` |
-| 4 | `build-image-and-scan` | `docker build` against the multi-stage `Dockerfile` → `trivy image` scan → `syft` CycloneDX SBOM artifact | `unit` |
-| 5 | `e2e` | End-to-end capstone suite | `unit`, `integration`, `build-image-and-scan` |
+<!-- Extended by Plan 070 §C1 — two new columns + per-run-step rows. -->
+<!-- "Local equivalent" = command a developer types locally to reproduce. -->
+<!-- "CI only? Reason" = "No" when there is a real local equivalent; "Yes — <reason>" when not. -->
+
+| Tier | Job | `run:` step | Depends on | Local equivalent | CI only? Reason |
+|------|-----|-------------|------------|-----------------|-----------------|
+| **ci.yml** | | | | | |
+| 1 | `lint` | `uv sync --frozen` | — | `uv sync` (developers typically have a synced venv already) | No |
+| 1 | `lint` | `uv run ruff check src/ tests/` | — | `uv run ruff check src/ tests/` (also via `uv run check` and pre-commit) | No |
+| 1 | `lint` | `uv run ruff format --check src/ tests/` | — | `uv run ruff format --check src/ tests/` (also via `uv run check` and pre-commit) | No |
+| 1 | `lint` | `aquasecurity/trivy-action` (fs scan, `uses:`) | — | `trivy fs --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed --scanners vuln --skip-dirs .venv .` | No (but requires trivy installed) |
+| 2 | `unit` | Install system deps for cfgrib / rioxarray / exactextract | — | Brew/apt on the dev host (developer responsibility) | Yes — system-package install, not project-managed |
+| 2 | `unit` | `uv sync --frozen` | — | `uv sync` | No |
+| 2 | `unit` | `uv run pytest tests/unit/ --cov=src/sapphire_flow --cov-report=term-missing -v` | — | `uv run pytest tests/unit/` (requires system deps above) | No (but requires system deps) |
+| 2 | `wheel-only-guard` | `uv sync --frozen --no-build --no-cache --no-install-project` | — | `uv sync --frozen --no-build --no-cache --no-install-project` | No |
+| 3 | `integration` | Install system deps for cfgrib / rioxarray / exactextract | `unit` | Brew/apt on the dev host (developer responsibility) | Yes — system-package install, not project-managed |
+| 3 | `integration` | `uv sync --frozen` | `unit` | `uv sync` | No |
+| 3 | `integration` | `uv run pytest tests/integration/ -v -m "not slow"` | `unit` | `uv run pytest tests/integration/ -v -m "not slow"` (requires postgres service + system deps) | No (but requires postgres) |
+| 4 | `build-image-and-scan` | `docker/build-push-action` (`uses:`) — build app image | `unit` | `docker buildx build -f Dockerfile -t sapphire-flow:local .` | No (but requires Docker daemon) |
+| 4 | `build-image-and-scan` | `aquasecurity/trivy-action` (image scan, `uses:`) | `unit` | `trivy image --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed sapphire-flow:local` | No (but requires the image to be built + trivy installed) |
+| 4 | `build-image-and-scan` | `anchore/sbom-action` (`uses:`) — generate SBOM with syft | `unit` | `syft sapphire-flow:local -o cyclonedx-json > sbom.cdx.json` | No (but requires syft installed) |
+| 5 | `e2e` | _(not yet implemented — dangling comment at line 206 of ci.yml)_ | `unit`, `integration`, `build-image-and-scan` | n/a | n/a |
+| **integration-nightly.yml** | | | | | |
+| N | `integration-nightly` | Install system deps for cfgrib / rioxarray / exactextract | — | Brew/apt on the dev host (developer responsibility) | Yes — system-package install, not project-managed |
+| N | `integration-nightly` | `uv sync --frozen` | — | `uv sync` | No |
+| N | `integration-nightly` | `uv run pytest tests/integration/ -v -m "slow" --timeout=3600` | — | `uv run pytest tests/integration/ -v -m "slow"` (requires postgres + system deps) | No (but requires postgres + system deps) |
+| N | `integration-nightly` | `uv run pytest tests/integration/live -v --timeout=3600 --override-ini "addopts="` | — | `uv run pytest tests/integration/live -v --override-ini "addopts="` (live external APIs) | No (but requires network + live external APIs) |
+| **live-lindas-weekly.yml** | | | | | |
+| W | `live-lindas-schema` | `uv sync --frozen` (Install dependencies) | — | `uv sync` | No |
+| W | `live-lindas-schema` | `uv run pytest -m live_lindas -v` (Run live LINDAS schema check) | — | `uv run pytest -m live_lindas -v` (live external API) | No (but requires network + BAFU LINDAS up) |
 
 ### Local gate helper — `uv run check`
 

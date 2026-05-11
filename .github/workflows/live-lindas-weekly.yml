@@ -1,3 +1,13 @@
+# First-fire register (Plan 070 §C2):
+#   First successful run (any trigger):  24824715145  (2026-04-23 08:18 UTC, workflow_dispatch)
+#   First successful scheduled run:      24980849671  (2026-04-27 06:53 UTC)
+# Known external-dependency caveat: BAFU LINDAS publishing-pipeline regression on
+# Monday mornings (2026-05-04, 2026-05-11 schedule failures). 2 of 3 observed
+# Mondays failed; 1 succeeded (2026-04-27). See
+# docs/decisions/bafu-lindas-monday-window.md for the timeline + triage procedure.
+# The recurring Monday failure is an upstream BAFU issue, NOT a workflow defect —
+# do not act on individual Monday failures as schema drift without first checking
+# the BAFU VoID descriptor per the decision record.
 name: Live LINDAS weekly schema check
 
 on:
