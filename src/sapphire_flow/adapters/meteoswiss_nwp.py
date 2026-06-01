@@ -6,7 +6,7 @@ import shutil
 import time
 from datetime import timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import urlparse
 
 import httpx
@@ -23,8 +23,6 @@ from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.weather import GriddedForecast
 
 if TYPE_CHECKING:
-    from collections.abc import Hashable
-
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.ids import StationId
     from sapphire_flow.types.station import StationWeatherSource
@@ -171,7 +169,9 @@ def _combine_cfgrib_datasets(per_file: list[xr.Dataset]) -> xr.Dataset:
     """
     normalised = [_normalise_number_dim(d) for d in per_file]
 
-    by_valid_time: dict[Hashable, list[xr.Dataset]] = {}
+    # valid_time scalars come from xarray's `.item()`, which is typed Any;
+    # they are chronologically sortable timestamps at runtime.
+    by_valid_time: dict[Any, list[xr.Dataset]] = {}
     for d in normalised:
         vt = d.coords["valid_time"].values.item()
         by_valid_time.setdefault(vt, []).append(d)

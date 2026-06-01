@@ -4,7 +4,7 @@ import hashlib
 import time
 import traceback
 from datetime import UTC
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 import polars as pl
 import structlog
@@ -32,7 +32,7 @@ from sapphire_flow.types.training import TrainingUnit
 
 if TYPE_CHECKING:
     import random
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
     from datetime import timedelta
 
     from sapphire_flow.config.deployment import DeploymentConfig
@@ -212,6 +212,7 @@ def _make_synthetic_group_training_data(
     n_future_rows: int = 10,
 ) -> GroupTrainingData:
     from datetime import datetime
+    from uuid import uuid4
 
     from sapphire_flow.types.ids import StationId
     from sapphire_flow.types.model import GroupTrainingData
@@ -220,7 +221,9 @@ def _make_synthetic_group_training_data(
     base = datetime(2000, 1, 1, tzinfo=UTC)
     past_ts = [base + i * time_step for i in range(n_past_rows)]
     future_ts = [base + (n_past_rows + i) * time_step for i in range(n_future_rows)]
-    station_ids = tuple(StationId(f"synthetic_{i}") for i in range(n_stations))
+    # StationId is a UUID NewType; the stacked-frame "station_id" column must
+    # equal str(sid) so GroupTrainingData.for_station can slice by station.
+    station_ids = tuple(StationId(uuid4()) for _ in range(n_stations))
 
     def _stacked_df(
         cols: frozenset[str],
@@ -237,16 +240,16 @@ def _make_synthetic_group_training_data(
 
     static: pl.DataFrame | None = None
     if req.static_features:
-        rows = []
+        rows: list[dict[str, str | float]] = []
         for sid in station_ids:
-            row = {"station_id": str(sid)}
+            row: dict[str, str | float] = {"station_id": str(sid)}
             for col in req.static_features:
                 row[col] = rng.random()
             rows.append(row)
         static = pl.DataFrame(rows)
 
     return GroupTrainingData(
-        group_id=StationGroupId("synthetic_group"),
+        group_id=StationGroupId(uuid4()),
         station_ids=station_ids,
         past_targets=_stacked_df(req.target_parameters, past_ts),
         past_dynamic=_stacked_df(req.past_dynamic_features, past_ts),
@@ -258,6 +261,8 @@ def _make_synthetic_group_training_data(
 
 
 def smoke_test_model(model: ForecastModel, rng: random.Random) -> None:
+    from uuid import uuid4
+
     from sapphire_flow.protocols.forecast_model import (
         GroupForecastModel,
         StationForecastModel,
@@ -317,7 +322,7 @@ def smoke_test_model(model: ForecastModel, rng: random.Random) -> None:
             from sapphire_flow.types.model import StationInputData, StationModelInputs
 
             inputs = StationModelInputs(
-                station_id=StationId("smoke_test_station"),
+                station_id=StationId(uuid4()),
                 data=StationInputData(
                     past_targets=data.past_targets,
                     past_dynamic=data.past_dynamic,
@@ -347,8 +352,13 @@ def _utc_now() -> UtcDatetime:
     return UtcDatetime(datetime.now(tz=UTC))
 
 
+class _HasParameter(Protocol):
+    @property
+    def parameter(self) -> str: ...
+
+
 def _validate_ensemble_dict(
-    ensembles: dict[str, object],
+    ensembles: Mapping[str, _HasParameter],
     expected_keys: frozenset[str],
 ) -> None:
     missing = expected_keys - set(ensembles.keys())
@@ -357,7 +367,7 @@ def _validate_ensemble_dict(
             f"predict() result missing keys: {missing}. Got: {set(ensembles.keys())}"
         )
     for key, ensemble in ensembles.items():
-        if hasattr(ensemble, "parameter") and ensemble.parameter != key:
+        if ensemble.parameter != key:
             raise ModelSmokeTestError(
                 f"ForecastEnsemble key/value mismatch: key={key!r}, "
                 f"ensemble.parameter={ensemble.parameter!r}"

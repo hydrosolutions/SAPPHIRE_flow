@@ -23,6 +23,7 @@ from sapphire_flow.types.enums import (
 )
 from sapphire_flow.types.ids import StationId
 from sapphire_flow.types.station import StationConfig
+from sapphire_flow.types.weather import GriddedForecast
 
 if TYPE_CHECKING:
     from sapphire_flow.protocols.adapters import StationDataSource
@@ -313,6 +314,16 @@ def _run_nwp(args: argparse.Namespace) -> None:
                 forecast = adapter.fetch_forecasts([], ct)
             except Exception as exc:
                 log.error("nwp.recording_failed", cycle_time=str(ct), error=str(exc))
+                continue
+
+            # MeteoSwissNwpAdapter returns a GriddedForecast; the point-based
+            # dict branch of the union is not produced by this adapter.
+            if not isinstance(forecast, GriddedForecast):
+                log.error(
+                    "nwp.recording_unexpected_type",
+                    cycle_time=str(ct),
+                    got=type(forecast).__name__,
+                )
                 continue
 
             try:
