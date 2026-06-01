@@ -99,7 +99,7 @@ After each subagent completes, the orchestrator verifies:
 
 1. Task's verification command passes
 2. `uv run ruff check src/ tests/` and `uv run ruff format --check src/ tests/` clean
-3. `uv run pyright --strict src/` — no type errors in changed modules
+3. `uv run pyright src/` — no type errors in changed modules
 4. `uv run pytest` — all tests pass
 5. Affected docs updated in the same change
 

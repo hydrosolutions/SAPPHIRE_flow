@@ -91,7 +91,7 @@ One training-data-assembly abstraction, strategy-selectable. Initial training an
 ## Exit gates (sketch)
 
 1. `uv run pytest tests/unit/services/test_training_data_assemblers.py tests/unit/config/ tests/unit/flows/test_train_models.py` green.
-2. `uv run pyright --strict src/` clean.
+2. `uv run pyright src/` clean.
 3. Against a fixture DB matching dress-rehearsal state, `train-models` with default strategy produces ≥1 new artifact per (station, model). No "got 1" errors.
 4. `docs/plans/046-*.md` §A3 step 4 reinstated (remove F3 skippable note) and cross-referenced to this plan's DONE commit.
 

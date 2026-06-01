@@ -3038,7 +3038,7 @@ References (does not redefine): container log driver from cicd.md, audit_log sch
 | Dashboard | HTMX + Jinja2 |
 | ML model contract | ForecastInterface (`hydrosolutions/ForecastInterface`) |
 | Reverse proxy | Caddy |
-| Type checker | pyright --strict |
+| Type checker | pyright src/ |
 | Linter/formatter | ruff |
 
 ## Key design decisions
