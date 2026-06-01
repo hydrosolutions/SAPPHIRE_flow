@@ -18,6 +18,7 @@ jobs:
       - run: uv sync --frozen
       - run: uv run ruff check src/ tests/
       - run: uv run ruff format --check src/ tests/
+      - run: shellcheck scripts/launchd/start-sapphire.sh scripts/launchd/watchdog.sh scripts/launchd/install-launchd.sh scripts/bootstrap-mac-mini.sh
       # pyright --strict disabled: pyright 1.1.408 removed the --strict CLI
        # flag (must be configured via pyproject.toml or pyrightconfig.json),
        # and a default-mode run reports 1078 pre-existing errors that

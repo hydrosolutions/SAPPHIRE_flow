@@ -43,6 +43,21 @@ repos:
       - id: check-added-large-files
         files: ^(src|tests|docs|\.github|scripts|tools)/
 
+  # ── Mac-mini ops scripts: check-only shell/plist lint ───────────────────
+  - repo: local
+    hooks:
+      - id: shellcheck
+        name: shellcheck Mac-mini scripts
+        entry: shellcheck
+        language: system
+        files: ^(scripts/launchd/.*\.sh|scripts/bootstrap-mac-mini\.sh)$
+        types_or: [shell]
+      - id: plutil-launchd
+        name: plutil launchd plists
+        entry: bash -c 'command -v plutil >/dev/null 2>&1 || exit 0; plutil -lint "$@"' --
+        language: system
+        files: ^scripts/launchd/.*\.plist$
+
   # ── gitleaks: secret pattern detection (belt-and-suspenders) ────────────
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.30.1
