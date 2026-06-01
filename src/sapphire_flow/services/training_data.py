@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta  # noqa: TCH003
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import polars as pl
 import structlog
@@ -68,7 +68,8 @@ def resample_to_time_step(
     target_us = time_step.total_seconds() * 1_000_000
     if (
         median_diff_us is not None
-        and abs(median_diff_us - target_us) < target_us * 0.01
+        # polars .median() is typed PythonLiteral; the cast column is Int64
+        and abs(cast("float", median_diff_us) - target_us) < target_us * 0.01
     ):
         return df
 

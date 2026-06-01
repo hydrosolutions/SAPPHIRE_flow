@@ -685,6 +685,11 @@ class ExceedanceResult:
     exceeded: bool                 # whether the threshold was crossed in the configured direction
     model_ids: tuple[ModelId, ...] = ()                        # models that contributed
     strategy: ModelCombinationStrategy = ModelCombinationStrategy.PRIMARY   # which strategy produced this result
+
+    def __post_init__(self) -> None:
+        # Invariant: a crossed threshold must carry its probability.
+        if self.exceeded and self.exceedance_probability is None:
+            raise ValueError("exceedance_probability must be set when exceeded=True")
 ```
 
 Module: `types/domain.py`

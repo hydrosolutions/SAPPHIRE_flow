@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from datetime import datetime  # noqa: TCH003  # runtime use: isinstance narrowing
+from typing import TYPE_CHECKING, cast
 
 import polars as pl
 
@@ -28,13 +29,16 @@ def _apply_negative_value(
 ) -> QcFlag | None:
     value_min = thresholds["value_min"]
     min_val = ensemble.values["value"].min()
-    if min_val is not None and min_val < value_min:
-        return QcFlag(
-            rule_id=rule.rule_id,
-            rule_version=_RULE_VERSION,
-            status=QcStatus.QC_FAILED,
-            detail=f"min value {min_val} below {value_min}",
-        )
+    if min_val is not None:
+        # polars .min() is typed PythonLiteral; the "value" column is float64
+        min_val_f = cast("float", min_val)
+        if min_val_f < value_min:
+            return QcFlag(
+                rule_id=rule.rule_id,
+                rule_version=_RULE_VERSION,
+                status=QcStatus.QC_FAILED,
+                detail=f"min value {min_val_f} below {value_min}",
+            )
     return None
 
 
@@ -67,13 +71,16 @@ def _apply_flat_ensemble(
 ) -> QcFlag | None:
     tolerance = thresholds["tolerance"]
     std = ensemble.values["value"].std()
-    if std is not None and std < tolerance:
-        return QcFlag(
-            rule_id=rule.rule_id,
-            rule_version=_RULE_VERSION,
-            status=QcStatus.QC_SUSPECT,
-            detail=f"ensemble std {std:.6f} below tolerance {tolerance}",
-        )
+    if std is not None:
+        # polars .std() is typed PythonLiteral; the "value" column is float64
+        std_f = cast("float", std)
+        if std_f < tolerance:
+            return QcFlag(
+                rule_id=rule.rule_id,
+                rule_version=_RULE_VERSION,
+                status=QcStatus.QC_SUSPECT,
+                detail=f"ensemble std {std_f:.6f} below tolerance {tolerance}",
+            )
     return None
 
 
@@ -86,6 +93,8 @@ def _apply_ensemble_spread(
     first_vt = ensemble.values["valid_time"].min()
     if first_vt is None:
         return None
+    # "valid_time" is a datetime column; polars .min() is typed PythonLiteral
+    assert isinstance(first_vt, datetime)
     doy = first_vt.timetuple().tm_yday
     key = (ensemble.station_id, ensemble.parameter, doy)
     baseline = baseline_index.get(key)
@@ -112,7 +121,8 @@ def _apply_ensemble_spread(
 
     min_spread_ratio = thresholds["min_spread_ratio"]
     max_spread_ratio = thresholds["max_spread_ratio"]
-    ratio = mean_iqr / clim_std
+    # polars .mean() is typed PythonLiteral; the "iqr" column is float64
+    ratio = cast("float", mean_iqr) / clim_std
 
     if ratio < min_spread_ratio or ratio > max_spread_ratio:
         return QcFlag(
@@ -136,6 +146,8 @@ def _apply_climatology_outlier(
     first_vt = ensemble.values["valid_time"].min()
     if first_vt is None:
         return None
+    # "valid_time" is a datetime column; polars .min() is typed PythonLiteral
+    assert isinstance(first_vt, datetime)
     doy = first_vt.timetuple().tm_yday
     key = (ensemble.station_id, ensemble.parameter, doy)
     baseline = baseline_index.get(key)
@@ -148,13 +160,15 @@ def _apply_climatology_outlier(
         return None
 
     k_sigma = thresholds["k_sigma"]
-    if abs(overall_median - baseline.rolling_mean) > k_sigma * baseline.rolling_std:
+    # polars .median() is typed PythonLiteral; the "value" column is float64
+    overall_median_f = cast("float", overall_median)
+    if abs(overall_median_f - baseline.rolling_mean) > k_sigma * baseline.rolling_std:
         return QcFlag(
             rule_id=rule.rule_id,
             rule_version=_RULE_VERSION,
             status=QcStatus.QC_SUSPECT,
             detail=(
-                f"ensemble median {overall_median:.4f} deviates from baseline "
+                f"ensemble median {overall_median_f:.4f} deviates from baseline "
                 f"mean {baseline.rolling_mean:.4f} by >{k_sigma}σ "
                 f"(std={baseline.rolling_std:.4f})"
             ),

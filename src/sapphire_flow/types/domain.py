@@ -218,6 +218,10 @@ class ExceedanceResult:
     model_ids: tuple[ModelId, ...] = ()
     strategy: ModelCombinationStrategy = ModelCombinationStrategy.PRIMARY
 
+    def __post_init__(self) -> None:
+        if self.exceeded and self.exceedance_probability is None:
+            raise ValueError("exceedance_probability must be set when exceeded=True")
+
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class ForecastQcRuleParams:

@@ -9,7 +9,11 @@ from typing import TYPE_CHECKING
 import polars as pl
 import structlog
 
-from sapphire_flow.exceptions import ConfigurationError, ModelSmokeTestError
+from sapphire_flow.exceptions import (
+    ConfigurationError,
+    ModelSmokeTestError,
+    StoreError,
+)
 from sapphire_flow.types.enums import (
     ArtifactScope,
     ModelAssignmentStatus,
@@ -570,6 +574,10 @@ def onboard_model(
     compute_skill_fn: Callable[..., None] | None = None,
     skip_smoke_test: bool = False,
 ) -> ModelOnboardingResult:
+    from sapphire_flow.protocols.forecast_model import (
+        GroupForecastModel,
+        StationForecastModel,
+    )
     from sapphire_flow.services.training import (
         promote_artifact,
         train_group_model,
@@ -579,6 +587,8 @@ def onboard_model(
         assemble_group_training_data,
         assemble_station_training_data,
     )
+    from sapphire_flow.types.enums import ArtifactScope
+    from sapphire_flow.types.model import GroupTrainingData, StationTrainingData
 
     log.info("model.onboarding_started", model_id=str(model_id), unit_count=len(units))
     unit_results: list[OnboardingUnitResult] = []
@@ -704,7 +714,17 @@ def onboard_model(
                     station_store=station_store,
                 )
             else:
+                # TrainingUnit.__post_init__ guarantees exactly-one-of
+                # station_id / group_id; group_id is set in this branch.
+                assert unit.group_id is not None
                 group = group_store.fetch_group(unit.group_id)
+                if group is None:
+                    raise StoreError(
+                        f"fetch_group({unit.group_id}) returned None — "
+                        "group was deleted or never persisted; training unit "
+                        "references a stale group_id"
+                    )
+                assert isinstance(model, GroupForecastModel)
                 training_data = assemble_group_training_data(
                     group=group,
                     model=model,
@@ -752,11 +772,13 @@ def onboard_model(
 
         # Step 3: Train
         try:
-            from sapphire_flow.types.enums import ArtifactScope
-
             if model.artifact_scope == ArtifactScope.STATION:
+                assert isinstance(model, StationForecastModel)
+                assert isinstance(training_data, StationTrainingData)
                 artifact_bytes = train_station_model(model, training_data, {}, rng)
             else:
+                assert isinstance(model, GroupForecastModel)
+                assert isinstance(training_data, GroupTrainingData)
                 artifact_bytes = train_group_model(model, training_data, {}, rng)
         except Exception as exc:
             log.error(
@@ -1017,6 +1039,9 @@ def onboard_model(
                     clock=clock,
                 )
             else:
+                # TrainingUnit.__post_init__ guarantees exactly-one-of
+                # station_id / group_id; group_id is set in this branch.
+                assert unit.group_id is not None
                 create_group_assignment(
                     group_id=unit.group_id,
                     model_id=model_id,
