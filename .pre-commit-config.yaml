@@ -58,6 +58,16 @@ repos:
         language: system
         files: ^scripts/launchd/.*\.plist$
 
+  # ── pyright ratchet: slower type gate, so run before push ───────────────
+  - repo: local
+    hooks:
+      - id: pyright-ratchet
+        name: pyright ratchet
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+        entry: bash -c 'uv run pyright --outputjson src/ > /tmp/pyright.json || true; uv run python tools/pyright_ratchet.py /tmp/pyright.json tools/pyright_baseline.json'
+
   # ── gitleaks: secret pattern detection (belt-and-suspenders) ────────────
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.30.1
