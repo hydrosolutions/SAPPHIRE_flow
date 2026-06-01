@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from sapphire_flow.api.deps import get_connection
-from sapphire_flow.api.routes.tables import _get_reflected
+from sapphire_flow.api.routes.tables import get_reflected
 
 router = APIRouter(tags=["stations"])
 
@@ -20,7 +20,7 @@ def observation_coverage(
 ) -> HTMLResponse:
     from sapphire_flow.api import templates
 
-    reflected = _get_reflected(conn)
+    reflected = get_reflected(conn)
     obs_table = reflected.tables.get("observations")
     stations_table = reflected.tables.get("stations")
 
@@ -105,7 +105,7 @@ def station_list(
 ) -> HTMLResponse:
     from sapphire_flow.api import templates
 
-    reflected = _get_reflected(conn)
+    reflected = get_reflected(conn)
     stations = reflected.tables["stations"]
 
     # Build columns — handle geometry specially
@@ -170,7 +170,7 @@ def station_detail(
 ) -> HTMLResponse:
     from sapphire_flow.api import templates
 
-    reflected = _get_reflected(conn)
+    reflected = get_reflected(conn)
     stations = reflected.tables["stations"]
 
     select_cols = []
@@ -393,7 +393,7 @@ def station_observations_json(
     end: str = Query(..., description="ISO datetime"),
     conn: sa.Connection = Depends(get_connection),
 ) -> JSONResponse:
-    reflected = _get_reflected(conn)
+    reflected = get_reflected(conn)
     obs = reflected.tables.get("observations")
     if obs is None:
         return JSONResponse({"timestamps": [], "values": [], "qc_statuses": []})
@@ -441,7 +441,7 @@ def station_forcing_json(
     end: str = Query(..., description="ISO datetime"),
     conn: sa.Connection = Depends(get_connection),
 ) -> JSONResponse:
-    reflected = _get_reflected(conn)
+    reflected = get_reflected(conn)
     forcing = reflected.tables.get("historical_forcing")
     if forcing is None:
         return JSONResponse({"timestamps": [], "series": {}})
@@ -490,7 +490,7 @@ def station_baselines_json(
     parameter: str = Query(...),
     conn: sa.Connection = Depends(get_connection),
 ) -> JSONResponse:
-    reflected = _get_reflected(conn)
+    reflected = get_reflected(conn)
     baselines = reflected.tables.get("clim_baselines")
     if baselines is None:
         return JSONResponse({"day_of_year": [], "rolling_mean": [], "rolling_std": []})
@@ -533,7 +533,7 @@ def station_hindcasts_json(
     end: str = Query(..., description="ISO datetime"),
     conn: sa.Connection = Depends(get_connection),
 ) -> JSONResponse:
-    reflected = _get_reflected(conn)
+    reflected = get_reflected(conn)
     hf = reflected.tables.get("hindcast_forecasts")
     hv = reflected.tables.get("hindcast_values")
     obs = reflected.tables.get("observations")

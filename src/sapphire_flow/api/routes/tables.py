@@ -24,10 +24,13 @@ PAGE_SIZE = 50
 _reflected: sa.MetaData | None = None
 
 
-def _get_reflected(conn: sa.Connection) -> sa.MetaData:
+def get_reflected(conn: sa.Connection) -> sa.MetaData:
+    """Lazily reflect the live database schema; cached after first call."""
     global _reflected  # noqa: PLW0603
     if _reflected is None:
-        import geoalchemy2  # noqa: F401  — registers geometry type with SQLAlchemy
+        # Side-effect import: registers the PostGIS geometry type with
+        # SQLAlchemy so MetaData.reflect() can map geometry columns.
+        import geoalchemy2  # noqa: F401  # pyright: ignore[reportUnusedImport]  # 2026-06-01: re-review 2026-12-01
 
         _reflected = sa.MetaData()
         _reflected.reflect(bind=conn)
@@ -73,7 +76,7 @@ def table_list(
 ) -> HTMLResponse:
     from sapphire_flow.api import templates
 
-    reflected = _get_reflected(conn)
+    reflected = get_reflected(conn)
     tables_info = []
     for name in sorted(reflected.tables.keys()):
         if name not in SAPPHIRE_TABLES:
@@ -104,7 +107,7 @@ def table_detail(
 ) -> HTMLResponse:
     from sapphire_flow.api import templates
 
-    reflected = _get_reflected(conn)
+    reflected = get_reflected(conn)
     if table_name not in SAPPHIRE_TABLES or table_name not in reflected.tables:
         raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
 
@@ -146,7 +149,7 @@ def table_rows_partial(
 ) -> HTMLResponse:
     from sapphire_flow.api import templates
 
-    reflected = _get_reflected(conn)
+    reflected = get_reflected(conn)
     if table_name not in SAPPHIRE_TABLES or table_name not in reflected.tables:
         raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
 

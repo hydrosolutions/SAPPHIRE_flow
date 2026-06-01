@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 
 from sapphire_flow.api.deps import get_connection
-from sapphire_flow.api.routes.tables import _get_reflected
+from sapphire_flow.api.routes.tables import get_reflected
 
 router = APIRouter(tags=["dashboard"])
 
@@ -16,7 +16,7 @@ def dashboard(
 ) -> HTMLResponse:
     from sapphire_flow.api import templates
 
-    reflected = _get_reflected(conn)
+    reflected = get_reflected(conn)
 
     def _count(table_name: str, where: sa.ColumnElement[bool] | None = None) -> int:
         table = reflected.tables.get(table_name)

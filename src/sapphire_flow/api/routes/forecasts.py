@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from sapphire_flow.api.deps import get_connection
-from sapphire_flow.api.routes.tables import PAGE_SIZE, _get_reflected
+from sapphire_flow.api.routes.tables import PAGE_SIZE, get_reflected
 
 router = APIRouter(tags=["forecasts"])
 
@@ -21,7 +21,7 @@ def forecast_list(
 ) -> HTMLResponse:
     from sapphire_flow.api import templates
 
-    reflected = _get_reflected(conn)
+    reflected = get_reflected(conn)
     forecasts = reflected.tables.get("forecasts")
 
     rows: list[dict[str, Any]] = []
@@ -73,7 +73,7 @@ def forecast_detail(
 ) -> HTMLResponse:
     from sapphire_flow.api import templates
 
-    reflected = _get_reflected(conn)
+    reflected = get_reflected(conn)
     forecasts = reflected.tables.get("forecasts")
     if forecasts is None:
         raise HTTPException(status_code=404, detail="Not found")
@@ -119,7 +119,7 @@ def forecast_data_json(
     forecast_id: str,
     conn: sa.Connection = Depends(get_connection),
 ) -> JSONResponse:
-    reflected = _get_reflected(conn)
+    reflected = get_reflected(conn)
     forecasts = reflected.tables.get("forecasts")
     fv = reflected.tables.get("forecast_values")
     if forecasts is None or fv is None:

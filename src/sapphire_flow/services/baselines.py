@@ -13,11 +13,6 @@ if TYPE_CHECKING:
 _EPSILON = 1e-6
 
 
-def _doy_distance(a: int, b: int) -> int:
-    diff = abs(a - b)
-    return min(diff, 366 - diff)
-
-
 def compute_clim_baselines(
     observations: list[Observation],
     station_id: StationId,

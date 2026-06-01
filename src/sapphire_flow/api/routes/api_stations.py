@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from enum import Enum
 from typing import Any
 from uuid import UUID
 
@@ -117,7 +118,7 @@ def _parse_datetime(value: str, field_name: str) -> UtcDatetime:
     return ensure_utc(dt)
 
 
-def _parse_enum(value: str, enum_cls: type, field_name: str) -> Any:
+def _parse_enum(value: str, enum_cls: type[Enum], field_name: str) -> Any:
     try:
         return enum_cls(value)
     except ValueError as exc:

@@ -75,7 +75,13 @@ def validate_compatibility(
         StationForecastModel,
     )
 
-    protocol_conforms = isinstance(model, StationForecastModel | GroupForecastModel)
+    # Runtime conformance gate for entry-point-discovered (plugin) models: the
+    # static ForecastModel annotation makes this look redundant, but the flow
+    # wrapper passes a plugin object that may not actually conform.
+    protocol_conforms = isinstance(
+        model,
+        StationForecastModel | GroupForecastModel,
+    )  # pyright: ignore[reportUnnecessaryIsInstance]  # 2026-06-01: re-review 2026-12-01
     req: ModelDataRequirements = model.data_requirements
 
     if station_config.forecast_targets is None:
@@ -122,7 +128,13 @@ def validate_compatibility_for_unit(
         StationForecastModel,
     )
 
-    protocol_conforms = isinstance(model, StationForecastModel | GroupForecastModel)
+    # Runtime conformance gate for entry-point-discovered (plugin) models: the
+    # static ForecastModel annotation makes this look redundant, but the flow
+    # wrapper passes a plugin object that may not actually conform.
+    protocol_conforms = isinstance(
+        model,
+        StationForecastModel | GroupForecastModel,
+    )  # pyright: ignore[reportUnnecessaryIsInstance]  # 2026-06-01: re-review 2026-12-01
     req: ModelDataRequirements = model.data_requirements
     missing_past = req.past_dynamic_features - available_features
     missing_future = req.future_dynamic_features - available_features
