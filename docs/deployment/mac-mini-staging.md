@@ -179,6 +179,13 @@ curl -s http://localhost:8010/api/v1/health \
 
 ## LAN access (SSH tunnel)
 
+### Network posture
+
+The Mac mini staging stack is LAN-only and serves plain HTTP on the
+host. There is no caddy TLS service in this overlay per Plan 046 D1;
+public HTTPS is owned by Plan 049. Use the SSH tunnel below for team
+laptop access.
+
 On each team laptop, add to `~/.ssh/config`:
 
 ```ssh-config

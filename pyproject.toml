@@ -1,6 +1,6 @@
 [project]
 name = "sapphire-flow"
-version = "0.1.441"
+version = "0.1.442"
 description = "Add your description here"
 readme = "README.md"
 license = "MIT"
@@ -101,7 +101,7 @@ markers = [
 addopts = "-m 'not deployment and not live and not live_lindas and not live_stac and not slow'"
 
 [tool.bumpversion]
-current_version = "0.1.441"
+current_version = "0.1.442"
 commit = false
 tag = false
 allow_dirty = true
