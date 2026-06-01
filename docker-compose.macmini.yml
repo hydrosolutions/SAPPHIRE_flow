@@ -14,6 +14,7 @@
 #   * Exposes the API on the host (port 8000) so the watchdog on the
 #     host can probe http://localhost:8000/api/v1/health, and so
 #     team laptops can SSH-tunnel into the LAN-side API.
+#   * LAN-only/plain HTTP; no caddy TLS here (public HTTPS is Plan 049).
 #
 # Spec: docs/plans/046-mac-mini-staging-deployment.md §C2, §C3.
 
