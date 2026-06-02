@@ -1,28 +1,16 @@
 # Known-accepted CVEs. Every entry MUST carry a dated comment explaining why
 # it is ignored and when to re-review. No undated entries. See Plan 064 A2.
 
-# --- OpenSSL in Debian 12 (bookworm) base ---
-# Packages: libssl3t64, openssl, openssl-provider-legacy (all from python:3.12.13-slim).
-# Accepted 2026-04-21, review by 2026-05-21.
-# These will clear when python:3.12.x-slim rebuilds against an updated bookworm-security
-# mirror, or when Dependabot raises a python base-image bump (A3 docker ecosystem).
-# Plan 064 D11 explicitly accepts live OS-package feed drift as residual risk monitored here.
-CVE-2026-28390
-CVE-2026-28388
-CVE-2026-28389
-CVE-2026-31789
-CVE-2026-31790
-CVE-2026-2673
-CVE-2026-28387
-
-# --- pip 25.0.1 bundled with python:3.12.13-slim ---
-# Accepted 2026-04-21, review by 2026-05-21.
-# pip version ships with the Python base image. Fix lands when the Python maintainers
-# roll a new patch image that bundles a newer pip. We deliberately do NOT run
-# `pip install --upgrade pip` in the Dockerfile — that would pull whatever pip is
-# latest at build time, weakening reproducibility, and is out of scope for Plan 064 D11.
-CVE-2025-8869
-CVE-2026-1703
-# CVE-2026-6357 added 2026-05-06: same pip 25.0.1 from the base image, fix in pip 26.1.
-# Clears when a python:3.12.x-slim refresh bundles pip >= 26.1 (Dependabot A3).
-CVE-2026-6357
+# --- No active entries as of 2026-06-02 ---
+# The base image was re-pinned to the python:3.12.13-slim debian 13.5 rebuild
+# (digest sha256:090ba77e…) on 2026-06-02. That rebuild cleared all previously
+# accepted CVEs, so they were removed rather than re-dated:
+#   - OpenSSL (libssl3t64/openssl/openssl-provider-legacy): CVE-2026-28390,
+#     -28388, -28389, -31789, -31790, -2673, -28387 — fixed in debian 13.5.
+#   - pip 25.0.1: CVE-2025-8869, CVE-2026-1703, CVE-2026-6357 — no longer
+#     flagged HIGH/CRITICAL by the current Trivy DB for the bundled pip.
+#   - libcap2 CVE-2026-4878 (the finding that turned CI red on 2026-06-01) is
+#     fixed in libcap2 1:2.75-10+deb13u1, present in the 13.5 rebuild.
+# A fresh `trivy image` scan of the rebuilt base reports 0 HIGH/CRITICAL.
+# Re-populate this file (with dated comments) only when a future scan surfaces
+# an accepted, not-yet-fixed CVE.
