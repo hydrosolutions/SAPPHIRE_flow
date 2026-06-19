@@ -21,6 +21,8 @@ from sapphire_flow.protocols.forecast_model import (
     StationForecastModel,
 )
 from sapphire_flow.services.model_onboarding import (
+    assert_model_conforms,
+    assert_operational_floors,
     create_group_assignment,
     create_station_assignment,
     determine_onboarding_scope,
@@ -48,6 +50,8 @@ from sapphire_flow.types.model_onboarding import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.ids import ArtifactId
     from sapphire_flow.types.model import (
@@ -62,6 +66,26 @@ log = structlog.get_logger(__name__)
 
 def _unit_shard(unit: TrainingUnit) -> str:
     return str(unit.station_id) if unit.station_id is not None else str(unit.group_id)
+
+
+def _build_station_code_resolver(
+    station_store: object,
+) -> Callable[[StationId], str]:
+    def resolve_station_code(station_id: StationId) -> str:
+        station = station_store.fetch_station(station_id)  # type: ignore[union-attr]
+        if station is None:
+            raise ConfigurationError(
+                f"station_store could not resolve station_id {station_id!r}"
+            )
+
+        station_code = station.code.strip()
+        if not station_code:
+            raise ConfigurationError(
+                f"station_store resolved station_id {station_id!r} without a code"
+            )
+        return station_code
+
+    return resolve_station_code
 
 
 @task(
@@ -203,6 +227,7 @@ def _validate_compatibility_task(
     station_store: object,
     group_store: object,
     basin_store: object,
+    parameter_store: object,
     deployment_config: object,
 ) -> CompatibilityReport:
     avail_static_by_station: dict[StationId, frozenset[str]] = {}
@@ -218,6 +243,11 @@ def _validate_compatibility_task(
         else:
             avail_static_by_station[sid] = frozenset()
 
+    canonical_units = {
+        parameter.name: parameter.unit
+        for parameter in parameter_store.fetch_all()  # type: ignore[union-attr]
+    }
+
     return validate_compatibility_for_unit(
         model_id=model_id,
         model=model,  # type: ignore[arg-type]
@@ -227,6 +257,7 @@ def _validate_compatibility_task(
         available_features=deployment_config.available_nwp_parameters,  # type: ignore[union-attr]
         available_static_by_station=avail_static_by_station,
         requested_time_step=unit.time_step,
+        canonical_units=canonical_units,
     )
 
 
@@ -236,7 +267,22 @@ def _validate_compatibility_task(
     task_run_name="smoke-test-model",
     cache_policy=NO_CACHE,
 )
-def _smoke_test_model_task(model: object, rng: random.Random) -> None:
+def _smoke_test_model_task(
+    model: object,
+    deployment_config: object,
+    rng: random.Random,
+) -> None:
+    from sapphire_flow.adapters.forecast_interface import ForecastInterfaceAdapter
+
+    if isinstance(model, ForecastInterfaceAdapter):
+        assert_model_conforms(model, rng)
+        assert_operational_floors(
+            model=model,
+            config=deployment_config,  # type: ignore[arg-type]
+            rng=rng,
+        )
+        return
+
     smoke_test_model(model=model, rng=rng)  # type: ignore[arg-type]
 
 
@@ -431,6 +477,7 @@ def onboard_model_flow(
     hindcast_store: object = None,
     skill_store: object = None,
     flow_regime_store: object = None,
+    parameter_store: object = None,
     forcing_source: object = None,
     deployment_config: object = None,
     clock: object = None,
@@ -441,6 +488,7 @@ def onboard_model_flow(
 
     import prefect.runtime
 
+    from sapphire_flow.adapters.forecast_interface import adapt_if_fi
     from sapphire_flow.exceptions import ModelSmokeTestError
     from sapphire_flow.services.model_registry import discover_models
     from sapphire_flow.types.datetime import ensure_utc
@@ -463,6 +511,7 @@ def onboard_model_flow(
         hindcast_store = stores["hindcast_store"]
         skill_store = stores["skill_store"]
         flow_regime_store = stores["flow_regime_store"]
+        parameter_store = stores["parameter_store"]
 
     if deployment_config is None:
         config_path = os.environ.get("SAPPHIRE_CONFIG")
@@ -482,6 +531,8 @@ def onboard_model_flow(
 
     if model_store is None:
         raise ConfigurationError("model_store is required but was not provided")
+    if station_store is None:
+        raise ConfigurationError("station_store is required but was not provided")
     if group_store is None:
         raise ConfigurationError("group_store is required but was not provided")
     if obs_store is None:
@@ -496,6 +547,8 @@ def onboard_model_flow(
         raise ConfigurationError("skill_store is required but was not provided")
     if flow_regime_store is None:
         raise ConfigurationError("flow_regime_store is required but was not provided")
+    if parameter_store is None:
+        raise ConfigurationError("parameter_store is required but was not provided")
 
     if clock is None:
         clock = lambda: ensure_utc(datetime.now(UTC))  # noqa: E731
@@ -540,6 +593,11 @@ def onboard_model_flow(
             f"Available: {sorted(str(k) for k in discovered)}"
         )
     model_instance = discovered[typed_model_id]
+    station_code_resolver = _build_station_code_resolver(station_store)
+    model_instance = adapt_if_fi(
+        model_instance,
+        station_code_resolver=station_code_resolver,
+    )
     register_models({typed_model_id: model_instance}, model_store, clock)  # type: ignore[arg-type]
 
     with concurrency(f"model_training:{model_id}", occupy=1):
@@ -576,6 +634,7 @@ def onboard_model_flow(
                 station_store=station_store,
                 group_store=group_store,
                 basin_store=basin_store,
+                parameter_store=parameter_store,
                 deployment_config=deployment_config,
             )
 
@@ -607,7 +666,11 @@ def onboard_model_flow(
 
             # M.2b: Smoke test
             try:
-                _smoke_test_model_task(model=model_instance, rng=rng)
+                _smoke_test_model_task(
+                    model=model_instance,
+                    deployment_config=deployment_config,
+                    rng=rng,
+                )
                 log.info(
                     "model.smoke_test_completed",
                     station_id=sid_str,

@@ -21,7 +21,7 @@
 | 1 | **Flow 5/5w** — Station onboarding | Simplified bootstrap script (see A4 below). TOML import, historical obs, QC, baselines, model assignments. No dashboard, no progress tracking. |
 | 2 | **Flow 2** — Observation ingest + QC | Stage 1 QC only. No rating curves (BAFU provides Q directly). Alerting steps optional (`enable_observation_alerts`). |
 | 3 | **Flow 6 → 7 → 8** — Train → hindcast → skill | Auto-promote (no approval gate). Full skill metric suite (CRPS, CRPSss, BSS, POD/FAR/CSI, peak timing, NSE, KGE, PBIAS, MAE, diagrams). |
-| 3 | **Flow 13** — Model onboarding | Register + validate + smoke test + train + hindcast + skill gate + auto-promote. Sample model (LinearRegressionDaily). No approval gate (auto-promote). Reuses services from Flows 6/7/8 directly (does NOT call `train_models` flow — composes the underlying service layer to interpose the skill gate). |
+| 3 | **Flow 13** — Model onboarding | Implemented as `onboard_model_flow` in code. Register + validate + smoke test + train + hindcast + skill gate + auto-promote. Sample model (LinearRegressionDaily). No approval gate (auto-promote). Reuses services from Flows 6/7/8 directly (does NOT call `train_models` flow — composes the underlying service layer to interpose the skill gate). |
 | 4 | **Flow 1** — Forecast cycle | Gridded NWP (ICON-CH2-EPS) via STAC API; steps 1.2–1.4 active from v0 onwards. Steps 1.5 (NWP post-process) and 1.9 (forecast post-process) are pass-through throughout v0. Step 1.10 (forecast QC) is active throughout v0. Alerting (1.12-1.14) controlled by `enable_forecast_alerts` (default `false`). |
 | — | **API** | FastAPI with basic CRUD for stations, observations, forecasts, alerts. No auth. Health endpoint. |
 | — | **Flow 12B** — Manual CSV import | Branch B only (validate CSV, ingest with `source = 'manual_import'`, run QC). Branches A (rating curve reprocessing) and C (QC re-evaluation) deferred. |
@@ -206,17 +206,21 @@ The v0a/v0b distinction for NWP is collapsed by Plan 021. Remaining v0a/v0b refe
 
 **Full design**: 4-slot data contract (past_targets, past_dynamic, future_dynamic, static) with ModelDataRequirements declaring per-slot feature needs. GroupModelInputs uses stacked DataFrames for batch ML inference.
 
-**v0**: Implemented (plan 008). `GroupModelInputs` and `stack_model_inputs()` provide the stacked DataFrame container with `for_station()` slicing. `predict_batch()` accepts `GroupModelInputs` in the hindcast path; operational forecast path (Flow 1) will use the same stacking when implemented. past_dynamic and future_dynamic use the same reanalysis source in training/hindcast (future_dynamic filled from reanalysis as teacher forcing). Multi-target predictions supported from day one. v0 exercises this with discharge (river) and water_level (lake) forecasting — skill computation, store filtering, and training orchestration are all parameter-scoped.
+**v0**: Implemented (plan 008). `GroupModelInputs` and `stack_model_inputs()` provide the stacked DataFrame container with `for_station()` slicing. `predict_batch()` accepts `GroupModelInputs` in the hindcast path and the operational Flow 1 GROUP path. past_dynamic and future_dynamic use the same reanalysis source in training/hindcast (future_dynamic filled from reanalysis as teacher forcing). Multi-target predictions supported from day one. v0 exercises this with discharge (river) and water_level (lake) forecasting — skill computation, store filtering, and training orchestration are all parameter-scoped.
 
 **A14. ForecastInterface adapter**
 
 **v0a**: Not needed — `LinearRegressionDaily` implements `StationForecastModel` directly.
 
-**v0b**: Active when FI-compatible ML models are onboarded. The `ForecastInterfaceAdapter`
-bridges `hydrosolutions/ForecastInterface` types to SAPPHIRE Flow internals — converting
-`ModelOutput` → `ForecastEnsemble` on output, and `GroupModelInputs`/`StationModelInputs`
-→ FI input format on input. External dependency: `ForecastInterface` is under active
-development; input types are contributed via PR from SAPPHIRE Flow (see plan 014).
+**v0b**: Implemented (plan 076). The `ForecastInterfaceAdapter` bridges
+`hydrosolutions/ForecastInterface` types to SAPPHIRE Flow internals — converting
+`ModelOutput` → `ForecastEnsemble` on output, and `GroupModelInputs` /
+`StationModelInputs` → FI `ModelInputs` on input. FI-compatible models are adapted at
+discovery/onboarding via `adapt_if_fi`, checked by FI-specific onboarding gates
+(unit match, supported spatial type, station-code resolvability, runtime `max_nan`,
+and integration-time operational floors), and can run through the operational GROUP
+path in Flow 1. External dependency: `forecastinterface==0.1.17`, guarded by the
+adapter version check.
 
 ---
 

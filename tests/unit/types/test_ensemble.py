@@ -59,7 +59,7 @@ class TestForecastEnsembleFromMembers:
             station_id=_sid(),
             issued_at=_issued(),
             parameter="discharge",
-            units="m3/s",
+            units="m³/s",
             time_step=timedelta(hours=1),
             values=df,
         )
@@ -73,7 +73,7 @@ class TestForecastEnsembleFromMembers:
                 station_id=_sid(),
                 issued_at=_issued(),
                 parameter="discharge",
-                units="m3/s",
+                units="m³/s",
                 time_step=timedelta(hours=1),
                 values=df,
             )
@@ -85,7 +85,7 @@ class TestForecastEnsembleFromMembers:
                 station_id=_sid(),
                 issued_at=_issued(),
                 parameter="discharge",
-                units="m3/s",
+                units="m³/s",
                 time_step=timedelta(hours=1),
                 values=df,
             )
@@ -97,7 +97,7 @@ class TestForecastEnsembleFromMembers:
                 station_id=_sid(),
                 issued_at=_issued(),
                 parameter="discharge",
-                units="m3/s",
+                units="m³/s",
                 time_step=timedelta(hours=1),
                 values=df,
             )
@@ -109,7 +109,7 @@ class TestForecastEnsembleFromMembers:
                 station_id=_sid(),
                 issued_at=_issued(),
                 parameter="discharge",
-                units="m3/s",
+                units="m³/s",
                 time_step=timedelta(hours=1),
                 values=df,
             )
@@ -127,7 +127,7 @@ class TestForecastEnsembleFromMembers:
                 station_id=_sid(),
                 issued_at=_issued(),
                 parameter="discharge",
-                units="m3/s",
+                units="m³/s",
                 time_step=timedelta(hours=1),
                 values=df,
             )
@@ -140,7 +140,7 @@ class TestForecastEnsembleFromQuantiles:
             station_id=_sid(),
             issued_at=_issued(),
             parameter="discharge",
-            units="m3/s",
+            units="m³/s",
             time_step=timedelta(hours=1),
             values=df,
         )
@@ -154,7 +154,7 @@ class TestForecastEnsembleFromQuantiles:
                 station_id=_sid(),
                 issued_at=_issued(),
                 parameter="discharge",
-                units="m3/s",
+                units="m³/s",
                 time_step=timedelta(hours=1),
                 values=df,
             )
@@ -166,7 +166,7 @@ class TestForecastEnsembleFromQuantiles:
                 station_id=_sid(),
                 issued_at=_issued(),
                 parameter="discharge",
-                units="m3/s",
+                units="m³/s",
                 time_step=timedelta(hours=1),
                 values=df,
             )
@@ -178,7 +178,7 @@ class TestForecastEnsembleFromQuantiles:
                 station_id=_sid(),
                 issued_at=_issued(),
                 parameter="discharge",
-                units="m3/s",
+                units="m³/s",
                 time_step=timedelta(hours=1),
                 values=df,
             )
@@ -190,7 +190,7 @@ class TestForecastEnsembleFromQuantiles:
                 station_id=_sid(),
                 issued_at=_issued(),
                 parameter="discharge",
-                units="m3/s",
+                units="m³/s",
                 time_step=timedelta(hours=1),
                 values=df,
             )
@@ -202,7 +202,7 @@ class TestForecastEnsembleFromQuantiles:
                 station_id=_sid(),
                 issued_at=_issued(),
                 parameter="discharge",
-                units="m3/s",
+                units="m³/s",
                 time_step=timedelta(hours=1),
                 values=df,
             )

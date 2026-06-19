@@ -60,7 +60,7 @@ def _populate_stores(
     station_store = FakeStationStore()
     flow_regime_store = FakeFlowRegimeConfigStore()
 
-    units = "m3/s" if parameter == "discharge" else "m"
+    units = "m³/s" if parameter == "discharge" else "m"
     time_step = timedelta(hours=1)
 
     for i in range(3):
@@ -266,7 +266,7 @@ class TestComputeCombinedSkillsTask:
                 station_id=sid,
                 issued_at=step,
                 parameter="discharge",
-                units="m3/s",
+                units="m³/s",
                 time_step=time_step,
                 values=df,
             )
@@ -345,7 +345,7 @@ class TestComputeCombinedSkillsTask:
                     station_id=sid,
                     issued_at=step,
                     parameter="discharge",
-                    units="m3/s",
+                    units="m³/s",
                     time_step=time_step,
                     values=df.with_columns(
                         (pl.col("value") + val_offset).alias("value")

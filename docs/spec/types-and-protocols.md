@@ -1042,7 +1042,7 @@ class ForecastEnsemble:
     station_id: StationId
     issued_at: UtcDatetime
     parameter: str                 # "discharge" or "water_level" — selects the correct StationThreshold
-    units: str                     # e.g. "m3/s", "m" — for display and unit-mismatch guards
+    units: str                     # e.g. "m³/s", "m" — for display and unit-mismatch guards
     forecast_horizon_steps: int
     time_step: timedelta
     model_id: ModelId | None = None    # set during forecast cycle; None for test/legacy
@@ -1579,6 +1579,23 @@ data for all stations in the group. The orchestration layer (Flow 6/9 T.2–T.3)
 The caller persists state via `ModelStateStore`.
 
 Module: `protocols/forecast_model.py`
+
+### ForecastInterfaceAdapter
+
+`ForecastInterfaceAdapter` is SAP3's single conformance boundary for external
+`forecastinterface.ForecastModel` implementations. The wrapper satisfies
+`StationForecastModel` or `GroupForecastModel` depending on FI `artifact_scope`,
+projects FI `InputRequirement` into SAP3 `ModelDataRequirements`, converts SAP3
+training/prediction inputs into FI `ModelInputs`, converts FI `VariableOutput`
+into `ForecastEnsemble`, and bridges FI gauge-code station keys back to SAP3
+`StationId` values.
+
+Total FI failures (`ModelFailure`, empty `ModelOutput.variables`, or all
+`VariableStatus.FAILURE` outputs) raise `ModelOutputError` (defined below) so
+callers see the same total-failure signal as native SAP3 models. FI-wrapped
+GROUP models run through the operational GROUP path in Flow 1.
+
+Module: `adapters/forecast_interface.py`
 
 ---
 

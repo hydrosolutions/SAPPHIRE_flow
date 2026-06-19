@@ -10,10 +10,11 @@ from pathlib import Path
 # sites requiring a hash guard:
 #   protocols/ — Protocol method definitions
 #   models/    — model class method implementations (the serialize/deserialize body)
+#   adapters/  — adapter method implementations that delegate model deserialization
 #   services/  — smoke_test_model() does a pure serialize→deserialize roundtrip;
 #                bytes are never fetched from storage, so hash guard is N/A
 #   store/     — fetch_artifact() implementations handle hash verification internally
-_SKIP_DIRS = {"protocols", "models", "services", "store"}
+_SKIP_DIRS = {"protocols", "models", "adapters", "services", "store"}
 
 _SRC_ROOT = Path(__file__).parent.parent.parent / "src" / "sapphire_flow"
 

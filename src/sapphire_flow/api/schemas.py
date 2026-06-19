@@ -99,7 +99,7 @@ class ForecastSummary(BaseModel):
 class EnsembleResponse(BaseModel):
     representation: str
     parameter: str
-    units: str
+    units: str  # Canonical API unit form, e.g. discharge "m³/s".
     forecast_horizon_steps: int
     time_step_seconds: int
     member_count: int

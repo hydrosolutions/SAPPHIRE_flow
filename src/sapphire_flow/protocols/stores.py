@@ -546,8 +546,8 @@ class StationGroupStore(Protocol):
         raise NotImplementedError
 
     def fetch_groups_for_model(self, model_id: ModelId) -> list[StationGroup]:
-        # All groups with at least one station that has an active model assignment
-        # for this model. Used by training scope determination.
+        # All groups with an active group-model assignment for this model.
+        # Used by training scope and operational group forecast discovery.
         raise NotImplementedError
 
     def add_station_to_group(

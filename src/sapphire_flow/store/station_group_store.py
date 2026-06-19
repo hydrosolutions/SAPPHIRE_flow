@@ -6,7 +6,6 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from sapphire_flow.db.metadata import (
     group_model_assignments,
-    model_assignments,
     station_group_members,
     station_groups,
 )
@@ -89,25 +88,19 @@ class PgStationGroupStore:
         return [_build_group(self._conn, row) for row in rows]
 
     def fetch_groups_for_model(self, model_id: ModelId) -> list[StationGroup]:
-        subq = (
-            sa.select(station_group_members.c.group_id)
-            .join(
-                model_assignments,
-                station_group_members.c.station_id == model_assignments.c.station_id,
-            )
-            .where(
-                sa.and_(
-                    model_assignments.c.model_id == model_id,
-                    model_assignments.c.status == "active",
-                )
-            )
-            .distinct()
-            .subquery()
-        )
         rows = (
             self._conn.execute(
-                sa.select(station_groups).where(
-                    station_groups.c.id.in_(sa.select(subq))
+                sa.select(station_groups)
+                .join(
+                    group_model_assignments,
+                    station_groups.c.id == group_model_assignments.c.group_id,
+                )
+                .where(
+                    sa.and_(
+                        group_model_assignments.c.model_id == model_id,
+                        group_model_assignments.c.status
+                        == ModelAssignmentStatus.ACTIVE.value,
+                    )
                 )
             )
             .mappings()
