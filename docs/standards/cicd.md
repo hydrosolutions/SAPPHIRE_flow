@@ -264,7 +264,7 @@ CI builds the `sapphire-flow` image on every pull request under the `build-image
 
 Two gates protect every change before it reaches `main`:
 
-1. **Developer-tier gate (pre-commit)** — fast, local, fires automatically before `git commit` completes. Catches lint, format, and secret-pattern issues the moment they are written, before they reach a branch.
+1. **Developer-tier gate (pre-commit + pre-push)** — local hooks catch lint, format, and secret-pattern issues before `git commit` completes. The slower pyright ratchet runs at `pre-push` so commits stay fast while type regressions are still blocked before they leave the machine.
 2. **CI gate (GitHub Actions)** — thorough, remote, fires on push and PR. Catches what pre-commit misses: integration tests (require postgres + system deps), image builds, Trivy CVE scans, SBOM generation, and the wheel-only guard.
 
 **The parity invariant**: a developer should never push a commit that CI will reject for a reason their local environment could not have surfaced first.
@@ -286,6 +286,11 @@ developer runs uv run check  (optional, pre-push confidence)
   • ruff format --check src/ tests/
   • ruff check src/ tests/
         │ mirrors the CI lint job's ruff steps
+        ▼
+[pre-push hook — on git push]
+  • uv run pyright --outputjson src/
+  • tools/pyright_ratchet.py compares live errors with tools/pyright_baseline.json
+        │ blocks push if pyright errors exceed the ratchet baseline
         ▼
 git push / open PR
         │
@@ -311,9 +316,9 @@ The `live-lindas-weekly.yml` Monday 06:00 UTC schedule has exhibited intermitten
 ### Cross-references
 
 - `CLAUDE.md` §Pre-commit hooks — per-contributor install instructions, hook policy, and the check-only rationale.
-- [`docs/plans/070-precommit-and-gate-parity.md`](../plans/070-precommit-and-gate-parity.md) — the plan that introduced the developer-tier gate and `uv run check`. Also defines the deferred A4 task (pyright ratchet as a pre-commit hook, triggers when Plan 069 Phase 1 lands).
+- [`docs/plans/070-precommit-and-gate-parity.md`](../plans/070-precommit-and-gate-parity.md) — the plan that introduced the developer-tier gate and `uv run check`. A4 wires the pyright ratchet at `pre-push`, with CI as the backstop.
 - [`docs/plans/064-supply-chain-hardening.md`](../plans/064-supply-chain-hardening.md) — predecessor plan that surfaced the "wired but unrun" gate problem this plan fixes. Introduced Trivy image scan, SBOM generation, and CI action SHA pinning.
-- [`docs/plans/069-pyright-backlog-cleanup.md`](../plans/069-pyright-backlog-cleanup.md) — DRAFT follow-on that re-enables pyright as a pre-commit ratchet (Plan 070 task A4, deferred until Phase 1 of Plan 069 lands).
+- [`docs/plans/069-pyright-backlog-cleanup.md`](../plans/069-pyright-backlog-cleanup.md) — follow-on that supplied the pyright ratchet baseline and CI backstop consumed by Plan 070 A4.
 
 See the CI workflow tiers table below for the full per-step breakdown of every `run:` command across all three workflow files, including local equivalents and CI-only reasons.
 
@@ -331,6 +336,9 @@ This subsection describes the operational topology of `.github/workflows/ci.yml`
 | 1 | `lint` | `uv sync --frozen` | — | `uv sync` (developers typically have a synced venv already) | No |
 | 1 | `lint` | `uv run ruff check src/ tests/` | — | `uv run ruff check src/ tests/` (also via `uv run check` and pre-commit) | No |
 | 1 | `lint` | `uv run ruff format --check src/ tests/` | — | `uv run ruff format --check src/ tests/` (also via `uv run check` and pre-commit) | No |
+| 1 | `lint` | `shellcheck scripts/launchd/start-sapphire.sh scripts/launchd/watchdog.sh scripts/launchd/install-launchd.sh scripts/bootstrap-mac-mini.sh` | — | Same command (also via pre-commit `shellcheck`) | No |
+| 1 | `lint` | `uv run pyright --outputjson src/ > /tmp/pyright.json \|\| true` | — | `uv run pyright src/` | No |
+| 1 | `lint` | `uv run python tools/pyright_ratchet.py /tmp/pyright.json tools/pyright_baseline.json` | — | `uv run pyright src/` (then compare against `tools/pyright_baseline.json`) | No |
 | 1 | `lint` | `aquasecurity/trivy-action` (fs scan, `uses:`) | — | `trivy fs --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed --scanners vuln --skip-dirs .venv .` | No (but requires trivy installed) |
 | 2 | `unit` | Install system deps for cfgrib / rioxarray / exactextract | — | Brew/apt on the dev host (developer responsibility) | Yes — system-package install, not project-managed |
 | 2 | `unit` | `uv sync --frozen` | — | `uv sync` | No |

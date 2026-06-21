@@ -1,6 +1,6 @@
 # Plan 070 — Pre-commit hooks + CI/local gate parity
 
-**Status**: DONE (Phases 1–4 implemented 2026-05-11; A4 deferred pending Plan 069 Phase 1)
+**Status**: DONE (Phases 1–4 implemented 2026-05-11; A4 implemented 2026-06-01 at pre-push after Plan 069 Phase 1 landed)
 **Date**: 2026-04-22 (DRAFT) → 2026-05-11 (READY → DRAFT → READY → DONE, four review rounds + four implementation phases in one day)
 **Depends on**: none (independent of Plan 069 but intentionally lands first:
 stops new lint/format/secret regressions from leaking in while Plan 069
@@ -9,8 +9,8 @@ drains the pyright backlog under a ratchet).
 Plan 064 surfaced. Install `pre-commit` (the tool) with ruff and
 gitleaks hooks as the developer-tier gate; add a `uv run check` developer-side helper that mirrors the `lint` job's local-reproducible steps (ruff format/check); CI itself keeps its existing standalone steps; audit every CI gate
 for local reproducibility and every scheduled workflow for first-fire
-confirmation. Pyright joins the pre-commit set only after Plan 069 Phase 1's
-ratchet exists (task A4, deferred). No runtime behaviour change.
+confirmation. Pyright joins the local hook set at pre-push after Plan 069
+Phase 1's ratchet exists (task A4). No runtime behaviour change.
 
 ---
 
@@ -40,9 +40,8 @@ Plan 069 T3 begins to avoid ci.yml concurrent edits.
 
 **Config location:** `pyrightconfig.json` at repo root is
 authoritative. `[tool.pyright]` in `pyproject.toml` is NOT used.
-Plan 070's future pre-commit pyright hook (task A4, deferred) must
-invoke `uv run pyright src/` (no flags) and rely on JSON config
-discovery.
+Plan 070's pre-push pyright hook (task A4) invokes `uv run pyright
+--outputjson src/` and relies on JSON config discovery.
 
 ---
 
@@ -73,8 +72,10 @@ Two gates, both enforced:
 
 1. **Developer-tier gate (pre-commit)** — fast, local, runs before `git
    commit` completes. Prevents lint / format / secret regressions from ever
-   reaching a branch. Zero-config for contributors: `uv sync` + `uv run
-   pre-commit install` and the hooks fire automatically.
+   reaching a branch. A slower `pre-push` pyright-ratchet hook blocks type
+   regressions before they leave the machine. Zero-config for contributors:
+   `uv sync` + `uv run pre-commit install --hook-type pre-commit
+   --hook-type pre-push` and the hooks fire automatically.
 2. **CI gate (GitHub Actions)** — thorough, remote, runs on push + PR.
    Catches what pre-commit misses (integration tests, image builds, Trivy,
    SBOM, wheel-only guard).
@@ -83,8 +84,9 @@ The parity invariant: **a developer must never push a commit that CI will
 reject for a reason their local environment couldn't have told them about.**
 
 Ratchet the parity, don't big-bang. Start with the fast checks (ruff,
-gitleaks); add pyright as a pre-commit hook only after Plan 069
-Phase 1 lands the ratchet (`tools/pyright_ratchet.py` + `tools/pyright_baseline.json`) that gates on error count rather than pyright's exit code (deferred to A4).
+gitleaks); add pyright as a pre-push hook after Plan 069 Phase 1 lands
+the ratchet (`tools/pyright_ratchet.py` + `tools/pyright_baseline.json`)
+that gates on error count rather than pyright's exit code (A4).
 
 ### Non-goals
 
@@ -156,7 +158,7 @@ Phase 1 lands the ratchet (`tools/pyright_ratchet.py` + `tools/pyright_baseline.
 |---|---|---|
 | D1 | **Use `pre-commit` (the tool at pre-commit.com) as the framework.** Config lives at `.pre-commit-config.yaml`. Managed as a dev dep via `uv add pre-commit --dev`. | Standard in the Python ecosystem. Declarative config, pinned hook versions, ecosystem-wide conventions. Lefthook / husky are plausible alternatives but offer no advantage here and add language-ecosystem mismatch. |
 | D2 | **Hook set (v0)**: `ruff check`, `ruff format --check`, `gitleaks`, and basic cross-platform hygiene (`trailing-whitespace`, `end-of-file-fixer`, `check-merge-conflict`, `check-added-large-files`). | Each is fast (< 1s on a typical commit), non-flaky, and already matches a CI gate. **Exception**: gitleaks' first run downloads its rules DB and takes 10-30s; subsequent runs are near-instant. A3 must document this so contributors don't interpret the first-commit latency as a hang. **Note**: `trailing-whitespace`, `end-of-file-fixer`, and similar hygiene hooks from the `pre-commit-hooks` repo mutate files by default — the same conflict with the mandatory `bump-my-version` commit sequence that D8 catches for ruff. They cannot be set to `--check`-only (the upstream hooks have no such flag), so A1 must add them with a documented expectation: the FIRST commit on a dirty file is blocked by the mutating hook (file is auto-fixed, exit non-zero), the developer runs `git add <fixed-files>` and re-commits. A3 must call this out in the onboarding doc. The asymmetry with D8's "no auto-fix for ruff" is deliberate: ruff has `--check` mode, the hygiene hooks do not; the hygiene hooks' "first-commit-blocked, re-stage, re-commit" UX is the minimum-viable cross-platform-hygiene option. If this UX cost becomes painful, drop the hygiene hooks from v0 and address whitespace via ruff's whitespace rules (which are check-only). |
-| D3 | **No pyright in pre-commit until Plan 069 Phase 1 lands (deferred to A4).** When wired (A4, deferred), the hook follows the two-step pattern Plan 069 T3 establishes: capture `uv run pyright --outputjson src/` to a tempfile, then invoke `uv run python tools/pyright_ratchet.py <tempfile> tools/pyright_baseline.json`. Pyright discovers `pyrightconfig.json` at repo root automatically; A4 carries the inline invocation spec so this plan remains self-contained. | Pre-commit must stay fast. Today pyright takes 30-60s and reports 675 errors (flows/ carve-out active) — would block every commit. After Plan 069's ratchet lands, the ratchet script becomes the gating mechanism. The JSON config is authoritative per the §Inputs note on `pyrightconfig.json`. |
+| D3 | **Run pyright ratchet at pre-push after Plan 069 Phase 1 lands.** The hook follows the two-step pattern Plan 069 T3 establishes: capture `uv run pyright --outputjson src/` to a tempfile, then invoke `uv run python tools/pyright_ratchet.py <tempfile> tools/pyright_baseline.json`. Pyright discovers `pyrightconfig.json` at repo root automatically; A4 carries the inline invocation spec so this plan remains self-contained. | Pre-commit must stay fast. Pyright takes 30-60s, so running it on every commit would violate the fast developer-tier gate. Pre-push catches regressions before they leave the machine; CI is the hard backstop. After Plan 069's ratchet lands, the ratchet script becomes the gating mechanism. The JSON config is authoritative per the §Inputs note on `pyrightconfig.json`. |
 | D4 | **Pin every hook by `rev:` (git SHA or tag).** Dependabot's `github-actions` ecosystem does NOT cover pre-commit hooks; a separate update cadence is needed. For gitleaks, use the canonical `gitleaks/gitleaks` repo on GitHub (`https://github.com/gitleaks/gitleaks`). | Mutable tags on pre-commit hooks are the same supply-chain risk Plan 064 C1 addressed for GitHub Actions. Same defense, applied consistently. Manual review quarterly until Dependabot adds pre-commit support OR we wire Renovate for this one file. |
 | D5 | **`uv run check` lives at `src/sapphire_flow/cli/check.py`**, exposed via `[project.scripts] check = "sapphire_flow.cli.check:main"` in `pyproject.toml`. Invokes: ruff check, ruff format --check. Note: invoked locally as `uv run check`; bare `check` on PATH outside `uv run` may resolve to other tools (uv ensures the project venv on PATH inside `uv run`). | The build backend is `uv_build`; `[project.scripts]` entries must resolve against the installed package namespace. Top-level `tools/` is not a package path installed by `uv_build` — entries there are not importable in a wheel install. A collision also exists: `src/sapphire_flow/tools/` already exists as an internal subpackage, so any `tools.check` reference would conflict. The `cli/` subpackage is the correct home. |
 | D6 | **Gate-parity audit** before declaring the plan DONE. Enumerate every CI step, confirm it has a local equivalent (or is explicitly marked as "CI-only" with reason), and confirm every scheduled workflow has fired at least once and produced the expected outcome. | This is the root-cause fix for the class of problem Plan 064 surfaced. Without the audit, we re-accumulate "wired but unrun" gates. Scope-limited: `uv run check` exercises the **`lint` job's** local-reproducible ruff steps (`ruff format --check` + `ruff check`). The `unit` and `integration` jobs are CI-only because they require system deps (libeccodes, libgeos) and a postgres service that local-helper invocation should not assume. `uv run check` does NOT invoke `uv sync`: developers typically have a synced venv when invoking it, and CI's lint job runs `uv sync --frozen` at the workflow level before the ruff steps. |
@@ -205,7 +207,9 @@ clean working tree with all existing files passing.
 
 **Files**: none (git hooks folder is not tracked)
 
-1. Run `uv run pre-commit install`. Installs `.git/hooks/pre-commit`.
+1. Run `uv run pre-commit install --hook-type pre-commit --hook-type
+   pre-push`. Installs `.git/hooks/pre-commit` and
+   `.git/hooks/pre-push`.
 2. Verify: make a deliberate lint violation in a scratch file (e.g., an
    unused import), try `git commit`, confirm the hook BLOCKS the commit
    (exits non-zero). The ruff hook must not auto-fix — per D8, the file
@@ -224,7 +228,8 @@ new `docs/standards/precommit.md` — pick the fit.
 
 1. Add a short section explaining:
    - What pre-commit runs.
-   - How to install: `uv run pre-commit install`.
+   - How to install: `uv run pre-commit install --hook-type
+     pre-commit --hook-type pre-push`.
    - How to run manually: `uv run pre-commit run --all-files`.
    - How to bypass in emergencies: `git commit --no-verify` +
      acknowledgement that CI is the backstop.
@@ -238,13 +243,21 @@ new `docs/standards/precommit.md` — pick the fit.
 **Exit**: Onboarding doc mentions pre-commit; `grep -ri "pre-commit"
 docs/ CLAUDE.md README.md` returns a coherent mention, not a grab-bag.
 
-#### A4 — Wire pyright ratchet into pre-commit (DEFERRED)
+#### A4 — Wire pyright ratchet into pre-push (DONE)
 
-**Trigger**: PR for Plan 069 Phase 1 merged (which lands `tools/pyright_ratchet.py` and `tools/pyright_baseline.json`).
+**Trigger**: PR for Plan 069 Phase 1 merged (which landed
+`tools/pyright_ratchet.py` and `tools/pyright_baseline.json`; baseline
+total = 579).
 
 **Files**: `.pre-commit-config.yaml`
 
-When the trigger fires, add a `local` hook to `.pre-commit-config.yaml`:
+The hook is intentionally staged at `pre-push`, not at the default
+`pre-commit` stage. `uv run pyright` takes 30-60s, and running it on
+every commit contradicts CLAUDE.md's "pre-commit must stay fast" gate.
+Pre-push catches regressions before they leave the machine; CI (Plan
+069 T3) remains the hard backstop.
+
+Add a `local` hook to `.pre-commit-config.yaml`:
 
     - repo: local
       hooks:
@@ -252,20 +265,21 @@ When the trigger fires, add a `local` hook to `.pre-commit-config.yaml`:
           name: pyright ratchet
           language: system
           pass_filenames: false
+          stages: [pre-push]
           entry: bash -c 'uv run pyright --outputjson src/ > /tmp/pyright.json || true; uv run python tools/pyright_ratchet.py /tmp/pyright.json tools/pyright_baseline.json'
 
 The two-step pattern is required because pre-commit hooks do not pipe stdout
 between commands. The bash wrapper captures pyright's JSON output to a tempfile,
 then invokes the ratchet script with both file paths as positional args. The
 ratchet script is responsible for the exit code (0 = within baseline; 1 = above
-baseline). If Plan 069 T3's invocation contract changes later, update A4 then.
+baseline; 2 = malformed). If Plan 069 T3's invocation contract changes later,
+update A4 then.
 
-**No work required in Plan 070's initial implementation.** This task exists to
-ensure A4 is tracked and not forgotten when Plan 069 Phase 1 merges.
-
-**Exit (deferred)**: pyright ratchet runs as a pre-commit hook; a commit that
-increases any per-file error count above the baseline is blocked locally, not
-just in CI.
+**Exit**: pyright ratchet runs as a pre-push hook; a push that increases
+any per-file error count above the baseline is blocked locally, not just
+in CI. Verified 2026-06-01 with `uv run pre-commit run
+pyright-ratchet --hook-stage pre-push --all-files`: live total 579 ==
+baseline total 579.
 
 ---
 
@@ -509,11 +523,11 @@ can trace the full gate lifecycle.
       "depends_on": ["phase-3-parity-audit"]
     },
     {
-      "id": "phase-5-deferred",
+      "id": "phase-5-a4-pre-push",
       "tasks": ["A4"],
       "parallel": false,
       "depends_on": ["plan-069-phase-1"],
-      "note": "A4 is deferred — triggers when Plan 069 Phase 1 merges"
+      "note": "A4 implemented 2026-06-01 at pre-push after Plan 069 Phase 1 merged"
     }
   ]
 }
@@ -522,8 +536,8 @@ can trace the full gate lifecycle.
 Phase-1 is sequential (A1 → A2 → A3) because each task depends on the
 previous landing. Phase-3 tasks are mostly independent, with the
 caveat that C2's first-fire of `integration-nightly.yml` may expose
-issues that C1's audit should cover. A4 is explicitly deferred and
-blocked on Plan 069 Phase 1.
+issues that C1's audit should cover. A4 landed after Plan 069 Phase 1
+provided the ratchet script and baseline.
 
 ---
 
@@ -686,12 +700,17 @@ All resolved 2026-05-11 at READY promotion:
   - `c36e8e7` v0.1.425 + `ed83dad` v0.1.428 — uv.lock alignment (the
     recurring `bump-my-version` rebuild-step drift)
 
-  **A4 remains deferred** — the pyright-ratchet pre-commit hook is
-  blocked on Plan 069 Phase 1 landing the `tools/pyright_baseline.json`
-  + `tools/pyright_ratchet.py` artifacts. When Plan 069 Phase 1 merges,
-  reactivate A4 from this plan's task list and add the local hook
-  per the spec already embedded in A4.
+  A4 remained deferred at this point pending Plan 069 Phase 1 landing
+  the `tools/pyright_baseline.json` + `tools/pyright_ratchet.py`
+  artifacts.
 
-  Plan kept at its current (non-archived) path so future-Claude can
-  pick up A4 from `docs/plans/070-…md` rather than digging through
-  `docs/plans/archive/`. Move to archive only after A4 lands.
+- **2026-06-01 (DONE — A4 landed at pre-push)** — Plan 069 Phase 1
+  landed the pyright ratchet artifacts with baseline total 579. Wired
+  `.pre-commit-config.yaml` with a local `pyright-ratchet` hook at the
+  `pre-push` stage, updated contributor setup to install both
+  `pre-commit` and `pre-push` hook types, and documented the CI
+  backstop in `docs/standards/cicd.md`. The stage intentionally
+  deviates from the original A4 default-stage wording because pyright
+  takes 30-60s and CLAUDE.md requires the commit gate to stay fast.
+  Pre-push catches regressions before they leave the machine; CI
+  remains the hard backstop.

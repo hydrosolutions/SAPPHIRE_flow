@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import cast
 
 from fastapi import FastAPI, HTTPException
 from fastapi.templating import Jinja2Templates
@@ -19,7 +20,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
-templates.env.globals["prefect_ui_url"] = _PREFECT_UI_URL
+# jinja2 stubs over-narrow env.globals' value type to the default-globals
+# union; at runtime it is a plain str-keyed dict accepting any value.
+cast("dict[str, object]", templates.env.globals)["prefect_ui_url"] = _PREFECT_UI_URL
 
 # --- CORS ---
 _cors_origins = os.environ.get("SAPPHIRE_CORS_ORIGINS", "")

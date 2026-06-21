@@ -1,13 +1,13 @@
 # pyright: reportUnknownMemberType=false, reportUnknownArgumentType=false
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from sapphire_flow.db.metadata import observations
+from sapphire_flow.db.metadata import observations as observations_table
 from sapphire_flow.store._helpers import utc_from_row, utc_or_none
 from sapphire_flow.types.domain import QcFlag
 from sapphire_flow.types.enums import ObservationSource, QcStatus
@@ -22,19 +22,19 @@ class PgObservationStore:
     def __init__(self, conn: sa.Connection) -> None:
         self._conn = conn
 
-    def store_observations(self, obs_list: list[Observation]) -> None:
-        if not obs_list:
+    def store_observations(self, observations: list[Observation]) -> None:
+        if not observations:
             return
-        for obs in obs_list:
+        for obs in observations:
             stmt = (
-                pg_insert(observations)
+                pg_insert(observations_table)
                 .values(**_obs_to_values(obs))
                 .on_conflict_do_update(
                     index_elements=[
-                        observations.c.station_id,
-                        observations.c.timestamp,
-                        observations.c.parameter,
-                        observations.c.source,
+                        observations_table.c.station_id,
+                        observations_table.c.timestamp,
+                        observations_table.c.parameter,
+                        observations_table.c.source,
                     ],
                     set_={
                         "value": obs.value,
@@ -49,9 +49,9 @@ class PgObservationStore:
     _BATCH_SIZE = 5000  # same as PgHistoricalForcingStore; 9 cols × 5000 = 45K params
 
     def store_raw_observations(
-        self, obs_list: list[RawObservation]
+        self, observations: list[RawObservation]
     ) -> list[ObservationId]:
-        if not obs_list:
+        if not observations:
             return []
 
         rows = [
@@ -66,24 +66,26 @@ class PgObservationStore:
                 "qc_flags": None,
                 "qc_rule_version": None,
             }
-            for raw in obs_list
+            for raw in observations
         ]
 
         ids: list[ObservationId] = []
         for i in range(0, len(rows), self._BATCH_SIZE):
             batch = rows[i : i + self._BATCH_SIZE]
             stmt = (
-                pg_insert(observations)
+                pg_insert(observations_table)
                 .values(batch)
                 .on_conflict_do_nothing(
                     index_elements=["station_id", "timestamp", "parameter", "source"],
                 )
-                .returning(observations.c.id)
+                .returning(observations_table.c.id)
             )
             returned = {row[0] for row in self._conn.execute(stmt).fetchall()}
             for row in batch:
                 if row["id"] in returned:
-                    ids.append(row["id"])
+                    # row["id"] is ObservationId(uuid4()); the heterogeneous
+                    # insert-row dict widens its inferred type.
+                    ids.append(cast("ObservationId", row["id"]))
 
         return ids
 
@@ -95,8 +97,8 @@ class PgObservationStore:
         qc_rule_version: str | None = None,
     ) -> None:
         self._conn.execute(
-            sa.update(observations)
-            .where(observations.c.id == observation_id)
+            sa.update(observations_table)
+            .where(observations_table.c.id == observation_id)
             .values(
                 qc_status=qc_status.value,
                 qc_flags=_serialize_flags(qc_flags),
@@ -114,16 +116,16 @@ class PgObservationStore:
         source: ObservationSource | None = None,
     ) -> list[Observation]:
         stmt = (
-            sa.select(observations)
-            .where(observations.c.station_id == station_id)
-            .where(observations.c.parameter == parameter)
-            .where(observations.c.timestamp >= start)
-            .where(observations.c.timestamp < end)
+            sa.select(observations_table)
+            .where(observations_table.c.station_id == station_id)
+            .where(observations_table.c.parameter == parameter)
+            .where(observations_table.c.timestamp >= start)
+            .where(observations_table.c.timestamp < end)
         )
         if qc_status is not None:
-            stmt = stmt.where(observations.c.qc_status == qc_status.value)
+            stmt = stmt.where(observations_table.c.qc_status == qc_status.value)
         if source is not None:
-            stmt = stmt.where(observations.c.source == source.value)
+            stmt = stmt.where(observations_table.c.source == source.value)
         rows = self._conn.execute(stmt).mappings().all()
         return [_row_to_domain(row) for row in rows]
 
@@ -131,10 +133,10 @@ class PgObservationStore:
         self, station_id: StationId, parameter: str
     ) -> UtcDatetime | None:
         row = self._conn.execute(
-            sa.select(sa.func.max(observations.c.timestamp)).where(
+            sa.select(sa.func.max(observations_table.c.timestamp)).where(
                 sa.and_(
-                    observations.c.station_id == station_id,
-                    observations.c.parameter == parameter,
+                    observations_table.c.station_id == station_id,
+                    observations_table.c.parameter == parameter,
                 )
             )
         ).scalar_one_or_none()
@@ -152,16 +154,16 @@ class PgObservationStore:
         if not station_ids:
             return {}
         stmt = (
-            sa.select(observations)
-            .where(observations.c.station_id.in_(station_ids))
-            .where(observations.c.parameter == parameter)
-            .where(observations.c.timestamp >= start)
-            .where(observations.c.timestamp < end)
+            sa.select(observations_table)
+            .where(observations_table.c.station_id.in_(station_ids))
+            .where(observations_table.c.parameter == parameter)
+            .where(observations_table.c.timestamp >= start)
+            .where(observations_table.c.timestamp < end)
         )
         if qc_status is not None:
-            stmt = stmt.where(observations.c.qc_status == qc_status.value)
+            stmt = stmt.where(observations_table.c.qc_status == qc_status.value)
         if source is not None:
-            stmt = stmt.where(observations.c.source == source.value)
+            stmt = stmt.where(observations_table.c.source == source.value)
         rows = self._conn.execute(stmt).mappings().all()
 
         result: dict[StationId, list[Observation]] = {sid: [] for sid in station_ids}

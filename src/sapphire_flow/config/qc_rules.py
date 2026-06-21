@@ -9,12 +9,27 @@ from sapphire_flow.config._overlay import (
     _resolve_overlay_paths,  # pyright: ignore[reportPrivateUsage]
     load_merged_toml,
 )
-from sapphire_flow.types.domain import QcRuleParams, QcRuleSet
+from sapphire_flow.types.domain import QcRuleId, QcRuleParams, QcRuleSet
+
+_VALID_RULE_IDS: frozenset[str] = frozenset(
+    {
+        "range_check",
+        "rate_of_change",
+        "spike",
+        "gross_outlier",
+        "frozen_sensor",
+    }
+)
 
 
 def _parse_rule(raw: dict) -> QcRuleParams:
+    rule_id = raw["rule_id"]
+    if rule_id not in _VALID_RULE_IDS:
+        raise ValueError(
+            f"Unknown QC rule_id {rule_id!r}; valid: {sorted(_VALID_RULE_IDS)}"
+        )
     return QcRuleParams(
-        rule_id=raw["rule_id"],
+        rule_id=cast("QcRuleId", rule_id),
         rule_version=raw["rule_version"],
         parameter=raw["parameter"],
         time_step=timedelta(seconds=raw["time_step_seconds"]),

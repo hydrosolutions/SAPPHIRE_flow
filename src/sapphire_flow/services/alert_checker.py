@@ -303,6 +303,9 @@ def _process_results(
     level_max_prob: dict[str, float] = {}
     for result in results:
         if result.exceeded:
+            # ExceedanceResult.__post_init__ guarantees a non-None
+            # exceedance_probability whenever exceeded=True.
+            assert result.exceedance_probability is not None
             current = level_max_prob.get(result.danger_level, 0.0)
             level_max_prob[result.danger_level] = max(
                 current, result.exceedance_probability

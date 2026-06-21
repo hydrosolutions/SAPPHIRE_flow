@@ -1,7 +1,7 @@
 # Plan 073 — Fix concrete pyright violations outside `flows/`
 
-**Status**: READY
-**Date**: 2026-04-22 (DRAFT) → 2026-05-11 (READY, post six review rounds)
+**Status**: DONE (2026-06-01 — all phases landed; pyright 676 → 579; commits 73afc3f/6f6c976/6cd72d5, tags v0.1.438–440)
+**Date**: 2026-04-22 (DRAFT) → 2026-05-11 (READY, post six review rounds) → 2026-06-01 (DONE)
 **Depends on**: none (independent of Plan 069 but intentionally lands alongside — Plan 069 drains the ~445 "Unknown-cluster" errors that propagate through services under the ratchet, while this plan fixes the concrete violations pyright flagged which are not masked by the `flows/` carve-out).
 **Scope**: Fix the 65+ concrete type-violations pyright reports outside
 `src/sapphire_flow/flows/` after the flows/ carve-out experiment landed

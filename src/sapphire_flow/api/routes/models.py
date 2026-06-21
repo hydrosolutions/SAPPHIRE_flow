@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from sapphire_flow.api.deps import get_connection
-from sapphire_flow.api.routes.tables import _get_reflected
+from sapphire_flow.api.routes.tables import get_reflected
 
 router = APIRouter(tags=["models"])
 
@@ -18,7 +18,7 @@ def model_list(
 ) -> HTMLResponse:
     from sapphire_flow.api import templates
 
-    reflected = _get_reflected(conn)
+    reflected = get_reflected(conn)
     models_table = reflected.tables.get("models")
 
     models: list[dict[str, Any]] = []
@@ -64,7 +64,7 @@ def model_detail(
 ) -> HTMLResponse:
     from sapphire_flow.api import templates
 
-    reflected = _get_reflected(conn)
+    reflected = get_reflected(conn)
     models_table = reflected.tables.get("models")
     if models_table is None:
         raise HTTPException(status_code=404, detail="Models table not found")
@@ -167,7 +167,7 @@ def model_skill_chart_json(
     ),
     conn: sa.Connection = Depends(get_connection),
 ) -> JSONResponse:
-    reflected = _get_reflected(conn)
+    reflected = get_reflected(conn)
     skill_table = reflected.tables.get("skill_scores")
     if skill_table is None:
         return JSONResponse({"series": []})

@@ -9,12 +9,33 @@ from sapphire_flow.config._overlay import (
     _resolve_overlay_paths,  # pyright: ignore[reportPrivateUsage]
     load_merged_toml,
 )
-from sapphire_flow.types.domain import ForecastQcRuleParams, ForecastQcRuleSet
+from sapphire_flow.types.domain import (
+    ForecastQcRuleId,
+    ForecastQcRuleParams,
+    ForecastQcRuleSet,
+)
+
+_VALID_RULE_IDS: frozenset[str] = frozenset(
+    {
+        "negative_value",
+        "range_check",
+        "flat_ensemble",
+        "ensemble_spread",
+        "climatology_outlier",
+        "temporal_consistency",
+        "quantile_crossing",
+    }
+)
 
 
 def _parse_rule(raw: dict) -> ForecastQcRuleParams:
+    rule_id = raw["rule_id"]
+    if rule_id not in _VALID_RULE_IDS:
+        raise ValueError(
+            f"Unknown forecast QC rule_id {rule_id!r}; valid: {sorted(_VALID_RULE_IDS)}"
+        )
     return ForecastQcRuleParams(
-        rule_id=raw["rule_id"],
+        rule_id=cast("ForecastQcRuleId", rule_id),
         rule_version=raw["rule_version"],
         parameter=raw["parameter"],
         time_step=timedelta(seconds=raw["time_step_seconds"]),

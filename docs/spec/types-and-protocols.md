@@ -476,7 +476,7 @@ from datetime import timedelta
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class QcRuleParams:
-    rule_id: str                   # e.g. "range_check", "rate_of_change", "frozen_sensor", "spike", "gross_outlier"
+    rule_id: QcRuleId              # Literal["range_check", "rate_of_change", "spike", "gross_outlier", "frozen_sensor"]
     rule_version: str              # e.g. "1.0.0"
     parameter: str                 # canonical parameter name (e.g. "discharge", "water_level")
     time_step: timedelta           # observation time step these thresholds apply to
@@ -530,7 +530,7 @@ QC, but operates on ensemble forecasts rather than individual observations.
 ```python
 @dataclass(frozen=True, kw_only=True, slots=True)
 class ForecastQcRuleParams:
-    rule_id: str                   # e.g. "negative_value", "ensemble_spread", "quantile_crossing"
+    rule_id: ForecastQcRuleId      # Literal["negative_value", "range_check", "flat_ensemble", "ensemble_spread", "climatology_outlier", "temporal_consistency", "quantile_crossing"]
     rule_version: str
     parameter: str                 # "discharge" or "water_level"
     time_step: timedelta
@@ -685,6 +685,11 @@ class ExceedanceResult:
     exceeded: bool                 # whether the threshold was crossed in the configured direction
     model_ids: tuple[ModelId, ...] = ()                        # models that contributed
     strategy: ModelCombinationStrategy = ModelCombinationStrategy.PRIMARY   # which strategy produced this result
+
+    def __post_init__(self) -> None:
+        # Invariant: a crossed threshold must carry its probability.
+        if self.exceeded and self.exceedance_probability is None:
+            raise ValueError("exceedance_probability must be set when exceeded=True")
 ```
 
 Module: `types/domain.py`

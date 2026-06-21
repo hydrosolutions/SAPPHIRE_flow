@@ -62,10 +62,10 @@ uv sync
 ```
 
 Then register the pre-commit hooks so lint/format/secret checks run
-on every `git commit`:
+on every `git commit` and the pyright ratchet runs before `git push`:
 
 ```bash
-uv run pre-commit install
+uv run pre-commit install --hook-type pre-commit --hook-type pre-push
 ```
 
 If `pre-commit install` errors with `Cowardly refusing to install hooks
