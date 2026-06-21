@@ -45,9 +45,13 @@ if TYPE_CHECKING:
         StationStore,
     )
     from sapphire_flow.types.historical_forcing import RawHistoricalForcing
-    from sapphire_flow.types.model import ModelArtifact
+    from sapphire_flow.types.model import ModelArtifact, ModelInputs
     from sapphire_flow.types.observation import Observation
-    from sapphire_flow.types.station import StationGroup, StationWeatherSource
+    from sapphire_flow.types.station import (
+        StationConfig,
+        StationGroup,
+        StationWeatherSource,
+    )
 
 log = structlog.get_logger(__name__)
 
@@ -210,9 +214,9 @@ def _assemble_hindcast_inputs(
 
 def _load_static_attributes(
     basin_store: BasinStore,
-    station_config: object,
+    station_config: StationConfig,
 ) -> pl.DataFrame | None:
-    if not hasattr(station_config, "basin_id") or station_config.basin_id is None:
+    if station_config.basin_id is None:
         return None
     basin = basin_store.fetch_basin(station_config.basin_id)
     if basin is not None and basin.attributes:
@@ -226,7 +230,7 @@ def _load_static_attributes(
 # ---------------------------------------------------------------------------
 
 
-def _to_legacy_model_inputs(inputs: StationModelInputs) -> object:
+def _to_legacy_model_inputs(inputs: StationModelInputs) -> ModelInputs:
     """Temporary shim: pack StationModelInputs into legacy ModelInputs for stacking."""
     from sapphire_flow.types.model import ModelInputs
 

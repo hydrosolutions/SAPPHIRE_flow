@@ -8,7 +8,8 @@ Phase 2+. See §Cross-plan coordination for the full merge order.
 (a) verifying and documenting the existing `pyrightconfig.json` (already strict
 globally, with a `flows/` carve-out for Prefect decorator type erasure),
 (b) fixing the stale `--strict` CLI reference in `docs/workflow.md`,
-(c) capturing the post-Plan-073 error count (≤609) as a ratchet baseline, and
+(c) capturing the post-Plan-073 error count (live count, expected ≈579 as
+of 2026-06-01) as a ratchet baseline, and
 (d) draining the remaining backlog under that ratchet. No runtime behaviour
 change.
 
@@ -31,13 +32,14 @@ hygiene after Plan 064. The three are:
 **Merge order (mandatory):** 070 → 073 → 069 Phase 1 → 069 Phase 2+.
 Rationale: 070 stops new regressions from leaking in; 073 fixes real
 bugs so the ratchet floor is clean; 069 Phase 1 captures the
-post-Plan-073 total (≤609) as the ratchet floor; 069 Phase 2+ drains
-what remains.
+post-Plan-073 total (live count, expected ≈579 as of 2026-06-01) as the
+ratchet floor; 069 Phase 2+ drains what remains.
 
 **Baseline numbers:**
 - 1078 = pre-experiment (no carve-out). Historical reference only.
 - 676 = live baseline at 2026-05-11, pre-Plan-073 (flows/ carve-out active).
-- ≤609 = post-Plan-073 (this plan's ratchet floor).
+- live count, expected ≈579 as of 2026-06-01 = post-Plan-073 (this plan's
+  ratchet floor). Measure live at execution time; do not hard-code.
 
 **Config location:** `pyrightconfig.json` at repo root is
 authoritative. `[tool.pyright]` in `pyproject.toml` is NOT used —
@@ -67,7 +69,8 @@ is already committed to `pyrightconfig.json`.
 Separately, investigation of the remaining 676 errors identified 65+
 concrete violations outside `flows/` (Plan 073 scope) and 166
 concrete violations inside `flows/` (Plan 069 Phase 2 scope). After
-Plan 073 lands, the ratchet floor is ≤609.
+Plan 073 lands, the ratchet floor is the live count, expected ≈579 as
+of 2026-06-01.
 
 The `lint` CI job currently runs only ruff + ruff format. Static
 type-checking is our largest protection against refactor regressions
@@ -77,7 +80,8 @@ Leaving it off indefinitely erodes that investment.
 
 ### The shape of the backlog (measured 2026-04-22, post-carve-out)
 
-**Total: 676 errors pre-Plan-073 at 2026-05-11 (expected ≤609 post-Plan-073)**
+**Total: 676 errors pre-Plan-073 at 2026-05-11 (live count, expected ≈579
+post-Plan-073 as of 2026-06-01)**
 
 | Count | Pyright rule | Category |
 |---|---|---|
@@ -88,13 +92,14 @@ Leaving it off indefinitely erodes that investment.
 | 33  | `reportMissingTypeArgument` | " |
 | 19  | `reportMissingParameterType` | Our own missing annotations — NOT silenced by the carve-out; fix in-place (Phase 3 only) |
 | 1   | `reportUnknownLambdaType` | " |
-| **445** | **"Unknown" subtotal (non-flows)** | Phase 3 drain target |
+| **~413** | **"Unknown" subtotal (non-flows)** | Phase 3 drain target (was 445 at 2026-04-22; re-measure at execution) |
 | 103 | `reportArgumentType` (flows/) | **Phase 2 — T4** |
 | 51  | `reportAttributeAccessIssue` (flows/) | **Phase 2 — T5** |
 | 12  | `reportCallIssue`, `reportPrivateUsage`, etc. (flows/) | **Phase 2 — T6** |
 | 124+76+other | all concrete rules (non-flows) | **Plan 073 scope — NOT this plan** |
 
-**Concentration (top 10 files, post-carve-out):**
+**Concentration (top 10 files, post-carve-out; measured 2026-04-22,
+re-measure at execution):**
 
 | Count | File |
 |---|---|
@@ -117,7 +122,8 @@ Baseline captured to `/tmp/pyright_rewrite.json` on 2026-04-22 (historical 2026-
 ### Principle
 
 Ratchet, don't big-bang. We cannot pause feature work for weeks to
-drain ≤609 errors, but we also cannot keep letting the count grow while
+drain the live backlog (expected ≈579 as of 2026-06-01), but we also
+cannot keep letting the count grow while
 we drain it. The ratchet model: lock Plan-073's landing count as the
 floor, fail CI if the count rises, then reduce the baseline one batch
 at a time.
@@ -150,9 +156,9 @@ at a time.
   are installed; `uv run check` developer-side helper exists;
   `tools/gate_parity_check.py` is in place.
 - **Plan 073** (concrete pyright violations outside `flows/`) —
-  **READY** as of 2026-05-11 (commit `5d601fc`, six review rounds).
-  Must land BEFORE Plan 069 Phase 2 starts so the ratchet baseline
-  is captured at the post-073 floor (≤609).
+  **DONE** as of 2026-06-01 (landed `73afc3f` / `6f6c976` / `6cd72d5`).
+  Landed BEFORE Plan 069 Phase 2 so the ratchet baseline is captured
+  at the post-073 floor (live count, expected ≈579 as of 2026-06-01).
 
 - `.github/workflows/ci.yml` — the `lint` job's pyright step is
   currently commented out (Plan 064 b17eaad), with a TODO pointing at
@@ -238,9 +244,10 @@ touches the file.
 
 1. Run `uv run pyright` (no flags). Confirm it reads `pyrightconfig.json`
    from the repo root (pyright prints which config it finds).
-   - If Plan 073 has landed: expect ≤609 errors.
-   - If Plan 073 has not yet landed: expect ~676 errors.
-   Either is acceptable; T2 captures the live number.
+   - Plan 073 is DONE (landed `73afc3f` / `6f6c976` / `6cd72d5`): expect the
+     live count, ≈579 errors as of 2026-06-01.
+   - (Historical: pre-Plan-073 the count was ~676.)
+   Whatever the live number, T2 captures it.
 2. Document the carve-out rationale in `docs/standards/pyright.md` (new
    file, short — under 40 lines). Cover: `typeCheckingMode: "strict"`
    global; `executionEnvironments` carve-out for `src/sapphire_flow/flows/`
@@ -310,9 +317,9 @@ touches the file.
    ignored (see D1, D2).
 
 **Exit**: `uv run pyright` runs without flags, reads `pyrightconfig.json`,
-produces approximately 676 errors pre-Plan-073 or ≤609 errors post-Plan-073
-(Plan 073 is READY as of 2026-05-11). Acceptable tolerance: ±5 errors due to
-pyright measurement variance. Live count must be recorded in the implementation
+produces the live count — expected ≈579 errors as of 2026-06-01, since
+Plan 073 is DONE (historical pre-Plan-073 count was ~676). Acceptable
+tolerance: ±5 errors due to pyright measurement variance. Live count must be recorded in the implementation
 commit message body per **Plan 073 §D9 convention** (Plan 069's own
 architecture-decisions table is D1–D7; D9 is a cross-plan reference
 to Plan 073).
@@ -325,37 +332,53 @@ rationale; no stderr warnings from pyright about unknown config keys.
 still references the removed flag.
 
 1. Replace `uv run pyright --strict src/` → `uv run pyright src/`
-   (no flags; config in `pyrightconfig.json` controls mode) in every
-   location returned by `grep -rn "pyright --strict" docs/`.
-2. As of 2026-04-22 the known stale locations are (verify live at
-   execution time — other PRs may land new references before T1b runs):
+   (no flags; config in `pyrightconfig.json` controls mode) at every
+   **command-form** hit — i.e. every location that invokes the flag as a
+   runnable command. Do NOT rewrite prose/historical references that merely
+   mention the flag in narrative (see the "leave alone" list below).
+2. As of 2026-06-01 the live
+   `grep -rn "pyright --strict" docs/ | grep -v archive | grep -v 069`
+   returns **7 hits**. Only **5** are command-form and MUST be rewritten
+   (verify live at execution time — other PRs may land new references
+   before T1b runs):
    - `docs/workflow.md:102` — Task Exit Gate section (primary target).
    - `docs/v0-scope.md:404`
    - `docs/architecture-context.md:3041`
    - `docs/plans/066-train-models-retrain-strategy.md:94`
    - `docs/plans/068-onboard-stations-parallelization.md:106`
+
+   **Leave alone (prose/historical — do NOT rewrite):**
+   - `docs/plans/070-precommit-and-gate-parity.md:56` — historical
+     narrative describing the disabled gate, not a command to run.
+   - `docs/v0-launch-roadmap.md:303` — the line describing task T1b
+     itself; rewriting it would corrupt the description of this work.
+
    Plan 067 was archived 2026-05-11 (commit `0a4819e`, tag `v0.1.432`);
    its `pyright --strict` references survive in the archived copy and are
    excluded by the `-v docs/plans/archive/` filter.
 3. Archived plans (under `docs/plans/archive/`) are historical artefacts —
    leave them alone even if they contain the stale flag.
-4. After edits, `grep -rn "pyright --strict" docs/` should return no
-   non-archive hits.
+4. After edits, the command-form grep (see Exit) should return no
+   non-archive, non-prose hits.
 
 **Exit**:
 ```
 grep -rn "pyright --strict" docs/ \
   | grep -v docs/plans/archive/ \
-  | grep -v docs/plans/069-pyright-backlog-cleanup.md
+  | grep -v docs/plans/069-pyright-backlog-cleanup.md \
+  | grep -v docs/plans/070-precommit-and-gate-parity.md \
+  | grep -v docs/v0-launch-roadmap.md
 ```
-returns nothing; every remaining reference to pyright invokes it as
-`uv run pyright src/` (or `uv run pyright --outputjson src/` for the
-ratchet capture).
+returns nothing; every remaining command-form reference to pyright invokes
+it as `uv run pyright src/` (or `uv run pyright --outputjson src/` for the
+ratchet capture). The two prose files (`plans/070`, `v0-launch-roadmap.md`)
+are excluded because their references are narrative, not commands.
 
 **Note**: The plan file `docs/plans/069-pyright-backlog-cleanup.md`
 itself contains multiple `pyright --strict` references as explanatory
 prose (documenting what's being changed). These are intentional and
-excluded from the cleanup by the additional `-v` filter.
+excluded from the cleanup by the additional `-v` filter — as are the two
+prose files listed above.
 
 #### T2 — Capture the baseline
 
@@ -368,16 +391,35 @@ This is a reusable CI utility (not a one-time script), so it is written as a
    `uv run pyright --outputjson src/` and reduces the output to:
    ```json
    {
-     "total": 609,
+     "total": 579,
      "by_file": {
        "src/sapphire_flow/services/onboarding.py": 121,
        ...
      }
    }
    ```
-   (`"total"` is the live measured count at execution time; ≤609 is the
-   post-Plan-073 expected value. Do not hard-code this number — measure live.)
-   Include only files with ≥1 error.
+   (`"total"` is the live measured count at execution time; ≈579 is the
+   post-Plan-073 expected value as of 2026-06-01. Measure live; do not
+   hard-code this number.) Include only files with ≥1 error.
+
+   **Count errors only**: `"total"` and every `by_file` count MUST count
+   only diagnostics with `severity == "error"` — NOT `len(generalDiagnostics)`.
+   Warnings and info-level diagnostics are excluded. This also naturally
+   excludes the `flows/` carved-out Unknown rules, which the
+   `executionEnvironments` block sets to `"none"` (so they never appear as
+   errors).
+
+   **Path normalization (BLOCKER)**: pyright emits ABSOLUTE paths in
+   `generalDiagnostics[].file` (confirmed: e.g.
+   `/Users/bea/.../src/sapphire_flow/...` locally,
+   `/home/runner/work/.../src/sapphire_flow/...` in CI). Before storing any
+   `by_file` key, strip the repo-root prefix (relative to the cwd / git
+   toplevel) and convert to a forward-slash POSIX path, so the stored key is
+   e.g. `src/sapphire_flow/services/onboarding.py`. This MUST be done
+   identically in `tools/pyright_baseline.py` (T2) and
+   `tools/pyright_ratchet.py` (T3) so baseline keys match live keys on any
+   machine; otherwise every key mismatches between local and CI and the
+   ratchet is meaningless.
 
    **Subprocess handling**: pyright exits non-zero whenever it finds any
    errors (which is always the case during baseline capture — that's why
@@ -390,9 +432,10 @@ This is a reusable CI utility (not a one-time script), so it is written as a
    documented in T2 step 1.
 
 2. Run the script to produce `tools/pyright_baseline.json`.
-   The total will be ≤609 (if Plan 073 has landed) or ~676 (if not).
-   The agent running T2 must measure the live count at execution time
-   and commit that number — do not hard-code any specific value.
+   The total will be the live count (expected ≈579 as of 2026-06-01, since
+   Plan 073 is DONE). The agent running T2 must measure the live count at
+   execution time and commit that number — do not hard-code any specific
+   value.
 3. Commit both files.
 4. Wire the script as a helper: `uv run python tools/pyright_baseline.py`
    regenerates the baseline when a deliberate ratchet update is needed.
@@ -418,10 +461,13 @@ for every file with ≥1 error.
    - run: uv run pyright --outputjson src/ > /tmp/pyright.json || true
    - run: uv run python tools/pyright_ratchet.py /tmp/pyright.json tools/pyright_baseline.json
    ```
-   **YAML indentation matters**: the `- run:` prefix must align with
-   the other steps in the `lint` job's `steps:` list. Wrong indentation
-   silently re-attributes the step to the wrong job or breaks the
-   YAML. After the edit, run `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"` to confirm valid YAML.
+   **YAML indentation matters**: align the two new `- run:` lines to a
+   **6-space** indent, matching the existing lint-job steps at `ci.yml:18–21`
+   — NOT the 7-space indent of the disabled comment body. The target block to
+   replace is `ci.yml:22–28`. Wrong indentation silently re-attributes the
+   step to the wrong job or breaks the YAML. After the edit, run
+   `python3 -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"`
+   to confirm valid YAML.
 2. The temp file path `/tmp/pyright.json` matches Plan 070 A4's
    pre-commit hook convention (also writes to `/tmp/pyright.json`).
    Using `/tmp/` avoids creating an untracked `pyright.json` in the
@@ -435,6 +481,15 @@ for every file with ≥1 error.
 3. Write `tools/pyright_ratchet.py`: load both JSON, compare
    per-file and total, fail with exit code 1 if ANY count is higher
    than baseline. Print the diff in a human-readable table.
+
+   **Path normalization (BLOCKER)**: before comparing, normalize every live
+   file path the SAME way `tools/pyright_baseline.py` does (T2) — strip the
+   repo-root prefix (relative to cwd / git toplevel) and use forward-slash
+   POSIX paths. Pyright emits absolute paths that differ between local
+   (`/Users/bea/...`) and CI (`/home/runner/work/...`); without identical
+   normalization in both scripts, every key mismatches and the ratchet
+   silently passes (or spuriously fails). Count only diagnostics with
+   `severity == "error"`, matching T2.
 4. The `--outputjson ... || true` ensures the step doesn't fail on
    pyright's nonzero exit; the ratchet script is the real gate.
 
@@ -459,13 +514,21 @@ for every file with ≥1 error.
 5. **Malformed pyright JSON output**: exit code 2 (distinguish from
    exit code 1 = ratchet violation). Print the malformed first 200
    chars to stderr for debugging.
-6. **Empty pyright JSON output** (no errors at all): treat as
-   `total = 0` and all files at 0. The ratchet passes if baseline
-   also has total = 0 (which would only happen post-T15b).
+6. **Empty result vs. malformed output** — `total = 0` applies ONLY to a
+   successfully-parsed JSON object whose `generalDiagnostics` is `[]` (a
+   clean run with no errors). Treat that as `total = 0`, all files at 0; the
+   ratchet passes if the baseline also has `total = 0` (only post-T15b). Any
+   `json.load` failure, 0-byte file, non-dict top-level, or stack-trace /
+   non-JSON output is **MALFORMED → exit 2** (per edge case 5), NOT
+   `total = 0`. A crashed pyright must never read as "0 errors, pass".
 
 **Why `/tmp/pyright.json` and not a repo-root path**: keeps the
 ratchet's working file outside the git tree; no `.gitignore` entry
 needed; matches Plan 070 A4's pre-commit hook convention.
+
+**Note on ignore budgets**: the ratchet enforces only error *counts*. The
+per-file "≤20% ignores" budget (D6 / T7) and the T15b "≤5 ignores total"
+budget are **reviewer-enforced** — there is no automated check for them.
 
 **Exit**: CI lint job runs pyright + ratchet. Baseline equals live
 output → CI passes. Any file with more errors than baseline → CI
@@ -481,7 +544,11 @@ Plan 069 Phase 2 does NOT touch non-flows files.
 #### T4 — `reportArgumentType` sweep inside `flows/` (103 errors)
 
 1. List instances: `uv run pyright --outputjson src/ | python3 -c "import json,sys; [print(e['file'],e['message']) for e in json.load(sys.stdin)['generalDiagnostics'] if e.get('rule')=='reportArgumentType' and '/flows/' in e['file']]"`
-2. For each callsite: fix callsite (cast/reshape/guard), fix target signature, or flag as latent bug (separate plan/issue).
+2. For each callsite: apply a **type-level fix only** — a `cast(...)` or an
+   annotation — or fix the target signature, or flag as a latent bug
+   (separate plan/issue). Do NOT reshape data or add a runtime guard: if a
+   real reshape or guard is needed to satisfy the type, that is a latent bug
+   → escalate, do not change behaviour (consistent with §Non-goals).
 3. Land as small commits; update `tools/pyright_baseline.json` each commit.
 
 **Exit**: Zero `reportArgumentType` inside `flows/`; latent bugs tracked separately; baseline updated.
@@ -501,8 +568,9 @@ Same pattern as T4 for the 51 attribute-access errors inside `flows/`.
 
 ### Phase 3 — Drain the Unknown cluster (non-flows), largest-first
 
-Phase 3 targets the 445 non-flows Unknown-cluster errors that survive after
-Plan 073's concrete-violation fixes. These are `reportUnknownVariableType`,
+Phase 3 targets the ~413 non-flows Unknown-cluster errors that survive after
+Plan 073's concrete-violation fixes (was 445 at 2026-04-22; re-measure at
+execution). These are `reportUnknownVariableType`,
 `reportUnknownMemberType`, `reportUnknownArgumentType`,
 `reportUnknownParameterType`, `reportMissingTypeArgument`,
 `reportMissingParameterType`, `reportUnknownLambdaType` in services/, store/,
@@ -569,7 +637,10 @@ coordination section. The full list of Plan 073-owned files is:
 `adapters/meteoswiss_nwp.py`, `types/domain.py`.
 If T15 sweeps one of these files and finds residual Unknown-cluster errors
 after Plan 073 has landed, proceed — but do not re-fix sites that Plan 073
-already addressed.
+already addressed. T8–T14 may drain the Unknown-cluster residual of these
+shared files; the guard forbids only re-touching 073's concrete fixes (it
+does not forbid clearing the Unknown-cluster residual those files still
+carry).
 
 **Exit**: Total pyright error count ≤ 100. All surviving entries have
 dated ignore comments per D6.
@@ -617,7 +688,7 @@ the ratchet script; CI is zero-tolerance for new errors.
 |------|------|--------|--------|-----|
 | 1 | T1 + T1b + T2 + T3 (Phase 1) | High (enabler) | Low (~1 day) | Nothing in Phase 2 or 3 matters until the ratchet is live. T1b fixes the stale workflow.md flag. Unblocks everything. |
 | 2 | T4 + T5 + T6 (flows/ concrete violations) | High (latent-bug value) | Medium | 166 errors, each potentially a real bug in Prefect flow wiring. Parallel to Plan 073 which covers non-flows. |
-| 3 | T7..T14 (top non-flows files, Unknown cluster) | Medium (mechanical hygiene) | Medium-high per file | 445 errors but concentrated in 10 files. Linear progress, ratchet makes it safe to spread over weeks. |
+| 3 | T7..T14 (top non-flows files, Unknown cluster) | Medium (mechanical hygiene) | Medium-high per file | ~413 errors but concentrated in 10 files. Linear progress, ratchet makes it safe to spread over weeks. |
 | 4 | T15 + T15b + T16 (tail + drain to zero + flip) | Medium | Low | Close out. T15b drains residual ≤100 errors to exactly zero before T16 flips to zero-tolerance. Only meaningful once Phase 3 has drained the concentration. |
 
 Phase 1 is a hard prerequisite for everything else. Within Phase 2,
@@ -761,3 +832,42 @@ into the same `tools/pyright_baseline.json` so they serialize on merge.
 
   Implementation gated on a separate orchestrator go-ahead. Sprint 2
   merge order: 070 (DONE) → 073 → 069 Phase 1 → 069 Phase 2+.
+
+- **2026-06-01 (READY — A1-amend review-fix pass)** — Amendments applied
+  against the live post-073 repo (pyright count = 579). Stays READY.
+  (1) **[BLOCKER] Path normalization** — T2 and T3 now explicitly require
+  stripping the repo-root prefix to a forward-slash POSIX path in BOTH
+  scripts, because pyright emits absolute paths that differ between local
+  (`/Users/...`) and CI (`/home/runner/work/...`); without identical
+  normalization the baseline keys never match live keys. (2) **Count errors
+  only** — T2 counts only `severity == "error"` diagnostics, not
+  `len(generalDiagnostics)`; this also naturally excludes the `flows/`
+  carved-out Unknown rules (set to `"none"`). (3) **T3 edge case #6** —
+  `total = 0` applies ONLY to a parsed JSON whose `generalDiagnostics` is
+  `[]`; any load failure / 0-byte / non-dict / stack-trace output is
+  MALFORMED → exit 2, never "0 errors, pass". (4) **T1b scope** — the live
+  grep returns 7 hits, not 5; only the 5 command-form references are
+  rewritten; added an explicit "leave alone (prose/historical)" list
+  (`plans/070:56`, `v0-launch-roadmap.md:303`); step 1 softened to
+  "command-form hit"; the exit-gate grep now `-v`'s the two prose files.
+  (5) **Number refresh** — `≤609` gate/target language replaced with "live
+  count, expected ≈579 as of 2026-06-01"; T2 example JSON `total` 609 → 579;
+  non-flows Unknown subtotal 445 → ~413; §Concentration table dated; §Inputs
+  precondition updated to Plan 073 DONE (`73afc3f`/`6f6c976`/`6cd72d5`).
+  (6) **T4 non-goal alignment** — struck "reshape/guard"; fixes restricted
+  to type-level cast / annotation; a needed reshape or runtime guard is a
+  latent bug → escalate. (7) **T15 guard clarity** — added a sentence
+  noting T8–T14 may drain the Unknown-cluster residual of shared files; the
+  guard forbids only re-touching 073's concrete fixes. (8) **T3 indent +
+  budgets note** — the two new `- run:` lines align to 6-space indent
+  (matching `ci.yml:18–21`, target block `ci.yml:22–28`); added a note that
+  the per-file 20% / T15b ≤5 ignore budgets are reviewer-enforced (no
+  automated check).
+
+  **Phase 1 self-containment confirmed**: T1/T1b/T2/T3 are fully
+  self-contained and executable independently of Phases 2–4 — T1 verifies +
+  documents config, T1b is a docs-only grep-and-replace, T2 writes the
+  baseline script + JSON, T3 wires the CI ratchet. None depend on any
+  Phase 2/3/4 task. **Downstream effect**: landing Phase 1 unblocks
+  Plan 070 A4 (the `pyright-ratchet` pre-commit hook, per `cicd.md:314`),
+  which was explicitly deferred to this plan's Phase 1 landing.

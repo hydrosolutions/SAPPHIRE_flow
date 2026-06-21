@@ -26,6 +26,10 @@ from sapphire_flow.types.forecast_summary import ForecastSummaryRow
 from sapphire_flow.types.ids import ArtifactId, ForecastId, ModelId, StationId
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from sqlalchemy import RowMapping
+
     from sapphire_flow.types.datetime import UtcDatetime
 
 
@@ -259,7 +263,7 @@ def _build_value_rows(forecast: OperationalForecast) -> list[dict]:  # type: ign
     return rows
 
 
-def _rows_to_domain(rows: list) -> OperationalForecast:  # type: ignore[type-arg]
+def _rows_to_domain(rows: Sequence[RowMapping]) -> OperationalForecast:
     header = rows[0]
     representation = EnsembleRepresentation(header["representation"])
     is_members = representation == EnsembleRepresentation.MEMBERS

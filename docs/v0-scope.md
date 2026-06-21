@@ -401,7 +401,7 @@ Target: full integration suite < 60s locally. Individual tests < 5s.
 ### E5. CI pipeline (GitHub Actions)
 
 Four parallel jobs:
-- **lint**: ruff + pyright --strict (< 30s)
+- **lint**: ruff + pyright src/ (< 30s)
 - **unit**: pytest tests/unit/ --cov (< 30s, no DB)
 - **integration**: real PostgreSQL, replay adapters, scenario tests (< 2 min)
 - **e2e**: full pipeline, golden answer comparison (< 5 min)

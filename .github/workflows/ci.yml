@@ -11,20 +11,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
         with:
           version: "0.11.7"
           python-version: "3.12"
       - run: uv sync --frozen
       - run: uv run ruff check src/ tests/
       - run: uv run ruff format --check src/ tests/
-      # pyright --strict disabled: pyright 1.1.408 removed the --strict CLI
-       # flag (must be configured via pyproject.toml or pyrightconfig.json),
-       # and a default-mode run reports 1078 pre-existing errors that
-       # predate Plan 064. Re-enabling strict type-checking in CI is tracked
-       # as a separate follow-up (needs a plan to clean up the backlog
-       # incrementally). Keeping ruff as the sole enforced lint gate for now.
-       # - run: uv run pyright src/
+      - run: shellcheck scripts/launchd/start-sapphire.sh scripts/launchd/watchdog.sh scripts/launchd/install-launchd.sh scripts/bootstrap-mac-mini.sh
+      - run: uv run pyright --outputjson src/ > /tmp/pyright.json || true
+      - run: uv run python tools/pyright_ratchet.py /tmp/pyright.json tools/pyright_baseline.json
       # A2 — Trivy filesystem scan. Reads uv.lock + pyproject.toml without
       # building the image, so dep-only PRs get fast feedback. Fails on HIGH
       # or CRITICAL vulnerabilities that have an available fix; unfixed CVEs
@@ -51,7 +47,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
         with:
           version: "0.11.7"
           python-version: "3.12"
@@ -87,7 +83,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
         with:
           version: "0.11.7"
           python-version: "3.12"
@@ -117,7 +113,7 @@ jobs:
           --health-retries 5
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
         with:
           version: "0.11.7"
           python-version: "3.12"

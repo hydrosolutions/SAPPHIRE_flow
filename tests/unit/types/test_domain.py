@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from uuid import uuid4
 
 import pytest
 
 from sapphire_flow.types.domain import (
     DangerLevelDefinition,
+    ExceedanceResult,
     GeoCoord,
     QcFlag,
     SeasonDefinition,
     aggregate_qc_status,
 )
 from sapphire_flow.types.enums import QcStatus, ThresholdDirection
+from sapphire_flow.types.ids import StationId
 
 
 class TestGeoCoord:
@@ -214,3 +217,29 @@ class TestSeasonDefinition:
     def test_month_13(self) -> None:
         with pytest.raises(ValueError, match="months must be in"):
             SeasonDefinition(name="x", months=frozenset({13}))
+
+
+class TestExceedanceResult:
+    def test_post_init_rejects_exceeded_true_with_none_probability(self) -> None:
+        with pytest.raises(ValueError, match="exceedance_probability"):
+            ExceedanceResult(
+                station_id=StationId(uuid4()),
+                danger_level="DL1",
+                parameter="discharge",
+                threshold_value=100.0,
+                exceedance_probability=None,
+                observed_value=None,
+                exceeded=True,
+            )
+
+    def test_allows_exceeded_false_with_none_probability(self) -> None:
+        result = ExceedanceResult(
+            station_id=StationId(uuid4()),
+            danger_level="DL1",
+            parameter="discharge",
+            threshold_value=100.0,
+            exceedance_probability=None,
+            observed_value=None,
+            exceeded=False,
+        )
+        assert result.exceedance_probability is None

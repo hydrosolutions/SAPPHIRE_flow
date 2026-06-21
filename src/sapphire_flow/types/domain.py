@@ -134,9 +134,18 @@ def aggregate_input_quality(flags: list[InputQualityFlag]) -> InputQualityLevel:
     return worst.level
 
 
+QcRuleId = Literal[
+    "range_check",
+    "rate_of_change",
+    "spike",
+    "gross_outlier",
+    "frozen_sensor",
+]
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class QcRuleParams:
-    rule_id: str
+    rule_id: QcRuleId
     rule_version: str
     parameter: str
     time_step: timedelta
@@ -218,10 +227,25 @@ class ExceedanceResult:
     model_ids: tuple[ModelId, ...] = ()
     strategy: ModelCombinationStrategy = ModelCombinationStrategy.PRIMARY
 
+    def __post_init__(self) -> None:
+        if self.exceeded and self.exceedance_probability is None:
+            raise ValueError("exceedance_probability must be set when exceeded=True")
+
+
+ForecastQcRuleId = Literal[
+    "negative_value",
+    "range_check",
+    "flat_ensemble",
+    "ensemble_spread",
+    "climatology_outlier",
+    "temporal_consistency",
+    "quantile_crossing",
+]
+
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class ForecastQcRuleParams:
-    rule_id: str
+    rule_id: ForecastQcRuleId
     rule_version: str
     parameter: str
     time_step: timedelta

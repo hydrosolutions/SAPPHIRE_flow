@@ -96,11 +96,15 @@ CI is the secondary gate (push + PR).
 
 ```bash
 uv sync                       # installs pre-commit as a dev dep
-uv run pre-commit install     # registers .git/hooks/pre-commit
+uv run pre-commit install --hook-type pre-commit --hook-type pre-push
+# registers .git/hooks/pre-commit and .git/hooks/pre-push
 ```
 
-**Hooks run automatically on `git commit`**. To run them manually
-across all files (useful after a rebase or when bisecting):
+**Hooks run automatically on `git commit` and `git push`**. The
+pre-push hook runs the pyright ratchet because `uv run pyright` takes
+30-60s and must stay out of the fast commit loop; CI is the hard
+backstop. To run hooks manually across all files (useful after a
+rebase or when bisecting):
 
 ```bash
 uv run pre-commit run --all-files

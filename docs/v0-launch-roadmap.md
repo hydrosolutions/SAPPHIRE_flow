@@ -4,7 +4,7 @@
 and then cleanly extend it. Not a plan document (plans live in
 `docs/plans/`); this is a tracker that references them.
 
-**Last updated**: 2026-05-11
+**Last updated**: 2026-06-01
 
 **Decisions locked**:
 - **D1 = B**: 5-station scope for initial Mac Mini deploy; Plan 068
@@ -16,6 +16,11 @@ and then cleanly extend it. Not a plan document (plans live in
   workflows for manual pre-merge runs; ritual documented in
   `docs/standards/cicd.md` — `gh workflow run integration-nightly.yml
   --ref <branch>` before merging major changes.
+- **D3 = Stream C LAN-only/plain HTTP**: no caddy TLS is shipped in
+  the Mac Mini staging overlay; public HTTPS is owned by Plan 049.
+- **D4 = Stream C rot gate**: shell scripts are shellcheck-gated in
+  pre-commit and CI; launchd plists are guarded by a local,
+  self-skipping `plutil -lint` pre-commit hook for macOS contributors.
 
 ---
 
@@ -31,7 +36,9 @@ and then cleanly extend it. Not a plan document (plans live in
   archived at `docs/plans/archive/067-...md` (2026-05-11, commit
   `0a4819e`).
 - **Plan 046** (Mac Mini deploy) — IN_PROGRESS; Streams A (dress
-  rehearsal) green; Stream C (Mac Mini glue) is the next big chunk.
+  rehearsal) green; Stream C (Mac Mini glue) delivered by `514ff36`
+  (`v0.1.403`) and audited/hardened by Plan 075; Stream D operator
+  validation remains.
 - **Sprint 2 (pyright/CI hygiene)** completed today (2026-05-11):
   - **Plan 070** (pre-commit + gate parity) — **DONE**, all 4 phases
     implemented + committed (commits `0223e8e`/`804ac59`/`0677c0e`/
@@ -180,25 +187,30 @@ only remaining Mac-Mini-side work is `./scripts/bootstrap-mac-mini.sh`.
 **Gate**: Mac Mini boots into the `sapphire` user, Docker Desktop starts
 automatically, `ls /Volumes/sapphire-backup` succeeds, repo cloned.
 
-### 1.5 Plan 046 Stream C — Mac Mini glue + one-command bootstrap (~1 week)
+### 1.5 Plan 046 Stream C — Mac Mini glue + one-command bootstrap — DONE (2026-06-01)
+
+Stream C was delivered by commit `514ff36` (tag `v0.1.403`) and
+audited/hardened by Plan 075. The §1.5 boxes were authored unchecked
+by the delivering commit as a spec checklist, not reverted later; Plan
+075 ticks them after verifying the shipped artifacts.
 
 Split into two coordinated deliverables:
 
 #### 1.5a — Building blocks
 
-- [ ] `scripts/launchd/ch.hydrosolutions.sapphire.plist` — main-stack LaunchAgent.
-- [ ] `scripts/launchd/ch.hydrosolutions.sapphire-watchdog.plist` — watchdog LaunchAgent.
-- [ ] `scripts/launchd/start-sapphire.sh` — wait-for-Docker-Desktop + `compose up -d` wrapper.
-- [ ] `scripts/launchd/watchdog.sh` — watchdog runner.
-- [ ] `scripts/launchd/install-launchd.sh` — copies plists + `launchctl bootstrap`.
-- [ ] `docker-compose.macmini.yml` — overlay (USB backup bind-mount, CAMELS-CH host bind-mount, caddy TLS).
-- [ ] `src/sapphire_flow/ops/__init__.py` + `src/sapphire_flow/ops/watchdog.py` — watchdog logic (health probe, backup-staleness check, hysteresis, Slack-if-present-else-log-only).
-- [ ] `/etc/newsyslog.d/sapphire-watchdog.conf` template (version-controlled under `scripts/launchd/`).
-- [ ] `docs/deployment/mac-mini-staging.md` — runbook (primarily points at the bootstrap script; covers the few unavoidable manual steps + troubleshooting).
+- [x] `scripts/launchd/ch.hydrosolutions.sapphire.plist` — main-stack LaunchAgent.
+- [x] `scripts/launchd/ch.hydrosolutions.sapphire-watchdog.plist` — watchdog LaunchAgent.
+- [x] `scripts/launchd/start-sapphire.sh` — wait-for-Docker-Desktop + `compose up -d` wrapper.
+- [x] `scripts/launchd/watchdog.sh` — watchdog runner.
+- [x] `scripts/launchd/install-launchd.sh` — copies plists + `launchctl bootstrap`.
+- [x] `docker-compose.macmini.yml` — overlay (USB backup bind-mount, CAMELS-CH host bind-mount; caddy TLS dropped per Plan 046 D1 — public HTTPS → Plan 049).
+- [x] `src/sapphire_flow/ops/__init__.py` + `src/sapphire_flow/ops/watchdog.py` — watchdog logic (health probe, backup-staleness check, hysteresis, Slack-if-present-else-log-only).
+- [x] `/etc/newsyslog.d/sapphire-watchdog.conf` template (version-controlled under `scripts/launchd/`).
+- [x] `docs/deployment/mac-mini-staging.md` — runbook (primarily points at the bootstrap script; covers the few unavoidable manual steps + troubleshooting).
 
 #### 1.5b — One-command bootstrap
 
-- [ ] `scripts/bootstrap-mac-mini.sh` — detects missing prereqs (Homebrew, uv, Docker CLI), creates `secrets/db_password` if absent, detects optional `secrets/slack_webhook_url`, verifies USB backup disk at `/Volumes/sapphire-backup`, brings up `docker compose -f docker-compose.yml -f docker-compose.macmini.yml up -d`, calls `install-launchd.sh`, loops on health-check until `ok`, prints final report with any remaining manual steps (Docker Desktop install if absent; System Settings if auto-login/auto-update not configured).
+- [x] `scripts/bootstrap-mac-mini.sh` — detects missing prereqs (Homebrew, uv, Docker CLI), creates `secrets/db_password` if absent, detects optional `secrets/slack_webhook_url`, verifies USB backup disk at `/Volumes/sapphire-backup`, brings up `docker compose -f docker-compose.yml -f docker-compose.macmini.yml up -d`, calls `install-launchd.sh`, loops on health-check until `ok`, prints final report with any remaining manual steps (Docker Desktop install if absent; System Settings if auto-login/auto-update not configured).
 
 **Operator flow on the Mac Mini** (assumes §1.4b prereqs done — hostname,
 `sapphire` user, Docker Desktop, USB SSD, repo cloned):
@@ -215,6 +227,11 @@ Script handles the rest; prints clear guidance if it can't continue.
 - Slack webhook: skipped at install; watchdog log-only until added.
 - CAMELS-CH: host bind-mount of pre-staged `~/camels-ch/`.
 - Cross-platform (Linux): out of scope for v0; v1/Nepal follow-up.
+- caddy TLS: dropped from Stream C; staging remains LAN-only/plain HTTP,
+  and public HTTPS is owned by Plan 049.
+- Rot protection: shellcheck covers Mac Mini shell scripts in
+  pre-commit and CI; a self-guarded macOS `plutil -lint` pre-commit
+  hook covers the launchd plists.
 
 **Gate**: `./scripts/bootstrap-mac-mini.sh` on a fresh Mac Mini (with Docker Desktop installed + USB attached) brings up the stack, installs LaunchAgents, and reports "ready" with `/api/v1/health` returning `ok`.
 

@@ -103,7 +103,7 @@ From `docs/deployment/dress-rehearsal-2026-04-21.md`:
 ## Exit gates (sketch)
 
 1. `uv run pytest tests/unit/flows/test_backfill_hindcasts.py tests/unit/flows/test_onboard.py` green.
-2. `uv run pyright --strict src/` clean.
+2. `uv run pyright src/` clean.
 3. Integration test (T6): `onboard-stations` completes ≤ 30 s for 2 stations × 1 model on a fresh DB; `backfill-hindcasts` completes with zero duplicate rows in `hindcast_forecasts` (relies on Plan 040's unique constraint).
 4. Re-run A3 dress rehearsal (T7): onboard-stations wall-clock ≤ 60 s for 5 stations.
 5. Plan 046 Rev 12 lands with the updated A3 sequence; A4 is no longer blocked on this plan.
