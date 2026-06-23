@@ -85,6 +85,8 @@ the ~1.5 GB dataset from Zenodo (record `7784632`, Höge et al. 2023)
 and lays out the directory tree the onboarding flow expects:
 
 ```bash
+CA="$(uv run --no-project --with certifi python -c 'import certifi; print(certifi.where())')"
+export SSL_CERT_FILE="$CA" REQUESTS_CA_BUNDLE="$CA"
 uv run --no-project --with camelsch \
   python -c "import camelsch; print(camelsch.download_camels_ch(dest='/Users/sapphire/camels-ch/CAMELS_CH'))"
 ```
@@ -94,6 +96,18 @@ prebuilt-wheel deps into a throwaway environment. A plain `uv run`
 would sync the whole project, which builds `exactextract` from an
 arm64 source dist needing cmake/libgeos via Homebrew — unavailable to
 the unprivileged `sapphire` user on this host (see "Host notes").
+
+The first two lines are **required on this host**: uv-managed
+(standalone) Python ships its own OpenSSL and does **not** read the
+macOS system CA roots, so `camelsch`'s download fails with
+`SSLCertVerificationError: unable to get local issuer certificate`.
+Pointing `SSL_CERT_FILE`/`REQUESTS_CA_BUNDLE` at `certifi`'s bundle
+fixes it (covers both `urllib`/OpenSSL and `requests` clients). The
+exports persist for the rest of the shell session. If you instead see
+this error from a *network* (a TLS-inspecting proxy re-signing with
+its own root CA), `certifi` won't help — add the org root CA;
+`curl -sSI https://zenodo.org/records/7784632` succeeding rules that
+out.
 
 Verify before bootstrapping:
 
