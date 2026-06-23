@@ -75,9 +75,32 @@ Set these in Docker Desktop -> Settings -> Resources before first run.
 
 Plan 060 removed the `sapphire_data:/data/raw` mount from the base
 compose. The Mac-mini overlay binds `~/camels-ch` into the
-`prefect-worker` read-only instead. Download the dataset (v1.0 or
-newer) and extract it so that `~/camels-ch/CAMELS_CH/` exists with
-the full time-series tree before bootstrapping.
+`prefect-worker` **read-only** (`/Users/sapphire/camels-ch:/data/raw:ro`)
+instead, so the worker cannot download into it — the dataset must be
+**pre-staged on the host** at `~/camels-ch/CAMELS_CH/` before
+bootstrapping (the worker reads it at `/data/raw/CAMELS_CH`).
+
+Download it with the project's own `camelsch` library, which fetches
+the ~1.5 GB dataset from Zenodo (record `7784632`, Höge et al. 2023)
+and lays out the directory tree the onboarding flow expects:
+
+```bash
+uv run --no-project --with camelsch \
+  python -c "import camelsch; print(camelsch.download_camels_ch(dest='/Users/sapphire/camels-ch/CAMELS_CH'))"
+```
+
+`--no-project --with camelsch` installs only `camelsch` and its
+prebuilt-wheel deps into a throwaway environment. A plain `uv run`
+would sync the whole project, which builds `exactextract` from an
+arm64 source dist needing cmake/libgeos via Homebrew — unavailable to
+the unprivileged `sapphire` user on this host (see "Host notes").
+
+Verify before bootstrapping:
+
+```bash
+ls ~/camels-ch/CAMELS_CH/        # dataset tree present
+du -sh ~/camels-ch               # ~1.5 GB
+```
 
 ## Install
 
