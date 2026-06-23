@@ -66,14 +66,55 @@ Set these in Docker Desktop -> Settings -> Resources before first run.
 - Hostname: `sapphire-staging.local`
 - Repo path: `/Users/sapphire/SAPPHIRE_flow` (LaunchAgent plists
   reference this exact path).
+- Login credentials for the `sapphire` macOS account live in the
+  project OneDrive under `admin/11_secrets` (restricted team access).
+  Never commit the password itself — this runbook records only its
+  location.
 
 ### CAMELS-CH staging
 
 Plan 060 removed the `sapphire_data:/data/raw` mount from the base
 compose. The Mac-mini overlay binds `~/camels-ch` into the
-`prefect-worker` read-only instead. Download the dataset (v1.0 or
-newer) and extract it so that `~/camels-ch/CAMELS_CH/` exists with
-the full time-series tree before bootstrapping.
+`prefect-worker` **read-only** (`/Users/sapphire/camels-ch:/data/raw:ro`)
+instead, so the worker cannot download into it — the dataset must be
+**pre-staged on the host** at `~/camels-ch/CAMELS_CH/` before
+bootstrapping (the worker reads it at `/data/raw/CAMELS_CH`).
+
+Download it with the project's own `camelsch` library, which fetches
+the ~1.5 GB dataset from Zenodo (record `7784632`, Höge et al. 2023)
+and lays out the directory tree the onboarding flow expects:
+
+```bash
+CA="$(uv run --no-project --with certifi python -c 'import certifi; print(certifi.where())')"
+export SSL_CERT_FILE="$CA" REQUESTS_CA_BUNDLE="$CA"
+uv run --no-project --with camelsch \
+  python -c "import camelsch; print(camelsch.download_camels_ch(dest='/Users/sapphire/camels-ch/CAMELS_CH'))"
+```
+
+`--no-project --with camelsch` installs only `camelsch` and its
+prebuilt-wheel deps into a throwaway environment. A plain `uv run`
+would sync the whole project, which builds `exactextract` from an
+arm64 source dist needing cmake/libgeos via Homebrew — unavailable to
+the unprivileged `sapphire` user on this host (see "Host notes").
+
+The first two lines are **required on this host**: uv-managed
+(standalone) Python ships its own OpenSSL and does **not** read the
+macOS system CA roots, so `camelsch`'s download fails with
+`SSLCertVerificationError: unable to get local issuer certificate`.
+Pointing `SSL_CERT_FILE`/`REQUESTS_CA_BUNDLE` at `certifi`'s bundle
+fixes it (covers both `urllib`/OpenSSL and `requests` clients). The
+exports persist for the rest of the shell session. If you instead see
+this error from a *network* (a TLS-inspecting proxy re-signing with
+its own root CA), `certifi` won't help — add the org root CA;
+`curl -sSI https://zenodo.org/records/7784632` succeeding rules that
+out.
+
+Verify before bootstrapping:
+
+```bash
+ls ~/camels-ch/CAMELS_CH/        # dataset tree present
+du -sh ~/camels-ch               # ~1.5 GB
+```
 
 ## Install
 
@@ -117,6 +158,48 @@ Flags:
     `~/Library/LaunchAgents/` and `launchctl bootstrap`s them.
 12. **Summary** — prints stack URLs, health status, LaunchAgent
     listing, next steps.
+
+## Host notes — `sapphire-staging.local` (as-built)
+
+What was actually done on the physical mini, where it diverged from
+the generic steps above. Keep this current so the host's real state is
+auditable.
+
+### Shared-account Homebrew (resolved 2026-06-22)
+
+Homebrew was already installed on this mini under a **different admin
+account** (`sandrohunziker`) and owns `/opt/homebrew`. Running
+`brew install …` as `sapphire` fails with *"/opt/homebrew/Cellar is
+not writable"*. We deliberately did **not** `chown` the prefix to
+`sapphire` — that only moves the breakage to the other user (one Unix
+owner per Homebrew prefix). Instead we sidestepped brew entirely, which
+the bootstrap supports natively:
+
+- **Docker Desktop** — installed from the `.dmg`
+  (<https://www.docker.com/products/docker-desktop/>), *not*
+  `brew install --cask docker`. Bootstrap step 2 only checks
+  `command -v docker`; it never invokes brew for Docker.
+- **uv** — installed via the standalone installer
+  (`curl -LsSf https://astral.sh/uv/install.sh | sh`) into
+  `~/.local/bin`, *not* `brew install uv`. Ensure `~/.local/bin` is on
+  `PATH` (add to `~/.zshrc`) so bootstrap step 3 finds it.
+
+Net effect: with `docker` and `uv` both already on `PATH`, bootstrap
+step 3 reports "Homebrew present" / "uv present" and performs **zero**
+brew writes — the shared Homebrew under `sandrohunziker` is left
+untouched.
+
+### Docker Desktop is per-user
+
+Docker Desktop on macOS initializes per-user. The `sapphire` account
+must `open -a Docker` once and complete the first-run privileged-helper
+prompt; only then does the `desktop-linux` CLI context and the per-user
+socket (`~/.docker/run/docker.sock`) exist. Until that happens,
+`docker context ls` shows only `default` (which targets
+`/var/run/docker.sock`) and `docker ps` returns *permission denied*.
+The first-run helper install needs admin rights — if `sapphire` is a
+Standard user, grant it temporary admin (System Settings → Users &
+Groups), complete Docker Desktop setup, then demote if desired.
 
 ## LaunchAgents
 
