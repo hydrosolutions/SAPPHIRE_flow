@@ -1,6 +1,6 @@
 [project]
 name = "sapphire-flow"
-version = "0.1.494"
+version = "0.1.496"
 description = "Add your description here"
 readme = "README.md"
 license = "MIT"
@@ -17,6 +17,7 @@ dependencies = [
     "eccodes>=2.46.0",
     "exactextract>=0.3",
     "fastapi>=0.135.2",
+    "forecastinterface",
     "geoalchemy2>=0.18.4",
     "geopandas>=1.1.3",
     "httpx>=0.28.1",
@@ -36,6 +37,7 @@ dependencies = [
     "scikit-learn>=1.8.0",
     "shapely",
     "sqlalchemy>=2.0",
+    "starlette>=1.3.1",
     "structlog>=24.1.0",
     "uvicorn[standard]>=0.42.0",
     "xarray>=2026.04.0",
@@ -75,6 +77,9 @@ name = "pypi"
 url = "https://pypi.org/simple"
 default = true
 
+[tool.uv.sources]
+forecastinterface = { git = "https://github.com/hydrosolutions/ForecastInterface.git", rev = "v0.1.17" }
+
 [tool.ruff]
 target-version = "py311"
 line-length = 88
@@ -101,7 +106,7 @@ markers = [
 addopts = "-m 'not deployment and not live and not live_lindas and not live_stac and not slow'"
 
 [tool.bumpversion]
-current_version = "0.1.494"
+current_version = "0.1.496"
 commit = false
 tag = false
 allow_dirty = true

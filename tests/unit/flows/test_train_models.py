@@ -66,7 +66,7 @@ def _seed_hindcasts_and_obs(
     from sapphire_flow.types.ids import HindcastForecastId, ObservationId
     from sapphire_flow.types.observation import Observation
 
-    units = "m3/s" if parameter == "discharge" else "m"
+    units = "m³/s" if parameter == "discharge" else "m"
     time_step = timedelta(hours=1)
 
     for i in range(3):

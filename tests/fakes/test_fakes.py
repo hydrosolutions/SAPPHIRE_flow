@@ -247,7 +247,7 @@ def _build_hindcast(*, parameter: str = "discharge") -> HindcastForecast:  # noq
         pl.col("member_id").cast(pl.Int32),
     )
 
-    units = "m3/s" if parameter == "discharge" else "m"
+    units = "m³/s" if parameter == "discharge" else "m"
     ensemble = ForecastEnsemble.from_members(
         station_id=station_id,
         issued_at=issued_at,

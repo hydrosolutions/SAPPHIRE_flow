@@ -21,6 +21,10 @@ class CompatibilityReport:
     missing_future_dynamic: frozenset[str]
     missing_static_features: frozenset[str]
     time_step_compatible: bool
+    fi_unit_mismatches: frozenset[str] = frozenset()
+    fi_unsupported_units: frozenset[str] = frozenset()
+    spatial_type_supported: bool = True
+    station_codes_resolvable: bool = True
 
     def __post_init__(self) -> None:
         if self.station_id is not None and self.group_id is not None:
@@ -39,6 +43,10 @@ class CompatibilityReport:
             and not self.missing_future_dynamic
             and not self.missing_static_features
             and self.time_step_compatible
+            and not self.fi_unit_mismatches
+            and not self.fi_unsupported_units
+            and self.spatial_type_supported
+            and self.station_codes_resolvable
         )
 
 

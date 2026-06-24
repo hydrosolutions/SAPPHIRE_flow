@@ -1055,7 +1055,7 @@ class TestCheckStationAlertsMultiStation:
             sid_a: {mid: {"discharge": ens_a}},
             sid_b: {mid: {"discharge": ens_b}},
         }
-        # Thresholds set very low (1.0 m3/s) so all members exceed them
+        # Thresholds set very low (1.0 m³/s) so all members exceed them
         all_thresholds = {
             sid_a: [_make_threshold(station_id=sid_a, danger_level="DL1", value=1.0)],
             sid_b: [_make_threshold(station_id=sid_b, danger_level="DL1", value=1.0)],

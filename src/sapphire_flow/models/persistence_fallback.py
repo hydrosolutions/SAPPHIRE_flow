@@ -103,7 +103,7 @@ class PersistenceFallbackModel:
                 station_id=inputs.station_id,
                 issued_at=inputs.issue_time,
                 parameter=param,
-                units="m3/s",
+                units="m³/s",
                 time_step=inputs.time_step,
                 values=values_df,
             )

@@ -4,7 +4,7 @@ import math
 import os
 import random
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -16,9 +16,10 @@ from prefect import flow, task
 from prefect import runtime as prefect_runtime
 from prefect.cache_policies import NO_CACHE
 
-from sapphire_flow.exceptions import ConfigurationError
+from sapphire_flow.exceptions import ConfigurationError, StoreError
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
+    ModelAssignmentStatus,
     NwpCycleSource,
     StationKind,
     StationStatus,
@@ -396,6 +397,7 @@ def run_forecast_cycle_flow(
     alert_store: object = None,
     baseline_store: object = None,
     basin_store: object = None,
+    group_store: object | None = None,
     forcing_store: object = None,
     adapter: object = None,
     models: object | None = None,
@@ -455,6 +457,7 @@ def run_forecast_cycle_flow(
             alert_store = cast("AlertStore", stores["alert_store"])
             baseline_store = cast("ClimBaselineStore", stores["baseline_store"])
             basin_store = cast("BasinStore", stores["basin_store"])
+            group_store = stores["group_store"]
             forcing_store = cast("HistoricalForcingStore", stores["forcing_store"])
 
         if config is None:
@@ -691,6 +694,11 @@ def run_forecast_cycle_flow(
         from sapphire_flow.services.forecast_combination import build_combined_forecasts
         from sapphire_flow.services.operational_inputs import (
             assemble_station_operational_inputs,
+        )
+        from sapphire_flow.services.run_group_forecast import (
+            assemble_group_operational_inputs,
+            discover_group_runs,
+            run_group_forecast,
         )
         from sapphire_flow.services.run_station_forecast import (
             run_all_station_forecasts,
@@ -960,6 +968,206 @@ def run_forecast_cycle_flow(
                 finally:
                     structlog.contextvars.unbind_contextvars("model_id")
             structlog.contextvars.unbind_contextvars("station_id")
+
+        # --- Phase B2: per-group forecast loop ---
+        if group_store is not None:
+            operational_ids = {s.id for s in operational}
+            group_produced_pairs: set[tuple[StationId, ModelId]] = set()
+            for group, model_id in discover_group_runs(models, group_store):  # type: ignore[arg-type]
+                group_t0 = time.perf_counter()
+                structlog.contextvars.bind_contextvars(
+                    group_id=str(group.id),
+                    model_id=str(model_id),
+                )
+                try:
+                    group_assignments = group_store.fetch_group_model_assignments(  # type: ignore[union-attr]
+                        group.id
+                    )
+                    active_assignments = sorted(
+                        (
+                            assignment
+                            for assignment in group_assignments
+                            if assignment.model_id == model_id
+                            and assignment.status == ModelAssignmentStatus.ACTIVE
+                        ),
+                        key=lambda assignment: assignment.priority,
+                    )
+                    if not active_assignments:
+                        log.info(
+                            "forecast_cycle.group_skipped_no_active_assignment",
+                        )
+                        continue
+                    assignment = active_assignments[0]
+
+                    member_ids = [
+                        sid
+                        for sid in sorted(group.station_ids, key=str)
+                        if sid in operational_ids
+                    ]
+                    dropped_station_ids = sorted(
+                        (
+                            sid
+                            for sid in group.station_ids
+                            if sid not in operational_ids
+                        ),
+                        key=str,
+                    )
+                    if dropped_station_ids:
+                        log.info(
+                            "forecast_cycle.group_dropped_non_operational_members",
+                            station_ids=[str(sid) for sid in dropped_station_ids],
+                        )
+                    if not member_ids:
+                        log.info("forecast_cycle.group_skipped_no_operational_members")
+                        continue
+
+                    duplicate_member_ids = [
+                        sid
+                        for sid in member_ids
+                        if (sid, model_id) in group_produced_pairs
+                    ]
+                    if duplicate_member_ids:
+                        log.warning(
+                            "forecast_cycle.group_duplicate_station_model_skipped",
+                            station_ids=[str(sid) for sid in duplicate_member_ids],
+                        )
+                        member_ids = [
+                            sid
+                            for sid in member_ids
+                            if (sid, model_id) not in group_produced_pairs
+                        ]
+                    if not member_ids:
+                        log.warning(
+                            "forecast_cycle.group_skipped_duplicate_station_model_members"
+                        )
+                        continue
+
+                    model = models[model_id]  # type: ignore[index]
+                    nwp_source_by_station = {
+                        sid: (
+                            all_weather_sources[sid][0].nwp_source
+                            if all_weather_sources.get(sid)
+                            else "icon-ch2-eps"
+                        )
+                        for sid in member_ids
+                    }
+                    baselines_by_station = {
+                        sid: all_baselines.get(sid, []) for sid in member_ids
+                    }
+                    restricted_group = replace(group, station_ids=frozenset(member_ids))
+
+                    try:
+                        group_inputs_result = assemble_group_operational_inputs(
+                            group=restricted_group,
+                            model=model,  # type: ignore[arg-type]
+                            model_id=model_id,
+                            issue_time=resolved_cycle_time,
+                            cycle_time=resolved_cycle_time,
+                            nwp_source_by_station=nwp_source_by_station,
+                            forcing_source=forcing_source,
+                            weather_forecast_store=weather_forecast_store,  # type: ignore[arg-type]
+                            obs_store=obs_store,  # type: ignore[arg-type]
+                            station_store=station_store,  # type: ignore[arg-type]
+                            basin_store=basin_store,  # type: ignore[arg-type]
+                            model_state_store=model_state_store,  # type: ignore[arg-type]
+                            clock=clock,  # type: ignore[arg-type]
+                            forecast_horizon_steps=(
+                                model.data_requirements.forecast_horizon_steps
+                            ),
+                            time_step=assignment.time_step,
+                        )
+                    except StoreError:
+                        raise
+                    except Exception as exc:
+                        log.warning(
+                            "forecast_cycle.group_input_assembly_failed",
+                            error=str(exc),
+                        )
+                        errors.append(
+                            f"Group input assembly failed for {group.id}: {exc}"
+                        )
+                        continue
+
+                    if group_inputs_result is None:
+                        log.info("forecast_cycle.group_skipped_no_serviceable_stations")
+                        continue
+
+                    group_inputs, metadata_by_station = group_inputs_result
+                    group_results = run_group_forecast(
+                        group=restricted_group,
+                        group_inputs=group_inputs,
+                        metadata_by_station=metadata_by_station,
+                        assignment=assignment,
+                        model=model,  # type: ignore[arg-type]
+                        artifact_store=artifact_store,  # type: ignore[arg-type]
+                        qc_checker=qc_checker,
+                        qc_rules=qc_rules,  # type: ignore[arg-type]
+                        qc_overrides=[],
+                        baselines_by_station=baselines_by_station,
+                        nwp_cycle_reference_time=resolved_cycle_time,
+                        nwp_cycle_source=nwp_cycle_source,
+                        config=config,  # type: ignore[arg-type]
+                        clock=clock,  # type: ignore[arg-type]
+                        id_gen=uuid4,
+                        rng=rng,  # type: ignore[arg-type]
+                    )
+
+                    for sid, result in group_results.items():
+                        for fc in result.forecasts:
+                            try:
+                                forecast_store.store_forecast(fc)  # type: ignore[union-attr]
+                                forecasts_stored += 1
+                            except StoreError:
+                                raise
+                            except Exception as exc:
+                                log.warning(
+                                    "forecast_cycle.store_forecast_failed",
+                                    station_id=str(sid),
+                                    error=str(exc),
+                                )
+                                errors.append(f"Store failed for {sid}: {exc}")
+
+                        if result.new_state is not None:
+                            try:
+                                model_state_store.store_state(  # type: ignore[union-attr]
+                                    sid,
+                                    model_id,
+                                    resolved_cycle_time,
+                                    result.new_state,
+                                )
+                            except StoreError:
+                                raise
+                            except Exception as exc:
+                                log.warning(
+                                    "forecast_cycle.store_state_failed",
+                                    station_id=str(sid),
+                                    error=str(exc),
+                                )
+
+                        all_ensembles.setdefault(sid, {})[model_id] = dict(
+                            result.ensembles
+                        )
+                        all_priorities.setdefault(sid, {})[model_id] = (
+                            assignment.priority
+                        )
+                        group_produced_pairs.add((sid, model_id))
+
+                    log.info(
+                        "forecast_cycle.group_completed",
+                        stations_forecast=len(group_results),
+                        duration_ms=round((time.perf_counter() - group_t0) * 1000, 1),
+                    )
+                except StoreError:
+                    raise
+                except Exception as exc:
+                    log.warning(
+                        "forecast_cycle.group_forecast_failed",
+                        error=str(exc),
+                    )
+                    errors.append(f"Group forecast failed for {group.id}: {exc}")
+                    continue
+                finally:
+                    structlog.contextvars.unbind_contextvars("group_id", "model_id")
 
         # --- Phase C: alert checking ---
         alerts_checked = False

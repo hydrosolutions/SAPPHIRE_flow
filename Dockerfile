@@ -11,7 +11,7 @@ WORKDIR /app
 # linux/aarch64 wheel; see Plan 056 D3). Builder stage only — the final image
 # copies .venv and excludes these packages.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential cmake libgeos-dev \
+        build-essential cmake git libgeos-dev \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml uv.lock README.md ./

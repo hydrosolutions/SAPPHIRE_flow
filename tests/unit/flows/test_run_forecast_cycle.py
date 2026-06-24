@@ -22,18 +22,27 @@ from sapphire_flow.flows.run_forecast_cycle import (
 )
 from sapphire_flow.types.basin import Basin
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
-from sapphire_flow.types.domain import ForecastQcRuleSet
+from sapphire_flow.types.domain import ForecastQcRuleSet, StationThreshold
 from sapphire_flow.types.enums import (
+    AlertSource,
+    AlertStatus,
+    ArtifactScope,
     ModelArtifactStatus,
     ModelAssignmentStatus,
     ModelCombinationStrategy,
     SpatialRepresentation,
     StationKind,
     StationStatus,
+    ThresholdSource,
     WeatherSourceStatus,
 )
-from sapphire_flow.types.ids import BasinId, ModelId, StationId
-from sapphire_flow.types.station import ModelAssignment, StationWeatherSource
+from sapphire_flow.types.ids import BasinId, ModelId, StationGroupId, StationId
+from sapphire_flow.types.station import (
+    GroupModelAssignment,
+    ModelAssignment,
+    StationGroup,
+    StationWeatherSource,
+)
 from sapphire_flow.types.weather import (
     BasinAverageForecast,
     ElevationBandForecast,
@@ -42,7 +51,7 @@ from sapphire_flow.types.weather import (
 )
 from tests.conftest import make_observations, make_station_config
 from tests.fakes.fake_adapters import FakeGridExtractor, FakeWeatherForecastSource
-from tests.fakes.fake_models import FakeStationForecastModel
+from tests.fakes.fake_models import FakeGroupForecastModel, FakeStationForecastModel
 from tests.fakes.fake_stores import (
     FakeAlertStore,
     FakeBasinStore,
@@ -53,6 +62,7 @@ from tests.fakes.fake_stores import (
     FakeModelStateStore,
     FakeNwpGridStore,
     FakeObservationStore,
+    FakeStationGroupStore,
     FakeStationStore,
     FakeWeatherForecastStore,
 )
@@ -95,6 +105,22 @@ def _make_config(**overrides: object) -> DeploymentConfig:
     return DeploymentConfig(**defaults)  # type: ignore[arg-type]
 
 
+def _make_alerting_config() -> DeploymentConfig:
+    return _make_config(
+        enable_forecast_alerts=True,
+        alert_model_strategy=ModelCombinationStrategy.POOLED,
+        danger_levels=[
+            {
+                "name": "DL1",
+                "level": 1,
+                "color": "#facc15",
+                "trigger_probability": 0.1,
+                "resolve_probability": 0.05,
+            }
+        ],
+    )
+
+
 def _empty_qc_rules() -> ForecastQcRuleSet:
     return ForecastQcRuleSet(version="1.0", rules=())
 
@@ -114,6 +140,18 @@ max_retention_days = {max_retention_days}
         + "\n"
     )
     return path
+
+
+def _make_forecast_threshold(station_id: StationId) -> StationThreshold:
+    return StationThreshold(
+        station_id=station_id,
+        danger_level="DL1",
+        parameter="discharge",
+        value=0.0,
+        source=ThresholdSource.AUTHORITY,
+        created_at=_NOW,
+        updated_at=_NOW,
+    )
 
 
 def _make_nwp_records(
@@ -220,6 +258,9 @@ def _build_station_and_stores(
     seed_nwp: bool = True,
     extraction_type: SpatialRepresentation = SpatialRepresentation.POINT,
     basin_store: FakeBasinStore | None = None,
+    station_status: StationStatus = StationStatus.OPERATIONAL,
+    seed_model_assignment: bool = True,
+    seed_artifact: bool = True,
 ) -> None:
     basin_id: BasinId | None = None
     if extraction_type == SpatialRepresentation.BASIN_AVERAGE:
@@ -243,22 +284,23 @@ def _build_station_and_stores(
     station = make_station_config(
         station_id=station_id,
         station_kind=StationKind.RIVER,
-        station_status=StationStatus.OPERATIONAL,
+        station_status=station_status,
         measured_parameters=frozenset({"discharge"}),
         forecast_targets=frozenset({"discharge"}),
         basin_id=basin_id,
     )
     station_store.store_station(station)
 
-    assignment = ModelAssignment(
-        station_id=station_id,
-        model_id=model_id,
-        time_step=timedelta(hours=1),
-        status=ModelAssignmentStatus.ACTIVE,
-        priority=1,
-        created_at=_NOW,
-    )
-    station_store.store_model_assignment(assignment)
+    if seed_model_assignment:
+        assignment = ModelAssignment(
+            station_id=station_id,
+            model_id=model_id,
+            time_step=timedelta(hours=1),
+            status=ModelAssignmentStatus.ACTIVE,
+            priority=1,
+            created_at=_NOW,
+        )
+        station_store.store_model_assignment(assignment)
 
     source = StationWeatherSource(
         station_id=station_id,
@@ -278,6 +320,7 @@ def _build_station_and_stores(
         parameter="discharge",
         start=obs_start,
         interval=timedelta(hours=1),
+        rng=random.Random(str(station_id)),
     )
     obs_store.store_observations(observations)
 
@@ -314,15 +357,16 @@ def _build_station_and_stores(
     forcing_store.store_forcing(raw_forcing)
 
     # Active artifact
-    artifact_store.store_artifact(
-        model_id=model_id,
-        artifact_bytes=b"fake_artifact",
-        training_period_start=ensure_utc(datetime(2020, 1, 1, tzinfo=UTC)),
-        training_period_end=ensure_utc(datetime(2025, 12, 31, tzinfo=UTC)),
-        trained_at=_NOW,
-        station_id=station_id,
-        status=ModelArtifactStatus.ACTIVE,
-    )
+    if seed_artifact:
+        artifact_store.store_artifact(
+            model_id=model_id,
+            artifact_bytes=b"fake_artifact",
+            training_period_start=ensure_utc(datetime(2020, 1, 1, tzinfo=UTC)),
+            training_period_end=ensure_utc(datetime(2025, 12, 31, tzinfo=UTC)),
+            trained_at=_NOW,
+            station_id=station_id,
+            status=ModelArtifactStatus.ACTIVE,
+        )
 
 
 class _SmallFakeModel(FakeStationForecastModel):
@@ -494,6 +538,60 @@ scratch_path = "/tmp/test-nwp"
 
         with pytest.raises(ConfigurationError, match="stac_collection"):
             _load_weather_forecast_adapter_config()
+
+
+class _SmallFakeGroupModel(FakeGroupForecastModel):
+    """Group fake with the same compact data window as the flow station fake."""
+
+    artifact_scope = ArtifactScope.GROUP
+    data_requirements = FakeGroupForecastModel.data_requirements.__class__(
+        target_parameters=frozenset({"discharge"}),
+        past_dynamic_features=frozenset({"precipitation", "temperature"}),
+        future_dynamic_features=frozenset({"precipitation", "temperature"}),
+        static_features=frozenset(),
+        supported_time_steps=frozenset({timedelta(hours=1)}),
+        lookback_steps=20,
+        forecast_horizon_steps=5,
+        spatial_input_type=SpatialRepresentation.POINT,
+    )
+
+
+def _store_group_run(
+    group_store: FakeStationGroupStore,
+    artifact_store: FakeModelArtifactStore,
+    model_id: ModelId,
+    station_ids: frozenset[StationId],
+    *,
+    priority: int = 2,
+) -> StationGroup:
+    group = StationGroup(
+        id=StationGroupId(uuid4()),
+        name="test-group",
+        station_ids=station_ids,
+        description=None,
+        created_at=_NOW,
+    )
+    group_store.store_group(group)
+    group_store.store_group_model_assignment(
+        GroupModelAssignment(
+            group_id=group.id,
+            model_id=model_id,
+            time_step=timedelta(hours=1),
+            status=ModelAssignmentStatus.ACTIVE,
+            priority=priority,
+            created_at=_NOW,
+        )
+    )
+    artifact_store.store_artifact(
+        model_id=model_id,
+        artifact_bytes=b"fake_group_artifact",
+        training_period_start=ensure_utc(datetime(2020, 1, 1, tzinfo=UTC)),
+        training_period_end=ensure_utc(datetime(2025, 12, 31, tzinfo=UTC)),
+        trained_at=_NOW,
+        group_id=group.id,
+        status=ModelArtifactStatus.ACTIVE,
+    )
+    return group
 
 
 class TestForecastCycle:
@@ -862,6 +960,424 @@ scratch_path = "{tmp_path / "scratch"}"
         # Warm-up state persisted for both stations
         assert (sid_a, _MODEL_ID) in state_store._states
         assert (sid_b, _MODEL_ID) in state_store._states
+
+    def test_accepts_group_store_kwarg_without_group_runs(self) -> None:
+        sid = StationId(uuid4())
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        group_store = FakeStationGroupStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+        )
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            group_store=group_store,
+            forcing_store=forcing_store,
+            adapter=FakeWeatherForecastSource(result={}),
+            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+            config=_make_config(),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+        )
+
+        assert result.forecasts_stored == 1
+        assert len(forecast_store._forecasts) == 1
+
+    def test_station_and_group_paths_coexist_and_feed_alerts(self) -> None:
+        sid_a = StationId(uuid4())
+        sid_b = StationId(uuid4())
+        group_model_id = ModelId("fake_group_model")
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        group_store = FakeStationGroupStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid_a,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+        )
+        _build_station_and_stores(
+            sid_b,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+            seed_model_assignment=False,
+            seed_artifact=False,
+        )
+        station_store.store_thresholds(
+            [_make_forecast_threshold(sid_a), _make_forecast_threshold(sid_b)]
+        )
+        _store_group_run(
+            group_store,
+            artifact_store,
+            group_model_id,
+            frozenset({sid_a, sid_b}),
+            priority=2,
+        )
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            group_store=group_store,
+            forcing_store=forcing_store,
+            adapter=FakeWeatherForecastSource(result={}),
+            models={
+                _MODEL_ID: _SmallFakeModel(),
+                group_model_id: _SmallFakeGroupModel(),
+            },  # type: ignore[arg-type]
+            config=_make_alerting_config(),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+        )
+
+        assert result.errors == ()
+        assert result.forecasts_stored == 3
+        stored_pairs = {
+            (forecast.station_id, forecast.model_id)
+            for forecast in forecast_store._forecasts.values()
+        }
+        assert stored_pairs == {
+            (sid_a, _MODEL_ID),
+            (sid_a, group_model_id),
+            (sid_b, group_model_id),
+        }
+
+        active_alerts = alert_store.fetch_active_alerts(source=AlertSource.FORECAST)
+        alerts_by_station = {alert.station_id: alert for alert in active_alerts}
+        assert set(alerts_by_station) == {sid_a, sid_b}
+        assert all(alert.status == AlertStatus.RAISED for alert in active_alerts)
+        assert set(alerts_by_station[sid_a].model_ids) == {
+            _MODEL_ID,
+            group_model_id,
+        }
+        assert (
+            alerts_by_station[sid_a].alert_model_strategy
+            == ModelCombinationStrategy.POOLED
+        )
+        assert alerts_by_station[sid_b].model_ids == (group_model_id,)
+
+    def test_group_path_runs_without_station_model_assignments(self) -> None:
+        sid_a = StationId(uuid4())
+        sid_b = StationId(uuid4())
+        group_model_id = ModelId("fake_group_model")
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        group_store = FakeStationGroupStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        for sid in (sid_a, sid_b):
+            _build_station_and_stores(
+                sid,
+                _MODEL_ID,
+                station_store,
+                obs_store,
+                nwp_store,
+                artifact_store,
+                forcing_store,
+                seed_model_assignment=False,
+                seed_artifact=False,
+            )
+        _store_group_run(
+            group_store,
+            artifact_store,
+            group_model_id,
+            frozenset({sid_a, sid_b}),
+        )
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            group_store=group_store,
+            forcing_store=forcing_store,
+            adapter=FakeWeatherForecastSource(result={}),
+            models={group_model_id: _SmallFakeGroupModel()},  # type: ignore[dict-item]
+            config=_make_config(),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+        )
+
+        assert result.errors == ()
+        assert result.forecasts_stored == 2
+        stored_pairs = {
+            (forecast.station_id, forecast.model_id)
+            for forecast in forecast_store._forecasts.values()
+        }
+        assert stored_pairs == {
+            (sid_a, group_model_id),
+            (sid_b, group_model_id),
+        }
+
+    def test_group_path_drops_non_operational_members(self) -> None:
+        operational_sid = StationId(uuid4())
+        suspended_sid = StationId(uuid4())
+        group_model_id = ModelId("fake_group_model")
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        group_store = FakeStationGroupStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            operational_sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+            seed_model_assignment=False,
+            seed_artifact=False,
+        )
+        _build_station_and_stores(
+            suspended_sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+            station_status=StationStatus.SUSPENDED,
+            seed_model_assignment=False,
+            seed_artifact=False,
+        )
+        _store_group_run(
+            group_store,
+            artifact_store,
+            group_model_id,
+            frozenset({operational_sid, suspended_sid}),
+        )
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            group_store=group_store,
+            forcing_store=forcing_store,
+            adapter=FakeWeatherForecastSource(result={}),
+            models={group_model_id: _SmallFakeGroupModel()},  # type: ignore[dict-item]
+            config=_make_config(),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+        )
+
+        assert result.errors == ()
+        assert result.stations_attempted == 1
+        assert result.forecasts_stored == 1
+        stored_pairs = {
+            (forecast.station_id, forecast.model_id)
+            for forecast in forecast_store._forecasts.values()
+        }
+        assert stored_pairs == {(operational_sid, group_model_id)}
+
+    def test_group_path_skips_overlapping_same_model_members(self) -> None:
+        import structlog.testing
+
+        sid = StationId(uuid4())
+        group_model_id = ModelId("fake_group_model")
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        group_store = FakeStationGroupStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+            seed_model_assignment=False,
+            seed_artifact=False,
+        )
+        _store_group_run(
+            group_store,
+            artifact_store,
+            group_model_id,
+            frozenset({sid}),
+        )
+        _store_group_run(
+            group_store,
+            artifact_store,
+            group_model_id,
+            frozenset({sid}),
+        )
+
+        with structlog.testing.capture_logs() as captured:
+            result = run_forecast_cycle_flow(
+                station_store=station_store,
+                obs_store=obs_store,
+                weather_forecast_store=nwp_store,
+                forecast_store=forecast_store,
+                model_state_store=state_store,
+                artifact_store=artifact_store,
+                alert_store=alert_store,
+                baseline_store=baseline_store,
+                basin_store=basin_store,
+                group_store=group_store,
+                forcing_store=forcing_store,
+                adapter=FakeWeatherForecastSource(result={}),
+                models={group_model_id: _SmallFakeGroupModel()},  # type: ignore[dict-item]
+                config=_make_config(),
+                qc_rules=_empty_qc_rules(),
+                clock=_clock,
+                rng=random.Random(42),
+            )
+
+        assert result.errors == ()
+        assert result.forecasts_stored == 1
+        stored_pairs = {
+            (forecast.station_id, forecast.model_id)
+            for forecast in forecast_store._forecasts.values()
+        }
+        assert stored_pairs == {(sid, group_model_id)}
+        assert any(
+            event.get("event") == "forecast_cycle.group_duplicate_station_model_skipped"
+            for event in captured
+        )
+
+    def test_group_phase_skipped_when_group_store_not_injected(self) -> None:
+        sid = StationId(uuid4())
+        group_model_id = ModelId("fake_group_model")
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+        )
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=FakeWeatherForecastSource(result={}),
+            models={
+                _MODEL_ID: _SmallFakeModel(),
+                group_model_id: _SmallFakeGroupModel(),
+            },  # type: ignore[arg-type]
+            config=_make_config(),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+        )
+
+        assert result.errors == ()
+        assert result.forecasts_stored == 1
+        stored_pairs = {
+            (forecast.station_id, forecast.model_id)
+            for forecast in forecast_store._forecasts.values()
+        }
+        assert stored_pairs == {(sid, _MODEL_ID)}
 
     def test_emits_forecast_run_completed_event(self) -> None:
         """Per-(station, model) run_completed with ensemble_size and lead_time_hours."""

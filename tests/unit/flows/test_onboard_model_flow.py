@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 import pytest
 import structlog.testing
 
+from sapphire_flow.exceptions import ModelSmokeTestError
 from sapphire_flow.flows.onboard_model import onboard_model_flow
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import OnboardingOutcome
@@ -18,6 +19,7 @@ from tests.fakes.fake_models import FakeStationForecastModel
 from tests.fakes.fake_stores import (
     FakeModelArtifactStore,
     FakeModelStore,
+    FakeParameterStore,
     FakeSkillStore,
     FakeStationGroupStore,
     FakeStationStore,
@@ -58,6 +60,7 @@ def _make_stores(station_id: StationId | None = None) -> dict:
         "hindcast_store": MagicMock(),
         "skill_store": FakeSkillStore(),
         "flow_regime_store": MagicMock(),
+        "parameter_store": FakeParameterStore(),
         "forcing_source": None,
         "deployment_config": make_deployment_config(max_retention_days=3650),
     }
@@ -98,6 +101,7 @@ def _run_flow(
     *,
     compat: MagicMock | None = None,
     skill_gate: MagicMock | None = None,
+    smoke_side_effect: Exception | None = None,
 ) -> tuple[object, MagicMock, MagicMock]:
     fake_model = FakeStationForecastModel()
     fake_discovered = {ModelId(_MODEL_ID): fake_model}
@@ -121,7 +125,10 @@ def _run_flow(
             "sapphire_flow.flows.onboard_model._validate_compatibility_task",
             return_value=compat_report,
         ),
-        patch("sapphire_flow.flows.onboard_model._smoke_test_model_task"),
+        patch(
+            "sapphire_flow.flows.onboard_model._smoke_test_model_task",
+            side_effect=smoke_side_effect,
+        ),
         patch(
             "sapphire_flow.flows.onboard_model._assemble_onboarding_data_task",
             return_value=MagicMock(),
@@ -217,6 +224,27 @@ class TestCompatibilityCheck:
         assert result.skipped_count() == 1
         assert result.units[0].outcome == OnboardingOutcome.SKIPPED_COMPAT
         assert result.units[0].artifact_id is None
+        mock_promote.assert_not_called()
+        mock_assign.assert_not_called()
+
+
+class TestSmokeTest:
+    def test_failed_smoke_test_returns_failed_outcome(self) -> None:
+        sid = StationId(_uuid())
+        artifact_id = ArtifactId(_uuid())
+        stores = _make_stores(station_id=sid)
+
+        result, mock_promote, mock_assign = _run_flow(
+            sid,
+            artifact_id,
+            stores,
+            smoke_side_effect=ModelSmokeTestError("under operational floor"),
+        )
+
+        assert result.failed_count() == 1
+        assert result.units[0].outcome == OnboardingOutcome.FAILED_SMOKE_TEST
+        assert result.units[0].artifact_id is None
+        assert result.units[0].error == "under operational floor"
         mock_promote.assert_not_called()
         mock_assign.assert_not_called()
 
@@ -340,6 +368,7 @@ class TestBootstrapPath:
             "hindcast_store": MagicMock(),
             "skill_store": MagicMock(),
             "flow_regime_store": MagicMock(),
+            "parameter_store": MagicMock(),
         }
         captured: dict[str, object] = {}
 

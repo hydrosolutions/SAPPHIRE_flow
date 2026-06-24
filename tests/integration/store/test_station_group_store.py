@@ -35,23 +35,6 @@ def _seed_model(conn: sa.Connection, model_id: str) -> None:
     )
 
 
-def _seed_assignment(
-    conn: sa.Connection, station_id: StationId, model_id: str, status: str = "active"
-) -> None:
-    from sapphire_flow.db.metadata import model_assignments
-
-    conn.execute(
-        sa.insert(model_assignments).values(
-            station_id=station_id,
-            model_id=model_id,
-            time_step=timedelta(hours=1),
-            status=status,
-            priority=0,
-            created_at=_NOW,
-        )
-    )
-
-
 def _make_group(
     name: str,
     station_ids: frozenset[StationId] | None = None,
@@ -153,7 +136,9 @@ class TestFetchGroupsForModel:
         store.store_group(g_with)
         store.store_group(g_without)
 
-        _seed_assignment(db_connection, s1, "ml_v1", status="active")
+        store.store_group_model_assignment(
+            _make_group_model_assignment(g_with.id, ModelId("ml_v1"))
+        )
 
         results = store.fetch_groups_for_model(ModelId("ml_v1"))
         result_ids = {g.id for g in results}
@@ -168,7 +153,13 @@ class TestFetchGroupsForModel:
         store = PgStationGroupStore(db_connection)
         store.store_group(g)
 
-        _seed_assignment(db_connection, s, "ml_v2", status="inactive")
+        store.store_group_model_assignment(
+            _make_group_model_assignment(
+                g.id,
+                ModelId("ml_v2"),
+                status=ModelAssignmentStatus.INACTIVE,
+            )
+        )
 
         results = store.fetch_groups_for_model(ModelId("ml_v2"))
         assert results == []
