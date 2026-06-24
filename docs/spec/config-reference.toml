@@ -424,6 +424,10 @@ thresholds = { k_sigma = 4.0 }
 # =============================================================================
 
 [adapters.weather_forecast]
+enabled = true                       # production/base default: self-wire and fetch NWP
+# Only native TOML bool true enables NWP self-wiring. Absent section,
+# absent key, or false disables NWP; non-bool values are config errors.
+# Disable per environment with an overlay, e.g. config/overlays/mac-mini.toml.
 type = "meteoswiss_nwp"               # maps to MeteoSwissNwpAdapter class
 archive = true                        # permanently store all NWP data
 max_cache_age_hours = 12

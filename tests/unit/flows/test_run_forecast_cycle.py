@@ -1,17 +1,23 @@
 from __future__ import annotations
 
+import builtins
 import random
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from unittest.mock import patch
 from uuid import uuid4
 
+import httpx
 import numpy as np
 import polars as pl
+import pytest
 import xarray as xr
 
 from sapphire_flow.config.deployment import DeploymentConfig
-from sapphire_flow.exceptions import ExtractionError, StoreError
+from sapphire_flow.exceptions import ConfigurationError, ExtractionError, StoreError
 from sapphire_flow.flows.run_forecast_cycle import (
     ForecastCycleResult,
+    _load_weather_forecast_adapter_config,
     run_forecast_cycle_flow,
 )
 from sapphire_flow.types.basin import Basin
@@ -56,6 +62,29 @@ _NWP_SOURCE = "icon_ch2_eps"
 _MODEL_ID = ModelId("fake_station_model")
 
 
+@pytest.fixture(autouse=True)
+def _block_real_httpx_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    original_handle_request = httpx.HTTPTransport.handle_request
+    loopback_hosts = {"127.0.0.1", "::1", "localhost"}
+
+    def _blocked_httpx_transport(
+        self: httpx.HTTPTransport,
+        request: httpx.Request,
+    ) -> httpx.Response:
+        if request.url.host in loopback_hosts:
+            return original_handle_request(self, request)
+        raise AssertionError(
+            f"Unexpected real HTTP via httpx in forecast-cycle tests: "
+            f"{request.method} {request.url}"
+        )
+
+    monkeypatch.setattr(
+        httpx.HTTPTransport,
+        "handle_request",
+        _blocked_httpx_transport,
+    )
+
+
 def _clock() -> UtcDatetime:
     return _NOW
 
@@ -68,6 +97,23 @@ def _make_config(**overrides: object) -> DeploymentConfig:
 
 def _empty_qc_rules() -> ForecastQcRuleSet:
     return ForecastQcRuleSet(version="1.0", rules=())
+
+
+def _write_forecast_cycle_config(
+    path: Path,
+    weather_forecast_section: str = "",
+    *,
+    max_retention_days: int = 3650,
+) -> Path:
+    path.write_text(
+        f"""
+max_retention_days = {max_retention_days}
+
+{weather_forecast_section}
+""".strip()
+        + "\n"
+    )
+    return path
 
 
 def _make_nwp_records(
@@ -296,7 +342,469 @@ class _SmallFakeModel(FakeStationForecastModel):
     )
 
 
+class TestWeatherForecastAdapterConfig:
+    def test_enabled_true(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_path = _write_forecast_cycle_config(
+            tmp_path / "config.toml",
+            """
+[adapters.weather_forecast]
+enabled = true
+stac_base_url = "https://example.test/stac"
+stac_collection = "test-collection"
+scratch_path = "/tmp/test-nwp"
+""",
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config_path))
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+
+        config = _load_weather_forecast_adapter_config()
+
+        assert config.enabled is True
+
+    def test_explicit_false(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_path = _write_forecast_cycle_config(
+            tmp_path / "config.toml",
+            """
+[adapters.weather_forecast]
+enabled = false
+""",
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config_path))
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+
+        config = _load_weather_forecast_adapter_config()
+
+        assert config.enabled is False
+
+    def test_absent_section(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_path = _write_forecast_cycle_config(tmp_path / "config.toml")
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config_path))
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+
+        config = _load_weather_forecast_adapter_config()
+
+        assert config.enabled is False
+
+    def test_absent_enabled_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_path = _write_forecast_cycle_config(
+            tmp_path / "config.toml",
+            """
+[adapters.weather_forecast]
+stac_base_url = "https://example.test/stac"
+stac_collection = "test-collection"
+scratch_path = "/tmp/test-nwp"
+""",
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config_path))
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+
+        config = _load_weather_forecast_adapter_config()
+
+        assert config.enabled is False
+
+    def test_configured_stac_and_scratch_values(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_path = _write_forecast_cycle_config(
+            tmp_path / "config.toml",
+            """
+[adapters.weather_forecast]
+enabled = true
+stac_base_url = "https://custom.example/stac"
+stac_collection = "custom-collection"
+scratch_path = "/tmp/custom-scratch"
+""",
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config_path))
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+
+        config = _load_weather_forecast_adapter_config()
+
+        assert config.stac_base_url == "https://custom.example/stac"
+        assert config.stac_collection == "custom-collection"
+        assert config.scratch_path == Path("/tmp/custom-scratch")
+
+    def test_overlay_scalar_override(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        base_path = _write_forecast_cycle_config(
+            tmp_path / "config.toml",
+            """
+[adapters.weather_forecast]
+enabled = true
+stac_base_url = "https://example.test/stac"
+stac_collection = "test-collection"
+scratch_path = "/tmp/test-nwp"
+""",
+        )
+        overlay_path = tmp_path / "overlay.toml"
+        overlay_path.write_text(
+            """
+[adapters.weather_forecast]
+enabled = false
+""".strip()
+            + "\n"
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(base_path))
+        monkeypatch.setenv("SAPPHIRE_CONFIG_OVERLAY", str(overlay_path))
+
+        config = _load_weather_forecast_adapter_config()
+
+        assert config.enabled is False
+        assert config.stac_base_url == "https://example.test/stac"
+
+    def test_non_bool_enabled_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_path = _write_forecast_cycle_config(
+            tmp_path / "config.toml",
+            """
+[adapters.weather_forecast]
+enabled = "false"
+""",
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config_path))
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+
+        with pytest.raises(ConfigurationError, match="TOML boolean"):
+            _load_weather_forecast_adapter_config()
+
+    def test_enabled_true_missing_meteoswiss_field_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_path = _write_forecast_cycle_config(
+            tmp_path / "config.toml",
+            """
+[adapters.weather_forecast]
+enabled = true
+stac_base_url = "https://example.test/stac"
+scratch_path = "/tmp/test-nwp"
+""",
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config_path))
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+
+        with pytest.raises(ConfigurationError, match="stac_collection"):
+            _load_weather_forecast_adapter_config()
+
+
 class TestForecastCycle:
+    def test_injected_adapter_bypasses_config_gate(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("SAPPHIRE_CONFIG", raising=False)
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+
+        sid = StationId(uuid4())
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+        )
+
+        adapter = FakeWeatherForecastSource(result={})
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=adapter,
+            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+            config=_make_config(),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+        )
+
+        assert result.stations_succeeded == 1
+
+    def test_constructs_meteoswiss_adapter_when_config_enabled(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_path = _write_forecast_cycle_config(
+            tmp_path / "config.toml",
+            f"""
+[adapters.weather_forecast]
+enabled = true
+stac_base_url = "https://example.test/stac"
+stac_collection = "test-collection"
+scratch_path = "{tmp_path / "scratch"}"
+""",
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config_path))
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+
+        sid = StationId(uuid4())
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+        )
+
+        constructed: list[dict[str, object]] = []
+
+        class _PatchedMeteoSwissNwpAdapter:
+            def __init__(
+                self,
+                *,
+                stac_base_url: str,
+                stac_collection: str,
+                scratch_path: Path,
+                http_client: object,
+                max_fallback_steps: int,
+            ) -> None:
+                constructed.append(
+                    {
+                        "stac_base_url": stac_base_url,
+                        "stac_collection": stac_collection,
+                        "scratch_path": scratch_path,
+                        "http_client": http_client,
+                        "max_fallback_steps": max_fallback_steps,
+                    }
+                )
+
+            def fetch_forecasts(
+                self,
+                station_configs: list[StationWeatherSource],
+                cycle_time: UtcDatetime,
+            ) -> dict[StationId, BasinAverageForecast]:
+                return {}
+
+        with patch(
+            "sapphire_flow.adapters.meteoswiss_nwp.MeteoSwissNwpAdapter",
+            _PatchedMeteoSwissNwpAdapter,
+        ):
+            result = run_forecast_cycle_flow(
+                station_store=station_store,
+                obs_store=obs_store,
+                weather_forecast_store=nwp_store,
+                forecast_store=forecast_store,
+                model_state_store=state_store,
+                artifact_store=artifact_store,
+                alert_store=alert_store,
+                baseline_store=baseline_store,
+                basin_store=basin_store,
+                forcing_store=forcing_store,
+                models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+                qc_rules=_empty_qc_rules(),
+                clock=_clock,
+                rng=random.Random(42),
+            )
+
+        assert result.stations_succeeded == 1
+        assert len(constructed) == 1
+        assert constructed[0]["stac_base_url"] == "https://example.test/stac"
+        assert constructed[0]["stac_collection"] == "test-collection"
+        assert constructed[0]["scratch_path"] == tmp_path / "scratch"
+        assert constructed[0]["max_fallback_steps"] == 2
+        created_client = constructed[0]["http_client"]
+        assert isinstance(created_client, httpx.Client)
+        assert created_client.is_closed
+
+    def test_adapter_none_with_absent_config_is_runoff_only_state(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import structlog.testing
+
+        monkeypatch.delenv("SAPPHIRE_CONFIG", raising=False)
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+
+        with (
+            patch(
+                "sapphire_flow.adapters.meteoswiss_nwp.MeteoSwissNwpAdapter",
+                side_effect=AssertionError("adapter must not be constructed"),
+            ),
+            structlog.testing.capture_logs() as captured,
+        ):
+            result = run_forecast_cycle_flow(
+                station_store=FakeStationStore(),
+                obs_store=FakeObservationStore(),
+                weather_forecast_store=FakeWeatherForecastStore(),
+                forecast_store=FakeForecastStore(),
+                model_state_store=FakeModelStateStore(),
+                artifact_store=FakeModelArtifactStore(),
+                alert_store=FakeAlertStore(),
+                baseline_store=FakeClimBaselineStore(),
+                basin_store=FakeBasinStore(),
+                forcing_store=FakeHistoricalForcingStore(),
+                models={},
+                qc_rules=_empty_qc_rules(),
+                clock=_clock,
+                rng=random.Random(42),
+            )
+
+        assert result.stations_attempted == 0
+        assert result.errors == ()
+        assert any(
+            event.get("event") == "forecast_cycle.nwp_disabled_missing_config"
+            and event.get("log_level") == "warning"
+            for event in captured
+        )
+
+    def test_runoff_only_ignores_grid_archive_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("SAPPHIRE_CONFIG", raising=False)
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+
+        real_import = builtins.__import__
+        blocked_modules = {
+            "sapphire_flow.store.zarr_nwp_grid_store",
+            "sapphire_flow.preprocessing.exact_extract_grid_extractor",
+        }
+
+        def guarded_import(
+            name: str,
+            globals: dict[str, object] | None = None,  # noqa: A002 - mirrors __import__ signature
+            locals: dict[str, object] | None = None,  # noqa: A002 - mirrors __import__ signature
+            fromlist: tuple[str, ...] = (),
+            level: int = 0,
+        ) -> object:
+            if name in blocked_modules:
+                raise AssertionError(f"disabled NWP must not import {name}")
+            return real_import(name, globals, locals, fromlist, level)
+
+        monkeypatch.setattr(builtins, "__import__", guarded_import)
+
+        result = run_forecast_cycle_flow(
+            station_store=FakeStationStore(),
+            obs_store=FakeObservationStore(),
+            weather_forecast_store=FakeWeatherForecastStore(),
+            forecast_store=FakeForecastStore(),
+            model_state_store=FakeModelStateStore(),
+            artifact_store=FakeModelArtifactStore(),
+            alert_store=FakeAlertStore(),
+            baseline_store=FakeClimBaselineStore(),
+            basin_store=FakeBasinStore(),
+            forcing_store=FakeHistoricalForcingStore(),
+            models={},
+            config=_make_config(nwp_grid_archive_base_path="/data/nwp_grids"),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+        )
+
+        assert result.stations_attempted == 0
+        assert result.errors == ()
+
+    def test_runoff_only_skips_nwp_task_and_forecasts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import structlog.testing
+
+        monkeypatch.delenv("SAPPHIRE_CONFIG", raising=False)
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+
+        sid = StationId(uuid4())
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+        )
+
+        with (
+            patch(
+                "sapphire_flow.flows.run_forecast_cycle._fetch_nwp_task.submit",
+                side_effect=AssertionError("NWP task must not be submitted"),
+            ),
+            patch(
+                "sapphire_flow.adapters.meteoswiss_nwp.MeteoSwissNwpAdapter",
+                side_effect=AssertionError("adapter must not be constructed"),
+            ),
+            structlog.testing.capture_logs() as captured,
+        ):
+            result = run_forecast_cycle_flow(
+                station_store=station_store,
+                obs_store=obs_store,
+                weather_forecast_store=nwp_store,
+                forecast_store=forecast_store,
+                model_state_store=state_store,
+                artifact_store=artifact_store,
+                alert_store=alert_store,
+                baseline_store=baseline_store,
+                basin_store=basin_store,
+                forcing_store=forcing_store,
+                models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+                config=_make_config(nwp_grid_archive_base_path="/data/nwp_grids"),
+                qc_rules=_empty_qc_rules(),
+                clock=_clock,
+                rng=random.Random(42),
+            )
+
+        assert result.stations_attempted == 1
+        assert result.stations_succeeded == 1
+        assert result.forecasts_stored == 1
+        assert result.errors == ()
+        assert any(
+            event.get("event") == "forecast_cycle.nwp_disabled"
+            and event.get("mode") == "runoff_only"
+            and event.get("cycle_time") == _NOW.isoformat()
+            for event in captured
+        )
+
     def test_happy_path(self) -> None:
         sid_a = StationId(uuid4())
         sid_b = StationId(uuid4())
