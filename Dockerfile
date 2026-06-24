@@ -1,6 +1,6 @@
 # python:3.12.13-slim (manifest-list digest pinned 2026-04-21; re-pinned 2026-06-02
 # to the debian 13.5 rebuild — clears CVE-2026-4878 libcap2 + prior OpenSSL/pip CVEs — per Plan 064 B1)
-FROM python:3.12.13-slim@sha256:d764629ce0ddd8c71fd371e9901efb324a95789d2315a47db7e4d27e78f1b0e9 AS builder
+FROM python:3.14.6-slim@sha256:44dd04494ee8f3b538294360e7c4b3acb87c8268e4d0a4828a6500b1eff50061 AS builder
 
 # ghcr.io/astral-sh/uv:0.11.7 (manifest-list digest pinned 2026-04-21 per Plan 064 B5)
 COPY --from=ghcr.io/astral-sh/uv:0.11.7@sha256:240fb85ab0f263ef12f492d8476aa3a2e4e1e333f7d67fbdd923d00a506a516a /uv /usr/local/bin/uv
@@ -26,7 +26,7 @@ COPY alembic/ alembic/
 
 # python:3.12.13-slim (manifest-list digest pinned 2026-04-21; re-pinned 2026-06-02
 # to the debian 13.5 rebuild — clears CVE-2026-4878 libcap2 + prior OpenSSL/pip CVEs — per Plan 064 B1)
-FROM python:3.12.13-slim@sha256:d764629ce0ddd8c71fd371e9901efb324a95789d2315a47db7e4d27e78f1b0e9
+FROM python:3.14.6-slim@sha256:44dd04494ee8f3b538294360e7c4b3acb87c8268e4d0a4828a6500b1eff50061
 
 RUN groupadd -g 1000 app && useradd -u 1000 -g 1000 -m app
 
