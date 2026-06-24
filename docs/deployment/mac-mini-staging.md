@@ -301,6 +301,41 @@ projects, personal Docker stacks, or browser sessions on it — port
 conflicts, resource starvation, and forgotten-tab battery drain
 have all cost us runs in the past.
 
+## Forecast-cycle NWP modes
+
+The Mac mini runs the `forecast-cycle` deployment in **runoff-only**
+mode by default. `docker-compose.macmini.yml` sets
+`SAPPHIRE_CONFIG_OVERLAY=/app/config/overlays/mac-mini.toml` for the
+`prefect-worker` service only, and bind-mounts that overlay read-only
+there. The overlay sets:
+
+```toml
+[adapters.weather_forecast]
+enabled = false
+```
+
+In runoff-only mode the flow forecasts from past discharge. It does
+not fetch NWP, build grid machinery, or require NWP scratch/archive
+paths to be writable.
+
+The base config keeps NWP enabled for production/default operation with
+`[adapters.weather_forecast].enabled = true`. In NWP-enabled mode,
+`/data/nwp_grids` is a named Docker volume; `docker/entrypoint.sh`
+chowns it to `app:app` on container start, so no host `chown` is
+needed. `/tmp/sapphire_nwp` is a 4 GiB sticky tmpfs from the base
+compose file, writable by the non-root `app` user and ephemeral per
+container. Verify both paths from the running worker with:
+
+```bash
+docker compose exec -u app prefect-worker sh -c 'touch /data/nwp_grids/.w /tmp/sapphire_nwp/.w && echo ok && rm /data/nwp_grids/.w /tmp/sapphire_nwp/.w'
+```
+
+To switch the Mac mini to NWP-enabled mode, change only the overlay
+gate to `enabled = true` (or remove the Mac-mini overlay wiring),
+restart the worker, run the writability check above, then trigger a
+`forecast-cycle` run. Do not edit base `config.toml` for the Mac-mini
+exception.
+
 ## Troubleshooting
 
 ### "Docker Desktop did not start within 240s" in `sapphire-flow.log`
