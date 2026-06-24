@@ -70,7 +70,7 @@ def _make_hindcast(
         pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
         pl.col("member_id").cast(pl.Int32),
     )
-    units = "m3/s" if parameter == "discharge" else "m"
+    units = "m³/s" if parameter == "discharge" else "m"
     ensemble = ForecastEnsemble.from_members(
         station_id=station_id,
         issued_at=hindcast_step,
@@ -796,7 +796,7 @@ def _make_hindcast_quantiles(
         pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
         pl.col("quantile").cast(pl.Float64),
     )
-    units = "m3/s" if parameter == "discharge" else "m"
+    units = "m³/s" if parameter == "discharge" else "m"
     ensemble = ForecastEnsemble.from_quantiles(
         station_id=station_id,
         issued_at=hindcast_step,
@@ -833,7 +833,7 @@ class TestFlowRegimeStratification:
         hindcasts = []
         observations = []
 
-        # Low-regime hindcasts: value = 80 m3/s (< p50=150)
+        # Low-regime hindcasts: value = 80 m³/s (< p50=150)
         for i in range(3):
             step = _utc(2025, 1, i + 1)
             hindcasts.append(
@@ -851,7 +851,7 @@ class TestFlowRegimeStratification:
                 _make_observation(station_id=station_id, timestamp=vt, value=80.0)
             )
 
-        # High-regime hindcasts: value = 200 m3/s (p50 < 200 < p90)
+        # High-regime hindcasts: value = 200 m³/s (p50 < 200 < p90)
         for i in range(3):
             step = _utc(2025, 2, i + 1)
             hindcasts.append(
@@ -869,7 +869,7 @@ class TestFlowRegimeStratification:
                 _make_observation(station_id=station_id, timestamp=vt, value=200.0)
             )
 
-        # Flood-regime hindcasts: value = 500 m3/s (> p90=350)
+        # Flood-regime hindcasts: value = 500 m³/s (> p90=350)
         for i in range(3):
             step = _utc(2025, 3, i + 1)
             hindcasts.append(

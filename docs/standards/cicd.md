@@ -343,7 +343,8 @@ This subsection describes the operational topology of `.github/workflows/ci.yml`
 | 2 | `unit` | Install system deps for cfgrib / rioxarray / exactextract | — | Brew/apt on the dev host (developer responsibility) | Yes — system-package install, not project-managed |
 | 2 | `unit` | `uv sync --frozen` | — | `uv sync` | No |
 | 2 | `unit` | `uv run pytest tests/unit/ --cov=src/sapphire_flow --cov-report=term-missing -v` | — | `uv run pytest tests/unit/` (requires system deps above) | No (but requires system deps) |
-| 2 | `wheel-only-guard` | `uv sync --frozen --no-build --no-cache --no-install-project` | — | `uv sync --frozen --no-build --no-cache --no-install-project` | No |
+| 2 | `wheel-only-guard` | Step 1 = "the wheel-only guard": `uv sync --frozen --no-build --no-cache --no-install-project --no-install-package forecastinterface` | — | `uv sync --frozen --no-build --no-cache --no-install-project --no-install-package forecastinterface` | No |
+| 2 | `wheel-only-guard` | Step 2 = "post-guard temporary forecastinterface exception install": `uv sync --frozen --no-cache --no-install-project --reinstall-package forecastinterface` | Step 1 guard | `uv sync --frozen --no-cache --no-install-project --reinstall-package forecastinterface` | No |
 | 3 | `integration` | Install system deps for cfgrib / rioxarray / exactextract | `unit` | Brew/apt on the dev host (developer responsibility) | Yes — system-package install, not project-managed |
 | 3 | `integration` | `uv sync --frozen` | `unit` | `uv sync` | No |
 | 3 | `integration` | `uv run pytest tests/integration/ -v -m "not slow"` | `unit` | `uv run pytest tests/integration/ -v -m "not slow"` (requires postgres service + system deps) | No (but requires postgres) |

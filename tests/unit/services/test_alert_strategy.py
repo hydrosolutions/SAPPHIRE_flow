@@ -88,7 +88,7 @@ def _make_members_ensemble(
         station_id=station_id,
         issued_at=_EPOCH,
         parameter="discharge",
-        units="m3/s",
+        units="m³/s",
         time_step=_TIME_STEP,
         values=df,
         model_id=model_id,
@@ -121,7 +121,7 @@ def _make_quantiles_ensemble(
         station_id=station_id,
         issued_at=_EPOCH,
         parameter="discharge",
-        units="m3/s",
+        units="m³/s",
         time_step=_TIME_STEP,
         values=df,
         model_id=model_id,
@@ -314,8 +314,8 @@ def _make_spread_quantiles_ensemble(
     n_steps: int = 1,
 ) -> ForecastEnsemble:
     """Build a QUANTILES ensemble with realistic Swiss Aare discharge spread."""
-    # Quantile levels and corresponding values (m3/s) spanning 50–400 range.
-    # q=0.50 → 200 m3/s is the median.
+    # Quantile levels and corresponding values (m³/s) spanning 50–400 range.
+    # q=0.50 → 200 m³/s is the median.
     quantile_levels = [0.02, 0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95, 0.98]
     values_at_q = [50.0, 80.0, 110.0, 160.0, 200.0, 260.0, 320.0, 360.0, 400.0]
     rows = [
@@ -336,7 +336,7 @@ def _make_spread_quantiles_ensemble(
         station_id=station_id,
         issued_at=_EPOCH,
         parameter="discharge",
-        units="m3/s",
+        units="m³/s",
         time_step=_TIME_STEP,
         values=df,
         model_id=model_id,
@@ -349,7 +349,7 @@ class TestComputeExceedanceQuantiles:
 
         mid = ModelId("model_q")
         ens = _make_spread_quantiles_ensemble(model_id=mid, n_steps=1)
-        # Threshold exactly at median value (200 m3/s → q=0.50) → P(X > 200) = 0.50
+        # Threshold exactly at median value (200 m³/s → q=0.50) → P(X > 200) = 0.50
         result = _compute_exceedance(ens, threshold_value=200.0)
         assert result == pytest.approx(0.50, abs=0.01)
 
@@ -358,7 +358,7 @@ class TestComputeExceedanceQuantiles:
 
         mid = ModelId("model_q")
         ens = _make_spread_quantiles_ensemble(model_id=mid, n_steps=1)
-        # Threshold below lowest quantile value (50 m3/s) → exceedance ≈ 1 - q[0] = 0.98
+        # Threshold below lowest quantile value (50 m³/s) → exceedance ≈ 1 - q[0] = 0.98
         result = _compute_exceedance(ens, threshold_value=40.0)
         assert result == pytest.approx(1.0 - 0.02)
 
@@ -367,7 +367,7 @@ class TestComputeExceedanceQuantiles:
 
         mid = ModelId("model_q")
         ens = _make_spread_quantiles_ensemble(model_id=mid, n_steps=1)
-        # Threshold above highest quantile (400 m3/s) → exceedance ≈ 1 - q[-1] = 0.02
+        # Threshold above highest quantile (400 m³/s) → exceedance ≈ 1 - q[-1] = 0.02
         result = _compute_exceedance(ens, threshold_value=450.0)
         assert result == pytest.approx(1.0 - 0.98)
 

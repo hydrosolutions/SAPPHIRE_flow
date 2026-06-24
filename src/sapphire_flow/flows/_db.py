@@ -33,6 +33,7 @@ def make_pg_stores(conn: sa.Connection) -> dict[str, object]:
     from sapphire_flow.store.model_state_store import PgModelStateStore
     from sapphire_flow.store.model_store import PgModelStore
     from sapphire_flow.store.observation_store import PgObservationStore
+    from sapphire_flow.store.parameter_store import PgParameterStore
     from sapphire_flow.store.skill_store import PgSkillStore
     from sapphire_flow.store.station_group_store import PgStationGroupStore
     from sapphire_flow.store.station_store import PgStationStore
@@ -56,6 +57,7 @@ def make_pg_stores(conn: sa.Connection) -> dict[str, object]:
         "weather_forecast_store": PgWeatherForecastStore(conn),
         "forecast_store": PgForecastStore(conn),
         "model_state_store": PgModelStateStore(conn),
+        "parameter_store": PgParameterStore(conn),
     }
 
 

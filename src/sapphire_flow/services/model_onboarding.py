@@ -4,7 +4,8 @@ import hashlib
 import time
 import traceback
 from datetime import UTC
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, cast
+from uuid import UUID
 
 import polars as pl
 import structlog
@@ -16,11 +17,13 @@ from sapphire_flow.exceptions import (
 )
 from sapphire_flow.types.enums import (
     ArtifactScope,
+    EnsembleRepresentation,
     ModelAssignmentStatus,
     OnboardingOutcome,
+    SpatialRepresentation,
     StationStatus,
 )
-from sapphire_flow.types.ids import StationGroupId
+from sapphire_flow.types.ids import StationGroupId, StationId
 from sapphire_flow.types.model_onboarding import (
     CompatibilityReport,
     ModelOnboardingResult,
@@ -39,6 +42,8 @@ if TYPE_CHECKING:
     from sapphire_flow.protocols.adapters import WeatherReanalysisSource
     from sapphire_flow.protocols.forecast_model import (
         ForecastModel,
+        GroupForecastModel,
+        StationForecastModel,
     )
     from sapphire_flow.protocols.stores import (
         BasinStore,
@@ -52,7 +57,8 @@ if TYPE_CHECKING:
         StationStore,
     )
     from sapphire_flow.types.datetime import UtcDatetime
-    from sapphire_flow.types.ids import ArtifactId, ModelId, StationId
+    from sapphire_flow.types.ensemble import ForecastEnsemble
+    from sapphire_flow.types.ids import ArtifactId, ModelId
     from sapphire_flow.types.model import (
         GroupTrainingData,
         ModelDataRequirements,
@@ -61,6 +67,14 @@ if TYPE_CHECKING:
     from sapphire_flow.types.station import StationConfig
 
 log = structlog.get_logger(__name__)
+
+_DELIVERABLE_FI_SPATIAL_TYPES = frozenset(
+    {
+        SpatialRepresentation.POINT,
+        SpatialRepresentation.BASIN_AVERAGE,
+        SpatialRepresentation.ELEVATION_BAND,
+    }
+)
 
 
 def validate_compatibility(
@@ -113,6 +127,45 @@ def model_id_from_model(model: ForecastModel) -> ModelId:
     raise NotImplementedError("model_id must be passed explicitly")
 
 
+def _fi_compatibility_checks(
+    *,
+    model: ForecastModel,
+    stations_by_id: Mapping[StationId, StationConfig | None],
+    canonical_units: Mapping[str, str] | None,
+) -> tuple[frozenset[str], frozenset[str], bool, bool]:
+    from sapphire_flow.adapters.forecast_interface import ForecastInterfaceAdapter
+
+    if not isinstance(model, ForecastInterfaceAdapter):
+        return frozenset(), frozenset(), True, True
+
+    declared_units = model.declared_units()
+    catalog = canonical_units or {}
+    mismatches: set[str] = set()
+    unsupported = set(model.unsupported_units())
+
+    for name, declared_unit in declared_units.items():
+        expected_unit = catalog.get(name)
+        if expected_unit is None:
+            unsupported.add(name)
+        elif declared_unit != expected_unit:
+            mismatches.add(name)
+
+    spatial_type_supported = (
+        model.data_requirements.spatial_input_type in _DELIVERABLE_FI_SPATIAL_TYPES
+    )
+    station_codes_resolvable = all(
+        station is not None and bool(station.code.strip())
+        for station in stations_by_id.values()
+    )
+
+    return (
+        frozenset(mismatches),
+        frozenset(unsupported),
+        spatial_type_supported,
+        station_codes_resolvable,
+    )
+
+
 def validate_compatibility_for_unit(
     model_id: ModelId,
     model: ForecastModel,
@@ -122,6 +175,7 @@ def validate_compatibility_for_unit(
     available_features: frozenset[str],
     available_static_by_station: dict[StationId, frozenset[str]],
     requested_time_step: timedelta,
+    canonical_units: Mapping[str, str] | None = None,
 ) -> CompatibilityReport:
     from sapphire_flow.protocols.forecast_model import (
         GroupForecastModel,
@@ -143,9 +197,11 @@ def validate_compatibility_for_unit(
     # Union of all missing targets/static across member stations
     all_missing_targets: frozenset[str] = frozenset()
     all_missing_static: frozenset[str] = frozenset()
+    stations_by_id: dict[StationId, StationConfig | None] = {}
 
     for sid in unit.station_ids:
         station = station_store.fetch_station(sid)
+        stations_by_id[sid] = station
         if station is None:
             all_missing_targets = all_missing_targets | frozenset(req.target_parameters)
             all_missing_static = all_missing_static | req.static_features
@@ -159,6 +215,17 @@ def validate_compatibility_for_unit(
         avail_static = available_static_by_station.get(sid, frozenset())
         all_missing_static = all_missing_static | (req.static_features - avail_static)
 
+    (
+        fi_unit_mismatches,
+        fi_unsupported_units,
+        spatial_type_supported,
+        station_codes_resolvable,
+    ) = _fi_compatibility_checks(
+        model=model,
+        stations_by_id=stations_by_id,
+        canonical_units=canonical_units,
+    )
+
     return CompatibilityReport(
         model_id=model_id,
         station_id=unit.station_id,
@@ -169,6 +236,10 @@ def validate_compatibility_for_unit(
         missing_future_dynamic=missing_future,
         missing_static_features=all_missing_static,
         time_step_compatible=time_step_ok,
+        fi_unit_mismatches=fi_unit_mismatches,
+        fi_unsupported_units=fi_unsupported_units,
+        spatial_type_supported=spatial_type_supported,
+        station_codes_resolvable=station_codes_resolvable,
     )
 
 
@@ -224,9 +295,7 @@ def _make_synthetic_group_training_data(
     n_future_rows: int = 10,
 ) -> GroupTrainingData:
     from datetime import datetime
-    from uuid import uuid4
 
-    from sapphire_flow.types.ids import StationId
     from sapphire_flow.types.model import GroupTrainingData
 
     time_step = next(iter(req.supported_time_steps))
@@ -235,7 +304,7 @@ def _make_synthetic_group_training_data(
     future_ts = [base + (n_past_rows + i) * time_step for i in range(n_future_rows)]
     # StationId is a UUID NewType; the stacked-frame "station_id" column must
     # equal str(sid) so GroupTrainingData.for_station can slice by station.
-    station_ids = tuple(StationId(uuid4()) for _ in range(n_stations))
+    station_ids = tuple(_station_id_from_rng(rng) for _ in range(n_stations))
 
     def _stacked_df(
         cols: frozenset[str],
@@ -261,7 +330,7 @@ def _make_synthetic_group_training_data(
         static = pl.DataFrame(rows)
 
     return GroupTrainingData(
-        group_id=StationGroupId(uuid4()),
+        group_id=_station_group_id_from_rng(rng),
         station_ids=station_ids,
         past_targets=_stacked_df(req.target_parameters, past_ts),
         past_dynamic=_stacked_df(req.past_dynamic_features, past_ts),
@@ -273,95 +342,217 @@ def _make_synthetic_group_training_data(
 
 
 def smoke_test_model(model: ForecastModel, rng: random.Random) -> None:
-    from uuid import uuid4
-
-    from sapphire_flow.protocols.forecast_model import (
-        GroupForecastModel,
-        StationForecastModel,
-    )
-    from sapphire_flow.types.enums import ArtifactScope
-    from sapphire_flow.types.ids import StationId
-
     req = model.data_requirements
-    seed = int(hashlib.sha256(str(req).encode()).hexdigest(), 16) & 0xFFFFFFFF
+    seed = _synthetic_run_seed(req)
     rng.seed(seed)
 
     try:
-        # Past needs lookback + horizon rows; future IS the horizon.
-        smoke_horizon = max(req.forecast_horizon_steps, 10)
-        n_past = req.lookback_steps + smoke_horizon + 10
-        n_future = smoke_horizon
-
-        if model.artifact_scope == ArtifactScope.GROUP:
-            assert isinstance(model, GroupForecastModel)
-            data = _make_synthetic_group_training_data(
-                req, rng, n_past_rows=n_past, n_future_rows=n_future
-            )
-            artifact = model.train(data, {}, rng)
-            raw_bytes = model.serialize_artifact(artifact)
-            reloaded = model.deserialize_artifact(raw_bytes)
-
-            time_step = next(iter(req.supported_time_steps))
-            from sapphire_flow.types.model import GroupModelInputs
-
-            station_ids = data.station_ids
-            inputs = GroupModelInputs(
-                group_id=data.group_id,
-                station_ids=station_ids,
-                past_targets=data.past_targets,
-                past_dynamic=data.past_dynamic,
-                future_dynamic=data.future_dynamic,
-                static=data.static,
-                issue_time=_utc_now(),
-                forecast_horizon_steps=min(
-                    req.forecast_horizon_steps, len(data.future_dynamic)
-                ),
-                time_step=time_step,
-            )
-            results = model.predict_batch(reloaded, inputs, rng)
-            for _sid, (ensembles, _) in results.items():
-                _validate_ensemble_dict(ensembles, req.target_parameters)
-        else:
-            assert isinstance(model, StationForecastModel)
-            data = _make_synthetic_station_training_data(
-                req, rng, n_past_rows=n_past, n_future_rows=n_future
-            )
-            artifact = model.train(data, {}, rng)
-            raw_bytes = model.serialize_artifact(artifact)
-            reloaded = model.deserialize_artifact(raw_bytes)
-
-            time_step = next(iter(req.supported_time_steps))
-            from sapphire_flow.types.model import StationInputData, StationModelInputs
-
-            inputs = StationModelInputs(
-                station_id=StationId(uuid4()),
-                data=StationInputData(
-                    past_targets=data.past_targets,
-                    past_dynamic=data.past_dynamic,
-                    future_dynamic=data.future_dynamic,
-                    static=data.static,
-                ),
-                issue_time=_utc_now(),
-                forecast_horizon_steps=min(
-                    req.forecast_horizon_steps, len(data.future_dynamic)
-                ),
-                time_step=time_step,
-            )
-            ensembles, _ = model.predict(reloaded, inputs, rng)
-            _validate_ensemble_dict(ensembles, req.target_parameters)
-
+        _, ensembles = _run_synthetic_train_predict(model, rng)
+        _validate_synthetic_ensembles(ensembles, req.target_parameters)
     except Exception as exc:
         raise ModelSmokeTestError(
             f"Smoke test failed: {exc}\n{traceback.format_exc()}"
         ) from exc
 
 
-def _utc_now() -> UtcDatetime:
+def assert_model_conforms(
+    model: StationForecastModel | GroupForecastModel,
+    rng: random.Random,
+) -> None:
+    """Validate a forecast model through SAP3's protocol surface."""
+    _assert_protocol_shape(model)
+    determinism_seed = rng.getrandbits(64)
+    smoke_test_model(model, rng)
+    _assert_fixed_seed_determinism(model, determinism_seed)
+
+
+def assert_operational_floors(
+    model: StationForecastModel | GroupForecastModel,
+    config: DeploymentConfig,
+    rng: random.Random,
+) -> None:
+    """Validate that synthetic FI outputs meet operational ensemble floors."""
+    req = model.data_requirements
+    rng.seed(_synthetic_run_seed(req))
+
+    try:
+        _, ensembles = _run_synthetic_train_predict(model, rng)
+        _validate_synthetic_ensembles(ensembles, req.target_parameters)
+        _assert_synthetic_ensembles_meet_operational_floors(ensembles, config)
+    except ModelSmokeTestError:
+        raise
+    except Exception as exc:
+        raise ModelSmokeTestError(
+            f"Operational floor check failed: {exc}\n{traceback.format_exc()}"
+        ) from exc
+
+
+def _run_synthetic_train_predict(
+    model: ForecastModel,
+    rng: random.Random,
+) -> tuple[
+    bytes,
+    dict[str, ForecastEnsemble] | dict[StationId, dict[str, ForecastEnsemble]],
+]:
+    from sapphire_flow.protocols.forecast_model import (
+        GroupForecastModel,
+        StationForecastModel,
+    )
+
+    req = model.data_requirements
+    # Past needs lookback + horizon rows; future IS the horizon.
+    smoke_horizon = max(req.forecast_horizon_steps, 10)
+    n_past = req.lookback_steps + smoke_horizon + 10
+    n_future = smoke_horizon
+    time_step = next(iter(req.supported_time_steps))
+    issue_time = _synthetic_issue_time(time_step, n_past)
+
+    if model.artifact_scope is ArtifactScope.GROUP:
+        if not isinstance(model, GroupForecastModel):
+            raise ModelSmokeTestError(
+                "GROUP-scoped model does not implement GroupForecastModel"
+            )
+        data = _make_synthetic_group_training_data(
+            req, rng, n_past_rows=n_past, n_future_rows=n_future
+        )
+        artifact = model.train(data, {}, rng)
+        raw_bytes = model.serialize_artifact(artifact)
+        reloaded = model.deserialize_artifact(raw_bytes)
+
+        from sapphire_flow.types.model import GroupModelInputs
+
+        inputs = GroupModelInputs(
+            group_id=data.group_id,
+            station_ids=data.station_ids,
+            past_targets=data.past_targets,
+            past_dynamic=data.past_dynamic,
+            future_dynamic=data.future_dynamic,
+            static=data.static,
+            issue_time=issue_time,
+            forecast_horizon_steps=min(
+                req.forecast_horizon_steps, len(data.future_dynamic)
+            ),
+            time_step=time_step,
+        )
+        results = model.predict_batch(reloaded, inputs, rng)
+        return raw_bytes, {
+            station_id: ensembles for station_id, (ensembles, _) in results.items()
+        }
+
+    if model.artifact_scope is ArtifactScope.STATION:
+        if not isinstance(model, StationForecastModel):
+            raise ModelSmokeTestError(
+                "STATION-scoped model does not implement StationForecastModel"
+            )
+        data = _make_synthetic_station_training_data(
+            req, rng, n_past_rows=n_past, n_future_rows=n_future
+        )
+        artifact = model.train(data, {}, rng)
+        raw_bytes = model.serialize_artifact(artifact)
+        reloaded = model.deserialize_artifact(raw_bytes)
+
+        from sapphire_flow.types.model import StationInputData, StationModelInputs
+
+        inputs = StationModelInputs(
+            station_id=_station_id_from_rng(rng),
+            data=StationInputData(
+                past_targets=data.past_targets,
+                past_dynamic=data.past_dynamic,
+                future_dynamic=data.future_dynamic,
+                static=data.static,
+            ),
+            issue_time=issue_time,
+            forecast_horizon_steps=min(
+                req.forecast_horizon_steps, len(data.future_dynamic)
+            ),
+            time_step=time_step,
+        )
+        ensembles, _ = model.predict(reloaded, inputs, rng)
+        return raw_bytes, ensembles
+
+    raise ModelSmokeTestError(f"Unsupported artifact_scope: {model.artifact_scope!r}")
+
+
+def _synthetic_run_seed(req: ModelDataRequirements) -> int:
+    return int(hashlib.sha256(str(req).encode()).hexdigest(), 16) & 0xFFFFFFFF
+
+
+def _uuid_from_rng(rng: random.Random) -> UUID:
+    return UUID(int=rng.getrandbits(128), version=4)
+
+
+def _station_id_from_rng(rng: random.Random) -> StationId:
+    return StationId(_uuid_from_rng(rng))
+
+
+def _station_group_id_from_rng(rng: random.Random) -> StationGroupId:
+    return StationGroupId(_uuid_from_rng(rng))
+
+
+def _synthetic_issue_time(
+    time_step: timedelta,
+    n_past_rows: int,
+) -> UtcDatetime:
     from datetime import datetime
 
     from sapphire_flow.types.datetime import UtcDatetime
 
-    return UtcDatetime(datetime.now(tz=UTC))
+    base = datetime(2000, 1, 1, tzinfo=UTC)
+    return UtcDatetime(base + max(n_past_rows - 1, 0) * time_step)
+
+
+def _assert_protocol_shape(model: object) -> None:
+    from sapphire_flow.protocols.forecast_model import (
+        GroupForecastModel,
+        StationForecastModel,
+    )
+
+    try:
+        artifact_scope = model.artifact_scope  # type: ignore[attr-defined]
+    except AttributeError as exc:
+        raise ModelSmokeTestError("Model is missing artifact_scope") from exc
+
+    if artifact_scope is ArtifactScope.STATION:
+        if not isinstance(model, StationForecastModel):
+            raise ModelSmokeTestError(
+                "STATION-scoped model does not implement StationForecastModel"
+            )
+        return
+
+    if artifact_scope is ArtifactScope.GROUP:
+        if not isinstance(model, GroupForecastModel):
+            raise ModelSmokeTestError(
+                "GROUP-scoped model does not implement GroupForecastModel"
+            )
+        return
+
+    raise ModelSmokeTestError(f"Unsupported artifact_scope: {artifact_scope!r}")
+
+
+def _assert_fixed_seed_determinism(
+    model: ForecastModel,
+    seed: int,
+) -> None:
+    import random
+
+    try:
+        first_bytes, first_ensembles = _run_synthetic_train_predict(
+            model, random.Random(seed)
+        )
+        second_bytes, second_ensembles = _run_synthetic_train_predict(
+            model, random.Random(seed)
+        )
+    except Exception as exc:
+        raise ModelSmokeTestError(
+            f"Determinism check failed during synthetic run: {exc}"
+        ) from exc
+
+    if first_bytes != second_bytes:
+        raise ModelSmokeTestError(
+            "Determinism check failed: serialized artifacts differ for identical seed"
+        )
+
+    _assert_synthetic_ensembles_equal(first_ensembles, second_ensembles)
 
 
 class _HasParameter(Protocol):
@@ -383,6 +574,129 @@ def _validate_ensemble_dict(
             raise ModelSmokeTestError(
                 f"ForecastEnsemble key/value mismatch: key={key!r}, "
                 f"ensemble.parameter={ensemble.parameter!r}"
+            )
+
+
+def _validate_synthetic_ensembles(
+    ensembles: (
+        dict[str, ForecastEnsemble] | dict[StationId, dict[str, ForecastEnsemble]]
+    ),
+    expected_keys: frozenset[str],
+) -> None:
+    if all(isinstance(key, str) for key in ensembles):
+        _validate_ensemble_dict(
+            cast("dict[str, ForecastEnsemble]", ensembles),
+            expected_keys,
+        )
+        return
+
+    for station_ensembles in cast(
+        "dict[StationId, dict[str, ForecastEnsemble]]", ensembles
+    ).values():
+        _validate_ensemble_dict(station_ensembles, expected_keys)
+
+
+def _assert_synthetic_ensembles_meet_operational_floors(
+    ensembles: (
+        dict[str, ForecastEnsemble] | dict[StationId, dict[str, ForecastEnsemble]]
+    ),
+    config: DeploymentConfig,
+) -> None:
+    for station_id, parameter, ensemble in _iter_synthetic_ensembles(ensembles):
+        representation = ensemble.representation
+        if representation is EnsembleRepresentation.MEMBERS:
+            # FI 1.5: one member means deterministic-only, which is non-operational.
+            required = config.min_operational_ensemble_size
+        elif representation is EnsembleRepresentation.QUANTILES:
+            required = config.min_operational_quantile_levels
+        else:
+            raise ModelSmokeTestError(
+                "Operational floor check failed for "
+                f"station {station_id} parameter {parameter!r}: unsupported "
+                f"representation {representation!r}"
+            )
+
+        observed = ensemble.member_count
+        if observed < required:
+            raise ModelSmokeTestError(
+                "Operational floor check failed for "
+                f"station {station_id} parameter {parameter!r}: "
+                f"observed_count={observed}, representation={representation.value}, "
+                f"required_floor={required}"
+            )
+
+
+def _iter_synthetic_ensembles(
+    ensembles: (
+        dict[str, ForecastEnsemble] | dict[StationId, dict[str, ForecastEnsemble]]
+    ),
+) -> tuple[tuple[str, str, ForecastEnsemble], ...]:
+    if all(isinstance(key, str) for key in ensembles):
+        return tuple(
+            (str(ensemble.station_id), parameter, ensemble)
+            for parameter, ensemble in cast(
+                "dict[str, ForecastEnsemble]", ensembles
+            ).items()
+        )
+
+    return tuple(
+        (str(station_id), parameter, ensemble)
+        for station_id, station_ensembles in cast(
+            "dict[StationId, dict[str, ForecastEnsemble]]", ensembles
+        ).items()
+        for parameter, ensemble in station_ensembles.items()
+    )
+
+
+def _assert_synthetic_ensembles_equal(
+    first: dict[str, ForecastEnsemble] | dict[StationId, dict[str, ForecastEnsemble]],
+    second: dict[str, ForecastEnsemble] | dict[StationId, dict[str, ForecastEnsemble]],
+) -> None:
+    first_is_station = all(isinstance(key, str) for key in first)
+    second_is_station = all(isinstance(key, str) for key in second)
+    if first_is_station != second_is_station:
+        raise ModelSmokeTestError(
+            "Determinism check failed: output scope changed for identical seed"
+        )
+
+    if first_is_station:
+        _assert_ensemble_dicts_equal(
+            "station",
+            cast("dict[str, ForecastEnsemble]", first),
+            cast("dict[str, ForecastEnsemble]", second),
+        )
+        return
+
+    first_group = cast("dict[StationId, dict[str, ForecastEnsemble]]", first)
+    second_group = cast("dict[StationId, dict[str, ForecastEnsemble]]", second)
+    if set(first_group) != set(second_group):
+        raise ModelSmokeTestError(
+            "Determinism check failed: station result keys differ for identical seed"
+        )
+
+    for station_id in sorted(first_group, key=str):
+        _assert_ensemble_dicts_equal(
+            f"station {station_id}",
+            first_group[station_id],
+            second_group[station_id],
+        )
+
+
+def _assert_ensemble_dicts_equal(
+    label: str,
+    first: dict[str, ForecastEnsemble],
+    second: dict[str, ForecastEnsemble],
+) -> None:
+    if set(first) != set(second):
+        raise ModelSmokeTestError(
+            f"Determinism check failed: ensemble keys differ for {label}"
+        )
+
+    for parameter in sorted(first):
+        if not first[parameter].values.equals(second[parameter].values):
+            raise ModelSmokeTestError(
+                "Determinism check failed: ForecastEnsemble.values differ for "
+                f"{label} parameter {parameter!r}"
             )
 
 

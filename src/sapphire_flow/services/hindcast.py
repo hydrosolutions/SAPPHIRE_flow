@@ -67,7 +67,7 @@ _CONNECTION_FATAL_KEYWORDS = frozenset(
 )
 
 
-def _is_connection_fatal(exc: Exception) -> bool:
+def is_connection_fatal(exc: Exception) -> bool:
     """Return True if the exception indicates the DB connection is dead."""
     if isinstance(exc, (DisconnectionError, InterfaceError, PendingRollbackError)):
         return True
@@ -373,7 +373,7 @@ def run_station_hindcast(
             results.append(HindcastStepResult(issue_time=issue_time, success=True))
 
         except Exception as exc:
-            if _is_connection_fatal(exc):
+            if is_connection_fatal(exc):
                 log.error(
                     "hindcast.connection_failed",
                     station_id=str(station_id),
@@ -544,7 +544,7 @@ def run_group_hindcast(
                 else:
                     inputs_batch[sid] = inputs
             except Exception as exc:
-                if _is_connection_fatal(exc):
+                if is_connection_fatal(exc):
                     log.error(
                         "hindcast.connection_failed",
                         station_id=str(sid),
@@ -609,7 +609,7 @@ def run_group_hindcast(
                 rng=rng,
             )
         except Exception as exc:
-            if _is_connection_fatal(exc):
+            if is_connection_fatal(exc):
                 log.error(
                     "hindcast.connection_failed",
                     issue_time=str(issue_time),
@@ -665,7 +665,7 @@ def run_group_hindcast(
                     HindcastStepResult(issue_time=issue_time, success=True)
                 )
             except Exception as exc:
-                if _is_connection_fatal(exc):
+                if is_connection_fatal(exc):
                     log.error(
                         "hindcast.connection_failed",
                         station_id=str(sid),

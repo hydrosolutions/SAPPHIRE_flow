@@ -353,6 +353,8 @@ thresholds = { k_sigma = 4.0 }
 
 # Adapter configuration
 [adapters.weather_forecast]
+enabled = true
+# v0 does not dispatch on type; the gate hardcodes MeteoSwissNwpAdapter.
 type = "meteoswiss_nwp"
 archive = true
 max_cache_age_hours = 12

@@ -2480,7 +2480,7 @@ Reference / lookup table for canonical parameter names. Makes the DB self-docume
 parameters:
   name: TEXT PK                           # canonical name — "discharge", "precipitation", etc.
   display_name: TEXT                      # human-readable — "Discharge", "Precipitation", etc.
-  unit: TEXT                              # SI or conventional unit — "m3/s", "mm", "°C", etc.
+  unit: TEXT                              # SI or conventional unit — "m³/s", "mm", "°C", etc.
   parameter_domain: TEXT                  # ParameterDomain: river | weather (extensible — see below)
   aggregation_method: TEXT                # AggregationMethod: sum | mean — for pentadal/dekadal temporal aggregation
   created_at: TIMESTAMPTZ

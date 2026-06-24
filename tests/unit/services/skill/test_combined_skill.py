@@ -73,7 +73,7 @@ def _make_hindcast(
         pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
         pl.col("member_id").cast(pl.Int32),
     )
-    units = "m3/s" if parameter == "discharge" else "m"
+    units = "m³/s" if parameter == "discharge" else "m"
     ensemble = ForecastEnsemble.from_members(
         station_id=station_id,
         issued_at=hindcast_step,

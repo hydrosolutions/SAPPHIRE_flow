@@ -53,7 +53,7 @@ def _make_members_ensemble(
         station_id=station_id,
         issued_at=_NOW,
         parameter="discharge",
-        units="m3/s",
+        units="m³/s",
         time_step=_STEP,
         values=df,
     )
@@ -79,7 +79,7 @@ def _make_quantiles_ensemble(
         station_id=station_id,
         issued_at=_NOW,
         parameter="discharge",
-        units="m3/s",
+        units="m³/s",
         time_step=_STEP,
         values=df,
     )

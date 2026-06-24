@@ -33,7 +33,7 @@ class FakeStationForecastModel:
         spatial_input_type=SpatialRepresentation.POINT,
     )
     parameter: str = "discharge"
-    units: str = "m3/s"
+    units: str = "m³/s"
 
     def train(
         self, data: StationTrainingData, params: ModelParams, rng: random.Random
@@ -137,7 +137,7 @@ class FakeMultiTargetStationForecastModel:
                 station_id=inputs.station_id,
                 issued_at=inputs.issue_time,
                 parameter=param,
-                units="m3/s" if param == "discharge" else "m",
+                units="m³/s" if param == "discharge" else "m",
                 time_step=inputs.time_step,
                 values=df,
             )
@@ -163,7 +163,7 @@ class FakeGroupForecastModel:
         spatial_input_type=SpatialRepresentation.POINT,
     )
     parameter: str = "discharge"
-    units: str = "m3/s"
+    units: str = "m³/s"
 
     def train(
         self, data: GroupTrainingData, params: ModelParams, rng: random.Random
@@ -273,7 +273,7 @@ class FakeMultiTargetGroupForecastModel:
                     station_id=sid,
                     issued_at=inputs.issue_time,
                     parameter=param,
-                    units="m3/s" if param == "discharge" else "m",
+                    units="m³/s" if param == "discharge" else "m",
                     time_step=inputs.time_step,
                     values=df,
                 )

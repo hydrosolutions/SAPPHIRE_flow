@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from sapphire_flow.types.domain import (
         ClimBaseline,
         ForecastQcRuleSet,
+        QcFlag,
         StationForecastQcOverride,
     )
     from sapphire_flow.types.ensemble import ForecastEnsemble
@@ -68,7 +69,7 @@ class MultiModelForecastResult:
         }
 
 
-def _worst_qc_status(flags: list) -> QcStatus:
+def worst_qc_status(flags: list[QcFlag]) -> QcStatus:
     if not flags:
         return QcStatus.QC_PASSED
     priority = {
@@ -142,7 +143,7 @@ def _run_single_model(
     for param, ensemble in ensembles.items():
         flags = qc_checker.check(ensemble, qc_rules, qc_overrides, baselines)
         all_flags[param] = flags
-        worst = _worst_qc_status(flags)
+        worst = worst_qc_status(flags)
         if worst == QcStatus.QC_FAILED:
             log.warning(
                 "run_station_forecast.qc_failed",
@@ -169,7 +170,7 @@ def _run_single_model(
     now = clock()
     for param, ensemble in ensembles.items():
         flags = all_flags[param]
-        qc_status = _worst_qc_status(flags)
+        qc_status = worst_qc_status(flags)
         forecast = OperationalForecast(
             id=ForecastId(id_gen()),
             station_id=station_id,

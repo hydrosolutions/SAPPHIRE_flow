@@ -1,6 +1,7 @@
 ---
-status: DONE
+status: SUPERSEDED
 created: 2026-03-30
+superseded_by: 076
 completed_tasks: [1, 2]  # output adapter + enum alignment — implemented 2026-04-01
 in_flight: [3]           # FI input types PR — instructions prepared, work in FI repo
 blocked: [4, 5]          # deferred to v1 — FI interface/ module not yet implemented
@@ -16,6 +17,12 @@ depends_on: [008, 003, 012]  # all DONE/ARCHIVED — informational traceability
 
 # 014 — ForecastInterface Adapter Design + Weather Source Mapping
 
+> **Superseded by Plan 076.** This plan's "FI `interface/` module not yet
+> implemented / GROUP path deferred to v1" framing, including blocked tasks 4–5,
+> is obsolete: FI v0.1.17 implements the interface module with station-keyed
+> output, and the SAP3 adapter plus operational GROUP path were built under
+> Plan 076.
+>
 > **v0a / v0b / v1 scoping:**
 >
 > **Section A, Tasks 1–3 → v0b.** Model development against FI's contract starts now.
