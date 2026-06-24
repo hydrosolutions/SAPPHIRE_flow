@@ -384,11 +384,13 @@ The goal is *attributable* risk — when a CVE lands or a build breaks, `git log
 
 ### Wheel-only dependency-update guard
 
-A dedicated CI job runs `uv sync --frozen --no-build --no-cache --no-install-project`. This makes GitHub-hosted CI the first execution environment for dependency-update installs and fails if a new package version requires Python build-backend / sdist execution on the CI platform.
+A dedicated CI job runs a two-step install sequence. Step 1 = "the wheel-only guard": `uv sync --frozen --no-build --no-cache --no-install-project --no-install-package forecastinterface`. This makes GitHub-hosted CI the first execution environment for dependency-update installs and fails if any non-excepted package version requires Python build-backend / sdist execution on the CI platform.
+
+Step 2 = "post-guard temporary forecastinterface exception install": `uv sync --frozen --no-cache --no-install-project --reinstall-package forecastinterface`. This step is allowed to build only `forecastinterface`, after the wheel-only guard has already checked every other locked dependency.
 
 `--no-install-project` is required because the SAPPHIRE Flow root package is editable-only and has no published wheel — the project itself is never installed from an index. This does **not** weaken the guard: the third-party dependencies (the real concern for install-time code execution) are still exercised end-to-end.
 
-**Documented source-build exception**: `exactextract` may require a source build on `linux/arm64` in the Dockerfile builder stage. GitHub-hosted amd64 CI stays wheel-only. Any new source-build exception must be recorded in the implementation PR and in this section before merge.
+**Documented source-build exceptions**: Plan 079 allows the temporary `forecastinterface` source build because it is first-party, public, pure Python, git-pinned to `v0.1.17` / `303aa422...`, and outside Plan 064's untrusted native-build threat model. The removal trigger is exact: remove this exception once ForecastInterface is published as a versioned wheel to a hydrosolutions package index and SAPPHIRE Flow migrates from the git pin to `forecastinterface==0.1.x`. `exactextract` may require a source build on `linux/arm64` in the Dockerfile builder stage. GitHub-hosted amd64 CI stays wheel-only except for the post-guard temporary `forecastinterface` install. Any new source-build exception must be recorded in the implementation PR and in this section before merge.
 
 ### Image pinning
 

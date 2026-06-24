@@ -61,24 +61,26 @@ jobs:
 
   # A4 — Wheel-only guard for dependency-update installs.
   #
-  # Runs `uv sync --frozen --no-build --no-cache --no-install-project` on
-  # GitHub-hosted amd64 to make CI the first execution environment for new
-  # dependency versions and to fail if an update introduces new Python
-  # build-backend / sdist source execution on this platform. `--no-cache`
-  # is required because cached pre-built wheels would otherwise mask a
-  # newly-required source build. `--no-install-project` skips the local
-  # editable root package (which has no binary distribution by design) so
-  # the guard only checks third-party dependencies — the actual target of
-  # this control.
+  # Step 1 below is the wheel-only guard: it runs `uv sync --frozen
+  # --no-build --no-cache --no-install-project --no-install-package
+  # forecastinterface` on GitHub-hosted amd64 to make CI the first execution
+  # environment for new dependency versions and to fail if any non-excepted
+  # package introduces new Python build-backend / sdist source execution on
+  # this platform. `--no-cache` is required because cached pre-built wheels
+  # would otherwise mask a newly-required source build. `--no-install-project`
+  # skips the local editable root package (which has no binary distribution
+  # by design) so the guard only checks third-party dependencies — the actual
+  # target of this control.
   #
   # Runs on every PR and push; the guard is fast enough that scoping to
   # pyproject.toml / uv.lock changes is not necessary. Any merged
   # dependency change is therefore guaranteed to have exercised the guard.
   #
-  # Known source-build exception: `exactextract` may require a source build
-  # in the linux/arm64 Docker builder path. GitHub-hosted amd64 CI is
-  # expected to remain wheel-only; any new exception must be documented in
-  # docs/standards/security.md per Plan 064 A4 step 3.
+  # Known source-build exceptions: `forecastinterface` is the temporary CI
+  # exception and is installed only after step 1 succeeds; `exactextract` may
+  # require a source build in the linux/arm64 Docker builder path. Any new
+  # exception must be documented in docs/standards/security.md per Plan 064 A4
+  # step 3.
   wheel-only-guard:
     runs-on: ubuntu-latest
     steps:
@@ -93,7 +95,11 @@ jobs:
           # explicitly disabling here makes the job v4/v8 compatible
           # (Dependabot PR #4 surfaced this).
           enable-cache: false
-      - run: uv sync --frozen --no-build --no-cache --no-install-project
+      - run: |
+          set -euo pipefail
+          # step 1 IS the guard — must keep --no-build and must precede step 2; step 2 has no --no-build and may build ONLY forecastinterface.
+          uv sync --frozen --no-build --no-cache --no-install-project --no-install-package forecastinterface
+          uv sync --frozen --no-cache --no-install-project --reinstall-package forecastinterface
 
   integration:
     runs-on: ubuntu-latest
