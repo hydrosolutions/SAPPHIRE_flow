@@ -1,6 +1,6 @@
 # Plan 084 — Dev-machine deployment validation: 2-station runoff-only end-to-end
 
-**Status**: DRAFT
+**Status**: READY
 **Phase**: 10c (staging infrastructure / deployment validation)
 **Parent**: Plan 046 (Mac Mini Staging Deployment) — builds directly on the A3
 dress-rehearsal procedure
@@ -48,11 +48,11 @@ repro finding to seed a WF2 fix milestone — not fixed inline.
 |---|---|---|
 | D1 | **Stations `2009` + `2091` are the target pair.** Both are discharge/river stations with CAMELS-CH attributes and LINDAS coverage. | Both present in `config.toml` `[onboarding].basin_ids` (lines 141-146). Plan 046 §A1: the four rivers were `{2091, 2009, 2033, 2085}`, the lake was `2004`; "all five are LINDAS-verified and already carry CAMELS-CH attributes"; "2004/2009/2091 were already in the 167-station list". Task 1a re-confirms live before onboarding. |
 | D2 | **Runoff-only first; no NWP adapter required.** The forecast model set (`linear_regression_daily`, `persistence_fallback`, `climatology_fallback`) declares no future-dynamic NWP features, so a forecast can be produced without contacting MeteoSwiss. | Plan 077 problem statement + `operational_inputs.py:197-205`; `run_forecast_cycle.py` `runoff_only_mode` branch (`:514`, `:643`). |
-| D3 | **Runoff-only is selected by the Plan 077 overlay** `config/overlays/mac-mini.toml` (`[adapters.weather_forecast].enabled = false`), wired via `SAPPHIRE_CONFIG_OVERLAY`. Base `config.toml` ships `enabled = true` (NWP-on), so without the overlay a parameter-less `forecast-cycle` self-wires `MeteoSwissNwpAdapter` and contacts MeteoSwiss live. | Plan 077 D1, T6; `run_forecast_cycle.py` self-wiring branch. |
+| D3 | **Runoff-only is selected by the Plan 077 overlay** `config/overlays/mac-mini.toml` (`[adapters.weather_forecast].enabled = false`), wired via `SAPPHIRE_CONFIG_OVERLAY`. Base `config.toml` ships `enabled = true` (NWP-on), so without the overlay a parameter-less `forecast-cycle` self-wires `MeteoSwissNwpAdapter` and contacts MeteoSwiss live. The overlay file is **not baked into the image** — like base `config.toml` it must be **bind-mounted** into the read-only worker; if `SAPPHIRE_CONFIG_OVERLAY` points at a path that is not mounted, `config/_overlay.py:36-38` raises `FileNotFoundError` and the forecast-cycle crashes before any NWP decision (it does **not** silently fall back to NWP). | Plan 077 D1, T6; `run_forecast_cycle.py:93-100` (`_resolve_overlay_paths` → `load_merged_toml`); `config/_overlay.py:12,27-33,36-38`; base config mount `docker-compose.yml:108` (`./config.toml:/app/config.toml:ro`); overlay mount `docker-compose.macmini.yml:28`; Dockerfile `:62-65` copies only `.venv/src/alembic` (no `config/`). |
 | D4 | **`forecast-cycle` is a parameter-less deployment** in both modes (Plan 077). Direct Python invocation (the Plan 046 §A3-step-8 template) is only needed when explicitly injecting a `MeteoSwissNwpAdapter` for debugging; runoff-only and self-wired NWP both run via the normal Prefect deployment trigger. | `register_deployments.py:46-52` (no params); Plan 077 D3 + non-goals. |
 | D5 | **Step 8 mark-operational is independent of Step 7 training.** Step 8 (`services/onboarding.py:608-654`) iterates `resolved_station_ids` and marks a non-weather station operational iff `fetch_artifacts_by_status(... ACTIVE, station_id)` returns ≥1 ACTIVE artifact for any `discovered` model — regardless of whether training ran or was skipped this run. This is the property failure mode 3 stress-tests. | `services/onboarding.py:608-654`. |
-| D6 | **Only `ingest-observations`, `forecast-cycle`, `backup-database` carry crons.** In the current code `onboard-stations` is registered with `cron=None` — it does **not** auto-fire. This contradicts the Mac mini observation ("scheduled `onboard-stations` fires with `basin_ids=None`"). See Open Question 1. We still pause all three cron'd deployments for the test to keep the worker idle. | `register_deployments.py:33-91`. |
-| D7 | **`onboarding.training_skipped` is logged at DEBUG** (`services/onboarding.py:520`, `log.debug`), and the worker runs `PREFECT_LOGGING_LEVEL=WARNING`. Asserting on it may require raising sapphire log verbosity; the idempotency gate (Phase 4) therefore relies primarily on the API (stations stay operational) and treats the `training_skipped` grep as best-effort. | `services/onboarding.py:520`; `docker-compose.yml:76`. |
+| D6 | **Only `ingest-observations` (`*/30`), `forecast-cycle` (`0 */6`), `backup-database` (`0 2`) carry crons.** In the current code `onboard-stations` is registered with `cron=None` — it cannot auto-fire on a schedule. The **real** full-set risk is therefore not a cron but the `basin_ids=None` config fallback: a parameter-less `onboard-stations` run reads `config.toml [onboarding].basin_ids` (the full ~167 list) and logs `basin_ids_from_config`. Defence is preventive (Task 2a): always pass `-p 'basin_ids=[...]'`, guard that no other `onboard-stations` run is RUNNING/SCHEDULED before triggering, and CANCEL on sight of `onboarding_starting` with `basin_ids=null`. We still pause the three cron'd deployments to keep the worker idle. | `register_deployments.py:33-91` (cron defaults `:29`; crons `:35-37,44,50,57`); `flows/onboard.py:144-152` (config fallback + `basin_ids_from_config`). |
+| D7 | **Sapphire exit-gate events are emitted at every level regardless of `PREFECT_LOGGING_LEVEL`.** `configure_prefect_logging()` is *defined* (`logging.py:82`) but **never called** — the worker runs a bare `prefect worker start` (`docker-compose.yml:70`), so sapphire's structlog stays unconfigured and emits all levels through the default `PrintLogger`. `PREFECT_LOGGING_LEVEL=WARNING` (`docker-compose.yml:76`) only governs Prefect's own stdlib loggers, not sapphire structlog. Therefore `onboarding.training_skipped` (DEBUG, `services/onboarding.py:520`) is observable on stdout alongside every INFO/WARNING gate event. Phase 4 asserts on it **directly** — no verbosity change needed. | `services/onboarding.py:520`; `logging.py:82` (no callsite); `docker-compose.yml:70,76`. |
 
 ---
 
@@ -60,8 +60,18 @@ repro finding to seed a WF2 fix milestone — not fixed inline.
 
 All commands run from the repo root on this host. Set once per shell:
 
+**Preconditions** (one-time on a fresh checkout / reused host, per README
+§"Quick start"): the `secrets/` symlink and `secrets/db_password` exist
+(README §1 — `up` mounts `./secrets/db_password`, `docker-compose.yml:247`), and
+`.env` defines `CAMELS_CH_HOST_DIR` (README §2; auto-loaded by docker compose).
+Both already exist on this dev host; verify before `up` if reusing on the Mac
+mini. Run `uv sync` first so `uv run` below resolves — an empty `VERSION` aborts
+every `$DC` call via `${VERSION:?...}` (`docker-compose.yml:69`).
+
 ```bash
 cd /Users/bea/Documents/GitHub/SAPPHIRE_flow
+
+uv sync   # ensure the uv env is synced (fresh checkout) so the next line resolves
 
 # Image tag — docker-compose.yml references sapphire-flow:${VERSION} with no default.
 export VERSION="$(uv run bump-my-version show current_version)"
@@ -78,6 +88,12 @@ API=http://localhost:8010/api/v1
 ```
 
 Targets: `BASINS='["2009","2091"]'`.
+
+> **Shell note**: `VERSION`, the `DC` alias, and `API` are shell-local. If you
+> open a new terminal mid-run (e.g. one shell tailing logs, one issuing
+> commands), **re-run this entire preamble** in that shell — `docker-compose.yml`
+> hard-requires `${VERSION}` (no default), so a `$DC` call with an unset
+> `VERSION` aborts.
 
 ---
 
@@ -118,10 +134,16 @@ scheduled deployments so only intended manual runs execute.
   ```
 - **Exit gates** (each is a hard check):
   1. `init` exited 0: `$DC logs init | tail -n 5` shows `Init complete` and
-     `docker inspect -f '{{.State.ExitCode}}' "$($DC ps -q init)"` is `0`.
+     `docker inspect -f '{{.State.ExitCode}}' "$($DC ps -aq init)"` is `0`.
+     (Use `ps -aq`, not `ps -q`: `init` has `restart: "no"`
+     (`docker-compose.yml:226`) and has already exited by gate time, so plain
+     `ps -q` omits it and `docker inspect ""` would error.)
   2. Long-running services healthy within 5 min (first boot):
-     `$DC ps` shows `postgres`, `prefect-server`, `prefect-worker`, `api`,
-     `caddy` healthy/running.
+     `$DC ps` shows `postgres`, `prefect-server`, `prefect-worker`, `api`
+     healthy/running. (`caddy` is **not** on the validation path — it binds host
+     `:80`/`:443` with a 30s start-period and nothing here goes through it
+     (validation hits `localhost:8010` directly); treat its state as
+     non-blocking.)
   3. Health endpoint:
      `curl -s "$API/health" | jq -e '.status=="ok" and .prefect_status=="ok"'`
      returns `true`.
@@ -141,19 +163,37 @@ scheduled deployments so only intended manual runs execute.
 - **Scope**: Prevent any cron'd deployment from firing and thrashing the single
   process worker while the targeted runs execute (failure mode 2). Out: deleting
   schedules permanently.
-- **Steps** (Prefect 3 CLI; confirm the exact subcommand at runtime with
-  `$DC exec -T prefect-worker prefect deployment schedule --help` — in Prefect 3
-  it is `prefect deployment schedule pause <deployment-name> [schedule_id]`,
-  with `prefect deployment schedule ls <deployment-name>` to inspect):
+- **Steps** (Prefect 3.6.23 CLI). The `pause` subcommand **cannot** take a bare
+  `<flow>/<deployment>`: `_set_schedule_activation` (`prefect/cli/deployment.py:885-888`)
+  requires *either* `--all` *or* both a deployment name **and** an explicit
+  `schedule_id`; a deployment-name-only call exits non-zero and pauses nothing.
+  Pause all schedules in one shot via the worker container (`-T` skips the TTY
+  confirm prompt — `is_interactive()` is false without a TTY):
+  ```bash
+  $DC exec -T prefect-worker prefect deployment schedule pause --all
+  ```
+  `--all` only touches deployments that actually have a schedule, i.e. the three
+  cron'd ones (`forecast-cycle`, `ingest-observations`, `backup-database`);
+  `onboard-stations` has no schedule, so `--all` is harmless and safer than
+  hand-listing schedule-ids. Then verify per deployment with the bare
+  `<flow>/<deployment>` name (which `ls` **does** accept —
+  `prefect/cli/deployment.py:1043-1060`; flow name == deployment name for all v0
+  deployments):
   ```bash
   for d in forecast-cycle ingest-observations backup-database; do
     $DC exec -T prefect-worker prefect deployment schedule ls "$d/$d"
-    $DC exec -T prefect-worker prefect deployment schedule pause "$d/$d"
   done
   ```
   Note (D6): `onboard-stations` has **no** schedule in the current code, so there
-  is nothing to pause for it; it can only run when manually triggered.
-- **Exit gate**: `prefect deployment schedule ls <name>` shows each of the three
+  is nothing to pause for it; it can only run when manually triggered. The
+  parameter-less full-set risk for `onboard-stations` is handled preventively in
+  Task 2a, not by pausing.
+- **Teardown (resume afterward)**: when validation is done, re-enable the
+  schedules so the host returns to normal operation:
+  ```bash
+  $DC exec -T prefect-worker prefect deployment schedule resume --all
+  ```
+- **Exit gate**: `prefect deployment schedule ls "$d/$d"` shows each of the three
   schedules `active: False` (paused). For a belt-and-braces check, observe the
   Prefect UI "Upcoming runs" panel for ~2 min and confirm **no** auto-scheduled
   runs appear and **no** repeated `onboarding_starting` events surface in
@@ -169,9 +209,19 @@ scheduled deployments so only intended manual runs execute.
   it run to completion without touching the worker. Out: scale, lakes, NWP.
 - **Ordering constraint (failure mode 1)**: do **not** restart, recreate, or
   `--force-recreate` the worker (or any service) while this run is in flight.
-  Any NWP-enable (Phase 5) happens strictly after onboarding completes. Confirm
-  no other flow run is RUNNING before triggering.
-- **Trigger** (JSON-string quoting for the list param, per Plan 046 §A3 F2):
+  Any NWP-enable (Phase 5) happens strictly after onboarding completes.
+- **Pre-trigger guard (failure mode 2 — preventive, D6)**: the full-set danger is
+  a parameter-less `onboard-stations` run falling back to `config.toml`'s full
+  `[onboarding].basin_ids`. Before triggering, assert no `onboard-stations` run is
+  already RUNNING or SCHEDULED, and cancel any that is:
+  ```bash
+  $DC exec -T prefect-worker prefect flow-run ls --flow-name onboard-stations \
+    --state RUNNING --state SCHEDULED --state PENDING
+  # If any appear, cancel each before proceeding:
+  #   $DC exec -T prefect-worker prefect flow-run cancel <FLOW_RUN_ID>
+  ```
+- **Trigger** (the `-p 'basin_ids=[...]'` argument is **mandatory** — never trigger
+  parameter-less; JSON-string quoting for the list param, per Plan 046 §A3 F2):
   ```bash
   $DC exec -T prefect-worker prefect deployment run onboard-stations/onboard-stations \
     -p 'basin_ids=["2009","2091"]'
@@ -182,7 +232,13 @@ scheduled deployments so only intended manual runs execute.
   ```
 - **Exit gates** (grep the canonical single-line events):
   1. Exactly one `onboarding_starting` for this run carries `basin_ids` of the
-     two IDs (no `basin_ids=null`, no full-list run).
+     two IDs. **If `onboarding_starting` shows `basin_ids=null` (or the full
+     ~167-list), CANCEL the flow run immediately** — that run fell back to
+     `config.toml` and is onboarding the full set:
+     ```bash
+     $DC exec -T prefect-worker prefect flow-run cancel <FLOW_RUN_ID>
+     ```
+     then stop and re-trigger with the explicit `-p 'basin_ids=[...]'` argument.
   2. The run reaches `onboarding_flow_complete` (proves an uninterrupted run got
      to Step 8 — defends failure mode 1) carrying
      `stations_marked_operational=2`. Record `observations_imported`,
@@ -222,16 +278,27 @@ scheduled deployments so only intended manual runs execute.
 - **Scope**: Produce a forecast for both operational stations without NWP. Out:
   NWP/gridded path (Phase 5), skill/combination.
 - **Select runoff-only mode**: the worker must run with the Plan 077 runoff-only
-  overlay so the parameter-less `forecast-cycle` skips NWP. Provide
-  `SAPPHIRE_CONFIG_OVERLAY=/app/config/overlays/mac-mini.toml` to the
-  `prefect-worker` for this validation. Use a small **transient** dev override
-  saved by the operator (do not commit) — e.g. `docker-compose.runoff.yml`:
+  overlay so the parameter-less `forecast-cycle` skips NWP. This requires **both**
+  the env var **and** a bind-mount of the overlay file — the overlay is *not* baked
+  into the image (D3), and the worker is `read_only`, so an env var alone makes
+  `config/_overlay.py` raise `FileNotFoundError` and crashes the cycle before it
+  ever evaluates NWP. Use a small **transient** dev override saved by the operator
+  (do not commit) — `docker-compose.runoff.yml`, mirroring
+  `docker-compose.macmini.yml:24-28`:
   ```yaml
   services:
     prefect-worker:
       environment:
         SAPPHIRE_CONFIG_OVERLAY: /app/config/overlays/mac-mini.toml
+      volumes:
+        - ./config/overlays/mac-mini.toml:/app/config/overlays/mac-mini.toml:ro
   ```
+  > Why a bespoke override and not `-f docker-compose.macmini.yml` directly:
+  > `docker-compose.macmini.yml` additionally binds host paths that exist only on
+  > the mini (`/Volumes/sapphire-backup/pg_dumps`, `/Users/sapphire/camels-ch`).
+  > Layering it on this dev host would append those mounts and fail. The transient
+  > override copies only the two lines we need (env var + overlay mount).
+
   Apply it and recreate **only the worker** — this is safe now because Phase 2
   onboarding is complete and nothing is running:
   ```bash
@@ -250,10 +317,14 @@ scheduled deployments so only intended manual runs execute.
      runoff-only path), and `forecast_cycle.starting` reports `stations=2`.
   2. **No** `forecast_cycle.no_operational_stations` event.
   3. The flow run reaches `COMPLETED`.
-  4. Forecasts visible via the API for **both** stations:
+  4. Forecasts visible via the API for **both** stations. **Pass an explicit wide
+     window** — `GET /stations/{id}/forecasts` defaults to `[now-7d, now]`
+     (`api_stations.py:248-253`), so a forecast whose `cycle_time` rounds to a
+     future slot would fall after `end=now` and read `.total==0`:
      ```bash
+     WIN='start=2000-01-01T00:00:00Z&end=2100-01-01T00:00:00Z'
      for sid in $(curl -s "$API/stations?status=operational&limit=200" | jq -r '.items[].id'); do
-       echo "$sid -> $(curl -s "$API/stations/$sid/forecasts?limit=1" | jq '.total')"
+       echo "$sid -> $(curl -s "$API/stations/$sid/forecasts?limit=1&$WIN" | jq '.total')"
      done
      ```
      Each station returns `.total >= 1`.
@@ -278,10 +349,23 @@ scheduled deployments so only intended manual runs execute.
   2. **Stations remain operational**:
      `curl -s "$API/stations?status=operational&limit=200" | jq '.total'` still
      returns `2`.
-  3. Best-effort (D7): `onboarding.training_skipped`
-     `reason=all_stations_have_active_artifact` is emitted (DEBUG — may require
-     temporarily raising sapphire log verbosity; absence is not a failure if
-     gates 1-2 hold and no new artifacts were created).
+  3. **Idempotency — authoritative signal**: no new ACTIVE artifacts were created
+     (artifact count unchanged from Phase 2) and the stations stay operational
+     (gate 2). The artifact-count delta is the provable idempotency check (it
+     reflects DB state, not logging config).
+  4. (D7) **Corroborating only**: `onboarding.training_skipped`
+     `reason=all_stations_have_active_artifact` *should* appear. It logs at DEBUG;
+     the D7 claim is that sapphire structlog is unconfigured on the worker so it
+     prints regardless of `PREFECT_LOGGING_LEVEL`:
+     ```bash
+     $DC logs prefect-worker | grep 'onboarding.training_skipped'
+     ```
+     This is the one gate that depends on logging-config behaviour rather than a
+     provable code path. If the line is **missing** while gates 2-3 pass, do
+     **not** call it a D5 bug — treat it as "verify the D7 logging assumption"
+     (e.g. confirm via the stations API that the two stations are still
+     operational and the artifact count is unchanged, which are the authoritative
+     signals). Only a gate-2/gate-3 failure constitutes the Phase 4 bug below.
 - **If gate 2 FAILS** (stations drop out of / never reach operational on the
   re-run): this is the suspected Mac mini bug. Do **not** fix inline. Produce a
   crisp **BUG FINDING** with:
@@ -313,14 +397,23 @@ the worker is safe, because nothing is running.
      ```bash
      $DC up -d --force-recreate prefect-worker
      ```
-  2. Writability check (Plan 077 §T7):
+  2. Writability check (Plan 077 §T7) — confirms the NWP scratch/archive paths
+     the gridded path writes to:
      ```bash
      $DC exec -u app -T prefect-worker sh -c \
        'touch /data/nwp_grids/.w /tmp/sapphire_nwp/.w && echo ok && rm /data/nwp_grids/.w /tmp/sapphire_nwp/.w'
      ```
-     Expect `ok`. (Also relevant to Plan 062 / failure mode 6 — note whether
-     `PREFECT_HOME` / `.prefect` paths are writable and whether interrupted-run
-     recovery works on this host.)
+     Expect `ok`.
+  2b. `PREFECT_HOME` observation (failure mode 6 / Plan 062 — record only, do not
+     block). `PREFECT_HOME` is unset in every compose file; Plan 062's concern is
+     server-side state persistence across `down`/restart, which this from-`down -v`
+     procedure never exercises (the server is not restarted mid-run). Just record
+     the observed dev behaviour:
+     ```bash
+     $DC exec -T prefect-server printenv PREFECT_HOME || echo "PREFECT_HOME unset (expected)"
+     ```
+     Note: because `PREFECT_HOME` is unset, a `$DC down` loses Prefect run history;
+     this is recorded behaviour, not a gate failure for this plan.
   3. Trigger NWP forecast-cycle. Preferred: parameter-less (Plan 077 self-wires
      `MeteoSwissNwpAdapter` from `enabled=true`):
      ```bash
@@ -358,16 +451,24 @@ Ordered, copy-paste procedure (uses the Environment preamble above):
 2. **Clean start** — `$DC down -v && $DC build && $DC up -d`; gate on `init`
    exit 0, health `ok/ok`, 9 deployments, `/stations?limit=200 .total==0`,
    `ls /data/raw/CAMELS_CH` non-empty.
-3. **Pause schedules** — pause `forecast-cycle`, `ingest-observations`,
-   `backup-database`; verify each `active: False` and no upcoming runs.
-4. **Onboard 2** — `prefect deployment run onboard-stations/onboard-stations -p 'basin_ids=["2009","2091"]'`;
-   gate on `onboarding_flow_complete` `stations_marked_operational=2` + 2×
+3. **Pause schedules** — `prefect deployment schedule pause --all` (a bare
+   `pause <flow>/<deployment>` does nothing on 3.6.23); verify each of
+   `forecast-cycle`, `ingest-observations`, `backup-database` shows
+   `active: False` via `schedule ls "$d/$d"` and no upcoming runs. Resume with
+   `... schedule resume --all` when done.
+4. **Onboard 2** — guard no `onboard-stations` run is RUNNING/SCHEDULED, then
+   `prefect deployment run onboard-stations/onboard-stations -p 'basin_ids=["2009","2091"]'`
+   (the `-p` arg is mandatory — parameter-less falls back to the full config list);
+   gate on `onboarding_starting` carrying the 2 IDs (CANCEL if `basin_ids=null`),
+   `onboarding_flow_complete` `stations_marked_operational=2` + 2×
    `onboarding.station_operational`; never touch the worker mid-run.
 5. **Verify operational** — `/stations?status=operational&limit=200 .total==2`.
-6. **Runoff forecast** — worker with `SAPPHIRE_CONFIG_OVERLAY=.../mac-mini.toml`;
+6. **Runoff forecast** — recreate the worker with `docker-compose.runoff.yml`
+   (env var **and** overlay bind-mount — an env var alone crashes config load);
    `prefect deployment run forecast-cycle/forecast-cycle`; gate on
    `forecast_cycle.nwp_disabled mode=runoff_only`, no
-   `no_operational_stations`, forecasts `.total>=1` per station.
+   `no_operational_stations`, forecasts `.total>=1` per station (use an explicit
+   wide `start/end` window on the forecasts query).
 7. **Idempotency** — re-run step 4; gate on `.total==2` operational still holds.
 8. **(Optional) NWP** — drop the overlay, `up -d --force-recreate prefect-worker`,
    writability `ok`, re-trigger forecast-cycle.
@@ -377,10 +478,14 @@ Ordered, copy-paste procedure (uses the Environment preamble above):
 1. **Never restart/recreate the worker mid-onboarding** — it tears down the flow
    before Step 8 → 0 operational. Sequence any worker recreate (Phase 5) strictly
    after `onboarding_flow_complete`.
-2. **Pause cron'd deployments** before the test (`forecast-cycle`,
-   `ingest-observations`, `backup-database`). Repeated `onboarding_starting` =
-   an auto-firing schedule starving the targeted run. NB: in current code
-   `onboard-stations` has no cron (D6 / Open Question 1).
+2. **Never trigger `onboard-stations` parameter-less; pause the cron'd
+   deployments.** The real full-set mechanism is the `basin_ids=None` →
+   `config.toml` full-list fallback (D6), not a cron — `onboard-stations` has no
+   schedule. Defence is preventive: guard that no `onboard-stations` run is
+   RUNNING/SCHEDULED before triggering, always pass `-p 'basin_ids=[...]'`, and
+   CANCEL on sight of `onboarding_starting` with `basin_ids=null`. Separately,
+   pause the three cron'd deployments (`forecast-cycle`, `ingest-observations`,
+   `backup-database`) to keep the single-process worker idle.
 3. **Re-run must keep stations operational** — Step 8 is independent of training
    (D5). If a re-run drops them, that is a BUG to capture (Phase 4), not expected.
 4. **Always query with `?status=operational&limit=200`** — the default
@@ -388,9 +493,11 @@ Ordered, copy-paste procedure (uses the Environment preamble above):
 5. **Pick discharge/river stations** — lake stations (water_level only) correctly
    stay in `onboarding` (no discharge model). `2009`/`2091` are rivers; `2004`
    (Murten) is a lake — do not use it here.
-6. **`PREFECT_HOME` may not be persistent** (Plan 062) — verify `.prefect` is
-   writable on this host; non-persistence means warnings + non-resumable runs.
-   Note the observed behaviour for the mini.
+6. **`PREFECT_HOME` is unset everywhere — record, do not block** (Plan 062). This
+   from-`down -v` procedure never restarts the server mid-run, so it does not
+   exercise Plan 062's resumability concern. Just observe
+   `$DC exec prefect-server printenv PREFECT_HOME` (expect unset) and note that a
+   `down` loses run history. Do not block this plan on Plan 062.
 
 ---
 
@@ -443,27 +550,42 @@ Ordered, copy-paste procedure (uses the Environment preamble above):
 
 ---
 
-## Open questions (resolve before promoting to READY)
+## Resolved ground truth (was: open questions; all settled against the codebase 2026-06-26)
 
-1. **Failure mode 2 vs code (D6).** The current `register_deployments.py`
-   registers `onboard-stations` with `cron=None` — it cannot auto-fire on a
-   schedule. Yet the Mac mini showed repeated `onboarding_starting` with the full
-   ~160-station set. Was the mini running older code, was onboarding triggered
-   manually more than once, or did a different flow log that event? Confirm
-   before trusting the "pause schedules" mitigation as complete.
-2. **Runoff-only selection on dev.** Is the transient `docker-compose.runoff.yml`
-   override (Phase 3b) acceptable, or should the dev overlay grow a documented
-   `SAPPHIRE_CONFIG_OVERLAY` hook? Confirm the `config/overlays/mac-mini.toml`
-   overlay is baked into the `sapphire-flow` image (so `/app/config/overlays/...`
-   resolves inside the worker without an extra mount).
-3. **`training_skipped` observability (D7).** Should Phase 4 temporarily set a
-   DEBUG sapphire log level to make the idempotency assertion direct, or is the
-   API-based gate sufficient?
-4. **Exact Prefect 3 pause command.** Confirm `prefect deployment schedule pause`
-   (vs `prefect deployment pause-schedule`) on the pinned Prefect 3 version in
-   the worker image, and that pausing survives the test window.
-5. **`PREFECT_HOME` persistence (Plan 062, failure mode 6).** Decide whether to
-   block this plan on Plan 062, or just record dev behaviour and proceed.
+1. **Failure mode 2 mechanism (D6).** `onboard-stations` is registered with
+   `cron=None` (`register_deployments.py:29,80-84`) — it cannot auto-fire. The
+   real full-set risk is the `basin_ids=None` → `config.toml [onboarding].basin_ids`
+   fallback (`flows/onboard.py:144-152`, logs `basin_ids_from_config`). Mitigation
+   is preventive in Task 2a (guard for running/scheduled runs; mandatory `-p`
+   argument; cancel on `basin_ids=null`), plus pausing the three real crons.
+2. **Runoff-only selection on dev.** The transient `docker-compose.runoff.yml`
+   override is the chosen mechanism. The overlay is **not** baked into the image
+   (Dockerfile `:62-65` copies only `.venv/src/alembic`); like base `config.toml`
+   it must be **bind-mounted**. The override therefore sets **both**
+   `SAPPHIRE_CONFIG_OVERLAY` and the `./config/overlays/mac-mini.toml` mount
+   (mirroring `docker-compose.macmini.yml:24-28`). Selection wiring is real:
+   `_resolve_overlay_paths()` (`config/_overlay.py:12,27-33`) →
+   `load_merged_toml` (`run_forecast_cycle.py:93-100`) →
+   `nwp_enabled = weather_forecast_config.enabled` →
+   `runoff_only_mode = not nwp_enabled` (`run_forecast_cycle.py:476-479,517`);
+   base `config.toml` ships `enabled = true`, overlay sets `enabled = false`.
+3. **`training_skipped` observability (D7).** Direct gate. `configure_prefect_logging()`
+   is never called, so sapphire structlog prints all levels regardless of
+   `PREFECT_LOGGING_LEVEL`; `onboarding.training_skipped` (DEBUG) is grep-able on
+   the worker stdout. No verbosity change needed (see Phase 4 gate 3).
+4. **Prefect pause command.** On Prefect 3.6.23, `pause` requires `--all` or both
+   a deployment name and an explicit `schedule_id` — a bare
+   `pause <flow>/<deployment>` exits non-zero and pauses nothing
+   (`prefect/cli/deployment.py:885-888`). The working command is
+   `prefect deployment schedule pause --all` (resume with
+   `... schedule resume --all`). Inspection, however, **does** accept the bare
+   name: `prefect deployment schedule ls <flow>/<deployment>`
+   (`prefect/cli/deployment.py:1043-1060`; flow name == deployment name for all v0
+   deployments).
+5. **`PREFECT_HOME` (Plan 062, failure mode 6).** Do **not** block on Plan 062.
+   `PREFECT_HOME` is unset in every compose file; Plan 062's concern is
+   server-side persistence across restart, which this from-`down -v` procedure
+   never exercises. Record the observed value (Task 5a step 2b) and proceed.
 
 ---
 
