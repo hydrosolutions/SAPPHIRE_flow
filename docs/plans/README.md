@@ -22,6 +22,9 @@ by hand.
 - **066** — Train-models retrain strategy (configurable) — `DRAFT` — Framework so retrain data-window is selectable; default restores dress-rehearsal A3 step 4 (F3).
 - **067** — MeteoSwiss STAC adapter investigation + configurability — `READY` — Root-cause the "cycle late" signal (F4), then move `_MAX_FALLBACK_STEPS` into config and decide pagination-cap fate (F5). Four review rounds.
 - **068** — `onboard-stations` parallelization + decouple historical hindcast — `DRAFT` — Cut 38 min onboarding to seconds; move historical hindcast to new async `backfill-hindcasts` flow with `task.map`. Depends on Plans 038 + 040.
+- **081** — recap-dg-client forcing adapter — `DRAFT` — Offline-completable Nepal v1 Recap adapter foundation, variable catalog, metadata design, band converter, and fake-client contract tests.
+- **082** — recap Gateway operational and training readiness — `DRAFT` — Live Gateway smoke, Nepal config, latest-cycle/watchdog semantics, temporal model-input join, coverage gate, and runbooks. Depends on Plan 081.
+- **083** — Human-readable station code in structured logs — `DRAFT` — Bind `station_code` alongside the UUID `station_id` at per-station fan-out boundaries so operators can read logs without a UUID lookup; update `logging.md`.
 
 ## Deferred
 
