@@ -25,6 +25,7 @@ by hand.
 - **081** — recap-dg-client forcing adapter — `DRAFT` — Offline-completable Nepal v1 Recap adapter foundation, variable catalog, metadata design, band converter, and fake-client contract tests.
 - **082** — recap Gateway operational and training readiness — `DRAFT` — Live Gateway smoke, Nepal config, latest-cycle/watchdog semantics, temporal model-input join, coverage gate, and runbooks. Depends on Plan 081.
 - **083** — Human-readable station code in structured logs — `DRAFT` — Bind `station_code` alongside the UUID `station_id` at per-station fan-out boundaries so operators can read logs without a UUID lookup; update `logging.md`.
+- **084** — Dev-machine deployment validation (2-station runoff-only) — `DRAFT` — Clean, repeatable end-to-end validation of the local dev stack for 2 BAFU river stations (2009/2091): onboard → operational → runoff-only forecast → idempotency re-run → optional NWP, hardened against the six Mac-mini failure modes before the mini re-attempt.
 
 ## Deferred
 
