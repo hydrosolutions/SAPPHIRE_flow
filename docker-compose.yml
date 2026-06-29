@@ -68,6 +68,14 @@ services:
     build: .
     image: sapphire-flow:${VERSION:?VERSION is required; set in .env or export before compose up}
     command: prefect worker start --pool default --type process
+    # Plan 086: bound the blast radius of an over-budget NWP-on forecast cycle.
+    # An over-limit run is cgroup-killed INSIDE this container (still a SIGKILL)
+    # instead of the host OOM killer taking an arbitrary host process — this
+    # bounds blast radius, it is NOT a graceful failure. Sized 8 GiB: above the
+    # 4 GiB tmpfs working set (/tmp/sapphire_nwp) + worker base, below the
+    # ~15.84 GiB VM. A value near 4 GiB would risk killing normal runs because
+    # of the tmpfs staging working set (see Plan 086 D8 / Open Item D).
+    mem_limit: 8g
     environment:
       SAPPHIRE_DATA_DIR: /data
       SAPPHIRE_CONFIG: /app/config.toml
