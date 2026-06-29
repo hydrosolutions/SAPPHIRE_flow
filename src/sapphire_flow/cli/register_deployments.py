@@ -32,7 +32,7 @@ class DeploymentSpec:
 
 def _build_specs() -> list[DeploymentSpec]:
     """Build deployment specs with env-var-configurable schedules."""
-    cron_ingest = os.environ.get("SCHEDULE_INGEST_OBSERVATIONS", "*/30 * * * *")
+    cron_ingest = os.environ.get("SCHEDULE_INGEST_OBSERVATIONS", "*/5 * * * *")
     cron_forecast = os.environ.get("SCHEDULE_FORECAST_CYCLE", "0 */6 * * *")
     cron_backup = os.environ.get("SCHEDULE_BACKUP_DATABASE", "0 2 * * *")
 
