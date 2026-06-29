@@ -26,6 +26,7 @@ by hand.
 - **082** — recap Gateway operational and training readiness — `DRAFT` — Live Gateway smoke, Nepal config, latest-cycle/watchdog semantics, temporal model-input join, coverage gate, and runbooks. Depends on Plan 081.
 - **083** — Human-readable station code in structured logs — `DRAFT` — Bind `station_code` alongside the UUID `station_id` at per-station fan-out boundaries so operators can read logs without a UUID lookup; update `logging.md`.
 - **084** — Dev-machine deployment validation (2-station runoff-only) — `READY` — Clean, repeatable end-to-end validation of the local dev stack for 2 BAFU river stations (2009/2091): onboard → operational → runoff-only forecast → idempotency re-run → optional NWP, hardened against the six Mac-mini failure modes before the mini re-attempt.
+- **085** — Observation ingest: value-restatement upsert + 5-min poll cadence — `READY` — Scoped `on_conflict_do_update` so BAFU value restatements are captured (last-write-wins on a real value change) with a `value IS DISTINCT FROM` predicate, QC-state reset for in-flow re-QC, and a stored/skipped counting-trap fix; plus raising the default ingest cron `*/30`→`*/5` for the snapshot-only LINDAS adapter. WF2 fix-mode.
 
 ## Deferred
 
