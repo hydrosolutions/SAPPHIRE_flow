@@ -133,7 +133,7 @@ NWP-on task wiring lives in `flows/run_forecast_cycle.py` — `_fetch_nwp_task` 
 | D8 | **The deployed NWP scratch is RAM-backed `tmpfs` (4 GiB).** `prefect-worker` mounts `/tmp/sapphire_nwp` as `tmpfs … size: 4294967296`, so the 2.7 GB of staged compressed GRIB consumes RAM too. The lazy + archive-rechunk fix shrinks the **decompressed** peak to a few tens of MB, so **after the fix the tmpfs working set (~2.7 GB) becomes the dominant RAM driver**. Any `mem_limit` near 4 GiB therefore risks killing normal runs; the durable fix is moving scratch to the disk-backed `nwp_grids` volume (Open Item D / Risk 4). | `docker-compose.yml` `prefect-worker` `tmpfs` mount; `config.toml:365` `scratch_path="/tmp/sapphire_nwp"`. |
 | D9 | **`dask` is ALREADY a dependency — no install-footprint change.** `pyproject.toml` declares `"dask[array]>=2024.1.0"`; `uv.lock` resolves `dask`. The core fix adds **no** new package. | `pyproject.toml:16`; `uv.lock:731, 3606, 3661`. |
 | D10 | **The regression signal is BEHAVIORAL laziness + archive round-trip, not a live OOM.** Fast, deterministic, committed-fixture proxies (D3 fixtures, <1 s): (a) after parse `GriddedForecast.values` is dask-backed (`.chunks is not None`) — fails today, passes after; (b) archiving a **real-dim-order** lazy source round-trips via `load()` — fails today (the D4 `ValueError`), passes after the rechunk. The codebase has **no precedent for peak-RSS / memory assertions** — these are the lockable proxies. | xarray dask semantics; empirical D4 repro; existing tests assert values/shape, never RSS. |
-| D11 | **Locked tests MUST use the real dim order, or they miss the blocker.** The existing synthetic fixtures (`test_zarr_nwp_grid_store.py:15-30` and `test_exact_extract_grid_extractor.py:25-56`) are `member`-first with `latitude`/`longitude` and stay **eager** (single numpy chunk), so `to_zarr` never hits the dask-chunk-overlap path — they would pass even on broken `main`. Task 6b must archive a **dask source with dims `(valid_time, member, values)` chunked `(1,1,N)`** and assert `archive → load()` round-trips (this catches the BLOCKER). Task 6c must use an instrumented / chunk-counting dask source asserting peak materialization = ONE slice. | `tests/unit/store/test_zarr_nwp_grid_store.py:15-30`; `tests/unit/preprocessing/test_exact_extract_grid_extractor.py:25-56`. |
+| D11 | **Locked tests MUST use the real dim order, or they miss the blocker.** The existing synthetic fixtures (`test_zarr_nwp_grid_store.py:15-30` and `test_exact_extract_grid_extractor.py:25-56`) are `member`-first with `latitude`/`longitude` and stay **eager** (single numpy chunk), so `to_zarr` never hits the dask-chunk-overlap path — they would pass even on broken `main`. Task 6b must archive a **dask source with dims `(valid_time, member, values)` chunked `(1,1,N)`** and assert `archive → load()` round-trips (this catches the BLOCKER). (Task 6c is verify-only — the extractor doesn't change, so it is NOT a lockable fix-mode red anchor; see Task 6c.) | `tests/unit/store/test_zarr_nwp_grid_store.py:15-30`; `tests/unit/preprocessing/test_exact_extract_grid_extractor.py:25-56`. |
 
 ---
 
@@ -351,20 +351,23 @@ archive round-trip + non-regression — no real OOM / large data needed (D10).
   fails pre-fix (overlap `ValueError`), passes post-fix; existing eager
   `test_round_trip` stays green.
 
-#### Task 6c — Locked extractor incremental-materialization + non-regression test
+#### Task 6c — Extractor non-regression (VERIFY-ONLY — NOT a locked fix-mode red anchor)
 
-- **Scope**: In `tests/unit/preprocessing/test_exact_extract_grid_extractor.py`,
-  feed the extractor a **dask-backed** lat/lon grid via an **instrumented /
-  chunk-counting** source (e.g. wrap `_make_grid` output in `.chunk(...)` plus a
-  recorder that counts per-`.sel` materializations, or a thin instrumented
-  `xr.Dataset` proxy) and assert (i) **peak materialization = ONE slice** (not the
-  weak `.chunks is not None` of 6a — the instrumented count must equal 1 at a time,
-  never the whole cube), and (ii) OUTPUT is unchanged: identical row count
-  (`test_dataframe_row_count`, `:186`) and preserved ensemble members
-  (`test_ensemble_members_preserved`, n_members=21). Note in the test that this is
-  the lat/lon-grid path; mesh extraction is out of scope (Open Item E). Keep 6a as
-  the weak laziness proxy and note it as such.
-- **Verification**: `uv run pytest tests/unit/preprocessing/test_exact_extract_grid_extractor.py`.
+- **NOTE (WF2 fix-mode):** The extractor requires **no code change** in 086 (Phase 3
+  is verify-only): fed a dask-backed lat/lon grid, the existing `.sel` loop already
+  streams one 2-D slice at a time on `main`. So an "extractor streams" test is
+  **green on `main`** and therefore CANNOT be a fix-mode red anchor (every locked
+  test must be red-on-main → green-after). An instrumented peak-materialization
+  test here was correctly rejected by the cross-vendor test-review as not-sound.
+  **Do NOT lock an extractor test.** The milestone's locked red anchors are **6a**
+  (parse laziness), **6b** (archive round-trip), **6d** (config cap) only.
+- **Scope**: Extractor OUTPUT non-regression (identical row count / ensemble members
+  on the lat/lon-grid path) is already covered by the EXISTING extractor tests
+  (`test_dataframe_row_count` `:186`, `test_ensemble_members_preserved` n_members=21),
+  which run in the milestone acceptance gate (Task 6e). Mesh extraction is out of
+  scope (Open Item E).
+- **Verification**: the existing `tests/unit/preprocessing/test_exact_extract_grid_extractor.py`
+  stays green in the full suite (Task 6e) — no new locked test added here.
 - **Exit gate**: peak-materialization-is-one-slice assertion passes against a
   dask-backed grid; row count + member set identical to the eager path.
 
@@ -454,11 +457,12 @@ milestone:
       round-trips value-equal via load() -- this FAILS on main with the dask-chunk
       -overlap ValueError and passes after (would have caught the blocker).
       On-disk encoding/chunks and zarr_format=2 unchanged.  [Task 6b]
-    - ExactExtractGridExtractor.extract computes one slice per (param, member,
-      valid_time) from a dask-backed lat/lon grid with peak materialization = ONE
-      slice (instrumented count, not the weak .chunks proxy); OUTPUT row count and
-      ensemble members identical to the eager path. Mesh extraction is out of
-      scope.  [Task 6c]
+    - (NOT a locked test — VERIFY-ONLY, Task 6c) The extractor does NOT change in
+      086 (it already streams a lazy lat/lon grid one slice at a time on main), so
+      no extractor red anchor is lockable in fix-mode. Extractor OUTPUT
+      non-regression (row count, ensemble members) is covered by the EXISTING
+      extractor tests passing in the full-suite acceptance gate (below). Mesh
+      extraction is out of scope (Open Item E).
     - max_files flows from [adapters.weather_forecast].max_files in config into the
       constructed MeteoSwissNwpAdapter (cap honored); absent -> None (unlimited);
       non-int -> ConfigurationError; config-overlay override wins.  [Task 6d]
