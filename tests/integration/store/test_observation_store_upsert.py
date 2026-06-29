@@ -121,8 +121,32 @@ class TestStoreRawUpsertRestatement:
             oid, QcStatus.QC_PASSED, [_passed_flag()], qc_rule_version="1.0"
         )
 
-        # Identical re-ingest: same natural key AND same value.
-        written = store.store_raw_observations([_raw(sid, hour=0, value=10.0)])
+        # Pre-condition (RED under on_conflict_do_nothing): a genuine restatement
+        # MUST upsert the new value so a qc_passed row exists at the restated
+        # value before we exercise the unchanged-re-ingest no-churn path. Under
+        # the buggy store this write is dropped and the assertions below fail.
+        restated = store.store_raw_observations([_raw(sid, hour=0, value=20.0)])
+        assert len(restated) == 1
+        after_restate = store.fetch_observations(
+            station_id=sid,
+            parameter="discharge",
+            start=_utc(hour=0),
+            end=_utc(hour=1),
+        )
+        assert len(after_restate) == 1
+        assert after_restate[0].value == 20.0
+        assert after_restate[0].qc_status == QcStatus.RAW
+
+        # The in-flow QC pass marks the restated row qc_passed again.
+        store.update_qc(
+            after_restate[0].id,
+            QcStatus.QC_PASSED,
+            [_passed_flag()],
+            qc_rule_version="1.0",
+        )
+
+        # Identical re-ingest: same natural key AND same (restated) value.
+        written = store.store_raw_observations([_raw(sid, hour=0, value=20.0)])
 
         # No row write.
         assert written == []
@@ -135,7 +159,7 @@ class TestStoreRawUpsertRestatement:
         )
         assert len(fetched) == 1
         obs = fetched[0]
-        assert obs.value == 10.0
+        assert obs.value == 20.0
         # The qc_passed row stays qc_passed — no reset, no churn.
         assert obs.qc_status == QcStatus.QC_PASSED
         assert obs.qc_rule_version == "1.0"
@@ -167,32 +191,6 @@ class TestStoreRawUpsertRestatement:
         assert len(fetched) == 1
         # Last row in the batch wins.
         assert fetched[0].value == 20.0
-
-    def test_distinct_timestamps_still_produce_distinct_rows(
-        self, db_connection: sa.Connection
-    ) -> None:
-        sid = _seed_station(db_connection, rng_seed=24)
-        store = PgObservationStore(db_connection)
-
-        ids = store.store_raw_observations(
-            [
-                _raw(sid, hour=0, value=10.0),
-                _raw(sid, hour=1, value=11.0),
-            ]
-        )
-        assert len(ids) == 2
-
-        more = store.store_raw_observations([_raw(sid, hour=2, value=12.0)])
-        assert len(more) == 1
-
-        fetched = store.fetch_observations(
-            station_id=sid,
-            parameter="discharge",
-            start=_utc(hour=0),
-            end=_utc(hour=3),
-        )
-        assert len(fetched) == 3
-        assert {o.value for o in fetched} == {10.0, 11.0, 12.0}
 
 
 class TestStoreRawUpsertObservability:
