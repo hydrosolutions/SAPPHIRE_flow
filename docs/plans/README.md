@@ -22,6 +22,11 @@ by hand.
 - **066** — Train-models retrain strategy (configurable) — `DRAFT` — Framework so retrain data-window is selectable; default restores dress-rehearsal A3 step 4 (F3).
 - **067** — MeteoSwiss STAC adapter investigation + configurability — `READY` — Root-cause the "cycle late" signal (F4), then move `_MAX_FALLBACK_STEPS` into config and decide pagination-cap fate (F5). Four review rounds.
 - **068** — `onboard-stations` parallelization + decouple historical hindcast — `DRAFT` — Cut 38 min onboarding to seconds; move historical hindcast to new async `backfill-hindcasts` flow with `task.map`. Depends on Plans 038 + 040.
+- **081** — recap-dg-client forcing adapter — `DRAFT` — Offline-completable Nepal v1 Recap adapter foundation, variable catalog, metadata design, band converter, and fake-client contract tests.
+- **082** — recap Gateway operational and training readiness — `DRAFT` — Live Gateway smoke, Nepal config, latest-cycle/watchdog semantics, temporal model-input join, coverage gate, and runbooks. Depends on Plan 081.
+- **083** — Human-readable station code in structured logs — `DRAFT` — Bind `station_code` alongside the UUID `station_id` at per-station fan-out boundaries so operators can read logs without a UUID lookup; update `logging.md`.
+- **084** — Dev-machine deployment validation (2-station runoff-only) — `READY` — Clean, repeatable end-to-end validation of the local dev stack for 2 BAFU river stations (2009/2091): onboard → operational → runoff-only forecast → idempotency re-run → optional NWP, hardened against the six Mac-mini failure modes before the mini re-attempt.
+- **085** — Observation ingest: value-restatement upsert + 5-min poll cadence — `READY` — Scoped `on_conflict_do_update` so BAFU value restatements are captured (last-write-wins on a real value change) with a `value IS DISTINCT FROM` predicate, QC-state reset for in-flow re-QC, and a stored/skipped counting-trap fix; plus raising the default ingest cron `*/30`→`*/5` for the snapshot-only LINDAS adapter. WF2 fix-mode.
 
 ## Deferred
 

@@ -1,0 +1,15 @@
+{
+  "_comment": "Per-repo capability manifest for vision-build (WF2). Gate commands mirror .github/workflows/ci.yml so a local pass predicts a green CI. WF2 runs these via a detached runner (long gates dodge the 10-min/agent Bash cap). Placeholders: {testIgnore} = flags excluding the milestone's not-yet-satisfied locked acceptance tests from a per-step regression run; {base} = merge base for changed-line coverage. scope:'step' runs after each implementation step (regression only); scope:'milestone' runs once after all steps (proves acceptance). required:false reports but never blocks. NOTE: vision-build has NOT yet been run against this repo — confirm these commands locally (uvx diff-cover network fetch; trivy/pyright availability) before the first launch.",
+  "version": 1,
+  "testRoots": ["tests"],
+  "lockedTestExclusion": { "supported": true, "note": "pytest supports --ignore=<path>; default addopts already exclude deployment/live/slow markers" },
+  "gates": [
+    { "id": "lint",        "scope": "step",      "command": "uv run ruff check src/ tests/ && uv run ruff format --check src/ tests/",                                                              "timeoutMinutes": 5,   "required": true },
+    { "id": "regression",  "scope": "step",      "command": "uv run pytest tests/unit {testIgnore} -q",                                                                                            "timeoutMinutes": 15,  "required": true },
+    { "id": "typecheck",   "scope": "milestone", "command": "uv run pyright --outputjson src/ > /tmp/pyright.json || true; uv run python tools/pyright_ratchet.py /tmp/pyright.json tools/pyright_baseline.json", "timeoutMinutes": 10, "required": true },
+    { "id": "acceptance",  "scope": "milestone", "command": "uv run pytest tests/unit tests/integration --ignore=tests/integration/live -q",                                                        "timeoutMinutes": 30,  "required": true },
+    { "id": "changed-cov", "scope": "milestone", "command": "uv run pytest tests/unit --cov=src/sapphire_flow --cov-report=xml -q && uvx diff-cover coverage.xml --compare-branch={base} --fail-under=85", "timeoutMinutes": 30, "required": true },
+    { "id": "sast",        "scope": "milestone", "command": "trivy fs --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed --scanners vuln --skip-dirs .venv .",                                  "timeoutMinutes": 10,  "required": false }
+  ],
+  "ci": { "provider": "github", "required": true }
+}

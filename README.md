@@ -19,6 +19,43 @@ Operational hydrological forecasting system. Ingests weather and station data, r
 
 🟢 **Active** – Developed & maintained by [hydrosolutions](https://github.com/hydrosolutions)
 
+## Vision
+
+SAPPHIRE Flow turns public weather and river data into **operational, reviewable
+ensemble flood forecasts** for national hydrological services. The system ingests
+NWP forcing and station observations, runs ensemble forecast models per station (or
+station group), checks alert thresholds, and serves results through a REST API with
+an optional forecaster review dashboard. It runs on Docker Compose on a single VM and
+is designed to scale from a handful of gauges to ~1000 stations across deployments.
+
+The work proceeds in phases:
+
+- **v0 (now)** — a working end-to-end pipeline on Swiss public data (MeteoSwiss
+  ICON-CH2-EPS, BAFU/SwissMetNet stations via LINDAS, CAMELS-CH attributes) with
+  simple models, to validate the architecture before field deployment.
+- **v1 (target Oct 2026)** — Nepal DHM deployment (ECMWF IFS, DHM stations, ERA5-Land,
+  elevation-band NWP extraction).
+
+The authoritative vision and locked design decisions live in
+[`docs/architecture-context.md`](docs/architecture-context.md) (full v1 reference) and
+[`docs/v0-scope.md`](docs/v0-scope.md) (what v0 builds and in what order — overrides the
+architecture doc wherever they differ).
+
+## Engineering standards
+
+All contributions adhere to the standards below. Read the relevant one before working
+on its subsystem:
+
+- [Conventions](docs/conventions.md) — naming, patterns, error handling
+- [Workflow](docs/workflow.md) — orchestration protocol, plan structure, task exit gates
+- [Type & Protocol spec](docs/spec/types-and-protocols.md) — authoritative type definitions
+- [CI/CD](docs/standards/cicd.md) — Docker topology, named volumes, health checks, deployment
+- [Security](docs/standards/security.md) — secrets, container hardening, auth, OWASP
+- [Orchestration](docs/standards/orchestration.md) — Prefect 3 flows, scheduling, concurrency
+- [Logging](docs/standards/logging.md) — structlog config, context fields, event naming
+- [Pyright](docs/standards/pyright.md) — type-checking ratchet policy
+- [WMO](docs/standards/wmo.md) — WMO publications mapped to forecast/QC/alert subsystems
+
 ## Requirements
 
 - Docker >= 24, Docker Compose v2
