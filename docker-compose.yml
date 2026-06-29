@@ -203,7 +203,7 @@ services:
     environment:
       DATABASE_URL_TEMPLATE: postgresql+psycopg://${DB_USER:-sapphire}@postgres:5432/sapphire
       PREFECT_API_URL: http://prefect-server:4200/api
-      SCHEDULE_INGEST_OBSERVATIONS: ${SCHEDULE_INGEST_OBSERVATIONS:-*/30 * * * *}
+      SCHEDULE_INGEST_OBSERVATIONS: ${SCHEDULE_INGEST_OBSERVATIONS:-*/5 * * * *}
       SCHEDULE_FORECAST_CYCLE: ${SCHEDULE_FORECAST_CYCLE:-0 */6 * * *}
       SCHEDULE_BACKUP_DATABASE: ${SCHEDULE_BACKUP_DATABASE:-0 2 * * *}
     depends_on:

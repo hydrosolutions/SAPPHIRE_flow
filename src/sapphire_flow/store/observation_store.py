@@ -1,10 +1,12 @@
 # pyright: reportUnknownMemberType=false, reportUnknownArgumentType=false
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+import math
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 import sqlalchemy as sa
+import structlog
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from sapphire_flow.db.metadata import observations as observations_table
@@ -16,6 +18,16 @@ from sapphire_flow.types.observation import Observation, RawObservation
 
 if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
+
+log = structlog.get_logger(__name__)
+
+_RawObservationKey = tuple[object, object, object, object]
+_OBSERVATION_NATURAL_KEY_COLUMNS = (
+    observations_table.c.station_id,
+    observations_table.c.timestamp,
+    observations_table.c.parameter,
+    observations_table.c.source,
+)
 
 
 class PgObservationStore:
@@ -30,12 +42,7 @@ class PgObservationStore:
                 pg_insert(observations_table)
                 .values(**_obs_to_values(obs))
                 .on_conflict_do_update(
-                    index_elements=[
-                        observations_table.c.station_id,
-                        observations_table.c.timestamp,
-                        observations_table.c.parameter,
-                        observations_table.c.source,
-                    ],
+                    index_elements=_OBSERVATION_NATURAL_KEY_COLUMNS,
                     set_={
                         "value": obs.value,
                         "qc_status": obs.qc_status.value,
@@ -54,6 +61,7 @@ class PgObservationStore:
         if not observations:
             return []
 
+        deduped = _dedupe_raw_observations(observations)
         rows = [
             {
                 "id": ObservationId(uuid4()),
@@ -66,26 +74,45 @@ class PgObservationStore:
                 "qc_flags": None,
                 "qc_rule_version": None,
             }
-            for raw in observations
+            for raw in deduped
         ]
 
         ids: list[ObservationId] = []
+        inserted_count = 0
+        updated_count = 0
         for i in range(0, len(rows), self._BATCH_SIZE):
             batch = rows[i : i + self._BATCH_SIZE]
-            stmt = (
-                pg_insert(observations_table)
-                .values(batch)
-                .on_conflict_do_nothing(
-                    index_elements=["station_id", "timestamp", "parameter", "source"],
-                )
-                .returning(observations_table.c.id)
-            )
-            returned = {row[0] for row in self._conn.execute(stmt).fetchall()}
-            for row in batch:
-                if row["id"] in returned:
-                    # row["id"] is ObservationId(uuid4()); the heterogeneous
-                    # insert-row dict widens its inferred type.
-                    ids.append(cast("ObservationId", row["id"]))
+            proposed_ids = {cast("ObservationId", row["id"]) for row in batch}
+            insert_stmt = pg_insert(observations_table).values(batch)
+            stmt = insert_stmt.on_conflict_do_update(
+                index_elements=_OBSERVATION_NATURAL_KEY_COLUMNS,
+                set_={
+                    "value": insert_stmt.excluded.value,
+                    "qc_status": QcStatus.RAW.value,
+                    "qc_flags": None,
+                    "qc_rule_version": None,
+                },
+                where=observations_table.c.value.is_distinct_from(
+                    insert_stmt.excluded.value
+                ),
+            ).returning(observations_table.c.id)
+            written_ids = [
+                cast("ObservationId", obs_id)
+                for obs_id in self._conn.execute(stmt).scalars()
+            ]
+            written_id_set = set(written_ids)
+            ids.extend(written_ids)
+            inserted_count += len(written_id_set & proposed_ids)
+            updated_count += len(written_id_set - proposed_ids)
+
+        log.info(
+            "observation.raw_upsert",
+            inserted=inserted_count,
+            updated=updated_count,
+            skipped=len(observations) - inserted_count - updated_count,
+            input_count=len(observations),
+            deduped_count=len(rows),
+        )
 
         return ids
 
@@ -180,7 +207,7 @@ class PgObservationStore:
         raise NotImplementedError("Rating curves deferred to v1")
 
 
-def _serialize_flags(flags: list[QcFlag]) -> list[dict] | None:  # type: ignore[type-arg]
+def _serialize_flags(flags: list[QcFlag]) -> list[dict[str, str | None]] | None:
     if not flags:
         return None
     return [
@@ -194,7 +221,25 @@ def _serialize_flags(flags: list[QcFlag]) -> list[dict] | None:  # type: ignore[
     ]
 
 
-def _deserialize_flags(raw: list | None) -> list[QcFlag]:  # type: ignore[type-arg]
+def _dedupe_raw_observations(
+    observations: list[RawObservation],
+) -> list[RawObservation]:
+    deduped: dict[_RawObservationKey, RawObservation] = {}
+    for raw in observations:
+        _validate_raw_observation(raw)
+        key = (raw.station_id, raw.timestamp, raw.parameter, raw.source)
+        deduped[key] = raw
+    return list(deduped.values())
+
+
+def _validate_raw_observation(raw: RawObservation) -> None:
+    if not raw.parameter.strip():
+        raise ValueError("RawObservation.parameter must not be empty")
+    if not math.isfinite(raw.value):
+        raise ValueError("RawObservation.value must be finite")
+
+
+def _deserialize_flags(raw: list[dict[str, Any]] | None) -> list[QcFlag]:
     if not raw:
         return []
     return [
@@ -208,7 +253,7 @@ def _deserialize_flags(raw: list | None) -> list[QcFlag]:  # type: ignore[type-a
     ]
 
 
-def _obs_to_values(obs: Observation) -> dict:  # type: ignore[type-arg]
+def _obs_to_values(obs: Observation) -> dict[str, object]:
     return {
         "id": obs.id,
         "station_id": obs.station_id,

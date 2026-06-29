@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 import polars as pl
 
 from sapphire_flow.exceptions import ArtifactIntegrityError, ConflictError, StoreError
+from sapphire_flow.store.observation_store import _dedupe_raw_observations
 from sapphire_flow.types.alert import Alert  # noqa: TC001
 from sapphire_flow.types.basin import Basin  # noqa: TC001
 from sapphire_flow.types.datetime import UtcDatetime  # noqa: TC001
@@ -98,14 +99,29 @@ class FakeObservationStore:
         self, observations: list[RawObservation]
     ) -> list[ObservationId]:
         ids = []
-        for raw in observations:
-            # Skip duplicate natural key (matches ON CONFLICT DO NOTHING)
+        for raw in _dedupe_raw_observations(observations):
             natural_key = (raw.station_id, raw.timestamp, raw.parameter, raw.source)
-            if any(
-                (o.station_id, o.timestamp, o.parameter, o.source) == natural_key
-                for o in self._observations.values()
-            ):
+            existing = next(
+                (
+                    o
+                    for o in self._observations.values()
+                    if (o.station_id, o.timestamp, o.parameter, o.source) == natural_key
+                ),
+                None,
+            )
+            if existing is not None and existing.value == raw.value:
                 continue
+            if existing is not None:
+                self._observations[existing.id] = replace(
+                    existing,
+                    value=raw.value,
+                    qc_status=QcStatus.RAW,
+                    qc_flags=[],
+                    qc_rule_version=None,
+                )
+                ids.append(existing.id)
+                continue
+
             oid = ObservationId(uuid4())
             obs = Observation(
                 id=oid,

@@ -22,7 +22,7 @@ class TestBuildSpecs:
         specs = _build_specs()
         by_name = {s.deployment_name: s for s in specs}
 
-        assert by_name["ingest-observations"].cron == "*/30 * * * *"
+        assert by_name["ingest-observations"].cron == "*/5 * * * *"
         assert by_name["forecast-cycle"].cron == "0 */6 * * *"
         assert by_name["backup-database"].cron == "0 2 * * *"
 
