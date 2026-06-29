@@ -29,7 +29,49 @@ def _make_forecast(cycle_time: UtcDatetime) -> GriddedForecast:
     return GriddedForecast(nwp_source="icon_ch2_eps", cycle_time=cycle_time, values=ds)
 
 
+def _make_dask_forecast_real_dim_order(cycle_time: UtcDatetime) -> GriddedForecast:
+    """A dask-backed forecast with the REAL adapter dim order/chunking.
+
+    Dims ``(valid_time, member, values)`` chunked ``(1, 1, N)`` — exactly what
+    the lazy cfgrib parse produces (one GRIB message per file → one member, one
+    step). Feeding this naive-lazy source to archive's ``(1, member, values)``
+    encoding raises the dask-chunk-overlap ``ValueError`` unless archive rechunks
+    it first (Plan 086, the BLOCKER).
+    """
+    ds = xr.Dataset(
+        {
+            "precipitation": xr.DataArray(
+                np.arange(2 * 3 * 8, dtype=np.float32).reshape(2, 3, 8),
+                dims=["valid_time", "member", "values"],
+            ),
+            "temperature": xr.DataArray(
+                np.arange(2 * 3 * 8, dtype=np.float32).reshape(2, 3, 8) + 100.0,
+                dims=["valid_time", "member", "values"],
+            ),
+        }
+    ).chunk({"valid_time": 1, "member": 1, "values": -1})
+    return GriddedForecast(nwp_source="icon_ch2_eps", cycle_time=cycle_time, values=ds)
+
+
 class TestZarrNwpGridStore:
+    def test_archive_round_trip_dask_real_dim_order(self, tmp_path: object) -> None:
+        """A lazy (1,1,N) source in real dim order archives and round-trips.
+
+        Red on main: archive feeds the (1,1,N) dask source straight into the
+        (1, member, values) encoding → ValueError "would overlap multiple Dask
+        chunks". Green after the archive rechunk to (1, *shape[1:]).
+        """
+        store = ZarrNwpGridStore()
+        ct = ensure_utc(datetime(2026, 4, 1, 6, tzinfo=UTC))
+        forecast = _make_dask_forecast_real_dim_order(ct)
+
+        path = store.archive(forecast, tmp_path)  # type: ignore[arg-type]
+        assert path.exists()
+
+        loaded = store.load(tmp_path, "icon_ch2_eps", ct)  # type: ignore[arg-type]
+        loaded.values.load()
+        xr.testing.assert_equal(loaded.values, forecast.values.compute())
+
     def test_round_trip(self, tmp_path: object) -> None:
         """Archive then load produces identical Dataset."""
         store = ZarrNwpGridStore()

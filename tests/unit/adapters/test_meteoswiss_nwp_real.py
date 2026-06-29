@@ -95,6 +95,19 @@ class TestParseGribFilesReal:
         assert ds.sizes["valid_time"] == 2
         assert (times[1:] > times[:-1]).all(), "valid_time must be sorted"
 
+    def test_parsed_cube_is_dask_backed_lazy(
+        self, fixture_files: list[Path], tmp_path: Path
+    ) -> None:
+        # Plan 086: the parse must open cfgrib lazily (chunks={}) and keep the
+        # concat/merge/convert path lazy, so every data var is dask-backed
+        # (.chunks is not None). Red on main (eager numpy → .chunks is None).
+        adapter = _make_adapter(tmp_path)
+        ds = adapter._parse_grib_files(fixture_files)
+
+        assert ds.data_vars, "expected at least one data var"
+        for name, var in ds.data_vars.items():
+            assert var.chunks is not None, f"{name} is eager (not dask-backed)"
+
     def test_unstructured_grid_preserved(
         self, fixture_files: list[Path], tmp_path: Path
     ) -> None:

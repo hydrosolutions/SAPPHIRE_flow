@@ -73,6 +73,7 @@ class _WeatherForecastAdapterConfig:
     stac_base_url: str | None
     stac_collection: str | None
     scratch_path: Path | None
+    max_files: int | None
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +89,7 @@ def _load_weather_forecast_adapter_config() -> _WeatherForecastAdapterConfig:
             stac_base_url="https://data.geo.admin.ch/api/stac/v1",
             stac_collection="ch.meteoschweiz.ogd-forecasting-icon-ch2",
             scratch_path=Path("/tmp/sapphire_nwp"),
+            max_files=None,
         )
 
     from sapphire_flow.config._overlay import (
@@ -116,6 +118,17 @@ def _load_weather_forecast_adapter_config() -> _WeatherForecastAdapterConfig:
     stac_collection = weather_forecast.get("stac_collection")
     scratch_path_value = weather_forecast.get("scratch_path")
 
+    # Plan 086: optional hard cap on GRIB files fetched per cycle. Absent → None
+    # (unlimited, production default). A bool is rejected explicitly because
+    # ``bool`` is a subclass of ``int`` in Python.
+    max_files_value = weather_forecast.get("max_files")
+    if max_files_value is not None and (
+        isinstance(max_files_value, bool) or not isinstance(max_files_value, int)
+    ):
+        raise ConfigurationError(
+            "[adapters.weather_forecast].max_files must be a TOML integer or unset"
+        )
+
     if enabled_value:
         missing = [
             key
@@ -140,6 +153,7 @@ def _load_weather_forecast_adapter_config() -> _WeatherForecastAdapterConfig:
         scratch_path=Path(scratch_path_value)
         if isinstance(scratch_path_value, str)
         else None,
+        max_files=max_files_value,
     )
 
 
@@ -507,6 +521,7 @@ def run_forecast_cycle_flow(
                     max_fallback_steps=math.ceil(
                         config.nwp_max_fallback_age_hours / 6.0
                     ),
+                    max_files=weather_forecast_config.max_files,
                 )
             elif config_path_for_adapter is None:
                 log.warning(

@@ -431,6 +431,10 @@ enabled = true                       # production/base default: self-wire and fe
 type = "meteoswiss_nwp"               # maps to MeteoSwissNwpAdapter class
 archive = true                        # permanently store all NWP data
 max_cache_age_hours = 12
+# max_files = 42                      # Plan 086: optional hard cap on GRIB files
+#                                     # fetched per cycle (operator escape hatch /
+#                                     # sampled runs). Unset = unlimited (prod
+#                                     # default). Non-int → ConfigurationError.
 
 # Pipeline monitoring config for this adapter.
 # Source: architecture-context.md § Pipeline monitoring schedule config

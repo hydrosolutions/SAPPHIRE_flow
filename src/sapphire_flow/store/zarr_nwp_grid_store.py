@@ -103,6 +103,17 @@ class ZarrNwpGridStore:
         log.info("nwp.archive_started", zarr_path=str(zarr_path))
 
         ds = forecast.values
+        # Plan 086: rechunk the (possibly lazy/dask-backed) source so each var's
+        # dask chunks match its on-disk encoding (1, *shape[1:]) — size 1 along
+        # the leading axis, full (-1) elsewhere. The leading axis is derived from
+        # a data variable's own axis-0 (ds[var].dims[0]); xr.Dataset.dims is a
+        # mapping whose iteration order is NOT the per-variable axis order, so
+        # next(iter(ds.dims)) can pick the wrong axis. Without this, a naively
+        # lazy (1,1,N) source raises ValueError "would overlap multiple Dask
+        # chunks" when to_zarr meets the (1, *shape[1:]) encoding. The on-disk
+        # encoding/chunk shape and zarr_format=2 are unchanged.
+        lead = ds[next(iter(ds.data_vars))].dims[0]
+        ds = ds.chunk({lead: 1, **{d: -1 for d in ds.dims if d != lead}})  # pyright: ignore[reportUnknownMemberType]
         encoding: dict[str, dict[str, object]] = {
             str(v): {
                 "chunks": (1, *ds[v].shape[1:]),

@@ -578,6 +578,13 @@ class MeteoSwissNwpAdapter:
                     d = xr.open_dataset(
                         p,
                         engine="cfgrib",
+                        # Plan 086: open lazily (dask-backed) so the per-message
+                        # arrays are not materialized into RAM. Each ICON file
+                        # is one GRIB message → dask chunks (1, 1, N); the
+                        # downstream concat/merge/convert stay lazy, bounding the
+                        # decompressed peak. The archive rechunks to match the
+                        # on-disk encoding (see ZarrNwpGridStore.archive).
+                        chunks={},
                         backend_kwargs={
                             "filter_by_keys": {
                                 "shortName": short_name,

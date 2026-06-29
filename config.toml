@@ -363,6 +363,11 @@ stac_collection = "ch.meteoschweiz.ogd-forecasting-icon-ch2"
 archive_format = "zarr"
 archive_base_path = "/data/nwp_grids"
 scratch_path = "/tmp/sapphire_nwp"
+# Plan 086: optional hard cap on GRIB files fetched per cycle (operator escape
+# hatch / sampled runs — caps members·steps, NOT a correctness control). Unset =
+# unlimited (production default). A conservative cap belongs in the mac-mini
+# overlay, not here.
+# max_files = 42
 
 [adapters.weather_forecast.monitoring]
 expected_delivery_offset_hours = 5.0

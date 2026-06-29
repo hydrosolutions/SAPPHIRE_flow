@@ -697,6 +697,7 @@ scratch_path = "{tmp_path / "scratch"}"
                 scratch_path: Path,
                 http_client: object,
                 max_fallback_steps: int,
+                max_files: int | None,
             ) -> None:
                 constructed.append(
                     {
@@ -705,6 +706,7 @@ scratch_path = "{tmp_path / "scratch"}"
                         "scratch_path": scratch_path,
                         "http_client": http_client,
                         "max_fallback_steps": max_fallback_steps,
+                        "max_files": max_files,
                     }
                 )
 
@@ -745,6 +747,109 @@ scratch_path = "{tmp_path / "scratch"}"
         created_client = constructed[0]["http_client"]
         assert isinstance(created_client, httpx.Client)
         assert created_client.is_closed
+
+    def test_max_files_wires_from_config_into_adapter(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Plan 086: [adapters.weather_forecast].max_files reaches the adapter.
+
+        Red on main: the flow constructs MeteoSwissNwpAdapter without max_files
+        and the config loader carries no such field, so the cap is never wired.
+        """
+        config_path = _write_forecast_cycle_config(
+            tmp_path / "config.toml",
+            f"""
+[adapters.weather_forecast]
+enabled = true
+stac_base_url = "https://example.test/stac"
+stac_collection = "test-collection"
+scratch_path = "{tmp_path / "scratch"}"
+max_files = 7
+""",
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config_path))
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+
+        sid = StationId(uuid4())
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+        )
+
+        constructed: list[int | None] = []
+
+        class _PatchedMeteoSwissNwpAdapter:
+            def __init__(
+                self,
+                *,
+                stac_base_url: str,
+                stac_collection: str,
+                scratch_path: Path,
+                http_client: object,
+                max_fallback_steps: int,
+                max_files: int | None,
+            ) -> None:
+                constructed.append(max_files)
+
+            def fetch_forecasts(
+                self,
+                station_configs: list[StationWeatherSource],
+                cycle_time: UtcDatetime,
+            ) -> dict[StationId, BasinAverageForecast]:
+                return {}
+
+        with patch(
+            "sapphire_flow.adapters.meteoswiss_nwp.MeteoSwissNwpAdapter",
+            _PatchedMeteoSwissNwpAdapter,
+        ):
+            run_forecast_cycle_flow(
+                station_store=station_store,
+                obs_store=obs_store,
+                weather_forecast_store=nwp_store,
+                forecast_store=forecast_store,
+                model_state_store=state_store,
+                artifact_store=artifact_store,
+                alert_store=alert_store,
+                baseline_store=baseline_store,
+                basin_store=basin_store,
+                forcing_store=forcing_store,
+                models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+                qc_rules=_empty_qc_rules(),
+                clock=_clock,
+                rng=random.Random(42),
+            )
+
+        assert constructed == [7]
+
+        # Absent max_files → None (unlimited, production default).
+        absent_path = _write_forecast_cycle_config(
+            tmp_path / "config_absent.toml",
+            """
+[adapters.weather_forecast]
+enabled = true
+stac_base_url = "https://example.test/stac"
+stac_collection = "test-collection"
+scratch_path = "/tmp/test-nwp"
+""",
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(absent_path))
+        assert _load_weather_forecast_adapter_config().max_files is None
 
     def test_adapter_none_with_absent_config_is_runoff_only_state(
         self, monkeypatch: pytest.MonkeyPatch
