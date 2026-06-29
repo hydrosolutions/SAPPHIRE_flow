@@ -5,7 +5,13 @@
 **Related**: Plan 084 (dev-deployment validation — runoff-only e2e, the harness
 this rides on), Plan 017 (per-station observation frequency for mixed
 manual/automatic networks), Plan 045/021 (NWP path — unrelated, but shares the
-`*/N` cron-default convention in `register_deployments.py`)
+`*/N` cron-default convention in `register_deployments.py`),
+Plan 058 (BAFU LINDAS archive collection — DRAFT; its T2 already owns changing
+this same `SCHEDULE_INGEST_OBSERVATIONS` default, to `*/10`). **Reconciliation:**
+085 supersedes/refines 058's cadence intent — 085 ships `*/5` now as the v0
+default (2× oversampling of the ~10-min source per D9/Change A), so when 058
+advances its T2 must drop its independent `*/30→*/10` step and inherit 085's
+`*/5` default (058 keeps only its Mac-Mini-specific benchmark/throttle work).
 **Created**: 2026-06-29
 **Intended execution**: WF2 fix-mode (`vision-build`) — Claude authors the LOCKED
 regression tests first, Codex implements against them. See the "WF2 fix-mode
@@ -63,7 +69,7 @@ exposes only the latest value (no history).
 | D1 | **`store_raw_observations` is first-write-wins today.** It builds each row with a fresh `id = ObservationId(uuid4())` and `qc_status = QcStatus.RAW.value`, then `pg_insert(...).on_conflict_do_nothing(index_elements=[station_id, timestamp, parameter, source]).returning(id)`. A conflicting (duplicate natural-key) row is skipped and never returned. | `store/observation_store.py:57-90` (rows `:57-70`; `on_conflict_do_nothing` `:78-81`; `.returning(id)` `:81`). |
 | D2 | **The in-repo upsert pattern already exists** in the same file: `store_observations` uses `on_conflict_do_update(index_elements=[…], set_={value, qc_status, qc_flags, qc_rule_version})`. Change B mirrors this, adding the value-changed `where` predicate. | `store/observation_store.py:29-47`. |
 | D3 | **The natural key is the DB unique index `uq_observations_natural_key`** on `(station_id, timestamp, parameter, source)`. The upsert stays **per-source** (the key includes `source`). | `db/metadata.py:283-290`. |
-| D4 | **The QC pass runs LATER in the SAME ingest flow and only touches RAW rows.** `_run_qc_task` fetches the context window then filters `raw_obs = [o for o in all_obs if o.qc_status == QcStatus.RAW]` and calls `update_qc(...)`. So a row whose `qc_status` is reset to `RAW` on a value change WILL be re-QC'd in the same run; a row left untouched (already `qc_passed`) will NOT be re-processed. This is exactly why Change B must reset QC state on a real value change. | `flows/ingest_observations.py:141-191` (RAW filter `:162`; `update_qc` `:183`); flow calls QC after store at `:328-358`. |
+| D4 | **The QC pass runs LATER in the SAME ingest flow and only touches RAW rows.** `_run_qc_task` fetches the context window then filters `raw_obs = [o for o in all_obs if o.qc_status == QcStatus.RAW]` and calls `update_qc(...)`. So a row whose `qc_status` is reset to `RAW` on a value change WILL be re-QC'd in the same run; a row left untouched (already `qc_passed`) will NOT be re-processed. This is exactly why Change B must reset QC state on a real value change. **Second caller is symmetric:** onboarding's Step 5 also re-QCs by fetching RAW rows in `[start_utc, end_utc]` and calling `update_qc`, so a row restated-to-RAW by the bulk import is re-QC'd there (not orphaned in RAW) — the QC-reset-is-safe argument holds for BOTH callers. | `flows/ingest_observations.py:141-191` (RAW filter `:162`; `update_qc` `:183`); flow calls QC after store at `:328-358`; onboarding re-QC `services/onboarding.py:350-382` (fetches `qc_status=QcStatus.RAW` `:358-359`). |
 | D5 | **Counting trap.** `_store_raw_task` returns `len(ids)` and the flow computes `skipped = len(raw_obs) - stored`, logging `ingest.store_complete stored=… skipped=…`. `store_raw_observations` builds `ids` by membership test `if row["id"] in returned`, where `row["id"]` is the **freshly generated uuid4**. With `on_conflict_do_update`, `.returning(id)` returns the **existing** row's id (not the new uuid4), so an *updated* row's id would never match `row["id"]` → an update is miscounted as a skip and `observations_stored` undercounts. Change B MUST fix the accounting so an update counts as a write. | `flows/ingest_observations.py:132-133, 324-326`; `store/observation_store.py:83-88`. |
 | D6 | **Second caller exists — `services/onboarding.py:290`.** The onboarding historical import also calls `store_raw_observations` and derives `observations_imported += len(inserted_ids)` and `skipped = len(raw_obs) - len(inserted_ids)` for `observation.duplicate_skipped`. Any change to the return shape/accounting MUST keep this caller correct (and its fake + the `StoreRawObservations` Protocol signature). | `services/onboarding.py:286-303`; Protocol `protocols/stores.py:90`; fake `tests/fakes/fake_stores.py:97`. |
 | D7 | **Existing dup test asserts the no-op contract.** `TestStoreRawDuplicateSkip.test_second_insert_returns_empty_and_no_new_rows` re-inserts an **identical** row and asserts the second call returns `[]` and no new DB row. Under Change B's value-changed predicate, an identical re-insert performs no update → returns nothing for that row → this contract is preserved (the test stays green, possibly reworded for the new accounting). | `tests/integration/store/test_observation_store.py:282-303`. |
@@ -168,11 +174,22 @@ Switch `store_raw_observations` (`store/observation_store.py:75-90`) from
      `RETURNING`). Portable, no system column, and the fake reproduces it trivially
      because it owns its ids. The **written list returned** is the union (all of
      `returned`).
-   - **Observability:** emit `inserted` / `updated` / `skipped` distinctly on
-     `ingest.store_complete` (additive context kwargs per `logging.md`
-     `{entity}.{action}`; no new event name). `observations_stored = inserted +
-     updated`. The inserted/updated split is computed and logged INSIDE the store;
-     it is NOT surfaced through the signature.
+   - **Observability (two layers, no signature change):**
+     - The **flow** keeps its existing list-based mechanism unchanged:
+       `ingest.store_complete stored=<len(ids)> skipped=<len(raw_obs)-stored>`
+       (`flows/ingest_observations.py:324-326`), where `stored = inserted + updated`
+       (the returned list is the written union) and `skipped` therefore excludes
+       genuine writes. The flow CANNOT split inserted-vs-updated (it only receives
+       `len(ids)` via `_store_raw_task`, `:132-133`), and must not try to.
+     - The **store** emits the finer split as a NEUTRAL, caller-agnostic event
+       `observation.raw_upsert inserted=… updated=… skipped=…` via a NEW
+       module-level structlog logger added to `store/observation_store.py`
+       (the module has no logger today). The event is caller-agnostic on purpose:
+       it is emitted correctly for BOTH the LINDAS ingest flow AND the onboarding
+       bulk import (D6), so it must NOT be named after either flow. `inserted` /
+       `updated` / `skipped` come from the uuid4 set-diff. `observations_stored =
+       inserted + updated`. The split is computed and logged INSIDE the store and
+       is NOT surfaced through the signature.
 5. **Scope (D3/D6).** `store_raw_observations` is the generic raw-observation
    store path; the natural key includes `source`, so the upsert stays per-source.
    The change applies to **all** raw-observation ingestion (the LINDAS ingest
@@ -211,11 +228,22 @@ inserts non-null, exact-bitwise float equality).
      (B2 — this existing test breaks otherwise).
   Preserve the `SCHEDULE_INGEST_OBSERVATIONS` env override in all of the above.
   Out: any other deployment's cron; the adapter; rate-limit batching.
-- **Docs**: note the new default + the ~1000-station scale caveat wherever ingest
-  cadence is documented (e.g. `docs/standards/orchestration.md` scheduling
-  section and/or the deployment/operations doc that lists the crons). Update
-  Plan 084's incidental `ingest-observations (*/30)` mention only if it is
-  presented as current truth.
+- **Docs (run-count budget invalidated by `*/30→*/5` — MAJOR-2):** `*/5` =
+  **288 runs/day**, 6× the documented "48 runs/day". Update every doc that pins the
+  old count or budget:
+  - `docs/standards/orchestration.md:33` — "observation ingest (48 runs/day)" →
+    "observation ingest (288 runs/day)".
+  - `docs/standards/cicd.md:162` — the "48 obs ingest runs/day" log-volume budget.
+    Update to 288 and add an explicit scale note that **obs-ingest log volume grows
+    ~6×** at `*/5` (the ~1000-station "logs rotate within hours" / `max-file: 5` ×
+    `max-size: 50m` = 250 MB cap should be revisited per cicd.md's own rotation
+    guidance). Keep the existing per-poll SPARQL-rate-limit caveat (Change A,
+    ~1000 stations × up to 1000 queries/5 min) — it is additive, not a replacement.
+  - Plan 084's D6 line (`084-dev-deployment-validation-2-station-runoff.md:54`,
+    "`ingest-observations` (`*/30`)") is presented as current truth → update that
+    one mention to `*/5`.
+  - Also note the new default + the ~1000-station scale caveat in the
+    deployment/operations doc that lists the crons, if not already covered above.
 - **Verification**: `uv run pytest tests/unit/cli/ -k register_deployments` (the
   test at `:25` now asserts `*/5 * * * *`, plus the Task 3c env-override
   assertion); `uv run ruff check src/ tests/`.
@@ -265,19 +293,31 @@ once against both changes; the locked tests in Phase 3 cover both phases.
 - **Scope**: Fix the counting trap (D5) with the **uuid4 set-diff** (O2 — NOT
   `xmax`): `inserted = returned ∩ generated_uuids`,
   `updated = returned − generated_uuids`, `skipped = len(batch) − len(returned)`.
+  `generated_uuids` and the returned-ids set **accumulate ACROSS batches** (the
+  store loops in `_BATCH_SIZE=5000` chunks): LINDAS ingest is single-batch, but the
+  onboarding bulk import multi-batches, so the inserted/updated/skipped totals are
+  summed over every batch, not computed per-batch-and-discarded.
   KEEP the Protocol return as `list[ObservationId]` (O1 — dataclass rejected),
   returning the **written** ids (all of `returned` = inserted + updated) so both
   callers (`ingest_observations.py`, `onboarding.py`) stay correct with **zero
-  signature churn**. `observations_stored = inserted + updated`. Emit
-  `inserted`/`updated`/`skipped` on `ingest.store_complete` (additive kwargs, per
-  `logging.md`); the inserted/updated split is computed and logged inside the
-  store, not surfaced through the signature. Out: new event names; the Protocol
-  signature (`protocols/stores.py`) and the `RawStoreOutcome` dataclass (rejected).
+  signature churn**. `observations_stored = inserted + updated`.
+  **Observability (two layers — MAJOR-1 resolution):** the FLOW keeps its existing
+  list-based log unchanged — `ingest.store_complete stored=<len(ids)>
+  skipped=<len(raw_obs)-stored>` (`flows/ingest_observations.py:324-326`); it does
+  NOT split inserted-vs-updated (it only sees `len(ids)`). The STORE emits the
+  finer split via a NEW module-level structlog logger added to
+  `store/observation_store.py` (no logger today) as a NEUTRAL, caller-agnostic
+  event `observation.raw_upsert inserted=… updated=… skipped=…` — correct for both
+  the LINDAS flow and onboarding callers. Out: any flow-named event emitted from
+  the store; the Protocol signature (`protocols/stores.py`) and the
+  `RawStoreOutcome` dataclass (rejected).
 - **Verification**: `uv run pytest tests/unit/flows/test_ingest_observations.py tests/integration/store/test_observation_store.py tests/unit/services -k onboard`;
   `uv run pyright src/`.
 - **Exit gate**: a changed-value re-ingest counts as a **write** (not a skip);
-  the returned list contains inserted + updated ids; `ingest.store_complete`
-  reports inserted+updated+skipped consistently; `onboarding.py`'s
+  the returned list contains inserted + updated ids; the flow's
+  `ingest.store_complete` reports `stored`(=inserted+updated)/`skipped` (skipped
+  excludes genuine writes); the store emits `observation.raw_upsert` with the
+  inserted/updated/skipped split; `onboarding.py`'s
   `observations_imported`/`observation.duplicate_skipped` remain correct **without
   caller changes**; full suite green.
 
@@ -326,8 +366,15 @@ pass).
      `(station_id, timestamp, parameter, source)` but different `value` must NOT
      raise `CardinalityViolation`; the last row's `value` wins; exactly one DB row
      exists for that key.
+  5. **Split observability (light) — `observation.raw_upsert` classifies correctly
+     (MAJOR-1)**: capture structlog events from the store (e.g.
+     `structlog.testing.capture_logs`) across a mixed batch — one brand-new key,
+     one changed-value restatement, one unchanged dup — and assert the store emits
+     `observation.raw_upsert` with `inserted=1`, `updated=1`, `skipped=1` (the
+     uuid4 set-diff classification). Keep it light: assert the counts only, not
+     wording of other fields.
 - **Verification**: `uv run pytest tests/integration/store/test_observation_store.py`.
-- **Exit gate**: all four locked tests pass against real Postgres.
+- **Exit gate**: all five locked tests pass against real Postgres.
 
 #### Task 3b — Locked flow round-trip test (re-QC after restatement)
 
@@ -393,10 +440,14 @@ acceptanceCriteria:
     CardinalityViolation; last-wins; exactly one row results.
   - Counting trap fixed via the uuid4 set-diff (not xmax): an updated row counts
     as a write (observations_stored = inserted + updated), not a skip; the return
-    stays list[ObservationId] = inserted + updated ids; ingest.store_complete
-    reports inserted / updated / skipped consistently; onboarding.py
+    stays list[ObservationId] = inserted + updated ids; onboarding.py
     observations_imported and observation.duplicate_skipped remain correct with
     no caller change.
+  - Observability (two layers, both tested): (i) the flow's ingest.store_complete
+    reports stored = inserted + updated and skipped excludes genuine writes
+    (testable via the returned list length + flow counts); (ii) the store emits the
+    neutral, caller-agnostic event observation.raw_upsert with inserted / updated /
+    skipped from the uuid4 set-diff (light store-level test, Task 3a item 5).
   - Distinct measurementTimes still produce distinct rows (dedup non-regression).
   - Default SCHEDULE_INGEST_OBSERVATIONS cron is "*/5 * * * *" in BOTH the code
     default (register_deployments.py) AND the compose fallback
@@ -468,9 +519,13 @@ acceptanceCriteria:
 
 - `src/sapphire_flow/store/observation_store.py` — Change B: in-Python last-wins
   natural-key dedup (Task 2b) + scoped `on_conflict_do_update` (value-changed
-  predicate, QC reset, Task 2a) + uuid4-set-diff accounting (Task 2c).
-- `src/sapphire_flow/flows/ingest_observations.py` — counting / `inserted` /
-  `updated` / `skipped` accounting + `ingest.store_complete` context (Task 2c).
+  predicate, QC reset, Task 2a) + uuid4-set-diff accounting (Task 2c) + a NEW
+  module-level structlog logger emitting the neutral `observation.raw_upsert
+  inserted/updated/skipped` event (the module has none today — MAJOR-1).
+- `src/sapphire_flow/flows/ingest_observations.py` — verify-only for the flow's
+  existing list-based `ingest.store_complete stored/skipped` (the returned-list
+  count now correctly includes updates; no inserted/updated split is added at the
+  flow level — MAJOR-1, Task 2c).
 - `src/sapphire_flow/cli/register_deployments.py` — Change A: code default ingest
   cron `*/30` → `*/5`.
 - `docker-compose.yml` — Change A: init-container fallback `*/30` → `*/5` (D10 —
@@ -487,8 +542,14 @@ acceptanceCriteria:
 - `src/sapphire_flow/protocols/stores.py` — NO change (signature unchanged, O1).
 - `tests/integration/store/test_observation_store.py`,
   `tests/unit/flows/test_ingest_observations.py` — locked tests (Phase 3).
-- `docs/standards/orchestration.md` (or the ops doc listing crons) — new default
-  cadence + scale caveat.
+- `docs/standards/orchestration.md` — line 33: "observation ingest (48 runs/day)"
+  → "288 runs/day" (MAJOR-2).
+- `docs/standards/cicd.md` — line ~162: "48 obs ingest runs/day" budget → 288 +
+  explicit ~6× obs-ingest log-volume scale note / revisit `max-file`×`max-size`
+  rotation (MAJOR-2).
+- `docs/plans/084-dev-deployment-validation-2-station-runoff.md` — line 54 (D6):
+  one-line `ingest-observations (*/30)` → `*/5` (it is presented as current truth,
+  MINOR-3).
 - `docs/plans/085-observation-ingest-upsert-and-poll-cadence.md` (this plan),
   `docs/plans/README.md` (index entry).
 - No other production files.
