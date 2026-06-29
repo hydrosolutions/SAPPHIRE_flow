@@ -119,3 +119,28 @@ class TestParseGribFilesReal:
 
         assert "values" in ds.dims
         assert ds.sizes["values"] == 283876
+
+    def test_mesh_coords_attached_on_values_dim(
+        self, fixture_files: list[Path], tmp_path: Path
+    ) -> None:
+        # Plan 087: convert_raw_dataset attaches per-cell latitude/longitude
+        # (from the static package asset) on the `values` dim. The arrays span
+        # the FULL ICON-CH2 model domain (NOT the narrow Swiss band): min lon is
+        # NEGATIVE (~-0.77), confirming the values are already on [-180, 180].
+        adapter = _make_adapter(tmp_path)
+        ds = adapter._parse_grib_files(fixture_files)
+
+        assert "latitude" in ds.coords
+        assert "longitude" in ds.coords
+        assert ds["latitude"].dims == ("values",)
+        assert ds["longitude"].dims == ("values",)
+        assert ds["latitude"].sizes["values"] == 283876
+        assert ds["longitude"].sizes["values"] == 283876
+
+        lat = ds["latitude"].values
+        lon = ds["longitude"].values
+        assert 42.0 < float(lat.min()) < 42.5
+        assert 50.0 < float(lat.max()) < 50.5
+        # min lon NEGATIVE → already on [-180, 180], normalisation is a no-op.
+        assert -1.0 < float(lon.min()) < 0.0
+        assert 17.0 < float(lon.max()) < 18.0

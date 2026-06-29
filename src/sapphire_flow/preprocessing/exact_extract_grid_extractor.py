@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import time
+from datetime import UTC
 from typing import TYPE_CHECKING, Any, cast
 
 import geopandas as gpd
@@ -30,14 +31,15 @@ log = structlog.get_logger(__name__)
 
 
 def _to_utc_datetime(vt: Any) -> UtcDatetime:
-    # NOTE: Plan 063 owns the MeteoSwiss adapter's tz-aware emission contract;
-    # this guard asserts only at the extractor boundary. Do not silently coerce —
-    # naive datetimes past the v0 boundary are a project-wide anti-pattern.
+    # ICON forecast valid_times are UTC by construction. The parsed MeteoSwiss
+    # cube (``_parse_grib_files``) carries tz-NAIVE ``numpy.datetime64``, and
+    # ``run_forecast_cycle_flow`` feeds that cube straight to the extractor with
+    # no manual localization. Naive values (numpy.datetime64 or naive datetime)
+    # are therefore localized to UTC (not shifted); tz-aware inputs are converted
+    # to UTC unchanged. Both extractors share this helper.
     ts = pd.Timestamp(vt)
     if ts.tzinfo is None:
-        raise ValueError(
-            f"valid_time {vt!r} is naive; GridExtractor requires tz-aware datetimes"
-        )
+        ts = ts.tz_localize(UTC)
     return ensure_utc(ts.to_pydatetime())  # type: ignore[arg-type]
 
 

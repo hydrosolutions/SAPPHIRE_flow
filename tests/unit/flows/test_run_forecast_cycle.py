@@ -539,6 +539,233 @@ scratch_path = "/tmp/test-nwp"
         with pytest.raises(ConfigurationError, match="stac_collection"):
             _load_weather_forecast_adapter_config()
 
+    def test_grid_extractor_defaults_to_mesh(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_path = _write_forecast_cycle_config(
+            tmp_path / "config.toml",
+            """
+[adapters.weather_forecast]
+enabled = false
+""",
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config_path))
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+
+        assert _load_weather_forecast_adapter_config().grid_extractor == "mesh"
+
+    def test_grid_extractor_explicit_exactextract(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_path = _write_forecast_cycle_config(
+            tmp_path / "config.toml",
+            """
+[adapters.weather_forecast]
+enabled = false
+grid_extractor = "exactextract"
+""",
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config_path))
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+
+        assert _load_weather_forecast_adapter_config().grid_extractor == "exactextract"
+
+    def test_grid_extractor_unknown_value_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_path = _write_forecast_cycle_config(
+            tmp_path / "config.toml",
+            """
+[adapters.weather_forecast]
+enabled = false
+grid_extractor = "regrid"
+""",
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config_path))
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+
+        with pytest.raises(ConfigurationError, match="grid_extractor"):
+            _load_weather_forecast_adapter_config()
+
+
+class TestGridExtractorSelection:
+    def test_default_build_grid_constructs_mesh_extractor(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # With no injected grid_extractor and an archive path configured, the
+        # flow constructs MeshBasinExtractor (default) — never the regular-grid
+        # ExactExtractGridExtractor.
+        monkeypatch.delenv("SAPPHIRE_CONFIG", raising=False)
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+
+        adapter = FakeWeatherForecastSource(result={})
+        with (
+            patch(
+                "sapphire_flow.preprocessing.mesh_basin_extractor.MeshBasinExtractor"
+            ) as mesh_cls,
+            patch(
+                "sapphire_flow.preprocessing.exact_extract_grid_extractor.ExactExtractGridExtractor",
+                side_effect=AssertionError("exactextract must not be constructed"),
+            ),
+        ):
+            run_forecast_cycle_flow(
+                station_store=FakeStationStore(),
+                obs_store=FakeObservationStore(),
+                weather_forecast_store=FakeWeatherForecastStore(),
+                forecast_store=FakeForecastStore(),
+                model_state_store=FakeModelStateStore(),
+                artifact_store=FakeModelArtifactStore(),
+                alert_store=FakeAlertStore(),
+                baseline_store=FakeClimBaselineStore(),
+                basin_store=FakeBasinStore(),
+                forcing_store=FakeHistoricalForcingStore(),
+                adapter=adapter,
+                models={},
+                config=_make_config(nwp_grid_archive_base_path="/tmp/test_grids"),
+                qc_rules=_empty_qc_rules(),
+                clock=_clock,
+                rng=random.Random(42),
+                grid_store=FakeNwpGridStore(),
+            )
+
+        mesh_cls.assert_called_once()
+
+    def test_injected_adapter_honors_exactextract_selector(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # An injected adapter must NOT force the default mesh extractor: the
+        # configured grid_extractor selector is honored independently of the
+        # adapter-build path.
+        config_path = _write_forecast_cycle_config(
+            tmp_path / "config.toml",
+            """
+[adapters.weather_forecast]
+enabled = false
+grid_extractor = "exactextract"
+""",
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config_path))
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+
+        adapter = FakeWeatherForecastSource(result={})
+        with (
+            patch(
+                "sapphire_flow.preprocessing.exact_extract_grid_extractor.ExactExtractGridExtractor"
+            ) as exact_cls,
+            patch(
+                "sapphire_flow.preprocessing.mesh_basin_extractor.MeshBasinExtractor",
+                side_effect=AssertionError("mesh must not be constructed"),
+            ),
+        ):
+            run_forecast_cycle_flow(
+                station_store=FakeStationStore(),
+                obs_store=FakeObservationStore(),
+                weather_forecast_store=FakeWeatherForecastStore(),
+                forecast_store=FakeForecastStore(),
+                model_state_store=FakeModelStateStore(),
+                artifact_store=FakeModelArtifactStore(),
+                alert_store=FakeAlertStore(),
+                baseline_store=FakeClimBaselineStore(),
+                basin_store=FakeBasinStore(),
+                forcing_store=FakeHistoricalForcingStore(),
+                adapter=adapter,
+                models={},
+                config=_make_config(nwp_grid_archive_base_path="/tmp/test_grids"),
+                qc_rules=_empty_qc_rules(),
+                clock=_clock,
+                rng=random.Random(42),
+                grid_store=FakeNwpGridStore(),
+            )
+
+        exact_cls.assert_called_once()
+
+    def test_injected_adapter_honors_mesh_selector(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_path = _write_forecast_cycle_config(
+            tmp_path / "config.toml",
+            """
+[adapters.weather_forecast]
+enabled = false
+grid_extractor = "mesh"
+""",
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config_path))
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+
+        adapter = FakeWeatherForecastSource(result={})
+        with (
+            patch(
+                "sapphire_flow.preprocessing.mesh_basin_extractor.MeshBasinExtractor"
+            ) as mesh_cls,
+            patch(
+                "sapphire_flow.preprocessing.exact_extract_grid_extractor.ExactExtractGridExtractor",
+                side_effect=AssertionError("exactextract must not be constructed"),
+            ),
+        ):
+            run_forecast_cycle_flow(
+                station_store=FakeStationStore(),
+                obs_store=FakeObservationStore(),
+                weather_forecast_store=FakeWeatherForecastStore(),
+                forecast_store=FakeForecastStore(),
+                model_state_store=FakeModelStateStore(),
+                artifact_store=FakeModelArtifactStore(),
+                alert_store=FakeAlertStore(),
+                baseline_store=FakeClimBaselineStore(),
+                basin_store=FakeBasinStore(),
+                forcing_store=FakeHistoricalForcingStore(),
+                adapter=adapter,
+                models={},
+                config=_make_config(nwp_grid_archive_base_path="/tmp/test_grids"),
+                qc_rules=_empty_qc_rules(),
+                clock=_clock,
+                rng=random.Random(42),
+                grid_store=FakeNwpGridStore(),
+            )
+
+        mesh_cls.assert_called_once()
+
+    def test_injected_adapter_skips_meteoswiss_field_validation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Regression (codex P2): an injected adapter must NOT trigger full
+        # MeteoSwiss-only config validation. A config with enabled=true but
+        # omitting MeteoSwiss-only fields (stac_base_url/scratch_path/...) must
+        # not raise ConfigurationError — the injected adapter bypasses the
+        # MeteoSwiss build path entirely.
+        config_path = _write_forecast_cycle_config(
+            tmp_path / "config.toml",
+            """
+[adapters.weather_forecast]
+enabled = true
+""",
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config_path))
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+
+        adapter = FakeWeatherForecastSource(result={})
+        result = run_forecast_cycle_flow(
+            station_store=FakeStationStore(),
+            obs_store=FakeObservationStore(),
+            weather_forecast_store=FakeWeatherForecastStore(),
+            forecast_store=FakeForecastStore(),
+            model_state_store=FakeModelStateStore(),
+            artifact_store=FakeModelArtifactStore(),
+            alert_store=FakeAlertStore(),
+            baseline_store=FakeClimBaselineStore(),
+            basin_store=FakeBasinStore(),
+            forcing_store=FakeHistoricalForcingStore(),
+            adapter=adapter,
+            models={},
+            config=_make_config(),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+            grid_store=FakeNwpGridStore(),
+        )
+
+        assert isinstance(result, ForecastCycleResult)
+
 
 class _SmallFakeGroupModel(FakeGroupForecastModel):
     """Group fake with the same compact data window as the flow station fake."""

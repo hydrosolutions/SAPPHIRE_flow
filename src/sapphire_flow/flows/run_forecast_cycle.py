@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import uuid4
 
 import structlog
@@ -74,6 +74,11 @@ class _WeatherForecastAdapterConfig:
     stac_collection: str | None
     scratch_path: Path | None
     max_files: int | None
+    grid_extractor: str
+
+
+_GRID_EXTRACTOR_CHOICES: tuple[str, ...] = ("mesh", "exactextract")
+_DEFAULT_GRID_EXTRACTOR: Literal["mesh"] = "mesh"
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +95,7 @@ def _load_weather_forecast_adapter_config() -> _WeatherForecastAdapterConfig:
             stac_collection="ch.meteoschweiz.ogd-forecasting-icon-ch2",
             scratch_path=Path("/tmp/sapphire_nwp"),
             max_files=None,
+            grid_extractor=_DEFAULT_GRID_EXTRACTOR,
         )
 
     from sapphire_flow.config._overlay import (
@@ -129,6 +135,18 @@ def _load_weather_forecast_adapter_config() -> _WeatherForecastAdapterConfig:
             "[adapters.weather_forecast].max_files must be a TOML integer or unset"
         )
 
+    grid_extractor_value = weather_forecast.get(
+        "grid_extractor", _DEFAULT_GRID_EXTRACTOR
+    )
+    if (
+        not isinstance(grid_extractor_value, str)
+        or grid_extractor_value not in _GRID_EXTRACTOR_CHOICES
+    ):
+        raise ConfigurationError(
+            "[adapters.weather_forecast].grid_extractor must be one of "
+            f"{_GRID_EXTRACTOR_CHOICES}"
+        )
+
     if enabled_value:
         missing = [
             key
@@ -154,7 +172,47 @@ def _load_weather_forecast_adapter_config() -> _WeatherForecastAdapterConfig:
         if isinstance(scratch_path_value, str)
         else None,
         max_files=max_files_value,
+        grid_extractor=grid_extractor_value,
     )
+
+
+def _load_grid_extractor_choice() -> Literal["mesh", "exactextract"]:
+    """Read ONLY the ``[adapters.weather_forecast].grid_extractor`` selector.
+
+    Decoupled from :func:`_load_weather_forecast_adapter_config` so the selector
+    is honored for injected adapters without triggering MeteoSwiss-only field
+    validation. Returns the default (``"mesh"``) when ``SAPPHIRE_CONFIG`` is
+    unset or the key is absent. Raises ``ConfigurationError`` only when the
+    value is present but not a recognized choice — no MeteoSwiss-only field is
+    read or validated here.
+    """
+    config_path = os.environ.get("SAPPHIRE_CONFIG")
+    if config_path is None:
+        return _DEFAULT_GRID_EXTRACTOR
+
+    from sapphire_flow.config._overlay import (
+        _resolve_overlay_paths,  # pyright: ignore[reportPrivateUsage]
+        load_merged_toml,
+    )
+
+    data = cast(
+        "dict[str, Any]",
+        load_merged_toml(Path(config_path), _resolve_overlay_paths()),
+    )
+    adapters = data.get("adapters", {})
+    weather_forecast = (
+        adapters.get("weather_forecast", {}) if isinstance(adapters, dict) else {}
+    )
+    if not isinstance(weather_forecast, dict):
+        weather_forecast = {}
+
+    value = weather_forecast.get("grid_extractor", _DEFAULT_GRID_EXTRACTOR)
+    if value not in _GRID_EXTRACTOR_CHOICES:
+        raise ConfigurationError(
+            "[adapters.weather_forecast].grid_extractor must be one of "
+            f"{_GRID_EXTRACTOR_CHOICES}"
+        )
+    return cast('Literal["mesh", "exactextract"]', value)
 
 
 def _load_forecast_qc_rules() -> ForecastQcRuleSet:
@@ -486,7 +544,11 @@ def run_forecast_cycle_flow(
                 config = DeploymentConfig(max_retention_days=600)
 
         config_path_for_adapter = os.environ.get("SAPPHIRE_CONFIG")
-        weather_forecast_config: _WeatherForecastAdapterConfig | None = None
+        # The grid_extractor selector is honored whether or not an adapter is
+        # injected, via a lightweight read that does NOT validate MeteoSwiss-only
+        # fields. Full adapter-config validation (MeteoSwiss-only fields) is
+        # gated on `adapter is None` so an injected adapter bypasses it.
+        grid_extractor_choice = _load_grid_extractor_choice()
         nwp_enabled = adapter is not None
         if adapter is None:
             weather_forecast_config = _load_weather_forecast_adapter_config()
@@ -546,11 +608,18 @@ def run_forecast_cycle_flow(
 
                 grid_store = ZarrNwpGridStore()
             if grid_extractor is None:
-                from sapphire_flow.preprocessing.exact_extract_grid_extractor import (
-                    ExactExtractGridExtractor,
-                )
+                if grid_extractor_choice == "exactextract":
+                    from sapphire_flow.preprocessing.exact_extract_grid_extractor import (  # noqa: E501
+                        ExactExtractGridExtractor,
+                    )
 
-                grid_extractor = ExactExtractGridExtractor()
+                    grid_extractor = ExactExtractGridExtractor()
+                else:
+                    from sapphire_flow.preprocessing.mesh_basin_extractor import (
+                        MeshBasinExtractor,
+                    )
+
+                    grid_extractor = MeshBasinExtractor()
 
         if obs_store is None:
             raise ConfigurationError("obs_store is required but was not provided")

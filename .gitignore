@@ -20,6 +20,11 @@ secrets/
 # Downloaded data (never commit)
 data/
 .data/
+# ...but DO ship the packaged static mesh-coords asset (Plan 087 package data).
+!src/sapphire_flow/data/
+!src/sapphire_flow/data/**
+# ...except compiled bytecode under it (the `!data/**` negation re-exposed it).
+src/sapphire_flow/data/__pycache__/
 
 # Claude Code — track shared settings.json, ignore machine-local state
 # (settings.local.json is also in the global gitignore)

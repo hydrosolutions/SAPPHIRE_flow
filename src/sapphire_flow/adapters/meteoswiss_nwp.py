@@ -2,9 +2,11 @@
 # pyright: reportUnknownArgumentType=false
 from __future__ import annotations
 
+import importlib.resources
 import shutil
 import time
 from datetime import timedelta
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 from urllib.parse import urlparse
@@ -127,6 +129,52 @@ def _compute_wind_speed(ds: xr.Dataset) -> xr.Dataset:
     return ds
 
 
+# Plan 087: the ICON-CH2-EPS mesh coordinates ship as a static package asset
+# (derived once from the OGD horizontal-constants GRIB; mesh is fixed across
+# cycles). The runtime never reads GRIB/ecCodes for coords — only np.load. Cell
+# ordering matches the forecast `values` dim by construction, guaranteed by
+# uuidOfHGrid (pinned at regeneration; cfgrib drops the UUID at runtime).
+_GRID_ASSET_PACKAGE = "sapphire_flow.data"
+_GRID_ASSET_NAME = "icon_ch2_eps_grid.npz"
+
+
+@lru_cache(maxsize=1)
+def _load_mesh_coords() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    asset = importlib.resources.files(_GRID_ASSET_PACKAGE) / _GRID_ASSET_NAME
+    with importlib.resources.as_file(asset) as path, np.load(path) as data:
+        return (
+            data["tlat"].astype(np.float64),
+            data["tlon"].astype(np.float64),
+            data["h"].astype(np.float64),
+        )
+
+
+def _attach_mesh_coords(ds: xr.Dataset) -> xr.Dataset:
+    """Attach per-cell latitude/longitude (+orography) on the unstructured mesh.
+
+    ICON-CH2-EPS parses to dims ``(valid_time, member, values)`` with NO
+    latitude/longitude dim (Plan 087 D1). Attach the static per-cell coords on
+    ``values``, normalising longitude to ``[-180, 180]`` (a verified no-op — the
+    asset's tlon is already on that range — kept as a defensive guard). On a
+    regular-grid cube (no ``values`` dim) this is a no-op.
+    """
+    if "values" not in ds.dims:
+        return ds
+    tlat, tlon, h = _load_mesh_coords()
+    expected = ds.sizes["values"]
+    if len(tlat) != expected:
+        raise AdapterError(
+            f"mesh-coord length {len(tlat)} != cube values dim {expected}; "
+            "the static ICON grid asset does not match the parsed forecast mesh"
+        )
+    longitude = ((tlon + 180.0) % 360.0) - 180.0
+    return ds.assign_coords(
+        latitude=("values", tlat),
+        longitude=("values", longitude),
+        orography=("values", h),
+    )
+
+
 def convert_raw_dataset(ds: xr.Dataset) -> xr.Dataset:
     if "tp" in ds:
         ds = _deaccumulate_precipitation(ds)
@@ -134,6 +182,7 @@ def convert_raw_dataset(ds: xr.Dataset) -> xr.Dataset:
     ds = _compute_wind_speed(ds)
     if "number" in ds.dims:
         ds = ds.rename({"number": "member"})
+    ds = _attach_mesh_coords(ds)
     return ds
 
 
