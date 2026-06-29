@@ -473,7 +473,7 @@ Ordered, copy-paste procedure (uses the Environment preamble above):
 8. **(Optional) NWP** — drop the overlay, `up -d --force-recreate prefect-worker`,
    writability `ok`, re-trigger forecast-cycle.
 
-**Six gotchas (defend against each):**
+**Gotchas (defend against each):**
 
 1. **Never restart/recreate the worker mid-onboarding** — it tears down the flow
    before Step 8 → 0 operational. Sequence any worker recreate (Phase 5) strictly
@@ -498,6 +498,63 @@ Ordered, copy-paste procedure (uses the Environment preamble above):
    exercise Plan 062's resumability concern. Just observe
    `$DC exec prefect-server printenv PREFECT_HOME` (expect unset) and note that a
    `down` loses run history. Do not block this plan on Plan 062.
+7. **Any worker/service recreate re-runs `init`, which re-activates the paused
+   schedules** (discovered during the 2026-06-28 run). `prefect-worker`
+   `depends_on` `init`, so `up -d [--force-recreate] prefect-worker` brings up
+   `init` again → `register_deployments` re-creates the deployments with their
+   crons **active**, silently undoing Task 1c. After *every* worker recreate
+   (Phase 3b, Phase 5), immediately re-run
+   `prefect deployment schedule pause --all` and re-verify `active: False`.
+
+---
+
+## Validation run — 2026-06-28 (results)
+
+Executed on this dev host (macOS, Docker Desktop VM 15.84 GiB), image
+`sapphire-flow:0.1.499`. Stations `2009` (`056108c7…`) + `2091` (`828385f6…`).
+
+| Phase | Outcome | Evidence |
+|---|---|---|
+| 1a targets | ✅ PASS | both IDs in `[onboarding].basin_ids`; CAMELS-CH staged + visible to worker (`/data/raw/CAMELS_CH`). |
+| 1b clean start | ✅ PASS | `init` exit 0 (`Init complete`, `count=9`); postgres/prefect-server/api healthy; health `ok/ok`; 9 deployments; DB `total=0`. |
+| 1c pause schedules | ✅ PASS | `pause --all` → 3 cron'd deployments `active: False`. The round-2 blocker fix (`pause --all`, not bare `pause <flow>/<dep>`) validated live. |
+| 2 onboard | ✅ PASS | `onboarding_starting basin_ids=['2009','2091']` (not null); `onboarding_flow_complete stations_marked_operational=2 models_trained=6 observations_imported=58440 qc_passed=28955 qc_failed=0 qc_suspect=265`; 2× `station_operational`; 0× `station_no_active_artifact`; flow `COMPLETED`. Onboarding took ~20 min (day-by-day historical hindcast — Plan 068 territory). Failure modes 1 & 2 defended (uninterrupted run reached Step 8; scoped run, not the full set). |
+| 3a operational | ✅ PASS | API `status=operational&limit=200 .total=2`, codes `2009`/`2091`; histogram clean. |
+| 3b runoff forecast | ✅ PASS | `forecast_cycle.nwp_disabled mode=runoff_only`, `starting stations=2`, `forecasts_stored=2 stations_succeeded=2`, no `no_operational_stations`; flow `COMPLETED`; forecasts `.total=1` for both stations. Required re-pausing schedules after the worker recreate (gotcha 7). |
+| 4 idempotency | ✅ PASS — **failure mode 3 did NOT reproduce** | re-run `onboarding_flow_complete stations_marked_operational=2 models_trained=0`; stations still operational (`.total=2`); **ACTIVE artifact count unchanged 6→6** (authoritative); `training_skipped reason=all_stations_have_active_artifact` for all 3 models — observed at DEBUG on worker stdout, **empirically confirming D7**. Step 8 is independent of training, as designed (D5). |
+| 5 NWP (optional) | ❌ **FAIL — OOM** | see Finding NWP-OOM below. Core pipeline (1–4) unaffected. |
+
+### Finding: NWP forecast-cycle OOM-killed on dev (NWP-OOM)
+
+- **Repro**: clean dev stack (Phases 1–4 green) → recreate worker NWP-on (base
+  `config.toml enabled=true`) → `prefect deployment run forecast-cycle/forecast-cycle`.
+- **Expected**: cycle `COMPLETED`, forecasts for both stations.
+- **Actual**: flow run **CRASHED** after ~320 s — state message
+  *"Flow run process exited with non-zero status code -9"* (SIGKILL). Worker
+  container `"OOMKilled": true`. The crash is in the NWP fetch/extract step
+  (`nwp.fetch_started` logged; no forecasts stored; no graceful
+  `nwp_fetch_failed_aborting`).
+- **Diagnosis**: the ICON-CH2-EPS pull for one cycle staged **484 GRIB2 files /
+  2.7 GB** under `/tmp/sapphire_nwp/<cycle>/` (21 members × ~120 hourly steps ×
+  {t_2m, tot_prec} × {ctrl, perturb}); the worker has **no `mem_limit`** and the
+  Docker VM is 15.84 GiB. Processing the set exceeded available memory →
+  cgroup/host OOM killer took the flow subprocess.
+- **Not fixed inline** (validation only). Candidate mitigations for a follow-up
+  (WF2 fix-mode milestone or a dedicated plan): stream/extract per member/step
+  and release eagerly instead of holding the full set in memory; cap NWP
+  concurrency; set a worker `mem_limit` + verify graceful degradation; or
+  pre-archive to Zarr out-of-band. **This is the most material finding of the
+  run** and gates any NWP-on deployment on the Mac mini (which is unlikely to
+  have more RAM than this host).
+
+### Net result
+
+The **runoff-only end-to-end pipeline (Phases 1–4) is validated green** on dev
+for 2 river stations, and the suspected failure mode 3 did not reproduce —
+strongly implying the Mac mini's 0-operational outcome was operational (worker
+recreated mid-onboarding / partial prior state / schedule reactivation), not a
+Step 8 code bug. The **NWP-on path is blocked by an OOM** that must be addressed
+before an NWP-enabled mini bring-up.
 
 ---
 
