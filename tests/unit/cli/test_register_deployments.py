@@ -56,6 +56,7 @@ class TestBuildSpecs:
         monkeypatch.setenv("SCHEDULE_INGEST_OBSERVATIONS", "*/10 * * * *")
         monkeypatch.setenv("SCHEDULE_FORECAST_CYCLE", "0 */3 * * *")
         monkeypatch.setenv("SCHEDULE_BACKUP_DATABASE", "0 4 * * *")
+        monkeypatch.setenv("SCHEDULE_INGEST_WEATHER_HISTORY", "30 5 * * *")
 
         specs = _build_specs()
         by_name = {s.deployment_name: s for s in specs}
@@ -63,10 +64,22 @@ class TestBuildSpecs:
         assert by_name["ingest-observations"].cron == "*/10 * * * *"
         assert by_name["forecast-cycle"].cron == "0 */3 * * *"
         assert by_name["backup-database"].cron == "0 4 * * *"
+        assert by_name["ingest-weather-history"].cron == "30 5 * * *"
 
-    def test_returns_nine_specs(self) -> None:
+    def test_returns_ten_specs(self) -> None:
+        # Plan 071 adds the rolling weather-history ingest deployment.
         specs = _build_specs()
-        assert len(specs) == 9
+        assert len(specs) == 10
+
+    def test_ingest_weather_history_daily_deployment(self) -> None:
+        """Plan-071 rolling-ingest flow is registered as a daily deployment."""
+        specs = _build_specs()
+        by_name = {s.deployment_name: s for s in specs}
+
+        spec = by_name["ingest-weather-history"]
+        assert spec.cron == "0 6 * * *"
+        assert spec.flow_module == "sapphire_flow.flows.ingest_weather_history"
+        assert spec.flow_attr == "ingest_weather_history_flow"
 
     def test_all_deployment_names_unique(self) -> None:
         specs = _build_specs()
@@ -209,7 +222,7 @@ class TestRegisterAll:
             await register_all()
 
         mock_client.create_work_pool.assert_awaited_once()
-        assert mock_register.await_count == 9
+        assert mock_register.await_count == 10
 
     @pytest.mark.asyncio
     async def test_handles_existing_work_pool(self) -> None:
@@ -239,4 +252,4 @@ class TestRegisterAll:
             # Should NOT raise — ObjectAlreadyExists is caught
             await register_all()
 
-        assert mock_register.await_count == 9
+        assert mock_register.await_count == 10

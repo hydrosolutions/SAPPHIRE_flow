@@ -379,6 +379,14 @@ expected_cycles_per_day = 4
 provider_retention_days = 1
 recovery_max_attempts = 3
 
+# Plan 071: MeteoSwiss open-data daily reanalysis (historical_forcing ingest).
+# Drives the scheduled `ingest-weather-history` deployment. STAC base url +
+# collection only; defaults match these values when the section is absent.
+[adapters.weather_reanalysis]
+type = "meteoswiss_open_data_reanalysis"
+stac_base_url = "https://data.geo.admin.ch/api/stac/v1"
+stac_collection = "ch.meteoschweiz.ogd-surface-derived-grid"
+
 [adapters.weather_stations]
 type = "meteoswiss_smn"
 max_cache_age_hours = 24
