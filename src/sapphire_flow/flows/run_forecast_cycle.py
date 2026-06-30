@@ -709,12 +709,16 @@ def run_forecast_cycle_flow(
                         "nwp.basin_not_found", station_id=s.id, basin_id=s.basin_id
                     )
 
-        # Instantiate reanalysis source for past_dynamic
-        from sapphire_flow.adapters.store_backed_reanalysis import (
-            StoreBackedReanalysisSource,
+        # Instantiate reanalysis source for past_dynamic. The hybrid resolver
+        # (Plan 072) is opt-in via DeploymentConfig.reanalysis_source; "single"
+        # keeps the v0a per-station single-source path.
+        from sapphire_flow.adapters.hybrid_reanalysis_factories import (
+            select_reanalysis_source,
         )
 
-        forcing_source = StoreBackedReanalysisSource(forcing_store)
+        forcing_source = select_reanalysis_source(
+            forcing_store=forcing_store, mode=config.reanalysis_source
+        )
 
         # Instantiate forecast QC checker
         from sapphire_flow.services.forecast_qc import ForecastOutputQualityChecker
