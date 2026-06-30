@@ -15,11 +15,11 @@ shape. Do not weaken them to make implementation easier.
 from __future__ import annotations
 
 import pytest
-from sapphire_flow.types.forcing_schema import CANONICAL_FORCING_SCHEMA
 
 from sapphire_flow.adapters.forecast_interface import Unit, fi_unit_to_canonical
 from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.types.enums import SpatialRepresentation
+from sapphire_flow.types.forcing_schema import CANONICAL_FORCING_SCHEMA
 
 _CANONICAL_PARAMETERS = {
     "precipitation",
