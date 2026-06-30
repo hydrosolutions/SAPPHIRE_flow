@@ -35,6 +35,9 @@ def _build_specs() -> list[DeploymentSpec]:
     cron_ingest = os.environ.get("SCHEDULE_INGEST_OBSERVATIONS", "*/5 * * * *")
     cron_forecast = os.environ.get("SCHEDULE_FORECAST_CYCLE", "0 */6 * * *")
     cron_backup = os.environ.get("SCHEDULE_BACKUP_DATABASE", "0 2 * * *")
+    cron_weather_history = os.environ.get(
+        "SCHEDULE_INGEST_WEATHER_HISTORY", "0 6 * * *"
+    )
 
     return [
         DeploymentSpec(
@@ -87,6 +90,12 @@ def _build_specs() -> list[DeploymentSpec]:
             flow_attr="onboard_model_flow",
             deployment_name="onboard-model",
             concurrency_limit=1,
+        ),
+        DeploymentSpec(
+            flow_module="sapphire_flow.flows.ingest_weather_history",
+            flow_attr="ingest_weather_history_flow",
+            deployment_name="ingest-weather-history",
+            cron=cron_weather_history,
         ),
     ]
 
