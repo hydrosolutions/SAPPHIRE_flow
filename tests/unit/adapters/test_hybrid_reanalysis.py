@@ -31,7 +31,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sapphire_flow.adapters.hybrid_reanalysis import HybridForcingSource
-
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.enums import SpatialRepresentation, WeatherSourceStatus
 from sapphire_flow.types.forcing_sources import ForcingSource

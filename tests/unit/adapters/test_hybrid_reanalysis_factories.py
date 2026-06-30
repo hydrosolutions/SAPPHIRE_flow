@@ -34,7 +34,6 @@ from datetime import UTC, datetime
 from sapphire_flow.adapters.hybrid_reanalysis_factories import (
     default_hybrid_forcing_source,
 )
-
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.enums import SpatialRepresentation, WeatherSourceStatus
 from sapphire_flow.types.historical_forcing import RawHistoricalForcing
