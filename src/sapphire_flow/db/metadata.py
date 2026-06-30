@@ -387,7 +387,11 @@ historical_forcing = sa.Table(
         "created_at",
         sa.DateTime(timezone=True),
         nullable=False,
-        server_default=sa.func.now(),
+        # clock_timestamp() (NOT now()/transaction_timestamp()) returns a
+        # row-level wall clock, so multiple versions of one logical key
+        # inserted in a SINGLE transaction get distinct, insertion-ordered
+        # created_at values — making latest-version supersession deterministic.
+        server_default=sa.func.clock_timestamp(),
     ),
     sa.CheckConstraint(
         "(spatial_type = 'elevation_band' AND band_id IS NOT NULL) OR "
