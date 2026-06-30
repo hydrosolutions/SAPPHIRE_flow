@@ -72,11 +72,44 @@ class PgHistoricalForcingStore:
         )
         if parameters is not None:
             q = q.where(historical_forcing.c.parameter.in_(parameters))
-        if version is not None:
-            q = q.where(historical_forcing.c.version == version)
         if member_id is not None:
             q = q.where(historical_forcing.c.member_id == member_id)
-        rows = self._conn.execute(q).mappings().all()
+        if version is not None:
+            # Audit path: return the exact-version rows (all of them, even if a
+            # newer version supersedes them) — no supersession filter applied.
+            q = q.where(historical_forcing.c.version == version)
+            rows = self._conn.execute(q).mappings().all()
+            return [_row_to_record(row) for row in rows]
+
+        # Default path: collapse to the latest version per logical key. Order by
+        # created_at (server-default clock_timestamp(), row-level so same-txn
+        # inserts get distinct, insertion-ordered values), tie-break on id for a
+        # final stable order — `version` is a content hash with no natural order.
+        latest = (
+            sa.func.row_number()
+            .over(
+                partition_by=(
+                    historical_forcing.c.station_id,
+                    historical_forcing.c.source,
+                    historical_forcing.c.valid_time,
+                    historical_forcing.c.parameter,
+                    historical_forcing.c.spatial_type,
+                    sa.func.coalesce(historical_forcing.c.band_id, -1),
+                    sa.func.coalesce(historical_forcing.c.member_id, -1),
+                ),
+                order_by=(
+                    historical_forcing.c.created_at.desc(),
+                    historical_forcing.c.id.desc(),
+                ),
+            )
+            .label("_rn")
+        )
+        ranked = q.add_columns(latest).subquery()
+        rows = (
+            self._conn.execute(sa.select(ranked).where(ranked.c._rn == 1))
+            .mappings()
+            .all()
+        )
         return [_row_to_record(row) for row in rows]
 
     def fetch_forcing_as_dataframe(

@@ -22,6 +22,9 @@ import sqlalchemy as sa
 
 from sapphire_flow.db.metadata import historical_forcing
 from sapphire_flow.store.historical_forcing_store import PgHistoricalForcingStore
+from sapphire_flow.types.datetime import ensure_utc
+from sapphire_flow.types.enums import SpatialRepresentation
+from sapphire_flow.types.historical_forcing import RawHistoricalForcing
 from sapphire_flow.types.ids import StationId
 from tests.conftest import make_station_config
 
@@ -173,6 +176,48 @@ class TestFetchForcingSupersession:
 
         assert len(records) == 1
         assert records[0].version == "only000000000000"
+
+    def test_same_transaction_inserts_last_written_version_wins(
+        self, db_connection: sa.Connection
+    ) -> None:
+        # Regression for the nondeterministic same-transaction tie: two versions
+        # of ONE logical key written via the store (server-default created_at) in
+        # a SINGLE transaction, NO explicit created_at. With now()/transaction-
+        # constant timestamps both rows tie on created_at and the random-UUID id
+        # tiebreak could surface the OLDER row. clock_timestamp() gives each
+        # insert a distinct, insertion-ordered created_at so the genuinely
+        # last-written version wins, deterministically.
+        sid = _seed_station(db_connection)
+        store = PgHistoricalForcingStore(db_connection)
+        vt = _utc(2026, 4, 10)
+
+        def _raw(version: str, value: float) -> RawHistoricalForcing:
+            return RawHistoricalForcing(
+                station_id=sid,
+                source="meteoswiss_rprelimd",
+                version=version,
+                valid_time=ensure_utc(vt),
+                parameter="precipitation",
+                spatial_type=SpatialRepresentation.BASIN_AVERAGE,
+                band_id=None,
+                member_id=None,
+                value=value,
+            )
+
+        # Two separate statements within the one per-test transaction.
+        store.store_forcing([_raw("aaaaaaaaaaaaaaaa", 3.0)])
+        store.store_forcing([_raw("bbbbbbbbbbbbbbbb", 4.0)])
+
+        records = store.fetch_forcing(
+            sid,
+            "meteoswiss_rprelimd",
+            _utc(2026, 4, 10),
+            _utc(2026, 4, 11),
+        )
+
+        assert len(records) == 1
+        assert records[0].version == "bbbbbbbbbbbbbbbb"
+        assert records[0].value == 4.0
 
     def test_distinct_logical_keys_each_keep_their_latest(
         self, db_connection: sa.Connection
