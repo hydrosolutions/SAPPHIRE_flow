@@ -38,6 +38,15 @@ def _resolution_token(resolution: object) -> str:
     return str(token).lower()
 
 
+def _safe_canonical(unit: Unit) -> str | None:
+    # Units absent from the SAP3 canonical map raise; treat that as "no
+    # canonical string" so set-membership comparisons stay total over Unit.
+    try:
+        return fi_unit_to_canonical(unit)
+    except ConfigurationError:
+        return None
+
+
 class TestCanonicalForcingSchemaDeclaration:
     def test_declares_exactly_the_canonical_parameters(self) -> None:
         assert set(CANONICAL_FORCING_SCHEMA.parameters) == _CANONICAL_PARAMETERS
@@ -86,5 +95,18 @@ class TestPrecipitationUnitRejectsMmPerDay:
         with pytest.raises(ConfigurationError):
             fi_unit_to_canonical(Unit.MM_PER_DAY)
 
-    def test_schema_does_not_declare_precipitation_in_mm_per_day(self) -> None:
-        assert CANONICAL_FORCING_SCHEMA.units["precipitation"] != Unit.MM_PER_DAY
+    def test_precipitation_unit_is_an_accumulation_not_a_rate(self) -> None:
+        # Independent failure signal (not the trivial ``!= MM_PER_DAY``):
+        # precipitation's declared unit must belong to the family that maps to
+        # the SAP3 accumulation string "mm" and must NOT belong to the family
+        # that maps to a rate ("mm/h"). This fails for *any* distinct wrong
+        # value — Unit.MM_PER_DAY (no canonical string at all), Unit.MM_PER_HOUR
+        # ("mm/h"), or Unit.DEG_C ("°C") — each falls outside the "mm" family.
+        precip_unit = CANONICAL_FORCING_SCHEMA.units["precipitation"]
+        maps_to_mm = {u for u in Unit if _safe_canonical(u) == "mm"}
+        maps_to_rate = {u for u in Unit if _safe_canonical(u) == "mm/h"}
+        assert precip_unit in maps_to_mm
+        assert precip_unit not in maps_to_rate
+        # mm/day must not even be a member of the "mm" family (it has no
+        # canonical mapping), guarding against a silent rate->accumulation alias.
+        assert Unit.MM_PER_DAY not in maps_to_mm

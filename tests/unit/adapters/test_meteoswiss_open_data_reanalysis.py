@@ -355,19 +355,59 @@ class TestSchemaConformance:
 
 
 class TestFetchReanalysisErrorPaths:
+    def _fetch_with_handler(
+        self, handler: Callable[[httpx.Request], httpx.Response]
+    ) -> list[RawHistoricalForcing]:
+        sid = StationId(uuid.uuid4())
+        adapter = _make_adapter(httpx.MockTransport(handler), {sid: _make_basin(sid)})
+        return adapter.fetch_reanalysis(
+            [_make_config(sid)],
+            ensure_utc(datetime(2026, 4, 10, tzinfo=UTC)),
+            ensure_utc(datetime(2026, 4, 12, tzinfo=UTC)),
+            sorted(_CANONICAL_PARAMETERS),
+        )
+
     def test_stac_server_error_raises_adapter_error(self) -> None:
+        # STAC search endpoint 5xx: the whole pipeline must fail loudly.
         def handler(_request: httpx.Request) -> httpx.Response:
             return httpx.Response(500, json={"error": "upstream failure"})
 
-        sid = StationId(uuid.uuid4())
-        adapter = _make_adapter(httpx.MockTransport(handler), {sid: _make_basin(sid)})
         with pytest.raises(AdapterError):
-            adapter.fetch_reanalysis(
-                [_make_config(sid)],
-                ensure_utc(datetime(2026, 4, 10, tzinfo=UTC)),
-                ensure_utc(datetime(2026, 4, 12, tzinfo=UTC)),
-                sorted(_CANONICAL_PARAMETERS),
-            )
+            self._fetch_with_handler(handler)
+
+    def test_partial_asset_download_failure_raises_adapter_error(self) -> None:
+        # STAC search succeeds and three of four product assets download, but
+        # the precipitation asset 404s. The adapter must raise rather than
+        # silently emit a forcing stream missing the precipitation rows.
+        partial = {k: v for k, v in _byte_map().items() if k[0] != "rprelimd"}
+        with pytest.raises(AdapterError):
+            self._fetch_with_handler(_make_handler(partial))
+
+    def test_asset_server_error_raises_adapter_error(self) -> None:
+        # An asset download 5xx (transient upstream fault) must also surface as
+        # AdapterError, not a partial result.
+        def handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            if "/assets/" in url:
+                return httpx.Response(500, json={"error": "asset upstream failure"})
+            if "/collections/" in url:
+                days = [d for d in _DAYS]
+                return httpx.Response(
+                    200, json={"features": [_feature(d) for d in days], "links": []}
+                )
+            return httpx.Response(200, json={"features": [], "links": []})
+
+        with pytest.raises(AdapterError):
+            self._fetch_with_handler(handler)
+
+    def test_empty_stac_result_yields_no_rows(self) -> None:
+        # STAC returns HTTP 200 with no features for the requested range (a gap
+        # in the archive). The documented contract is an empty forcing stream —
+        # no rows, no exception, no fabricated data.
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"features": [], "links": []})
+
+        assert self._fetch_with_handler(handler) == []
 
 
 class TestReanalysisBasinAveraging:
@@ -419,3 +459,13 @@ class TestReanalysisBasinAveraging:
         # 2 daily valid_times x 2 parameters, no ensemble fan-out.
         assert len(keys) == 4
         assert df["member_id"].n_unique() == 1
+
+        # DAILY resolution (criterion 2): the extractor preserves exactly the
+        # two input-grid daily timestamps — 24 h apart, no hourly sub-sampling.
+        # A sub-daily extractor that deduplicated to 4 unique rows would still
+        # pass the counts above but would fail this exact-timestamp pin.
+        valid_times = sorted(set(df["valid_time"].to_list()))
+        assert valid_times == [
+            datetime(2026, 4, 10, tzinfo=UTC),
+            datetime(2026, 4, 11, tzinfo=UTC),
+        ]
