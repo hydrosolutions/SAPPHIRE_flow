@@ -4,7 +4,7 @@ import hashlib
 import os
 import random
 from datetime import timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from uuid import UUID, uuid4
 
 from prefect import flow, task
@@ -22,6 +22,8 @@ from sapphire_flow.types.training import HindcastStepResult  # noqa: TC001
 
 if TYPE_CHECKING:
     from collections.abc import Callable  # noqa: TC003
+
+    from sapphire_flow.config.deployment import DeploymentConfig
 
 
 @task(
@@ -147,6 +149,7 @@ def run_hindcast_flow(
     clock: object = None,
     rng: object = None,
     hindcast_run_id: UUID | None = None,
+    config: object = None,
 ) -> list[HindcastStepResult] | dict[StationId, list[HindcastStepResult]]:
     from datetime import UTC, datetime
 
@@ -187,11 +190,27 @@ def run_hindcast_flow(
         forcing_store = None
 
     if forcing_source is None and forcing_store is not None:
-        from sapphire_flow.adapters.store_backed_reanalysis import (
-            StoreBackedReanalysisSource,
+        from sapphire_flow.adapters.hybrid_reanalysis_factories import (
+            select_reanalysis_source,
         )
 
-        forcing_source = StoreBackedReanalysisSource(forcing_store)
+        # Plan 072: opt-in hybrid resolver via DeploymentConfig.reanalysis_source;
+        # absent config keeps the v0a single-source path.
+        if config is None:
+            config_path = os.environ.get("SAPPHIRE_CONFIG")
+            if config_path is not None:
+                from sapphire_flow.config.deployment import load_config
+
+                config = load_config(config_path)
+        resolved_config = cast("DeploymentConfig | None", config)
+        mode = (
+            resolved_config.reanalysis_source
+            if resolved_config is not None
+            else "single"
+        )
+        forcing_source = select_reanalysis_source(
+            forcing_store=forcing_store, mode=mode
+        )
 
     if model is None:
         from sapphire_flow.services.model_registry import discover_models
