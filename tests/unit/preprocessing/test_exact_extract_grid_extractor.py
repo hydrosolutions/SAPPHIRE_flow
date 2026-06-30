@@ -250,11 +250,22 @@ class TestOutOfExtent:
         assert str(sid_a) in msg and str(sid_b) in msg
 
 
-class TestNaiveDatetimeRejection:
-    def test_naive_valid_time_raises(self) -> None:
+class TestNaiveDatetimeLocalizedToUtc:
+    def test_naive_datetime_localized_to_utc(self) -> None:
+        # ICON valid_times are UTC. The parsed cube carries tz-naive values
+        # (numpy.datetime64 / naive datetime); they are localized to UTC, not
+        # shifted, and not rejected.
         from sapphire_flow.preprocessing.exact_extract_grid_extractor import (
             _to_utc_datetime,
         )
 
-        with pytest.raises(ValueError, match="naive"):
-            _to_utc_datetime(datetime(2026, 4, 1, 0, 0))
+        result = _to_utc_datetime(datetime(2026, 4, 1, 0, 0))
+        assert result == datetime(2026, 4, 1, 0, 0, tzinfo=UTC)
+
+    def test_naive_numpy_datetime64_localized_to_utc(self) -> None:
+        from sapphire_flow.preprocessing.exact_extract_grid_extractor import (
+            _to_utc_datetime,
+        )
+
+        result = _to_utc_datetime(np.datetime64("2026-04-01T00:00:00"))
+        assert result == datetime(2026, 4, 1, 0, 0, tzinfo=UTC)

@@ -435,6 +435,11 @@ max_cache_age_hours = 12
 #                                     # fetched per cycle (operator escape hatch /
 #                                     # sampled runs). Unset = unlimited (prod
 #                                     # default). Non-int → ConfigurationError.
+grid_extractor = "mesh"               # Plan 087: basin extractor. "mesh" (default)
+#                                     # handles the ICON-CH2-EPS unstructured mesh
+#                                     # via point-in-polygon; "exactextract" is the
+#                                     # regular lat/lon raster path. Unknown value →
+#                                     # ConfigurationError.
 
 # Pipeline monitoring config for this adapter.
 # Source: architecture-context.md § Pipeline monitoring schedule config

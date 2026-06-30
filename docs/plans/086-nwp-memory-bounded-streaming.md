@@ -521,6 +521,9 @@ milestone:
    unit tests the milestone goes GREEN while real NWP-on E2E is still non-functional
    (now at extract, not OOM). 086 makes the path memory-safe and the archive valid,
    NOT NWP-on functional end-to-end (Open Item E).
+   **UPDATE: Open Item E is ADDRESSED by Plan 087** (`MeshBasinExtractor` +
+   `values`-dim coord-attach + `grid_extractor` selector) — mesh extraction is now
+   functional; 086 and 087 together deliver the NWP-on E2E path.
 
 ---
 

@@ -363,6 +363,10 @@ stac_collection = "ch.meteoschweiz.ogd-forecasting-icon-ch2"
 archive_format = "zarr"
 archive_base_path = "/data/nwp_grids"
 scratch_path = "/tmp/sapphire_nwp"
+# Plan 087: basin extractor for NWP forcing. "mesh" (default) handles the
+# ICON-CH2-EPS unstructured triangular mesh via point-in-polygon; "exactextract"
+# is the regular lat/lon raster path. Unknown values raise ConfigurationError.
+grid_extractor = "mesh"
 # Plan 086: optional hard cap on GRIB files fetched per cycle (operator escape
 # hatch / sampled runs — caps members·steps, NOT a correctness control). Unset =
 # unlimited (production default). A conservative cap belongs in the mac-mini
