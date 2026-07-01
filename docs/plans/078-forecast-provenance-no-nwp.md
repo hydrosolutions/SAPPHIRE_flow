@@ -1,12 +1,50 @@
 # Plan 078 — forecast provenance for NWP-less forecasts
 
-**Status**: DRAFT (parked — not actionable until a grill-me design session;
-see "Process" below)
+**Status**: DONE (grill-me resolved 2026-07-01; core fix shipped as epic-088 M4
+— see "Resolution" below. The mixed-deployment verification/skill segmentation
+(open question 4) remains a v1 follow-on, tracked there.)
 **Phase**: v1 (forecast provenance / verification)
 **Parent**: Plan 077 (optional NWP adapter wiring) — surfaced finding F2
 **Related**: `NwpCycleSource` enum, forecast persistence schema, API forecast
 endpoints, `input_quality` messaging
 **Created**: 2026-06-24
+
+---
+
+## Resolution (epic-088 M4, 2026-07-01)
+
+The grill-me session ran during epic-088 M4 (NWP-on operational forecasting),
+which made NWP-consuming models real and thus made this fix load-bearing. The
+converged design (implemented + tested SAP3-side, no ForecastInterface change —
+provenance is orchestrator knowledge, not a model contract):
+
+1. **Representation — hybrid of open-question 1's options (a)+(b)+(c).** Added
+   `NwpCycleSource.RUNOFF_ONLY = "runoff_only"` (third enum value) AND made
+   `nwp_cycle_reference_time` nullable (null ⇔ no NWP cycle) AND introduced a
+   small forward-compatible `ForecastProvenance` record
+   (`types/forecast.py`: `nwp_cycle_source` + `nwp_cycle_reference_time | None`,
+   exposed via `OperationalForecast.provenance`) as the seed of the broader
+   input-provenance object option (c) for v1.
+2. **Schema migration** — `alembic/versions/0026_forecast_provenance_runoff_only.py`:
+   `nwp_cycle_reference_time` → nullable, CHECK extended to
+   `IN ('primary','fallback','runoff_only')`. Existing rows left as-is
+   (pre-cleanup staging decision, per open-question 2). The downgrade coerces
+   runoff-only rows back to `primary` + backfills the reference time from
+   `issued_at` before restoring the two-value CHECK / NOT NULL (reversibility).
+3. **API contract** — `ForecastDetail.nwp_cycle_reference_time` is now
+   `datetime | None`; `nwp_cycle_source` gains the `runoff_only` value. Additive
+   for consumers (no v0 consumers today).
+4. **`input_quality` messaging** — the runoff-only branch emits a distinct
+   NWP-category "No NWP forcing: runoff-only mode" detail, separate from
+   primary/fallback (open-question 5).
+5. **Recording** — `run_forecast_cycle.py` stamps `RUNOFF_ONLY` + null reference
+   time in runoff-only mode; `PRIMARY`/`FALLBACK` (threaded from the adapter's
+   resolved-cycle fallback signal) with the resolved cycle time otherwise.
+
+**Deferred to v1 (open-question 4, the real downstream driver):** how skill
+computation / hindcast verification / the review dashboard segment NWP-less
+forecasts in a mixed deployment. Not needed until Nepal v1 mixes NWP and
+runoff-only models operationally.
 
 ---
 

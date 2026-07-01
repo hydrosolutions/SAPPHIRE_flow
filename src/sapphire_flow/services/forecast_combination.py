@@ -190,7 +190,7 @@ def build_combined_forecasts(
     station_id: StationId,
     multi_result: MultiModelForecastResult,
     strategy: ModelCombinationStrategy,
-    nwp_cycle_reference_time: UtcDatetime,
+    nwp_cycle_reference_time: UtcDatetime | None,
     nwp_cycle_source: NwpCycleSource,
     clock: Callable[[], UtcDatetime],
     uuid_factory: Callable[[], UUID],
@@ -226,11 +226,14 @@ def build_combined_forecasts(
             combination_strategy_label = "pooled"
             combined_model_id = POOLED_MODEL_ID
 
+    now = clock()
     first_result = next(iter(combinable_results.values()))
     first_ensemble = next(iter(first_result.ensembles.values()), None)
-    issued_at = first_ensemble.issued_at if first_ensemble else nwp_cycle_reference_time
-
-    now = clock()
+    # Combined forecasts always have contributing ensembles (>=2 combinable
+    # results guaranteed above); ``now`` is a defensive fallback so issued_at
+    # stays a concrete UtcDatetime even when reference_time is None
+    # (runoff-only mode).
+    issued_at = first_ensemble.issued_at if first_ensemble else now
     source_model_ids = list(combinable_results.keys())
 
     forecasts: list[OperationalForecast] = []

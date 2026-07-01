@@ -178,6 +178,7 @@ class ForeignForecastStatus(Enum):
 class NwpCycleSource(Enum):
     PRIMARY = "primary"
     FALLBACK = "fallback"
+    RUNOFF_ONLY = "runoff_only"
 
 
 class WeatherSourceStatus(Enum):

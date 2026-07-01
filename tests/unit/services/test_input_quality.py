@@ -141,6 +141,50 @@ class TestNwpAssessment:
         assert "9.0h" in nwp_flags[0].detail  # partial threshold
 
 
+class TestRunoffOnlyQualifier:
+    """epic-088 M4: runoff-only mode emits a distinct human-readable NWP flag.
+
+    Primary / fallback / runoff-only produce DISTINCT details. Runoff-only
+    yields a NWP-category flag regardless of NWP age (there is no NWP), with a
+    "runoff-only" detail. RED on main: NwpCycleSource has no RUNOFF_ONLY and
+    the assessor has no runoff branch.
+    """
+
+    def test_runoff_only_emits_nwp_flag_even_at_zero_age(self) -> None:
+        kwargs = _default_kwargs()
+        kwargs["nwp_cycle_source"] = NwpCycleSource.RUNOFF_ONLY
+        kwargs["nwp_age_hours"] = 0.0  # no NWP → age is meaningless
+        _, flags = assess_input_quality(**kwargs)
+        nwp_flags = [f for f in flags if f.category == InputQualityCategory.NWP]
+        assert len(nwp_flags) == 1
+        assert "runoff-only" in nwp_flags[0].detail
+
+    def test_runoff_only_detail_distinct_from_fallback(self) -> None:
+        kwargs = _default_kwargs()
+        kwargs["nwp_cycle_source"] = NwpCycleSource.RUNOFF_ONLY
+        kwargs["nwp_age_hours"] = 0.0
+        _, flags = assess_input_quality(**kwargs)
+        nwp_flags = [f for f in flags if f.category == InputQualityCategory.NWP]
+        assert "fallback" not in nwp_flags[0].detail
+
+    def test_fresh_primary_emits_no_nwp_flag(self) -> None:
+        kwargs = _default_kwargs()  # PRIMARY, nwp_age_hours=0.0
+        level, flags = assess_input_quality(**kwargs)
+        nwp_flags = [f for f in flags if f.category == InputQualityCategory.NWP]
+        assert nwp_flags == []
+        assert level == InputQualityLevel.FULL
+
+    def test_fallback_note_distinct_from_runoff_only(self) -> None:
+        kwargs = _default_kwargs()
+        kwargs["nwp_cycle_source"] = NwpCycleSource.FALLBACK
+        kwargs["nwp_age_hours"] = 9.0  # stale enough to raise the fallback note
+        _, flags = assess_input_quality(**kwargs)
+        nwp_flags = [f for f in flags if f.category == InputQualityCategory.NWP]
+        assert len(nwp_flags) == 1
+        assert "fallback" in nwp_flags[0].detail
+        assert "runoff-only" not in nwp_flags[0].detail
+
+
 class TestWarmUpAssessment:
     def test_none_source_no_warmup_flag(self) -> None:
         kwargs = _default_kwargs()

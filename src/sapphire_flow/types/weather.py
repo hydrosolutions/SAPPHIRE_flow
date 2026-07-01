@@ -61,6 +61,9 @@ class GriddedForecast:
     nwp_source: str
     cycle_time: UtcDatetime
     values: xr.Dataset
+    # True iff the adapter walked back >=1 cycle to resolve this grid.
+    # Threaded into NwpCycleSource.FALLBACK provenance by the forecast cycle.
+    fallback_used: bool = False
 
 
 WeatherForecastResult = PointForecast | BasinAverageForecast | ElevationBandForecast
