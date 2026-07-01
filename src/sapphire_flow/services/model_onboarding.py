@@ -53,6 +53,7 @@ if TYPE_CHECKING:
         ModelArtifactStore,
         ModelStore,
         ObservationStore,
+        ParameterStore,
         SkillStore,
         StationGroupStore,
         StationStore,
@@ -994,6 +995,7 @@ def onboard_model(
     run_hindcast_fn: Callable[..., list] | None = None,
     compute_skill_fn: Callable[..., None] | None = None,
     skip_smoke_test: bool = False,
+    parameter_store: ParameterStore | None = None,
 ) -> ModelOnboardingResult:
     from sapphire_flow.protocols.forecast_model import (
         GroupForecastModel,
@@ -1013,6 +1015,14 @@ def onboard_model(
 
     log.info("model.onboarding_started", model_id=str(model_id), unit_count=len(units))
     unit_results: list[OnboardingUnitResult] = []
+
+    # Canonical unit catalog (parameter name -> unit) for FI unit-compat gating.
+    # Absent parameter_store preserves prior behaviour (None -> empty catalog).
+    canonical_units: dict[str, str] | None = (
+        {parameter.name: parameter.unit for parameter in parameter_store.fetch_all()}
+        if parameter_store is not None
+        else None
+    )
 
     for unit in units:
         unit_start = time.monotonic()
@@ -1047,6 +1057,7 @@ def onboard_model(
             available_features=config.available_nwp_parameters,
             available_static_by_station=avail_static,
             requested_time_step=unit.time_step,
+            canonical_units=canonical_units,
         )
 
         if not compat.is_compatible:
