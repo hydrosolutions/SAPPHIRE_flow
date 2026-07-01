@@ -25,6 +25,12 @@ def _derive_display_name(model_id: str) -> str:
 
 
 def discover_models() -> dict[ModelId, ForecastModel]:
+    # adapt_if_fi wraps a `forecastinterface` model into the SAP3
+    # StationForecastModel boundary; native SAP3 models pass through unchanged
+    # (idempotent). Wrapping HERE means every discovery caller — train-models,
+    # onboard-model, the forecast cycle — gets a SAP3-compatible model with
+    # `data_requirements`, not a raw FI object exposing only `input_requirement`.
+    from sapphire_flow.adapters.forecast_interface import adapt_if_fi
     from sapphire_flow.types.ids import ModelId as _ModelId
 
     eps = importlib.metadata.entry_points(group=_ENTRY_POINT_GROUP)
@@ -33,7 +39,7 @@ def discover_models() -> dict[ModelId, ForecastModel]:
         model_id = _ModelId(ep.name)
         try:
             cls = ep.load()
-            instance = cls()
+            instance = adapt_if_fi(cls())
             result[model_id] = instance
             log.info("model_discovered", model_id=ep.name)
         except Exception:

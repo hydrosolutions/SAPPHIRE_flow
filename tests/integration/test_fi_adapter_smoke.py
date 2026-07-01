@@ -52,7 +52,8 @@ def test_fi_adapter_capstone_smoke_composes_onboarding_and_prediction() -> None:
     adapter = _adapt_station(fi_model)
     assert adapter.artifact_scope is ArtifactScope.STATION
     assert adapter.data_requirements.target_parameters == frozenset({"discharge"})
-    assert adapter.data_requirements.past_dynamic_features == frozenset({"discharge"})
+    # discharge is the target → excluded from the forcing channel (past_targets).
+    assert adapter.data_requirements.past_dynamic_features == frozenset()
     assert adapter.data_requirements.future_dynamic_features == frozenset(
         {"precipitation_forecast"}
     )

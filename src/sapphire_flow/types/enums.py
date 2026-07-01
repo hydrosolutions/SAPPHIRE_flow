@@ -77,6 +77,11 @@ class SpatialRepresentation(Enum):
     GRIDDED = "gridded"
 
 
+class EnsembleMode(Enum):
+    SINGLE = "single"
+    ENSEMBLE = "ensemble"
+
+
 class ThresholdSource(Enum):
     AUTHORITY = "authority"
     INFERRED = "inferred"

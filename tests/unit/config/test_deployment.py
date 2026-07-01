@@ -52,6 +52,24 @@ data_dir = "/some/path"
 """
 
 
+class TestAvailableNwpParameters:
+    """M2: onboarding compatibility for NWP-forced models needs precipitation and
+    temperature exposed via available_nwp_parameters."""
+
+    def test_default_includes_precipitation_and_temperature(self) -> None:
+        config = make_deployment_config()
+        assert "precipitation" in config.available_nwp_parameters
+        assert "temperature" in config.available_nwp_parameters
+
+    def test_override_exposes_listed_parameters(self) -> None:
+        config = make_deployment_config(
+            available_nwp_parameters=frozenset({"precipitation", "temperature"})
+        )
+        assert config.available_nwp_parameters == frozenset(
+            {"precipitation", "temperature"}
+        )
+
+
 class TestLoadConfig:
     def test_minimal_toml_populates_fields(self, tmp_path: Path) -> None:
         cfg_file = tmp_path / "deployment.toml"

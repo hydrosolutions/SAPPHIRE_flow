@@ -286,7 +286,13 @@ def run_station_hindcast(
 
     weather_sources = station_store.fetch_weather_sources(station_id)
     static_df = _load_static_attributes(basin_store, station_config)
-    required_features = list(model.data_requirements.past_dynamic_features)
+    # Fetch BOTH past- and future-known forcing from reanalysis: future-dynamic
+    # forcing (e.g. NWP precip/temp) is teacher-forced in hindcast and must be
+    # present for models whose forcing is future-known only (past set empty).
+    required_features = sorted(
+        model.data_requirements.past_dynamic_features
+        | model.data_requirements.future_dynamic_features
+    )
     targets = station_config.forecast_targets
     parameter = next(iter(targets), "discharge") if targets else "discharge"
 
@@ -462,7 +468,12 @@ def run_group_hindcast(
         for sid, cfg in station_configs.items()
         if cfg is not None
     }
-    required_features = list(model.data_requirements.past_dynamic_features)
+    # Fetch BOTH past- and future-known forcing from reanalysis (see run_station
+    # _hindcast): future-dynamic forcing is teacher-forced in hindcast.
+    required_features = sorted(
+        model.data_requirements.past_dynamic_features
+        | model.data_requirements.future_dynamic_features
+    )
 
     if forecast_horizon_steps is None:
         forecast_horizon_steps = model.data_requirements.forecast_horizon_steps

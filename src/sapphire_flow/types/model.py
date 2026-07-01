@@ -5,6 +5,8 @@ from typing import TYPE_CHECKING, Any
 
 import polars as pl  # noqa: TC002
 
+from sapphire_flow.types.enums import EnsembleMode
+
 if TYPE_CHECKING:
     from datetime import timedelta
     from uuid import UUID
@@ -266,6 +268,7 @@ class ModelDataRequirements:
     lookback_steps: int
     forecast_horizon_steps: int
     spatial_input_type: SpatialRepresentation
+    ensemble_mode: EnsembleMode = EnsembleMode.SINGLE
 
     def __post_init__(self) -> None:
         if self.lookback_steps < 1:

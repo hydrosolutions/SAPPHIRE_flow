@@ -209,6 +209,27 @@ def test_projects_multi_product_multi_variable_input_requirement() -> None:
     assert req.static_features == frozenset({"catchment_area", "elevation"})
 
 
+def test_projection_excludes_target_history_from_past_dynamic_features() -> None:
+    """M2 (Fix #2): discharge is a target AND its own past_known history.
+
+    Target history must NOT be projected into ``past_dynamic_features`` (which is
+    the FORCING channel); otherwise training_data tries to fetch "discharge" from
+    the forcing source and the onboarding gate marks the model incompatible.
+    """
+    from tests.fakes.fake_fi_models import m2_fi_input_requirement
+
+    adapter = fi_boundary.ForecastInterfaceAdapter(
+        FakeFIForecastModel(m2_fi_input_requirement())
+    )
+
+    req = adapter.data_requirements
+    assert req.target_parameters == frozenset({"discharge"})
+    # discharge is target history, not forcing — it must be excluded.
+    assert "discharge" not in req.past_dynamic_features
+    assert req.past_dynamic_features == frozenset()
+    assert req.future_dynamic_features == frozenset({"precipitation", "temperature"})
+
+
 def test_multi_spatial_input_raises_configuration_error() -> None:
     dynamic_spec = _dynamic_spec()
     requirement = fi_boundary.InputRequirement(

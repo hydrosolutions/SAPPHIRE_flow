@@ -38,13 +38,20 @@ from forecast_interface import (
     VariableStatus,
 )
 from forecast_interface import (
+    EnsembleMode as FIEnsembleMode,
+)
+from forecast_interface import (
     SpatialRepresentation as FISpatialRepresentation,
 )
 
 from sapphire_flow.exceptions import ConfigurationError, ModelOutputError
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.ensemble import ForecastEnsemble
-from sapphire_flow.types.enums import ArtifactScope, SpatialRepresentation
+from sapphire_flow.types.enums import (
+    ArtifactScope,
+    EnsembleMode,
+    SpatialRepresentation,
+)
 from sapphire_flow.types.model import ModelDataRequirements
 
 if TYPE_CHECKING:
@@ -162,6 +169,13 @@ def adapt_if_fi(
     *,
     station_code_resolver: Callable[[StationId], str] | None = None,
 ) -> ForecastInterfaceAdapter | T:
+    # discover_models() wraps FI models at discovery time with no resolver; a
+    # later adapt_if_fi(..., station_code_resolver=...) (e.g. GROUP onboarding)
+    # must ATTACH the resolver to the already-wrapped adapter, not drop it.
+    if isinstance(obj, ForecastInterfaceAdapter):
+        if station_code_resolver is not None:
+            obj.with_station_code_resolver(station_code_resolver)
+        return obj
     if is_fi_model(obj):
         return ForecastInterfaceAdapter(
             cast("ForecastModel", obj),
@@ -434,24 +448,31 @@ class ForecastInterfaceAdapter:
         self.artifact_scope = ArtifactScope(fi_model.artifact_scope.value)
         self.data_requirements = self._project_requirements(fi_model.input_requirement)
 
+    def with_station_code_resolver(
+        self, resolver: Callable[[StationId], str]
+    ) -> ForecastInterfaceAdapter:
+        """Attach (or replace) the GROUP station-code resolver; returns self."""
+        self._station_code_resolver = resolver
+        return self
+
     def _project_requirements(self, req: InputRequirement) -> ModelDataRequirements:
         spatial_reps: set[FISpatialRepresentation] = set()
-        past_dynamic_features: set[str] = set()
         future_dynamic_features: set[str] = set()
-        lookback_steps = 1
+        past_variables: list[tuple[str, PastKnownVariable]] = []
         forecast_horizon_steps: int | None = None
+        any_ensemble_future = False
 
         for fi_rep, spec in self._iter_dynamic_specs(req):
             spatial_reps.add(fi_rep)
 
             for variables in spec.past_known.values():
-                for name, variable in variables.items():
-                    past_dynamic_features.add(name)
-                    lookback_steps = max(lookback_steps, variable.lookback)
+                past_variables.extend(variables.items())
 
             for variables in spec.future_known.values():
                 for name, variable in variables.items():
                     future_dynamic_features.add(name)
+                    if variable.ensemble_mode is FIEnsembleMode.ENSEMBLE:
+                        any_ensemble_future = True
                     if forecast_horizon_steps is None:
                         forecast_horizon_steps = variable.future_steps
                     else:
@@ -475,6 +496,20 @@ class ForecastInterfaceAdapter:
                 "future_known forcing"
             )
 
+        # A target's own past_known history is autoregressive conditioning
+        # delivered from the TARGET channel (past_targets), never a forcing
+        # feature — it must not leak into past_dynamic_features (the forcing
+        # channel keyed for reanalysis fetch), regardless of its lookback vs the
+        # forecast horizon. Its lookback STILL counts toward lookback_steps: the
+        # model needs those past target steps, delivered from past_targets.
+        past_dynamic_features: set[str] = set()
+        lookback_steps = 1
+        for name, variable in past_variables:
+            lookback_steps = max(lookback_steps, variable.lookback)
+            if name in req.targets:
+                continue
+            past_dynamic_features.add(name)
+
         [spatial_rep] = spatial_reps
         return ModelDataRequirements(
             target_parameters=frozenset(req.targets),
@@ -487,6 +522,9 @@ class ForecastInterfaceAdapter:
             # the input-forcing length used as the horizon proxy, endorsed in SF2.
             forecast_horizon_steps=forecast_horizon_steps,
             spatial_input_type=SpatialRepresentation(spatial_rep.value),
+            ensemble_mode=(
+                EnsembleMode.ENSEMBLE if any_ensemble_future else EnsembleMode.SINGLE
+            ),
         )
 
     def _declared_fi_units(self) -> dict[str, Unit]:

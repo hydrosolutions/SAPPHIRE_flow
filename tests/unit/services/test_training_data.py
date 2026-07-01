@@ -316,6 +316,184 @@ class TestAssembleStationTrainingDataNoDynamicFeatures:
         assert fake_source.fetch_reanalysis_call_count == 0
 
 
+_DAILY = timedelta(days=1)
+
+
+def _daily_ts(i: int) -> object:
+    return ensure_utc(datetime(2020, 1, 1, tzinfo=UTC) + i * _DAILY)
+
+
+class TestAssembleStationTrainingDataFutureDynamicDelivery:
+    def test_future_known_forcing_delivered_into_future_dynamic(self) -> None:
+        """M2 (Fix #1): a model that declares future_dynamic_features (precip/temp)
+        must have that forcing fetched and delivered into ``future_dynamic`` —
+        NOT cleared. Discharge still comes from observations → ``past_targets``.
+        """
+        from sapphire_flow.types.enums import ArtifactScope, SpatialRepresentation
+        from sapphire_flow.types.model import ModelDataRequirements
+
+        class _FutureForcingModel(FakeStationForecastModel):
+            artifact_scope = ArtifactScope.STATION
+            data_requirements = ModelDataRequirements(
+                target_parameters=frozenset({"discharge"}),
+                # discharge is target history, not forcing → past_dynamic empty.
+                past_dynamic_features=frozenset(),
+                future_dynamic_features=frozenset({"precipitation", "temperature"}),
+                static_features=frozenset(),
+                supported_time_steps=frozenset({_DAILY}),
+                lookback_steps=7,
+                forecast_horizon_steps=5,
+                spatial_input_type=SpatialRepresentation.POINT,
+            )
+
+        station_id = _sid()
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        station_store.store_station(make_station_config(station_id=station_id))
+        station_store.store_weather_source(_weather_source(station_id))
+
+        # Discharge observations at daily timestamps → past_targets.
+        obs = make_observations(
+            n=5, station_id=station_id, start=_daily_ts(0), interval=_DAILY
+        )
+        obs_store.store_observations(obs)
+
+        # Known-answer forcing: specific precip/temp at the same daily timestamps.
+        precip_vals = [1.0, 2.0, 3.0, 4.0, 5.0]
+        temp_vals = [10.0, 11.0, 12.0, 13.0, 14.0]
+        forcing_records: list = []
+        for i in range(5):
+            forcing_records.append(
+                make_raw_historical_forcing(
+                    station_id=station_id,
+                    parameter="precipitation",
+                    valid_time=_daily_ts(i),
+                    value=precip_vals[i],
+                )
+            )
+            forcing_records.append(
+                make_raw_historical_forcing(
+                    station_id=station_id,
+                    parameter="temperature",
+                    valid_time=_daily_ts(i),
+                    value=temp_vals[i],
+                )
+            )
+
+        result = assemble_station_training_data(
+            station_id=station_id,
+            model=_FutureForcingModel(),
+            period_start=_daily_ts(0),
+            period_end=_daily_ts(30),
+            time_step=_DAILY,
+            forcing_source=FakeWeatherReanalysisSource(forcing_records),
+            obs_store=obs_store,
+            basin_store=FakeBasinStore(),
+            station_store=station_store,
+        )
+
+        assert result is not None
+
+        # Discharge target history is unchanged: sourced from observations.
+        assert "discharge" in result.past_targets.columns
+        assert result.past_targets.height == 5
+
+        # future_known forcing IS delivered into future_dynamic (not cleared).
+        future = result.future_dynamic.sort("timestamp")
+        assert not future.is_empty()
+        assert "precipitation" in future.columns
+        assert "temperature" in future.columns
+        assert future["precipitation"].to_list() == precip_vals
+        assert future["temperature"].to_list() == temp_vals
+
+        # future_dynamic timestamps align to the past_targets timestamps.
+        past_ts = result.past_targets.sort("timestamp")["timestamp"].to_list()
+        assert future["timestamp"].to_list() == past_ts
+
+    def test_forcing_source_never_asked_for_target(self) -> None:
+        """The target (discharge) comes from observations → ``past_targets`` and
+        must NEVER be requested from the forcing/reanalysis source, even though its
+        history counts toward the model lookback.
+
+        Driven through the REAL adapter-wrapped ``NwpRegression`` (discharge is a
+        target AND its own past_known history, lookback == horizon). Under the old
+        projection rule discharge leaked into ``past_dynamic_features`` (the forcing
+        channel) → the assembler would request it from the forcing source → this
+        test is RED. With the fix, discharge is excluded and only precip/temp are
+        fetched.
+        """
+        from sapphire_flow.adapters import forecast_interface as fi_boundary
+        from sapphire_flow.models.nwp_regression import NwpRegression
+
+        adapter = fi_boundary.adapt_if_fi(NwpRegression())
+        assert isinstance(adapter, fi_boundary.ForecastInterfaceAdapter)
+
+        class _RaiseOnTargetForcing(FakeWeatherReanalysisSource):
+            def fetch_reanalysis(
+                self,
+                station_configs: list[StationWeatherSource],
+                start: object,
+                end: object,
+                parameters: list[str],
+            ) -> list:
+                if "discharge" in parameters:
+                    raise AssertionError(
+                        "forcing source asked for the target 'discharge'; "
+                        "target history must be sourced from observations"
+                    )
+                return super().fetch_reanalysis(station_configs, start, end, parameters)
+
+        station_id = _sid()
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        station_store.store_station(make_station_config(station_id=station_id))
+        station_store.store_weather_source(_weather_source(station_id))
+
+        obs = make_observations(
+            n=5, station_id=station_id, start=_daily_ts(0), interval=_DAILY
+        )
+        obs_store.store_observations(obs)
+
+        forcing_records: list = []
+        for i in range(5):
+            forcing_records.append(
+                make_raw_historical_forcing(
+                    station_id=station_id,
+                    parameter="precipitation",
+                    valid_time=_daily_ts(i),
+                    value=float(i),
+                )
+            )
+            forcing_records.append(
+                make_raw_historical_forcing(
+                    station_id=station_id,
+                    parameter="temperature",
+                    valid_time=_daily_ts(i),
+                    value=float(10 + i),
+                )
+            )
+
+        source = _RaiseOnTargetForcing(forcing_records)
+        result = assemble_station_training_data(
+            station_id=station_id,
+            model=adapter,
+            period_start=_daily_ts(0),
+            period_end=_daily_ts(30),
+            time_step=_DAILY,
+            forcing_source=source,
+            obs_store=obs_store,
+            basin_store=FakeBasinStore(),
+            station_store=station_store,
+        )
+
+        assert result is not None
+        assert "discharge" in result.past_targets.columns
+        # Only precip/temp were fetched; discharge never crossed the forcing edge.
+        assert set(result.future_dynamic.columns) >= {"precipitation", "temperature"}
+        assert "discharge" not in result.future_dynamic.columns
+        assert "discharge" not in result.past_dynamic.columns
+
+
 class TestAssembleGroupTrainingData:
     def test_two_stations_both_with_data(self) -> None:
         sid1 = _sid()
