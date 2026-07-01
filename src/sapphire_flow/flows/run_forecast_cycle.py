@@ -21,6 +21,7 @@ from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
     ModelAssignmentStatus,
     NwpCycleSource,
+    SpatialRepresentation,
     StationKind,
     StationStatus,
 )
@@ -53,6 +54,31 @@ if TYPE_CHECKING:
     from sapphire_flow.types.station import StationConfig, StationWeatherSource
 
 log = structlog.get_logger(__name__)
+
+# = MeteoSwissNwpAdapter.NWP_SOURCE. The operational NWP forcing path.
+_ICON_NWP_SOURCE = "icon_ch2_eps"
+
+
+def _select_nwp_source(weather_sources: list[StationWeatherSource]) -> str:
+    """Deterministically pick the operational ICON / BASIN_AVERAGE NWP source.
+
+    Independent of ``fetch_weather_sources`` ordering and two-pass so an EXACT
+    ICON binding always wins over any other ``BASIN_AVERAGE`` source (e.g. a
+    reanalysis binding that is also basin-average): Phase A only stores ICON
+    grid records, so selecting a non-ICON basin-average source in Phase B would
+    read the wrong ``nwp_source`` and skip the station.
+
+    First pass: any source whose ``nwp_source`` is exactly ICON. Second pass:
+    any ``BASIN_AVERAGE`` source (the binding onboarding Step 4b creates). Else
+    fall back to the ICON source string.
+    """
+    for ws in weather_sources:
+        if ws.nwp_source == _ICON_NWP_SOURCE:
+            return ws.nwp_source
+    for ws in weather_sources:
+        if ws.extraction_type is SpatialRepresentation.BASIN_AVERAGE:
+            return ws.nwp_source
+    return _ICON_NWP_SOURCE
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -833,11 +859,9 @@ def run_forecast_cycle_flow(
                 first_model.data_requirements.forecast_horizon_steps
             )
 
-            # Determine nwp_source for this station
+            # Determine nwp_source for this station (deterministic ICON selection)
             weather_sources = all_weather_sources.get(sid, [])
-            nwp_source: str = (
-                weather_sources[0].nwp_source if weather_sources else "icon-ch2-eps"
-            )
+            nwp_source: str = _select_nwp_source(weather_sources)
 
             try:
                 inputs_result = assemble_station_operational_inputs(
@@ -1132,11 +1156,7 @@ def run_forecast_cycle_flow(
 
                     model = models[model_id]  # type: ignore[index]
                     nwp_source_by_station = {
-                        sid: (
-                            all_weather_sources[sid][0].nwp_source
-                            if all_weather_sources.get(sid)
-                            else "icon-ch2-eps"
-                        )
+                        sid: _select_nwp_source(all_weather_sources.get(sid, []))
                         for sid in member_ids
                     }
                     baselines_by_station = {

@@ -17,16 +17,20 @@ from sapphire_flow.config.deployment import DeploymentConfig
 from sapphire_flow.exceptions import ConfigurationError, ExtractionError, StoreError
 from sapphire_flow.flows.run_forecast_cycle import (
     ForecastCycleResult,
+    _fetch_nwp_task,
     _load_weather_forecast_adapter_config,
+    _select_nwp_source,
     run_forecast_cycle_flow,
 )
 from sapphire_flow.types.basin import Basin
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.domain import ForecastQcRuleSet, StationThreshold
+from sapphire_flow.types.ensemble import ForecastEnsemble
 from sapphire_flow.types.enums import (
     AlertSource,
     AlertStatus,
     ArtifactScope,
+    EnsembleMode,
     ModelArtifactStatus,
     ModelAssignmentStatus,
     ModelCombinationStrategy,
@@ -2715,3 +2719,378 @@ scratch_path = "/tmp/test-nwp"
             )
 
         assert isinstance(result, ForecastCycleResult)
+
+
+# =========================================================================== #
+# epic-088 M3: operational ICON forcing path
+#
+#   B. deterministic NWP-source selection (icon_ch2_eps / BASIN_AVERAGE), incl.
+#      the hyphen -> underscore fallback fix.
+#   C. extraction filter (configs_for_source) runs only for the ICON source.
+#   F. end-to-end "forecasts use weather": a 21-member ensemble whose discharge
+#      rises when the precipitation forcing rises.
+# =========================================================================== #
+
+
+def _make_m3_stores() -> tuple:
+    return (
+        FakeStationStore(),
+        FakeObservationStore(),
+        FakeWeatherForecastStore(),
+        FakeModelArtifactStore(),
+        FakeForecastStore(),
+        FakeModelStateStore(),
+        FakeAlertStore(),
+        FakeClimBaselineStore(),
+        FakeBasinStore(),
+        FakeHistoricalForcingStore(),
+    )
+
+
+def _run_m3_cycle(stores: tuple, models: dict) -> ForecastCycleResult:
+    (
+        station_store,
+        obs_store,
+        nwp_store,
+        artifact_store,
+        forecast_store,
+        state_store,
+        alert_store,
+        baseline_store,
+        basin_store,
+        forcing_store,
+    ) = stores
+    return run_forecast_cycle_flow(
+        station_store=station_store,
+        obs_store=obs_store,
+        weather_forecast_store=nwp_store,
+        forecast_store=forecast_store,
+        model_state_store=state_store,
+        artifact_store=artifact_store,
+        alert_store=alert_store,
+        baseline_store=baseline_store,
+        basin_store=basin_store,
+        forcing_store=forcing_store,
+        adapter=FakeWeatherForecastSource(result={}),
+        models=models,  # type: ignore[arg-type]
+        config=_make_config(),
+        qc_rules=_empty_qc_rules(),
+        clock=_clock,
+        rng=random.Random(42),
+    )
+
+
+class TestNwpExtractionSourceFilter:
+    """C. Grid extraction runs only for weather sources whose nwp_source matches
+    the grid — i.e. the ICON / BASIN_AVERAGE binding onboarding must create.
+    """
+
+    def test_icon_basin_average_source_runs_extraction_and_stores(self) -> None:
+        sid = StationId(uuid4())
+        extractor = FakeGridExtractor(
+            result=_make_basin_avg_result([sid], n_steps=5, n_members=3)
+        )
+        nwp_store = FakeWeatherForecastStore()
+        source = StationWeatherSource(
+            station_id=sid,
+            nwp_source=_NWP_SOURCE,  # icon_ch2_eps, matches the grid
+            extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+            status=WeatherSourceStatus.ACTIVE,
+        )
+
+        out = _fetch_nwp_task.fn(
+            adapter=FakeWeatherForecastSource(result=_make_gridded_forecast()),
+            station_configs=[source],
+            cycle_time=_NOW,
+            weather_forecast_store=nwp_store,
+            clock=_clock,
+            grid_store=None,
+            grid_extractor=extractor,
+            station_basins={},
+            grid_archive_base_path=None,
+        )
+
+        assert out == _NOW
+        assert extractor.call_count == 1
+        assert extractor.last_configs == [source]  # filter kept the ICON source
+        assert len(nwp_store._records) > 0  # extracted records persisted
+
+    def test_non_icon_source_is_filtered_out_and_extraction_skipped(self) -> None:
+        sid = StationId(uuid4())
+        extractor = FakeGridExtractor(result=_make_basin_avg_result([sid]))
+        nwp_store = FakeWeatherForecastStore()
+        # Only a camels-ch source: it does NOT match the icon_ch2_eps grid, so the
+        # configs_for_source filter is empty -> no_matching_sources (no extraction).
+        source = StationWeatherSource(
+            station_id=sid,
+            nwp_source="camels-ch",
+            extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+            status=WeatherSourceStatus.ACTIVE,
+        )
+
+        out = _fetch_nwp_task.fn(
+            adapter=FakeWeatherForecastSource(result=_make_gridded_forecast()),
+            station_configs=[source],
+            cycle_time=_NOW,
+            weather_forecast_store=nwp_store,
+            clock=_clock,
+            grid_store=None,
+            grid_extractor=extractor,
+            station_basins={},
+            grid_archive_base_path=None,
+        )
+
+        assert out == _NOW  # a skipped extraction is still a successful NWP no-op
+        assert extractor.call_count == 0
+        assert nwp_store._records == []
+
+
+class TestDeterministicNwpSourceSelection:
+    """B. Phase B must select the ICON / BASIN_AVERAGE source explicitly (not the
+    order-dependent weather_sources[0]) AND fall back to the underscore spelling
+    ``icon_ch2_eps`` (= MeteoSwissNwpAdapter.NWP_SOURCE), not ``icon-ch2-eps``.
+    """
+
+    def test_prefers_icon_source_over_camels_when_both_present(self) -> None:
+        sid = StationId(uuid4())
+        stores = _make_m3_stores()
+        station_store = stores[0]
+        obs_store = stores[1]
+        nwp_store = stores[2]
+        artifact_store = stores[3]
+        forcing_store = stores[9]
+
+        # camels-ch stored FIRST => weather_sources[0] under the old code. Its NWP
+        # source has NO stored records, so the old "pick the first source" logic
+        # reads the wrong source and skips the station (forecasts_stored == 0).
+        station_store.store_weather_source(
+            StationWeatherSource(
+                station_id=sid,
+                nwp_source="camels-ch",
+                extraction_type=SpatialRepresentation.POINT,
+                status=WeatherSourceStatus.ACTIVE,
+            )
+        )
+        # Appends the icon_ch2_eps source + seeds icon NWP records for readback.
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+        )
+
+        result = _run_m3_cycle(stores, {_MODEL_ID: _SmallFakeModel()})
+
+        # Only reachable if icon_ch2_eps (BASIN_AVERAGE) was selected deterministically.
+        assert result.forecasts_stored == 1
+
+    def test_falls_back_to_underscore_icon_source_string(self) -> None:
+        sid = StationId(uuid4())
+        stores = _make_m3_stores()
+        station_store = stores[0]
+        obs_store = stores[1]
+        nwp_store = stores[2]
+        artifact_store = stores[3]
+        forcing_store = stores[9]
+
+        # Seeds icon NWP records under "icon_ch2_eps" (underscores).
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+        )
+        # Remove ALL weather sources so Phase B takes the hardcoded fallback path.
+        station_store._weather_sources.clear()
+
+        result = _run_m3_cycle(stores, {_MODEL_ID: _SmallFakeModel()})
+
+        # The fallback must be "icon_ch2_eps"; the old "icon-ch2-eps" (hyphens)
+        # mismatches the stored records and skips the station.
+        assert result.forecasts_stored == 1
+
+    def test_exact_icon_wins_over_earlier_basin_average_source(self) -> None:
+        """Two-pass: an EXACT icon_ch2_eps binding wins even when a non-ICON
+        BASIN_AVERAGE source appears FIRST in fetch order (Fix 1 regression)."""
+        sid = StationId(uuid4())
+        sources = [
+            StationWeatherSource(
+                station_id=sid,
+                nwp_source="camels-ch",
+                extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+                status=WeatherSourceStatus.ACTIVE,
+            ),
+            StationWeatherSource(
+                station_id=sid,
+                nwp_source="icon_ch2_eps",
+                extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+                status=WeatherSourceStatus.ACTIVE,
+            ),
+        ]
+
+        assert _select_nwp_source(sources) == "icon_ch2_eps"
+
+    def test_basin_average_non_icon_only_selects_that_source(self) -> None:
+        """With no ICON binding, the second pass returns the sole BASIN_AVERAGE
+        source's nwp_source (per the implemented fallback order)."""
+        sid = StationId(uuid4())
+        sources = [
+            StationWeatherSource(
+                station_id=sid,
+                nwp_source="camels-ch",
+                extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+                status=WeatherSourceStatus.ACTIVE,
+            ),
+        ]
+
+        assert _select_nwp_source(sources) == "camels-ch"
+
+
+class _MonotonicEnsembleModel(FakeStationForecastModel):
+    """Ensemble model (fanned out over member-suffixed forcing) whose discharge is
+    a strictly increasing function of the precipitation input — the minimal fake
+    that proves "the forecast uses weather" end-to-end.
+    """
+
+    from sapphire_flow.types.model import ModelDataRequirements
+
+    data_requirements = ModelDataRequirements(
+        target_parameters=frozenset({"discharge"}),
+        past_dynamic_features=frozenset({"precipitation", "temperature"}),
+        future_dynamic_features=frozenset({"precipitation", "temperature"}),
+        static_features=frozenset(),
+        supported_time_steps=frozenset({timedelta(hours=1)}),
+        lookback_steps=20,
+        forecast_horizon_steps=5,
+        spatial_input_type=SpatialRepresentation.POINT,
+        ensemble_mode=EnsembleMode.ENSEMBLE,
+    )
+
+    def predict(self, artifact, inputs, rng, prior_state=None):  # type: ignore[no-untyped-def]
+        fd = inputs.data.future_dynamic.sort("timestamp")
+        rows = [
+            {"valid_time": vt, "member_id": 0, "value": 100.0 + 5.0 * float(p)}
+            for vt, p in zip(
+                fd["timestamp"].to_list(),
+                fd["precipitation"].to_list(),
+                strict=True,
+            )
+        ]
+        df = pl.DataFrame(rows).with_columns(
+            pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
+            pl.col("member_id").cast(pl.Int32),
+        )
+        ens = ForecastEnsemble.from_members(
+            station_id=inputs.station_id,
+            issued_at=inputs.issue_time,
+            parameter="discharge",
+            units="m³/s",
+            time_step=inputs.time_step,
+            values=df,
+        )
+        return ({"discharge": ens}, None)  # stateless -> fan-out safe
+
+
+def _make_ensemble_nwp_records(
+    station_id: StationId,
+    precip_by_member: dict[int, float],
+    *,
+    n_steps: int = 5,
+) -> list[WeatherForecastRecord]:
+    records: list[WeatherForecastRecord] = []
+    for step in range(n_steps):
+        vt = ensure_utc(
+            datetime.fromtimestamp(_NOW.timestamp() + (step + 1) * 3600, tz=UTC)
+        )
+        for member, precip in precip_by_member.items():
+            records.append(
+                WeatherForecastRecord(
+                    id=uuid4(),
+                    station_id=station_id,
+                    nwp_source=_NWP_SOURCE,
+                    cycle_time=_NOW,
+                    valid_time=vt,
+                    parameter="precipitation",
+                    spatial_type=SpatialRepresentation.POINT,
+                    band_id=None,
+                    member_id=member,
+                    value=float(precip),
+                    created_at=_NOW,
+                )
+            )
+            records.append(
+                WeatherForecastRecord(
+                    id=uuid4(),
+                    station_id=station_id,
+                    nwp_source=_NWP_SOURCE,
+                    cycle_time=_NOW,
+                    valid_time=vt,
+                    parameter="temperature",
+                    spatial_type=SpatialRepresentation.POINT,
+                    band_id=None,
+                    member_id=member,
+                    value=10.0,
+                    created_at=_NOW,
+                )
+            )
+    return records
+
+
+class TestForecastsUseWeatherEndToEnd:
+    def _run_with_precip(
+        self, precip_by_member: dict[int, float]
+    ) -> tuple[FakeForecastStore, ForecastCycleResult]:
+        sid = StationId(uuid4())
+        stores = _make_m3_stores()
+        station_store = stores[0]
+        obs_store = stores[1]
+        nwp_store = stores[2]
+        artifact_store = stores[3]
+        forecast_store = stores[4]
+        forcing_store = stores[9]
+
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+            seed_nwp=False,
+        )
+        nwp_store.store_weather_forecasts(
+            _make_ensemble_nwp_records(sid, precip_by_member)
+        )
+
+        result = _run_m3_cycle(stores, {_MODEL_ID: _MonotonicEnsembleModel()})
+        return forecast_store, result
+
+    def test_21_member_forecast_rises_with_precipitation(self) -> None:
+        baseline = {m: 2.0 + float(m) for m in range(21)}
+        raised = {m: 2.0 + float(m) + 30.0 for m in range(21)}  # +30 mm every member
+
+        store_lo, res_lo = self._run_with_precip(baseline)
+        store_hi, res_hi = self._run_with_precip(raised)
+
+        assert res_lo.forecasts_stored == 1
+        assert res_hi.forecasts_stored == 1
+
+        fc_lo = next(iter(store_lo._forecasts.values()))
+        fc_hi = next(iter(store_hi._forecasts.values()))
+
+        # 21-member ensemble carrying the ICON member ids 0..20.
+        assert fc_lo.ensemble.member_count == 21
+        assert fc_hi.ensemble.member_count == 21
+        assert set(fc_lo.ensemble.values["member_id"].to_list()) == set(range(21))
+
+        lo_vals = fc_lo.ensemble.values["value"].to_list()
+        hi_vals = fc_hi.ensemble.values["value"].to_list()
+        # Raising precip lifts EVERY discharge member: the forecast uses weather.
+        assert min(hi_vals) > max(lo_vals)

@@ -360,6 +360,36 @@ class TestRequirementsAndUnits:
 # --------------------------------------------------------------------------- #
 
 
+class TestForecastHorizonIsFiveDays:
+    """M3 owner decision: lower ``future_steps`` 7 -> 5 to match ICON-CH2-EPS's
+    5-day / 120h coverage. ``max_nan`` stays 0. RED until ``_HORIZON = 5``.
+    """
+
+    _M3_HORIZON = 5
+
+    @pytest.mark.parametrize("variant", _VARIANTS)
+    def test_declared_future_steps_is_five(self, variant: type) -> None:
+        model = variant()
+        assert _declared_horizon(model) == self._M3_HORIZON
+
+        # Both future-known forcing variables carry the SAME lowered horizon.
+        _step, _rep, spec = _dynamic_spec(model)
+        future_vars = [
+            var
+            for variables in spec.future_known.values()
+            for var in variables.values()
+        ]
+        assert future_vars  # sanity: precip + temp declared
+        for var in future_vars:
+            assert var.future_steps == self._M3_HORIZON
+            assert var.max_nan == 0  # unchanged by the horizon lowering
+
+    @pytest.mark.parametrize("variant", _VARIANTS)
+    def test_adapter_projects_forecast_horizon_steps_five(self, variant: type) -> None:
+        req = _adapter(variant()).data_requirements
+        assert req.forecast_horizon_steps == self._M3_HORIZON
+
+
 class TestArtifactRoundTrip:
     @pytest.mark.parametrize("variant", _VARIANTS)
     def test_serialize_roundtrip_preserves_coefficients_and_predictions(

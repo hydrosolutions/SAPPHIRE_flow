@@ -12,8 +12,10 @@ from sapphire_flow.types.enums import (
     ModelArtifactStatus,
     ObservationSource,
     QcStatus,
+    SpatialRepresentation,
     StationKind,
     StationStatus,
+    WeatherSourceStatus,
 )
 from sapphire_flow.types.ids import BasinId, ModelId, StationId
 from sapphire_flow.types.observation import RawObservation
@@ -653,3 +655,63 @@ class TestRerunIdempotency:
         # No duplicate baselines or flow regimes
         assert result2.baselines_computed == result1.baselines_computed
         assert result2.flow_regimes_computed == result1.flow_regimes_computed
+
+
+class TestIconWeatherSourceBinding:
+    """M3 owner decision (Step 4b): every non-weather river station also gets an
+    ``icon_ch2_eps`` / ``BASIN_AVERAGE`` / ``ACTIVE`` ``StationWeatherSource``
+    ALONGSIDE the existing ``camels-ch`` / ``POINT`` binding. This is what makes
+    the operational ICON forcing path reach the station. RED until Step 4b writes
+    the second binding.
+    """
+
+    def test_river_station_gets_both_camels_and_icon_bindings(self) -> None:
+        sid = StationId(uuid4())
+        basin = _make_basin("RIV001")
+        station = make_station_config(
+            station_id=sid, code="RIV001", station_kind=StationKind.RIVER
+        )
+        s = _Stores()
+
+        _run(
+            s,
+            stations=[station],
+            basins=[basin],
+            obs_by_station={sid: _make_raw_obs(sid, 100)},
+            forcing_by_station={sid: _make_forcing(sid, 100)},
+        )
+
+        sources = s.station.fetch_weather_sources(sid)
+        by_source = {ws.nwp_source: ws for ws in sources}
+
+        # Existing camels-ch / POINT binding is preserved.
+        assert "camels-ch" in by_source
+        assert by_source["camels-ch"].extraction_type is SpatialRepresentation.POINT
+
+        # New M3 icon_ch2_eps / BASIN_AVERAGE / ACTIVE binding.
+        assert "icon_ch2_eps" in by_source
+        icon = by_source["icon_ch2_eps"]
+        assert icon.extraction_type is SpatialRepresentation.BASIN_AVERAGE
+        assert icon.status is WeatherSourceStatus.ACTIVE
+        assert icon.station_id == sid
+
+    def test_weather_station_does_not_get_icon_binding(self) -> None:
+        # A WEATHER station is a forcing SOURCE, not a forecast target — it must
+        # not be bound to the operational ICON forecast path.
+        sid = StationId(uuid4())
+        basin = _make_basin("WX001")
+        station = make_station_config(
+            station_id=sid, code="WX001", station_kind=StationKind.WEATHER
+        )
+        s = _Stores()
+
+        _run(
+            s,
+            stations=[station],
+            basins=[basin],
+            obs_by_station={sid: _make_raw_obs(sid, 20)},
+            forcing_by_station={sid: _make_forcing(sid, 20)},
+        )
+
+        sources = s.station.fetch_weather_sources(sid)
+        assert all(ws.nwp_source != "icon_ch2_eps" for ws in sources)

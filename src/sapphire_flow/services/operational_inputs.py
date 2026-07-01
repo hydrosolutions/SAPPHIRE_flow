@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -29,6 +30,7 @@ if TYPE_CHECKING:
     )
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.ids import ModelId, StationId
+    from sapphire_flow.types.weather import WeatherForecastRecord
 
 log = structlog.get_logger(__name__)
 
@@ -40,6 +42,84 @@ class OperationalInputMetadata:
     observation_staleness_hours: float | None
     prior_state: bytes | None
     nwp_age_hours: float
+
+
+@dataclass(frozen=True, slots=True)
+class _AggregatedNwpPoint:
+    """A single per-member NWP value aggregated to the model's time_step."""
+
+    valid_time: UtcDatetime
+    parameter: str
+    member_id: int | None
+    value: float
+
+
+def _member_records_to_wide(records: list[WeatherForecastRecord]) -> pl.DataFrame:
+    all_times = sorted({r.valid_time for r in records})
+    pivot: dict[UtcDatetime, dict[str, object]] = {
+        ts: {"timestamp": ts} for ts in all_times
+    }
+    for r in records:
+        pivot[r.valid_time][r.parameter] = r.value
+    return pl.DataFrame(list(pivot.values()))
+
+
+def _aggregate_nwp_records_to_time_step(
+    records: list[WeatherForecastRecord],
+    time_step: timedelta,
+) -> list[_AggregatedNwpPoint]:
+    """Aggregate hourly per-member NWP records to the model's ``time_step``.
+
+    Keyed on ``(bare-parameter, member_id, UTC-calendar-day)`` via the shared
+    ``resample_to_time_step`` machinery (mirrors ``_future_dynamic_from_forcing``):
+    precipitation SUMs, temperature MEANs (from ``_V0_AGGREGATION_FALLBACK`` on the
+    BARE parameter name), on UTC-midnight buckets. All members are preserved.
+    """
+    if not records:
+        return []
+
+    by_member: dict[int | None, list[WeatherForecastRecord]] = defaultdict(list)
+    for r in records:
+        by_member[r.member_id].append(r)
+
+    aggregated: list[_AggregatedNwpPoint] = []
+    for member_id, member_records in by_member.items():
+        wide = _member_records_to_wide(member_records)
+        daily = resample_to_time_step(wide, time_step, aggregation_methods=None)
+        param_cols = [c for c in daily.columns if c != "timestamp"]
+        for row in daily.iter_rows(named=True):
+            ts = ensure_utc(row["timestamp"])
+            for param in param_cols:
+                value = row[param]
+                if value is None:
+                    continue
+                aggregated.append(
+                    _AggregatedNwpPoint(
+                        valid_time=ts,
+                        parameter=param,
+                        member_id=member_id,
+                        value=float(value),
+                    )
+                )
+    return aggregated
+
+
+def _filter_and_cap_daily_records(
+    records: list[_AggregatedNwpPoint],
+    issue_time: UtcDatetime,
+    forecast_horizon_steps: int,
+) -> list[_AggregatedNwpPoint]:
+    """Drop backdated daily buckets and cap to the forecast horizon.
+
+    Keeps only buckets whose ``valid_time`` is strictly after ``issue_time``
+    (dropping the UTC-midnight issue-day bucket that a non-midnight cycle
+    backdates), then keeps the earliest ``forecast_horizon_steps`` distinct
+    future valid_times. The retained valid_time set is identical across all
+    members, so every ensemble member yields the same daily buckets.
+    """
+    future_times = sorted({r.valid_time for r in records if r.valid_time > issue_time})
+    kept_times = frozenset(future_times[:forecast_horizon_steps])
+    return [r for r in records if r.valid_time in kept_times]
 
 
 def _pivot_nwp_records(
@@ -204,7 +284,24 @@ def assemble_station_operational_inputs(
         )
         return None
 
-    future_dynamic = _pivot_nwp_records(nwp_records, reqs.future_dynamic_features)
+    # Aggregate hourly per-member NWP to the model's time_step (daily) on the
+    # BARE parameter name (precip SUM, temp MEAN) BEFORE pivoting to member-
+    # suffixed columns, so the aggregation methods resolve correctly.
+    daily_nwp_records = _aggregate_nwp_records_to_time_step(nwp_records, time_step)
+    # Daily UTC-calendar-day bucketing of a non-midnight cycle backdates the
+    # issue-day bucket to UTC midnight (< issue_time) and can add a partial
+    # end-day bucket. Drop backdated buckets (keep valid_time > issue_time) and
+    # cap to the model's forecast_horizon_steps (earliest N future buckets),
+    # applied to the SAME bucket set across all members, so a daily model with
+    # max_nan=0 receives exactly <= N clean future steps.
+    kept_daily_records = _filter_and_cap_daily_records(
+        daily_nwp_records,
+        issue_time=issue_time,
+        forecast_horizon_steps=forecast_horizon_steps,
+    )
+    future_dynamic = _pivot_nwp_records(
+        kept_daily_records, reqs.future_dynamic_features
+    )
     nwp_age_hours = (now - cycle_time).total_seconds() / 3600.0
     if nwp_age_hours < 0:
         log.warning(

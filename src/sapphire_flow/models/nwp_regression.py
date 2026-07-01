@@ -57,7 +57,7 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 _STEP = timedelta(days=1)
-_HORIZON = 7
+_HORIZON = 5  # M3: match ICON-CH2-EPS 5-day / 120h coverage (was 7)
 _LOOKBACK = 7
 _PRODUCT_NWP = "nwp"
 _PRODUCT_OBS = "obs"
