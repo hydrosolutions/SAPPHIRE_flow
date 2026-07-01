@@ -302,6 +302,55 @@ class TestResolveCycleTime:
             adapter.resolve_cycle_time(naive)  # type: ignore[arg-type]
 
 
+class TestResolveCycleFallbackSignal:
+    """epic-088 M4: the cycle-fallback outcome is SURFACED, not just logged.
+
+    ``resolve_cycle`` returns a ``CycleResolution`` value object carrying both
+    the resolved cycle and whether the adapter had to walk back >=1 step. This
+    is the signal the forecast cycle threads into ``NwpCycleSource.FALLBACK``.
+    """
+
+    def test_no_fallback_on_step_zero(self, tmp_path: Path) -> None:
+        from sapphire_flow.adapters.meteoswiss_nwp import CycleResolution
+
+        cycle = ensure_utc(datetime(2026, 4, 19, 12, 0, tzinfo=UTC))
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "datetime=2026-04-19T12:00:00Z" in str(request.url):
+                return httpx.Response(200, json={"features": _cycle_features(cycle)})
+            return httpx.Response(200, json={"features": []})
+
+        adapter = _make_adapter(httpx.MockTransport(handler), tmp_path)
+        now = ensure_utc(datetime(2026, 4, 19, 14, 37, 12, tzinfo=UTC))
+
+        resolution = adapter.resolve_cycle(now)
+        assert isinstance(resolution, CycleResolution)
+        assert resolution.cycle_time == cycle
+        assert resolution.fallback_used is False
+
+    def test_fallback_used_when_walking_back(self, tmp_path: Path) -> None:
+        from sapphire_flow.adapters.meteoswiss_nwp import CycleResolution
+
+        # 18:30 snaps to 18:00 (empty) then falls back one 6 h step to 12:00.
+        prior = ensure_utc(datetime(2026, 4, 19, 12, 0, tzinfo=UTC))
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            q = str(request.url)
+            if "datetime=2026-04-19T18:00:00Z" in q:
+                return httpx.Response(200, json={"features": []})
+            if "datetime=2026-04-19T12:00:00Z" in q:
+                return httpx.Response(200, json={"features": _cycle_features(prior)})
+            return httpx.Response(200, json={"features": []})
+
+        adapter = _make_adapter(httpx.MockTransport(handler), tmp_path)
+        now = ensure_utc(datetime(2026, 4, 19, 18, 30, tzinfo=UTC))
+
+        resolution = adapter.resolve_cycle(now)
+        assert isinstance(resolution, CycleResolution)
+        assert resolution.cycle_time == prior
+        assert resolution.fallback_used is True
+
+
 class TestCycleIsPublishedPropertyBased:
     """T2a (Plan 067): probe matches on forecast:reference_datetime, not ID prefix.
 

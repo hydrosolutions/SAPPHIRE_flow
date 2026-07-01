@@ -615,11 +615,13 @@ forecasts = sa.Table(
     sa.Column("combination_strategy", sa.Text, nullable=True),
     sa.Column("source_model_ids", JSONB, nullable=True),
     sa.Column("issued_at", sa.DateTime(timezone=True), nullable=False),
-    sa.Column("nwp_cycle_reference_time", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("nwp_cycle_reference_time", sa.DateTime(timezone=True), nullable=True),
     sa.Column(
         "nwp_cycle_source",
         sa.Text,
-        sa.CheckConstraint("nwp_cycle_source IN ('primary', 'fallback')"),
+        sa.CheckConstraint(
+            "nwp_cycle_source IN ('primary', 'fallback', 'runoff_only')"
+        ),
         nullable=False,
         server_default="primary",
     ),

@@ -64,8 +64,18 @@ def assess_input_quality(
                 )
             )
 
-    # NWP cycle age
-    if nwp_age_hours >= config.nwp_age_degraded_hours:
+    # NWP cycle age. Runoff-only mode has no NWP at all: emit a distinct
+    # human-readable flag regardless of nwp_age_hours (which is meaningless
+    # without a cycle) and short-circuit the age-based branches below.
+    if nwp_cycle_source == NwpCycleSource.RUNOFF_ONLY:
+        flags.append(
+            InputQualityFlag(
+                category=InputQualityCategory.NWP,
+                level=InputQualityLevel.DEGRADED,
+                detail="No NWP forcing: runoff-only mode (weather forecast disabled)",
+            )
+        )
+    elif nwp_age_hours >= config.nwp_age_degraded_hours:
         fallback_note = (
             ", fallback cycle" if nwp_cycle_source == NwpCycleSource.FALLBACK else ""
         )

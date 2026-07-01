@@ -103,6 +103,22 @@ class _WeatherForecastAdapterConfig:
     grid_extractor: str
 
 
+@dataclass(frozen=True, kw_only=True, slots=True)
+class _NwpFetchOutcome:
+    """Successful NWP-phase result threaded back to the forecast loop.
+
+    ``cycle_time`` is the adapter-RESOLVED published cycle (the grid's own
+    ``cycle_time`` on the gridded path), NOT the nominal request — on a fallback
+    this is an older cycle. The loop uses it for BOTH the Phase-B readback and
+    the ``nwp_cycle_reference_time`` provenance so records/readback/provenance
+    stay on one cycle. ``fallback_used`` is True iff the adapter walked back
+    >=1 cycle step; the loop maps it to ``NwpCycleSource.FALLBACK``.
+    """
+
+    cycle_time: UtcDatetime
+    fallback_used: bool
+
+
 _GRID_EXTRACTOR_CHOICES: tuple[str, ...] = ("mesh", "exactextract")
 _DEFAULT_GRID_EXTRACTOR: Literal["mesh"] = "mesh"
 
@@ -284,10 +300,11 @@ def _fetch_nwp_task(
     grid_extractor: GridExtractor | None = None,
     station_basins: dict[StationId, Basin] | None = None,
     grid_archive_base_path: str | None = None,
-) -> UtcDatetime | None:
+) -> _NwpFetchOutcome | None:
     """Fetch NWP forecast and store weather records.
 
-    Returns ``cycle_time`` on success OR when no extraction occurred (no
+    Returns a ``_NwpFetchOutcome`` (carrying ``cycle_time`` and the adapter's
+    ``fallback_used`` fact) on success OR when no extraction occurred (no
     matching sources / no extractor configured — both considered successful
     no-op NWP phases, because the downstream per-station forecast step does
     not require NWP input for models with zero NWP features).
@@ -324,7 +341,7 @@ def _fetch_nwp_task(
                 log.warning(
                     "nwp.archive_failed",
                     nwp_source=result_object.nwp_source,
-                    cycle_time=str(cycle_time),
+                    cycle_time=str(result_object.cycle_time),
                     error=str(exc),
                 )
             else:
@@ -339,7 +356,14 @@ def _fetch_nwp_task(
             log.warning(
                 "nwp.extraction_skipped", reason="grid_extractor_not_configured"
             )
-            return cycle_time
+            # Provenance carries the adapter-RESOLVED published cycle (which may
+            # be an older fallback cycle), never the nominal request. No records
+            # were stored on this no-extraction path, but the reference time must
+            # still reflect the true NWP cycle so age is not understated.
+            return _NwpFetchOutcome(
+                cycle_time=result_object.cycle_time,
+                fallback_used=result_object.fallback_used,
+            )
 
         # Filter configs to only those matching this grid's NWP source
         configs_for_source = [
@@ -351,22 +375,31 @@ def _fetch_nwp_task(
                 reason="no_matching_sources",
                 nwp_source=result_object.nwp_source,
             )
-            return cycle_time
+            return _NwpFetchOutcome(
+                cycle_time=result_object.cycle_time,
+                fallback_used=result_object.fallback_used,
+            )
 
         extract_t0 = time.perf_counter()
         try:
+            # Tag extracted basin-average records with the adapter-RESOLVED
+            # published cycle (result_object.cycle_time), NOT the nominal
+            # request. This keeps the stored records, the Phase-B readback, and
+            # the provenance reference time all on the same cycle — a fallback
+            # forecast is stored, read back, and reported at the true older
+            # cycle, so the station is not skipped and NWP age is not understated.
             extracted = grid_extractor.extract(
                 grid=result_object.values,
                 configs=configs_for_source,
                 basins=station_basins or {},
-                cycle_time=cycle_time,
+                cycle_time=result_object.cycle_time,
                 nwp_source=result_object.nwp_source,
             )
         except Exception as exc:
             log.error(
                 "extraction.failed",
                 nwp_source=result_object.nwp_source,
-                cycle_time=str(cycle_time),
+                cycle_time=str(result_object.cycle_time),
                 error=str(exc),
             )
             return None
@@ -397,7 +430,10 @@ def _fetch_nwp_task(
             extraction_duration_ms=round((time.perf_counter() - extract_t0) * 1000, 1),
             duration_ms=duration_ms,
         )
-        return cycle_time
+        return _NwpFetchOutcome(
+            cycle_time=result_object.cycle_time,
+            fallback_used=result_object.fallback_used,
+        )
 
     if not isinstance(result_object, dict):  # pyright: ignore[reportUnnecessaryIsInstance]
         log.error("nwp.unexpected_return_type", type=type(result_object).__name__)
@@ -428,7 +464,14 @@ def _fetch_nwp_task(
         stations=len(result_object),
         duration_ms=duration_ms,
     )
-    return cycle_time
+    # Records are persisted under each forecast's own cycle_time (a pre-extracted
+    # adapter may have snapped/fallen back to a published cycle). Report that
+    # resolved cycle so Phase B's readback + provenance stay consistent with the
+    # stored records (else the forecast is skipped / mis-recorded as the request).
+    resolved_cycle = (
+        next(iter(result_object.values())).cycle_time if result_object else cycle_time
+    )
+    return _NwpFetchOutcome(cycle_time=resolved_cycle, fallback_used=False)
 
 
 # ---------------------------------------------------------------------------
@@ -753,14 +796,13 @@ def run_forecast_cycle_flow(
 
         # --- Phase A: fetch NWP forcing (submit as task) ---
         nwp_future: Any = None
-        nwp_cycle: UtcDatetime | None = None
+        nwp_outcome: _NwpFetchOutcome | None = None
         if runoff_only_mode:
             log.info(
                 "forecast_cycle.nwp_disabled",
                 mode="runoff_only",
                 cycle_time=resolved_cycle_time.isoformat(),
             )
-            nwp_cycle = resolved_cycle_time
         else:
             nwp_future = _fetch_nwp_task.submit(
                 adapter=cast("WeatherForecastSource", adapter),
@@ -782,25 +824,51 @@ def run_forecast_cycle_flow(
 
         # Collect Phase A result
         if not runoff_only_mode:
-            nwp_cycle = nwp_future.result()
-        if nwp_cycle is None:
-            log.error("forecast_cycle.nwp_fetch_failed_aborting")
-            return ForecastCycleResult(
-                cycle_time=resolved_cycle_time,
-                stations_attempted=0,
-                stations_succeeded=0,
-                stations_failed=0,
-                forecasts_stored=0,
-                alerts_checked=False,
-                duration_ms=round((time.perf_counter() - flow_t0) * 1000, 1),
-                errors=("NWP fetch failed",),
-            )
+            nwp_outcome = nwp_future.result()
+            if nwp_outcome is None:
+                log.error("forecast_cycle.nwp_fetch_failed_aborting")
+                return ForecastCycleResult(
+                    cycle_time=resolved_cycle_time,
+                    stations_attempted=0,
+                    stations_succeeded=0,
+                    stations_failed=0,
+                    forecasts_stored=0,
+                    alerts_checked=False,
+                    duration_ms=round((time.perf_counter() - flow_t0) * 1000, 1),
+                    errors=("NWP fetch failed",),
+                )
 
         # Collect Step 1.6 result (we don't block on this — just use it for logging)
         _obs_timestamps: dict[StationId, UtcDatetime | None] = obs_ts_future.result()
 
-        # Determine nwp_cycle_source (v0: always PRIMARY)
-        nwp_cycle_source = NwpCycleSource.PRIMARY
+        # --- Honest NWP provenance (epic-088 M4) ---
+        # Runoff-only mode has no NWP cycle at all → RUNOFF_ONLY + null
+        # reference time (NOT a faked clock cycle). With NWP on, the adapter's
+        # fallback fact decides PRIMARY vs FALLBACK; the resolved cycle time is
+        # the reference.
+        nwp_cycle_reference_time: UtcDatetime | None
+        if runoff_only_mode:
+            nwp_cycle_source = NwpCycleSource.RUNOFF_ONLY
+            nwp_cycle_reference_time = None
+        else:
+            assert nwp_outcome is not None  # guarded by the abort above
+            nwp_cycle_source = (
+                NwpCycleSource.FALLBACK
+                if nwp_outcome.fallback_used
+                else NwpCycleSource.PRIMARY
+            )
+            nwp_cycle_reference_time = nwp_outcome.cycle_time
+
+        # Phase-B readback cycle: the NWP records were STORED under the adapter-
+        # resolved cycle, so they must be READ BACK under the same cycle or the
+        # station is skipped (no records found). ``issue_time`` stays the nominal
+        # cycle (the forecast is issued now, whatever NWP cycle it consumed).
+        # Runoff-only has no NWP records; keep the nominal cycle there.
+        nwp_readback_cycle_time: UtcDatetime = (
+            nwp_cycle_reference_time
+            if nwp_cycle_reference_time is not None
+            else resolved_cycle_time
+        )
 
         # --- Phase B: per-station forecast loop ---
         from datetime import timedelta
@@ -869,7 +937,7 @@ def run_forecast_cycle_flow(
                     model=first_model,
                     model_id=sorted_assignments[0].model_id,
                     issue_time=resolved_cycle_time,
-                    cycle_time=resolved_cycle_time,
+                    cycle_time=nwp_readback_cycle_time,
                     nwp_source=nwp_source,
                     forcing_source=forcing_source,
                     weather_forecast_store=weather_forecast_store,  # type: ignore[arg-type]
@@ -912,7 +980,7 @@ def run_forecast_cycle_flow(
                         qc_rules=qc_rules,
                         qc_overrides=[],
                         baselines=all_baselines[sid],
-                        nwp_cycle_reference_time=resolved_cycle_time,
+                        nwp_cycle_reference_time=nwp_cycle_reference_time,
                         nwp_cycle_source=nwp_cycle_source,
                         config=config,
                         clock=clock,
@@ -967,7 +1035,7 @@ def run_forecast_cycle_flow(
                         qc_rules=qc_rules,
                         qc_overrides=[],
                         baselines=all_baselines[sid],
-                        nwp_cycle_reference_time=resolved_cycle_time,
+                        nwp_cycle_reference_time=nwp_cycle_reference_time,
                         nwp_cycle_source=nwp_cycle_source,
                         config=config,
                         clock=clock,
@@ -1016,7 +1084,7 @@ def run_forecast_cycle_flow(
                         station_id=sid,
                         multi_result=multi_result,
                         strategy=config.forecast_combination_strategy,
-                        nwp_cycle_reference_time=resolved_cycle_time,
+                        nwp_cycle_reference_time=nwp_cycle_reference_time,
                         nwp_cycle_source=nwp_cycle_source,
                         clock=clock,
                         uuid_factory=uuid4,
@@ -1170,7 +1238,7 @@ def run_forecast_cycle_flow(
                             model=model,  # type: ignore[arg-type]
                             model_id=model_id,
                             issue_time=resolved_cycle_time,
-                            cycle_time=resolved_cycle_time,
+                            cycle_time=nwp_readback_cycle_time,
                             nwp_source_by_station=nwp_source_by_station,
                             forcing_source=forcing_source,
                             weather_forecast_store=weather_forecast_store,  # type: ignore[arg-type]
@@ -1212,7 +1280,7 @@ def run_forecast_cycle_flow(
                         qc_rules=qc_rules,  # type: ignore[arg-type]
                         qc_overrides=[],
                         baselines_by_station=baselines_by_station,
-                        nwp_cycle_reference_time=resolved_cycle_time,
+                        nwp_cycle_reference_time=nwp_cycle_reference_time,
                         nwp_cycle_source=nwp_cycle_source,
                         config=config,  # type: ignore[arg-type]
                         clock=clock,  # type: ignore[arg-type]

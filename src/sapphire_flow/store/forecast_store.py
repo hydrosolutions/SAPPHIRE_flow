@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 from sapphire_flow.db.metadata import forecast_values, forecasts
 from sapphire_flow.exceptions import ConflictError
-from sapphire_flow.store._helpers import utc_from_row
+from sapphire_flow.store._helpers import utc_from_row, utc_or_none
 from sapphire_flow.types.domain import QcFlag
 from sapphire_flow.types.ensemble import ForecastEnsemble
 from sapphire_flow.types.enums import (
@@ -337,7 +337,7 @@ def _rows_to_domain(rows: Sequence[RowMapping]) -> OperationalForecast:
             else None
         ),
         issued_at=issued_at,
-        nwp_cycle_reference_time=utc_from_row(header["nwp_cycle_reference_time"]),
+        nwp_cycle_reference_time=utc_or_none(header["nwp_cycle_reference_time"]),
         nwp_cycle_source=NwpCycleSource(header["nwp_cycle_source"]),
         representation=representation,
         status=ForecastStatus(header["status"]),

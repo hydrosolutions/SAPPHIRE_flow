@@ -226,8 +226,9 @@ class ForeignForecastStatus(Enum):
     PUBLISHED = "published"
 
 class NwpCycleSource(Enum):
-    PRIMARY = "primary"
-    FALLBACK = "fallback"
+    PRIMARY = "primary"          # snapped operational cycle, published
+    FALLBACK = "fallback"        # adapter walked back >=1 cycle step
+    RUNOFF_ONLY = "runoff_only"  # no NWP forcing (weather forecast disabled)
 
 class WeatherSourceStatus(Enum):
     ACTIVE = "active"
@@ -1317,13 +1318,25 @@ values payload.
 
 ```python
 @dataclass(frozen=True, kw_only=True, slots=True)
+class ForecastProvenance:
+    """Forward-compatible NWP provenance value object (epic-088 M4).
+
+    RUNOFF_ONLY carries a null reference time (there is no NWP cycle). Kept
+    extensible so future degradation facts fold in here rather than sprawling
+    across flat forecast fields.
+    """
+    nwp_cycle_source: NwpCycleSource
+    nwp_cycle_reference_time: UtcDatetime | None
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
 class OperationalForecast:
     id: ForecastId
     station_id: StationId
     model_id: ModelId
     model_artifact_id: ArtifactId | None   # NULL for combined forecasts (no single artifact)
     issued_at: UtcDatetime
-    nwp_cycle_reference_time: UtcDatetime
+    nwp_cycle_reference_time: UtcDatetime | None  # NULL in runoff-only mode (no NWP cycle)
     nwp_cycle_source: NwpCycleSource
     representation: EnsembleRepresentation
     status: ForecastStatus
@@ -1340,6 +1353,10 @@ class OperationalForecast:
     input_quality_flags: tuple[InputQualityFlag, ...] = ()
     combination_strategy: str | None = None        # NULL for individual; "pooled"|"bma"|"consensus" for combined
     source_model_ids: list[ModelId] | None = None  # NULL for individual; contributing model IDs for combined
+
+    @property
+    def provenance(self) -> ForecastProvenance:  # read-only view over the flat provenance fields
+        ...
 ```
 
 ### HindcastForecast

@@ -5,9 +5,20 @@
 **Parent**: Plan 046 (Mac Mini Staging Deployment) — builds directly on the A3
 dress-rehearsal procedure
 **Related**: Plan 077 (forecast-cycle optional NWP / runoff-only mode, DONE),
+Plan 078 (forecast provenance for NWP-less forecasts, DONE via epic-088 M4),
 Plan 060 (dev CAMELS-CH bind-mount + `cache_policy=NO_CACHE`), Plan 062
 (`PREFECT_HOME` persistence, open gap), Plan 065 (config overlays)
 **Created**: 2026-06-26
+
+---
+
+> **Provenance note (2026-07-01, epic-088 M4):** the runoff-only forecasts this
+> runbook produces now record `nwp_cycle_source = "runoff_only"` with a null
+> `nwp_cycle_reference_time` (Plan 078 fix). The Plan 077 F2 limitation — a
+> runoff-only forecast masquerading as `primary` with a bogus reference time — no
+> longer applies; a validated runoff-only run should show the `runoff_only`
+> provenance in the forecast API response and a distinct "No NWP forcing:
+> runoff-only mode" input-quality detail.
 
 ---
 

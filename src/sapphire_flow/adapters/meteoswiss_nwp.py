@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.resources
 import shutil
 import time
+from dataclasses import dataclass
 from datetime import timedelta
 from functools import lru_cache
 from pathlib import Path
@@ -78,6 +79,19 @@ _MAX_PAGINATION_PAGES: int = 800
 # exhausted, which at 100/page can be 40+ pages deep. 50 is a safe cap
 # that keeps probe latency under ~10 s.
 _MAX_PROBE_PAGES: int = 50
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class CycleResolution:
+    """Outcome of resolving the operational NWP cycle.
+
+    ``fallback_used`` is True iff the adapter had to walk back >=1 cycle step
+    from the snapped slot to find a published cycle. The forecast cycle threads
+    this into ``NwpCycleSource.FALLBACK`` provenance.
+    """
+
+    cycle_time: UtcDatetime
+    fallback_used: bool
 
 
 def _is_grib_asset(asset_key: str, asset: dict[str, object]) -> bool:
@@ -333,11 +347,9 @@ class MeteoSwissNwpAdapter:
     def max_fallback_steps(self) -> int:
         return self._max_fallback_steps
 
-    def resolve_cycle_time(self, now_utc: UtcDatetime) -> UtcDatetime:
+    def resolve_cycle(self, now_utc: UtcDatetime) -> CycleResolution:
         if now_utc.tzinfo is None:
-            raise ValueError(
-                f"resolve_cycle_time requires tz-aware input, got {now_utc!r}"
-            )
+            raise ValueError(f"resolve_cycle requires tz-aware input, got {now_utc!r}")
         snapped = self._snap_to_cycle(now_utc)
         candidate = snapped
         for step in range(self._max_fallback_steps + 1):
@@ -349,12 +361,15 @@ class MeteoSwissNwpAdapter:
                         resolved_cycle=candidate.isoformat(),
                         fallback_steps=step,
                     )
-                return candidate
+                return CycleResolution(cycle_time=candidate, fallback_used=step > 0)
             candidate = ensure_utc(candidate - timedelta(hours=_CYCLE_INTERVAL_HOURS))
         raise NoCycleAvailableError(
             f"No cycle available within {self._max_fallback_steps} fallback steps "
             f"from {snapped.isoformat()}"
         )
+
+    def resolve_cycle_time(self, now_utc: UtcDatetime) -> UtcDatetime:
+        return self.resolve_cycle(now_utc).cycle_time
 
     @staticmethod
     def _snap_to_cycle(now_utc: UtcDatetime) -> UtcDatetime:
@@ -404,11 +419,13 @@ class MeteoSwissNwpAdapter:
         station_configs: list[StationWeatherSource],  # noqa: ARG002
         cycle_time: UtcDatetime,
     ) -> GriddedForecast | dict[StationId, WeatherForecastResult]:
-        resolved_cycle = self.resolve_cycle_time(cycle_time)
+        resolution = self.resolve_cycle(cycle_time)
+        resolved_cycle = resolution.cycle_time
         log.info(
             "nwp.cycle_resolved",
             requested_cycle=cycle_time.isoformat(),
             resolved_cycle=resolved_cycle.isoformat(),
+            fallback_used=resolution.fallback_used,
         )
         log.info(
             "nwp.fetch_started",
@@ -430,6 +447,7 @@ class MeteoSwissNwpAdapter:
                 nwp_source=self.NWP_SOURCE,
                 cycle_time=resolved_cycle,
                 values=ds,
+                fallback_used=resolution.fallback_used,
             )
         except AdapterError:
             raise

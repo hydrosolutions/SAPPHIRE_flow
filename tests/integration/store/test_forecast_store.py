@@ -89,6 +89,8 @@ def _make_forecast(
     n_members: int = 5,
     n_steps: int = 10,
     parameter: str = "discharge",
+    nwp_cycle_source: NwpCycleSource = NwpCycleSource.PRIMARY,
+    nwp_cycle_reference_time: UtcDatetime | None = _NWP_CYCLE,
     rng: random.Random | None = None,
 ) -> OperationalForecast:
     rng = rng or random.Random(42)
@@ -106,8 +108,8 @@ def _make_forecast(
         model_id=model_id,
         model_artifact_id=artifact_id,
         issued_at=issued_at,
-        nwp_cycle_reference_time=_NWP_CYCLE,
-        nwp_cycle_source=NwpCycleSource.PRIMARY,
+        nwp_cycle_reference_time=nwp_cycle_reference_time,  # type: ignore[arg-type]
+        nwp_cycle_source=nwp_cycle_source,
         representation=representation,
         status=status,
         version=1,
@@ -459,3 +461,82 @@ class TestParameterFilter:
 
         with pytest.raises(sqlalchemy.exc.IntegrityError):
             store.store_forecast(fc_duplicate)
+
+
+class TestRunoffOnlyProvenanceRoundTrip:
+    """epic-088 M4: RUNOFF_ONLY source + null reference time survive persistence.
+
+    RED until migration 0026 makes ``nwp_cycle_reference_time`` nullable and
+    extends the ``nwp_cycle_source`` CHECK to include ``'runoff_only'``.
+    """
+
+    def test_round_trip_runoff_only_null_reference(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection, "runoff_only_model")
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgForecastStore(db_connection)
+
+        fc = _make_forecast(
+            sid,
+            mid,
+            aid,
+            nwp_cycle_source=NwpCycleSource.RUNOFF_ONLY,
+            nwp_cycle_reference_time=None,
+        )
+        store.store_forecast(fc)
+
+        fetched = store.fetch_forecast(fc.id)
+        assert fetched is not None
+        assert fetched.nwp_cycle_source == NwpCycleSource.RUNOFF_ONLY
+        assert fetched.nwp_cycle_reference_time is None
+
+
+class TestForecastProvenanceConstraints:
+    """The DB CHECK accepts the three known sources and rejects anything else."""
+
+    def test_check_accepts_runoff_only(self, db_connection: sa.Connection) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection, "runoff_only_check")
+        from sapphire_flow.db.metadata import forecasts
+
+        db_connection.execute(
+            sa.insert(forecasts).values(
+                id=uuid4(),
+                station_id=sid,
+                model_id=mid,
+                model_artifact_id=None,
+                issued_at=_ISSUED_A,
+                nwp_cycle_reference_time=None,
+                nwp_cycle_source="runoff_only",
+                representation="members",
+                status="raw",
+                version=1,
+                parameter="discharge",
+                units="m³/s",
+            )
+        )
+
+    def test_check_rejects_unknown_source(self, db_connection: sa.Connection) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection, "bogus_source_check")
+        from sapphire_flow.db.metadata import forecasts
+
+        with pytest.raises(sqlalchemy.exc.IntegrityError):
+            db_connection.execute(
+                sa.insert(forecasts).values(
+                    id=uuid4(),
+                    station_id=sid,
+                    model_id=mid,
+                    model_artifact_id=None,
+                    issued_at=_ISSUED_A,
+                    nwp_cycle_reference_time=None,
+                    nwp_cycle_source="satellite",
+                    representation="members",
+                    status="raw",
+                    version=1,
+                    parameter="discharge",
+                    units="m³/s",
+                )
+            )

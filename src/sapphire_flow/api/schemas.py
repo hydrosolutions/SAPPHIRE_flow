@@ -109,7 +109,7 @@ class EnsembleResponse(BaseModel):
 
 class ForecastDetail(ForecastSummary):
     model_artifact_id: str | None = None
-    nwp_cycle_reference_time: datetime
+    nwp_cycle_reference_time: datetime | None = None
     version: int
     warm_up_source: str | None = None
     observation_staleness_hours: float | None = None

@@ -34,6 +34,7 @@ from sapphire_flow.types.enums import (
     ModelArtifactStatus,
     ModelAssignmentStatus,
     ModelCombinationStrategy,
+    NwpCycleSource,
     SpatialRepresentation,
     StationKind,
     StationStatus,
@@ -222,7 +223,9 @@ def _make_basin_avg_result(
     station_ids: list[StationId],
     n_steps: int = 10,
     n_members: int = 3,
+    cycle_time: UtcDatetime | None = None,
 ) -> dict[StationId, BasinAverageForecast]:
+    ct = cycle_time if cycle_time is not None else _NOW
     result = {}
     for sid in station_ids:
         rows = []
@@ -243,10 +246,58 @@ def _make_basin_avg_result(
         df = pl.DataFrame(rows)
         result[sid] = BasinAverageForecast(
             nwp_source=_NWP_SOURCE,
-            cycle_time=_NOW,
+            cycle_time=ct,
             values=df,
         )
     return result
+
+
+class _CycleReflectingGridExtractor:
+    """Grid extractor mirroring the REAL extractor contract.
+
+    Like ``MeshBasinExtractor``, it tags each output ``BasinAverageForecast``
+    with the ``cycle_time`` it is CALLED with, while emitting future-dated
+    valid_times so a forecast is still produced. Unlike ``FakeGridExtractor``
+    (static result, ignores the arg) this lets a test observe whether records
+    are stored under the nominal request or the adapter-resolved cycle.
+    """
+
+    def __init__(self, station_ids: list[StationId]) -> None:
+        self._station_ids = station_ids
+        self.seen_cycle_times: list[UtcDatetime] = []
+
+    def extract(
+        self,
+        grid: xr.Dataset,
+        configs: list[StationWeatherSource],
+        basins: dict[StationId, Basin],
+        cycle_time: UtcDatetime,
+        nwp_source: str,
+    ) -> dict[StationId, BasinAverageForecast]:
+        self.seen_cycle_times.append(cycle_time)
+        out: dict[StationId, BasinAverageForecast] = {}
+        for sid in self._station_ids:
+            rows = []
+            for step in range(10):
+                vt = ensure_utc(
+                    datetime.fromtimestamp(_NOW.timestamp() + (step + 1) * 3600, tz=UTC)
+                )
+                for param in ("precipitation", "temperature"):
+                    for m in range(3):
+                        rows.append(
+                            {
+                                "valid_time": vt,
+                                "parameter": param,
+                                "member_id": m,
+                                "value": float(step + m),
+                            }
+                        )
+            out[sid] = BasinAverageForecast(
+                nwp_source=nwp_source,
+                cycle_time=cycle_time,
+                values=pl.DataFrame(rows),
+            )
+        return out
 
 
 def _build_station_and_stores(
@@ -2810,7 +2861,7 @@ class TestNwpExtractionSourceFilter:
             grid_archive_base_path=None,
         )
 
-        assert out == _NOW
+        assert out is not None and out.cycle_time == _NOW
         assert extractor.call_count == 1
         assert extractor.last_configs == [source]  # filter kept the ICON source
         assert len(nwp_store._records) > 0  # extracted records persisted
@@ -2840,9 +2891,47 @@ class TestNwpExtractionSourceFilter:
             grid_archive_base_path=None,
         )
 
-        assert out == _NOW  # a skipped extraction is still a successful NWP no-op
+        # a skipped extraction is still a successful NWP no-op
+        assert out is not None and out.cycle_time == _NOW
         assert extractor.call_count == 0
         assert nwp_store._records == []
+
+    def test_pre_extracted_dict_outcome_uses_forecast_cycle_not_request(self) -> None:
+        # A pre-extracted (dict) adapter that snapped / fell back to an older
+        # published cycle: records are persisted under each forecast's OWN
+        # cycle_time, so the outcome must report THAT resolved cycle — not the
+        # nominal request — or Phase B's readback + provenance mismatch and the
+        # forecast is skipped / mis-recorded against the request cycle.
+        sid = StationId(uuid4())
+        resolved = ensure_utc(
+            datetime.fromtimestamp(_NOW.timestamp() - 6 * 3600, tz=UTC)
+        )
+        nwp_store = FakeWeatherForecastStore()
+        source = StationWeatherSource(
+            station_id=sid,
+            nwp_source=_NWP_SOURCE,
+            extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+            status=WeatherSourceStatus.ACTIVE,
+        )
+        pre_extracted = _make_basin_avg_result(
+            [sid], n_steps=5, n_members=3, cycle_time=resolved
+        )
+
+        out = _fetch_nwp_task.fn(
+            adapter=FakeWeatherForecastSource(result=pre_extracted),
+            station_configs=[source],
+            cycle_time=_NOW,
+            weather_forecast_store=nwp_store,
+            clock=_clock,
+            grid_store=None,
+            grid_extractor=FakeGridExtractor(result={}),
+            station_basins={},
+            grid_archive_base_path=None,
+        )
+
+        # resolved cycle comes from the forecasts, NOT the nominal request (_NOW)
+        assert out is not None and out.cycle_time == resolved
+        assert len(nwp_store._records) > 0
 
 
 class TestDeterministicNwpSourceSelection:
@@ -3094,3 +3183,265 @@ class TestForecastsUseWeatherEndToEnd:
         hi_vals = fc_hi.ensemble.values["value"].to_list()
         # Raising precip lifts EVERY discharge member: the forecast uses weather.
         assert min(hi_vals) > max(lo_vals)
+
+
+class TestForecastProvenance:
+    """epic-088 M4: the cycle records honest NWP provenance on each forecast.
+
+    Runoff-only → RUNOFF_ONLY + null reference time (NOT PRIMARY + a faked
+    time). NWP-on with a fresh primary cycle → PRIMARY + the resolved cycle.
+    A fallback cycle (adapter walked back >=1 step) → FALLBACK.
+    """
+
+    def test_runoff_only_records_runoff_only_source_and_null_reference(self) -> None:
+        # RED on main: the runoff branch hardcodes nwp_cycle_source=PRIMARY and
+        # sets nwp_cycle_reference_time to the resolved (faked) clock cycle.
+        sid = StationId(uuid4())
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+        )
+
+        # No adapter + absent config => runoff-only mode.
+        with patch(
+            "sapphire_flow.adapters.meteoswiss_nwp.MeteoSwissNwpAdapter",
+            side_effect=AssertionError("adapter must not be constructed"),
+        ):
+            result = run_forecast_cycle_flow(
+                station_store=station_store,
+                obs_store=obs_store,
+                weather_forecast_store=nwp_store,
+                forecast_store=forecast_store,
+                model_state_store=state_store,
+                artifact_store=artifact_store,
+                alert_store=alert_store,
+                baseline_store=baseline_store,
+                basin_store=basin_store,
+                forcing_store=forcing_store,
+                models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+                config=_make_config(),
+                qc_rules=_empty_qc_rules(),
+                clock=_clock,
+                rng=random.Random(42),
+            )
+
+        assert result.forecasts_stored == 1
+        stored = list(forecast_store._forecasts.values())
+        assert len(stored) == 1
+        fc = stored[0]
+        assert fc.nwp_cycle_source == NwpCycleSource.RUNOFF_ONLY
+        assert fc.nwp_cycle_reference_time is None
+
+    def test_nwp_primary_records_primary_source_and_resolved_cycle(self) -> None:
+        sid = StationId(uuid4())
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+            extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+            basin_store=basin_store,
+        )
+
+        # Fresh primary cycle: default fallback_used=False on the gridded result.
+        adapter = FakeWeatherForecastSource(result=_make_gridded_forecast())
+        grid_extractor = FakeGridExtractor(result=_make_basin_avg_result([sid]))
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=adapter,
+            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+            config=_make_config(nwp_grid_archive_base_path="/tmp/test_grids"),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+            grid_store=FakeNwpGridStore(),
+            grid_extractor=grid_extractor,
+        )
+
+        assert result.forecasts_stored >= 1
+        stored = list(forecast_store._forecasts.values())
+        assert all(fc.nwp_cycle_source == NwpCycleSource.PRIMARY for fc in stored)
+        assert all(fc.nwp_cycle_reference_time == _NOW for fc in stored)
+
+    def test_fallback_cycle_records_fallback_source(self) -> None:
+        # RED on main: (1) GriddedForecast has no fallback_used field, and
+        # (2) the flow hardcodes PRIMARY regardless of the adapter's fallback.
+        sid = StationId(uuid4())
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+            extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+            basin_store=basin_store,
+        )
+
+        base = _make_gridded_forecast()
+        fallback_grid = GriddedForecast(
+            nwp_source=base.nwp_source,
+            cycle_time=base.cycle_time,
+            values=base.values,
+            fallback_used=True,
+        )
+        adapter = FakeWeatherForecastSource(result=fallback_grid)
+        grid_extractor = FakeGridExtractor(result=_make_basin_avg_result([sid]))
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=adapter,
+            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+            config=_make_config(nwp_grid_archive_base_path="/tmp/test_grids"),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+            grid_store=FakeNwpGridStore(),
+            grid_extractor=grid_extractor,
+        )
+
+        assert result.forecasts_stored >= 1
+        stored = list(forecast_store._forecasts.values())
+        assert all(fc.nwp_cycle_source == NwpCycleSource.FALLBACK for fc in stored)
+        assert all(fc.nwp_cycle_reference_time is not None for fc in stored)
+
+    def test_fallback_cycle_reports_resolved_cycle_not_request(self) -> None:
+        # RED on the pre-fix code: the flow tags the stored NWP records + the
+        # provenance with the NOMINAL request cycle (_NOW), so a FALLBACK
+        # forecast records the WRONG (too-new) nwp_cycle_reference_time and
+        # understates NWP age. Here the adapter resolves an OLDER published
+        # cycle (request - 6h) than the request, and the cycle-reflecting
+        # extractor stores records under whatever cycle the flow passes it, so
+        # the assertions catch both a wrong reference time AND a readback skip.
+        sid = StationId(uuid4())
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+            extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+            basin_store=basin_store,
+        )
+
+        resolved_cycle = ensure_utc(_NOW - timedelta(hours=6))
+        # The adapter walked back 6h: the grid's own cycle_time is the OLDER
+        # published cycle; the request (via _clock) is _NOW.
+        fallback_grid = GriddedForecast(
+            nwp_source=_NWP_SOURCE,
+            cycle_time=resolved_cycle,
+            values=_make_gridded_forecast(cycle_time=resolved_cycle).values,
+            fallback_used=True,
+        )
+        adapter = FakeWeatherForecastSource(result=fallback_grid)
+        grid_extractor = _CycleReflectingGridExtractor([sid])
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=adapter,
+            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+            config=_make_config(nwp_grid_archive_base_path="/tmp/test_grids"),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+            grid_store=FakeNwpGridStore(),
+            grid_extractor=grid_extractor,
+        )
+
+        # Records were extracted/stored under the RESOLVED cycle...
+        assert grid_extractor.seen_cycle_times == [resolved_cycle]
+        # ...and the forecast is PRODUCED (readback at the same resolved cycle
+        # finds those records — no skip).
+        assert result.forecasts_stored >= 1
+        stored = list(forecast_store._forecasts.values())
+        assert stored, "expected a stored forecast; station was skipped"
+        assert all(fc.nwp_cycle_source == NwpCycleSource.FALLBACK for fc in stored)
+        # Provenance reflects the TRUE resolved (older) cycle, not the request.
+        assert all(fc.nwp_cycle_reference_time == resolved_cycle for fc in stored)

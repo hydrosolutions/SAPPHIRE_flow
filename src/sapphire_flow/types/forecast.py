@@ -31,13 +31,26 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
+class ForecastProvenance:
+    """Forward-compatible NWP provenance value object.
+
+    RUNOFF_ONLY carries a null reference time (there is no NWP cycle). Kept
+    extensible so future degradation facts (e.g. FI input shortfall) fold in
+    here rather than sprawling across flat forecast fields.
+    """
+
+    nwp_cycle_source: NwpCycleSource
+    nwp_cycle_reference_time: UtcDatetime | None
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
 class OperationalForecast:
     id: ForecastId
     station_id: StationId
     model_id: ModelId
     model_artifact_id: ArtifactId | None
     issued_at: UtcDatetime
-    nwp_cycle_reference_time: UtcDatetime
+    nwp_cycle_reference_time: UtcDatetime | None
     nwp_cycle_source: NwpCycleSource
     representation: EnsembleRepresentation
     status: ForecastStatus
@@ -54,6 +67,13 @@ class OperationalForecast:
     input_quality_flags: tuple[InputQualityFlag, ...] = ()
     combination_strategy: str | None = None
     source_model_ids: list[ModelId] | None = None
+
+    @property
+    def provenance(self) -> ForecastProvenance:
+        return ForecastProvenance(
+            nwp_cycle_source=self.nwp_cycle_source,
+            nwp_cycle_reference_time=self.nwp_cycle_reference_time,
+        )
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

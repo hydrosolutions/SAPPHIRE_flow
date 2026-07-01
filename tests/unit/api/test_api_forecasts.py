@@ -103,6 +103,45 @@ class TestGetForecast:
         for _member_key, values in ens["series"].items():
             assert len(values) == fc.ensemble.forecast_horizon_steps
 
+    def test_runoff_only_exposes_null_reference_time(
+        self, client: TestClient, fake_stores: dict[str, Any]
+    ) -> None:
+        # epic-088 M4: a runoff-only forecast serialises source "runoff_only"
+        # and a NULL nwp_cycle_reference_time. RED on main: the schema pins
+        # nwp_cycle_reference_time: datetime (non-optional) and NwpCycleSource
+        # has no RUNOFF_ONLY, so a null reference triggers a 500.
+        from sapphire_flow.types.forecast import OperationalForecast
+
+        station = make_station_config(rng=random.Random(1))
+        ensemble = make_forecast_ensemble(
+            station_id=station.id, rng=random.Random(5), n_members=3, n_steps=5
+        )
+        fc = OperationalForecast(
+            id=ForecastId(uuid4()),
+            station_id=station.id,
+            model_id=ModelId("runoff_only_model"),
+            model_artifact_id=None,
+            issued_at=_EPOCH,
+            nwp_cycle_reference_time=None,  # type: ignore[arg-type]
+            nwp_cycle_source=NwpCycleSource.RUNOFF_ONLY,
+            representation=EnsembleRepresentation.MEMBERS,
+            status=ForecastStatus.RAW,
+            version=1,
+            warm_up_source=None,
+            warm_up_state_age_hours=None,
+            observation_staleness_hours=None,
+            ensemble=ensemble,
+            created_at=_EPOCH,
+            updated_at=_EPOCH,
+        )
+        fake_stores["forecast_store"].store_forecast(fc)
+
+        resp = client.get(f"/api/v1/forecasts/{fc.id}")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["nwp_cycle_source"] == "runoff_only"
+        assert body["nwp_cycle_reference_time"] is None
+
     def test_not_found(self, client: TestClient) -> None:
         resp = client.get(f"/api/v1/forecasts/{uuid4()}")
         assert resp.status_code == 404
