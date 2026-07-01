@@ -38,13 +38,20 @@ from forecast_interface import (
     VariableStatus,
 )
 from forecast_interface import (
+    EnsembleMode as FIEnsembleMode,
+)
+from forecast_interface import (
     SpatialRepresentation as FISpatialRepresentation,
 )
 
 from sapphire_flow.exceptions import ConfigurationError, ModelOutputError
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.ensemble import ForecastEnsemble
-from sapphire_flow.types.enums import ArtifactScope, SpatialRepresentation
+from sapphire_flow.types.enums import (
+    ArtifactScope,
+    EnsembleMode,
+    SpatialRepresentation,
+)
 from sapphire_flow.types.model import ModelDataRequirements
 
 if TYPE_CHECKING:
@@ -453,6 +460,7 @@ class ForecastInterfaceAdapter:
         future_dynamic_features: set[str] = set()
         past_variables: list[tuple[str, PastKnownVariable]] = []
         forecast_horizon_steps: int | None = None
+        any_ensemble_future = False
 
         for fi_rep, spec in self._iter_dynamic_specs(req):
             spatial_reps.add(fi_rep)
@@ -463,6 +471,8 @@ class ForecastInterfaceAdapter:
             for variables in spec.future_known.values():
                 for name, variable in variables.items():
                     future_dynamic_features.add(name)
+                    if variable.ensemble_mode is FIEnsembleMode.ENSEMBLE:
+                        any_ensemble_future = True
                     if forecast_horizon_steps is None:
                         forecast_horizon_steps = variable.future_steps
                     else:
@@ -512,6 +522,9 @@ class ForecastInterfaceAdapter:
             # the input-forcing length used as the horizon proxy, endorsed in SF2.
             forecast_horizon_steps=forecast_horizon_steps,
             spatial_input_type=SpatialRepresentation(spatial_rep.value),
+            ensemble_mode=(
+                EnsembleMode.ENSEMBLE if any_ensemble_future else EnsembleMode.SINGLE
+            ),
         )
 
     def _declared_fi_units(self) -> dict[str, Unit]:

@@ -1220,7 +1220,10 @@ class ModelDataRequirements:
     lookback_steps: int
     forecast_horizon_steps: int
     spatial_input_type: SpatialRepresentation
+    ensemble_mode: EnsembleMode = EnsembleMode.SINGLE   # SINGLE: model emits one trajectory; ENSEMBLE: forcing carries member-suffixed columns, fanned out per member
 ```
+
+`ensemble_mode` (`EnsembleMode` enum: `SINGLE` | `ENSEMBLE`, mirrors the ForecastInterface `FutureKnownVariable.ensemble_mode` values) marks a model whose future-known forcing is delivered as member-suffixed columns (`precipitation_0`, `precipitation_1`, …). The FI adapter projects `ENSEMBLE` when any `future_known` variable declares it; the operational and conformance paths then fan such a model out over the members (see `services/ensemble_fanout.py`), assembling one N-member ensemble from N single-trajectory predictions. Defaulted to `SINGLE` so native single-trajectory models are unaffected. The hindcast path never fans out (reanalysis is a single teacher-forced trajectory).
 
 Module: `types/model.py`
 

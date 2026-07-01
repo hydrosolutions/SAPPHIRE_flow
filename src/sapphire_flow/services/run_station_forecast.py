@@ -8,11 +8,17 @@ from uuid import UUID  # noqa: TC003
 
 import structlog
 
+from sapphire_flow.services.ensemble_fanout import (
+    ensembles_only,
+    fan_out_ensemble,
+    reject_prior_state_for_fanout,
+    reject_stateful_ensemble_states,
+)
 from sapphire_flow.services.input_quality import assess_input_quality
 from sapphire_flow.services.operational_inputs import (
     OperationalInputMetadata,  # noqa: TC001
 )
-from sapphire_flow.types.enums import ForecastStatus, QcStatus
+from sapphire_flow.types.enums import EnsembleMode, ForecastStatus, QcStatus
 from sapphire_flow.types.forecast import OperationalForecast
 from sapphire_flow.types.ids import (
     FALLBACK_PRIORITY_THRESHOLD,
@@ -122,14 +128,46 @@ def _run_single_model(
 
     artifact_id, artifact_bytes = artifact_result
 
+    is_ensemble = (
+        model.data_requirements.ensemble_mode is EnsembleMode.ENSEMBLE  # type: ignore[union-attr]
+    )
+    if is_ensemble:
+        # INPUT-side complement of the output-side stateful check below: the
+        # fan-out would forward the SAME aggregate ``prior_state`` into every
+        # member's ``predict`` (no way to split one aggregate state per member),
+        # so a stateful ensemble model on the input side is unsupported. Raise
+        # OUTSIDE the ``try`` so it propagates loudly rather than being swallowed
+        # into a graceful "predict failed" string.
+        reject_prior_state_for_fanout(input_metadata.prior_state)
+
+    ensemble_member_states: list[bytes | None] | None = None
     try:
         artifact = model.deserialize_artifact(artifact_bytes)  # type: ignore[union-attr]
-        ensembles, new_state = model.predict(  # type: ignore[union-attr]
-            artifact,
-            inputs,
-            rng,
-            prior_state=input_metadata.prior_state,
-        )
+        if is_ensemble:
+            # Member-suffixed forcing is fanned out into one N-member ensemble.
+            # The fan-out maps ``predict`` over N members; each may return its own
+            # ``new_state``. Capture them for the loud-fail check below.
+            # ``prior_state`` is guaranteed ``None`` here (guard above).
+            predict_fn = ensembles_only(
+                model.predict,  # type: ignore[union-attr]
+                artifact,
+                None,
+            )
+            ensembles = fan_out_ensemble(
+                predict_fn,
+                inputs,
+                rng,
+                future_features=model.data_requirements.future_dynamic_features,  # type: ignore[union-attr]
+            )
+            ensemble_member_states = predict_fn.states
+            new_state = None
+        else:
+            ensembles, new_state = model.predict(  # type: ignore[union-attr]
+                artifact,
+                inputs,
+                rng,
+                prior_state=input_metadata.prior_state,
+            )
     except Exception as exc:
         log.warning(
             "run_station_forecast.predict_failed",
@@ -138,6 +176,13 @@ def _run_single_model(
             error=str(exc),
         )
         return f"predict failed: {exc}"
+
+    # Combining N per-member warm-up states into one aggregate is ill-defined.
+    # Stateless ensemble models (all per-member states ``None``) lose nothing —
+    # report ``new_state = None``. But a NON-None per-member state means a stateful
+    # ensemble model, which is unsupported: fail loudly rather than silently drop.
+    if ensemble_member_states is not None:
+        reject_stateful_ensemble_states(ensemble_member_states)
 
     all_flags: dict[str, list] = {}
     for param, ensemble in ensembles.items():

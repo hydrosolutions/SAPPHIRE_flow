@@ -17,6 +17,7 @@ from sapphire_flow.exceptions import (
 )
 from sapphire_flow.types.enums import (
     ArtifactScope,
+    EnsembleMode,
     EnsembleRepresentation,
     ModelAssignmentStatus,
     OnboardingOutcome,
@@ -36,7 +37,7 @@ from sapphire_flow.types.training import TrainingUnit
 if TYPE_CHECKING:
     import random
     from collections.abc import Callable, Mapping
-    from datetime import timedelta
+    from datetime import datetime, timedelta
 
     from sapphire_flow.config.deployment import DeploymentConfig
     from sapphire_flow.protocols.adapters import WeatherReanalysisSource
@@ -75,6 +76,10 @@ _DELIVERABLE_FI_SPATIAL_TYPES = frozenset(
         SpatialRepresentation.ELEVATION_BAND,
     }
 )
+
+# Ensemble-mode conformance fans the synthetic forcing over this many members
+# unless a caller (e.g. the operational-floor check) requests the floor size.
+_DEFAULT_SYNTHETIC_MEMBERS = 2
 
 
 def validate_compatibility(
@@ -243,6 +248,10 @@ def validate_compatibility_for_unit(
     )
 
 
+def _rand_col(rng: random.Random, n: int) -> list[float]:
+    return [max(0.0, rng.gauss(1.0, 0.5)) for _ in range(n)]
+
+
 def _make_synthetic_station_training_data(
     req: ModelDataRequirements,
     rng: random.Random,
@@ -256,25 +265,28 @@ def _make_synthetic_station_training_data(
     base = datetime(2000, 1, 1, tzinfo=UTC)
     past_ts = [base + i * time_step for i in range(n_past_rows)]
 
-    def _rand_col(n: int) -> list[float]:
-        return [max(0.0, rng.gauss(1.0, 0.5)) for _ in range(n)]
-
     past_targets = pl.DataFrame(
         {"timestamp": past_ts}
-        | {col: _rand_col(n_past_rows) for col in req.target_parameters}
+        | {col: _rand_col(rng, n_past_rows) for col in req.target_parameters}
     )
     past_dynamic = pl.DataFrame(
         {"timestamp": past_ts}
-        | {col: _rand_col(n_past_rows) for col in req.past_dynamic_features}
+        | {col: _rand_col(rng, n_past_rows) for col in req.past_dynamic_features}
     )
     # Future-known forcing is delivered TIMESTAMP-ALIGNED with past_targets (same
     # past_ts), mirroring the real training path (_future_dynamic_from_forcing):
     # a model that fits target[t] ~ forcing[t] must find forcing at every target
     # timestamp. Native models (empty future_dynamic_features) get a timestamp-only
     # frame, unchanged in behaviour.
+    #
+    # Training data is a single BARE trajectory (bare column per feature, no member
+    # suffixes) — the exact shape real reanalysis/training data has (member_id=None).
+    # Member-suffixed forcing is an operational PREDICT-time construct and is built
+    # separately for the fan-out (see _make_member_suffixed_predict_forcing); it is
+    # never handed to train(), so a schema-strict ensemble model is not mis-trained.
     future_dynamic = pl.DataFrame(
         {"timestamp": past_ts}
-        | {col: _rand_col(n_past_rows) for col in req.future_dynamic_features}
+        | {col: _rand_col(rng, n_past_rows) for col in req.future_dynamic_features}
     )
     static: pl.DataFrame | None = None
     if req.static_features:
@@ -288,6 +300,28 @@ def _make_synthetic_station_training_data(
         time_step=time_step,
         val_start=None,
     )
+
+
+def _make_member_suffixed_predict_forcing(
+    req: ModelDataRequirements,
+    timestamps: list[datetime],
+    rng: random.Random,
+    ensemble_member_count: int,
+) -> pl.DataFrame:
+    """Build a member-suffixed future-forcing frame for the ensemble PREDICT fan-out.
+
+    Ensemble-mode models are fanned out over member-suffixed forcing columns
+    (``precipitation_0``, ``precipitation_1``, …), each member independently
+    randomized. This frame feeds ONLY ``fan_out_ensemble`` — it is never passed to
+    ``train()`` (real training data is a single bare trajectory).
+    """
+    n = len(timestamps)
+    columns: dict[str, list[float]] = {
+        f"{col}_{member}": _rand_col(rng, n)
+        for col in req.future_dynamic_features
+        for member in range(ensemble_member_count)
+    }
+    return pl.DataFrame({"timestamp": timestamps} | columns)
 
 
 def _make_synthetic_group_training_data(
@@ -379,7 +413,11 @@ def assert_operational_floors(
     rng.seed(_synthetic_run_seed(req))
 
     try:
-        _, ensembles = _run_synthetic_train_predict(model, rng)
+        _, ensembles = _run_synthetic_train_predict(
+            model,
+            rng,
+            ensemble_member_count=config.min_operational_ensemble_size,
+        )
         _validate_synthetic_ensembles(ensembles, req.target_parameters)
         _assert_synthetic_ensembles_meet_operational_floors(ensembles, config)
     except ModelSmokeTestError:
@@ -393,6 +431,7 @@ def assert_operational_floors(
 def _run_synthetic_train_predict(
     model: ForecastModel,
     rng: random.Random,
+    ensemble_member_count: int = _DEFAULT_SYNTHETIC_MEMBERS,
 ) -> tuple[
     bytes,
     dict[str, ForecastEnsemble] | dict[StationId, dict[str, ForecastEnsemble]],
@@ -400,6 +439,11 @@ def _run_synthetic_train_predict(
     from sapphire_flow.protocols.forecast_model import (
         GroupForecastModel,
         StationForecastModel,
+    )
+    from sapphire_flow.services.ensemble_fanout import (
+        ensembles_only,
+        fan_out_ensemble,
+        reject_stateful_ensemble_states,
     )
 
     req = model.data_requirements
@@ -445,12 +489,54 @@ def _run_synthetic_train_predict(
             raise ModelSmokeTestError(
                 "STATION-scoped model does not implement StationForecastModel"
             )
+        # Training data is a single BARE trajectory (no member suffixes) — the
+        # real training/reanalysis shape. train() must never see member-suffixed
+        # predict-only columns.
         data = _make_synthetic_station_training_data(req, rng, n_past_rows=n_past)
         artifact = model.train(data, {}, rng)
         raw_bytes = model.serialize_artifact(artifact)
         reloaded = model.deserialize_artifact(raw_bytes)
 
         from sapphire_flow.types.model import StationInputData, StationModelInputs
+
+        if req.ensemble_mode is EnsembleMode.ENSEMBLE:
+            # Build a SEPARATE member-suffixed forcing frame for the predict
+            # fan-out ONLY — train() above received the bare single-trajectory
+            # shape. Fanning this out yields an N-member ensemble so the
+            # operational floor observes N members even though the model emits
+            # one deterministic trajectory per member.
+            predict_forcing = _make_member_suffixed_predict_forcing(
+                req,
+                data.future_dynamic["timestamp"].to_list(),
+                rng,
+                ensemble_member_count,
+            )
+            inputs = StationModelInputs(
+                station_id=_station_id_from_rng(rng),
+                data=StationInputData(
+                    past_targets=data.past_targets,
+                    past_dynamic=data.past_dynamic,
+                    future_dynamic=predict_forcing,
+                    static=data.static,
+                ),
+                issue_time=issue_time,
+                forecast_horizon_steps=min(
+                    req.forecast_horizon_steps, len(predict_forcing)
+                ),
+                time_step=time_step,
+            )
+            predict_fn = ensembles_only(model.predict, reloaded)
+            ensembles = fan_out_ensemble(
+                predict_fn,
+                inputs,
+                rng,
+                future_features=req.future_dynamic_features,
+            )
+            # Mirror the operational fan-out: a stateful ensemble model (any
+            # non-``None`` per-member state) is unsupported and must be rejected
+            # at the gate, not just operationally.
+            reject_stateful_ensemble_states(predict_fn.states)
+            return raw_bytes, ensembles
 
         inputs = StationModelInputs(
             station_id=_station_id_from_rng(rng),
