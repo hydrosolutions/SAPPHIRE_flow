@@ -340,6 +340,21 @@ def _run_onboarding(
                 status=WeatherSourceStatus.ACTIVE,
             )
             station_store.store_weather_source(ws)
+
+            # M3: bind non-weather river stations to the operational ICON forcing
+            # path (icon_ch2_eps / BASIN_AVERAGE) alongside the camels-ch / POINT
+            # reanalysis binding. Weather stations are forcing SOURCES, not
+            # forecast targets, so they get no ICON binding.
+            station = station_store.fetch_station(station_id)
+            if station is not None and station.station_kind != StationKind.WEATHER:
+                station_store.store_weather_source(
+                    StationWeatherSource(
+                        station_id=station_id,
+                        nwp_source="icon_ch2_eps",
+                        extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+                        status=WeatherSourceStatus.ACTIVE,
+                    )
+                )
         except Exception as exc:
             log.warning(
                 "weather_source_store_error",

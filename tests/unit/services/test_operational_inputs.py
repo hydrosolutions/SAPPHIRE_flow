@@ -1,9 +1,15 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from collections import defaultdict
+from datetime import UTC, date, datetime, timedelta
 from uuid import uuid4
 
+import pytest
+
 from sapphire_flow.services.operational_inputs import (
+    _aggregate_nwp_records_to_time_step,
+    _AggregatedNwpPoint,
+    _filter_and_cap_daily_records,
     assemble_station_operational_inputs,
 )
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
@@ -426,3 +432,162 @@ class TestAssembleStationOperationalInputs:
         assert result is not None
         inputs, _ = result
         assert inputs.data.past_dynamic.is_empty()
+
+
+# --------------------------------------------------------------------------- #
+# M3: hourly per-member ICON forcing -> DAILY aggregation before the pivot.
+#
+# Precip aggregates by SUM, temperature by MEAN, keyed on (parameter, member_id,
+# UTC-calendar-day). All 21 members are preserved; buckets sit on UTC midnight.
+# RED until assemble_station_operational_inputs aggregates the hourly future block
+# to the model's daily time_step.
+# --------------------------------------------------------------------------- #
+
+_AGG_CYCLE = ensure_utc(datetime(2026, 1, 9, 20, tzinfo=UTC))
+_AGG_MEMBERS = 21  # ICON-CH2-EPS member_id 0..20
+# Two UTC days plus a partial first day (22:00, 23:00) and a partial last day.
+_AGG_HOURS: list[datetime] = (
+    [datetime(2026, 1, 9, h, tzinfo=UTC) for h in (22, 23)]
+    + [datetime(2026, 1, 10, h, tzinfo=UTC) for h in range(24)]
+    + [datetime(2026, 1, 11, h, tzinfo=UTC) for h in (0, 1, 2)]
+)
+
+
+def _agg_precip(member: int, hour: int) -> float:
+    # Distinct per member AND per hour so SUM is not confusable with count/mean.
+    return float(member) * 100.0 + float(hour) + 1.0
+
+
+def _agg_temp(member: int, hour: int) -> float:
+    return float(member) * 10.0 + float(hour) * 0.5
+
+
+def _hourly_ensemble_records(station_id: StationId) -> list[WeatherForecastRecord]:
+    records: list[WeatherForecastRecord] = []
+    for ts in _AGG_HOURS:
+        vt = ensure_utc(ts)
+        for m in range(_AGG_MEMBERS):
+            records.append(
+                WeatherForecastRecord(
+                    id=uuid4(),
+                    station_id=station_id,
+                    nwp_source=_NWP_SOURCE,
+                    cycle_time=_AGG_CYCLE,
+                    valid_time=vt,
+                    parameter="precipitation",
+                    spatial_type=SpatialRepresentation.BASIN_AVERAGE,
+                    band_id=None,
+                    member_id=m,
+                    value=_agg_precip(m, ts.hour),
+                    created_at=_NOW,
+                )
+            )
+            records.append(
+                WeatherForecastRecord(
+                    id=uuid4(),
+                    station_id=station_id,
+                    nwp_source=_NWP_SOURCE,
+                    cycle_time=_AGG_CYCLE,
+                    valid_time=vt,
+                    parameter="temperature",
+                    spatial_type=SpatialRepresentation.BASIN_AVERAGE,
+                    band_id=None,
+                    member_id=m,
+                    value=_agg_temp(m, ts.hour),
+                    created_at=_NOW,
+                )
+            )
+    return records
+
+
+def _expected_daily() -> tuple[
+    dict[tuple[date, int], float], dict[tuple[date, int], float]
+]:
+    """Independent oracle: plain-Python per-(day, member) precip SUM + temp MEAN."""
+    precip_sum: dict[tuple[date, int], float] = defaultdict(float)
+    temp_vals: dict[tuple[date, int], list[float]] = defaultdict(list)
+    for ts in _AGG_HOURS:
+        day = date(ts.year, ts.month, ts.day)
+        for m in range(_AGG_MEMBERS):
+            precip_sum[(day, m)] += _agg_precip(m, ts.hour)
+            temp_vals[(day, m)].append(_agg_temp(m, ts.hour))
+    temp_mean = {key: sum(vals) / len(vals) for key, vals in temp_vals.items()}
+    return dict(precip_sum), temp_mean
+
+
+class TestHourlyToDailyNwpAggregation:
+    def test_hourly_members_aggregate_to_daily_sum_and_mean(self) -> None:
+        # Exercise the raw aggregation directly (unfiltered) so the SUM/MEAN math
+        # is asserted without entangling the separate future-filter/cap step
+        # (which is covered by TestFutureFilterAndCap). All three UTC-calendar-day
+        # buckets are present here (partial first + full + partial last).
+        sid = StationId(uuid4())
+        points = _aggregate_nwp_records_to_time_step(
+            _hourly_ensemble_records(sid), timedelta(days=1)
+        )
+
+        # Three daily buckets on UTC midnight, all 21 members, both parameters.
+        buckets = sorted({p.valid_time for p in points})
+        assert buckets == [
+            ensure_utc(datetime(2026, 1, 9, tzinfo=UTC)),
+            ensure_utc(datetime(2026, 1, 10, tzinfo=UTC)),
+            ensure_utc(datetime(2026, 1, 11, tzinfo=UTC)),
+        ]
+        assert {p.member_id for p in points} == set(range(_AGG_MEMBERS))
+        assert {p.parameter for p in points} == {"precipitation", "temperature"}
+
+        # Known-answer: precip = per-day SUM, temperature = per-day MEAN, per member.
+        precip_sum, temp_mean = _expected_daily()
+        by_key: dict[tuple[date, int | None, str], float] = {}
+        for p in points:
+            vt = p.valid_time
+            key = (date(vt.year, vt.month, vt.day), p.member_id, p.parameter)
+            by_key[key] = p.value
+
+        for (day, m), expected in precip_sum.items():
+            assert by_key[(day, m, "precipitation")] == pytest.approx(expected)
+        for (day, m), expected in temp_mean.items():
+            assert by_key[(day, m, "temperature")] == pytest.approx(expected)
+
+
+class TestFutureFilterAndCap:
+    """Fix 2: a non-midnight cycle backdates the UTC-midnight issue-day bucket to
+    ``<= issue_time``; ``_filter_and_cap_daily_records`` drops those and caps to
+    ``forecast_horizon_steps``, applied identically across every member."""
+
+    def _daily_points(self) -> list[_AggregatedNwpPoint]:
+        sid = StationId(uuid4())
+        return _aggregate_nwp_records_to_time_step(
+            _hourly_ensemble_records(sid), timedelta(days=1)
+        )
+
+    def test_drops_backdated_buckets_and_caps_to_horizon(self) -> None:
+        # Non-midnight cycle: issue_time inside the 2026-01-10 UTC day. The
+        # backdated 01-09 and 01-10 midnight buckets are <= issue_time and drop;
+        # only future buckets survive. Horizon of 1 keeps exactly one.
+        issue_time = ensure_utc(datetime(2026, 1, 10, 6, tzinfo=UTC))
+        kept = _filter_and_cap_daily_records(
+            self._daily_points(), issue_time=issue_time, forecast_horizon_steps=1
+        )
+
+        kept_times = sorted({p.valid_time for p in kept})
+        assert kept_times == [ensure_utc(datetime(2026, 1, 11, tzinfo=UTC))]
+        # No bucket at or before issue_time survives.
+        assert all(p.valid_time > issue_time for p in kept)
+        # The SAME bucket set is retained for every ensemble member.
+        assert {p.member_id for p in kept} == set(range(_AGG_MEMBERS))
+
+    def test_cap_keeps_earliest_n_future_buckets_all_members(self) -> None:
+        # issue_time before all buckets => every bucket is "future"; horizon caps
+        # to the earliest N. Two future buckets requested -> the first two days.
+        issue_time = ensure_utc(datetime(2026, 1, 8, 12, tzinfo=UTC))
+        kept = _filter_and_cap_daily_records(
+            self._daily_points(), issue_time=issue_time, forecast_horizon_steps=2
+        )
+
+        kept_times = sorted({p.valid_time for p in kept})
+        assert kept_times == [
+            ensure_utc(datetime(2026, 1, 9, tzinfo=UTC)),
+            ensure_utc(datetime(2026, 1, 10, tzinfo=UTC)),
+        ]
+        assert {p.member_id for p in kept} == set(range(_AGG_MEMBERS))
