@@ -192,6 +192,47 @@ class TestValidateCompatibility:
         )
         assert report.is_compatible  # type: ignore[union-attr]
 
+    def test_future_dynamic_compatible_when_nwp_available(self) -> None:
+        """M2 (Fix #2 gate): an NWP model declares precip/temp as future forcing
+        with discharge as target history (NOT past forcing). When precip/temp are
+        in available_nwp_parameters, the model is compatible — discharge does not
+        appear in missing_past, and there is no missing_future.
+        """
+        model = _make_model_with_reqs(
+            past_dynamic=frozenset(),
+            future_dynamic=frozenset({"precipitation", "temperature"}),
+        )
+        report = self._call(
+            model,
+            station_forecast_targets=frozenset({"discharge"}),
+            available_features=frozenset({"precipitation", "temperature"}),
+            available_static=frozenset(),
+            time_step=timedelta(days=1),
+        )
+        assert report.is_compatible  # type: ignore[union-attr]
+        assert "discharge" not in report.missing_past_dynamic  # type: ignore[union-attr]
+        assert not report.missing_past_dynamic  # type: ignore[union-attr]
+        assert not report.missing_future_dynamic  # type: ignore[union-attr]
+
+    def test_missing_future_dynamic_when_nwp_absent(self) -> None:
+        """The config gate still works: precip/temp absent from
+        available_nwp_parameters → reported as missing_future_dynamic.
+        """
+        model = _make_model_with_reqs(
+            past_dynamic=frozenset(),
+            future_dynamic=frozenset({"precipitation", "temperature"}),
+        )
+        report = self._call(
+            model,
+            station_forecast_targets=frozenset({"discharge"}),
+            available_features=frozenset(),
+            available_static=frozenset(),
+            time_step=timedelta(days=1),
+        )
+        assert not report.is_compatible  # type: ignore[union-attr]
+        assert "precipitation" in report.missing_future_dynamic  # type: ignore[union-attr]
+        assert "temperature" in report.missing_future_dynamic  # type: ignore[union-attr]
+
 
 class TestSmokeTestModel:
     def test_passes_for_valid_model(self) -> None:
@@ -208,6 +249,32 @@ class TestSmokeTestModel:
         rng = random.Random(7)
         with pytest.raises(ModelSmokeTestError, match="training exploded"):
             smoke_test_model(model=model, rng=rng)
+
+
+class TestAssertModelConformsFutureForcing:
+    """Regression (epic-088 M2): the conformance suite's synthetic training data
+    must deliver future-known forcing TIMESTAMP-ALIGNED with past_targets. A
+    future-forcing model fits target[t] ~ forcing[t] and looks up forcing at every
+    target timestamp; disjoint synthetic timestamps raised KeyError → FAILED_SMOKE_TEST.
+    """
+
+    @pytest.mark.parametrize("model_cls", ["NwpRegression", "NwpRainfallRunoff"])
+    def test_adapter_wrapped_future_forcing_model_conforms(
+        self, model_cls: str
+    ) -> None:
+        from sapphire_flow.adapters.forecast_interface import adapt_if_fi
+        from sapphire_flow.models import nwp_regression
+        from sapphire_flow.services.model_onboarding import assert_model_conforms
+
+        model = getattr(nwp_regression, model_cls)()
+        adapter = adapt_if_fi(model)
+        # Sanity: it really is a future-forcing model (precip/temp future-known).
+        assert adapter.data_requirements.future_dynamic_features == frozenset(  # type: ignore[union-attr]
+            {"precipitation", "temperature"}
+        )
+        # Trains + serializes + predicts through SAP3's protocol surface without
+        # KeyError; determinism check runs the synthetic pipeline twice.
+        assert_model_conforms(adapter, random.Random(1))  # type: ignore[arg-type]
 
 
 class TestEvaluateSkillGate:

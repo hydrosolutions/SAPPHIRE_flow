@@ -226,6 +226,63 @@ def reference_fi_input_requirement() -> fi_boundary.InputRequirement:
     )
 
 
+M2_FI_STEP = timedelta(hours=24)
+M2_FI_HORIZON = 5
+
+
+def m2_fi_input_requirement() -> fi_boundary.InputRequirement:
+    """M2 scenario requirement.
+
+    discharge is BOTH a ``target`` and its own ``past_known`` history;
+    precipitation + temperature are ``future_known`` forcing. This exercises the
+    projection contract that target history must NOT leak into
+    ``past_dynamic_features``.
+    """
+    return fi_boundary.InputRequirement(
+        targets={
+            "discharge": fi_boundary.TargetSpec(
+                unit=fi_boundary.Unit.M3_PER_S,
+                representations=frozenset(
+                    {fi_boundary.OutputRepresentation.DETERMINISTIC}
+                ),
+            )
+        },
+        dynamic={
+            M2_FI_STEP: fi_boundary.SpatialInputSpec(
+                data={
+                    fi_boundary.FISpatialRepresentation.POINT: (
+                        fi_boundary.DynamicInputSpec(
+                            past_known={
+                                "obs": {
+                                    "discharge": fi_boundary.PastKnownVariable(
+                                        lookback=7,
+                                        max_nan=0,
+                                        unit=fi_boundary.Unit.M3_PER_S,
+                                    )
+                                }
+                            },
+                            future_known={
+                                "nwp": {
+                                    "precipitation": fi_boundary.FutureKnownVariable(
+                                        future_steps=M2_FI_HORIZON,
+                                        max_nan=0,
+                                        unit=fi_boundary.Unit.MM,
+                                    ),
+                                    "temperature": fi_boundary.FutureKnownVariable(
+                                        future_steps=M2_FI_HORIZON,
+                                        max_nan=0,
+                                        unit=fi_boundary.Unit.DEG_C,
+                                    ),
+                                }
+                            },
+                        )
+                    )
+                }
+            )
+        },
+    )
+
+
 def _station_offset(station_key: str) -> float:
     return float(sum(ord(char) for char in station_key) % 100)
 

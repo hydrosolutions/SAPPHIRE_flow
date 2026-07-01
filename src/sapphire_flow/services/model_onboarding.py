@@ -247,7 +247,6 @@ def _make_synthetic_station_training_data(
     req: ModelDataRequirements,
     rng: random.Random,
     n_past_rows: int = 50,
-    n_future_rows: int = 10,
 ) -> StationTrainingData:
     from datetime import datetime
 
@@ -256,7 +255,6 @@ def _make_synthetic_station_training_data(
     time_step = next(iter(req.supported_time_steps))
     base = datetime(2000, 1, 1, tzinfo=UTC)
     past_ts = [base + i * time_step for i in range(n_past_rows)]
-    future_ts = [base + (n_past_rows + i) * time_step for i in range(n_future_rows)]
 
     def _rand_col(n: int) -> list[float]:
         return [max(0.0, rng.gauss(1.0, 0.5)) for _ in range(n)]
@@ -269,9 +267,14 @@ def _make_synthetic_station_training_data(
         {"timestamp": past_ts}
         | {col: _rand_col(n_past_rows) for col in req.past_dynamic_features}
     )
+    # Future-known forcing is delivered TIMESTAMP-ALIGNED with past_targets (same
+    # past_ts), mirroring the real training path (_future_dynamic_from_forcing):
+    # a model that fits target[t] ~ forcing[t] must find forcing at every target
+    # timestamp. Native models (empty future_dynamic_features) get a timestamp-only
+    # frame, unchanged in behaviour.
     future_dynamic = pl.DataFrame(
-        {"timestamp": future_ts}
-        | {col: _rand_col(n_future_rows) for col in req.future_dynamic_features}
+        {"timestamp": past_ts}
+        | {col: _rand_col(n_past_rows) for col in req.future_dynamic_features}
     )
     static: pl.DataFrame | None = None
     if req.static_features:
@@ -292,7 +295,6 @@ def _make_synthetic_group_training_data(
     rng: random.Random,
     n_stations: int = 3,
     n_past_rows: int = 50,
-    n_future_rows: int = 10,
 ) -> GroupTrainingData:
     from datetime import datetime
 
@@ -301,7 +303,6 @@ def _make_synthetic_group_training_data(
     time_step = next(iter(req.supported_time_steps))
     base = datetime(2000, 1, 1, tzinfo=UTC)
     past_ts = [base + i * time_step for i in range(n_past_rows)]
-    future_ts = [base + (n_past_rows + i) * time_step for i in range(n_future_rows)]
     # StationId is a UUID NewType; the stacked-frame "station_id" column must
     # equal str(sid) so GroupTrainingData.for_station can slice by station.
     station_ids = tuple(_station_id_from_rng(rng) for _ in range(n_stations))
@@ -334,7 +335,9 @@ def _make_synthetic_group_training_data(
         station_ids=station_ids,
         past_targets=_stacked_df(req.target_parameters, past_ts),
         past_dynamic=_stacked_df(req.past_dynamic_features, past_ts),
-        future_dynamic=_stacked_df(req.future_dynamic_features, future_ts),
+        # Future-known forcing TIMESTAMP-ALIGNED with past_targets (past_ts), so a
+        # model fitting target[t] ~ forcing[t] finds forcing at every target time.
+        future_dynamic=_stacked_df(req.future_dynamic_features, past_ts),
         static=static,
         time_step=time_step,
         val_start=None,
@@ -400,10 +403,10 @@ def _run_synthetic_train_predict(
     )
 
     req = model.data_requirements
-    # Past needs lookback + horizon rows; future IS the horizon.
+    # Past needs lookback + horizon rows; future forcing is delivered aligned to
+    # these same past_ts rows (see _make_synthetic_*_training_data).
     smoke_horizon = max(req.forecast_horizon_steps, 10)
     n_past = req.lookback_steps + smoke_horizon + 10
-    n_future = smoke_horizon
     time_step = next(iter(req.supported_time_steps))
     issue_time = _synthetic_issue_time(time_step, n_past)
 
@@ -412,9 +415,7 @@ def _run_synthetic_train_predict(
             raise ModelSmokeTestError(
                 "GROUP-scoped model does not implement GroupForecastModel"
             )
-        data = _make_synthetic_group_training_data(
-            req, rng, n_past_rows=n_past, n_future_rows=n_future
-        )
+        data = _make_synthetic_group_training_data(req, rng, n_past_rows=n_past)
         artifact = model.train(data, {}, rng)
         raw_bytes = model.serialize_artifact(artifact)
         reloaded = model.deserialize_artifact(raw_bytes)
@@ -444,9 +445,7 @@ def _run_synthetic_train_predict(
             raise ModelSmokeTestError(
                 "STATION-scoped model does not implement StationForecastModel"
             )
-        data = _make_synthetic_station_training_data(
-            req, rng, n_past_rows=n_past, n_future_rows=n_future
-        )
+        data = _make_synthetic_station_training_data(req, rng, n_past_rows=n_past)
         artifact = model.train(data, {}, rng)
         raw_bytes = model.serialize_artifact(artifact)
         reloaded = model.deserialize_artifact(raw_bytes)

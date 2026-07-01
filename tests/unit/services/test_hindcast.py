@@ -1075,6 +1075,137 @@ class TestConnectionFatalAbort:
             )
 
 
+class _RecordingReanalysisSource(FakeWeatherReanalysisSource):
+    """Reanalysis source that records the parameters each fetch requests."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.requested_parameters: list[list[str]] = []
+
+    def fetch_reanalysis(
+        self,
+        station_configs: list[StationWeatherSource],
+        start: UtcDatetime,
+        end: UtcDatetime,
+        parameters: list[str],
+    ) -> list:
+        self.requested_parameters.append(list(parameters))
+        return super().fetch_reanalysis(station_configs, start, end, parameters)
+
+
+class _FutureForcingModel:
+    """STATION model whose forcing is future-known only (past_dynamic empty).
+
+    Mirrors the M2 NWP models: precip/temp are future_dynamic_features, so the
+    hindcast reanalysis fetch must union past+future features (P1) or
+    future_dynamic ends up empty.
+    """
+
+    from sapphire_flow.types.enums import ArtifactScope as _ArtifactScope
+    from sapphire_flow.types.model import ModelDataRequirements as _Reqs
+
+    artifact_scope = _ArtifactScope.STATION
+    data_requirements = _Reqs(
+        target_parameters=frozenset({"discharge"}),
+        past_dynamic_features=frozenset(),
+        future_dynamic_features=frozenset({"precipitation", "temperature"}),
+        static_features=frozenset(),
+        supported_time_steps=frozenset({timedelta(hours=1), timedelta(hours=24)}),
+        lookback_steps=720,
+        forecast_horizon_steps=5,
+        spatial_input_type=SpatialRepresentation.POINT,
+    )
+
+    def __init__(self) -> None:
+        self.calls: list[StationModelInputs] = []
+
+    def predict(
+        self,
+        artifact: ModelArtifact,
+        inputs: StationModelInputs,
+        rng: random.Random,
+        prior_state: bytes | None = None,
+    ) -> tuple:
+        self.calls.append(inputs)
+        return FakeStationForecastModel().predict(artifact, inputs, rng, prior_state)
+
+    def serialize_artifact(self, artifact: ModelArtifact) -> bytes:
+        return b""
+
+    def deserialize_artifact(self, raw: bytes) -> ModelArtifact:
+        return raw
+
+
+class TestFutureForcingFetched:
+    """P1: hindcast must fetch future-known forcing from reanalysis.
+
+    For a model whose precip/temp are ``future_dynamic_features`` (empty
+    ``past_dynamic_features``), the reanalysis fetch must request those features
+    and the assembled input must carry a NON-EMPTY ``future_dynamic``.
+    """
+
+    def test_reanalysis_fetches_future_features_and_populates_future_dynamic(
+        self,
+    ) -> None:
+        rng = random.Random(0)
+        station = make_station_config()
+        sid = station.id
+        model_id = ModelId("future_forcing_model")
+        artifact_id = ArtifactId(uuid4())
+        run_id = uuid4()
+
+        obs_store = FakeObservationStore()
+        hindcast_store = FakeHindcastStore()
+        station_store = FakeStationStore()
+        basin_store = FakeBasinStore()
+        forcing_source = _RecordingReanalysisSource()
+
+        station_store.store_station(station)
+        station_store.store_weather_source(_make_weather_source(sid))
+
+        data_start = ensure_utc(datetime(2021, 1, 1, tzinfo=UTC))
+        _seed_observations(obs_store, sid, data_start, n_days=400)
+        _seed_forcing(forcing_source, sid, data_start, n_days=400)
+
+        model = _FutureForcingModel()
+
+        results = run_station_hindcast(
+            model=model,
+            artifact=b"artifact",
+            station_id=sid,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            period_start=_PERIOD_START,
+            period_end=_PERIOD_END,
+            time_step=_STEP,
+            forcing_source=forcing_source,
+            obs_store=obs_store,
+            hindcast_store=hindcast_store,
+            station_store=station_store,
+            basin_store=basin_store,
+            clock=_fixed_clock,
+            rng=rng,
+            hindcast_run_id=run_id,
+            forecast_horizon_steps=5,
+        )
+
+        assert all(r.success for r in results)
+
+        # Reanalysis was asked for the future-known forcing, NOT the target.
+        assert forcing_source.requested_parameters == [["precipitation", "temperature"]]
+        assert all(
+            "discharge" not in params for params in forcing_source.requested_parameters
+        )
+
+        # Every assembled input carries a non-empty future_dynamic with precip/temp.
+        assert model.calls, "predict was never called"
+        for inputs in model.calls:
+            future = inputs.data.future_dynamic
+            assert not future.is_empty(), "future_dynamic is empty"
+            assert {"precipitation", "temperature"} <= set(future.columns)
+            assert (future["timestamp"] > inputs.issue_time).all()
+
+
 class TestGroupHindcastUsesGroupModelInputs:
     def test_predict_batch_receives_group_model_inputs(self) -> None:
         from sapphire_flow.types.model import GroupModelInputs

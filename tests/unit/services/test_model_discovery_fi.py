@@ -123,7 +123,8 @@ def test_adapt_if_fi_wraps_raw_fi_model_and_projects_sap3_contract() -> None:
     assert isinstance(adapted, fi_boundary.ForecastInterfaceAdapter)
     assert adapted.artifact_scope is ArtifactScope.GROUP
     assert adapted.data_requirements.target_parameters == frozenset({"discharge"})
-    assert adapted.data_requirements.past_dynamic_features == frozenset({"discharge"})
+    # discharge is the target → excluded from the forcing channel (past_targets).
+    assert adapted.data_requirements.past_dynamic_features == frozenset()
     assert adapted.data_requirements.future_dynamic_features == frozenset(
         {"precipitation"}
     )
@@ -153,3 +154,47 @@ def test_adapt_if_fi_raises_loudly_for_fi_version_mismatch(
             RawFIForecastModel(),
             station_code_resolver=_station_code_resolver,
         )
+
+
+def test_adapt_if_fi_attaches_resolver_to_already_wrapped_group_adapter() -> None:
+    # Regression for the discovery-wrapping P2: discover_models() wraps GROUP FI
+    # models with station_code_resolver=None. onboard_model_flow then calls
+    # adapt_if_fi(discovered, station_code_resolver=...) — this must ATTACH the
+    # resolver to the already-wrapped adapter, not drop it. Without the resolver,
+    # the GROUP train/predict path raises "station_code_resolver required".
+    from uuid import uuid4
+
+    from sapphire_flow.types.ids import StationId
+
+    wrapped = fi_boundary.adapt_if_fi(
+        RawFIForecastModel(fi_boundary.FIArtifactScope.GROUP)
+    )
+    assert isinstance(wrapped, fi_boundary.ForecastInterfaceAdapter)
+
+    sid = StationId(uuid4())
+    # Before attaching: the GROUP code-resolution path is unusable.
+    with pytest.raises(ConfigurationError, match="station_code_resolver required"):
+        wrapped._station_code(sid)  # noqa: SLF001
+
+    reattached = fi_boundary.adapt_if_fi(
+        wrapped, station_code_resolver=_station_code_resolver
+    )
+    # Same adapter instance, now carrying the resolver.
+    assert reattached is wrapped
+    assert reattached._station_code(sid) == f"station-{sid}"  # noqa: SLF001
+
+
+def test_discover_models_wraps_fi_entry_points() -> None:
+    # Regression for the discovery-wrapping P1: the M2 NWP models are FI models
+    # registered as entry points. discover_models() must return them
+    # adapter-wrapped (exposing the SAP3 `data_requirements` boundary) — callers
+    # that do NOT separately adapt_if_fi (e.g. train_models_flow) would otherwise
+    # get a raw FI object exposing only `input_requirement` and fail.
+    from sapphire_flow.services.model_registry import discover_models
+    from sapphire_flow.types.ids import ModelId
+
+    discovered = discover_models()
+    for name in ("nwp_regression", "nwp_rainfall_runoff"):
+        model = discovered[ModelId(name)]
+        assert isinstance(model, fi_boundary.ForecastInterfaceAdapter)
+        assert model.data_requirements.target_parameters == frozenset({"discharge"})

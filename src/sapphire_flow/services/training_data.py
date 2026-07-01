@@ -174,7 +174,9 @@ def assemble_station_training_data(
         )
         return None
 
-    required_features = list(model.data_requirements.past_dynamic_features)
+    past_features = model.data_requirements.past_dynamic_features
+    future_features = model.data_requirements.future_dynamic_features
+    required_features = sorted(past_features | future_features)
     if required_features:
         weather_sources = station_store.fetch_weather_sources(station_id)
         if not weather_sources:
@@ -198,7 +200,7 @@ def assemble_station_training_data(
         forcing_df = pl.DataFrame(schema={"timestamp": pl.Datetime("us", "UTC")})
 
     forcing_columns = set(forcing_df.columns) - {"timestamp"}
-    missing_features = model.data_requirements.past_dynamic_features - forcing_columns
+    missing_features = (past_features | future_features) - forcing_columns
     if missing_features:
         log.warning(
             "training_data.missing_features",
@@ -235,17 +237,56 @@ def assemble_station_training_data(
     past_targets_df = resample_to_time_step(
         past_targets_df, time_step, aggregation_methods=None
     )
-    # For training data, all forcing is historical — future_dynamic is empty
-    # (same schema as past_dynamic but zero rows).
-    future_dynamic_df = forcing_df.clear()
+
+    # Past-known forcing features are delivered as history (past_dynamic); the
+    # future-known forcing (e.g. NWP precip/temp) is delivered into future_dynamic,
+    # timestamp-aligned to past_targets. The discharge target stays in past_targets.
+    past_dynamic_df = _select_feature_columns(forcing_df, past_features)
+    future_dynamic_df = _future_dynamic_from_forcing(
+        forcing_df=forcing_df,
+        future_features=future_features,
+        past_targets=past_targets_df,
+        time_step=time_step,
+    )
 
     return StationTrainingData(
         past_targets=past_targets_df,
-        past_dynamic=forcing_df,
+        past_dynamic=past_dynamic_df,
         future_dynamic=future_dynamic_df,
         static=static_attributes,
         time_step=time_step,
         val_start=None,
+    )
+
+
+def _select_feature_columns(
+    forcing_df: pl.DataFrame, features: frozenset[str]
+) -> pl.DataFrame:
+    columns = ["timestamp", *sorted(features)]
+    return forcing_df.select([c for c in columns if c in forcing_df.columns])
+
+
+def _future_dynamic_from_forcing(
+    *,
+    forcing_df: pl.DataFrame,
+    future_features: frozenset[str],
+    past_targets: pl.DataFrame,
+    time_step: timedelta,
+) -> pl.DataFrame:
+    if not future_features:
+        return forcing_df.select("timestamp").clear()
+
+    future_cols = sorted(future_features)
+    future_forcing = resample_to_time_step(
+        forcing_df.select(["timestamp", *future_cols]),
+        time_step,
+        aggregation_methods=None,
+    ).with_columns(pl.col("timestamp").cast(pl.Datetime("us", "UTC")))
+
+    return (
+        past_targets.select(pl.col("timestamp").cast(pl.Datetime("us", "UTC")))
+        .join(future_forcing, on="timestamp", how="left")
+        .sort("timestamp")
     )
 
 
