@@ -515,6 +515,7 @@ def _run_onboarding(
         and forcing_source is not None
         and deployment_config is not None
     ):
+        from sapphire_flow.config.deployment import DEFAULT_PRIORITY
         from sapphire_flow.services.model_onboarding import (
             determine_onboarding_scope,
             onboard_model,
@@ -600,6 +601,15 @@ def _run_onboarding(
                     training_period_end=end_utc,
                     time_step=time_step,
                 )
+                # Resolve the SAME config-driven priority Step 6 uses, so the
+                # assignment written on artifact promotion does not regress to the
+                # default 0 (Plan 089). The Step 7 guard ensures deployment_config
+                # is not None; DEFAULT_PRIORITY is a belt-and-suspenders fallback.
+                priority = (
+                    deployment_config.priority_for_model(str(model_id))
+                    if deployment_config is not None
+                    else DEFAULT_PRIORITY
+                )
                 result_mo = onboard_model(
                     model_id=model_id,
                     model=model,
@@ -617,6 +627,7 @@ def _run_onboarding(
                     config=deployment_config,
                     clock=clock,
                     rng=_random.Random(42),
+                    assignment_priority=priority,
                     skip_smoke_test=True,
                     run_hindcast_fn=_make_hindcast_fn(),
                     compute_skill_fn=_make_skill_fn(),

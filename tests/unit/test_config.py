@@ -172,3 +172,37 @@ class TestDeploymentConfig:
         assert config.skill_interpretation[0].metric == "crpss"
         assert len(config.skill_interpretation[0].bands) == 5
         assert config.paths_data_dir == "/tmp/sapphire-test-data"
+
+    def test_config_reference_scalars_not_nested_under_tables(self) -> None:
+        """Plan 089 review: a [table] before top-level scalars silently nests
+        them (tomllib). Assert the documented scalars survive at top level and
+        keep their documented values (regression for the [input_quality] misorder
+        that made default_display_timezone load as "UTC")."""
+        import tomllib
+        from pathlib import Path as _Path
+
+        ref = _Path(__file__).parents[2] / "docs" / "spec" / "config-reference.toml"
+        with ref.open("rb") as fh:
+            raw = tomllib.load(fh)
+
+        # Representative scalars must be top-level, not nested under a table.
+        assert raw["default_display_timezone"] == "Europe/Zurich"
+        assert raw["calendar"] == "gregorian"
+        assert raw["flow_regime_p50_percentile"] == 50.0
+        assert raw["flow_regime_p90_percentile"] == 90.0
+        assert raw["min_skill_samples"] == 100
+        assert raw["min_skill_seasons"] == 2
+        assert raw["infer_missing_thresholds"] is False
+        # None of them leaked into the [input_quality] table.
+        iq = raw["input_quality"]
+        for leaked in (
+            "flow_regime_p50_percentile",
+            "min_skill_samples",
+            "default_display_timezone",
+            "calendar",
+        ):
+            assert leaked not in iq
+
+        # And the loaded config reflects the documented display timezone.
+        config = load_config(ref)
+        assert config.default_display_timezone == "Europe/Zurich"

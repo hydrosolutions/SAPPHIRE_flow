@@ -53,15 +53,6 @@ min_operational_quantile_levels = 7       # minimum quantile levels (must be >= 
 warm_up_snapshot_max_age_hours = 48.0       # default max age for warm-up snapshot
 warm_up_snapshot_max_age_monsoon_hours = 24.0  # shorter during wet season
 
-# --- Input quality assessment (Flow 1 step 1.7) ---
-# Source: types-and-protocols.md § InputQualityConfig
-[input_quality]
-obs_degraded_hours = 12.0                      # observation staleness → DEGRADED (must be > observation_staleness_warning_hours)
-nwp_age_partial_hours = 9.0                    # NWP cycle age → PARTIAL
-nwp_age_degraded_hours = 11.0                  # NWP cycle age → DEGRADED (must be <= nwp_max_fallback_age_hours)
-warmup_snapshot_age_partial_hours = 24.0       # warm-up snapshot age → PARTIAL (default; caller may override per season)
-warmup_snapshot_age_degraded_hours = 42.0      # warm-up snapshot age → DEGRADED (must be <= warm_up_snapshot_max_age_hours; for monsoon deployments, caller must cap at warm_up_snapshot_max_age_monsoon_hours)
-
 # --- Flow regime ---
 # Source: types-and-protocols.md § DeploymentConfig
 flow_regime_p50_percentile = 50.0     # customizable percentile boundary
@@ -89,6 +80,17 @@ calendar = "gregorian"                # Nepal v1: "bikram_sambat"
 # DeploymentConfig — array-of-tables / table sections
 # (Must follow all scalar fields due to TOML parsing rules)
 # =============================================================================
+
+# --- Input quality assessment (Flow 1 step 1.7) ---
+# Source: types-and-protocols.md § InputQualityConfig
+# NOTE: this is a [table]; it MUST sit below every top-level scalar field, else
+# tomllib nests those scalars under [input_quality] (they stop being top-level).
+[input_quality]
+obs_degraded_hours = 12.0                      # observation staleness → DEGRADED (must be > observation_staleness_warning_hours)
+nwp_age_partial_hours = 9.0                    # NWP cycle age → PARTIAL
+nwp_age_degraded_hours = 11.0                  # NWP cycle age → DEGRADED (must be <= nwp_max_fallback_age_hours)
+warmup_snapshot_age_partial_hours = 24.0       # warm-up snapshot age → PARTIAL (default; caller may override per season)
+warmup_snapshot_age_degraded_hours = 42.0      # warm-up snapshot age → DEGRADED (must be <= warm_up_snapshot_max_age_hours; for monsoon deployments, caller must cap at warm_up_snapshot_max_age_monsoon_hours)
 
 # --- Model assignment priority (Plan 089) ---
 # Source: docs/conventions.md § Model assignment priority
