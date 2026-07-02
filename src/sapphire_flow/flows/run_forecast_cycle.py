@@ -653,6 +653,7 @@ def run_forecast_cycle_flow(
                         config.nwp_max_fallback_age_hours / 6.0
                     ),
                     max_files=weather_forecast_config.max_files,
+                    cycle_min_age_minutes=config.nwp_cycle_min_age_minutes,
                 )
             elif config_path_for_adapter is None:
                 log.warning(

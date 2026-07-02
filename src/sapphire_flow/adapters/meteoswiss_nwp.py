@@ -86,12 +86,19 @@ class CycleResolution:
     """Outcome of resolving the operational NWP cycle.
 
     ``fallback_used`` is True iff the adapter had to walk back >=1 cycle step
-    from the snapped slot to find a published cycle. The forecast cycle threads
+    from the snapped slot to find an adequate cycle. The forecast cycle threads
     this into ``NwpCycleSource.FALLBACK`` provenance.
+
+    ``fallback_reason`` (Plan 090 D3) records WHY the walk-back happened when
+    ``fallback_used`` is True: ``"too_recent"`` (the snapped cycle was younger
+    than the configured delivery delay — likely still incompletely published) or
+    ``"not_published"`` (no matching STAC items yet). ``None`` when no walk-back
+    occurred.
     """
 
     cycle_time: UtcDatetime
     fallback_used: bool
+    fallback_reason: str | None = None
 
 
 def _is_grib_asset(asset_key: str, asset: dict[str, object]) -> bool:
@@ -317,6 +324,7 @@ class MeteoSwissNwpAdapter:
         cleanup_scratch_on_fetch: bool = True,
         max_fallback_steps: int = 2,
         max_files: int | None = None,
+        cycle_min_age_minutes: int = 0,
     ) -> None:
         # Plan 067 D2: max_fallback_steps is derived by the caller from
         # ``DeploymentConfig.nwp_max_fallback_age_hours`` as
@@ -342,6 +350,12 @@ class MeteoSwissNwpAdapter:
         self._cleanup_scratch_on_fetch = cleanup_scratch_on_fetch
         self._max_fallback_steps = max_fallback_steps
         self._max_files = max_files
+        # Plan 090 D2c/D4: age-delay selection gate. A snapped cycle younger than
+        # this (now - cycle_time) is treated as not-yet-adequately-published and
+        # skipped (walk back one 6 h slot), preferring a complete older cycle over
+        # a freshly-published incomplete one. 0 = disabled (test-convenience
+        # default); production threads DeploymentConfig.nwp_cycle_min_age_minutes.
+        self._cycle_min_age_minutes = cycle_min_age_minutes
 
     @property
     def max_fallback_steps(self) -> int:
@@ -352,16 +366,44 @@ class MeteoSwissNwpAdapter:
             raise ValueError(f"resolve_cycle requires tz-aware input, got {now_utc!r}")
         snapped = self._snap_to_cycle(now_utc)
         candidate = snapped
+        # Plan 090 D3: the reason for the FIRST walk-back away from the snapped
+        # slot — surfaced on the returned CycleResolution so "fallback" doesn't
+        # hide WHY (too-recent/incomplete vs not-yet-published).
+        first_reason: str | None = None
         for step in range(self._max_fallback_steps + 1):
-            if self._cycle_is_published(candidate):
+            age_minutes = (now_utc - candidate).total_seconds() / 60.0
+            if age_minutes < self._cycle_min_age_minutes:
+                # Plan 090 D2c/D4: too recent → likely incompletely published.
+                # Skip WITHOUT probing STAC and walk back to the next older slot.
+                if first_reason is None:
+                    first_reason = "too_recent"
+                log.info(
+                    "nwp.cycle_too_recent",
+                    candidate_cycle=candidate.isoformat(),
+                    age_minutes=round(age_minutes, 1),
+                    min_age_minutes=self._cycle_min_age_minutes,
+                )
+            elif self._cycle_is_published(candidate):
                 if step > 0:
                     log.warning(
                         "nwp.cycle_fallback_used",
                         snapped_cycle=snapped.isoformat(),
                         resolved_cycle=candidate.isoformat(),
                         fallback_steps=step,
+                        fallback_reason=first_reason,
                     )
-                return CycleResolution(cycle_time=candidate, fallback_used=step > 0)
+                return CycleResolution(
+                    cycle_time=candidate,
+                    fallback_used=step > 0,
+                    fallback_reason=first_reason if step > 0 else None,
+                )
+            else:
+                if first_reason is None:
+                    first_reason = "not_published"
+                log.info(
+                    "nwp.cycle_not_published",
+                    candidate_cycle=candidate.isoformat(),
+                )
             candidate = ensure_utc(candidate - timedelta(hours=_CYCLE_INTERVAL_HOURS))
         raise NoCycleAvailableError(
             f"No cycle available within {self._max_fallback_steps} fallback steps "

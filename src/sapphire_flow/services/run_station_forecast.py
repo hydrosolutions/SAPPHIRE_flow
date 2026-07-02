@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from uuid import UUID  # noqa: TC003
 
+import polars as pl
 import structlog
 
 from sapphire_flow.services.ensemble_fanout import (
@@ -75,6 +76,44 @@ class MultiModelForecastResult:
         }
 
 
+def _col_matches_feature(col: str, feature: str) -> bool:
+    """True if ``col`` is ``feature`` itself or a ``{feature}_{member}`` column.
+
+    Ensemble ``future_dynamic`` frames carry member-suffixed columns
+    (``precipitation_0`` .. ``precipitation_20``); deterministic frames carry the
+    bare feature name. The member suffix is an integer, so a bare multi-word
+    feature (e.g. ``snow_depth``) is not mistaken for a member column.
+    """
+    if col == feature:
+        return True
+    if col.startswith(f"{feature}_"):
+        return col[len(feature) + 1 :].isdigit()
+    return False
+
+
+def _min_future_coverage(
+    future_dynamic: pl.DataFrame, required_features: frozenset[str]
+) -> int:
+    """Fewest clean (non-null) future daily rows across every required feature.
+
+    Plan 090 D1: coverage is the number of future daily buckets available for
+    every required NWP variable AND every required member. For each required
+    feature we count the non-null rows of each of its column(s) (per-member for
+    ensembles) and return the minimum across all of them. A required feature with
+    no column at all yields 0 (fully absent variable/member set).
+    """
+    counts: list[int] = []
+    for feature in required_features:
+        cols = [c for c in future_dynamic.columns if _col_matches_feature(c, feature)]
+        if not cols:
+            return 0
+        counts.extend(
+            int(future_dynamic.select(pl.col(c).is_not_null().sum()).item())
+            for c in cols
+        )
+    return min(counts) if counts else 0
+
+
 def worst_qc_status(flags: list[QcFlag]) -> QcStatus:
     if not flags:
         return QcStatus.QC_PASSED
@@ -114,6 +153,34 @@ def _run_single_model(
             model_id=str(assignment.model_id),
         )
         return f"model {assignment.model_id} not found in registry"
+
+    # Plan 090 D1/D2d/D3: post-download coverage safety net. A model that
+    # declares future NWP forcing must receive >= its own forecast_horizon_steps
+    # clean future daily buckets for EVERY required variable AND member, or it
+    # must NOT forecast — otherwise a short/partial NWP frame silently truncates
+    # the horizon (e.g. NwpRegression forecasts horizon = len(future_times), so a
+    # 1-row frame becomes a 1-step forecast). Short coverage is treated like a
+    # graceful predict failure: return a reason string so the PRIMARY chain moves
+    # to the next (native/fallback) model — the station gets a runoff-only-style
+    # forecast, never a truncated NWP one.
+    future_features = model.data_requirements.future_dynamic_features
+    if future_features:
+        required_steps = model.data_requirements.forecast_horizon_steps
+        available_steps = _min_future_coverage(
+            inputs.data.future_dynamic, future_features
+        )
+        if available_steps < required_steps:
+            log.warning(
+                "nwp.insufficient_coverage",
+                station_id=str(station_id),
+                model_id=str(assignment.model_id),
+                required_steps=required_steps,
+                available_steps=available_steps,
+            )
+            return (
+                f"insufficient NWP coverage: {available_steps} clean future "
+                f"step(s) < required {required_steps}"
+            )
 
     artifact_result = artifact_store.fetch_active_artifact_for_station(
         station_id, assignment.model_id

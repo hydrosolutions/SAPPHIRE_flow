@@ -78,6 +78,13 @@ class DeploymentConfig(BaseModel):
     nwp_max_wait_hours: float = 3.0
     nwp_max_fallback_age_hours: float = 12.0
 
+    # Plan 090 (D5): operator-tunable delivery delay. A snapped NWP cycle younger
+    # than this (now - cycle_time) is treated as not-yet-adequately-published and
+    # the adapter walks back to the next older slot (age-delay selection gate),
+    # avoiding an incompletely-uploaded ICON cycle. Default 105 min sits inside the
+    # ~90-120 min ICON-CH2-EPS publish latency window.
+    nwp_cycle_min_age_minutes: int = 105
+
     warm_up_snapshot_max_age_hours: float = 48.0
     warm_up_snapshot_max_age_monsoon_hours: float = 24.0
 
@@ -122,6 +129,15 @@ class DeploymentConfig(BaseModel):
     nwp_grid_archive_base_path: str | None = None
 
     input_quality: InputQualityConfig = InputQualityConfig()
+
+    @field_validator("nwp_cycle_min_age_minutes")
+    @classmethod
+    def _validate_cycle_min_age(cls, v: int) -> int:
+        if v < 0:
+            from sapphire_flow.exceptions import ConfigurationError
+
+            raise ConfigurationError(f"nwp_cycle_min_age_minutes must be >= 0, got {v}")
+        return v
 
     @field_validator("min_operational_ensemble_size")
     @classmethod

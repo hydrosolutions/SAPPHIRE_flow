@@ -1024,6 +1024,7 @@ scratch_path = "{tmp_path / "scratch"}"
                 http_client: object,
                 max_fallback_steps: int,
                 max_files: int | None,
+                cycle_min_age_minutes: int,
             ) -> None:
                 constructed.append(
                     {
@@ -1033,6 +1034,7 @@ scratch_path = "{tmp_path / "scratch"}"
                         "http_client": http_client,
                         "max_fallback_steps": max_fallback_steps,
                         "max_files": max_files,
+                        "cycle_min_age_minutes": cycle_min_age_minutes,
                     }
                 )
 
@@ -1070,6 +1072,8 @@ scratch_path = "{tmp_path / "scratch"}"
         assert constructed[0]["stac_collection"] == "test-collection"
         assert constructed[0]["scratch_path"] == tmp_path / "scratch"
         assert constructed[0]["max_fallback_steps"] == 2
+        # Plan 090: the config delivery-delay reaches the adapter (default 105).
+        assert constructed[0]["cycle_min_age_minutes"] == 105
         created_client = constructed[0]["http_client"]
         assert isinstance(created_client, httpx.Client)
         assert created_client.is_closed
@@ -1130,6 +1134,7 @@ max_files = 7
                 http_client: object,
                 max_fallback_steps: int,
                 max_files: int | None,
+                cycle_min_age_minutes: int,
             ) -> None:
                 constructed.append(max_files)
 

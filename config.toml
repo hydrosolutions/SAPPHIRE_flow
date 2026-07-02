@@ -12,6 +12,9 @@ observation_staleness_warning_hours = 6.0
 # NWP lateness
 nwp_max_wait_hours = 3.0
 nwp_max_fallback_age_hours = 12.0
+# Plan 090: ignore an NWP cycle younger than this (min); walk back to the next
+# older, fully-published slot. ~90-120 min = ICON-CH2-EPS publish latency.
+nwp_cycle_min_age_minutes = 105
 
 # Per-source alert enablement
 enable_forecast_alerts = false
