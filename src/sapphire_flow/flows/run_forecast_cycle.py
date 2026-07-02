@@ -876,6 +876,7 @@ def run_forecast_cycle_flow(
         from sapphire_flow.services.forecast_combination import build_combined_forecasts
         from sapphire_flow.services.operational_inputs import (
             assemble_station_operational_inputs,
+            build_superset_requirements,
         )
         from sapphire_flow.services.run_group_forecast import (
             assemble_group_operational_inputs,
@@ -923,9 +924,28 @@ def run_forecast_cycle_flow(
                 stations_failed += 1
                 structlog.contextvars.unbind_contextvars("station_id")
                 continue
-            forecast_horizon_steps: int = (
-                first_model.data_requirements.forecast_horizon_steps
+            # Assemble inputs ONCE using a SUPERSET of every assigned model's
+            # data requirements so heterogeneous model sets (e.g. NWP models
+            # needing future forcing alongside native models that declare none)
+            # each receive the data they declare. Using only the first (highest-
+            # priority) model's requirements starved the others.
+            assigned_models = [
+                m
+                for a in sorted_assignments
+                if (m := models.get(a.model_id)) is not None
+            ]
+            superset_reqs = build_superset_requirements(
+                [m.data_requirements for m in assigned_models]
             )
+            forecast_horizon_steps: int = superset_reqs.forecast_horizon_steps
+
+            assignment_time_steps = {a.time_step for a in sorted_assignments}
+            if len(assignment_time_steps) > 1:
+                log.warning(
+                    "forecast_cycle.heterogeneous_assignment_time_steps",
+                    time_steps=[str(ts) for ts in sorted(assignment_time_steps)],
+                    used=str(time_step),
+                )
 
             # Determine nwp_source for this station (deterministic ICON selection)
             weather_sources = all_weather_sources.get(sid, [])
@@ -948,6 +968,7 @@ def run_forecast_cycle_flow(
                     clock=clock,
                     forecast_horizon_steps=forecast_horizon_steps,
                     time_step=time_step,
+                    requirements_override=superset_reqs,
                 )
             except Exception as exc:
                 log.warning("forecast_cycle.input_assembly_failed", error=str(exc))
