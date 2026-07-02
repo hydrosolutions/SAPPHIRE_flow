@@ -742,3 +742,149 @@ def test_run_group_forecast_connection_fatal_propagates_store_error() -> None:
             model=_BatchGroupModel(exc=DisconnectionError("connection reset")),
             artifact_store=artifact_store,
         )
+
+
+class _NwpBatchGroupModel:
+    """GROUP model declaring future NWP forcing (Plan 090 Finding 2)."""
+
+    def __init__(
+        self,
+        batch_result: dict[StationId, tuple[dict[str, ForecastEnsemble], bytes | None]],
+    ) -> None:
+        from sapphire_flow.types.enums import (
+            ArtifactScope,
+            EnsembleMode,
+            SpatialRepresentation,
+        )
+        from sapphire_flow.types.model import ModelDataRequirements
+
+        self.artifact_scope = ArtifactScope.GROUP
+        self.data_requirements = ModelDataRequirements(
+            target_parameters=frozenset({"discharge"}),
+            past_dynamic_features=frozenset(),
+            future_dynamic_features=frozenset({"precipitation"}),
+            static_features=frozenset(),
+            supported_time_steps=frozenset({_STEP}),
+            lookback_steps=1,
+            forecast_horizon_steps=2,
+            spatial_input_type=SpatialRepresentation.BASIN_AVERAGE,
+            ensemble_mode=EnsembleMode.SINGLE,
+        )
+        self.batch_result = batch_result
+        self.predict_calls = 0
+        self.deserialize_calls: list[bytes] = []
+
+    def deserialize_artifact(self, raw: bytes) -> bytes:
+        self.deserialize_calls.append(raw)
+        return raw
+
+    def predict_batch(
+        self,
+        artifact: object,
+        inputs: GroupModelInputs,
+        rng: random.Random,
+    ) -> dict[StationId, tuple[dict[str, ForecastEnsemble], bytes | None]]:
+        self.predict_calls += 1
+        return self.batch_result
+
+
+def _precip_group_inputs(group: StationGroup, future_rows: int) -> GroupModelInputs:
+    station_inputs: list[StationModelInputs] = []
+    for sid in sorted(group.station_ids, key=str):
+        times = [_ISSUE + (i + 1) * _STEP for i in range(future_rows)]
+        future_dynamic = _time_frame(
+            {"timestamp": list(times), "precipitation": [1.0] * future_rows}
+        )
+        station_inputs.append(
+            StationModelInputs(
+                station_id=sid,
+                data=StationInputData(
+                    past_targets=_time_frame(
+                        {"timestamp": [_ISSUE], "discharge": [10.0]}
+                    ),
+                    past_dynamic=_time_frame(
+                        {"timestamp": [_ISSUE], "precipitation": [1.0]}
+                    ),
+                    future_dynamic=future_dynamic,
+                    static=None,
+                ),
+                issue_time=_ISSUE,
+                forecast_horizon_steps=2,
+                time_step=_STEP,
+            )
+        )
+    return GroupModelInputs(
+        group_id=group.id,
+        station_ids=tuple(si.station_id for si in station_inputs),
+        past_targets=service._stack_station_frames(
+            [(si.station_id, si.data.past_targets) for si in station_inputs]
+        ),
+        past_dynamic=service._stack_station_frames(
+            [(si.station_id, si.data.past_dynamic) for si in station_inputs]
+        ),
+        future_dynamic=service._stack_station_frames(
+            [(si.station_id, si.data.future_dynamic) for si in station_inputs]
+        ),
+        static=None,
+        issue_time=_ISSUE,
+        forecast_horizon_steps=2,
+        time_step=_STEP,
+    )
+
+
+class TestGroupCoverageGuard:
+    """Plan 090 Finding 2: the GROUP path enforces the same D1 coverage guard
+    before ``predict_batch`` so an NWP-consuming group model cannot emit a
+    truncated batch forecast when a member station's future frame is short.
+    """
+
+    def test_short_future_frame_skips_group_model(self) -> None:
+        sid_a = StationId(uuid4())
+        sid_b = StationId(uuid4())
+        group = _make_group(sid_a, sid_b)
+        # 1 future row but the model needs forecast_horizon_steps=2.
+        group_inputs = _precip_group_inputs(group, future_rows=1)
+        artifact_store = FakeModelArtifactStore()
+        _seed_group_artifact(artifact_store, group)
+        model = _NwpBatchGroupModel(
+            {
+                sid_a: ({"discharge": _make_ensemble(sid_a, 10.0)}, None),
+                sid_b: ({"discharge": _make_ensemble(sid_b, 20.0)}, None),
+            }
+        )
+
+        results = _call_run_group_forecast(
+            group=group,
+            group_inputs=group_inputs,
+            metadata_by_station=_make_metadata_by_station(group_inputs.station_ids),
+            model=model,  # type: ignore[arg-type]
+            artifact_store=artifact_store,
+        )
+
+        assert results == {}
+        assert model.predict_calls == 0
+
+    def test_adequate_future_frame_runs_group_model(self) -> None:
+        sid_a = StationId(uuid4())
+        sid_b = StationId(uuid4())
+        group = _make_group(sid_a, sid_b)
+        group_inputs = _precip_group_inputs(group, future_rows=2)
+        artifact_store = FakeModelArtifactStore()
+        _seed_group_artifact(artifact_store, group)
+        model = _NwpBatchGroupModel(
+            {
+                sid_a: ({"discharge": _make_ensemble(sid_a, 10.0)}, None),
+                sid_b: ({"discharge": _make_ensemble(sid_b, 20.0)}, None),
+            }
+        )
+
+        results = _call_run_group_forecast(
+            group=group,
+            group_inputs=group_inputs,
+            metadata_by_station=_make_metadata_by_station(group_inputs.station_ids),
+            model=model,  # type: ignore[arg-type]
+            artifact_store=artifact_store,
+        )
+
+        assert set(results) == {sid_a, sid_b}
+        assert model.predict_calls == 1

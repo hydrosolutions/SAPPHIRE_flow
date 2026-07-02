@@ -117,6 +117,28 @@ class TestLoadConfig:
         # A [model_priorities] table must not swallow preceding top-level scalars.
         assert config.calendar == "gregorian"
 
+    def test_nwp_cycle_min_age_minutes_defaults_and_parses(
+        self, tmp_path: Path
+    ) -> None:
+        # Default when omitted.
+        cfg_file = tmp_path / "deployment.toml"
+        cfg_file.write_text(_MINIMAL_TOML)
+        assert load_config(cfg_file).nwp_cycle_min_age_minutes == 105
+
+        # Plan 090: the delivery-delay scalar must parse AND (TOML-safety) not be
+        # swallowed by the following [model_priorities] table header.
+        toml = (
+            _MINIMAL_TOML
+            + "nwp_cycle_min_age_minutes = 120\n"
+            + "\n[model_priorities]\n"
+            + "climatology_fallback = 100\n"
+        )
+        override = tmp_path / "override.toml"
+        override.write_text(toml)
+        config = load_config(override)
+        assert config.nwp_cycle_min_age_minutes == 120
+        assert config.model_priorities == {"climatology_fallback": 100}
+
     def test_minimal_toml_populates_fields(self, tmp_path: Path) -> None:
         cfg_file = tmp_path / "deployment.toml"
         cfg_file.write_text(_MINIMAL_TOML)

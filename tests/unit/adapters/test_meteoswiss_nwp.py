@@ -351,6 +351,109 @@ class TestResolveCycleFallbackSignal:
         assert resolution.fallback_used is True
 
 
+class TestCycleAgeDelayGuard:
+    """Plan 090 D2c/D4: the age-delay selection gate.
+
+    A snapped cycle younger than ``cycle_min_age_minutes`` is likely still
+    incompletely uploaded (MeteoSwiss publishes ICON-CH2-EPS lead-times
+    incrementally over ~90-120 min). The adapter must skip it and walk back to
+    the next older, adequately-aged slot even when the fresh cycle IS already
+    (partially) published — preferring a complete older cycle over a truncated
+    newer one.
+    """
+
+    def _make_delay_adapter(
+        self, transport: httpx.MockTransport, tmp_path: Path, min_age_minutes: int
+    ) -> MeteoSwissNwpAdapter:
+        client = httpx.Client(transport=transport, base_url="https://dummy")
+        return MeteoSwissNwpAdapter(
+            stac_base_url=_STAC_BASE,
+            stac_collection=_STAC_COLLECTION,
+            scratch_path=tmp_path,
+            http_client=client,
+            cycle_min_age_minutes=min_age_minutes,
+        )
+
+    def test_prefers_older_aged_cycle_over_too_recent_published_one(
+        self, tmp_path: Path
+    ) -> None:
+        from sapphire_flow.adapters.meteoswiss_nwp import CycleResolution
+
+        # now=12:30 snaps to 12:00 (age 30 min < 105 → too recent) and walks back
+        # to 06:00 (age 390 min >= 105 → adequate). BOTH cycles are published, so
+        # the ONLY reason 06:00 wins is the age-delay guard. Pre-Plan-090 the
+        # adapter returns the newest (12:00) because it is age-blind.
+        recent = ensure_utc(datetime(2026, 4, 19, 12, 0, tzinfo=UTC))
+        older = ensure_utc(datetime(2026, 4, 19, 6, 0, tzinfo=UTC))
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            q = str(request.url)
+            if "datetime=2026-04-19T12:00:00Z" in q:
+                return httpx.Response(200, json={"features": _cycle_features(recent)})
+            if "datetime=2026-04-19T06:00:00Z" in q:
+                return httpx.Response(200, json={"features": _cycle_features(older)})
+            return httpx.Response(200, json={"features": []})
+
+        adapter = self._make_delay_adapter(
+            httpx.MockTransport(handler), tmp_path, min_age_minutes=105
+        )
+        now = ensure_utc(datetime(2026, 4, 19, 12, 30, tzinfo=UTC))
+
+        resolution = adapter.resolve_cycle(now)
+        assert isinstance(resolution, CycleResolution)
+        assert resolution.cycle_time == older
+        assert resolution.fallback_used is True
+        assert resolution.fallback_reason == "too_recent"
+
+    def test_no_walk_back_when_snapped_cycle_old_enough(self, tmp_path: Path) -> None:
+        from sapphire_flow.adapters.meteoswiss_nwp import CycleResolution
+
+        # now=14:37 snaps to 12:00 (age 157 min >= 105 → adequate); no walk-back.
+        cycle = ensure_utc(datetime(2026, 4, 19, 12, 0, tzinfo=UTC))
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "datetime=2026-04-19T12:00:00Z" in str(request.url):
+                return httpx.Response(200, json={"features": _cycle_features(cycle)})
+            return httpx.Response(200, json={"features": []})
+
+        adapter = self._make_delay_adapter(
+            httpx.MockTransport(handler), tmp_path, min_age_minutes=105
+        )
+        now = ensure_utc(datetime(2026, 4, 19, 14, 37, tzinfo=UTC))
+
+        resolution = adapter.resolve_cycle(now)
+        assert isinstance(resolution, CycleResolution)
+        assert resolution.cycle_time == cycle
+        assert resolution.fallback_used is False
+        assert resolution.fallback_reason is None
+
+    def test_not_published_reason_preserved(self, tmp_path: Path) -> None:
+        from sapphire_flow.adapters.meteoswiss_nwp import CycleResolution
+
+        # Age guard passes (all cycles old enough) but the snapped cycle is not
+        # yet published → walk back with reason "not_published".
+        prior = ensure_utc(datetime(2026, 4, 19, 6, 0, tzinfo=UTC))
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            q = str(request.url)
+            if "datetime=2026-04-19T12:00:00Z" in q:
+                return httpx.Response(200, json={"features": []})
+            if "datetime=2026-04-19T06:00:00Z" in q:
+                return httpx.Response(200, json={"features": _cycle_features(prior)})
+            return httpx.Response(200, json={"features": []})
+
+        adapter = self._make_delay_adapter(
+            httpx.MockTransport(handler), tmp_path, min_age_minutes=105
+        )
+        now = ensure_utc(datetime(2026, 4, 19, 14, 37, tzinfo=UTC))
+
+        resolution = adapter.resolve_cycle(now)
+        assert isinstance(resolution, CycleResolution)
+        assert resolution.cycle_time == prior
+        assert resolution.fallback_used is True
+        assert resolution.fallback_reason == "not_published"
+
+
 class TestCycleIsPublishedPropertyBased:
     """T2a (Plan 067): probe matches on forecast:reference_datetime, not ID prefix.
 

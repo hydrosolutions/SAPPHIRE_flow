@@ -1024,6 +1024,7 @@ scratch_path = "{tmp_path / "scratch"}"
                 http_client: object,
                 max_fallback_steps: int,
                 max_files: int | None,
+                cycle_min_age_minutes: int,
             ) -> None:
                 constructed.append(
                     {
@@ -1033,6 +1034,7 @@ scratch_path = "{tmp_path / "scratch"}"
                         "http_client": http_client,
                         "max_fallback_steps": max_fallback_steps,
                         "max_files": max_files,
+                        "cycle_min_age_minutes": cycle_min_age_minutes,
                     }
                 )
 
@@ -1070,6 +1072,8 @@ scratch_path = "{tmp_path / "scratch"}"
         assert constructed[0]["stac_collection"] == "test-collection"
         assert constructed[0]["scratch_path"] == tmp_path / "scratch"
         assert constructed[0]["max_fallback_steps"] == 2
+        # Plan 090: the config delivery-delay reaches the adapter (default 105).
+        assert constructed[0]["cycle_min_age_minutes"] == 105
         created_client = constructed[0]["http_client"]
         assert isinstance(created_client, httpx.Client)
         assert created_client.is_closed
@@ -1130,6 +1134,7 @@ max_files = 7
                 http_client: object,
                 max_fallback_steps: int,
                 max_files: int | None,
+                cycle_min_age_minutes: int,
             ) -> None:
                 constructed.append(max_files)
 
@@ -1484,6 +1489,100 @@ scratch_path = "/tmp/test-nwp"
             f"{nwp_model.seen_future_dynamic.columns}"
         )
         assert nwp_model.seen_future_dynamic.height > 0
+
+    def test_no_cycle_available_falls_to_runoff_only_not_abort(self) -> None:
+        # Plan 090 D3 (Finding 1): the adapter exhausting its fallback budget
+        # (NoCycleAvailableError) must NOT abort the whole cycle. NWP is treated
+        # as unavailable this run → the native fallback still forecasts with
+        # RUNOFF_ONLY provenance; the NWP-consuming model produces nothing.
+        sid = StationId(uuid4())
+        native_id = ModelId("native_fallback")
+        nwp_id = ModelId("nwp_regression")
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            native_id,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+            seed_model_assignment=False,
+            seed_artifact=False,
+        )
+        for model_id, priority in ((native_id, 0), (nwp_id, 1)):
+            station_store.store_model_assignment(
+                ModelAssignment(
+                    station_id=sid,
+                    model_id=model_id,
+                    time_step=timedelta(hours=1),
+                    status=ModelAssignmentStatus.ACTIVE,
+                    priority=priority,
+                    created_at=_NOW,
+                )
+            )
+            artifact_store.store_artifact(
+                model_id=model_id,
+                artifact_bytes=b"fake_artifact",
+                training_period_start=ensure_utc(datetime(2020, 1, 1, tzinfo=UTC)),
+                training_period_end=ensure_utc(datetime(2025, 12, 31, tzinfo=UTC)),
+                trained_at=_NOW,
+                station_id=sid,
+                status=ModelArtifactStatus.ACTIVE,
+            )
+
+        nwp_model = _RecordingNwpFakeModel()
+        models = {native_id: _NativeFakeModel(), nwp_id: nwp_model}
+
+        class _NoCycleAdapter:
+            def fetch_forecasts(self, *args: object, **kwargs: object) -> object:
+                from sapphire_flow.exceptions import NoCycleAvailableError
+
+                raise NoCycleAvailableError("no adequate cycle within fallback budget")
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=_NoCycleAdapter(),
+            models=models,  # type: ignore[arg-type]
+            config=_make_config(),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+        )
+
+        # The cycle did NOT abort: the native fallback produced the forecast.
+        assert isinstance(result, ForecastCycleResult)
+        assert result.stations_succeeded == 1
+        assert result.forecasts_stored == 1
+        stored = list(forecast_store._forecasts.values())
+        assert len(stored) == 1
+        fc = stored[0]
+        assert fc.model_id == native_id
+        assert fc.nwp_cycle_source == NwpCycleSource.RUNOFF_ONLY
+        assert fc.nwp_cycle_reference_time is None
+        # The NWP-consuming model produced nothing and was never predicted.
+        assert all(f.model_id != nwp_id for f in stored)
+        assert nwp_model.seen_future_dynamic is None
 
     def test_accepts_group_store_kwarg_without_group_runs(self) -> None:
         sid = StationId(uuid4())

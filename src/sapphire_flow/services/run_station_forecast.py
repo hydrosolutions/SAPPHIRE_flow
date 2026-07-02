@@ -15,6 +15,7 @@ from sapphire_flow.services.ensemble_fanout import (
     reject_stateful_ensemble_states,
 )
 from sapphire_flow.services.input_quality import assess_input_quality
+from sapphire_flow.services.nwp_coverage import assess_future_coverage
 from sapphire_flow.services.operational_inputs import (
     OperationalInputMetadata,  # noqa: TC001
 )
@@ -114,6 +115,35 @@ def _run_single_model(
             model_id=str(assignment.model_id),
         )
         return f"model {assignment.model_id} not found in registry"
+
+    # Plan 090 D1/D2d/D3: post-download coverage safety net. A model that
+    # declares future NWP forcing must receive >= its own forecast_horizon_steps
+    # clean future daily buckets for EVERY required variable AND member, or it
+    # must NOT forecast — otherwise a short/partial NWP frame silently truncates
+    # the horizon (e.g. NwpRegression forecasts horizon = len(future_times), so a
+    # 1-row frame becomes a 1-step forecast). Short coverage is treated like a
+    # graceful predict failure: return a reason string so the PRIMARY chain moves
+    # to the next (native/fallback) model — the station gets a runoff-only-style
+    # forecast, never a truncated NWP one.
+    future_features = model.data_requirements.future_dynamic_features
+    if future_features:
+        required_steps = model.data_requirements.forecast_horizon_steps
+        coverage = assess_future_coverage(
+            inputs.data.future_dynamic,
+            required_features=future_features,
+            required_steps=required_steps,
+            ensemble_mode=model.data_requirements.ensemble_mode,
+        )
+        if not coverage.adequate:
+            log.warning(
+                "nwp.insufficient_coverage",
+                station_id=str(station_id),
+                model_id=str(assignment.model_id),
+                required_steps=required_steps,
+                available_steps=coverage.available_steps,
+                detail=coverage.detail,
+            )
+            return f"insufficient NWP coverage: {coverage.detail}"
 
     artifact_result = artifact_store.fetch_active_artifact_for_station(
         station_id, assignment.model_id
