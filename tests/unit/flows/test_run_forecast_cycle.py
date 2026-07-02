@@ -441,6 +441,50 @@ class _SmallFakeModel(FakeStationForecastModel):
     )
 
 
+class _NativeFakeModel(FakeStationForecastModel):
+    """Native model declaring NO future features (persistence/climatology-like)."""
+
+    data_requirements = FakeStationForecastModel.data_requirements.__class__(
+        target_parameters=frozenset({"discharge"}),
+        past_dynamic_features=frozenset(),
+        future_dynamic_features=frozenset(),
+        static_features=frozenset(),
+        supported_time_steps=frozenset({timedelta(hours=1)}),
+        lookback_steps=20,
+        forecast_horizon_steps=5,
+        spatial_input_type=SpatialRepresentation.POINT,
+    )
+
+
+class _RecordingNwpFakeModel(FakeStationForecastModel):
+    """NWP model that records the future_dynamic frame it is handed at predict."""
+
+    data_requirements = FakeStationForecastModel.data_requirements.__class__(
+        target_parameters=frozenset({"discharge"}),
+        past_dynamic_features=frozenset(),
+        future_dynamic_features=frozenset({"precipitation", "temperature"}),
+        static_features=frozenset(),
+        supported_time_steps=frozenset({timedelta(hours=1)}),
+        lookback_steps=20,
+        forecast_horizon_steps=5,
+        spatial_input_type=SpatialRepresentation.POINT,
+        ensemble_mode=EnsembleMode.SINGLE,
+    )
+
+    def __init__(self) -> None:
+        self.seen_future_dynamic: pl.DataFrame | None = None
+
+    def predict(
+        self,
+        artifact: object,
+        inputs: object,
+        rng: random.Random,
+        prior_state: bytes | None = None,
+    ) -> object:
+        self.seen_future_dynamic = inputs.data.future_dynamic  # type: ignore[attr-defined]
+        return super().predict(artifact, inputs, rng, prior_state)  # type: ignore[arg-type]
+
+
 class TestWeatherForecastAdapterConfig:
     def test_enabled_true(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1347,6 +1391,99 @@ scratch_path = "/tmp/test-nwp"
         # Warm-up state persisted for both stations
         assert (sid_a, _MODEL_ID) in state_store._states
         assert (sid_b, _MODEL_ID) in state_store._states
+
+    def test_superset_assembly_feeds_nwp_model_despite_native_first(self) -> None:
+        # Heterogeneous model set: a native model (no future features) at higher
+        # priority than an NWP model (needs future forcing). Pre-fix, inputs were
+        # assembled from only the first (native) model's requirements, starving
+        # the NWP model of its precipitation/temperature future forcing. The
+        # superset assembly must hand the NWP model a populated future_dynamic.
+        sid = StationId(uuid4())
+        native_id = ModelId("native_fallback")
+        nwp_id = ModelId("nwp_regression")
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            native_id,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+            seed_model_assignment=False,
+            seed_artifact=False,
+        )
+
+        # Native model FIRST (lower priority number) so first-model assembly
+        # would pick it and its empty future_dynamic_features.
+        for model_id, priority in ((native_id, 0), (nwp_id, 1)):
+            station_store.store_model_assignment(
+                ModelAssignment(
+                    station_id=sid,
+                    model_id=model_id,
+                    time_step=timedelta(hours=1),
+                    status=ModelAssignmentStatus.ACTIVE,
+                    priority=priority,
+                    created_at=_NOW,
+                )
+            )
+            artifact_store.store_artifact(
+                model_id=model_id,
+                artifact_bytes=b"fake_artifact",
+                training_period_start=ensure_utc(datetime(2020, 1, 1, tzinfo=UTC)),
+                training_period_end=ensure_utc(datetime(2025, 12, 31, tzinfo=UTC)),
+                trained_at=_NOW,
+                station_id=sid,
+                status=ModelArtifactStatus.ACTIVE,
+            )
+
+        nwp_model = _RecordingNwpFakeModel()
+        models = {native_id: _NativeFakeModel(), nwp_id: nwp_model}
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=FakeWeatherForecastSource(result={}),
+            models=models,  # type: ignore[arg-type]
+            config=_make_config(),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+        )
+
+        assert isinstance(result, ForecastCycleResult)
+        assert result.stations_succeeded == 1
+        # The NWP model's predict was reached and handed its future forcing.
+        assert nwp_model.seen_future_dynamic is not None
+        precip_cols = [
+            c
+            for c in nwp_model.seen_future_dynamic.columns
+            if c == "precipitation" or c.startswith("precipitation_")
+        ]
+        assert precip_cols, (
+            "NWP model received future_dynamic without any precipitation column: "
+            f"{nwp_model.seen_future_dynamic.columns}"
+        )
+        assert nwp_model.seen_future_dynamic.height > 0
 
     def test_accepts_group_store_kwarg_without_group_runs(self) -> None:
         sid = StationId(uuid4())

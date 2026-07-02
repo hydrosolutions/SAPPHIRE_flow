@@ -10,7 +10,11 @@ import structlog
 from sapphire_flow.services.training_data import resample_to_time_step
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import QcStatus, WarmUpSource
-from sapphire_flow.types.model import StationInputData, StationModelInputs
+from sapphire_flow.types.model import (
+    ModelDataRequirements,
+    StationInputData,
+    StationModelInputs,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -192,6 +196,47 @@ def _raw_forcing_to_dataframe(
     return pl.DataFrame(list(pivot.values()))
 
 
+def build_superset_requirements(
+    requirements: list[ModelDataRequirements],
+) -> ModelDataRequirements:
+    """Union the data requirements of all a station's assigned models.
+
+    A station may be assigned models with heterogeneous requirements (e.g. NWP
+    models declaring ``future_dynamic_features`` alongside native models that
+    declare none). Assembling inputs from only the first model's requirements
+    starves the others. This unions feature sets and takes the MAX of the step
+    counts so a single per-station assembly covers every assigned model. Feeding
+    a model more columns than it needs is harmless — each model slices/reads only
+    what it declares. ``spatial_input_type`` / ``ensemble_mode`` /
+    ``supported_time_steps`` are not consumed by assembly; the first model's
+    values are carried through (with ``supported_time_steps`` unioned).
+    """
+    if not requirements:
+        raise ValueError("Cannot build superset requirements from an empty list")
+
+    return ModelDataRequirements(
+        target_parameters=frozenset[str]().union(
+            *(r.target_parameters for r in requirements)
+        ),
+        past_dynamic_features=frozenset[str]().union(
+            *(r.past_dynamic_features for r in requirements)
+        ),
+        future_dynamic_features=frozenset[str]().union(
+            *(r.future_dynamic_features for r in requirements)
+        ),
+        static_features=frozenset[str]().union(
+            *(r.static_features for r in requirements)
+        ),
+        supported_time_steps=requirements[0].supported_time_steps.union(
+            *(r.supported_time_steps for r in requirements[1:])
+        ),
+        lookback_steps=max(r.lookback_steps for r in requirements),
+        forecast_horizon_steps=max(r.forecast_horizon_steps for r in requirements),
+        spatial_input_type=requirements[0].spatial_input_type,
+        ensemble_mode=requirements[0].ensemble_mode,
+    )
+
+
 def assemble_station_operational_inputs(
     station_id: StationId,
     model: StationForecastModel | GroupForecastModel,
@@ -208,9 +253,18 @@ def assemble_station_operational_inputs(
     clock: Callable[[], UtcDatetime],
     forecast_horizon_steps: int,
     time_step: timedelta,
+    requirements_override: ModelDataRequirements | None = None,
 ) -> tuple[StationModelInputs, OperationalInputMetadata] | None:
     now = clock()
-    reqs = model.data_requirements
+    # When a station is assigned models with heterogeneous requirements, the
+    # caller passes a SUPERSET ``requirements_override`` so every model receives
+    # the data it declares (e.g. NWP future forcing). ``model`` is retained only
+    # for its ``data_requirements`` fallback when no override is supplied.
+    reqs = (
+        requirements_override
+        if requirements_override is not None
+        else model.data_requirements
+    )
     lookback_start = ensure_utc(issue_time - reqs.lookback_steps * time_step)
 
     # --- past_targets ---
