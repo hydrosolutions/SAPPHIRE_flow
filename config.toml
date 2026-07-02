@@ -44,6 +44,18 @@ default_display_timezone = "Europe/Zurich"
 calendar = "gregorian"
 
 
+# Model assignment priority (Plan 089) — lower = preferred; tried first in the
+# PRIMARY first-success fallback chain. Skill models must outrank the fallbacks
+# so onboarding does not default them to a fallback. Any model not listed here
+# gets DEFAULT_PRIORITY (50), a neutral tier between skill models and fallbacks.
+[model_priorities]
+nwp_regression = 10          # skill: weather + lags
+nwp_rainfall_runoff = 20     # skill: weather-only
+linear_regression_daily = 30 # conceptual/regression
+persistence_fallback = 90    # fallback
+climatology_fallback = 100   # last-resort fallback
+
+
 [paths]
 # data_dir = "/data"   # uncomment for production; override with SAPPHIRE_DATA_DIR env var
 

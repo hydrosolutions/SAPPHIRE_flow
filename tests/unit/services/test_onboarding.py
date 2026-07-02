@@ -577,6 +577,69 @@ class TestOnboardingSteps6Through8:
         assert fetched is not None
         assert fetched.station_status == StationStatus.OPERATIONAL
 
+    def test_trained_model_keeps_config_priority(self) -> None:
+        """Plan 089 review (P1): Step 7 (training/promotion) must NOT overwrite
+        the config-driven priority set in Step 6. The onboard_model call has to
+        thread assignment_priority from model_priorities, else the promoted
+        assignment regresses to the default 0."""
+        from sapphire_flow.types.enums import SpatialRepresentation, WeatherSourceStatus
+        from sapphire_flow.types.station import StationWeatherSource
+        from tests.fakes.fake_models import FakeStationForecastModel
+
+        sid = StationId(uuid4())
+        station = make_station_config(station_id=sid, code="TR002")
+        basin = _make_basin("TR002")
+        s = _Stores()
+        s.wire_model_stores()
+        assert s.model is not None
+
+        weather_source = StationWeatherSource(
+            station_id=sid,
+            nwp_source="camels_ch",
+            extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+            status=WeatherSourceStatus.ACTIVE,
+        )
+        s.station.store_weather_source(weather_source)
+
+        reanalysis_records = [
+            make_raw_historical_forcing(
+                station_id=sid,
+                parameter=param,
+                valid_time=datetime.fromtimestamp(
+                    _START.timestamp() + i * 86400, tz=UTC
+                ),
+                value=float(i % 10),
+            )
+            for i in range(400)
+            for param in ("precipitation", "temperature")
+        ]
+        forcing_source = FakeWeatherReanalysisSource(records=reanalysis_records)
+
+        discovered = {_FAKE_MODEL_ID: FakeStationForecastModel()}
+        config = make_deployment_config(model_priorities={str(_FAKE_MODEL_ID): 20})
+
+        with patch(
+            "sapphire_flow.services.model_registry.discover_models",
+            return_value=discovered,
+        ):
+            result = _run(
+                s,
+                stations=[station],
+                basins=[basin],
+                obs_by_station={sid: _make_raw_obs(sid, 400)},
+                forcing_by_station={sid: _make_forcing(sid, 10)},
+                forcing_source=forcing_source,
+                deployment_config=config,
+            )
+
+        # Training must have actually run (so Step 7 wrote the assignment).
+        assert result.models_trained >= 1
+        assignments = s.station.fetch_model_assignments(sid)
+        fake_assignments = [a for a in assignments if a.model_id == _FAKE_MODEL_ID]
+        assert len(fake_assignments) == 1
+        # The final stored priority is the configured 20, NOT the default 0.
+        assert fake_assignments[0].priority == 20
+
     def test_station_stays_onboarding_without_active_artifact(self) -> None:
 
         sid = StationId(uuid4())

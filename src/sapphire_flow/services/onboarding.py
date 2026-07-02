@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 
     from sapphire_flow.config.deployment import DeploymentConfig
     from sapphire_flow.protocols.adapters import WeatherReanalysisSource
+    from sapphire_flow.protocols.forecast_model import ForecastModel
     from sapphire_flow.protocols.stores import (
         BasinStore,
         ClimBaselineStore,
@@ -48,7 +49,7 @@ if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.domain import QcRuleSet
     from sapphire_flow.types.historical_forcing import RawHistoricalForcing
-    from sapphire_flow.types.ids import StationId
+    from sapphire_flow.types.ids import ModelId, StationId
     from sapphire_flow.types.observation import RawObservation
     from sapphire_flow.types.station import StationConfig
 
@@ -457,7 +458,7 @@ def _run_onboarding(
 
     # Step 6: Configure model assignments
     # Skipped if model infrastructure not wired
-    discovered: dict = {}
+    discovered: dict[ModelId, ForecastModel] = {}
     if model_store is not None:
         from sapphire_flow.services.model_onboarding import create_station_assignment
         from sapphire_flow.services.model_registry import (
@@ -472,16 +473,23 @@ def _run_onboarding(
             station = station_store.fetch_station(station_id)
             if station is None or station.station_kind == StationKind.WEATHER:
                 continue
+            from sapphire_flow.config.deployment import DEFAULT_PRIORITY
+
             for model_id, model in discovered.items():
                 if model.artifact_scope == ArtifactScope.GROUP:
                     continue
                 try:
                     time_step = next(iter(model.data_requirements.supported_time_steps))
+                    priority = (
+                        deployment_config.priority_for_model(str(model_id))
+                        if deployment_config is not None
+                        else DEFAULT_PRIORITY
+                    )
                     create_station_assignment(
                         station_id=station_id,
                         model_id=model_id,
                         time_step=time_step,
-                        priority=0,
+                        priority=priority,
                         station_store=station_store,
                         clock=clock,
                     )
@@ -507,6 +515,7 @@ def _run_onboarding(
         and forcing_source is not None
         and deployment_config is not None
     ):
+        from sapphire_flow.config.deployment import DEFAULT_PRIORITY
         from sapphire_flow.services.model_onboarding import (
             determine_onboarding_scope,
             onboard_model,
@@ -592,6 +601,15 @@ def _run_onboarding(
                     training_period_end=end_utc,
                     time_step=time_step,
                 )
+                # Resolve the SAME config-driven priority Step 6 uses, so the
+                # assignment written on artifact promotion does not regress to the
+                # default 0 (Plan 089). The Step 7 guard ensures deployment_config
+                # is not None; DEFAULT_PRIORITY is a belt-and-suspenders fallback.
+                priority = (
+                    deployment_config.priority_for_model(str(model_id))
+                    if deployment_config is not None
+                    else DEFAULT_PRIORITY
+                )
                 result_mo = onboard_model(
                     model_id=model_id,
                     model=model,
@@ -609,6 +627,7 @@ def _run_onboarding(
                     config=deployment_config,
                     clock=clock,
                     rng=_random.Random(42),
+                    assignment_priority=priority,
                     skip_smoke_test=True,
                     run_hindcast_fn=_make_hindcast_fn(),
                     compute_skill_fn=_make_skill_fn(),

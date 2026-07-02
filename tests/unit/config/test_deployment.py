@@ -70,7 +70,53 @@ class TestAvailableNwpParameters:
         )
 
 
+class TestModelPriorities:
+    """Plan 089: config-driven model priority map (lower = preferred)."""
+
+    def test_listed_model_resolves_configured_priority(self) -> None:
+        config = make_deployment_config(
+            model_priorities={"nwp_rainfall_runoff": 20, "climatology_fallback": 100}
+        )
+        assert config.priority_for_model("nwp_rainfall_runoff") == 20
+        assert config.priority_for_model("climatology_fallback") == 100
+
+    def test_unlisted_model_returns_default_priority(self) -> None:
+        from sapphire_flow.config.deployment import DEFAULT_PRIORITY
+
+        config = make_deployment_config(model_priorities={"nwp_rainfall_runoff": 20})
+        assert config.priority_for_model("some_new_model") == DEFAULT_PRIORITY
+
+    def test_default_priority_sits_between_skill_and_fallback(self) -> None:
+        from sapphire_flow.config.deployment import DEFAULT_PRIORITY
+
+        assert 30 < DEFAULT_PRIORITY < 90
+
+    def test_empty_map_default(self) -> None:
+        config = make_deployment_config()
+        assert config.model_priorities == {}
+
+
 class TestLoadConfig:
+    def test_model_priorities_table_parsed_without_swallowing_scalars(
+        self, tmp_path: Path
+    ) -> None:
+        toml = (
+            _MINIMAL_TOML
+            + '\ncalendar = "gregorian"\n'
+            + "\n[model_priorities]\n"
+            + "nwp_rainfall_runoff = 20\n"
+            + "climatology_fallback = 100\n"
+        )
+        cfg_file = tmp_path / "deployment.toml"
+        cfg_file.write_text(toml)
+        config = load_config(cfg_file)
+        assert config.model_priorities == {
+            "nwp_rainfall_runoff": 20,
+            "climatology_fallback": 100,
+        }
+        # A [model_priorities] table must not swallow preceding top-level scalars.
+        assert config.calendar == "gregorian"
+
     def test_minimal_toml_populates_fields(self, tmp_path: Path) -> None:
         cfg_file = tmp_path / "deployment.toml"
         cfg_file.write_text(_MINIMAL_TOML)
