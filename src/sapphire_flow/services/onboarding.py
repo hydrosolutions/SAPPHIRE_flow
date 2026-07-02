@@ -39,6 +39,7 @@ if TYPE_CHECKING:
         ModelArtifactStore,
         ModelStore,
         ObservationStore,
+        ParameterStore,
         SkillStore,
         StationGroupStore,
         StationStore,
@@ -202,6 +203,7 @@ def _run_onboarding(
     forcing_source: WeatherReanalysisSource | None = None,
     deployment_config: DeploymentConfig | None = None,
     hindcast_days: int | None = None,
+    parameter_store: ParameterStore | None = None,
 ) -> OnboardingResult:
     errors: list[str] = []
     stations_created = 0
@@ -610,6 +612,7 @@ def _run_onboarding(
                     skip_smoke_test=True,
                     run_hindcast_fn=_make_hindcast_fn(),
                     compute_skill_fn=_make_skill_fn(),
+                    parameter_store=parameter_store,
                 )
                 models_trained += result_mo.promoted_count()
             except Exception as exc:
@@ -709,6 +712,7 @@ def onboard_from_camelsch(
     forcing_source: WeatherReanalysisSource | None = None,
     deployment_config: DeploymentConfig | None = None,
     hindcast_days: int | None = None,
+    parameter_store: ParameterStore | None = None,
 ) -> OnboardingResult:
     from sapphire_flow.adapters.camelsch_adapter import (
         load_forcing,
@@ -770,6 +774,7 @@ def onboard_from_camelsch(
         forcing_source=forcing_source,
         deployment_config=deployment_config,
         hindcast_days=hindcast_days,
+        parameter_store=parameter_store,
     )
 
     log.info(

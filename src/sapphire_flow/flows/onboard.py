@@ -92,6 +92,7 @@ def onboard_stations_flow(
     group_store: object = None,
     hindcast_store: object = None,
     skill_store: object = None,
+    parameter_store: object = None,
     forcing_source: object = None,
     deployment_config: object = None,
     qc_rules: object = None,
@@ -123,6 +124,7 @@ def onboard_stations_flow(
         group_store = stores["group_store"]
         hindcast_store = stores["hindcast_store"]
         skill_store = stores["skill_store"]
+        parameter_store = stores["parameter_store"]
 
     # Build store-backed forcing source for training (CAMELS-CH data)
     if forcing_source is None and forcing_store is not None:
@@ -183,6 +185,7 @@ def onboard_stations_flow(
         forcing_source=forcing_source,
         deployment_config=deployment_config,
         hindcast_days=hindcast_days,
+        parameter_store=parameter_store,  # type: ignore[arg-type]
     )
 
     log.info(
