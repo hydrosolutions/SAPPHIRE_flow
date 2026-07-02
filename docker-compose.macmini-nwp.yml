@@ -1,0 +1,13 @@
+# docker-compose.macmini-nwp.yml — NWP-ON selector for the Mac-mini stack.
+# Layer AFTER docker-compose.macmini.yml so this env var + mount override the
+# runoff-only selection:
+#   docker compose -f docker-compose.yml \
+#                  -f docker-compose.macmini.yml \
+#                  -f docker-compose.macmini-nwp.yml up -d
+# See docs/plans/091-macmini-nwp-on-data-collection.md.
+services:
+  prefect-worker:
+    environment:
+      SAPPHIRE_CONFIG_OVERLAY: /app/config/overlays/mac-mini-nwp.toml
+    volumes:
+      - ./config/overlays/mac-mini-nwp.toml:/app/config/overlays/mac-mini-nwp.toml:ro

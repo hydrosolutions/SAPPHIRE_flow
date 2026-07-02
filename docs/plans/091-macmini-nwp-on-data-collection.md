@@ -123,9 +123,10 @@ So the NWP-on overlay MUST be both **selected** (env var) **and**
 
 ### Recommended approach — a tiny NWP-on overlay + a tiny compose override
 
-Two small artifacts. **Full contents below** — create them on the mini exactly
-as shown. (This PR is docs-only and does **not** commit them; committing them is
-recommended as a small, reusable follow-up — see *Affected files*.)
+Two small artifacts, **now committed as tracked files** (`config/overlays/mac-mini-nwp.toml`
++ `docker-compose.macmini-nwp.yml`) — you do **not** need to hand-create them on
+the mini; a fresh checkout already has them. Their contents are shown below for
+reference.
 
 **Artifact 1 — `config/overlays/mac-mini-nwp.toml`** (re-enables NWP; base
 config's `nwp_cycle_min_age_minutes = 105` — present once PR #49 is merged —
@@ -166,10 +167,9 @@ the worker ends up with the USB-backup mount, the CAMELS-CH `/data/raw` mount,
 at the NWP-on file. The base `config.toml` mount from `docker-compose.yml:109`
 still supplies the merge base.
 
-> **Commit or transient?** Recommend committing both (they are small and
-> reusable for every future mini NWP-on run), but **this PR keeps to docs-only**
-> — the operator creates them on the mini from the blocks above, or a trivial
-> follow-up PR adds them as tracked files.
+> **Committed:** both files are tracked in the repo (added alongside this
+> runbook), so every future mini NWP-on run gets them from a plain checkout — no
+> hand-creation, no drift.
 
 ---
 
@@ -673,12 +673,11 @@ stop.
 
 ## Affected files
 
-- `docs/plans/091-macmini-nwp-on-data-collection.md` (this runbook — the only
-  file this PR adds).
-- **Described, not committed by this PR** (docs-only): `config/overlays/mac-mini-nwp.toml`
-  and `docker-compose.macmini-nwp.yml` — full contents are in *The NWP-on config
-  problem* section above. Recommended follow-up: commit both as small, reusable
-  tracked files.
+- `docs/plans/091-macmini-nwp-on-data-collection.md` (this runbook).
+- `config/overlays/mac-mini-nwp.toml` and `docker-compose.macmini-nwp.yml` —
+  **committed** as tracked files alongside this runbook, so a plain checkout on
+  the mini has them (no hand-creation). Contents also shown in *The NWP-on config
+  problem* section above. These are the only non-doc files this PR adds.
 - `docs/plans/README.md` — add a Plan 091 index entry (deferred; the working
   tree already carries an uncommitted README change, kept out of this PR's
   scope).
