@@ -1,31 +1,47 @@
-# Plan 090 — NWP adapter: don't select an incompletely-published cycle
+# Plan 090 — NWP incomplete-cycle selection + horizon-coverage validation
 
-**Status**: DRAFT (parked — captured for prioritization; not yet actionable)
-**Phase**: v0b operational hardening (NWP adapter robustness)
+**Status**: DRAFT (needs a grill-me on the design questions below, then READY).
+**Priority**: **elevated / near-term** — this silently truncated a live NWP
+forecast horizon (5 days → 1 step) with no error. Not a "parked" nice-to-have.
+**Phase**: v0b operational hardening (NWP adapter robustness + forecast validation)
 **Parent**: epic 088 (NWP-on forecasting) — surfaced during the 2026-07-02 live
 onboarding of stations 2009/2091
-**Related**: `adapters/meteoswiss_nwp.py` (`resolve_cycle` / `CycleResolution`,
-`max_fallback_steps`), M4 provenance (`nwp_cycle_source`), `operational_inputs`
-daily aggregation, Plan 089 (which recorded this as a sibling follow-up)
-**Created**: 2026-07-02
+**Related**: `adapters/meteoswiss_nwp.py` (`resolve_cycle` / `_cycle_is_published`
+/ `CycleResolution` / `max_fallback_steps`), `services/operational_inputs.py`
+(daily aggregation), `models/nwp_regression.py` (`horizon = len(future_times)`),
+M4 provenance (`nwp_cycle_source`), `docs/research/063-meteoswiss-stac-probe.md`,
+Plan 089 (recorded this as a sibling follow-up)
+**Created**: 2026-07-02 · **Revised**: 2026-07-02 (post design-review)
 
 ---
 
-## Problem (observed live, 2026-07-02)
+## Problem — TWO defects, not one (observed live 2026-07-02)
 
-MeteoSwiss publishes an ICON-CH2-EPS cycle **incrementally** — step-0 / early
-lead-time GRIB items appear on the OGD object store first, later lead-times fill
-in over ~an hour (see the existing note at `adapters/meteoswiss_nwp.py:78`,
-"Newer cycles' step-0 items only surface after older cycles' items are…").
+MeteoSwiss publishes an ICON-CH2-EPS cycle **incrementally**: early lead-times
+appear on OGD first, later lead-times fill in over ~an hour (note at
+`adapters/meteoswiss_nwp.py:76`).
 
-The adapter's cycle resolver snaps to the newest 6-hourly slot and walks back
-(`max_fallback_steps`) only until it finds a cycle with **any** published items —
-it does **not** check that the cycle has adequate **lead-time coverage**. So in
-the live run it selected the freshly-published **06Z** cycle (only ~30 of ~120
-hourly steps uploaded at fetch time) as `primary` over the **complete 00Z** cycle
-(121 steps). After the daily aggregation dropped the ≤ issue-time bucket, only
-**1** future daily step survived → the NWP forecast horizon was truncated to
-1 step / 24 h instead of the intended 5 days.
+**Defect A — the adapter selects an incompletely-published cycle.**
+`resolve_cycle()` stops at the first `_cycle_is_published(candidate)` success, and
+`_cycle_is_published()` returns true if **any** feature has a matching
+`forecast:reference_datetime` — there is **no lead-time / coverage check**
+(`meteoswiss_nwp.py:350, :381, :404`). The fetch path is likewise coverage-blind:
+it lists `cycle_time → cycle_time+120h`, client-filters by
+`forecast:reference_datetime`, and downloads matching allowlisted assets
+(`:467, :523, :535`). So it selected the freshly-published **06Z** cycle (~30 of
+~120 hourly steps uploaded at fetch) over the **complete 00Z** cycle (121 steps).
+
+**Defect B — partial NWP is not validated; the forecast is silently truncated.**
+The daily aggregation + `_filter_and_cap_daily_records` are **correct** for the
+observed case (`operational_inputs.py:71, :111, :124`): for an ~08:00 issue time
+with 06Z data only through next-day 14:00, the daily buckets are issue-day 00:00
+(backdated, dropped) and next-day 00:00 → exactly **1** future bucket survives.
+The bug is that **nothing rejects or flags an under-covered future frame**:
+`NwpRegression.predict` forecasts `horizon = len(future_times)`
+(`models/nwp_regression.py:214, :240`), so a 1-row future frame becomes a 1-step
+forecast **with no error**. Even a perfect cycle-selection fix should be paired
+with a coverage guard so a short/partial NWP frame fails loudly (and falls back)
+rather than producing a truncated forecast.
 
 Evidence (stored `weather_forecasts` at fetch time):
 
@@ -34,55 +50,99 @@ Evidence (stored `weather_forecasts` at fetch time):
 | 00Z (complete) | 121 | 07-02 00:00 → 07-07 00:00 (5 days) |
 | 06Z (selected, incomplete) | 30 | 07-02 06:00 → 07-03 14:00 (~1.3 days) |
 
-The daily aggregation / `_filter_and_cap_daily_records` are **correct** — the
-defect is upstream in **cycle selection**: a newer-but-incomplete cycle is
-preferred over a complete older one.
-
 ## Goal
 
-The adapter selects a cycle only if it has **adequate lead-time coverage** for
-the deployment's forecast horizon; otherwise it treats that cycle as
-not-yet-available and falls back to the last complete cycle. Provenance
-(`nwp_cycle_source`) continues to distinguish primary vs fallback correctly.
+The pipeline never emits a silently-truncated NWP forecast: (1) the adapter
+prefers a cycle with **adequate coverage for the deployment's horizon** over a
+newer-but-incomplete one, and (2) an under-covered future frame is **validated
+and rejected** (fall back / fail loudly), not consumed. Provenance and logs make
+the reason explicit.
 
-## Open design questions (for a grill-me before READY)
+## Design questions (for the grill-me — then READY)
 
-1. **Coverage criterion.** What counts as "complete enough"? Options: require the
-   full published step count (≈120 h hourly); require ≥ the model's
-   `forecast_horizon_steps` worth of lead-time after issue-time; or a configured
-   minimum-coverage threshold. The daily models need only ~5 future days, so a
-   horizon-relative check may suffice and is cheaper than demanding the full 120 h.
-2. **Detection mechanism.** Determine coverage from the STAC item listing (count
-   distinct lead-times / max step) BEFORE downloading, to avoid fetching a doomed
-   partial cycle. Confirm the STAC/OGD listing exposes per-item lead-time.
-3. **Interaction with `max_fallback_steps`.** An incomplete newest cycle should
-   consume a fallback step (walk back to the previous complete cycle) — verify the
-   fallback budget + the `CycleResolution.fallback_used` semantics still read
-   correctly (this WOULD legitimately be `fallback_used=True`).
-4. **Staleness vs completeness trade-off.** Falling back to 00Z when 06Z is
-   partial trades ~6 h of freshness for a full horizon. Confirm that is the right
-   call for daily models (almost certainly yes); note it may differ for a future
-   sub-daily / nowcasting use case.
-5. **Config surface.** Whether the coverage threshold is a `DeploymentConfig`
-   value (operator-tunable) or derived from the forecast horizon.
+### D1 — Coverage criterion (define in DAILY BUCKETS, not raw hours)
+"≥ `forecast_horizon_steps` of lead-time" as written is under-specified:
+`forecast_horizon_steps` is **model steps**, not hours, and the check must
+account for `time_step`, UTC-midnight bucket semantics, and the fact that Phase B
+keeps the **nominal/clock** issue time even when NWP falls back
+(`run_forecast_cycle.py:862`). Practical criterion for daily models: **"the cycle
+can yield N future daily buckets strictly after the nominal issue_time, for every
+required NWP variable AND every required ensemble member/type"** — not just a max
+hourly step. Precip is the sharp case: intermediate hourly-accumulation gaps must
+not pass a naive max-step check.
+
+### D2 — Detection mechanism (feasibility refined)
+Pre-download detection **is** feasible — live STAC exposes `forecast:horizon` per
+item (probed: `.../items?datetime=2026-07-02T06:00:00Z&limit=1` →
+`forecast:horizon = P0DT18H00M00S`). But **server-side filtering by
+`forecast:reference_datetime` is NOT available** — only `datetime` (valid-time)
+filters server-side (`docs/research/063-meteoswiss-stac-probe.md:13, :59`). So
+"enumerate the whole cycle and count distinct lead-times" is more expensive than
+needed. Candidate mechanisms to weigh:
+- **(a) Terminal-valid-time probe (cheapest):** query
+  `datetime=<required terminal valid-time(s)>` and client-filter by
+  `forecast:reference_datetime` + variable + perturb/control to confirm the
+  needed far lead-times exist for the required variables/members.
+- **(b) Full-listing coverage count:** list the cycle window once, count distinct
+  lead-times per variable/member. Simpler logic, more items fetched.
+- **(c) Age-delay guard (cheapest, least exact):** ignore cycles younger than a
+  configured delivery-delay (existing age/fallback config:
+  `config/deployment.py:77`, `config.toml:12`). A good **first operational
+  mitigation** even before full coverage probing.
+- **(d) Post-download / parsed-dataset guard (defence in depth — likely always
+  needed):** after fetch+parse, validate the assembled future frame meets D1 per
+  variable/member; reject if short. Catches the cases (a)-(c) miss: a listing that
+  looks complete but an asset download fails or a variable/member is absent. NOTE
+  today an adapter fetch failure **aborts** NWP fetch rather than walking back to
+  an older cycle (`run_forecast_cycle.py:327`) — the walk-back-on-insufficient
+  behaviour must be designed in.
+
+Likely answer: **(c) or (a) as the selection-time gate + (d) as the mandatory
+post-assembly validation.**
+
+### D3 — Fallback semantics, provenance, and budget
+An incomplete newest cycle should consume a `max_fallback_steps` step and walk
+back to the last adequate cycle. `fallback_used=True` is semantically fine
+(current provenance maps any adapter walk-back to `NwpCycleSource.FALLBACK` —
+`run_forecast_cycle.py:106, :844`), BUT add a **diagnostic `fallback_reason`**
+(e.g. `incomplete_coverage` vs `not_published` vs `late`) so "fallback" doesn't
+hide *why*. Decide: what if the fallback budget is exhausted by successive
+incomplete cycles (fail the cycle? emit runoff-only? widen the budget)?
+
+### D4 — Staleness vs completeness trade-off
+Falling back to 00Z when 06Z is partial trades ~6 h freshness for a full horizon —
+almost certainly right for daily models; confirm, and note it may differ for a
+future sub-daily / nowcasting use case (out of scope here).
+
+### D5 — Config surface
+Whether the coverage threshold / delivery-delay is a `DeploymentConfig` value
+(operator-tunable) or derived from the forecast horizon + `time_step`.
 
 ## Non-goals
 
-- Changing the daily aggregation / filter (they are correct).
+- Changing the daily aggregation / `_filter_and_cap_daily_records` (correct).
 - Sub-daily / nowcasting cycle handling (future).
 
 ## Affected surfaces (preliminary)
 
-- `adapters/meteoswiss_nwp.py` — `resolve_cycle` / STAC item enumeration /
-  `CycleResolution`; a coverage check before accepting a cycle.
-- possibly `DeploymentConfig` — a coverage threshold.
-- `flows/run_forecast_cycle.py` — provenance already threads `fallback_used`; a
-  completeness-driven fallback should flow through unchanged.
-- tests — a fake STAC listing with a partial newest cycle + a complete older one;
-  assert the complete cycle is chosen and `fallback_used=True`.
+- `adapters/meteoswiss_nwp.py` — `resolve_cycle` / `_cycle_is_published` / STAC
+  item enumeration / `CycleResolution`: coverage-aware acceptance + walk-back.
+- `services/operational_inputs.py` or `run_station_forecast` — **post-assembly
+  coverage validation** of the future frame (per variable/member) with loud
+  reject + fallback.
+- `flows/run_forecast_cycle.py` — walk-back-on-insufficient (not just on
+  not-published); `fallback_reason` logging; provenance already threads
+  `fallback_used`.
+- `config/deployment.py` + `config.toml` — coverage / delivery-delay threshold.
+- tests — fake STAC listing with a partial newest + complete older cycle
+  (assert the complete one is chosen, `fallback_used=True`,
+  `fallback_reason=incomplete_coverage`); a parsed under-covered frame is
+  rejected / falls back rather than producing a 1-step forecast.
 
 ## Process
 
-DRAFT until a grill-me resolves the coverage criterion + detection mechanism,
-then re-draft with phases + JSON dependency graph and flip DRAFT → READY per
-`docs/workflow.md`. No implementation from DRAFT.
+DRAFT until a grill-me resolves D1–D5 (coverage criterion in daily buckets;
+selection-time mechanism (a/b/c) + mandatory post-download guard (d); fallback
+reason/budget), then re-draft with phases + JSON dependency graph and flip DRAFT
+→ READY per `docs/workflow.md`. No implementation from DRAFT. Given the live
+silent-truncation impact, schedule the grill-me near-term rather than parking.
