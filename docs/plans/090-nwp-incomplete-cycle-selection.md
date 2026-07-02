@@ -1,6 +1,8 @@
 # Plan 090 — NWP incomplete-cycle selection + horizon-coverage validation
 
-**Status**: DRAFT (needs a grill-me on the design questions below, then READY).
+**Status**: READY (grill-me held 2026-07-02 — D1–D5 resolved below; phases
+concrete). Implement Phase 1 (age-delay guard + post-download validation) before
+the Mac-mini data-collection deployment.
 **Priority**: **elevated / near-term** — this silently truncated a live NWP
 forecast horizon (5 days → 1 step) with no error. Not a "parked" nice-to-have.
 **Phase**: v0b operational hardening (NWP adapter robustness + forecast validation)
@@ -58,7 +60,47 @@ newer-but-incomplete one, and (2) an under-covered future frame is **validated
 and rejected** (fall back / fail loudly), not consumed. Provenance and logs make
 the reason explicit.
 
-## Design questions (for the grill-me — then READY)
+## Resolved decisions (grill-me 2026-07-02)
+
+- **D1** — coverage = **N future daily buckets strictly after the nominal
+  issue_time, for every required variable AND every required member/type**, where
+  N = the model's `forecast_horizon_steps` in `time_step` units (not raw hours).
+- **D2** — implement **(c) age-delay guard (selection gate) + (d) mandatory
+  post-download coverage validation** first. Defer (a) terminal-valid-time probe
+  and (b) full-listing count as later precision refinements.
+- **D3** — add `fallback_reason` (`incomplete_coverage` / `not_published` /
+  `late`). On fallback-budget exhaustion (no adequate cycle within
+  `max_fallback_steps`): **fall to runoff-only for NWP-consuming models** (they
+  produce nothing this cycle; fallback models still forecast via the priority
+  chain) — do NOT fail the whole cycle.
+- **D4** — prefer the **complete older cycle** for daily models (accept ~6 h less
+  freshness for a full horizon). Sub-daily/nowcasting out of scope.
+- **D5** — the coverage requirement is **derived** from `forecast_horizon_steps`
+  + `time_step` (not operator-set); the **delivery-delay** is an operator-tunable
+  `DeploymentConfig` value (default ≈ 90–120 min, ICON publish latency).
+
+## Phases
+
+- **P1 — cheap mitigation (ship before mini deploy):**
+  - Config: add a delivery-delay to `DeploymentConfig` + `config.toml` (default
+    ≈ 90–120 min).
+  - Adapter selection gate: `resolve_cycle` skips a snapped cycle whose age
+    `(now - cycle_time) < delivery_delay` and walks back per `max_fallback_steps`
+    (age-delay guard, D2c); this legitimately sets `fallback_used=True`.
+  - Post-download validation (D2d): after the future frame is assembled
+    (`operational_inputs` / a shared guard), require ≥ N daily buckets per
+    variable/member (D1); on shortfall, treat NWP as unavailable for that station
+    → **runoff-only** path (M4 `RUNOFF_ONLY` provenance) rather than a truncated
+    forecast.
+  - `fallback_reason` logging (D3); runoff-only-on-exhaustion (D3).
+  - Tests (RED-confirmed): (i) partial newest + complete older cycle → complete
+    chosen, `fallback_used=True`, `fallback_reason=incomplete_coverage`; (ii) an
+    under-covered assembled frame → runoff-only, NOT a 1-step forecast.
+- **P2 — precision refinement (later, optional):** (a) terminal-valid-time STAC
+  probe per variable/member for exact pre-download coverage, reducing wasted
+  fetches of doomed partial cycles. Own follow-up once P1 is in.
+
+## Design questions (resolved above — retained for rationale)
 
 ### D1 — Coverage criterion (define in DAILY BUCKETS, not raw hours)
 "≥ `forecast_horizon_steps` of lead-time" as written is under-specified:
@@ -141,8 +183,6 @@ Whether the coverage threshold / delivery-delay is a `DeploymentConfig` value
 
 ## Process
 
-DRAFT until a grill-me resolves D1–D5 (coverage criterion in daily buckets;
-selection-time mechanism (a/b/c) + mandatory post-download guard (d); fallback
-reason/budget), then re-draft with phases + JSON dependency graph and flip DRAFT
-→ READY per `docs/workflow.md`. No implementation from DRAFT. Given the live
-silent-truncation impact, schedule the grill-me near-term rather than parking.
+READY (grill-me done). **P1** is the next implementation (hold-at-PR) and gates
+the Mac-mini data-collection deployment's forecast quality. **P2** is a deferred
+precision refinement. Re-scope P2 into its own plan when P1 lands.
