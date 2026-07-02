@@ -638,3 +638,52 @@ class TestRunAllStationForecasts:
         assert _MODEL_ID_A in combinable
         assert _MODEL_ID_B in combinable
         assert _MODEL_ID_C not in combinable
+
+
+class TestSkillModelOutranksFallback:
+    """Plan 089 regression: config-driven priorities make the PRIMARY chain
+    prefer skill models over fallbacks.
+
+    Before the fix, onboarding assigned every model priority=0, so the
+    first-success chain reached a fallback (by arbitrary store order) before the
+    skill model. Here priorities are resolved from DeploymentConfig.model_priorities
+    exactly as onboarding Step 6 does; the fallback is listed FIRST to model the
+    arbitrary fetch order that caused the live incident.
+    """
+
+    def test_skill_model_is_primary_over_fallback(self) -> None:
+        skill_model_id = ModelId("nwp_rainfall_runoff")
+        fallback_model_id = ModelId("climatology_fallback")
+
+        config = DeploymentConfig(
+            max_retention_days=1000,
+            model_priorities={
+                str(skill_model_id): 20,
+                str(fallback_model_id): 100,
+            },
+        )
+
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, skill_model_id)
+        _seed_artifact(store, fallback_model_id)
+
+        # Fallback ordered first — pre-fix (equal priorities) this wins the chain.
+        result = _run_all(
+            assignments=[
+                _make_assignment(
+                    fallback_model_id,
+                    priority=config.priority_for_model(str(fallback_model_id)),
+                ),
+                _make_assignment(
+                    skill_model_id,
+                    priority=config.priority_for_model(str(skill_model_id)),
+                ),
+            ],
+            models={
+                skill_model_id: FakeStationForecastModel(),
+                fallback_model_id: FakeStationForecastModel(),
+            },
+            store=store,
+        )
+
+        assert result.primary_model_id == skill_model_id

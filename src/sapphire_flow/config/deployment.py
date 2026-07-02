@@ -23,6 +23,12 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
+# Priority assigned to a model that has no entry in [model_priorities]. Sits
+# between skill models (lower) and fallbacks (higher), so an unlisted new model
+# outranks the fallbacks by default but not the tuned skill models. See Plan 089.
+DEFAULT_PRIORITY = 50
+
+
 class _DangerLevelInput(BaseModel):
     name: str
     level: int  # maps to display_order
@@ -100,6 +106,11 @@ class DeploymentConfig(BaseModel):
     available_nwp_parameters: frozenset[str] = frozenset(
         {"precipitation", "temperature"}
     )
+
+    # model_id -> priority (lower = preferred; tried first in the PRIMARY
+    # first-success fallback chain). Unlisted models get DEFAULT_PRIORITY.
+    # See Plan 089 and docs/conventions.md § Model assignment priority.
+    model_priorities: dict[str, int] = {}
 
     min_skill_samples: int = 100
     min_skill_seasons: int = 2
@@ -197,6 +208,14 @@ class DeploymentConfig(BaseModel):
                 " < warmup_snapshot_age_degraded_hours"
             )
         return self
+
+    def priority_for_model(self, model_id: str) -> int:
+        """Resolve a model's assignment priority (lower = preferred).
+
+        Returns the configured value from [model_priorities], or
+        DEFAULT_PRIORITY for models absent from the map.
+        """
+        return self.model_priorities.get(model_id, DEFAULT_PRIORITY)
 
     def get_danger_level_definitions(self) -> list[DangerLevelDefinition]:
         return [

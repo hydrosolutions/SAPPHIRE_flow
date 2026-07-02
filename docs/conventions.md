@@ -423,20 +423,29 @@ All status/enum columns store TEXT matching the Python enum `.value` (lowercase)
 
 ## Model assignment priority
 
-Lower integer = higher priority. `0` = primary model (run first in forecast cycle,
-drives alert decisions when all models succeed).
+Lower integer = higher priority — the model is tried first in the forecast
+cycle's PRIMARY first-success fallback chain and drives alert decisions when all
+models succeed. The intended hierarchy is **skill models > fallbacks**.
+
+**Priorities are config-driven (Plan 089).** Onboarding no longer hardcodes a
+priority. It resolves each model's priority from the `[model_priorities]` map in
+`config.toml` (`DeploymentConfig.model_priorities`), keyed by `model_id`. A model
+absent from the map gets `DEFAULT_PRIORITY = 50` — a neutral tier between skill
+models (< 50) and fallbacks (>= 90). Re-onboarding is idempotent and re-applies
+the current config priorities to existing assignments (upsert).
 
 | Priority | Model type | Semantics |
 |----------|-----------|-----------|
-| 0 | Linear regression / primary | Fastest fallback; alert-selection primary |
-| 1 | ML (LSTM, etc.) | |
-| 2 | Conceptual (HBV, etc.) | |
-| 90 | `ClimatologyFallbackModel` | Guaranteed last-resort; excluded from combination |
-| 99 | `PersistenceFallbackModel` | Absolute last-resort; excluded from combination |
+| 10–30 | Skill models (NWP regression, NWP rainfall-runoff, linear regression) | Weather-driven / conceptual; alert-selection primary |
+| 50 | `DEFAULT_PRIORITY` (unlisted models) | Neutral tier — outranks fallbacks, below tuned skill models |
+| 90 | `PersistenceFallbackModel` | Guaranteed last-resort; excluded from combination |
+| 100 | `ClimatologyFallbackModel` | Absolute last-resort; excluded from combination |
 
+- Config: `[model_priorities]` in `config.toml`, parsed at the Pydantic boundary
+  into `DeploymentConfig.model_priorities: dict[str, int]`. Operator-tunable.
 - DB default: `server_default="0"` on `model_assignments.priority` and `group_model_assignments.priority`.
 - Alert strategy dispatches via `min(priority)` — lowest integer wins.
-- Priorities 90–99 are reserved for fallback models. `FALLBACK_PRIORITY_THRESHOLD = 90` — models at or above this threshold are excluded from multi-model combination (`pooled`, `bma`, `consensus` strategies). They participate in error-recovery fallback only.
+- Priorities >= 90 are reserved for fallback models. `FALLBACK_PRIORITY_THRESHOLD = 90` — models at or above this threshold are excluded from multi-model combination (`pooled`, `bma`, `consensus` strategies). They participate in error-recovery fallback only.
 - v1 may add a separate `alert_priority` column to decouple fallback order from alert selection (see `architecture-context.md` §I3).
 
 ---

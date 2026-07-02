@@ -439,6 +439,36 @@ class TestCreateAssignment:
         assert len(assignments) == 1
         assert assignments[0].status == ModelAssignmentStatus.INACTIVE
 
+    def test_reonboard_updates_priority_idempotently(self) -> None:
+        """Plan 089: re-onboarding with a changed config priority upserts the
+        existing active assignment (single row, new priority)."""
+        station_store = FakeStationStore()
+        station = make_station_config()
+        station_store.store_station(station)
+        model_id = ModelId("nwp_rainfall_runoff")
+
+        create_station_assignment(
+            station_id=station.id,
+            model_id=model_id,
+            time_step=timedelta(days=1),
+            priority=100,
+            station_store=station_store,
+            clock=_CLOCK,
+        )
+        # Re-onboard with a new (lower) priority — e.g. config retuned.
+        create_station_assignment(
+            station_id=station.id,
+            model_id=model_id,
+            time_step=timedelta(days=1),
+            priority=20,
+            station_store=station_store,
+            clock=_CLOCK,
+        )
+
+        assignments = station_store.fetch_model_assignments(station.id)
+        assert len(assignments) == 1
+        assert assignments[0].priority == 20
+
 
 class TestHindcastDays:
     """Verify the hindcast_days narrowing logic in _run_onboarding()."""
