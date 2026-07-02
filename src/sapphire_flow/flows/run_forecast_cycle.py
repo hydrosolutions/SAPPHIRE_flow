@@ -16,7 +16,11 @@ from prefect import flow, task
 from prefect import runtime as prefect_runtime
 from prefect.cache_policies import NO_CACHE
 
-from sapphire_flow.exceptions import ConfigurationError, StoreError
+from sapphire_flow.exceptions import (
+    ConfigurationError,
+    NoCycleAvailableError,
+    StoreError,
+)
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
     ModelAssignmentStatus,
@@ -113,10 +117,16 @@ class _NwpFetchOutcome:
     the ``nwp_cycle_reference_time`` provenance so records/readback/provenance
     stay on one cycle. ``fallback_used`` is True iff the adapter walked back
     >=1 cycle step; the loop maps it to ``NwpCycleSource.FALLBACK``.
+
+    ``nwp_unavailable`` (Plan 090 D3) is True when NO adequate cycle exists this
+    run (the adapter exhausted its fallback budget → ``NoCycleAvailableError``).
+    This is NOT a flow-fatal error: the loop falls to runoff-only for THIS cycle
+    (NWP-consuming models produce nothing; native/fallback models still forecast).
     """
 
     cycle_time: UtcDatetime
     fallback_used: bool
+    nwp_unavailable: bool = False
 
 
 _GRID_EXTRACTOR_CHOICES: tuple[str, ...] = ("mesh", "exactextract")
@@ -326,6 +336,14 @@ def _fetch_nwp_task(
     t0 = time.perf_counter()
     try:
         result = adapter.fetch_forecasts(station_configs, cycle_time)
+    except NoCycleAvailableError as exc:
+        # Plan 090 D3: no adequate cycle within the fallback budget. This is NOT
+        # a flow-fatal failure — signal NWP-unavailable so the caller falls to
+        # runoff-only for THIS cycle (native/fallback models still forecast).
+        log.warning("nwp.no_cycle_available", error=str(exc))
+        return _NwpFetchOutcome(
+            cycle_time=cycle_time, fallback_used=False, nwp_unavailable=True
+        )
     except Exception as exc:
         log.error("nwp.fetch_failed", error=str(exc))
         return None
@@ -842,13 +860,29 @@ def run_forecast_cycle_flow(
         # Collect Step 1.6 result (we don't block on this — just use it for logging)
         _obs_timestamps: dict[StationId, UtcDatetime | None] = obs_ts_future.result()
 
+        # Plan 090 D3: NWP configured but no adequate cycle this run → treat NWP
+        # as unavailable FOR THIS CYCLE and fall to runoff-only (NWP-consuming
+        # models produce nothing; native/fallback models still forecast). This is
+        # distinct from a genuine fatal error (handled by the abort above).
+        nwp_unavailable_runtime = (
+            not runoff_only_mode
+            and nwp_outcome is not None
+            and nwp_outcome.nwp_unavailable
+        )
+        if nwp_unavailable_runtime:
+            log.warning(
+                "forecast_cycle.nwp_unavailable_runoff_only",
+                cycle_time=resolved_cycle_time.isoformat(),
+            )
+        effective_runoff_only = runoff_only_mode or nwp_unavailable_runtime
+
         # --- Honest NWP provenance (epic-088 M4) ---
-        # Runoff-only mode has no NWP cycle at all → RUNOFF_ONLY + null
-        # reference time (NOT a faked clock cycle). With NWP on, the adapter's
-        # fallback fact decides PRIMARY vs FALLBACK; the resolved cycle time is
-        # the reference.
+        # Runoff-only (configured OR runtime-unavailable) has no NWP cycle at all
+        # → RUNOFF_ONLY + null reference time (NOT a faked clock cycle). With NWP
+        # on and available, the adapter's fallback fact decides PRIMARY vs
+        # FALLBACK; the resolved cycle time is the reference.
         nwp_cycle_reference_time: UtcDatetime | None
-        if runoff_only_mode:
+        if effective_runoff_only:
             nwp_cycle_source = NwpCycleSource.RUNOFF_ONLY
             nwp_cycle_reference_time = None
         else:
@@ -938,6 +972,18 @@ def run_forecast_cycle_flow(
             superset_reqs = build_superset_requirements(
                 [m.data_requirements for m in assigned_models]
             )
+            # Plan 090 D3: when NWP is unavailable at RUNTIME (adapter exhausted
+            # its cycle budget this run), assemble WITHOUT future features so a
+            # declared-but-unfetchable NWP requirement does not make assembly
+            # return None and starve the native models. The per-model coverage
+            # guard then skips NWP-consuming models (no future columns → inadequate)
+            # while native/fallback models still forecast. Scoped to the runtime-
+            # unavailable case (NOT pure config runoff-only, which keeps its Plan
+            # 077 semantics of consuming any stored NWP records).
+            if nwp_unavailable_runtime:
+                superset_reqs = replace(
+                    superset_reqs, future_dynamic_features=frozenset()
+                )
             forecast_horizon_steps: int = superset_reqs.forecast_horizon_steps
 
             assignment_time_steps = {a.time_step for a in sorted_assignments}

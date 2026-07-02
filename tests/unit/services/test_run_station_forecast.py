@@ -798,6 +798,146 @@ class TestNwpCoverageGuard:
         assert result.primary_model_id == self._NWP_ID
 
 
+class _MixedMemberEnsembleNwpModel:
+    """ensemble_mode=ENSEMBLE model whose future_dynamic carries one required
+    feature member-suffixed and another as a bare column. Plan 090 D1 requires
+    every required feature to carry the SAME non-empty member set for an ensemble
+    model — a bare-only feature is inadequate (the fan-out would reuse the single
+    bare value for every member)."""
+
+    def __init__(self) -> None:
+        from sapphire_flow.types.enums import (
+            ArtifactScope,
+            EnsembleMode,
+            SpatialRepresentation,
+        )
+        from sapphire_flow.types.model import ModelDataRequirements
+
+        self.artifact_scope = ArtifactScope.STATION
+        self.data_requirements = ModelDataRequirements(
+            target_parameters=frozenset({"discharge"}),
+            past_dynamic_features=frozenset(),
+            future_dynamic_features=frozenset({"precipitation", "temperature"}),
+            static_features=frozenset(),
+            supported_time_steps=frozenset({_STEP}),
+            lookback_steps=1,
+            forecast_horizon_steps=5,
+            spatial_input_type=SpatialRepresentation.BASIN_AVERAGE,
+            ensemble_mode=EnsembleMode.ENSEMBLE,
+        )
+
+    def train(self, *args: object, **kwargs: object) -> bytes:
+        return b"artifact"
+
+    def predict(
+        self,
+        artifact: object,
+        inputs: StationModelInputs,
+        rng: random.Random,
+        prior_state: bytes | None = None,
+    ) -> tuple[dict, bytes | None]:
+        from sapphire_flow.types.ensemble import ForecastEnsemble
+
+        # Reached only pre-fix (via fan-out per member slice → bare precipitation).
+        fd = inputs.data.future_dynamic
+        values = fd.select(
+            pl.col("timestamp").alias("valid_time"),
+            pl.lit(0).cast(pl.Int32).alias("member_id"),
+            pl.col("precipitation").cast(pl.Float64).alias("value"),
+        )
+        ens = ForecastEnsemble.from_members(
+            station_id=inputs.station_id,
+            issued_at=inputs.issue_time,
+            parameter="discharge",
+            units="m³/s",
+            time_step=inputs.time_step,
+            values=values,
+        )
+        return {"discharge": ens}, None
+
+    def serialize_artifact(self, artifact: object) -> bytes:
+        return b"artifact"
+
+    def deserialize_artifact(self, raw: bytes) -> object:
+        return raw
+
+
+def _mixed_member_inputs(rows: int = 5, n_members: int = 3) -> StationModelInputs:
+    times = [ensure_utc(_NOW + (i + 1) * _STEP) for i in range(rows)]
+    data: dict[str, list] = {"timestamp": times, "temperature": [10.0] * rows}
+    for k in range(n_members):
+        data[f"precipitation_{k}"] = [1.0] * rows
+    future_dynamic = pl.DataFrame(data).with_columns(
+        pl.col("timestamp").cast(pl.Datetime("us", "UTC"))
+    )
+    obs_rows = [
+        {"timestamp": _NOW - timedelta(hours=i), "value": 10.0} for i in range(10)
+    ]
+    obs_df = pl.DataFrame(obs_rows).with_columns(
+        pl.col("timestamp").cast(pl.Datetime("us", "UTC"))
+    )
+    empty = pl.DataFrame({"timestamp": []}).with_columns(
+        pl.col("timestamp").cast(pl.Datetime("us", "UTC"))
+    )
+    return StationModelInputs(
+        station_id=_STATION_ID,
+        data=StationInputData(
+            past_targets=obs_df,
+            past_dynamic=empty,
+            future_dynamic=future_dynamic,
+            static=None,
+        ),
+        issue_time=_NOW,
+        forecast_horizon_steps=5,
+        time_step=_STEP,
+    )
+
+
+class TestEnsembleMemberSetCoverage:
+    """Plan 090 D1 (Finding 3): the coverage guard is member-set-aware. An
+    ENSEMBLE model with a required feature present only as a bare column (no
+    member suffix) has inadequate coverage and is skipped — even though each
+    present column individually carries enough clean rows.
+    """
+
+    _NWP_ID = ModelId("nwp_ensemble")
+    _NATIVE_ID = ModelId("persistence_fallback")
+
+    def test_ensemble_bare_only_feature_is_skipped(self) -> None:
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, self._NWP_ID)
+        _seed_artifact(store, self._NATIVE_ID)
+        result = run_all_station_forecasts(
+            station_id=_STATION_ID,
+            inputs=_mixed_member_inputs(),
+            input_metadata=_make_metadata(),
+            assignments=[
+                _make_assignment(self._NWP_ID, priority=1),
+                _make_assignment(self._NATIVE_ID, priority=2),
+            ],
+            models={
+                self._NWP_ID: _MixedMemberEnsembleNwpModel(),  # type: ignore[dict-item]
+                self._NATIVE_ID: FakeStationForecastModel(),  # type: ignore[dict-item]
+            },
+            artifact_store=store,
+            qc_checker=ForecastOutputQualityChecker(),
+            qc_rules=_empty_qc_rules(),
+            qc_overrides=[],
+            baselines=[],
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            config=_make_config(),
+            clock=_fixed_clock(),  # type: ignore[arg-type]
+            id_gen=_sequential_id_gen(),  # type: ignore[arg-type]
+            rng=random.Random(42),
+        )
+
+        assert self._NWP_ID not in result.results
+        assert self._NWP_ID in result.failed_models
+        assert "insufficient NWP coverage" in result.failed_models[self._NWP_ID]
+        assert result.primary_model_id == self._NATIVE_ID
+
+
 class TestSkillModelOutranksFallback:
     """Plan 089 regression: config-driven priorities make the PRIMARY chain
     prefer skill models over fallbacks.

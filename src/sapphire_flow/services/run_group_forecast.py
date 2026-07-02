@@ -8,6 +8,7 @@ import structlog
 from sapphire_flow.exceptions import ModelOutputError, StoreError
 from sapphire_flow.services.hindcast import is_connection_fatal
 from sapphire_flow.services.input_quality import assess_input_quality
+from sapphire_flow.services.nwp_coverage import assess_future_coverage
 from sapphire_flow.services.operational_inputs import (
     assemble_station_operational_inputs,
 )
@@ -350,6 +351,35 @@ def run_group_forecast(
     id_gen: Callable[[], UUID],
     rng: random.Random,
 ) -> dict[StationId, StationForecastResult]:
+    # Plan 090 D1/D2/D3 (GROUP path): before predict_batch, a group model that
+    # declares future NWP forcing must have adequate coverage for EVERY member
+    # station it forecasts — else predict_batch would emit a truncated batch. On
+    # shortfall for any station, skip the group model gracefully (return {}) so
+    # the fallback chain still runs, mirroring the STATION path.
+    future_features = model.data_requirements.future_dynamic_features
+    if future_features:
+        required_steps = model.data_requirements.forecast_horizon_steps
+        ensemble_mode = model.data_requirements.ensemble_mode
+        for station_id in group_inputs.station_ids:
+            station_future = group_inputs.for_station(station_id).future_dynamic
+            coverage = assess_future_coverage(
+                station_future,
+                required_features=future_features,
+                required_steps=required_steps,
+                ensemble_mode=ensemble_mode,
+            )
+            if not coverage.adequate:
+                log.warning(
+                    "nwp.insufficient_coverage",
+                    group_id=str(group.id),
+                    model_id=str(assignment.model_id),
+                    station_id=str(station_id),
+                    required_steps=required_steps,
+                    available_steps=coverage.available_steps,
+                    detail=coverage.detail,
+                )
+                return {}
+
     try:
         artifact_result = artifact_store.fetch_active_artifact(
             assignment.model_id,
