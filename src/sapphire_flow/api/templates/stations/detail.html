@@ -269,7 +269,7 @@ function loadCharts() {
       }
       plot("obs-chart", traces, {
         title: {text: param + " — " + label},
-        xaxis: {title: {text: "Date"}},
+        xaxis: {title: {text: "Date (UTC)"}},
         yaxis: {title: {text: param}},
       });
     })
@@ -319,7 +319,7 @@ function loadCharts() {
       }
       plot("forcing-chart", traces, {
         title: {text: "Forcing — " + label},
-        xaxis: {title: {text: "Date"}},
+        xaxis: {title: {text: "Date (UTC)"}},
       });
     })
     .catch(e => { errDiv.textContent = "Forcing error: " + e; });
@@ -363,7 +363,7 @@ function loadCharts() {
       }
       plot("hindcast-chart", traces, {
         title: {text: "Hindcasts vs Observed — " + param},
-        xaxis: {title: {text: "Date"}},
+        xaxis: {title: {text: "Date (UTC)"}},
         yaxis: {title: {text: param}},
       });
     })
