@@ -1,21 +1,37 @@
 # Plan 098 — guaranteed-cadence observation ingest (decouple from forecast-cycle)
 
-**Status**: READY (plan-review 2026-07-03 corrected the premise + resolved the
-design against the installed Prefect source; grill-me approved the two forks —
-see below). Implementation-precision residuals (register_all restructure so
-`_build_specs()` precedes the client block; per-overlay ingest-worker bind
-precision — do NOT copy the backup/CAMELS binds; Phase-3 test deps on the
-`work_pool_name` field) are watch-outs for the implementer, not blockers.
+**Status**: READY (plan-review 2026-07-03, 3 rounds — corrected the premise +
+resolved the design against the installed Prefect source; reconciled the Phase-0
+evidence with the root cause, corrected the `register_all` restructure to the
+minimal safe change, added the `read_only` ingest-worker tmpfs fix, pinned the
+`mem_limit`, added a rollback path, and fixed the `work_pool_name` field default +
+test deps). Final round left **0 blockers**; the residual "majors" were all
+doc-completeness/prose-accuracy nits — now folded in: the ingest worker's
+`logging:` block (unbounded-log fix, D3); five more stale single-pool/one-worker
+doc lines added to D8 (`orchestration.md:16`, `cicd.md:71`, `cicd.md:45`,
+`v0-scope.md:66`); the missing-overlay failure mode corrected to
+silent-wrong-station (not `FileNotFoundError`); the poll interval corrected to 10 s;
+and the `test_handles_existing_work_pool` `side_effect` made deterministic (callable
+keyed on pool name, not a positional list against an unordered set). **No residual
+design fork** — the two grill-me forks (dedicated worker + `ingest` pool; root
+cause) were already decided. Implementation-precision residuals (per-overlay
+ingest-worker bind precision — do NOT copy the backup/CAMELS binds; Phase-3 test
+deps on the `work_pool_name` field) are watch-outs for the implementer, not
+blockers.
 
 **Grill-me decisions (2026-07-03):** (1) **Approach = dedicated ingest worker +
 `ingest` pool** (isolation), not a concurrency knob (Option A is a no-op — the
-worker is already unbounded). (2) **Phase 0 root-cause test DONE on the mini
-(2026-07-03) — see "Phase 0 RESULT" below.** OOM/contention is **ruled out**
-(OOMKilled=false, Restarts=0, memory far below limit); confirmed cause = **poll/
-scheduling latency** (the shared worker's poll loop starves during the 6-hourly
-forecast-cycle, delaying the `*/5` ingest pickup by ≈25–60 min → lost LINDAS
-windows). Plan 062 absorption is **not urgent** (the recreate-hang did not cause
-today's loss). Phases 1–3 are unblocked and unchanged.
+worker is already unbounded). (2) **Phase 0 root-cause test PARTIALLY DONE on the
+mini (2026-07-03) — see "Phase 0 RESULT" below.** OOM/contention is **ruled out**
+(OOMKilled=false, Restarts=0, memory far below limit). The residual mechanism
+producing the 25–60 min lateness is **narrowed to two consistent candidates**
+(async-poll-cycle starvation on the worker's event loop vs. server-side
+scheduled-run dequeue latency) — both are resolved OR their blast radius contained
+by the dedicated-worker isolation, so the fix does not depend on disambiguating
+them. A one-line Phase-0 timing measurement (cron-tick → subprocess-appears gap;
+see the RESULT section) tells operators which is dominant, but **Phases 1–3 do not
+gate on it**. Plan 062 absorption is **not urgent** (the recreate-hang did not
+cause today's loss). Phases 1–3 are unblocked and unchanged.
 
 **Priority**: high — LINDAS observations are only live for ~10 min, so any
 delayed/blocked ingest **permanently loses discharge data**. Directly hit on the
@@ -126,20 +142,67 @@ The Q1 controlled test was run on the mini. Evidence:
   during a forecast-cycle window; the runs themselves complete **fast** once they
   start.
 
-**Confirmed root cause = poll/scheduling latency, NOT resource exhaustion.**
-Cause 1 (contention/OOM) is **ruled out** (OOMKilled=false, Restarts=0, memory
-far below limit). Cause 2 (Plan-062 recreate-hang) is a *distinct, separate*
-symptom (total stall until manual `restart`, seen on `up -d` recreate) — not what
-produces the recurring, bounded 25–60 min lateness here. The actual mechanism is
-that the **single shared process worker's poll/submission loop is starved while it
-runs the 6-hourly forecast-cycle** (21 members × 2 stations pegs CPU), stretching
-the `*/5` ingest pickup by tens of minutes. Because LINDAS obs live only ~10 min,
-that pickup delay = **permanent data loss**.
+**Confirmed: resource exhaustion is ruled out.** Cause 1 (contention/OOM) is
+**ruled out** (OOMKilled=false, Restarts=0, memory far below limit). Cause 2
+(Plan-062 recreate-hang) is a *distinct, separate* symptom (total stall until
+manual `restart`, seen on `up -d` recreate) — not what produces the recurring,
+bounded 25–60 min lateness here.
+
+**The `docker top → 2` evidence corrects the naive "run is queued behind
+forecast-cycle" story and narrows — but does not by itself pin — the lateness
+mechanism.** Two subprocesses concurrent during the overlap proves the ingest run
+*was* submitted and *did* run concurrently (F1: no worker-level cap). So the
+lateness is NOT "the run waits in a queue for forecast-cycle to finish." That
+leaves two mechanisms consistent with `count == 2`:
+
+  - **(a) Async poll-cycle starvation (worker-side, pre-submission).** The
+    `ProcessWorker` poll loop runs on a single async event loop
+    (`PREFECT_WORKER_QUERY_SECONDS`, default **10 s** between "Discovered N work"
+    polls — `prefect.settings.models.worker:42`, `Field(default=10)`; NOT ~2 s).
+    When the worker's event loop is CPU-saturated by *managing* the running
+    forecast-cycle subprocess (21 members × 2 stations pegs CPU), it can skip or
+    delay poll cycles — so the *next* scheduled ingest tick is discovered and
+    submitted tens of minutes late. At a 10 s poll cadence, 25–60 min of lateness
+    means **150–360 consecutive skipped/delayed polls** — that magnitude points at a
+    *sustained* CPU-saturation stall of the event loop, not occasional misses, which
+    strengthens mechanism (a) as the dominant explanation. This is fully consistent with `count == 2`: a
+    *previous* ingest started fine (hence a second python subprocess is visible),
+    while the *current* tick's poll is what is delayed. This is a form of
+    poll-starvation, but pre-submission and worker-local — a dedicated ingest
+    worker with its own event loop and no forecast-cycle subprocess to manage
+    resolves it directly.
+  - **(b) Server-side scheduled-run dequeue latency.** The Prefect *server* may be
+    slow to emit the scheduled run to the worker (late-run backoff, scheduled-run
+    dequeue latency, or slow emission when a pool already has a busy worker). If
+    this is dominant, a second *pool* still helps — the `ingest` pool's runs are
+    dequeued independently of `default`'s busy worker — but it does NOT help if the
+    slowness is a global server throttle. That residual server-side risk is the
+    same shared-fate risk already tracked in D6/Q4 and the resource-interaction
+    matrix; a dedicated worker + pool is still the correct and lowest-risk first
+    move, and Phase 4 validation measures whether lateness persists.
+
+**Disambiguating measurement (Phase 0 follow-on — one line, does NOT gate Phases
+1–3).** While a live forecast-cycle runs AND the ingest subprocess is visible in
+`docker top` (confirming pickup), measure the gap from the cron tick to when the
+subprocess appears, and cross-check the "Discovered N work" poll timestamps:
+`docker logs prefect-worker | grep 'Discovered'` (poll cadence) and the
+`ingest-observations` flow-run `Scheduled`→`Running` timestamps
+(`prefect flow-run ls`). If cron-tick→subprocess is 25–60 min, the delay is
+**pre-submission** → mechanism (a) or (b) (poll cadence tells which: sparse
+"Discovered" lines during the overlap ⇒ (a); regular polls but late run emission
+⇒ (b)). If that gap is short but *completion* is 25–60 min late, the ingest
+subprocess itself is being throttled by contention with forecast-cycle — which
+contradicts the "runs complete fast" observation below and would re-open Cause 1.
+The observation that ingest runs "complete fast once they start" points at a
+pre-submission delay (a)/(b), i.e. poll/scheduling latency.
 
 This **strengthens** the plan's direction: the fix is **cadence isolation** (a
-dedicated `ingest` worker + pool so the obs poll loop is independent of the
-forecast-cycle's CPU load), justified by poll-starvation rather than memory. D3's
-small `mem_limit` for the ingest worker is still fine — memory was never the
+dedicated `ingest` worker + pool so the obs poll loop runs on its own event loop,
+independent of the forecast-cycle's CPU load and subprocess-management burden),
+justified by pre-submission poll/scheduling latency rather than memory. Mechanism
+(a) is resolved outright by the second worker; mechanism (b) is mitigated by the
+second pool and any residual is the shared server-side risk tracked in D6/Q4.
+D3's small `mem_limit` for the ingest worker is still fine — memory was never the
 constraint, and a lightweight always-polling worker is exactly what isolates the
 5-min cadence. Phases 1–3 proceed unchanged; Plan 062 absorption is **not urgent**
 (the recreate-hang did not cause today's loss, though it remains a tracked
@@ -230,22 +293,63 @@ installed source, so they are now recorded as **facts**, not questions:
   `spec.work_pool_name` to `adeploy` instead of the module-level `WORK_POOL`.
 - **D2 — dedicated ingest-worker container.** Add a `prefect-worker-ingest`
   service in `docker-compose.yml` started with
-  `prefect worker start --pool ingest --type process`. It must replicate the
-  worker's infrastructure **except** the heavy bits (see D3). The base
-  `prefect-worker` keeps serving `default` (forecast-cycle, weather-history,
-  train, hindcast, backup, onboarding).
+  `prefect worker start --pool ingest --type process`. **It uses the SAME image as
+  the base worker — `build: .` / `image: sapphire-flow:${VERSION:?...}` — copied
+  verbatim from the existing `prefect-worker` service (`docker-compose.yml:68-69`).
+  This is the highest-risk implementation detail to leave implicit: an
+  `image:`-less service definition is rejected by Compose, and copying the wrong
+  image would run stale flow code.** It must replicate the worker's infrastructure
+  **except** the heavy bits (see D3). The base `prefect-worker` keeps serving
+  `default` (forecast-cycle, weather-history, train, hindcast, backup, onboarding).
 - **D3 — ingest-worker resource profile.** The ingest worker does **not** need:
   the `/tmp/sapphire_nwp` 4 GiB tmpfs (`docker-compose.yml:110-114`), the 8 GiB
   `mem_limit`, or the `model_artifacts` / `backups` / `nwp_grids` volumes. It
-  **does** need: `read_only: true`, `tmpfs: [/tmp, /data/cache]`, the same
+  **does** need: `read_only: true`, the same
   `cap_drop: [ALL]` + `cap_add: [SETUID, SETGID, CHOWN, FOWNER]`, the
   `db_password` secret, the same `entrypoint`/`command`-side environment
   (`SAPPHIRE_DATA_DIR`, `SAPPHIRE_CONFIG`, `DATABASE_URL_TEMPLATE`,
   `PREFECT_API_URL`, `PREFECT_LOGGING_LEVEL`), the `./config.toml` bind mount, the
   same `depends_on` (prefect-server healthy, init completed), `restart:
-  unless-stopped`, and `networks: [backend]`. Set a **small `mem_limit`** (e.g.
-  512m–1g — obs ingest is tiny) so the two workers together stay under the
-  ~15.84 GiB VM. Grill-me: pin the exact value. It also does **not** need the
+  unless-stopped`, `networks: [backend]`, and — **do not omit** — the same
+  `logging: {driver: json-file, options: {max-size: 50m, max-file: 5}}` block every
+  other service in `docker-compose.yml` carries (postgres, prefect-server,
+  prefect-worker, api, caddy, init). The ingest worker runs 288×/day (`*/5`) emitting
+  structlog per tick; without the capped `logging:` block Docker's default json-file
+  driver grows unbounded and defeats the `cicd.md:162` log-volume cap. Copy the block
+  verbatim from the `prefect-worker` service.
+
+  **`tmpfs` MUST include `/data/artifacts` and `/data/raw`, not just
+  `/data/cache` — BLOCKER fix (2026-07-03 review).** `ingest_observations_flow`
+  calls `setup_production_stores` → `make_pg_stores` → `resolve_artifact_dir()`
+  (`src/sapphire_flow/flows/_db.py:42`) → `resolve_data_dir()`, which
+  **unconditionally** runs `mkdir(parents=True, exist_ok=True)` for the `raw`,
+  `artifacts`, and `cache` subdirs of the data root at flow startup
+  (`src/sapphire_flow/config/paths.py:8` `_SUBDIRS = ("raw", "artifacts",
+  "cache")`, `:22-23`). Under `read_only: true` with `SAPPHIRE_DATA_DIR=/data`,
+  every `mkdir` targets a read-only path unless a writable tmpfs is mounted there,
+  so the flow would raise `OSError: [Errno 30] Read-only file system` on the
+  first ingest tick and the dedicated worker would be **completely
+  non-functional**. Fix: mount all three as tmpfs —
+  **`tmpfs: [/tmp, /data/cache, /data/artifacts, /data/raw]`**. These are only
+  *created* by the ingest flow (not written — `PgModelArtifactStore` performs no
+  artifact-file writes during an obs-ingest run), so tmpfs is sufficient and
+  correct. (A cleaner long-term fix — lazy `mkdir` in `resolve_data_dir` so
+  subdirs are created only when actually needed — is a larger change to shared
+  boundary code and is out of scope for 098; the two extra tmpfs mounts are the
+  minimal fix.)
+
+  **`mem_limit` — pinned (2026-07-03 review).** Set **`mem_limit: 512m`**. Obs
+  ingest performs only SPARQL HTTP (BAFU LINDAS) + PostgreSQL writes with no
+  GRIB/Zarr/raster processing, and the Prefect worker baseline (poll loop + async
+  event loop + subprocess manager + interpreter) is small. Before deploy the
+  implementer SHOULD sanity-check with `docker stats prefect-worker --no-stream
+  --format '{{.MemUsage}}'` at idle and during a live `ingest-observations` run,
+  add ~50% headroom, and round up to the next 128 MiB boundary — but `512m` is the
+  authoritative pinned value to write into `docker-compose.yml` unless the
+  measurement shows a higher peak. Undershooting risks a cgroup-kill of the ingest
+  worker itself, recreating the exact outage 098 prevents, so do NOT set it below
+  the measured peak + headroom. Both workers together stay well under the
+  ~15.84 GiB VM (8 GiB default + 512m ingest). It also does **not** need the
   `docker-compose.dev.yml:25-27` CAMELS-CH `/data/raw` bind mount that
   `prefect-worker` carries: that mount exists for onboard-stations reference data,
   and obs ingest resolves stations from the DB (`ingest_observations.py`), so the
@@ -259,13 +363,25 @@ installed source, so they are now recorded as **facts**, not questions:
     /app/config/overlays/staging-5-stations.toml` + the overlay TOML bind mount)
 
   A new `prefect-worker-ingest` in `docker-compose.yml` is silently **not**
-  patched by any of these (Compose merges by service name), so without a matching
-  block the ingest worker starts **without** `SAPPHIRE_CONFIG_OVERLAY` and the
-  overlay TOML bind mount → runtime `ConfigurationError` / `FileNotFoundError` for
-  station resolution (`cicd.md:474` documents the missing-overlay-file crash) on
-  every `docker compose -f docker-compose.yml -f docker-compose.<overlay>.yml up`.
-  This is the same failure class D4 already documents for the macmini overlays —
-  it applies identically to staging.
+  patched by any of these (Compose merges by service name). The failure mode of a
+  missing block is **NOT a startup crash** — it is a **silent behavioural
+  misconfiguration** (2026-07-03 review correction). When the overlay block is
+  simply absent, `SAPPHIRE_CONFIG_OVERLAY` is **unset** on the ingest worker, so
+  `_resolve_overlay_paths()` returns `[]`
+  (`src/sapphire_flow/config/_overlay.py:29-33` — `if raw is None or raw == "":
+  return []`) and `load_merged_toml` uses the **base config alone**. No crash —
+  the ingest worker just queries the **wrong station set**: in staging it queries
+  **all** operational stations instead of the intended 5-station subset; on the
+  macmini it runs against the full config rather than the overlay. The
+  `ConfigurationError` / `FileNotFoundError` crash at `cicd.md:474` /
+  `_overlay.py:37-38` is a **distinct** scenario — it fires only when
+  `SAPPHIRE_CONFIG_OVERLAY` **IS** set to a path that is not bind-mounted (e.g., a
+  future compose change adds the env var but forgets the mount). Adding the overlay
+  blocks is the correct fix for **both** scenarios; the point for Phase 4 is that
+  the validation criterion is **not** "absence of a startup crash" — it is
+  **confirming the correct overlay is applied** (see Phase 4). This silent-wrong-
+  station failure class applies identically to all three overlays (macmini,
+  macmini-nwp, staging).
 
   **Copy EXACTLY these — and nothing else — into each `prefect-worker-ingest`
   overlay block (do NOT "mirror the whole block"):** the existing
@@ -282,6 +398,18 @@ installed source, so they are now recorded as **facts**, not questions:
     (`:27`).
   - `docker-compose.macmini-nwp.yml` (`:9-13`): only the `SAPPHIRE_CONFIG_OVERLAY`
     env var + its overlay TOML `:ro` bind — nothing else that block carries.
+    **Override chain (2026-07-03 review — confirm intentional).** The NWP-on
+    deployment layers macmini THEN macmini-nwp (`docker compose -f docker-compose.yml
+    -f docker-compose.macmini.yml -f docker-compose.macmini-nwp.yml up -d`,
+    documented at `docker-compose.macmini-nwp.yml:1-6`). Compose merges in file
+    order, so for `prefect-worker-ingest` the `macmini.yml` block sets
+    `SAPPHIRE_CONFIG_OVERLAY=/app/config/overlays/mac-mini.toml` and the
+    `macmini-nwp.yml` block **overrides** it to `.../mac-mini-nwp.toml` — the same
+    override chain the existing `prefect-worker` block relies on. This is the
+    expected, correct behaviour, and **both** overlay blocks are required: without
+    the `macmini-nwp.yml` `prefect-worker-ingest` block, the ingest worker in
+    NWP-on mode silently runs the runoff-only `mac-mini.toml` overlay (a
+    misconfiguration), so this block is mandatory, not optional.
   - `docker-compose.staging.yml` (`:7-11`): only `SAPPHIRE_CONFIG_OVERLAY:
     /app/config/overlays/staging-5-stations.toml` + the
     `staging-5-stations.toml:ro` bind — nothing else.
@@ -298,6 +426,16 @@ installed source, so they are now recorded as **facts**, not questions:
   worker needs); confirm no incompatible `/data/raw` mount is silently inherited
   (it is not — Compose does not apply a service's overrides to a differently-named
   service).
+
+  **Dev-mode diagnostics — no port exposure by design (2026-07-03 review note).**
+  Under `-f docker-compose.yml -f docker-compose.dev.yml`, `prefect-worker-ingest`
+  **does** start (it is in the base compose) but, unlike the regular
+  `prefect-worker`, has **no host port re-exposure** — there is no way to reach its
+  Prefect pool-polling behaviour from the host in dev mode. This is **intentional**:
+  the ingest worker is a headless polling worker, not a UI/debug endpoint. Do **not**
+  add port exposure "for symmetry". The diagnostic path for dev-mode ingest-worker
+  issues is `docker logs prefect-worker-ingest` (look for the "Discovered" poll
+  lines and any `mkdir`/read-only traceback).
 - **D5 — `concurrency_limit=1` on `ingest-weather-history`.** Prevents two
   60-day-fetch runs racing on the heavy worker. Add to
   `register_deployments.py:94-99`.
@@ -352,12 +490,26 @@ installed source, so they are now recorded as **facts**, not questions:
     only `prefect-server ──→ prefect-worker`. Add `prefect-worker-ingest` as a
     second arrow off `prefect-server` (both workers are init-gated one-shot
     dependents, per D7).
+  - `docs/standards/cicd.md:162` container-count prose: "v0 has 6 containers (no
+    PgBouncer, one worker instead of three)" → **7 containers (no PgBouncer, two
+    workers instead of three)** — adding `prefect-worker-ingest` makes it 7.
+  - `docs/standards/cicd.md:129` upgrade step: also append the **Rollback** sequence
+    (from the Phase 1+2 atomicity section) so operators can revert routing to
+    `WORK_POOL`, re-run `init`, and run only the `default` worker if
+    `prefect-worker-ingest` fails to start during the upgrade window.
   - `docs/standards/cicd.md:478` overlay-pattern prose: it lists the services that
     receive `SAPPHIRE_CONFIG_OVERLAY` as `(prefect-worker, api, init)`. Add
-    `prefect-worker-ingest` to that parenthetical — it is precisely the service
-    that MUST receive the overlay env var + TOML bind or it crashes with
-    `FileNotFoundError` at startup (the failure mode already noted at `cicd.md:474`
-    and in D4). New list: `(prefect-worker, prefect-worker-ingest, api, init)`.
+    `prefect-worker-ingest` to that parenthetical → `(prefect-worker,
+    prefect-worker-ingest, api, init)`. **State the failure mode accurately (per D4,
+    do NOT repeat the pre-correction "crashes with FileNotFoundError" claim):**
+    without the overlay block the ingest worker's `SAPPHIRE_CONFIG_OVERLAY` is
+    simply unset, `_resolve_overlay_paths()` returns `[]` (`config/_overlay.py:27-33`)
+    and the worker **silently falls back to the base config and queries the wrong
+    station set** (staging: all stations instead of the 5-station subset; macmini:
+    full config instead of overlay) — no crash. The `FileNotFoundError` crash fires
+    only in the *distinct* misconfiguration where the env var IS set but the TOML
+    bind mount is absent (`cicd.md:474`). Both are prevented by adding the overlay
+    block; the doc must not conflate them.
   - `docs/standards/orchestration.md` — four stale "v0 uses a single `default`
     pool" statements become incorrect after 098. Annotate each with a note that
     Plan 098 introduces a second `ingest` pool + dedicated worker for obs-feed
@@ -387,6 +539,51 @@ installed source, so they are now recorded as **facts**, not questions:
     row (custom image; scope **v0b**; obs-feed isolation) and adjust the "Not in v0"
     note to clarify that a separate worker exists in v0 **for obs-feed isolation**,
     not for training/hindcast pool separation (which stays v1).
+  - **`docs/design/v0-flow678-training-pipeline.md:15` (2026-07-03 review — was
+    missing).** The simplification table row `Work pools | 3 pools (ops, training,
+    hindcast) | Single `default` pool` becomes **false** after 098 adds the second
+    pool. Update the v0 cell from "Single `default` pool" to "Two pools (`default`
+    + `ingest` — obs-feed isolation via Plan 098; training stays on `default`)".
+  - **`docs/design/v0-flow13-model-onboarding.md:16, 907, 936` (2026-07-03 review —
+    was missing).** Three stale single-pool statements. `:16` ("Single `default`
+    pool. Work pool routing annotation is in place…") → note training still runs on
+    `default` but v0 now has **two** pools (the second is `ingest`, dedicated to obs
+    ingest via Plan 098). `:907` ("saturating the single `default` work pool with
+    concurrent training jobs") and `:936` ("All training in v0 runs on the single
+    `default` pool") → drop the word "single" (training still runs on **the**
+    `default` pool; a separate `ingest` pool now also exists for obs isolation).
+  - **`docs/standards/orchestration.md:16` flow-to-Prefect mapping table (2026-07-03
+    review — was missing).** The Flow 2 (`ingest_observations_flow`) row shows
+    `Work pool = ops` with no v0 override. After 098, obs ingest uses the `ingest`
+    pool in v0. Change that cell to `ingest (v0) / ops (v1)`, mirroring the
+    existing Flow-13 annotation style (`training (v0: default)` at `:27`). This is
+    the **authoritative** pool-mapping table — leaving it as `ops` would have
+    operators route/document ingest onto the wrong pool.
+  - **`docs/standards/cicd.md:71` (2026-07-03 review — was missing).** The "Prefect
+    work pool separation" section header states `> **v1-only** … v0 uses a single
+    `default` work pool.` This is adjacent to the topology table D8 already edits but
+    was itself missed. Amend to note v0 now runs **two** pools (`default` + `ingest`)
+    — the `ingest` pool + dedicated worker is a v0b obs-feed-isolation addition
+    (Plan 098); the three-pool ops/training/hindcast topology below still applies to
+    v1.
+  - **`docs/standards/cicd.md:45` (2026-07-03 review — was missing).** "Config bind
+    mount: `./config.toml:/app/config.toml:ro` on api and **all three workers**."
+    The "three workers" phrasing tracks the v1 topology table; v0 now has **two**
+    workers (`prefect-worker` + `prefect-worker-ingest`), both of which mount the
+    config. Clarify: "…on `api` and both v0 workers (`prefect-worker`,
+    `prefect-worker-ingest`); the three-worker phrasing refers to the v1 topology."
+    Prevents an in-document contradiction with the new ingest-worker row.
+  - **`docs/v0-scope.md:66` §A3 PgBouncer deferral (2026-07-03 review — was
+    missing).** Two edits on this line: (i) "One API process + **one** Prefect
+    worker = no connection pooling needed" is now factually wrong — change to "One
+    API process + **two** Prefect workers (general `default` + dedicated `ingest`,
+    Plan 098)". (ii) The line's own review trigger — "Revisit … if **multiple worker
+    processes are introduced**" — is now literally tripped by 098. Add a note that
+    the trigger was evaluated: **PgBouncer deferral remains safe** — the ingest
+    worker adds only a small SPARQL+PG-write footprint (5-10 connections each, well
+    below exhaustion on the single Postgres), so no PgBouncer is required in v0
+    despite the second worker. Record the evaluation so the trigger is not silently
+    left tripped.
 
 ## Non-goals
 
@@ -428,6 +625,45 @@ workers up). If the work is split across commits, the **compose change (Phase 2)
 must land first** so the `ingest` pool always has a worker even before `init`
 reroutes deployments to it. Do NOT merge/deploy Phase 1 alone.
 
+**Rollback (2026-07-03 review — covers the failure mode where the combined deploy
+lands but `prefect-worker-ingest` then fails to start or crashes on startup, e.g.
+a missing `/data/artifacts` tmpfs, too-low `mem_limit`, missing `db_password`
+propagation, or a wrong overlay path).** At that point `init` has already
+re-registered `ingest-observations` onto the `ingest` pool and the `default`
+worker no longer claims it, so the obs feed is **dead** until recovery. The
+rollback restores the pre-098 state (LATE obs, not dead obs):
+  0. **Pre-upgrade (do this BEFORE the upgrade window opens):** verify the current
+     image is still present and tag it as a rollback anchor. The project ships **no
+     registry-publish workflow** (`cicd.md:256` — "No image publish / release
+     workflow is shipped today"), so images are local-only in the common v0
+     pattern; if the pre-upgrade image has been pruned there is **nothing to roll
+     back to**. Run
+     `docker images sapphire-flow --format "{{.Tag}}"` to confirm the current tag,
+     then `docker tag sapphire-flow:${OLD_VERSION} sapphire-flow:rollback-backup`
+     so the pre-upgrade image survives a later `docker image prune`.
+  1. `docker compose stop prefect-worker prefect-worker-ingest` — quiesce both.
+  2. Revert `register_deployments.py` to the pre-098 routing (no `INGEST_POOL`;
+     `ingest-observations` routes to `WORK_POOL = "default"`) and deploy the
+     previous image — either rebuild the revert, or point `VERSION` in `.env` back
+     to the tagged `rollback-backup` / `${OLD_VERSION}` image from step 0 and
+     `docker compose up -d`. (Mirrors the `cicd.md` upgrade procedure, which sets
+     the image tag via `VERSION` in `.env`, `cicd.md:129`.) **Note:** if the revert
+     also requires undoing a DB migration shipped in the same upgrade, follow the
+     `cicd.md` rollback note (restore from backup + redeploy) — a code-level
+     rollback that crossed a migration boundary also needs a DB restore. 098 itself
+     ships **no** migration, so this only applies if 098 is bundled with a
+     migration-carrying release.
+  3. `docker compose run --rm init` — re-registers `ingest-observations` back onto
+     the `default` pool. (`init` is idempotent — `register_deployments.py:139`.)
+  4. `docker compose up -d prefect-worker` **without** the `prefect-worker-ingest`
+     service — the `default` worker now serves the obs feed again.
+This same sequence is added to the revised `cicd.md:129` upgrade step (D8) so
+operators have it at hand during the upgrade window. The symmetric partial-deploy
+failures (Phase 1 without Phase 2 → workerless `ingest` pool; Phase 2 without the
+`ingest` pool created → ingest worker polls an empty pool) reduce to the same
+recovery: revert routing to `WORK_POOL`, re-run `init`, run only the `default`
+worker.
+
 **Phase 0 — reproduce & confirm (documentation gate only, NOT a Phase 1–2 gate).**
 Execute Q1 on the Mac Mini; record the confirmed cause (contention/OOM vs
 Plan-062 hang) in this plan. Phase 0 determines **which root cause to document**
@@ -444,30 +680,74 @@ architectural fix waiting on an observation-ambiguity that may take days to
 reproduce.
 
 **Phase 1 — deployment routing (register_deployments.py).**
-- Add `INGEST_POOL = "ingest"` and `work_pool_name: str = WORK_POOL` on
-  `DeploymentSpec` (`:24-30`).
+- Add `INGEST_POOL = "ingest"` and a **field-level-defaulted**
+  `work_pool_name: str = WORK_POOL` on `DeploymentSpec` (`:24-30`). The default is
+  **required** (not a bare `work_pool_name: str`): `DeploymentSpec` is
+  `@dataclass(frozen=True, slots=True)` (`register_deployments.py:24`) and every
+  existing `_build_specs()` call site and test constructs it **without**
+  `work_pool_name`. A defaulted field keeps all those call sites compiling
+  unchanged; only `ingest-observations` passes `work_pool_name=INGEST_POOL`
+  explicitly. (A required field would break every `DeploymentSpec(...)`
+  construction with a missing-argument error.)
 - Set `work_pool_name=INGEST_POOL` on the `ingest-observations` spec (`:43-48`).
 - Add `concurrency_limit=1` on the `ingest-weather-history` spec (`:94-99`, D5).
-- **Restructure `register_all` — required reordering (do not skip).** Today
-  `register_all` (`:138-157`) creates the `default` pool **inside** the
-  `async with get_client()` block (`:144-151`) and only then calls `specs =
-  _build_specs()` **after** that block closes (`:153`). Phase 1 needs the pool set
-  derived from `specs`, so `specs` must exist **before** pool creation. Collapse
-  the current two-phase structure into one:
-  1. Call `specs = _build_specs()` **first**, before opening the client context.
-  2. Open **one** `async with get_client() as client:` block that (a) loops over
-     `{spec.work_pool_name for spec in specs}` (an ordered dedup is fine), creating
-     each pool with its **own** per-iteration `try/except ObjectAlreadyExists` so
-     one pre-existing pool does not abort creation of the other, then (b) calls
-     `await _register_one(spec)` for each spec **inside the same block**.
+- **Restructure `register_all` — minimal two-step reordering (2026-07-03 review
+  correction).** Today `register_all` (`:138-157`) creates the `default` pool
+  **inside** the `async with get_client()` block (`:144-151`) and only then calls
+  `specs = _build_specs()` **after** that block closes (`:153`). Phase 1 needs the
+  pool set derived from `specs`, so `specs` must exist **before** pool creation.
+  The strictly required change is only two steps — **do NOT collapse the
+  `_register_one` registration loop into the client context**:
+  1. Move `specs = _build_specs()` to **before** the `async with get_client()`
+     block (so the pool set is in scope when the block opens — otherwise the
+     reference is `UnboundLocalError`/`NameError`).
+  2. Inside the `async with get_client() as client:` block, replace the single
+     `create_work_pool(WORK_POOL)` call with a loop over the distinct pool names,
+     `{spec.work_pool_name for spec in specs}`. **Ordering is irrelevant** — a
+     Python `set` is unordered, and pool-creation order does not matter; do **NOT**
+     add `sorted()` or `list(dict.fromkeys(...))` (the earlier "ordered dedup fine"
+     phrasing was misleading — there is nothing to order). **Each pool gets its
+     OWN per-iteration `try/except ObjectAlreadyExists`, INSIDE the loop body.**
+     This is a **BLOCKER-level** implementation detail: a single `try/except`
+     wrapping the *whole* loop (a common error when copy-pasting the existing
+     single-pool pattern) would let the **first** `ObjectAlreadyExists` abort
+     creation of the **second** pool — the exact failure the per-iteration guard
+     prevents. Add this as a code comment at the loop:
+     `# Each pool gets its own guard — a single try/except around the loop would
+     abort on the first ObjectAlreadyExists.`
+     **Also bind the two `log.info` calls to the LOOP VARIABLE, not `WORK_POOL`.**
+     The existing `log.info("workpool.created", name=WORK_POOL)`
+     (`register_deployments.py:149`) and `log.info("workpool.exists",
+     name=WORK_POOL)` (`:151`) are inside the block being replaced; after the
+     restructure they must reference the current pool name (`name=pool_name`),
+     otherwise **both** pool events log `name="default"` regardless of which pool
+     was created vs. already existed, and operators cannot distinguish them in the
+     structured logs.
+  3. The `for spec in specs: await _register_one(spec)` registration loop stays
+     **outside** the `async with` block, exactly as today (`:153-155`).
 
-  The current split (pool creation inside the client context at `:144-151`, spec
-  registration outside at `:153-155`) must be **collapsed into one** `async with`
-  context. Following the old ordering literally — leaving `_build_specs()` after
-  the client block while referencing `specs` inside it — produces an
-  `UnboundLocalError`/`NameError` (specs not yet in scope). The per-iteration guard
-  is what the partial-existing test in Phase 3 exercises. Deriving the pool set
-  from the specs keeps it correct if more pools appear later.
+  **Why registration stays outside the client context (review correction):**
+  `_register_one` calls `flow_fn.afrom_source(...)` and `sourced_flow.adeploy(...)`
+  (`register_deployments.py:111`, `:128`) — both open and manage their **own**
+  internal Prefect client connections; they do **not** use the passed-in `client`.
+  Collapsing the 10 `_register_one` awaits inside a single `async with
+  get_client()` context would hold that outer client connection open across all 10
+  `adeploy` calls (minutes of work) for no benefit — a gratuitous change to
+  connection management. The current split (pool creation inside the client
+  context, spec registration outside) is correct as-is; only the `specs` ordering
+  and the pool loop change. The per-iteration guard is what the partial-existing
+  test exercises.
+- **Author the per-iteration-guard test IN THIS PHASE, not Phase 3 (2026-07-03
+  review).** Phase 1 and Phase 3 are separate atomic commits, so a subtly-wrong
+  single-block `try/except` shipped in Phase 1 would go **uncaught until Phase 3
+  lands**. To close that window, the `test_handles_existing_work_pool` partial-path
+  improvement (`side_effect=[ObjectAlreadyExists("pool exists"), None]` — see
+  Phase 3) MUST be authored **together with the Phase 1 code change**, exercising
+  the per-iteration guard the moment it is introduced. (Phase 3 remains the
+  home for the *other* register-deployments test updates; only this one guard test
+  is pulled forward. Since Phase 1 and Phase 3 both touch the same test file and
+  are "authored together" per the Phase 3 preamble, this is a sequencing note, not
+  a structural split.)
 - `_register_one` reads `spec.work_pool_name` and passes it to `adeploy` (`:118`)
   instead of the module-level `WORK_POOL` constant.
 - **`init` service needs no change.** It invokes `register_all`, which now creates
@@ -477,9 +757,17 @@ reproduce.
   `depends_on: init` does not introduce a recreate hang.
 
 **Phase 2 — docker-compose worker service (D2/D3/D4) + affected docs (D8).**
-- Add `prefect-worker-ingest` to `docker-compose.yml` per D3 (small `mem_limit`,
-  no NWP tmpfs, no heavy volumes; same `depends_on: prefect-server healthy + init
-  completed` as `prefect-worker`, per D7).
+- Add `prefect-worker-ingest` to `docker-compose.yml` per D3:
+  **`build: .` / `image: sapphire-flow:${VERSION:?...}` copied verbatim from the
+  existing `prefect-worker` at `docker-compose.yml:68-69`** (do NOT omit `image:` —
+  Compose rejects an image-less service),
+  `command: prefect worker start --pool ingest --type process`, pinned
+  `mem_limit: 512m`, `read_only: true`, **`tmpfs: [/tmp, /data/cache,
+  /data/artifacts, /data/raw]`** (the last two are required — the ingest flow's
+  `resolve_data_dir()` mkdir's all three subdirs at startup, `paths.py:8,:22-23`;
+  omitting them raises read-only-fs on the first tick), no NWP tmpfs, no heavy
+  volumes; same `depends_on: prefect-server healthy + init completed` as
+  `prefect-worker`, per D7.
 - Add matching `prefect-worker-ingest` patch blocks to **all three** overlays
   that patch `prefect-worker` by name (D4):
   - `docker-compose.macmini.yml`
@@ -489,16 +777,21 @@ reproduce.
 - Do **not** add a block to `docker-compose.dev.yml` (D4: the ingest worker needs
   neither the re-exposed ports nor the CAMELS-CH mount).
 - Update `docs/standards/cicd.md` per D8: upgrade step `:129` (`stop
-  prefect-worker prefect-worker-ingest`), the service-topology table (`:13-24` —
-  add the ingest row **and** fix the stale `prefect-worker` `postgres` dependency),
-  the v0 dependency-chain diagram (`:59-66`), and the overlay-pattern prose
-  (`:478`).
+  prefect-worker prefect-worker-ingest` **+ the Rollback sequence**), the
+  service-topology table (`:13-24` — add the ingest row **and** fix the stale
+  `prefect-worker` `postgres` dependency), the v0 dependency-chain diagram
+  (`:59-66`), the container-count prose (`:162` — "6 containers … one worker" →
+  "7 containers … two workers"), and the overlay-pattern prose (`:478`).
 - Update `docs/standards/orchestration.md` per D8: annotate the four stale
   "single `default` pool" statements (`:5`, `:33`, `:59`, `:132`) — v0 now runs
   two pools (`default` + `ingest`).
 - Update `docs/v0-scope.md` per D8: §A6 clarifying note **and** the service-topology
   table (`:449-458` — add the `prefect-worker-ingest` row + adjust the "Not in v0"
   note).
+- Update the two design docs per D8: `docs/design/v0-flow678-training-pipeline.md:15`
+  ("Single `default` pool" → two-pool cell) and
+  `docs/design/v0-flow13-model-onboarding.md:16, 907, 936` (drop "single" from the
+  three single-`default`-pool statements).
 
 **Phase 3 — tests (register_deployments).**
 
@@ -519,10 +812,17 @@ reproduce.
   pool: `default`, `ingest`), so the existing `mock_client.create_work_pool.
   assert_awaited_once()` (`:224`) fails with "awaited 2 times". Replace it with
   `assert mock_client.create_work_pool.await_count == 2` and assert **both** pool
-  names appear across the two calls — inspect
-  `mock_client.create_work_pool.await_args_list` and assert the set of
-  `WorkPoolCreate.name` values equals `{"default", "ingest"}` (order-independent).
-  Also replace the `== 10` register count (`:225`) with `len(_build_specs())`.
+  names appear across the two calls. **Concrete extraction pattern (2026-07-03
+  review — use exactly this):**
+  `assert {c.args[0].name for c in mock_client.create_work_pool.await_args_list}
+  == {"default", "ingest"}`. The call site passes `WorkPoolCreate(...)` as the
+  **sole positional argument** (`register_deployments.py:146-148`), so the mock
+  records it at `call_args.args[0]`, **not** as a kwarg — using `.kwargs["name"]`
+  raises `KeyError`. `WorkPoolCreate` is a Pydantic model, so `.args[0].name`
+  reads the pool name cleanly. The result set comparison is order-independent.
+  Also replace the `== 10` register count (`:225`) with the exact set of
+  deployment names (see `test_returns_ten_specs` below for the rationale — a set
+  assertion is non-circular and more informative than `len(_build_specs())`).
 
 *One existing test still PASSES after Phase 1 but is incomplete — improve it (do
 not skip as optional cleanup):*
@@ -533,16 +833,46 @@ not skip as optional cleanup):*
   per-iteration pool-creation calls raise and both are caught by the per-iteration
   guard — all specs still register and `mock_register.await_count == 10` still
   holds. It merely exercises only the "both pools already exist" path. Change it to
-  `side_effect=[ObjectAlreadyExists("pool exists"), None]` so it tests the
-  realistic **partial** case (`default` pre-exists, `ingest` is new) and confirms
-  the per-iteration guard catches only the raising call while the other succeeds.
-  Replace the `== 10` register count (`:255`) with `len(_build_specs())`. Add a
+  test the realistic **partial** case (`default` pre-exists, `ingest` is new) and
+  confirm the per-iteration guard catches only the raising call while the other
+  succeeds. **Use a callable `side_effect` keyed on the pool name — NOT a positional
+  `[ObjectAlreadyExists(...), None]` list (2026-07-03 review correction).** The
+  production loop iterates `{spec.work_pool_name for spec in specs}`, an **unordered
+  `set`**, and the plan deliberately does **not** add `sorted()` (D-Phase-1: ordering
+  is irrelevant for the impl). A positional `side_effect` list would therefore map
+  to whichever pool the set happens to yield first — non-deterministic across
+  Python versions, so the test could silently pass without ever exercising the
+  guard for the `ingest` pool. Key the raise on the argument instead:
+  `create_work_pool.side_effect = lambda work_pool: (_ for _ in ()).throw(
+  ObjectAlreadyExists("pool exists")) if work_pool.name == "default" else None`
+  (or an equivalent `def` that raises for `name == "default"` and returns `None`
+  otherwise). This makes "`default` pre-exists, `ingest` is created" deterministic
+  regardless of set iteration order, and lets the test assert the `ingest` pool
+  creation specifically succeeded. Replace the `== 10` register count (`:255`) with
+  the **exact registered-name
+  set** (option (b) in `test_returns_ten_specs` above — non-circular), not
+  `len(_build_specs())`. Add a
   companion `test_handles_all_work_pools_existing` with
   `side_effect=[ObjectAlreadyExists(...), ObjectAlreadyExists(...)]` for the
   both-existing path.
-- **`test_returns_ten_specs` (`:69-72`).** Replace `== 10` with
-  `len(_build_specs())` (self-correcting; the spec count is unchanged by 098 but
-  the magic number should stop being asserted against a literal).
+- **`test_returns_ten_specs` (`:69-72`).** The count is **unchanged by 098** (still
+  10). **Do NOT replace `== 10` with `len(_build_specs())` (2026-07-03 review
+  correction)** — that is circular: the test would call the same function under
+  test to produce its own expected value, so an accidental ±1 change to
+  `_build_specs()` would silently pass and the regression guard is destroyed. Two
+  acceptable options, pick one: (a) **keep the literal `== 10`** and add an inline
+  comment enumerating the ten named deployments, or (b) — preferred, non-circular
+  and more informative — assert the **exact set of deployment names**:
+  ```python
+  assert {s.deployment_name for s in _build_specs()} == {
+      "ingest-observations", "forecast-cycle", "backup-database", "train-models",
+      "run-hindcast", "compute-skills", "compute-combined-skills",
+      "onboard-stations", "onboard-model", "ingest-weather-history",
+  }
+  ```
+  Option (b) also subsumes the `test_creates_work_pool_and_registers_all` /
+  `test_handles_existing_work_pool` register-count assertions: assert the exact
+  registered-name set there too, rather than a bare count or `len(_build_specs())`.
 
 *New / strengthened tests for the D1 routing + field forwarding:*
 
@@ -555,6 +885,17 @@ not skip as optional cleanup):*
   keeps the hardcoded `WORK_POOL` at `:118` instead of reading
   `spec.work_pool_name`. Strengthening the existing test alone is insufficient —
   a distinct non-default pool is required to catch a copy-paste regression.
+- **`test_registers_scheduled_flow` (`:120-153`) — update the assertion so it is
+  not vacuously true (2026-07-03 review).** After Phase 1 the field is defaulted
+  (`work_pool_name: str = WORK_POOL`), so the spec at `:121-126` — which does not
+  set `work_pool_name` — defaults to `WORK_POOL` and the assertion at `:149`
+  (`== WORK_POOL`) still passes, but only by accident (spec default == module
+  constant). Change the assertion to read the spec:
+  `assert call_kwargs["work_pool_name"] == spec.work_pool_name` (equivalently
+  `== WORK_POOL` with a comment that it is the spec's default, not the module
+  constant). This makes the intent explicit and prevents a future non-default spec
+  from silently passing the wrong assertion. Set `work_pool_name=WORK_POOL`
+  explicitly on the spec construction at `:121-126` for the same clarity.
 - **Spec-level routing.** Add a test asserting each `DeploymentSpec.work_pool_name`
   routes correctly: `ingest-observations` → `"ingest"`, all others (forecast-cycle,
   ingest-weather-history, train, hindcast, skills, onboarding, backup) → `"default"`.
@@ -570,12 +911,26 @@ not skip as optional cleanup):*
 runs on the `ingest` pool via a dedicated worker (`prefect deployment inspect`),
 (b) an in-flight `forecast-cycle` + a concurrent `ingest-weather-history` do not
 delay an ingest tick, (c) each overlay applies the correct config to the ingest
-worker (no `ConfigurationError` / `FileNotFoundError`) — explicitly bring the
-ingest worker up under **each** of the three overlays (macmini, macmini-nwp,
-staging) and confirm `SAPPHIRE_CONFIG_OVERLAY` resolves and the TOML bind mount
-is present, and (d) an upgrade following the revised `cicd.md:129` step
+worker — explicitly bring the ingest worker up under **each** of the three
+overlays (macmini, macmini-nwp, staging), confirm `SAPPHIRE_CONFIG_OVERLAY`
+resolves and the TOML bind mount is present, **and — critically — confirm the
+ingest worker queries the CORRECT station set, not just the absence of a startup
+crash** (2026-07-03 review: a missing overlay block does **not** crash — it
+silently falls back to the base config and queries the wrong stations; see D4).
+For staging, verify the ingest run queries the **5-station** subset (not all
+operational stations); for macmini, verify it uses the mac-mini overlay config.
+Check via the flow-run's structured logs / queried-station count, and (d) an upgrade following the revised `cicd.md:129` step
 (`stop prefect-worker prefect-worker-ingest`) quiesces both workers before
 `init`/migrations re-run.
+- **Post-deploy smoke check (do this FIRST, within 10 min of the combined
+  deploy).** Confirm the ingest worker is actually serving — the D3 `read_only`
+  tmpfs fix means the first tick must not raise `OSError: Read-only file system`.
+  Run `prefect flow-run ls` (or filter to the `ingest-observations` deployment)
+  and confirm a run reaches `Running`/`Completed` within one-to-two `*/5`
+  intervals; also `docker logs prefect-worker-ingest` should show a "Discovered"
+  poll and NO `mkdir`/read-only traceback. If the ingest worker crash-loops or the
+  first run fails, execute the **Rollback** sequence (above) immediately so the
+  obs feed reverts to the `default` worker rather than staying dead.
 
 ## Process
 
@@ -589,4 +944,7 @@ change is small but touches several files: `register_deployments.py`,
 register-deployments tests, and the affected docs (`docs/standards/cicd.md`
 upgrade step + topology table + dependency chain + overlay-service list,
 `docs/standards/orchestration.md` single-pool statements, `docs/v0-scope.md` §A6 +
-service table) per the CLAUDE.md "every code change updates docs" rule (D8).
+service table, and the two design docs
+`docs/design/v0-flow678-training-pipeline.md:15` +
+`docs/design/v0-flow13-model-onboarding.md:16,907,936` single-pool statements)
+per the CLAUDE.md "every code change updates docs" rule (D8).
