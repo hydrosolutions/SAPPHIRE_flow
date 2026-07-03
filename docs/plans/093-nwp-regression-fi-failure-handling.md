@@ -1,9 +1,17 @@
 # Plan 093 — nwp_regression: return ModelFailure on insufficient lags (FI contract)
 
-**Status**: DRAFT
+**Status**: READY (plan-review workflow converged 2026-07-03, 2 rounds, 0
+blockers/majors; grill-me resolved the two residual forks — see below)
 **Priority**: medium — surfaces as noisy `hindcast.step_failed` + the operational
 `matmul` failure; not fatal (onboarding completes, artifact promotes), but the
 model violates the ForecastInterface "return, don't raise" contract.
+
+**Grill-me resolution (2026-07-03):** (1) **Scope = length-shortfall only** —
+guard `len(lags) != artifact.n_lags`; a `KeyError` from a *missing* obs/discharge
+key is **out of scope** (it cannot occur through the real pipeline — the FI
+adapter always builds that entry — only via hand-built `ModelInputs`). (2) The
+upstream "SAP3 warns when it under-delivers the lookback window" concern is a
+**companion follow-up (Plan 097)**, not part of 093.
 **Phase**: v0b — model robustness (ForecastInterface adherence)
 **Parent**: epic 088 (NWP-on); surfaced during the 2026-07-03 Mac-mini onboarding
 **Related**: `models/nwp_regression.py` (`predict`, `_initial_lags`, the training
@@ -148,8 +156,12 @@ do not search for or add a separate `hindcast()` override.
   (the guard lives in `predict` today because that is the only prediction entry
   point).
 - **Making SAP3 pad/fail upstream on under-delivered lookback** — a separate
-  observability/upstream concern (own issue/plan); the model guard stands
-  regardless.
+  observability/upstream concern → **Plan 097** (companion); the model guard
+  stands regardless.
+- **Handling a missing obs/discharge KEY (`KeyError` in `_initial_lags`)** —
+  out of scope (grill-me decision): the guard covers the length shortfall, the
+  only failure mode reachable through the FI adapter. A `KeyError` requires a
+  hand-built `ModelInputs`, not the real pipeline.
 
 ## Process
 
@@ -162,3 +174,10 @@ input returns `ModelFailure` (not raises). The RED fixture must pass an
 the `len(lags) != artifact.n_lags` branch rather than a class-level short
 `_n_lags`. Assert `isinstance(result, ModelFailure)`, `result.cause is
 FailureCause.INPUT_DATA`, and the got/need counts appear in `result.message`.
+Also assert `result.model_name == "nwp_regression"` and
+`result.issue_datetime == <the input issue_datetime>` — these exercise the
+Pydantic `ModelFailure` field validators (`forecast_interface/interface/result.py:25-29`),
+so a wrongly-empty `model_name` raises `ValidationError` (a new crash) instead of
+passing silently. The test must import `ModelFailure` + `FailureCause` (add to
+the existing `from forecast_interface import (...)` line, or use
+`fi_boundary.ModelFailure` / `fi_boundary.FailureCause`).
