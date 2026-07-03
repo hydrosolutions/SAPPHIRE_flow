@@ -146,23 +146,42 @@ def forecast_data_json(
 
     representation = forecast.get("representation", "members")
 
+    units = forecast.get("units")
+    issued_at = forecast["issued_at"].isoformat()
+
     if representation == "quantiles":
         # Group by quantile
         quantiles: dict[str, dict[str, list[Any]]] = {}
         for r in rows:
             q = str(r.get("quantile", r.get("member_id", "?")))
             if q not in quantiles:
-                quantiles[q] = {"lead_times": [], "values": []}
+                quantiles[q] = {"lead_times": [], "valid_times": [], "values": []}
             quantiles[q]["lead_times"].append(r["lead_time_hours"])
+            quantiles[q]["valid_times"].append(r["valid_time"].isoformat())
             quantiles[q]["values"].append(r["value"])
-        return JSONResponse({"representation": "quantiles", "quantiles": quantiles})
+        return JSONResponse(
+            {
+                "representation": "quantiles",
+                "quantiles": quantiles,
+                "units": units,
+                "issued_at": issued_at,
+            }
+        )
     else:
         # Group by member
         members: dict[str, dict[str, list[Any]]] = {}
         for r in rows:
             m = str(r.get("member_id", "?"))
             if m not in members:
-                members[m] = {"lead_times": [], "values": []}
+                members[m] = {"lead_times": [], "valid_times": [], "values": []}
             members[m]["lead_times"].append(r["lead_time_hours"])
+            members[m]["valid_times"].append(r["valid_time"].isoformat())
             members[m]["values"].append(r["value"])
-        return JSONResponse({"representation": "members", "members": members})
+        return JSONResponse(
+            {
+                "representation": "members",
+                "members": members,
+                "units": units,
+                "issued_at": issued_at,
+            }
+        )
