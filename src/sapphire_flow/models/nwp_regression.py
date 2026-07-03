@@ -31,8 +31,10 @@ from forecast_interface import (
     DeterministicData,
     DynamicInputSpec,
     EnsembleMode,
+    FailureCause,
     FutureKnownVariable,
     InputRequirement,
+    ModelFailure,
     ModelOutput,
     ModelResult,
     ModelSuccess,
@@ -214,6 +216,20 @@ class _NwpRegressionBase:
         horizon = len(future_times)
 
         lags = self._initial_lags(dynamic)
+        if len(lags) != artifact.n_lags:
+            log.warning(
+                "nwp_regression.insufficient_lags",
+                got=len(lags),
+                need=artifact.n_lags,
+            )
+            return ModelFailure(
+                model_name=self._model_name,
+                issue_datetime=issue_datetime,
+                cause=FailureCause.INPUT_DATA,
+                message=(
+                    f"insufficient lag history: got {len(lags)}, need {artifact.n_lags}"
+                ),
+            )
         coefficients = np.asarray(artifact.coefficients, dtype=np.float64)
         intercept = float(artifact.intercept[0])
 

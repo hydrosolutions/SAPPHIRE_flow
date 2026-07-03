@@ -25,7 +25,12 @@ from uuid import UUID
 import numpy as np
 import polars as pl
 import pytest
-from forecast_interface import AggregationMethod, EnsembleMode
+from forecast_interface import (
+    AggregationMethod,
+    EnsembleMode,
+    FailureCause,
+    ModelFailure,
+)
 
 from sapphire_flow.adapters import forecast_interface as fi_boundary
 from sapphire_flow.exceptions import ModelOutputError
@@ -749,3 +754,46 @@ class TestAdapterTrainingPath:
         reloaded = adapter.deserialize_artifact(raw)
         assert isinstance(reloaded, NwpRegressionArtifact)
         assert np.array_equal(reloaded.coefficients, artifact.coefficients)
+
+
+# --------------------------------------------------------------------------- #
+# 9. Insufficient lag history → ModelFailure (FI "return, don't raise" contract)
+# --------------------------------------------------------------------------- #
+
+
+class TestInsufficientLagsReturnsModelFailure:
+    def test_predict_returns_model_failure_when_lags_shorter_than_artifact(
+        self,
+    ) -> None:
+        # Artifact trained for 7 lags, but only 3 past-discharge rows delivered:
+        # ``_initial_lags`` silently truncates to 3, so the feature vector is one
+        # dimension short of the trained coefficients. Per the FI contract this
+        # anticipated INPUT_DATA condition must be RETURNED as ModelFailure, not
+        # raised as a raw numpy matmul ValueError.
+        model = NwpRegression()
+        n_lags = 7
+        artifact = NwpRegressionArtifact(
+            coefficients=np.zeros(2 + n_lags, dtype=np.float64),
+            intercept=np.asarray([0.0], dtype=np.float64),
+            n_lags=n_lags,
+        )
+        horizon = _declared_horizon(model)
+        inputs = _fi_predict_inputs(
+            model,
+            issue=_ISSUE,
+            horizon=horizon,
+            precip=[7.0 + k for k in range(horizon)],
+            temp=[10.0] * horizon,
+            lag_discharge=[10.0, 11.0, 12.0],  # only 3 rows, need 7
+        )
+
+        result = model.predict(
+            artifact, inputs=inputs, issue_datetime=_ISSUE, rng=random.Random(0)
+        )
+
+        assert isinstance(result, ModelFailure)
+        assert result.cause is FailureCause.INPUT_DATA
+        assert "got 3" in result.message
+        assert "need 7" in result.message
+        assert result.model_name == "nwp_regression"
+        assert result.issue_datetime == _ISSUE
