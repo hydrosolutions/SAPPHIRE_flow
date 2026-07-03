@@ -74,6 +74,15 @@ class DeploymentConfig(BaseModel):
     forecast_hot_days: int = 548
     max_retention_days: int
 
+    # Plan 095: hot window (days) for the raw NWP grid-cube zarrs under
+    # nwp_grid_archive_base_path. Supersedes weather_hot_days for the raw-grid
+    # zarr path only — the permanent archive is the extracted values in
+    # weather_forecasts. Must be >= ceil(nwp_max_fallback_age_hours / 24) + 1
+    # (fallback budget in days + one-day margin) so a still-fallback-eligible
+    # cycle is not pruned then immediately re-fetched (efficiency guard, not a
+    # safety guard — the adapter re-fetches from STAC, never from the zarr).
+    nwp_grid_retention_days: int = 3
+
     observation_staleness_warning_hours: float = 6.0
     nwp_max_wait_hours: float = 3.0
     nwp_max_fallback_age_hours: float = 12.0
@@ -167,6 +176,19 @@ class DeploymentConfig(BaseModel):
             raise ValueError(
                 f"max_retention_days ({self.max_retention_days}) must be > "
                 f"forecast_hot_days ({self.forecast_hot_days})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_nwp_grid_retention(self) -> Self:
+        # Pure arithmetic (no `import math`): the `+ 24` encodes the one-day
+        # margin, so this is exactly
+        # nwp_grid_retention_days >= ceil(nwp_max_fallback_age_hours / 24) + 1.
+        if self.nwp_grid_retention_days * 24 < self.nwp_max_fallback_age_hours + 24:
+            raise ValueError(
+                f"nwp_grid_retention_days ({self.nwp_grid_retention_days}) must be "
+                f">= ceil(nwp_max_fallback_age_hours / 24) + 1 "
+                f"(nwp_max_fallback_age_hours={self.nwp_max_fallback_age_hours})"
             )
         return self
 

@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -12,12 +13,64 @@ import structlog
 import xarray as xr
 
 from sapphire_flow.exceptions import StoreError
+from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.weather import GriddedForecast
 
 if TYPE_CHECKING:
-    from sapphire_flow.types.datetime import UtcDatetime
+    from collections.abc import Callable
 
 log = structlog.get_logger(__name__)
+
+# Plan 095: a cycle archive is named `{cycle_stem}.zarr` where cycle_stem is
+# `%Y%m%dT%H` (see `_safe_zarr_path`). The prune parses the cycle timestamp from
+# this stem — NOT from filesystem mtime, so re-archiving does not reset the age.
+_CYCLE_STEM_RE = re.compile(r"^(?P<cycle>\d{8}T\d{2})\.zarr$")
+
+
+def _parse_cycle_time(name: str) -> UtcDatetime | None:
+    m = _CYCLE_STEM_RE.match(name)
+    if m is None:
+        return None
+    try:
+        parsed = datetime.strptime(m.group("cycle"), "%Y%m%dT%H").replace(tzinfo=UTC)
+    except ValueError:
+        return None
+    return ensure_utc(parsed)
+
+
+def prune_old_cycles(
+    base_path: Path,
+    retention_days: int,
+    clock: Callable[[], UtcDatetime],
+) -> None:
+    """Prune NWP grid-cube zarrs whose cycle_time is older than the window.
+
+    Age-only (no DB gate): the permanent archive is the extracted values in
+    `weather_forecasts`; an age-only rule also reclaims orphaned zarrs from
+    extraction-failure runs. Self-discovers every NWP-source subdirectory under
+    `base_path` (no `nwp_source` argument), so a source added after deployment
+    is covered automatically. A missing `base_path` is a no-op.
+    """
+    if not base_path.exists():
+        return
+    cutoff = clock() - timedelta(days=retention_days)
+    for source_dir in base_path.iterdir():
+        if not source_dir.is_dir():
+            continue
+        for cycle_dir in source_dir.iterdir():
+            if not cycle_dir.is_dir():
+                continue
+            cycle_time = _parse_cycle_time(cycle_dir.name)
+            if cycle_time is None:
+                continue
+            if cycle_time < cutoff:
+                shutil.rmtree(cycle_dir, ignore_errors=True)
+                log.info(
+                    "nwp.old_cycle_pruned",
+                    path=str(cycle_dir),
+                    cycle_time=cycle_time.isoformat(),
+                )
+
 
 # CONSTRAINT: all per-cycle paths (symlink, versioned dirs, _tmp) must reside on
 # the SAME filesystem as `base_path`. In Docker, this means the `nwp_grids` named
