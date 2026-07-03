@@ -234,9 +234,13 @@ value: str | None = None
 
 ### Version Bumping (mandatory)
 
-**Every commit MUST include a patch version bump.** No exceptions.
+**Every CODE commit MUST include a patch version bump.** The one exception:
+**plan-doc-only commits made directly to `main`** (see the plan-workflow rule
+below) do **not** bump — the version tracks code releases, and bumping on plan
+commits collides with in-flight code PRs. Code changes always go through a PR
+(hold-at-PR) and always bump.
 
-Before committing, follow this exact sequence:
+Before committing code, follow this exact sequence:
 
 1. `uv run bump-my-version bump patch` — modifies `pyproject.toml` and `src/sapphire_flow/__init__.py`
 2. Stage version files alongside code changes
