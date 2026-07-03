@@ -844,6 +844,29 @@ def run_forecast_cycle_flow(
         # Collect Phase A result
         if not runoff_only_mode:
             nwp_outcome = nwp_future.result()
+            # Plan 095: bound the nwp_grids disk footprint by pruning grid-cube
+            # zarrs from cycles older than the retention window. Age-only; the
+            # permanent archive is the extracted values in weather_forecasts. A
+            # prune failure must never abort the forecast cycle.
+            if (
+                nwp_outcome is not None
+                and config.nwp_grid_archive_base_path is not None
+            ):
+                from pathlib import Path
+
+                from sapphire_flow.store.zarr_nwp_grid_store import prune_old_cycles
+
+                try:
+                    prune_old_cycles(
+                        Path(config.nwp_grid_archive_base_path),
+                        config.nwp_grid_retention_days,
+                        clock,
+                    )
+                except Exception:
+                    log.warning(
+                        "forecast_cycle.nwp_grid_prune_failed",
+                        base_path=config.nwp_grid_archive_base_path,
+                    )
             if nwp_outcome is None:
                 log.error("forecast_cycle.nwp_fetch_failed_aborting")
                 return ForecastCycleResult(

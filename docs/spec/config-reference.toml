@@ -21,7 +21,7 @@
 # Tiered: hot (PostgreSQL) -> cold (Parquet) -> delete at max_retention_days.
 # v0: no cold storage (everything stays in PostgreSQL). See v0-scope.md § A2.
 # Source: types-and-protocols.md § DeploymentConfig
-weather_hot_days = 180          # weather data hot window (raw grids + extracted NWP + observations)
+weather_hot_days = 180          # weather data hot window (extracted NWP + observations); raw grid-cube zarrs use nwp_grid_retention_days (Plan 095)
 forecast_hot_days = 548         # runoff forecast + hindcast hot window (~1.5 years)
 max_retention_days = 3650       # total lifetime for all data (must be set, no default)
 # Constraint: max_retention_days > forecast_hot_days (validated at load time)
@@ -34,6 +34,10 @@ observation_staleness_warning_hours = 6.0  # Flow 1 step 1.6 warning threshold
 # Source: types-and-protocols.md § DeploymentConfig, architecture-context.md § NWP lateness fallback
 nwp_max_wait_hours = 3.0              # max wait for expected NWP delivery
 nwp_max_fallback_age_hours = 12.0     # max age of fallback NWP cycle
+# Plan 095: hot window (days) for raw NWP grid-cube zarrs under nwp_grid_archive_base_path.
+# Old cycles are pruned by age; extracted values in weather_forecasts stay the permanent archive.
+# Constraint: nwp_grid_retention_days >= ceil(nwp_max_fallback_age_hours / 24) + 1 (validated at load time)
+nwp_grid_retention_days = 3
 
 # --- Per-source alert enablement ---
 # Source: types-and-protocols.md § DeploymentConfig, v0-scope.md § A8c

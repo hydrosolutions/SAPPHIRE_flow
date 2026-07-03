@@ -70,6 +70,36 @@ class TestAvailableNwpParameters:
         )
 
 
+class TestNwpGridRetention:
+    """Plan 095: retention floor >= ceil(nwp_max_fallback_age_hours / 24) + 1."""
+
+    def test_default_passes_with_default_fallback(self) -> None:
+        # Default nwp_grid_retention_days=3 with default fallback=12.0 -> floor 2.
+        config = make_deployment_config()
+        assert config.nwp_grid_retention_days == 3
+
+    def test_below_floor_rejected(self) -> None:
+        # nwp_max_fallback_age_hours=24.0 -> floor ceil(24/24)+1 = 2; reject 2? No:
+        # 2*24=48 >= 24+24=48, so 2 is exactly the floor (accepted); 1 is rejected.
+        with pytest.raises(pydantic.ValidationError, match="nwp_grid_retention_days"):
+            make_deployment_config(
+                nwp_grid_retention_days=1, nwp_max_fallback_age_hours=24.0
+            )
+
+    def test_floor_boundary_accepted(self) -> None:
+        config = make_deployment_config(
+            nwp_grid_retention_days=2, nwp_max_fallback_age_hours=24.0
+        )
+        assert config.nwp_grid_retention_days == 2
+
+    def test_two_rejected_when_fallback_forces_three(self) -> None:
+        # A fallback of 25h -> ceil(25/24)+1 = 3, so retention=2 must be rejected.
+        with pytest.raises(pydantic.ValidationError, match="nwp_grid_retention_days"):
+            make_deployment_config(
+                nwp_grid_retention_days=2, nwp_max_fallback_age_hours=25.0
+            )
+
+
 class TestModelPriorities:
     """Plan 089: config-driven model priority map (lower = preferred)."""
 
@@ -137,6 +167,25 @@ class TestLoadConfig:
         override.write_text(toml)
         config = load_config(override)
         assert config.nwp_cycle_min_age_minutes == 120
+
+    def test_nwp_grid_retention_days_defaults_and_parses(self, tmp_path: Path) -> None:
+        # Default when omitted.
+        cfg_file = tmp_path / "deployment.toml"
+        cfg_file.write_text(_MINIMAL_TOML)
+        assert load_config(cfg_file).nwp_grid_retention_days == 3
+
+        # Plan 095: the scalar must parse AND (TOML-safety) not be swallowed by a
+        # following [model_priorities] table header.
+        toml = (
+            _MINIMAL_TOML
+            + "nwp_grid_retention_days = 5\n"
+            + "\n[model_priorities]\n"
+            + "climatology_fallback = 100\n"
+        )
+        override = tmp_path / "override.toml"
+        override.write_text(toml)
+        config = load_config(override)
+        assert config.nwp_grid_retention_days == 5
         assert config.model_priorities == {"climatology_fallback": 100}
 
     def test_minimal_toml_populates_fields(self, tmp_path: Path) -> None:

@@ -2722,7 +2722,7 @@ All time-series data follows a unified tiered lifecycle: **hot (PostgreSQL / obj
 |---|---|---|---|---|
 | Observations | `forecast_hot_days` (548) | Parquet | `max_retention_days` | `observations` |
 | Extracted NWP values | `weather_hot_days` (180) | Parquet | `max_retention_days` | `weather_forecasts` |
-| Raw gridded NWP | `weather_hot_days` (180) | Zarr (zstd-compressed internally) | `max_retention_days` | `/data/nwp_grids/` → `cold/nwp_grids/` |
+| Raw gridded NWP | `nwp_grid_retention_days` (3) | — (no cold tier) | pruned by age at `nwp_grid_retention_days` | `/data/nwp_grids/` (Plan 095) |
 | Runoff forecasts | `forecast_hot_days` (548) | Parquet | `max_retention_days` | `forecasts` + `forecast_values` |
 | Hindcast forecasts | `forecast_hot_days` (548) | Parquet | `max_retention_days` | `hindcast_forecasts` + `hindcast_values` |
 | Daily aggregates | **permanent** (PostgreSQL) | — | **never** | in-place |
@@ -2730,6 +2730,8 @@ All time-series data follows a unified tiered lifecycle: **hot (PostgreSQL / obj
 | Resolved alerts | `alerts_retention_days` (90) | — | `alerts_retention_days` | `alerts` (resolved only) |
 
 Constraint: `max_retention_days` must be > `forecast_hot_days` (validated at config load time).
+
+**Raw gridded NWP (Plan 095):** the raw grid-cube zarrs are disposable auxiliary data — the **permanent** NWP archive is the extracted basin-average values in `weather_forecasts` (row above). Their hot window is capped independently at `nwp_grid_retention_days` (default 3), **not** at `weather_hot_days`, and old cycles are pruned **by age** (cycle_time older than the window); there is no cold tier for raw cubes (re-derivable by STAC re-fetch). Constraint: `nwp_grid_retention_days >= ceil(nwp_max_fallback_age_hours / 24) + 1` (validated at config load time). Trade-off: reprocessing with new station geometry beyond `nwp_grid_retention_days` days requires re-fetching from STAC rather than re-reading a cold cube; operators for whom long-window reprocessing matters more than disk may raise `nwp_grid_retention_days`.
 
 ### Observations are re-ingestible
 

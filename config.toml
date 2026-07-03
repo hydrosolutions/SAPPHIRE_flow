@@ -15,6 +15,11 @@ nwp_max_fallback_age_hours = 12.0
 # Plan 090: ignore an NWP cycle younger than this (min); walk back to the next
 # older, fully-published slot. ~90-120 min = ICON-CH2-EPS publish latency.
 nwp_cycle_min_age_minutes = 105
+# Plan 095: hot window (days) for raw NWP grid-cube zarrs under
+# nwp_grid_archive_base_path. Old cycles are pruned; extracted values in
+# weather_forecasts remain the permanent archive. Must be
+# >= ceil(nwp_max_fallback_age_hours / 24) + 1.
+nwp_grid_retention_days = 3
 
 # Per-source alert enablement
 enable_forecast_alerts = false

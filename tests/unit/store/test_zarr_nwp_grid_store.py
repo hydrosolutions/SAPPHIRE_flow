@@ -159,3 +159,105 @@ class TestZarrNwpGridStore:
         zarray = json.loads((path / "precipitation" / ".zarray").read_text())
         assert zarray["zarr_format"] == 2
         assert zarray["compressor"]["id"] == "zstd"
+
+
+def _fixed_clock(now: datetime) -> object:
+    """A frozen clock returning `now` (UtcDatetime) — DI, no datetime.now()."""
+    frozen = ensure_utc(now)
+    return lambda: frozen
+
+
+class TestPruneOldCycles:
+    """Plan 095: prune grid-cube zarrs from cycles older than the window."""
+
+    def _make_cycle_dir(self, base_path: object, source: str, cycle_stem: str) -> None:
+        from pathlib import Path
+
+        cycle_dir = Path(str(base_path)) / source / f"{cycle_stem}.zarr"
+        cycle_dir.mkdir(parents=True, exist_ok=True)
+        (cycle_dir / ".zgroup").write_text("{}")
+
+    def test_removes_old_keeps_recent(self, tmp_path: object) -> None:
+        from pathlib import Path
+
+        from sapphire_flow.store.zarr_nwp_grid_store import prune_old_cycles
+
+        base = Path(str(tmp_path))
+        # now = 2026-04-10T00; retention 3 days -> cutoff 2026-04-07T00.
+        now = datetime(2026, 4, 10, 0, tzinfo=UTC)
+        self._make_cycle_dir(base, "icon_ch2_eps", "20260401T00")  # old
+        self._make_cycle_dir(base, "icon_ch2_eps", "20260405T12")  # old
+        self._make_cycle_dir(base, "icon_ch2_eps", "20260409T06")  # recent
+        self._make_cycle_dir(base, "icon_ch2_eps", "20260410T00")  # recent
+
+        prune_old_cycles(base, 3, _fixed_clock(now))  # type: ignore[arg-type]
+
+        src = base / "icon_ch2_eps"
+        remaining = {p.name for p in src.iterdir()}
+        assert remaining == {"20260409T06.zarr", "20260410T00.zarr"}
+
+    def test_base_path_missing_is_noop(self, tmp_path: object) -> None:
+        from pathlib import Path
+
+        from sapphire_flow.store.zarr_nwp_grid_store import prune_old_cycles
+
+        missing = Path(str(tmp_path)) / "does_not_exist"
+        now = datetime(2026, 4, 10, 0, tzinfo=UTC)
+        # Must not raise.
+        prune_old_cycles(missing, 3, _fixed_clock(now))  # type: ignore[arg-type]
+        assert not missing.exists()
+
+    def test_discovers_multiple_sources_without_being_told(
+        self, tmp_path: object
+    ) -> None:
+        from pathlib import Path
+
+        from sapphire_flow.store.zarr_nwp_grid_store import prune_old_cycles
+
+        base = Path(str(tmp_path))
+        now = datetime(2026, 4, 10, 0, tzinfo=UTC)
+        self._make_cycle_dir(base, "icon_ch2_eps", "20260401T00")  # old
+        self._make_cycle_dir(base, "icon_ch2_eps", "20260409T06")  # recent
+        # A source added after deployment — never named to the prune function.
+        self._make_cycle_dir(base, "ifs_ens", "20260402T00")  # old
+        self._make_cycle_dir(base, "ifs_ens", "20260409T12")  # recent
+
+        prune_old_cycles(base, 3, _fixed_clock(now))  # type: ignore[arg-type]
+
+        assert {p.name for p in (base / "icon_ch2_eps").iterdir()} == {
+            "20260409T06.zarr"
+        }
+        assert {p.name for p in (base / "ifs_ens").iterdir()} == {"20260409T12.zarr"}
+
+    def test_orphaned_zarr_pruned_by_age_no_db_gate(self, tmp_path: object) -> None:
+        """An orphaned zarr (archived, no DB record) older than the window is
+        pruned by age alone — no DB-presence check."""
+        from pathlib import Path
+
+        from sapphire_flow.store.zarr_nwp_grid_store import prune_old_cycles
+
+        base = Path(str(tmp_path))
+        now = datetime(2026, 4, 10, 0, tzinfo=UTC)
+        self._make_cycle_dir(base, "icon_ch2_eps", "20260401T00")  # orphaned + old
+
+        prune_old_cycles(base, 3, _fixed_clock(now))  # type: ignore[arg-type]
+
+        assert not (base / "icon_ch2_eps" / "20260401T00.zarr").exists()
+
+    def test_skips_non_matching_entries(self, tmp_path: object) -> None:
+        from pathlib import Path
+
+        from sapphire_flow.store.zarr_nwp_grid_store import prune_old_cycles
+
+        base = Path(str(tmp_path))
+        now = datetime(2026, 4, 10, 0, tzinfo=UTC)
+        src = base / "icon_ch2_eps"
+        src.mkdir(parents=True)
+        (src / "not-a-cycle").mkdir()
+        (src / "20260401T00_v1").mkdir()  # versioned dir, not `.zarr` — skip
+        (src / "README.txt").write_text("keep me")
+
+        prune_old_cycles(base, 3, _fixed_clock(now))  # type: ignore[arg-type]
+
+        remaining = {p.name for p in src.iterdir()}
+        assert remaining == {"not-a-cycle", "20260401T00_v1", "README.txt"}

@@ -3067,6 +3067,99 @@ def _run_m3_cycle(stores: tuple, models: dict) -> ForecastCycleResult:
     )
 
 
+class TestNwpGridRetentionPrune:
+    """Plan 095: the flow body prunes old grid-cube zarrs after a successful NWP
+    fetch, using the configured retention window + archive base path."""
+
+    def _run(
+        self,
+        *,
+        monkeypatch: pytest.MonkeyPatch,
+        nwp_grid_archive_base_path: str | None,
+        nwp_grid_retention_days: int = 3,
+    ) -> list[tuple[object, ...]]:
+        calls: list[tuple[object, ...]] = []
+
+        def _spy(base_path: object, retention_days: object, clock: object) -> None:
+            calls.append((base_path, retention_days, clock))
+
+        monkeypatch.setattr(
+            "sapphire_flow.store.zarr_nwp_grid_store.prune_old_cycles", _spy
+        )
+
+        sid = StationId(uuid4())
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+            extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+            basin_store=basin_store,
+        )
+
+        adapter = FakeWeatherForecastSource(result=_make_gridded_forecast())
+        grid_store = FakeNwpGridStore()
+        grid_extractor = FakeGridExtractor(result=_make_basin_avg_result([sid]))
+        config = _make_config(
+            nwp_grid_archive_base_path=nwp_grid_archive_base_path,
+            nwp_grid_retention_days=nwp_grid_retention_days,
+        )
+
+        run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=FakeAlertStore(),
+            baseline_store=FakeClimBaselineStore(),
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=adapter,
+            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+            config=config,
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+            grid_store=grid_store,
+            grid_extractor=grid_extractor,
+        )
+        return calls
+
+    def test_prune_invoked_with_configured_retention_and_base_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = self._run(
+            monkeypatch=monkeypatch,
+            nwp_grid_archive_base_path="/tmp/test_grids",
+            nwp_grid_retention_days=5,
+        )
+        assert len(calls) == 1
+        base_path, retention_days, clock = calls[0]
+        assert str(base_path) == "/tmp/test_grids"
+        assert retention_days == 5
+        assert clock is _clock
+
+    def test_prune_not_invoked_when_base_path_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = self._run(monkeypatch=monkeypatch, nwp_grid_archive_base_path=None)
+        assert calls == []
+
+
 class TestNwpExtractionSourceFilter:
     """C. Grid extraction runs only for weather sources whose nwp_source matches
     the grid — i.e. the ICON / BASIN_AVERAGE binding onboarding must create.
