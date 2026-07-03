@@ -47,6 +47,7 @@
 </div>
 
 <script>
+const OBS_WINDOW_DAYS = 7;
 fetch("/api/v1/forecasts/{{ forecast.id }}/data.json")
   .then(r => r.json())
   .then(data => {
@@ -56,7 +57,7 @@ fetch("/api/v1/forecasts/{{ forecast.id }}/data.json")
       memberKeys.forEach((m, i) => {
         const series = data.members[m];
         traces.push({
-          x: series.lead_times,
+          x: series.valid_times,
           y: series.values,
           mode: "lines",
           name: "Member " + m,
@@ -70,7 +71,7 @@ fetch("/api/v1/forecasts/{{ forecast.id }}/data.json")
         const series = data.quantiles[q];
         const isMedian = parseFloat(q) === 0.5;
         traces.push({
-          x: series.lead_times,
+          x: series.valid_times,
           y: series.values,
           mode: "lines",
           name: "Q" + q,
@@ -78,12 +79,44 @@ fetch("/api/v1/forecasts/{{ forecast.id }}/data.json")
         });
       });
     }
-    Plotly.newPlot("ensemble-chart", traces, {
+
+    if (!data.units) {
+      console.warn("data.json returned no units for forecast {{ forecast.id }}; falling back to parameter name");
+    }
+    const layout = {
       title: "{{ forecast.parameter }} — {{ forecast.representation }}",
-      xaxis: {title: "Lead time (hours)"},
-      yaxis: {title: "{{ forecast.parameter }}"},
+      xaxis: {type: "date", title: "Valid time (UTC)"},
+      yaxis: {title: data.units || "{{ forecast.parameter }}"},
       margin: {t: 40, r: 20},
-    });
+    };
+
+    // Observation overlay: anchor the window on the authoritative issue time
+    // (top-level data.issued_at), NOT valid_times[0] which is 1–24h after issue.
+    const anchor = data.issued_at ? Date.parse(data.issued_at) : NaN;
+    if (isNaN(anchor)) {
+      Plotly.newPlot("ensemble-chart", traces, layout);
+      return;
+    }
+    const end = new Date(anchor).toISOString();
+    const start = new Date(anchor - OBS_WINDOW_DAYS * 86400000).toISOString();
+    const obsUrl = "/api/v1/stations/{{ forecast.station_id | string }}/observations.json"
+      + "?parameter={{ forecast.parameter | urlencode }}"
+      + "&start=" + encodeURIComponent(start)
+      + "&end=" + encodeURIComponent(end);
+    fetch(obsUrl)
+      .then(r => { if (!r.ok) return null; return r.json(); })
+      .then(obs => {
+        if (obs && obs.timestamps && obs.timestamps.length > 0) {
+          traces.push({
+            x: obs.timestamps,
+            y: obs.values,
+            mode: "lines+markers",
+            name: "Observed",
+          });
+        }
+        Plotly.newPlot("ensemble-chart", traces, layout);
+      })
+      .catch(() => Plotly.newPlot("ensemble-chart", traces, layout));
   });
 </script>
 {% else %}
