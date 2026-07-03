@@ -9,11 +9,13 @@ precision — do NOT copy the backup/CAMELS binds; Phase-3 test deps on the
 
 **Grill-me decisions (2026-07-03):** (1) **Approach = dedicated ingest worker +
 `ingest` pool** (isolation), not a concurrency knob (Option A is a no-op — the
-worker is already unbounded). (2) **Confirm the root cause on the mini FIRST**
-(Phase 0) before implementing — the controlled test (trigger a forecast-cycle,
-watch whether ingest runs concurrently and whether the worker OOMs) pins OOM vs
-Plan-062 recreate-hang and sets how urgently Plan 062 is absorbed. The isolation
-fix is correct either way, but Phase 0 gates the implementation per owner choice.
+worker is already unbounded). (2) **Phase 0 root-cause test DONE on the mini
+(2026-07-03) — see "Phase 0 RESULT" below.** OOM/contention is **ruled out**
+(OOMKilled=false, Restarts=0, memory far below limit); confirmed cause = **poll/
+scheduling latency** (the shared worker's poll loop starves during the 6-hourly
+forecast-cycle, delaying the `*/5` ingest pickup by ≈25–60 min → lost LINDAS
+windows). Plan 062 absorption is **not urgent** (the recreate-hang did not cause
+today's loss). Phases 1–3 are unblocked and unchanged.
 
 **Priority**: high — LINDAS observations are only live for ~10 min, so any
 delayed/blocked ingest **permanently loses discharge data**. Directly hit on the
@@ -105,6 +107,43 @@ committing to a fix. The two credible causes:
    regardless of concurrency.
 
 Either way the fix is **isolation + resilience**, not a concurrency cap.
+
+### Phase 0 RESULT — confirmed on the Mac mini (2026-07-03)
+
+The Q1 controlled test was run on the mini. Evidence:
+
+- **`docker inspect prefect-worker` → `OOMKilled=false`, `RestartCount=0`**, and
+  the container's `StartedAt` predates all the LATE ingests — the worker has been
+  up continuously and was **never OOM-killed or restarted**.
+- **`docker stats` during a live forecast-cycle → memory far below the 8 GiB
+  `mem_limit`** (no cgroup pressure).
+- **`docker top prefect-worker | grep -c python` → 2** during the overlap — the
+  worker genuinely runs the ingest as a **concurrent subprocess** (confirms F1: no
+  worker-level cap; the run is not queued behind forecast-cycle).
+- **`prefect flow-run ls --state RUNNING` → none** at rest — no run is stuck
+  `RUNNING` holding a `concurrency_limit=1` slot (rules out a hung-run block).
+- **Observed lateness ≈ 25–60 min** on `ingest-observations` ticks that land
+  during a forecast-cycle window; the runs themselves complete **fast** once they
+  start.
+
+**Confirmed root cause = poll/scheduling latency, NOT resource exhaustion.**
+Cause 1 (contention/OOM) is **ruled out** (OOMKilled=false, Restarts=0, memory
+far below limit). Cause 2 (Plan-062 recreate-hang) is a *distinct, separate*
+symptom (total stall until manual `restart`, seen on `up -d` recreate) — not what
+produces the recurring, bounded 25–60 min lateness here. The actual mechanism is
+that the **single shared process worker's poll/submission loop is starved while it
+runs the 6-hourly forecast-cycle** (21 members × 2 stations pegs CPU), stretching
+the `*/5` ingest pickup by tens of minutes. Because LINDAS obs live only ~10 min,
+that pickup delay = **permanent data loss**.
+
+This **strengthens** the plan's direction: the fix is **cadence isolation** (a
+dedicated `ingest` worker + pool so the obs poll loop is independent of the
+forecast-cycle's CPU load), justified by poll-starvation rather than memory. D3's
+small `mem_limit` for the ingest worker is still fine — memory was never the
+constraint, and a lightweight always-polling worker is exactly what isolates the
+5-min cadence. Phases 1–3 proceed unchanged; Plan 062 absorption is **not urgent**
+(the recreate-hang did not cause today's loss, though it remains a tracked
+residual risk — D6/Q4).
 
 ## Goal
 
