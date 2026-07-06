@@ -1,15 +1,20 @@
 # Plan 101 — investigate observation-QC failures (`ingest.qc_complete failed=2`)
 
-**Status**: NOT-READY (2026-07-06) — an **independent review found a BLOCKER the
-automated plan-review missed**: the null-datum backstop's global-widening is
-architecturally incompatible with datum-subtract (one shared rule set → widening
-erases the tight relative QC). Fixes folded in "Independent review" at the end:
-**null-datum = SKIP-until-datum (widening DROPPED)**, plus 3 majors (flag-detail
-honesty, baseline delete/replace, forecast-side QC in-slice). **Two owner decisions
-now open:** (i) persisted-column vs in-memory datum (scope), (ii) forecast-side QC
-in-slice vs block water_level forecast activation. Root cause + keep-raw +
-subtract-before-QC + per-station datum all stand. Re-review after the owner decides.
-Superseded framing note below —
+**Status**: ALL DECISIONS SETTLED (2026-07-06) — needs a **consolidation + final
+re-gate** before READY (the doc is layered; see below). Design is now coherent:
+root cause (datum/unit mismatch) → **keep raw + subtract-before-QC** → **datum is
+surveyed gauge-zero METADATA set at onboarding, PERSISTED** in
+`stations.water_level_datum_masl` (not history-derived, not in-memory) → **null-datum
+= SKIP-until-datum** (global widening DROPPED — architecturally incompatible per the
+independent review) → **forecast-side QC fixed in the SAME slice**. Folded: the
+`(station_id, parameter)` datum-keying fix (don't shift discharge), spike
+`tolerance→max_delta` across all 4 locations, flag-detail honesty, baseline
+delete/replace, `update_station` (not `store_station`) for backfill. **AUTHORITATIVE
+sections (latest wins):** "Owner decision — datum is STATION METADATA", "Independent
+review", "Plan-review round 3 — FINAL CORRECTIONS", "SCOPE LOCKED". Earlier sections
+(DECIDED DIRECTION, Remediation artefacts, the option-B widening) are SUPERSEDED.
+Next: consolidate into one clean implementation spec, then a final independent-review
+gate → READY. Superseded framing note below —
 **SCOPE (owner 2026-07-06): (A) per-station datum** as the *primary,
 per-station* precision mechanism (the plan-review's option (B) global-widening is
 NOT the primary fix, but its config-widening artefact **survives as the NULL-datum
@@ -901,3 +906,37 @@ for v0). Either keeps your "per-station datum" choice; only the persistence diff
 **Datum statistic (reviewer-recommended, adopt unless owner objects):** robust low
 percentile (p1/p5) over the last full year of history if available, else all history
 with a minimum-sample threshold; computed explicitly, no silent drift.
+
+## Owner decision (2026-07-06): datum is STATION METADATA set at onboarding (supersedes "data-driven from history" AND the persist-vs-in-memory fork)
+
+The per-station water_level datum is the **surveyed gauge-zero elevation (m a.s.l.)**
+— **station metadata provided at onboarding**, NOT inferred from observation history.
+It is durable and re-measured only every **~5–10 years** (a re-survey), applied via
+`update_station`. This collapses several earlier residuals:
+
+- **Scope #1 RESOLVED → PERSISTED** (not in-memory). Because the datum is durable,
+  occasionally-updated metadata, it lives in a **`stations.water_level_datum_masl`
+  column** (Alembic migration + `StationConfig` field + write path in
+  `PgStationStore.update_station` — reviewer C3). The in-memory/compute alternative is
+  dropped: you don't recompute surveyed metadata.
+- **Datum SOURCE = onboarding INPUT** (BAFU published gauge-zero / Pegelnullpunkt),
+  which **supersedes the earlier "data-driven from history" grill-me answer AND the
+  "datum statistic/window" residual** — there is no statistic to compute; it is a
+  provided value. The onboarding flow (`onboard.py` / `services/onboarding.py`) must
+  accept a `water_level_datum_masl` input; document provenance (surveyed / BAFU).
+- **Backfill 2009/2091** with their known BAFU gauge datums via `update_station`
+  (already-onboarded rows), then re-QC.
+- **NULL-datum = skip-until-datum** (unchanged, still correct): a station whose datum
+  metadata is not yet set skips the water_level range check (spike + rate_of_change,
+  datum-invariant, still run) until the datum is provided. Widening remains dropped.
+- **Update path:** a re-survey updates the column via `update_station`; existing
+  water_level rows should be re-QC'd against the revised datum (explicit, not silent
+  drift). This aligns with the future gauge-zero / rating-curve work (Nepal v1).
+
+**Forecast-side QC (owner decision #2) — RESOLVED (2026-07-06): fix in the SAME
+slice.** v0 forecasts water_level and `run_station_forecast` aborts on `QC_FAILED`,
+so the forecast path must also datum-subtract water_level before its QC, reading the
+same `water_level_datum_masl` metadata — identical `(station_id, parameter)`-keyed
+shift + skip-until-datum behaviour as the observation side, applied at the forecast QC
+gate (`run_station_forecast.py:219-229`, `config/forecast_qc_rules.py`). Not deferred;
+not a separate gate. **All owner decisions are now settled.**
