@@ -18,6 +18,7 @@ import structlog
 log = structlog.get_logger(__name__)
 
 WORK_POOL = "default"
+INGEST_POOL = "ingest"
 FLOW_SOURCE_ROOT = "/app"
 
 
@@ -28,6 +29,7 @@ class DeploymentSpec:
     deployment_name: str
     cron: str | None = None
     concurrency_limit: int | None = None
+    work_pool_name: str = WORK_POOL
 
 
 def _build_specs() -> list[DeploymentSpec]:
@@ -45,6 +47,7 @@ def _build_specs() -> list[DeploymentSpec]:
             flow_attr="ingest_observations_flow",
             deployment_name="ingest-observations",
             cron=cron_ingest,
+            work_pool_name=INGEST_POOL,
         ),
         DeploymentSpec(
             flow_module="sapphire_flow.flows.run_forecast_cycle",
@@ -96,6 +99,7 @@ def _build_specs() -> list[DeploymentSpec]:
             flow_attr="ingest_weather_history_flow",
             deployment_name="ingest-weather-history",
             cron=cron_weather_history,
+            concurrency_limit=1,
         ),
     ]
 
@@ -115,7 +119,7 @@ async def _register_one(spec: DeploymentSpec) -> None:
 
     deploy_kwargs: dict[str, object] = {
         "name": spec.deployment_name,
-        "work_pool_name": WORK_POOL,
+        "work_pool_name": spec.work_pool_name,
         "build": False,
         "push": False,
         "print_next_steps": False,
@@ -141,16 +145,20 @@ async def register_all() -> None:
     from prefect.client.schemas.actions import WorkPoolCreate
     from prefect.exceptions import ObjectAlreadyExists
 
-    async with get_client() as client:
-        try:
-            await client.create_work_pool(
-                WorkPoolCreate(name=WORK_POOL, type="process")
-            )
-            log.info("workpool.created", name=WORK_POOL)
-        except ObjectAlreadyExists:
-            log.info("workpool.exists", name=WORK_POOL)
-
     specs = _build_specs()
+
+    async with get_client() as client:
+        for pool_name in {spec.work_pool_name for spec in specs}:
+            # Each pool gets its own guard — a single try/except around the loop
+            # would abort on the first ObjectAlreadyExists.
+            try:
+                await client.create_work_pool(
+                    WorkPoolCreate(name=pool_name, type="process")
+                )
+                log.info("workpool.created", name=pool_name)
+            except ObjectAlreadyExists:
+                log.info("workpool.exists", name=pool_name)
+
     for spec in specs:
         await _register_one(spec)
 

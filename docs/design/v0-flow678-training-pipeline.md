@@ -12,7 +12,7 @@ Per `v0-scope.md` § A5 and § A7:
 |--------|---------------------------------------|-------------------|
 | Artifact lifecycle | 5 statuses (training → pending_approval → active → superseded → rejected) | 3 statuses: `TRAINING` → `ACTIVE` (auto-promote). `ACTIVE` → `SUPERSEDED` when replaced. |
 | Retraining comparison | T.6–T.8 (compare, request approval, promote/reject) | Skipped — auto-promote on initial training. Flow 9 deferred. |
-| Work pools | 3 pools (ops, training, hindcast) | Single `default` pool |
+| Work pools | 3 pools (ops, training, hindcast) | Two pools (`default` + `ingest` — obs-feed isolation via Plan 098; training stays on `default`) |
 | Forcing source | Configurable (station obs, reanalysis, NWP archive) | CAMELS-CH basin-averaged gridded forcing (per Plan 021 — supersedes Plan 013), tagged `ForcingType.REANALYSIS`. Nepal v1: ERA5-Land via `WeatherReanalysisSource`. |
 | Skill metrics | Full suite | Full suite — kept as designed (pure computation, high research value) |
 | `freshness` field | Set STALE on data change, reset to CURRENT by recomputation | Not exercised in v0 — no observation correction or NWP recovery flows. Field exists in schema. |

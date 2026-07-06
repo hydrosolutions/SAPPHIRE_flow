@@ -11,3 +11,9 @@ services:
       SAPPHIRE_CONFIG_OVERLAY: /app/config/overlays/mac-mini-nwp.toml
     volumes:
       - ./config/overlays/mac-mini-nwp.toml:/app/config/overlays/mac-mini-nwp.toml:ro
+
+  prefect-worker-ingest:
+    environment:
+      SAPPHIRE_CONFIG_OVERLAY: /app/config/overlays/mac-mini-nwp.toml
+    volumes:
+      - ./config/overlays/mac-mini-nwp.toml:/app/config/overlays/mac-mini-nwp.toml:ro

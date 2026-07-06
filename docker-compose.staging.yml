@@ -10,6 +10,12 @@ services:
     volumes:
       - ./config/overlays/staging-5-stations.toml:/app/config/overlays/staging-5-stations.toml:ro
 
+  prefect-worker-ingest:
+    environment:
+      SAPPHIRE_CONFIG_OVERLAY: /app/config/overlays/staging-5-stations.toml
+    volumes:
+      - ./config/overlays/staging-5-stations.toml:/app/config/overlays/staging-5-stations.toml:ro
+
   api:
     environment:
       SAPPHIRE_CONFIG_OVERLAY: /app/config/overlays/staging-5-stations.toml

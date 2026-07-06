@@ -15,7 +15,8 @@ Single VM deployment. All services in one `docker-compose.yml`. Swiss v0 targets
 | `postgres` | `postgis/postgis:16-3.4` | — | `pg_isready -U sapphire` | `unless-stopped` | v0+v1 |
 | `pgbouncer` | `pgbouncer/pgbouncer` | postgres (healthy) | `pg_isready -h localhost -p 6432` | `unless-stopped` | **v1** (§A3) |
 | `prefect-server` | `prefecthq/prefect:3-python3.11` | postgres (healthy) | `curl -f http://localhost:4200/api/health` | `unless-stopped` | v0+v1 |
-| `prefect-worker` | custom (sapphire-flow) | prefect-server, postgres | — | `unless-stopped` | **v0** (§A6) |
+| `prefect-worker` | custom (sapphire-flow) | prefect-server (healthy), init (completed) | — | `unless-stopped` | **v0** (§A6) |
+| `prefect-worker-ingest` | custom (sapphire-flow) | prefect-server (healthy), init (completed) | — | `unless-stopped` | **v0b** (§A6) — dedicated `ingest` pool worker isolating `*/5` obs ingest from the shared `default` pool (Plan 098) |
 | `prefect-worker-ops` | custom (sapphire-flow) | prefect-server, pgbouncer | — | `unless-stopped` | **v1** (§A6) |
 | `prefect-worker-hindcast` | custom (sapphire-flow) | prefect-server, pgbouncer | — | `unless-stopped` | **v1** (§A6) |
 | `prefect-worker-training` | custom (sapphire-flow) | prefect-server, pgbouncer | — | `unless-stopped` | **v1** (§A6) |
@@ -42,7 +43,7 @@ One Dockerfile for `prefect-worker-ops`, `prefect-worker-hindcast`, `prefect-wor
 
 tmpfs mount: `/tmp/sapphire_nwp` (size=4g) on prefect-worker — scratch space for NWP GRIB2-to-Zarr conversion.
 
-Config bind mount: `./config.toml:/app/config.toml:ro` on api and all three workers.
+Config bind mount: `./config.toml:/app/config.toml:ro` on `api` and both v0 workers (`prefect-worker`, `prefect-worker-ingest`); the three-worker phrasing refers to the v1 topology.
 
 ### Dependency chain
 
@@ -56,20 +57,21 @@ postgres ──→ pgbouncer ──→ api ──→ caddy
     init (one-shot, runs before workers/api)
 ```
 
-> **v0 variant** (v0-scope.md §A3, §A6): No PgBouncer intermediary; single `prefect-worker` replaces the three specialized workers.
+> **v0 variant** (v0-scope.md §A3, §A6): No PgBouncer intermediary; `prefect-worker` (general `default` pool) plus `prefect-worker-ingest` (dedicated `ingest` pool, Plan 098) replace the three specialized workers. Both workers are init-gated one-shot dependents of `prefect-server`.
 > ```
 > postgres ──→ api ──→ caddy
 >     │
 >     └──→ prefect-server ──→ prefect-worker
+>                        ──→ prefect-worker-ingest
 >
->     init (one-shot, runs before worker/api)
+>     init (one-shot, runs before workers/api)
 > ```
 
 All `depends_on` use `condition: service_healthy` where health checks are defined.
 
 ## Prefect work pool separation
 
-> **v1-only** (v0-scope.md §A6): v0 uses a single `default` work pool. The three-pool topology below applies to v1.
+> **v1-only** (v0-scope.md §A6): v0 now runs **two** work pools — the general `default` pool plus a dedicated `ingest` pool served by `prefect-worker-ingest` (a v0b obs-feed-isolation addition, Plan 098, that keeps the `*/5` observation ingest off the shared `default` pool). The three-pool ops/training/hindcast topology below still applies to v1.
 
 Three work pools isolate workloads with different resource and concurrency profiles:
 
@@ -126,13 +128,25 @@ Responsibilities are split across two stages:
 ### Upgrade procedure
 
 1. Pull new image tag: `docker compose pull`
-2. Stop workers (graceful): `docker compose stop prefect-worker` (v0 single worker; v1: `prefect-worker-ops prefect-worker-training`)
-3. Run init: `docker compose run --rm init` (applies migrations)
+2. Stop workers (graceful): `docker compose stop prefect-worker prefect-worker-ingest` (v0 both workers; v1: `prefect-worker-ops prefect-worker-training`)
+3. Run init: `docker compose run --rm init` (applies migrations, creates both pools, reroutes deployments)
 4. Restart all: `docker compose up -d`
+
+> **Plan 098 note**: both v0 workers must be quiesced in step 2 before `init`/`alembic upgrade head` re-runs — leaving `prefect-worker-ingest` running during the upgrade breaks the sequence. Phase 1 (routing `ingest-observations` to the `ingest` pool) and Phase 2 (the `prefect-worker-ingest` container that serves it) ship together in a single image build + compose update; a partial deploy leaves the `ingest` pool workerless and the obs feed dead.
 
 ### Rollback
 
 No schema downgrade path — rollback = restore from backup + redeploy previous image tag. Migrations must be backwards-compatible for one version (additive only: new columns nullable, no destructive changes in a single release). This means the previous image tag can run against the new schema during the migration window.
+
+**Ingest-worker rollback (Plan 098)** — if the combined deploy lands but `prefect-worker-ingest` then fails to start or crashes (e.g. missing `/data/artifacts` tmpfs, too-low `mem_limit`, missing `db_password`, or a wrong overlay path), `init` has already re-routed `ingest-observations` onto the `ingest` pool and the `default` worker no longer claims it, so the obs feed is **dead** until recovery. Restore the pre-098 state (LATE obs, not dead obs):
+
+0. **Before opening the upgrade window**, tag the current image as a rollback anchor. The project ships no registry-publish workflow (see "No image publish / release workflow" below), so images are local-only — if the pre-upgrade image is pruned there is nothing to roll back to. Confirm the current tag with `docker images sapphire-flow --format "{{.Tag}}"`, then `docker tag sapphire-flow:${OLD_VERSION} sapphire-flow:rollback-backup`.
+1. `docker compose stop prefect-worker prefect-worker-ingest` — quiesce both workers.
+2. Revert `register_deployments.py` to the pre-098 routing (no `INGEST_POOL`; `ingest-observations` routes to `WORK_POOL = "default"`) and deploy the previous image — either rebuild the revert or point `VERSION` in `.env` back to the tagged `rollback-backup` / `${OLD_VERSION}` image from step 0, then `docker compose up -d`. If the revert also crosses a DB-migration boundary, follow the schema-rollback note above (restore from backup + redeploy). 098 itself ships no migration, so this applies only if 098 is bundled with a migration-carrying release.
+3. `docker compose run --rm init` — re-registers `ingest-observations` back onto the `default` pool (`init` is idempotent).
+4. `docker compose up -d prefect-worker` **without** the `prefect-worker-ingest` service — the `default` worker serves the obs feed again.
+
+The symmetric partial-deploy failures (Phase 1 without Phase 2 → workerless `ingest` pool; Phase 2 before the pool is created → ingest worker polls an empty pool) reduce to the same recovery: revert routing to `WORK_POOL`, re-run `init`, run only the `default` worker.
 
 ## Log management
 
@@ -159,7 +173,7 @@ Retained in Prefect database. Retention: 30 days (configured in Prefect server s
 
 ### Disk impact
 
-With 4 forecast cycles/day and 48 obs ingest runs/day, estimated log volume is ~100 MB/day at ~50 stations before rotation, scaling roughly linearly with station count (~340 MB/day at ~170 stations, ~2 GB/day at ~1000 stations). The `max-file: 5` x `max-size: 50m` = 250 MB cap per container. 8 containers x 250 MB = ~2 GB maximum disk usage for container logs. v0 has 6 containers (no PgBouncer, one worker instead of three). At ~1000 stations, the 250 MB cap causes logs to rotate within hours — see plan 013 DECISION on line 125.
+With 4 forecast cycles/day and 48 obs ingest runs/day, estimated log volume is ~100 MB/day at ~50 stations before rotation, scaling roughly linearly with station count (~340 MB/day at ~170 stations, ~2 GB/day at ~1000 stations). The `max-file: 5` x `max-size: 50m` = 250 MB cap per container. 8 containers x 250 MB = ~2 GB maximum disk usage for container logs. v0 has 7 containers (no PgBouncer, two workers instead of three). At ~1000 stations, the 250 MB cap causes logs to rotate within hours — see plan 013 DECISION on line 125.
 
 ## Systemd integration
 
@@ -475,7 +489,7 @@ A missing overlay file raises `FileNotFoundError` at startup. There is no silent
 
 ### Docker Compose pattern
 
-Compose overlays select config overlays. `docker-compose.staging.yml` bind-mounts `config/overlays/staging-5-stations.toml` and sets `SAPPHIRE_CONFIG_OVERLAY` on the services that read config (`prefect-worker`, `api`, `init`). Operators run:
+Compose overlays select config overlays. `docker-compose.staging.yml` bind-mounts `config/overlays/staging-5-stations.toml` and sets `SAPPHIRE_CONFIG_OVERLAY` on the services that read config (`prefect-worker`, `prefect-worker-ingest`, `api`, `init`). The ingest worker must be included: without the overlay block its `SAPPHIRE_CONFIG_OVERLAY` is simply unset, `_resolve_overlay_paths()` returns `[]`, and the worker silently falls back to the base config and queries the wrong station set (all stations instead of the 5-station subset) — no crash. This is distinct from the `FileNotFoundError` failure mode above, which fires only when the env var IS set but the TOML bind mount is absent; both are prevented by adding the overlay block. Operators run:
 
 ```
 docker compose -f docker-compose.yml -f docker-compose.staging.yml up

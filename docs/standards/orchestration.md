@@ -2,7 +2,7 @@
 
 > This document extends `docs/architecture-context.md`. It adds Prefect 3 implementation detail for the 12 data flows (plus Flow 5w) and maintenance tasks. For foundational decisions, see: flow definitions and step sequencing (architecture-context.md § Data flows), Prefect naming conventions (conventions.md § Prefect flows and tasks), retry patterns (conventions.md § Error handling at adapter boundaries), work pool topology and resource limits (cicd.md § Prefect work pool separation), and container layout (cicd.md § Docker Compose service topology). This document does not redefine the tech stack, flow step logic, or data model.
 >
-> **v0 simplifications**: See [`docs/v0-scope.md`](../v0-scope.md) § A6 (single work pool), § A4 (simplified onboarding), § A7 (simplified artifact lifecycle), § D4 (minimize Prefect overhead). v0 uses a single `default` pool — the three-pool topology described below applies to v1.
+> **v0 simplifications**: See [`docs/v0-scope.md`](../v0-scope.md) § A6 (single work pool), § A4 (simplified onboarding), § A7 (simplified artifact lifecycle), § D4 (minimize Prefect overhead). v0 runs **two** pools — the general `default` pool plus a dedicated `ingest` pool served by `prefect-worker-ingest` for obs-feed isolation (Plan 098); only `ingest-observations` routes to `ingest`, everything else stays on `default`. The three-pool ops/training/hindcast topology described below applies to v1.
 
 ## Why Prefect 3
 
@@ -13,7 +13,7 @@ Prefect 3 replaces a patchwork of Luigi, bash scripts, and cron jobs with a sing
 | Flow | Prefect flow function | Work pool | Trigger | Concurrency limit | Scope |
 |------|-----------------------|-----------|---------|-------------------|-------|
 | 1 — Forecast cycle | `run_forecast_cycle_flow` | `ops` | Cron | 1 | v0+v1 |
-| 2 — Observation ingest | `ingest_observations_flow` | `ops` | Cron | — | v0+v1 |
+| 2 — Observation ingest | `ingest_observations_flow` | `ingest` (v0) / `ops` (v1) | Cron | — | v0+v1 |
 | 3 — Forecast review | *(not a Prefect flow — user-driven via API/dashboard)* | — | — | — | v0+v1 |
 | 4 — Pipeline monitoring | `monitor_pipeline` | `ops` | Cron | — | **v0c+** (§D5) |
 | 5 — River station onboarding | `onboard_stations_flow` | `ops` | On-demand | — | v0+v1 |
@@ -30,7 +30,7 @@ Prefect 3 replaces a patchwork of Luigi, bash scripts, and cron jobs with a sing
 | Data archival | `archive_cold_data` | `ops` | Cron (monthly) | — | **v1** (§A2) |
 | Backup restore rehearsal | `rehearse_backup_restore` | `ops` | Cron (monthly) | — | **v1** (§A10) |
 
-All cron schedules are deployment-configurable — set as `CronSchedule` parameters in each deployment definition, not hardcoded. **→ DECISION (plan 013)**: At ~1000 stations on a single `default` work pool (v0), staggering forecast cycles, observation ingest (48 runs/day), and backup flows is a recommended operational practice to reduce contention. Operators should offset cron schedules to avoid simultaneous heavy flows (e.g., stagger `run_forecast_cycle_flow` and `train_models_flow` by at least 10 minutes). See cicd.md § Prefect work pool separation for pool-level concurrency limits and container resource bounds.
+All cron schedules are deployment-configurable — set as `CronSchedule` parameters in each deployment definition, not hardcoded. **→ DECISION (plan 013)**: At ~1000 stations on the `default` work pool (v0), staggering forecast cycles and backup flows is a recommended operational practice to reduce contention. Operators should offset cron schedules to avoid simultaneous heavy flows (e.g., stagger `run_forecast_cycle_flow` and `train_models_flow` by at least 10 minutes). **Plan 098 note**: staggering is no longer the mechanism that protects the `*/5` observation ingest — obs ingest now runs on the dedicated `ingest` pool (`prefect-worker-ingest`), isolated from the heavy `default`-pool flows. Staggering is retained as general contention guidance for the remaining `default`-pool flows. See cicd.md § Prefect work pool separation for pool-level concurrency limits and container resource bounds.
 
 ## Task granularity
 
@@ -56,7 +56,7 @@ Flow 1 parallelizes forecast execution across stations. Two mechanisms are avail
 - `task.map()` — for homogeneous work over a collection (e.g. running the same forecast task for each station/model pair).
 - `task.submit()` + gather — for heterogeneous parallel work where tasks differ by inputs or type.
 
-`task.map()` with `unmapped()` store/connection arguments requires an in-process task runner (`ThreadPoolTaskRunner`; note: `ConcurrentTaskRunner` is a backwards-compatibility alias for the same class in Prefect 3.6+). Stores hold SQLAlchemy connections that are not pickle-serializable — distributed or subprocess runners would fail. v0 uses a single work pool with in-process execution. **→ BENCHMARK (plan 013)**: Default `max_workers` is unbounded (`sys.maxsize`). At ~1000-station fan-out via `task.map()`, this spawns ~1000 concurrent OS threads. Cap via `ThreadPoolTaskRunner(max_workers=N)` or `PREFECT_TASK_RUNNER_THREAD_POOL_MAX_WORKERS` env var. Benchmark thread count limits, memory footprint, and connection pool pressure before deploying at >500 stations.
+`task.map()` with `unmapped()` store/connection arguments requires an in-process task runner (`ThreadPoolTaskRunner`; note: `ConcurrentTaskRunner` is a backwards-compatibility alias for the same class in Prefect 3.6+). Stores hold SQLAlchemy connections that are not pickle-serializable — distributed or subprocess runners would fail. The `default` pool retains in-process `task.map` fan-out for Flow 1. **Plan 098 note**: the `ingest` pool is a separate worker process (`prefect-worker-ingest`), not in-process with `default`; it serves only the observation-ingest flow, which does no `task.map` fan-out. **→ BENCHMARK (plan 013)**: Default `max_workers` is unbounded (`sys.maxsize`). At ~1000-station fan-out via `task.map()`, this spawns ~1000 concurrent OS threads. Cap via `ThreadPoolTaskRunner(max_workers=N)` or `PREFECT_TASK_RUNNER_THREAD_POOL_MAX_WORKERS` env var. Benchmark thread count limits, memory footprint, and connection pool pressure before deploying at >500 stations.
 
 Illustrative sketch for Flow 1 (not implementation):
 
@@ -129,7 +129,7 @@ Four composition patterns are used across the 12 flows (plus Flow 5w):
 
 **1. Direct subflow call** — a `@flow` calls another `@flow` in-process. Prefect tracks the parent–child relationship in the UI. Used for Flows 6/9 calling Flow 7 (hindcast) and Flows 8/10 (skill) as part of the training pipeline.
 
-> **v1-only** (v0-scope.md §A6): Cross-pool submission requires the three-pool topology. v0 uses a single pool — sub-flows run in-process.
+> **v1-only** (v0-scope.md §A6): Cross-pool submission requires the three-pool topology. **Plan 098 note**: v0 now runs two pools (`default` + `ingest`), but the `ingest` pool serves only `ingest-observations` (no sub-flow composition), so sub-flows still run in-process on the `default` pool.
 
 **2. Cross-pool submission** — a parent flow submits work to a different work pool via `run_deployment()`. The parent does not block; it polls or waits for the child deployment's run to complete. Used when the training pool (`training`) needs to dispatch hindcast and skill work to the `hindcast` pool after T.3 completes.
 
