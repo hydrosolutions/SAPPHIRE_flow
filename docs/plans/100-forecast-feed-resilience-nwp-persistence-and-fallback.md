@@ -32,7 +32,36 @@ default per Plan 089); M0a extended to `group_model_assignments`; M0c **decided*
 by the categorical `FALLBACK_MODEL_IDS` single-source tier, Decision 2**); M3 extended
 to tier-filter the **pooled/BMA/consensus** alert path (not just Primary); B3
 reconciled with the `input_quality` spec mechanism; fleet-wide floor audit + a
-fallback-priority drift tripwire (C1c) added; several citations corrected. Still
+fallback-priority drift tripwire (C1c) added; several citations corrected. **Round 4 (code-grounded major sweep, 2026-07-06) folded:** M0a precedence rule 2
+replaced (value-pattern "deliberate override" inference was indistinguishable from the
+bug's own drift signature → now an **explicit `(station_id, model_id)` override
+allowlist**, every other skill row unconditionally → config); **M0a write path pinned
+to priority-only** (the upsert helpers also SET `time_step`/`status`, and re-deriving
+`time_step` would clobber operator-set cadence → read-back-and-round-trip OR a new
+`UPDATE` store method); **A3 `SAPPHIRE_REQUIRE_NWP` read UNCONDITIONALLY at the loader
+top** into BOTH the `SAPPHIRE_CONFIG`-unset early-return dataclass AND the main path
+(not "mirroring" `enabled`, whose early-return value is hardcoded `False` — mirroring
+would silently defeat the unset-config gate case — now the single general check,
+see round-4 correctness sweep below); **broken regression test**
+`test_run_station_forecast.py:617-640` added to the migration budget; **retroactive
+`FORECAST`-alert audit** added (acceptance check 15, Goal #4); **`docs/v0-scope.md`
+model-inventory + §A8e mechanism** added to the doc-sync list; `FALLBACK_MODEL_IDS`
+retyped `frozenset[ModelId]`. **Plan-review round 4 (correctness sweep, 2026-07-06)
+folded:** A3 gate **generalized to the single check `require_nwp and not
+weather_forecast_config.enabled` at `:642`** (the two enumerated conditions missed the
+explicit-`enabled=false` merged-TOML case that was the actual incident); **M0c
+config-load validator scoped to fallback ids EXPLICITLY PRESENT in `[model_priorities]`**
+(the `priority_for_model(...)`-based form over-fired via `DEFAULT_PRIORITY=50` and broke
+`make_deployment_config()`); **B2 RAISES a narrow `InsufficientObservationsError`** (the
+native `predict` Protocol has no `ModelFailure` return — that is FI-only); **`ModelTier`
+enum replaces the `is_fallback: bool`** on the badge/JSON schema (CLAUDE.md
+enum-over-bool); **M0a gains a pre-rewrite read-only fleet AUDIT** (allowlist must not be
+assumed = the 2-station dev sample); **B3 extended to the model-assignment surfaces**
+(`stations/detail.html:89`, `models/detail.html:59`, `_to_model_assignment_response`);
+plus minors — DB `server_default="0"` recorded as an open residual (C1c-tracked), M0a
+option-(b) `UPDATE` path guarded/scoped, vestigial `MultiModelForecastResult.priorities`
+flagged, M3 suppression pinned to station-level granularity, `architecture-context.md`
+doc-sync extended to rewrite the numeric-gate mechanism clause to categorical. Still
 DRAFT — re-run `plan-review` to confirm convergence, then phases → READY, then
 `vision-build` (WF2).
 Implementation is a **code change** → **hold-at-PR** with a version bump.
@@ -134,18 +163,56 @@ and no below-tier fallback row can be written.
      `persistence_fallback→90` — so the floor always lands in the `≥90` tier. A
      fallback row is never left below threshold, regardless of any prior manual
      edit (the whole point of M0 is that a fallback below `90` is the bug).
-  2. **A skill model is rewritten to `priority_for_model(model_id)`
+  2. **A skill model is UNCONDITIONALLY rewritten to `priority_for_model(model_id)`
      (`nwp_regression→10`, `nwp_rainfall_runoff→20`, `linear_regression_daily→30`)
-     UNLESS its current DB value is a deliberate operator override** — i.e. a
-     value that is (a) below `FALLBACK_PRIORITY_THRESHOLD` (so still legitimately
-     skill-tier) and (b) differs from the config value — in which case the override
-     is **preserved** (e.g. the manual `nwp_rainfall_runoff=-10` skill-comparison
-     knob stays `-10`). This never lets a *fallback* stand below tier (rule 1 wins
-     for those), only a *skill* model's deliberate ordering choice.
+     EXCEPT for an explicit, hard-coded allowlist of `(station_id, model_id)` pairs
+     known to carry an intentional experiment override** — corrected after the
+     2026-07-06 review, which showed the earlier "infer deliberate from the value
+     pattern" rule was unsound. The prior rule preserved a skill priority whenever it
+     was "(a) below `FALLBACK_PRIORITY_THRESHOLD` **and** (b) differs from the config
+     value". But (a) is true of **every** skill priority by design (config values are
+     10/20/30, all `< 90`) and (b) is true of **any** drifted value by definition — so
+     that rule would classify the incident's own drift signature as "deliberate" and
+     preserve it. The live-DB finding above (line 88: nwp_regression and
+     linear_regression_daily also stuck at `0` at 2009/2091, not only the documented
+     `nwp_rainfall_runoff=-10` override) is exactly this failure: under the old rule
+     both `0`-valued skill rows satisfy (a)+(b) identically to the `-10` row and would
+     be left at `0` forever, leaving `sorted(assignments, key=lambda a: a.priority)`
+     (`run_forecast_cycle.py:970`, `run_station_forecast.py:301`) with a
+     non-deterministic tie between `nwp_regression` and `linear_regression_daily` for
+     both primary-model selection **and** `time_step` selection — the very ordering
+     fragility M0a's `time_step` audit (below) worries about, on the audited stations.
+     **Fix:** do NOT infer "deliberate" from the value (indistinguishable from the
+     bug's own signature). Reconcile from a **named, explicit allowlist** of the
+     specific `(station_id, model_id)` pairs that carry an intentional override — for
+     this repair, exactly `nwp_rainfall_runoff` on stations `2009` and `2091`
+     (`config.toml:59-64` skill-comparison knob). Every skill row NOT on that
+     allowlist is rewritten to `priority_for_model(model_id)` — the same unconditional
+     treatment rule 1 gives fallbacks. Allowlisted rows keep their stored value.
   Net: `FALLBACK_MODEL_IDS` membership is the categorical fact (Decision 2 /
-  Plan-review round 3); `priority_for_model` sets the default ordering integer;
-  a deliberate skill-tier override is respected. Acceptance check 1 asserts exactly
-  this (fallbacks at `100`/`90`; a pre-existing skill override survives).
+  Plan-review round 3); `priority_for_model` sets the default ordering integer for
+  every non-allowlisted row; only an **explicitly allowlisted** skill override is
+  respected. Acceptance check 1 asserts exactly this (fallbacks at `100`/`90`; the
+  allowlisted `nwp_rainfall_runoff=-10` row survives; the previously-drifted-to-`0`
+  `nwp_regression`/`linear_regression_daily` rows converge to config `10`/`30`).
+  - **M0a pre-rewrite fleet AUDIT — derive the allowlist from the REAL target DB,
+    not the 2-station dev sample (folded from the 2026-07-06 round-4 review):** the
+    allowlist above (`nwp_rainfall_runoff` on `2009`/`2091`) is derived from the
+    **2-station dev stack**. The real production / mac-mini fleet could carry other
+    legitimate skill-priority overrides that were never seen on dev, and a blanket
+    "rewrite every non-allowlisted skill row to `priority_for_model`" would silently
+    clobber them — the mirror-image of the bug this plan fixes. **Before** the blanket
+    rewrite runs, M0a MUST first run a **read-only fleet audit** (mirroring B1b's
+    fleet-wide floor audit): list every skill-model assignment row across the REAL
+    target DB (`model_assignments` **and** `group_model_assignments`) whose stored
+    `priority` differs from `priority_for_model(model_id)`, and **require each
+    divergence to be explicitly triaged** — either added to the `(station_id, model_id)`
+    override allowlist (a confirmed intentional experiment override) or confirmed as
+    drift to be reconciled — **before** any row is rewritten. The dev-derived allowlist
+    (`nwp_rainfall_runoff` on `2009`/`2091`) is the *starting* allowlist; the audit is
+    what makes it complete for whichever DB M0a actually targets. Acceptance check 1 is
+    extended to assert the audit ran and that every skill-row divergence was triaged
+    (allowlisted or reconciled), none silently clobbered.
   - **M0a side effect — `time_step` selection can flip (folded from the 2026-07-06
     review; must be audited before the repair runs):** the per-station input-assembly
     cadence is keyed on the **first priority-sorted assignment's** `time_step`
@@ -172,6 +239,40 @@ and no below-tier fallback row can be written.
     a design decision rather than clobbering it. Acceptance check 1 is extended to
     assert this audit ran and that no station's effective `time_step` changed as a
     side effect of M0a.
+  - **M0a WRITE-PATH requirement — priority-only, must not clobber `time_step`/`status`
+    (folded from the 2026-07-06 review):** the only assignment writers in the codebase
+    are the full-row upsert helpers `create_station_assignment` /
+    `create_group_assignment` (`model_onboarding.py:838-895`) →
+    `store_model_assignment` (`store/station_store.py:193-211`) /
+    `store_group_model_assignment` (`store/station_group_store.py:132-150`), whose
+    `INSERT … ON CONFLICT DO UPDATE` **SET clause also overwrites `time_step` and
+    `status` on every call** — there is no priority-only writer today. Two consequences
+    M0a MUST honour: (1) `create_station_assignment`'s `time_step: timedelta` parameter
+    has **no default** (`model_onboarding.py:838-867`), so a script built on the
+    upserts must supply a `time_step` for every row it rewrites; (2) it must **NOT
+    re-derive** `time_step` from `model.data_requirements.supported_time_steps` (the
+    pattern at `onboarding.py:482,592`, i.e. `next(iter(...supported_time_steps))`),
+    because `onboard_model_flow` writes an arbitrary operator-supplied `time_step_hours`
+    (default 24, `flows/onboard_model.py:469,577`) that is NOT re-derivable from the
+    model — re-deriving would silently clobber legitimately-different stored cadences,
+    reintroducing the exact corruption the plan is preventing. **Required:** M0a either
+    (a) reads back each existing row's current `time_step` **and** `status` and passes
+    them through byte-for-byte unchanged when re-invoking the upsert to rewrite only
+    `priority`, or — simpler and safer — (b) **bypasses the upsert helpers entirely and
+    issues a priority-only `UPDATE`** (a new thin store method, `model_assignments` /
+    `group_model_assignments` `SET priority=… WHERE …`) so the write path structurally
+    cannot touch `time_step`/`status`. (b) is preferred. **Guard note (folded round 4):
+    a priority-only `UPDATE` is a NEW write path that bypasses the M0b write-time guard
+    in `create_station_assignment`/`create_group_assignment`.** To keep the invariant
+    "no code path can persist a fallback below tier", scope this method as
+    **private/one-off to the M0a repair script ONLY**, OR have it assert the same
+    `model_id in FALLBACK_MODEL_IDS and priority < FALLBACK_PRIORITY_THRESHOLD → raise`
+    check before issuing the UPDATE. **Doc-sync:** if option (b) is taken, add the new
+    method signature to both Store Protocols in `docs/spec/types-and-protocols.md` at
+    land time. Acceptance check 1 is extended to assert **every individual row's**
+    `time_step` (not just the post-sort *effective* one) is bit-for-bit identical
+    before/after M0a — the effective-only check would miss corruption of a
+    non-first-ranked row.
 - **M0b — fix the creation paths:** the config-driven `priority_for_model` value
   must reach **every** assignment write. The two pipeline call sites
   (`onboarding.py` Steps 6/7) already do this; the live gap is **`onboard_model_flow`
@@ -203,9 +304,12 @@ and no below-tier fallback row can be written.
     Acceptance check asserts a below-tier fallback write raises.
 - **M0c — `FALLBACK_MODEL_IDS` is the SINGLE categorical source of truth for the
   fallback/skill-tier boolean — DECIDED (plan-review round 3, Decision 2):**
-  Introduce a `FALLBACK_MODEL_IDS: frozenset[str]` constant
-  (`{"climatology_fallback", "persistence_fallback"}`) next to
-  `FALLBACK_PRIORITY_THRESHOLD` (`types/ids.py:20`). The *categorical* fact "is this a
+  Introduce a `FALLBACK_MODEL_IDS: frozenset[ModelId] = frozenset({
+  ModelId("climatology_fallback"), ModelId("persistence_fallback")})` constant next to
+  `FALLBACK_PRIORITY_THRESHOLD` (`types/ids.py:20`) — wrapped through `ModelId`
+  (`= NewType("ModelId", str)`, `types/ids.py:16`) to match the existing sentinel
+  pattern (`POOLED_MODEL_ID`/`BMA_MODEL_ID`/`CONSENSUS_MODEL_ID`, `:17-19`) and every
+  `ModelId`-typed membership call site, NOT bare `frozenset[str]`. The *categorical* fact "is this a
   fallback model" is `model_id in FALLBACK_MODEL_IDS`, and **the identical boolean is
   used in all three places that previously computed the tier two different ways**:
   1. **Forecast combination** — `MultiModelForecastResult.combinable_results`
@@ -215,7 +319,16 @@ and no below-tier fallback row can be written.
      was blended into the pooled forecast as a skill member. **Replace that check
      with `model_id not in FALLBACK_MODEL_IDS`** — combination now admits a model iff
      it is not categorically a fallback, independent of any drifted DB priority.
-  2. **B3 `is_fallback` badge** — `model_id in FALLBACK_MODEL_IDS`.
+     **Vestigial-field note (folded round 4):** once `combinable_results` no longer reads
+     `self.priorities`, the `MultiModelForecastResult.priorities` field
+     (`run_station_forecast.py:66`, populated `:304,:309`, passed `:338`) is no longer
+     consulted for tier classification. Landing this change should either **remove the
+     `priorities` field + its threading** or **explicitly re-comment it as
+     ordering/tie-break-only** (it may still legitimately feed `min(priority)`
+     primary-selection ordering) — do not leave a dead field that reads as the old tier
+     source.
+  2. **B3 `ModelTier` badge** — `ModelTier.FALLBACK if model_id in FALLBACK_MODEL_IDS
+     else ModelTier.SKILL` (a derived enum, not a raw `is_fallback: bool` — MAJOR-6).
   3. **M3 alert-suppression gate** — `model_id in FALLBACK_MODEL_IDS`.
   - **DB `assignment.priority` is DEMOTED to an ordering / tie-break key AMONG
     admitted skill models only** (the `min(priority)` primary-selection dispatch and
@@ -232,24 +345,51 @@ and no below-tier fallback row can be written.
     entire class of DB-priority drift: a manual DB edit or any onboarding-path bug
     that mis-sets `priority` cannot un-badge a fallback, cannot re-admit it into a
     pooled alert, and cannot blend it into a skill forecast.
-  - **M0c config-load validator (retained — closes the config-side hazard):** the
-    numeric `[model_priorities]` map (read via `deployment.py:250-256 priority_for_model`,
+  - **M0c config-load validator (retained — closes the config-side hazard;
+    scoped to PRESENT keys, corrected 2026-07-06 round 4):** the numeric
+    `[model_priorities]` map (read via `deployment.py:250-256 priority_for_model`,
     default `DEFAULT_PRIORITY=50`) still drives *ordering*, so a `config.toml` edit that
     priced a fallback below `90` (copy-paste, merge conflict, an experiment tweak
     mirroring `nwp_rainfall_runoff = -10`) would give a fallback a nonsensical
     skill-tier ordering integer. Add a **config-load-time validator** (a
     `model_validator` on the deployment-config model, alongside the existing
-    `@model_validator(mode="after")` chain at `deployment.py:173-248`) that asserts
-    **every `model_id in FALLBACK_MODEL_IDS` has `priority_for_model(...) >=
-    FALLBACK_PRIORITY_THRESHOLD`**, raising `ConfigurationError` at startup otherwise.
-    This keeps the ordering integer consistent with the categorical set and fails
-    loud instead of shipping a self-contradictory config. Acceptance check asserts it.
+    `@model_validator(mode="after")` chain at `deployment.py:173-248`). **The validator
+    MUST enforce only on fallback ids EXPLICITLY PRESENT in `self.model_priorities`,
+    NOT via `priority_for_model(...)`.** The earlier "every `model_id in
+    FALLBACK_MODEL_IDS` has `priority_for_model(...) >= FALLBACK_PRIORITY_THRESHOLD`"
+    wording over-fires: `priority_for_model` returns `DEFAULT_PRIORITY=50`
+    (`deployment.py:29,256`) for any model absent from `[model_priorities]`, and
+    `50 < 90` — so ANY `DeploymentConfig` that does not explicitly list BOTH fallbacks
+    in `[model_priorities]` would raise at construction. That would break the shared
+    test helper `make_deployment_config()` (`tests/conftest.py:288-293`, which passes
+    only `max_retention_days`) used across the suite, plus every real config that omits
+    the fallbacks. **Correct form:**
+    `for mid in FALLBACK_MODEL_IDS: v = self.model_priorities.get(mid); if v is not
+    None and v < FALLBACK_PRIORITY_THRESHOLD: raise ConfigurationError(...)` — an
+    **absent** entry is safe because the categorical `FALLBACK_MODEL_IDS` tier already
+    governs classification (M0c Decision 2), and an absent fallback simply falls back
+    to the `DEFAULT_PRIORITY=50` ordering integer, which never crosses the `>=90` tier
+    but also never mis-*classifies* the model (classification is categorical, not
+    numeric). Only an **explicitly present, below-threshold** fallback priority is a
+    genuine self-contradictory config and must fail loud. This keeps the ordering
+    integer consistent with the categorical set without regressing well-formed configs.
+    Acceptance check 11 covers both cases: a config that prices a present
+    `climatology_fallback = 5` raises; **a well-formed config that OMITS the fallback
+    ids from `[model_priorities]` still loads cleanly**. (Test-migration note: if any
+    test wants the fallbacks explicitly priced, add them to the config under test — but
+    the default `make_deployment_config()` helper must continue to load without listing
+    them.)
   - **Belt-and-suspenders (folded into M4/C1c):** M4's tripwire still flags any
     `model_assignments`/`group_model_assignments.priority` for a `FALLBACK_MODEL_IDS`
     member that has drifted below `FALLBACK_PRIORITY_THRESHOLD`, so a recurrence of the
     root cause is *visible* even though (post-Decision-2) it can no longer misclassify
-    the tier. (A fuller registry-declared `ModelTier` enum is the cleaner long-term
-    shape but is out of scope here; the `frozenset` constant is the minimal decoupling.)
+    the tier. (M0c introduces a small **`ModelTier` enum** (`SKILL`/`FALLBACK`, see
+    Decision 2 / MAJOR-6 below) *derived* from the `FALLBACK_MODEL_IDS` frozenset — this
+    is the value exposed on the badge/JSON schema, replacing a raw `is_fallback: bool`.
+    A fuller **registry-declared per-model tier** — each model declaring its own tier at
+    registration rather than membership in a central frozenset — is the cleaner
+    long-term shape but is out of scope here; the `frozenset` + derived-enum pairing is
+    the minimal decoupling.)
 
 ### M1 — Persist NWP-on deterministically (Part A)
 
@@ -271,10 +411,23 @@ and no below-tier fallback row can be written.
     boundary** as a typed field, not read inline in flow logic. Add a `require_nwp:
     bool = False` field to `_WeatherForecastAdapterConfig` (field list at
     `run_forecast_cycle.py:100-106`) and populate it in
-    `_load_weather_forecast_adapter_config` (`:141-169`) from
-    `SAPPHIRE_REQUIRE_NWP`, mirroring how that loader already reads the `enabled`
-    gate — so the global gate reads `adapter_config.require_nwp`, not the raw env
-    var. **Deployment wiring:** the mini's `docker-compose.macmini.yml` (the sole
+    `_load_weather_forecast_adapter_config` (`:141-169`) from `SAPPHIRE_REQUIRE_NWP`.
+    **`SAPPHIRE_REQUIRE_NWP` MUST be read from `os.environ` unconditionally at the TOP
+    of `_load_weather_forecast_adapter_config`, before the `config_path is None` branch
+    (`:142`), and threaded into BOTH constructions** — the early-return
+    `_WeatherForecastAdapterConfig` at `:143-151` AND the main-path one. Do **NOT**
+    "mirror" the `enabled` field's read location (corrected after the 2026-07-06
+    review): `enabled` is hardcoded `False` in the early-return branch (`:145`) and is
+    env-derived only later at `:169`, in the branch taken when `SAPPHIRE_CONFIG` **is**
+    set. But the early-return branch is taken **exactly** when `SAPPHIRE_CONFIG` is
+    unset — the precise unset-config scenario the single general gate must catch — so
+    literally mirroring `enabled` would leave `require_nwp` at its unread default `False`
+    there, and the `ConfigurationError` would never fire even with
+    `SAPPHIRE_REQUIRE_NWP=1`, silently defeating the gate in exactly the unset-config
+    case it exists for. Populate `require_nwp` in **both** dataclass constructions; the
+    general gate (above) then reads `weather_forecast_config.require_nwp` (the same
+    `_WeatherForecastAdapterConfig` object returned by the loader, in scope at
+    `run_forecast_cycle.py:642`), not the raw env var. **Deployment wiring:** the mini's `docker-compose.macmini.yml` (the sole
     remaining mini compose file after A2's fold) sets `SAPPHIRE_REQUIRE_NWP=1` in
     the `environment:` block of the **`prefect-worker` service** — the `forecast-cycle`
     deployment runs on the `default` pool → `prefect-worker` only
@@ -285,17 +438,35 @@ and no below-tier fallback row can be written.
     098) that never runs the forecast cycle. Acceptance check 4 asserts the env var is
     on the `prefect-worker` service specifically, so the guard is actually enabled on
     the real mini and not merely exercisable by hand-setting the env var in a test.
-  - **Global gate (two hard-refuse conditions):** at `run_forecast_cycle_flow`
-    entry, when `SAPPHIRE_REQUIRE_NWP=1`, raise `ConfigurationError` if **either**
-    (a) the NWP adapter cannot be constructed at all (missing STAC config etc. —
-    nothing could forecast anyway), **or** (b) **`SAPPHIRE_CONFIG` is unset entirely**
-    — because `_load_weather_forecast_adapter_config` returns `enabled=False` when
-    `SAPPHIRE_CONFIG` is unset (`run_forecast_cycle.py:141-151`), which is a **second
-    silent-NWP-off path** (distinct from the deleted `-nwp` overlay). If NWP is
-    *required* but the config that would turn it on is absent, that is exactly the
-    silent-off failure this plan exists to kill, so it must fail loud rather than run
-    runoff-only. (This folds the former "`SAPPHIRE_CONFIG`-unset" residual into the
-    A3 gate; acceptance check 4 covers it.)
+  - **Global gate (ONE general check — corrected 2026-07-06 round 4):** the earlier
+    "two enumerated hard-refuse conditions ((a) adapter unconstructable, (b)
+    `SAPPHIRE_CONFIG` unset)" **missed the historical incident's actual mechanism**.
+    Verified against `run_forecast_cycle.py:625-682`,
+    `_load_weather_forecast_adapter_config` feeds THREE return paths:
+    1. `SAPPHIRE_CONFIG` unset → hardcoded `enabled=False` (`:143-151`) — the earlier
+       condition (b).
+    2. `enabled=True` but STAC fields missing → **already raises `ConfigurationError`
+       UNCONDITIONALLY today** (`:648-656`, pre-existing, NOT flag-gated) — the earlier
+       condition (a) is already covered by existing code and needs no new gate.
+    3. **The merged TOML explicitly sets `enabled=false`** (mac-mini overlay,
+       `config/overlays/mac-mini.toml`, `enabled` absent/`false` → `:642`
+       `nwp_enabled = weather_forecast_config.enabled` is `False`) → neither an
+       early-return nor a construction failure. **Case (3) IS the historical incident**
+       (`SAPPHIRE_CONFIG` was set; the mac-mini overlay set `enabled=false`), and it
+       fell through the two enumerated conditions → nothing raised, nothing logged,
+       silent runoff-only.
+    **Fix — a single general check that subsumes all three:** right after
+    `nwp_enabled = weather_forecast_config.enabled` (`run_forecast_cycle.py:642`),
+    `if adapter_config.require_nwp and not weather_forecast_config.enabled: raise
+    ConfigurationError(...)`. This one check catches the unset-config case (1, where
+    `enabled` is the hardcoded `False`), the explicit-`enabled=false` incident case (3),
+    AND leaves the pre-existing unconditional STAC-missing raise (case 2) as-is. It
+    reads the typed `require_nwp` field (parsed at the config boundary, below) — never a
+    raw inline `os.environ.get`. **(Defense-in-depth note:** post-A2 the mini's overlay
+    is `enabled=true`, so on the fixed mini this gate never fires — it is the structural
+    backstop against any future re-introduction of `enabled=false`, exactly the class of
+    change that caused the incident.) Acceptance check 4 covers case (1) and case (3);
+    the former "`SAPPHIRE_CONFIG`-unset" residual is subsumed by the same single check.
   - **Post-hoc dark detection:** **promote the existing zero-forecast branches** —
     `fc_result is None` (`run_forecast_cycle.py:1082-1086`) and
     `primary_model_id is None` (`:1137-1141`) — from `log.warning` to **`log.error`
@@ -371,21 +542,48 @@ and no below-tier fallback row can be written.
     OPERATIONAL non-weather stations lacking an active `climatology_fallback`
     artifact) and extend the backfill to every station it returns; acceptance
     check 5 asserts the audit returns zero post-fix.
-  - **Test-migration budget:** onboarding unit tests that mock `discover_models`
-    with a non-floor model set and assert OPERATIONAL
-    (`tests/unit/services/test_onboarding.py:510-578`) **will break** under the
-    gate — update them to include a working climatology fake or assert the new
-    NOT-operational outcome. This is scoped work, not free.
+  - **Test-migration budget:** two breakages, both scoped work (not free):
+    1. onboarding unit tests that mock `discover_models` with a non-floor model set
+       and assert OPERATIONAL (`tests/unit/services/test_onboarding.py:510-578`) **will
+       break** under the B1b gate — update them to include a working climatology fake
+       or assert the new NOT-operational outcome.
+    2. **`tests/unit/services/test_run_station_forecast.py:617-640`
+       (`test_combinable_results_excludes_high_priority_fallbacks`) breaks under M0c**
+       (folded from the 2026-07-06 review): it seeds `model-a`/`model-b`/`model-c`
+       (`:40-41,:474`) at priorities `1`/`50`/`90` and asserts `model-c` is excluded
+       from `combinable_results` **purely because `priority=90` crosses the old numeric
+       threshold**. None of `model-a/b/c` are members of `FALLBACK_MODEL_IDS`, so under
+       M0c's `model_id not in FALLBACK_MODEL_IDS` filter `model-c` is **no longer
+       excluded** and `assert _MODEL_ID_C not in combinable` fails. Update it to the
+       new membership semantics: assert a synthetic high-priority-but-non-fallback
+       `model_id` is **NOT** excluded post-fix, while an actual
+       `climatology_fallback`/`persistence_fallback` id **IS** excluded regardless of
+       its priority value.
   - **Backfill 2009/2091** (named idempotent admin action): create assignments
     **and train + promote a `climatology_fallback` artifact** (an assignment
     without an active artifact is inert → still dark). Re-run = no-op (guard
     artifact promotion; `create_station_assignment` already upserts, Plan 089).
-- **B2 (persistence empty-obs guard):** `climatology_fallback` produces from its
-  artifact alone (floor holds). Add an explicit empty/short-obs guard to
-  `persistence_fallback.predict` so an *anticipated* no-obs case degrades cleanly
-  (return `ModelFailure`, per CLAUDE.md §FI: "anticipated failure must be returned,
-  not raised") instead of leaning on the `try/except` backstop (backstop is for
-  *unanticipated* bugs).
+- **B2 (persistence empty-obs guard) — RAISES a narrow exception, NOT "return
+  `ModelFailure`" (corrected 2026-07-06 round 4):** `climatology_fallback` produces
+  from its artifact alone (floor holds). Add an explicit empty/short-obs guard to
+  `persistence_fallback.predict` so an *anticipated* no-obs case degrades cleanly.
+  **Mechanism note (native protocol, not FI):** `ModelFailure` is an **FI-contract
+  type** (`adapters/forecast_interface.py:22`, from the external `forecast_interface`
+  package). The native `StationForecastModel.predict` Protocol
+  (`protocols/forecast_model.py:32-39`) fixes the return type to
+  `tuple[dict[str, ForecastEnsemble], bytes | None]` — there is **no failure-sentinel
+  union member**, so a native model *cannot* "return `ModelFailure`". Instead, the
+  empty/short-obs guard **raises a specific, narrow exception** (e.g. a dedicated
+  `InsufficientObservationsError`, not the current bare `IndexError` on
+  `past_targets[param][-1]`), which the existing `_run_single_model` try/except
+  backstop (`run_station_forecast.py:174-208`) converts into a graceful
+  `"predict failed: {exc}"` reason → the model is recorded failed and the first-success
+  chain advances to `climatology_fallback`. Using a *named* exception (rather than
+  leaning on the incidental `IndexError`) makes the anticipated case explicit and
+  distinguishable from an unanticipated bug — while still respecting the native return
+  contract. **This is distinct from a real FI `ModelFailure` return**, which only
+  exists once the native model converges onto the FI contract — the separate Plan-102
+  track (residuals), not this plan.
   - **FI-adherence gate for touching a native model (folded from the 2026-07-06
     review):** CLAUDE.md §ForecastInterface Adherence is unconditional ("no
     exceptions, no silent workarounds") and sanctions exactly two responses to a
@@ -410,32 +608,57 @@ and no below-tier fallback row can be written.
 
 ### M3 — Fallback handling in forecasts + alerts (Part B3 + alert safety)
 
-- **B3 (label fallback forecasts) — a static membership check, no config plumbing
-  (Decision 2):** compute `is_fallback` at render/serialize time as
-  **`model_id in FALLBACK_MODEL_IDS`** — a static import of the `types/ids.py`
-  frozenset constant. Render a `FALLBACK` badge in `forecasts/list.html` +
-  `detail.html` and expose the flag on the JSON forecast schema (`api_forecasts.py`).
-  No DB migration. **This DISSOLVES the earlier "the API needs `DeploymentConfig`
-  plumbing" major:** because the tier is now a categorical constant (not
-  `deployment_config.priority_for_model(...)`), the API needs **no** config load and
-  **no** `SAPPHIRE_CONFIG` env var added to the `api` compose service — it only
-  imports `FALLBACK_MODEL_IDS`. The Process file-list carries no `api/deps.py`
-  config-plumbing scope.
+- **B3 (label fallback forecasts) — a static membership check exposing a
+  `ModelTier` enum, no config plumbing (Decision 2; enum + surface-coverage
+  corrected round 4):** derive the tier at render/serialize time as
+  **`ModelTier.FALLBACK if model_id in FALLBACK_MODEL_IDS else ModelTier.SKILL`** — a
+  static import of the `types/ids.py` frozenset constant plus the new `ModelTier` enum
+  (MAJOR-6, below). **Do NOT expose a raw `is_fallback: bool`:** per CLAUDE.md
+  Type-Driven-Development ("Never use `bool` to represent a domain state with two named
+  possibilities. Use `enum.Enum`"), a skill-vs-fallback tier is exactly that
+  anti-pattern. Introduce a small **`ModelTier` enum** (`SKILL`, `FALLBACK`) alongside
+  `FALLBACK_MODEL_IDS` (in `types/ids.py` or `types/enums.py`), and expose **that** on
+  the JSON schema + badge, not a bool.
+  - **Surfaces to cover — ALL that render raw priority / tier next to `model_id`
+    (extended round 4):** the earlier scope covered only the forecast surfaces
+    (`forecasts/list.html`, `forecasts/detail.html`, `api_forecasts.py`), but the
+    **model-assignment surfaces** also render a raw `model_assignments.priority` right
+    next to the `model_id` with no tier context, which is exactly the "a fallback
+    priced 0 looks like a skill model" confusion this plan kills:
+    - `api/templates/stations/detail.html:89` (`<td>{{ ma.priority }}</td>` in the
+      per-station assignment table),
+    - `api/templates/models/detail.html:59` (`<td>{{ a.priority }}</td>` in the
+      per-model assignment table),
+    - `ModelAssignmentResponse` (`api/schemas.py:36`) via `_to_model_assignment_response`
+      (`api/routes/api_stations.py:56-57`).
+    Thread the derived `ModelTier` (same static `FALLBACK_MODEL_IDS` membership check)
+    into `_to_model_assignment_response` and render it in both assignment tables, so a
+    fallback assignment is visibly badged everywhere its priority appears. These files
+    join the B3 scope + Process doc-list.
+  - Render a `FALLBACK` tier badge in `forecasts/list.html` + `detail.html` and expose
+    the `ModelTier` on the JSON forecast schema (`api_forecasts.py`). No DB migration.
+    **This DISSOLVES the earlier "the API needs `DeploymentConfig` plumbing" major:**
+    because the tier is now a categorical constant (not
+    `deployment_config.priority_for_model(...)`), the API needs **no** config load and
+    **no** `SAPPHIRE_CONFIG` env var added to the `api` compose service — it only
+    imports `FALLBACK_MODEL_IDS` + `ModelTier`. The Process file-list carries no
+    `api/deps.py` config-plumbing scope.
   - **Relationship to the existing `input_quality` provenance mechanism (DECIDED
     after review):** `OperationalForecast` already carries
     `input_quality: InputQualityLevel` + `input_quality_flags`
     (`types-and-protocols.md:1352-1353`, categories today OBSERVATION/NWP/WARM_UP
     at `:435-459`) for "forecast produced under degraded *input* conditions". B3's
-    `is_fallback` is a **deliberately separate** concept: it is not about degraded
+    `ModelTier` is a **deliberately separate** concept: it is not about degraded
     inputs but about **which model tier served the row**, and it is a **derived,
-    render-time UI label** — no stored domain state, so it adds **no** typed field
-    to the spec now. We do NOT overload `InputQualityCategory` with a model-tier
+    render-time UI label** — no stored domain state, so it adds **no** typed *forecast*
+    field to the spec now. We do NOT overload `InputQualityCategory` with a model-tier
     value, because that field's contract is input-data provenance, not model
     selection. **Consequence for CLAUDE.md's "every code change updates docs":**
-    the render-time label needs no `types-and-protocols.md` change; the DEFERRED
+    the render-time label needs no `OperationalForecast` spec change; the DEFERRED
     persisted `served_as_fallback` column (residuals) is the variant that WOULD add
     a first-class typed field and update the spec — flagged there so the decision is
-    explicit, not silent.
+    explicit, not silent. (The `ModelTier` enum itself — being a new domain enum on the
+    API schema — is documented in `types-and-protocols.md` at land time.)
 - **M3-alert (SUPPRESS + tier-filter, redesigned — the webhook framing was
   fictional; extended after review to cover pooled/BMA/consensus):** there is
   **no flood-alert webhook/dispatch in v0** (alerts are logged + shown via API),
@@ -496,22 +719,50 @@ and no below-tier fallback row can be written.
       priority can leak a fallback into an alert** (M0c). This supersedes the earlier
       "build it the same way `combinable_results` filters" instruction, which named a
       combination-mode-only property and silently skipped the PRIMARY default.
-  - **Suppress when the eligible set is empty (fallback-only cycle):** if filtering
-    leaves **zero** eligible ensembles for a station/parameter, **suppress alert
-    evaluation** and log a monitorable **dotted** structlog event
-    **`alert.suppressed_fallback_only`** (per `docs/standards/logging.md`'s
-    `{entity}.{action}` pattern — the canonical `alert` entity already has a
-    `suppressed` action; NOT colon-separated free-text like "alert suppressed:
-    fallback-only"). This subsumes the primary-only case (`PrimaryModelStrategy`) and
-    the pooled case under one rule.
+  - **Suppress when the eligible set is empty (fallback-only cycle) — STATION-level
+    granularity (resolved round 4):** the central filter drops every `model_id ∈
+    FALLBACK_MODEL_IDS` from `all_ensembles[sid]` at **(station, model)** granularity,
+    *before* `check_station_alerts` (which does the per-parameter fan-out internally,
+    `alert_checker.py:108-176`). To keep the guard at that same greppable granularity —
+    rather than re-implementing a pre/post-filter comparison inside `_check_station`'s
+    per-parameter loop — **suppression is detected and logged per STATION**: if
+    filtering leaves **zero** eligible models for a station (the whole
+    `all_ensembles[sid]` dict is emptied), **suppress alert evaluation for that station**
+    and log the monitorable **dotted** structlog event **`alert.suppressed_fallback_only`**
+    (per `docs/standards/logging.md`'s `{entity}.{action}` pattern — the canonical
+    `alert` entity already has a `suppressed` action; NOT colon-separated free-text like
+    "alert suppressed: fallback-only"). This subsumes the primary-only case
+    (`PrimaryModelStrategy`) and the pooled case under one rule. **Acceptance check 8 is
+    therefore scoped to station-level** (fallback-only station → no `Alert`, one
+    suppression event) — NOT a per-parameter suppression assertion. (Per-parameter
+    suppression, comparing pre/post-filter `param_ensembles` inside the per-parameter
+    loop, is a deliberately-declined finer granularity: with the categorical filter a
+    fallback-only station is empty for *all* its parameters at once, so the station-level
+    check is sufficient and simpler.)
   - **Rationale:** climatology is a day-of-year seasonal average — it carries zero
     event information and would trip the identical "alert" every year on that
     calendar day → pure false alarms. Persistence is obs-grounded but "current
     level is dangerous" is Flow 2's (observation→QC→alert) job, not a naive
     flat-line forecast alert. A flood alert must come from a **skill** forecast.
   - **Corollary:** after tier-filtering, any alert that fires is skill-sourced by
-    definition, so no per-alert `is_fallback` label is needed. (A persisted
-    label on the `Alert` record is a deferred v-next, not this plan.)
+    definition, so no per-alert tier label is needed. (A persisted tier/suppression
+    flag on the `Alert` record is a deferred v-next, not this plan.)
+  - **Retroactive alert audit (one-time, folded from the 2026-07-06 review):** the
+    fix is forward-looking, but the plan's own M0 root-cause section confirms the drift
+    is **empirically present** on the live dev DB — so `FORECAST`-source alerts may
+    ALREADY have been raised from a mis-classified fallback under the pre-fix path
+    (`PooledEnsembleStrategy` never consults `priorities`, `alert_strategy.py:197-232`,
+    and pools every member). The schema makes the audit trivial: every `Alert` persists
+    `model_ids: tuple[ModelId, ...]` and `alert_model_strategy` (`types/alert.py:19-35`),
+    populated at write time by `_process_results` from the contributing
+    `ExceedanceResult.model_ids`/`.strategy` (`alert_checker.py:295-334`). **Required
+    one-time audit (acceptance check 15):** query all `FORECAST`-source `Alert` rows
+    whose `model_ids` intersect `FALLBACK_MODEL_IDS` (particularly any still
+    ACTIVE/unresolved), and either surface them for operator review/resolution or
+    explicitly confirm none exist on the live system before closing the plan. This is
+    the backward-looking analogue of the forward-looking floor audit (check 5) and
+    mini-state diagnostic (check 10), and it directly serves Goal #4 (a fallback must
+    never be the basis of a flood alert) for alerts already on record.
 
 ### M4 — Minimal runtime tripwires: NWP-staleness + fallback-priority drift (Part C1)
 
@@ -539,22 +790,30 @@ and no below-tier fallback row can be written.
 
 1. **Priorities reconciled (M0):** after M0a, **both** `model_assignments.priority`
    **and** `group_model_assignments.priority` for the fallbacks equal the config
-   chain (climatology=100, persistence=90) for all stations/groups, **while a
-   pre-existing deliberate skill override survives** (a `nwp_rainfall_runoff=-10` row
-   stays `-10`, per the M0a precedence rule); `combinable_results` **excludes**
-   climatology and `is_fallback` on a climatology-sourced forecast is **True** —
-   **both because `climatology_fallback ∈ FALLBACK_MODEL_IDS`** (categorical, M0c),
-   independent of its DB `priority`. Re-running M0a is a no-op. **M0b is proven
-   against the live vector:** invoking
-   `onboard_model_flow` (`flows/onboard_model.py`) directly — the `onboard-model`
-   deployment path, station- AND group-scoped — with no explicit `assignment_priority`
-   writes the **config** priorities, not `0`. (The `onboarding.py` Step 6/7 pipeline
-   path already does this correctly — the new coverage is the flow path.) **M0a
-   `time_step` audit:** the pre-repair audit ran, and no station's/group's effective
-   input-assembly `time_step` (`run_forecast_cycle.py:970-971`) changed as a side
-   effect of the priority reorder — either because every multi-model station is
-   homogeneous in `time_step`, or because heterogeneous stations were handled
-   explicitly rather than silently flipped.
+   chain (climatology=100, persistence=90) for all stations/groups; **every
+   non-allowlisted skill row converges to its config value** — specifically the
+   previously-drifted-to-`0` `nwp_regression`/`linear_regression_daily` rows at 2009/2091
+   become `10`/`30` (they are NOT on the override allowlist), while **an explicitly
+   allowlisted override survives** (the `nwp_rainfall_runoff` on 2009/2091 stays `-10`).
+   `combinable_results` **excludes** climatology and the tier on a climatology-sourced
+   forecast is **`ModelTier.FALLBACK`** — **both because
+   `climatology_fallback ∈ FALLBACK_MODEL_IDS`** (categorical, M0c), independent of its
+   DB `priority`. **The pre-rewrite fleet audit ran** (MAJOR-3): every skill-row
+   `priority`≠`priority_for_model(...)` divergence across the REAL target DB was
+   explicitly triaged (allowlisted or reconciled), none silently clobbered — the
+   allowlist is not assumed to equal the 2-station dev sample. Re-running M0a is a
+   no-op. **M0b is proven against the live vector:**
+   invoking `onboard_model_flow` (`flows/onboard_model.py`) directly — the
+   `onboard-model` deployment path, station- AND group-scoped — with no explicit
+   `assignment_priority` writes the **config** priorities, not `0`. (The `onboarding.py`
+   Step 6/7 pipeline path already does this correctly — the new coverage is the flow
+   path.) **M0a `time_step`/`status` preservation:** **every individual row's**
+   `time_step` **and** `status` is bit-for-bit identical before/after M0a (the
+   priority-only write path never touches them — NOT re-derived from
+   `supported_time_steps`), and the pre-repair `time_step`-homogeneity audit ran so no
+   station's/group's *effective* input-assembly `time_step`
+   (`run_forecast_cycle.py:970-971`) changed as a side effect of the priority reorder
+   either — heterogeneous stations were handled explicitly, not silently flipped.
 2. **Restart persistence (A2):** cold-boot the mini via `start-sapphire.sh` → a
    `forecast-cycle` runs NWP-on (`nwp.*` logs, grids archived), no manual overlay,
    no `-nwp` file anywhere; `docs/deployment/mac-mini-staging.md` no longer
@@ -566,9 +825,14 @@ and no below-tier fallback row can be written.
    and NWP off, a station that produces zero forecasts is logged at **ERROR** (dotted
    event `forecast_cycle.station_dark`) and appears on `errors`/`stations_failed`
    (not a silent warning), while every other station still forecasts (flow does NOT
-   abort). The flow-level `ConfigurationError` fires when the NWP adapter cannot be
-   constructed at all **OR when `SAPPHIRE_CONFIG` is unset entirely** (the second
-   silent-off path, now covered by the gate). The env var is read through the config
+   abort). The flow-level `ConfigurationError` (the single general check
+   `require_nwp and not weather_forecast_config.enabled` at `run_forecast_cycle.py:642`)
+   fires **whenever NWP is required but `weather_forecast_config.enabled` is `False`** —
+   which covers BOTH the `SAPPHIRE_CONFIG`-unset case (hardcoded `enabled=False`) **and
+   the explicit `enabled=false`-in-merged-TOML case that was the actual historical
+   incident** (the earlier two enumerated conditions missed the latter). The
+   pre-existing unconditional STAC-missing raise (`:648-656`) still covers the
+   adapter-unbuildable case independently. The env var is read through the config
    boundary (`_WeatherForecastAdapterConfig.require_nwp`, not an inline
    `os.environ.get`), and `docker-compose.macmini.yml` sets `SAPPHIRE_REQUIRE_NWP=1`
    **on the `prefect-worker` service** (`:24`) — the `default`-pool worker that runs
@@ -585,7 +849,10 @@ and no below-tier fallback row can be written.
    and the onboarding run reports **non-green** (not swallowed). Floor training
    succeeding → OPERATIONAL. Existing onboarding tests updated.
 7. **persistence empty-obs (B2):** `persistence_fallback.predict` on empty obs
-   degrades gracefully (no uncaught `IndexError`); climatology still produces.
+   **raises the narrow `InsufficientObservationsError`** (not a bare `IndexError`),
+   which the `_run_single_model` backstop (`run_station_forecast.py:174-208`) turns
+   into a graceful "predict failed" reason → the chain advances; climatology still
+   produces. (No "return `ModelFailure`" — the native protocol has no such return.)
 8. **Alert suppressed on fallback-only + no pooled contamination (M3-alert):** (a)
    **shipped-default path (the incident config):**
    `forecast_combination_strategy=PRIMARY` + `alert_model_strategy="primary"`
@@ -602,7 +869,11 @@ and no below-tier fallback row can be written.
    (`run_forecast_cycle.py:1207-1210` build). Both (a) and (b) — and the GROUP build
    (`:1414`) — pass because the tier filter drops every `model_id ∈ FALLBACK_MODEL_IDS`
    **once, centrally**, on `all_ensembles` before `check_station_alerts`
-   (`:1441-1447`), independent of which of the three sites populated the dict.
+   (`:1441-1447`), independent of which of the three sites populated the dict. **The
+   suppression assertion is scoped to STATION-level** (a fallback-only station → zero
+   `Alert` + exactly one `alert.suppressed_fallback_only` event), matching the
+   (station, model)-granularity central filter — NOT a per-parameter suppression
+   assertion (a fallback-only station is empty for all its parameters at once).
 9. **C1 staleness fires (M4):** after C1a plumbing, force a grid-archival gap past
    `expected_delivery_offset_hours × cadence` → the staleness event fires (proves
    it is not dead code).
@@ -628,6 +899,12 @@ and no below-tier fallback row can be written.
     step 8 is updated from "≥1 model artifact" to the ratified rule ("≥1 skill
     artifact AND an active `climatology_fallback` floor artifact"), matching the
     onboarding floor-gate — the doc and the code agree, no silent divergence.
+15. **Retroactive alert audit clean (M3-alert / Goal #4):** the one-time query over
+    all `FORECAST`-source `Alert` rows (`types/alert.py:19-35`) whose `model_ids`
+    intersects `FALLBACK_MODEL_IDS` — restricted to still-ACTIVE/unresolved rows —
+    either **returns zero** on the live system, or every returned row is surfaced for
+    operator review/resolution before the plan closes. No historical fallback-sourced
+    alert is left silently trusted.
 
 ---
 
@@ -698,10 +975,13 @@ entirely our deployment + resilience gap, not an external outage.
   recover ad-hoc via a throwaway overlay only if ever needed; no open fork.
 - **A3 — DECIDED (redesigned): post-hoc dark detection, not a preflight.** Promote
   the existing `fc_result is None` / `primary_model_id is None` branches to ERROR
-  + `errors.append` (dotted event `forecast_cycle.station_dark`); the flow-level
-  `ConfigurationError` fires when the NWP adapter cannot be constructed at all **or
-  when `SAPPHIRE_CONFIG` is unset entirely** (the second silent-off path, folded into
-  the gate — Decision 4). Simpler and more general than the climatology-keyed
+  + `errors.append` (dotted event `forecast_cycle.station_dark`); the
+  `ConfigurationError` gate is **one general check** (`require_nwp and not
+  weather_forecast_config.enabled` at `run_forecast_cycle.py:642`, corrected round 4)
+  that fires whenever NWP is required but `enabled` is `False` — subsuming BOTH the
+  `SAPPHIRE_CONFIG`-unset path AND the explicit `enabled=false`-in-merged-TOML case
+  that was the **actual** historical incident (the earlier two enumerated conditions
+  missed the latter). Simpler and more general than the climatology-keyed
   preflight (which duplicated an artifact fetch and could itself cause darkness by
   over-skipping a station a healthy persistence would serve).
 
@@ -720,19 +1000,29 @@ entirely our deployment + resilience gap, not an external outage.
   applied to that doc at land time; Step 7 does not swallow floor-training failure;
   `flows/onboard.py` surfaces it non-green; floor plugin-load/absence is loud;
   onboarding tests budgeted; idempotent backfill for 2009/2091.
-- **B2 — DECIDED:** persistence empty-obs guard returns `ModelFailure` (anticipated
-  failure, not raised). Because B2 touches a native (non-FI) model, CLAUDE.md §FI
-  path (2) is discharged **at B2 land time** by filing the FI-repo issue for the
-  native-sentinel-fallback gap; the full native→FI convergence is the separate
-  track (residual). **The "CLAUDE.md carve-out instead" alternative is dropped
-  (Decision 4) — filing the FI issue is the resolution.**
-- **B3 — DECIDED:** label fallback forecasts (badge + JSON flag) via a **static
-  `model_id in FALLBACK_MODEL_IDS` membership check** (Decision 2) — no config load,
-  no `SAPPHIRE_CONFIG` in the `api` service, no migration. `is_fallback` is a
+- **B2 — DECIDED:** persistence empty-obs guard **raises a narrow named exception**
+  (e.g. `InsufficientObservationsError`) that the existing `_run_single_model` backstop
+  (`run_station_forecast.py:174-208`) turns into a graceful "predict failed" reason →
+  chain advances to climatology. It does **NOT** "return `ModelFailure`" — that is an
+  FI-contract type and the native `StationForecastModel.predict` Protocol
+  (`protocols/forecast_model.py:32-39`) has no failure-sentinel return (corrected round
+  4). Because B2 touches a native (non-FI) model, CLAUDE.md §FI path (2) is discharged
+  **at B2 land time** by filing the FI-repo issue for the native-sentinel-fallback gap;
+  the full native→FI convergence (where a real `ModelFailure` return would exist) is the
+  separate Plan-102 track (residual). **The "CLAUDE.md carve-out instead" alternative is
+  dropped (Decision 4) — filing the FI issue is the resolution.**
+- **B3 — DECIDED:** label fallback forecasts via a **derived `ModelTier` enum
+  (`SKILL`/`FALLBACK`)** computed from a **static `model_id in FALLBACK_MODEL_IDS`
+  membership check** (Decision 2), NOT a raw `is_fallback: bool` (MAJOR-6 / CLAUDE.md
+  enum-over-bool) — no config load, no `SAPPHIRE_CONFIG` in the `api` service, no
+  migration. The tier is rendered/serialized on **all** surfaces that show
+  `model_id`/priority: the forecast list/detail + JSON schema **and** the
+  model-assignment tables (`stations/detail.html:89`, `models/detail.html:59`,
+  `ModelAssignmentResponse` via `_to_model_assignment_response`). `ModelTier` is a
   deliberately separate render-time UI concept from the existing input-provenance
   mechanism (`OperationalForecast.input_quality`, `types-and-protocols.md:1352-1353`)
   — it is model-tier, not degraded-input, so it does NOT overload
-  `InputQualityCategory` and adds no typed spec field now (see M3/B3 body).
+  `InputQualityCategory` and adds no typed *forecast* field now (see M3/B3 body).
 
 ### Part C — detectability + alert safety
 
@@ -753,9 +1043,21 @@ entirely our deployment + resilience gap, not an external outage.
 
 ## Residual forks / follow-ups (post-100)
 
-All plan-review round-3 forks are now RESOLVED (Decision 4) — the only remaining
-residual is the DEFERRED persisted-column work, which genuinely needs a migration.
+All plan-review round-3 forks are now RESOLVED (Decision 4). Two residuals remain
+open: the DEFERRED persisted-column work (needs a migration) and the DB-level
+`server_default` tightening (belt-and-suspenders, tracked by C1c).
 
+- **[OPEN — belt-and-suspenders, tracked by C1c] DB `priority` `server_default="0"`
+  gap:** `model_assignments.priority` (`alembic/versions/0001_v0_schema.py:405`) and
+  `group_model_assignments.priority` (`0021_add_group_model_assignments.py:35`) both
+  carry `server_default="0"`, so a raw SQL INSERT that omits `priority` lands a row at
+  the skill tier `0` — the same drift signature the incident showed, on any code path
+  that bypasses the M0b app-layer write-time guard. **Tightening the DB DEFAULT is
+  out of scope for Plan 100** (M0c's categorical tier already makes B3/M3/combination
+  immune to the drift, and C1c's tripwire makes any such out-of-band row *visible*);
+  it is recorded here as an explicit open residual rather than silently closed. (This
+  corrects the earlier "all round-3 forks resolved / only the persisted-column residual
+  open" framing, which omitted this gap.)
 - **[NEW TRACK] Native models → FI contract** (owner-requested): converge
   `climatology_fallback`, `persistence_fallback`, `linear_regression_daily` onto
   the FI contract. Separate plan (suggest Plan 102); ties to
@@ -768,15 +1070,17 @@ residual is the DEFERRED persisted-column work, which genuinely needs a migratio
 - **[RESOLVED] Runoff-only toggle** — lost by the A2 fold; **accepted permanently**
   (Decision 4). Recover ad-hoc via a throwaway overlay only if a future
   skill-comparison experiment ever needs it. No longer an open fork.
-- **[RESOLVED → folded into A3] `SAPPHIRE_CONFIG`-unset silent-off path** —
-  `_load_weather_forecast_adapter_config` returns `enabled=False` when
-  `SAPPHIRE_CONFIG` is unset (`run_forecast_cycle.py:141-151`), a second silent-off
-  path. **Now part of the A3 global gate** (Decision 4): if `SAPPHIRE_REQUIRE_NWP=1`
-  and `SAPPHIRE_CONFIG` is unset → `ConfigurationError`; acceptance check 4 covers it.
+- **[RESOLVED → folded into the A3 single gate] silent-NWP-off paths** —
+  `_load_weather_forecast_adapter_config` yields `enabled=False` both when
+  `SAPPHIRE_CONFIG` is unset (`run_forecast_cycle.py:143-151`) **and** when the merged
+  TOML explicitly sets `enabled=false` (the actual historical incident). **Both are now
+  caught by the single general A3 gate** (`require_nwp and not
+  weather_forecast_config.enabled` at `:642`, Decision 4 / round-4 correction);
+  acceptance check 4 covers both.
 - **[DEFERRED] Persisted `served_as_fallback` forecast column** + a persisted
-  `is_fallback`/suppression flag on the `Alert` record — durable/queryable; needs
-  a migration. Confirmed deferred to a later plan (this remains the one open
-  residual — B3's `is_fallback` ships as a render-time label only).
+  tier/suppression flag on the `Alert` record — durable/queryable; needs
+  a migration. Confirmed deferred to a later plan — B3's `ModelTier` ships as a
+  render-time label only.
 
 ## Non-goals
 
@@ -791,7 +1095,7 @@ residual is the DEFERRED persisted-column work, which genuinely needs a migratio
 
 ## Verification
 
-See **Acceptance checks** (14) in the IMPLEMENTATION VISION. Local dev repro:
+See **Acceptance checks** (15) in the IMPLEMENTATION VISION. Local dev repro:
 onboard a test station with an NWP model + the floor, run a `forecast-cycle`
 NWP-off → confirm a `climatology_fallback` row is written, badged fallback, and
 **no alert fires**; flip NWP-on → skill model becomes primary. Cold-boot the mini
@@ -805,53 +1109,113 @@ decisions (categorical `FALLBACK_MODEL_IDS` tier, write-time guard, v0-scope §A
 amendment, A3 post-hoc + `SAPPHIRE_CONFIG` gate, alert suppression, strict
 floor-gate) converge with no new blockers/majors → phases → READY → `vision-build`
 (WF2). Implementation touches:
-- **`types/ids.py`** — new `FALLBACK_MODEL_IDS: frozenset[str]` constant
-  (`{"climatology_fallback", "persistence_fallback"}`) next to
-  `FALLBACK_PRIORITY_THRESHOLD` — the SINGLE categorical tier source (Decision 2).
+- **`types/ids.py`** — new `FALLBACK_MODEL_IDS: frozenset[ModelId] = frozenset({
+  ModelId("climatology_fallback"), ModelId("persistence_fallback")})` constant next to
+  `FALLBACK_PRIORITY_THRESHOLD` — the SINGLE categorical tier source (Decision 2);
+  wrapped through `ModelId` per the existing sentinel-constant pattern (`:16-19`), not
+  bare `frozenset[str]`. **Plus a small `ModelTier` enum (`SKILL`/`FALLBACK`)** (in
+  `types/ids.py` or `types/enums.py`) derived from `FALLBACK_MODEL_IDS` — the value
+  exposed on the B3 badge/JSON schema in place of a raw `is_fallback: bool` (MAJOR-6 /
+  CLAUDE.md enum-over-bool).
 - **`services/run_station_forecast.py:71-76`** — `combinable_results` filters on
   `model_id not in FALLBACK_MODEL_IDS` (was `priorities.get(mid,0) <
-  FALLBACK_PRIORITY_THRESHOLD`).
+  FALLBACK_PRIORITY_THRESHOLD`); **migrate the regression test
+  `tests/unit/services/test_run_station_forecast.py:617-640`
+  (`test_combinable_results_excludes_high_priority_fallbacks`)** to the membership
+  semantics (see B1b test-migration budget item 2).
 - **`services/model_onboarding.py:838-895`** — write-time guard in
   `create_station_assignment`/`create_group_assignment` (raise if `model_id ∈
   FALLBACK_MODEL_IDS and priority < FALLBACK_PRIORITY_THRESHOLD`); **`flows/onboard_model.py`**
   (M0b — the live drift default) + `model_onboarding.py:994` (make explicit).
 - a named M0a reconciliation script covering **both** `model_assignments` and
-  `group_model_assignments` **plus a pre-repair `time_step`-homogeneity audit** (M0a
-  precedence rule).
-- **`config/deployment.py`** — M0c config-load-time validator (every
-  `FALLBACK_MODEL_IDS` member has `priority_for_model(...) >=
-  FALLBACK_PRIORITY_THRESHOLD`, else `ConfigurationError`).
+  `group_model_assignments`, preceded by a **read-only fleet audit** (every skill-row
+  `priority`≠`priority_for_model(...)` divergence across the REAL target DB, each
+  explicitly triaged before any rewrite — MAJOR-3), driven by an **explicit
+  `(station_id, model_id)` override allowlist** (M0a precedence rule 2 —
+  `nwp_rainfall_runoff` on 2009/2091 as the *starting* allowlist, completed by the
+  audit), a **priority-only write path** (a new thin `UPDATE` store method — **scoped
+  private/one-off to the M0a repair script** OR, if reused, itself asserting the
+  `FALLBACK_MODEL_IDS`/threshold guard before issuing the UPDATE so no code path
+  persists a fallback below tier; or read-back-and-round-trip of each row's existing
+  `time_step`/`status` — never re-derive `time_step`), **plus a pre-repair
+  `time_step`-homogeneity audit**. **Doc-sync: if the new `UPDATE` store method (option
+  b) is taken, add its signature to both Store Protocols in
+  `docs/spec/types-and-protocols.md` at land time.**
+- a one-time **retroactive alert audit** query (`FORECAST`-source `Alert` rows whose
+  `model_ids` intersect `FALLBACK_MODEL_IDS`, still-ACTIVE/unresolved) — acceptance
+  check 15 / Goal #4.
+- **`config/deployment.py`** — M0c config-load-time validator, enforced **only on
+  fallback ids explicitly present in `self.model_priorities`** (`v =
+  self.model_priorities.get(mid); if v is not None and v < FALLBACK_PRIORITY_THRESHOLD:
+  raise ConfigurationError`) — NOT via `priority_for_model(...)`, whose
+  `DEFAULT_PRIORITY=50` for an absent id would over-fire and break
+  `make_deployment_config()` and every config omitting the fallbacks (BLOCKER-1).
 - `mac-mini.toml` + compose (`docker-compose.macmini.yml` sets `SAPPHIRE_REQUIRE_NWP=1`
   **on the `prefect-worker` service**, `:24`) + `docs/deployment/mac-mini-staging.md`
   (A2 toggle rewrite).
 - **`run_forecast_cycle.py`** — A3 post-hoc ERROR+errors (dotted
   `forecast_cycle.station_dark`) + `_WeatherForecastAdapterConfig.require_nwp` field +
-  parse in `_load_weather_forecast_adapter_config` + global gate (`ConfigurationError`
-  when adapter unbuildable OR `SAPPHIRE_CONFIG` unset) + **filter `all_ensembles` ONCE
+  parse in `_load_weather_forecast_adapter_config` + **single general gate**
+  (`ConfigurationError` when `require_nwp and not weather_forecast_config.enabled` at
+  `:642` — subsumes `SAPPHIRE_CONFIG`-unset AND the explicit-`enabled=false` incident
+  case; the STAC-missing raise at `:648-656` already covers adapter-unbuildable) +
+  **filter `all_ensembles` ONCE
   — drop `model_id ∈ FALLBACK_MODEL_IDS` immediately before the Phase-C
   `check_station_alerts` call (`:1441-1447`)**, covering all three build sites
   (`:1111`/`:1207`/`:1414`); C1a loader + `_WeatherForecastAdapterConfig` field,
   C1b/C1c checks.
 - `onboarding.py` Step 7/8 + `flows/onboard.py` + onboarding tests (B1b) + a one-time
   fleet floor-audit query.
-- `persistence_fallback.py` (B2 — return `ModelFailure`) + **a filed FI-repo issue for
+- `persistence_fallback.py` (B2 — **raise a narrow `InsufficientObservationsError`**
+  caught by the `_run_station_forecast` backstop; NOT "return `ModelFailure`", which the
+  native protocol cannot express) + **a filed FI-repo issue for
   the native-sentinel-fallback gap**.
 - `alert_strategy.py`/`alert_checker.py` (M3 suppression `alert.suppressed_fallback_only`
   across Primary/Pooled/BMA/Consensus) — note the central filter now makes fallback
   ensembles never reach these strategies; API/templates (B3 — static
-  `FALLBACK_MODEL_IDS` import, **no `api/deps.py` config plumbing, no `SAPPHIRE_CONFIG`
-  in the `api` service**).
+  `FALLBACK_MODEL_IDS` import + derived `ModelTier` enum, **no `api/deps.py` config
+  plumbing, no `SAPPHIRE_CONFIG` in the `api` service**). **B3 surfaces:**
+  `api/templates/forecasts/{list,detail}.html` + `api/routes/api_forecasts.py` (forecast
+  tier badge/flag) **AND the model-assignment surfaces**
+  `api/templates/stations/detail.html:89`, `api/templates/models/detail.html:59`, and
+  `ModelAssignmentResponse` (`api/schemas.py:36`) via `_to_model_assignment_response`
+  (`api/routes/api_stations.py:56-57`) — all render `model_id`/priority and must carry
+  the `ModelTier` (MAJOR-5).
 
 **Docs updated at land time** (CLAUDE.md: every code change updates affected docs):
 - `docs/v0-scope.md §A4` — apply the owner-ratified operational-mark amendment
   ("≥1 model artifact" → "≥1 skill artifact AND an active `climatology_fallback` floor
   artifact"; Decision 1 / acceptance check 14).
+- **`docs/v0-scope.md` model-inventory table + §A8e mechanism sentence (folded from the
+  2026-07-06 review)** — v0-scope.md is CLAUDE.md's #1 "read first" authoritative doc,
+  and it carries the identical staleness M0c fixes elsewhere: the inventory table
+  (`docs/v0-scope.md:120-124`) lists `LinearRegressionDaily` priority `0`,
+  `ClimatologyFallbackModel` `90`, `PersistenceFallbackModel` `99` — all stale vs.
+  `config.toml:59-64` (`linear_regression_daily=30`, `climatology_fallback=100`,
+  `persistence_fallback=90`; and the reversed climatology/persistence order is the same
+  pre-existing Plan-089 drift M0 diagnoses). **Correct the table to the config values**,
+  and **rewrite the two mechanism sentences that describe the superseded numeric gate**
+  — `:126` ("Models with priority ≥ `FALLBACK_PRIORITY_THRESHOLD` (= 90) are excluded
+  from multi-model combination") and `:173` ("`combinable_results` property excludes
+  fallback models (priority ≥ 90)") — to the categorical `model_id ∈ FALLBACK_MODEL_IDS`
+  mechanism, mirroring the `conventions.md`/`types-and-protocols.md` edits below. Leaving
+  these stale is exactly the "silent divergence" CLAUDE.md forbids, on the highest-
+  priority doc.
 - `docs/standards/logging.md` — the A3 WARNING→ERROR carve-out for a zero-forecast
   station, plus the new dotted events `forecast_cycle.station_dark` /
   `alert.suppressed_fallback_only`.
-- `docs/architecture-context.md:132` — correct the STALE fallback priorities
-  (`climatology 90`/`persistence 99`) to `climatology=100`/`persistence=90`, matching
-  `conventions.md:441-442` + `config.toml`.
+- `docs/architecture-context.md` (the **Fallback models** paragraph, `:132`, plus the
+  `:128` `combinable_results` sentence) — TWO edits: (1) correct the STALE fallback
+  priorities `ClimatologyFallbackModel (priority 90)` / `PersistenceFallbackModel
+  (priority 99)` to `climatology=100` / `persistence=90`, matching `conventions.md:441-442`
+  + `config.toml`; **and (2) rewrite the parenthetical mechanism clause** — "(models with
+  priority ≥ `FALLBACK_PRIORITY_THRESHOLD` = 90 are never included in pooled, bma, or
+  consensus combination)" at `:132` and "excludes fallback models (priority ≥
+  `FALLBACK_PRIORITY_THRESHOLD`)" at `:128` — to the **categorical `model_id ∈
+  FALLBACK_MODEL_IDS`** scheme (M0c Decision 2), mirroring the
+  `conventions.md`/`types-and-protocols.md`/`v0-scope.md` edits. Fixing only the numeric
+  values while leaving the superseded numeric-gate mechanism described would re-introduce
+  the same "silent divergence" CLAUDE.md forbids.
 - **`docs/conventions.md` §Model assignment priority (`:424-449`)** and
   **`docs/spec/types-and-protocols.md` (the `combinable_results` / priority section)** —
   both today describe a **single DB-`priority`-driven** fallback-tier mechanism; M0c
@@ -865,11 +1229,14 @@ floor-gate) converge with no new blockers/majors → phases → READY → `visio
   > only as an **ordering / tie-break** key among admitted skill models
   > (`min(priority)` primary-selection dispatch, combination ordering). The config
   > `[model_priorities]` map sets that ordering integer, and a config-load validator
-  > keeps every fallback's ordering integer `>= FALLBACK_PRIORITY_THRESHOLD`.
+  > keeps every **explicitly-configured** fallback's ordering integer
+  > `>= FALLBACK_PRIORITY_THRESHOLD` (an omitted fallback falls back to
+  > `DEFAULT_PRIORITY` and is classified purely by the categorical set).
   This removes the reverse-engineering burden and documents that a drifted DB
-  `priority` can no longer misclassify a tier. (B3's render-time `is_fallback` still
-  adds **no** *typed field* to `types-and-protocols.md` — only the DEFERRED persisted
-  `served_as_fallback` column would; the spec edit here is the priority/`combinable_results`
-  narrative, not a new dataclass field.) A named
+  `priority` can no longer misclassify a tier. (B3's render-time `ModelTier` adds **no**
+  new field to the `OperationalForecast` dataclass — only the DEFERRED persisted
+  `served_as_fallback` column would; the spec edits here are the
+  priority/`combinable_results` narrative **plus documenting the new `ModelTier` enum**
+  on the API schema, not a new `OperationalForecast` field.) A named
 idempotent backfill for 2009/2091 + fleet residue → **hold-at-PR** with a version
 bump, per CLAUDE.md.
