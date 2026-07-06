@@ -1,8 +1,16 @@
 # Plan 101 — investigate observation-QC failures (`ingest.qc_complete failed=2`)
 
-**Status**: READY (pending 2 owner-confirmables at end) — root cause FOUND; grill-me
-DONE; raw-vs-relative → KEEP-RAW;
-**SCOPE LOCKED by owner (2026-07-06): (A) per-station datum** as the *primary,
+**Status**: NOT-READY (2026-07-06) — an **independent review found a BLOCKER the
+automated plan-review missed**: the null-datum backstop's global-widening is
+architecturally incompatible with datum-subtract (one shared rule set → widening
+erases the tight relative QC). Fixes folded in "Independent review" at the end:
+**null-datum = SKIP-until-datum (widening DROPPED)**, plus 3 majors (flag-detail
+honesty, baseline delete/replace, forecast-side QC in-slice). **Two owner decisions
+now open:** (i) persisted-column vs in-memory datum (scope), (ii) forecast-side QC
+in-slice vs block water_level forecast activation. Root cause + keep-raw +
+subtract-before-QC + per-station datum all stand. Re-review after the owner decides.
+Superseded framing note below —
+**SCOPE (owner 2026-07-06): (A) per-station datum** as the *primary,
 per-station* precision mechanism (the plan-review's option (B) global-widening is
 NOT the primary fix, but its config-widening artefact **survives as the NULL-datum
 backstop** — see below). Realization = **subtract the datum from the water_level
@@ -834,3 +842,62 @@ all implementation-completeness (no design forks). Folded:
 
 With C1–C6 folded and the two confirmables above, the design is settled and Plan 101
 is **READY** for implementation (hold-at-PR).
+
+## Independent review (2026-07-06) — NOT-READY: 1 blocker + 3 majors (my plan-review MISSED the blocker)
+
+An independent reviewer (outside the plan-review workflow) audited this plan and
+returned **NOT-READY**. The findings are accepted; they SUPERSEDE the conflicting
+parts of "FINAL CORRECTIONS" and the null-datum backstop.
+
+- **B-INDEP (blocker) — the global-widening null-datum backstop is architecturally
+  BROKEN; REMOVE it.** `Stage1QualityChecker` applies ONE shared `QcRuleSet` per
+  (parameter, time_step) — there is no separate "datum path" rule set
+  (`services/qc.py:219,239`). If the backstop widens the global water_level
+  `range_check` to `[0, 4500]`, then datum-shifted **relative** values (which must be
+  checked against `[-2, 20]`) get checked against `[0, 4500]` — **erasing the tight
+  relative-stage QC** the datum-subtract exists to provide. Widening and
+  datum-subtract cannot coexist on one shared rule set. **RESOLUTION (also settles
+  owner-confirmable #1): NULL-datum = SKIP water_level range QC until the datum
+  exists** (mark raw/unknown, not failed; spike + rate_of_change, which are
+  datum-invariant, still run). Do NOT widen the global bounds. The
+  "backstop-widening" artefact and confirmable-#1's "widen" option are **dropped**.
+  (My automated plan-review INTRODUCED the widening in round 2 and never caught the
+  conflict — an independent pass was required to see it.)
+- **M-INDEP-1 (major) — shadow-shift makes `qc_flags.detail` misleading.** Range/
+  spike/gross_outlier detail strings embed `obs.value` (`services/qc.py:66,160,187`)
+  and are stored verbatim (`observation_store.py:119,210`). After datum-subtract the
+  detail says e.g. "value 21 outside …" while the **stored raw** value is ~282 m
+  a.s.l. **Fix:** when a datum shift is applied, augment the water_level flag detail
+  with **raw + relative + datum** (or a structured trace field) so diagnostics aren't
+  a lie.
+- **M-INDEP-2 (major) — baseline recompute needs delete/replace (stale-row safety).**
+  gross_outlier compares `obs.value` (now relative) with `baseline.rolling_mean`
+  (`services/qc.py:167`), so water_level baselines must be recomputed in **relative**
+  terms too. But `PgClimBaselineStore` only upserts/fetches
+  (`clim_baseline_store.py:16,44`) — if the recompute yields fewer day-of-year rows,
+  stale **absolute** rows survive and mix. **Fix:** add a delete/replace for
+  `(station_id, parameter)` baselines and run it before storing the relative recompute.
+- **M-INDEP-3 (major) — forecast-side QC must be fixed in the SAME slice (v0 forecasts
+  water_level).** v0 explicitly includes water_level forecasting (`docs/v0-scope.md:11,
+  213`); `run_station_forecast` runs forecast QC per predicted parameter and **aborts
+  on QC_FAILED** (`run_station_forecast.py:217`), and forecast defaults still reject
+  absolute water_level with `[-2, 20]` (`config/forecast_qc_rules.py:149`). **Decide
+  (owner):** fix forecast-side water_level QC in this same implementation slice
+  (datum-subtract on the forecast path too), OR explicitly **block water_level
+  forecast activation** until it's fixed. Not a vague "gated follow-on".
+- **Minor — citation:** `run_forecast_cycle.py:811` instantiates the checker; the
+  apply/abort gate is `run_station_forecast.py:219-229` (not `:812`).
+
+### Owner decision resurfaced by the independent review — SCOPE (persist vs in-memory datum)
+
+The reviewer questions whether the **persisted** datum (schema column + migration +
+`StationConfig`/store changes) is warranted for v0, since water_level QC is secondary.
+Lighter alternative: **compute the datum in-memory from existing DB history** at QC
+time (cache it), avoiding the schema/migration/store surface entirely — same
+per-station-datum behaviour you chose, less plumbing. **Owner decision:** persisted
+column (durable, no per-run recompute) vs in-memory/cached (no schema change, lighter
+for v0). Either keeps your "per-station datum" choice; only the persistence differs.
+
+**Datum statistic (reviewer-recommended, adopt unless owner objects):** robust low
+percentile (p1/p5) over the last full year of history if available, else all history
+with a minimum-sample threshold; computed explicitly, no silent drift.
