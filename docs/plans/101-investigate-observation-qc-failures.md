@@ -1,7 +1,10 @@
 # Plan 101 — investigate observation-QC failures (`ingest.qc_complete failed=2`)
 
-**Status**: DRAFT — **root cause FOUND (2026-07-06, local-stack repro); fix
-decision pending grill-me** (see Findings).
+**Status**: DRAFT — root cause FOUND; **grill-me DONE (2026-07-06)**: fix =
+convert absolute → **relative stage** with a **data-driven per-station datum**,
+**re-QC** existing rows (see DECIDED DIRECTION). **One residual needs the owner's
+confirm before READY: raw-data preservation** (store relative-only vs keep the raw
+absolute + derive stage — recommend keep-raw). Then plan-review (WF1).
 **Priority**: medium — surfaced on the mac-mini 2026-07-06: `ingest.qc_complete`
 reports `failed=2` on obs ingest. Not yet known whether this is legitimate
 bad-data rejection, a too-tight QC threshold, or a rule bug. Matters because the
@@ -85,6 +88,55 @@ water_level) experiment and floods QC monitoring with false failures.
 Characterise the QC failures precisely, decide the category (legit / threshold /
 bug), and record the remediation (adjust threshold, fix rule, or accept as correct
 rejection). This plan is **investigation-first**; any code fix is a follow-on.
+
+## DECIDED DIRECTION (grill-me 2026-07-06)
+
+Root cause is settled (datum/unit mismatch, not bad data). Grill-me chose:
+
+- **Fix = convert absolute → relative stage** (not per-station range overrides).
+  BAFU/LINDAS water_level is absolute m a.s.l.; convert to a **relative stage**
+  (`stage = absolute_masl − datum`) so the global `range_check [-2, 20]` (relative
+  metres) applies correctly and uniformly.
+- **Datum = data-driven from history.** Compute each station's reference datum from
+  its observed water_level history (a robust low-water reference — e.g. a low
+  percentile / min over a window, +margin), rather than `altitude_masl` (unreliable
+  as the water datum) or manual config (doesn't scale to ~1000 stations). Computed at
+  onboarding; a new station with no history falls back to a wide default until enough
+  history accrues.
+- **Re-QC existing after the fix.** Once conversion + datum are in place, re-evaluate
+  the 622 existing `qc_failed` water_level rows so the historical series is usable and
+  the dashboard is clean.
+
+### ⚠ Residual sub-decisions (confirm before READY — the grill-me exposed these)
+
+1. **Raw-data preservation vs relative-only (RECOMMEND: keep raw).** "Adapter
+   converts to relative stage" read literally means we **store relative and discard
+   the raw absolute m a.s.l.** — which conflicts with the *parse-don't-validate /
+   preserve-raw-at-the-boundary* principle (CLAUDE.md) and loses the actual BAFU
+   value. **Recommendation:** keep storing the **raw absolute** value and derive
+   relative stage for **QC + display** (store the derived stage as a second field, or
+   compute `value − datum` on read). This is close to the "hybrid" option but driven
+   by data-fidelity, not flexibility. Confirm: relative-only vs raw-preserved.
+2. **Datum definition (statistic + window).** Exactly which statistic (min? p1? a
+   robust low-water reference?) over which history window, and the margin. Ties to
+   the rating-curve / gauge-zero work (Nepal v1) — a datum here should be compatible
+   with, not contradict, a future published gauge-zero.
+3. **Datum stability / recompute policy.** Compute once at onboarding vs periodically
+   (a regime shift or a re-levelled gauge changes the true datum). Recommend
+   compute-at-onboarding + a documented recompute path, not silent drift.
+4. **Backfill mechanics + audit.** Converting/re-QC-ing the 622 rows: bump
+   `qc_rule_version` so the re-evaluation is traceable (the "re-QC + audit" flavour),
+   even though the grill-me picked plain re-QC — cheap traceability on a bulk data
+   change.
+5. **Plan 102 ripple.** Plan 102's decided unit label is **"m a.s.l."** If we display
+   relative stage, that panel's unit becomes **"m (stage)"** (or we display both).
+   Update Plan 102's `PARAM_UNITS` decision accordingly — flag now so the two plans
+   don't diverge.
+
+**Observability (decided, no fork):** the per-observation rejection **reason** is
+already persisted in `qc_flags` (how this was diagnosed) but the `ingest.qc_complete`
+event logs only counts — add a `qc.rejected` debug event (or fold the flag summary in)
+so future QC issues are visible from logs, not just the DB.
 
 ## Investigation steps
 
