@@ -1,6 +1,10 @@
 # Plan 102 — dashboard: make water_level & water_temperature observations visible
 
-**Status**: DRAFT
+**Status**: DRAFT — **grill-me COMPLETE (2026-07-06)**: layout = **multi-panel
+(stacked, per-parameter axis)**; **ship independent of Plan 101** with a
+**QC-failed show/hide toggle**; **scope = station-detail page only**. See DECIDED
+DESIGN + IMPLEMENTATION VISION. Next: `plan-review` (WF1) → READY → implement
+(hold-at-PR).
 **Priority**: medium — operators report "we don't see any water level or
 temperature data" on the dashboard, yet all three parameters are ingested and
 served. It is a visibility/UX gap, not missing data.
@@ -46,30 +50,57 @@ Every ingested parameter for a station is **visible and legible** on the dashboa
 without hunting — discharge, water_level, and water_temperature — each with an
 appropriate axis/scale and clear QC state.
 
-## Design options (grill-me before READY)
+## DECIDED DESIGN (grill-me 2026-07-06)
 
-- **D1 — how to show multiple parameters.**
-  - (a) **Multi-panel** — one small stacked chart per available parameter on the
-    station-detail page (recommended: each parameter has a different unit/scale, so
-    separate y-axes read better than an overlay). Keeps the existing
-    `observations.json` per-parameter endpoint; just render N panels from
-    `station["parameters"]`.
-  - (b) **Single chart, multi-select overlay** with a secondary y-axis — compact but
-    mixing m³/s, m a.s.l., and °C on shared axes is hard to read.
-  - (c) **Keep the dropdown but default smarter** + show a per-parameter
-    availability/count summary so operators at least see the parameters exist.
-  - Recommend (a); confirm.
-- **D2 — units/axis labelling.** Each parameter needs its own y-axis label + unit
-  (discharge m³/s, water_level m a.s.l., water_temperature °C). Confirm the unit
-  strings and whether they come from config/registry vs hardcoded.
-- **D3 — QC display honesty.** water_level is all `qc_failed` until Plan 101 lands.
-  Decide: does this plan depend on Plan 101 (so water_level shows as valid), ship
-  independently (water_level shows as red-failed but at least visible + a note), or
-  both? Recommend: ship 102 independently (visibility is orthogonal), and let Plan
-  101 fix the QC colour. Cross-reference, do not block.
-- **D4 — scope.** Station-detail page only, or also the station list / observations
-  coverage page (`stations.py:16` coverage already lists parameters)? Recommend
-  detail page first.
+- **D1 — multi-panel (stacked), one chart per parameter.** Replace the single obs
+  chart for the station-detail page with **N stacked panels**, one per parameter in
+  `station["parameters"]`, each with its **own y-axis + unit**. All parameters are
+  always visible — no dropdown hunting. Each panel calls the existing
+  `/api/v1/stations/{id}/observations.json?parameter=…` endpoint (unchanged
+  contract). Rationale: the three parameters have incompatible scales/units (m³/s,
+  m a.s.l., °C), so separate axes read far better than an overlay.
+- **D2 — units via a small hardcoded display map (no registry exists).** There is
+  **no** parameter→unit registry today (the obs y-axis currently shows the bare
+  `param` string). Add a minimal display-unit map in the template/route:
+  `discharge → "m³/s"`, `water_level → "m a.s.l."`, `water_temperature → "°C"`
+  (unknown params fall back to the bare name). Each panel's y-axis title becomes
+  `"<param> (<unit>)"`. Keep the map in one place (a small dict) so it is easy to
+  extend; a future canonical unit registry can replace it without touching the
+  layout. water_level's unit is **m a.s.l.** (the absolute datum — see Plan 101).
+- **D3 — ship INDEPENDENT of Plan 101 + a QC-failed toggle.** Do **not** block on
+  Plan 101. Each panel keeps the existing group-by-`qc_status` rendering, plus a
+  **"show QC-failed" toggle** (default **on**, but failed points **de-emphasized** —
+  smaller/greyer markers) so water_level is **visible and legible now** (not an
+  alarming wall of red) and simply becomes clean once Plan 101 fixes the datum
+  threshold. A short inline note links water_level's current failures to Plan 101.
+- **D4 — scope: station-detail page ONLY.** The observations-coverage page and the
+  station list are **out of scope** for this plan (revisit separately if needed).
+
+### Implementation vision (feeds WF1 plan-review → WF2)
+
+- **Template (`stations/detail.html`):** replace the single `#obs-chart` +
+  `#param-select`-driven obs load with a **loop that renders one panel per
+  `station.parameters`** entry (server-side render N `<div>`s, or client-side build
+  them from a `parameters` list injected into the page). Each panel: fetch its
+  parameter, group by qc_status (existing styles), y-axis = `"<param> (<unit>)"`,
+  x-axis already `"Date (UTC)"`. Add one **"show QC-failed" checkbox** (page-level
+  or per-panel — plan-review to sharpen) that toggles the `qc_failed` trace
+  visibility; default visible + de-emphasized style.
+- **The `#param-select` dropdown drives more than obs (WATCH-OUT):** it currently
+  also reloads the **baseline** and **hindcast** charts (`detail.html`
+  `loadCharts()`). Those are **discharge-oriented** (climatology baseline; models
+  forecast discharge). Decision for plan-review: the obs section goes
+  dropdown-free (multi-panel), while **baseline + hindcast default to `discharge`**
+  (or keep a smaller selector scoped to just those). Do NOT silently break the
+  baseline/hindcast charts when removing the shared obs dropdown.
+- **Route (`stations.py`):** no contract change needed — `parameters` is already
+  computed (`:194-207`) and `observations.json` already serves per-parameter data
+  with `qc_statuses`. Inject the unit map + `parameters` into the template context.
+- **Verification:** render 2009/2091 at http://localhost:8010 — three panels
+  (discharge m³/s, water_level m a.s.l., water_temperature °C); water_temperature a
+  clean ~9 °C series; water_level visible with failed points de-emphasized + the
+  Plan-101 note; the QC-failed toggle hides/shows failed markers; baseline +
+  hindcast still render (discharge).
 
 ## Non-goals
 
@@ -79,16 +110,13 @@ appropriate axis/scale and clear QC state.
   parameters + qc_statuses).
 - The forecast/hindcast charts (those are discharge-only by model design).
 
-## Verification (local stack is up)
-
-Render the station-detail page for 2009/2091 at http://localhost:8010 and confirm
-all three parameters appear with correct units/axes; water_temperature shows a
-clean ~9 °C series; water_level appears (as failed markers pre-101, as valid
-post-101).
-
 ## Process
 
-DRAFT until a grill-me settles D1 (multi-panel vs overlay), D2 (unit source), D3
-(101 dependency). Then plan-review → implement. Implementation is a template +
-route change (`stations/detail.html`, possibly `stations.py`) → **hold-at-PR** with
-a version bump.
+Grill-me **COMPLETE** (2026-07-06): D1 multi-panel, D2 hardcoded unit map, D3 ship
+independent + QC-failed toggle, D4 station-detail only (see DECIDED DESIGN). One
+residual for **plan-review to sharpen**: the shared `#param-select` dropdown that
+also drives the baseline/hindcast charts — how to keep those working (default to
+discharge vs a scoped selector) once the obs section goes multi-panel. Next: run
+`plan-review` (WF1) → READY → implement. Implementation is a template + route
+change (`stations/detail.html`, `stations.py` context only — no endpoint contract
+change) → **hold-at-PR** with a version bump.
