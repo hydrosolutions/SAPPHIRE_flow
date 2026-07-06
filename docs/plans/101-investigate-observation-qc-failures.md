@@ -1,10 +1,12 @@
 # Plan 101 — investigate observation-QC failures (`ingest.qc_complete failed=2`)
 
-**Status**: DRAFT — root cause FOUND; **grill-me DONE (2026-07-06)**: fix =
-convert absolute → **relative stage** with a **data-driven per-station datum**,
-**re-QC** existing rows (see DECIDED DIRECTION). **One residual needs the owner's
-confirm before READY: raw-data preservation** (store relative-only vs keep the raw
-absolute + derive stage — recommend keep-raw). Then plan-review (WF1).
+**Status**: DRAFT — root cause FOUND; grill-me DONE; **plan-review (2 rounds)
+resolved raw-vs-relative → KEEP-RAW** (subtract a per-station datum inside
+`_run_qc_task` via the existing `overrides` path; NOT adapter conversion) **but did
+NOT converge — 6 blockers + 7 majors, all real → an OWNER SCOPE DECISION is now
+required** (full precise per-station datum fix vs a simpler v0 global-widening
+backstop). See "Plan-review verdict (round 2)" at the end. Not READY until scope is
+chosen.
 **Priority**: medium — surfaced on the mac-mini 2026-07-06: `ingest.qc_complete`
 reports `failed=2` on obs ingest. Not yet known whether this is legitimate
 bad-data rejection, a too-tight QC threshold, or a rule bug. Matters because the
@@ -16,7 +18,7 @@ the lag window and can contribute to model failures independently of NWP.
 **Related**:
 - `src/sapphire_flow/flows/ingest_observations.py:178-187` (QC loop; `counts["failed"] += 1`), `:39,41` (`qc_failed`, `stations_failed` result fields), the `ingest.qc_complete` structured event
 - the observation-QC service/rules (range / spike / flatline / stale checks) + their thresholds in config
-- `src/sapphire_flow/services/forecast_qc.py` (forecast-side QC — confirm whether obs QC shares rule code)
+- `src/sapphire_flow/services/forecast_qc.py` + `src/sapphire_flow/config/forecast_qc_rules.py:151-177` (forecast-side QC — parallel `[-2.0, 20.0]` / `negative_value` defaults, applied at `flows/run_forecast_cycle.py:812`; symmetrically broken, gated follow-on)
 - BAFU/LINDAS adapter `src/sapphire_flow/adapters/hydro_scraper.py` (source of the obs being QC'd)
 **Created**: 2026-07-06
 
@@ -57,12 +59,27 @@ water_level` verbatim, `hydro_scraper.py:48`, no datum conversion). So **every**
 `failed=2` = one `water_level` per station per tick × 2 stations.
 
 A **single global** `water_level` range cannot work: absolute levels differ ~115 m
-between these two stations, so no one `[min,max]` fits both. Two structural facts:
-- `qc_rules.py:122` / `forecast_qc_rules.py:169` hardcode the same `[-2.0, 20.0]`
-  default, so this is a systemic default, not a one-off.
+between these two stations, so no one `[min,max]` fits both. Structural facts:
+- The `[-2.0, 20.0]` bound lives in **THREE co-equal places** that must be fixed
+  atomically (missing any one leaves a broken fallback path):
+  1. `config/qc_rules.py:122` — `_default_swiss_qc_rules()`, the 10-min operational
+     `water_level` `range_check` (`{value_min: -2.0, value_max: 20.0}`).
+  2. `config/forecast_qc_rules.py:169` — `_default_swiss_forecast_qc_rules()`, the
+     forecast-side counterpart (plus its `negative_value` floor `value_min=-2.0` at
+     `:155`/`:162` and the hourly `range_check` at `:176`).
+  3. `config.toml:231` — the `[[qc_rules.rules]]` `range_check` for `water_level`,
+     used **in production** whenever `SAPPHIRE_CONFIG` is set (the mac-mini path).
+  The `config/*.py` defaults are the fallback used ONLY when no `SAPPHIRE_CONFIG` is
+  set (`ingest_observations.py:53-58` → `_default_swiss_qc_rules()`) — i.e. tests /
+  local dev without a config file. So the fix targets both the deployed `config.toml`
+  AND the two in-code defaults; this is a systemic default, not a one-off.
 - The QC checker supports per-observation `overrides` (`services/qc.py`
   `checker.check(..., overrides=...)`), but `ingest_observations.py:174` passes
   `overrides=[]` — per-station threshold overrides are **not wired from any store**.
+  This is the seam the datum fix plugs into (see DECIDED DIRECTION).
+- **Other water_level rules are datum-sensitive too** — the range_check is not the
+  only rule that breaks under absolute vs relative values. See the mandatory
+  "per-rule audit" step below; the `spike` and `gross_outlier` rules are affected.
 
 **Impact:** benign for forecasting today (models use discharge, which passes), but
 `water_level` is 100% rejected — which breaks the multi-parameter (discharge +
@@ -78,10 +95,17 @@ water_level) experiment and floods QC monitoring with false failures.
   per station (ties to the rating-curve/datum work).
 - **(c) Widen / drop the global `water_level` `value_max`** — rejected: masks real
   errors and still can't fit both stations' absolute levels.
-- Minor observability note: the rejection **reason is already persisted** in
-  `qc_flags` (that is how this was diagnosed) — the only gap is that the
-  `ingest.qc_complete` **log event** omits it. A small `qc.rejected` debug event or
-  including the flag summary would have surfaced this from logs alone. Optional.
+- Observability note (corrected): the rejection **reason is already persisted** in
+  `qc_flags` (that is how this was diagnosed). But the log-stream gap is more severe
+  than "the summary omits it": there is currently **no per-observation QC-rejection
+  log event at all**. Per-obs failures are only counted silently into `counts["failed"]`
+  in the loop at `ingest_observations.py:179-189`. The existing `ingest.qc_failed`
+  event at `:351-357` fires **only when the QC task raises an exception** (task crash)
+  — it is NOT a per-obs rejection signal. So a `qc.rejected` debug event would be the
+  FIRST per-obs rejection log event, and it must be added **inside the `flags` loop at
+  `:179-189`** (emitting `station_id`, `parameter`, `rule_id`, `value`, `threshold`
+  for each `QcFlag` whose `status == QC_FAILED`), not folded into the summary. The
+  `ingest.qc_failed` exception event stays untouched.
 
 ## Goal
 
@@ -89,54 +113,161 @@ Characterise the QC failures precisely, decide the category (legit / threshold /
 bug), and record the remediation (adjust threshold, fix rule, or accept as correct
 rejection). This plan is **investigation-first**; any code fix is a follow-on.
 
-## DECIDED DIRECTION (grill-me 2026-07-06)
+## DECIDED DIRECTION (grill-me 2026-07-06; datum-storage + raw-vs-relative fork RESOLVED at plan-review)
 
-Root cause is settled (datum/unit mismatch, not bad data). Grill-me chose:
+Root cause is settled (datum/unit mismatch, not bad data). The two design forks the
+grill-me left open — (i) raw-preserved vs relative-only, and (ii) *where the datum
+lives* — are now **resolved** so implementation is unblocked:
 
-- **Fix = convert absolute → relative stage** (not per-station range overrides).
-  BAFU/LINDAS water_level is absolute m a.s.l.; convert to a **relative stage**
-  (`stage = absolute_masl − datum`) so the global `range_check [-2, 20]` (relative
-  metres) applies correctly and uniformly.
-- **Datum = data-driven from history.** Compute each station's reference datum from
-  its observed water_level history (a robust low-water reference — e.g. a low
-  percentile / min over a window, +margin), rather than `altitude_masl` (unreliable
-  as the water datum) or manual config (doesn't scale to ~1000 stations). Computed at
-  onboarding; a new station with no history falls back to a wide default until enough
-  history accrues.
-- **Re-QC existing after the fix.** Once conversion + datum are in place, re-evaluate
-  the 622 existing `qc_failed` water_level rows so the historical series is usable and
-  the dashboard is clean.
+- **Keep the raw absolute value; subtract the datum in QC (NOT in the adapter).**
+  The earlier "adapter converts absolute → relative stage" wording contradicted the
+  "keep raw" recommendation: if the adapter converts and stores relative, the raw
+  BAFU m a.s.l. value is **discarded** — which violates the *parse-don't-validate /
+  preserve-raw-at-the-boundary* principle (CLAUDE.md) and loses the source value.
+  RESOLUTION: the `HydroScraperAdapter` is unchanged — it stores the raw absolute
+  value as received (`hydro_scraper.py:48` keeps mapping `waterLevel → water_level`
+  verbatim; the adapter is a stateless HTTP boundary with no store access and MUST
+  stay that way). The per-station datum is applied **inside `_run_qc_task`** by
+  populating the currently-empty `overrides=[]` argument
+  (`ingest_observations.py:174`) with a per-station `water_level` `range_check`
+  override whose bounds are `[datum − 2.0, datum + 20.0]` (i.e. the global relative
+  band shifted into absolute m a.s.l. for that station). Equivalent to subtracting
+  the datum before the check, but expressed through the existing override seam that
+  `Stage1QualityChecker._merge_thresholds` already supports — no new "relative-stage"
+  storage field, no adapter change, and raw data fidelity preserved. QC thus compares
+  the **raw absolute value** against **datum-derived absolute bounds**. (If display
+  ever needs relative stage, compute `value − datum` on read; do not persist a second
+  field in v0.)
+- **Datum storage = one nullable column on the `stations` table.** RESOLUTION (was
+  the single blocking gap): add a nullable `water_level_datum_masl FLOAT` column to
+  the `stations` table (`db/metadata.py:67-129`, alongside the existing
+  `altitude_masl` column at `:74`) via an Alembic migration; add the field to
+  `StationConfig` (`types/station.py:26-43`) as `water_level_datum_masl: float | None
+  = None`; and add a `StationStore` accessor (`protocols/stores.py:484` — the
+  Protocol already has `fetch_station`/`store_station` at `:485`/`:503`) so
+  `_run_qc_task` can read it. **A dedicated `station_datums` table is rejected as
+  over-engineering** for a single scalar per station. **NULL datum = no datum yet →
+  fall back to the wide global default** (see backstop below), so a fresh station
+  with no history QCs against a permissive absolute band rather than rejecting 100%.
+  The datum is read by the **QC flow task** (injected `StationStore`), NOT by the
+  adapter and NOT at flow startup — it is fetched per station inside `_run_qc_task`
+  next to the existing `baseline_store.fetch_baselines` call
+  (`ingest_observations.py:168`).
+- **Datum = data-driven from history, computed at onboarding.** Compute each
+  station's reference datum from its observed `water_level` history (a robust
+  low-water reference — see sub-decision 2), rather than `altitude_masl` (unreliable
+  as the water datum) or manual config (doesn't scale to ~1000 stations). The
+  onboarding flow computes it and writes `water_level_datum_masl` via
+  `StationStore.store_station`. A station with insufficient history leaves the column
+  NULL until enough accrues, then a recompute pass populates it (sub-decision 3).
+- **Global default becomes a physical backstop, not a per-station bound.** Because the
+  global `[-2.0, 20.0]` cannot fit absolute m a.s.l. for the NULL-datum fallback,
+  widen the global `water_level` `range_check` in all three locations (Findings) to a
+  **safe physical absolute band for the network** (e.g. `[0.0, 4500.0]` for Swiss
+  stations — no BAFU gauge sits above the highest Alpine outlet). This is a coarse
+  backstop that catches only gross sensor faults; the tight per-station QC comes from
+  the datum-derived override. This keeps the fallback path safe when a datum is NULL.
+- **Re-QC existing after the fix.** Once the datum + override wiring is in place,
+  re-evaluate the 622 existing `qc_failed` water_level rows (see sub-decision 4).
 
-### ⚠ Residual sub-decisions (confirm before READY — the grill-me exposed these)
+### Mandatory per-rule audit — ALL five water_level QC rules (not just range_check)
 
-1. **Raw-data preservation vs relative-only (RECOMMEND: keep raw).** "Adapter
-   converts to relative stage" read literally means we **store relative and discard
-   the raw absolute m a.s.l.** — which conflicts with the *parse-don't-validate /
-   preserve-raw-at-the-boundary* principle (CLAUDE.md) and loses the actual BAFU
-   value. **Recommendation:** keep storing the **raw absolute** value and derive
-   relative stage for **QC + display** (store the derived stage as a second field, or
-   compute `value − datum` on read). This is close to the "hybrid" option but driven
-   by data-fidelity, not flexibility. Confirm: relative-only vs raw-preserved.
+The fix touches `range_check` directly, but three other `water_level` rules
+(`config/qc_rules.py:116-151`) have threshold semantics that interact with the
+absolute-vs-relative representation. Because we chose **keep-raw-absolute** (values
+stay ~261–376 m), each rule must be audited and the outcome recorded before READY:
+
+1. **`range_check`** — FIXED by the datum-derived per-station override + widened
+   global backstop (above).
+2. **`rate_of_change`** (`services/qc.py`, `max_rate=0.5`) — operates on the
+   **delta** between consecutive values; a delta is datum-invariant (`Δabsolute =
+   Δrelative`). **Correct as-is under keep-raw.** No change.
+3. **`frozen_sensor`** (`tolerance=0.001`) — operates on consecutive-value equality
+   within a tolerance; also delta-based / datum-invariant. **Correct as-is.** No change.
+4. **`spike`** (`services/qc.py:136-164`, `tolerance=0.1`) — **PRE-EXISTING BUG that
+   becomes load-bearing under keep-raw.** It flags when `abs(obs.value − prev.value) >
+   tolerance * abs(prev.value)` (`:148,:152`). With absolute values (~261 m) the
+   threshold is `0.1 × 261 ≈ 26 m`, so it silently passes every genuine spike —
+   spike detection is effectively disabled at absolute scale. It also has a
+   `if ref == 0.0: return None` guard (`:149`) that would skip checks at zero stage if
+   we ever went relative. RESOLUTION: for stage-like data the spike threshold must be
+   an **absolute delta** (e.g. `max_delta` in metres), not a percentage of `prev.value`.
+   Since keep-raw keeps values absolute, flag this as a pre-existing bug and change the
+   `water_level` spike rule to an absolute-delta threshold (add a `max_delta` threshold
+   and branch, or scope the percentage form to `discharge` only). This is the only rule
+   whose *code* changes, not just config.
+5. **`gross_outlier`** (`services/qc.py:167-192`, `k_sigma=5.0`) — compares
+   `abs(obs.value − baseline.rolling_mean) > k_sigma × baseline.rolling_std` against
+   `ClimBaseline` rows. Under keep-raw, observations stay **absolute**, so baselines
+   must ALSO be in absolute m a.s.l. for the comparison to be valid. RESOLUTION: audit
+   whether any `water_level` `ClimBaseline` rows exist
+   (`baseline_store.fetch_baselines`, `ingest_observations.py:168`). If none exist yet
+   (likely in v0, since water_level was 100% rejected), **document that explicitly** so
+   the backfill does not leave stale baselines. If any exist and were computed from a
+   different representation, they must be **invalidated and recomputed from the raw
+   absolute series** as part of the backfill (sub-decision 4). Since we keep values
+   absolute end-to-end, no unit switch occurs — the risk is only stale/partial baselines.
+
+### Forecast-side QC — parallel fix, gated on first water_level forecast run
+
+`forecast_qc_rules.py` is symmetrically broken: the same absolute-scale defaults at
+`:169` (`range_check [-2.0, 20.0]`) and the `negative_value` floor `value_min=-2.0` at
+`:155`/`:162`, applied in `run_forecast_cycle.py:812` via `ForecastOutputQualityChecker`.
+Because we keep water_level **absolute** end-to-end, forecast QC must use the same
+absolute bounds as obs QC. RESOLUTION: update `forecast_qc_rules.py` in parallel —
+widen `range_check` to the physical backstop and set `negative_value` `value_min` to a
+physical floor (`0.0` is the lowest plausible absolute water level? — no; use the same
+network-wide low bound, e.g. `0.0` only if 0 m a.s.l. is impossible for the network,
+else the backstop min). **v0 gate:** water_level forecasting is not yet enabled, so
+gate this step behind a "before the first water_level forecast run" checkpoint rather
+than shipping it in the obs-QC PR; but it MUST be listed as a tracked follow-on so the
+two QC configs do not diverge.
+
+### ⚠ Residual sub-decisions (owner confirm before READY — narrowed, no longer blocking)
+
+1. ~~Raw-data preservation vs relative-only~~ **RESOLVED above: keep raw absolute,
+   subtract datum in QC via the `overrides` path.** No adapter change, no second field.
 2. **Datum definition (statistic + window).** Exactly which statistic (min? p1? a
    robust low-water reference?) over which history window, and the margin. Ties to
    the rating-curve / gauge-zero work (Nepal v1) — a datum here should be compatible
-   with, not contradict, a future published gauge-zero.
+   with, not contradict, a future published gauge-zero. (Design detail, not a blocker:
+   the storage + wiring are fixed above; only the numeric recipe remains.)
 3. **Datum stability / recompute policy.** Compute once at onboarding vs periodically
    (a regime shift or a re-levelled gauge changes the true datum). Recommend
-   compute-at-onboarding + a documented recompute path, not silent drift.
-4. **Backfill mechanics + audit.** Converting/re-QC-ing the 622 rows: bump
-   `qc_rule_version` so the re-evaluation is traceable (the "re-QC + audit" flavour),
-   even though the grill-me picked plain re-QC — cheap traceability on a bulk data
-   change.
-5. **Plan 102 ripple.** Plan 102's decided unit label is **"m a.s.l."** If we display
-   relative stage, that panel's unit becomes **"m (stage)"** (or we display both).
-   Update Plan 102's `PARAM_UNITS` decision accordingly — flag now so the two plans
-   don't diverge.
+   compute-at-onboarding + a documented recompute path (a re-run that overwrites
+   `water_level_datum_masl` via `store_station`), not silent drift.
+4. **Backfill mechanics + audit (actor + version string SPECIFIED).** Re-QC-ing the
+   622 rows:
+   - **Actor:** a one-shot admin script (`uv run python3 << 'EOF'` per CLAUDE.md),
+     NOT a new Prefect flow. It reads each station's `water_level_datum_masl`, rebuilds
+     the datum-derived override, re-runs `Stage1QualityChecker.check` over the stored
+     raw values, and writes the new status.
+   - **Bulk-update API gap:** `ObservationStore.update_qc`
+     (`protocols/stores.py:95-102`, impl `store/observation_store.py:119-134`) updates
+     **one** `ObservationId` per call and hardcodes nothing — but the flow passes
+     `qc_rule_version="1.0"` at `ingest_observations.py:183`. Re-QC-ing 622 rows
+     one-by-one is acceptable at this size (single transaction in the script; 622 rows
+     is not a scale concern), so **no `bulk_update_qc` method is required** — the script
+     wraps the loop in one transaction. (If this were 10^5+ rows a bulk helper would be
+     warranted; note the trade-off but do not add API surface for 622 rows.)
+   - **Version string:** write `qc_rule_version="1.1-datum-reqc"` (a concrete literal)
+     for the re-QC'd rows so they are distinguishable from the original `"1.0"` pass.
+     `qc_rule_version` is a free-form `str | None` today (no registry); this documents
+     the convention rather than inventing a silent one.
+   - If any `water_level` `ClimBaseline` rows exist (see audit rule 5), recompute them
+     from the raw absolute series in the same script before the re-QC pass.
+5. **Plan 102 ripple.** Plan 102's decided unit label is **"m a.s.l."** Because we
+   **keep raw absolute** (not relative stage), the displayed value stays absolute m
+   a.s.l., so **Plan 102's `PARAM_UNITS` label "m a.s.l." remains correct** — no change
+   needed (this is simpler than the earlier relative-stage assumption). Flag retained
+   only so a future switch to displaying relative stage revisits it.
 
-**Observability (decided, no fork):** the per-observation rejection **reason** is
-already persisted in `qc_flags` (how this was diagnosed) but the `ingest.qc_complete`
-event logs only counts — add a `qc.rejected` debug event (or fold the flag summary in)
-so future QC issues are visible from logs, not just the DB.
+**Observability (decided, no fork):** per-observation rejections have **no log event
+today** — only a count in `ingest.qc_complete`. The existing `ingest.qc_failed`
+(`ingest_observations.py:351-357`) is a **task-exception** event, not a per-obs signal.
+Add a `qc.rejected` debug event **inside the `flags` loop at `:179-189`**, emitting
+`station_id`, `parameter`, `rule_id`, `value`, `threshold` for each `QcFlag` with
+`status == QC_FAILED`. This is a code add inside `_run_qc_task`, not a summary tweak.
 
 ## Investigation steps
 
@@ -164,6 +295,41 @@ so future QC issues are visible from logs, not just the DB.
    degrade the `nwp_regression`-with-lags input window for 2009/2091 (i.e. whether
    this contributed to model failures beyond the NWP-off cause in Plan 100).
 
+## Remediation artefacts (settled — the implementation surface)
+
+The DECIDED DIRECTION resolves to this concrete, ordered change set (each grounded
+in a real file:line):
+
+1. **Datum storage** (unblocks everything else):
+   - Alembic migration: nullable `water_level_datum_masl FLOAT` on the `stations`
+     table (`db/metadata.py:67-129`, next to `altitude_masl` at `:74`).
+   - `StationConfig.water_level_datum_masl: float | None = None`
+     (`types/station.py:26-43`).
+   - `StationStore` accessor to read the datum (`protocols/stores.py:484`; the
+     Protocol already exposes `fetch_station`/`store_station`). `fetch_station`
+     returning the enriched `StationConfig` may suffice — confirm during impl whether
+     a dedicated method is warranted or the field on `StationConfig` is enough.
+2. **QC-side datum application:** in `_run_qc_task` (`ingest_observations.py:168-176`)
+   fetch the station's datum and build a per-station `water_level` `range_check`
+   override `[datum − 2.0, datum + 20.0]`; pass it via `overrides=` (currently `[]`
+   at `:174`). NULL datum → omit the override (global backstop applies).
+3. **Global backstop widening** in all three locations atomically: `config/qc_rules.py:122`,
+   `config/forecast_qc_rules.py:169` (+ `:155`/`:162`/`:176`), and `config.toml:231`.
+4. **Spike-rule code fix** for `water_level` (absolute-delta threshold, not
+   percentage-of-prev) — `services/qc.py:136-164` + the rule's thresholds at
+   `config/qc_rules.py:138-144`.
+5. **`qc.rejected` debug log event** inside the `flags` loop at
+   `ingest_observations.py:179-189`.
+6. **Onboarding datum computation** writing `water_level_datum_masl` via
+   `store_station` (statistic per sub-decision 2).
+7. **Backfill script** (one-shot, per sub-decision 4) re-QC-ing the 622 rows with
+   `qc_rule_version="1.1-datum-reqc"`, recomputing any water_level baselines first.
+8. **Forecast-QC parallel fix** (`forecast_qc_rules.py`) — gated behind the first
+   water_level forecast run, tracked as a follow-on.
+
+Steps 1–5 + 7 are the obs-QC fix PR(s); step 6 lands in the onboarding flow; step 8
+is a gated follow-on.
+
 ## Non-goals
 
 - The NWP-off forecast blackout and fallback resilience — Plan 100.
@@ -172,7 +338,66 @@ so future QC issues are visible from logs, not just the DB.
 
 ## Process
 
-DRAFT → investigation (use the local stack + mini logs) → findings recorded here →
-decision on remediation. If a code fix results (rule/threshold/logging), it goes
-**hold-at-PR** with a version bump. If the reason-logging gap (#1) is confirmed,
-that small observability add is likely the first PR.
+DRAFT → investigation (DONE — findings + root cause above) → design (DONE — DECIDED
+DIRECTION + Remediation artefacts settled the datum-storage and raw-vs-relative forks)
+→ plan-review sign-off → READY. The code fix is multi-artefact (see Remediation
+artefacts); it goes **hold-at-PR** with a version bump. The `qc.rejected` observability
+add (artefact 5) is the smallest slice and a reasonable first PR; the datum column +
+QC-override wiring (artefacts 1–4, 7) is the core fix. Onboarding datum computation
+(6) and forecast-QC (8) follow.
+
+**Trade-offs noted (not regressions):** (a) the widened global backstop
+(`[0, 4500]`) is deliberately coarse — it only catches gross sensor faults; the tight
+per-station bound comes from the datum override, and a NULL-datum station QCs loosely
+until its datum is computed. (b) Re-QC-ing 622 rows one-by-one via the existing
+single-row `update_qc` is accepted over adding a `bulk_update_qc` API, given the small
+row count; revisit if the backfill grows by orders of magnitude.
+
+## Plan-review verdict (round 2, 2026-07-06) — SCOPE DECISION REQUIRED
+
+Plan-review resolved the raw-vs-relative fork (→ **keep-raw**, datum subtracted at
+QC time via `overrides`, datum in a `stations.water_level_datum_masl` column) but did
+**not converge**: 6 blockers + 7 majors, all real and code-grounded. They cluster
+into one conclusion — **the precise per-station datum fix is a genuine multi-file
+feature, not a threshold tweak:**
+
+1. **The broken bound is duplicated far beyond "three places."** Besides the 10-min
+   `range_check [-2,20]`, the **daily** `range_check [-5,30]` (`qc_rules.py:153`,
+   `config.toml:292`) is equally broken for absolute values, and the **spike** rules
+   (10-min + daily, percentage-form) mis-scale at ~261–376 m — across
+   `qc_rules.py`, `config.toml`, **and** `forecast_qc_rules.py`. Any atomic fix must
+   hit **all** of them or a fallback path silently rejects again.
+2. **`StationQcOverride` matches `time_step` EXACTLY** (`_qc_helpers.py:22`). A single
+   datum override won't apply to both the 600 s and 86 400 s rules — need one override
+   per time_step, or make `time_step` a nullable wildcard (cleaner). Unspecified =
+   silent no-op.
+3. **Signature + schema cascade.** `_run_qc_task` has no `station_store` param;
+   adding the datum needs it threaded through the call sites; adding
+   `water_level_datum_masl` to the frozen `StationConfig` cascades; and
+   `PgStationStore.update_station` doesn't persist that column today.
+4. **Datum-computation path doesn't fit onboarding.** "Compute the datum at
+   onboarding" assumes CAMELS-CH onboarding, but 2009/2091 are **BAFU LINDAS live**
+   stations that don't come through that path — so *where/when* the data-driven datum
+   is computed for the actual problem stations is unresolved.
+
+### The scope fork (owner decides)
+
+- **(A) Full precise per-station datum QC** — the keep-raw design above, done right:
+  schema column + migration, `StationConfig`/store/`update_station` updates,
+  `_run_qc_task` signature, per-`time_step` overrides (or the wildcard refactor), fix
+  **all** duplicated bound/spike locations, a datum-computation path that covers BAFU
+  stations, and the re-QC backfill. Precise QC, but a real multi-file feature.
+- **(B) v0 global-widening backstop (pragmatic) + defer precise QC** — widen the
+  `water_level` `range_check` (and fix the spike scaling) across all config locations
+  to physically plausible **absolute** bounds for the deployment (e.g. Switzerland
+  `[0, 4500]` m a.s.l.), unblocking the feed + dashboard now and still catching gross
+  errors (negative, absurd). Loses per-station precision (a 261 m gauge reading 376 m
+  would pass). Defer (A) to when multi-parameter validation / v1 rating-curve/gauge-
+  zero work needs it. **Small, all-config, low-risk.**
+
+**Recommendation:** given water_level QC is **secondary in v0** (models forecast
+discharge, which is clean), do **(B) now** to stop the false-failure flood + make the
+dashboard usable, and **reopen (A)** under the rating-curve/gauge-zero track when
+per-station stage precision actually matters. If the owner wants precision now, take
+(A) and fold all 13 findings first. Either way: also add the `qc.rejected` per-obs log
+event (observability gap, orthogonal to the scope choice).
