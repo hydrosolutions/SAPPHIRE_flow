@@ -1,6 +1,7 @@
 # Plan 101 — investigate observation-QC failures (`ingest.qc_complete failed=2`)
 
-**Status**: DRAFT (investigation)
+**Status**: DRAFT — **root cause FOUND (2026-07-06, local-stack repro); fix
+decision pending grill-me** (see Findings).
 **Priority**: medium — surfaced on the mac-mini 2026-07-06: `ingest.qc_complete`
 reports `failed=2` on obs ingest. Not yet known whether this is legitimate
 bad-data rejection, a too-tight QC threshold, or a rule bug. Matters because the
@@ -31,6 +32,53 @@ mini. We do not yet know:
   (rule misfire / unit mismatch — note the `m³/s` unit-standardisation history).
 - Whether `failed=2` is **persistent every tick** (systematic) or **occasional**
   (transient bad readings).
+
+## Findings (2026-07-06 — reproduced on the local dev stack)
+
+The local stack (same two stations, 2009/2091; 60k+ obs, live-ingesting) shows
+**622 `qc_failed`** — **311 per station, all `water_level`** (discharge is clean).
+Every failure is the same `range_check` rejection (from the stored `qc_flags`):
+
+```
+2091 water_level 261.5   → "value 261.5 outside [-2.0, 20.0]"
+2009 water_level 376.004 → "value 376.004 outside [-2.0, 20.0]"
+```
+
+**Root cause — a datum/unit mismatch in the QC threshold, NOT bad data.**
+`config.toml:225-231` sets a **global** `water_level` `range_check` of
+`{value_min = -2.0, value_max = 20.0}` — bounds appropriate for a **relative stage
+height in metres**. But BAFU/LINDAS delivers water level as **absolute metres above
+sea level** (~261 m at 2091, ~376 m at 2009; the adapter maps `waterLevel →
+water_level` verbatim, `hydro_scraper.py:48`, no datum conversion). So **every**
+`water_level` observation is out of range and marked `qc_failed`. The mini's
+`failed=2` = one `water_level` per station per tick × 2 stations.
+
+A **single global** `water_level` range cannot work: absolute levels differ ~115 m
+between these two stations, so no one `[min,max]` fits both. Two structural facts:
+- `qc_rules.py:122` / `forecast_qc_rules.py:169` hardcode the same `[-2.0, 20.0]`
+  default, so this is a systemic default, not a one-off.
+- The QC checker supports per-observation `overrides` (`services/qc.py`
+  `checker.check(..., overrides=...)`), but `ingest_observations.py:174` passes
+  `overrides=[]` — per-station threshold overrides are **not wired from any store**.
+
+**Impact:** benign for forecasting today (models use discharge, which passes), but
+`water_level` is 100% rejected — which breaks the multi-parameter (discharge +
+water_level) experiment and floods QC monitoring with false failures.
+
+**Fix options (grill-me):**
+- **(a) Per-station `water_level` range overrides** (recommended) — set bounds from
+  each station's datum + plausible stage variation at onboarding, plumbed through
+  the currently-empty `overrides` path. Handles the per-station absolute-datum
+  reality directly.
+- **(b) Adapter converts absolute m a.s.l. → relative stage** using a per-station
+  datum, so the global `[-2,20]` applies. Cleaner semantically but needs a datum
+  per station (ties to the rating-curve/datum work).
+- **(c) Widen / drop the global `water_level` `value_max`** — rejected: masks real
+  errors and still can't fit both stations' absolute levels.
+- Minor observability note: the rejection **reason is already persisted** in
+  `qc_flags` (that is how this was diagnosed) — the only gap is that the
+  `ingest.qc_complete` **log event** omits it. A small `qc.rejected` debug event or
+  including the flag summary would have surfaced this from logs alone. Optional.
 
 ## Goal
 
