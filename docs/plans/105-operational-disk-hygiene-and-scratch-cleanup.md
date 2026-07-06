@@ -1,6 +1,11 @@
 # Plan 105 — operational disk hygiene & NWP scratch cleanup (stop a full disk silently killing the feed)
 
-**Status**: DRAFT
+**Status**: DRAFT — **grill-me COMPLETE (2026-07-06)**: D1 finally-cleanup +
+prune-all-stale (safe, `forecast-cycle` is `concurrency_limit=1`); D2 **tiered**
+(soft → warn+degrade to fallback, hard → fail-closed red run) on **absolute free-GB**
+thresholds; D3 **weekly HOST-level launchd cron** for `docker image/builder prune`
+(NOT a Prefect flow — no Docker socket in the worker); D4 keep 4 GiB scratch, no
+`max_files` cap. See DECIDED DESIGN. Next: `plan-review` (WF1) → READY → implement.
 **Priority**: high — on 2026-07-06 a full disk **silently stopped the operational
 forecast feed** on the mac-mini: `nwp.fetch_failed: no space left on device`, the
 forecast-cycle completed **green** (runoff-only fallback catch), and no forecast
@@ -61,34 +66,68 @@ no alert, no signal, exactly like the NWP-off blackout.
   stale cycle dirs are pruned.
 - Deploys **don't accumulate** unbounded Docker images/build cache on the host.
 
-## Design (proposed; grill-me before READY)
+## DECIDED DESIGN (grill-me 2026-07-06)
 
 - **D1 — scratch self-cleanup on failure + prune ALL stale cycle dirs (the bug fix).**
-  - Wrap the fetch body so the current cycle's `scratch_dir` is removed in a
-    **`finally`** (or on the exception path) — a failed fetch never leaves partials.
-  - At fetch start, prune **every** stale cycle dir under `scratch_path` (not just
-    the current `cycle_time`), e.g. any dir older than the current cycle / not the
-    active one. This drains an already-clogged scratch without a worker recreate.
-  - GRILL-ME: prune-all-but-current vs age-based; confirm no concurrent fetch races
-    on the shared scratch (v0 runs one forecast-cycle at a time — confirm).
-- **D2 — pre-fetch disk-space tripwire (fail-loud, reuse `DISK_USAGE`).** Before
-  starting a ~2.8 GB download, check free space on the **scratch mount** and the
-  **`/data/nwp_grids` volume**; if below a threshold, emit a **loud, monitorable
-  event** (wire to the existing `DISK_USAGE` metric / Flow-4 monitoring) and decide
-  fail-closed vs warn-and-skip-NWP. Catches the cause proactively instead of only
-  the stale-grid symptom (Plan 100 M4). GRILL-ME: thresholds (absolute GB vs %),
-  fail-closed vs warn, and which mounts to check.
-- **D3 — deploy-time image/build-cache pruning.** Add `docker image prune -f` +
-  `docker builder prune -f` to the deploy/upgrade path so old images don't
-  accumulate. GRILL-ME: where — `start-sapphire.sh` (every boot, risky if it prunes
-  something in use), the `cicd.md` upgrade runbook (manual, safe), or a low-frequency
-  maintenance cron. Recommend the upgrade runbook + an optional weekly prune cron;
-  **not** on every boot.
-- **D4 — mini scratch sizing (contingent).** The live incident showed a *clean*
-  fetch stays well under 4 GiB (~400 MB and climbing when healthy), so the tmpfs is
-  **not** currently too small — the clog was leftovers, fixed by D1. Keep 4 GiB;
-  only revisit a `max_files` mini cap (`config/overlays/mac-mini.toml`) if a clean
-  fetch is later shown to exceed it. Documented so we don't cap prematurely.
+  - Wrap the fetch body in `meteoswiss_nwp.py` `fetch_forecasts` so the current
+    cycle's `scratch_dir` is removed in a **`finally`** — a failed fetch never leaves
+    partials.
+  - At fetch start, prune **every** stale cycle dir under `scratch_path` (any dir
+    that is not the active `cycle_time`), draining an already-clogged scratch without
+    a worker recreate. **Safe: no concurrent-fetch race** — `forecast-cycle` is
+    `concurrency_limit=1` (`register_deployments.py:57`), so only one fetch touches
+    the scratch at a time (record this invariant in a comment; if v0b ever
+    parallelises forecast-cycle, revisit).
+- **D2 — pre-fetch disk tripwire: TIERED, ABSOLUTE free-GB, first real use of
+  `DISK_USAGE`.** Before starting the ~2.8 GB download, check **absolute free GB** on
+  both the **scratch mount** (`/tmp/sapphire_nwp`) and the **`/data/nwp_grids`
+  persistent volume**. `DISK_USAGE` (`types/enums.py:139`) is currently **defined but
+  never emitted** — this wires it up. Two tiers (starter values; plan-review/impl to
+  tune):
+  - **Soft (e.g. < ~8 GB free on the persistent disk / < ~1.5 GB on the 4 GiB
+    scratch) → WARN + DEGRADE:** emit a loud `DISK_USAGE` event and **skip NWP for
+    this cycle**; the forecast-cycle continues runoff-only / on the Plan-100 fallback
+    floor. Feed stays alive, issue surfaced.
+  - **Hard/critical (e.g. < ~3 GB free on the persistent disk / < ~0.5 GB scratch) →
+    FAIL-CLOSED:** raise → the forecast-cycle run goes **RED** in Prefect. Maximum
+    visibility when the disk is critically full.
+  - Absolute GB (not %) — predictable against the fixed ~2.8 GB working set.
+    Thresholds live in config so they are tunable per deployment.
+- **D3 — weekly HOST-level launchd cron for image/build-cache prune (NOT a Prefect
+  flow).** A Docker prune needs **host Docker-daemon access**; running it from a
+  Prefect flow would require mounting the Docker socket into the worker — a
+  **security no-go** (container escape surface; violates the least-privilege model in
+  `docs/standards/security.md`). So the weekly `docker image prune -f` +
+  `docker builder prune -f` runs as a **host launchd periodic job on the mac-mini**
+  (alongside `start-sapphire.sh`), documented in the mini runbook. **Not** on every
+  boot, **not** in the upgrade runbook (owner chose weekly-cron only). GRILL-ME
+  residual for plan-review: exact cron cadence + a size-guard so it only prunes when
+  reclaimable space is meaningful.
+- **D4 — keep the 4 GiB scratch, no `max_files` mini cap.** The live incident showed
+  a *clean* fetch stays well under 4 GiB (~400 MB and climbing when healthy) — the
+  tmpfs is not too small; the clog was leftovers (fixed by D1). Do **not** add a
+  `max_files` cap prematurely; only revisit if a clean fetch is later shown to exceed
+  4 GiB.
+
+### Implementation vision (feeds WF1 plan-review → WF2)
+
+- **D1 (code):** in `adapters/meteoswiss_nwp.py` `fetch_forecasts` (`:459-503`),
+  move the per-cycle `rmtree` into a `try/finally` around the download/convert body,
+  and add a start-of-fetch sweep that removes every child of `scratch_path` except
+  the active cycle dir. Unit-test: seed a stale `scratch/<oldcycle>/` + a partial in
+  the active dir, run a fetch (fake HTTP), assert both are gone afterward and a
+  raised fetch still cleans its own dir.
+- **D2 (code + config):** add a `disk_free_gb(path)` helper (`shutil.disk_usage`) and
+  a pre-fetch check in `flows/run_forecast_cycle.py` (before the fetch, near
+  `:339-348`); emit `DISK_USAGE`; branch on soft/hard thresholds (config keys, e.g.
+  `disk_guard_soft_gb` / `disk_guard_hard_gb`). Soft path reuses the existing
+  runoff-only degrade branch (`:679-682, 819`); hard path raises. Inject the clock/
+  path so it's testable. Tests: soft → degrade + event; hard → raise; healthy →
+  no-op.
+- **D3 (ops):** a `scripts/launchd/prune-docker.sh` (+ a launchd `.plist`) that runs
+  `docker image prune -f` + `docker builder prune -f` weekly; documented in the mini
+  runbook / `docs/standards/cicd.md`. No app-code change; no Docker socket in any
+  container.
 
 ## Non-goals
 
@@ -107,13 +146,17 @@ no alert, no signal, exactly like the NWP-off blackout.
 - **D2:** constrain free space (or lower the threshold) and confirm a loud
   `DISK_USAGE` event fires and the chosen fail-closed/warn behaviour holds *before*
   a doomed download.
-- **D3:** run the deploy/upgrade step and confirm stale images are reclaimed with no
-  impact on running services.
+- **D3:** run the weekly host launchd prune job and confirm stale images/build cache
+  are reclaimed with no impact on running services.
 
 ## Process
 
-DRAFT until a grill-me settles D1 (prune strategy), D2 (thresholds + fail-closed vs
-warn + mounts), D3 (where the prune runs). Then plan-review (WF1) → implement.
-Implementation is a code + config change (`meteoswiss_nwp.py`, the pre-fetch check
-in `run_forecast_cycle.py`, a deploy-script/runbook edit, docs) → **hold-at-PR**
-with a version bump.
+Grill-me **COMPLETE** (2026-07-06): D1 finally-cleanup + prune-all-stale (safe via
+`concurrency_limit=1`); D2 tiered soft-degrade / hard-fail-closed on absolute
+free-GB; D3 weekly host launchd prune (not a Prefect flow — no Docker socket in the
+worker); D4 keep 4 GiB, no `max_files`. Residuals for **plan-review to sharpen**:
+exact GB thresholds per mount, the cron cadence + reclaimable-size guard. Next: run
+`plan-review` (WF1) → READY → implement. Implementation is a code + config + ops
+change (`adapters/meteoswiss_nwp.py`, a pre-fetch check in
+`flows/run_forecast_cycle.py`, config threshold keys, a `scripts/launchd/`
+prune job + `.plist`, docs) → **hold-at-PR** with a version bump.
