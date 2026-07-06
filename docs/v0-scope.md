@@ -63,7 +63,7 @@
 
 **Full design**: PgBouncer in transaction mode, separate `DATABASE_URL_DIRECT` for migrations.
 
-**v0**: Direct PostgreSQL connections. One API process + one Prefect worker = no connection pooling needed. Use asyncpg's built-in pool or SQLAlchemy's pool. **→ DECISION (plan 013)**: PgBouncer deferral remains safe for v0. At ~1000 stations with sub-daily ingest, connection pressure increases (particularly GridExtractor subflow concurrency), but asyncpg's built-in pool with 5-10 connections is sufficient for a single worker process. Revisit if connection pool exhaustion is observed or if multiple worker processes are introduced.
+**v0**: Direct PostgreSQL connections. One API process + two Prefect workers (general `default` + dedicated `ingest`, Plan 098). Use asyncpg's built-in pool or SQLAlchemy's pool. **→ DECISION (plan 013)**: PgBouncer deferral remains safe for v0. At ~1000 stations with sub-daily ingest, connection pressure increases (particularly GridExtractor subflow concurrency), but asyncpg's built-in pool with 5-10 connections is sufficient. Revisit if connection pool exhaustion is observed or if multiple worker processes are introduced. **Plan 098 evaluation**: introducing the second (`ingest`) worker literally trips the "multiple worker processes" trigger, so it was evaluated — PgBouncer deferral **remains safe**. The ingest worker adds only a small SPARQL-fetch + PG-write footprint (~5-10 connections), well below connection-exhaustion on the single Postgres, so no PgBouncer is required in v0 despite the second worker.
 
 **Removes**: PgBouncer container, dual connection string config, transaction-mode gotchas.
 
@@ -97,7 +97,9 @@ Implement the full skill metric suite: CRPS, CRPSss (climatology + persistence b
 
 **Full design**: Three work pools (ops, training, hindcast) with per-pool concurrency and resource limits.
 
-**v0**: Single `default` pool. **→ DECISION (plan 013)**: Resource isolation remains unnecessary for v0. Training runs are infrequent and manual. At ~170 Swiss stations, training does not compete materially with the forecast cycle. Operational note: avoid running `train_models` concurrently with `run_forecast_cycle` on resource-constrained VMs. Pool separation (three-pool topology) is warranted when training becomes scheduled/frequent or when a deployment exceeds ~500 stations.
+**v0**: General `default` pool for all heavy flows. **→ DECISION (plan 013)**: Resource isolation remains unnecessary for v0. Training runs are infrequent and manual. At ~170 Swiss stations, training does not compete materially with the forecast cycle. Operational note: avoid running `train_models` concurrently with `run_forecast_cycle` on resource-constrained VMs. Pool separation (three-pool topology) is warranted when training becomes scheduled/frequent or when a deployment exceeds ~500 stations.
+
+**Plan 098 addition (v0b)**: v0 also runs a second `ingest` pool served by a dedicated `prefect-worker-ingest` container, purely to isolate the `*/5` observation ingest from the shared `default` pool. This is an obs-feed-isolation measure, not a change to the general-worker model — only `ingest-observations` routes to `ingest`; every other flow (including `ingest-weather-history`) stays on `default`. The three-pool ops/training/hindcast topology remains a v1 concern.
 
 ### A7. Simplified model artifact lifecycle
 
@@ -446,12 +448,13 @@ Docker Compose with simplified topology:
 |---------|-------|-------|
 | `postgres` | postgis/postgis:16-3.4 | No pg_partman, no pg_cron |
 | `prefect-server` | prefecthq/prefect:3-python3.11 | |
-| `prefect-worker` | custom (sapphire-flow) | **Single worker** (no pool separation) |
+| `prefect-worker` | custom (sapphire-flow) | General `default`-pool worker (no ops/training/hindcast pool separation) |
+| `prefect-worker-ingest` | custom (sapphire-flow) | **v0b** — dedicated `ingest`-pool worker isolating the `*/5` obs ingest from `default` (Plan 098) |
 | `api` | custom (sapphire-flow) | FastAPI, no auth |
 | `caddy` | caddy:2 | Reverse proxy |
 | `init` | custom (sapphire-flow) | One-shot: migrations + deployment registration |
 
-**Not in v0**: PgBouncer, separate training/hindcast workers, restic backup, restore rehearsal.
+**Not in v0**: PgBouncer, separate training/hindcast workers, restic backup, restore rehearsal. (A dedicated `prefect-worker-ingest` **does** exist in v0 — but only for obs-feed isolation, not for training/hindcast pool separation, which stays v1.)
 
 ### F1. Config profiles
 

@@ -27,6 +27,12 @@ services:
       - /Users/sapphire/camels-ch:/data/raw:ro
       - ./config/overlays/mac-mini.toml:/app/config/overlays/mac-mini.toml:ro
 
+  prefect-worker-ingest:
+    environment:
+      SAPPHIRE_CONFIG_OVERLAY: /app/config/overlays/mac-mini.toml
+    volumes:
+      - ./config/overlays/mac-mini.toml:/app/config/overlays/mac-mini.toml:ro
+
   api:
     ports:
       - "8000:8000"

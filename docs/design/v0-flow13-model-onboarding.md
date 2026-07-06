@@ -13,7 +13,7 @@ Per `v0-scope.md` §A7:
 | Aspect | Full design (architecture-context.md) | v0 simplification |
 |--------|---------------------------------------|-------------------|
 | Approval gate | `PENDING_APPROVAL` status between training and promotion | Deferred. v0 auto-promotes (TRAINING → ACTIVE). The PostgreSQL enum has all 5 values (`training`, `active`, `superseded`, `pending_approval`, `rejected`) for forward compatibility — **already implemented** in `types/enums.py` (`ModelArtifactStatus`, line 46). v0 only wires 3 transition paths (TRAINING→ACTIVE, ACTIVE→SUPERSEDED, TRAINING stays on gate rejection). `promote_artifact()` goes directly TRAINING → ACTIVE. `v0-scope.md` §C already states 5 values / 3 transition paths — no change needed to §C enum row. **Justification for keeping 5**: PostgreSQL `ALTER TYPE ... ADD VALUE` for enums cannot run inside a transaction, making future additions painful. The codebase already defines the full enum. Restricting to 3 values in the DB would require removing working code for no operational benefit. |
-| Cloud training | Dedicated training work pool with GPU resource labels | Single `default` pool. Work pool routing annotation is in place; execution is local. |
+| Cloud training | Dedicated training work pool with GPU resource labels | Training runs on the `default` pool. Work pool routing annotation is in place; execution is local. (v0 now has **two** pools — the second is `ingest`, dedicated to obs ingest via Plan 098 — but training stays on `default`.) |
 | Group assignment | `GroupModelAssignment` persisted via dedicated store method | Persisted as `group_model_assignments` table rows via `StationGroupStore` (table created in P7a). |
 | Compatibility check | Protocol conformance + feature availability + time step | Full compatibility check. No hardware checks. |
 | Skill gate thresholds | Per-deployment configuration | Stored in `DeploymentConfig`. Numeric thresholds only (no percentile-relative gates in v0). |
@@ -904,7 +904,7 @@ sequential processing proves too slow at scale (~1000 stations), the loop can be
 to `task.map()` calling **service functions directly** (not `@flow` wrappers) — Option B in
 the design review.
 
-**Concurrency limit**: `concurrency_limit: 1` — same as `train_models`. Only one onboarding flow runs at a time to avoid saturating the single `default` work pool with concurrent training jobs.
+**Concurrency limit**: `concurrency_limit: 1` — same as `train_models`. Only one onboarding flow runs at a time to avoid saturating the `default` work pool with concurrent training jobs.
 
 **Dependency injection pattern**: identical to `flows/train_models.py` — concrete stores and adapters are constructed in the flow body and passed to service functions.
 
@@ -933,7 +933,7 @@ def train_onboarding_model_task(...) -> ArtifactId:
 
 ### v0 note
 
-All training in v0 runs on the single `default` pool (CPU). The `gpu_training` pool is not created. The routing annotation serves as documentation for v1.
+All training in v0 runs on the `default` pool (CPU); a separate `ingest` pool also exists for obs-ingest isolation (Plan 098), but training does not use it. The `gpu_training` pool is not created. The routing annotation serves as documentation for v1.
 
 **v1 pool assignment note**: `onboard-model` writes artifacts to `/data/artifacts/`, which is read-write only for `prefect-worker-training` per `security.md` §Volume permissions. In v1, `onboard-model` must be registered to the `training` work pool (not `ops`), independent of GPU requirements.
 

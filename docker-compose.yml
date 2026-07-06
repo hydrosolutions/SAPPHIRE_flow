@@ -118,6 +118,50 @@ services:
         max-size: "50m"
         max-file: "5"
 
+  # Dedicated obs-ingest worker (Plan 098): serves only the `ingest` pool so the
+  # 5-minute observation cadence cannot be starved by long forecast/NWP runs on
+  # the shared `default` worker.
+  prefect-worker-ingest:
+    build: .
+    image: sapphire-flow:${VERSION:?VERSION is required; set in .env or export before compose up}
+    command: prefect worker start --pool ingest --type process
+    mem_limit: 512m
+    environment:
+      SAPPHIRE_DATA_DIR: /data
+      SAPPHIRE_CONFIG: /app/config.toml
+      DATABASE_URL_TEMPLATE: postgresql+psycopg://${DB_USER:-sapphire}@postgres:5432/sapphire
+      PREFECT_API_URL: http://prefect-server:4200/api
+      PREFECT_LOGGING_LEVEL: WARNING
+    depends_on:
+      prefect-server:
+        condition: service_healthy
+      init:
+        condition: service_completed_successfully
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+      - CHOWN
+      - FOWNER
+    secrets:
+      - db_password
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /data/cache
+      - /data/artifacts
+      - /data/raw
+    restart: unless-stopped
+    networks: [backend]
+    volumes:
+      - ./config.toml:/app/config.toml:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
   api:
     build: .
     image: sapphire-flow:${VERSION:?VERSION is required; set in .env or export before compose up}
