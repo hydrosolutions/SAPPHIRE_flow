@@ -1,12 +1,13 @@
 # Plan 101 — investigate observation-QC failures (`ingest.qc_complete failed=2`)
 
-**Status**: DRAFT — root cause FOUND; grill-me DONE; **plan-review (2 rounds)
-resolved raw-vs-relative → KEEP-RAW** (subtract a per-station datum inside
-`_run_qc_task` via the existing `overrides` path; NOT adapter conversion) **but did
-NOT converge — 6 blockers + 7 majors, all real → an OWNER SCOPE DECISION is now
-required** (full precise per-station datum fix vs a simpler v0 global-widening
-backstop). See "Plan-review verdict (round 2)" at the end. Not READY until scope is
-chosen.
+**Status**: DRAFT — root cause FOUND; grill-me DONE; raw-vs-relative → KEEP-RAW;
+**SCOPE LOCKED by owner (2026-07-06): (A) per-station datum** (global-widening (B)
+dropped — it was a misunderstanding). Realization refined to **subtract the datum
+from the water_level VALUE before `checker.check`** (NOT per-rule overrides), which
+**dissolves 4 of the 6 review blockers** (no threshold edits, no override/`time_step`
+wiring) — see "SCOPE LOCKED" at the end. Remaining = the multi-file datum
+storage/compute + a datum statistic/window residual. **Re-running plan-review (WF1)
+to confirm convergence** under this framing.
 **Priority**: medium — surfaced on the mac-mini 2026-07-06: `ingest.qc_complete`
 reports `failed=2` on obs ingest. Not yet known whether this is legitimate
 bad-data rejection, a too-tight QC threshold, or a rule bug. Matters because the
@@ -401,3 +402,51 @@ dashboard usable, and **reopen (A)** under the rating-curve/gauge-zero track whe
 per-station stage precision actually matters. If the owner wants precision now, take
 (A) and fold all 13 findings first. Either way: also add the `qc.rejected` per-obs log
 event (observability gap, orthogonal to the scope choice).
+
+## SCOPE LOCKED (owner 2026-07-06): (A) per-station datum — realized by datum-subtract-BEFORE-QC
+
+Owner chose **(A) precise per-station datum** ("the widening was a misunderstanding —
+we use the per-station datum, that's enough"). **The global-widening option (B) is
+dropped.** Realization is refined from the plan-review's override-based framing to the
+simpler, blocker-dissolving form:
+
+**Subtract the datum from the water_level VALUE before `checker.check`, NOT via
+per-rule `StationQcOverride`.** For each `water_level` observation, evaluate QC on
+`value − station_datum` (a relative-stage copy); the **stored** value stays raw
+absolute (keep-raw). This makes ALL water_level rules operate on relative stage.
+
+**This dissolves 4 of the 6 review blockers + several majors — because we change NO
+thresholds and use NO override:**
+- ❌→✅ *daily `range_check [-5,30]`, spike %, multiple bound locations,
+  `forecast_qc_rules.py`* — all now **correct as-is**: once the value is relative,
+  the existing relative bounds/percentages apply. No config bound edits.
+- ❌→✅ *`StationQcOverride.time_step` exact-match / per-time_step overrides* — **not
+  used at all**; `overrides` stays `[]`. No domain-type or `_qc_helpers` refactor.
+- ✅ *rate_of_change* — Δ is datum-invariant; unchanged.
+
+**Remaining real work (accepted — this is the multi-file part the owner signed up for):**
+1. **Datum storage.** Add nullable `stations.water_level_datum_masl` (Alembic
+   migration) + the field on `StationConfig` + persist it in
+   `PgStationStore.update_station` (`station_store.py:126`, which today omits it) +
+   a fetch accessor.
+2. **`_run_qc_task` gets the datum.** The **caller** (the flow loop,
+   `ingest_observations.py:338-349`) fetches the station's datum from `station_store`
+   and passes the **datum value** into `_run_qc_task` (pass the float, not the whole
+   store — keeps the task pure/testable). `_run_qc_task` subtracts it from each
+   water_level obs before `checker.check`.
+3. **Datum computation — from DB history, decoupled from onboarding (resolves the
+   "BAFU stations don't go through CAMELS onboarding" blocker).** Compute the datum
+   from the station's **`observations` water_level history** (a robust low-water
+   reference — statistic + window for plan-review to finalize), reading the DB
+   directly, so it works regardless of onboarding path. 2009/2091 already have
+   water_level history in the DB. Run as an explicit step (at onboarding if history
+   exists; otherwise a backfill/recompute task) — NOT wedged into CAMELS onboarding.
+4. **Backfill + audit.** Re-QC existing `water_level` rows with the datum applied;
+   bump `qc_rule_version` so the bulk re-evaluation is traceable.
+5. **Observability (orthogonal).** Add the `qc.rejected` per-obs event inside the
+   `flags` loop (`ingest_observations.py:179-189`).
+
+**Only genuine residual for plan-review to finalize:** the datum **statistic + history
+window** (#3) and its **recompute policy**. The structural blockers are resolved by
+the subtract-before-QC realization. Re-run plan-review to confirm convergence under
+this framing.
