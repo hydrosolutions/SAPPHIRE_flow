@@ -15,11 +15,11 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
   subtract-before-QC across all four QC call sites; the mechanism DHM's mixed
   cm/m/m-a.s.l. units need. 4 design gates + implementation review (regression locks
   verified).
-- **100** — Forecast-feed resilience — **base MERGED (#65); 6a floor-gate fix in PR
-  #67 (pending merge)** — persist NWP-on across restarts + always-on climatology
-  floor + fatal NWP-off gate + staleness/health. NOTE: #65 merged INCOMPLETE (the 6a
-  new-onboarding floor gate was missing); **#67 closes that incident-class gap — merge
-  it, then archive 100.** Archive pending #67.
+- **100** — Forecast-feed resilience — **MERGED (#65 base + #67 floor-gate fix),
+  ARCHIVED** — persist NWP-on across restarts + always-on climatology floor + fatal
+  NWP-off gate + new-onboarding floor gate (6a, the incident-class fix) +
+  staleness/health. Implemented via WF2, independently reviewed (the review caught
+  the 6a gap in #65; #67 closed it, re-verified).
 
 ## Active — operational hardening (A) — the gate to any v1 prod deploy
 
@@ -114,4 +114,4 @@ These are named in `architecture-context.md` / `v0-scope.md` but have no plan:
 
 ## Archived
 
-See [archive/](archive/) for completed and archived plans (69 entries).
+See [archive/](archive/) for completed and archived plans (70 entries).
