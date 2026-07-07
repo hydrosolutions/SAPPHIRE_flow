@@ -9,14 +9,17 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
 **A** = v0 operational hardening / reliability (land before any v1 prod deploy) ·
 **B** = v1 Nepal feature · **C** = dev-experience / dashboard / deferrable.
 
-## In flight (WF2 dispatched, hold-at-PR, own worktrees)
+## Recently merged (v1 operational hardening — implemented via WF2, independently reviewed)
 
-- **100** — Forecast-feed resilience — `READY` — **A** — persist NWP-on across
-  restarts + always-on climatology fallback + fatal NWP-off gate + staleness/health.
-  Born from the 3-day mac-mini blackout. *(WF2 running)*
-- **101** — water_level QC datum fix — `READY-TO-IMPLEMENT` — **A** — per-station
-  datum, subtract-before-QC; the exact mechanism DHM's mixed cm/m/m-a.s.l. units
-  need. Passed 4 independent-review gates. *(WF2 running)*
+- **101** — water_level QC datum fix — **MERGED (#66), ARCHIVED** — per-station datum,
+  subtract-before-QC across all four QC call sites; the mechanism DHM's mixed
+  cm/m/m-a.s.l. units need. 4 design gates + implementation review (regression locks
+  verified).
+- **100** — Forecast-feed resilience — **base MERGED (#65); 6a floor-gate fix in PR
+  #67 (pending merge)** — persist NWP-on across restarts + always-on climatology
+  floor + fatal NWP-off gate + staleness/health. NOTE: #65 merged INCOMPLETE (the 6a
+  new-onboarding floor gate was missing); **#67 closes that incident-class gap — merge
+  it, then archive 100.** Archive pending #67.
 
 ## Active — operational hardening (A) — the gate to any v1 prod deploy
 
@@ -111,4 +114,4 @@ These are named in `architecture-context.md` / `v0-scope.md` but have no plan:
 
 ## Archived
 
-See [archive/](archive/) for completed and archived plans (68 entries).
+See [archive/](archive/) for completed and archived plans (69 entries).
