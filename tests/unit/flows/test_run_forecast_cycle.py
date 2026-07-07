@@ -22,6 +22,10 @@ from sapphire_flow.flows.run_forecast_cycle import (
     _select_nwp_source,
     run_forecast_cycle_flow,
 )
+from sapphire_flow.models.climatology_fallback import (
+    ClimatologyArtifact,
+    ClimatologyFallbackModel,
+)
 from sapphire_flow.types.basin import Basin
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.domain import ForecastQcRuleSet, StationThreshold
@@ -45,7 +49,14 @@ from sapphire_flow.types.enums import (
     ThresholdSource,
     WeatherSourceStatus,
 )
-from sapphire_flow.types.ids import BasinId, ModelId, StationGroupId, StationId
+from sapphire_flow.types.ids import (
+    CLIMATOLOGY_FALLBACK_MODEL_ID,
+    NWP_REGRESSION_MODEL_ID,
+    BasinId,
+    ModelId,
+    StationGroupId,
+    StationId,
+)
 from sapphire_flow.types.station import (
     GroupModelAssignment,
     ModelAssignment,
@@ -162,6 +173,21 @@ def _make_forecast_threshold(station_id: StationId) -> StationThreshold:
         created_at=_NOW,
         updated_at=_NOW,
     )
+
+
+def _serialized_climatology_artifact(model: ClimatologyFallbackModel) -> bytes:
+    rows = [
+        {
+            "day_of_year": valid_time.timetuple().tm_yday,
+            "quantile": quantile,
+            "value": 25.0 + float(step),
+            "parameter": "discharge",
+        }
+        for step in range(1, 6)
+        for valid_time in [_NOW + step * timedelta(hours=24)]
+        for quantile in (0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95)
+    ]
+    return model.serialize_artifact(ClimatologyArtifact(quantiles=pl.DataFrame(rows)))
 
 
 def _make_nwp_records(
@@ -1362,6 +1388,7 @@ enabled = false
         monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
 
         sid = StationId(uuid4())
+        native_id = ModelId("native_runoff_model")
 
         station_store = FakeStationStore()
         obs_store = FakeObservationStore()
@@ -1376,7 +1403,7 @@ enabled = false
 
         _build_station_and_stores(
             sid,
-            _MODEL_ID,
+            native_id,
             station_store,
             obs_store,
             nwp_store,
@@ -1406,7 +1433,7 @@ enabled = false
                 baseline_store=baseline_store,
                 basin_store=basin_store,
                 forcing_store=forcing_store,
-                models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+                models={native_id: _NativeFakeModel()},  # type: ignore[dict-item]
                 config=_make_config(nwp_grid_archive_base_path="/data/nwp_grids"),
                 qc_rules=_empty_qc_rules(),
                 clock=_clock,
@@ -1551,6 +1578,97 @@ enabled = false
         assert records[0].detail["reason"] == "all_models_failed"
         assert records[0].detail["assigned_models"] == [str(_MODEL_ID)]
         assert records[0].detail["nwp_enabled"] is True
+
+    def test_climatology_floor_writes_forecast_when_nwp_off_and_skill_fails(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        config_path = _write_forecast_cycle_config(
+            tmp_path / "config.toml",
+            """
+[adapters.weather_forecast]
+enabled = false
+""",
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config_path))
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+        monkeypatch.delenv("SAPPHIRE_REQUIRE_NWP", raising=False)
+
+        sid = StationId(uuid4())
+        climatology_model = ClimatologyFallbackModel()
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        pipeline_health_store = FakePipelineHealthStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            NWP_REGRESSION_MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+            seed_nwp=False,
+            seed_artifact=False,
+        )
+        station_store.store_model_assignment(
+            ModelAssignment(
+                station_id=sid,
+                model_id=CLIMATOLOGY_FALLBACK_MODEL_ID,
+                time_step=timedelta(hours=24),
+                status=ModelAssignmentStatus.ACTIVE,
+                priority=100,
+                created_at=_NOW,
+            )
+        )
+        artifact_store.store_artifact(
+            model_id=CLIMATOLOGY_FALLBACK_MODEL_ID,
+            artifact_bytes=_serialized_climatology_artifact(climatology_model),
+            training_period_start=ensure_utc(datetime(2020, 1, 1, tzinfo=UTC)),
+            training_period_end=ensure_utc(datetime(2025, 12, 31, tzinfo=UTC)),
+            trained_at=_NOW,
+            station_id=sid,
+            status=ModelArtifactStatus.ACTIVE,
+        )
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            pipeline_health_store=pipeline_health_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            models={
+                NWP_REGRESSION_MODEL_ID: _SmallFakeModel(),
+                CLIMATOLOGY_FALLBACK_MODEL_ID: climatology_model,
+            },  # type: ignore[dict-item]
+            config=_make_config(),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+        )
+
+        assert result.stations_succeeded == 1
+        assert result.forecasts_stored == 1
+        stored_forecasts = list(forecast_store._forecasts.values())
+        assert len(stored_forecasts) == 1
+        assert stored_forecasts[0].model_id == CLIMATOLOGY_FALLBACK_MODEL_ID
+        assert stored_forecasts[0].station_id == sid
+        assert stored_forecasts[0].ensemble.parameter == "discharge"
 
     def test_superset_assembly_feeds_nwp_model_despite_native_first(self) -> None:
         # Heterogeneous model set: a native model (no future features) at higher
@@ -3863,6 +3981,7 @@ class TestForecastProvenance:
         # RED on main: the runoff branch hardcodes nwp_cycle_source=PRIMARY and
         # sets nwp_cycle_reference_time to the resolved (faked) clock cycle.
         sid = StationId(uuid4())
+        native_id = ModelId("native_runoff_model")
 
         station_store = FakeStationStore()
         obs_store = FakeObservationStore()
@@ -3877,7 +3996,7 @@ class TestForecastProvenance:
 
         _build_station_and_stores(
             sid,
-            _MODEL_ID,
+            native_id,
             station_store,
             obs_store,
             nwp_store,
@@ -3901,7 +4020,7 @@ class TestForecastProvenance:
                 baseline_store=baseline_store,
                 basin_store=basin_store,
                 forcing_store=forcing_store,
-                models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+                models={native_id: _NativeFakeModel()},  # type: ignore[dict-item]
                 config=_make_config(),
                 qc_rules=_empty_qc_rules(),
                 clock=_clock,

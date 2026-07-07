@@ -1313,16 +1313,26 @@ def run_forecast_cycle_flow(
 
             # Use time_step from first active assignment (priority-sorted)
             sorted_assignments = sorted(assignments, key=lambda a: a.priority)
-            time_step: timedelta = sorted_assignments[0].time_step
-            first_model = models.get(sorted_assignments[0].model_id)
+            assembly_assignment = sorted_assignments[0]
+            if effective_runoff_only:
+                assembly_assignment = next(
+                    (
+                        assignment
+                        for assignment in sorted_assignments
+                        if (model := models.get(assignment.model_id)) is not None
+                        and not model.data_requirements.future_dynamic_features
+                    ),
+                    sorted_assignments[0],
+                )
+            time_step: timedelta = assembly_assignment.time_step
+            first_model = models.get(assembly_assignment.model_id)
             if first_model is None:
                 log.error(
                     "forecast_cycle.station_skipped_model_not_loaded",
-                    model_id=str(sorted_assignments[0].model_id),
+                    model_id=str(assembly_assignment.model_id),
                 )
                 errors.append(
-                    "Configured model "
-                    f"{sorted_assignments[0].model_id} missing for {sid}"
+                    f"Configured model {assembly_assignment.model_id} missing for {sid}"
                 )
                 stations_failed += 1
                 structlog.contextvars.unbind_contextvars("station_id")
@@ -1340,15 +1350,13 @@ def run_forecast_cycle_flow(
             superset_reqs = build_superset_requirements(
                 [m.data_requirements for m in assigned_models]
             )
-            # Plan 090 D3: when NWP is unavailable at RUNTIME (adapter exhausted
+            # When NWP is unavailable (configured runoff-only or adapter exhausted
             # its cycle budget this run), assemble WITHOUT future features so a
             # declared-but-unfetchable NWP requirement does not make assembly
-            # return None and starve the native models. The per-model coverage
-            # guard then skips NWP-consuming models (no future columns → inadequate)
-            # while native/fallback models still forecast. Scoped to the runtime-
-            # unavailable case (NOT pure config runoff-only, which keeps its Plan
-            # 077 semantics of consuming any stored NWP records).
-            if nwp_unavailable_runtime:
+            # return None and starve native/fallback models. The per-model coverage
+            # guard then skips NWP-consuming models while native/fallback models
+            # still forecast.
+            if effective_runoff_only:
                 superset_reqs = replace(
                     superset_reqs, future_dynamic_features=frozenset()
                 )
@@ -1370,7 +1378,7 @@ def run_forecast_cycle_flow(
                 inputs_result = assemble_station_operational_inputs(
                     station_id=sid,
                     model=first_model,
-                    model_id=sorted_assignments[0].model_id,
+                    model_id=assembly_assignment.model_id,
                     issue_time=resolved_cycle_time,
                     cycle_time=nwp_readback_cycle_time,
                     nwp_source=nwp_source,

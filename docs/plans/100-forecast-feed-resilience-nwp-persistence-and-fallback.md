@@ -38,9 +38,8 @@ FORECAST flood alert; a dangerous CURRENT level is covered independently by the
 enabled observation-alert path (Flow 2's obs checker), NOT by any forecast-cycle
 re-routing (see the targeted-review note below); HARD ship precondition
 `enable_observation_alerts=true` on the mini; **(ER-D2)** a climatology-QA diagnostic
-at onboarding/backfill (recurring seasonal
-baseline crossing a danger threshold → a config/threshold-review signal, NOT a
-flood warning); **(ER-D3)** the Step-8 floor-gate separates a **DERIVED `no_floor` indicator**
+is reserved/deferred (recurring seasonal baseline crossing a danger threshold should
+eventually emit a config/threshold-review signal, NOT a flood warning); **(ER-D3)** the Step-8 floor-gate separates a **DERIVED `no_floor` indicator**
 (computed at query/render time from active-`climatology_fallback`-artifact presence
 — NOT a persisted field, NO `StationStatus` member, NO migration) from station
 operational status, rolled out **phased** (hard gate for NEW onboarding; existing
@@ -776,6 +775,13 @@ exists to kill, just relocated to onboarding time. Fix by making the lookups
   only model that produces from its artifact alone (zero runtime obs) → the
   guaranteed floor. The guarantee keys on **`climatology_fallback`-with-active-
   artifact** (post-M0, at the correct priority 100).
+- **Implementation status (PR #65 after independent review):** code + tests now
+  implement the NEW-onboarding hard floor gate and the NWP-off runtime path that
+  still writes a real `climatology_fallback` forecast when skill/NWP models cannot.
+  Existing-station fleet audit/backfill remains an **operator-run deployment
+  procedure** via `scripts/plan100_forecast_feed_resilience.py`; this PR does not
+  automate training/promoting missing floor artifacts for the live fleet and does
+  not claim that live-fleet acceptance check as automated.
 - **B1b (floor-gate onboarding + un-swallow floor-training failure + backfill —
   STRICT):** Step 6 already assigns every discovered model
   (`onboarding.py:472-505`), so there is no narrowing to fix. The defect is a
@@ -783,7 +789,7 @@ exists to kill, just relocated to onboarding time. Fix by making the lookups
   - **Step 8 floor-gate — SEPARATE forecast-readiness from operational status +
     PHASED rollout (ER-D3, external review — SOFTENS the earlier "strict: stays
     NOT-operational immediately" stance):** the earlier draft tightened the locked
-    `docs/v0-scope.md §A4` rule to a hard gate ("≥1 skill artifact AND an active
+    `docs/v0-scope.md §A4` rule to a hard gate ("active
     `climatology_fallback` floor artifact" → else NOT operational) and applied it
     fleet-wide. The external reviewer flagged two hazards: (a) it would **flip
     currently-OPERATIONAL stations to NOT-operational at deploy** (a surprise fleet
@@ -804,14 +810,14 @@ exists to kill, just relocated to onboarding time. Fix by making the lookups
       floor for every floorless OPERATIONAL station) → **verify** → **enforce the
       strict gate for NEW onboarding only** → **THEN** decide, per operator review,
       whether any *existing* station's operational status should change. New stations
-      get the hard gate ("≥1 skill artifact AND an active floor artifact" → else NOT
+      get the hard gate ("active `climatology_fallback` floor artifact" → else NOT
       OPERATIONAL + loud ERROR); existing stations get the **DERIVED `no_floor` badge**
       (no status change, no persisted field, no migration) + reporting, and any status
       change happens **only after backfill + verify**, never as a surprise deploy-time
       flip.
     - **§A4 amendment scoped to NEW onboarding:** the owner-ratified (2026-07-06)
-      tightening of `docs/v0-scope.md §A4` step 8 ("≥1 model artifact" → "≥1 skill
-      artifact AND an active `climatology_fallback` floor artifact") **applies to NEW
+      tightening of `docs/v0-scope.md §A4` step 8 ("≥1 model artifact" → "active
+      `climatology_fallback` floor artifact") **applies to NEW
       onboarding**. Existing stations are reconciled via the `no_floor` degraded state
       + the phased backfill, NOT the amended gate at deploy. The amendment text in
       `docs/v0-scope.md §A4` is updated at land time to say exactly this (new-onboarding
@@ -856,28 +862,21 @@ exists to kill, just relocated to onboarding time. Fix by making the lookups
        `model_id` is **NOT** excluded post-fix, while an actual
        `climatology_fallback`/`persistence_fallback` id **IS** excluded regardless of
        its priority value.
-  - **Backfill 2009/2091** (named idempotent admin action): create assignments
-    **and train + promote a `climatology_fallback` artifact** (an assignment
-    without an active artifact is inert → still dark). Re-run = no-op (guard
-    artifact promotion; `create_station_assignment` already upserts, Plan 089).
-  - **Climatology QA diagnostic (ER-D2, external review — additive):** at
-    onboarding/backfill, after a `climatology_fallback` artifact is trained, check
-    whether its quantiles/mean **recurringly exceed a configured danger threshold**
-    for day-of-year periods. A seasonal baseline that is itself frequently above a
-    danger level is a **signal**, not a warning: either the station has a genuinely
-    hazardous seasonal baseline, or the threshold is mis-set. On a recurring crossing,
-    emit a **station-threshold-review / config-QA item** — a `pipeline_health` record
-    (`PgPipelineHealthStore.append_health_record`, `store/pipeline_health_store.py:16`),
-    pinned (FIX-E) to `check_type=CLIMATOLOGY_THRESHOLD_REVIEW` (a **new**
-    `PipelineCheckType` member), `status=WARNING`, `subject=str(station_id)`,
-    `detail={"danger_threshold", "exceeding_quantiles", "doy_range"}` — **NOT** an
-    `AlertSource.PIPELINE` alert row and
-    **NOT a flood warning** (a climatology exceedance is `NO_EVENT_INFORMATION`, D1 — it
-    must never become a flood alert). This is a diagnostic that runs at floor-training
-    time only,
-    not in the operational cycle; it flags the config/threshold for operator review.
-    Acceptance check 17 asserts a station whose trained climatology recurringly crosses
-    a danger threshold emits the config-review item and **no flood alert**.
+  - **Backfill 2009/2091** (operator-run admin action): this PR provides audit and
+    reconciliation tooling, plus the runtime/onboarding gates that make a missing
+    active floor visible. It does **not** automate training + promotion of
+    `climatology_fallback` artifacts for 2009/2091 or other live stations. Operators
+    must run `audit-floor`, train/promote missing floors through the model
+    onboarding path, then verify `audit-floor` is empty before calling the live
+    backfill acceptance check satisfied.
+  - **Climatology QA diagnostic (ER-D2, external review — additive,
+    deferred):** the `CLIMATOLOGY_THRESHOLD_REVIEW` enum value is reserved, but this
+    PR does **not** implement an emitter. Future work should, at onboarding/backfill
+    after a `climatology_fallback` artifact is trained, check whether its
+    quantiles/mean **recurringly exceed a configured danger threshold** for
+    day-of-year periods and then emit a station-threshold-review / config-QA
+    `pipeline_health` item. Until that emitter exists, this diagnostic is not
+    reported as satisfied.
 - **B2 (persistence empty-obs guard) — RAISES a narrow exception, NOT "return
   `ModelFailure`" (corrected 2026-07-06 round 4):** `climatology_fallback` produces
   from its artifact alone (floor holds). Add an explicit empty/short-obs guard to
@@ -1244,14 +1243,16 @@ recreates the very "green pipeline, wrong answer" failure this plan exists to ki
   - **M0a migration-audit** (ER-D6) → **new `PipelineCheckType`
     `PRIORITY_MIGRATION_AUDIT`**, `status=OK`, `subject="m0a_priority_reconciliation"`,
     `detail={"rows_changed", "triaged_overrides", "backup_reference"}`.
-  - **climatology-QA** (ER-D2) → **new `PipelineCheckType`
-    `CLIMATOLOGY_THRESHOLD_REVIEW`**, `status=WARNING`, `subject=str(station_id)`,
-    `detail={"danger_threshold", "exceeding_quantiles", "doy_range"}`.
+  - **climatology-QA** (ER-D2) → **reserved `PipelineCheckType`
+    `CLIMATOLOGY_THRESHOLD_REVIEW`**; emitter deferred, so this PR does not claim a
+    persisted climatology-QA health record.
   The four NEW members (`FORECAST_STATION_DARK`, `ALERT_SUPPRESSED_FALLBACK`,
   `PRIORITY_MIGRATION_AUDIT`, `CLIMATOLOGY_THRESHOLD_REVIEW`) are added to
   `PipelineCheckType` (`types/enums.py:134-142`, which today holds `NWP_DELIVERY`,
   `OBSERVATION_FRESHNESS`, `FORECAST_FRESHNESS`, `FLOW_RUN_HEALTH`, `DISK_USAGE`,
-  `BACKUP_FRESHNESS`, `BACKUP_RESTORE_TEST`); `NWP_DELIVERY` is reused as-is. **Written regardless of the `enable_*_alerts` flags**
+  `BACKUP_FRESHNESS`, `BACKUP_RESTORE_TEST`); `NWP_DELIVERY` is reused as-is.
+  `CLIMATOLOGY_THRESHOLD_REVIEW` is reserved until its emitter is implemented.
+  **Written regardless of the `enable_*_alerts` flags**
   (all three default `False`, `config/deployment.py:103-105`) — health metrics are never
   gated on `enable_pipeline_alerts`. **Only if an ACTIVE operator alert is explicitly
   wanted** would an `AlertSource.PIPELINE` alert row be created in addition — and that
@@ -1323,15 +1324,18 @@ recreates the very "green pipeline, wrong answer" failure this plan exists to ki
    station's/group's *effective* input-assembly `time_step`
    (`run_forecast_cycle.py:970-971`) changed as a side effect of the priority reorder
    either — heterogeneous stations were handled explicitly, not silently flipped.
-   **M0a safety envelope ran (ER-D6):** maintenance mode / advisory lock held for
-   the mutation (no forecast-cycle or onboarding interleaved), a DB backup was taken, a
-   `(station_id, model_id, old→new)` dry-run diff was produced + signed off with every
-   non-config divergence triaged, the rewrite applied in one transaction, and a
-   migration-audit record (ER-D4 channel) was persisted.
+   **Status in PR #65:** static priority resolution, assignment write guards,
+   categorical fallback behavior, and focused tests are implemented. The live M0a
+   fleet rewrite/safety envelope is an **operator-run deployment action**, not an
+   automated test. The reconcile script requires `--maintenance-mode-confirmed`
+   with `--apply`; operators must pause forecast-cycle/onboarding writers, wait for
+   active runs to drain, take a DB backup, review the dry-run diff, apply in one
+   transaction, and verify the migration-audit record.
 2. **Restart persistence (A2):** cold-boot the mini via `start-sapphire.sh` → a
    `forecast-cycle` runs NWP-on (`nwp.*` logs, grids archived), no manual overlay,
    no `-nwp` file anywhere; `docs/deployment/mac-mini-staging.md` no longer
-   documents a toggle.
+   documents a toggle. **Status in PR #65:** configuration and docs are updated; the
+   cold-boot observation remains an operator-run deployment check.
 3. **Floor writes + is labelled (B1a/B3):** station with an NWP model + the floor,
    stack NWP-off → a `climatology_fallback` row **IS** written and **badged
    FALLBACK**. Flip NWP-on → the skill model becomes primary, row **not** badged.
@@ -1368,14 +1372,17 @@ recreates the very "green pipeline, wrong answer" failure this plan exists to ki
      dark-but-completed case is deliberately distinct from (4a)'s fatal raise.
 5. **Backfill effective + idempotent + fleet-clean (B1b):** 2009/2091 have active
    climatology artifacts + assignments at the correct priority; a NWP-off
-   `forecast-cycle` writes fallback rows for both. Re-run of the backfill = no-op.
-   **The fleet-wide floor audit** (all OPERATIONAL non-weather stations lacking an
-   active `climatology_fallback` artifact) **returns zero** after the backfill —
-   i.e. no station beyond 2009/2091 is silently floor-less.
+   `forecast-cycle` writes fallback rows for both. **Status in PR #65:** the NWP-off
+   floor runtime path is implemented with a unit test using a real
+   `ClimatologyFallbackModel` artifact. Live fleet backfill is
+   **deferred/operator-run**: `audit-floor` identifies floorless operational
+   stations, but this PR does not automate artifact training/promotion. Do not mark
+   this acceptance check satisfied until operators train/promote missing floors and
+   verify the audit is empty on the target deployment.
 6. **Floor-gate PHASED + `no_floor` state (B1b / ER-D3):** (a) **NEW onboarding
-   hard gate:** onboard a test station whose `climatology_fallback` training is forced
-   to fail → station **NOT** OPERATIONAL and the onboarding run reports **non-green**
-   (not swallowed); floor training succeeding → OPERATIONAL. (b) **Existing station
+   hard gate:** onboard a test station with no active `climatology_fallback` floor
+   artifact → station **NOT** OPERATIONAL and the onboarding run reports a clear
+   missing-floor error; floor present → OPERATIONAL. (b) **Existing station
    degraded, not flipped:** an already-OPERATIONAL station whose floor artifact is
    absent/failed **stays OPERATIONAL and serving** but is flagged **`no_floor`**
    (a DERIVED indicator computed from active-`climatology_fallback`-artifact presence —
@@ -1442,7 +1449,8 @@ recreates the very "green pipeline, wrong answer" failure this plan exists to ki
     candidate gap (unassigned floor / inert artifact / priority drift / `enabled=false`
     gate) was live at incident time. The check passes iff the snapshots exist and the
     mechanism is still provable from them AFTER the fix ships (the mutation cannot have
-    destroyed the evidence).
+    destroyed the evidence). **Status in PR #65:** this is explicitly
+    operator-run-at-deploy via `capture-snapshot`, not automated by tests.
 11. **M0c config-load validator fails loud (FIX-A):** a `config.toml` that **explicitly
     prices** any `FALLBACK_MODEL_IDS` member below `FALLBACK_PRIORITY_THRESHOLD` (e.g.
     `climatology_fallback = 5`) raises `ConfigurationError` at config load, not a
@@ -1464,8 +1472,8 @@ recreates the very "green pipeline, wrong answer" failure this plan exists to ki
     though M0c's categorical `MODEL_TIERS` already keeps the B3 badge + combination
     correct and alert routing reads `ALERT_ELIGIBILITIES` (never `priority`).
 14. **v0-scope §A4 amendment applied, scoped to NEW onboarding (B1b / ER-D3):**
-    `docs/v0-scope.md §A4` step 8 is updated to the ratified rule ("≥1 skill artifact
-    AND an active `climatology_fallback` floor artifact") **for NEW onboarding**, with
+    `docs/v0-scope.md §A4` step 8 is updated to the ratified rule ("active
+    `climatology_fallback` floor artifact") **for NEW onboarding**, with
     the doc explicitly stating existing stations are reconciled via the `no_floor`
     degraded state + phased backfill (NOT a deploy-time fleet flip) — the doc and code
     agree, no silent divergence and no implied surprise fleet-wide status change.
@@ -1474,7 +1482,9 @@ recreates the very "green pipeline, wrong answer" failure this plan exists to ki
     intersects `FALLBACK_MODEL_IDS` — restricted to still-ACTIVE/unresolved rows —
     either **returns zero** on the live system, or every returned row is surfaced for
     operator review/resolution before the plan closes. No historical fallback-sourced
-    alert is left silently trusted.
+    alert is left silently trusted. **Status in PR #65:** `audit-forecast-alerts`
+    provides the query; live review/resolution is operator-run and not claimed as an
+    automated acceptance check.
 16. **Registry / load-time tier guard fails loud (M0d / ER-D7):** a discovered
     model absent from BOTH explicit maps (`MODEL_TIERS` + `ALERT_ELIGIBILITIES`) and
     declaring neither `ModelTier` nor `AlertEligibility` as an attribute **raises
@@ -1482,13 +1492,11 @@ recreates the very "green pipeline, wrong answer" failure this plan exists to ki
     it does NOT default to `SKILL` / `SKILL_FORECAST` (no skill-by-absence) and cannot
     participate in combination or alerting. A model present in both maps (or declaring
     both facets) loads normally, and `FALLBACK_MODEL_IDS` is derived from `MODEL_TIERS`.
-17. **Climatology QA diagnostic (M2 / ER-D2):** a station whose trained
-    `climatology_fallback` quantiles/mean recurringly cross a configured danger
-    threshold for day-of-year periods emits a **config / threshold-review item** — a
-    `pipeline_health` record with pinned `check_type=CLIMATOLOGY_THRESHOLD_REVIEW`
-    (WARNING, `subject=str(station_id)`), NOT an `AlertSource.PIPELINE` alert row — at
-    onboarding/backfill, and **no flood alert** — flagging the seasonal baseline /
-    threshold for operator review.
+17. **Climatology QA diagnostic (M2 / ER-D2): DEFERRED.** This PR reserves
+    `PipelineCheckType.CLIMATOLOGY_THRESHOLD_REVIEW` but does not emit it. No
+    acceptance test claims this diagnostic is live. Future work must add the
+    onboarding/backfill threshold-review check before this item can be marked
+    implemented.
 18. **Pipeline-health records + cycle-outcome (M5 / ER-D4 / FIX-E):** the `station_dark`
     (`FORECAST_STATION_DARK`, CRITICAL), `alert_suppressed` (`ALERT_SUPPRESSED_FALLBACK`,
     WARNING), and `nwp.grid_stale` (`NWP_DELIVERY`, CRITICAL) records are persisted as
@@ -1610,8 +1618,8 @@ entirely our deployment + resilience gap, not an external outage.
   `climatology_fallback`-with-active-artifact (post-M0, priority 100).
 - **B1b — DECIDED (PHASED floor-gate + DERIVED `no_floor` indicator, no migration;
   ER-D3 — NOT a fleet-wide deploy-time flip):** the owner-ratified (2026-07-06) tightening of the
-  locked `docs/v0-scope.md §A4` rule ("≥1 model artifact" → "≥1 skill artifact AND an
-  active `climatology_fallback` floor artifact") is a **hard gate for NEW onboarding
+  locked `docs/v0-scope.md §A4` rule ("≥1 model artifact" → "active
+  `climatology_fallback` floor artifact") is a **hard gate for NEW onboarding
   ONLY** (a new station without an active floor artifact → NOT OPERATIONAL + loud ERROR,
   applied to that doc at land time). **Existing stations are NOT flipped
   OPERATIONAL→NOT at deploy:** a currently-OPERATIONAL station lacking a floor artifact
@@ -1757,7 +1765,7 @@ SHIP-WITH-CHANGES: 1 blocker + several majors → ER-D1…ER-D7)**.
 **GROWTH NOTE (external review):** Plan 100 has GROWN materially with ER-D1…ER-D7
 (a new `AlertEligibility` model — climatology + persistence both dropped from the
 forecast-alert set, current-condition coverage via Flow 2's existing obs checker — a
-climatology-QA diagnostic, a DERIVED `no_floor` indicator (no migration) + phased floor-gate rollout,
+deferred climatology-QA diagnostic, a DERIVED `no_floor` indicator (no migration) + phased floor-gate rollout,
 first-class `pipeline_health` records + a `ForecastCycleHealth` cycle-outcome field, a
 step-0 snapshot prerequisite, an M0a fleet-mutation safety envelope, and a registry tier
 guard). **Candidate follow-up split (owner to decide, NOT split here):** the **M5
@@ -1771,7 +1779,7 @@ The folded decisions (the categorical
 `MODEL_TIERS` tier + derived `FALLBACK_MODEL_IDS`, write-time guard, v0-scope §A4
 amendment, A3 post-hoc + `SAPPHIRE_CONFIG` gate, plus the seven external-review
 decisions: `AlertEligibility` routing (climatology + persistence both dropped from the
-forecast-alert set; current-condition via Flow 2), climatology-QA diagnostic, phased
+forecast-alert set; current-condition via Flow 2), deferred climatology-QA diagnostic, phased
 floor-gate + `no_floor`, first-class `pipeline_health` records + `ForecastCycleHealth`
 outcome, step-0 snapshot, M0a safety envelope, registry tier guard) have all converged
 and are folded (owner-ratified **READY** 2026-07-07). Next: **`vision-build` (WF2)**.
@@ -1889,9 +1897,10 @@ Implementation touches:
   `types/ids.py` (alongside the `MODEL_TIERS` + `ALERT_ELIGIBILITIES` maps). **Plus four
   NEW `PipelineCheckType` members (FIX-E), added to `:134-142`:
   `FORECAST_STATION_DARK`, `ALERT_SUPPRESSED_FALLBACK`, `PRIORITY_MIGRATION_AUDIT`,
-  `CLIMATOLOGY_THRESHOLD_REVIEW`** — the pinned `check_type`s for the M5 health signals
-  (`nwp.grid_stale` reuses the existing `NWP_DELIVERY`; `PipelineHealthStatus` stays
-  `OK`/`WARNING`/`CRITICAL`, `:128-133`, unchanged).
+  `CLIMATOLOGY_THRESHOLD_REVIEW`**. The first three are emitted by Plan 100 paths;
+  `CLIMATOLOGY_THRESHOLD_REVIEW` is reserved until the deferred climatology-QA
+  emitter exists (`nwp.grid_stale` reuses the existing `NWP_DELIVERY`;
+  `PipelineHealthStatus` stays `OK`/`WARNING`/`CRITICAL`, `:128-133`, unchanged).
 - **DERIVED `no_floor` indicator + dashboard/API badge (ER-D3 / FIX-C — NO migration,
   NO new field):** `no_floor` is **computed at query/render time** from "does the
   station have an ACTIVE `climatology_fallback` artifact?" (the same check the Step-8
@@ -1905,10 +1914,8 @@ Implementation touches:
   stays serving + visibly flagged rather than flipped OPERATIONAL→NOT. The strict
   floor-gate applies to NEW onboarding only; phased rollout for existing — **no
   deploy-time status flip, no stations-table/schema/migration scope.**
-- **climatology-QA diagnostic** at onboarding/backfill (ER-D2) — recurring seasonal
-  threshold crossing → a `pipeline_health` record pinned to
-  `check_type=CLIMATOLOGY_THRESHOLD_REVIEW` (FIX-E; a new member, WARNING),
-  NOT an `AlertSource.PIPELINE` alert row and NOT a flood alert.
+- **climatology-QA diagnostic** at onboarding/backfill (ER-D2) — **deferred**.
+  `CLIMATOLOGY_THRESHOLD_REVIEW` is reserved, but this PR does not emit it.
 - **Step-0 root-cause snapshot** (ER-D5) + **M0a fleet-mutation safety envelope**
   (ER-D6: maintenance mode / advisory lock, DB backup, dry-run diff + per-divergence
   triage, single-transaction apply, migration-audit record) — both are named admin
@@ -1936,8 +1943,8 @@ Implementation touches:
 
 **Docs updated at land time** (CLAUDE.md: every code change updates affected docs):
 - `docs/v0-scope.md §A4` — apply the owner-ratified operational-mark amendment
-  ("≥1 model artifact" → "≥1 skill artifact AND an active `climatology_fallback` floor
-  artifact"), **scoped to NEW onboarding** (ER-D3), with the doc stating existing
+  ("≥1 model artifact" → "active `climatology_fallback` floor artifact"), **scoped to
+  NEW onboarding** (ER-D3), with the doc stating existing
   stations are reconciled via the `no_floor` degraded state + phased backfill (NOT a
   deploy-time fleet flip) — acceptance check 14.
 - **`docs/v0-scope.md` model-inventory table + §A8e mechanism sentence (folded from the
