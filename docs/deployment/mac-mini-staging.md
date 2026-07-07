@@ -333,8 +333,17 @@ docker compose exec -u app prefect-worker sh -c 'touch /data/nwp_grids/.w /tmp/s
 Run Plan 100 administration checks from the worker environment with
 `scripts/plan100_forecast_feed_resilience.py` before and after priority
 reconciliation. The reconciliation subcommand is dry-run by default; use
-`--apply --backup-reference <snapshot>` only after the immutable Step 0
-snapshot has been captured.
+`--apply --backup-reference <snapshot> --maintenance-mode-confirmed` only after:
+
+1. The immutable Step 0 snapshot has been captured.
+2. `forecast-cycle` and onboarding/model-onboarding deployments are paused.
+3. Active forecast/onboarding runs have drained or been intentionally stopped.
+4. A fresh database backup reference is recorded.
+
+The script enforces the explicit maintenance-mode confirmation flag, but it
+does not pause Prefect deployments itself. Treat the priority reconciliation,
+floor audit/backfill verification, and fallback-alert audit as operator-run
+deployment checks, not automated application gates.
 
 Plan 100 operator visibility:
 

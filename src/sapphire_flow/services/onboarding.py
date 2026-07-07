@@ -31,6 +31,7 @@ from sapphire_flow.types.enums import (
     StationStatus,
     WeatherSourceStatus,
 )
+from sapphire_flow.types.ids import CLIMATOLOGY_FALLBACK_MODEL_ID
 from sapphire_flow.types.onboarding import OnboardingResult
 
 if TYPE_CHECKING:
@@ -724,8 +725,8 @@ def _run_onboarding(
                 )
 
     # Step 8: Mark stations operational
-    # Weather stations: operational after QC (steps 1-5 complete)
-    # Non-weather: operational if ≥1 ACTIVE model artifact exists
+    # Weather stations: operational after QC (steps 1-5 complete).
+    # Non-weather stations are promoted only once the guaranteed floor exists.
     for station_id in resolved_station_ids:
         station = station_store.fetch_station(station_id)
         if station is None:
@@ -741,18 +742,12 @@ def _run_onboarding(
                     f"Failed to mark weather station {station_id} operational: {exc}"
                 )
         elif artifact_store is not None:
-            has_active = any(
-                len(
-                    artifact_store.fetch_artifacts_by_status(
-                        model_id=mid,
-                        status=ModelArtifactStatus.ACTIVE,
-                        station_id=station_id,
-                    )
-                )
-                > 0
-                for mid in discovered
+            active_floor = artifact_store.fetch_artifacts_by_status(
+                model_id=CLIMATOLOGY_FALLBACK_MODEL_ID,
+                status=ModelArtifactStatus.ACTIVE,
+                station_id=station_id,
             )
-            if has_active:
+            if active_floor:
                 try:
                     station_store.update_station_status(
                         station_id, StationStatus.OPERATIONAL
@@ -766,9 +761,15 @@ def _run_onboarding(
                         f"Failed to mark station {station_id} operational: {exc}"
                     )
             else:
+                errors.append(
+                    "Cannot mark station "
+                    f"{station_id} operational: missing active "
+                    f"{CLIMATOLOGY_FALLBACK_MODEL_ID} floor artifact"
+                )
                 log.warning(
-                    "onboarding.station_no_active_artifact",
+                    "onboarding.station_missing_climatology_floor",
                     station_id=str(station_id),
+                    model_id=str(CLIMATOLOGY_FALLBACK_MODEL_ID),
                 )
 
     return OnboardingResult(

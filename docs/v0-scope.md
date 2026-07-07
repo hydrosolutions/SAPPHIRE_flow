@@ -79,7 +79,9 @@
 5. Computes climatology quantiles (CRPSss reference), persistence baseline, and flow regime boundaries (Q50/Q90)
 6. Configures model assignments (**Prerequisite**: Model types must be onboarded via Flow 13 before they can be assigned to stations in this step.)
 7. Triggers training (Flow 6 → 7 → 8). Station remains in `onboarding` status.
-8. Marks stations `operational` after ≥1 model artifact reaches `active` status (auto-promoted in v0)
+8. Marks new non-weather stations `operational` only after an active
+   `climatology_fallback` floor artifact exists; weather stations still become
+   operational after QC
 
 Training is triggered as part of onboarding (step 7), not as a separate workflow. No onboarding dashboard, no progress tracking, no model readiness branches.
 
