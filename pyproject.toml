@@ -1,6 +1,6 @@
 [project]
 name = "sapphire-flow"
-version = "0.1.549"
+version = "0.1.547"
 description = "Add your description here"
 readme = "README.md"
 license = "MIT"
@@ -48,7 +48,7 @@ dependencies = [
 check = "sapphire_flow.cli.check:main"
 
 [build-system]
-requires = ["uv_build>=0.11.25,<0.12.0"]
+requires = ["uv_build>=0.11.26,<0.12.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
@@ -106,7 +106,7 @@ markers = [
 addopts = "-m 'not deployment and not live and not live_lindas and not live_stac and not slow'"
 
 [tool.bumpversion]
-current_version = "0.1.549"
+current_version = "0.1.547"
 commit = false
 tag = false
 allow_dirty = true
