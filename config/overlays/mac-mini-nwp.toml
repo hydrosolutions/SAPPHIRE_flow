@@ -1,8 +1,0 @@
-# config/overlays/mac-mini-nwp.toml — Mac-mini NWP-ON overlay.
-# Re-enables the ICON-CH2-EPS gridded NWP path that config/overlays/mac-mini.toml
-# disables. Deep-merged over base config.toml (which already ships enabled=true);
-# this overlay exists so we can point SAPPHIRE_CONFIG_OVERLAY at an explicitly
-# NWP-on file instead of the runoff-only mac-mini.toml.
-# See docs/plans/091-macmini-nwp-on-data-collection.md.
-[adapters.weather_forecast]
-enabled = true

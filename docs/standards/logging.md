@@ -383,6 +383,8 @@ Three distinct destinations:
 
 In v0, only **application logs** and **pipeline health** are active. The audit log destination is not implemented until v1.
 
+Plan 100 forecast-feed resilience events that affect operator trust (for example fallback-only/suppressed forecast-alert conditions, dark station forecasts, and stale NWP grids) must have a queryable `pipeline_health` record in addition to any structlog event. These are operational health facts, not `AlertSource.PIPELINE` rows.
+
 Different destinations serve different audiences. The same underlying problem (e.g., corrupted model artifact) may appear as an ERROR in application logs (with traceback, for developers) and as a `pipeline_health` record (status check, for ops). This is not duplication — each destination records the event for its own purpose. What to avoid: logging the same event twice to the *same* destination.
 
 ## Security: what NOT to log

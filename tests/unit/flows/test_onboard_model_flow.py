@@ -13,7 +13,12 @@ from sapphire_flow.exceptions import ModelSmokeTestError
 from sapphire_flow.flows.onboard_model import onboard_model_flow
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import OnboardingOutcome
-from sapphire_flow.types.ids import ArtifactId, ModelId, StationId
+from sapphire_flow.types.ids import (
+    CLIMATOLOGY_FALLBACK_MODEL_ID,
+    ArtifactId,
+    ModelId,
+    StationId,
+)
 from tests.conftest import make_deployment_config, make_station_config
 from tests.fakes.fake_models import FakeStationForecastModel
 from tests.fakes.fake_stores import (
@@ -99,12 +104,13 @@ def _run_flow(
     artifact_id: ArtifactId,
     stores: dict,
     *,
+    model_id: str = _MODEL_ID,
     compat: MagicMock | None = None,
     skill_gate: MagicMock | None = None,
     smoke_side_effect: Exception | None = None,
 ) -> tuple[object, MagicMock, MagicMock]:
     fake_model = FakeStationForecastModel()
-    fake_discovered = {ModelId(_MODEL_ID): fake_model}
+    fake_discovered = {ModelId(model_id): fake_model}
     fake_flow_run = MagicMock()
     fake_flow_run.id = uuid4()
 
@@ -158,7 +164,7 @@ def _run_flow(
         mock_skills.map.return_value = []
 
         result = onboard_model_flow.fn(
-            model_id=_MODEL_ID,
+            model_id=model_id,
             station_ids=[str(sid)],
             period_start="2023-01-01T00:00:00+00:00",
             period_end="2025-01-01T00:00:00+00:00",
@@ -185,6 +191,22 @@ class TestHappyPath:
         assert result.units[0].outcome == OnboardingOutcome.PROMOTED
         mock_promote.assert_called_once()
         mock_assign.assert_called_once()
+
+    def test_omitted_assignment_priority_uses_canonical_fallback_priority(self) -> None:
+        sid = StationId(_uuid())
+        artifact_id = ArtifactId(_uuid())
+        stores = _make_stores(station_id=sid)
+        stores["deployment_config"] = make_deployment_config(model_priorities={})
+
+        result, _, mock_assign = _run_flow(
+            sid,
+            artifact_id,
+            stores,
+            model_id=str(CLIMATOLOGY_FALLBACK_MODEL_ID),
+        )
+
+        assert result.promoted_count() == 1
+        assert mock_assign.call_args.kwargs["assignment_priority"] == 100
 
     def test_model_not_found_raises_value_error(self) -> None:
         stores = _make_stores()

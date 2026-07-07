@@ -71,6 +71,7 @@ class TestGetForecast:
         assert body["id"] == str(fc.id)
         assert body["station_id"] == str(station.id)
         assert body["model_id"] == str(fc.model_id)
+        assert body["model_tier"] == "skill"
         assert body["representation"] == fc.representation.value
         assert body["status"] == fc.status.value
         assert body["version"] == fc.version
@@ -79,6 +80,22 @@ class TestGetForecast:
         assert body["warm_up_source"] is None
         assert body["combination_strategy"] is None
         assert body["source_model_ids"] is None
+
+    def test_fallback_model_exposes_model_tier(
+        self, client: TestClient, fake_stores: dict[str, Any]
+    ) -> None:
+        from dataclasses import replace
+
+        station = make_station_config(rng=random.Random(1))
+        fc = replace(
+            _make_operational_forecast(station_id=station.id, rng=random.Random(2)),
+            model_id=ModelId("climatology_fallback"),
+        )
+        fake_stores["forecast_store"].store_forecast(fc)
+
+        resp = client.get(f"/api/v1/forecasts/{fc.id}")
+        assert resp.status_code == 200
+        assert resp.json()["model_tier"] == "fallback"
 
     def test_ensemble_shape(
         self, client: TestClient, fake_stores: dict[str, Any]

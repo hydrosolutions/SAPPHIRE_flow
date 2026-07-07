@@ -467,7 +467,7 @@ def onboard_model_flow(
     period_start: str | None = None,
     period_end: str | None = None,
     time_step_hours: int = 24,
-    assignment_priority: int = 0,
+    assignment_priority: int | None = None,
     model_store: object = None,
     station_store: object = None,
     group_store: object = None,
@@ -576,6 +576,11 @@ def onboard_model_flow(
 
     time_step = timedelta(hours=time_step_hours)
     typed_model_id = ModelId(model_id)
+    resolved_assignment_priority = (
+        assignment_priority
+        if assignment_priority is not None
+        else deployment_config.assignment_priority_for_model(typed_model_id)  # type: ignore[attr-defined]
+    )
 
     typed_station_ids: frozenset[StationId] | None = None
     if station_ids is not None:
@@ -885,7 +890,7 @@ def onboard_model_flow(
             _create_assignment_task(
                 unit=unit,
                 model_id=typed_model_id,
-                assignment_priority=assignment_priority,
+                assignment_priority=resolved_assignment_priority,
                 station_store=station_store,
                 group_store=group_store,
                 clock=clock,

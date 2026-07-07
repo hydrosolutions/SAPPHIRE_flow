@@ -6,8 +6,9 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from sapphire_flow.exceptions import ModelSmokeTestError
+from sapphire_flow.exceptions import ConfigurationError, ModelSmokeTestError
 from sapphire_flow.services.model_onboarding import (
+    create_group_assignment,
     create_station_assignment,
     evaluate_skill_gate,
     smoke_test_model,
@@ -20,7 +21,13 @@ from sapphire_flow.types.enums import (
     SkillSource,
     SpatialRepresentation,
 )
-from sapphire_flow.types.ids import ArtifactId, ModelId, StationId
+from sapphire_flow.types.ids import (
+    CLIMATOLOGY_FALLBACK_MODEL_ID,
+    ArtifactId,
+    ModelId,
+    StationGroupId,
+    StationId,
+)
 from sapphire_flow.types.model import ModelDataRequirements
 from tests.conftest import (
     make_deployment_config,
@@ -30,6 +37,7 @@ from tests.conftest import (
 from tests.fakes.fake_models import FakeStationForecastModel
 from tests.fakes.fake_stores import (
     FakeSkillStore,
+    FakeStationGroupStore,
     FakeStationStore,
 )
 
@@ -468,6 +476,34 @@ class TestCreateAssignment:
         assignments = station_store.fetch_model_assignments(station.id)
         assert len(assignments) == 1
         assert assignments[0].priority == 20
+
+    def test_below_tier_fallback_station_assignment_raises(self) -> None:
+        station_store = FakeStationStore()
+        station = make_station_config()
+        station_store.store_station(station)
+
+        with pytest.raises(ConfigurationError, match="climatology_fallback"):
+            create_station_assignment(
+                station_id=station.id,
+                model_id=CLIMATOLOGY_FALLBACK_MODEL_ID,
+                time_step=timedelta(days=1),
+                priority=0,
+                station_store=station_store,
+                clock=_CLOCK,
+            )
+
+    def test_below_tier_fallback_group_assignment_raises(self) -> None:
+        group_store = FakeStationGroupStore()
+
+        with pytest.raises(ConfigurationError, match="climatology_fallback"):
+            create_group_assignment(
+                group_id=StationGroupId(uuid4()),
+                model_id=CLIMATOLOGY_FALLBACK_MODEL_ID,
+                time_step=timedelta(days=1),
+                priority=0,
+                group_store=group_store,
+                clock=_CLOCK,
+            )
 
 
 class TestHindcastDays:

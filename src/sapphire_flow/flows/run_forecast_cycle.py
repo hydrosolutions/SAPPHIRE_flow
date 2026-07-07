@@ -5,7 +5,7 @@ import os
 import random
 import time
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import uuid4
@@ -23,11 +23,21 @@ from sapphire_flow.exceptions import (
 )
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
+    AlertEligibility,
+    ForecastCycleHealth,
     ModelAssignmentStatus,
     NwpCycleSource,
+    PipelineCheckType,
+    PipelineHealthStatus,
     SpatialRepresentation,
     StationKind,
     StationStatus,
+)
+from sapphire_flow.types.ids import (
+    ALERT_ELIGIBILITIES,
+    FALLBACK_MODEL_IDS,
+    FALLBACK_PRIORITY_THRESHOLD,
+    ModelId,
 )
 
 if TYPE_CHECKING:
@@ -47,6 +57,7 @@ if TYPE_CHECKING:
         ModelStateStore,
         NwpGridStore,
         ObservationStore,
+        StationGroupStore,
         StationStore,
         WeatherForecastStore,
     )
@@ -54,13 +65,15 @@ if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.domain import ForecastQcRuleSet
     from sapphire_flow.types.ensemble import ForecastEnsemble
-    from sapphire_flow.types.ids import ModelId, StationId
+    from sapphire_flow.types.ids import StationId
     from sapphire_flow.types.station import StationConfig, StationWeatherSource
 
 log = structlog.get_logger(__name__)
 
 # = MeteoSwissNwpAdapter.NWP_SOURCE. The operational NWP forcing path.
 _ICON_NWP_SOURCE = "icon_ch2_eps"
+_NWP_CADENCE_HOURS = 6.0
+_DEFAULT_EXPECTED_DELIVERY_OFFSET_HOURS = 5.0
 
 
 def _select_nwp_source(weather_sources: list[StationWeatherSource]) -> str:
@@ -88,6 +101,7 @@ def _select_nwp_source(weather_sources: list[StationWeatherSource]) -> str:
 @dataclass(frozen=True, kw_only=True, slots=True)
 class ForecastCycleResult:
     cycle_time: UtcDatetime
+    health: ForecastCycleHealth
     stations_attempted: int
     stations_succeeded: int
     stations_failed: int
@@ -100,11 +114,13 @@ class ForecastCycleResult:
 @dataclass(frozen=True, kw_only=True, slots=True)
 class _WeatherForecastAdapterConfig:
     enabled: bool
+    require_nwp: bool
     stac_base_url: str | None
     stac_collection: str | None
     scratch_path: Path | None
     max_files: int | None
     grid_extractor: str
+    expected_delivery_offset_hours: float
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -138,16 +154,56 @@ _DEFAULT_GRID_EXTRACTOR: Literal["mesh"] = "mesh"
 # ---------------------------------------------------------------------------
 
 
+def _parse_env_bool(name: str) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return False
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ConfigurationError(
+        f"{name} must be a boolean-like value (1/0, true/false, yes/no, on/off)"
+    )
+
+
+def _parse_expected_delivery_offset_hours(
+    weather_forecast: dict[str, object],
+) -> float:
+    monitoring = weather_forecast.get("monitoring", {})
+    if not isinstance(monitoring, dict):
+        return _DEFAULT_EXPECTED_DELIVERY_OFFSET_HOURS
+    value = monitoring.get(
+        "expected_delivery_offset_hours",
+        _DEFAULT_EXPECTED_DELIVERY_OFFSET_HOURS,
+    )
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigurationError(
+            "[adapters.weather_forecast.monitoring].expected_delivery_offset_hours "
+            "must be a TOML number"
+        )
+    if value <= 0:
+        raise ConfigurationError(
+            "[adapters.weather_forecast.monitoring].expected_delivery_offset_hours "
+            "must be > 0"
+        )
+    return float(value)
+
+
 def _load_weather_forecast_adapter_config() -> _WeatherForecastAdapterConfig:
+    require_nwp = _parse_env_bool("SAPPHIRE_REQUIRE_NWP")
     config_path = os.environ.get("SAPPHIRE_CONFIG")
     if config_path is None:
         return _WeatherForecastAdapterConfig(
             enabled=False,
+            require_nwp=require_nwp,
             stac_base_url="https://data.geo.admin.ch/api/stac/v1",
             stac_collection="ch.meteoschweiz.ogd-forecasting-icon-ch2",
             scratch_path=Path("/tmp/sapphire_nwp"),
             max_files=None,
             grid_extractor=_DEFAULT_GRID_EXTRACTOR,
+            expected_delivery_offset_hours=_DEFAULT_EXPECTED_DELIVERY_OFFSET_HOURS,
         )
 
     from sapphire_flow.config._overlay import (
@@ -165,6 +221,7 @@ def _load_weather_forecast_adapter_config() -> _WeatherForecastAdapterConfig:
     )
     if not isinstance(weather_forecast, dict):
         weather_forecast = {}
+    weather_forecast = cast("dict[str, object]", weather_forecast)
 
     enabled_value = weather_forecast.get("enabled", False)
     if not isinstance(enabled_value, bool):
@@ -218,6 +275,7 @@ def _load_weather_forecast_adapter_config() -> _WeatherForecastAdapterConfig:
 
     return _WeatherForecastAdapterConfig(
         enabled=enabled_value,
+        require_nwp=require_nwp,
         stac_base_url=stac_base_url if isinstance(stac_base_url, str) else None,
         stac_collection=stac_collection if isinstance(stac_collection, str) else None,
         scratch_path=Path(scratch_path_value)
@@ -225,6 +283,9 @@ def _load_weather_forecast_adapter_config() -> _WeatherForecastAdapterConfig:
         else None,
         max_files=max_files_value,
         grid_extractor=grid_extractor_value,
+        expected_delivery_offset_hours=_parse_expected_delivery_offset_hours(
+            weather_forecast
+        ),
     )
 
 
@@ -267,6 +328,31 @@ def _load_grid_extractor_choice() -> Literal["mesh", "exactextract"]:
     return cast('Literal["mesh", "exactextract"]', value)
 
 
+def _load_expected_delivery_offset_hours() -> float:
+    config_path = os.environ.get("SAPPHIRE_CONFIG")
+    if config_path is None:
+        return _DEFAULT_EXPECTED_DELIVERY_OFFSET_HOURS
+
+    from sapphire_flow.config._overlay import (
+        _resolve_overlay_paths,  # pyright: ignore[reportPrivateUsage]
+        load_merged_toml,
+    )
+
+    data = cast(
+        "dict[str, Any]",
+        load_merged_toml(Path(config_path), _resolve_overlay_paths()),
+    )
+    adapters = data.get("adapters", {})
+    weather_forecast = (
+        adapters.get("weather_forecast", {}) if isinstance(adapters, dict) else {}
+    )
+    if not isinstance(weather_forecast, dict):
+        return _DEFAULT_EXPECTED_DELIVERY_OFFSET_HOURS
+    return _parse_expected_delivery_offset_hours(
+        cast("dict[str, object]", weather_forecast)
+    )
+
+
 def _load_forecast_qc_rules() -> ForecastQcRuleSet:
     from sapphire_flow.config.forecast_qc_rules import (
         _default_swiss_forecast_qc_rules,  # pyright: ignore[reportPrivateUsage]
@@ -286,6 +372,241 @@ def _resolve_cycle_time(
     if cycle_time_str is not None:
         return ensure_utc(datetime.fromisoformat(cycle_time_str).replace(tzinfo=UTC))
     return clock()
+
+
+def _model_alert_eligibility(
+    model_id: ModelId,
+    models: dict[ModelId, ForecastModel],
+) -> AlertEligibility:
+    if model_id in ALERT_ELIGIBILITIES:
+        return ALERT_ELIGIBILITIES[model_id]
+    model = models.get(model_id)
+    declared = getattr(model, "alert_eligibility", None)
+    if isinstance(declared, AlertEligibility):
+        return declared
+    raise ConfigurationError(f"model {model_id} has no declared AlertEligibility")
+
+
+def _append_pipeline_health_record(
+    pipeline_health_store: object | None,
+    *,
+    check_type: PipelineCheckType,
+    checked_at: UtcDatetime,
+    status: PipelineHealthStatus,
+    subject: str,
+    detail: dict[str, object],
+    cycle_time: UtcDatetime | None,
+) -> None:
+    if pipeline_health_store is None:
+        return
+    append = getattr(pipeline_health_store, "append_health_record", None)
+    if not callable(append):
+        return
+
+    from sapphire_flow.types.pipeline import PipelineHealthRecord
+
+    try:
+        append(
+            PipelineHealthRecord(
+                check_type=check_type,
+                checked_at=checked_at,
+                status=status,
+                subject=subject,
+                detail=detail,
+                cycle_time=cycle_time,
+                created_at=checked_at,
+            )
+        )
+    except Exception as exc:
+        log.warning(
+            "pipeline.health_record_write_failed",
+            check_type=check_type.value,
+            subject=subject,
+            error=str(exc),
+        )
+
+
+def _record_station_dark(
+    pipeline_health_store: object | None,
+    *,
+    station_id: StationId,
+    reason: str,
+    assigned_models: list[ModelId],
+    nwp_enabled: bool,
+    checked_at: UtcDatetime,
+    cycle_time: UtcDatetime,
+) -> None:
+    detail = {
+        "reason": reason,
+        "assigned_models": [str(model_id) for model_id in assigned_models],
+        "nwp_enabled": nwp_enabled,
+    }
+    log.error("forecast_cycle.station_dark", **detail)
+    _append_pipeline_health_record(
+        pipeline_health_store,
+        check_type=PipelineCheckType.FORECAST_STATION_DARK,
+        checked_at=checked_at,
+        status=PipelineHealthStatus.CRITICAL,
+        subject=str(station_id),
+        detail=cast("dict[str, object]", detail),
+        cycle_time=cycle_time,
+    )
+
+
+def _partition_alert_eligible_ensembles(
+    all_ensembles: dict[StationId, dict[ModelId, dict[str, ForecastEnsemble]]],
+    models: dict[ModelId, ForecastModel],
+    pipeline_health_store: object | None,
+    *,
+    checked_at: UtcDatetime,
+    cycle_time: UtcDatetime,
+) -> tuple[dict[StationId, dict[ModelId, dict[str, ForecastEnsemble]]], bool]:
+    eligible: dict[StationId, dict[ModelId, dict[str, ForecastEnsemble]]] = {}
+    suppressed = False
+
+    for station_id, model_ensembles in all_ensembles.items():
+        station_eligible: dict[ModelId, dict[str, ForecastEnsemble]] = {}
+        suppressed_eligibilities: set[str] = set()
+        suppressed_parameters: set[str] = set()
+
+        for model_id, param_ensembles in model_ensembles.items():
+            eligibility = _model_alert_eligibility(model_id, models)
+            if eligibility is AlertEligibility.SKILL_FORECAST:
+                station_eligible[model_id] = param_ensembles
+                continue
+            suppressed_eligibilities.add(eligibility.value)
+            suppressed_parameters.update(param_ensembles.keys())
+
+        if station_eligible:
+            eligible[station_id] = station_eligible
+            continue
+
+        if model_ensembles:
+            suppressed = True
+            detail = {
+                "alert_eligibility": sorted(suppressed_eligibilities),
+                "parameter": sorted(suppressed_parameters),
+            }
+            log.warning(
+                "alert.suppressed_fallback_only",
+                station_id=str(station_id),
+                **detail,
+            )
+            _append_pipeline_health_record(
+                pipeline_health_store,
+                check_type=PipelineCheckType.ALERT_SUPPRESSED_FALLBACK,
+                checked_at=checked_at,
+                status=PipelineHealthStatus.WARNING,
+                subject=str(station_id),
+                detail=cast("dict[str, object]", detail),
+                cycle_time=cycle_time,
+            )
+
+    return eligible, suppressed
+
+
+def _check_nwp_grid_staleness(
+    weather_forecast_store: object,
+    pipeline_health_store: object | None,
+    *,
+    expected_delivery_offset_hours: float,
+    checked_at: UtcDatetime,
+    cycle_time: UtcDatetime,
+) -> bool:
+    fetch_latest = getattr(weather_forecast_store, "fetch_latest_cycle_time", None)
+    if not callable(fetch_latest):
+        return False
+
+    latest_cycle_time = cast("UtcDatetime | None", fetch_latest(_ICON_NWP_SOURCE))
+    max_age_hours = expected_delivery_offset_hours * _NWP_CADENCE_HOURS
+    if latest_cycle_time is None:
+        detail: dict[str, object] = {
+            "last_grid_age_hours": None,
+            "expected_offset_hours": expected_delivery_offset_hours,
+        }
+    else:
+        age_hours = (checked_at - latest_cycle_time).total_seconds() / 3600.0
+        if age_hours <= max_age_hours:
+            return False
+        detail = {
+            "last_grid_age_hours": round(age_hours, 3),
+            "expected_offset_hours": expected_delivery_offset_hours,
+        }
+
+    log.error("nwp.grid_stale", **detail)
+    _append_pipeline_health_record(
+        pipeline_health_store,
+        check_type=PipelineCheckType.NWP_DELIVERY,
+        checked_at=checked_at,
+        status=PipelineHealthStatus.CRITICAL,
+        subject="nwp_grid",
+        detail=detail,
+        cycle_time=cycle_time,
+    )
+    return True
+
+
+def _check_fallback_priority_drift(
+    model_assignments: dict[StationId, list],
+    group_store: object | None,
+) -> bool:
+    drifted: list[dict[str, object]] = [
+        {
+            "scope": "station",
+            "subject": str(station_id),
+            "model_id": str(assignment.model_id),
+            "priority": assignment.priority,
+        }
+        for station_id, assignments in model_assignments.items()
+        for assignment in assignments
+        if assignment.model_id in FALLBACK_MODEL_IDS
+        and assignment.priority < FALLBACK_PRIORITY_THRESHOLD
+    ]
+
+    if group_store is not None:
+        typed_group_store = cast("StationGroupStore", group_store)
+        for model_id in FALLBACK_MODEL_IDS:
+            for group in typed_group_store.fetch_groups_for_model(model_id):
+                for assignment in typed_group_store.fetch_group_model_assignments(
+                    group.id
+                ):
+                    if (
+                        assignment.model_id == model_id
+                        and assignment.priority < FALLBACK_PRIORITY_THRESHOLD
+                    ):
+                        drifted.append(
+                            {
+                                "scope": "group",
+                                "subject": str(group.id),
+                                "model_id": str(model_id),
+                                "priority": assignment.priority,
+                            }
+                        )
+
+    if not drifted:
+        return False
+    log.error("forecast_cycle.fallback_priority_drift", assignments=drifted)
+    return True
+
+
+def _forecast_cycle_health(
+    *,
+    stations_attempted: int,
+    stations_failed: int,
+    alert_suppressed: bool,
+    nwp_grid_stale: bool,
+    fallback_priority_drift: bool,
+) -> ForecastCycleHealth:
+    if stations_attempted > 0 and stations_failed >= stations_attempted:
+        return ForecastCycleHealth.FAILED
+    if (
+        stations_failed > 0
+        or alert_suppressed
+        or nwp_grid_stale
+        or fallback_priority_drift
+    ):
+        return ForecastCycleHealth.DEGRADED
+    return ForecastCycleHealth.HEALTHY
 
 
 # ---------------------------------------------------------------------------
@@ -554,6 +875,7 @@ def run_forecast_cycle_flow(
     model_state_store: object = None,
     artifact_store: object = None,
     alert_store: object = None,
+    pipeline_health_store: object | None = None,
     baseline_store: object = None,
     basin_store: object = None,
     group_store: object | None = None,
@@ -614,6 +936,7 @@ def run_forecast_cycle_flow(
             model_state_store = cast("ModelStateStore", stores["model_state_store"])
             artifact_store = cast("ModelArtifactStore", stores["artifact_store"])
             alert_store = cast("AlertStore", stores["alert_store"])
+            pipeline_health_store = stores["pipeline_health_store"]
             baseline_store = cast("ClimBaselineStore", stores["baseline_store"])
             basin_store = cast("BasinStore", stores["basin_store"])
             group_store = stores["group_store"]
@@ -637,9 +960,18 @@ def run_forecast_cycle_flow(
         # gated on `adapter is None` so an injected adapter bypasses it.
         grid_extractor_choice = _load_grid_extractor_choice()
         nwp_enabled = adapter is not None
+        expected_delivery_offset_hours = _load_expected_delivery_offset_hours()
         if adapter is None:
             weather_forecast_config = _load_weather_forecast_adapter_config()
             nwp_enabled = weather_forecast_config.enabled
+            expected_delivery_offset_hours = (
+                weather_forecast_config.expected_delivery_offset_hours
+            )
+            if weather_forecast_config.require_nwp and not nwp_enabled:
+                raise ConfigurationError(
+                    "SAPPHIRE_REQUIRE_NWP is set but "
+                    "[adapters.weather_forecast].enabled is false"
+                )
             if weather_forecast_config.enabled:
                 import httpx
 
@@ -742,6 +1074,7 @@ def run_forecast_cycle_flow(
             log.info("forecast_cycle.no_operational_stations")
             return ForecastCycleResult(
                 cycle_time=resolved_cycle_time,
+                health=ForecastCycleHealth.HEALTHY,
                 stations_attempted=0,
                 stations_succeeded=0,
                 stations_failed=0,
@@ -775,6 +1108,10 @@ def run_forecast_cycle_flow(
             s.id: {a.model_id: a.priority for a in model_assignments[s.id]}
             for s in operational
         }
+        fallback_priority_drift = _check_fallback_priority_drift(
+            model_assignments,
+            group_store,
+        )
 
         # Batch pre-fetch weather sources (eliminates per-station queries in Phase B)
         all_weather_sources: dict[StationId, list] = {
@@ -871,6 +1208,7 @@ def run_forecast_cycle_flow(
                 log.error("forecast_cycle.nwp_fetch_failed_aborting")
                 return ForecastCycleResult(
                     cycle_time=resolved_cycle_time,
+                    health=ForecastCycleHealth.FAILED,
                     stations_attempted=0,
                     stations_succeeded=0,
                     stations_failed=0,
@@ -898,6 +1236,15 @@ def run_forecast_cycle_flow(
                 cycle_time=resolved_cycle_time.isoformat(),
             )
         effective_runoff_only = runoff_only_mode or nwp_unavailable_runtime
+        nwp_grid_stale = False
+        if nwp_enabled:
+            nwp_grid_stale = _check_nwp_grid_staleness(
+                weather_forecast_store,
+                pipeline_health_store,
+                expected_delivery_offset_hours=expected_delivery_offset_hours,
+                checked_at=clock(),
+                cycle_time=resolved_cycle_time,
+            )
 
         # --- Honest NWP provenance (epic-088 M4) ---
         # Runoff-only (configured OR runtime-unavailable) has no NWP cycle at all
@@ -929,8 +1276,6 @@ def run_forecast_cycle_flow(
         )
 
         # --- Phase B: per-station forecast loop ---
-        from datetime import timedelta
-
         from sapphire_flow.services.forecast_combination import build_combined_forecasts
         from sapphire_flow.services.operational_inputs import (
             assemble_station_operational_inputs,
@@ -1080,7 +1425,21 @@ def run_forecast_cycle_flow(
                     )
 
                     if fc_result is None:
-                        log.warning("forecast_cycle.all_models_failed")
+                        reason = "all_models_failed"
+                        _record_station_dark(
+                            pipeline_health_store,
+                            station_id=sid,
+                            reason=reason,
+                            assigned_models=[
+                                assignment.model_id for assignment in sorted_assignments
+                            ],
+                            nwp_enabled=nwp_enabled,
+                            checked_at=clock(),
+                            cycle_time=resolved_cycle_time,
+                        )
+                        errors.append(
+                            f"Station {sid} produced zero forecasts: {reason}"
+                        )
                         stations_failed += 1
                         structlog.contextvars.unbind_contextvars("station_id")
                         continue
@@ -1135,7 +1494,21 @@ def run_forecast_cycle_flow(
                     )
 
                     if multi_result.primary_model_id is None:
-                        log.warning("forecast_cycle.all_models_failed")
+                        reason = "all_models_failed"
+                        _record_station_dark(
+                            pipeline_health_store,
+                            station_id=sid,
+                            reason=reason,
+                            assigned_models=[
+                                assignment.model_id for assignment in sorted_assignments
+                            ],
+                            nwp_enabled=nwp_enabled,
+                            checked_at=clock(),
+                            cycle_time=resolved_cycle_time,
+                        )
+                        errors.append(
+                            f"Station {sid} produced zero forecasts: {reason}"
+                        )
                         stations_failed += 1
                         structlog.contextvars.unbind_contextvars("station_id")
                         continue
@@ -1436,15 +1809,27 @@ def run_forecast_cycle_flow(
                 finally:
                     structlog.contextvars.unbind_contextvars("group_id", "model_id")
 
+        alert_eligible_ensembles, alert_suppressed = (
+            _partition_alert_eligible_ensembles(
+                all_ensembles,
+                models,
+                pipeline_health_store,
+                checked_at=clock(),
+                cycle_time=resolved_cycle_time,
+            )
+            if all_ensembles
+            else ({}, False)
+        )
+
         # --- Phase C: alert checking ---
         alerts_checked = False
-        if config.enable_forecast_alerts and all_ensembles:
+        if config.enable_forecast_alerts and alert_eligible_ensembles:
             from sapphire_flow.services.alert_checker import check_station_alerts
 
             alert_t0 = time.perf_counter()
             try:
                 check_station_alerts(
-                    all_ensembles=all_ensembles,
+                    all_ensembles=alert_eligible_ensembles,
                     all_thresholds=all_thresholds,
                     danger_levels=config.get_danger_level_definitions(),
                     all_priorities=all_priorities,
@@ -1463,6 +1848,13 @@ def run_forecast_cycle_flow(
 
         result = ForecastCycleResult(
             cycle_time=resolved_cycle_time,
+            health=_forecast_cycle_health(
+                stations_attempted=len(operational),
+                stations_failed=stations_failed,
+                alert_suppressed=alert_suppressed,
+                nwp_grid_stale=nwp_grid_stale,
+                fallback_priority_drift=fallback_priority_drift,
+            ),
             stations_attempted=len(operational),
             stations_succeeded=stations_succeeded,
             stations_failed=stations_failed,
@@ -1478,6 +1870,7 @@ def run_forecast_cycle_flow(
             stations_attempted=result.stations_attempted,
             stations_succeeded=result.stations_succeeded,
             stations_failed=result.stations_failed,
+            health=result.health.value,
             forecasts_stored=result.forecasts_stored,
             alerts_checked=result.alerts_checked,
             duration_ms=result.duration_ms,

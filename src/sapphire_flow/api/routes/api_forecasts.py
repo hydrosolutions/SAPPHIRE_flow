@@ -7,6 +7,7 @@ import polars as pl
 from fastapi import APIRouter, Depends, HTTPException
 
 from sapphire_flow.api.deps import get_stores
+from sapphire_flow.api.model_visibility import model_tier_for_model_id
 from sapphire_flow.api.schemas import EnsembleResponse, ForecastDetail
 from sapphire_flow.types.enums import EnsembleRepresentation
 from sapphire_flow.types.ids import ForecastId
@@ -52,6 +53,7 @@ def _to_forecast_detail(f: OperationalForecast) -> ForecastDetail:
         id=str(f.id),
         station_id=str(f.station_id),
         model_id=str(f.model_id),
+        model_tier=model_tier_for_model_id(f.model_id).value,
         issued_at=f.issued_at,
         parameter=f.ensemble.parameter,
         representation=f.representation.value,

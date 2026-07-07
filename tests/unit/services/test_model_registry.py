@@ -2,13 +2,21 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
+
+from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.model_registry import (
     build_registry_entry,
     discover_models,
     register_models,
 )
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.enums import ArtifactScope, SpatialRepresentation
+from sapphire_flow.types.enums import (
+    AlertEligibility,
+    ArtifactScope,
+    ModelTier,
+    SpatialRepresentation,
+)
 from sapphire_flow.types.ids import ModelId
 from tests.fakes.fake_models import FakeGroupForecastModel, FakeStationForecastModel
 from tests.fakes.fake_stores import FakeModelStore
@@ -140,3 +148,46 @@ class TestDiscoverModels:
         result = discover_models()
         assert isinstance(result, dict)
         assert "linear_regression_daily" in result
+
+    def test_undeclared_model_fails_discovery(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class _EntryPoint:
+            name = "unknown_model"
+
+            def load(self) -> type[FakeStationForecastModel]:
+                return FakeStationForecastModel
+
+        monkeypatch.setattr(
+            "importlib.metadata.entry_points",
+            lambda group: [_EntryPoint()],
+        )
+
+        with pytest.raises(ConfigurationError, match="ModelTier"):
+            discover_models()
+
+    def test_model_declaring_both_facets_loads(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class DeclaredModel(FakeStationForecastModel):
+            model_tier = ModelTier.SKILL
+            alert_eligibility = AlertEligibility.SKILL_FORECAST
+
+        class _EntryPoint:
+            name = "declared_model"
+
+            def load(self) -> type[DeclaredModel]:
+                return DeclaredModel
+
+        monkeypatch.setattr(
+            "importlib.metadata.entry_points",
+            lambda group: [_EntryPoint()],
+        )
+
+        result = discover_models()
+
+        assert result[ModelId("declared_model")].model_tier is ModelTier.SKILL
+        assert (
+            result[ModelId("declared_model")].alert_eligibility
+            is AlertEligibility.SKILL_FORECAST
+        )

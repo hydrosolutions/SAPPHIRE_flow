@@ -43,12 +43,16 @@ app.add_exception_handler(Exception, unhandled_exception_handler)  # type: ignor
 # --- Routers (existing) ---
 from sapphire_flow.api.routes.dashboard import router as dashboard_router  # noqa: E402
 from sapphire_flow.api.routes.forecasts import router as forecasts_router  # noqa: E402
+from sapphire_flow.api.routes.health import (  # noqa: E402
+    dashboard_router as health_dashboard_router,
+)
 from sapphire_flow.api.routes.health import router as health_router  # noqa: E402
 from sapphire_flow.api.routes.models import router as models_router  # noqa: E402
 from sapphire_flow.api.routes.stations import router as stations_router  # noqa: E402
 from sapphire_flow.api.routes.tables import router as tables_router  # noqa: E402
 
 app.include_router(health_router)
+app.include_router(health_dashboard_router)
 app.include_router(dashboard_router)
 app.include_router(tables_router)
 app.include_router(stations_router)

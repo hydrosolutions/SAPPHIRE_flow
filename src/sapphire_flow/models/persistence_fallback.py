@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 import structlog
 
+from sapphire_flow.exceptions import InsufficientObservationsError
 from sapphire_flow.types.enums import ArtifactScope, SpatialRepresentation
 from sapphire_flow.types.model import ModelDataRequirements
 
@@ -79,6 +80,11 @@ class PersistenceFallbackModel:
         ensembles: dict[str, ForecastEnsemble] = {}
 
         for param in art.target_parameters:
+            if param not in past_targets.columns or past_targets.is_empty():
+                raise InsufficientObservationsError(
+                    "persistence_fallback requires at least one observation "
+                    f"for {param!r}"
+                )
             last_value = past_targets[param][-1]
 
             rows: list[dict[str, Any]] = []

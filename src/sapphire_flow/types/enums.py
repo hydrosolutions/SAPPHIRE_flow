@@ -99,6 +99,23 @@ class ModelCombinationStrategy(Enum):
     CONSENSUS = "consensus"
 
 
+class ModelTier(Enum):
+    SKILL = "skill"
+    FALLBACK = "fallback"
+
+
+class AlertEligibility(Enum):
+    SKILL_FORECAST = "skill_forecast"
+    CURRENT_OBS_PROXY = "current_obs_proxy"
+    NO_EVENT_INFORMATION = "no_event_information"
+
+
+class ForecastCycleHealth(Enum):
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"
+    FAILED = "failed"
+
+
 class RegulationType(Enum):
     UNREGULATED = "unregulated"
     RESERVOIR = "reservoir"
@@ -139,6 +156,10 @@ class PipelineCheckType(Enum):
     DISK_USAGE = "disk_usage"
     BACKUP_FRESHNESS = "backup_freshness"
     BACKUP_RESTORE_TEST = "backup_restore_test"
+    FORECAST_STATION_DARK = "forecast_station_dark"
+    ALERT_SUPPRESSED_FALLBACK = "alert_suppressed_fallback"
+    PRIORITY_MIGRATION_AUDIT = "priority_migration_audit"
+    CLIMATOLOGY_THRESHOLD_REVIEW = "climatology_threshold_review"
 
 
 class NotificationChannel(Enum):

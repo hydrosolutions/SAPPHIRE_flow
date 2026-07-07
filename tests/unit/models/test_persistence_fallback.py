@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 import polars as pl
 import pytest
 
+from sapphire_flow.exceptions import InsufficientObservationsError
 from sapphire_flow.models.persistence_fallback import (
     PersistenceArtifact,
     PersistenceFallbackModel,
@@ -200,6 +201,35 @@ class TestPredict:
         result, _ = model.predict(artifact, predict_inputs, _RNG)
         ensemble = result["discharge"]
         assert ensemble.forecast_horizon_steps == predict_inputs.forecast_horizon_steps
+
+    def test_empty_observations_raise_narrow_error(
+        self,
+        model: PersistenceFallbackModel,
+        artifact: PersistenceArtifact,
+        predict_inputs: StationModelInputs,
+    ) -> None:
+        empty_inputs = StationModelInputs(
+            station_id=predict_inputs.station_id,
+            data=StationInputData(
+                past_targets=pl.DataFrame(
+                    schema={
+                        "timestamp": pl.Datetime("us", "UTC"),
+                        "discharge": pl.Float64,
+                    }
+                ),
+                past_dynamic=predict_inputs.data.past_dynamic,
+                future_dynamic=predict_inputs.data.future_dynamic,
+                static=predict_inputs.data.static,
+            ),
+            issue_time=predict_inputs.issue_time,
+            forecast_horizon_steps=predict_inputs.forecast_horizon_steps,
+            time_step=predict_inputs.time_step,
+        )
+
+        with pytest.raises(
+            InsufficientObservationsError, match="at least one observation"
+        ):
+            model.predict(artifact, empty_inputs, _RNG)
 
 
 class TestSerialize:

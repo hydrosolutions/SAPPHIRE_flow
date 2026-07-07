@@ -24,7 +24,13 @@ from sapphire_flow.types.enums import (
     SpatialRepresentation,
     StationStatus,
 )
-from sapphire_flow.types.ids import StationGroupId, StationId
+from sapphire_flow.types.ids import (
+    FALLBACK_MODEL_IDS,
+    FALLBACK_PRIORITY_THRESHOLD,
+    ModelId,
+    StationGroupId,
+    StationId,
+)
 from sapphire_flow.types.model_onboarding import (
     CompatibilityReport,
     ModelOnboardingResult,
@@ -60,7 +66,7 @@ if TYPE_CHECKING:
     )
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.ensemble import ForecastEnsemble
-    from sapphire_flow.types.ids import ArtifactId, ModelId
+    from sapphire_flow.types.ids import ArtifactId
     from sapphire_flow.types.model import (
         GroupTrainingData,
         ModelDataRequirements,
@@ -81,6 +87,14 @@ _DELIVERABLE_FI_SPATIAL_TYPES = frozenset(
 # Ensemble-mode conformance fans the synthetic forcing over this many members
 # unless a caller (e.g. the operational-floor check) requests the floor size.
 _DEFAULT_SYNTHETIC_MEMBERS = 2
+
+
+def _assert_assignment_priority_invariant(model_id: ModelId, priority: int) -> None:
+    if model_id in FALLBACK_MODEL_IDS and priority < FALLBACK_PRIORITY_THRESHOLD:
+        raise ConfigurationError(
+            f"fallback model {model_id} priority must be >= "
+            f"{FALLBACK_PRIORITY_THRESHOLD}, got {priority}"
+        )
 
 
 def validate_compatibility(
@@ -843,6 +857,7 @@ def create_station_assignment(
     station_store: StationStore,
     clock: Callable[[], UtcDatetime],
 ) -> ModelAssignment:
+    _assert_assignment_priority_invariant(model_id, priority)
     existing = station_store.fetch_model_assignments(station_id)
     for assignment in existing:
         if assignment.model_id == model_id:
@@ -875,6 +890,7 @@ def create_group_assignment(
     group_store: StationGroupStore,
     clock: Callable[[], UtcDatetime],
 ) -> GroupModelAssignment:
+    _assert_assignment_priority_invariant(model_id, priority)
     existing = group_store.fetch_group_model_assignments(group_id)
     for assignment in existing:
         if assignment.model_id == model_id:
@@ -991,7 +1007,7 @@ def onboard_model(
     config: DeploymentConfig,
     clock: Callable[[], UtcDatetime],
     rng: random.Random,
-    assignment_priority: int = 0,
+    assignment_priority: int | None = None,
     run_hindcast_fn: Callable[..., list] | None = None,
     compute_skill_fn: Callable[..., None] | None = None,
     skip_smoke_test: bool = False,
@@ -1015,6 +1031,11 @@ def onboard_model(
 
     log.info("model.onboarding_started", model_id=str(model_id), unit_count=len(units))
     unit_results: list[OnboardingUnitResult] = []
+    resolved_assignment_priority = (
+        assignment_priority
+        if assignment_priority is not None
+        else config.assignment_priority_for_model(model_id)
+    )
 
     # Canonical unit catalog (parameter name -> unit) for FI unit-compat gating.
     # Absent parameter_store preserves prior behaviour (None -> empty catalog).
@@ -1466,7 +1487,7 @@ def onboard_model(
                     station_id=unit.station_id,
                     model_id=model_id,
                     time_step=unit.time_step,
-                    priority=assignment_priority,
+                    priority=resolved_assignment_priority,
                     station_store=station_store,
                     clock=clock,
                 )
@@ -1478,7 +1499,7 @@ def onboard_model(
                     group_id=unit.group_id,
                     model_id=model_id,
                     time_step=unit.time_step,
-                    priority=assignment_priority,
+                    priority=resolved_assignment_priority,
                     group_store=group_store,
                     clock=clock,
                 )

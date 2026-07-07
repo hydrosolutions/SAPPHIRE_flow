@@ -22,6 +22,7 @@ services:
   prefect-worker:
     environment:
       SAPPHIRE_CONFIG_OVERLAY: /app/config/overlays/mac-mini.toml
+      SAPPHIRE_REQUIRE_NWP: "1"
     volumes:
       - /Volumes/sapphire-backup/pg_dumps:/data/backups:rw
       - /Users/sapphire/camels-ch:/data/raw:ro

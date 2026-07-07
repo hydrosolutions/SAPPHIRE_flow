@@ -32,7 +32,11 @@
     <tr>
       <td><a href="/forecasts/{{ f.id }}/">{{ f.issued_at }}</a></td>
       <td><a href="/stations/{{ f.station_id }}/">{{ f.station_id | string | truncate(8, True, '...') }}</a></td>
-      <td>{{ f.model_id | string | truncate(8, True, '...') if f.model_id else '' }}</td>
+      <td>
+        {{ f.model_id | string | truncate(8, True, '...') if f.model_id else '' }}
+        {% if f.model_tier == "fallback" %}<span class="badge badge-yellow">fallback</span>
+        {% else %}<span class="badge badge-blue">skill</span>{% endif %}
+      </td>
       <td>{{ f.parameter }}</td>
       <td>
         {% if f.status == "published" %}<span class="badge badge-green">{{ f.status }}</span>

@@ -763,7 +763,7 @@ class ModelAssignment:
     model_id: ModelId
     time_step: timedelta           # configured time step for this assignment
     status: ModelAssignmentStatus
-    priority: int                  # fallback order AND alert-selection priority: 0 = primary (run first, drives alerts when all succeed). See §I3 in v0-scope.md.
+    priority: int                  # run order / alert-selection priority within the model tier. Tier is derived separately via ModelTier.
     created_at: UtcDatetime
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -772,7 +772,7 @@ class GroupModelAssignment:
     model_id: ModelId
     time_step: timedelta
     status: ModelAssignmentStatus
-    priority: int                  # fallback order AND alert-selection priority within the group: 0 = primary. Expanded to per-station entries by Phase B for Phase C strategy dispatch.
+    priority: int                  # run order / alert-selection priority within the model tier. Expanded to per-station entries by Phase B.
     created_at: UtcDatetime
 ```
 
@@ -944,6 +944,24 @@ class PipelineHealthRecord:
 ```
 
 Module: `types/pipeline.py`
+
+### API/dashboard model visibility
+
+```python
+class ModelTier(StrEnum):
+    SKILL = "skill"
+    FALLBACK = "fallback"
+
+FALLBACK_MODEL_IDS: frozenset[ModelId] = frozenset(
+    {ModelId("climatology_fallback"), ModelId("persistence_fallback")}
+)
+
+def model_tier_for_model_id(model_id: str | ModelId | None) -> ModelTier: ...
+```
+
+Module: `api/model_visibility.py`. This is a query/render-time visibility facet,
+not a DB column. Station `no_floor` is likewise derived at query time from active
+`climatology_fallback` artifact presence.
 
 ### FlowRunState
 
@@ -2679,7 +2697,7 @@ Each fake has a test: `assert isinstance(FakeObservationStore(), ObservationStor
 
 ### MultiModelForecastResult
 
-Returned by `run_all_station_forecasts()`. Carries all per-model results from a single forecast cycle run, including the `combinable_results` subset that excludes fallback models.
+Returned by `run_all_station_forecasts()`. Carries all per-model results from a single forecast cycle run, including the `combinable_results` subset that excludes categorical fallback-tier models.
 
 Module: `services/run_station_forecast.py`
 
@@ -2694,10 +2712,10 @@ class MultiModelForecastResult:
 
     @property
     def combinable_results(self) -> dict[ModelId, StationForecastResult]:
-        """Results from non-fallback models only (priority < FALLBACK_PRIORITY_THRESHOLD)."""
+        """Results from non-fallback models only (model_id not in FALLBACK_MODEL_IDS)."""
         return {
             mid: r for mid, r in self.results.items()
-            if self.priorities.get(mid, 0) < FALLBACK_PRIORITY_THRESHOLD
+            if mid not in FALLBACK_MODEL_IDS
         }
 ```
 
