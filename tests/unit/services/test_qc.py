@@ -177,6 +177,27 @@ class TestFrozenSensor:
 
 
 class TestSpike:
+    def test_absolute_max_delta_detects_spike(self) -> None:
+        checker = Stage1QualityChecker()
+        obs = [_make_obs(10.0, 0), _make_obs(12.1, 1), _make_obs(10.2, 2)]
+        rs = _rule_set(_rule("spike", {"max_delta": 1.0}))
+
+        result = checker.check(obs, rs, [], [])
+
+        flags = result[obs[1].id]
+        assert len(flags) == 1
+        assert flags[0].rule_id == "spike"
+        assert flags[0].status == QcStatus.QC_SUSPECT
+
+    def test_absolute_max_delta_allows_small_delta(self) -> None:
+        checker = Stage1QualityChecker()
+        obs = [_make_obs(10.0, 0), _make_obs(10.8, 1), _make_obs(10.1, 2)]
+        rs = _rule_set(_rule("spike", {"max_delta": 1.0}))
+
+        result = checker.check(obs, rs, [], [])
+
+        assert result[obs[1].id] == []
+
     def test_normal_variation_passes(self) -> None:
         checker = Stage1QualityChecker()
         obs = [_make_obs(10.0, 0), _make_obs(11.0, 1), _make_obs(10.5, 2)]

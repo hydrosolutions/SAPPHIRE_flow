@@ -129,3 +129,45 @@ class TestFetchNonexistent:
 
         result = store.fetch_baseline(sid, "discharge", 42)
         assert result is None
+
+
+class TestDeleteBaselines:
+    def test_delete_baselines_removes_only_target_parameter(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        other_sid = _seed_station(db_connection)
+        store = PgClimBaselineStore(db_connection)
+        store.store_baselines(
+            [
+                _make_baseline(sid, "water_level", 1, rolling_mean=100.0),
+                _make_baseline(sid, "discharge", 1, rolling_mean=10.0),
+                _make_baseline(other_sid, "water_level", 1, rolling_mean=200.0),
+            ]
+        )
+
+        store.delete_baselines(sid, "water_level")
+
+        assert store.fetch_baselines(sid, "water_level") == []
+        assert len(store.fetch_baselines(sid, "discharge")) == 1
+        assert len(store.fetch_baselines(other_sid, "water_level")) == 1
+
+    def test_delete_then_store_leaves_recomputed_rows_only(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        store = PgClimBaselineStore(db_connection)
+        store.store_baselines(
+            [
+                _make_baseline(sid, "water_level", 1, rolling_mean=300.0),
+                _make_baseline(sid, "water_level", 2, rolling_mean=301.0),
+            ]
+        )
+
+        store.delete_baselines(sid, "water_level")
+        store.store_baselines([_make_baseline(sid, "water_level", 1, rolling_mean=3.0)])
+
+        results = store.fetch_baselines(sid, "water_level")
+        assert len(results) == 1
+        assert results[0].day_of_year == 1
+        assert results[0].rolling_mean == pytest.approx(3.0)

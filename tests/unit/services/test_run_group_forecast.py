@@ -13,9 +13,10 @@ from sqlalchemy.exc import DisconnectionError
 from sapphire_flow.config.deployment import DeploymentConfig
 from sapphire_flow.exceptions import ModelOutputError, StoreError
 from sapphire_flow.services import run_group_forecast as service
+from sapphire_flow.services.forecast_qc import ForecastOutputQualityChecker
 from sapphire_flow.services.operational_inputs import OperationalInputMetadata
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
-from sapphire_flow.types.domain import ForecastQcRuleSet, QcFlag
+from sapphire_flow.types.domain import ForecastQcRuleParams, ForecastQcRuleSet, QcFlag
 from sapphire_flow.types.ensemble import ForecastEnsemble
 from sapphire_flow.types.enums import (
     ForecastStatus,
@@ -198,7 +199,11 @@ def _make_assignment(group: StationGroup) -> GroupModelAssignment:
     )
 
 
-def _make_ensemble(station_id: StationId, base_value: float) -> ForecastEnsemble:
+def _make_ensemble(
+    station_id: StationId,
+    base_value: float,
+    parameter: str = "discharge",
+) -> ForecastEnsemble:
     rows = [
         {
             "valid_time": _ISSUE + (step + 1) * _STEP,
@@ -215,8 +220,8 @@ def _make_ensemble(station_id: StationId, base_value: float) -> ForecastEnsemble
     return ForecastEnsemble.from_members(
         station_id=station_id,
         issued_at=_ISSUE,
-        parameter="discharge",
-        units="m³/s",
+        parameter=parameter,
+        units="m³/s" if parameter == "discharge" else "m",
         time_step=_STEP,
         values=values,
         model_id=_MODEL_ID,
@@ -297,6 +302,21 @@ def _empty_qc_rules() -> ForecastQcRuleSet:
     return ForecastQcRuleSet(version="1.0", rules=())
 
 
+def _water_level_qc_rules() -> ForecastQcRuleSet:
+    return ForecastQcRuleSet(
+        version="1.0",
+        rules=(
+            ForecastQcRuleParams(
+                rule_id="range_check",
+                rule_version="1.0",
+                parameter="water_level",
+                time_step=_STEP,
+                thresholds={"value_min": -2.0, "value_max": 20.0},
+            ),
+        ),
+    )
+
+
 class _BatchGroupModel:
     artifact_scope = FakeGroupForecastModel.artifact_scope
     data_requirements = FakeGroupForecastModel.data_requirements
@@ -341,6 +361,7 @@ class _QcChecker:
         rule_set: ForecastQcRuleSet,
         qc_overrides: list[object],
         baselines: list[object],
+        skipped_rule_ids: frozenset[str] = frozenset(),
     ) -> list[QcFlag]:
         if ensemble.station_id == self.failed_station_id:
             return [
@@ -362,6 +383,8 @@ def _call_run_group_forecast(
     model: _BatchGroupModel,
     artifact_store: FakeModelArtifactStore,
     qc_checker: _QcChecker | None = None,
+    qc_rules: ForecastQcRuleSet | None = None,
+    water_level_datums_masl: dict[StationId, float | None] | None = None,
 ) -> dict[StationId, service.StationForecastResult]:
     return service.run_group_forecast(
         group=group,
@@ -371,7 +394,7 @@ def _call_run_group_forecast(
         model=model,
         artifact_store=artifact_store,
         qc_checker=qc_checker or _QcChecker(),
-        qc_rules=_empty_qc_rules(),
+        qc_rules=qc_rules or _empty_qc_rules(),
         qc_overrides=[],
         baselines_by_station={sid: [] for sid in group_inputs.station_ids},
         nwp_cycle_reference_time=_CYCLE,
@@ -380,6 +403,7 @@ def _call_run_group_forecast(
         clock=_clock,
         id_gen=_id_gen(),
         rng=random.Random(42),
+        water_level_datums_masl=water_level_datums_masl,
     )
 
 
@@ -558,6 +582,58 @@ def test_run_group_forecast_returns_station_results() -> None:
         assert forecast.issued_at == _ISSUE
         assert forecast.nwp_cycle_reference_time == _CYCLE
         assert forecast.nwp_cycle_source == NwpCycleSource.PRIMARY
+
+
+def test_run_group_forecast_applies_water_level_datum() -> None:
+    sid = StationId(uuid4())
+    group = _make_group(sid)
+    group_inputs = _make_group_inputs(group)
+    artifact_store = FakeModelArtifactStore()
+    _seed_group_artifact(artifact_store, group)
+    model = _BatchGroupModel(
+        {sid: ({"water_level": _make_ensemble(sid, 261.0, "water_level")}, None)}
+    )
+
+    results = _call_run_group_forecast(
+        group=group,
+        group_inputs=group_inputs,
+        metadata_by_station=_make_metadata_by_station(group_inputs.station_ids),
+        model=model,
+        artifact_store=artifact_store,
+        qc_checker=ForecastOutputQualityChecker(),
+        qc_rules=_water_level_qc_rules(),
+        water_level_datums_masl={sid: 260.0},
+    )
+
+    assert set(results) == {sid}
+    forecast = results[sid].forecasts[0]
+    assert forecast.qc_status == QcStatus.QC_PASSED
+    assert forecast.ensemble.values["value"].min() == 261.0
+
+
+def test_run_group_forecast_skips_water_level_range_when_datum_missing() -> None:
+    sid = StationId(uuid4())
+    group = _make_group(sid)
+    group_inputs = _make_group_inputs(group)
+    artifact_store = FakeModelArtifactStore()
+    _seed_group_artifact(artifact_store, group)
+    model = _BatchGroupModel(
+        {sid: ({"water_level": _make_ensemble(sid, 261.0, "water_level")}, None)}
+    )
+
+    results = _call_run_group_forecast(
+        group=group,
+        group_inputs=group_inputs,
+        metadata_by_station=_make_metadata_by_station(group_inputs.station_ids),
+        model=model,
+        artifact_store=artifact_store,
+        qc_checker=ForecastOutputQualityChecker(),
+        qc_rules=_water_level_qc_rules(),
+        water_level_datums_masl={sid: None},
+    )
+
+    assert set(results) == {sid}
+    assert results[sid].forecasts[0].qc_status == QcStatus.QC_PASSED
 
 
 def test_run_group_forecast_no_active_artifact_returns_empty() -> None:

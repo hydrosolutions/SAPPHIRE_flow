@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from sapphire_flow.flows.ingest_observations import (
     IngestResult,
     _load_adapter_endpoint,
+    _run_qc_task,
     ingest_observations_flow,
 )
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
@@ -54,6 +55,40 @@ _QC_RULES = QcRuleSet(
             parameter="water_level",
             time_step=timedelta(seconds=600),
             thresholds={"value_min": 0.0, "value_max": 3000.0},
+        ),
+    ),
+)
+
+_WATER_LEVEL_DATUM_RULES = QcRuleSet(
+    version="test",
+    rules=(
+        QcRuleParams(
+            rule_id="range_check",
+            rule_version="1.0",
+            parameter="water_level",
+            time_step=timedelta(seconds=600),
+            thresholds={"value_min": -2.0, "value_max": 20.0},
+        ),
+        QcRuleParams(
+            rule_id="rate_of_change",
+            rule_version="1.0",
+            parameter="water_level",
+            time_step=timedelta(seconds=600),
+            thresholds={"max_rate": 0.5},
+        ),
+        QcRuleParams(
+            rule_id="gross_outlier",
+            rule_version="1.0",
+            parameter="water_level",
+            time_step=timedelta(seconds=600),
+            thresholds={"k_sigma": 1.0},
+        ),
+        QcRuleParams(
+            rule_id="range_check",
+            rule_version="1.0",
+            parameter="discharge",
+            time_step=timedelta(seconds=600),
+            thresholds={"value_min": 0.0, "value_max": 5000.0},
         ),
     ),
 )
@@ -242,6 +277,117 @@ class TestIngestObservationsFlow:
 
         assert result.observations_stored == 1
         assert result.qc_suspect == 1  # rate_of_change produces QC_SUSPECT
+
+    def test_water_level_datum_shift_is_applied_to_qc_task(self) -> None:
+        station = make_station_config(water_level_datum_masl=260.0)
+        obs_store = FakeObservationStore()
+        history = _make_obs(station.id, "water_level", 261.0, offset_minutes=10)
+        current = _make_obs(station.id, "water_level", 261.2)
+        obs_store.store_raw_observations([history])
+        stored_history = obs_store.observations()[0]
+        obs_store.update_qc(stored_history.id, QcStatus.QC_PASSED, [])
+        obs_store.store_raw_observations([current])
+
+        counts = _run_qc_task.fn(
+            obs_store,
+            FakeClimBaselineStore(),
+            station.id,
+            "water_level",
+            qc_rules=_WATER_LEVEL_DATUM_RULES,
+            now=_NOW,
+            datum=260.0,
+        )
+
+        latest = sorted(obs_store.observations(), key=lambda obs: obs.timestamp)[-1]
+        assert counts == {"passed": 1, "failed": 0, "suspect": 0}
+        assert latest.value == 261.2
+        assert latest.qc_rule_version == "1.1-datum"
+
+    def test_null_water_level_datum_skips_datum_dependent_rules_only(self) -> None:
+        station = make_station_config()
+        obs_store = FakeObservationStore()
+        history = _make_obs(station.id, "water_level", 261.0, offset_minutes=10)
+        current = _make_obs(station.id, "water_level", 263.0)
+        obs_store.store_raw_observations([history])
+        stored_history = obs_store.observations()[0]
+        obs_store.update_qc(stored_history.id, QcStatus.QC_PASSED, [])
+        obs_store.store_raw_observations([current])
+
+        counts = _run_qc_task.fn(
+            obs_store,
+            FakeClimBaselineStore(),
+            station.id,
+            "water_level",
+            qc_rules=_WATER_LEVEL_DATUM_RULES,
+            now=_NOW,
+            datum=None,
+        )
+
+        latest = sorted(obs_store.observations(), key=lambda obs: obs.timestamp)[-1]
+        assert counts == {"passed": 0, "failed": 0, "suspect": 1}
+        assert [flag.rule_id for flag in latest.qc_flags] == ["rate_of_change"]
+        assert latest.qc_rule_version == "1.1-datum-skip"
+
+    def test_water_level_datum_is_not_applied_to_discharge(self) -> None:
+        station = make_station_config(water_level_datum_masl=260.0)
+
+        def run_discharge_qc(
+            datum: float | None,
+        ) -> tuple[dict[str, int], QcStatus, list[str]]:
+            obs_store = FakeObservationStore()
+            history = _make_obs(station.id, "discharge", 100.0, offset_minutes=10)
+            current = _make_obs(station.id, "discharge", 101.0)
+            obs_store.store_raw_observations([history])
+            stored_history = obs_store.observations()[0]
+            obs_store.update_qc(stored_history.id, QcStatus.QC_PASSED, [])
+            obs_store.store_raw_observations([current])
+
+            counts = _run_qc_task.fn(
+                obs_store,
+                FakeClimBaselineStore(),
+                station.id,
+                "discharge",
+                qc_rules=_WATER_LEVEL_DATUM_RULES,
+                now=_NOW,
+                datum=datum,
+            )
+            latest = sorted(obs_store.observations(), key=lambda obs: obs.timestamp)[-1]
+            return counts, latest.qc_status, [flag.rule_id for flag in latest.qc_flags]
+
+        no_datum_result = run_discharge_qc(None)
+        datum_result = run_discharge_qc(260.0)
+
+        assert datum_result == no_datum_result
+        assert datum_result == (
+            {"passed": 1, "failed": 0, "suspect": 0},
+            QcStatus.QC_PASSED,
+            [],
+        )
+
+    def test_ingest_datum_lookup_is_keyed_by_station_and_parameter(self) -> None:
+        station = make_station_config(water_level_datum_masl=260.0)
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        obs_store = FakeObservationStore()
+        history = _make_obs(station.id, "discharge", 100.0, offset_minutes=10)
+        obs_store.store_raw_observations([history])
+        stored_history = obs_store.observations()[0]
+        obs_store.update_qc(stored_history.id, QcStatus.QC_PASSED, [])
+
+        result = ingest_observations_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            baseline_store=FakeClimBaselineStore(),
+            adapter=FakeStationDataSource([_make_obs(station.id, "discharge", 101.0)]),
+            qc_rules=_WATER_LEVEL_DATUM_RULES,
+            clock=_fixed_clock,
+        )
+
+        latest = sorted(obs_store.observations(), key=lambda obs: obs.timestamp)[-1]
+        assert result.qc_passed == 1
+        assert result.qc_failed == 0
+        assert latest.qc_rule_version == "1.0"
+        assert latest.qc_flags == []
 
     def test_no_baselines_still_runs_range_check(self) -> None:
         s1 = make_station_config(code="2135", name="Aare Bern")

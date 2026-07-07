@@ -72,6 +72,8 @@ stations = sa.Table(
     sa.Column("name", sa.Text, nullable=False),
     sa.Column("location", Geometry("POINT", srid=4326), nullable=False),
     sa.Column("altitude_masl", sa.Float, nullable=True),
+    sa.Column("water_level_datum_masl", sa.Float, nullable=True),
+    sa.Column("water_level_unit", sa.Text, nullable=True),
     sa.Column(
         "station_kind",
         sa.Text,

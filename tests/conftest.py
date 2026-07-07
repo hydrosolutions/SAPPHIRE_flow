@@ -98,6 +98,8 @@ def make_station_config(
     ownership: StationOwnership = StationOwnership.OWN,
     wigos_id: str | None = None,
     gauging_status: GaugingStatus = GaugingStatus.GAUGED,
+    water_level_datum_masl: float | None = None,
+    water_level_unit: str | None = None,
     rng: random.Random | None = None,
 ) -> StationConfig:
     from sapphire_flow.types.station import StationConfig
@@ -123,6 +125,8 @@ def make_station_config(
         ownership=ownership,
         wigos_id=wigos_id,
         gauging_status=gauging_status,
+        water_level_datum_masl=water_level_datum_masl,
+        water_level_unit=water_level_unit,
     )
 
 

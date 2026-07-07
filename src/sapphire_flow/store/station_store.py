@@ -102,6 +102,8 @@ class PgStationStore:
                     4326,
                 ),
                 altitude_masl=station.location.altitude_masl,
+                water_level_datum_masl=station.water_level_datum_masl,
+                water_level_unit=station.water_level_unit,
                 station_kind=station.station_kind.value,
                 basin_id=station.basin_id,
                 timezone=station.timezone,
@@ -134,6 +136,8 @@ class PgStationStore:
                     4326,
                 ),
                 altitude_masl=station.location.altitude_masl,
+                water_level_datum_masl=station.water_level_datum_masl,
+                water_level_unit=station.water_level_unit,
                 measured_parameters=list(station.measured_parameters),
                 forecast_targets=list(station.forecast_targets)
                 if station.forecast_targets
@@ -284,6 +288,8 @@ def _row_to_station(row: sa.engine.row.RowMapping) -> StationConfig:
         ownership=StationOwnership(row["ownership"]),
         wigos_id=row["wigos_id"],
         gauging_status=GaugingStatus(row["gauging_status"]),
+        water_level_datum_masl=row["water_level_datum_masl"],
+        water_level_unit=row["water_level_unit"],
     )
 
 

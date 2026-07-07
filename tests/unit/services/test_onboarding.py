@@ -4,6 +4,9 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 from uuid import uuid4
 
+import pytest
+
+from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.onboarding import _run_onboarding
 from sapphire_flow.types.basin import Basin
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
@@ -58,7 +61,7 @@ _TEST_RULES = QcRuleSet(
             rule_version="1.0",
             parameter="water_level",
             time_step=timedelta(days=1),
-            thresholds={"value_min": 0.0, "value_max": 1000.0},
+            thresholds={"value_min": 0.0, "value_max": 60.0},
         ),
     ),
 )
@@ -233,6 +236,79 @@ class TestHappyPath:
         assert result.observations_qc_failed == 0
         assert result.observations_qc_suspect == 0
 
+    def test_water_level_onboarding_qc_and_baselines_use_relative_stage(self) -> None:
+        sid = StationId(uuid4())
+        station = make_station_config(
+            station_id=sid,
+            code="LAKE",
+            station_kind=StationKind.LAKE,
+            forecast_targets=frozenset({"water_level"}),
+            measured_parameters=frozenset({"water_level"}),
+            water_level_datum_masl=100.0,
+            water_level_unit="m a.s.l.",
+        )
+        s = _Stores()
+
+        result = _run(
+            s,
+            stations=[station],
+            basins=[_make_basin("LAKE")],
+            obs_by_station={sid: _make_raw_waterlevel_obs(sid, 100)},
+            forcing_by_station={sid: _make_forcing(sid, 100)},
+        )
+
+        baselines = s.baseline.fetch_baselines(sid, "water_level")
+        assert result.observations_qc_failed == 0
+        assert result.observations_qc_passed == 100
+        assert baselines
+        assert max(b.rolling_mean for b in baselines) < 60.0
+
+    def test_water_level_baselines_skipped_until_datum_exists(self) -> None:
+        sid = StationId(uuid4())
+        station = make_station_config(
+            station_id=sid,
+            code="LAKE",
+            station_kind=StationKind.LAKE,
+            forecast_targets=frozenset({"water_level"}),
+            measured_parameters=frozenset({"water_level"}),
+            water_level_datum_masl=None,
+            water_level_unit="m a.s.l.",
+        )
+        s = _Stores()
+
+        result = _run(
+            s,
+            stations=[station],
+            basins=[_make_basin("LAKE")],
+            obs_by_station={sid: _make_raw_waterlevel_obs(sid, 100)},
+            forcing_by_station={sid: _make_forcing(sid, 100)},
+        )
+
+        assert result.observations_qc_passed == 100
+        assert s.baseline.fetch_baselines(sid, "water_level") == []
+
+    def test_unsupported_water_level_unit_fails_loudly(self) -> None:
+        sid = StationId(uuid4())
+        station = make_station_config(
+            station_id=sid,
+            code="LAKE",
+            station_kind=StationKind.LAKE,
+            forecast_targets=frozenset({"water_level"}),
+            measured_parameters=frozenset({"water_level"}),
+            water_level_datum_masl=100.0,
+            water_level_unit="cm",
+        )
+        s = _Stores()
+
+        with pytest.raises(ConfigurationError, match="water_level_unit"):
+            _run(
+                s,
+                stations=[station],
+                basins=[_make_basin("LAKE")],
+                obs_by_station={sid: _make_raw_waterlevel_obs(sid, 10)},
+                forcing_by_station={sid: _make_forcing(sid, 10)},
+            )
+
 
 class TestDedupExistingStation:
     def test_dedup_existing_station(self) -> None:
@@ -390,6 +466,7 @@ class TestLakeStationOnboarding:
             station_kind=StationKind.LAKE,
             forecast_targets=frozenset({"water_level"}),
             measured_parameters=frozenset({"water_level"}),
+            water_level_unit="m a.s.l.",
         )
         basin = _make_basin("LAKE001")
         obs = _make_raw_waterlevel_obs(sid, 400)
@@ -414,8 +491,8 @@ class TestLakeStationOnboarding:
         assert discharge_obs == []
         waterlevel_obs = s.obs.fetch_observations(sid, "water_level", _START, _END)
         assert len(waterlevel_obs) == 400
-        # Baselines and flow regime computed for water_level
-        assert len(s.baseline.fetch_baselines(sid, "water_level")) > 0
+        # Baselines wait for the surveyed datum; flow regime can still use passed obs.
+        assert s.baseline.fetch_baselines(sid, "water_level") == []
         assert len(s.baseline.fetch_baselines(sid, "discharge")) == 0
         regime = s.regime.fetch_latest(sid, "water_level")
         assert regime is not None

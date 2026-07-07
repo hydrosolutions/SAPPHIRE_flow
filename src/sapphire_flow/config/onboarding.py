@@ -15,6 +15,8 @@ from sapphire_flow.config._overlay import (
 class OnboardingConfig:
     data_source: str = "camels-ch"
     basin_ids: tuple[str, ...] = ()
+    water_level_datums_masl: dict[str, float] | None = None
+    water_level_units: dict[str, str] | None = None
 
 
 def load_onboarding_config(
@@ -36,8 +38,14 @@ def load_onboarding_config(
 
     basin_ids_raw = section.get("basin_ids", [])
     basin_ids = tuple(str(bid) for bid in basin_ids_raw)
+    datums_raw = section.get("water_level_datums_masl", {})
+    units_raw = section.get("water_level_units", {})
 
     return OnboardingConfig(
         data_source=section.get("data_source", "camels-ch"),
         basin_ids=basin_ids,
+        water_level_datums_masl={
+            str(code): float(datum) for code, datum in datums_raw.items()
+        },
+        water_level_units={str(code): str(unit) for code, unit in units_raw.items()},
     )

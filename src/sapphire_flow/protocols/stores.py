@@ -687,6 +687,9 @@ class ClimBaselineStore(Protocol):
         # Upsert keyed on (station_id, parameter, day_of_year)
         raise NotImplementedError
 
+    def delete_baselines(self, station_id: StationId, parameter: str) -> None:
+        raise NotImplementedError
+
     def fetch_baselines(
         self, station_id: StationId, parameter: str
     ) -> list[ClimBaseline]:
@@ -706,6 +709,7 @@ class QualityChecker(Protocol):
         rule_set: QcRuleSet,
         overrides: list[StationQcOverride],
         baselines: list[ClimBaseline],
+        skipped_rule_ids: frozenset[str] = frozenset(),
     ) -> dict[ObservationId, list[QcFlag]]:
         raise NotImplementedError
 
@@ -718,6 +722,7 @@ class ForecastQualityChecker(Protocol):
         rule_set: ForecastQcRuleSet,
         overrides: list[StationForecastQcOverride],
         baselines: list[ClimBaseline],
+        skipped_rule_ids: frozenset[str] = frozenset(),
     ) -> list[QcFlag]: ...
 
 

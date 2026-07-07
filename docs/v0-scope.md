@@ -264,7 +264,7 @@ These are deferred in architecture-context.md. For v0, don't create their tables
 - `parameters` — as designed (canonical parameter names, units, aggregation methods). Seeded via Alembic migration with the 10 canonical parameters defined in `architecture-context.md`.
 
 ### Core entities
-- `stations` — as designed (without override columns); includes `network`, `ownership`, `wigos_id`, `gauging_status` columns; unique constraint is `(network, code)`; `forecast_targets` is JSONB nullable (NULL for weather stations; e.g. `["discharge"]` or `["discharge","water_level"]`)
+- `stations` — as designed (without override columns); includes `network`, `ownership`, `wigos_id`, `gauging_status`, `water_level_datum_masl`, and `water_level_unit` columns; unique constraint is `(network, code)`; `forecast_targets` is JSONB nullable (NULL for weather stations; e.g. `["discharge"]` or `["discharge","water_level"]`). Water-level QC preserves raw absolute values and subtracts the station datum before relative-stage rules; if the datum is missing, datum-dependent rules are skipped until metadata is filled and baselines can be recomputed.
 - `basins` — as designed; includes `network` column; unique constraint is `(network, code)`
 - `station_thresholds` — as designed
 - `flow_regime_configs` — as designed

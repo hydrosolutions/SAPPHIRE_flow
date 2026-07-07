@@ -41,6 +41,8 @@ class StationConfig:
     ownership: StationOwnership
     wigos_id: str | None
     gauging_status: GaugingStatus = GaugingStatus.GAUGED
+    water_level_datum_masl: float | None = None
+    water_level_unit: str | None = None
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

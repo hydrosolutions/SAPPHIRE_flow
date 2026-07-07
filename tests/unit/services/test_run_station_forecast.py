@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import random
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 import polars as pl
@@ -17,7 +16,8 @@ from sapphire_flow.services.run_station_forecast import (
     run_station_forecast,
 )
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.domain import ForecastQcRuleSet, QcFlag
+from sapphire_flow.types.domain import ForecastQcRuleParams, ForecastQcRuleSet, QcFlag
+from sapphire_flow.types.ensemble import ForecastEnsemble
 from sapphire_flow.types.enums import (
     ModelArtifactStatus,
     ModelAssignmentStatus,
@@ -35,9 +35,6 @@ from sapphire_flow.types.model import StationInputData, StationModelInputs
 from sapphire_flow.types.station import ModelAssignment
 from tests.fakes.fake_models import FakeStationForecastModel
 from tests.fakes.fake_stores import FakeModelArtifactStore
-
-if TYPE_CHECKING:
-    from sapphire_flow.types.ensemble import ForecastEnsemble
 
 _NOW = ensure_utc(datetime(2025, 6, 1, 6, 0, tzinfo=UTC))
 _STEP = timedelta(hours=24)
@@ -117,6 +114,56 @@ def _seed_artifact(store: FakeModelArtifactStore, model_id: ModelId) -> Artifact
 
 def _empty_qc_rules() -> ForecastQcRuleSet:
     return ForecastQcRuleSet(version="1.0", rules=())
+
+
+def _water_level_qc_rules() -> ForecastQcRuleSet:
+    return ForecastQcRuleSet(
+        version="1.0",
+        rules=(
+            ForecastQcRuleParams(
+                rule_id="range_check",
+                rule_version="1.0",
+                parameter="water_level",
+                time_step=_STEP,
+                thresholds={"value_min": -2.0, "value_max": 20.0},
+            ),
+        ),
+    )
+
+
+class _WaterLevelModel(FakeStationForecastModel):
+    parameter = "water_level"
+    units = "m"
+
+    def predict(
+        self,
+        artifact: object,
+        inputs: StationModelInputs,
+        rng: random.Random,
+        prior_state: bytes | None = None,
+    ) -> tuple[dict[str, ForecastEnsemble], bytes | None]:
+        rows = [
+            {
+                "valid_time": inputs.issue_time + (step + 1) * inputs.time_step,
+                "member_id": member,
+                "value": 261.0,
+            }
+            for step in range(inputs.forecast_horizon_steps)
+            for member in range(3)
+        ]
+        df = pl.DataFrame(rows).with_columns(
+            pl.col("valid_time").cast(pl.Datetime("us", "UTC")),
+            pl.col("member_id").cast(pl.Int32),
+        )
+        ensemble = ForecastEnsemble.from_members(
+            station_id=inputs.station_id,
+            issued_at=inputs.issue_time,
+            parameter="water_level",
+            units="m",
+            time_step=inputs.time_step,
+            values=df,
+        )
+        return {"water_level": ensemble}, None
 
 
 def _fixed_clock() -> object:
@@ -209,6 +256,62 @@ class TestHappyPath:
         assert fc.version == 1
         assert fc.created_at == _NOW
         assert fc.updated_at == _NOW
+
+    def test_water_level_qc_uses_relative_stage_when_datum_present(self) -> None:
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, _MODEL_ID_A)
+
+        result = run_station_forecast(
+            station_id=_STATION_ID,
+            inputs=_make_inputs(),
+            input_metadata=_make_metadata(),
+            assignments=[_make_assignment(_MODEL_ID_A)],
+            models={_MODEL_ID_A: _WaterLevelModel()},  # type: ignore[dict-item]
+            artifact_store=store,
+            qc_checker=ForecastOutputQualityChecker(),
+            qc_rules=_water_level_qc_rules(),
+            qc_overrides=[],
+            baselines=[],
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            config=_make_config(),
+            clock=_fixed_clock(),  # type: ignore[arg-type]
+            id_gen=_sequential_id_gen(),  # type: ignore[arg-type]
+            rng=_RNG,
+            water_level_datum_masl=260.0,
+        )
+
+        assert result is not None
+        forecast = result.forecasts[0]
+        assert forecast.qc_status == QcStatus.QC_PASSED
+        assert forecast.ensemble.values["value"].min() == 261.0
+
+    def test_water_level_qc_skips_range_check_when_datum_missing(self) -> None:
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, _MODEL_ID_A)
+
+        result = run_station_forecast(
+            station_id=_STATION_ID,
+            inputs=_make_inputs(),
+            input_metadata=_make_metadata(),
+            assignments=[_make_assignment(_MODEL_ID_A)],
+            models={_MODEL_ID_A: _WaterLevelModel()},  # type: ignore[dict-item]
+            artifact_store=store,
+            qc_checker=ForecastOutputQualityChecker(),
+            qc_rules=_water_level_qc_rules(),
+            qc_overrides=[],
+            baselines=[],
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            config=_make_config(),
+            clock=_fixed_clock(),  # type: ignore[arg-type]
+            id_gen=_sequential_id_gen(),  # type: ignore[arg-type]
+            rng=_RNG,
+            water_level_datum_masl=None,
+        )
+
+        assert result is not None
+        assert result.forecasts[0].qc_status == QcStatus.QC_PASSED
 
 
 class TestMultiModelFallback:

@@ -45,6 +45,8 @@ from sapphire_flow.protocols.stores import (
     StationStore,
     WeatherForecastStore,
 )
+from sapphire_flow.types.domain import ClimBaseline
+from sapphire_flow.types.ids import StationId
 from tests.fakes.fake_adapters import (
     FakeForeignForecastSource,
     FakeGridExtractor,
@@ -160,6 +162,47 @@ class TestFakeAdapterConformance:
 
     def test_pipeline_status_source(self) -> None:
         assert isinstance(FakePipelineStatusSource(), PipelineStatusSource)
+
+
+class TestFakeClimBaselineStore:
+    def test_delete_baselines_removes_only_target_parameter(self) -> None:
+        store = FakeClimBaselineStore()
+        sid = StationId(_fake_uuid())
+        other_sid = StationId(_fake_uuid())
+        store.store_baselines(
+            [
+                ClimBaseline(
+                    station_id=sid,
+                    parameter="water_level",
+                    day_of_year=1,
+                    rolling_mean=100.0,
+                    rolling_std=1.0,
+                    sample_count=30,
+                ),
+                ClimBaseline(
+                    station_id=sid,
+                    parameter="discharge",
+                    day_of_year=1,
+                    rolling_mean=10.0,
+                    rolling_std=1.0,
+                    sample_count=30,
+                ),
+                ClimBaseline(
+                    station_id=other_sid,
+                    parameter="water_level",
+                    day_of_year=1,
+                    rolling_mean=200.0,
+                    rolling_std=1.0,
+                    sample_count=30,
+                ),
+            ]
+        )
+
+        store.delete_baselines(sid, "water_level")
+
+        assert store.fetch_baselines(sid, "water_level") == []
+        assert len(store.fetch_baselines(sid, "discharge")) == 1
+        assert len(store.fetch_baselines(other_sid, "water_level")) == 1
 
     def test_foreign_forecast_source(self) -> None:
         assert isinstance(FakeForeignForecastSource(), ForeignForecastSource)

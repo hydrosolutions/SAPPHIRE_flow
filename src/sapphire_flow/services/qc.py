@@ -144,6 +144,22 @@ def _apply_spike(
         return None
     if obs.value is None or prev.value is None or nxt.value is None:
         return None
+    if "max_delta" in thresholds:
+        max_delta = thresholds["max_delta"]
+        if (
+            abs(obs.value - prev.value) > max_delta
+            and abs(obs.value - nxt.value) > max_delta
+        ):
+            return QcFlag(
+                rule_id=rule.rule_id,
+                rule_version=_RULE_VERSION,
+                status=QcStatus.QC_SUSPECT,
+                detail=(
+                    f"spike: value {obs.value} deviates from prev {prev.value} "
+                    f"and next {nxt.value} by >{max_delta}"
+                ),
+            )
+        return None
     tolerance = thresholds["tolerance"]
     ref = abs(prev.value)
     if ref == 0.0:
@@ -199,6 +215,7 @@ class Stage1QualityChecker:
         rule_set: QcRuleSet,
         overrides: list[StationQcOverride],
         baselines: list[ClimBaseline],
+        skipped_rule_ids: frozenset[str] = frozenset(),
     ) -> dict[ObservationId, list[QcFlag]]:
         if not observations:
             return {}
@@ -222,6 +239,8 @@ class Stage1QualityChecker:
             rules = rule_set.rules_for(parameter, time_step)
 
             for rule in rules:
+                if rule.rule_id in skipped_rule_ids:
+                    continue
                 thresholds = _merge_thresholds(rule, overrides, station_id)
 
                 if rule.rule_id == "frozen_sensor":

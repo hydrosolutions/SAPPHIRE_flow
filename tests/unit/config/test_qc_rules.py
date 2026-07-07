@@ -1,14 +1,19 @@
 from __future__ import annotations
 
-from datetime import timedelta
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
-if TYPE_CHECKING:
-    from pathlib import Path
-
 from sapphire_flow.config.qc_rules import _default_swiss_qc_rules, load_qc_rules
+from sapphire_flow.services.qc import Stage1QualityChecker
+from sapphire_flow.types.datetime import ensure_utc
+from sapphire_flow.types.enums import ObservationSource, QcStatus
+from sapphire_flow.types.ids import ObservationId, StationId
+from sapphire_flow.types.observation import Observation
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 _MINIMAL_TOML = """\
 weather_hot_days = 180
@@ -109,6 +114,62 @@ class TestDefaultRules:
             "spike",
             "gross_outlier",
         }
+
+
+class TestProductionConfigRules:
+    @pytest.mark.parametrize(
+        "relative_path",
+        ("config.toml", "docs/spec/config-reference.toml"),
+    )
+    def test_water_level_spike_rules_use_max_delta(self, relative_path: str) -> None:
+        rules = load_qc_rules(_REPO_ROOT / relative_path)
+        water_level_spikes = [
+            rule
+            for rule in rules.rules
+            if rule.parameter == "water_level" and rule.rule_id == "spike"
+        ]
+
+        assert {rule.time_step for rule in water_level_spikes} == {
+            timedelta(seconds=600),
+            timedelta(seconds=86400),
+        }
+        assert {
+            rule.time_step: rule.thresholds["max_delta"] for rule in water_level_spikes
+        } == {
+            timedelta(seconds=600): 1.0,
+            timedelta(seconds=86400): 5.0,
+        }
+        assert all("tolerance" not in rule.thresholds for rule in water_level_spikes)
+
+    def test_loaded_water_level_spike_rule_dispatches_on_max_delta(self) -> None:
+        station_id = StationId(uuid4())
+        start = ensure_utc(datetime(2026, 4, 8, 14, 0, tzinfo=UTC))
+        observations = [
+            Observation(
+                id=ObservationId(uuid4()),
+                station_id=station_id,
+                timestamp=ensure_utc(start + timedelta(minutes=10 * i)),
+                parameter="water_level",
+                value=value,
+                source=ObservationSource.MEASURED,
+                rating_curve_id=None,
+                rating_curve_correction_version=None,
+                qc_status=QcStatus.RAW,
+                qc_flags=[],
+                qc_rule_version=None,
+                created_at=start,
+            )
+            for i, value in enumerate((15.0, 16.2, 15.0))
+        ]
+
+        flags = Stage1QualityChecker().check(
+            observations,
+            load_qc_rules(_REPO_ROOT / "config.toml"),
+            overrides=[],
+            baselines=[],
+        )
+
+        assert any(flag.rule_id == "spike" for flag in flags[observations[1].id])
 
 
 class TestRulesForFilter:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import random  # noqa: TC003
 from collections.abc import Callable  # noqa: TC003
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from uuid import UUID  # noqa: TC003
 
 import structlog
@@ -18,6 +18,11 @@ from sapphire_flow.services.input_quality import assess_input_quality
 from sapphire_flow.services.nwp_coverage import assess_future_coverage
 from sapphire_flow.services.operational_inputs import (
     OperationalInputMetadata,  # noqa: TC001
+)
+from sapphire_flow.services.qc_datum import (
+    add_forecast_datum_details,
+    forecast_skipped_rules,
+    shift_ensemble_for_water_level_datum,
 )
 from sapphire_flow.types.enums import EnsembleMode, ForecastStatus, QcStatus
 from sapphire_flow.types.forecast import OperationalForecast
@@ -98,6 +103,7 @@ def _run_single_model(
     qc_rules: ForecastQcRuleSet,
     qc_overrides: list[StationForecastQcOverride],
     baselines: list[ClimBaseline],
+    water_level_datum_masl: float | None,
     nwp_cycle_reference_time: UtcDatetime | None,
     nwp_cycle_source: NwpCycleSource,
     config: DeploymentConfig,
@@ -212,9 +218,30 @@ def _run_single_model(
     if ensemble_member_states is not None:
         reject_stateful_ensemble_states(ensemble_member_states)
 
-    all_flags: dict[str, list] = {}
+    ensembles = cast("dict[str, ForecastEnsemble]", ensembles)
+    new_state = cast("bytes | None", new_state)
+
+    all_flags: dict[str, list[QcFlag]] = {}
     for param, ensemble in ensembles.items():
-        flags = qc_checker.check(ensemble, qc_rules, qc_overrides, baselines)
+        datum = water_level_datum_masl if param == "water_level" else None
+        qc_ensemble = shift_ensemble_for_water_level_datum(ensemble, datum=datum)
+        skipped_rules = forecast_skipped_rules(param, datum)
+        if skipped_rules:
+            flags = qc_checker.check(
+                qc_ensemble,
+                qc_rules,
+                qc_overrides,
+                baselines,
+                skipped_rule_ids=skipped_rules,
+            )
+        else:
+            flags = qc_checker.check(qc_ensemble, qc_rules, qc_overrides, baselines)
+        flags = add_forecast_datum_details(
+            flags,
+            raw_ensemble=ensemble,
+            shifted_ensemble=qc_ensemble,
+            datum=datum,
+        )
         all_flags[param] = flags
         worst = worst_qc_status(flags)
         if worst == QcStatus.QC_FAILED:
@@ -295,6 +322,7 @@ def run_all_station_forecasts(
     clock: Callable[[], UtcDatetime],
     id_gen: Callable[[], UUID],
     rng: random.Random,
+    water_level_datum_masl: float | None = None,
 ) -> MultiModelForecastResult:
     sorted_assignments = sorted(assignments, key=lambda a: a.priority)
 
@@ -316,6 +344,7 @@ def run_all_station_forecasts(
             qc_rules=qc_rules,
             qc_overrides=qc_overrides,
             baselines=baselines,
+            water_level_datum_masl=water_level_datum_masl,
             nwp_cycle_reference_time=nwp_cycle_reference_time,
             nwp_cycle_source=nwp_cycle_source,
             config=config,
@@ -356,6 +385,7 @@ def run_station_forecast(
     clock: Callable[[], UtcDatetime],
     id_gen: Callable[[], UUID],
     rng: random.Random,
+    water_level_datum_masl: float | None = None,
 ) -> StationForecastResult | None:
     multi = run_all_station_forecasts(
         station_id=station_id,
@@ -374,6 +404,7 @@ def run_station_forecast(
         clock=clock,
         id_gen=id_gen,
         rng=rng,
+        water_level_datum_masl=water_level_datum_masl,
     )
     if multi.primary_model_id is None:
         log.warning(
