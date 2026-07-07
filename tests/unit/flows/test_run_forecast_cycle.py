@@ -27,14 +27,18 @@ from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.domain import ForecastQcRuleSet, StationThreshold
 from sapphire_flow.types.ensemble import ForecastEnsemble
 from sapphire_flow.types.enums import (
+    AlertEligibility,
     AlertSource,
     AlertStatus,
     ArtifactScope,
     EnsembleMode,
+    ForecastCycleHealth,
     ModelArtifactStatus,
     ModelAssignmentStatus,
     ModelCombinationStrategy,
     NwpCycleSource,
+    PipelineCheckType,
+    PipelineHealthStatus,
     SpatialRepresentation,
     StationKind,
     StationStatus,
@@ -67,6 +71,7 @@ from tests.fakes.fake_stores import (
     FakeModelStateStore,
     FakeNwpGridStore,
     FakeObservationStore,
+    FakePipelineHealthStore,
     FakeStationGroupStore,
     FakeStationStore,
     FakeWeatherForecastStore,
@@ -429,6 +434,7 @@ class _SmallFakeModel(FakeStationForecastModel):
 
     from sapphire_flow.types.model import ModelDataRequirements
 
+    alert_eligibility = AlertEligibility.SKILL_FORECAST
     data_requirements = FakeStationForecastModel.data_requirements.__class__(
         target_parameters=frozenset({"discharge"}),
         past_dynamic_features=frozenset({"precipitation", "temperature"}),
@@ -444,6 +450,7 @@ class _SmallFakeModel(FakeStationForecastModel):
 class _NativeFakeModel(FakeStationForecastModel):
     """Native model declaring NO future features (persistence/climatology-like)."""
 
+    alert_eligibility = AlertEligibility.SKILL_FORECAST
     data_requirements = FakeStationForecastModel.data_requirements.__class__(
         target_parameters=frozenset({"discharge"}),
         past_dynamic_features=frozenset(),
@@ -459,6 +466,7 @@ class _NativeFakeModel(FakeStationForecastModel):
 class _RecordingNwpFakeModel(FakeStationForecastModel):
     """NWP model that records the future_dynamic frame it is handed at predict."""
 
+    alert_eligibility = AlertEligibility.SKILL_FORECAST
     data_requirements = FakeStationForecastModel.data_requirements.__class__(
         target_parameters=frozenset({"discharge"}),
         past_dynamic_features=frozenset(),
@@ -533,6 +541,48 @@ enabled = false
         config = _load_weather_forecast_adapter_config()
 
         assert config.enabled is False
+
+    def test_require_nwp_env_is_parsed_without_sapphire_config(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("SAPPHIRE_CONFIG", raising=False)
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+        monkeypatch.setenv("SAPPHIRE_REQUIRE_NWP", "1")
+
+        config = _load_weather_forecast_adapter_config()
+
+        assert config.require_nwp is True
+        assert config.enabled is False
+
+    def test_require_nwp_invalid_env_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("SAPPHIRE_CONFIG", raising=False)
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+        monkeypatch.setenv("SAPPHIRE_REQUIRE_NWP", "sometimes")
+
+        with pytest.raises(ConfigurationError, match="SAPPHIRE_REQUIRE_NWP"):
+            _load_weather_forecast_adapter_config()
+
+    def test_expected_delivery_offset_parses_from_monitoring(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_path = _write_forecast_cycle_config(
+            tmp_path / "config.toml",
+            """
+[adapters.weather_forecast]
+enabled = false
+
+[adapters.weather_forecast.monitoring]
+expected_delivery_offset_hours = 2.5
+""",
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config_path))
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+
+        config = _load_weather_forecast_adapter_config()
+
+        assert config.expected_delivery_offset_hours == 2.5
 
     def test_absent_enabled_key(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -870,6 +920,7 @@ class _SmallFakeGroupModel(FakeGroupForecastModel):
     """Group fake with the same compact data window as the flow station fake."""
 
     artifact_scope = ArtifactScope.GROUP
+    alert_eligibility = AlertEligibility.SKILL_FORECAST
     data_requirements = FakeGroupForecastModel.data_requirements.__class__(
         target_parameters=frozenset({"discharge"}),
         past_dynamic_features=frozenset({"precipitation", "temperature"}),
@@ -1222,6 +1273,40 @@ scratch_path = "/tmp/test-nwp"
             for event in captured
         )
 
+    def test_require_nwp_with_disabled_adapter_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_path = _write_forecast_cycle_config(
+            tmp_path / "config.toml",
+            """
+[adapters.weather_forecast]
+enabled = false
+""",
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config_path))
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+        monkeypatch.setenv("SAPPHIRE_REQUIRE_NWP", "1")
+
+        with pytest.raises(ConfigurationError, match="SAPPHIRE_REQUIRE_NWP"):
+            run_forecast_cycle_flow(
+                station_store=FakeStationStore(),
+                obs_store=FakeObservationStore(),
+                weather_forecast_store=FakeWeatherForecastStore(),
+                forecast_store=FakeForecastStore(),
+                model_state_store=FakeModelStateStore(),
+                artifact_store=FakeModelArtifactStore(),
+                alert_store=FakeAlertStore(),
+                pipeline_health_store=FakePipelineHealthStore(),
+                baseline_store=FakeClimBaselineStore(),
+                basin_store=FakeBasinStore(),
+                forcing_store=FakeHistoricalForcingStore(),
+                models={},
+                config=_make_config(),
+                qc_rules=_empty_qc_rules(),
+                clock=_clock,
+                rng=random.Random(42),
+            )
+
     def test_runoff_only_ignores_grid_archive_path(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1396,6 +1481,76 @@ scratch_path = "/tmp/test-nwp"
         # Warm-up state persisted for both stations
         assert (sid_a, _MODEL_ID) in state_store._states
         assert (sid_b, _MODEL_ID) in state_store._states
+
+    def test_station_dark_writes_pipeline_health_and_degrades_cycle(self) -> None:
+        sid_dark = StationId(uuid4())
+        sid_ok = StationId(uuid4())
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        pipeline_health_store = FakePipelineHealthStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid_dark,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+            seed_artifact=False,
+        )
+        _build_station_and_stores(
+            sid_ok,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+        )
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            pipeline_health_store=pipeline_health_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=FakeWeatherForecastSource(result={}),
+            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+            config=_make_config(),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+        )
+
+        assert result.stations_succeeded == 1
+        assert result.stations_failed == 1
+        assert result.health is ForecastCycleHealth.DEGRADED
+        assert any("produced zero forecasts" in err for err in result.errors)
+        records = pipeline_health_store.fetch_recent(
+            PipelineCheckType.FORECAST_STATION_DARK
+        )
+        assert len(records) == 1
+        assert records[0].status is PipelineHealthStatus.CRITICAL
+        assert records[0].subject == str(sid_dark)
+        assert records[0].detail["reason"] == "all_models_failed"
+        assert records[0].detail["assigned_models"] == [str(_MODEL_ID)]
+        assert records[0].detail["nwp_enabled"] is True
 
     def test_superset_assembly_feeds_nwp_model_despite_native_first(self) -> None:
         # Heterogeneous model set: a native model (no future features) at higher
@@ -1584,6 +1739,123 @@ scratch_path = "/tmp/test-nwp"
         assert all(f.model_id != nwp_id for f in stored)
         assert nwp_model.seen_future_dynamic is None
 
+    def test_nwp_grid_stale_writes_pipeline_health_and_degrades_cycle(self) -> None:
+        sid = StationId(uuid4())
+
+        class _StaleLatestCycleWeatherStore(FakeWeatherForecastStore):
+            def fetch_latest_cycle_time(self, nwp_source: str) -> UtcDatetime | None:
+                return ensure_utc(_NOW - timedelta(hours=31))
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = _StaleLatestCycleWeatherStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        pipeline_health_store = FakePipelineHealthStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+        )
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            pipeline_health_store=pipeline_health_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=FakeWeatherForecastSource(result={}),
+            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+            config=_make_config(),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+        )
+
+        assert result.forecasts_stored == 1
+        assert result.health is ForecastCycleHealth.DEGRADED
+        records = pipeline_health_store.fetch_recent(PipelineCheckType.NWP_DELIVERY)
+        assert len(records) == 1
+        assert records[0].status is PipelineHealthStatus.CRITICAL
+        assert records[0].subject == "nwp_grid"
+        assert records[0].detail == {
+            "last_grid_age_hours": 31.0,
+            "expected_offset_hours": 5.0,
+        }
+
+    def test_fallback_priority_drift_tripwire_degrades_cycle(self) -> None:
+        import structlog.testing
+
+        sid = StationId(uuid4())
+        fallback_id = ModelId("persistence_fallback")
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        pipeline_health_store = FakePipelineHealthStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            fallback_id,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+        )
+
+        with structlog.testing.capture_logs() as captured:
+            result = run_forecast_cycle_flow(
+                station_store=station_store,
+                obs_store=obs_store,
+                weather_forecast_store=nwp_store,
+                forecast_store=forecast_store,
+                model_state_store=state_store,
+                artifact_store=artifact_store,
+                alert_store=alert_store,
+                pipeline_health_store=pipeline_health_store,
+                baseline_store=baseline_store,
+                basin_store=basin_store,
+                forcing_store=forcing_store,
+                adapter=FakeWeatherForecastSource(result={}),
+                models={fallback_id: _SmallFakeModel()},  # type: ignore[dict-item]
+                config=_make_config(),
+                qc_rules=_empty_qc_rules(),
+                clock=_clock,
+                rng=random.Random(42),
+            )
+
+        assert result.forecasts_stored == 1
+        assert result.health is ForecastCycleHealth.DEGRADED
+        assert any(
+            event.get("event") == "forecast_cycle.fallback_priority_drift"
+            and event.get("log_level") == "error"
+            for event in captured
+        )
+
     def test_accepts_group_store_kwarg_without_group_runs(self) -> None:
         sid = StationId(uuid4())
 
@@ -1728,6 +2000,70 @@ scratch_path = "/tmp/test-nwp"
             == ModelCombinationStrategy.POOLED
         )
         assert alerts_by_station[sid_b].model_ids == (group_model_id,)
+
+    def test_fallback_only_forecast_alert_is_suppressed_with_health_record(
+        self,
+    ) -> None:
+        sid = StationId(uuid4())
+        fallback_id = ModelId("climatology_fallback")
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        pipeline_health_store = FakePipelineHealthStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            fallback_id,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+        )
+        station_store.store_thresholds([_make_forecast_threshold(sid)])
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            pipeline_health_store=pipeline_health_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=FakeWeatherForecastSource(result={}),
+            models={fallback_id: _SmallFakeModel()},  # type: ignore[dict-item]
+            config=_make_config(enable_forecast_alerts=True),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+        )
+
+        assert result.forecasts_stored == 1
+        assert result.alerts_checked is False
+        assert result.health is ForecastCycleHealth.DEGRADED
+        assert alert_store.fetch_active_alerts(source=AlertSource.FORECAST) == []
+        records = pipeline_health_store.fetch_recent(
+            PipelineCheckType.ALERT_SUPPRESSED_FALLBACK
+        )
+        assert len(records) == 1
+        assert records[0].status is PipelineHealthStatus.WARNING
+        assert records[0].subject == str(sid)
+        assert records[0].detail == {
+            "alert_eligibility": [AlertEligibility.NO_EVENT_INFORMATION.value],
+            "parameter": ["discharge"],
+        }
 
     def test_group_path_runs_without_station_model_assignments(self) -> None:
         sid_a = StationId(uuid4())
@@ -3378,6 +3714,7 @@ class _MonotonicEnsembleModel(FakeStationForecastModel):
 
     from sapphire_flow.types.model import ModelDataRequirements
 
+    alert_eligibility = AlertEligibility.SKILL_FORECAST
     data_requirements = ModelDataRequirements(
         target_parameters=frozenset({"discharge"}),
         past_dynamic_features=frozenset({"precipitation", "temperature"}),

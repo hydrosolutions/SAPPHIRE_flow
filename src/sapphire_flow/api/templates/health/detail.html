@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}Pipeline Health — SAPPHIRE Flow{% endblock %}
+{% block content %}
+<h2>Pipeline Health</h2>
+
+<form method="get" action="/health/detail/" style="display:flex; gap:0.5rem; align-items:end; margin-bottom:1rem;">
+  <div>
+    <label for="check_type"><strong>Check Type</strong></label>
+    <select id="check_type" name="check_type">
+      <option value="">All</option>
+      {% for ct in check_types %}
+      <option value="{{ ct }}" {% if check_type == ct %}selected{% endif %}>{{ ct }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div>
+    <label for="limit"><strong>Limit</strong></label>
+    <input id="limit" name="limit" type="number" min="1" max="500" value="{{ limit }}">
+  </div>
+  <button type="submit">Apply</button>
+</form>
+
+{% if records %}
+<div class="table-container">
+<table>
+  <thead>
+    <tr>
+      <th>Checked At</th>
+      <th>Status</th>
+      <th>Check Type</th>
+      <th>Subject</th>
+      <th>Cycle Time</th>
+      <th>Detail</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in records %}
+    <tr>
+      <td>{{ r.checked_at }}</td>
+      <td>
+        {% if r.status == "ok" %}<span class="badge badge-green">ok</span>
+        {% elif r.status == "warning" %}<span class="badge badge-yellow">warning</span>
+        {% else %}<span class="badge badge-red">{{ r.status }}</span>{% endif %}
+      </td>
+      <td>{{ r.check_type }}</td>
+      <td>{{ r.subject }}</td>
+      <td>{{ r.cycle_time or "—" }}</td>
+      <td><code>{{ r.detail }}</code></td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="muted">No pipeline health records found.</p>
+{% endif %}
+{% endblock %}

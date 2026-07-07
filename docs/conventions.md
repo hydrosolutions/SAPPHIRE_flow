@@ -388,6 +388,7 @@ All status/enum columns store TEXT matching the Python enum `.value` (lowercase)
 | `alerts.status` / `AlertStatus` | `raised`, `acknowledged`, `resolved` | `resolved` | v0+v1 |
 | `alerts.source` / `AlertSource` | `forecast`, `observation`, `pipeline` | — | v0+v1 |
 | `models.artifact_scope` / `ArtifactScope` | `station`, `group` | — | v0+v1 |
+| API/dashboard `model_tier` / `ModelTier` | `skill`, `fallback` | — | v0+v1 |
 | `model_artifacts.status` / `ModelArtifactStatus` | `training`, `pending_approval` *(v1 -- v0 auto-promotes, §A7)*, `active`, `superseded`, `rejected` *(v1)* | `superseded`, `rejected` | v0+v1 |
 | `hindcast_forecasts.forcing_type` / `ForcingType` | `nwp_archive`, `reanalysis` | — | v0+v1 |
 | `skill_scores.skill_source` / `SkillSource` | `hindcast_nwp_archive`, `hindcast_reanalysis`, `operational`, `transfer_validation` | — | v0+v1 |
@@ -423,16 +424,18 @@ All status/enum columns store TEXT matching the Python enum `.value` (lowercase)
 
 ## Model assignment priority
 
-Lower integer = higher priority — the model is tried first in the forecast
-cycle's PRIMARY first-success fallback chain and drives alert decisions when all
-models succeed. The intended hierarchy is **skill models > fallbacks**.
+Lower integer = higher priority within the model's tier — the model is tried first
+in the forecast cycle's PRIMARY first-success chain and drives alert decisions
+when all models succeed. The intended hierarchy is **skill models > fallbacks**,
+but Plan 100 makes that hierarchy categorical: fallback membership comes from
+`ModelTier`/fallback model ID, not from the mutable DB `priority` value.
 
 **Priorities are config-driven (Plan 089).** Onboarding no longer hardcodes a
 priority. It resolves each model's priority from the `[model_priorities]` map in
 `config.toml` (`DeploymentConfig.model_priorities`), keyed by `model_id`. A model
-absent from the map gets `DEFAULT_PRIORITY = 50` — a neutral tier between skill
-models (< 50) and fallbacks (>= 90). Re-onboarding is idempotent and re-applies
-the current config priorities to existing assignments (upsert).
+absent from the map gets `DEFAULT_PRIORITY = 50` — a neutral run-order value for
+non-fallback models. Re-onboarding is idempotent and re-applies the current config
+priorities to existing assignments (upsert).
 
 | Priority | Model type | Semantics |
 |----------|-----------|-----------|
@@ -445,7 +448,9 @@ the current config priorities to existing assignments (upsert).
   into `DeploymentConfig.model_priorities: dict[str, int]`. Operator-tunable.
 - DB default: `server_default="0"` on `model_assignments.priority` and `group_model_assignments.priority`.
 - Alert strategy dispatches via `min(priority)` — lowest integer wins.
-- Priorities >= 90 are reserved for fallback models. `FALLBACK_PRIORITY_THRESHOLD = 90` — models at or above this threshold are excluded from multi-model combination (`pooled`, `bma`, `consensus` strategies). They participate in error-recovery fallback only.
+- `PersistenceFallbackModel` and `ClimatologyFallbackModel` are the fallback tier regardless of the stored assignment priority. API/dashboard surfaces expose this as `model_tier = "fallback"`; all other current models render as `model_tier = "skill"`.
+- The API/dashboard derives a `no_floor` station badge from active `climatology_fallback` artifact presence. This is not a `StationStatus`, station column, or migration.
+- Priorities >= 90 remain reserved for fallback assignment order. Multi-model combination excludes the categorical fallback tier (`ModelTier.FALLBACK`), not rows merely because their DB priority is >= 90.
 - v1 may add a separate `alert_priority` column to decouple fallback order from alert selection (see `architecture-context.md` §I3).
 
 ---

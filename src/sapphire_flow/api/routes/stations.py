@@ -8,7 +8,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from sapphire_flow.api.deps import get_connection
+from sapphire_flow.api.model_visibility import (
+    model_tier_for_model_id,
+    station_has_active_floor,
+)
 from sapphire_flow.api.routes.tables import get_reflected
+from sapphire_flow.types.ids import ModelId, StationId
 
 router = APIRouter(tags=["stations"])
 
@@ -231,6 +236,11 @@ def station_detail(
 
     station = dict(row)
     station["parameters"] = parameters
+    station["no_floor"] = not station_has_active_floor(
+        station_id=StationId(station["id"]),
+        stores={},
+        conn=conn,
+    )
 
     # Basin info
     basin: dict[str, object] | None = None
@@ -312,6 +322,11 @@ def station_detail(
                 .all()
             )
         model_assignments = [dict(r) for r in ma_rows]
+        for assignment in model_assignments:
+            model_id = assignment.get("model_id")
+            assignment["model_tier"] = model_tier_for_model_id(
+                ModelId(str(model_id)) if model_id is not None else None
+            ).value
 
     # Hindcast summary
     hindcast_summary: dict[str, object] | None = None

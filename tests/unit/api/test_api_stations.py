@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import random
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -9,6 +9,8 @@ from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.enums import (
     EnsembleRepresentation,
     ForecastStatus,
+    ModelArtifactStatus,
+    ModelAssignmentStatus,
     NwpCycleSource,
     StationKind,
     StationStatus,
@@ -18,6 +20,7 @@ from sapphire_flow.types.ids import (
     ModelId,
     StationId,
 )
+from sapphire_flow.types.station import ModelAssignment
 from tests.conftest import (
     make_forecast_ensemble,
     make_observation,
@@ -177,8 +180,50 @@ class TestGetStation:
         assert "thresholds" in body
         assert "model_assignments" in body
         assert "weather_sources" in body
+        assert body["no_floor"] is True
         assert "created_at" in body
         assert "updated_at" in body
+
+    def test_model_assignment_exposes_model_tier(
+        self, client: TestClient, fake_stores: dict[str, Any]
+    ) -> None:
+        station = make_station_config(rng=random.Random(1))
+        fake_stores["station_store"].store_station(station)
+        fake_stores["station_store"].store_model_assignment(
+            ModelAssignment(
+                station_id=station.id,
+                model_id=ModelId("persistence_fallback"),
+                time_step=timedelta(hours=24),
+                status=ModelAssignmentStatus.ACTIVE,
+                priority=90,
+                created_at=_EPOCH,
+            )
+        )
+
+        resp = client.get(f"/api/v1/stations/{station.id}")
+        assert resp.status_code == 200
+        assignments = resp.json()["model_assignments"]
+        assert assignments[0]["model_id"] == "persistence_fallback"
+        assert assignments[0]["model_tier"] == "fallback"
+
+    def test_no_floor_false_when_climatology_artifact_is_active(
+        self, client: TestClient, fake_stores: dict[str, Any]
+    ) -> None:
+        station = make_station_config(rng=random.Random(1))
+        fake_stores["station_store"].store_station(station)
+        fake_stores["artifact_store"].store_artifact(
+            ModelId("climatology_fallback"),
+            b"floor",
+            _EPOCH,
+            _EPOCH,
+            _EPOCH,
+            station_id=station.id,
+            status=ModelArtifactStatus.ACTIVE,
+        )
+
+        resp = client.get(f"/api/v1/stations/{station.id}")
+        assert resp.status_code == 200
+        assert resp.json()["no_floor"] is False
 
     def test_not_found(self, client: TestClient) -> None:
         resp = client.get(f"/api/v1/stations/{uuid4()}")

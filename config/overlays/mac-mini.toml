@@ -1,2 +1,4 @@
+enable_observation_alerts = true
+
 [adapters.weather_forecast]
-enabled = false
+enabled = true

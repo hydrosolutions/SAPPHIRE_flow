@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from sapphire_flow.api.deps import get_connection
+from sapphire_flow.api.model_visibility import model_tier_for_model_id
 from sapphire_flow.api.routes.tables import get_reflected
 
 router = APIRouter(tags=["models"])
@@ -78,6 +79,7 @@ def model_detail(
         raise HTTPException(status_code=404, detail="Model not found")
 
     model = dict(row)
+    model["model_tier"] = model_tier_for_model_id(model.get("id")).value
 
     # Get artifacts
     artifacts_table = reflected.tables.get("model_artifacts")
@@ -108,6 +110,10 @@ def model_detail(
             .all()
         )
         assignments = [dict(r) for r in raw]
+        for assignment in assignments:
+            assignment["model_tier"] = model_tier_for_model_id(
+                assignment.get("model_id")
+            ).value
 
     # Get skill scores for active artifact
     active_artifact_id = None

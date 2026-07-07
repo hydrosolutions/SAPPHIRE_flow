@@ -5,9 +5,14 @@ from enum import Enum
 from typing import Any
 from uuid import UUID
 
+import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from sapphire_flow.api.deps import get_stores
+from sapphire_flow.api.deps import get_connection, get_stores
+from sapphire_flow.api.model_visibility import (
+    model_tier_for_model_id,
+    station_has_active_floor,
+)
 from sapphire_flow.api.schemas import (
     ForecastSummary,
     GeoCoordResponse,
@@ -56,6 +61,7 @@ def _to_threshold_response(t: Any) -> ThresholdResponse:
 def _to_model_assignment_response(a: Any) -> ModelAssignmentResponse:
     return ModelAssignmentResponse(
         model_id=str(a.model_id),
+        model_tier=model_tier_for_model_id(a.model_id).value,
         time_step_hours=a.time_step.total_seconds() / 3600,
         status=a.status.value,
         priority=a.priority,
@@ -96,6 +102,7 @@ def _to_forecast_summary(row: Any) -> ForecastSummary:
         id=str(row.id),
         station_id=str(row.station_id),
         model_id=str(row.model_id),
+        model_tier=model_tier_for_model_id(row.model_id).value,
         issued_at=row.issued_at,
         parameter=row.parameter,
         representation=row.representation.value,
@@ -162,6 +169,7 @@ def list_stations(
 def get_station(
     station_id: str,
     stores: dict[str, Any] = Depends(get_stores),
+    conn: sa.Connection = Depends(get_connection),
 ) -> StationDetail:
     sid = StationId(UUID(station_id))
     station = stores["station_store"].fetch_station(sid)
@@ -202,6 +210,7 @@ def get_station(
         wigos_id=station.wigos_id,
         created_at=station.created_at,
         updated_at=station.updated_at,
+        no_floor=not station_has_active_floor(station_id=sid, stores=stores, conn=conn),
         thresholds=[_to_threshold_response(t) for t in thresholds],
         model_assignments=[_to_model_assignment_response(a) for a in assignments],
         weather_sources=[_to_weather_source_response(ws) for ws in weather_sources],

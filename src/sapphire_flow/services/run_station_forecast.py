@@ -22,7 +22,7 @@ from sapphire_flow.services.operational_inputs import (
 from sapphire_flow.types.enums import EnsembleMode, ForecastStatus, QcStatus
 from sapphire_flow.types.forecast import OperationalForecast
 from sapphire_flow.types.ids import (
-    FALLBACK_PRIORITY_THRESHOLD,
+    FALLBACK_MODEL_IDS,
     ArtifactId,
     ForecastId,
     ModelId,
@@ -70,9 +70,7 @@ class MultiModelForecastResult:
     @property
     def combinable_results(self) -> dict[ModelId, StationForecastResult]:
         return {
-            mid: r
-            for mid, r in self.results.items()
-            if self.priorities.get(mid, 0) < FALLBACK_PRIORITY_THRESHOLD
+            mid: r for mid, r in self.results.items() if mid not in FALLBACK_MODEL_IDS
         }
 
 
