@@ -61,7 +61,7 @@ _TEST_RULES = QcRuleSet(
             rule_version="1.0",
             parameter="water_level",
             time_step=timedelta(days=1),
-            thresholds={"value_min": 0.0, "value_max": 1000.0},
+            thresholds={"value_min": 0.0, "value_max": 60.0},
         ),
     ),
 )

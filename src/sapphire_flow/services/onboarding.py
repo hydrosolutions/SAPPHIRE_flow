@@ -214,8 +214,6 @@ def _run_onboarding(
     deployment_config: DeploymentConfig | None = None,
     hindcast_days: int | None = None,
     parameter_store: ParameterStore | None = None,
-    water_level_datums_masl: dict[str, float] | None = None,
-    water_level_units: dict[str, str] | None = None,
 ) -> OnboardingResult:
     errors: list[str] = []
     stations_created = 0

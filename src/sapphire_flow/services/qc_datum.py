@@ -17,7 +17,6 @@ FORECAST_DATUM_DEPENDENT_RULES = frozenset(
 )
 DATUM_QC_RULE_VERSION = "1.1-datum"
 DATUM_SKIP_QC_RULE_VERSION = "1.1-datum-skip"
-DATUM_REQC_RULE_VERSION = "1.1-datum-reqc"
 SUPPORTED_WATER_LEVEL_UNITS = frozenset({"m", "m a.s.l."})
 
 
