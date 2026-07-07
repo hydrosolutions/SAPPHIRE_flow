@@ -11,33 +11,61 @@ UNSAFE (with obs-alerts off, a gauge observably above threshold during an NWP
 outage would yield NO alert at all) → replaced by an **`AlertEligibility`**
 classification (`SKILL_FORECAST` / `CURRENT_OBS_PROXY` / `NO_EVENT_INFORMATION`,
 distinct from `ModelTier`): climatology (`NO_EVENT_INFORMATION`) never raises a
-flood alert, but a **fresh** persistence (`CURRENT_OBS_PROXY`) exceedance IS
-recorded via the **`AlertSource.OBSERVATION`** current-condition path (not silently
-dropped); HARD ship precondition `enable_observation_alerts=true` on the mini;
-**(ER-D2)** a climatology-QA diagnostic at onboarding/backfill (recurring seasonal
+flood alert, and a persistence (`CURRENT_OBS_PROXY`) exceedance likewise raises no
+FORECAST flood alert; a dangerous CURRENT level is covered independently by the
+enabled observation-alert path (Flow 2's obs checker), NOT by any forecast-cycle
+re-routing (see the targeted-review note below); HARD ship precondition
+`enable_observation_alerts=true` on the mini; **(ER-D2)** a climatology-QA diagnostic
+at onboarding/backfill (recurring seasonal
 baseline crossing a danger threshold → a config/threshold-review signal, NOT a
 flood warning); **(ER-D3)** the Step-8 floor-gate is split into **forecast-readiness /
 `no_floor` state vs station operational status** and rolled out **phased** (hard
 gate for NEW onboarding; existing stations get a degraded flag + operator
 reporting, not a surprise fleet-wide OPERATIONAL→NOT flip); **(ER-D4)**
-dark/suppressed/stale events become **first-class queryable `AlertSource.PIPELINE`
-health records + explicit run-state semantics** (degraded / failed / completed),
-written regardless of the `enable_*_alerts` flags — not log-only; **(ER-D5)** the
+dark/suppressed/stale events become **first-class queryable `pipeline_health`
+records** (the existing health-metrics table, NOT `AlertSource.PIPELINE` alert rows)
+**+ explicit `ForecastCycleHealth` run-outcome semantics** (degraded / failed /
+healthy on the cycle result, NOT a new `FlowRunState` member), written regardless of
+the `enable_*_alerts` flags — not log-only; **(ER-D5)** the
 mini-state root-cause capture (old check 10) is promoted to a **step-0
 prerequisite** (immutable snapshots BEFORE any M0/M2 mutation); **(ER-D6)** M0a gains
 a **fleet-mutation safety envelope** (maintenance-mode / advisory lock, DB backup,
 dry-run diff, per-divergence triage, single transaction, migration-audit record);
 **(ER-D7)** a **registry/load-time tier guard** — every discovered model must declare
 its `ModelTier` + `AlertEligibility` (or be explicitly listed) or **fail loud**
-before it can participate in combination or alerting. Plan 100 has GROWN; see
+before it can participate in combination or alerting.
+**TARGETED-REVIEW FIXES FOLDED (2026-07-07, NEEDS-FIXES → 3 blockers + 4 majors, all
+code-grounded fold-integrity fixes, no open forks):** (1) the forecast-cycle
+fresh-persistence → `AlertSource.OBSERVATION` routing is **DELETED as redundant** — the
+existing observation checker (`services/observation_alert_checker.py`) already fetches
+QC-passed obs (24h lookback), selects the latest, checks thresholds, and writes
+`AlertSource.OBSERVATION` (`:25,:52,:63,:73,:80`), wired under
+`enable_observation_alerts` (`flows/ingest_observations.py:366`); with that flag a HARD
+ship precondition, a dangerous current level is covered by Flow 2, so the forecast cycle
+needs no parallel current-condition path (net model: `SKILL_FORECAST` → `FORECAST`
+alert; `CURRENT_OBS_PROXY` + `NO_EVENT_INFORMATION` → no FORECAST flood alert). (2) the
+ungrounded "freshness gate" claim is removed — `check_observation_alerts` reads no
+`observation_staleness_hours`/`input_quality`, only a fixed 24h lookback
+(`observation_alert_checker.py:25,:52`). (3) all stale "`FALLBACK_MODEL_IDS` drives M3
+alert-suppression" text is purged — `FALLBACK_MODEL_IDS` / `ModelTier` governs
+COMBINATION + UI labelling ONLY; `AlertEligibility` governs alert routing. (4) M0d uses
+**explicit `MODEL_TIERS` + `ALERT_ELIGIBILITIES` maps** (no skill-by-absence default;
+`FALLBACK_MODEL_IDS` is DERIVED from `MODEL_TIERS`). (5) M5's dark/suppressed/stale
+events are **`pipeline_health` records** (`store/pipeline_health_store.py`,
+`types/pipeline.py`), NOT `AlertSource.PIPELINE` alert rows. (6) run-outcome uses a NEW
+**`ForecastCycleHealth`** field on `ForecastCycleResult` (Prefect run stays COMPLETED;
+`FlowRunState` is NOT extended). (7) the B1b decisions-recap is reconciled to ER-D3
+(hard floor-gate for NEW onboarding only; existing stations → `no_floor` + phased
+audit→backfill→verify). Plan 100 has GROWN; see
 Process for the one sub-part flagged as a candidate follow-up split. — grill-me
 COMPLETE (2026-07-06) + **plan-review round 3
 decisions folded (2026-07-06)**: v0-scope §A4 amendment **ratified** (the OPERATIONAL
 floor-gate is a deliberate, owner-ratified tightening of the locked rule, not a
-silent override); **categorical `FALLBACK_MODEL_IDS` single-source tier** (the same
-`model_id ∈ FALLBACK_MODEL_IDS` boolean now drives forecast combination, the B3
-badge, AND M3 alert-suppression — no more dual DB-priority-vs-config divergence, DB
-`priority` demoted to ordering/tie-break among admitted skill models only); a
+silent override); **categorical `MODEL_TIERS` single-source tier** (the same
+`ModelTier` fact now drives forecast combination and the B3 badge — no more dual
+DB-priority-vs-config divergence, DB `priority` demoted to ordering/tie-break among
+admitted skill models only; **alert routing is a SEPARATE `AlertEligibility` facet, NOT
+`FALLBACK_MODEL_IDS`** — targeted-review correction); a
 **write-time guard** at the assignment choke points (a below-tier fallback write now
 raises, a structural barrier not just C1c's post-hoc tripwire); and the residuals
 resolved (B2 FI-repo issue mandatory, `SAPPHIRE_CONFIG`-unset folded into the A3 gate,
@@ -134,13 +162,18 @@ root cause was that fallback-tier membership was inferred from the mutable DB
 `assignment.priority` (a `priority ≥ 90` check), and real rows carry drifted
 priorities (`0`/`-10`) so the floor was silently treated as a skill model. M0
 attacks this on **two** fronts: (a) **M0c makes the tier categorical** — a
-git-versioned `FALLBACK_MODEL_IDS` constant, used identically by forecast
-combination, the B3 badge, and M3 alert-suppression, so no DB-priority value can
+git-versioned `MODEL_TIERS` map (from which `FALLBACK_MODEL_IDS` is derived), used
+identically by forecast combination and the B3 UI badge, so no DB-priority value can
 move a model into or out of the fallback tier ever again; and (b) **M0a/M0b repair
 and guard the priority *ordering*** so the reconciled rows are correct and a
-below-tier fallback can no longer be written. M1+M2 are the incident fix; M3 stops
-operators (and the alert path) trusting a fallback; M4 is a minimal staleness +
-drift tripwire.
+below-tier fallback can no longer be written. **`FALLBACK_MODEL_IDS` / `ModelTier`
+governs forecast COMBINATION and UI labelling ONLY; `AlertEligibility` (a separate
+facet) governs alert routing.** A forecast flood alert fires only for
+`SKILL_FORECAST`; suppression of the FORECAST alert happens for both fallback
+eligibilities (`CURRENT_OBS_PROXY` and `NO_EVENT_INFORMATION`), with current-condition
+coverage provided by the enabled observation-alert path (Flow 2's obs checker). M1+M2
+are the incident fix; M3 stops operators trusting a fallback and keeps a fallback out
+of any FORECAST alert; M4 is a minimal staleness + drift tripwire.
 
 ### Step 0 — Root-cause capture BEFORE any mutation (PREREQUISITE — ER-D5, external review)
 
@@ -199,14 +232,16 @@ callers:
      `:536-537`).
 
 Consequence (pre-fix): because `combinable_results` (`services/run_station_forecast.py:71-76`)
-and the intended B3/M3 tier checks all inferred the tier from `assignment.priority`,
+and the intended B3 tier check both inferred the tier from `assignment.priority`,
 the drifted `climatology_fallback=0` row was treated as a **combinable *skill*
 model** — blended into the pooled forecast and eligible to drive an alert. **M0c
-removes this failure mode structurally:** the tier is now `model_id in
-FALLBACK_MODEL_IDS`, so combination, the B3 badge, and M3 alert-suppression all
-classify climatology as a fallback regardless of its (now merely ordering-only) DB
-`priority`. M0a/M0b still reconcile the priority column so the ordering is correct
-and no below-tier fallback row can be written.
+removes this failure mode structurally:** the tier is now keyed on the explicit
+`MODEL_TIERS` map (from which `FALLBACK_MODEL_IDS` is derived), so combination and the
+B3 badge both classify climatology as a fallback regardless of its (now merely
+ordering-only) DB `priority`; the alert path classifies it via the separate
+`ALERT_ELIGIBILITIES` map (`NO_EVENT_INFORMATION` → never a forecast flood alert). M0a/M0b
+still reconcile the priority column so the ordering is correct and no below-tier fallback
+row can be written.
 
 - **M0a — repair existing rows (precedence rule, aligned with the Plan-089 model
   in `docs/conventions.md:424-449`):** a named idempotent admin action rewrites
@@ -350,10 +385,11 @@ and no below-tier fallback row can be written.
        mandatory pre-apply gate, not a silent blanket rewrite.
     4. **Apply in ONE transaction** where the store/driver allows, so a mid-rewrite
        failure rolls back cleanly rather than leaving the fleet half-reconciled.
-    5. **Persist a migration-audit record** (an `AlertSource.PIPELINE` health record or
-       a dedicated migration-audit row, see ER-D4) capturing who ran M0a, when, the
-       applied diff, and the backup reference — so the mutation is queryable after the
-       fact, not just a shell-history line.
+    5. **Persist a migration-audit record** (a `pipeline_health` record via
+       `PgPipelineHealthStore.append_health_record`, `store/pipeline_health_store.py:16`,
+       or a dedicated migration-audit row — NOT an `AlertSource.PIPELINE` alert row; see
+       ER-D4) capturing who ran M0a, when, the applied diff, and the backup reference —
+       so the mutation is queryable after the fact, not just a shell-history line.
     Acceptance check 1 is extended to assert the envelope ran (maintenance/lock held,
     backup taken, dry-run diff signed off, single-transaction apply, migration-audit
     record written).
@@ -386,16 +422,33 @@ and no below-tier fallback row can be written.
     still cannot be guarded at the app layer, so M0 notes it as a residual DB-level
     consideration (tightening the DEFAULT is out of scope; C1c catches any such row).
     Acceptance check asserts a below-tier fallback write raises.
-- **M0c — `FALLBACK_MODEL_IDS` is the SINGLE categorical source of truth for the
-  fallback/skill-tier boolean — DECIDED (plan-review round 3, Decision 2):**
-  Introduce a `FALLBACK_MODEL_IDS: frozenset[ModelId] = frozenset({
-  ModelId("climatology_fallback"), ModelId("persistence_fallback")})` constant next to
-  `FALLBACK_PRIORITY_THRESHOLD` (`types/ids.py:20`) — wrapped through `ModelId`
-  (`= NewType("ModelId", str)`, `types/ids.py:16`) to match the existing sentinel
-  pattern (`POOLED_MODEL_ID`/`BMA_MODEL_ID`/`CONSENSUS_MODEL_ID`, `:17-19`) and every
-  `ModelId`-typed membership call site, NOT bare `frozenset[str]`. The *categorical* fact "is this a
-  fallback model" is `model_id in FALLBACK_MODEL_IDS`, and **the identical boolean is
-  used in all three places that previously computed the tier two different ways**:
+- **M0c — an explicit `MODEL_TIERS` map is the SINGLE categorical source of truth
+  for the fallback/skill tier; `FALLBACK_MODEL_IDS` is DERIVED from it — DECIDED
+  (plan-review round 3, Decision 2; explicit-map form folded from the targeted
+  review, MAJOR-4):** the earlier "hand-listed `FALLBACK_MODEL_IDS` frozenset + tier
+  by absence" form was itself a skill-by-absence default (a model NOT in the set
+  defaults to skill — the same silent-default hazard M0d exists to kill). Replace it
+  with **two explicit maps** in `types/ids.py` (next to `FALLBACK_PRIORITY_THRESHOLD`,
+  `:20`) that enumerate **every known model** (or require each model to declare both
+  facets as attributes — see M0d):
+  - `MODEL_TIERS: dict[ModelId, ModelTier]` — the categorical skill/fallback tier
+    (`climatology_fallback`→`FALLBACK`, `persistence_fallback`→`FALLBACK`;
+    `nwp_regression`/`nwp_rainfall_runoff`/`linear_regression_daily`→`SKILL`).
+  - `ALERT_ELIGIBILITIES: dict[ModelId, AlertEligibility]` — the SEPARATE alert-routing
+    facet (M3 / ER-D1): skill ids→`SKILL_FORECAST`,
+    `persistence_fallback`→`CURRENT_OBS_PROXY`,
+    `climatology_fallback`→`NO_EVENT_INFORMATION`.
+  `FALLBACK_MODEL_IDS: frozenset[ModelId]` is now **DERIVED FROM `MODEL_TIERS`**
+  (`frozenset(mid for mid, t in MODEL_TIERS.items() if t is ModelTier.FALLBACK)`), NOT
+  a second hand-maintained list that could diverge — `ModelId`-wrapped
+  (`= NewType("ModelId", str)`, `types/ids.py:16`) per the existing sentinel pattern
+  (`POOLED_MODEL_ID`/`BMA_MODEL_ID`/`CONSENSUS_MODEL_ID`, `:17-19`), NOT bare
+  `frozenset[str]`. The *categorical* fact "is this a fallback model" is
+  `MODEL_TIERS[model_id] is ModelTier.FALLBACK` (equivalently `model_id in
+  FALLBACK_MODEL_IDS`), and **the identical categorical fact is used in the two places
+  that previously computed the tier from the mutable DB `priority` — forecast
+  combination and the B3 UI badge. Alert routing does NOT use this fact: it is a
+  separate facet, `AlertEligibility`/`ALERT_ELIGIBILITIES` (M3 / ER-D1).**
   1. **Forecast combination** — `MultiModelForecastResult.combinable_results`
      (`services/run_station_forecast.py:71-76`) today filters on
      `self.priorities.get(mid, 0) < FALLBACK_PRIORITY_THRESHOLD`, i.e. the **mutable
@@ -411,9 +464,14 @@ and no below-tier fallback row can be written.
      ordering/tie-break-only** (it may still legitimately feed `min(priority)`
      primary-selection ordering) — do not leave a dead field that reads as the old tier
      source.
-  2. **B3 `ModelTier` badge** — `ModelTier.FALLBACK if model_id in FALLBACK_MODEL_IDS
-     else ModelTier.SKILL` (a derived enum, not a raw `is_fallback: bool` — MAJOR-6).
-  3. **M3 alert-suppression gate** — `model_id in FALLBACK_MODEL_IDS`.
+  2. **B3 `ModelTier` badge** — `MODEL_TIERS[model_id]` (equivalently
+     `ModelTier.FALLBACK if model_id in FALLBACK_MODEL_IDS else ModelTier.SKILL`) — a
+     derived enum, not a raw `is_fallback: bool` (MAJOR-6).
+  (Alert routing is intentionally NOT on this list — it reads the separate
+  `AlertEligibility` facet, M3 / ER-D1, so a FORECAST flood alert can fire only for a
+  `SKILL_FORECAST` model and neither fallback eligibility ever produces one; the
+  earlier "M3 alert-suppression gate = `model_id in FALLBACK_MODEL_IDS`" item is
+  DELETED as stale.)
   - **DB `assignment.priority` is DEMOTED to an ordering / tie-break key AMONG
     admitted skill models only** (the `min(priority)` primary-selection dispatch and
     combination ordering). It no longer decides *tier membership* anywhere — so a
@@ -421,14 +479,16 @@ and no below-tier fallback row can be written.
     reorders which skill model wins primary, but no DB-priority value can ever move a
     model into or out of the fallback tier. This **dissolves the entire dual-source
     divergence** the earlier draft carried (the "trade-off accepted" paragraph is
-    removed — there is no longer a runtime-vs-safety split to trade off; combination,
-    badge, and suppression all read the one categorical set).
+    removed — there is no longer a runtime-vs-safety split to trade off; combination
+    and the badge both read the one categorical `MODEL_TIERS` map, and alert routing
+    reads `ALERT_ELIGIBILITIES`).
   - **Why this is drift-immune:** the whole incident was a mutable, siloed DB column
     silently drifting from the intended tier with nothing noticing. Keying the tier on
-    a git-versioned `frozenset` constant makes B3/M3 **and** combination immune to the
-    entire class of DB-priority drift: a manual DB edit or any onboarding-path bug
-    that mis-sets `priority` cannot un-badge a fallback, cannot re-admit it into a
-    pooled alert, and cannot blend it into a skill forecast.
+    the git-versioned `MODEL_TIERS` map makes the B3 badge **and** forecast combination
+    immune to the entire class of DB-priority drift: a manual DB edit or any
+    onboarding-path bug that mis-sets `priority` cannot un-badge a fallback and cannot
+    blend it into a skill forecast. (Alert routing is separately drift-immune because it
+    reads `ALERT_ELIGIBILITIES`, never `priority` — M3 / ER-D1.)
   - **M0c config-load validator (retained — closes the config-side hazard;
     scoped to PRESENT keys, corrected 2026-07-06 round 4):** the numeric
     `[model_priorities]` map (read via `deployment.py:250-256 priority_for_model`,
@@ -468,39 +528,44 @@ and no below-tier fallback row can be written.
     member that has drifted below `FALLBACK_PRIORITY_THRESHOLD`, so a recurrence of the
     root cause is *visible* even though (post-Decision-2) it can no longer misclassify
     the tier. (M0c introduces a small **`ModelTier` enum** (`SKILL`/`FALLBACK`, see
-    Decision 2 / MAJOR-6 below) *derived* from the `FALLBACK_MODEL_IDS` frozenset — this
+    Decision 2 / MAJOR-6 below) — the values keyed by the `MODEL_TIERS` map — this
     is the value exposed on the badge/JSON schema, replacing a raw `is_fallback: bool`.
-    A fuller **registry-declared per-model tier** — each model declaring its own tier at
-    registration rather than membership in a central frozenset — is the cleaner
-    long-term shape but is out of scope here; the `frozenset` + derived-enum pairing is
-    the minimal decoupling.)
+    Either declaration form is admissible under M0d: explicit membership in the central
+    `MODEL_TIERS`/`ALERT_ELIGIBILITIES` maps, OR a per-model declared attribute — the
+    M0d registry guard enforces that one of the two is present for every discovered
+    model, so neither tier nor eligibility is ever defaulted by omission.)
 
 ### M0d — Registry / load-time tier guard (ER-D7, external review)
 
-M0c keys the tier on a central `FALLBACK_MODEL_IDS` frozenset. That is drift-immune
-for the two *known* fallbacks, but it is **silent-by-default for a NEW model**: a
-future `*_fallback` / emergency / experimental model that is NOT added to
-`FALLBACK_MODEL_IDS` would be treated as `SKILL` — combinable into the pooled
-forecast AND alert-eligible — the moment it is discovered, exactly the "a fallback
-looks like a skill model" failure this plan exists to kill, just relocated to
-onboarding time. Fix with a **registry / load-time guard** in
+M0c keys the tier on the explicit `MODEL_TIERS` map (and derives `FALLBACK_MODEL_IDS`
+from it). That is drift-immune for the *known* models, but a central map is still
+**silent-by-default for a NEW model** if the map is consulted with a `.get(..., SKILL)`
+style default: a future `*_fallback` / emergency / experimental model that is NOT added
+to `MODEL_TIERS` + `ALERT_ELIGIBILITIES` would be treated as `SKILL` /
+`SKILL_FORECAST` — combinable into the pooled forecast AND alert-eligible — the moment
+it is discovered, exactly the "a fallback looks like a skill model" failure this plan
+exists to kill, just relocated to onboarding time. Fix by making the lookups
+**total, never defaulted**, enforced at a **registry / load-time guard** in
 `services/model_registry.py` (`discover_models` / `register_models`,
 `model_registry.py:27-88`):
-- **Every discovered model must DECLARE both facets** — its `ModelTier`
-  (`SKILL`/`FALLBACK`) **and** its `AlertEligibility`
-  (`SKILL_FORECAST`/`CURRENT_OBS_PROXY`/`NO_EVENT_INFORMATION`, defined in M3 /
-  ER-D1) — either by being an explicitly-listed member of the central maps
-  (`FALLBACK_MODEL_IDS` + the eligibility map) or via a model-declared attribute.
-- An **unknown / undeclared** tier or eligibility **fails loud at registry
-  load/discovery** (raise `ConfigurationError`, do NOT default to `SKILL` /
-  `SKILL_FORECAST`) **before** the model can participate in forecast combination or
-  alerting. This is a fail-closed default: an un-triaged new model cannot be
-  combinable + alert-eligible by omission.
+- **Every discovered model must be present in BOTH explicit maps
+  (`MODEL_TIERS` + `ALERT_ELIGIBILITIES`) OR declare both facets as attributes** — its
+  `ModelTier` (`SKILL`/`FALLBACK`) **and** its `AlertEligibility`
+  (`SKILL_FORECAST`/`CURRENT_OBS_PROXY`/`NO_EVENT_INFORMATION`, defined in M3 / ER-D1).
+  `FALLBACK_MODEL_IDS` is derived from `MODEL_TIERS`, so populating the tier map is what
+  admits a fallback to the fallback tier — there is no "skill by absence" anywhere.
+- A model **present in neither map and declaring neither attribute** (i.e. an unknown
+  tier OR eligibility) **fails loud at registry load/discovery** — raise
+  `ConfigurationError` in `discover_models()` (`model_registry.py:27-88`, before the
+  model is returned in the `discovered` dict), do **NOT** default to `SKILL` /
+  `SKILL_FORECAST`, so the model cannot participate in forecast combination or alerting.
+  This is a fail-closed default: an un-triaged new model cannot be combinable +
+  alert-eligible by omission.
 - `ModelTier` and `AlertEligibility` are the **two distinct facets** a model
-  declares (ER-D1): `ModelTier` governs forecast-combination admission + the B3
-  UI badge; `AlertEligibility` governs the alert path (M3). Keep both; the registry
-  guard enforces that **both** are declared for every model, and Acceptance check 16
-  asserts an undeclared model fails discovery.
+  declares (ER-D1): `ModelTier` (from `MODEL_TIERS`) governs forecast-combination
+  admission + the B3 UI badge; `AlertEligibility` (from `ALERT_ELIGIBILITIES`) governs
+  the alert path (M3). Keep both; the registry guard enforces that **both** are declared
+  for every model, and Acceptance check 16 asserts an undeclared model fails discovery.
 
 ### M1 — Persist NWP-on deterministically (Part A)
 
@@ -590,14 +655,24 @@ onboarding time. Fix with a **registry / load-time guard** in
     climatology-specific preflight, no new artifact-store query, and it cannot
     over-skip a station a healthy `persistence_fallback` would have served.
     - **A log line is NOT enough — it recreates "green pipeline, wrong answer".**
-      Per ER-D4, a `station_dark` event ALSO **persists a queryable pipeline-
-      health record** with **`source=AlertSource.PIPELINE`** (`types/enums.py:38`),
-      written **regardless of the `enable_*_alerts` flags** (all three default
-      `False`, `config/deployment.py:103-105`) — this is operational-health, not a
-      flood alert, so it must NOT be gated on `enable_pipeline_alerts`. The record is
-      surfaced in the dashboard/API alongside the other health records (ER-D4).
-      Acceptance check 4 asserts the `station_dark` health record is written **and
-      visible** for a dark station.
+      Per ER-D4, a `station_dark` event ALSO **persists a queryable `pipeline_health`
+      record** — via `PgPipelineHealthStore.append_health_record`
+      (`store/pipeline_health_store.py:16`; `PipelineHealthRecord`, `types/pipeline.py:15`;
+      the `pipeline_health` table, `db/metadata.py:1078`), **NOT** an
+      `AlertSource.PIPELINE` row in the `alerts` table. The architecture deliberately
+      separates operational health-metrics (`pipeline_health`, `docs/v0-scope.md:296`,
+      `docs/architecture-context.md:2404`) from ops-alerts (`AlertSource.PIPELINE` in the
+      `alerts` table, `:486`); a dark station is a health metric. Written **regardless of
+      the `enable_*_alerts` flags** (all three default `False`,
+      `config/deployment.py:103-105`) — this is operational-health, not a flood alert.
+      Map it to a `PipelineCheckType` (`types/enums.py:134` — e.g. `FORECAST_FRESHNESS`,
+      or a new `STATION_DARK` member if none fits) with `status` CRITICAL and the
+      station in `subject`. The record is surfaced in the dashboard/API alongside the
+      other health records (ER-D4). (Only if an *active operator alert* is later deemed
+      necessary would an `AlertSource.PIPELINE` alert row be added — and that would
+      require defining its alert_level / status-lifecycle / dedup; the default here is
+      the `pipeline_health` record.) Acceptance check 4 asserts the `station_dark`
+      health record is written **and visible** for a dark station.
   - **Logging-standard reconciliation (folded after review):** `logging.md`'s Log
     levels section currently lists "Station skipped due to missing data (flow
     continues with remaining stations)" as a **WARNING** example. Promoting
@@ -712,10 +787,12 @@ onboarding time. Fix with a **registry / load-time guard** in
     for day-of-year periods. A seasonal baseline that is itself frequently above a
     danger level is a **signal**, not a warning: either the station has a genuinely
     hazardous seasonal baseline, or the threshold is mis-set. On a recurring crossing,
-    emit a **station-threshold-review / config-QA item** — a pipeline/config-QA record
-    (`AlertSource.PIPELINE`, or a dedicated config-review record), **NOT a flood
-    warning** (a climatology exceedance is `NO_EVENT_INFORMATION`, D1 — it must never
-    become a flood alert). This is a diagnostic that runs at floor-training time only,
+    emit a **station-threshold-review / config-QA item** — a `pipeline_health` record
+    (`PgPipelineHealthStore.append_health_record`, `store/pipeline_health_store.py:16`),
+    or a dedicated config-review record — **NOT** an `AlertSource.PIPELINE` alert row and
+    **NOT a flood warning** (a climatology exceedance is `NO_EVENT_INFORMATION`, D1 — it
+    must never become a flood alert). This is a diagnostic that runs at floor-training
+    time only,
     not in the operational cycle; it flags the config/threshold for operator review.
     Acceptance check 17 asserts a station whose trained climatology recurringly crosses
     a danger threshold emits the config-review item and **no flood alert**.
@@ -833,11 +910,17 @@ onboarding time. Fix with a **registry / load-time guard** in
     `CURRENT_OBS_PROXY`**; **`climatology_fallback` → `NO_EVENT_INFORMATION`**. This
     is an **alert-specific** classification, **DISTINCT from `ModelTier`**
     (`SKILL`/`FALLBACK`, which governs forecast-combination admission + the B3 UI
-    badge). Keep BOTH facets: a model declares each, and the M0d registry guard
-    (ER-D7) enforces that both are declared (fail-loud on an undeclared model).
-    The relationship: `ModelTier.FALLBACK` covers both `CURRENT_OBS_PROXY` and
-    `NO_EVENT_INFORMATION` (both are non-skill for *combination*), but they diverge for
-    *alerting* — which is precisely why a second facet is needed.
+    badge). Keep BOTH facets: a model declares each (via `MODEL_TIERS` +
+    `ALERT_ELIGIBILITIES`), and the M0d registry guard (ER-D7) enforces that both are
+    declared (fail-loud on an undeclared model). The relationship: `ModelTier.FALLBACK`
+    covers both `CURRENT_OBS_PROXY` and `NO_EVENT_INFORMATION` (both are non-skill for
+    *combination*). For the **forecast-alert** path both are dropped (only
+    `SKILL_FORECAST` alerts as `AlertSource.FORECAST`); the eligibility distinction is
+    retained because it documents *why* each is dropped — `NO_EVENT_INFORMATION` carries
+    no signal at all, whereas `CURRENT_OBS_PROXY` IS a real current-condition signal that
+    is delivered on a **different channel** (Flow 2's `AlertSource.OBSERVATION` obs
+    checker), not on the forecast path. It also scopes the future shared-helper note
+    above to the `CURRENT_OBS_PROXY` case specifically.
   - **Alert routing, per (station, model) ensemble, at Phase C:**
     - **`SKILL_FORECAST` (skill models)** → alert normally via the existing forecast-
       alert path (`services/alert_checker.py`, `source=AlertSource.FORECAST`, called
@@ -846,28 +929,42 @@ onboarding time. Fix with a **registry / load-time guard** in
       flood alert** — always dropped from the forecast-alert set. A day-of-year
       seasonal average carries zero event information; it would trip the identical
       "alert" every year on that calendar day (pure false alarms).
-    - **`CURRENT_OBS_PROXY` (`persistence_fallback`)** → NOT blanket-suppressed. If its
-      **source observation is FRESH** (within the configured staleness bound — via the
-      existing `observation_staleness_hours` / `input_quality` metadata,
-      `services/input_quality.py:43-61`, `types/forecast.py:60`) **AND it exceeds the
-      threshold**, it **DOES** produce an alert — but **recorded via the
-      observation / current-condition path** (`source=AlertSource.OBSERVATION`,
-      mirroring `services/observation_alert_checker.py:84,100`), **NOT** the forecast
-      path and **NOT** suppressed. If the source obs is **stale / untrusted**,
-      **suppress** (a stale flat-line is not trustworthy). This keeps "the river is
-      dangerous right now" visible during an NWP outage while still refusing to dress a
-      persistence flat-line up as a *skill forecast* alert (`AlertSource.FORECAST`) —
-      current-condition detection is the observation path's job (Flow 2), which is
-      exactly the source this routes to.
-  - **HARD SHIPPING PRECONDITION (ER-D1):** the `CURRENT_OBS_PROXY` routing above
-    writes through the observation / current-condition path, which is **gated on
+    - **`CURRENT_OBS_PROXY` (`persistence_fallback`)** → **dropped from the
+      forecast-alert set** (like climatology, no `AlertSource.FORECAST` alert). A
+      persistence flat-line is a transformed CURRENT observation
+      (`past_targets[param][-1]`), not a *skill forecast*, so it must never produce a
+      FORECAST flood alert. **The forecast cycle does NOT itself re-route it to the
+      observation path** — that routing is DELETED as redundant (targeted review,
+      BLOCKER-1): current-condition detection ("the river is dangerous right now") is
+      Flow 2's job, and the existing observation checker
+      (`services/observation_alert_checker.py`) independently alerts on the latest
+      QC-passed observation above a danger threshold — it fetches QC-passed obs (24h
+      lookback), selects the latest, checks thresholds, and writes `AlertSource.OBSERVATION`
+      (`observation_alert_checker.py:25,:52,:63,:73,:80`), wired under
+      `enable_observation_alerts` (`flows/ingest_observations.py:366`). Because that flag
+      is a HARD ship precondition (below), a dangerous current level is already covered
+      by Flow 2 — a forecast-cycle re-route of persistence to `AlertSource.OBSERVATION`
+      would only **duplicate** the obs checker's write, so it is not done.
+    - **Note (future timing gap — out of scope now):** IF a concrete case is ever
+      identified where Flow 1 (forecast cycle) runs and a hazardous current level would
+      go unseen until Flow 2 (obs ingest) runs, it must be closed as a **SHARED helper**
+      that both flows call and that **dedups through the existing active-alert upsert**
+      (`AlertStore.upsert_alert`, `observation_alert_checker.py:80`) — never a parallel
+      current-condition path in the forecast cycle. No such gap is claimed today, so no
+      such helper is built here.
+  - **HARD SHIPPING PRECONDITION (ER-D1):** the entire current-condition safety
+    coverage — the only thing that alerts on an observably-dangerous gauge during an NWP
+    outage — comes from Flow 2's observation checker, which is **gated on
     `enable_observation_alerts` (default `False`, `config/deployment.py:104` +
-    `config.toml:26`)**. If that flag is off, a fresh persistence exceedance would be
-    silently dropped — recreating the exact gap this blocker fixes. Therefore
+    `config.toml:26`)**. If that flag is off, a dangerous current level yields NO alert
+    at all — recreating the exact gap this blocker fixes. Therefore
     **`enable_observation_alerts=true` MUST be set on the mac-mini / staging deployment
     config** (`config/overlays/mac-mini.toml`, alongside the A2 `enabled=true` edit) as
     a precondition of shipping Plan 100 — added to the A2 / deployment-config changes
-    and the doc-update list. Acceptance check 8 asserts the mini config sets it.
+    and the doc-update list. Acceptance check 8 asserts the mini config sets it. (This
+    precondition is what makes it safe for the forecast cycle to DROP `CURRENT_OBS_PROXY`
+    from the forecast-alert set without any parallel routing: the obs checker
+    independently covers the current-condition case.)
   - **Partition ONCE, centrally, on `all_ensembles` immediately before the Phase-C
     dispatch — NOT inside any per-branch build:** `all_ensembles[sid]` is populated at
     **THREE** distinct sites (the dict is initialised at `run_forecast_cycle.py:956`).
@@ -915,57 +1012,68 @@ onboarding time. Fix with a **registry / load-time guard** in
       (station, model) ensemble by `AlertEligibility`** (looked up from the model's
       declared facet, M0d — NOT `assignment.priority`, so no drifted DB priority can
       leak, M0c):
-      - `NO_EVENT_INFORMATION` (climatology) → **drop** from the alert set entirely
-        (never a flood alert, ever).
-      - `SKILL_FORECAST` → pass to the existing `check_station_alerts(all_ensembles=…)`
-        forecast-alert dispatch (`AlertSource.FORECAST`).
-      - `CURRENT_OBS_PROXY` (persistence) → route to the **current-condition /
-        observation-alert path** (`AlertSource.OBSERVATION`), which applies the
-        freshness gate (fresh + exceeds → OBSERVATION alert; stale → suppress). Do NOT
-        pass it into the forecast-alert dispatch.
+      - `SKILL_FORECAST` → **keep**; pass to the existing
+        `check_station_alerts(all_ensembles=…)` forecast-alert dispatch
+        (`AlertSource.FORECAST`).
+      - `NO_EVENT_INFORMATION` (climatology) **and** `CURRENT_OBS_PROXY` (persistence)
+        → **drop** from the forecast-alert set entirely — neither ever produces an
+        `AlertSource.FORECAST` flood alert, and neither is pooled into one. Climatology
+        carries zero event information; persistence is a current-observation proxy whose
+        current-condition case is covered independently by Flow 2's obs checker (the
+        enabled `enable_observation_alerts` path). The forecast-cycle partition does
+        **NOT** re-route persistence to `AlertSource.OBSERVATION` and does **NOT** read
+        any freshness / `observation_staleness_hours` metadata — the obs checker's own
+        24h-latest logic governs obs alerts (existing behavior, unchanged by this plan).
       Partitioning here — not inside any of the three `all_ensembles` build sites
       (`:1111` PRIMARY / `:1207` combination / `:1414` GROUP) — makes the guard robust
       to which strategy produced the dict AND to any future population site, and keeps a
-      single greppable enforcement point. This supersedes both the earlier "build it the
+      single greppable enforcement point. In effect the partition reduces to "keep only
+      `SKILL_FORECAST` ensembles for the forecast-alert dispatch; drop every non-skill
+      eligibility". This supersedes both the earlier "build it the
       same way `combinable_results` filters" instruction (a combination-mode-only
-      property that skipped the PRIMARY default) AND the interim blanket
-      "drop every `model_id ∈ FALLBACK_MODEL_IDS`" rule (which unsafely dropped the fresh
-      persistence current-condition signal).
+      property that skipped the PRIMARY default) AND the interim
+      "route fresh persistence to `AlertSource.OBSERVATION`" rule (redundant with Flow
+      2's obs checker — targeted review, BLOCKER-1).
   - **Suppress when NO eligible signal remains — STATION-level granularity + a
     first-class health record (ER-D1 + ER-D4):** after partitioning, a station
-    is genuinely suppressed only when it has **zero `SKILL_FORECAST` ensembles AND no
-    fresh `CURRENT_OBS_PROXY` exceedance** — i.e. all it had was climatology
-    (`NO_EVENT_INFORMATION`, always dropped) and/or a *stale* persistence flat-line. In
-    that case, **suppress forecast-alert evaluation for that station** and:
+    is genuinely suppressed for the forecast-alert path when it has **zero
+    `SKILL_FORECAST` ensembles** — i.e. all it had was non-skill (climatology and/or
+    persistence, both dropped from the forecast-alert set). In that case, **suppress
+    forecast-alert evaluation for that station** and:
     (1) log the monitorable **dotted** structlog event **`alert.suppressed_fallback_only`**
     (per `docs/standards/logging.md`'s `{entity}.{action}` pattern — the canonical
     `alert` entity already has a `suppressed` action; NOT colon-separated free-text);
-    **and (2) persist a queryable `AlertSource.PIPELINE` health record**
-    (`alert_suppressed`, for audit — ER-D4), written **regardless of the
+    **and (2) persist a queryable `pipeline_health` record**
+    (`PgPipelineHealthStore.append_health_record`, `store/pipeline_health_store.py:16`;
+    `PipelineHealthRecord`, `types/pipeline.py:15`) — NOT an `AlertSource.PIPELINE` alert
+    row — capturing the suppressed cycle for audit (ER-D4), written **regardless of the
     `enable_*_alerts` flags** and surfaced in the dashboard/API. A log alone would
-    recreate "green pipeline, wrong answer"; the audit record makes the suppressed cycle
+    recreate "green pipeline, wrong answer"; the health record makes the suppressed cycle
     queryable. Suppression detection stays at **STATION granularity** (matching the
     (station, model)-granularity partition — with the categorical partition a
     genuinely-suppressed station is empty for all its parameters at once). **Acceptance
     check 8 is scoped to station-level** (fully-suppressed station → no `Alert`, one
-    `alert.suppressed_fallback_only` event, one `alert_suppressed` health record) —
-    distinct from the fresh-persistence case (which writes an `AlertSource.OBSERVATION`
-    alert, NOT a suppression).
+    `alert.suppressed_fallback_only` event, one `pipeline_health` record). Note this is
+    NOT the same as "a dangerous current level goes unseen": if the latest observation is
+    above threshold, Flow 2's obs checker still writes an `AlertSource.OBSERVATION` alert
+    independently — the forecast-alert suppression here only means no *skill forecast*
+    fired.
   - **Rationale:** climatology (`NO_EVENT_INFORMATION`) is a day-of-year seasonal
     average — zero event information, would trip the identical "alert" every year on
     that calendar day → pure false alarms → never a flood alert. Persistence
     (`CURRENT_OBS_PROXY`) is obs-grounded: "the level is dangerous **now**" is a real,
     actionable signal during an NWP outage, but it is a **current-condition** fact, not
-    a *skill forecast* — so a **fresh** persistence exceedance is recorded on the
-    **observation** channel (`AlertSource.OBSERVATION`, Flow 2's semantics), never
-    dressed up as `AlertSource.FORECAST`; a *stale* one is untrustworthy and suppressed.
-    A **forecast** flood alert (`AlertSource.FORECAST`) must still come from a **skill**
-    forecast (`SKILL_FORECAST`).
+    a *skill forecast* — so it must not be dressed up as an `AlertSource.FORECAST` alert.
+    That current-condition signal is already delivered by Flow 2's observation checker
+    (the enabled `enable_observation_alerts` path, `AlertSource.OBSERVATION`), so the
+    forecast cycle simply drops persistence from the forecast-alert set rather than
+    re-deriving the same alert. A **forecast** flood alert (`AlertSource.FORECAST`) comes
+    only from a **skill** forecast (`SKILL_FORECAST`).
   - **Corollary:** after eligibility partitioning, any `AlertSource.FORECAST` alert is
-    skill-sourced by definition; any current-condition exceedance surfaces as
-    `AlertSource.OBSERVATION`; climatology surfaces as neither. No per-alert tier label
-    is needed on the forecast path. (A persisted tier/suppression flag on the `Alert`
-    record is a deferred v-next, not this plan.)
+    skill-sourced by definition; a dangerous current level surfaces as
+    `AlertSource.OBSERVATION` via Flow 2; climatology surfaces as neither. No per-alert
+    tier label is needed on the forecast path. (A persisted tier/suppression flag on the
+    `Alert` record is a deferred v-next, not this plan.)
   - **Retroactive alert audit (one-time, folded from the 2026-07-06 review):** the
     fix is forward-looking, but the plan's own M0 root-cause section confirms the drift
     is **empirically present** on the live dev DB — so `FORECAST`-source alerts may
@@ -993,7 +1101,10 @@ onboarding time. Fix with a **registry / load-time guard** in
 - **C1b (the check):** once C1a lands, if NWP is expected but no grid archived in
   > `expected_delivery_offset_hours × cadence` → emit a loud monitorable event
   (dotted `nwp.grid_stale`) on the **same channel A3's post-hoc detection uses**,
-  **and persist a queryable `AlertSource.PIPELINE` health record (`grid_stale`)**
+  **and persist a queryable `pipeline_health` record** (`grid_stale`, via
+  `PgPipelineHealthStore.append_health_record`, `store/pipeline_health_store.py:16`;
+  natural fit for the existing `PipelineCheckType.NWP_DELIVERY`, `types/enums.py:134`) —
+  NOT an `AlertSource.PIPELINE` alert row —
   written **regardless of the `enable_*_alerts` flags**, surfaced in the dashboard/API
   (ER-D4 — not log-only). The **FULL watchdog** (source-outage detection,
   notification routing / dispatch) stays deferred to the **Flow-4 monitoring plan** —
@@ -1004,43 +1115,64 @@ onboarding time. Fix with a **registry / load-time guard** in
   `persistence_fallback` has drifted **below** `FALLBACK_PRIORITY_THRESHOLD`
   (`types/ids.py:20`). This is the ongoing detector for a recurrence of M0's exact
   root cause (a fresh DB edit / onboarding-path bug re-introducing the drift); it
-  complements M0c's **categorical** tier (which already makes combination, B3, and M3
-  immune to the drift) by making the DB drift itself *visible* rather than silent,
+  complements M0c's **categorical** `MODEL_TIERS` (which already makes combination and
+  the B3 badge immune to the drift, while alert routing reads `ALERT_ELIGIBILITIES`, not
+  `priority`) by making the DB drift itself *visible* rather than silent,
   and complements the M0b write-time guard (which blocks the app-layer write) by
   catching a drift introduced out-of-band (raw SQL / direct DB edit).
 
-### M5 — First-class pipeline-health records + run-state semantics (ER-D4, external review)
+### M5 — First-class pipeline-health records + cycle-outcome semantics (ER-D4, external review)
 
 The dark / suppressed / stale events above must **not be log-only** — a log line
 recreates the very "green pipeline, wrong answer" failure this plan exists to kill
 (a flow completes green while the feed is dark). Consolidate the Decision-4 treatment:
-- **Persist queryable pipeline-health records** (`source=AlertSource.PIPELINE`,
-  `types/enums.py:38`) for the three operational-health events introduced above —
+- **Persist queryable `pipeline_health` records** — via
+  `PgPipelineHealthStore.append_health_record` (`store/pipeline_health_store.py:16`;
+  `PipelineHealthRecord`, `types/pipeline.py:15`; the `pipeline_health` table,
+  `db/metadata.py:1078`) — for the three operational-health events introduced above —
   `station_dark` (zero forecasts this cycle, A3), `alert_suppressed` (fully-suppressed
-  fallback-only cycle, M3), and `nwp.grid_stale` (M4/C1b) — **written regardless of the
-  `enable_*_alerts` flags** (all three default `False`, `config/deployment.py:103-105`):
-  these are operational-health signals, not flood alerts, so they must never be gated
-  on `enable_pipeline_alerts`. **Surface them in the dashboard / API** next to the
-  forecast/alert views so an operator sees a dark or suppressed station without reading
-  logs. (The M0a migration-audit record, ER-D6, uses the same channel.)
-- **Run-state semantics — define degraded vs failed vs completed** for a
-  `forecast-cycle` run so a dark/suppressed outcome is not silently "green". The
-  `FlowRunState` enum (`types/enums.py:199-206`) has `COMPLETED`/`FAILED` but no
-  `DEGRADED`; the cycle result (`ForecastCycleResult`, `run_forecast_cycle.py:89-97`,
-  fields `stations_succeeded`/`stations_failed`/`errors`) has no degraded notion.
-  Define: a cycle with ≥1 `station_dark` or `alert_suppressed` outcome (but not a
-  hard crash) is **DEGRADED**, not `COMPLETED`; a cycle that could not run at all
-  (e.g. the A3 `ConfigurationError` gate, or NWP-fetch failure) is **FAILED**; only a
-  cycle with every station served by a live model and no suppression is `COMPLETED`.
-  This is what turns the incident's "green every 6 h while dark" into a visible
-  DEGRADED run. (Whether DEGRADED is a new `FlowRunState` member or a derived field on
-  `ForecastCycleResult` is a WF2 implementation choice; the *semantics* are fixed here.)
+  fallback-only cycle, M3), and `nwp.grid_stale` (M4/C1b). **These are `pipeline_health`
+  records, NOT `AlertSource.PIPELINE` rows in the `alerts` table.** The architecture
+  deliberately separates operational health-metrics (`pipeline_health`,
+  `docs/v0-scope.md:296`, `docs/architecture-context.md:2404`) from ops-alerts
+  (`AlertSource.PIPELINE` in the `alerts` table, an *active* operator alert with a
+  notification lifecycle, `docs/architecture-context.md:486`). A dark/suppressed/stale
+  event is a health metric, so it goes to `pipeline_health`. Each maps to a
+  `PipelineCheckType` (`types/enums.py:134`; e.g. `NWP_DELIVERY` for `grid_stale`,
+  `FORECAST_FRESHNESS`/`FLOW_RUN_HEALTH` for `station_dark`/`alert_suppressed`, or a new
+  member) with a `PipelineHealthStatus` (`types/enums.py:128`, OK/WARNING/CRITICAL) and
+  the station/subject in `subject`. **Written regardless of the `enable_*_alerts` flags**
+  (all three default `False`, `config/deployment.py:103-105`) — health metrics are never
+  gated on `enable_pipeline_alerts`. **Only if an ACTIVE operator alert is explicitly
+  wanted** would an `AlertSource.PIPELINE` alert row be created in addition — and that
+  path would have to define its `alert_level` / status-lifecycle / dedup; **the default
+  for Plan 100 is the `pipeline_health` record.** **Surface them in the dashboard / API**
+  next to the forecast/alert views so an operator sees a dark or suppressed station
+  without reading logs. (The M0a migration-audit record, ER-D6, uses the same
+  `pipeline_health` channel.)
+- **Cycle-outcome semantics — define DEGRADED vs FAILED vs HEALTHY on a NEW
+  `ForecastCycleHealth` field, NOT on `FlowRunState`:** so a dark/suppressed outcome is
+  not silently "green". `FlowRunState` (`types/enums.py:199-206`) is a **direct mapping
+  of Prefect's `StateType`** (`adapters/prefect_status.py:28`, `_STATE_MAP`), and Prefect
+  has **no** degraded state — extending `FlowRunState` with `DEGRADED` would put a member
+  in it that no Prefect state maps to, breaking that contract. Instead, introduce a
+  **separate `ForecastCycleHealth` (a.k.a. `ForecastCycleOutcome`) enum**
+  (`DEGRADED`/`FAILED`/`HEALTHY`) as a field on `ForecastCycleResult`
+  (`run_forecast_cycle.py:89-97`, alongside `stations_succeeded`/`stations_failed`/`errors`)
+  and on the API cycle-result response, **derived** from the cycle: a cycle with ≥1
+  `station_dark` or `alert_suppressed` outcome (but not a hard crash) is **DEGRADED**; a
+  cycle that could not run at all (e.g. the A3 `ConfigurationError` gate, or NWP-fetch
+  failure) is **FAILED**; a cycle with every station served by a live model and no
+  suppression is **HEALTHY**. **The Prefect run state stays `COMPLETED`** when the task
+  completed (do NOT extend `FlowRunState`) — the `ForecastCycleHealth` field is what
+  turns the incident's "green every 6 h while dark" into a visible DEGRADED outcome.
 - **The FULL watchdog** (source-outage detection, notification routing / dispatch)
   stays deferred to the **Flow-4 monitoring plan** — Plan 100 writes + surfaces the
   records; Flow 4 owns dispatch. (See the Process note on a possible follow-up split.)
-- Acceptance checks 4 + 8 + 18 assert these records are written **and visible** for a
-  dark station, a suppressed cycle, and a stale-grid condition, and that a degraded
-  cycle reports DEGRADED (not COMPLETED).
+- Acceptance checks 4 + 8 + 18 assert these `pipeline_health` records are written **and
+  visible** for a dark station, a suppressed cycle, and a stale-grid condition, and that
+  a degraded cycle reports `ForecastCycleHealth.DEGRADED` (while the Prefect run stays
+  COMPLETED).
 
 ### Acceptance checks (what WF2 must make pass)
 
@@ -1098,10 +1230,13 @@ recreates the very "green pipeline, wrong answer" failure this plan exists to ki
    `os.environ.get`), and `docker-compose.macmini.yml` sets `SAPPHIRE_REQUIRE_NWP=1`
    **on the `prefect-worker` service** (`:24`) — the `default`-pool worker that runs
    `forecast-cycle`, NOT `prefect-worker-ingest` (`:32`) — so the gate is live on the
-   deployed mini. **Health record + run-state (ER-D4):** the dark station ALSO
-   writes a queryable `AlertSource.PIPELINE` `station_dark` record (written regardless
-   of the `enable_*_alerts` flags) **visible in the dashboard/API**, and the cycle
-   reports **DEGRADED** (not `COMPLETED`) — not merely a log line.
+   deployed mini. **Health record + cycle-outcome (ER-D4):** the dark station ALSO
+   writes a queryable **`pipeline_health` record** (`station_dark`, via
+   `PgPipelineHealthStore.append_health_record` — NOT an `AlertSource.PIPELINE` alert
+   row; written regardless of the `enable_*_alerts` flags) **visible in the
+   dashboard/API**, and the cycle reports **`ForecastCycleHealth.DEGRADED`** (a NEW field
+   on `ForecastCycleResult`, while the Prefect run state stays `COMPLETED` — `FlowRunState`
+   is NOT extended) — not merely a log line.
 5. **Backfill effective + idempotent + fleet-clean (B1b):** 2009/2091 have active
    climatology artifacts + assignments at the correct priority; a NWP-off
    `forecast-cycle` writes fallback rows for both. Re-run of the backfill = no-op.
@@ -1127,37 +1262,44 @@ recreates the very "green pipeline, wrong answer" failure this plan exists to ki
    "blanket suppress" check:** the mini config sets **`enable_observation_alerts=true`**
    (`config/overlays/mac-mini.toml`) so the current-condition path is live (HARD ship
    precondition).
-   - **(a) fresh-persistence exceedance IS written, NOT silently suppressed (the
-     blocker's core case):** the **latest QC-passed observation above a danger
-     threshold + NWP off + fallback-only forecast** → an **`AlertSource.OBSERVATION`
-     alert record IS written** (via the current-condition path), because
-     `persistence_fallback` is `CURRENT_OBS_PROXY` and its source obs is FRESH (within
-     the `observation_staleness_hours` bound). This is the exact regression the old
-     blanket-suppress rule would have caused (gauge observably dangerous, zero alert).
-   - **(b) climatology-only exceedance writes NO forecast flood alert:** a
-     `climatology_fallback`-only (`NO_EVENT_INFORMATION`) exceedance under the
-     shipped-default config (`forecast_combination_strategy=PRIMARY` +
-     `alert_model_strategy="primary"`, `config.toml:29`) — including the
-     `all_ensembles[sid] = {fc_result.model_id: …}` PRIMARY build
-     (`run_forecast_cycle.py:1111`) + `n_models<=1` shortcut (`alert_checker.py:212-213`)
-     — **fires no `Alert`** and logs `alert.suppressed_fallback_only` + writes one
-     `alert_suppressed` health record (ER-D4).
-   - **(c) stale persistence suppressed:** a `persistence_fallback` exceedance whose
-     source obs is **stale** (past the staleness bound) → **no alert**, suppression
-     event + health record — a stale flat-line is untrustworthy.
+   - **(a) dangerous current level IS still alerted — via Flow 2, NOT the forecast
+     cycle (the blocker's core case):** with the **latest QC-passed observation above a
+     danger threshold + NWP off + fallback-only forecast**, an **`AlertSource.OBSERVATION`
+     alert record IS written by the observation checker** (`check_observation_alerts`,
+     `observation_alert_checker.py:80`, wired at `flows/ingest_observations.py:366`)
+     because `enable_observation_alerts=true` is a HARD ship precondition. The forecast
+     cycle itself does NOT write this alert (it drops `CURRENT_OBS_PROXY` from the
+     forecast-alert set with no re-routing) — but the gauge is not silently dark, which
+     is the exact regression the old blanket-suppress rule would have caused (gauge
+     observably dangerous, zero alert). Assert an `AlertSource.OBSERVATION` alert exists,
+     and that the forecast cycle writes no duplicate.
+   - **(b) climatology-only OR persistence-only exceedance writes NO forecast flood
+     alert:** a fallback-only (`NO_EVENT_INFORMATION` climatology and/or
+     `CURRENT_OBS_PROXY` persistence) exceedance under the shipped-default config
+     (`forecast_combination_strategy=PRIMARY` + `alert_model_strategy="primary"`,
+     `config.toml:29`) — including the `all_ensembles[sid] = {fc_result.model_id: …}`
+     PRIMARY build (`run_forecast_cycle.py:1111`) + `n_models<=1` shortcut
+     (`alert_checker.py:212-213`) — **fires no `AlertSource.FORECAST` `Alert`** and logs
+     `alert.suppressed_fallback_only` + writes one `alert_suppressed` **`pipeline_health`
+     record** (ER-D4). (Any `AlertSource.OBSERVATION` alert from Flow 2 is separate — it
+     is not a forecast alert.)
+   - **(c) persistence never produces a FORECAST alert:** a `persistence_fallback`
+     exceedance in the forecast cycle → **no `AlertSource.FORECAST` alert** regardless of
+     its source-obs freshness (the forecast cycle reads no `observation_staleness_hours`
+     metadata) — it is dropped from the forecast-alert set. Its current-condition case is
+     covered independently by Flow 2 (case a).
    - **(d) skill alerts normally:** a `SKILL_FORECAST` exceedance under the same default
      writes an `AlertSource.FORECAST` alert.
    - **(e) no pooled contamination:** a mixed POOLED/BMA/CONSENSUS cycle (skill + a
      guaranteed climatology floor) computes the exceedance from the **skill ensemble
-     only** — climatology members never enter the pooled/BMA calculation
-     (`:1207-1210` build); persistence, if present, is routed to the OBSERVATION path,
-     not pooled into a FORECAST alert.
+     only** — climatology and persistence members never enter the pooled/BMA calculation
+     (`:1207-1210` build); neither is pooled into a FORECAST alert.
    All cases — and the GROUP build (`:1414`) — pass because the partition-by-
    `AlertEligibility` runs **once, centrally** on `all_ensembles` before Phase-C dispatch
    (`:1441-1447`), independent of which of the three sites populated the dict. The
-   suppression assertion (b/c) is scoped to **STATION-level** (fully-suppressed station →
-   zero `Alert` + one `alert.suppressed_fallback_only` + one `alert_suppressed` health
-   record), NOT per-parameter.
+   suppression assertion (b) is scoped to **STATION-level** (fully-suppressed station →
+   zero `AlertSource.FORECAST` `Alert` + one `alert.suppressed_fallback_only` + one
+   `alert_suppressed` `pipeline_health` record), NOT per-parameter.
 9. **C1 staleness fires (M4):** after C1a plumbing, force a grid-archival gap past
    `expected_delivery_offset_hours × cadence` → the staleness event fires (proves
    it is not dead code).
@@ -1183,7 +1325,8 @@ recreates the very "green pipeline, wrong answer" failure this plan exists to ki
     `climatology_fallback` / `persistence_fallback` row in `model_assignments` **or**
     `group_model_assignments` below `FALLBACK_PRIORITY_THRESHOLD` → the tripwire emits
     its loud monitorable event (proving the DB-drift detector is not dead code), even
-    though M0c's categorical tier already keeps B3/M3/combination correct.
+    though M0c's categorical `MODEL_TIERS` already keeps the B3 badge + combination
+    correct and alert routing reads `ALERT_ELIGIBILITIES` (never `priority`).
 14. **v0-scope §A4 amendment applied, scoped to NEW onboarding (B1b / ER-D3):**
     `docs/v0-scope.md §A4` step 8 is updated to the ratified rule ("≥1 skill artifact
     AND an active `climatology_fallback` floor artifact") **for NEW onboarding**, with
@@ -1197,21 +1340,26 @@ recreates the very "green pipeline, wrong answer" failure this plan exists to ki
     operator review/resolution before the plan closes. No historical fallback-sourced
     alert is left silently trusted.
 16. **Registry / load-time tier guard fails loud (M0d / ER-D7):** a discovered
-    model that declares neither `ModelTier` nor `AlertEligibility` (and is not in the
-    central maps) **raises `ConfigurationError` at registry load/discovery**
-    (`services/model_registry.py:27-88`) — it does NOT default to `SKILL` /
-    `SKILL_FORECAST` and cannot participate in combination or alerting. A model that
-    declares both loads normally.
+    model absent from BOTH explicit maps (`MODEL_TIERS` + `ALERT_ELIGIBILITIES`) and
+    declaring neither `ModelTier` nor `AlertEligibility` as an attribute **raises
+    `ConfigurationError` in `discover_models()`** (`services/model_registry.py:27-88`) —
+    it does NOT default to `SKILL` / `SKILL_FORECAST` (no skill-by-absence) and cannot
+    participate in combination or alerting. A model present in both maps (or declaring
+    both facets) loads normally, and `FALLBACK_MODEL_IDS` is derived from `MODEL_TIERS`.
 17. **Climatology QA diagnostic (M2 / ER-D2):** a station whose trained
     `climatology_fallback` quantiles/mean recurringly cross a configured danger
-    threshold for day-of-year periods emits a **config / threshold-review item**
-    (`AlertSource.PIPELINE` or a config-review record) at onboarding/backfill — and
-    **no flood alert** — flagging the seasonal baseline / threshold for operator review.
-18. **Pipeline-health records + run-state (M5 / ER-D4):** the `station_dark`,
-    `alert_suppressed`, and `nwp.grid_stale` health records are persisted with
-    `source=AlertSource.PIPELINE` **regardless of the `enable_*_alerts` flags** and are
-    **visible in the dashboard/API**; a cycle with a dark or suppressed station reports
-    **DEGRADED** (not `COMPLETED`), and a cycle that cannot run reports **FAILED**.
+    threshold for day-of-year periods emits a **config / threshold-review item** — a
+    `pipeline_health` record or a dedicated config-review record (NOT an
+    `AlertSource.PIPELINE` alert row) — at onboarding/backfill, and **no flood alert** —
+    flagging the seasonal baseline / threshold for operator review.
+18. **Pipeline-health records + cycle-outcome (M5 / ER-D4):** the `station_dark`,
+    `alert_suppressed`, and `nwp.grid_stale` records are persisted as **`pipeline_health`
+    records** (via `PgPipelineHealthStore.append_health_record`, NOT `AlertSource.PIPELINE`
+    alert rows) **regardless of the `enable_*_alerts` flags** and are **visible in the
+    dashboard/API**; a cycle with a dark or suppressed station reports
+    **`ForecastCycleHealth.DEGRADED`** (a NEW field on `ForecastCycleResult`; the Prefect
+    run stays `COMPLETED` and `FlowRunState` is NOT extended), and a cycle that cannot run
+    reports **`ForecastCycleHealth.FAILED`**.
 
 ---
 
@@ -1268,9 +1416,11 @@ entirely our deployment + resilience gap, not an external outage.
 4. **Fallback forecasts never masquerade as skill, but a real current-condition
    hazard is never silently dropped** — fallbacks are labelled in the UI/API (B3
    `ModelTier`); a **skill forecast** is the only basis of an `AlertSource.FORECAST`
-   flood alert; climatology (`NO_EVENT_INFORMATION`) is never a flood alert; a **fresh**
-   persistence (`CURRENT_OBS_PROXY`) exceedance surfaces as an `AlertSource.OBSERVATION`
-   current-condition alert (ER-D1 / `AlertEligibility`), NOT suppressed.
+   flood alert; climatology (`NO_EVENT_INFORMATION`) and persistence
+   (`CURRENT_OBS_PROXY`) never raise a forecast flood alert; a dangerous current level is
+   covered independently by the **enabled observation-alert path** (Flow 2's obs checker,
+   `AlertSource.OBSERVATION`) — a HARD ship precondition — NOT by any forecast-cycle
+   re-routing (ER-D1 / `AlertEligibility`).
 
 ## Design decisions (grill-me 2026-07-06 + plan-review round folded)
 
@@ -1299,18 +1449,29 @@ entirely our deployment + resilience gap, not an external outage.
 ### Part B — always-on fallback floor
 
 - **B0/M0 — DECIDED: categorical tier + reconcile priorities (prerequisite).**
-  See M0 above. M0c makes the fallback/skill tier a categorical `FALLBACK_MODEL_IDS`
-  constant (single source for combination, B3, M3), demoting DB `priority` to
-  ordering/tie-break; M0a/M0b reconcile and guard the priority column.
+  See M0 above. M0c makes the fallback/skill tier a categorical `MODEL_TIERS` map (from
+  which `FALLBACK_MODEL_IDS` is derived) — the single source for forecast combination and
+  the B3 badge ONLY, demoting DB `priority` to ordering/tie-break. **Alert routing is a
+  SEPARATE facet, `AlertEligibility`/`ALERT_ELIGIBILITIES`, not `FALLBACK_MODEL_IDS`** (a
+  FORECAST flood alert fires only for `SKILL_FORECAST`; both fallback eligibilities are
+  dropped from the forecast-alert set). M0a/M0b reconcile and guard the priority column;
+  M0d fails loud on any model not declared in both maps.
 - **B1a — DECIDED:** both fallbacks; guarantee keyed on
   `climatology_fallback`-with-active-artifact (post-M0, priority 100).
-- **B1b — DECIDED (STRICT floor-gate; owner-ratified v0-scope §A4 amendment):**
-  Step 8 requires an active `climatology_fallback` floor artifact before OPERATIONAL —
-  a deliberate, owner-ratified (2026-07-06) tightening of the locked `docs/v0-scope.md
-  §A4` rule ("≥1 model artifact" → "≥1 skill artifact AND an active floor artifact"),
-  applied to that doc at land time; Step 7 does not swallow floor-training failure;
-  `flows/onboard.py` surfaces it non-green; floor plugin-load/absence is loud;
-  onboarding tests budgeted; idempotent backfill for 2009/2091.
+- **B1b — DECIDED (PHASED floor-gate + `no_floor` readiness state; ER-D3 — NOT a
+  fleet-wide deploy-time flip):** the owner-ratified (2026-07-06) tightening of the
+  locked `docs/v0-scope.md §A4` rule ("≥1 model artifact" → "≥1 skill artifact AND an
+  active `climatology_fallback` floor artifact") is a **hard gate for NEW onboarding
+  ONLY** (a new station without an active floor artifact → NOT OPERATIONAL + loud ERROR,
+  applied to that doc at land time). **Existing stations are NOT flipped
+  OPERATIONAL→NOT at deploy:** a currently-OPERATIONAL station lacking a floor artifact
+  **stays serving** but carries a `no_floor` degraded-readiness state (a field decoupled
+  from `StationStatus` + a dashboard badge) and is reported, and any status change
+  happens **only** after the phased **audit → backfill → verify** sequence, operator-
+  visible at each step — never a surprise fleet-wide flip. Independently: Step 7 does not
+  swallow floor-training failure; `flows/onboard.py` surfaces it non-green; floor
+  plugin-load/absence is loud; onboarding tests budgeted; idempotent backfill for
+  2009/2091.
 - **B2 — DECIDED:** persistence empty-obs guard **raises a narrow named exception**
   (e.g. `InsufficientObservationsError`) that the existing `_run_single_model` backstop
   (`run_station_forecast.py:174-208`) turns into a graceful "predict failed" reason →
@@ -1344,20 +1505,24 @@ entirely our deployment + resilience gap, not an external outage.
   `model_id ∈ FALLBACK_MODEL_IDS`" rule, which was UNSAFE):** in **one** central
   partition on `all_ensembles` before Phase-C dispatch — covering all THREE build sites
   (PRIMARY `:1111`, combination `:1207`, GROUP `:1414`) and every strategy — classify
-  each (station, model) ensemble by `AlertEligibility`: **climatology
-  (`NO_EVENT_INFORMATION`) is dropped** (never a flood alert, nor pooled into one);
-  **skill (`SKILL_FORECAST`) alerts via `AlertSource.FORECAST`**; **persistence
-  (`CURRENT_OBS_PROXY`) is routed to the current-condition path** —
-  `AlertSource.OBSERVATION` if its source obs is fresh + exceeds, suppressed if stale.
-  Suppression (nothing eligible left) logs `alert.suppressed_fallback_only` + writes an
-  `alert_suppressed` health record (ER-D4). This keeps "the river is dangerous
-  right now" visible during an NWP outage (the blocker: blanket-suppress would have
-  yielded zero alert on an observably-dangerous gauge with obs-alerts off), still
-  refuses to dress a fallback up as a *skill* flood alert, and closes the
-  pooled-contamination path (`PooledEnsembleStrategy` ignores `priorities`,
-  `all_ensembles` built from `multi_result.results`, not `combinable_results`). **HARD
-  ship precondition: `enable_observation_alerts=true` on the mini** so the
-  current-condition path is live.
+  each (station, model) ensemble by `AlertEligibility`: **skill (`SKILL_FORECAST`) is
+  kept** and alerts via `AlertSource.FORECAST`; **both non-skill eligibilities —
+  climatology (`NO_EVENT_INFORMATION`) and persistence (`CURRENT_OBS_PROXY`) — are
+  dropped** from the forecast-alert set (neither ever a flood alert, nor pooled into
+  one). The forecast cycle does **NOT** re-route persistence to `AlertSource.OBSERVATION`
+  and reads **no** freshness / `observation_staleness_hours` metadata (targeted review,
+  BLOCKER-1/BLOCKER-2): a dangerous current level is delivered independently by Flow 2's
+  observation checker (`observation_alert_checker.py:80`, 24h-latest logic), which is why
+  `enable_observation_alerts=true` is a HARD ship precondition. Suppression (no skill
+  ensemble left for a station) logs `alert.suppressed_fallback_only` + writes an
+  `alert_suppressed` **`pipeline_health` record** (ER-D4, NOT an `AlertSource.PIPELINE`
+  alert row). This keeps "the river is dangerous right now" visible during an NWP outage
+  via Flow 2 (the blocker: blanket-suppress would have yielded zero alert on an
+  observably-dangerous gauge with obs-alerts off), still refuses to dress a fallback up
+  as a *skill* flood alert, and closes the pooled-contamination path
+  (`PooledEnsembleStrategy` ignores `priorities`, `all_ensembles` built from
+  `multi_result.results`, not `combinable_results`). **HARD ship precondition:
+  `enable_observation_alerts=true` on the mini** so the current-condition path is live.
 
 ## Residual forks / follow-ups (post-100)
 
@@ -1374,8 +1539,9 @@ health-record dashboard/API surfacing that overlaps Flow 4 (candidate split).
   carry `server_default="0"`, so a raw SQL INSERT that omits `priority` lands a row at
   the skill tier `0` — the same drift signature the incident showed, on any code path
   that bypasses the M0b app-layer write-time guard. **Tightening the DB DEFAULT is
-  out of scope for Plan 100** (M0c's categorical tier already makes B3/M3/combination
-  immune to the drift, and C1c's tripwire makes any such out-of-band row *visible*);
+  out of scope for Plan 100** (M0c's categorical `MODEL_TIERS` already makes the B3 badge
+  + combination immune to the drift, alert routing reads `ALERT_ELIGIBILITIES`, and
+  C1c's tripwire makes any such out-of-band row *visible*);
   it is recorded here as an explicit open residual rather than silently closed. (This
   corrects the earlier "all round-3 forks resolved / only the persisted-column residual
   open" framing, which omitted this gap.)
@@ -1437,31 +1603,38 @@ specialized (hydrology + production-reliability) reviewer pass folded (2026-07-0
 SHIP-WITH-CHANGES: 1 blocker + several majors → ER-D1…ER-D7)**.
 
 **GROWTH NOTE (external review):** Plan 100 has GROWN materially with ER-D1…ER-D7
-(a new `AlertEligibility` model + current-condition alert routing, a climatology-QA
-diagnostic, a `no_floor` readiness state + phased floor-gate rollout, first-class
-health records + run-state semantics, a step-0 snapshot prerequisite, an M0a
-fleet-mutation safety envelope, and a registry tier guard). **Candidate follow-up
-split (owner to decide, NOT split here):** the **M5 pipeline-health-record
-dashboard/API surfacing** (ER-D4) overlaps the deferred **Flow-4 monitoring** plan —
+(a new `AlertEligibility` model — climatology + persistence both dropped from the
+forecast-alert set, current-condition coverage via Flow 2's existing obs checker — a
+climatology-QA diagnostic, a `no_floor` readiness state + phased floor-gate rollout,
+first-class `pipeline_health` records + a `ForecastCycleHealth` cycle-outcome field, a
+step-0 snapshot prerequisite, an M0a fleet-mutation safety envelope, and a registry tier
+guard). **Candidate follow-up split (owner to decide, NOT split here):** the **M5
+`pipeline_health`-record dashboard/API surfacing** (ER-D4) overlaps the deferred
+**Flow-4 monitoring** plan —
 Plan 100 keeps the minimal write + surface needed to close the incident; the richer
 surfacing / notification dispatch could move to Flow 4. No sub-part is split by this
 edit.
 
 Next: **re-run `plan-review`** to confirm the folded decisions (the categorical
-`FALLBACK_MODEL_IDS` tier, write-time guard, v0-scope §A4 amendment, A3 post-hoc +
-`SAPPHIRE_CONFIG` gate, plus the seven external-review decisions:
-`AlertEligibility` routing, climatology-QA diagnostic, phased floor-gate + `no_floor`,
-first-class health records + run-state, step-0 snapshot, M0a safety envelope, registry
-tier guard) converge with no new blockers/majors → phases → READY → `vision-build`
+`MODEL_TIERS` tier + derived `FALLBACK_MODEL_IDS`, write-time guard, v0-scope §A4
+amendment, A3 post-hoc + `SAPPHIRE_CONFIG` gate, plus the seven external-review
+decisions: `AlertEligibility` routing (climatology + persistence both dropped from the
+forecast-alert set; current-condition via Flow 2), climatology-QA diagnostic, phased
+floor-gate + `no_floor`, first-class `pipeline_health` records + `ForecastCycleHealth`
+outcome, step-0 snapshot, M0a safety envelope, registry tier guard) converge with no new
+blockers/majors → phases → READY → `vision-build`
 (WF2). Implementation touches:
-- **`types/ids.py`** — new `FALLBACK_MODEL_IDS: frozenset[ModelId] = frozenset({
-  ModelId("climatology_fallback"), ModelId("persistence_fallback")})` constant next to
-  `FALLBACK_PRIORITY_THRESHOLD` — the SINGLE categorical tier source (Decision 2);
-  wrapped through `ModelId` per the existing sentinel-constant pattern (`:16-19`), not
-  bare `frozenset[str]`. **Plus a small `ModelTier` enum (`SKILL`/`FALLBACK`)** (in
-  `types/ids.py` or `types/enums.py`) derived from `FALLBACK_MODEL_IDS` — the value
-  exposed on the B3 badge/JSON schema in place of a raw `is_fallback: bool` (MAJOR-6 /
-  CLAUDE.md enum-over-bool).
+- **`types/ids.py`** — new **explicit `MODEL_TIERS: dict[ModelId, ModelTier]`** and
+  **`ALERT_ELIGIBILITIES: dict[ModelId, AlertEligibility]`** maps next to
+  `FALLBACK_PRIORITY_THRESHOLD`, enumerating **every known model** (MAJOR-4 — no
+  skill-by-absence). **`FALLBACK_MODEL_IDS: frozenset[ModelId]` is DERIVED from
+  `MODEL_TIERS`** (`frozenset(mid for mid, t in MODEL_TIERS.items() if t is
+  ModelTier.FALLBACK)`), NOT a second hand-listed constant — `ModelId`-wrapped per the
+  existing sentinel-constant pattern (`:16-19`), not bare `frozenset[str]`. **Plus a
+  small `ModelTier` enum (`SKILL`/`FALLBACK`)** (in `types/ids.py` or `types/enums.py`) —
+  the value keyed by `MODEL_TIERS`, exposed on the B3 badge/JSON schema in place of a raw
+  `is_fallback: bool` (MAJOR-6 / CLAUDE.md enum-over-bool). `MODEL_TIERS` governs
+  combination + the badge ONLY; `ALERT_ELIGIBILITIES` governs alert routing (M3).
 - **`services/run_station_forecast.py:71-76`** — `combinable_results` filters on
   `model_id not in FALLBACK_MODEL_IDS` (was `priorities.get(mid,0) <
   FALLBACK_PRIORITY_THRESHOLD`); **migrate the regression test
@@ -1505,36 +1678,44 @@ tier guard) converge with no new blockers/majors → phases → READY → `visio
   `:642` — subsumes `SAPPHIRE_CONFIG`-unset AND the explicit-`enabled=false` incident
   case; the STAC-missing raise at `:648-656` already covers adapter-unbuildable) +
   **partition `all_ensembles` ONCE by `AlertEligibility` immediately before the
-  Phase-C dispatch (`:1441-1447`)** — drop `NO_EVENT_INFORMATION` (climatology), pass
-  `SKILL_FORECAST` to the `AlertSource.FORECAST` path, route `CURRENT_OBS_PROXY`
-  (persistence) to the current-condition `AlertSource.OBSERVATION` path with the
-  freshness gate (ER-D1) — covering all three build sites (`:1111`/`:1207`/`:1414`);
-  the `station_dark` + `alert_suppressed` **pipeline-health records** (`AlertSource.PIPELINE`,
-  written regardless of `enable_*_alerts`) + **DEGRADED run-state** on a dark/suppressed
-  cycle (ER-D4); C1a loader + `_WeatherForecastAdapterConfig` field, C1b/C1c checks +
-  the `nwp.grid_stale` health record.
+  Phase-C dispatch (`:1441-1447`)** — keep `SKILL_FORECAST` (→ `AlertSource.FORECAST`),
+  **drop BOTH `NO_EVENT_INFORMATION` (climatology) and `CURRENT_OBS_PROXY` (persistence)**
+  from the forecast-alert set (no re-routing, no freshness read; current-condition
+  coverage is Flow 2's obs checker — ER-D1, targeted review) — covering all three build
+  sites (`:1111`/`:1207`/`:1414`); the `station_dark` + `alert_suppressed` written as
+  **`pipeline_health` records** (`PgPipelineHealthStore.append_health_record`, NOT
+  `AlertSource.PIPELINE` alert rows; written regardless of `enable_*_alerts`) + a new
+  **`ForecastCycleHealth` field** (DEGRADED/FAILED/HEALTHY) on `ForecastCycleResult`
+  (`:89-97`) for a dark/suppressed cycle — the Prefect run stays COMPLETED, `FlowRunState`
+  is NOT extended (ER-D4); C1a loader + `_WeatherForecastAdapterConfig` field, C1b/C1c
+  checks + the `nwp.grid_stale` `pipeline_health` record.
 - **`services/model_registry.py:27-88`** — registry / load-time tier guard (ER-D7):
-  every discovered model must declare `ModelTier` **and** `AlertEligibility` (central
-  maps or model attribute) or **raise `ConfigurationError`** at discovery — no
-  `SKILL`/`SKILL_FORECAST` default.
+  every discovered model must be in BOTH explicit maps (`MODEL_TIERS` +
+  `ALERT_ELIGIBILITIES`) or declare both facets as attributes, else **raise
+  `ConfigurationError`** in `discover_models()` — no `SKILL`/`SKILL_FORECAST`
+  skill-by-absence default; `FALLBACK_MODEL_IDS` is derived from `MODEL_TIERS`.
 - **`services/observation_alert_checker.py`** (`check_observation_alerts`,
-  `AlertSource.OBSERVATION`) + **`flows/ingest_observations.py:366-374`** — the
-  current-condition path a fresh `CURRENT_OBS_PROXY` (persistence) exceedance routes to
-  (ER-D1); **HARD precondition `enable_observation_alerts=true` on the mini**
-  (`config/overlays/mac-mini.toml`, `config/deployment.py:104`, `config.toml:26`) so the
-  path is live.
+  `AlertSource.OBSERVATION`) + **`flows/ingest_observations.py:366-374`** — this is the
+  EXISTING current-condition path (24h-latest, `:25,:52,:63,:73,:80`) that independently
+  covers a dangerous current level; the forecast cycle does NOT re-route persistence to
+  it (targeted review, BLOCKER-1). No code change here beyond the **HARD precondition
+  `enable_observation_alerts=true` on the mini** (`config/overlays/mac-mini.toml`,
+  `config/deployment.py:104`, `config.toml:26`) so the path is live.
 - **`types/enums.py`** — new `AlertEligibility` enum
-  (`SKILL_FORECAST`/`CURRENT_OBS_PROXY`/`NO_EVENT_INFORMATION`, ER-D1) + run-state
-  DEGRADED semantics (`FlowRunState:199-206` / a `ForecastCycleResult` degraded field,
-  ER-D4); the `ModelTier` enum may live here or in `types/ids.py`.
+  (`SKILL_FORECAST`/`CURRENT_OBS_PROXY`/`NO_EVENT_INFORMATION`, ER-D1) + a new
+  **`ForecastCycleHealth` enum** (DEGRADED/FAILED/HEALTHY) for the cycle-outcome field on
+  `ForecastCycleResult` — **do NOT add `DEGRADED` to `FlowRunState`** (`:199-206`), which
+  is a direct mapping of Prefect's `StateType` (`adapters/prefect_status.py:28`) and has
+  no degraded state (ER-D4 / targeted review); the `ModelTier` enum may live here or in
+  `types/ids.py` (alongside the `MODEL_TIERS` + `ALERT_ELIGIBILITIES` maps).
 - **station-readiness `no_floor` state + dashboard badge/templates** (ER-D3) — a
   degraded-readiness flag decoupled from `StationStatus` (`types/enums.py:150-154`), so
   a floorless-but-skilled existing station stays serving + visibly flagged rather than
   flipped OPERATIONAL→NOT; the strict floor-gate applies to NEW onboarding only, phased
   rollout for existing.
 - **climatology-QA diagnostic** at onboarding/backfill (ER-D2) — recurring seasonal
-  threshold crossing → a config/threshold-review record (`AlertSource.PIPELINE` /
-  config-review), NOT a flood alert.
+  threshold crossing → a `pipeline_health` record (or a dedicated config-review record),
+  NOT an `AlertSource.PIPELINE` alert row and NOT a flood alert.
 - **Step-0 root-cause snapshot** (ER-D5) + **M0a fleet-mutation safety envelope**
   (ER-D6: maintenance mode / advisory lock, DB backup, dry-run diff + per-divergence
   triage, single-transaction apply, migration-audit record) — both are named admin
@@ -1547,9 +1728,10 @@ tier guard) converge with no new blockers/majors → phases → READY → `visio
   the native-sentinel-fallback gap**.
 - `alert_strategy.py`/`alert_checker.py` (M3 suppression `alert.suppressed_fallback_only`
   across Primary/Pooled/BMA/Consensus) — note the central `AlertEligibility` partition
-  now makes `NO_EVENT_INFORMATION` ensembles never reach these strategies, and routes a
-  fresh `CURRENT_OBS_PROXY` exceedance to the `AlertSource.OBSERVATION` path instead
-  (ER-D1); API/templates (B3 — static
+  now makes BOTH `NO_EVENT_INFORMATION` (climatology) and `CURRENT_OBS_PROXY`
+  (persistence) ensembles never reach these forecast-alert strategies; the
+  current-condition case is handled independently by Flow 2's obs checker, not by any
+  forecast-cycle re-routing (ER-D1, targeted review); API/templates (B3 — static
   `FALLBACK_MODEL_IDS` import + derived `ModelTier` enum, **no `api/deps.py` config
   plumbing, no `SAPPHIRE_CONFIG` in the `api` service**). **B3 surfaces:**
   `api/templates/forecasts/{list,detail}.html` + `api/routes/api_forecasts.py` (forecast
@@ -1583,8 +1765,8 @@ tier guard) converge with no new blockers/majors → phases → READY → `visio
 - `docs/standards/logging.md` — the A3 WARNING→ERROR carve-out for a zero-forecast
   station, plus the new dotted events `forecast_cycle.station_dark` /
   `alert.suppressed_fallback_only` / `nwp.grid_stale`, and a note that each of these
-  ALSO persists an `AlertSource.PIPELINE` health record regardless of the
-  `enable_*_alerts` flags (ER-D4).
+  ALSO persists a `pipeline_health` record (via `PgPipelineHealthStore`, NOT an
+  `AlertSource.PIPELINE` alert row) regardless of the `enable_*_alerts` flags (ER-D4).
 - `docs/architecture-context.md` (the **Fallback models** paragraph, `:132`, plus the
   `:128` `combinable_results` sentence) — TWO edits: (1) correct the STALE fallback
   priorities `ClimatologyFallbackModel (priority 90)` / `PersistenceFallbackModel
@@ -1600,19 +1782,23 @@ tier guard) converge with no new blockers/majors → phases → READY → `visio
 - **`docs/conventions.md` §Model assignment priority (`:424-449`)** and
   **`docs/spec/types-and-protocols.md` (the `combinable_results` / priority section)** —
   both today describe a **single DB-`priority`-driven** fallback-tier mechanism; M0c
-  replaces the tier's *source* with the categorical `FALLBACK_MODEL_IDS` constant, so
-  both must be updated to document the new scheme (folded, superseding the earlier
-  "dual-source" framing):
-  > **Fallback/skill tier membership is now categorical** — `model_id ∈
-  > FALLBACK_MODEL_IDS` — and is the single source read by forecast combination
-  > (`combinable_results`), the B3 badge, and M3 alert-suppression. DB
+  replaces the tier's *source* with the explicit categorical `MODEL_TIERS` map (from
+  which `FALLBACK_MODEL_IDS` is derived), so both must be updated to document the new
+  scheme (folded, superseding the earlier "dual-source" framing):
+  > **Fallback/skill tier membership is now categorical** — keyed on the explicit
+  > `MODEL_TIERS` map (equivalently `model_id ∈ FALLBACK_MODEL_IDS`, derived from it) —
+  > and is the single source read by forecast combination (`combinable_results`) and the
+  > B3 badge. **Alert routing is a SEPARATE facet, `AlertEligibility` /
+  > `ALERT_ELIGIBILITIES`, NOT the tier map**: a forecast flood alert fires only for a
+  > `SKILL_FORECAST` model; both fallback eligibilities (`CURRENT_OBS_PROXY`,
+  > `NO_EVENT_INFORMATION`) are dropped from the forecast-alert set. DB
   > `assignment.priority` no longer decides tier membership anywhere; it is retained
   > only as an **ordering / tie-break** key among admitted skill models
   > (`min(priority)` primary-selection dispatch, combination ordering). The config
   > `[model_priorities]` map sets that ordering integer, and a config-load validator
   > keeps every **explicitly-configured** fallback's ordering integer
   > `>= FALLBACK_PRIORITY_THRESHOLD` (an omitted fallback falls back to
-  > `DEFAULT_PRIORITY` and is classified purely by the categorical set).
+  > `DEFAULT_PRIORITY` and is classified purely by the categorical map).
   This removes the reverse-engineering burden and documents that a drifted DB
   `priority` can no longer misclassify a tier. (B3's render-time `ModelTier` adds **no**
   new field to the `OperationalForecast` dataclass — only the DEFERRED persisted
