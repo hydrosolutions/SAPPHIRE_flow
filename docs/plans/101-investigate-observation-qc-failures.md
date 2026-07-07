@@ -79,6 +79,20 @@ water_level VALUE before `checker.check`**, so every water_level rule operates o
 relative stage against the existing relative bounds. No adapter change, no threshold
 edits, no `StationQcOverride`, no `time_step` wiring.
 
+> **Boundary unit assumption + guard (added 2026-07-07).** This design assumes
+> water_level arrives in **metres** — either metres above ground (relative, datum `0`)
+> or metres above sea level (absolute, datum = surveyed gauge-zero). The datum is a
+> pure metres **offset**; it does NOT rescale units. **v0/BAFU is all metres**, so no
+> conversion is needed. But DHM/v1 will send some stations in **cm** (or m above
+> ground), and a cm value silently checked against relative-metre bounds would be
+> mis-QC'd. **Guard (implement here):** record the station's `water_level_unit` at
+> onboarding (alongside the datum) and, at the onboarding gate, **assert it is one of
+> `{m, m a.s.l.}`** (the metres-based units this plan supports); **fail onboarding with
+> a clear `ConfigurationError` for any other unit (e.g. `cm`)** so an unsupported-unit
+> station cannot be silently onboarded and mis-QC'd before the v1 normalization exists.
+> The actual **cm→m normalization is an adapter-boundary concern for v1/DHM**, out of
+> scope here (see §6) — this plan only *guards* the metres assumption.
+
 1. **Keep-raw + subtract-before-check.** The `HydroScraperAdapter` is unchanged (a
    stateless HTTP boundary — it MUST stay store-free per the parse-don't-validate /
    preserve-raw-at-the-boundary principle). At QC time, build a datum-shifted
@@ -484,6 +498,14 @@ not a unit test (`get_reflected` runs `MetaData.reflect`).
 - **The rating-curve / published gauge-zero work (Nepal v1)** — reference only; the
   `water_level_datum_masl` column is designed to be compatible with, not to replace, that
   future work.
+- **cm→m unit normalization for DHM/v1** — out of scope. v0/BAFU water_level is
+  metres-based (m a.s.l.). DHM/v1 stations may report **cm** or **m above ground**;
+  normalizing to canonical metres is an **adapter-boundary** responsibility (configured
+  from the onboarding `water_level_unit` metadata, applied at BOTH the historical import
+  and the operational ingest — a cm gauge reports cm on every reading, not just once).
+  This plan only adds the metres-assumption **guard** (§2 boundary note); the conversion
+  itself is tracked for the **DHM-adapter / recap-DG-client v1 track**. Once units are
+  normalized at the boundary, this plan's datum-subtract needs no change.
 
 ---
 
