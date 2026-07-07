@@ -12,6 +12,11 @@ from sapphire_flow.services.nwp_coverage import assess_future_coverage
 from sapphire_flow.services.operational_inputs import (
     assemble_station_operational_inputs,
 )
+from sapphire_flow.services.qc_datum import (
+    add_forecast_datum_details,
+    forecast_skipped_rules,
+    shift_ensemble_for_water_level_datum,
+)
 from sapphire_flow.services.run_station_forecast import (
     StationForecastResult,
     worst_qc_status,
@@ -258,6 +263,7 @@ def _build_station_result(
     qc_rules: ForecastQcRuleSet,
     qc_overrides: list[StationForecastQcOverride],
     baselines: list[ClimBaseline],
+    water_level_datum_masl: float | None,
     nwp_cycle_reference_time: UtcDatetime | None,
     nwp_cycle_source: NwpCycleSource,
     config: DeploymentConfig,
@@ -266,7 +272,25 @@ def _build_station_result(
 ) -> StationForecastResult | None:
     all_flags: dict[str, list[QcFlag]] = {}
     for param, ensemble in ensembles.items():
-        flags = qc_checker.check(ensemble, qc_rules, qc_overrides, baselines)
+        datum = water_level_datum_masl if param == "water_level" else None
+        qc_ensemble = shift_ensemble_for_water_level_datum(ensemble, datum=datum)
+        skipped_rules = forecast_skipped_rules(param, datum)
+        if skipped_rules:
+            flags = qc_checker.check(
+                qc_ensemble,
+                qc_rules,
+                qc_overrides,
+                baselines,
+                skipped_rule_ids=skipped_rules,
+            )
+        else:
+            flags = qc_checker.check(qc_ensemble, qc_rules, qc_overrides, baselines)
+        flags = add_forecast_datum_details(
+            flags,
+            raw_ensemble=ensemble,
+            shifted_ensemble=qc_ensemble,
+            datum=datum,
+        )
         all_flags[param] = flags
         worst = worst_qc_status(flags)
         if worst == QcStatus.QC_FAILED:
@@ -350,6 +374,7 @@ def run_group_forecast(
     clock: Callable[[], UtcDatetime],
     id_gen: Callable[[], UUID],
     rng: random.Random,
+    water_level_datums_masl: dict[StationId, float | None] | None = None,
 ) -> dict[StationId, StationForecastResult]:
     # Plan 090 D1/D2/D3 (GROUP path): before predict_batch, a group model that
     # declares future NWP forcing must have adequate coverage for EVERY member
@@ -480,6 +505,7 @@ def run_group_forecast(
             qc_rules=qc_rules,
             qc_overrides=qc_overrides,
             baselines=baselines_by_station.get(station_id, []),
+            water_level_datum_masl=(water_level_datums_masl or {}).get(station_id),
             nwp_cycle_reference_time=nwp_cycle_reference_time,
             nwp_cycle_source=nwp_cycle_source,
             config=config,

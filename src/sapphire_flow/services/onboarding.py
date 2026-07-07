@@ -2,15 +2,24 @@ from __future__ import annotations
 
 import random as _random
 import time
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
 import structlog
 
+from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.baselines import compute_clim_baselines
 from sapphire_flow.services.flow_regime import compute_flow_regime
 from sapphire_flow.services.qc import Stage1QualityChecker
+from sapphire_flow.services.qc_datum import (
+    SUPPORTED_WATER_LEVEL_UNITS,
+    add_observation_datum_details,
+    obs_qc_rule_version,
+    obs_skipped_rules,
+    shift_observations_for_water_level_datum,
+)
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.domain import aggregate_qc_status
 from sapphire_flow.types.enums import (
@@ -205,6 +214,8 @@ def _run_onboarding(
     deployment_config: DeploymentConfig | None = None,
     hindcast_days: int | None = None,
     parameter_store: ParameterStore | None = None,
+    water_level_datums_masl: dict[str, float] | None = None,
+    water_level_units: dict[str, str] | None = None,
 ) -> OnboardingResult:
     errors: list[str] = []
     stations_created = 0
@@ -248,18 +259,31 @@ def _run_onboarding(
     station_map: dict[str, StationId] = {}
     # Build lookup: station_id → forecast_targets parameter for QC/baseline/regime
     station_target: dict[StationId, str] = {}
+    station_by_id: dict[StationId, StationConfig] = {}
     for station in stations:
         try:
+            if (
+                station.forecast_targets is not None
+                and "water_level" in station.forecast_targets
+                and station.water_level_unit not in SUPPORTED_WATER_LEVEL_UNITS
+            ):
+                raise ConfigurationError(
+                    "water_level_unit must be one of "
+                    f"{sorted(SUPPORTED_WATER_LEVEL_UNITS)}, got "
+                    f"{station.water_level_unit!r} for station {station.code}"
+                )
             existing = station_store.fetch_station_by_code(
                 station.code, station.network
             )
             if existing is not None:
+                station_to_store = replace(station, id=existing.id)
                 station_map[station.code] = existing.id
-                if existing.forecast_targets:
-                    ft = existing.forecast_targets
+                station_by_id[existing.id] = station_to_store
+                if station_to_store.forecast_targets:
+                    ft = station_to_store.forecast_targets
                     station_target[existing.id] = next(iter(ft), "discharge")
                 t0 = time.perf_counter()
-                station_store.update_station(station)
+                station_store.update_station(station_to_store)
                 duration_ms = round((time.perf_counter() - t0) * 1000, 1)
                 stations_updated += 1
                 log.info(
@@ -272,11 +296,14 @@ def _run_onboarding(
             else:
                 station_store.store_station(station)
                 station_map[station.code] = station.id
+                station_by_id[station.id] = station
                 stations_created += 1
                 if station.forecast_targets:
                     ft = station.forecast_targets
                     station_target[station.id] = next(iter(ft), "discharge")
                 log.info("station_stored", code=station.code)
+        except ConfigurationError:
+            raise
         except Exception as exc:
             msg = f"Failed to store station {station.code}: {exc}"
             log.error("station_store_error", code=station.code, error=str(exc))
@@ -378,10 +405,40 @@ def _run_onboarding(
             )
             if not raw_obs:
                 continue
-            flags = checker.check(raw_obs, qc_rules, overrides=[], baselines=[])
+            station = station_by_id.get(station_id)
+            datum = (
+                station.water_level_datum_masl
+                if station is not None and parameter == "water_level"
+                else None
+            )
+            qc_obs = shift_observations_for_water_level_datum(
+                raw_obs,
+                parameter=parameter,
+                datum=datum,
+            )
+            flags = checker.check(
+                qc_obs,
+                qc_rules,
+                overrides=[],
+                baselines=[],
+                skipped_rule_ids=obs_skipped_rules(parameter, datum),
+            )
+            flags = add_observation_datum_details(
+                flags,
+                raw_observations=raw_obs,
+                shifted_observations=qc_obs,
+                parameter=parameter,
+                datum=datum,
+            )
+            qc_rule_version = obs_qc_rule_version(parameter, datum)
             for obs_id, obs_flags in flags.items():
                 status = aggregate_qc_status(obs_flags)
-                obs_store.update_qc(obs_id, status, obs_flags)
+                obs_store.update_qc(
+                    obs_id,
+                    status,
+                    obs_flags,
+                    qc_rule_version=qc_rule_version,
+                )
                 if status == QcStatus.QC_PASSED:
                     observations_qc_passed += 1
                 elif status == QcStatus.QC_FAILED:
@@ -413,7 +470,25 @@ def _run_onboarding(
                 end_utc,
                 qc_status=QcStatus.QC_PASSED,
             )
-            clim = compute_clim_baselines(qc_passed, station_id, parameter)
+            station = station_by_id.get(station_id)
+            datum = (
+                station.water_level_datum_masl
+                if station is not None and parameter == "water_level"
+                else None
+            )
+            if parameter == "water_level" and datum is None:
+                log.info(
+                    "baselines_skipped_missing_water_level_datum",
+                    station_id=str(station_id),
+                    parameter=parameter,
+                )
+                continue
+            baseline_obs = shift_observations_for_water_level_datum(
+                qc_passed,
+                parameter=parameter,
+                datum=datum,
+            )
+            clim = compute_clim_baselines(baseline_obs, station_id, parameter)
             if clim:
                 baseline_store.store_baselines(clim)
                 baselines_computed += len(clim)
@@ -732,6 +807,8 @@ def onboard_from_camelsch(
     deployment_config: DeploymentConfig | None = None,
     hindcast_days: int | None = None,
     parameter_store: ParameterStore | None = None,
+    water_level_datums_masl: dict[str, float] | None = None,
+    water_level_units: dict[str, str] | None = None,
 ) -> OnboardingResult:
     from sapphire_flow.adapters.camelsch_adapter import (
         load_forcing,
@@ -758,7 +835,13 @@ def onboard_from_camelsch(
         end_date=end_date,
     )
 
-    stations, basins = load_stations(data_dir, clock, basin_ids)
+    stations, basins = load_stations(
+        data_dir,
+        clock,
+        basin_ids,
+        water_level_datums_masl=water_level_datums_masl,
+        water_level_units=water_level_units,
+    )
 
     station_map: dict[str, StationId] = {}
     for s in stations:

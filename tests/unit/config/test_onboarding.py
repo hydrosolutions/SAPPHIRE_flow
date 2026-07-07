@@ -35,6 +35,23 @@ class TestLoadOnboardingConfig:
         assert cfg.data_source == "camels-ch"
         assert cfg.basin_ids == ("2004", "2009", "2135")
 
+    def test_parses_water_level_datum_and_unit_tables(self, tmp_path: Path) -> None:
+        toml = tmp_path / "config.toml"
+        toml.write_text(
+            "[onboarding]\n"
+            'basin_ids = ["2009"]\n'
+            "[onboarding.water_level_datums_masl]\n"
+            '"2009" = 260.5\n'
+            "[onboarding.water_level_units]\n"
+            '"2009" = "m a.s.l."\n'
+        )
+
+        cfg = load_onboarding_config(toml)
+
+        assert cfg is not None
+        assert cfg.water_level_datums_masl == {"2009": 260.5}
+        assert cfg.water_level_units == {"2009": "m a.s.l."}
+
     def test_missing_section_returns_none(self, tmp_path: Path) -> None:
         toml = tmp_path / "config.toml"
         toml.write_text("max_retention_days = 730\n")

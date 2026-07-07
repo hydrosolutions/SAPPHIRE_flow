@@ -41,6 +41,16 @@ class PgClimBaselineStore:
         )
         self._conn.execute(stmt)
 
+    def delete_baselines(self, station_id: StationId, parameter: str) -> None:
+        self._conn.execute(
+            sa.delete(clim_baselines).where(
+                sa.and_(
+                    clim_baselines.c.station_id == station_id,
+                    clim_baselines.c.parameter == parameter,
+                )
+            )
+        )
+
     def fetch_baselines(
         self, station_id: StationId, parameter: str
     ) -> list[ClimBaseline]:

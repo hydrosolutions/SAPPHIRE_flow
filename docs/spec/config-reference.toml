@@ -222,6 +222,19 @@ basin_ids = [                      # BAFU gauge IDs to onboard
     "2004", "2009", "2011",        # (167 EXACT_ID matches to LINDAS for v0 Swiss)
 ]
 
+[onboarding.water_level_datums_masl]
+# Optional surveyed gauge-zero elevation (BAFU Pegelnullpunkt), keyed by station code.
+# When present, water_level QC subtracts this datum before applying relative-stage rules.
+# Existing stations are updated through station metadata, not re-inserted.
+# Example only — replace with the operator-supplied surveyed datum for the station.
+# "2009" = 0.0
+
+[onboarding.water_level_units]
+# Unit guard for water_level onboarding metadata. v0 supports metres only:
+# "m" and "m a.s.l.". Unsupported units such as "cm" fail onboarding loudly until
+# the v1 adapter-boundary normalization path exists.
+# "2009" = "m a.s.l."
+
 
 # =============================================================================
 # QC rule configuration — deployment-level defaults
@@ -333,7 +346,7 @@ rule_id = "spike"
 rule_version = "1.0.0"
 parameter = "water_level"
 time_step_seconds = 600
-thresholds = { tolerance = 0.1 }
+thresholds = { max_delta = 1.0 }  # absolute metres
 
 [[qc_rules.rules]]
 rule_id = "gross_outlier"
@@ -369,7 +382,7 @@ rule_id = "spike"
 rule_version = "1.0.0"
 parameter = "water_level"
 time_step_seconds = 86400
-thresholds = { tolerance = 0.3 }
+thresholds = { max_delta = 5.0 }  # absolute metres
 
 [[qc_rules.rules]]
 rule_id = "gross_outlier"

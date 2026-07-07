@@ -769,6 +769,9 @@ def run_forecast_cycle_flow(
             for param in params:
                 combined.extend(baseline_store.fetch_baselines(s.id, param))  # type: ignore[union-attr]
             all_baselines[s.id] = combined
+        water_level_datums_masl: dict[StationId, float | None] = {
+            s.id: s.water_level_datum_masl for s in operational
+        }
 
         # Build priority index for alert checker
         all_priorities: dict[StationId, dict[ModelId, int]] = {
@@ -1077,6 +1080,7 @@ def run_forecast_cycle_flow(
                         clock=clock,
                         id_gen=uuid4,
                         rng=rng,
+                        water_level_datum_masl=water_level_datums_masl.get(sid),
                     )
 
                     if fc_result is None:
@@ -1132,6 +1136,7 @@ def run_forecast_cycle_flow(
                         clock=clock,
                         id_gen=uuid4,
                         rng=rng,
+                        water_level_datum_masl=water_level_datums_masl.get(sid),
                     )
 
                     if multi_result.primary_model_id is None:
@@ -1377,6 +1382,7 @@ def run_forecast_cycle_flow(
                         clock=clock,  # type: ignore[arg-type]
                         id_gen=uuid4,
                         rng=rng,  # type: ignore[arg-type]
+                        water_level_datums_masl=water_level_datums_masl,
                     )
 
                     for sid, result in group_results.items():

@@ -249,7 +249,7 @@ rule_id = "spike"
 rule_version = "1.0.0"
 parameter = "water_level"
 time_step_seconds = 600
-thresholds = { tolerance = 0.1 }
+thresholds = { max_delta = 1.0 }
 
 [[qc_rules.rules]]
 rule_id = "gross_outlier"
@@ -305,7 +305,7 @@ rule_id = "spike"
 rule_version = "1.0.0"
 parameter = "water_level"
 time_step_seconds = 86400
-thresholds = { tolerance = 0.5 }
+thresholds = { max_delta = 5.0 }
 
 [[qc_rules.rules]]
 rule_id = "gross_outlier"

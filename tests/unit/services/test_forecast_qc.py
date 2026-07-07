@@ -15,6 +15,10 @@ from sapphire_flow.services.forecast_qc import (
     _apply_range_check,
     _apply_temporal_consistency,
 )
+from sapphire_flow.services.qc_datum import (
+    add_forecast_datum_details,
+    shift_ensemble_for_water_level_datum,
+)
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.domain import (
     ClimBaseline,
@@ -36,6 +40,7 @@ _QUANTILE_LEVELS = [0.01, 0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95, 0.99]
 def _make_members_ensemble(
     values_per_step: list[list[float]],
     station_id: StationId = _STATION,
+    parameter: str = "discharge",
 ) -> ForecastEnsemble:
     rows = []
     for step_idx, member_vals in enumerate(values_per_step):
@@ -52,8 +57,8 @@ def _make_members_ensemble(
     return ForecastEnsemble.from_members(
         station_id=station_id,
         issued_at=_NOW,
-        parameter="discharge",
-        units="m³/s",
+        parameter=parameter,
+        units="m³/s" if parameter == "discharge" else "m",
         time_step=_STEP,
         values=df,
     )
@@ -143,6 +148,35 @@ class TestRangeCheck:
         assert result is not None
         assert result.rule_id == "range_check"
         assert result.status == QcStatus.QC_FAILED
+
+    def test_shifted_water_level_detail_includes_raw_relative_and_datum(self) -> None:
+        raw = _make_members_ensemble(
+            [[300.0, 300.0, 300.0], [300.0, 300.0, 300.0]],
+            parameter="water_level",
+        )
+        shifted = shift_ensemble_for_water_level_datum(raw, datum=260.0)
+        rule = ForecastQcRuleParams(
+            rule_id="range_check",
+            rule_version="1.0.0",
+            parameter="water_level",
+            time_step=_STEP,
+            thresholds={"value_min": -2.0, "value_max": 20.0},
+        )
+        flag = _apply_range_check(shifted, rule.thresholds, rule)
+        assert flag is not None
+
+        detailed = add_forecast_datum_details(
+            [flag],
+            raw_ensemble=raw,
+            shifted_ensemble=shifted,
+            datum=260.0,
+        )
+
+        detail = detailed[0].detail
+        assert detail is not None
+        assert "raw_min=300.0" in detail
+        assert "relative_min=40.0" in detail
+        assert "datum_masl=260.0" in detail
 
 
 class TestFlatEnsemble:

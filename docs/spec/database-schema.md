@@ -58,7 +58,9 @@ erDiagram
         TEXT name
         GEOMETRY location "POINT 4326"
         DOUBLE_PRECISION altitude_masl "NULL"
-        TEXT station_kind "weather | river"
+        DOUBLE_PRECISION water_level_datum_masl "NULL"
+        TEXT water_level_unit "NULL"
+        TEXT station_kind "weather | river | lake"
         UUID basin_id FK "NULL"
         TEXT timezone "IANA"
         TEXT regulation_type "NULL"
@@ -68,6 +70,7 @@ erDiagram
         TEXT network "NOT NULL"
         TEXT ownership "default own"
         TEXT wigos_id "NULL"
+        TEXT gauging_status "default gauged"
         TIMESTAMPTZ created_at
         TIMESTAMPTZ updated_at
     }
@@ -509,7 +512,9 @@ erDiagram
         TEXT name
         GEOMETRY location "POINT 4326"
         DOUBLE_PRECISION altitude_masl "NULL"
-        TEXT station_kind "weather | river"
+        DOUBLE_PRECISION water_level_datum_masl "NULL"
+        TEXT water_level_unit "NULL"
+        TEXT station_kind "weather | river | lake"
         UUID basin_id FK "NULL"
         TEXT timezone "IANA"
         TEXT regulation_type "NULL"
@@ -519,6 +524,7 @@ erDiagram
         TEXT network "NOT NULL"
         TEXT ownership "default own"
         TEXT wigos_id "NULL"
+        TEXT gauging_status "default gauged"
         TIMESTAMPTZ created_at
         TIMESTAMPTZ updated_at
     }

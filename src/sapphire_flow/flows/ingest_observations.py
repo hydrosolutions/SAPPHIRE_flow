@@ -13,6 +13,12 @@ from prefect.runtime import flow_run, task_run
 
 from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.qc import Stage1QualityChecker
+from sapphire_flow.services.qc_datum import (
+    add_observation_datum_details,
+    obs_qc_rule_version,
+    obs_skipped_rules,
+    shift_observations_for_water_level_datum,
+)
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import GaugingStatus, QcStatus, StationKind
 
@@ -145,6 +151,7 @@ def _run_qc_task(
     parameter: str,
     qc_rules: QcRuleSet,
     now: UtcDatetime,
+    datum: float | None = None,
     context_window_hours: float = 2.0,
 ) -> dict[str, int]:
     window_start = ensure_utc(now - timedelta(hours=context_window_hours))
@@ -167,20 +174,46 @@ def _run_qc_task(
 
     baselines = baseline_store.fetch_baselines(station_id, parameter)
 
+    qc_observations = shift_observations_for_water_level_datum(
+        all_obs,
+        parameter=parameter,
+        datum=datum,
+    )
     checker = Stage1QualityChecker()
     flags = checker.check(
-        observations=all_obs,
+        observations=qc_observations,
         rule_set=qc_rules,
         overrides=[],
         baselines=baselines,
+        skipped_rule_ids=obs_skipped_rules(parameter, datum),
+    )
+    flags = add_observation_datum_details(
+        flags,
+        raw_observations=all_obs,
+        shifted_observations=qc_observations,
+        parameter=parameter,
+        datum=datum,
     )
 
     counts: dict[str, int] = {"passed": 0, "failed": 0, "suspect": 0}
+    version = obs_qc_rule_version(parameter, datum)
+    raw_by_id = {obs.id: obs for obs in all_obs}
     for obs_id, obs_flags in flags.items():
         if obs_id not in raw_ids:
             continue
         status = _aggregate_qc_status(obs_flags)
-        obs_store.update_qc(obs_id, status, obs_flags, qc_rule_version="1.0")
+        obs_store.update_qc(obs_id, status, obs_flags, qc_rule_version=version)
+        for flag in obs_flags:
+            if flag.status == QcStatus.QC_FAILED:
+                obs = raw_by_id[obs_id]
+                log.debug(
+                    "qc.rejected",
+                    station_id=str(station_id),
+                    parameter=parameter,
+                    rule_id=flag.rule_id,
+                    value=obs.value,
+                    threshold=flag.detail,
+                )
         if status == QcStatus.QC_PASSED:
             counts["passed"] += 1
         elif status == QcStatus.QC_FAILED:
@@ -329,6 +362,10 @@ def ingest_observations_flow(
     station_params: set[tuple[StationId, str]] = {
         (o.station_id, o.parameter) for o in raw_obs
     }
+    datums: dict[tuple[StationId, str], float | None] = {
+        (station.id, "water_level"): station.water_level_datum_masl
+        for station in eligible
+    }
 
     totals = {"passed": 0, "failed": 0, "suspect": 0}
     errors: list[str] = []
@@ -342,6 +379,7 @@ def ingest_observations_flow(
                 parameter,
                 qc_rules=qc_rules,
                 now=now,
+                datum=datums.get((station_id, parameter)),
                 context_window_hours=context_window_hours,
             )
             totals["passed"] += counts["passed"]

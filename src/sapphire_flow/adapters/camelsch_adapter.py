@@ -148,6 +148,8 @@ def attributes_to_station(
     basin_id: BasinId | None,
     station_id: StationId,
     clock: Callable[[], UtcDatetime],
+    water_level_datums_masl: dict[str, float] | None = None,
+    water_level_units: dict[str, str] | None = None,
 ) -> StationConfig:
     from sapphire_flow.types.domain import GeoCoord
     from sapphire_flow.types.station import StationConfig
@@ -162,10 +164,14 @@ def attributes_to_station(
         station_kind = StationKind.LAKE
         forecast_targets: frozenset[str] = frozenset({"water_level"})
         measured_parameters: frozenset[str] = frozenset({"water_level"})
+        water_level_datum_masl = (water_level_datums_masl or {}).get(str(gauge_id))
+        water_level_unit = (water_level_units or {}).get(str(gauge_id), "m a.s.l.")
     elif water_body_type is None or water_body_type == "stream":
         station_kind = StationKind.RIVER
         forecast_targets: frozenset[str] = frozenset({"discharge"})
         measured_parameters = frozenset({"discharge"})
+        water_level_datum_masl = None
+        water_level_unit = None
     else:
         log.warning(
             "unrecognized_water_body_type",
@@ -175,6 +181,8 @@ def attributes_to_station(
         station_kind = StationKind.RIVER
         forecast_targets: frozenset[str] = frozenset({"discharge"})
         measured_parameters = frozenset({"discharge"})
+        water_level_datum_masl = None
+        water_level_unit = None
 
     return StationConfig(
         id=station_id,
@@ -193,6 +201,8 @@ def attributes_to_station(
         network="bafu",
         ownership=StationOwnership.OWN,
         wigos_id=None,
+        water_level_datum_masl=water_level_datum_masl,
+        water_level_unit=water_level_unit,
     )
 
 
@@ -244,6 +254,8 @@ def load_stations(
     data_dir: str | Path,
     clock: Callable[[], UtcDatetime],
     basin_ids: list[str] | None = None,
+    water_level_datums_masl: dict[str, float] | None = None,
+    water_level_units: dict[str, str] | None = None,
 ) -> tuple[list[StationConfig], list[Basin]]:
     import camelsch
 
@@ -267,7 +279,15 @@ def load_stations(
         bid = BasinId(uuid4())
         sid = StationId(uuid4())
         attrs = attrs_df.loc[gauge_id]
-        station = attributes_to_station(gauge_id, attrs, bid, sid, clock)
+        station = attributes_to_station(
+            gauge_id,
+            attrs,
+            bid,
+            sid,
+            clock,
+            water_level_datums_masl=water_level_datums_masl,
+            water_level_units=water_level_units,
+        )
         stations.append(station)
 
         normalised_id = str(gauge_id).removesuffix(".0")

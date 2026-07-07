@@ -1187,6 +1187,14 @@ class FakeClimBaselineStore:
         for b in baselines:
             self._baselines[(b.station_id, b.parameter, b.day_of_year)] = b
 
+    def delete_baselines(self, station_id: StationId, parameter: str) -> None:
+        for key in [
+            key
+            for key in self._baselines
+            if key[0] == station_id and key[1] == parameter
+        ]:
+            del self._baselines[key]
+
     def fetch_baselines(
         self, station_id: StationId, parameter: str
     ) -> list[ClimBaseline]:

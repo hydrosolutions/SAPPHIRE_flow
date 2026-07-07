@@ -140,7 +140,7 @@ def _default_swiss_qc_rules() -> QcRuleSet:
                 rule_version="1.0.0",
                 parameter="water_level",
                 time_step=timedelta(seconds=600),
-                thresholds={"tolerance": 0.1},
+                thresholds={"max_delta": 1.0},
             ),
             QcRuleParams(
                 rule_id="gross_outlier",
@@ -176,7 +176,7 @@ def _default_swiss_qc_rules() -> QcRuleSet:
                 rule_version="1.0.0",
                 parameter="water_level",
                 time_step=timedelta(seconds=86400),
-                thresholds={"tolerance": 0.3},
+                thresholds={"max_delta": 5.0},
             ),
             QcRuleParams(
                 rule_id="gross_outlier",

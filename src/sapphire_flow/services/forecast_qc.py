@@ -234,6 +234,7 @@ class ForecastOutputQualityChecker:
         rule_set: ForecastQcRuleSet,
         overrides: list[StationForecastQcOverride],
         baselines: list[ClimBaseline],
+        skipped_rule_ids: frozenset[str] = frozenset(),
     ) -> list[QcFlag]:
         flags: list[QcFlag] = []
         rules = rule_set.rules_for(ensemble.parameter, ensemble.time_step)
@@ -243,6 +244,8 @@ class ForecastOutputQualityChecker:
         }
 
         for rule in rules:
+            if rule.rule_id in skipped_rule_ids:
+                continue
             thresholds = merge_thresholds(
                 rule.thresholds,
                 overrides,

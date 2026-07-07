@@ -159,6 +159,32 @@ class TestAttributesToStation:
         assert station.name == "2004"
         assert station.basin_id is None
 
+    def test_applies_water_level_datum_and_unit_by_station_code(self) -> None:
+        station = attributes_to_station(
+            "2004",
+            _LAKE_ATTRS,
+            _BASIN_ID,
+            _STATION_ID,
+            _CLOCK,
+            water_level_datums_masl={"2004": 429.25},
+            water_level_units={"2004": "m a.s.l."},
+        )
+
+        assert station.station_kind == StationKind.LAKE
+        assert station.water_level_datum_masl == 429.25
+        assert station.water_level_unit == "m a.s.l."
+
+    def test_lake_water_level_unit_defaults_to_metres_above_sea_level(self) -> None:
+        station = attributes_to_station(
+            "2004",
+            _LAKE_ATTRS,
+            _BASIN_ID,
+            _STATION_ID,
+            _CLOCK,
+        )
+
+        assert station.water_level_unit == "m a.s.l."
+
 
 class TestGeometryToBasin:
     def test_creates_basin(self) -> None:
