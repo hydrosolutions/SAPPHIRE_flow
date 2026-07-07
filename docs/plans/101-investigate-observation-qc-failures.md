@@ -1,6 +1,10 @@
 # Plan 101 — fix observation-QC failures (water_level datum mismatch)
 
-**Status**: READY (pending final independent-review gate)
+**Status**: READY-TO-IMPLEMENT (2026-07-07) — passed 4 independent-review gates
+(review 1 caught the widening-vs-datum architecture conflict; 2 caught the missing
+GROUP-forecast/onboarding QC call sites; 3 the onboarding baseline/datum-input gaps;
+4 = clean). Only residual = the spike `max_delta` `N_10min`/`N_daily` numeric values,
+a tunable constant chosen at implementation. WF2-able (hold-at-PR).
 **Priority**: medium — surfaced on the mac-mini 2026-07-06: `ingest.qc_complete`
 reports `failed=2` on obs ingest. Matters because the `nwp_regression`-with-lags
 model consumes obs lag history, and water_level is 100 % QC-rejected, which breaks
