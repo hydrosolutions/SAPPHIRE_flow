@@ -224,6 +224,11 @@ def reconcile_priorities(args: argparse.Namespace) -> None:
         return
     if not args.backup_reference:
         raise RuntimeError("--backup-reference is required with --apply")
+    if not args.maintenance_mode_confirmed:
+        raise RuntimeError(
+            "--maintenance-mode-confirmed is required with --apply after pausing "
+            "forecast-cycle/onboarding writers and waiting for active runs to drain"
+        )
 
     config = _load_deployment_config(args.config)
     allowlist = _DEFAULT_OVERRIDE_ALLOWLIST | {
@@ -369,6 +374,7 @@ def _build_parser() -> argparse.ArgumentParser:
     reconcile.add_argument("--allow-override", action="append", default=[])
     reconcile.add_argument("--apply", action="store_true")
     reconcile.add_argument("--backup-reference")
+    reconcile.add_argument("--maintenance-mode-confirmed", action="store_true")
     reconcile.set_defaults(func=reconcile_priorities)
 
     floor = sub.add_parser("audit-floor")

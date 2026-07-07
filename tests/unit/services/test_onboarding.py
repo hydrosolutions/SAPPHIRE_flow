@@ -20,7 +20,12 @@ from sapphire_flow.types.enums import (
     StationStatus,
     WeatherSourceStatus,
 )
-from sapphire_flow.types.ids import BasinId, ModelId, StationId
+from sapphire_flow.types.ids import (
+    CLIMATOLOGY_FALLBACK_MODEL_ID,
+    BasinId,
+    ModelId,
+    StationId,
+)
 from sapphire_flow.types.observation import RawObservation
 from tests.conftest import (
     make_deployment_config,
@@ -65,6 +70,21 @@ _TEST_RULES = QcRuleSet(
         ),
     ),
 )
+
+
+def _seed_active_climatology_floor(
+    store: FakeModelArtifactStore,
+    station_id: StationId,
+) -> None:
+    store.store_artifact(
+        model_id=CLIMATOLOGY_FALLBACK_MODEL_ID,
+        artifact_bytes=b"climatology_floor",
+        training_period_start=_START,
+        training_period_end=_END,
+        trained_at=_EPOCH,
+        station_id=station_id,
+        status=ModelArtifactStatus.ACTIVE,
+    )
 
 
 def _fixed_clock() -> UtcDatetime:
@@ -557,7 +577,7 @@ class TestOnboardingSteps6Through8:
         assert fetched is not None
         assert fetched.station_status == StationStatus.OPERATIONAL
 
-    def test_no_models_registered_no_errors(self) -> None:
+    def test_no_models_registered_reports_missing_floor(self) -> None:
         sid = StationId(uuid4())
         station = make_station_config(station_id=sid, code="NM001")
         basin = _make_basin("NM001")
@@ -580,7 +600,9 @@ class TestOnboardingSteps6Through8:
 
         assert result.model_assignments_created == 0
         assert result.models_trained == 0
-        assert result.errors == []
+        assert any(
+            "missing active climatology_fallback" in err for err in result.errors
+        )
         # Non-weather station without any active artifact stays non-operational
         assert result.stations_marked_operational == 0
 
@@ -595,6 +617,7 @@ class TestOnboardingSteps6Through8:
         s = _Stores()
         s.wire_model_stores()
         assert s.model is not None
+        _seed_active_climatology_floor(s.artifact, sid)
 
         # Seed weather source so training_data can proceed
         weather_source = StationWeatherSource(
@@ -669,6 +692,7 @@ class TestOnboardingSteps6Through8:
         s = _Stores()
         s.wire_model_stores()
         assert s.model is not None
+        _seed_active_climatology_floor(s.artifact, sid)
 
         weather_source = StationWeatherSource(
             station_id=sid,
@@ -716,6 +740,67 @@ class TestOnboardingSteps6Through8:
         assert len(fake_assignments) == 1
         # The final stored priority is the configured 20, NOT the default 0.
         assert fake_assignments[0].priority == 20
+
+    def test_refuses_operational_without_active_climatology_floor(self) -> None:
+        from sapphire_flow.types.enums import SpatialRepresentation, WeatherSourceStatus
+        from sapphire_flow.types.station import StationWeatherSource
+        from tests.fakes.fake_models import FakeStationForecastModel
+
+        sid = StationId(uuid4())
+        station = make_station_config(
+            station_id=sid,
+            code="NOFLOOR001",
+            station_status=StationStatus.ONBOARDING,
+        )
+        basin = _make_basin("NOFLOOR001")
+        s = _Stores()
+        s.wire_model_stores()
+        assert s.model is not None
+
+        weather_source = StationWeatherSource(
+            station_id=sid,
+            nwp_source="camels_ch",
+            extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+            status=WeatherSourceStatus.ACTIVE,
+        )
+        s.station.store_weather_source(weather_source)
+        reanalysis_records = [
+            make_raw_historical_forcing(
+                station_id=sid,
+                parameter=param,
+                valid_time=datetime.fromtimestamp(
+                    _START.timestamp() + i * 86400, tz=UTC
+                ),
+                value=float(i % 10),
+            )
+            for i in range(400)
+            for param in ("precipitation", "temperature")
+        ]
+        forcing_source = FakeWeatherReanalysisSource(records=reanalysis_records)
+        discovered = {_FAKE_MODEL_ID: FakeStationForecastModel()}
+
+        with patch(
+            "sapphire_flow.services.model_registry.discover_models",
+            return_value=discovered,
+        ):
+            result = _run(
+                s,
+                stations=[station],
+                basins=[basin],
+                obs_by_station={sid: _make_raw_obs(sid, 400)},
+                forcing_by_station={sid: _make_forcing(sid, 10)},
+                forcing_source=forcing_source,
+                deployment_config=make_deployment_config(),
+            )
+
+        assert result.models_trained >= 1
+        assert result.stations_marked_operational == 0
+        assert any(
+            "missing active climatology_fallback" in err for err in result.errors
+        )
+        fetched = s.station.fetch_station(sid)
+        assert fetched is not None
+        assert fetched.station_status != StationStatus.OPERATIONAL
 
     def test_station_stays_onboarding_without_active_artifact(self) -> None:
 
