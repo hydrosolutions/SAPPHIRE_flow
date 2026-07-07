@@ -1,6 +1,27 @@
 # Plan 100 — forecast-feed resilience: persist NWP-on across restarts + always-on fallback (no silent blackout)
 
-**Status**: DRAFT — **EXTERNAL REVIEW FOLDED (2026-07-07)**: a specialized
+**Status**: DRAFT — **FINAL-GATE FIXES FOLDED (2026-07-07)**: a final-gate review
+returned NOT-READY (3 blockers + 2 majors — genuine self-contradictions +
+under-specification); all folded here with two owner decisions.
+**Fatal NWP gate RAISES (Prefect FAILED):** `SAPPHIRE_REQUIRE_NWP=1` + NWP-off →
+`raise ConfigurationError` → the Prefect `forecast-cycle` run **FAILS** and returns
+NO `ForecastCycleResult`; that gate therefore **NEVER** sets
+`ForecastCycleHealth.FAILED` (a raised exception carries no result) — `FAILED` is
+reserved for a cycle-wide station failure that STILL completes the Prefect task.
+**`no_floor` DERIVED (no migration):** the `no_floor` indicator is computed at
+query/render time from active-`climatology_fallback`-artifact presence — NO persisted
+column, NO `StationStatus` member, NO migration; a computed dashboard/API badge.
+**Canonical fallback-priority reconciled:** the assignment/backfill/creation path
+derives a fallback's `≥90` priority from a canonical tier map
+(`FALLBACK_ASSIGNMENT_PRIORITIES`, climatology=100/persistence=90), **NEVER** from
+`priority_for_model()` (which yields `DEFAULT_PRIORITY=50` on omission), so the M0b
+write-guard is always satisfied; config `[model_priorities]` omission is safe for
+CLASSIFICATION ONLY (categorical), not for the assignment VALUE.
+**`pipeline_health` plumbing pinned:** `PgPipelineHealthStore` wired into
+`make_pg_stores()` / `run_forecast_cycle_flow` / `api/deps.py` + a minimal
+route/schema/template, and **concrete `PipelineCheckType` values pinned** per signal
+(no "or/e.g.").
+**EXTERNAL REVIEW FOLDED (2026-07-07)**: a specialized
 (hydrology + production-reliability) external reviewer returned
 **SHIP-WITH-CHANGES** (one blocker + several majors). All seven owner-decided
 resolutions are folded into the relevant sections below (integrated, not appended).
@@ -18,10 +39,12 @@ re-routing (see the targeted-review note below); HARD ship precondition
 `enable_observation_alerts=true` on the mini; **(ER-D2)** a climatology-QA diagnostic
 at onboarding/backfill (recurring seasonal
 baseline crossing a danger threshold → a config/threshold-review signal, NOT a
-flood warning); **(ER-D3)** the Step-8 floor-gate is split into **forecast-readiness /
-`no_floor` state vs station operational status** and rolled out **phased** (hard
-gate for NEW onboarding; existing stations get a degraded flag + operator
-reporting, not a surprise fleet-wide OPERATIONAL→NOT flip); **(ER-D4)**
+flood warning); **(ER-D3)** the Step-8 floor-gate separates a **DERIVED `no_floor` indicator**
+(computed at query/render time from active-`climatology_fallback`-artifact presence
+— NOT a persisted field, NO `StationStatus` member, NO migration) from station
+operational status, rolled out **phased** (hard gate for NEW onboarding; existing
+stations get the derived `no_floor` badge + operator reporting, not a surprise
+fleet-wide OPERATIONAL→NOT flip); **(ER-D4)**
 dark/suppressed/stale events become **first-class queryable `pipeline_health`
 records** (the existing health-metrics table, NOT `AlertSource.PIPELINE` alert rows)
 **+ explicit `ForecastCycleHealth` run-outcome semantics** (degraded / failed /
@@ -249,11 +272,21 @@ row can be written.
   applying this precedence crisply (the earlier "rewrite everything to
   `priority_for_model` *and also* preserve overrides" wording was internally
   contradictory and is replaced):
-  1. **Every `FALLBACK_MODEL_IDS` member is UNCONDITIONALLY rewritten to
-     `priority_for_model(model_id)`** — `climatology_fallback→100`,
-     `persistence_fallback→90` — so the floor always lands in the `≥90` tier. A
-     fallback row is never left below threshold, regardless of any prior manual
-     edit (the whole point of M0 is that a fallback below `90` is the bug).
+  1. **Every `FALLBACK_MODEL_IDS` member is UNCONDITIONALLY rewritten to its
+     CANONICAL fallback-assignment priority** — `climatology_fallback→100`,
+     `persistence_fallback→90` — resolved from the canonical
+     **`FALLBACK_ASSIGNMENT_PRIORITIES`** tier map (`types/ids.py`, alongside
+     `MODEL_TIERS`), **NOT** from `priority_for_model(model_id)` (FIX-A). This
+     distinction is load-bearing: `priority_for_model` returns `DEFAULT_PRIORITY=50`
+     (`config/deployment.py:29,:250-256`) for any fallback **absent** from a
+     deployment's `[model_priorities]`, and `50 < 90` would land the floor **below**
+     its tier and trip the M0b write-guard. The canonical map resolves a fallback's
+     ordering integer as: its explicitly-configured `[model_priorities]` value when
+     present (the M0c validator guarantees that is `≥90`), else the hard-coded
+     canonical floor (`climatology_fallback=100`, `persistence_fallback=90`) — never
+     `50`. So the floor always lands in the `≥90` tier; a fallback row is never left
+     below threshold, regardless of any prior manual edit **or a config that omits the
+     fallbacks** (the whole point of M0 is that a fallback below `90` is the bug).
   2. **A skill model is UNCONDITIONALLY rewritten to `priority_for_model(model_id)`
      (`nwp_regression→10`, `nwp_rainfall_runoff→20`, `linear_regression_daily→30`)
      EXCEPT for an explicit, hard-coded allowlist of `(station_id, model_id)` pairs
@@ -385,11 +418,15 @@ row can be written.
        mandatory pre-apply gate, not a silent blanket rewrite.
     4. **Apply in ONE transaction** where the store/driver allows, so a mid-rewrite
        failure rolls back cleanly rather than leaving the fleet half-reconciled.
-    5. **Persist a migration-audit record** (a `pipeline_health` record via
-       `PgPipelineHealthStore.append_health_record`, `store/pipeline_health_store.py:16`,
-       or a dedicated migration-audit row — NOT an `AlertSource.PIPELINE` alert row; see
-       ER-D4) capturing who ran M0a, when, the applied diff, and the backup reference —
-       so the mutation is queryable after the fact, not just a shell-history line.
+    5. **Persist a migration-audit record** — a `pipeline_health` record via
+       `PgPipelineHealthStore.append_health_record` (`store/pipeline_health_store.py:16`),
+       pinned (FIX-E) to `check_type=PRIORITY_MIGRATION_AUDIT` (a **new**
+       `PipelineCheckType` member), `status=OK`,
+       `subject="m0a_priority_reconciliation"`, `detail={"rows_changed",
+       "triaged_overrides", "backup_reference"}` — **NOT** an `AlertSource.PIPELINE`
+       alert row (see ER-D4) — capturing who ran M0a, when, the applied diff, and the
+       backup reference, so the mutation is queryable after the fact, not just a
+       shell-history line.
     Acceptance check 1 is extended to assert the envelope ran (maintenance/lock held,
     backup taken, dry-run diff signed off, single-transaction apply, migration-audit
     record written).
@@ -402,6 +439,21 @@ row can be written.
   (b) require callers to always pass an explicit config-sourced priority (fail loud
   if omitted). `onboard_model()`'s `:994` default may stay (its only caller
   overrides it) but making it explicit there too is cheap belt-and-suspenders.
+  - **M0b canonical fallback-priority resolution (FIX-A) — every creation path that
+    resolves a fallback's priority uses the canonical map, NOT `priority_for_model`:**
+    `onboarding.py` Steps 6/7 (`onboarding.py:481-494`,`:604-612`) resolve **every**
+    model's priority via `deployment_config.priority_for_model(model_id)`, which returns
+    `DEFAULT_PRIORITY=50` for any model absent from `[model_priorities]`. For a
+    **`FALLBACK_MODEL_IDS` member**, a deployment config that omits the fallbacks would
+    therefore write `50` — below tier — and the M0b write-guard would raise, breaking
+    onboarding. **Fix:** at every creation site (onboarding Steps 6/7 **and**
+    `onboard_model_flow`), resolve a fallback's assignment priority from the canonical
+    `FALLBACK_ASSIGNMENT_PRIORITIES` map (its explicit `[model_priorities]` value when
+    present, validator-guaranteed `≥90`; else the hard-coded canonical `100`/`90`) —
+    **never** the raw `priority_for_model()` `50`-on-omission. Skill models continue to
+    resolve via `priority_for_model`. This is what makes the write-guard structurally
+    satisfiable for a fallback under **any** deployment config, and keeps M0a/M0b/the
+    write-guard/the M0c-validator mutually consistent: no path assigns a fallback at `50`.
   - **M0b write-time guard (STRUCTURAL BARRIER — Decision 2):** patching the
     `onboard_model_flow:470` default fixes today's known drift vector, but the class
     of bug (a `FALLBACK_MODEL_IDS` member written below the `≥90` tier) recurs any
@@ -510,18 +562,30 @@ row can be written.
     the fallbacks. **Correct form:**
     `for mid in FALLBACK_MODEL_IDS: v = self.model_priorities.get(mid); if v is not
     None and v < FALLBACK_PRIORITY_THRESHOLD: raise ConfigurationError(...)` — an
-    **absent** entry is safe because the categorical `FALLBACK_MODEL_IDS` tier already
-    governs classification (M0c Decision 2), and an absent fallback simply falls back
-    to the `DEFAULT_PRIORITY=50` ordering integer, which never crosses the `>=90` tier
-    but also never mis-*classifies* the model (classification is categorical, not
-    numeric). Only an **explicitly present, below-threshold** fallback priority is a
-    genuine self-contradictory config and must fail loud. This keeps the ordering
-    integer consistent with the categorical set without regressing well-formed configs.
+    **absent** entry is safe **for CLASSIFICATION ONLY**: the categorical
+    `FALLBACK_MODEL_IDS` / `MODEL_TIERS` tier governs classification (M0c Decision 2),
+    so classification never depends on the numeric value and an omitted fallback is
+    still classified `FALLBACK`. **Omission is NOT safe for the assignment VALUE** —
+    and the earlier claim that "an absent fallback simply falls back to the
+    `DEFAULT_PRIORITY=50` ordering integer" is **DELETED as a self-contradiction**
+    (FIX-A): a fallback must never be *assigned* at `50`, because the M0b write-guard
+    raises on any `FALLBACK_MODEL_IDS` member written `<90`. The reconciliation is that
+    the **assignment path (M0a repair, B1b backfill, M0b creation paths) assigns
+    fallbacks at their canonical `≥90` priority via `FALLBACK_ASSIGNMENT_PRIORITIES`
+    (the FIX-A canonical map), NEVER via `priority_for_model()`** — so the write-guard
+    is **always satisfied** whether or not `[model_priorities]` lists the fallbacks. The
+    config-load validator's sole job is to reject an **explicitly present,
+    below-threshold** fallback priority (a genuine self-contradictory config, e.g.
+    `climatology_fallback = 5`); an omitted fallback loads cleanly (classification is
+    categorical) AND is still *assigned* at its canonical `≥90` value by the assignment
+    path. This keeps M0/M0a/M0b/the write-guard/the M0c-validator mutually consistent —
+    **no line implies a fallback assignment at `50` is acceptable.**
     Acceptance check 11 covers both cases: a config that prices a present
     `climatology_fallback = 5` raises; **a well-formed config that OMITS the fallback
-    ids from `[model_priorities]` still loads cleanly**. (Test-migration note: if any
-    test wants the fallbacks explicitly priced, add them to the config under test — but
-    the default `make_deployment_config()` helper must continue to load without listing
+    ids from `[model_priorities]` still loads cleanly** (and the assignment path still
+    assigns them at their canonical `≥90` priority). (Test-migration note: if any test
+    wants the fallbacks explicitly priced, add them to the config under test — but the
+    default `make_deployment_config()` helper must continue to load without listing
     them.)
   - **Belt-and-suspenders (folded into M4/C1c):** M4's tripwire still flags any
     `model_assignments`/`group_model_assignments.priority` for a `FALLBACK_MODEL_IDS`
@@ -632,13 +696,23 @@ exists to kill, just relocated to onboarding time. Fix by making the lookups
        fell through the two enumerated conditions → nothing raised, nothing logged,
        silent runoff-only.
     **Fix — a single general check that subsumes all three:** right after
-    `nwp_enabled = weather_forecast_config.enabled` (`run_forecast_cycle.py:642`),
-    `if adapter_config.require_nwp and not weather_forecast_config.enabled: raise
-    ConfigurationError(...)`. This one check catches the unset-config case (1, where
-    `enabled` is the hardcoded `False`), the explicit-`enabled=false` incident case (3),
-    AND leaves the pre-existing unconditional STAC-missing raise (case 2) as-is. It
-    reads the typed `require_nwp` field (parsed at the config boundary, below) — never a
-    raw inline `os.environ.get`. **(Defense-in-depth note:** post-A2 the mini's overlay
+    `nwp_enabled = weather_forecast_config.enabled` (`run_forecast_cycle.py:642`, in the
+    gate region `:641-656`), `if adapter_config.require_nwp and not
+    weather_forecast_config.enabled: raise ConfigurationError(...)`. This one check
+    catches the unset-config case (1, where `enabled` is the hardcoded `False`), the
+    explicit-`enabled=false` incident case (3), AND leaves the pre-existing
+    unconditional STAC-missing raise (case 2) as-is. It reads the typed `require_nwp`
+    field (parsed at the config boundary, below) — never a raw inline `os.environ.get`.
+    **This fatal gate RAISES (owner decision, FIX-B):** `SAPPHIRE_REQUIRE_NWP=1` + NWP
+    off → `raise ConfigurationError` → the Prefect `forecast-cycle` run **FAILS** loudly
+    and returns **NO `ForecastCycleResult`**. Because the raise fires in the gate region
+    (`:641-656`) **before** any per-station processing, it does **NOT** — and cannot —
+    set `ForecastCycleHealth.FAILED`: a raised exception returns no result object to
+    carry that field. `ForecastCycleHealth` (M5) is reserved for cycles that ENTER
+    station processing and complete; the fatal config gate is a loud Prefect FAILURE
+    instead, deliberately distinct from a dark-but-completed cycle (which DOES return a
+    result carrying `ForecastCycleHealth.DEGRADED`/`FAILED`). **(Defense-in-depth note:**
+    post-A2 the mini's overlay
     is `enabled=true`, so on the fixed mini this gate never fires — it is the structural
     backstop against any future re-introduction of `enabled=false`, exactly the class of
     change that caused the incident.) Acceptance check 4 covers case (1) and case (3);
@@ -665,9 +739,10 @@ exists to kill, just relocated to onboarding time. Fix by making the lookups
       `alerts` table, `:486`); a dark station is a health metric. Written **regardless of
       the `enable_*_alerts` flags** (all three default `False`,
       `config/deployment.py:103-105`) — this is operational-health, not a flood alert.
-      Map it to a `PipelineCheckType` (`types/enums.py:134` — e.g. `FORECAST_FRESHNESS`,
-      or a new `STATION_DARK` member if none fits) with `status` CRITICAL and the
-      station in `subject`. The record is surfaced in the dashboard/API alongside the
+      Pinned (FIX-E): `check_type=FORECAST_STATION_DARK` (a **new** `PipelineCheckType`
+      member, `types/enums.py:134-142`), `status=CRITICAL`, `subject=str(station_id)`,
+      `detail={"reason", "assigned_models", "nwp_enabled"}`, `cycle_time=issue_time`.
+      The record is surfaced in the dashboard/API alongside the
       other health records (ER-D4). (Only if an *active operator alert* is later deemed
       necessary would an `AlertSource.PIPELINE` alert row be added — and that would
       require defining its alert_level / status-lifecycle / dedup; the default here is
@@ -715,21 +790,24 @@ exists to kill, just relocated to onboarding time. Fix by making the lookups
     floorless station** entirely rather than serving its good forecasts with a warning.
     Owner decision:
     - **Decouple "forecast readiness / floor state" from station operational
-      status.** Introduce a **`no_floor` / degraded-readiness flag** (a station-
-      readiness state field + a dashboard badge) rather than ONLY flipping
-      OPERATIONAL→NOT. A station with good skill forecasts but a failed/absent floor
-      artifact **stays visible and serving**, flagged `no-floor` — its degradation is
-      *loud and queryable* (see ER-D4 health records), not silent, and not a
-      blackout.
+      status.** Surface a **DERIVED `no_floor` indicator** (FIX-C, owner decision:
+      DERIVED) — computed at query/render time from "does the station have an ACTIVE
+      `climatology_fallback` artifact?" (the **same check the Step-8 floor-gate already
+      runs**) — **NOT a persisted column, NO new `StationStatus` member, NO migration.**
+      It is a computed dashboard/API badge, rather than ONLY flipping OPERATIONAL→NOT. A
+      station with good skill forecasts but a failed/absent floor artifact **stays
+      visible and serving**, badged `no_floor` — its degradation is *loud and queryable*
+      (see ER-D4 health records), not silent, and not a blackout.
     - **Phased rollout, operator-visible at each step:**
       **audit** (fleet-wide floor audit, below) → **backfill** (train + promote the
       floor for every floorless OPERATIONAL station) → **verify** → **enforce the
       strict gate for NEW onboarding only** → **THEN** decide, per operator review,
       whether any *existing* station's operational status should change. New stations
       get the hard gate ("≥1 skill artifact AND an active floor artifact" → else NOT
-      OPERATIONAL + loud ERROR); existing stations get the `no_floor` degraded flag +
-      reporting, and any status change happens **only after backfill + verify**, never
-      as a surprise deploy-time flip.
+      OPERATIONAL + loud ERROR); existing stations get the **DERIVED `no_floor` badge**
+      (no status change, no persisted field, no migration) + reporting, and any status
+      change happens **only after backfill + verify**, never as a surprise deploy-time
+      flip.
     - **§A4 amendment scoped to NEW onboarding:** the owner-ratified (2026-07-06)
       tightening of `docs/v0-scope.md §A4` step 8 ("≥1 model artifact" → "≥1 skill
       artifact AND an active `climatology_fallback` floor artifact") **applies to NEW
@@ -789,7 +867,10 @@ exists to kill, just relocated to onboarding time. Fix by making the lookups
     hazardous seasonal baseline, or the threshold is mis-set. On a recurring crossing,
     emit a **station-threshold-review / config-QA item** — a `pipeline_health` record
     (`PgPipelineHealthStore.append_health_record`, `store/pipeline_health_store.py:16`),
-    or a dedicated config-review record — **NOT** an `AlertSource.PIPELINE` alert row and
+    pinned (FIX-E) to `check_type=CLIMATOLOGY_THRESHOLD_REVIEW` (a **new**
+    `PipelineCheckType` member), `status=WARNING`, `subject=str(station_id)`,
+    `detail={"danger_threshold", "exceeding_quantiles", "doy_range"}` — **NOT** an
+    `AlertSource.PIPELINE` alert row and
     **NOT a flood warning** (a climatology exceedance is `NO_EVENT_INFORMATION`, D1 — it
     must never become a flood alert). This is a diagnostic that runs at floor-training
     time only,
@@ -1045,7 +1126,10 @@ exists to kill, just relocated to onboarding time. Fix by making the lookups
     `alert` entity already has a `suppressed` action; NOT colon-separated free-text);
     **and (2) persist a queryable `pipeline_health` record**
     (`PgPipelineHealthStore.append_health_record`, `store/pipeline_health_store.py:16`;
-    `PipelineHealthRecord`, `types/pipeline.py:15`) — NOT an `AlertSource.PIPELINE` alert
+    `PipelineHealthRecord`, `types/pipeline.py:15`), pinned (FIX-E) to
+    `check_type=ALERT_SUPPRESSED_FALLBACK` (a **new** `PipelineCheckType` member),
+    `status=WARNING`, `subject=str(station_id)`, `detail={"alert_eligibility",
+    "parameter"}`, `cycle_time=issue_time` — NOT an `AlertSource.PIPELINE` alert
     row — capturing the suppressed cycle for audit (ER-D4), written **regardless of the
     `enable_*_alerts` flags** and surfaced in the dashboard/API. A log alone would
     recreate "green pipeline, wrong answer"; the health record makes the suppressed cycle
@@ -1102,8 +1186,11 @@ exists to kill, just relocated to onboarding time. Fix by making the lookups
   > `expected_delivery_offset_hours × cadence` → emit a loud monitorable event
   (dotted `nwp.grid_stale`) on the **same channel A3's post-hoc detection uses**,
   **and persist a queryable `pipeline_health` record** (`grid_stale`, via
-  `PgPipelineHealthStore.append_health_record`, `store/pipeline_health_store.py:16`;
-  natural fit for the existing `PipelineCheckType.NWP_DELIVERY`, `types/enums.py:134`) —
+  `PgPipelineHealthStore.append_health_record`, `store/pipeline_health_store.py:16`),
+  pinned (FIX-E) to the **existing** `check_type=PipelineCheckType.NWP_DELIVERY`
+  (`types/enums.py:135` — no new member needed; it already covers NWP grid
+  delivery/staleness), `status=CRITICAL`, `subject="nwp_grid"`,
+  `detail={"last_grid_age_hours", "expected_offset_hours"}` —
   NOT an `AlertSource.PIPELINE` alert row —
   written **regardless of the `enable_*_alerts` flags**, surfaced in the dashboard/API
   (ER-D4 — not log-only). The **FULL watchdog** (source-outage detection,
@@ -1137,11 +1224,33 @@ recreates the very "green pipeline, wrong answer" failure this plan exists to ki
   `docs/v0-scope.md:296`, `docs/architecture-context.md:2404`) from ops-alerts
   (`AlertSource.PIPELINE` in the `alerts` table, an *active* operator alert with a
   notification lifecycle, `docs/architecture-context.md:486`). A dark/suppressed/stale
-  event is a health metric, so it goes to `pipeline_health`. Each maps to a
-  `PipelineCheckType` (`types/enums.py:134`; e.g. `NWP_DELIVERY` for `grid_stale`,
-  `FORECAST_FRESHNESS`/`FLOW_RUN_HEALTH` for `station_dark`/`alert_suppressed`, or a new
-  member) with a `PipelineHealthStatus` (`types/enums.py:128`, OK/WARNING/CRITICAL) and
-  the station/subject in `subject`. **Written regardless of the `enable_*_alerts` flags**
+  event is a health metric, so it goes to `pipeline_health`. **Each signal maps to ONE
+  pinned `(check_type, status, subject, detail)` — no "or/e.g." ambiguity (FIX-E;
+  `PipelineHealthStatus` verified `OK`/`WARNING`/`CRITICAL`, `types/enums.py:128-133`;
+  `PipelineHealthRecord` fields = `check_type, checked_at, status, subject, detail,
+  cycle_time, created_at`, `types/pipeline.py:15`):**
+  - **`station_dark`** (A3, zero forecasts this cycle) → **new `PipelineCheckType`
+    `FORECAST_STATION_DARK`**, `status=CRITICAL`, `subject=str(station_id)`,
+    `detail={"reason", "assigned_models", "nwp_enabled"}`, `cycle_time=issue_time`.
+  - **`alert_suppressed`** (M3, fully-suppressed fallback-only cycle) → **new
+    `PipelineCheckType` `ALERT_SUPPRESSED_FALLBACK`**, `status=WARNING`,
+    `subject=str(station_id)`, `detail={"alert_eligibility", "parameter"}`,
+    `cycle_time=issue_time`.
+  - **`nwp.grid_stale`** (M4/C1b) → the **existing `PipelineCheckType.NWP_DELIVERY`**
+    (`types/enums.py:135` — it already covers NWP grid delivery/staleness; no new member
+    needed), `status=CRITICAL`, `subject="nwp_grid"`,
+    `detail={"last_grid_age_hours", "expected_offset_hours"}`.
+  - **M0a migration-audit** (ER-D6) → **new `PipelineCheckType`
+    `PRIORITY_MIGRATION_AUDIT`**, `status=OK`, `subject="m0a_priority_reconciliation"`,
+    `detail={"rows_changed", "triaged_overrides", "backup_reference"}`.
+  - **climatology-QA** (ER-D2) → **new `PipelineCheckType`
+    `CLIMATOLOGY_THRESHOLD_REVIEW`**, `status=WARNING`, `subject=str(station_id)`,
+    `detail={"danger_threshold", "exceeding_quantiles", "doy_range"}`.
+  The four NEW members (`FORECAST_STATION_DARK`, `ALERT_SUPPRESSED_FALLBACK`,
+  `PRIORITY_MIGRATION_AUDIT`, `CLIMATOLOGY_THRESHOLD_REVIEW`) are added to
+  `PipelineCheckType` (`types/enums.py:134-142`, which today holds `NWP_DELIVERY`,
+  `OBSERVATION_FRESHNESS`, `FORECAST_FRESHNESS`, `FLOW_RUN_HEALTH`, `DISK_USAGE`,
+  `BACKUP_FRESHNESS`, `BACKUP_RESTORE_TEST`); `NWP_DELIVERY` is reused as-is. **Written regardless of the `enable_*_alerts` flags**
   (all three default `False`, `config/deployment.py:103-105`) — health metrics are never
   gated on `enable_pipeline_alerts`. **Only if an ACTIVE operator alert is explicitly
   wanted** would an `AlertSource.PIPELINE` alert row be created in addition — and that
@@ -1159,13 +1268,21 @@ recreates the very "green pipeline, wrong answer" failure this plan exists to ki
   **separate `ForecastCycleHealth` (a.k.a. `ForecastCycleOutcome`) enum**
   (`DEGRADED`/`FAILED`/`HEALTHY`) as a field on `ForecastCycleResult`
   (`run_forecast_cycle.py:89-97`, alongside `stations_succeeded`/`stations_failed`/`errors`)
-  and on the API cycle-result response, **derived** from the cycle: a cycle with ≥1
-  `station_dark` or `alert_suppressed` outcome (but not a hard crash) is **DEGRADED**; a
-  cycle that could not run at all (e.g. the A3 `ConfigurationError` gate, or NWP-fetch
-  failure) is **FAILED**; a cycle with every station served by a live model and no
-  suppression is **HEALTHY**. **The Prefect run state stays `COMPLETED`** when the task
-  completed (do NOT extend `FlowRunState`) — the `ForecastCycleHealth` field is what
-  turns the incident's "green every 6 h while dark" into a visible DEGRADED outcome.
+  and on the API cycle-result response, **derived** from the cycle. **These three
+  outcomes are set ONLY for a cycle that ENTERS station processing and COMPLETES the
+  Prefect task (FIX-B); the fatal A3 config gate is NOT covered by this field — it
+  RAISES `ConfigurationError` before processing, so the Prefect run FAILS and no
+  `ForecastCycleResult` is returned to carry a health value.** Concrete semantics:
+  **HEALTHY** = every station served by a live model, no suppression, no stale grid;
+  **DEGRADED** = the cycle completed but ≥1 station is dark, an alert was suppressed, or
+  a grid is stale (a partial degradation); **FAILED** = a **cycle-wide** failure that
+  STILL completes the Prefect task — e.g. **every** station dark (zero forecasts
+  fleet-wide) — reported on the returned `ForecastCycleResult`. **The Prefect run state
+  stays `COMPLETED`** when the task completed (do NOT extend `FlowRunState`) — the
+  `ForecastCycleHealth` field is what turns the incident's "green every 6 h while dark"
+  into a visible DEGRADED/FAILED outcome. (An NWP-fetch failure or the A3 gate that
+  *raises* likewise FAILS the Prefect run with **no** result; only failures that still
+  return a `ForecastCycleResult` carry `ForecastCycleHealth.FAILED`.)
 - **The FULL watchdog** (source-outage detection, notification routing / dispatch)
   stays deferred to the **Flow-4 monitoring plan** — Plan 100 writes + surfaces the
   records; Flow 4 owns dispatch. (See the Process note on a possible follow-up split.)
@@ -1177,9 +1294,12 @@ recreates the very "green pipeline, wrong answer" failure this plan exists to ki
 ### Acceptance checks (what WF2 must make pass)
 
 1. **Priorities reconciled (M0):** after M0a, **both** `model_assignments.priority`
-   **and** `group_model_assignments.priority` for the fallbacks equal the config
-   chain (climatology=100, persistence=90) for all stations/groups; **every
-   non-allowlisted skill row converges to its config value** — specifically the
+   **and** `group_model_assignments.priority` for the fallbacks equal their
+   **canonical** values (climatology=100, persistence=90) for all stations/groups —
+   resolved from the `FALLBACK_ASSIGNMENT_PRIORITIES` map (FIX-A), NOT
+   `priority_for_model()`, so they land in-tier **even under a deployment config that
+   omits the fallbacks**; **every non-allowlisted skill row converges to its config
+   value** — specifically the
    previously-drifted-to-`0` `nwp_regression`/`linear_regression_daily` rows at 2009/2091
    become `10`/`30` (they are NOT on the override allowlist), while **an explicitly
    allowlisted override survives** (the `nwp_rainfall_runoff` on 2009/2091 stays `-10`).
@@ -1214,29 +1334,37 @@ recreates the very "green pipeline, wrong answer" failure this plan exists to ki
 3. **Floor writes + is labelled (B1a/B3):** station with an NWP model + the floor,
    stack NWP-off → a `climatology_fallback` row **IS** written and **badged
    FALLBACK**. Flip NWP-on → the skill model becomes primary, row **not** badged.
-4. **A3 post-hoc detection + global gate (revised):** with `SAPPHIRE_REQUIRE_NWP=1`
-   and NWP off, a station that produces zero forecasts is logged at **ERROR** (dotted
-   event `forecast_cycle.station_dark`) and appears on `errors`/`stations_failed`
-   (not a silent warning), while every other station still forecasts (flow does NOT
-   abort). The flow-level `ConfigurationError` (the single general check
-   `require_nwp and not weather_forecast_config.enabled` at `run_forecast_cycle.py:642`)
-   fires **whenever NWP is required but `weather_forecast_config.enabled` is `False`** —
-   which covers BOTH the `SAPPHIRE_CONFIG`-unset case (hardcoded `enabled=False`) **and
-   the explicit `enabled=false`-in-merged-TOML case that was the actual historical
-   incident** (the earlier two enumerated conditions missed the latter). The
-   pre-existing unconditional STAC-missing raise (`:648-656`) still covers the
-   adapter-unbuildable case independently. The env var is read through the config
-   boundary (`_WeatherForecastAdapterConfig.require_nwp`, not an inline
-   `os.environ.get`), and `docker-compose.macmini.yml` sets `SAPPHIRE_REQUIRE_NWP=1`
-   **on the `prefect-worker` service** (`:24`) — the `default`-pool worker that runs
-   `forecast-cycle`, NOT `prefect-worker-ingest` (`:32`) — so the gate is live on the
-   deployed mini. **Health record + cycle-outcome (ER-D4):** the dark station ALSO
-   writes a queryable **`pipeline_health` record** (`station_dark`, via
-   `PgPipelineHealthStore.append_health_record` — NOT an `AlertSource.PIPELINE` alert
-   row; written regardless of the `enable_*_alerts` flags) **visible in the
-   dashboard/API**, and the cycle reports **`ForecastCycleHealth.DEGRADED`** (a NEW field
-   on `ForecastCycleResult`, while the Prefect run state stays `COMPLETED` — `FlowRunState`
-   is NOT extended) — not merely a log line.
+4. **A3 fatal gate RAISES vs post-hoc dark detection (FIX-B — SPLIT into 4a/4b):**
+   - **(4a) `SAPPHIRE_REQUIRE_NWP=1` + NWP off → the fatal gate RAISES → the Prefect
+     run FAILS:** the single general check `require_nwp and not
+     weather_forecast_config.enabled` (in the gate region `run_forecast_cycle.py:641-656`,
+     right after `nwp_enabled = weather_forecast_config.enabled` at `:642`) fires
+     **whenever NWP is required but `weather_forecast_config.enabled` is `False`** —
+     covering BOTH the `SAPPHIRE_CONFIG`-unset case (hardcoded `enabled=False`) **and the
+     explicit `enabled=false`-in-merged-TOML case that was the actual historical
+     incident** (the earlier two enumerated conditions missed the latter). It **`raise`s
+     `ConfigurationError` → the Prefect `forecast-cycle` run FAILS**; assert the raise
+     and that **NO `ForecastCycleResult` is returned** (a raised exception carries no
+     result, so this fatal gate **NEVER** sets `ForecastCycleHealth.FAILED`). The
+     pre-existing unconditional STAC-missing raise (`:648-656`) still covers the
+     adapter-unbuildable case independently. The env var is read through the config
+     boundary (`_WeatherForecastAdapterConfig.require_nwp`, not an inline
+     `os.environ.get`), and `docker-compose.macmini.yml` sets `SAPPHIRE_REQUIRE_NWP=1`
+     **on the `prefect-worker` service** (`:24`) — the `default`-pool worker that runs
+     `forecast-cycle`, NOT `prefect-worker-ingest` (`:32`) — so the gate is live on the
+     deployed mini.
+   - **(4b) NWP off but NOT required (or `require_nwp` unset) + a station yields zero
+     forecasts → the flow does NOT abort:** a station that produces zero forecasts is
+     logged at **ERROR** (dotted event `forecast_cycle.station_dark`), appears on
+     `errors`/`stations_failed` (not a silent warning), and ALSO writes a queryable
+     **`pipeline_health` record** (`FORECAST_STATION_DARK`, status CRITICAL, via
+     `PgPipelineHealthStore.append_health_record` — NOT an `AlertSource.PIPELINE` alert
+     row; written regardless of the `enable_*_alerts` flags) **visible in the
+     dashboard/API**, while **every other station still forecasts (flow does NOT abort)**
+     and the cycle COMPLETES the Prefect task carrying **`ForecastCycleHealth.DEGRADED`**
+     (a NEW field on `ForecastCycleResult`, while the Prefect run state stays
+     `COMPLETED` — `FlowRunState` is NOT extended) — not merely a log line. This
+     dark-but-completed case is deliberately distinct from (4a)'s fatal raise.
 5. **Backfill effective + idempotent + fleet-clean (B1b):** 2009/2091 have active
    climatology artifacts + assignments at the correct priority; a NWP-off
    `forecast-cycle` writes fallback rows for both. Re-run of the backfill = no-op.
@@ -1249,8 +1377,10 @@ recreates the very "green pipeline, wrong answer" failure this plan exists to ki
    (not swallowed); floor training succeeding → OPERATIONAL. (b) **Existing station
    degraded, not flipped:** an already-OPERATIONAL station whose floor artifact is
    absent/failed **stays OPERATIONAL and serving** but is flagged **`no_floor`**
-   (readiness state + dashboard badge) and reported — it is NOT silently flipped to
-   NOT-operational at deploy. (c) Any existing-station status change happens **only
+   (a DERIVED indicator computed from active-`climatology_fallback`-artifact presence —
+   NO persisted field/column/migration, NO `StationStatus` member; a computed
+   dashboard/API badge) and reported — it is NOT silently flipped to NOT-operational at
+   deploy. (c) Any existing-station status change happens **only
    after** the audit→backfill→verify phases, operator-visible at each step. Existing
    onboarding tests updated for the split.
 7. **persistence empty-obs (B2):** `persistence_fallback.predict` on empty obs
@@ -1312,10 +1442,15 @@ recreates the very "green pipeline, wrong answer" failure this plan exists to ki
     gate) was live at incident time. The check passes iff the snapshots exist and the
     mechanism is still provable from them AFTER the fix ships (the mutation cannot have
     destroyed the evidence).
-11. **M0c config-load validator fails loud:** a `config.toml` that prices any
-    `FALLBACK_MODEL_IDS` member below `FALLBACK_PRIORITY_THRESHOLD` (e.g.
+11. **M0c config-load validator fails loud (FIX-A):** a `config.toml` that **explicitly
+    prices** any `FALLBACK_MODEL_IDS` member below `FALLBACK_PRIORITY_THRESHOLD` (e.g.
     `climatology_fallback = 5`) raises `ConfigurationError` at config load, not a
-    silent runtime misclassification. A well-formed config loads cleanly.
+    silent runtime misclassification. A well-formed config loads cleanly — **including a
+    config that OMITS the fallbacks from `[model_priorities]`** (classification is
+    categorical), and in that omitted case the assignment path still assigns the
+    fallbacks at their canonical `≥90` priority via `FALLBACK_ASSIGNMENT_PRIORITIES` (so
+    no fallback is ever assigned at `DEFAULT_PRIORITY=50` and the write-guard is
+    satisfied).
 12. **Write-time guard raises (M0b):** calling `create_station_assignment` /
     `create_group_assignment` (`services/model_onboarding.py:838-895`) — including via
     `onboard_model_flow` — with `model_id ∈ FALLBACK_MODEL_IDS` and
@@ -1349,17 +1484,31 @@ recreates the very "green pipeline, wrong answer" failure this plan exists to ki
 17. **Climatology QA diagnostic (M2 / ER-D2):** a station whose trained
     `climatology_fallback` quantiles/mean recurringly cross a configured danger
     threshold for day-of-year periods emits a **config / threshold-review item** — a
-    `pipeline_health` record or a dedicated config-review record (NOT an
-    `AlertSource.PIPELINE` alert row) — at onboarding/backfill, and **no flood alert** —
-    flagging the seasonal baseline / threshold for operator review.
-18. **Pipeline-health records + cycle-outcome (M5 / ER-D4):** the `station_dark`,
-    `alert_suppressed`, and `nwp.grid_stale` records are persisted as **`pipeline_health`
-    records** (via `PgPipelineHealthStore.append_health_record`, NOT `AlertSource.PIPELINE`
-    alert rows) **regardless of the `enable_*_alerts` flags** and are **visible in the
-    dashboard/API**; a cycle with a dark or suppressed station reports
-    **`ForecastCycleHealth.DEGRADED`** (a NEW field on `ForecastCycleResult`; the Prefect
-    run stays `COMPLETED` and `FlowRunState` is NOT extended), and a cycle that cannot run
-    reports **`ForecastCycleHealth.FAILED`**.
+    `pipeline_health` record with pinned `check_type=CLIMATOLOGY_THRESHOLD_REVIEW`
+    (WARNING, `subject=str(station_id)`), NOT an `AlertSource.PIPELINE` alert row — at
+    onboarding/backfill, and **no flood alert** — flagging the seasonal baseline /
+    threshold for operator review.
+18. **Pipeline-health records + cycle-outcome (M5 / ER-D4 / FIX-E):** the `station_dark`
+    (`FORECAST_STATION_DARK`, CRITICAL), `alert_suppressed` (`ALERT_SUPPRESSED_FALLBACK`,
+    WARNING), and `nwp.grid_stale` (`NWP_DELIVERY`, CRITICAL) records are persisted as
+    **`pipeline_health` records** with the pinned `(check_type, status, subject, detail)`
+    (via `PgPipelineHealthStore.append_health_record`, NOT `AlertSource.PIPELINE` alert
+    rows) **regardless of the `enable_*_alerts` flags** and are **visible in the
+    dashboard/API**; a cycle with a dark or suppressed station (but not fleet-wide)
+    reports **`ForecastCycleHealth.DEGRADED`** (a NEW field on `ForecastCycleResult`; the
+    Prefect run stays `COMPLETED` and `FlowRunState` is NOT extended), and a **cycle-wide**
+    failure that STILL completes the Prefect task (e.g. **every** station dark) reports
+    **`ForecastCycleHealth.FAILED`** on the returned result. **The fatal A3 config gate is
+    NOT asserted here** — it RAISES with no result (FIX-B, acceptance check 4a); this
+    check covers only cycles that complete and return a `ForecastCycleResult`.
+19. **Minimal health visibility wired (FIX-D):** `make_pg_stores()` (`flows/_db.py`)
+    includes `PgPipelineHealthStore`; `run_forecast_cycle_flow` takes a
+    `pipeline_health_store` param (production-bound from `stores`) and its `station_dark`
+    / `alert_suppressed` / `nwp.grid_stale` events call `append_health_record` through
+    it; `get_stores()` (`api/deps.py`) exposes the store; and a minimal read-only route +
+    `PipelineHealthRecordResponse` schema + template renders the recent `pipeline_health`
+    records (via `fetch_recent`) so a dark/suppressed/stale condition is **visible in the
+    dashboard/API without reading logs**.
 
 ---
 
@@ -1458,15 +1607,17 @@ entirely our deployment + resilience gap, not an external outage.
   M0d fails loud on any model not declared in both maps.
 - **B1a — DECIDED:** both fallbacks; guarantee keyed on
   `climatology_fallback`-with-active-artifact (post-M0, priority 100).
-- **B1b — DECIDED (PHASED floor-gate + `no_floor` readiness state; ER-D3 — NOT a
-  fleet-wide deploy-time flip):** the owner-ratified (2026-07-06) tightening of the
+- **B1b — DECIDED (PHASED floor-gate + DERIVED `no_floor` indicator, no migration;
+  ER-D3 — NOT a fleet-wide deploy-time flip):** the owner-ratified (2026-07-06) tightening of the
   locked `docs/v0-scope.md §A4` rule ("≥1 model artifact" → "≥1 skill artifact AND an
   active `climatology_fallback` floor artifact") is a **hard gate for NEW onboarding
   ONLY** (a new station without an active floor artifact → NOT OPERATIONAL + loud ERROR,
   applied to that doc at land time). **Existing stations are NOT flipped
   OPERATIONAL→NOT at deploy:** a currently-OPERATIONAL station lacking a floor artifact
-  **stays serving** but carries a `no_floor` degraded-readiness state (a field decoupled
-  from `StationStatus` + a dashboard badge) and is reported, and any status change
+  **stays serving** but carries a **DERIVED `no_floor` indicator** (FIX-C — computed
+  from active-`climatology_fallback`-artifact presence at query/render time; NO persisted
+  field, NO `StationStatus` member, NO migration; a computed dashboard/API badge) and is
+  reported, and any status change
   happens **only** after the phased **audit → backfill → verify** sequence, operator-
   visible at each step — never a surprise fleet-wide flip. Independently: Step 7 does not
   swallow floor-training failure; `flows/onboard.py` surfaces it non-green; floor
@@ -1588,7 +1739,7 @@ health-record dashboard/API surfacing that overlaps Flow 4 (candidate split).
 
 ## Verification
 
-See **Acceptance checks** (18) in the IMPLEMENTATION VISION. Local dev repro:
+See **Acceptance checks** (19) in the IMPLEMENTATION VISION. Local dev repro:
 onboard a test station with an NWP model + the floor, run a `forecast-cycle`
 NWP-off → confirm a `climatology_fallback` row is written, badged fallback, that a
 **climatology-only** exceedance fires **no** flood alert, but a **fresh
@@ -1605,7 +1756,7 @@ SHIP-WITH-CHANGES: 1 blocker + several majors → ER-D1…ER-D7)**.
 **GROWTH NOTE (external review):** Plan 100 has GROWN materially with ER-D1…ER-D7
 (a new `AlertEligibility` model — climatology + persistence both dropped from the
 forecast-alert set, current-condition coverage via Flow 2's existing obs checker — a
-climatology-QA diagnostic, a `no_floor` readiness state + phased floor-gate rollout,
+climatology-QA diagnostic, a DERIVED `no_floor` indicator (no migration) + phased floor-gate rollout,
 first-class `pipeline_health` records + a `ForecastCycleHealth` cycle-outcome field, a
 step-0 snapshot prerequisite, an M0a fleet-mutation safety envelope, and a registry tier
 guard). **Candidate follow-up split (owner to decide, NOT split here):** the **M5
@@ -1635,6 +1786,13 @@ blockers/majors → phases → READY → `vision-build`
   the value keyed by `MODEL_TIERS`, exposed on the B3 badge/JSON schema in place of a raw
   `is_fallback: bool` (MAJOR-6 / CLAUDE.md enum-over-bool). `MODEL_TIERS` governs
   combination + the badge ONLY; `ALERT_ELIGIBILITIES` governs alert routing (M3).
+  **Plus a canonical `FALLBACK_ASSIGNMENT_PRIORITIES: dict[ModelId, int]` map (FIX-A)**
+  — `climatology_fallback=100`, `persistence_fallback=90` — the SINGLE source the
+  assignment/backfill/creation path uses to resolve a fallback's `≥90` ordering integer
+  (explicit `[model_priorities]` value when present, validator-guaranteed `≥90`; else the
+  hard-coded canonical). It is used **NEVER** via `priority_for_model()` (which returns
+  `DEFAULT_PRIORITY=50` on omission and would trip the M0b write-guard), so a fallback is
+  always assigned in-tier regardless of whether the deployment config lists it.
 - **`services/run_station_forecast.py:71-76`** — `combinable_results` filters on
   `model_id not in FALLBACK_MODEL_IDS` (was `priorities.get(mid,0) <
   FALLBACK_PRIORITY_THRESHOLD`); **migrate the regression test
@@ -1689,6 +1847,26 @@ blockers/majors → phases → READY → `vision-build`
   (`:89-97`) for a dark/suppressed cycle — the Prefect run stays COMPLETED, `FlowRunState`
   is NOT extended (ER-D4); C1a loader + `_WeatherForecastAdapterConfig` field, C1b/C1c
   checks + the `nwp.grid_stale` `pipeline_health` record.
+- **`pipeline_health` store plumbing (FIX-D — the write/read path is currently
+  unwired):** the store exists (`store/pipeline_health_store.py:12-38`,
+  `append_health_record` `:16`, `fetch_recent` `:28`) but nothing in Flow 1 or the API
+  can reach it today. Explicit scope, in FOUR parts:
+  1. **`flows/_db.py:23-61`** — add `PgPipelineHealthStore` to `make_pg_stores()`
+     (currently omitted, `:44-61`) so the production store bundle exposes it.
+  2. **`flows/run_forecast_cycle.py:549-620`** — add a `pipeline_health_store: object |
+     None = None` param to `run_forecast_cycle_flow` (signature `:549-570`, which has NO
+     such param today), bind it from `stores["pipeline_health_store"]` in the
+     production-setup block (`:603-620`), and route the `station_dark` /
+     `alert_suppressed` / `nwp.grid_stale` append calls through it.
+  3. **`api/deps.py:32-61`** — expose `PgPipelineHealthStore` from `get_stores()`
+     (currently omitted, `:49-61`) so the API can read health records.
+  4. **a minimal health-record route + response schema + template** — a read-only
+     `api/routes/*` endpoint backed by `PgPipelineHealthStore.fetch_recent`
+     (`pipeline_health_store.py:28`), a `PipelineHealthRecordResponse` schema, and a
+     minimal dashboard template — so `station_dark` / `alert_suppressed` / `grid_stale`
+     records are **visible** without reading logs (ER-D4 / FIX-D). Richer surfacing may
+     later move to the Flow-4 monitoring plan (candidate split). Acceptance check 19
+     asserts this minimal health-visibility wiring.
 - **`services/model_registry.py:27-88`** — registry / load-time tier guard (ER-D7):
   every discovered model must be in BOTH explicit maps (`MODEL_TIERS` +
   `ALERT_ELIGIBILITIES`) or declare both facets as attributes, else **raise
@@ -1707,14 +1885,28 @@ blockers/majors → phases → READY → `vision-build`
   `ForecastCycleResult` — **do NOT add `DEGRADED` to `FlowRunState`** (`:199-206`), which
   is a direct mapping of Prefect's `StateType` (`adapters/prefect_status.py:28`) and has
   no degraded state (ER-D4 / targeted review); the `ModelTier` enum may live here or in
-  `types/ids.py` (alongside the `MODEL_TIERS` + `ALERT_ELIGIBILITIES` maps).
-- **station-readiness `no_floor` state + dashboard badge/templates** (ER-D3) — a
-  degraded-readiness flag decoupled from `StationStatus` (`types/enums.py:150-154`), so
-  a floorless-but-skilled existing station stays serving + visibly flagged rather than
-  flipped OPERATIONAL→NOT; the strict floor-gate applies to NEW onboarding only, phased
-  rollout for existing.
+  `types/ids.py` (alongside the `MODEL_TIERS` + `ALERT_ELIGIBILITIES` maps). **Plus four
+  NEW `PipelineCheckType` members (FIX-E), added to `:134-142`:
+  `FORECAST_STATION_DARK`, `ALERT_SUPPRESSED_FALLBACK`, `PRIORITY_MIGRATION_AUDIT`,
+  `CLIMATOLOGY_THRESHOLD_REVIEW`** — the pinned `check_type`s for the M5 health signals
+  (`nwp.grid_stale` reuses the existing `NWP_DELIVERY`; `PipelineHealthStatus` stays
+  `OK`/`WARNING`/`CRITICAL`, `:128-133`, unchanged).
+- **DERIVED `no_floor` indicator + dashboard/API badge (ER-D3 / FIX-C — NO migration,
+  NO new field):** `no_floor` is **computed at query/render time** from "does the
+  station have an ACTIVE `climatology_fallback` artifact?" (the same check the Step-8
+  floor-gate runs) — it is **NOT** a persisted column on the stations table
+  (`db/metadata.py:67-95`), **NOT** a field on the `Station` dataclass
+  (`types/station.py:28-43`), **NOT** a field on the station API schema
+  (`api/schemas.py:49-70`), and **NOT** a new `StationStatus` member
+  (`types/enums.py:150-154`). The derivation lives in the **API/dashboard layer**
+  (`api/routes/*` + templates) plus wherever the floor-gate artifact check already runs;
+  it renders a computed `no_floor` badge so a floorless-but-skilled existing station
+  stays serving + visibly flagged rather than flipped OPERATIONAL→NOT. The strict
+  floor-gate applies to NEW onboarding only; phased rollout for existing — **no
+  deploy-time status flip, no stations-table/schema/migration scope.**
 - **climatology-QA diagnostic** at onboarding/backfill (ER-D2) — recurring seasonal
-  threshold crossing → a `pipeline_health` record (or a dedicated config-review record),
+  threshold crossing → a `pipeline_health` record pinned to
+  `check_type=CLIMATOLOGY_THRESHOLD_REVIEW` (FIX-E; a new member, WARNING),
   NOT an `AlertSource.PIPELINE` alert row and NOT a flood alert.
 - **Step-0 root-cause snapshot** (ER-D5) + **M0a fleet-mutation safety envelope**
   (ER-D6: maintenance mode / advisory lock, DB backup, dry-run diff + per-divergence
