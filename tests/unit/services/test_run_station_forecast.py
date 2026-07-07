@@ -25,7 +25,12 @@ from sapphire_flow.types.enums import (
     QcStatus,
     WarmUpSource,
 )
-from sapphire_flow.types.ids import ArtifactId, ModelId, StationId
+from sapphire_flow.types.ids import (
+    CLIMATOLOGY_FALLBACK_MODEL_ID,
+    ArtifactId,
+    ModelId,
+    StationId,
+)
 from sapphire_flow.types.model import StationInputData, StationModelInputs
 from sapphire_flow.types.station import ModelAssignment
 from tests.fakes.fake_models import FakeStationForecastModel
@@ -717,22 +722,25 @@ class TestRunAllStationForecasts:
         assert _MODEL_ID_A in result.failed_models
         assert _MODEL_ID_B in result.failed_models
 
-    def test_combinable_results_excludes_high_priority_fallbacks(self) -> None:
+    def test_combinable_results_uses_fallback_membership_not_priority(self) -> None:
         store = FakeModelArtifactStore()
         _seed_artifact(store, _MODEL_ID_A)
         _seed_artifact(store, _MODEL_ID_B)
         _seed_artifact(store, _MODEL_ID_C)
+        _seed_artifact(store, CLIMATOLOGY_FALLBACK_MODEL_ID)
 
         result = _run_all(
             assignments=[
                 _make_assignment(_MODEL_ID_A, priority=1),
                 _make_assignment(_MODEL_ID_B, priority=50),
                 _make_assignment(_MODEL_ID_C, priority=90),
+                _make_assignment(CLIMATOLOGY_FALLBACK_MODEL_ID, priority=0),
             ],
             models={
                 _MODEL_ID_A: FakeStationForecastModel(),
                 _MODEL_ID_B: FakeStationForecastModel(),
                 _MODEL_ID_C: FakeStationForecastModel(),
+                CLIMATOLOGY_FALLBACK_MODEL_ID: FakeStationForecastModel(),
             },
             store=store,
         )
@@ -740,7 +748,8 @@ class TestRunAllStationForecasts:
         combinable = result.combinable_results
         assert _MODEL_ID_A in combinable
         assert _MODEL_ID_B in combinable
-        assert _MODEL_ID_C not in combinable
+        assert _MODEL_ID_C in combinable
+        assert CLIMATOLOGY_FALLBACK_MODEL_ID not in combinable
 
 
 class _ShortHorizonNwpModel:

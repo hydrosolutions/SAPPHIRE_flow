@@ -547,17 +547,24 @@ def _run_onboarding(
             if station is None or station.station_kind == StationKind.WEATHER:
                 continue
             from sapphire_flow.config.deployment import DEFAULT_PRIORITY
+            from sapphire_flow.types.ids import (
+                FALLBACK_ASSIGNMENT_PRIORITIES,
+                FALLBACK_MODEL_IDS,
+            )
 
             for model_id, model in discovered.items():
                 if model.artifact_scope == ArtifactScope.GROUP:
                     continue
                 try:
                     time_step = next(iter(model.data_requirements.supported_time_steps))
-                    priority = (
-                        deployment_config.priority_for_model(str(model_id))
-                        if deployment_config is not None
-                        else DEFAULT_PRIORITY
-                    )
+                    if deployment_config is not None:
+                        priority = deployment_config.assignment_priority_for_model(
+                            model_id
+                        )
+                    elif model_id in FALLBACK_MODEL_IDS:
+                        priority = FALLBACK_ASSIGNMENT_PRIORITIES[model_id]
+                    else:
+                        priority = DEFAULT_PRIORITY
                     create_station_assignment(
                         station_id=station_id,
                         model_id=model_id,
@@ -678,11 +685,12 @@ def _run_onboarding(
                 # assignment written on artifact promotion does not regress to the
                 # default 0 (Plan 089). The Step 7 guard ensures deployment_config
                 # is not None; DEFAULT_PRIORITY is a belt-and-suspenders fallback.
-                priority = (
-                    deployment_config.priority_for_model(str(model_id))
-                    if deployment_config is not None
-                    else DEFAULT_PRIORITY
-                )
+                if deployment_config is not None:
+                    priority = deployment_config.assignment_priority_for_model(model_id)
+                elif model_id in FALLBACK_MODEL_IDS:
+                    priority = FALLBACK_ASSIGNMENT_PRIORITIES[model_id]
+                else:
+                    priority = DEFAULT_PRIORITY
                 result_mo = onboard_model(
                     model_id=model_id,
                     model=model,

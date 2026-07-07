@@ -13,6 +13,10 @@ from sapphire_flow.config.deployment import _resolve_env_vars, load_config
 from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.types.domain import DangerLevelDefinition, SeasonDefinition
 from sapphire_flow.types.enums import ModelCombinationStrategy, ThresholdDirection
+from sapphire_flow.types.ids import (
+    CLIMATOLOGY_FALLBACK_MODEL_ID,
+    NWP_RAINFALL_RUNOFF_MODEL_ID,
+)
 from tests.conftest import make_deployment_config
 
 
@@ -124,6 +128,36 @@ class TestModelPriorities:
     def test_empty_map_default(self) -> None:
         config = make_deployment_config()
         assert config.model_priorities == {}
+
+    def test_explicit_below_tier_fallback_priority_rejected(self) -> None:
+        with pytest.raises(ConfigurationError, match="climatology_fallback"):
+            make_deployment_config(
+                model_priorities={str(CLIMATOLOGY_FALLBACK_MODEL_ID): 5}
+            )
+
+    def test_omitted_fallback_priorities_load(self) -> None:
+        config = make_deployment_config(
+            model_priorities={str(NWP_RAINFALL_RUNOFF_MODEL_ID): 20}
+        )
+        assert config.priority_for_model(str(CLIMATOLOGY_FALLBACK_MODEL_ID)) == 50
+        assert (
+            config.assignment_priority_for_model(CLIMATOLOGY_FALLBACK_MODEL_ID) == 100
+        )
+
+    def test_configured_fallback_assignment_priority_used_when_present(self) -> None:
+        config = make_deployment_config(
+            model_priorities={str(CLIMATOLOGY_FALLBACK_MODEL_ID): 110}
+        )
+        assert (
+            config.assignment_priority_for_model(CLIMATOLOGY_FALLBACK_MODEL_ID) == 110
+        )
+
+    def test_skill_assignment_priority_uses_config_default_chain(self) -> None:
+        config = make_deployment_config(
+            model_priorities={str(NWP_RAINFALL_RUNOFF_MODEL_ID): 20}
+        )
+        assert config.assignment_priority_for_model(NWP_RAINFALL_RUNOFF_MODEL_ID) == 20
+        assert config.assignment_priority_for_model("some_new_model") == 50
 
 
 class TestLoadConfig:

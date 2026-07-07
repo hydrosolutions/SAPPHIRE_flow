@@ -9,7 +9,13 @@
     <table>
       <tr><td><strong>ID</strong></td><td>{{ station.id }}</td></tr>
       <tr><td><strong>Kind</strong></td><td>{{ station.station_kind }}</td></tr>
-      <tr><td><strong>Status</strong></td><td>{{ station.station_status }}</td></tr>
+      <tr>
+        <td><strong>Status</strong></td>
+        <td>
+          {{ station.station_status }}
+          {% if station.no_floor %}<span class="badge badge-red">no_floor</span>{% endif %}
+        </td>
+      </tr>
       <tr><td><strong>Network</strong></td><td>{{ station.network }}</td></tr>
       <tr><td><strong>Location</strong></td><td>{{ station.lon }}, {{ station.lat }} ({{ station.altitude_masl }} m)</td></tr>
       <tr><td><strong>Timezone</strong></td><td>{{ station.timezone }}</td></tr>
@@ -82,11 +88,15 @@
   <div class="card">
     <h3>Model Assignments</h3>
     <table>
-      <thead><tr><th>Model</th><th>Priority</th><th>Status</th><th>Time Step</th></tr></thead>
+      <thead><tr><th>Model</th><th>Tier</th><th>Priority</th><th>Status</th><th>Time Step</th></tr></thead>
       <tbody>
         {% for ma in model_assignments %}
         <tr>
           <td><a href="/models/{{ ma.model_id }}/">{{ ma.display_name or ma.model_id }}</a></td>
+          <td>
+            {% if ma.model_tier == "fallback" %}<span class="badge badge-yellow">fallback</span>
+            {% else %}<span class="badge badge-blue">skill</span>{% endif %}
+          </td>
           <td>{{ ma.priority }}</td>
           <td><span class="badge {% if ma.status == 'active' %}badge-green{% else %}badge-yellow{% endif %}">{{ ma.status }}</span></td>
           <td>{{ ma.time_step }}</td>

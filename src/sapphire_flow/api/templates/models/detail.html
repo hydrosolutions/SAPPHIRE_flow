@@ -6,6 +6,13 @@
 <div class="card" style="margin-bottom:2rem;">
   <table>
     <tr><td><strong>ID</strong></td><td>{{ model.id }}</td></tr>
+    <tr>
+      <td><strong>Tier</strong></td>
+      <td>
+        {% if model.model_tier == "fallback" %}<span class="badge badge-yellow">fallback</span>
+        {% else %}<span class="badge badge-blue">skill</span>{% endif %}
+      </td>
+    </tr>
     <tr><td><strong>Scope</strong></td><td>{{ model.artifact_scope }}</td></tr>
     <tr><td><strong>Time Step</strong></td><td>{{ model.time_step }}</td></tr>
     <tr><td><strong>Class Path</strong></td><td><code>{{ model.class_path }}</code></td></tr>
@@ -50,12 +57,16 @@
 <h3>Station Assignments ({{ assignments | length }})</h3>
 <table>
   <thead>
-    <tr><th>Station</th><th>Priority</th><th>Status</th><th>Time Step</th></tr>
+    <tr><th>Station</th><th>Tier</th><th>Priority</th><th>Status</th><th>Time Step</th></tr>
   </thead>
   <tbody>
     {% for a in assignments %}
     <tr>
       <td><a href="/stations/{{ a.station_id }}/">{{ a.station_id | string | truncate(8, True, '...') }}</a></td>
+      <td>
+        {% if a.model_tier == "fallback" %}<span class="badge badge-yellow">fallback</span>
+        {% else %}<span class="badge badge-blue">skill</span>{% endif %}
+      </td>
       <td>{{ a.priority }}</td>
       <td>{{ a.status }}</td>
       <td>{{ a.time_step }}</td>

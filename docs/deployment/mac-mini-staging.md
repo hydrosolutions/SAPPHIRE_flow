@@ -301,40 +301,52 @@ projects, personal Docker stacks, or browser sessions on it — port
 conflicts, resource starvation, and forgotten-tab battery drain
 have all cost us runs in the past.
 
-## Forecast-cycle NWP modes
+## Forecast-cycle NWP mode
 
-The Mac mini runs the `forecast-cycle` deployment in **runoff-only**
-mode by default. `docker-compose.macmini.yml` sets
-`SAPPHIRE_CONFIG_OVERLAY=/app/config/overlays/mac-mini.toml` for the
-`prefect-worker` service only, and bind-mounts that overlay read-only
-there. The overlay sets:
+The Mac mini runs the `forecast-cycle` deployment with NWP enabled.
+`docker-compose.macmini.yml` sets
+`SAPPHIRE_CONFIG_OVERLAY=/app/config/overlays/mac-mini.toml` and
+`SAPPHIRE_REQUIRE_NWP=1` for the `prefect-worker` service only, and
+bind-mounts that overlay read-only there. The overlay sets:
 
 ```toml
+enable_observation_alerts = true
+
 [adapters.weather_forecast]
-enabled = false
+enabled = true
 ```
 
-In runoff-only mode the flow forecasts from past discharge. It does
-not fetch NWP, build grid machinery, or require NWP scratch/archive
-paths to be writable.
+`SAPPHIRE_REQUIRE_NWP=1` makes a disabled weather-forecast adapter a
+startup-time configuration error for the forecast worker. The ingest
+worker uses the same overlay without that environment guard.
 
-The base config keeps NWP enabled for production/default operation with
-`[adapters.weather_forecast].enabled = true`. In NWP-enabled mode,
 `/data/nwp_grids` is a named Docker volume; `docker/entrypoint.sh`
-chowns it to `app:app` on container start, so no host `chown` is
-needed. `/tmp/sapphire_nwp` is a 4 GiB sticky tmpfs from the base
-compose file, writable by the non-root `app` user and ephemeral per
-container. Verify both paths from the running worker with:
+chowns it to `app:app` on container start, so no host `chown` is needed.
+`/tmp/sapphire_nwp` is a 4 GiB sticky tmpfs from the base compose file,
+writable by the non-root `app` user and ephemeral per container. Verify
+both paths from the running worker with:
 
 ```bash
 docker compose exec -u app prefect-worker sh -c 'touch /data/nwp_grids/.w /tmp/sapphire_nwp/.w && echo ok && rm /data/nwp_grids/.w /tmp/sapphire_nwp/.w'
 ```
 
-To switch the Mac mini to NWP-enabled mode, change only the overlay
-gate to `enabled = true` (or remove the Mac-mini overlay wiring),
-restart the worker, run the writability check above, then trigger a
-`forecast-cycle` run. Do not edit base `config.toml` for the Mac-mini
-exception.
+Run Plan 100 administration checks from the worker environment with
+`scripts/plan100_forecast_feed_resilience.py` before and after priority
+reconciliation. The reconciliation subcommand is dry-run by default; use
+`--apply --backup-reference <snapshot>` only after the immutable Step 0
+snapshot has been captured.
+
+Plan 100 operator visibility:
+
+- Check `/api/v1/health/detail` or `/health/detail/` for recent
+  `pipeline_health` records such as stale NWP grids, dark station
+  forecasts, or fallback-only forecast-alert suppression.
+- Forecast and model-assignment dashboard surfaces display `skill` /
+  `fallback` model-tier badges derived from model ID, not assignment
+  priority.
+- Station detail displays `no_floor` when no active
+  `climatology_fallback` artifact is present. This is a derived badge,
+  not a station status or schema column.
 
 ## Troubleshooting
 

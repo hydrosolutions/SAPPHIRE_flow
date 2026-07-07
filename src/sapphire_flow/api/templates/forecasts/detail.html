@@ -7,7 +7,14 @@
   <table>
     <tr><td><strong>ID</strong></td><td>{{ forecast.id }}</td></tr>
     <tr><td><strong>Station</strong></td><td><a href="/stations/{{ forecast.station_id }}/">{{ forecast.station_id }}</a></td></tr>
-    <tr><td><strong>Model</strong></td><td>{{ forecast.model_id }}</td></tr>
+    <tr>
+      <td><strong>Model</strong></td>
+      <td>
+        {{ forecast.model_id }}
+        {% if forecast.model_tier == "fallback" %}<span class="badge badge-yellow">fallback</span>
+        {% else %}<span class="badge badge-blue">skill</span>{% endif %}
+      </td>
+    </tr>
     <tr><td><strong>Parameter</strong></td><td>{{ forecast.parameter }}</td></tr>
     <tr><td><strong>Issued At</strong></td><td>{{ forecast.issued_at }}</td></tr>
     <tr><td><strong>Status</strong></td><td>{{ forecast.status }}</td></tr>

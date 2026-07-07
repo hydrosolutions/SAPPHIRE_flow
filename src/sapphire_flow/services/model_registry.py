@@ -5,6 +5,9 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from sapphire_flow.exceptions import ConfigurationError
+from sapphire_flow.types.enums import AlertEligibility, ModelTier
+from sapphire_flow.types.ids import ALERT_ELIGIBILITIES, MODEL_TIERS
 from sapphire_flow.types.model import ModelRecord, ModelRegistryEntry
 
 if TYPE_CHECKING:
@@ -24,6 +27,45 @@ def _derive_display_name(model_id: str) -> str:
     return " ".join(part.capitalize() for part in model_id.split("_"))
 
 
+def _declared_model_tier(model_id: ModelId, model: object) -> ModelTier:
+    configured = MODEL_TIERS.get(model_id)
+    if configured is not None:
+        return configured
+    declared = getattr(model, "model_tier", None)
+    if isinstance(declared, ModelTier):
+        return declared
+    raise ConfigurationError(
+        f"model {model_id} must declare ModelTier via MODEL_TIERS or model_tier"
+    )
+
+
+def _declared_alert_eligibility(
+    model_id: ModelId,
+    model: object,
+) -> AlertEligibility:
+    configured = ALERT_ELIGIBILITIES.get(model_id)
+    if configured is not None:
+        return configured
+    declared = getattr(model, "alert_eligibility", None)
+    if isinstance(declared, AlertEligibility):
+        return declared
+    raise ConfigurationError(
+        f"model {model_id} must declare AlertEligibility via "
+        "ALERT_ELIGIBILITIES or alert_eligibility"
+    )
+
+
+def _assert_model_classification_declared(
+    model_id: ModelId,
+    raw_model: object,
+    adapted_model: object,
+) -> None:
+    tier = _declared_model_tier(model_id, raw_model)
+    eligibility = _declared_alert_eligibility(model_id, raw_model)
+    adapted_model.model_tier = tier  # type: ignore[attr-defined]
+    adapted_model.alert_eligibility = eligibility  # type: ignore[attr-defined]
+
+
 def discover_models() -> dict[ModelId, ForecastModel]:
     # adapt_if_fi wraps a `forecastinterface` model into the SAP3
     # StationForecastModel boundary; native SAP3 models pass through unchanged
@@ -39,9 +81,18 @@ def discover_models() -> dict[ModelId, ForecastModel]:
         model_id = _ModelId(ep.name)
         try:
             cls = ep.load()
-            instance = adapt_if_fi(cls())
+            raw_instance = cls()
+            instance = adapt_if_fi(raw_instance)
+            _assert_model_classification_declared(
+                model_id,
+                raw_instance,
+                instance,
+            )
             result[model_id] = instance
             log.info("model_discovered", model_id=ep.name)
+        except ConfigurationError:
+            log.exception("model_discovery_classification_failed", model_id=ep.name)
+            raise
         except Exception:
             log.exception("model_discovery_failed", model_id=ep.name)
     return result

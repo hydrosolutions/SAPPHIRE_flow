@@ -6,6 +6,10 @@ class InsufficientDataError(SapphireError):
     """Not enough input data to run a model or service function."""
 
 
+class InsufficientObservationsError(InsufficientDataError):
+    """Not enough recent observations to run an observation-backed model."""
+
+
 class SanityCheckFailure(SapphireError):  # noqa: N818
     """Model output failed plausibility checks."""
 

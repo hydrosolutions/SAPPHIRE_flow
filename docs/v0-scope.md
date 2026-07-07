@@ -31,7 +31,7 @@
 | Flow | Earliest | Why |
 |------|----------|-----|
 | Flow 3 — Forecast review | v1 | No dashboard |
-| Flow 4 — Pipeline monitoring | v0c or v1 | **→ DECISION (plan 013)**: Manual supervision suffices at Swiss v0 scale (~170 stations). Health endpoint (`/api/v1/health`) does lightweight live checks (DB ping, Prefect heartbeat) independently — does not require Flow 4. `pipeline_health` table exists but is not populated until Flow 4 is implemented. |
+| Flow 4 — Pipeline monitoring | v0c or v1 | **→ DECISION (plan 013, amended by Plan 100)**: Manual supervision suffices at Swiss v0 scale (~170 stations). Health endpoint (`/api/v1/health`) does lightweight live checks (DB ping, Prefect heartbeat) independently — does not require Flow 4. Plan 100 adds a minimal `/api/v1/health/detail` read endpoint and dashboard page for any `pipeline_health` records written by forecast resilience checks before full Flow 4 exists. |
 | Flow 9 — Model retraining (comparison) | v1 | Only initial training needed |
 | Flow 10 — Skill recomputation (broad) | v1 | Flow 8 (narrow) covers v0 |
 | Flow 11 — NWP gap recovery | v0c or v1 | Gaps accepted and logged |
@@ -83,6 +83,12 @@
 
 Training is triggered as part of onboarding (step 7), not as a separate workflow. No onboarding dashboard, no progress tracking, no model readiness branches.
 
+Plan 100 tightens the fallback floor without adding station schema: existing stations
+that lack an active `climatology_fallback` artifact remain in their current station
+status but the API/dashboard derives a `no_floor` badge at query time. New onboarding
+uses the active climatology floor as the operational floor gate in the implementation
+slice that owns onboarding.
+
 For `station_kind = 'weather'` stations (Flow 5w), steps 5–8 are skipped — weather stations provide forcing data, not forecasts. They become `operational` after QC (step 4).
 
 **v0a** skips catchment attribute fetching (step 5.2) — the initial linear regression model does not require static attributes. **v0b** adds catchment attribute fetching when ML models with `data_requirements.static_features` are introduced.
@@ -123,7 +129,7 @@ Flow 13 (model onboarding) uses the same auto-promote path: `training` → `acti
 | `ClimatologyFallbackModel` | `StationForecastModel` | 90 | v0 |
 | `PersistenceFallbackModel` | `StationForecastModel` | 99 | v0 |
 
-`ClimatologyFallbackModel` and `PersistenceFallbackModel` are real `StationForecastModel` implementations — they train, predict, pass QC, and accumulate skill. They are assigned to all stations as guaranteed last-resort fallbacks. Models with priority ≥ `FALLBACK_PRIORITY_THRESHOLD` (= 90) are excluded from multi-model combination (§A8e).
+`ClimatologyFallbackModel` and `PersistenceFallbackModel` are real `StationForecastModel` implementations — they train, predict, pass QC, and accumulate skill. They are assigned to all stations as guaranteed last-resort fallbacks. Plan 100 makes fallback membership a categorical `ModelTier` fact (`skill` or `fallback`) derived from the model ID, not from mutable assignment priority. Fallback-tier models are excluded from multi-model combination (§A8e); assignment priority remains the run-order/tie-break value within the tier.
 
 ### A8. No notification system
 
@@ -170,7 +176,7 @@ Rationale: per-source flags allow incremental activation during testing — pipe
 
 **v0**: `forecast_combination_strategy` config field exists with default `PRIMARY`. No combination step runs. Schema columns for `combination_strategy` and `source_model_ids` exist to support future migration.
 
-**v0b**: `POOLED` strategy implemented (Plan 026). Step 1.8b is active when `forecast_combination_strategy = POOLED`. `run_all_station_forecasts()` runs every assigned model and returns a `MultiModelForecastResult`; its `combinable_results` property excludes fallback models (priority ≥ 90). `build_combined_forecasts()` constructs the pooled ensemble and stores it with `combination_strategy="pooled"`, `source_model_ids`, sentinel `model_id = "_pooled"`, and `model_artifact_id = NULL`. DB migration added `combination_strategy` (TEXT NULL) and `source_model_ids` (JSONB NULL) columns to `forecasts`; `model_artifact_id` is now nullable on `forecasts`, `skill_scores`, and `skill_diagrams`. Sentinel rows `_pooled`, `_bma`, `_consensus` inserted into `models` table with `artifact_scope = 'virtual'`. `ArtifactScope` enum gains `VIRTUAL` value. Combined skill computed via step S.4b using `compute_combined_skill()` and stored with `model_artifact_id = NULL`. Phase 9 (API) still needs updating to handle sentinel `model_id` values in query filters and responses.
+**v0b**: `POOLED` strategy implemented (Plan 026). Step 1.8b is active when `forecast_combination_strategy = POOLED`. `run_all_station_forecasts()` runs every assigned model and returns a `MultiModelForecastResult`; its `combinable_results` property excludes models whose categorical `ModelTier` is `fallback`. `build_combined_forecasts()` constructs the pooled ensemble and stores it with `combination_strategy="pooled"`, `source_model_ids`, sentinel `model_id = "_pooled"`, and `model_artifact_id = NULL`. DB migration added `combination_strategy` (TEXT NULL) and `source_model_ids` (JSONB NULL) columns to `forecasts`; `model_artifact_id` is now nullable on `forecasts`, `skill_scores`, and `skill_diagrams`. Sentinel rows `_pooled`, `_bma`, `_consensus` inserted into `models` table with `artifact_scope = 'virtual'`. `ArtifactScope` enum gains `VIRTUAL` value. Combined skill computed via step S.4b using `compute_combined_skill()` and stored with `model_artifact_id = NULL`. The API/dashboard exposes sentinel IDs and renders `model_tier` badges for forecast and assignment surfaces.
 
 **v0c**: `BMA` strategy implemented (Plan 026, Tasks 9–11). `compute_bma_weights()` derives per-model weights from skill scores via inverse-CRPS normalization. `combine_ensembles_bma()` samples 100 members weight-proportionally. Cross-validated skill is computed by `compute_bma_skill_cross_validated()`: splits hindcast period in half, trains on each half, evaluates on the other, averages results. BMA weights are ephemeral (not stored). `build_combined_forecasts()` accepts an optional `weights` parameter and falls back to `POOLED` when weights are unavailable.
 
@@ -271,7 +277,7 @@ These are deferred in architecture-context.md. For v0, don't create their tables
 - `station_groups` — as designed
 - `station_group_members` — as designed
 - `model_artifacts` — as designed; status enum has all 5 values (`training | pending_approval | active | superseded | rejected`) for forward compatibility, v0 wires 3 transition paths only (see §A7); includes `sha256_hash TEXT NOT NULL` column (OWASP A08 integrity control — see `security.md`)
-- `model_assignments` — as designed
+- `model_assignments` — as designed. Plan 100 adds no station/model-assignment schema column for fallback visibility; API/dashboard `model_tier` badges are derived from model ID.
 - `group_model_assignments` — as designed; records (`group_id`, `model_id`, `time_step`, `status`, `priority`, `created_at`); unique on `(group_id, model_id)`
 - `model_states` — as designed
 - `station_weather_sources` — as designed
@@ -295,7 +301,7 @@ These are deferred in architecture-context.md. For v0, don't create their tables
 
 ### Operational support
 - `alerts` — as designed, plus `model_ids` (JSONB, `[]` for observation/pipeline alerts) and `alert_model_strategy` (TEXT, NULL for observation/pipeline alerts) for forecast alert traceability (see §A8d). Keep `notified_at` as always-NULL.
-- `pipeline_health` — as designed
+- `pipeline_health` — as designed. Plan 100 exposes a minimal read endpoint and dashboard page for recent records.
 
 ### Not created in v0
 `dead_letter_queue`, `forecast_adjustments`, `users`, `access_tokens`, `refresh_tokens`, `audit_log`, `rating_curves`, `notification_routing`, `notification_recipients`
@@ -582,7 +588,7 @@ POST   /api/v1/alerts/{id}/acknowledge     # ✓ Plan 041 — 404/409 checks, RW
 
 POST   /api/v1/flows/{flow}/trigger        # deferred to v0b (needs auth; users have Prefect CLI)
 GET    /api/v1/health                      # ✓ Plan 041 — DB ping + Prefect heartbeat
-GET    /api/v1/health/detail               # deferred to v0b (pipeline_health empty until Flow 4)
+GET    /api/v1/health/detail               # ✓ Plan 100 — recent pipeline_health records
 # Health checks are live (DB ping, Prefect worker heartbeat) — independent of Flow 4
 
 # Deferred to v1:

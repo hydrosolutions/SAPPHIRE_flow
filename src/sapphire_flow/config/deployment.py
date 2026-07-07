@@ -14,6 +14,12 @@ from sapphire_flow.types.domain import (
     SkillInterpretationScheme,
 )
 from sapphire_flow.types.enums import ModelCombinationStrategy, ThresholdDirection
+from sapphire_flow.types.ids import (
+    FALLBACK_ASSIGNMENT_PRIORITIES,
+    FALLBACK_MODEL_IDS,
+    FALLBACK_PRIORITY_THRESHOLD,
+    ModelId,
+)
 from sapphire_flow.types.model_onboarding import (
     SUPPORTED_SKILL_METRICS,
     SkillGateMetric,
@@ -247,6 +253,19 @@ class DeploymentConfig(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _validate_fallback_priorities(self) -> Self:
+        from sapphire_flow.exceptions import ConfigurationError
+
+        for model_id in FALLBACK_MODEL_IDS:
+            configured = self.model_priorities.get(str(model_id))
+            if configured is not None and configured < FALLBACK_PRIORITY_THRESHOLD:
+                raise ConfigurationError(
+                    f"fallback model {model_id} priority must be >= "
+                    f"{FALLBACK_PRIORITY_THRESHOLD}, got {configured}"
+                )
+        return self
+
     def priority_for_model(self, model_id: str) -> int:
         """Resolve a model's assignment priority (lower = preferred).
 
@@ -254,6 +273,18 @@ class DeploymentConfig(BaseModel):
         DEFAULT_PRIORITY for models absent from the map.
         """
         return self.model_priorities.get(model_id, DEFAULT_PRIORITY)
+
+    def assignment_priority_for_model(self, model_id: ModelId | str) -> int:
+        """Resolve assignment priority without defaulting fallbacks below tier."""
+        typed_model_id = ModelId(str(model_id))
+        configured = self.model_priorities.get(str(typed_model_id))
+        if typed_model_id in FALLBACK_MODEL_IDS:
+            return (
+                configured
+                if configured is not None
+                else FALLBACK_ASSIGNMENT_PRIORITIES[typed_model_id]
+            )
+        return configured if configured is not None else DEFAULT_PRIORITY
 
     def get_danger_level_definitions(self) -> list[DangerLevelDefinition]:
         return [

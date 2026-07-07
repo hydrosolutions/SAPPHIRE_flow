@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from sapphire_flow.api.deps import get_connection
+from sapphire_flow.api.model_visibility import model_tier_for_model_id
 from sapphire_flow.api.routes.tables import PAGE_SIZE, get_reflected
 
 router = APIRouter(tags=["forecasts"])
@@ -40,6 +41,8 @@ def forecast_list(
         offset = page * PAGE_SIZE
         raw = conn.execute(q.limit(PAGE_SIZE).offset(offset)).mappings().all()
         rows = [dict(r) for r in raw]
+        for row in rows:
+            row["model_tier"] = model_tier_for_model_id(row.get("model_id")).value
 
     # Also get hindcast counts
     hindcasts = reflected.tables.get("hindcast_forecasts")
@@ -87,6 +90,7 @@ def forecast_detail(
         raise HTTPException(status_code=404, detail="Forecast not found")
 
     forecast = dict(row)
+    forecast["model_tier"] = model_tier_for_model_id(forecast.get("model_id")).value
 
     # Get forecast values
     fv = reflected.tables.get("forecast_values")
@@ -148,6 +152,7 @@ def forecast_data_json(
 
     units = forecast.get("units")
     issued_at = forecast["issued_at"].isoformat()
+    model_tier = model_tier_for_model_id(forecast.get("model_id")).value
 
     if representation == "quantiles":
         # Group by quantile
@@ -165,6 +170,7 @@ def forecast_data_json(
                 "quantiles": quantiles,
                 "units": units,
                 "issued_at": issued_at,
+                "model_tier": model_tier,
             }
         )
     else:
@@ -183,5 +189,6 @@ def forecast_data_json(
                 "members": members,
                 "units": units,
                 "issued_at": issued_at,
+                "model_tier": model_tier,
             }
         )

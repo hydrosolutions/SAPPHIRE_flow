@@ -35,6 +35,7 @@ class ThresholdResponse(BaseModel):
 
 class ModelAssignmentResponse(BaseModel):
     model_id: str
+    model_tier: str
     time_step_hours: float
     status: str
     priority: int
@@ -67,6 +68,7 @@ class StationDetail(StationSummary):
     wigos_id: str | None = None
     created_at: datetime
     updated_at: datetime
+    no_floor: bool
     thresholds: list[ThresholdResponse]
     model_assignments: list[ModelAssignmentResponse]
     weather_sources: list[WeatherSourceResponse]
@@ -87,6 +89,7 @@ class ForecastSummary(BaseModel):
     id: str
     station_id: str
     model_id: str
+    model_tier: str
     issued_at: datetime
     parameter: str
     representation: str
@@ -150,3 +153,19 @@ class HealthResponse(BaseModel):
     status: str
     prefect_status: str
     checked_at: datetime
+
+
+class PipelineHealthRecordResponse(BaseModel):
+    check_type: str
+    checked_at: datetime
+    status: str
+    subject: str
+    detail: dict[str, object]
+    cycle_time: datetime | None = None
+    created_at: datetime
+
+
+class HealthDetailResponse(BaseModel):
+    items: list[PipelineHealthRecordResponse]
+    total: int
+    limit: int
