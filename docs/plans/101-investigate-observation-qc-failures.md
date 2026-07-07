@@ -90,7 +90,17 @@ edits, no `StationQcOverride`, no `time_step` wiring.
    Storage is a new nullable `stations.water_level_datum_masl` column. This supersedes
    every earlier "data-driven from history" / "compute a low-water statistic" /
    "persist-vs-in-memory" framing: there is no statistic to compute; it is a provided
-   value whose provenance (surveyed / BAFU) is documented at onboarding.
+   value whose provenance (operator-supplied surveyed BAFU gauge-zero) is documented at
+   onboarding.
+   **Datum-source surface = a TOML table keyed by station code.** The CAMELS onboarding
+   config schema (`config/onboarding.py:14` `OnboardingConfig`, parsed at `:37`) has only
+   `data_source` + `basin_ids` today, and the `StationConfig` is built in
+   `adapters/camelsch_adapter.py` (`attributes_to_station`, `:145`; the
+   `return StationConfig(...)` at `:179`) with no datum field. Add a config table
+   `[onboarding.water_level_datums_masl]` keyed by **station code** (e.g. `"2009" = <masl>`,
+   `"2091" = <masl>`), parse it into `OnboardingConfig`, and apply it by `code` in
+   `attributes_to_station` (`camelsch_adapter.py:145/179`), setting
+   `water_level_datum_masl` (→ `None` when the code is absent from the table).
 
 3. **Key the datum by `(station_id, parameter)`, NOT `station_id`.** The adapter
    fetches discharge, waterLevel AND waterTemperature for every river station
@@ -101,31 +111,41 @@ edits, no `StationQcOverride`, no `time_step` wiring.
    `datum=datums.get((station_id, parameter))` → `None` (no shift) for discharge, the
    datum only for water_level.
 
-4. **NULL datum (metadata not yet set) → SKIP ONLY the datum-dependent `range_check`
-   rule; still run + aggregate the datum-invariant rules.** There is **no UNKNOWN QC
-   status** (`types/enums.py:4-9` — the statuses are RAW, QC_PASSED, QC_FAILED,
-   QC_SUSPECT, MISSING) and `aggregate_qc_status` returns `QC_PASSED` only for an **empty**
-   flag list (`types/domain.py:104`). So a null-datum water_level obs must NOT be marked
-   with a fictional "unknown". Instead: skip only `range_check` (the sole datum-dependent
-   rule) and run `spike`/`max_delta`, `rate_of_change`, `frozen_sensor` (all
-   datum-invariant) normally, letting the obs aggregate to a **real** status from those
-   remaining rules. Persist `qc_rule_version = "1.1-datum-skip"` so null-datum passes are
-   auditable and distinct from both the datum-applied (`"1.1-datum"`) and legacy (`"1.0"`)
-   passes. **Global widening was REJECTED** — the independent review proved it is
-   architecturally incompatible: `Stage1QualityChecker` applies ONE shared `QcRuleSet` per
-   (parameter, time_step) with no separate datum path (`services/qc.py:219,239`). Widening
-   the shared `water_level` `range_check` to a physical absolute band (e.g. `[0, 4500]`)
-   would then also be applied to the datum-shifted **relative** values, erasing the tight
+4. **NULL datum (metadata not yet set) → SKIP EVERY datum-dependent rule; still run +
+   aggregate the datum-invariant rules.** There is **no UNKNOWN QC status**
+   (`types/enums.py:4-9` — the statuses are RAW, QC_PASSED, QC_FAILED, QC_SUSPECT, MISSING)
+   and `aggregate_qc_status` returns `QC_PASSED` only for an **empty** flag list
+   (`types/domain.py:104`). So a null-datum water_level obs must NOT be marked with a
+   fictional "unknown". Instead, skip the **datum-dependent rules** and run the
+   **datum-invariant rules** normally, letting the obs aggregate to a **real** status from
+   those. The skip set is NOT just `range_check` — any rule that compares an absolute value
+   or an (absolute) baseline is datum-dependent:
+   - **obs QC (datum-dependent, SKIP when null):** `range_check`, `gross_outlier` (compares
+     `obs.value` to `baseline.rolling_mean`, `services/qc.py:167,181`).
+   - **forecast QC (datum-dependent, SKIP when null):** `range_check`, `negative_value`
+     (a relative lower-bound `value_min=-2.0`, `config/forecast_qc_rules.py:150,157`),
+     `climatology_outlier` (baseline compare, `services/forecast_qc.py:170`).
+   - **datum-invariant (always RUN):** `spike`/`max_delta`, `rate_of_change`,
+     `frozen_sensor` (all delta-based).
+
+   Persist `qc_rule_version = "1.1-datum-skip"` so null-datum passes are auditable and
+   distinct from both the datum-applied (`"1.1-datum"`) and legacy (`"1.0"`) passes.
+   **Global widening was REJECTED** — the independent review proved it is architecturally
+   incompatible: `Stage1QualityChecker` applies ONE shared `QcRuleSet` per (parameter,
+   time_step) with no separate datum path (`services/qc.py:219,239`). Widening the shared
+   `water_level` `range_check` to a physical absolute band (e.g. `[0, 4500]`) would then
+   also be applied to the datum-shifted **relative** values, erasing the tight
    relative-stage QC the datum-subtract exists to provide. Widening and datum-subtract
-   cannot coexist on one shared rule set → skip-`range_check`-until-datum instead.
+   cannot coexist on one shared rule set → skip-datum-dependent-rules-until-datum instead.
 
 5. **ALL forecast + onboarding QC paths are fixed in the SAME slice.** v0 explicitly
    forecasts water_level via BOTH a per-station and an operational GROUP path
    (`docs/v0-scope.md:11,213`). Forecast defaults reject absolute water_level with
    `[-2, 20]` (`config/forecast_qc_rules.py:169`, plus the `negative_value` floor
-   `value_min=-2.0` at `:155`/`:162`). Every path that runs a checker on absolute
+   `value_min=-2.0` at `:150`/`:157`). Every path that runs a checker on absolute
    water_level must get the same `(station_id, parameter)`-keyed datum-subtract +
-   skip-`range_check`-until-datum, reading the same `water_level_datum_masl` metadata.
+   skip-datum-dependent-rules-until-datum (the full skip set per design item 4), reading
+   the same `water_level_datum_masl` metadata.
    Four call sites total (spelled out in §3):
    - **obs-ingest** — `ingest_observations._run_qc_task` (the primary fix).
    - **station-forecast** — `run_station_forecast` runs forecast QC per predicted
@@ -182,6 +202,23 @@ edits, no `StationQcOverride`, no `time_step` wiring.
    Run the delete **before** storing the relative recompute, else stale absolute rows
    survive and flag every relative obs as a gross outlier. (In v0 water_level was 100 %
    rejected, so likely no water_level baselines exist yet — audit and document explicitly.)
+
+   **Onboarding builds baselines too — they must be RELATIVE from the start.** Onboarding
+   QC (`services/onboarding.py:381`) is immediately followed by fetching the QC_PASSED obs
+   (`:409`) and `compute_clim_baselines(qc_passed, …)` (`:416`), and
+   `compute_clim_baselines` uses raw `obs.value` directly (`services/baselines.py:23`). So
+   a new water_level station would store **absolute** baselines that later get compared to
+   **shifted relative** QC values — a half-shifted comparison that flags every obs. Fix:
+   - **Datum present at onboarding:** compute water_level baselines from datum-**shifted**
+     shadow observations — subtract the station datum from the water_level obs (the same
+     `(station, parameter)`-keyed shadow-copy helper used on the QC path) **before**
+     `compute_clim_baselines`, so the stored baseline is relative. (Prefer shifting the obs
+     input to one consistent shadow-copy path over post-hoc adjusting `rolling_mean`.)
+   - **Null datum at onboarding:** **SKIP water_level baseline creation** until the datum
+     exists (a null-datum station has no relative frame to build a baseline in), consistent
+     with the null-datum skip of `gross_outlier` in design item 4. When the datum is later
+     filled via `update_station`, delete + recompute the water_level baselines
+     (`delete_baselines(station_id, parameter)` + a relative recompute) — see §5 rollout.
 
 9. **`qc_rule_version` resolved ONCE** at the top of `_run_qc_task`, before the flags
    loop (`ingest_observations.py:179-189`): for water_level, `version = "1.1-datum" if
@@ -242,15 +279,27 @@ sites** — obs-ingest (5–6), station-forecast (8), group-forecast (9), onboar
    - `_row_to_station` (`station_store.py:258`) — read `row["water_level_datum_masl"]`
      and pass it to `StationConfig`, else `fetch_station` never surfaces the datum.
 
-4. **Onboarding input + onboarding QC** (`flows/onboard.py` / `services/onboarding.py`):
-   - Accept a `water_level_datum_masl` input and thread it into the `StationConfig` it
-     constructs; document provenance (surveyed / BAFU gauge-zero).
-   - **Apply the datum-shift + skip-`range_check`-until-datum to the onboarding QC pass.**
-     `onboarding.py` runs `Stage1QualityChecker.check` directly on raw obs (`:381`, before
-     baseline computation at `:416`); the datum is available (the metadata input), so build
-     the same `(station_id, "water_level")`-keyed datum-shifted shadow copies before
-     `.check` there too, and skip `range_check` when the datum is null. Without this,
-     onboarding re-introduces the 100 %-rejection on the very obs it is validating.
+4. **Onboarding datum input + onboarding QC + onboarding baselines**
+   (`config/onboarding.py`, `adapters/camelsch_adapter.py`, `services/onboarding.py`):
+   - **Datum input surface (TOML).** Extend `OnboardingConfig` (`config/onboarding.py:14`)
+     with a `water_level_datums_masl: dict[str, float]` field and parse the
+     `[onboarding.water_level_datums_masl]` table (keyed by station code) in
+     `load_onboarding_config` (`:37`). Apply it by `code` in `attributes_to_station`
+     (`adapters/camelsch_adapter.py:145`; `return StationConfig(...)` at `:179`), setting
+     `water_level_datum_masl` from the table (`None` when the code is absent). Provenance =
+     operator-supplied surveyed BAFU Pegelnullpunkt.
+   - **Apply the datum-shift + skip-datum-dependent-rules-until-datum to the onboarding QC
+     pass.** `onboarding.py` runs `Stage1QualityChecker.check` directly on raw obs (`:381`,
+     before baseline computation at `:416`); the datum is available (the metadata input), so
+     build the same `(station_id, "water_level")`-keyed datum-shifted shadow copies before
+     `.check` there too, and skip the datum-dependent rules (`range_check`, `gross_outlier`)
+     when the datum is null (design item 4). Without this, onboarding re-introduces the
+     100 %-rejection on the very obs it is validating.
+   - **Onboarding baselines must be RELATIVE.** `compute_clim_baselines` (`:416`, using raw
+     `obs.value` at `services/baselines.py:23`) must receive datum-**shifted** water_level
+     obs when a datum exists, and be **skipped for water_level when the datum is null**
+     (design item 8). Without the shift, onboarding stores absolute baselines that
+     `gross_outlier` later compares to shifted relative values.
 
 5. **`_run_qc_task` datum application** (`ingest_observations.py:141-191`):
    - Receive `datum: float | None` as a parameter (passed by the caller).
@@ -265,9 +314,10 @@ sites** — obs-ingest (5–6), station-forecast (8), group-forecast (9), onboar
      `_apply_range_check` (`qc.py:55`) and `_apply_spike` (`qc.py:145`) both short-circuit
      on `value is None`. All context obs must be shifted too (a mixed list would make
      `rate_of_change`/`spike` compute a ~−datum delta).
-   - When `datum is None` → **skip ONLY the `range_check` rule** for water_level (design
-     item 4); still run + aggregate the datum-invariant rules. Do NOT widen the shared
-     bound and do NOT mark a fictional "unknown" (no such status exists).
+   - When `datum is None` → **skip the datum-dependent rules** for water_level — on the obs
+     path `range_check` and `gross_outlier` (design item 4); still run + aggregate the
+     datum-invariant rules. Do NOT widen the shared bound and do NOT mark a fictional
+     "unknown" (no such status exists).
    - Pass the shadow list to `checker.check(overrides=[])`; the returned
      `dict[ObservationId, list[QcFlag]]` keys onto the real IDs, so the `raw_ids` filter +
      `update_qc` at `:179-189` are unchanged and the stored DB value is never touched.
@@ -298,10 +348,13 @@ sites** — obs-ingest (5–6), station-forecast (8), group-forecast (9), onboar
      (`config/qc_rules.py:71,107` + `config.toml:217,280`).
 
 8. **Forecast-side datum-subtract — STATION path + signature cascade** (design item 5).
-   Apply the same `(station_id, parameter)`-keyed shift + skip-`range_check`-until-datum
-   before the checker at `services/run_station_forecast.py:219` (abort gate `:218-229`),
-   reading `water_level_datum_masl`. Do NOT widen `config/forecast_qc_rules.py` (`:169`,
-   `:155`/`:162`) — same shared-rule-set argument as obs QC. **Signature cascade:**
+   Apply the same `(station_id, parameter)`-keyed shift before the checker at
+   `services/run_station_forecast.py:219` (abort gate `:218-229`), reading
+   `water_level_datum_masl`; when the datum is null, skip the forecast datum-dependent
+   rules — `range_check`, `negative_value` (`config/forecast_qc_rules.py:150,157`), and
+   `climatology_outlier` (`services/forecast_qc.py:170`) — per design item 4. Do NOT widen
+   `config/forecast_qc_rules.py` (`:169`, `:150`/`:157`) — same shared-rule-set argument as
+   obs QC. **Signature cascade:**
    `run_station_forecast` receives `station_id: StationId`, not the datum
    (`services/run_station_forecast.py:344`), so thread the datum (or the resolved shift)
    through the chain `_run_single_model` (`:92`, `station_id` at `:93`) →
@@ -316,8 +369,9 @@ sites** — obs-ingest (5–6), station-forecast (8), group-forecast (9), onboar
    (`services/run_group_forecast._build_station_result:248`) runs `qc_checker.check` at
    `:269` and aborts the station's output on `QC_FAILED` at `:272`, called from
    `flows/run_forecast_cycle.py:1363`. Apply the identical `(station_id, parameter)`-keyed
-   shift, `range_check` skip-until-datum, baseline handling, and forecast flag-detail
-   honesty here, threading the datum through `run_group_forecast` (`:335`) →
+   shift, null-datum skip of the forecast datum-dependent rules (`range_check`,
+   `negative_value`, `climatology_outlier`; design item 4), baseline handling, and forecast
+   flag-detail honesty here, threading the datum through `run_group_forecast` (`:335`) →
    `_build_station_result` (`:248`), and update the call site + affected unit tests —
    parallel to the STATION cascade.
 
@@ -358,14 +412,15 @@ Part of the datum-subtract PR:
   it through. `FakeStationStore` (`tests/fakes/fake_stores.py:794`) needs no change — it
   stores/returns `StationConfig` verbatim and the new field is a defaulted attribute.
 - **`_run_qc_task`:** (i) datum applied → water_level QC'd on relative stage;
-  (ii) NULL datum → **only `range_check` is skipped**; the datum-invariant rules still
-  run and the obs aggregates to a real status (NOT a fictional "unknown"), and
-  `qc_rule_version == "1.1-datum-skip"`; (iii) a `MISSING` (`value=None`) obs in the
-  context window passes through unchanged (regresses the `TypeError` blocker);
-  (iv) `qc_rule_version` is `"1.1-datum"` when a datum is applied; (v) **the water_level
-  datum is NOT applied to the same station's discharge QC** — a station with
-  `water_level_datum_masl` set, run through the `(station_id, "discharge")` path, produces
-  flags identical to `datum=None` (regresses the discharge-corruption blocker).
+  (ii) NULL datum → **the datum-dependent rules are skipped** (`range_check` and
+  `gross_outlier`); the datum-invariant rules still run and the obs aggregates to a real
+  status (NOT a fictional "unknown"), and `qc_rule_version == "1.1-datum-skip"`; (iii) a
+  `MISSING` (`value=None`) obs in the context window passes through unchanged (regresses
+  the `TypeError` blocker); (iv) `qc_rule_version` is `"1.1-datum"` when a datum is applied;
+  (v) **the water_level datum is NOT applied to the same station's discharge QC** — a
+  station with `water_level_datum_masl` set, run through the `(station_id, "discharge")`
+  path, produces flags identical to `datum=None` (regresses the discharge-corruption
+  blocker).
 - **`_apply_spike` dispatch:** (a) `thresholds={"max_delta": 1.0}` → deviation >1 m flags,
   <1 m does not; (b) `thresholds={"tolerance": 0.1}` → the legacy percentage form still
   applies (discharge regression guard).
@@ -374,8 +429,15 @@ Part of the datum-subtract PR:
 - **Group-forecast:** datum-subtract applied on the `run_group_forecast` /
   `_build_station_result` QC path; the water_level datum is NOT applied to the discharge
   ensemble; NULL datum → `range_check` skipped.
+- **Onboarding datum input:** `load_onboarding_config` parses
+  `[onboarding.water_level_datums_masl]` and `attributes_to_station` applies it by station
+  code (code present → `water_level_datum_masl` set; code absent → `None`).
 - **Onboarding QC:** the onboarding `Stage1QualityChecker.check` pass applies the
-  datum-shift so onboarded water_level obs are not re-rejected; NULL datum → skip.
+  datum-shift so onboarded water_level obs are not re-rejected; NULL datum → skip the
+  datum-dependent rules.
+- **Onboarding baselines:** with a datum, `compute_clim_baselines` receives shifted obs so
+  the stored water_level baseline is relative; with a null datum, water_level baseline
+  creation is skipped.
 - **Forecast flag-detail:** a shifted forecast water_level flag detail carries raw +
   relative + datum.
 - **Baseline `delete_baselines`:** the fake and Pg store delete only the targeted
@@ -396,8 +458,13 @@ not a unit test (`get_reflected` runs `MetaData.reflect`).
 3. Run the one-shot backfill script (§3 item 12): delete + recompute any water_level
    baselines in relative terms first, then re-QC the 622 existing water_level rows on
    datum-shifted shadow copies, writing `qc_rule_version="1.1-datum-reqc"` for audit.
-4. On a future re-survey: update the column via `update_station` and re-run the re-QC
-   against the revised datum (explicit, not silent drift).
+4. **Datum-fill / re-survey path (`update_station`):** whenever a station's
+   `water_level_datum_masl` transitions null→value (first fill for a station onboarded
+   without a datum) or value→value (a re-survey), **delete + recompute the water_level
+   `ClimBaseline` rows** (`delete_baselines(station_id, "water_level")` + a relative
+   recompute) and re-QC the existing water_level rows against the (revised) datum. This
+   covers a station that onboarded with a null datum (baselines were skipped, design item 8)
+   and only later received one. Explicit, not silent drift.
 
 ---
 
@@ -418,16 +485,14 @@ not a unit test (`get_reflected` runs `MetaData.reflect`).
 
 ## ⚠ Residuals for implementation
 
-The findings from the independent review — GROUP-forecast QC, null-datum status/version
-semantics, forecast flag-detail honesty, in-slice onboarding QC, and the
-`delete_baselines` Protocol/fake surface — are **RESOLVED in this spec** (design items 4,
-5, 7, 8; checklist items 4, 8, 9, 10, 11). The only remaining residuals are numeric /
-operational inputs, not design forks:
+All prior review findings are **RESOLVED in this spec** — GROUP-forecast QC, null-datum
+status/version semantics (now the full datum-dependent skip set), forecast flag-detail
+honesty, in-slice onboarding QC, the `delete_baselines` Protocol/fake surface, the
+onboarding relative-baseline fix, and the onboarding datum **input** surface (the
+`[onboarding.water_level_datums_masl]` TOML table — which also resolves the earlier BAFU
+Pegelnullpunkt provenance residual). The only remaining residual is a numeric input, not a
+design fork:
 
-- **BAFU Pegelnullpunkt provenance for NEW stations.** The design keeps the column NULL →
-  skip-`range_check`-until-datum. Confirm there is an operational path to obtain the
-  surveyed gauge-zero for all onboarded stations (2009/2091 have known values; the general
-  onboarding input assumes provenance is available).
 - **`N_10min` / `N_daily` spike `max_delta` values.** Provisional `1.0 m` for 10-min;
   `N_daily` unspecified ("distinct larger" — a 1 m/10-min cap does not translate to
   1 m/day). Pin both numeric values at implementation.
