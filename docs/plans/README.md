@@ -1,40 +1,114 @@
 # SAPPHIRE Flow — Plan Index
 
-Update this index whenever a plan's status changes or a new plan is added. List
-every plan file currently under `docs/plans/`. Do not auto-generate — maintain
-by hand.
+Maintained by hand — update whenever a plan's status changes, a new plan is added,
+or a plan is implemented (move it to [archive/](archive/)). Do not auto-generate.
 
-## Active
+**Context:** v0 is complete (the mac-mini runs NWP-on operational runoff
+forecasting). We are marching to **v1 = Nepal DHM deployment** (ECMWF IFS via the
+recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tags:
+**A** = v0 operational hardening / reliability (land before any v1 prod deploy) ·
+**B** = v1 Nepal feature · **C** = dev-experience / dashboard / deferrable.
 
-- **015** — Virtual Station Support — `READY` — Design for virtual station types, calculated station formulas, flow impacts, and QC propagation (v1 target).
-- **017** — Manual vs Automatic Station Support — `DRAFT` — Per-station observation frequency, manual/automatic classification, and watchdog/QC implications for mixed networks.
-- **035** — Rating Curve Provenance for Skill Score Integrity — `READY` — Schema, types, and flow logic for rating-curve provenance tracking (v1 Nepal).
-- **038** — Store Write Atomicity — `DRAFT` — Wrap two-phase store inserts in transactions to eliminate orphan header rows under crash.
-- **040** — Hindcast Deduplication Constraint — `DRAFT` — Add a unique constraint to `hindcast_forecasts` to prevent duplicate rows.
-- **046** — Mac Mini Staging Deployment + Edge-Case Test Suite — `IN_PROGRESS` — Staging infrastructure on the Mac mini plus the deployment-validation edge-case suite.
-- **047** — Nepal v1 data sources (ECMWF IFS, DHM, ERA5-Land, elevation bands) — `DRAFT (stub)` — Placeholder for Nepal v1 adapter work; filled in once v0 wraps.
-- **048** — restic + encrypted backup + monthly restore rehearsal — `DRAFT (stub)` — v1 backup hardening: restic, encryption, and monthly restore rehearsal on staging.
-- **049** — Cloudflare Public URL for SAPPHIRE Staging — `DRAFT` — Publish the Mac-mini staging API via Cloudflare Tunnel + Access with Entra SSO and OTP for external viewers.
-- **057** — API route-module tests — `DRAFT (stub)` — Test coverage for the HTML route modules under `api/routes/` plus `health.py`.
-- **058** — BAFU LINDAS archive via operational collection on Mac Mini v0 — `DRAFT` — Build a BAFU LINDAS archive by running the v0 ingest on the Mac mini after Plan 046 is DONE.
-- **062** — Prefect state persistence (`PREFECT_HOME` ↔ `prefect_data` volume) — `DRAFT` — Set `PREFECT_HOME` so SQLite DB, deployments, and flow-run history persist on the named volume.
-- **064** — Supply-chain hardening — `DRAFT` — Pin third-party inputs, add CVE scanning and SBOMs, document the new posture.
-- **066** — Train-models retrain strategy (configurable) — `DRAFT` — Framework so retrain data-window is selectable; default restores dress-rehearsal A3 step 4 (F3).
-- **067** — MeteoSwiss STAC adapter investigation + configurability — `READY` — Root-cause the "cycle late" signal (F4), then move `_MAX_FALLBACK_STEPS` into config and decide pagination-cap fate (F5). Four review rounds.
-- **068** — `onboard-stations` parallelization + decouple historical hindcast — `DRAFT` — Cut 38 min onboarding to seconds; move historical hindcast to new async `backfill-hindcasts` flow with `task.map`. Depends on Plans 038 + 040.
-- **081** — recap-dg-client forcing adapter — `DRAFT` — Offline-completable Nepal v1 Recap adapter foundation, variable catalog, metadata design, band converter, and fake-client contract tests.
-- **082** — recap Gateway operational and training readiness — `DRAFT` — Live Gateway smoke, Nepal config, latest-cycle/watchdog semantics, temporal model-input join, coverage gate, and runbooks. Depends on Plan 081.
-- **083** — Human-readable station code in structured logs — `DRAFT` — Bind `station_code` alongside the UUID `station_id` at per-station fan-out boundaries so operators can read logs without a UUID lookup; update `logging.md`.
-- **084** — Dev-machine deployment validation (2-station runoff-only) — `READY` — Clean, repeatable end-to-end validation of the local dev stack for 2 BAFU river stations (2009/2091): onboard → operational → runoff-only forecast → idempotency re-run → optional NWP, hardened against the six Mac-mini failure modes before the mini re-attempt.
-- **085** — Observation ingest: value-restatement upsert + 5-min poll cadence — `READY` — Scoped `on_conflict_do_update` so BAFU value restatements are captured (last-write-wins on a real value change) with a `value IS DISTINCT FROM` predicate, QC-state reset for in-flow re-QC, and a stored/skipped counting-trap fix; plus raising the default ingest cron `*/30`→`*/5` for the snapshot-only LINDAS adapter. WF2 fix-mode.
-- **086** — NWP forecast-cycle memory-bounded (lazy/dask) streaming — `READY` — Fixes the Plan 084 NWP-OOM (which occurs at the eager cfgrib parse/merge in `_parse_grib_files`, before archive/extract) by opening cfgrib with `chunks={}` so the grid cube is dask-backed, **plus** rechunking the source in `ZarrNwpGridStore.archive` to `(1, *shape[1:])` (leading axis derived from a data variable's axis-0, not `ds.dims`) so `to_zarr` streams a small bounded number of `valid_time` slabs (tens–low-hundreds of MB) instead of raising a dask-chunk-overlap `ValueError` (THE BLOCKER, empirically verified on the real `(valid_time, member, values)` ICON mesh fixture — no lat/lon dims). Folds in two guardrails — wiring the existing `max_files` cap into config and a 6–8 GiB `prefect-worker` `mem_limit` (bounds blast radius, not graceful failure). Extraction-from-mesh is a SEPARATE pre-existing gap (Open Item E), out of scope. dask already a dependency. WF2 fix-mode (laziness-property + archive-round-trip repro).
-- **087** — ICON-CH2-EPS unstructured-mesh basin extraction — `READY` — Resolves Plan 086 **Open Item E**: makes the NWP-on forecast-cycle produce basin-average forcing from real ICON mesh data (parsed dims `(valid_time, member, values)`, 283 876 cells, **no lat/lon dims**, so `ExactExtractGridExtractor.set_spatial_dims` aborts). Commits the fixed per-cell mesh coords (`tlat`/`tlon`/`h` from the OGD collection-level `horizontal_constants_icon-ch2-eps.grib2`, **float32 npz**) as a compact static package asset; attaches `latitude`/`longitude` as 1-D `values`-dim coords (normalised to [-180,180] — a **verified no-op**: real `tlon` ∈ [-0.77, 17.68], already signed) in `convert_raw_dataset`; adds a NEW `MeshBasinExtractor` (point-in-polygon cell→basin via geopandas/shapely + count-weighted mean, **NO regrid** — xESMF/CDO rejected for arm64 build burden) emitting the identical `BasinAverageForecast` schema with `out_of_extent` + per-member NaN parity and a **`shapely.STRtree.nearest`** small-basin nearest-cell fallback gated by `_MAX_NEAREST_CELL_DEG ≈ 0.04°`; a `grid_extractor` config selector keeps `ExactExtractGridExtractor` for regular grids. **NO new dep** (geopandas/shapely already direct; scipy NOT used). Cell ordering is a **hard guarantee** via `uuidOfHGrid` (`bbbd5a09855499243c7a4aa4c8762920`, byte-identical grid↔forecast), pinned at regeneration. **Independent of Plan 086** (non-overlapping `meteoswiss_nwp.py` edits); both needed for NWP-on E2E. WF2 new-capability. All pre-READY Open Qs resolved empirically (lon convention, weighting, out-of-domain criterion, OGD attribution); only Q-perf (cell→basin caching at 1000 stations) remains as a non-blocking follow-up.
+## In flight (WF2 dispatched, hold-at-PR, own worktrees)
+
+- **100** — Forecast-feed resilience — `READY` — **A** — persist NWP-on across
+  restarts + always-on climatology fallback + fatal NWP-off gate + staleness/health.
+  Born from the 3-day mac-mini blackout. *(WF2 running)*
+- **101** — water_level QC datum fix — `READY-TO-IMPLEMENT` — **A** — per-station
+  datum, subtract-before-QC; the exact mechanism DHM's mixed cm/m/m-a.s.l. units
+  need. Passed 4 independent-review gates. *(WF2 running)*
+
+## Active — operational hardening (A) — the gate to any v1 prod deploy
+
+- **103** — Prefect worker observability & home — `DRAFT` — persist flow-run logs to
+  the Prefect store + writable `PREFECT_HOME`. **Supersedes 062.**
+- **105** — Operational disk hygiene & NWP scratch cleanup — `DRAFT` (grill-me done)
+  — scratch self-clean on failure + pre-fetch disk tripwire + weekly image prune.
+- **097** — Short-lookback observability — `DRAFT` — warn when the delivered lookback
+  is shorter than requested.
+- **048** — restic encrypted backup + monthly restore rehearsal — `DRAFT (stub)` —
+  **HARD prod prerequisite.** Depends on 046.
+- **046** — Mac Mini staging deployment + edge-case suite — `IN_PROGRESS`.
+- **058** — BAFU LINDAS archive via operational collection — `DRAFT` — depends on 046.
+- **091** — Mac-mini NWP-on data-collection runbook — `DRAFT` — depends on 046.
+- **094** — Cap onboarding/hindcast window to actual data range — `DRAFT`.
+- **038** — Store write atomicity (transactional two-phase insert) — `DRAFT`.
+- **040** — Hindcast deduplication unique constraint — `DRAFT`.
+- **083** — Human-readable `station_code` in structured logs — `DRAFT`.
+- **075** — Mac Mini Stream C: glue + one-command bootstrap — `READY`.
+- **084** — Dev-machine deployment validation (2-station runoff-only) — `READY`
+  (validated 2026-06-28; reusable harness not fully built).
+- **064** — Supply-chain hardening — `READY` (largely shipped; residuals remain).
+- **069** — Pyright backlog cleanup: ratchet + drain — `READY` (P1 shipped; drain
+  remaining).
+- **062** — Prefect state persistence (`PREFECT_HOME` ↔ volume) — `DRAFT` — **likely
+  subsumed by 103**; reconcile.
+
+## Active — v1 Nepal feature (B)
+
+- **080** — FI wheel distribution — `DRAFT` (low-pri) — publish `forecastinterface`
+  as a versioned wheel, migrate off the git-pin, drop the temporary CI wheel-guard
+  (Plan 079). **Blocked externally** on FI hitting the private index. Packaging
+  prerequisite for a Nepal handover.
+- **081** — recap-dg-client forcing adapter — `DRAFT` — the Nepal forcing foundation
+  (IFS/ERA5-Land time-series from the gateway). **Offline-completable** against fakes.
+- **082** — recap Gateway operational + training readiness — `DRAFT` — live gateway
+  smoke, Nepal config, coverage gate, watchdog, runbooks. Depends on 081.
+- **047** — Nepal v1 data sources umbrella (IFS, DHM, ERA5-Land) — `DRAFT (stub)` —
+  depends on 081/082.
+- **035** — Rating-curve provenance for skill integrity — `READY` — v1 DHM hQ.
+- **017** — Manual vs automatic station support — `DRAFT` — v1, DHM mixed networks.
+- **015** — Virtual / calculated station support — `DRAFT` — v1 (enum slice shipped).
+
+## Active — dev experience / dashboard (C)
+
+- **102** — Dashboard multi-parameter observation visibility — `READY`.
+- **104** — Dashboard hardening (links, chart defaults, skill-chart) — `READY`.
+- **099** — Dashboard display timezone — **P1 shipped** (UTC axis labels, #59); **P2
+  pending** (UTC↔Europe/Zurich toggle).
+- **090** — NWP incomplete-cycle selection + horizon-coverage — **P1 shipped**
+  (age-delay guard, #49); **P2 pending** (terminal-valid-time refetch).
+- **049** — Cloudflare public URL + Entra SSO for staging — `DRAFT` — depends on 046.
+- **071** — v0b weather-history: MeteoSwiss daily reanalysis adapter — `DRAFT`.
+- **072** — v0b weather-history: hybrid forcing resolver — `DRAFT`.
+- **066** — Configurable retrain data-window — `DRAFT`.
+- **068** — `onboard-stations` parallelization + async backfill — `DRAFT` — depends
+  on 038 + 040.
+- **057** — API route-module tests — `DRAFT (stub)`.
 
 ## Deferred
 
-- **039** — Sensor/Model Failure Visibility for Operators — `DEFERRED` — Sensor-offline visibility belongs in Flow 4 (pipeline monitoring); revisit when Flow 4 is scoped.
-- **042** — API Key Auth + Client SDK — `DEFERRED` — Auth and SDK deferred to v0b — no external consumers during v0.
+- **039** — Sensor/Model failure visibility — `DEFERRED` → Flow 4 (pipeline
+  monitoring).
+- **042** — API Key Auth + Client SDK — `DEFERRED` → post-v0 (but see the multi-tenant
+  gap below — a Nepal handover needs auth/RBAC).
+
+## v1 gaps — work with NO plan yet (draft before the waves that need them)
+
+These are named in `architecture-context.md` / `v0-scope.md` but have no plan:
+
+1. **Multi-tenant / deployment isolation** (east HSOL / west DHM) — blocks the
+   multi-tenant wave.
+2. **DHM observation adapter** — real-time DHM gauge ingest (distinct from the
+   gateway *forcing* adapter 081).
+3. **water_level unit normalization** — cm / m-above-ground → canonical metres at the
+   adapter boundary (Plan 101 only *guards* the metres assumption).
+4. **ERA5-Land reanalysis adapter** (`WeatherReanalysisSource` for Nepal) — folded
+   verbally into 081/047, no dedicated build plan.
+5. **Flow 0 Nepal deployment onboarding** — AoI definition, bulk static-attribute
+   fetch (HydroATLAS/MERIT/DHM GIS).
+6. **Rating-curve h→Q ingestion + reprocessing** (Flow 12 Branch A) — 035 covers
+   provenance only.
+7. **Auth / RBAC / audit** for the multi-tenant handover (Plan 042 deferral is
+   insufficient).
+8. **Flow 4 pipeline monitoring** full build (v0 is basic-only; 039 folds in).
+9. **Bikram Sambat calendar + bulletin generation** (Nepal official reporting).
+
+> **NOT needed for v1: elevation-band / gridded NWP extraction.** Nepal forcing
+> arrives as **basin/band time-series directly from the Data Gateway API** — SAP3
+> does not extract from grids for Nepal. (The ICON-mesh extraction, Plan 087, is
+> Swiss/v0-only.)
 
 ## Archived
 
-See [archive/](archive/) for completed and archived plans (46+ entries).
+See [archive/](archive/) for completed and archived plans (68 entries).
