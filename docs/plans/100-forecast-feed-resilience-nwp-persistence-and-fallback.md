@@ -1,6 +1,7 @@
 # Plan 100 — forecast-feed resilience: persist NWP-on across restarts + always-on fallback (no silent blackout)
 
-**Status**: DRAFT — **FINAL-GATE FIXES FOLDED (2026-07-07)**: a final-gate review
+**Status**: READY — **owner-ratified 2026-07-07** after 7 review passes (grill-me + 4 `plan-review` rounds + external hydrology/ops review + targeted consistency pass + final-gate); decision-complete and staged for WF2 (vision-build), hold-at-PR. Review-trail annotations below are retained for provenance.
+**FINAL-GATE FIXES FOLDED (2026-07-07)**: a final-gate review
 returned NOT-READY (3 blockers + 2 majors — genuine self-contradictions +
 under-specification); all folded here with two owner decisions.
 **Fatal NWP gate RAISES (Prefect FAILED):** `SAPPHIRE_REQUIRE_NWP=1` + NWP-off →
@@ -143,9 +144,9 @@ assumed = the 2-station dev sample); **B3 extended to the model-assignment surfa
 plus minors — DB `server_default="0"` recorded as an open residual (C1c-tracked), M0a
 option-(b) `UPDATE` path guarded/scoped, vestigial `MultiModelForecastResult.priorities`
 flagged, M3 suppression pinned to station-level granularity, `architecture-context.md`
-doc-sync extended to rewrite the numeric-gate mechanism clause to categorical. Still
-DRAFT — re-run `plan-review` to confirm convergence, then phases → READY, then
-`vision-build` (WF2).
+doc-sync extended to rewrite the numeric-gate mechanism clause to categorical. Now
+**READY** (owner-ratified 2026-07-07) — the review passes referenced here all completed
+and folded; next is `vision-build` (WF2).
 Implementation is a **code change** → **hold-at-PR** with a version bump.
 **Priority**: high — the operational forecast feed went **fully dark for ~3 days
 (2026-07-03 → 07-06)** with every flow reporting green.
@@ -1766,15 +1767,15 @@ Plan 100 keeps the minimal write + surface needed to close the incident; the ric
 surfacing / notification dispatch could move to Flow 4. No sub-part is split by this
 edit.
 
-Next: **re-run `plan-review`** to confirm the folded decisions (the categorical
+The folded decisions (the categorical
 `MODEL_TIERS` tier + derived `FALLBACK_MODEL_IDS`, write-time guard, v0-scope §A4
 amendment, A3 post-hoc + `SAPPHIRE_CONFIG` gate, plus the seven external-review
 decisions: `AlertEligibility` routing (climatology + persistence both dropped from the
 forecast-alert set; current-condition via Flow 2), climatology-QA diagnostic, phased
 floor-gate + `no_floor`, first-class `pipeline_health` records + `ForecastCycleHealth`
-outcome, step-0 snapshot, M0a safety envelope, registry tier guard) converge with no new
-blockers/majors → phases → READY → `vision-build`
-(WF2). Implementation touches:
+outcome, step-0 snapshot, M0a safety envelope, registry tier guard) have all converged
+and are folded (owner-ratified **READY** 2026-07-07). Next: **`vision-build` (WF2)**.
+Implementation touches:
 - **`types/ids.py`** — new **explicit `MODEL_TIERS: dict[ModelId, ModelTier]`** and
   **`ALERT_ELIGIBILITIES: dict[ModelId, AlertEligibility]`** maps next to
   `FALLBACK_PRIORITY_THRESHOLD`, enumerating **every known model** (MAJOR-4 — no
