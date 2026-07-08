@@ -181,7 +181,8 @@ include them in the task context packet.
 
 **Downstream consumers to inspect when behavior changes:**
 
-- forecast persistence / API write path
+- forecast persistence / API write path (write-side contracts: see the
+  **Persistence / API write path** map)
 - dashboard or API readers if output schema changes
 - logs / operational observability
 - alerting or quality gates that depend on model success/failure
@@ -301,7 +302,8 @@ Before planning or implementation, inspect the relevant touchpoints below and in
 **Downstream consumers to inspect when behavior changes:**
 
 - forecast persistence (`store_forecast`) and model-state persistence
-  (`store_state`) — inline per-record inside the Phase B / B2 loops
+  (`store_state`) — inline per-record inside the Phase B / B2 loops (write-side
+  contracts: see the **Persistence / API write path** map)
 - alerting (`check_station_alerts`), gated on the
   `AlertEligibility.SKILL_FORECAST` partition
 - `ForecastCycleResult` readers and cycle observability logs
@@ -373,6 +375,91 @@ When this map applies, the context packet should name:
   explicitly unaffected
 - which contracts (status-filter asymmetry, fallback breadth, store-failure
   asymmetry, NWP failure split, alert guard scope, health scope) are at risk
+- which focused tests will prove the change
+
+### Touchpoint map: Persistence / API write path
+
+Use this map when a task touches the store-write layer — how domain objects are persisted or mutated: the `Pg*Store` write methods, transaction / commit scoping, optimistic locking / `ConflictError`, idempotency / `ON CONFLICT`, the JSONB↔domain (de)serialization boundary, PostGIS geometry (de)serialization, `ensure_utc` at the write edge, `StoreError` classification, or the one API mutation endpoint. For *what triggers* a write during a forecast run — cycle phases, where `store_forecast` / `store_state` attach — use the **Forecast cycle / assignment selection** map; for output normalization *before* persistence, use the **ForecastInterface / model execution** map.
+
+**The API is read-mostly.** Every route is `GET` except one write endpoint (`POST /api/v1/alerts/{alert_id}/acknowledge` → `PgAlertStore.acknowledge_alert`). The real write path is **Prefect flows via stores** (ingest, QC, forecast cycle, group forecast, training/skill flows). Route write-behavior questions there, not to the API.
+
+Before planning or implementation, inspect the relevant touchpoints below and include them in the task context packet.
+
+**Common touch triggers:**
+
+- a `Pg*Store` write method (`store_*`, `upsert_*`, `update_*`, `transition_*`, `mark_*`, `append_*`, `delete_*`, `register_model`, `archive`)
+- transaction / commit scoping or connection lifecycle (`get_connection_rw`, `make_pg_stores`, `setup_production_stores`)
+- optimistic locking / version columns / `ConflictError`
+- idempotency: `ON CONFLICT` clauses, natural-key unique constraints, dedup on re-run
+- JSONB column read/write ((de)serialization of `QcFlag`, id arrays, `band_geometries`)
+- PostGIS `geometry` column read/write (`from_shape` / `to_shape`, geoalchemy2 — distinct from the JSONB `band_geometries` on the same `basins` row)
+- `ensure_utc` / `UtcDatetime` normalization at the write edge
+- `StoreError` / exception classification / SQLAlchemy exception surfacing
+- a new store Protocol or a new `Pg*` implementation
+- the API acknowledge endpoint or any newly-added API mutation
+- schema/DDL changes in `metadata.py` that a write path depends on
+- tests exercising store writes, upsert semantics, or the acknowledge route
+
+**Upstream inputs to inspect:**
+
+- who constructs the domain object being written (parse-at-boundary is expected to have already run — most stores do **not** re-validate; `store_raw_observations` is a limited exception that does)
+- the injected `sa.Connection` and its transaction mode (API vs flow path — see contracts)
+- for cycle-driven writes, the caller in the **Forecast cycle** map (Phase B/B2 inline persistence)
+- the relevant table's constraints / indexes in `metadata.py` (unique keys, partial-index predicates, version columns)
+
+**Core implementation touchpoints:**
+
+- store Protocols (`protocols/stores.py`) and their one-to-one `Pg*` implementations under `store/`; every SQL store takes `sa.Connection` by constructor injection and manages no transaction of its own
+- connection factories: `get_connection_rw`, `make_pg_stores`, `setup_production_stores`
+- version-gated mutation: `PgForecastStore.transition_status`
+- upsert / idempotent writers (`store_observations` / `store_raw_observations`, `store_weather_forecasts`, `store_forcing`, `PgAlertStore.upsert_alert`, `store_baselines`, station/group upserts, `register_model`)
+- plain-insert / append-only writers (`store_forecast`, `store_hindcast`, `store_state`, `store_config`, `append_health_record`, `store_basin`)
+- filesystem-plus-DB writers with separate failure domains: `PgModelArtifactStore.store_artifact`, `ZarrNwpGridStore.archive`
+- JSONB (de)serialization helpers (`_serialize_flags` / `_deserialize_flags` and the per-store id-array builders)
+- PostGIS geometry (de)serialization for `basins.geometry` (`from_shape` / `to_shape`)
+- read-side UTC normalization (`utc_from_row` / `utc_or_none` in `store/_helpers.py`)
+- the single API write route (`api_alerts` acknowledge handler) and its error mapping (`errors.py`)
+
+**Downstream consumers to inspect when behavior changes:**
+
+- Prefect flow callers that assume a write is atomic, idempotent, or fail-loud (forecast cycle, ingest, hindcast, training)
+- flow-side readers of already-written rows (`compute_skills`, `services/onboarding`) that consume `hindcast_store` / `observation_store` output — check these, not just write-atomicity callers, when a JSONB shape or table schema changes
+- API / dashboard readers if a written schema or JSONB shape changes
+- the acknowledge route if `AlertStore` write semantics or `Alert` status states change
+- retry / re-run logic in callers that catches on `SapphireError` (raw SQLAlchemy exceptions leak past the store — see contracts)
+- tests / fixtures asserting upsert-vs-duplicate behavior, version conflict, or serialized JSONB shape
+
+**Contracts that must not change silently:**
+
+- **Transaction scope differs by caller and is not symmetric.** API writes run inside `engine.begin()` (one commit/rollback per request); flows run on an AUTOCOMMIT connection, so **each statement commits on its own** and multi-statement writes are **not atomic as a unit** — `store_forecast` (header + values), `store_hindcast`, `store_group` (group + members), and `store_artifact` (filesystem then DB row) can partial-write on a crash. Diff `_db.py` before assuming a change relies on atomicity.
+- **Optimistic locking exists only on `forecasts.version`** (`transition_status`, the sole `ConflictError` caller). `transition_artifact_status` and other status flips have **no CAS guard** — do not assume a `transition_*` name implies conflict detection; diff the specific method.
+- **`store_forecast` is a plain insert against a table carrying a partial unique index** (`uq_forecasts_station_model_issued_param`), with no `ON CONFLICT` and no store-boundary exception translation — a duplicate-cycle re-run raises an **unwrapped SQLAlchemy `IntegrityError`**, not a domain error. Confirm this is intended before assuming a naive retry-on-`SapphireError` caller covers it.
+- **Idempotency is uneven.** Some writers upsert on real natural-key constraints; others (`store_hindcast`, `store_state`) have **no natural-key dedup** and silently duplicate rows on re-run. Verify the target table's constraint in `metadata.py` before assuming a re-run is safe.
+- **No Pg SQL store wraps SQLAlchemy exceptions** — raw `sqlalchemy.exc.*` propagates out of the store layer. `StoreError` is raised by `ZarrNwpGridStore` and by the **caller / service layer** (e.g. group-forecast, hindcast), **not** by the Pg stores, and there is no transient-vs-fatal classification inside them. Any such classification lives in the caller (see the store-failure asymmetry in the **Forecast cycle** map), not here.
+- **`ensure_utc` is applied on read, never re-asserted on write.** Correctness depends on `UtcDatetime` being normalized upstream (parse-at-boundary); there is no defense-in-depth at the write edge. Flag any write path that could receive a non-boundary-constructed datetime.
+- **JSONB (de)serialization is hand-rolled and unguarded on read** (`_deserialize_flags` assumes fixed keys). Changing a JSONB shape is a silent cross-version compatibility hazard for existing rows.
+- **The API acknowledge endpoint has no auth and is not atomic across its two connections** (RO existence/status check, then a separate RW `PgAlertStore` write) — the RESOLVED-guard→update sequence has a narrow race. `acknowledged_by` is a caller-supplied UUID that is **format-validated by the route** (400 on non-UUID) but checked against **no authenticated principal** — any syntactically valid UUID is accepted as the acknowledger.
+- Declared Protocols `ForeignForecastStore`, `RatingCurveStore`, `ForecastAdjustmentStore` have **no `Pg*` implementation** — confirm deferred-vs-missing before depending on them.
+- repo-specific Task Exit Gate still applies before PR approval
+
+**Suggested verification:**
+
+- store unit test for the changed write method: happy-path insert + the re-run case (upsert-dedup vs. duplicate vs. raised driver exception — whichever the table actually guarantees)
+- optimistic-lock regression on `transition_status` (concurrent version mismatch → `ConflictError`) when touching version semantics
+- round-trip test for any changed JSONB shape (serialize → deserialize → domain equality), including a legacy/malformed-row read if shape changed
+- atomicity-intent test or explicit note for any new multi-statement flow-path write
+- acknowledge-route test (400 / 404 / 409 branches) if touching that endpoint or `AlertStore` write behavior
+- forecast-cycle integration test if the write is cycle-driven (cross-reference the **Forecast cycle** map's store-failure regressions)
+- full Task Exit Gate for implementation PRs
+
+**Context packet reminder:**
+
+When this map applies, the context packet should name:
+
+- which touch trigger applies, and whether the write is API-path or flow-path (transaction mode)
+- which upstream constructor is trusted to have parsed/normalized the domain object
+- which downstream consumers (flow callers, flow-side readers, API/dashboard readers, retry logic) are affected or explicitly unaffected
+- which contracts (transaction asymmetry, version-guard scope, idempotency guarantee, exception surfacing, UTC-on-write, JSONB shape) are at risk
 - which focused tests will prove the change
 
 ### Required perspectives
