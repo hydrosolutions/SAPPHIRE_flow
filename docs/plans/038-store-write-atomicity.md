@@ -1,6 +1,6 @@
 # Plan 038 — Store Write Atomicity (AUTOCOMMIT → Transactional Two-Phase Inserts)
 
-**Status**: DRAFT — grill-me COMPLETE (2026-07-08); WF1 plan-review applied (2026-07-08); test-isolation reworked to injectable-transaction DI (2026-07-08); next = owner READY
+**Status**: READY (2026-07-08) — grill-me COMPLETE + **3 WF1 plan-review passes** (design converged: D5 reversed, test-isolation reworked to injectable-transaction DI; the residual test-migration mechanics are WF2's to prove by running the tests, with guidance pinned in Steps 5a/5b). Next = **WF2 (vision-build) → hold-at-PR**.
 **Phase**: Cross-cutting (store layer + flows)
 **Depends on**: Plan 037 (security audit finding H-21)
 
@@ -379,7 +379,13 @@ which independently prevents naive `task.map()` fan-out of store calls
 (confirmed by `docs/standards/orchestration.md`).
 
 **API path**: `api/deps.py`'s `get_stores` depends on `get_connection`
-(`engine.connect()`, default transactional mode, not AUTOCOMMIT). With the default
+(`engine.connect()`, default transactional mode, not AUTOCOMMIT). `api/deps.py`
+(`~:62–65`) constructs all three affected stores (`group_store`,
+`hindcast_store`, `forecast_store`) on that real transactional
+`engine.connect()`-supplied connection; under DI they receive **no**
+`transaction_factory` and therefore use the DEFAULT factory (`conn.engine.begin`) —
+so the production API construction path is unchanged and correct, and **no factory
+injection is needed there**. With the default
 factory the store's `self._begin()` (`conn.engine.begin`) opens a separate pooled
 connection — correct but uses an extra connection unnecessarily in that context. **However, none of
 the three affected store methods (`store_forecast`, `store_hindcast`,
@@ -388,7 +394,9 @@ concern is moot for the current API surface. Moreover, the API's one write
 endpoint (alert acknowledge) obtains a transactional connection via
 `get_connection_rw` (`api/deps.py:26–29`, which calls `engine.begin()` and
 **yields the resulting connection**), then passes that live connection directly to
-`PgAlertStore(conn_rw)` (`api/routes/api_alerts.py:112`), bypassing `get_stores`
+`PgAlertStore(conn_rw)` (`api/routes/api_alerts.py:138` — line 112 is the
+`conn_rw: sa.Connection = Depends(get_connection_rw)` DI parameter, not the store
+construction), bypassing `get_stores`
 entirely. This is **distinct** from the pattern this plan introduces: here the
 store *receives* a connection and opens a *separate* `engine.begin()` transaction
 internally — whereas the alert path's store executes on the caller-supplied
@@ -407,10 +415,14 @@ does not block a future switch to `COPY` — the `engine.begin()` block can host
 a `COPY` command via SQLAlchemy Core `text("COPY …")` or Polars
 `write_database()`. Note: §D2 also mentions asyncpg `copy_to_table()`, which
 uses its own connection pool incompatible with SQLAlchemy Core. The current
-store layer uses synchronous SQLAlchemy (psycopg2), not asyncpg — this is a
-pre-existing driver choice gap unrelated to this plan. If the future COPY
-migration follows the asyncpg path, the `engine.begin()` wrapper would need
-replacement, not just extension.
+store layer uses **synchronous SQLAlchemy with psycopg v3**
+(`psycopg[binary]>=3.3.3`, `pyproject.toml:32`) — **not** psycopg2 and not asyncpg.
+psycopg v3 has native COPY support via `conn.copy()` that runs on the **same**
+synchronous SQLAlchemy connection, so a future server-side-COPY migration
+(psycopg v3 `conn.copy()`, distinct from both psycopg2 and asyncpg APIs) can host
+`COPY` **inside** the `engine.begin()` block without replacing the wrapper. Only if a
+future migration instead chose the asyncpg `copy_to_table()` path (separate pool)
+would the `engine.begin()` wrapper need replacement rather than extension.
 
 ### Read-path resilience (D1)
 
@@ -441,10 +453,13 @@ ensemble = _reconstruct_ensemble(header, rows_for_id, station_id)
 ```
 
 The guard lives in the **caller loop** (not inside `_reconstruct_ensemble`) — the
-simpler shape (see Step 7, review Finding 9). `_reconstruct_ensemble`'s existing
-`if not rows: raise ValueError(...)` stays as a defence-in-depth backstop that the
-caller guard prevents from ever firing on an orphan. The valid headers in the same
-fetch still return.
+simpler shape (see Step 7, review Finding 9) — inserted between
+`rows_for_id = values_by_id.get(fid, [])` and the `_reconstruct_ensemble(...)` call
+(`hindcast_store.py:124–125` in `fetch_hindcasts`, `:185–186` in
+`fetch_hindcasts_by_station`). `_reconstruct_ensemble`'s existing
+`if not rows: raise ValueError(...)` (`hindcast_store.py:224`) stays as a
+defence-in-depth backstop that the caller guard prevents from ever firing on an
+orphan. The valid headers in the same fetch still return.
 
 **Scope**: D1's code change is limited to the **hindcast read path** — and to
 **both** of its `_reconstruct_ensemble` callers (`fetch_hindcasts:~125`,
@@ -525,7 +540,11 @@ construction, the `if rows:` / `if group.station_ids:` conditionals, and the
 per-method dialect usage (`sa.insert` for `store_forecast`; `pg_insert`
 *without* an `ON CONFLICT` clause for the `store_hindcast` header; `pg_insert`
 **with** `on_conflict_do_update` / `on_conflict_do_nothing` for `store_group`,
-preserved verbatim).
+preserved verbatim). For `store_hindcast` specifically, keep
+`pg_insert(hindcast_forecasts).values(...)` **verbatim** (no ON CONFLICT clause;
+there is no unique constraint to target — see Plan 040); only switch the connection
+object from `self._conn.execute(...)` to `txn.execute(...)`. Do **not** simplify it
+to `sa.insert` in this plan (defer any such cleanup to a future pass).
 
 **Do NOT catch or wrap exceptions (D5 reversed).** Let any SQLAlchemy exception
 propagate raw out of the `with` block — this matches every other SQL-backed
@@ -570,6 +589,21 @@ and avoid materialising the full child-table set:
 - `DELETE FROM forecasts f WHERE NOT EXISTS (SELECT 1 FROM forecast_values fv WHERE fv.forecast_id = f.id)`
 - `DELETE FROM hindcast_forecasts hf WHERE NOT EXISTS (SELECT 1 FROM hindcast_values hv WHERE hv.hindcast_forecast_id = hf.id)`
 
+**Pre-migration dry-run counts (blast radius) — run and log before the
+backup+migration.** Before taking the backup and running the destructive DELETEs,
+run the analogous `count(*)` dry-run for each of the two tables the migration
+actually DELETEs, so the operator sees exactly how many rows will be removed
+(mirroring the manual `station_groups` dry-run below):
+```sql
+SELECT count(*) FROM forecasts f
+WHERE NOT EXISTS (SELECT 1 FROM forecast_values fv WHERE fv.forecast_id = f.id);
+
+SELECT count(*) FROM hindcast_forecasts hf
+WHERE NOT EXISTS (SELECT 1 FROM hindcast_values hv WHERE hv.hindcast_forecast_id = hf.id);
+```
+Record (log) both counts before proceeding — they are the pre-DELETE blast radius
+for the two in-migration tables and should be captured for the deploy record.
+
 **Station groups — excluded from migration**: Empty station groups may be
 intentional (created between `store_group(empty)` and `add_station_to_group()`).
 The `station_groups` cleanup is **not** included in the Alembic migration.
@@ -586,16 +620,75 @@ If the results confirm all empty groups are orphans (not intentionally empty),
 a follow-up migration or manual DELETE can be issued. Do not gate conditional
 logic inside an Alembic migration — it either runs or it does not.
 
+**`downgrade()` — irreversible no-op (mandatory).** This is a data-DELETE
+migration; deleted rows cannot be restored, so `downgrade()` cannot undo it. Every
+migration in this repo defines a `downgrade()` (e.g.
+`alembic/versions/0027_station_water_level_datum.py:31`), so it must be present —
+but as an explicit no-op with a comment, **not** omitted (an omitted/`raise`-ing
+downgrade would error on `alembic downgrade`):
+
+```python
+def downgrade() -> None:
+    # Irreversible data delete — orphan rows cannot be reconstructed.
+    # Recovery is via DB restore + previous image tag (see docs/standards/cicd.md),
+    # not via Alembic downgrade.
+    pass
+```
+
 ### Step 5 — Tests
 
 #### 5a — Test isolation via injected SAVEPOINT transaction factory (MUST be done first)
 
 **File**: the existing store test files (`tests/integration/store/test_forecast_store.py`,
 `test_hindcast_store.py`, `test_station_group_store.py`, `test_forecast_summary.py`,
-and `tests/integration/test_model_onboarding_integration.py`). **No new conftest, no
-committed session seeds, no autouse truncation, no `pytest_plugins` cross-directory
-registration, and no migration of existing `_seed_*` calls** — the DI approach makes
-all of that unnecessary (see the D3/D5b SUPERSEDED entries).
+`tests/integration/test_model_onboarding_integration.py`, **and
+`tests/integration/test_e2e_pipeline.py`** — see the e2e sub-section below). **No new
+conftest, no committed session seeds, no autouse truncation, no `pytest_plugins`
+cross-directory registration, and no migration of existing `_seed_*` FK-parent
+calls** — the DI approach makes all of that unnecessary (see the D3/D5b SUPERSEDED
+entries).
+
+**CRITICAL — scope of "affected test" (Reviewer blocker). Apply as a
+grep-mechanical rule, not by chasing exact per-file site counts.** "No migration of
+existing `_seed_*` calls" means only that FK-parent **seeding** is unchanged. It does
+**NOT** mean existing tests need no edits. The rule:
+
+> **Every existing test that constructs one of the three stores AND calls
+> `store_forecast` / `store_hindcast` / `store_group` must inject the savepoint
+> `transaction_factory`** (otherwise the default `conn.engine.begin` factory commits
+> on a separate connection and leaks across the session-scoped container). Find the
+> sites with:
+> ```bash
+> grep -n 'store_forecast\|store_hindcast\|store_group\b' tests/
+> ```
+> Single-statement write methods (`store_group_model_assignment`,
+> `add_station_to_group`, etc.) write directly via `self._conn` and do **NOT** need
+> the factory.
+
+If a store is constructed *without* the savepoint factory and a write method is called,
+the default factory (`conn.engine.begin`) opens a **separate pooled connection** that
+**commits outside the per-test rollback scope** — the committed write is never rolled
+back at teardown and **contaminates every subsequent test in the session**. This is
+the whole reason the DI param exists on the test side. A test that only constructs a
+store to call `fetch_*` (a pure read) does **not** need the factory — the default is
+harmless when no write runs. **But a test that calls a write method only to SEED
+data** (even if it then tests a read/summary) DOES need the factory for that seeding
+write.
+
+**Affected files (informative pointer — verify by grep; counts may drift):**
+
+| File | Store(s) |
+|------|----------|
+| `tests/integration/store/test_forecast_store.py` | `PgForecastStore` |
+| `tests/integration/store/test_hindcast_store.py` | `PgHindcastStore` |
+| `tests/integration/store/test_station_group_store.py` | `PgStationGroupStore` |
+| `tests/integration/store/test_forecast_summary.py` | `PgForecastStore` |
+| `tests/integration/test_model_onboarding_integration.py` | `PgStationGroupStore` |
+| `tests/integration/test_e2e_pipeline.py` | `PgHindcastStore`, `PgStationGroupStore` (see e2e note) |
+
+The list is a starting pointer, not an inventory. The RULE above is authoritative:
+**any test that constructs one of the three stores and calls a write method — for the
+subject under test OR merely to seed — gets the savepoint factory.**
 
 **The problem the DI approach solves.** With the default factory, the two-phase write
 would run on a *separate* pooled `engine.begin()` connection that commits outside the
@@ -658,6 +751,43 @@ readable. This is a plain helper, **not** an autouse fixture, so it never forces
 `db_engine` container onto unrelated `tests/integration/` tests (the placement problem
 the old design fought is gone).
 
+**e2e tests use a different transaction shape — bind the savepoint to `conn`, not
+`db_connection`.** `tests/integration/test_e2e_pipeline.py` does **not** use the per-test
+`db_connection` rollback fixture. It opens its own `with engine.begin() as conn:` blocks
+and seeds FK parents (stations, models, `model_artifacts`) on `conn` **uncommitted**,
+then constructs and uses the stores on that same `conn`. Concretely, the step-1
+onboarding block (`tests/integration/test_e2e_pipeline.py:187–225`) builds
+`PgStationGroupStore(conn)` (`:196`) and `PgHindcastStore(conn)` (`:197`) and passes them
+into `_run_onboarding`, which drives `store_hindcast`/`store_group` indirectly
+(`_run_onboarding` → `onboard_model` → `_run_hindcast` → `run_station_hindcast` →
+`hindcast_store.store_hindcast(...)`). `hindcast_forecasts` has FK constraints on
+`stations.id`, `models.id`, and `model_artifacts.id` (`db/metadata.py:722–729`).
+
+After this plan's change, if these stores use the **default** factory, `store_hindcast`
+opens a **separate** `conn.engine.begin()` connection at READ COMMITTED that **cannot
+see** the uncommitted FK parents on `conn` → `IntegrityError` (FK violation). The e2e
+test would break on the very first `store_hindcast` inside any `engine.begin` block that
+also seeds FK parents. **Fix**: in every e2e `engine.begin` block that constructs a
+write-path store, inject a savepoint factory **bound to that block's `conn`** (which is
+transactional, so `begin_nested()` is legal):
+
+```python
+with engine.begin() as conn:
+    ...
+    hindcast_store = PgHindcastStore(
+        conn, transaction_factory=lambda: savepoint_txn(conn)
+    )
+    group_store = PgStationGroupStore(
+        conn, transaction_factory=lambda: savepoint_txn(conn)
+    )
+```
+
+This keeps the two-phase write on the **same** `conn` (FK parents visible; write is a
+nested savepoint inside the block's transaction, released on success). Make
+`savepoint_txn` importable from a shared store-test helper so the e2e file can reuse it.
+Apply the same treatment to the other e2e `engine.begin` blocks that construct
+`PgHindcastStore` (`:348`, `:391`, `:426`) if a write method is invoked in them.
+
 **Isolation-holds test.** Add an explicit test proving isolation actually holds. Write
 via an affected store method constructed with the savepoint factory (e.g.
 `store_forecast` / `store_hindcast` / `store_group`), then confirm the row is **absent**
@@ -678,40 +808,93 @@ and the whole write rolls back with the test. No committed session seeds are
 required.
 
 1. **Atomicity rollback test** (one per store): Construct the store with the
-   savepoint factory, then force the *second* `execute` inside the two-phase write
-   (the values insert) to raise `sqlalchemy.exc.OperationalError`. The write runs on
-   the connection yielded by `with self._begin() as txn:` — which, with the injected
-   savepoint factory, **is** the test's `db_connection`. So the test can monkeypatch
-   `db_connection.execute` (or wrap it) to raise on its second call within the store
-   method. Sketch:
+   savepoint factory, then force the values insert (the *second* store-issued write)
+   to fail while the header has **already been written**, and assert the header is
+   rolled back. **Do NOT use a naive `execute`-call counter** — it targets the wrong
+   statement and produces a false-positive (Reviewer Finding 1, verified below).
+
+   **Why a monkeypatch counter is WRONG here.** With the injected savepoint factory,
+   `with self._begin() as txn:` calls `db_connection.begin_nested()`, whose
+   `NestedTransaction.__init__` calls `connection._savepoint_impl()` →
+   `do_savepoint()` → `connection.execute(SavepointClause(...))`
+   (verified: `.venv/lib/python3.12/site-packages/sqlalchemy/engine/default.py:767–768`
+   `def do_savepoint(self, connection, name): connection.execute(expression.SavepointClause(name))`,
+   entered from `NestedTransaction.__init__` at `engine/base.py:2810`
+   `self._savepoint = self.connection._savepoint_impl()`). So the `execute` call
+   sequence on `db_connection` inside the store method is: **#1 = `SAVEPOINT`**
+   (emitted by `begin_nested()`), **#2 = the header INSERT**, **#3 = the values
+   INSERT**. A counter that fires on `calls["n"] == 2` therefore intercepts the
+   **header** insert, not the values insert — the header is never written, so
+   "assert header absent" passes trivially without proving orphan rollback. The
+   real orphan scenario (header written → values insert fails → savepoint rolls the
+   header back) is never exercised, and a broken atomicity fix would still pass.
+
+   **Correct approach — per store.** The technique differs by store because the
+   value-row IDs for `store_forecast` / `store_hindcast` are generated by a **bare
+   `uuid4()` inside the store** (`_build_value_rows` at `forecast_store.py:~249`;
+   the row-dict comprehension at `hindcast_store.py:~62`), so they are **not
+   injectable** and a test cannot pre-seed a colliding PK without mocking `uuid4`.
+   **Explicitly DROP the "pre-seed a colliding UUID PK" framing for
+   `store_forecast` / `store_hindcast`** — it is impractical for those two. Use a
+   statement-type-filter monkeypatch for them, and an FK violation for
+   `store_group`:
+
+   - **`store_forecast` and `store_hindcast`** — **statement-type-filter
+     monkeypatch on the write connection**. Wrap the connection's `execute` so it
+     raises `sqlalchemy.exc.IntegrityError` (or `OperationalError`) **only** when the
+     executed statement is an INSERT into the *values* table — `forecast_values` for
+     `store_forecast`, `hindcast_values` for `store_hindcast`. This makes the
+     SECOND (values) insert fail while the header INSERT has already succeeded, so the
+     `SAVEPOINT` rolls the header back — leaving the header absent. Filter by statement
+     **shape**, not call count (the savepoint statement offsets any counter — see the
+     WRONG note above). For example:
+
+     ```python
+     import sqlalchemy as sa
+
+     def _fail_on_values_insert(stmt, *a, **k):
+         if isinstance(stmt, sa.sql.dml.Insert) and getattr(stmt.table, "name", "") == "forecast_values":
+             raise sa.exc.IntegrityError("forced values-insert failure", None, Exception())
+         return _real_execute(stmt, *a, **k)
+     ```
+
+     (use `"hindcast_values"` for the `store_hindcast` test). Assert the raw
+     SQLAlchemy exception propagates (**not** `StoreError` — D5 reversed) and the
+     header row is **absent** within the test transaction.
+
+   - **`store_group`** — simplest is a real **FK violation** on the members insert:
+     pass a member whose `station_id` does **not** exist in `stations`, so the header
+     UPSERT succeeds and the members INSERT raises `sqlalchemy.exc.IntegrityError`.
+     (The members insert uses `on_conflict_do_nothing`, so a *duplicate* member does
+     not raise — the non-existent FK is what forces the failure.) The group **must be
+     non-empty** (see the non-empty caveat in the general note below) or the second
+     execute is skipped entirely. Assert the group header is **absent** after the
+     savepoint rollback.
+
+   Sketch (`store_forecast`, statement-type-filter form):
 
    ```python
-   calls = {"n": 0}
-   real_execute = db_connection.execute
-
-   def exec_side_effect(*args, **kwargs):
-       calls["n"] += 1
-       if calls["n"] == 2:            # values insert
-           raise sqlalchemy.exc.OperationalError("boom", None, None)
-       return real_execute(*args, **kwargs)
-
-   monkeypatch.setattr(db_connection, "execute", exec_side_effect)
    store = PgForecastStore(
        db_connection,
        transaction_factory=lambda: savepoint_txn(db_connection),
    )
-   with pytest.raises(sqlalchemy.exc.OperationalError):
+   # monkeypatch the write connection so the forecast_values INSERT fails
+   #   (header INSERT succeeds first → savepoint rolls it back).
+   with pytest.raises(sqlalchemy.exc.IntegrityError):
        store.store_forecast(fc)
+   # assert the header was rolled back with the values insert:
+   header = db_connection.execute(
+       sa.select(forecasts.c.id).where(forecasts.c.id == fc.id)
+   ).first()
+   assert header is None
    ```
 
-   (Count only the two writes inside the store method; if the test's own setup runs
-   executes on `db_connection` first, install the side-effect immediately before the
-   store call, or count from the header insert.) Assert that (a) the raw SQLAlchemy
-   exception propagates (it is **not** wrapped in `StoreError` — D5 reversed) and
-   (b) the header row is **absent** — the `SAVEPOINT` rolled the whole two-phase
-   write back. Read the absence back on `db_connection` itself: because the write
-   was nested in `db_connection`'s transaction and the savepoint rolled it back, the
-   header is gone from `db_connection`'s view (and never committed anywhere).
+   Assert that (a) the raw SQLAlchemy exception propagates (it is **not** wrapped in
+   `StoreError` — D5 reversed) and (b) the header row is **absent** — the `SAVEPOINT`
+   rolled the whole two-phase write back *after* the header was written. Read the
+   absence back on `db_connection` itself: because the write was nested in
+   `db_connection`'s transaction and the savepoint rolled it back to before the header,
+   the header is gone from `db_connection`'s view (and never committed anywhere).
 2. **Atomicity success test** (one per store): Construct the store with the
    savepoint factory, call the method, and assert both the header and the values are
    visible **within the test transaction** — read them back via `db_connection`
@@ -725,6 +908,15 @@ required.
    confirms production callers get the `engine.begin` behavior unchanged. (The old
    `conn.engine is db_engine` smoke test, which assumed the committed-connection
    design, is dropped.)
+
+**MANDATORY caveat — `store_group` rollback/success tests must use a NON-EMPTY
+group.** `store_group` only issues the members insert when `group.station_ids` is
+truthy: `if group.station_ids: ... execute(...)` (`station_group_store.py:39`). A test
+that constructs a group with `station_ids=frozenset()` skips the second execute
+entirely — the two-phase path is never exercised, so neither the atomicity rollback
+test (there is no failing second insert) nor the success test (there is nothing to
+insert) verifies anything. **Both `store_group` tests MUST use at least one
+`station_id`** in `station_ids`, seeded as an FK parent in `stations`.
 
 ### Step 6 — Update docs
 
@@ -767,14 +959,19 @@ if not rows_for_id:
 
 **PINNED to the caller-guard shape (review Finding 9).** Add the
 `if not rows_for_id: log.warning(...); continue` guard directly in the loop body of
-**both** `fetch_hindcasts` (the loop after `value_rows` at
-`hindcast_store.py:~114`) and `fetch_hindcasts_by_station` (the loop after
-`value_rows` at `~:175`), before the `_reconstruct_ensemble` call. This is
-strictly simpler than the alternative of returning a sentinel from
-`_reconstruct_ensemble` (which would force every caller to check the sentinel).
+**both** methods — **immediately after `rows_for_id = values_by_id.get(fid, [])`
+and immediately before the `_reconstruct_ensemble(...)` call**, which are the two
+consecutive lines in each loop. Insertion points:
+`fetch_hindcasts` at `hindcast_store.py:124–125` and
+`fetch_hindcasts_by_station` at `hindcast_store.py:185–186`. (The bulk
+`value_rows = self._conn.execute(vq)...` fetch lines — `:114` and `:175` — are
+**not** the insertion point; the guard goes inside the per-header loop, not at the
+bulk fetch.) This is strictly simpler than the alternative of returning a sentinel
+from `_reconstruct_ensemble` (which would force every caller to check the sentinel).
 Leave `_reconstruct_ensemble`'s existing `if not rows: raise ValueError(...)` guard
-(`hindcast_store.py:214`+) in place as a **defence-in-depth backstop** — the caller
-guard means it is never reached for an orphan, but it stays as a hard invariant.
+(`hindcast_store.py:224`, inside the function defined at `:214`) in place as a
+**defence-in-depth backstop** — the caller guard means it is never reached for an
+orphan, but it stays as a hard invariant.
 Reuse the module-level `log = structlog.get_logger(__name__)` added in Step 3.
 
 **Note (review Finding 9):** `station_id` is a direct method parameter in *both*
