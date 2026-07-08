@@ -1,7 +1,11 @@
 ---
-status: READY
+status: DRAFT
 created: 2026-03-30
-updated: 2026-04-02
+updated: 2026-07-08
+# NOTE: only the v0 GaugingStatus enum slice shipped (1a88f92). The v1 flow logic
+# (calculated_station_formulas, COMPONENT_DERIVED, Flow 2/5 branching, QC propagation)
+# is undesigned — needs grill-me + WF1 re-draft before WF2. Reverted READY→DRAFT per
+# Plan 106 §4 (v1 critical-path roadmap). Must merge before Plan 017 starts.
 scope: design — virtual station types, calculated station formulas, flow impacts, QC propagation
 depends_on: [014, 013]  # both DONE/archived; target: v1 (types and schema land in v0)
 ---

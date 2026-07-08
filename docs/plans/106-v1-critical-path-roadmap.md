@@ -26,14 +26,19 @@ this document is derived from them.
 | D2 | **RivRetrieve / other-public-data = optional stress-test, NOT a gated wave.** Build the DHM-shaped subsystems (obs adapter, unit normalization, rating curves) against fakes + unit tests; probe with RivRetrieve foreign gauges opportunistically. **DHM is the first real integration.** | Keeps WIP down; no plan/wave hangs off a foreign-data milestone. |
 | D3 | **Wave 0 = lean "stabilize the base" gate.** Reliability fixes that kill the Swiss feed (105 disk hygiene, 090 horizon coverage) land first; observability (097, 103) runs in parallel, non-gating. | We develop against the live mac-mini; a flaky base costs debugging time. Silent feed kills occurred 2026-07-03/06. |
 | D4 | **Auth/RBAC/audit + tenant WRITE-isolation are designable now.** The topology model (shared on-prem prod, cloud→staging, station-group-scoped ownership, authn+audit mandatory, no gateway read-isolation) is firm enough to design against. **BLOCKED:** physical hosting location → off-site backup target + network/access + who-admins. | Per `project_nepal_v1_collaborator_requirements`. The *mechanism* is decided; only the deployment's physical home and role/ownership *values* are collaborator input. |
-| D5 | **First NEW v1 plans to draft (post-Wave-0):** (1) **081** recap forcing adapter, (2) a **new DHM-observation + water_level-unit-normalization** plan, (3) a **new auth/RBAC/audit + tenant-write-isolation** plan. The READY plans **015** (virtual stations) and **035** (rating-curve provenance) go **straight to implement** (no re-draft). | These three are independent, fully designable-now tracks that parallelize; they converge only at Flow 0 Nepal onboarding and at live DHM integration. |
+| D5 | **First NEW v1 plans to draft (post-Wave-0):** (1) **081** recap forcing adapter, (2) a **new DHM-observation + water_level-unit-normalization** plan, (3) a **new auth/RBAC/audit + tenant-write-isolation** plan. **035** (rating-curve provenance, genuinely `READY`) goes **straight to implement** (no re-draft). **015** is NOT straight-to-implement: only its v0 `GaugingStatus` enum slice shipped (`1a88f92`); the v1 flow logic (`calculated_station_formulas` table, `COMPONENT_DERIVED` enum value, Flow 2 tiered derivation, Flow 5 branching, QC propagation) is undesigned — so 015 needs a **grill-me + WF1 re-draft before WF2** (README moved it READY→DRAFT in `2795c87`). | These are independent, designable-now tracks that parallelize; they converge only at Flow 0 Nepal onboarding and at live DHM integration. |
 | D6 | **v1.0 is HEADLESS.** Flow 3 (review/publish/adjust), the dashboard, Excel bulletin, and the Bikram Sambat calendar are **deferred to v1.x**. v1.0 = gateway forcing → DHM obs → forecast → REST API → webhook alerts; DHM consumes via the API and runs its own review/alerting in-house. | Per `project_nepal_alerting_scope` (DHM may handle alerting in-house; dashboard targets v2). Shrinks the Oct-2026 critical path to the data+model+deploy spine. |
 
 **Corollaries baked in (not re-litigated):**
 - **No elevation-band / gridded-NWP extraction for Nepal.** Forcing arrives as basin/band **time-series** from the Data-Gateway API (`recap-dg-client`). ICON-mesh extraction (Plan 087) is Swiss/v0-only.
 - **ERA5-Land is NOT a separate CDS adapter.** It is the gateway `era5_land_reanalysis` endpoint, covered by 081/082. README gap #4 is **subsumed**, not a standalone build.
 - **IFS ensemble = 1 `fc`(HRES, member_id=0) + 50 `pf` = 51 members** (ECMWF discontinued `cf`; resolved, no gateway ask). Per `project_recap_ifs_fc_hres_member0`.
-- **recap-dg-client distribution mirrors FI:** git-pin + scoped CI wheel-guard exception now → private-index wheel later (it is a **private** repo → CI/Docker need clone auth). Folds into 081/082/080.
+- **recap-dg-client distribution mirrors FI — but is a PRIVATE repo, so the git-pin is NOT a drop-in copy of the FI exception.** `forecastinterface` is **public** (HTTPS clone, no auth — `ci.yml:98-102`); recap-dg-client needs authenticated clone. Adding it as a git-pin has **four concrete CI/Docker entry-gates** (make these explicit in-scope items for Plan 081's grill-me, else the first WF2 run fails CI):
+  1. a **CI secret** — SSH deploy key or fine-grained PAT scoped to the recap-dg-client repo;
+  2. **SSH-URL (or token-injected) form** for the pin in `pyproject.toml`;
+  3. a **second two-step wheel-guard block** in `ci.yml` mirroring `ci.yml:98-102` — step 1 adds `--no-install-package recap-dg-client` under the `--no-build` guard, step 2 adds `--reinstall-package recap-dg-client`;
+  4. a **Dockerfile BUILDER change** if the build runner lacks the key/agent (git is already present from the FI work; the new need is auth, not the git binary).
+  These are hard entry-gates for **Plan 082** (the first CI-touching build), **not Plan 081**. Plan 081 stays **offline** (injected fakes only) and explicitly **does not** add recap-dg-client to `pyproject.toml` (`081:65-67`); the git-pin lands in 082 where live smoke needs it (`081:128`). The four gates fold into 082 (with 080 for the eventual wheel migration) for tracking — call them out in Plan 081's grill-me only so the **082** design already carries them, not so 081 blocks on CI.
 
 ---
 
@@ -45,7 +50,7 @@ Wave 1  Nepal forcing spine                     [designable now; live smoke bloc
 Wave 2  Nepal observation & rating-curve path   [mechanism designable now; DHM specifics blocked]
 Wave 3  Multi-tenant, auth & deployment hardening [auth designable now; host/off-site blocked]
 ─────── DHM ACCESS LANDS ───────                [gate: real DHM creds + data + shapefiles arrive]
-Wave 4  Nepal integration + go-live             [blocked until access; = adapter-swap + config]
+Wave 4  Nepal integration + go-live             [blocked until access; adapter-swap + config PLUS a Nepal model-training + onboarding run (Flow 6 + Flow 12-B) against the real DHM archive — trained artifacts + model assignments are a hard go-live prerequisite]
 Wave 5  v1.x deferred (post-v1.0)               [forecaster-facing + niceties]
 ```
 
@@ -58,11 +63,13 @@ points: **Flow 0 Nepal onboarding** (needs forcing + obs + auth all present) and
 ### Hard-prerequisite chains (these ARE serial)
 
 ```
+038 (store write atomicity) ──► 040 (hindcast dedup)   [Wave 0; 040 depends_on 038 — 040 line 5; 040 must not land before 038]
 FI published to private index ─────────────► 080 (drop git-pin + CI wheel-guard exception)
 081 (offline adapter) ──► 082 (live smoke/coverage) ──► 047 (Nepal data-sources umbrella)
 035 (provenance, READY) ──► rating-curve h→Q ingestion ──► Stage 2 QC (2.5–2.7)
 water_level unit normalization ──► removes the Plan 101 cm-onboarding guard
-046 (staging validation, IN_PROGRESS) ──► 048 (restic + restore rehearsal) ──► 049 (Cloudflare public URL)
+046 (staging validation, IN_PROGRESS) ──► 048 (restic + restore rehearsal)   [048/049 are PARALLEL, both downstream of 046; NO 048→049 edge]
+046 (staging validation, IN_PROGRESS) ──► 049 (Cloudflare public URL + SSO)  [049 depends_on 046 only — 049 line 5; 048 depends_on 046 only — 048 line 5]
 auth/RBAC foundation ──► tenant write-isolation ──► Flow 0 Nepal onboarding (owner-scoped)
 DHM obs adapter + unit-norm ──► Nepal obs ingest ──► rating-curve derivation (Stage 2 needs h→Q)
 ```
@@ -71,12 +78,21 @@ DHM obs adapter + unit-norm ──► Nepal obs ingest ──► rating-curve de
 
 - **Wave 0** gates only platform stability; its observability items (097, 103) run alongside its reliability items (105, 090).
 - **Forcing (Wave 1)**, **Obs/rating (Wave 2)**, and **Auth (Wave 3)** are mutually independent — draft/build concurrently to the extent review bandwidth allows.
-- **015** and **035** (both READY) can be implemented at any time in parallel with drafting the Wave-1/2/3 leads.
+- **035** (genuinely READY) can be implemented at any time in parallel with drafting the Wave-1/2/3 leads. **015** is NOT ready-to-build (only its enum slice shipped) — it needs a grill-me + WF1 re-draft first, and it **must merge before 017**. The 017→015 edge is a **behavioral** dependency, not a type one: `GaugingStatus.CALCULATED`/`GAUGED` already exist in the codebase (`src/sapphire_flow/types/enums.py:184-186`, shipped in `1a88f92`). 017 branches on plan-015's **undesigned v1 flow logic** — 015 D6 (CALCULATED stations exempt from rule-based QC — `017:49-58`) and the 015 Flow 4 component-station-freshness contract (`017:53-56`). The type is shipped; the design contract is not.
 - Live-dependent tails — **082** live smoke, **Flow 0** Nepal specifics, **048** off-site — block on external answers and are pulled forward only as those answers arrive.
 
 ---
 
-## 2. Every remaining piece — classification table
+## 2. Remaining category-B / gap pieces + prod-gating correctness fixes — classification table
+
+> **Scope of this table:** the category-**B** v1 plans (per `docs/plans/README.md` §Active — "v1 Nepal feature (B)", line 50) plus the
+> **gap** items with no plan yet, **plus** the two correctness-bug category-A plans
+> that gate any prod deploy (**038** store-write atomicity, **040** hindcast dedup —
+> both Swiss-testable NOW). It is **not** a mirror of the full category-A operational
+> backlog: the other active category-A plans (**094, 075, 064, 069, 058, 083, 091**
+> in `docs/plans/README.md:24-48`) are ordinary Swiss-side hardening tracked in the
+> README and are **not** re-sequenced here — they run on the mac-mini dev track
+> independently of the Nepal wave sequence.
 
 **Legend — Class:** `NOW` = designable & buildable now (against Swiss data / fakes /
 RivRetrieve); `NOW*` = *mechanism* designable now, DHM/collaborator *values* wire in as
@@ -85,12 +101,14 @@ config later; `BLOCKED` = core design needs an external answer first (see §3).
 | Item | Plan | Status | Class | Depends on | Wave |
 |------|------|--------|-------|------------|------|
 | Disk hygiene / NWP scratch cleanup | **105** | DRAFT (grill-me done) | NOW | — | 0 |
-| NWP incomplete-cycle / horizon coverage (P2) | **090** | P1 shipped; P2 pending | NOW | — | 0 |
-| Prefect worker observability & home | **103** | DRAFT (grill-me done) | NOW | supersedes 062 | 0 (parallel) |
-| Short-lookback observability | **097** | DRAFT (grill-me done) | NOW | 093 (done) | 0 (parallel) |
+| NWP incomplete-cycle / horizon coverage (P2) | **090** | READY (P1 DONE — PR #49; P2 pending, OPTIONAL) | NOW | — | 0 (parallel, NON-gating) |
+| Store write atomicity (two-phase insert crash → orphan header) | **038** | DRAFT | NOW | — | 0 |
+| Hindcast deduplication unique constraint | **040** | DRAFT | NOW | **038** (`040:5` — queue behind 038 within Wave 0) | 0 |
+| Prefect worker observability & home | **103** | DRAFT (grill-me PENDING — D2 mechanism + D3 level-split unresolved) | NOW | supersedes 062 | 0 (parallel) |
+| Short-lookback observability | **097** | DRAFT (grill-me done) | NOW | 093 (done — archived at `docs/plans/archive/093-*.md`, shipped #53) | 0 (parallel) |
 | recap-dg-client forcing adapter (offline) | **081** | DRAFT | NOW | — | 1 |
 | recap Gateway operational + training readiness (live) | **082** | DRAFT | BLOCKED | 081; gateway creds/coverage | 1 |
-| Nepal data-sources umbrella (IFS/DHM/ERA5-Land) | **047** | DRAFT (stub) | NOW* | 081/082; DHM+geometry | 1 |
+| Nepal data-sources umbrella (IFS/DHM/ERA5-Land) | **047** | DRAFT (stub — **scope STALE, must be revised before READY**, see §4 action) | NOW* | 081/082; DHM+geometry | 1 |
 | ERA5-Land reanalysis source | — | *subsumed by 081/082* | NOW | 081 | 1 |
 | FI wheel distribution + drop CI exception | **080** | DRAFT (low-pri) | BLOCKED | FI wheel on private index | 1 (tail) |
 | recap-dg-client private wheel + drop CI exception | — | (folds into 081/082/080) | BLOCKED | recap wheel on private index | 1 (tail) |
@@ -99,8 +117,8 @@ config later; `BLOCKED` = core design needs an external answer first (see §3).
 | Rating-curve provenance | **035** | READY → implement | NOW | — | 2 |
 | Rating-curve h→Q ingestion + reprocessing (Flow 12-A / Flow 5) | *to-draft* | gap | BLOCKED | 035; DHM hQ table + correction-param semantics | 2 |
 | Stage 2 QC (2.5–2.7, conversion validation) | *to-draft* | gap | NOW* | h→Q ingestion | 2 |
-| Virtual / calculated station support | **015** | READY → implement | NOW | — | 2 |
-| Manual vs automatic station support | **017** | DRAFT | NOW | 015 (orthogonal) | 2 |
+| Virtual / calculated station support | **015** | DRAFT (enum slice shipped `1a88f92`; v1 flow logic undesigned) | NOW | — | 2 |
+| Manual vs automatic station support | **017** | DRAFT | NOW | 015 (behavioral dep — 015 D6 QC-exemption + Flow 4 component-freshness contract, `017:49-58`; enum already shipped `1a88f92`; 015 must merge first) | 2 |
 | **Auth / RBAC / audit** foundation | *to-draft (D5-3)* | gap (042 deferral insufficient) | NOW* | HSOL role/ownership values | 3 |
 | **Multi-tenant WRITE-isolation** (station-group-scoped promotion/onboarding) | *to-draft (D5-3, same plan)* | gap | NOW* | auth foundation | 3 |
 | API key auth + client SDK | **042** | DEFERRED | NOW | folds under auth foundation | 3 |
@@ -109,7 +127,8 @@ config later; `BLOCKED` = core design needs an external answer first (see §3).
 | restic encrypted backup + monthly restore rehearsal | **048** | DRAFT (stub) | BLOCKED | 046; hosting location + off-site target + key mgmt | 3 |
 | Cloudflare public URL + SSO | **049** | DRAFT | NOW* | 046; hosting decision | 3 |
 | Flow 4 pipeline monitoring (full build) | *to-draft* | gap (039 folds in) | NOW | Swiss-testable | 3 |
-| **DHM live integration + go-live** | *config/wiring* | gate | BLOCKED | ALL of §3 DHM answers | 4 |
+| **Nepal model training + onboarding** (Flow 6 + Flow 12-B) | *to-draft* | gap | BLOCKED | DHM historical obs archive (§3-4) + gateway forcing coverage (§3-11) + hQ/Snowmapper confirms (§3-3, §3-12) | 4 |
+| **DHM live integration + go-live** | *config/wiring* | gate | BLOCKED | ALL of §3 DHM answers **+** trained Nepal artifacts + model assignments (row above) | 4 |
 | Flow 3 review/publish/adjust | — | v1.x | — | headless v1.0 (D6) | 5 |
 | Dashboard (099 P2, 102, 104 + full) | 099/102/104 | mixed | — | v1.x (D6) | 5 |
 | Excel bulletin generation | — | v1.x | — | DHM bulletin template | 5 |
@@ -152,17 +171,26 @@ one of these.
 ## 4. Draft these plans next (immediate critical path)
 
 **Wave 0 (first — small, stabilizes the base):**
-- **A.** Grill-me + finalize **090** P2 (horizon coverage) and **105** (disk hygiene) → WF1 → WF2. *(Reliability gate.)*
-- **B.** In parallel, non-gating: **097** and **103** → WF1 → WF2. *(Observability.)*
+- **A. Reliability gate:** **105** (disk hygiene, grill-me done) → WF1 → WF2, plus the two Swiss-testable correctness bugs **038** (two-phase-insert crash leaves an orphan header — plan 038 lines 43–47: an orphan hindcast header makes `_reconstruct_ensemble` **raise `ValueError` on fetch**, a crash not a silent degradation) and **040** (hindcast dedup unique constraint) → grill-me/WF1 → WF2. **These two are NOT parallel: 040 depends on 038** (`040:5`; `040:79-81` — with 038 in place a duplicate is data-quality-only, without 038 an orphan header hits the same `_reconstruct_ensemble` `ValueError` 038 is fixing). Sequence: run **038** grill-me → WF1 → WF2 **first**; 040's grill-me may overlap 038's WF2 (the designs are independent), but **040 must not land before 038**. README classes 038/040 as category-A "the gate to any v1 prod deploy" (`README.md:24,38-39`). Plan 090 **P1 already shipped** (PR #49); **090 P2 is OPTIONAL** (plan 090 lines 99, 187: "precision refinement (later, optional)", "deferred precision refinement") — it is NOT a Wave-1 gate. Per plan 090 line 188 ("Re-scope P2 into its own plan when P1 lands"), P2 needs a **new scoped plan file** (there is no P2 scope/phase/exit-gate section in `090` today) before it has a concrete WF1 target; do that opportunistically, not as a Wave-0 blocker. *(Required companion edit, plan-doc-only to `main`: the plan 090 file header (`090:2-5`) still reads `Status: READY` even though P1 shipped via PR #49 — a subagent reading `090` directly would treat P1 as still-to-implement. Set it to `DONE (P1 — PR #49); P2 pending (optional — re-scope into its own plan)` so file and roadmap agree. My edit scope here is 106; this is the required next commit.)*
+- **B. Observability (parallel, non-gating):**
+  - **097** → WF1 → WF2. *(grill-me done.)*
+  - **103** → **grill-me FIRST** (D2 APILogHandler attachment mechanism + D3 log-level split are still open — plan 103 lines 54, 62–74, 104) → WF1 → WF2. *No subagent runs from a DRAFT plan; the 103 grill-me is a mandatory gate (§5).*
 
 **Then the three parallel designable-now v1 leads (D5):**
-1. **081** recap-dg-client forcing adapter (offline) — grill-me → WF1 → WF2. *The Nepal forcing spine; gates 082/047.*
+1. **081** recap-dg-client forcing adapter (offline) — grill-me → WF1 → WF2. *The Nepal forcing spine; gates 082/047.* **In-scope for the 081 grill-me (do NOT let it stop at "add a new adapter class"):** both production dispatch points are **hardcoded to the single Swiss source** and must be **generalized** (not just given one extra `if` branch), or the adapter is built but never wired in —
+   - **Flow 1 — an ICON-specific *selection* function, not just a hardcoded constructor:** `run_forecast_cycle.py` instantiates `MeteoSwissNwpAdapter` as the *only* production `WeatherForecastSource` (around `:964-989`), **and** `_select_nwp_source()` (`run_forecast_cycle.py:79-98`) is ICON-specific by design — it preferentially returns the station's `icon_ch2_eps` binding and falls back to `_ICON_NWP_SOURCE = "icon_ch2_eps"` (`:74`) for every other case, so a gateway adapter's `NWP_SOURCE` (e.g. `"ifs_ecmwf"`) is **never selected**. The latest-cycle fetch (`:520`) and per-station selection (`:1377-1378`, `:1704`) all hardcode/route through `_ICON_NWP_SOURCE`. Wiring the gateway in therefore requires **replacing/generalizing `_select_nwp_source` into a multi-source (registry- or config-driven) selector** — otherwise the adapter is built but the grid-store lookup silently reads **zero** records. **Draft this dispatch design in the 081 grill-me** so 082's CI build does not discover the gap first.
+   - **Flow 6 / training — the hook points are the factory + dispatch, not the config loader:** the ERA5-Land-via-gateway path branches at `ingest_weather_history.py:168-202` (`build_production_reanalysis_adapter` — the factory that returns a hardcoded `MeteoSwissOpenDataReanalysisAdapter`) and its call site `:277-292` (`if adapter is None: adapter = build_production_reanalysis_adapter(...)`) — **not** `_load_reanalysis_stac_config()` at `:99-138` (a pure config reader). Both the factory and the dispatch block need a second-source branch (consistent with the "ERA5-Land is the gateway endpoint, subsumed by 081/082" corollary). **Structural constraint:** this flow consumes a **local** `_ReanalysisAdapter` Protocol (`ingest_weather_history.py:66-78`) that requires a `NWP_SOURCE: str` class attribute **in addition to** `fetch_reanalysis` — the public `WeatherReanalysisSource` Protocol (`protocols/adapters.py:47-55`) has **only** `fetch_reanalysis`, no `NWP_SOURCE`. The `_reanalysis_sources()` filter (`:243-252`) keys station weather-source records on `adapter.NWP_SOURCE`, so a gateway adapter satisfying only `WeatherReanalysisSource` would raise `AttributeError`/match nothing at runtime. The grill-me must **resolve** whether to (a) add `NWP_SOURCE` to the public `WeatherReanalysisSource` Protocol, (b) keep the local Protocol and require the gateway adapter to satisfy it structurally, or (c) split dispatching into a flow-level strategy; and update `_reanalysis_sources()` (or add a dispatcher) to filter on the gateway source string.
 2. **NEW plan: DHM observation adapter + water_level unit normalization** — grill-me → WF1 → WF2. *Discharges the Plan 101 cm-guard; the DHM-shaped obs path, built against fakes/RivRetrieve.*
 3. **NEW plan: auth/RBAC/audit + tenant write-isolation foundation** — grill-me → WF1 → WF2. *Folds in the deferred Plan 042; gates Flow 0 onboarding.*
 
 **Implement in parallel (already READY — no re-draft):**
-- **015** virtual/calculated station support.
-- **035** rating-curve provenance.
+- **035** rating-curve provenance (genuinely `READY`).
+
+**Designable-now, but needs a re-draft (NOT straight-to-implement):**
+- **015** virtual/calculated station support — enum slice shipped (`1a88f92`); the v1 flow logic (`calculated_station_formulas`, `COMPONENT_DERIVED`, Flow 2/5 branching, QC propagation) is undesigned → **grill-me → WF1 → WF2**, and **015 must merge before 017 starts** — a **behavioral** dep, not a type one (017 branches on 015 D6 QC-exemption + Flow 4 component-freshness, `017:49-58`; `GaugingStatus.CALCULATED`/`GAUGED` already exist at `types/enums.py:184-186`).
+  - **Required companion edit (plan-doc-only, direct to `main`):** the plan **015 file frontmatter still says `status: READY`** (`015:2`) and disagrees with `docs/plans/README.md:70` (DRAFT) — a subagent or WF2 agent reading `015` directly would treat it as ready to implement, which it is **not**. This roadmap's own Wave-2 gating on 015's grill-me is unreliable while the file invites direct-to-WF2 execution. Set `015:2` to `status: DRAFT` as part of landing this roadmap (both are plan-doc-only commits to `main`; my edit scope here is 106, so this is called out as the required next commit, not silently deferred).
+
+**Action — revise Plan 047 stub before it progresses (its scope contradicts this roadmap's corollaries):** `047` still lists **Elevation-band NWP extraction** as in-scope *and* as an open question (`047:19-44`), which the §0 corollary explicitly reverses (no elevation-band / gridded extraction for Nepal — forcing arrives as gateway time-series). Before 047 is promoted stub → DRAFT/READY, strip from its scope: (a) elevation-band extraction, (b) ERA5-Land as a standalone CDS adapter (subsumed by 081/082), (c) the DHM obs adapter (moved to the new D5-2 plan); and align its exit gates to the §0 D-decisions. Otherwise 047's first grill-me re-opens already-decided questions.
 
 **Pulled forward as answers arrive (blocked tails):**
 - **082** live smoke ← gateway creds (§3-11).
@@ -195,4 +223,4 @@ Each plan above follows the standing workflow, unchanged by this roadmap:
 - **048** is classed BLOCKED on hosting, but a *local* encrypted-restic + restore-rehearsal mechanism is designable now — split 048 into a NOW mechanism half and a BLOCKED off-site half?
 - Does the **Stage 2 QC** design genuinely need DHM's hQ format, or can it be built `NOW*` against a generic rating-table shape with DHM values wiring in later (like the obs adapter)?
 - **RivRetrieve** is D2-optional — but is there a cheap, high-value subset (one UK/US gauge with a known rating curve) worth making a *soft* checkpoint inside Wave 2 to de-risk the obs+rating path before DHM?
-```
+- **Nepal model training + onboarding** (new Wave-4 §2 row) is BLOCKED on the DHM obs archive — is any of it de-riskable now against Swiss/fake data (e.g. dry-run the Flow 6 + Flow 12-B path end-to-end on the mac-mini) so go-live is a data-swap, not a first-ever run?

@@ -1,8 +1,9 @@
 # Plan 090 — NWP incomplete-cycle selection + horizon-coverage validation
 
-**Status**: READY (grill-me held 2026-07-02 — D1–D5 resolved below; phases
-concrete). Implement Phase 1 (age-delay guard + post-download validation) before
-the Mac-mini data-collection deployment.
+**Status**: DONE (P1 — age-delay guard + post-download validation, shipped PR #49);
+P2 pending (OPTIONAL — terminal-valid-time refetch / precision refinement; must be
+re-scoped into its own plan file before it has a concrete WF1 target — see this file's
+P2 note and Plan 106 §4). NOT a Wave-0 gate.
 **Priority**: **elevated / near-term** — this silently truncated a live NWP
 forecast horizon (5 days → 1 step) with no error. Not a "parked" nice-to-have.
 **Phase**: v0b operational hardening (NWP adapter robustness + forecast validation)
