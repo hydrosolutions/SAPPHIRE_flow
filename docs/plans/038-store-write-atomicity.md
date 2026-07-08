@@ -1,6 +1,6 @@
 # Plan 038 — Store Write Atomicity (AUTOCOMMIT → Transactional Two-Phase Inserts)
 
-**Status**: DRAFT — grill-me COMPLETE (2026-07-08); WF1 plan-review applied (2026-07-08); next = owner READY
+**Status**: DRAFT — grill-me COMPLETE (2026-07-08); WF1 plan-review applied (2026-07-08); test-isolation reworked to injectable-transaction DI (2026-07-08); next = owner READY
 **Phase**: Cross-cutting (store layer + flows)
 **Depends on**: Plan 037 (security audit finding H-21)
 
@@ -8,11 +8,18 @@
 
 Six forks were resolved in a grill-me held 2026-07-08. A subsequent WF1
 plan-review + two owner decisions (2026-07-08) **reversed D5** (do NOT wrap
-writes in `StoreError`) and **reworked the test-isolation strategy** (D3/D5b →
-committed session-scoped FK-parent seeds + broad per-test truncation). The
-reversal is recorded inline below; entries D5a and D5c are **superseded** by the
-D5 reversal (there is no `StoreError` wrap left to preserve fault-escalation
-across, and no store-level `ERROR` to double-log against the caller `WARNING`).
+writes in `StoreError`). A later owner decision (2026-07-08) then **replaced the
+whole test-isolation approach**: the committed session-scoped FK-parent seeds +
+broad per-test `TRUNCATE` scheme is **abandoned** in favour of an **injectable
+transaction-context factory (DI)**. The stores gain one optional keyword-only
+constructor param; production is unchanged (default factory = `conn.engine.begin`),
+and tests inject a factory that runs the write inside a `SAVEPOINT` on the test's
+own transactional connection so it participates in the existing per-test rollback.
+This eliminates the committed-seeds fixture entirely and, with it, the four
+problems the WF1 re-verify found (see the review-pass note at the end of this
+section). The reversal and the DI rework are recorded inline below; entries D5a
+and D5c are **superseded** by the D5 reversal, and D3 (broad `TRUNCATE`) is
+**superseded** by the DI rework.
 
 - **D1 — Read resilience (SCOPE ADDITION)**: In addition to prevention
   (`engine.begin()`) and the one-time cleanup migration, harden the hindcast
@@ -30,38 +37,53 @@ across, and no store-level `ERROR` to double-log against the caller `WARNING`).
   paused-flows / deploy-time execution; `station_groups` stays excluded (manual
   dry-run). Rationale: a header with zero value rows is definitionally valueless,
   and the migration runs with flows paused (no concurrent writes). See Step 4.
-- **D3 — Test isolation (REWORKED, WF1 + owner, 2026-07-08)**: KEEP the autouse
-  `TRUNCATE … CASCADE` fixture, but its scope and the seed strategy are reworked
-  (see D5b below). Two owner-confirmed pins:
-  (1) **Broad truncation over write tables only.** Per-test the fixture truncates
-  ONLY the tables the three affected methods commit
-  (`forecasts`, `forecast_values`, `hindcast_forecasts`, `hindcast_values`,
-  `station_groups`, `station_group_members`, `group_model_assignments`,
-  `model_artifacts`) — **NOT** `stations`/`models`, which are stable
-  committed session seeds (truncating them would drop the FK parents the
-  separate `engine.begin()` connection needs).
-  (2) **Teardown ordering pinned (D3 pin retained).** The separate-connection
-  `TRUNCATE` must run **after** the `db_connection` rollback releases its locks;
-  otherwise the `ACCESS EXCLUSIVE` truncate deadlocks against the `ROW EXCLUSIVE`
-  locks still held by the open per-test transaction.
-  Add a test asserting isolation actually holds across committed writes. See the
-  Step 5a rework.
-- **D5b — FK-parent visibility across connections (test strategy, MANDATORY —
-  REWORKED)**: Because the three affected store methods now write on a *separate*
-  pooled connection (`engine.begin()`), their FK parents (**stations, models**)
-  must be **committed and visible** before the store method is called. The
-  existing tests seed parents via the uncommitted `db_connection` rollback
-  transaction, so after this plan those parents are invisible at READ COMMITTED
-  to the store's new connection → FK `IntegrityError`. **Chosen approach
-  (owner-confirmed)**: seed the FK parents once via a **committed,
-  session/module-scoped** fixture (visible to every pool connection) using
-  deterministic codes (e.g. `TEST-001`), namespaced so they do not collide with
-  per-test rollback-seeded rows. The per-test truncation (D3) does **not** touch
-  `stations`/`models`, so these committed seeds survive across tests. See the
-  Step 5a rework.
-- **D4 — Core approach CONFIRMED**: `conn.engine` + per-method `engine.begin()`
-  (a second short-lived pooled connection per two-phase write; the shared
-  AUTOCOMMIT connection is untouched; zero constructor changes).
+- **D3 — Test isolation: SUPERSEDED (2026-07-08) — replaced by injectable
+  transaction DI.** The broad-`TRUNCATE` scheme is **abandoned**. The autouse
+  per-test cleanup fixture, the committed session-scoped FK-parent seeds, the
+  `_ATOMIC_WRITE_TABLES` truncation, the row-level `station_groups` DELETE, the
+  CASCADE-avoidance analysis, the hoisted `tests/integration/store/conftest.py`
+  autouse fixture + `pytest_plugins` cross-directory registration, the
+  widen-beyond-`store/` coverage, and the ≈51-test migration of existing `_seed_*`
+  calls to committed seeds are **all no longer needed and are removed**. Under the
+  DI approach the store write runs inside a `SAVEPOINT` on the test's own
+  `db_connection` (which is already a real, rolled-back-at-teardown transaction),
+  so nothing commits and the existing rollback fixture provides full isolation —
+  no truncation, no committed seeds, no cross-connection FK-visibility problem.
+  See the reworked D4 and Step 5a. The one surviving requirement is the
+  **isolation-holds test**: assert a store-method write is absent in a fresh
+  connection / the next test because the outer transaction rolled back.
+- **D5b — SUPERSEDED (2026-07-08) — no longer applicable under DI.** The
+  cross-connection FK-parent-visibility problem existed *only* because the old D4
+  wrote on a *separate* pooled `engine.begin()` connection at READ COMMITTED,
+  making uncommitted `db_connection`-seeded parents invisible. Under the DI
+  approach the injected test factory runs the write inside a `SAVEPOINT` on the
+  **same** `db_connection`, so FK parents seeded via `db_connection` are visible
+  to the write with no commit required. The committed session seeds, the two-station
+  minimum, the unified seed helpers, the dual-visibility analysis, and the
+  existing-test migration are therefore all removed. Existing tests keep their
+  current `db_connection` seeds unchanged.
+- **D4 — Core approach CONFIRMED + REFINED to an injectable transaction factory
+  (2026-07-08)**: the two-phase write runs inside a transaction obtained from an
+  **injectable transaction-context factory** rather than always `engine.begin()`.
+  The three stores gain an OPTIONAL keyword-only constructor param
+  `transaction_factory: Callable[[], ContextManager[sa.Connection]] | None = None`;
+  `__init__` sets `self._begin = transaction_factory if transaction_factory is not
+  None else conn.engine.begin`. Production callers are **unchanged**
+  (`PgForecastStore(conn)` still works): the default factory is `conn.engine.begin`,
+  i.e. a fresh pooled transactional connection that issues `BEGIN`, commits on
+  success and rolls back on exception — exactly today's per-method
+  `engine.begin()` behavior. This refines the earlier "zero constructor change"
+  claim to **"one optional kwarg, default preserves production behavior."** The
+  store methods use `with self._begin() as txn:` and execute the header + value
+  inserts on `txn` (preserving the per-method `pg_insert` vs `sa.insert` dialect
+  usage). In PRODUCTION `txn` is the fresh `engine.begin()` connection (atomic
+  commit/rollback, separate from the shared AUTOCOMMIT connection). In TESTS the
+  injected factory runs the write inside a `SAVEPOINT` (`conn.begin_nested()`) on
+  the test's own transactional `db_connection` (see D3 / Step 5a) so it
+  participates in the per-test rollback. Note savepoints are safe in tests
+  *because* `db_connection` is transactional; they do **not** work on the
+  production AUTOCOMMIT connection — which is exactly why production keeps the
+  default `engine.begin` factory rather than a savepoint.
 - **D5 — REVERSED (WF1, 2026-07-08)**: Do **NOT** catch/wrap writes in
   `StoreError`. Let the raw SQLAlchemy exceptions propagate — matching every
   other SQL-backed store, none of which catch or wrap write exceptions.
@@ -98,6 +120,19 @@ across, and no store-level `ERROR` to double-log against the caller `WARNING`).
 - **D6 — task.map invariant**: DOCUMENT the sequential-writes invariant (rely on
   the non-picklable SQLAlchemy connection as the de facto fan-out barrier — see
   `flows/train_models.py:420–422`); do **not** add a runtime guard.
+
+**Review-pass note (DI rework, 2026-07-08).** The WF1 re-verify of the earlier
+committed-seeds + broad-`TRUNCATE` design raised **2 blockers + 2 majors**:
+(a) `TRUNCATE station_groups CASCADE` would wipe the committed `model_artifacts`
+seed (table-level cascade), (b) autouse-fixture placement forcing a `db_engine`
+container onto every `tests/integration/` test, (c) a single committed station
+could not satisfy the two-member `store_group` tests, and (d) a mandatory ≈51-test
+migration of existing `_seed_*` calls to committed seeds. This DI rework
+**resolves all four by deleting the fixture that caused them**: with the write
+running inside a `SAVEPOINT` on the test's own `db_connection`, there is no
+separate committed connection, so no committed seeds, no `TRUNCATE`/CASCADE, no
+cross-directory autouse fixture, and no existing-test migration are needed.
+D1, D2, D5 (reversed), and D6 are unchanged by this rework.
 
 ## Context
 
@@ -227,28 +262,48 @@ two-phase writes. The test fixtures masked the issue because they never exercise
 
 ## Design
 
-### Chosen approach: `conn.engine` + per-method transaction (Option C simplified)
+### Chosen approach: injectable transaction-context factory (default = `conn.engine.begin`)
 
 SQLAlchemy 2.0.48 (our pinned version) exposes `conn.engine` as an instance
-attribute that returns the originating `Engine`. The three affected stores
-use this in `__init__` to obtain an engine reference:
+attribute that returns the originating `Engine`, whose `.begin()` yields a
+short-lived transactional connection. Rather than call `engine.begin()` directly
+in each method, the three affected stores obtain their transaction context from an
+**injectable factory** set in `__init__`. This keeps production behavior identical
+to a per-method `engine.begin()` while letting tests inject a `SAVEPOINT`-based
+factory on the test's own transactional connection:
 
 ```python
+from collections.abc import Callable
+from contextlib import AbstractContextManager as ContextManager
+
 class PgForecastStore:
-    def __init__(self, conn: sa.Connection) -> None:
+    def __init__(
+        self,
+        conn: sa.Connection,
+        *,
+        transaction_factory: Callable[[], ContextManager[sa.Connection]] | None = None,
+    ) -> None:
         self._conn = conn
-        self._engine = conn.engine
+        # Default = a fresh pooled transactional connection (BEGIN / commit-on-
+        # success / rollback-on-exception) — exactly today's engine.begin() behavior.
+        self._begin = (
+            transaction_factory if transaction_factory is not None else conn.engine.begin
+        )
 ```
 
-This requires **zero changes** to `make_pg_stores`, `setup_production_stores`,
-or `api/deps.py`. The constructor signature is unchanged.
+Production callers are **unchanged** — `PgForecastStore(conn)` still works, and
+the default factory (`conn.engine.begin`) preserves today's behavior. This
+requires **zero changes** to `make_pg_stores`, `setup_production_stores`, or
+`api/deps.py`; the only signature change is one optional keyword-only param that
+callers may ignore. This refines the earlier "zero constructor change" framing to
+**"one optional kwarg, default preserves production behavior."**
 
 In `store_forecast`, `store_hindcast`, and `store_group`, the two-phase write
-uses a short-lived transactional connection from the engine:
+runs inside the factory's transaction context:
 
 ```python
 def store_forecast(self, forecast: OperationalForecast) -> ForecastId:
-    with self._engine.begin() as txn:
+    with self._begin() as txn:
         txn.execute(sa.insert(forecasts).values(...))
         rows = _build_value_rows(forecast)
         if rows:
@@ -256,7 +311,7 @@ def store_forecast(self, forecast: OperationalForecast) -> ForecastId:
     return forecast.id
 
 def store_hindcast(self, hindcast: HindcastForecast) -> HindcastForecastId:
-    with self._engine.begin() as txn:
+    with self._begin() as txn:
         # NOTE: pg_insert here has NO on_conflict clause (== sa.insert); keep or
         # simplify, but do NOT add ON CONFLICT (no unique constraint; see Plan 040).
         txn.execute(pg_insert(hindcast_forecasts).values(...))
@@ -266,15 +321,18 @@ def store_hindcast(self, hindcast: HindcastForecast) -> HindcastForecastId:
     return hindcast.id
 
 def store_group(self, group: StationGroup) -> None:
-    with self._engine.begin() as txn:
+    with self._begin() as txn:
         txn.execute(pg_insert(station_groups).values(...).on_conflict_do_update(...))
         if group.station_ids:
             txn.execute(pg_insert(station_group_members).values([...]).on_conflict_do_nothing())
 ```
 
-`engine.begin()` opens a new connection, issues `BEGIN`, auto-commits on
-success, auto-rolls-back on exception, and closes the connection. The shared
-AUTOCOMMIT connection used by all other stores is unaffected.
+In PRODUCTION `self._begin` is `conn.engine.begin`, so `with self._begin() as
+txn:` opens a new connection, issues `BEGIN`, auto-commits on success,
+auto-rolls-back on exception, and closes the connection — atomic and separate from
+the shared AUTOCOMMIT connection, which is unaffected. In TESTS the injected
+factory runs the same block inside a `SAVEPOINT` on the test's own transactional
+`db_connection` (see Step 5a), so the write rolls back with the test.
 
 **Note (corrected — dialect usage per method)**: only `store_group` genuinely
 uses `ON CONFLICT`. Verified against the current code:
@@ -321,16 +379,21 @@ which independently prevents naive `task.map()` fan-out of store calls
 (confirmed by `docs/standards/orchestration.md`).
 
 **API path**: `api/deps.py`'s `get_stores` depends on `get_connection`
-(`engine.connect()`, default transactional mode, not AUTOCOMMIT). The
-`engine.begin()` call inside a store opens a separate pooled connection — correct
-but uses an extra connection unnecessarily in that context. **However, none of
+(`engine.connect()`, default transactional mode, not AUTOCOMMIT). With the default
+factory the store's `self._begin()` (`conn.engine.begin`) opens a separate pooled
+connection — correct but uses an extra connection unnecessarily in that context. **However, none of
 the three affected store methods (`store_forecast`, `store_hindcast`,
 `store_group`) is called from any API route** — so the "extra connection"
 concern is moot for the current API surface. Moreover, the API's one write
-endpoint (alert acknowledge) already uses `engine.begin()` via
-`get_connection_rw` and instantiates `PgAlertStore(conn_rw)` directly, bypassing
-`get_stores` entirely (`api/routes/api_alerts.py:112`). Do **not** over-apply the
-`engine.begin()` pattern to API-path stores that do not need it. Since any future
+endpoint (alert acknowledge) obtains a transactional connection via
+`get_connection_rw` (`api/deps.py:26–29`, which calls `engine.begin()` and
+**yields the resulting connection**), then passes that live connection directly to
+`PgAlertStore(conn_rw)` (`api/routes/api_alerts.py:112`), bypassing `get_stores`
+entirely. This is **distinct** from the pattern this plan introduces: here the
+store *receives* a connection and opens a *separate* `engine.begin()` transaction
+internally — whereas the alert path's store executes on the caller-supplied
+transactional connection. Neither pattern conflicts with the other. Do **not**
+over-apply the `engine.begin()` pattern to API-path stores that do not need it. Since any future
 API write volume is negligible (review/publish operations only), the extra
 connection is acceptable if it ever arises.
 
@@ -377,10 +440,11 @@ if not rows_for_id:
 ensemble = _reconstruct_ensemble(header, rows_for_id, station_id)
 ```
 
-Equivalently, `_reconstruct_ensemble` may signal the orphan (e.g. return a
-sentinel / raise a narrow, caught exception) and the caller performs the
-skip-with-WARNING — either shape is acceptable as long as one orphan never
-aborts the batch. The valid headers in the same fetch still return.
+The guard lives in the **caller loop** (not inside `_reconstruct_ensemble`) — the
+simpler shape (see Step 7, review Finding 9). `_reconstruct_ensemble`'s existing
+`if not rows: raise ValueError(...)` stays as a defence-in-depth backstop that the
+caller guard prevents from ever firing on an orphan. The valid headers in the same
+fetch still return.
 
 **Scope**: D1's code change is limited to the **hindcast read path** — and to
 **both** of its `_reconstruct_ensemble` callers (`fetch_hindcasts:~125`,
@@ -433,20 +497,30 @@ Per `docs/standards/logging.md`:
 
 ## Tasks
 
-### Step 1 — Add `self._engine` to three stores
+### Step 1 — Add the injectable `transaction_factory` param to three stores
 
 **Files**: `forecast_store.py`, `hindcast_store.py`, `station_group_store.py`
 
-In each store's `__init__`, add `self._engine = conn.engine` after the existing
-`self._conn = conn` line.
+In each store's `__init__`, add an OPTIONAL keyword-only param
+`transaction_factory: Callable[[], ContextManager[sa.Connection]] | None = None`
+and, after the existing `self._conn = conn` line, assign
+`self._begin = transaction_factory if transaction_factory is not None else
+conn.engine.begin`. Import `Callable` from `collections.abc` and a
+`ContextManager` alias (e.g. `from contextlib import AbstractContextManager as
+ContextManager`, or `typing.ContextManager`). The default factory
+(`conn.engine.begin`) preserves production behavior; existing callers
+(`make_pg_stores`, `setup_production_stores`, `api/deps.py`) are unchanged.
 
-### Step 2 — Wrap two-phase writes in `engine.begin()`
+### Step 2 — Run two-phase writes inside `self._begin()`
 
 **Files**: same three stores
 
 Replace the two sequential `self._conn.execute()` calls in each method with
-a `with self._engine.begin() as txn:` block, switching the two `self._conn.execute()`
-calls to `txn.execute(...)`. Preserve all existing logic verbatim — row
+a `with self._begin() as txn:` block, switching the two `self._conn.execute()`
+calls to `txn.execute(...)`. With the default factory `self._begin()` is
+`conn.engine.begin()` (production atomicity, separate from the AUTOCOMMIT
+connection); with an injected factory it is a `SAVEPOINT` on the test connection
+(Step 5a). Preserve all existing logic verbatim — row
 construction, the `if rows:` / `if group.station_ids:` conditionals, and the
 per-method dialect usage (`sa.insert` for `store_forecast`; `pg_insert`
 *without* an `ON CONFLICT` clause for the `store_hindcast` header; `pg_insert`
@@ -455,9 +529,10 @@ preserved verbatim).
 
 **Do NOT catch or wrap exceptions (D5 reversed).** Let any SQLAlchemy exception
 propagate raw out of the `with` block — this matches every other SQL-backed
-store, none of which catch or wrap write exceptions. `engine.begin()` already
-rolls the whole two-phase write back atomically and closes the connection on
-exception, so no wrapper is needed. Wrapping in `StoreError` would (a) collapse
+store, none of which catch or wrap write exceptions. The transaction context
+(`engine.begin()` in production, the injected `SAVEPOINT` in tests) already
+rolls the whole two-phase write back atomically on exception, so no wrapper is
+needed. Wrapping in `StoreError` would (a) collapse
 `StoreError`'s connection-fatal-only meaning and (b) regress the GROUP path,
 whose `except StoreError: raise` (`run_forecast_cycle.py:1774`, outer `:1814`)
 would abort the whole group cycle on a *transient* write failure. See the D5
@@ -513,146 +588,143 @@ logic inside an Alembic migration — it either runs or it does not.
 
 ### Step 5 — Tests
 
-#### 5a — Test isolation v2: committed session seeds + broad truncation (MUST be done first)
+#### 5a — Test isolation via injected SAVEPOINT transaction factory (MUST be done first)
 
-**File**: `tests/integration/conftest.py` (hoisted so coverage reaches every
-affected test, not just `tests/integration/store/`)
+**File**: the existing store test files (`tests/integration/store/test_forecast_store.py`,
+`test_hindcast_store.py`, `test_station_group_store.py`, `test_forecast_summary.py`,
+and `tests/integration/test_model_onboarding_integration.py`). **No new conftest, no
+committed session seeds, no autouse truncation, no `pytest_plugins` cross-directory
+registration, and no migration of existing `_seed_*` calls** — the DI approach makes
+all of that unnecessary (see the D3/D5b SUPERSEDED entries).
 
-Two distinct problems must be solved together, in order, before Step 2 is
-implemented — implementing Step 2 without both will immediately break the
-existing integration tests that call the three affected store methods.
+**The problem the DI approach solves.** With the default factory, the two-phase write
+would run on a *separate* pooled `engine.begin()` connection that commits outside the
+test's rollback scope. That commit (a) leaks across tests (breaking isolation) and (b)
+cannot see FK parents that a test seeded on the uncommitted `db_connection` transaction
+(READ COMMITTED → `IntegrityError`). Both problems disappear if the write runs on the
+**same** connection/transaction as the test's seed data.
 
-**Problem 1 — committed writes leak across tests.** The existing `db_connection`
-fixture wraps each test in a transaction that rolls back at teardown. After this
-plan, `engine.begin()` opens a **separate pooled connection** that commits
-outside that rollback scope. Data written by the three affected store methods
-persists across tests — breaking isolation for every affected write call in the
-suite.
-
-**Problem 2 — FK parents seeded via `db_connection` are invisible to the store's
-new connection (D5b).** The affected-store tests currently seed prerequisites
-(stations, models) via the uncommitted `db_connection` transaction, then call the
-store method. After the change, the store writes on a *second* connection from
-`engine.begin()`; at READ COMMITTED the uncommitted parents are invisible to it →
-every write raises `IntegrityError` (FK violation). The truncate fixture below
-does **nothing** for this problem.
-
-**Fix for Problem 2 (D5b) — committed session/module-scoped FK-parent seeds.**
-Seed the FK parents the atomicity tests need — **stations and models** — via a
-**committed, session/module-scoped** fixture (`db_engine.begin()`), so they are
-visible to every pool connection, including the store's separate `engine.begin()`
-connection. Seed them **once** so deterministic codes (e.g. `TEST-001`) do not
-collide per-test. Namespace these committed seed codes so they do not collide
-with any per-test rollback-seeded `stations`/`models` rows a test may still add
-on `db_connection`. Because the per-test truncation (below) does **not** touch
-`stations`/`models`, these committed seeds survive across the whole session.
+**The fix — inject a `SAVEPOINT` factory bound to `db_connection`.** In each affected
+test, construct the store with a `transaction_factory` that wraps the write in a
+`SAVEPOINT` on the test's existing (transactional, rolled-back-at-teardown)
+`db_connection`:
 
 ```python
-with db_engine.begin() as seed:
-    sid = _seed_station(seed, code="TEST-001")   # committed, session-scoped
-    mid = _seed_model(seed, name="test-model")   # committed, session-scoped
-store = PgForecastStore(db_connection)           # store constructor unchanged
-```
+from contextlib import contextmanager
 
-**Fix for Problem 1 — per-test TRUNCATE over the write tables only (D3).** Add an
-`autouse` function-scoped fixture that truncates ONLY the tables the three
-affected methods commit — **NOT** `stations`/`models` (they are the committed
-session seeds; truncating them would drop the FK parents the separate
-`engine.begin()` connection needs):
+@contextmanager
+def savepoint_txn(conn):
+    with conn.begin_nested():   # SAVEPOINT — works because db_connection is in a real
+        yield conn              # transaction (NOT autocommit)
 
-```python
-from __future__ import annotations
-import pytest
-import sqlalchemy as sa
-
-# Write tables committed by store_forecast / store_hindcast / store_group only.
-# stations/models are DELIBERATELY EXCLUDED: they are committed session seeds
-# (D5b) and truncating them would drop the FK parents the separate
-# engine.begin() connection depends on.
-_ATOMIC_WRITE_TABLES = (
-    "forecast_values",
-    "forecasts",
-    "hindcast_values",
-    "hindcast_forecasts",
-    "group_model_assignments",
-    "model_artifacts",
-    "station_group_members",
-    "station_groups",
+# store constructed with the injected factory:
+store = PgForecastStore(
+    db_connection,
+    transaction_factory=lambda: savepoint_txn(db_connection),
 )
-
-@pytest.fixture(autouse=True)
-def _truncate_atomic_writes(db_connection, db_engine: sa.Engine):
-    yield
-    # Teardown-ordering pin (D3): the separate-connection TRUNCATE must run
-    # AFTER db_connection's per-test transaction has rolled back and released
-    # its ROW EXCLUSIVE locks — otherwise this ACCESS EXCLUSIVE truncate
-    # deadlocks against them. Depending on db_connection orders this teardown
-    # to fire after db_connection's rollback.
-    with db_engine.begin() as conn:
-        conn.execute(
-            sa.text(f"TRUNCATE {', '.join(_ATOMIC_WRITE_TABLES)} CASCADE")
-        )
 ```
 
-**Teardown ordering (D3 pin retained)**: the truncate runs in teardown, and the
-fixture depends on `db_connection` so its teardown fires *after* `db_connection`
-rolls back and drops its locks. Truncating while the per-test transaction still
-holds `ROW EXCLUSIVE` locks would deadlock the `ACCESS EXCLUSIVE` truncate. The
-first test in the session starts against empty write tables (migrations leave
-them empty).
+`conn.begin_nested()` issues a real `SAVEPOINT` and, on success, releases it (the write
+stays within `db_connection`'s outer transaction); on exception it rolls back to the
+savepoint. Because the write now runs on the **same** connection/transaction as the
+test's seed data:
 
-**Coverage — widen beyond `store/` (owner-confirmed).** The autouse truncation
-must apply to **every** test that calls one of the three affected store methods,
-because each commits on a separate connection whose rows would otherwise leak.
-The affected files are:
-- `tests/integration/store/test_forecast_store.py`
-- `tests/integration/store/test_hindcast_store.py`
-- `tests/integration/store/test_station_group_store.py`
-- `tests/integration/store/test_forecast_summary.py`
-- `tests/integration/test_model_onboarding_integration.py` (outside `store/`)
-- `tests/integration/test_e2e_pipeline.py` (outside `store/`)
+- **(a) FK parents are visible.** Parents seeded via `db_connection` (stations, models,
+  `model_artifacts`) are visible to the write with no commit required — there is no
+  cross-connection invisibility, so no committed session seeds and no existing-test
+  seed migration are needed. Existing tests keep their current per-test `db_connection`
+  seeds unchanged.
+- **(b) Nothing commits.** The outer `db_connection` transaction rolls back at teardown
+  (the existing `db_connection` fixture already does this), so the store write — nested
+  inside it via the savepoint — rolls back too. The existing rollback fixture provides
+  full isolation. No `TRUNCATE`, no `_ATOMIC_WRITE_TABLES`, no cross-directory autouse
+  fixture, no committed seeds.
 
-**Chosen approach**: place the autouse `_truncate_atomic_writes` fixture (and the
-committed FK-parent seed fixture) in **`tests/integration/conftest.py`** so it is
-in scope for both the `store/` subpackage and the two top-level integration
-files, rather than in `tests/integration/store/conftest.py` (which would miss
-the two outside `store/`).
+**Why savepoints are safe HERE but NOT in production.** `conn.begin_nested()` requires
+an open transaction block; `db_connection` is a genuine transactional connection
+(`db_engine.connect()` + `conn.begin()` in `tests/integration/conftest.py`), so the
+`SAVEPOINT` succeeds. This is exactly the case the plan notes does **not** hold on the
+production AUTOCOMMIT connection (see `### Why conn.begin() on AUTOCOMMIT doesn't work`):
+there is no outer transaction to nest within, so PostgreSQL rejects `SAVEPOINT`.
+Production therefore uses the **default** `engine.begin` factory (a fresh transactional
+connection), never a savepoint on the shared AUTOCOMMIT connection. The savepoint
+factory is a **test-only** injection.
 
-**FK cascade note**: `model_artifacts.group_id` and
-`group_model_assignments.group_id` both reference `station_groups.id`.
-`TRUNCATE station_groups CASCADE` would cascade into those tables. Including
-them explicitly in the truncation list makes the dependency visible and
-prevents silent data loss if future tests write to those tables via
-`engine.begin()`.
+**A small helper.** Put the `savepoint_txn` context manager (and a
+`savepoint_factory(conn)` convenience returning `lambda: savepoint_txn(conn)`) somewhere
+shared for the store tests — a module-level helper in each affected test file, or a
+small helper importable from `tests/integration/store/` — whichever keeps the tests
+readable. This is a plain helper, **not** an autouse fixture, so it never forces a
+`db_engine` container onto unrelated `tests/integration/` tests (the placement problem
+the old design fought is gone).
 
-**Overhead**: ~10–20 ms per test on a local testcontainer. Acceptable.
-
-**Isolation-holds test (D3)**: Add an explicit test proving isolation actually
-holds across the committed writes. In one test, write via an affected store
-method (e.g. `store_forecast` / `store_hindcast` / `store_group`) — a committed
-`engine.begin()` write against the committed session FK parents. In a
-*subsequent* test, assert the row is **absent** (e.g. `fetch_*` returns `None` /
-`[]`). This confirms the autouse `TRUNCATE` fixture cleans committed writes left
-by the prior test and that no state leaks between tests, while the committed
-`stations`/`models` seeds correctly survive.
+**Isolation-holds test.** Add an explicit test proving isolation actually holds. Write
+via an affected store method constructed with the savepoint factory (e.g.
+`store_forecast` / `store_hindcast` / `store_group`), then confirm the row is **absent**
+in a fresh connection / the next test because the outer `db_connection` transaction
+rolled back at teardown. Because the write is nested in `db_connection`'s transaction,
+a fresh `db_engine.connect()` read (a different transaction) never sees it, and after
+teardown nothing remains — proving no state leaks between tests without any truncation.
 
 #### 5b — New tests
 
 **Files**: additions to existing store test files
 
-All tests below rely on the committed session/module-scoped FK-parent seeds
-(stations, models) from Step 5a so the store's internal `engine.begin()`
-connection can see them.
+All tests below construct the store with the **savepoint `transaction_factory`**
+from Step 5a (`transaction_factory=lambda: savepoint_txn(db_connection)`), so the
+two-phase write runs inside a `SAVEPOINT` on the test's own transactional
+`db_connection`. FK parents seeded via `db_connection` are visible to the write,
+and the whole write rolls back with the test. No committed session seeds are
+required.
 
-1. **Atomicity rollback test** (one per store): Monkeypatch `txn.execute` to
-   raise `sqlalchemy.exc.OperationalError` on the second call (values insert).
-   Assert that (a) the raw SQLAlchemy exception propagates (it is **not** wrapped
-   in `StoreError` — D5 reversed) and (b) the header row is absent from the DB
-   (`engine.begin()` rolled the whole two-phase write back atomically).
-2. **Atomicity success test** (one per store): Call the store method, then
-   verify both header and values are committed and fetchable.
-3. **`conn.engine` smoke test**: Assert `db_connection.engine is db_engine` in
-   the test fixture to confirm the engine extraction works with testcontainers.
+1. **Atomicity rollback test** (one per store): Construct the store with the
+   savepoint factory, then force the *second* `execute` inside the two-phase write
+   (the values insert) to raise `sqlalchemy.exc.OperationalError`. The write runs on
+   the connection yielded by `with self._begin() as txn:` — which, with the injected
+   savepoint factory, **is** the test's `db_connection`. So the test can monkeypatch
+   `db_connection.execute` (or wrap it) to raise on its second call within the store
+   method. Sketch:
+
+   ```python
+   calls = {"n": 0}
+   real_execute = db_connection.execute
+
+   def exec_side_effect(*args, **kwargs):
+       calls["n"] += 1
+       if calls["n"] == 2:            # values insert
+           raise sqlalchemy.exc.OperationalError("boom", None, None)
+       return real_execute(*args, **kwargs)
+
+   monkeypatch.setattr(db_connection, "execute", exec_side_effect)
+   store = PgForecastStore(
+       db_connection,
+       transaction_factory=lambda: savepoint_txn(db_connection),
+   )
+   with pytest.raises(sqlalchemy.exc.OperationalError):
+       store.store_forecast(fc)
+   ```
+
+   (Count only the two writes inside the store method; if the test's own setup runs
+   executes on `db_connection` first, install the side-effect immediately before the
+   store call, or count from the header insert.) Assert that (a) the raw SQLAlchemy
+   exception propagates (it is **not** wrapped in `StoreError` — D5 reversed) and
+   (b) the header row is **absent** — the `SAVEPOINT` rolled the whole two-phase
+   write back. Read the absence back on `db_connection` itself: because the write
+   was nested in `db_connection`'s transaction and the savepoint rolled it back, the
+   header is gone from `db_connection`'s view (and never committed anywhere).
+2. **Atomicity success test** (one per store): Construct the store with the
+   savepoint factory, call the method, and assert both the header and the values are
+   visible **within the test transaction** — read them back via `db_connection`
+   (the write committed the savepoint into `db_connection`'s outer transaction, so
+   `db_connection` sees them). Then confirm they are gone after rollback: at teardown
+   the outer `db_connection` transaction rolls back, so a subsequent test (or a fresh
+   `db_engine.connect()` read) finds nothing — the isolation half of the assertion.
+3. **Default-factory smoke test**: Assert that when **no** `transaction_factory` is
+   injected, the store uses the default `conn.engine.begin` factory (e.g.
+   `PgForecastStore(db_connection)._begin is db_connection.engine.begin`). This
+   confirms production callers get the `engine.begin` behavior unchanged. (The old
+   `conn.engine is db_engine` smoke test, which assumed the committed-connection
+   design, is dropped.)
 
 ### Step 6 — Update docs
 
@@ -693,10 +765,24 @@ if not rows_for_id:
     continue
 ```
 
-Equivalently, have `_reconstruct_ensemble` signal the orphan and let the caller
-skip — either shape is fine so long as one orphan never aborts the batch, and it
-must be applied consistently to **both** loops. Reuse the module-level
-`log = structlog.get_logger(__name__)` added in Step 3. Do **not** change the
+**PINNED to the caller-guard shape (review Finding 9).** Add the
+`if not rows_for_id: log.warning(...); continue` guard directly in the loop body of
+**both** `fetch_hindcasts` (the loop after `value_rows` at
+`hindcast_store.py:~114`) and `fetch_hindcasts_by_station` (the loop after
+`value_rows` at `~:175`), before the `_reconstruct_ensemble` call. This is
+strictly simpler than the alternative of returning a sentinel from
+`_reconstruct_ensemble` (which would force every caller to check the sentinel).
+Leave `_reconstruct_ensemble`'s existing `if not rows: raise ValueError(...)` guard
+(`hindcast_store.py:214`+) in place as a **defence-in-depth backstop** — the caller
+guard means it is never reached for an orphan, but it stays as a hard invariant.
+Reuse the module-level `log = structlog.get_logger(__name__)` added in Step 3.
+
+**Note (review Finding 9):** `station_id` is a direct method parameter in *both*
+loops — `fetch_hindcasts(self, station_id: StationId, …)` (`hindcast_store.py:83`)
+and `fetch_hindcasts_by_station(self, station_id: StationId, …)`
+(`hindcast_store.py:154`) — so the `station_id=` structlog field in the WARNING is
+unambiguous in each. Use the method-level `station_id` parameter; there is no need
+to read it back off the header row. Do **not** change the
 forecast or station-group read paths (their INNER JOINs already exclude orphans
 without crashing).
 
