@@ -142,14 +142,26 @@ existing branch".
      downloaded GRIB files in `scratch_dir` are still consumed by `_parse_grib_files`
      (called in `fetch_forecasts:480`, AFTER `_fetch_grib_files` returns), a plain
      `finally: rmtree(scratch_dir)` inside `_fetch_grib_files` would delete the files
-     before parsing. **Chosen resolution:** wrap only the download body of
+     before parsing. **Chosen resolution:** wrap the download body of
      `_fetch_grib_files` in `try/except Exception: rmtree(scratch_dir,
      ignore_errors=True); raise` (clean the current cycle on ANY raise — including
-     the `AdapterError`/`BudgetExceededError` paths at `:538,545,593,609` — then
-     re-raise). The success return leaves files intact for `_parse_grib_files`.
+     the `AdapterError`/`BudgetExceededError` paths at `:538,545,593,609` **and the
+     final "No matching GRIB2 files" `AdapterError` at `:646-649`** — then re-raise).
+     The success return leaves files intact for `_parse_grib_files`. **Wrap range
+     (minor fix — was `:535-644`, which omits the final raise): wrap from the
+     `max_files=0` short-circuit at `:533` through the final
+     `if not grib_files and not max_files_reached: raise AdapterError(...)` at
+     `:645-649`, i.e. everything after `scratch_dir.mkdir(...)` (`:504`) up to (but not
+     including) `return grib_files` at `:650`.** The earlier `:535-644` range left the
+     empty-`scratch_dir` (created by `mkdir` at `:504`) uncleaned on the zero-GRIB-files
+     raise, violating the stated "clean on ANY raise" invariant. (In practice that
+     leftover dir is EMPTY — no files were downloaded — and op 2's stale sweep reclaims
+     it on the next fetch for a different cycle, so it is not a disk-clog hazard; but
+     extending the wrap upholds the invariant cleanly.)
      **Implementation note (minor fix):** the `except Exception` block **intentionally**
      catches `AdapterError` subclasses too (`BudgetExceededError` `:593,609`, pagination
-     `AdapterError` `:538`, STAC timeout/failure `:545-547`) — cleanup-on-any-raise is
+     `AdapterError` `:538`, STAC timeout/failure `:545-547`, and the no-matching-files
+     `AdapterError` `:646-649`) — cleanup-on-any-raise is
      the desired invariant. Do **not** write a narrower guard that skips cleanup for
      `AdapterError` (e.g. `if not isinstance(exc, AdapterError): rmtree...`) — that
      would leave partial downloads behind on the budget-exceeded path, defeating D1.
@@ -178,14 +190,41 @@ existing branch".
     config is never loaded, so the flow has no scratch path to check. The adapter,
     `MeteoSwissNwpAdapter`, **always** owns `self._scratch_path` regardless of call
     path. **Chosen resolution (reviewer option a):** perform the scratch-mount check
-    inside `MeteoSwissNwpAdapter.fetch_forecasts`. **Insertion point (minor fix — pin
-    it): AFTER `resolve_cycle(cycle_time)` returns at `:464-465`, BEFORE
-    `_fetch_grib_files(resolved_cycle)` at `:479`.** Inserting it before `resolve_cycle`
-    would fire the disk check even for cycles that would have raised
-    `NoCycleAvailableError` (no published cycle) before any download is attempted —
-    emitting a misleading DISK_USAGE record for what is really an NWP-unavailability
-    event. Placing it after `resolve_cycle` but before the download keeps the log
-    semantics clean and still pre-empts the doomed `_fetch_grib_files` download.
+    inside `MeteoSwissNwpAdapter.fetch_forecasts`. **Insertion point (minor+major fix —
+    pin it EXACTLY OUTSIDE the try): insert between `t0 = time.perf_counter()`
+    (`meteoswiss_nwp.py:477`) and `try:` (`:478`)** — i.e. AFTER `resolve_cycle(cycle_time)`
+    returns at `:464-465` (so a no-published-cycle run raises `NoCycleAvailableError`
+    first and does NOT emit a misleading DISK_USAGE record), and BEFORE the existing
+    `try:` at `:478` that wraps `_fetch_grib_files(resolved_cycle)` (`:479`). Inserting it
+    before `resolve_cycle` would fire the disk check even for cycles that would have
+    raised `NoCycleAvailableError` (no published cycle) before any download is attempted.
+    **The check MUST be OUTSIDE the `try:` at `:478` (verified against code):** the
+    existing `except Exception as exc:` at `:496` wraps any non-`AdapterError` into
+    `AdapterError(f"NWP fetch failed: {exc}")` and re-raises. If the disk check (or its
+    `shutil.disk_usage` probe) fired INSIDE that try, a probe `OSError` (see the OSError
+    guard below) would be swallowed and mis-wrapped as a generic `NWP fetch failed`.
+    (Note: `DiskSoftLimitError`/`DiskHardLimitError` now BOTH subclass `AdapterError`
+    (7th pass), so the `:494-495` `except AdapterError: raise` would in fact re-raise
+    them unchanged — but the probe `OSError` case, and keeping the whole disk-check
+    apparatus off the `_fetch_grib_files` error path, still make OUTSIDE-the-try the
+    correct placement.) Keeping the check between `:477` and `:478` lets
+    `DiskSoftLimitError`/`DiskHardLimitError` propagate cleanly out of `fetch_forecasts`
+    to `_fetch_nwp_task`'s dedicated except-clauses.
+    **Probe-error guard (major fix — OSError from `shutil.disk_usage`):** on a fresh
+    worker restart the tmpfs mount at `self._scratch_path` (`/tmp/sapphire_nwp`) may not
+    yet exist, so `shutil.disk_usage(self._scratch_path)` can raise `FileNotFoundError`
+    (an `OSError` subclass). Wrap each `shutil.disk_usage(path)` call (inside the
+    `disk_free_gb(path)` helper — see the D2 impl vision) in `try/except OSError as exc:
+    log.warning("nwp.disk_check_probe_failed", path=str(path), error=str(exc))` and have
+    the caller SKIP that mount's tier comparison (fail-open — proceed as if the mount is
+    healthy) so a missing/unmounted mount degrades gracefully rather than aborting the
+    cycle. This is fail-open by design (consistent with the `nwp_grid_archive_path is None`
+    skip): a probe failure means "cannot determine free space", NOT "disk full", so it must
+    not be treated as a hard limit. Without this guard the bare `OSError` would propagate
+    out of `fetch_forecasts`, be caught by `_fetch_nwp_task`'s bare `except Exception:
+    return None` (`:668`), and abort the cycle RED with zero `DISK_USAGE` record and a
+    misleading `nwp.fetch_failed` log — a probe failure treated identically to a hard
+    disk-full event.
     Thread the four threshold values + an optional
     `nwp_grid_archive_path: Path | None` into the adapter constructor (`:997-1007`
     call-site) for the persistent-volume check. This makes the check testable via the
@@ -198,11 +237,10 @@ existing branch".
     `_check_nwp_grid_staleness` pattern" — that analogy was **FALSE and the emit was
     unreachable**: `_check_nwp_grid_staleness` (`:1244-1249`) is called directly by the
     flow and returns synchronously, whereas the disk check fires deep inside the
-    adapter and signals **only via exception**. On the soft path the adapter raises
-    `NoCycleAvailableError`, which `_fetch_nwp_task:660-667` converts to
-    `_NwpFetchOutcome(nwp_unavailable=True)`; on the hard path `AdapterError` →
-    `_fetch_nwp_task:668-670` returns `None`. In both cases the disk context (`path`,
-    `free_gb`, `threshold_gb`) is dropped before the flow sees it.
+    adapter and signals **only via exception**. The disk context (`path`, `free_gb`,
+    `threshold_gb`) is dropped before the flow sees it unless the task itself reads and
+    emits it — which is exactly why the two disk-specific `AdapterError` subclasses
+    below carry that context and the task's dedicated `except` clauses emit the record.
     **Chosen resolution (5th pass — reviewer-corrected to the SIMPLEST option): emit
     the DISK_USAGE record from inside `_fetch_nwp_task` directly, by injecting
     `pipeline_health_store` into the task.** This is one line at the call-site and
@@ -216,27 +254,37 @@ existing branch".
     submit call (`:1166-1176`).
     1. **Two disk-specific exception subclasses** (in `exceptions.py`, alongside the
        existing `AdapterError:29` / `NoCycleAvailableError:33` / `BudgetExceededError:37`):
-       - `DiskSoftLimitError(NoCycleAvailableError)` — carries `path: str`,
+       - `DiskSoftLimitError(AdapterError)` — carries `path: str`,
          `free_gb: float`, `threshold_gb: float`, and `subject:
          Literal["scratch", "nwp_archive"]` attributes.
        - `DiskHardLimitError(AdapterError)` — same four attributes.
-       **Except-clause ordering (BLOCKER — must be pinned exactly).** Because
-       `DiskSoftLimitError` subclasses `NoCycleAvailableError`, Python evaluates the
-       `try/except` clauses **top-to-bottom** and dispatches to the FIRST matching
-       handler. Therefore the two new clauses `except DiskSoftLimitError` and
-       `except DiskHardLimitError` MUST be the **first two handlers** in the
-       `_fetch_nwp_task` try/except — inserted **BEFORE `except NoCycleAvailableError`
-       at `:660`** (NOT merely before `except Exception` at `:668`). If they were
-       placed anywhere AFTER `except NoCycleAvailableError` (`:660`), that existing
-       clause would swallow every `DiskSoftLimitError` — no `DISK_USAGE` record would
-       be emitted and the wrong `nwp.no_cycle_available` log would fire. Concretely,
-       the final handler order is:
+       **Base-class rationale (MAJOR — 7th pass, SUPERSEDES the earlier
+       `DiskSoftLimitError(NoCycleAvailableError)` design).** `DiskSoftLimitError` is
+       based **directly on `AdapterError`**, identically to `DiskHardLimitError` — NOT
+       on `NoCycleAvailableError`. Disk pressure is semantically **not** "no NWP cycle
+       published"; subclassing `NoCycleAvailableError` is a footgun — any future
+       `except NoCycleAvailableError` site (in the adapter, the task, or a new caller)
+       would silently absorb a disk-soft event, take the plain no-cycle path, and drop
+       the `DISK_USAGE` record entirely. Basing it on `AdapterError` keeps the disk
+       tiers independent of the no-cycle path and forces the routing to be **explicit**:
+       the dedicated `except DiskSoftLimitError` clause must itself return the
+       runoff-only signal (it can no longer fall through to the no-cycle handler).
+       **Except-clause ordering (BLOCKER — must be pinned exactly).** Python evaluates
+       the `try/except` clauses **top-to-bottom** and dispatches to the FIRST matching
+       handler, and BOTH new classes subclass `AdapterError`, so they MUST precede the
+       generic `except Exception` at `:668`. They do **NOT** need to precede
+       `except NoCycleAvailableError` at `:660` — because `DiskSoftLimitError` is no
+       longer a `NoCycleAvailableError` subclass, that clause can never catch it, so the
+       relative order of the two new clauses vs `:660` is immaterial to correctness. The
+       only hard requirement is: the two new clauses come **before `except Exception`
+       (`:668`)**. Concretely, the final handler order is:
        1. `except DiskSoftLimitError as exc:` (NEW — emits WARNING record, degrades)
        2. `except DiskHardLimitError as exc:` (NEW — emits CRITICAL record, aborts)
        3. `except NoCycleAvailableError as exc:` (existing `:660`)
        4. `except Exception as exc:` (existing `:668`)
        The two new clauses read the disk metadata AND emit the record; the existing
-       two are unchanged.
+       two are unchanged. (Placing the two new clauses first is still the clearest
+       arrangement, but the load-bearing constraint is only "before `:668`".)
        **`__init__` signature (minor fix — the existing `exceptions.py` classes at
        `:1-59` are all bare subclasses with NO constructor, so the reader attribute
        access would `AttributeError` unless the ctor is specified).** Both classes take:
@@ -256,7 +304,17 @@ existing branch".
     2. **Inject `pipeline_health_store` into `_fetch_nwp_task`** (`run_forecast_cycle.py:624-634`):
        add a new keyword param `pipeline_health_store: object | None = None` to the task
        signature, and pass `pipeline_health_store=pipeline_health_store` at the submit
-       call-site (`:1166-1176`, where the flow already has it in scope). The task then
+       call-site (`:1166-1176`, where the flow already has it in scope). **Concurrency
+       caveat (minor fix — document the same assumption as the D1 `concurrency_limit=1`
+       note):** Prefect 3's default thread-based `ConcurrentTaskRunner` passes task
+       parameters by reference (no serialization), so a non-picklable `pipeline_health_store`
+       (e.g. a live DB-connection wrapper) works today. Add a one-line comment at the new
+       param noting that this relies on thread-based (not process-based) task execution —
+       if the runner is ever switched to a process-based executor (e.g. for the `task.map`
+       forecast-cycle parallelisation deferred from Phase 8), `pipeline_health_store` would
+       fail to serialize at `.submit()` time. The same caveat already applies to the other
+       object params passed to this task (`weather_forecast_store`, `grid_store`); the
+       Phase-8 `task.map` decision must revisit all of them, not just this one. The task then
        emits the DISK_USAGE record itself in the two new `except` clauses:
        - `except DiskSoftLimitError as exc:` → `log.warning("nwp.disk_soft_limit", path=exc.path,
          free_gb=exc.free_gb, threshold_gb=exc.threshold_gb, subject=exc.subject)`, then
@@ -266,6 +324,18 @@ existing branch".
          "free_gb": exc.free_gb, "threshold_gb": exc.threshold_gb}, cycle_time=cycle_time)`,
          then `return _NwpFetchOutcome(cycle_time=cycle_time, fallback_used=False,
          nwp_unavailable=True)`. Runoff-only degrade; record emitted from the task.
+         **This explicit `return` is now REQUIRED (7th pass):** because
+         `DiskSoftLimitError` no longer subclasses `NoCycleAvailableError`, this clause
+         can NOT fall through to the `except NoCycleAvailableError` handler at `:660` —
+         it must construct and return the `_NwpFetchOutcome(nwp_unavailable=True)` itself
+         (mirroring exactly what the `:660` clause returns).
+         **`cycle_time` note (minor fix):** the `cycle_time=cycle_time` passed to
+         `_append_pipeline_health_record` (a REQUIRED param, `run_forecast_cycle.py:398`)
+         is the task's `cycle_time` parameter (`:627`) — the **requested / nominal**
+         cycle_time, NOT an adapter-resolved cycle. No resolved cycle exists yet when the
+         disk check fires (it is between `t0` at `:477` and the `try:` at `:478`, before
+         `_fetch_grib_files`), so there is nothing else to pass; the nominal cycle_time is
+         correct here.
        - `except DiskHardLimitError as exc:` → `log.error("nwp.disk_hard_limit", ...)` with
          the same fields, then `_append_pipeline_health_record(..., status=PipelineHealthStatus.CRITICAL,
          ...)`, then `return None`. Returning `None` is exactly what the old bare
@@ -280,9 +350,12 @@ existing branch".
        `abort_requested` sentinel, no explicit hard-abort guard.** The 4th-pass design
        added all of these to thread metadata to the flow; the 5th pass DROPS them all
        because the task now emits the record directly. The hard path returns `None` and
-       reuses the existing `:1210` abort verbatim; the soft path returns the existing
-       `_NwpFetchOutcome(nwp_unavailable=True)` (`:665-667`) verbatim → the existing
-       `:1231-1241` runoff-only path. `_NwpFetchOutcome` (`run_forecast_cycle.py:126-145`)
+       reuses the existing `:1210` abort verbatim; the soft path **constructs and returns
+       its own** `_NwpFetchOutcome(nwp_unavailable=True)` — identical to what the existing
+       `:665-667` branch returns, but produced inside the `except DiskSoftLimitError`
+       clause itself (7th pass — it can NOT fall through to `:660` now that
+       `DiskSoftLimitError` subclasses `AdapterError`) → the existing `:1231-1241`
+       runoff-only path. `_NwpFetchOutcome` (`run_forecast_cycle.py:126-145`)
        is **unchanged**.
     4. **Belt-and-suspenders log (store may be None).** `_append_pipeline_health_record`
        silently no-ops when `pipeline_health_store is None` (`:400-401`). The
@@ -304,12 +377,15 @@ existing branch".
     disk) → WARN + DEGRADE:** the adapter returns the **NWP-unavailable signal** so
     the cycle falls to runoff-only. **This is a NEW behaviour** (see corrected
     semantics above — today a fetch abort does NOT degrade). Concretely: have the
-    adapter raise `DiskSoftLimitError(NoCycleAvailableError)` on the soft-disk path.
-    The new, more-specific `except DiskSoftLimitError` clause in `_fetch_nwp_task`
+    adapter raise `DiskSoftLimitError(AdapterError)` on the soft-disk path (7th pass —
+    based directly on `AdapterError`, NOT on `NoCycleAvailableError`). The new,
+    more-specific `except DiskSoftLimitError` clause in `_fetch_nwp_task`
     emits the `DISK_USAGE` WARNING record (via `_append_pipeline_health_record` — the
-    task now has `pipeline_health_store` injected) and then returns
-    `_NwpFetchOutcome(nwp_unavailable=True)` — exactly the runoff-only signal the
-    existing `:665-667` branch produces → `effective_runoff_only` at `:1241`. Feed
+    task now has `pipeline_health_store` injected) and then **explicitly returns**
+    `_NwpFetchOutcome(nwp_unavailable=True)` — the same runoff-only signal the
+    existing `:665-667` branch produces → `effective_runoff_only` at `:1241`. (Because
+    `DiskSoftLimitError` no longer subclasses `NoCycleAvailableError`, this clause can
+    NOT fall through to the `:660` handler — it constructs the outcome itself.) Feed
     stays alive on native/fallback models; issue surfaced via the task's `DISK_USAGE`
     emit + the task/adapter log.
   - **Hard/critical (e.g. < ~0.5 GB scratch / < ~3 GB persistent disk) →
@@ -425,7 +501,19 @@ existing branch".
     reads `docker system df --format '{{json .}}'` (one JSON object per row, each with
     `Type` and `Reclaimable`), selects the `"Images"` and `"Build Cache"` rows
     explicitly, and parses each `Reclaimable` (stripping any trailing ` (xx%)` and the
-    `GB`/`MB` unit, normalising to GB). Gate `docker image prune -a -f` on the **Images**
+    `GB`/`MB` unit, normalising to GB). **Parsing tool (minor fix — name it explicitly):**
+    do NOT rely on `jq` (not confirmed present on the mac-mini / Docker-Desktop host) and
+    do NOT hand-roll a bash string hack (misparses the MB/GB suffix and the optional
+    ` (xx%)` trailer). Pipe the `{{json .}}` output into an inline `python3 -c "..."`
+    one-liner (per CLAUDE.md's Python-over-awk/sed mandate) that reads stdin
+    line-by-line, `json.loads` each row, picks the `"Images"` and `"Build Cache"` rows
+    by `Type`, strips the trailing ` (xx%)`, and normalises MB→GB / GB → float. Prefer
+    plain `python3` — the **host system** Python — because `prune-docker.sh` runs OUTSIDE
+    any container and `uv` is not guaranteed on `PATH` in the launchd minimal environment
+    (so `uv run python` cannot be assumed to resolve; note `watchdog.sh:8` does use
+    `exec uv run python`, but it runs in a very different context and is NOT a model for
+    this host-launchd script). Gate
+    `docker image prune -a -f` on the **Images**
     reclaimable and `docker builder prune -f` on the **Build Cache** reclaimable
     independently, each skipped when its figure is `< 1 GB`. Log the two figures and the
     per-command skip/prune decision.
@@ -468,28 +556,56 @@ existing branch".
   (`ignore_errors=True` retained; the explicit `is_dir()` filter plus the
   after-`mkdir` ordering make the sweep safe against both stray non-directory entries
   and a missing `scratch_path`);
-  (c) wrap the download body (the `while url ...` loop + STAC walk, `:535-644`) in
+  (c) wrap the download body (the `max_files=0` short-circuit + `while url ...` loop +
+  STAC walk + the final `if not grib_files and not max_files_reached: raise
+  AdapterError(...)` guard, **`:533-649`** — everything after `scratch_dir.mkdir(...)`
+  at `:504` up to but not including `return grib_files` at `:650`) in
   `try/except Exception: shutil.rmtree(scratch_dir, ignore_errors=True); raise` so a
   failed cycle cleans its own dir on any raise (this intentionally also cleans on
-  `AdapterError`/`BudgetExceededError` — see the D1 note) while the success return
+  `AdapterError`/`BudgetExceededError` at `:538,545,593,609` **and on the no-matching-
+  files `AdapterError` at `:646-649`** — see the D1 note) while the success return
   leaves files for `_parse_grib_files`. Do **not** touch `fetch_forecasts` for cleanup.
+  (The `:535-644` range in earlier drafts omitted the `:646-649` raise, leaving an empty
+  `scratch_dir` behind on the zero-GRIB-files path — corrected to `:533-649`.)
+  **Wrap-start clarification (7th pass — minor):** the wrap MAY start at `:533` for
+  structural uniformity (everything after `scratch_dir.mkdir(...)`), but note that the
+  `:533-534` `max_files <= 0` early-exit is a **flag assignment + short-circuit that
+  cannot raise** — it downloads nothing — so the `except Exception` cleanup is a **no-op
+  on that sub-path** (there is nothing partial to clean). The first genuinely raiseable
+  statement inside the wrap is ~`:537` (the STAC pagination / download path). This is
+  stated so a reader does NOT mistake the `max_files=0` path for a download path that
+  the cleanup is protecting — it is inside the wrap only for uniformity, not because it
+  can leave a partial download.
   Unit-tests: (1) seed a stale `scratch/<oldcycle>/` + confirm the sweep removes it on
   a fetch for a new cycle (adapter built with `disk_guard_enabled=True`, the default);
   (2) make the STAC walk raise mid-download, assert the active `scratch_dir` is gone
   afterward; (3) confirm the existing `test_cleans_scratch_on_entry`
   (`test_meteoswiss_nwp.py:975`) still passes unmodified; (4) success path leaves
   `scratch_dir` files intact for parse.
-- **D2 (code + config):** add a `disk_free_gb(path)` helper (`shutil.disk_usage`) and
+- **D2 (code + config):** add a `disk_free_gb(path)` helper (`shutil.disk_usage`,
+  wrapped in `try/except OSError` — **fail-OPEN (7th pass, confirmed):** on `OSError`
+  (e.g. the mount is missing / not yet created) the helper logs
+  `nwp.disk_check_probe_failed` and signals "unknown", and the caller then **SKIPS that
+  mount's tier comparison and proceeds as if the mount is healthy** — it does NOT abort
+  the fetch and does NOT treat the probe failure as a hard limit — see the D2
+  OSError-guard bullet) and
   a **pre-fetch check inside `MeteoSwissNwpAdapter.fetch_forecasts`
   (`meteoswiss_nwp.py:459`, top, before `_fetch_grib_files`), gated on
   `if self._disk_guard_enabled:`** (the NEW ctor flag, default `True`; the recording
-  tool passes `False`) — inserted AFTER `resolve_cycle` (`:464-465`) and BEFORE
-  `_fetch_grib_files` (`:479`). The adapter always
+  tool passes `False`) — inserted **between `t0 = time.perf_counter()` (`:477`) and the
+  `try:` (`:478`)**, i.e. AFTER `resolve_cycle` (`:464-465`) and OUTSIDE the existing
+  try that wraps `_fetch_grib_files` (`:479`) so `DiskSoftLimitError`/`DiskHardLimitError`
+  and any probe `OSError` are NOT swallowed by the `:496` `except Exception` (see the D2
+  insertion-point + OSError-guard bullets above). The `disk_free_gb(path)` probe wraps
+  `shutil.disk_usage` in `try/except OSError` and fails open (skip that mount). The
+  adapter always
   owns `self._scratch_path` and (threaded via ctor) `nwp_grid_archive_path`. On soft
-  raise `DiskSoftLimitError(NoCycleAvailableError)` carrying
+  raise `DiskSoftLimitError(AdapterError)` (7th pass — based on `AdapterError`, NOT
+  `NoCycleAvailableError`) carrying
   `path/free_gb/threshold_gb/subject`; the task's new `except DiskSoftLimitError`
   clause emits the WARNING `DISK_USAGE` record (via `_append_pipeline_health_record`,
-  now callable because `pipeline_health_store` is injected into the task) then returns
+  now callable because `pipeline_health_store` is injected into the task) then
+  **explicitly returns**
   `_NwpFetchOutcome(nwp_unavailable=True)` → runoff-only at
   `run_forecast_cycle.py:665-667,1231-1241`. On hard raise
   `DiskHardLimitError(AdapterError)` with the same attributes; the task's new
@@ -522,6 +638,44 @@ existing branch".
   new disk-guard tests then pass `disk_guard_enabled=True` explicitly (and the
   stale-sweep test likewise, per the D1 unit-test note) to exercise the guarded
   behaviour.
+  **Second `_make_adapter` helper (minor fix — completeness of the file inventory).**
+  `tests/unit/adapters/test_meteoswiss_nwp_real.py:31-40` has its OWN local `_make_adapter`
+  (distinct from the `test_meteoswiss_nwp.py:226-235` one). Its tests only call
+  `_parse_grib_files` directly — they never hit `_fetch_grib_files` or `fetch_forecasts`,
+  so the D1 sweep / D2 disk check would not fire there today. Proactively add
+  `disk_guard_enabled=False` to that helper too (belt-and-suspenders, one keyword), so a
+  FUTURE test in that file that calls `_fetch_grib_files`/`fetch_forecasts` does not
+  silently inherit `disk_guard_enabled=True` and get subjected to the operational disk
+  thresholds.
+  **Complete direct-construction call-site inventory (7th pass — the two `_make_adapter`
+  helpers are NOT the only affected sites).** Because the new `disk_guard_enabled: bool
+  = True` default turns the D1 stale sweep + D2 pre-fetch probe ON for any adapter built
+  without the flag, EVERY direct `MeteoSwissNwpAdapter(...)` construction whose test then
+  calls `_fetch_grib_files` or `fetch_forecasts` must be reconciled:
+  - `tests/unit/adapters/test_meteoswiss_nwp.py`: the shared `_make_adapter` helper
+    (`:226`) defaults `disk_guard_enabled=False` (above); PLUS the six direct
+    `MeteoSwissNwpAdapter(...)` constructions at **`:947`, `:1318`, `:1344`, `:1353`,
+    `:1369`, `:1393`** (each drives `_fetch_grib_files` directly — e.g. the call at
+    `:1353` runs against the ctor at `:1344`) must EACH pass `disk_guard_enabled=False`,
+    UNLESS the test specifically exercises the guard (a new disk-guard test passes
+    `disk_guard_enabled=True`). Without this, these pre-existing tests silently gain the
+    D1 sweep + D2 probe and can flake on a low-free-space CI runner.
+  - `tests/unit/adapters/test_meteoswiss_nwp_real.py:35` (`_make_adapter`): default
+    `disk_guard_enabled=False` (also covered by the "Second `_make_adapter` helper"
+    bullet above).
+  - `tests/integration/live/test_meteoswiss_nwp_live.py:66`: constructs the adapter
+    directly and then calls `fetch_forecasts` (the real live-STAC fetch), so with the
+    new `disk_guard_enabled=True` default the D2 pre-fetch `shutil.disk_usage` probe
+    would fire on EVERY live-STAC run. Pass `disk_guard_enabled=False` here too — the
+    live smoke test is about STAC fetch behaviour, not operational free-space limits,
+    and must not be aborted by a near-full local disk. (If a future maintainer instead
+    wants the live probe active, they must document explicitly why the operational
+    threshold is acceptable on the live path; the default choice here is opt-out.)
+  - `_make_delay_adapter` (`tests/unit/adapters/test_meteoswiss_nwp.py:365`) does **NOT**
+    need the flag: its tests only call `resolve_cycle_time`, never the
+    fetch/`_fetch_grib_files`/`fetch_forecasts` path, so neither the D1 sweep nor the D2
+    probe can fire. Leave it unchanged (recording the reasoning so a future reader does
+    not "fix" it needlessly).
   **Test file placement (minor fix).** The **adapter-level** tests (soft/hard raise
   `Disk*LimitError` with the right attributes, healthy → no raise, archive-`None` skip,
   recording-tool opt-out) live in `tests/unit/adapters/test_meteoswiss_nwp.py`
@@ -617,6 +771,17 @@ existing branch".
     which is a permanent no-op from the launchd cwd — see the `-a` safety note below);
     a guard-command error defaults to SKIP; the script sets an explicit absolute
     `PATH`/working dir per the `start-sapphire.sh` convention.
+    **Exact guard idiom (7th pass — pin it):** write the guard as a single leading-`!`
+    conditional that exits cleanly on "not running":
+    `if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q sapphire; then log 'stack not running or daemon unreachable — skipping prune'; exit 0; fi`.
+    The `2>/dev/null` swallows the daemon-unreachable stderr and the leading `!` makes a
+    non-zero `docker ps` exit (Docker daemon down) resolve to "not running → skip"
+    **without tripping `set -euo pipefail`** (the same shell mode as
+    `install-launchd.sh:8`): a bare `docker ps` under `pipefail` would abort the whole
+    script on daemon-down, but wrapping its non-zero status in an `if !` condition makes
+    that a tested branch, not an uncaught failure — so a daemon-down / unknown-state run
+    SKIPs the prune (the stated "guard-error defaults to SKIP" intent) rather than
+    aborting or, worse, pruning.
   - `scripts/launchd/ch.hydrosolutions.sapphire-docker-prune.plist` (new) — label
     `ch.hydrosolutions.sapphire-docker-prune`, weekly `StartCalendarInterval`.
   - `scripts/launchd/install-launchd.sh` (**edit — minor fix, was omitted**) — add
@@ -668,7 +833,8 @@ today — D2 soft-degrade is new behaviour), matched the D3 plist to the
 (2026-07-08)** resolving the reviewers' blockers/majors: (1) the DISK_USAGE emit was
 architecturally **unreachable** (the adapter raises; the task discards disk context;
 the flow only sees `_NwpFetchOutcome | None`) — fixed by adding
-`DiskSoftLimitError(NoCycleAvailableError)`/`DiskHardLimitError(AdapterError)` carrying
+`DiskSoftLimitError(NoCycleAvailableError)` (**base changed to `AdapterError` in the
+seventh pass — see below**) / `DiskHardLimitError(AdapterError)` carrying
 `path/free_gb/threshold_gb/subject`, **and (SUPERSEDED by the fifth pass) a
 `disk_check_detail: _DiskCheckDetail | None`
 field on `_NwpFetchOutcome` (with `severity` + `abort_requested`), a dedicated
@@ -693,10 +859,11 @@ four attributes; `adapters/meteoswiss_nwp.py` disk check + D1 cleanup;
 `flows/run_forecast_cycle.py` **imports `DiskSoftLimitError`/`DiskHardLimitError` from
 `sapphire_flow.exceptions` (added to the existing `:19-23` import block alongside
 `NoCycleAvailableError` — else the new clauses `NameError`)**, and `_fetch_nwp_task`
-gains a `pipeline_health_store` param + two disk `except`-clauses **placed as the FIRST
-TWO handlers, BEFORE `except NoCycleAvailableError` at `:660`** (NOT merely before
-`except Exception` at `:668` — since `DiskSoftLimitError` subclasses
-`NoCycleAvailableError`, any placement after `:660` would be swallowed) that emit
+gains a `pipeline_health_store` param + two disk `except`-clauses **placed before
+`except Exception` at `:668`** (7th pass — since `DiskSoftLimitError` now subclasses
+`AdapterError`, NOT `NoCycleAvailableError`, they no longer need to precede the `:660`
+`except NoCycleAvailableError` clause; the soft clause must **explicitly return**
+`_NwpFetchOutcome(nwp_unavailable=True)` since it can no longer fall through to `:660`) that emit
 `DISK_USAGE` via `_append_pipeline_health_record`
 and return `nwp_unavailable=True` (soft) / `None` (hard, reusing the existing `:1210`
 abort) — **no `_DiskCheckDetail`, no `_NwpFetchOutcome.disk_check_detail` field, no
@@ -796,9 +963,13 @@ disk-check insertion point to AFTER `resolve_cycle` (`:464-465`) / BEFORE
 emit a misleading DISK_USAGE record.
 
 **Sixth plan-review pass applied (2026-07-08)** resolving reviewer blockers/majors — all
-precision corrections, no design change: (1) **BLOCKER** — pinned the `_fetch_nwp_task`
-except-clause ordering UNAMBIGUOUSLY: because `DiskSoftLimitError` subclasses
-`NoCycleAvailableError`, the two new `except DiskSoftLimitError` / `except
+precision corrections, no design change: (1) **BLOCKER (SUPERSEDED by the seventh pass —
+`DiskSoftLimitError` re-based on `AdapterError`, so the "before `:660`" requirement is
+dropped; the two new clauses now only need to precede `except Exception` at `:668`, and
+the soft clause must explicitly return `_NwpFetchOutcome(nwp_unavailable=True)`)** —
+pinned the `_fetch_nwp_task`
+except-clause ordering UNAMBIGUOUSLY: because `DiskSoftLimitError` subclassed
+`NoCycleAvailableError` (at that time), the two new `except DiskSoftLimitError` / `except
 DiskHardLimitError` clauses MUST be the FIRST TWO handlers, inserted BEFORE
 `except NoCycleAvailableError` at `:660` (NOT merely before `except Exception` at `:668`);
 the earlier "ABOVE those generic branches" wording was ambiguous and any placement after
@@ -825,3 +996,55 @@ the new D1 sweep / D2 check; disk-guard tests pass `disk_guard_enabled=True` exp
 `nwp_unavailable=True` / WARNING-`DISK_USAGE` tests go in
 `tests/unit/flows/test_run_forecast_cycle.py` (adapter-level raise/attribute tests stay
 in `tests/unit/adapters/test_meteoswiss_nwp.py`).
+
+**Seventh plan-review pass applied (2026-07-08)** resolving reviewer blockers/majors —
+one design simplification (fix 1) plus precision corrections: (1) **MAJOR — re-based
+`DiskSoftLimitError` on `AdapterError` (SUPERSEDES the earlier
+`DiskSoftLimitError(NoCycleAvailableError)` design and its "must precede `:660`"
+except-ordering fix).** Disk pressure is semantically NOT "no NWP cycle published";
+subclassing `NoCycleAvailableError` was a footgun — any future `except
+NoCycleAvailableError` site would silently absorb a disk-soft event and drop the
+`DISK_USAGE` record. `DiskSoftLimitError` now subclasses `AdapterError` directly (same
+as `DiskHardLimitError`). Consequences propagated throughout: (a) the `except
+DiskSoftLimitError` clause in `_fetch_nwp_task` now **explicitly returns
+`_NwpFetchOutcome(nwp_unavailable=True)`** (mirroring the `:660` clause) — it can no
+longer fall through; (b) the except-ordering requirement SIMPLIFIES — the two new
+clauses only need to precede `except Exception` (`:668`), NOT `except
+NoCycleAvailableError` (`:660`) — the "first two handlers, before `:660`" language in
+the D2 wire-through, the `run_forecast_cycle.py` inventory, and the 6th-pass log entry
+were relaxed accordingly; (c) removed rationale claiming the subclassing "keeps existing
+except-order semantics intact" (that reasoning is now reversed). (2) **MAJOR — completed
+the `disk_guard_enabled=False` test call-site inventory.** Beyond the two `_make_adapter`
+helpers, the D2 inventory now covers the six direct
+`MeteoSwissNwpAdapter(...)` constructions in `test_meteoswiss_nwp.py` (`:947`, `:1318`,
+`:1344`, `:1353`, `:1369`, `:1393`) that drive `_fetch_grib_files` directly (each passes
+`disk_guard_enabled=False` unless it exercises the guard), the `test_meteoswiss_nwp_real.py:35`
+helper, and `tests/integration/live/test_meteoswiss_nwp_live.py:66` (which calls
+`fetch_forecasts`, so the D2 probe would fire on every live-STAC run → pass
+`disk_guard_enabled=False`). Noted `_make_delay_adapter` (`:365`) does NOT need the flag
+(its tests only call `resolve_cycle_time`). (3) **MINOR — pinned the D3 guard bash
+idiom:** `if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q sapphire; then log
+'stack not running or daemon unreachable — skipping prune'; exit 0; fi` — the
+`2>/dev/null` + leading `!` make a non-zero `docker ps` (daemon down) resolve to "not
+running → skip" safely under `set -euo pipefail` (matching `install-launchd.sh:8`),
+satisfying the "guard-error defaults to SKIP" intent. (4) **MINOR — fixed the `python3`
+justification:** removed the false `watchdog.sh` analogy (it actually uses `exec uv run
+python`, the opposite); the justification is now "prefer plain `python3` (host system
+Python) because `prune-docker.sh` runs outside any container and `uv` is not guaranteed
+on `PATH` in the launchd minimal environment." (5) **MINOR — clarified the D1 wrap
+range:** the `:533-534` `max_files <= 0` early-exit is a flag assignment that cannot
+raise, so the `except Exception` cleanup is a no-op on that sub-path; the first raiseable
+statement is ~`:537`. The wrap may start at `:533` for structural uniformity, but this is
+stated so a reader does not mistake the `max_files=0` path for a download path. (6)
+**MINOR — OSError fail-open confirmed:** the `disk_free_gb(path)` `try/except OSError` is
+fail-OPEN — on `OSError` (e.g. mount missing) it skips that mount's tier comparison and
+proceeds as if healthy; it does NOT abort the fetch.
+
+_(Note: the disk-probe insertion point pin — between `t0` at `:477` and `try:` at `:478`,
+OUTSIDE the existing try — the D1 `:533-649` wrap extension, the thread-based-execution
+caveat for the injected `pipeline_health_store`, the nominal-`cycle_time` clarification,
+the `python3 -c`/`{{json .}}` parsing-tool naming, and the second `_make_adapter`
+(`test_meteoswiss_nwp_real.py`) inventory addition were already folded into the body in
+an earlier iteration of this pass; fixes (1)–(6) above supersede/extend them where they
+overlap — in particular fix (1) reverses the "subclasses `NoCycleAvailableError`"
+premise and fix (4) reverses the `watchdog.sh` parsing-tool analogy.)_
