@@ -32,6 +32,9 @@ code-grounded pass, e.g. `codex exec -s read-only`) whenever it is added or touc
 - **Training / hindcast / skill** — the offline model lifecycle: training-data
   assembly, model training + artifact creation / registration / promotion, hindcast
   generation, skill computation, retraining / recomputation.
+- **Alerting / alert-state** — ensemble/observation threshold checking, the
+  danger-level model, the Alert lifecycle (raise / acknowledge / resolve), dedup /
+  auto-resolve semantics, and the (unimplemented) notification boundary.
 
 ---
 
@@ -503,3 +506,68 @@ Use this map when a task touches the **offline model lifecycle** — training-da
 **Context packet reminder:**
 
 When this map applies, the context packet should name: which touch trigger and lifecycle stage apply; which upstream inputs (scope resolution, sources, `model_priorities`, persisted hindcasts) were inspected; which downstream consumers (forecast cycle, skill-from-hindcast, API readers) are affected or explicitly not; which contracts are at risk and which are aspirational vs real; and which focused tests will prove the change.
+
+### Touchpoint map: Alerting / alert-state
+
+Use this map when a task touches alert **evaluation, state, or delivery** — ensemble/observation threshold checking, the danger-level model, the `Alert` lifecycle (`RAISED` → `ACKNOWLEDGED` → `RESOLVED`), dedup/resolve semantics, or the notification boundary. For **where** alert evaluation attaches to a forecast run (Phase C, the `AlertEligibility` partition, the single all-or-nothing guard), use the **Forecast cycle / assignment selection** map. For `PgAlertStore.upsert_alert` / `acknowledge_alert` write semantics and the `POST /alerts/{id}/acknowledge` route (auth + RESOLVED-guard race), use the **Persistence / API write path** map. Danger-level / severity definitions are normative in `docs/standards/wmo.md` (WMO-1150 impact-based warnings) — cite it, do not restate. **Aspirational-vs-real is a core hazard here** — much of the notification and state surface is enum/type-only; flagged below.
+
+**Common touch triggers:**
+
+- ensemble threshold checking (`check_station_alerts`, `alert_checker`, `_compute_exceedance` in `alert_strategy`)
+- observation threshold checking (`check_observation_alerts`, `observation_alert_checker`)
+- danger-level config (`DangerLevelDefinition`, `DeploymentConfig.get_danger_level_definitions`)
+- multi-model alert combination (`ModelCombinationStrategy` enum + the `ModelAlertStrategy` Protocol — `PrimaryModelStrategy` / `PooledEnsembleStrategy`)
+- ensemble-adequacy / representation gates (`_ensemble_size_adequate`, MEMBERS vs QUANTILES)
+- the `Alert` lifecycle / `AlertStatus` / `AlertSource`
+- notification delivery (`NotificationChannel`, `NotificationAdapter`, `Alert.notified_at`)
+- tests exercising alert raise / resolve / acknowledge
+
+**Upstream inputs to inspect:**
+
+- the alert-eligibility partition that gates which ensembles reach the checker (owned by the **Forecast cycle** map — models declared `CURRENT_OBS_PROXY` / `NO_EVENT_INFORMATION` never raise)
+- forecast path: `config.enable_forecast_alerts`, `config.threshold_check_mode`, `config.alert_model_strategy` (the alert combination-strategy knob — **not** `config.forecast_combination_strategy`, which is the unrelated forecast-cycle output-combination field owned by the **Forecast cycle** map), ensemble-size floors
+- observation path: `config.enable_observation_alerts` (its on/off gate), plus the latest `QC_PASSED` observation within lookback
+- `DangerLevelDefinition`s (name, `trigger_probability`, `direction`) from deployment config
+
+**Core implementation touchpoints:**
+
+- forecast path: `check_station_alerts` → per-danger-level exceedance vs `trigger_probability`; `_compute_exceedance` reduces across lead times
+- observation path: `check_observation_alerts` — a **separate, fully-wired** point-threshold checker (latest value vs threshold, no probability, no direction), invoked from the observation-ingest flow
+- combination: `ModelCombinationStrategy` selection in `alert_checker` + `alert_strategy`
+- state writes: `PgAlertStore.upsert_alert` (write semantics owned by the **Persistence** map); `resolve_alert` is a trivial in-place status flip to `RESOLVED`
+- acknowledge: `POST /alerts/{id}/acknowledge` → `acknowledge_alert` (owned by the **Persistence** map)
+- delivery boundary: `NotificationChannel` / `NotificationAdapter` Protocol (**no concrete implementation exists**)
+
+**Downstream consumers to inspect when behavior changes:**
+
+- the acknowledge route + any `AlertStatus` reader if the state set or transitions change (**Persistence** map)
+- API / dashboard alert readers if `Alert` shape, `alert_level` string domain, or `AlertSource` changes
+- pipeline monitoring — `DATA_UNAVAILABLE` and `AlertSource.PIPELINE` belong to Flow 4, **not** this subsystem (see contracts)
+- tests / fixtures asserting raise/resolve/dedup or acknowledge branches
+
+**Contracts that must not change silently:**
+
+- **The threshold statistic is reduced by MAX across lead times** ("alert if any lead time exceeds") — not mean/single-quantile. Changing the reduction silently shifts trigger sensitivity across the whole subsystem. See `_compute_exceedance`'s docstring for the MEMBERS/QUANTILES computation.
+- **Dedup is by active rows only: a `RESOLVED` row never blocks a fresh raise for the same station/level/source** (resolution is final per row). The active-row unique index is owned by the **Persistence** map.
+- **Danger levels are independent, concurrently-active rows — there is no supersede/auto-resolve between them.** One station can simultaneously hold `RAISED` at two levels; each clears only when its own probability drops. `DangerLevelDefinition.display_order` is display ordering, **not** precedence.
+- **`Alert.first_detected_at` is NOT preserved across re-raises** — `upsert_alert`'s ON CONFLICT resets it to the new trigger time every cycle. Do not build duration-based logic on the assumption it is stable.
+- **Auto-resolve is completeness-gated and never fires on missing data.** A level resolves only when no longer exceeded **and** every configured parameter was evaluated this cycle; on missing sensors/models active alerts **persist silently** (deferred, Plan 039). There is **no hysteresis**: `resolve_probability`, `min_trigger_duration`, `min_resolve_duration` on `DangerLevelDefinition` (the `*_hours` names are the deployment-config boundary equivalents) are validated but **never read** — aspirational.
+- **`BELOW`-direction is aspirational in the forecast path only.** `check_station_alerts` evaluates only `ThresholdDirection.ABOVE`; the observation path has no direction concept (`StationThreshold` has no `direction` field, always compares `>=`). A non-`raw` `threshold_check_mode` is **rejected — the check skips and logs `alert.check_mode_rejected`** (it does not fall back to raw). `BMA` / `CONSENSUS` are not implemented: **multi-model input degrades to POOLED / PRIMARY with an `alert.strategy_degraded` warning**, while single-model input resolves straight to PRIMARY. Only PRIMARY and POOLED are real.
+- **Alert delivery is not implemented — "webhook-only" is convention, not enforcement.** `NotificationChannel` lists `EMAIL`/`SMS`/`WEBHOOK` and `NotificationAdapter` is a Protocol, but **no concrete adapter exists** and `Alert.notified_at` is hard-coded `None`. Nothing sends, retries, or enforces webhook-exclusivity. (The Slack poster in `ops.watchdog` is pipeline-health, **not** flood-alert delivery.)
+- **The flood-alert state model excludes `DATA_UNAVAILABLE`** (only `RAISED`/`ACKNOWLEDGED`/`RESOLVED`). `AlertSource.PIPELINE` exists but no `PIPELINE`-sourced `Alert` is produced — station-dark detection writes a `PipelineHealthRecord`. Pipeline alerting is Flow-4 deferred (Plan 039).
+- **`alert_level` is a free-form string keyed to deployment `DangerLevelDefinition`s** — not a fixed enum, not yet WMO tri-color-locked (a v1 item per `wmo.md`).
+- **Acknowledge-route atomicity (the RESOLVED-guard TOCTOU race) is a Persistence-map contract** — do not re-derive or duplicate the fix here.
+- repo-specific Task Exit Gate still applies before PR approval
+
+**Suggested verification:**
+
+- exceedance-reduction test proving MAX-across-lead-time on both MEMBERS and QUANTILES paths
+- combination-strategy test per reachable branch (PRIMARY, POOLED, and BMA/CONSENSUS → documented fallback)
+- resolve regression: exceeded→cleared resolves only when all parameters evaluated; missing-data leaves the alert active (Plan 039)
+- dedup regression: re-raise merges the active row; a `RESOLVED` row does not block a fresh raise
+- observation-path test (point threshold, latest `QC_PASSED` value)
+- full Task Exit Gate for implementation PRs
+
+**Context packet reminder:**
+
+When this map applies, the context packet should name: which touch trigger applies (evaluation, state, or delivery); which upstream inputs (eligibility partition, config flags, danger-level defs) were inspected; which downstream consumers (acknowledge route, API/dashboard readers, pipeline monitoring) are affected or explicitly not; which contracts are at risk and which are aspirational vs real; and which focused tests will prove the change.
