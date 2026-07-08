@@ -140,7 +140,8 @@ and verification a context packet points into when a task touches a given subsys
 live in **`docs/touchpoint-maps.md`**. Consult the relevant map when building the
 context packet. Current maps: **ForecastInterface / model execution**; **Forecast
 cycle / assignment selection**; **Persistence / API write path**; **Prefect / Docker /
-deployment**. Their governance — the right-sizing fitness test — is below (see
+deployment**; **Training / hindcast / skill**. Their governance — the right-sizing
+fitness test — is below (see
 Right-sizing).
 
 ### Required perspectives

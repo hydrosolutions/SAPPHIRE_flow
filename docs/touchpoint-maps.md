@@ -29,6 +29,9 @@ code-grounded pass, e.g. `codex exec -s read-only`) whenever it is added or touc
 - **Prefect / Docker / deployment** — deployment registration, work-pool topology,
   Docker build / compose / Caddy topology, entrypoint, DB migration sequencing,
   the VERSION deploy convention, the Mac-mini launchd host.
+- **Training / hindcast / skill** — the offline model lifecycle: training-data
+  assembly, model training + artifact creation / registration / promotion, hindcast
+  generation, skill computation, retraining / recomputation.
 
 ---
 
@@ -429,3 +432,74 @@ Before planning or implementation, inspect the relevant touchpoints below and in
 **Context packet reminder:**
 
 When this map applies, name: which touch trigger (Prefect-layer, image/compose-layer, or host/deploy-layer); which standards doc(s) + sibling map(s) were consulted and which items are implemented vs aspirational; which downstream consumers (restart scripts, `init`, CI, affected docs) are impacted; which contracts (overlay-parity, stale-image, `VERSION`-unset, non-root, `mem_limit`, builder-`git`) are at risk; which build / migration / registration checks will prove the change.
+
+### Touchpoint map: Training / hindcast / skill
+
+Use this map when a task touches the **offline model lifecycle** — training-data assembly, model training + artifact creation / registration / promotion, hindcast generation, skill computation, or retraining / recomputation. For the model boundary (`train` / `serialize_artifact` / `predict`, `ModelDataRequirements`) and for `_assemble_hindcast_inputs` + `resample_to_time_step`, use the **ForecastInterface / model execution** map — this map does not re-derive them. For the *write semantics* of `store_artifact` / `store_hindcast` / `register_model`, use the **Persistence / API write path** map. Verification-metric definitions are normative in `docs/standards/wmo.md` — cite it, do not restate it. **Aspirational-vs-real is a core hazard here** (several lifecycle automations are manual-trigger-only or DRAFT) — flagged below; verify before depending on one.
+
+**Common touch triggers:**
+
+- training-data assembly (`assemble_station_training_data` / `assemble_group_training_data`)
+- training / serialization (`train_station_model` / `train_group_model`, `model.train` / `serialize_artifact`, `ModelParams` passthrough)
+- artifact creation / integrity / promotion (`store_and_promote_artifact`, `promote_artifact`, SHA-256 verify, `ArtifactIntegrityError`)
+- STATION vs GROUP artifact scope + assignment-priority ordering
+- hindcast generation (`run_hindcast_flow`, `run_station_hindcast` / `run_group_hindcast`)
+- skill computation (`compute_skills_task`, `compute_skill_for_station`, `compute_combined_skills_flow`)
+- onboarding skill gate (`evaluate_skill_gate`) vs retrain (no gate)
+- `model_training:{model_id}` concurrency, `clock` / `rng` injection
+- retraining / recomputation triggers, staleness (`SkillStore.mark_stale`)
+- tests exercising any lifecycle flow
+
+**Upstream inputs to inspect:**
+
+- scope resolution: `determine_training_scope` (retrain) / `determine_onboarding_scope` (onboarding) → `TrainingUnit` per station (STATION) or per group (GROUP); `ArtifactScope`
+- observation / forcing sources feeding assembly (same sources as operational input — see the FI map)
+- `DeploymentConfig.model_priorities` (operator-set assignment priority)
+- persisted hindcast rows + observations that skill computation reads back
+- injected `clock` / `rng` at each flow signature
+
+**Core implementation touchpoints:**
+
+- entry flows: `train_models_flow` (retrain/refresh, sequential per-unit loop) and `onboard_model_flow` (first-time onboarding: `adapt_if_fi` → register → per-unit compat → smoke → train → hindcast → skill-gate → promote → assignment). A *separate* Flow-5 flow, `onboard_stations_flow` / `onboard_from_camelsch`, also runs its own hindcast + skill wiring — it is not the only hindcast/skill producer
+- train/serialize service: `train_station_model` / `train_group_model`
+- artifact store + promotion: `store_and_promote_artifact` (retrain), store-as-TRAINING then `promote_artifact` on passed gate (onboarding) — write semantics in the Persistence map
+- `register_models` / `build_registry_entry` → `register_model` (model-class catalog row, distinct from artifacts)
+- hindcast services (`run_station_hindcast` / `run_group_hindcast`) and the legacy `_to_legacy_model_inputs` GROUP shim
+- skill service: `compute_skill_for_station` (strata by lead-time / season / flow-regime; `SkillScore` + `SkillDiagram`), combined/BMA skill in `combined_skill`
+- skill gate: `evaluate_skill_gate` / `_evaluate_skill_gate_task` — an **automated threshold** compare against `config.skill_gate_thresholds` (no human step); onboarding-only
+
+**Downstream consumers to inspect when behavior changes:**
+
+- forecast cycle: an ACTIVE artifact + assignment is what the operational cycle loads (see the **Forecast cycle** map)
+- skill computation consumes **persisted hindcast rows** — a hindcast schema / dedup change propagates here, not just to write-atomicity callers
+- API / dashboard readers of skill scores, diagrams, artifact status
+- `SkillStore.mark_stale` — **unwired today** (defined on the store, zero production callers; only tests exercise it). Its data-recovery / rating-curve consumers are unimplemented v1 designs — a design gap, not code to trace
+- tests / fixtures asserting artifact status transitions, skill metrics, or scope
+
+**Contracts that must not change silently:**
+
+- **STATION trains one artifact per station; GROUP trains ONE artifact shared across the whole group** (`assemble_group_training_data` concatenates all group stations, tagged by `station_id`). Do not assume a per-station artifact for GROUP.
+- **Assignment priority is config-driven for ordinary models but code-enforced for fallbacks.** Ordering among non-fallback models is a pure `model_priorities` convention an operator sets (the shipped default actually runs NWP/weather models *before* linear, not the reverse). The two fallbacks (`FALLBACK_MODEL_IDS`) DO have a code floor: `_assert_assignment_priority_invariant` raises `ConfigurationError` if their priority drops below `FALLBACK_PRIORITY_THRESHOLD` at assignment creation. Don't conflate the two.
+- **Train/serve/hindcast are NOT preprocessing-parity.** `resample_to_time_step` is shared training↔operational (owned by the FI map); hindcast's independent assembly (`_assemble_hindcast_inputs`, uses neither) is also owned there. This map only flags the fallout: a skill/hindcast change must not assume the hindcast leg matches train/serve preprocessing.
+- **Skill depends on hindcast rows already being persisted** — `compute_skills` is fan-out over `(station_id, parameter)` that reads stored hindcasts + observations. Because `store_hindcast` has no natural-key dedup (Persistence map), a re-run is additive, not idempotent — skill callers must key off `hindcast_run_id`.
+- **Three lifecycle flows re-verify SHA-256 after the store already did** (store raises `ArtifactIntegrityError` on read — Persistence map): `onboard_model`, `train_models`, and `run_hindcast` each re-hash and raise a plain `ValueError` instead — an exception-type inconsistency; do not standardize one without the rest.
+- **Retrain promotes without a skill gate; onboarding gates first.** `store_and_promote_artifact` moves a retrained artifact straight to ACTIVE, whereas onboarding stores as TRAINING and promotes only on `evaluate_skill_gate(...).passed`. A bad retrain has no skill floor — confirm this asymmetry is intended.
+- **`ModelParams` is always `{}` at both call sites** — hyperparameter passthrough is aspirational; do not assume tuned params flow into `train`.
+- **`clock` / `rng` are injectable on the core lifecycle flows** (train / onboard-model / hindcast) for determinism, but they **default to live `datetime.now(UTC)` / `random.Random()`**, and *station* onboarding is an exception (no `rng` param; hard-codes `Random(42)` + a `datetime.now` skill callback). Don't assume determinism is enforced everywhere.
+- **Concurrency gap**: the `model_training:{model_id}` slot is acquired **only in onboarding**. Deployment-level `concurrency_limit=1` serializes repeated runs of the *same* deployment (Prefect/Docker map), so two retrains queue — but a retrain and a concurrent onboarding for the same `model_id` (two deployments, independent scopes) are NOT mutually exclusive.
+- **Lifecycle automation is largely manual-trigger.** `run-hindcast` runs as a subflow and `compute-skills` as a `compute_skills_task.map()` task fan-out, from `train_models_flow` / `onboard_model_flow`; `compute-combined-skills` and `train_models_flow` are cron-less registered deployments with **no automated caller** (trigger-only). **Automated skill-decay-triggered retraining does not exist** (deferred). The hindcast window cap (Plan 094) is **DRAFT** — the wide 1980–2030 default lives in *station onboarding* (`onboard_from_camelsch`), not `onboard_model_flow` (which already bounds to `now.year - 2`); apply the fix to the right module.
+- repo-specific Task Exit Gate still applies before PR approval
+
+**Suggested verification:**
+
+- training test per scope: STATION one-artifact-per-station and GROUP one-shared-artifact (concatenation tagged by `station_id`)
+- artifact integrity regression: corrupt bytes → `ArtifactIntegrityError` on read; fallback below `FALLBACK_PRIORITY_THRESHOLD` → `ConfigurationError`
+- promotion regression: onboarding gates on skill (TRAINING→ACTIVE only on pass) vs retrain promotes unconditionally
+- hindcast → skill round-trip proving skill reads persisted rows, plus a re-run-duplication check keyed on `hindcast_run_id`
+- skill-metric test against `wmo.md` definitions
+- determinism test injecting a seeded `rng` + fake `clock` on a core flow
+- full Task Exit Gate for implementation PRs
+
+**Context packet reminder:**
+
+When this map applies, the context packet should name: which touch trigger and lifecycle stage apply; which upstream inputs (scope resolution, sources, `model_priorities`, persisted hindcasts) were inspected; which downstream consumers (forecast cycle, skill-from-hindcast, API readers) are affected or explicitly not; which contracts are at risk and which are aspirational vs real; and which focused tests will prove the change.
