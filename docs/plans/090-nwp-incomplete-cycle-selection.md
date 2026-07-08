@@ -184,6 +184,6 @@ Whether the coverage threshold / delivery-delay is a `DeploymentConfig` value
 
 ## Process
 
-READY (grill-me done). **P1** is the next implementation (hold-at-PR) and gates
-the Mac-mini data-collection deployment's forecast quality. **P2** is a deferred
-precision refinement. Re-scope P2 into its own plan when P1 lands.
+**P1** shipped (age-delay guard + post-download validation, PR #49) — it gated
+the Mac-mini data-collection deployment's forecast quality. **P2** is a deferred,
+OPTIONAL precision refinement; re-scope it into its own plan file before implementing.

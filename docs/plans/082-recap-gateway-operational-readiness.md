@@ -269,8 +269,9 @@ uv run pytest tests/unit/adapters/test_recap_gateway_cycle_resolution.py
      `MeteoSwissNwpAdapter`).
    - **(b)** Parameterize `_check_nwp_grid_staleness` (`run_forecast_cycle.py:508-546`) on
      the **active NWP source string** instead of the module-level `_ICON_NWP_SOURCE`,
-     wiring the call site at `:1244-1250`. On an IFS-only Nepal deployment (no ICON Zarr
-     store) the current `fetch_latest("icon_ch2_eps")` returns `None` every cycle and
+     wiring the call site at `:1244-1250`. On an IFS-only Nepal deployment the current
+     `fetch_latest_cycle_time("icon_ch2_eps")` over `weather_forecasts` (NOT the Zarr grid
+     archive — do not send the fix toward grid storage) returns `None` every cycle and
      writes `PipelineHealthStatus.CRITICAL` / `PipelineCheckType.NWP_DELIVERY` (`:536-545`)
      — a permanent false alarm. Skip/redirect the ICON-grid staleness check for gateway
      (pre-extracted, non-gridded) sources.
@@ -288,18 +289,22 @@ uv run pytest tests/unit/adapters/test_recap_gateway_cycle_resolution.py
      `fetch_weather_forecasts(nwp_source=…)` (`services/operational_inputs.py:323-330`) finds
      them — otherwise every Nepal station logs `operational_inputs.no_nwp` and returns None.
 
-**Cross-check (owned by the D5-2 DHM-obs/onboarding plan, verified here):** any
-`StationWeatherSource` binding for a gateway NWP source MUST carry
-`extraction_type = SpatialRepresentation.BASIN_AVERAGE` (`types/enums.py:73-77`), validated
-at onboarding — else `_select_nwp_source`'s fallback (`run_forecast_cycle.py:98`) silently
-routes the station through `_ICON_NWP_SOURCE`, defeating this fix while the 2C test still passes.
+3. **Generic gateway-binding validator (owned HERE, not deferred to D5-2).** To remove a
+   sequencing contradiction (the completion-gate test below asserts the invariant, so its
+   owner cannot be a later Wave-2 plan): Task 2C ships a **minimal, generic** validator —
+   any `StationWeatherSource` binding for a gateway NWP source MUST carry
+   `extraction_type = SpatialRepresentation.BASIN_AVERAGE` (`types/enums.py:73-77`), else
+   `_select_nwp_source`'s fallback (`run_forecast_cycle.py:98`) silently routes the station
+   through `_ICON_NWP_SOURCE` and defeats the fix. The **fuller, DHM-specific** onboarding
+   validation (per-station units, datums, gauge metadata) remains owned by the D5-2 DHM-obs/
+   onboarding plan, which **extends** this generic check — D5-2 depends on 2C, not vice-versa.
 
 **Scope out:** Do not collapse all adapter errors into stale NWP delivery.
 
 **Authoring dependency:** the dispatch regression test cannot compile until the
-`RecapGatewayAdapter` class exists (Plan 081). Per the 081→082 phase edge (`082:432`),
-sequence **081 WF2 merge → author the 2C dispatch test**; do not stall a WF2 agent on a
-missing import.
+`RecapGatewayAdapter` class exists (Plan 081). Per the 081→082 dependency (frontmatter
+`082:7-8`; graph `082:476,483`), sequence **081 WF2 merge → author the 2C dispatch test**;
+do not stall a WF2 agent on a missing import.
 
 **Verification:**
 
@@ -307,12 +312,17 @@ missing import.
 uv run pytest tests/unit/flows/test_run_forecast_cycle.py::TestRecapNwpDeliveryWatchdog tests/integration/store/test_pipeline_health_store.py
 ```
 
-Plus a **completion-gate test**: route an IFS-bound station (`nwp_source="ifs_ecmwf"`,
-`extraction_type=BASIN_AVERAGE`) through the full dispatch and assert it (i) selects the
-gateway source, (ii) constructs the `RecapGatewayAdapter` (not `MeteoSwissNwpAdapter`), and
-(iii) does **not** emit a `PipelineHealthStatus.CRITICAL` `NWP_DELIVERY` record from an empty
-ICON store; plus an onboarding test asserting a `ConfigurationError` when a gateway binding
-uses a non-`BASIN_AVERAGE` `extraction_type`.
+Plus a **completion-gate test that cannot pass by disabling the watchdog** (the loose form
+would let "delete the staleness check entirely" pass): use a store with a callable
+`fetch_latest_cycle_time`, seed **no** `icon_ch2_eps` cycles and a **fresh** `ifs_ecmwf`
+cycle (or assert the gateway skip path), then route an IFS-bound station
+(`nwp_source="ifs_ecmwf"`, `extraction_type=BASIN_AVERAGE`) through the full dispatch and
+assert it (i) selects the gateway source, (ii) constructs the `RecapGatewayAdapter` (not
+`MeteoSwissNwpAdapter`), and (iii) does **not** emit a `PipelineHealthStatus.CRITICAL`
+`NWP_DELIVERY` record. **Plus a POSITIVE control:** a genuinely stale *active* source (an
+ICON-bound Swiss station with an old cycle) **still** emits CRITICAL — proving the watchdog
+was made source-aware, not switched off. **Plus** an onboarding test asserting a
+`ConfigurationError` when a gateway binding uses a non-`BASIN_AVERAGE` `extraction_type`.
 
 #### Task 2D - Define and test temporal model-input join policy
 
@@ -363,17 +373,29 @@ or from a supervised manifest if not.
 uv run pytest tests/unit/services/test_gateway_coverage_gate.py::TestGatewayCoverageManifest
 ```
 
-#### Task 3B - Gate Flow 6 training on coverage
+#### Task 3B - Gate Flow 6 training on coverage + parametric multi-year backfill window
 
-**Scope in:** Refuse training unless coverage contains the requested training
-window for every required Gateway-backed variable, spatial target, and band.
+**Scope in:**
+1. Refuse training unless coverage contains the requested training window for every
+   required Gateway-backed variable, spatial target, and band.
+2. **Parametric historical-forcing backfill window** (added per Plan 106 — this is the
+   home for the multi-year-ingest gap): `ingest_weather_history` is **hardcoded to a
+   60-day window** (`flows/ingest_weather_history.py:50` `_WINDOW_DAYS = 60`, used at
+   `:300` as `now - 60 days`) — the MeteoSwiss open-data archive limit. Add explicit
+   `start`/`end` (or `window_days`) backfill parameters so Nepal ERA5-Land/Snowmapper
+   training can accrue **multi-year** history from the gateway; **keep the Swiss 60-day
+   default** unchanged (no regression to the MeteoSwiss path). Tie **Task 4A**'s manual
+   Gateway back-extraction runbook to the coverage manifest so a supervised backfill is
+   verifiable via coverage. (A separate plan is warranted ONLY if automated/chunked
+   large-backfill orchestration is later needed — a plain parametric window suffices for v1.0.)
 
-**Scope out:** Do not weaken existing Swiss/CAMELS training paths.
+**Scope out:** Do not weaken existing Swiss/CAMELS training paths; do not build automated
+chunked-backfill orchestration here.
 
 **Verification:**
 
 ```bash
-uv run pytest tests/unit/services/test_gateway_coverage_gate.py::TestGatewayCoverageGate tests/unit/flows/test_train_models.py::TestGatewayCoverageTrainingGate
+uv run pytest tests/unit/services/test_gateway_coverage_gate.py::TestGatewayCoverageGate tests/unit/flows/test_train_models.py::TestGatewayCoverageTrainingGate tests/unit/flows/test_ingest_weather_history.py::TestParametricBackfillWindow
 ```
 
 ### Phase 4 - Gateway Operations Runbooks
