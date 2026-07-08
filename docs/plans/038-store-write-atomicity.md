@@ -1,8 +1,40 @@
 # Plan 038 — Store Write Atomicity (AUTOCOMMIT → Transactional Two-Phase Inserts)
 
-**Status**: DRAFT
+**Status**: DRAFT — grill-me COMPLETE (2026-07-08); next = WF1 plan-review
 **Phase**: Cross-cutting (store layer + flows)
 **Depends on**: Plan 037 (security audit finding H-21)
+
+## Grill-me decisions (2026-07-08)
+
+Six forks were resolved in a grill-me held 2026-07-08:
+
+- **D1 — Read resilience (SCOPE ADDITION)**: In addition to prevention
+  (`engine.begin()`) and the one-time cleanup migration, harden the hindcast
+  read path so a single orphan header does **not** crash the whole fetch. The
+  orphan is skipped with a `WARNING` log **and** an observability signal —
+  resilient BUT loud. Scoped to the hindcast read path (forecast and
+  station-group reads already tolerate orphans via INNER JOINs). See
+  `### Read-path resilience (D1)` in Design and `### Step 7` in Tasks.
+- **D2 — Cleanup migration**: KEEP the destructive one-time delete (forecast +
+  hindcast orphans via `NOT EXISTS`), with the backup requirement and
+  paused-flows / deploy-time execution; `station_groups` stays excluded (manual
+  dry-run). Rationale: a header with zero value rows is definitionally valueless,
+  and the migration runs with flows paused (no concurrent writes). See Step 4.
+- **D3 — Test isolation**: KEEP the `tests/integration/store/conftest.py` autouse
+  `TRUNCATE … CASCADE` fixture, but PIN that it must tear down **after** the
+  `db_connection` rollback fixture releases its locks (so the separate-connection
+  `TRUNCATE` cannot block/deadlock on a still-open per-test transaction), and add
+  a test asserting isolation actually holds. See the Step 5a refinement.
+- **D4 — Core approach CONFIRMED**: `conn.engine` + per-method `engine.begin()`
+  (a second short-lived pooled connection per two-phase write; the shared
+  AUTOCOMMIT connection is untouched; zero constructor changes).
+- **D5 — Error handling CONFIRMED**: wrap each `engine.begin()` in
+  `try / except SQLAlchemyError` → log `ERROR` + raise `StoreError` (widening
+  `StoreError` to write failures); reads and single-statement writes keep
+  propagating raw exceptions.
+- **D6 — task.map invariant**: DOCUMENT the sequential-writes invariant (rely on
+  the non-picklable SQLAlchemy connection as the de facto fan-out barrier); do
+  **not** add a runtime guard.
 
 ## Context
 
@@ -44,7 +76,10 @@ third — its header upsert + member insert is the same two-phase pattern.
   first, then values separately. An orphan header triggers
   `_reconstruct_ensemble`, which raises `ValueError("No hindcast_values rows
   for hindcast_forecast_id=...")`. **An orphan header crashes the fetch**, it
-  does not silently degrade.
+  does not silently degrade. **(Changed by D1 → skip-with-WARNING; see
+  `### Read-path resilience (D1)` below and Step 7.)** Because this fetch feeds
+  skill computation / model comparison, one orphan aborting the whole batch is
+  the worst-case blast radius, and the reason D1 hardens this path.
 - **Station group**: `fetch_groups_for_station` uses an INNER JOIN on
   `station_group_members`, so an orphan group header (no members) is **invisible**
   to this query. Only a direct `fetch_group(group_id)` call reveals the orphan,
@@ -196,6 +231,54 @@ store layer uses synchronous SQLAlchemy (psycopg2), not asyncpg — this is a
 pre-existing driver choice gap unrelated to this plan. If the future COPY
 migration follows the asyncpg path, the `engine.begin()` wrapper would need
 replacement, not just extension.
+
+### Read-path resilience (D1)
+
+Prevention (`engine.begin()`) and the one-time cleanup migration close the
+orphan-creation window and remove the historical orphans, but neither guarantees
+a fetch will never meet an orphan header again (crash between deploy of the fix
+and next cleanup, an orphan created by a path outside the three hardened methods,
+or a future duplicate-header edge case). D1 makes the hindcast read path
+**resilient BUT loud**: a single orphan header must not abort the whole fetch.
+
+Concretely, in the `fetch_hindcasts` loop (`hindcast_store.py` ~:125 and ~:186),
+before reconstructing each ensemble, the missing-value-rows condition is checked:
+when a header id has zero `hindcast_values` rows, the loop logs a `WARNING` and
+**skips** that header (`continue`) instead of calling `_reconstruct_ensemble` and
+propagating its `ValueError`:
+
+```python
+if not rows_for_id:
+    log.warning(
+        "hindcast.orphan_header_skipped",
+        hindcast_forecast_id=fid,
+        station_id=station_id,
+    )
+    continue
+ensemble = _reconstruct_ensemble(header, rows_for_id, station_id)
+```
+
+Equivalently, `_reconstruct_ensemble` may signal the orphan (e.g. return a
+sentinel / raise a narrow, caught exception) and the caller performs the
+skip-with-WARNING — either shape is acceptable as long as one orphan never
+aborts the batch. The valid headers in the same fetch still return.
+
+**Scope**: D1's code change is limited to the **hindcast read path**. Forecast
+reads (`forecast_store.py`) and station-group reads use INNER JOINs, so orphan
+headers are already silently excluded and no crash occurs. To keep the
+no-silent-failure posture consistent, orphans must never be **silent** — the
+hindcast path is where the skip is newly needed, and its `WARNING` is the visible
+signal that a JOIN would otherwise hide.
+
+**Loud**: the `hindcast.orphan_header_skipped` `WARNING` events are the
+observability signal — surfaceable by the watchdog / Flow 4 (pipeline
+monitoring) — consistent with the no-silent-failure posture. An orphan is
+tolerated at read time but never swallowed.
+
+Why the fetch must not crash: `fetch_hindcasts` feeds skill computation and
+model comparison (batch reads across many headers). A single orphan aborting the
+whole batch turns one bad header into a full-flow failure — the exact
+degrade-gracefully case this hardening targets.
 
 ### Logging
 
@@ -354,7 +437,36 @@ to handle seed-data isolation (stations, models, artifacts inserted via
 `conn.execute()`) for all other stores. The truncation is belt-and-suspenders
 for the new committed writes.
 
+**Teardown ordering (D3, MANDATORY)**: The `_truncate_atomic_writes` fixture must
+run its `TRUNCATE` **after** the `db_connection` rollback fixture has rolled back
+and released its per-test locks. The `TRUNCATE` runs on a *separate* pooled
+connection (`db_engine.begin()`) and takes `ACCESS EXCLUSIVE` locks; if the
+per-test transaction on `db_connection` is still open, that `TRUNCATE` can block
+— and, with lock ordering across the two connections, deadlock — against the
+still-open transaction.
+
+Ordering must therefore be enforced explicitly, not left to fixture-declaration
+accident. Make `_truncate_atomic_writes` depend on `db_connection` (request it as
+a parameter). pytest tears down fixtures in reverse setup order, so
+`_truncate_atomic_writes` — which sets up **after** the `db_connection` it now
+depends on — tears down **before** `db_connection` rolls back. To force the
+`TRUNCATE` to run only after that rollback, drive the truncate from the
+`db_connection`-dependent fixture's *finalizer* rather than its `yield`-teardown,
+or move the `TRUNCATE` into a fixture that is torn down strictly after
+`db_connection` (e.g. by having `db_connection` itself depend on it). The
+invariant to hold: **`TRUNCATE` executes only after `db_connection`'s rollback
+has completed and its locks are released.** Verify with the isolation-holds test
+below (a deadlock/block would surface as a hang/timeout).
+
 **Overhead**: ~10–20 ms per test on a local testcontainer. Acceptable.
+
+**Isolation-holds test (D3)**: Add an explicit test proving isolation actually
+holds across the committed writes. In one test, write via an affected store
+method (e.g. `store_forecast` / `store_hindcast` / `store_group`) — a committed
+`engine.begin()` write. In the next test (or after truncation), assert the row is
+**absent** (e.g. `fetch_*` returns `None` / `[]`). This confirms the autouse
+`TRUNCATE` fixture cleans committed writes and that its teardown ordering does not
+block or leak state between tests.
 
 #### 5b — New tests
 
@@ -381,3 +493,42 @@ for the new committed writes.
 - Update `docs/spec/types-and-protocols.md` if store Protocol docstrings
   mention transaction behavior (currently they do not — verify and skip if clean).
 - Archive this plan.
+
+### Step 7 — Harden the hindcast read against orphan headers (D1)
+
+**File**: `hindcast_store.py`
+
+Make the hindcast fetch resilient to orphan headers (a header id with zero
+`hindcast_values` rows) — see `### Read-path resilience (D1)` in Design. In the
+`fetch_hindcasts` loop (~:125 and the analogous `fetch_hindcasts_by_station`
+loop ~:186), before reconstructing each ensemble, check for missing value rows.
+When absent, log a `WARNING` and **skip** the header (`continue`) instead of
+calling `_reconstruct_ensemble` (whose `ValueError` would otherwise abort the
+whole fetch):
+
+```python
+if not rows_for_id:
+    log.warning(
+        "hindcast.orphan_header_skipped",
+        hindcast_forecast_id=fid,
+        station_id=station_id,
+    )
+    continue
+```
+
+Equivalently, have `_reconstruct_ensemble` signal the orphan and let the caller
+skip — either shape is fine so long as one orphan never aborts the batch. Reuse
+the module-level `log = structlog.get_logger(__name__)` added in Step 3. Do
+**not** change the forecast or station-group read paths (their INNER JOINs
+already exclude orphans without crashing).
+
+The `hindcast.orphan_header_skipped` `WARNING` is the observability signal
+(watchdog / Flow 4) — orphans are tolerated but never silent.
+
+**Test** (addition to the hindcast store test file):
+- **Orphan-header skip test**: seed two hindcast headers — one valid (with value
+  rows) and one orphan (header only, no `hindcast_values`). Call `fetch_hindcasts`
+  (and/or `fetch_hindcasts_by_station`) and assert: (1) it does **not** raise;
+  (2) the valid header is returned; (3) the orphan is absent from the result; and
+  (4) a `hindcast.orphan_header_skipped` `WARNING` is emitted (capture via the
+  structlog test capture / `caplog`).
