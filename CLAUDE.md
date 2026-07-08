@@ -10,6 +10,7 @@ SAPPHIRE Flow is an operational hydrological forecasting system that ingests wea
 3. `docs/spec/types-and-protocols.md` — Python type definitions and Protocol signatures (authoritative for implementation)
 4. `docs/conventions.md` — Naming, patterns, error handling conventions
 5. `docs/workflow.md` — Orchestration protocol, plan structure, task exit gates
+6. `docs/touchpoint-maps.md` — Per-subsystem routing checklists (touchpoints, must-not-change contracts, verification) a context packet points into. **Consult the relevant map when a task touches that subsystem.**
 
 **Standards documents** (consult when planning or implementing the relevant subsystem):
 - `docs/standards/security.md` — Container privilege model, secrets management, auth/authz, OWASP mitigations. **Read before** any work on Dockerfile, entrypoint, secrets, authentication, or API security.
