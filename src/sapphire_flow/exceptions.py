@@ -1,3 +1,8 @@
+from __future__ import annotations
+
+from typing import Literal
+
+
 class SapphireError(Exception):
     """Base for all SAPPHIRE Flow domain errors."""
 
@@ -36,6 +41,44 @@ class NoCycleAvailableError(AdapterError):
 
 class BudgetExceededError(AdapterError):
     """Local size or file-count guard tripped; not a retriable external-source error."""
+
+
+class DiskSoftLimitError(AdapterError):
+    """Free disk space below soft threshold; NWP fetch degraded to runoff-only."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        path: str,
+        free_gb: float,
+        threshold_gb: float,
+        subject: Literal["scratch", "nwp_archive"],
+    ) -> None:
+        super().__init__(message)
+        self.path = path
+        self.free_gb = free_gb
+        self.threshold_gb = threshold_gb
+        self.subject = subject
+
+
+class DiskHardLimitError(AdapterError):
+    """Free disk space below hard threshold; NWP fetch aborted (fail-closed)."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        path: str,
+        free_gb: float,
+        threshold_gb: float,
+        subject: Literal["scratch", "nwp_archive"],
+    ) -> None:
+        super().__init__(message)
+        self.path = path
+        self.free_gb = free_gb
+        self.threshold_gb = threshold_gb
+        self.subject = subject
 
 
 class ConfigurationError(SapphireError):

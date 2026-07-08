@@ -14,6 +14,7 @@ UID_VAL="$(id -u)"
 PLISTS=(
     "ch.hydrosolutions.sapphire.plist"
     "ch.hydrosolutions.sapphire-watchdog.plist"
+    "ch.hydrosolutions.sapphire-docker-prune.plist"
 )
 
 log() { printf '[install-launchd] %s\n' "$1"; }

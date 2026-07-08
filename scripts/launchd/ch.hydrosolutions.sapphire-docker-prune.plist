@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ch.hydrosolutions.sapphire-docker-prune</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/sapphire/SAPPHIRE_flow/scripts/launchd/prune-docker.sh</string>
+    </array>
+    <!-- Weekly on Sunday at 04:00 local time — off the operational cycle cadence. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key>
+        <integer>0</integer>
+        <key>Hour</key>
+        <integer>4</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>WorkingDirectory</key>
+    <string>/Users/sapphire/SAPPHIRE_flow/scripts/launchd</string>
+    <key>StandardOutPath</key>
+    <string>/Users/sapphire/Library/Logs/sapphire-docker-prune.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/sapphire/Library/Logs/sapphire-docker-prune.log</string>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>UserName</key>
+    <string>sapphire</string>
+</dict>
+</plist>

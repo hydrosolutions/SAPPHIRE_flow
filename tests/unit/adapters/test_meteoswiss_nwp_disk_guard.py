@@ -37,11 +37,36 @@ _DiskUsage = namedtuple("_DiskUsage", ["total", "used", "free"])
 _GB = 1024**3
 
 
-def _empty_transport() -> httpx.MockTransport:
-    # STAC search returns no items → _fetch_grib_files yields [] after creating
-    # the scratch dir. Enough to exercise the fetch path deterministically.
+def _published_transport() -> httpx.MockTransport:
+    """Transport that makes _CYCLE appear published (non-empty features) so
+    resolve_cycle() returns successfully and D1/D2 code paths are reachable.
+
+    The STAC search URL contains a `datetime=` parameter with the cycle
+    timestamp.  The adapter's _cycle_is_published() returns True when features
+    are non-empty for that datetime.  We return a minimal stub feature for any
+    request so that the first fallback step is accepted.
+
+    For _fetch_grib_files, the items endpoint is called per-feature to get
+    the actual download URL; we return an empty asset dict so no files are
+    actually downloaded (the stale-sweep and failure-cleanup paths are
+    exercised without any real GRIB files).
+    """
+    ref_dt = _CYCLE.strftime("%Y-%m-%dT%H:%M:%SZ")
+
     def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"features": [], "links": []})
+        return httpx.Response(
+            200,
+            json={
+                "features": [
+                    {
+                        "id": "stub-item-001",
+                        "properties": {"forecast:reference_datetime": ref_dt},
+                        "assets": {},
+                    }
+                ],
+                "links": [],
+            },
+        )
 
     return httpx.MockTransport(handler)
 
@@ -49,7 +74,7 @@ def _empty_transport() -> httpx.MockTransport:
 def _make_guard_adapter(
     tmp_path: Path, *, disk_guard_enabled: bool
 ) -> MeteoSwissNwpAdapter:
-    client = httpx.Client(transport=_empty_transport(), base_url="https://dummy")
+    client = httpx.Client(transport=_published_transport(), base_url="https://dummy")
     return MeteoSwissNwpAdapter(
         stac_base_url=_STAC_BASE,
         stac_collection=_STAC_COLLECTION,

@@ -30,6 +30,8 @@ _FIXTURE_DIR = (
 
 def _make_adapter(tmp_path: Path) -> MeteoSwissNwpAdapter:
     # Real-data tests never hit the network — dummy transport is fine.
+    # disk_guard_enabled=False: tests only call _parse_grib_files directly;
+    # guard is irrelevant here and should not fire (Plan 105).
     transport = httpx.MockTransport(lambda _req: httpx.Response(404))
     client = httpx.Client(transport=transport, base_url="https://dummy")
     return MeteoSwissNwpAdapter(
@@ -37,6 +39,7 @@ def _make_adapter(tmp_path: Path) -> MeteoSwissNwpAdapter:
         stac_collection=_STAC_COLLECTION,
         scratch_path=tmp_path,
         http_client=client,
+        disk_guard_enabled=False,
     )
 
 

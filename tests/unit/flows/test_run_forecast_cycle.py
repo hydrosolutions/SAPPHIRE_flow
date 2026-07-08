@@ -1102,6 +1102,8 @@ scratch_path = "{tmp_path / "scratch"}"
                 max_fallback_steps: int,
                 max_files: int | None,
                 cycle_min_age_minutes: int,
+                disk_guard_enabled: bool = True,
+                **kwargs: object,
             ) -> None:
                 constructed.append(
                     {
@@ -1212,6 +1214,8 @@ max_files = 7
                 max_fallback_steps: int,
                 max_files: int | None,
                 cycle_min_age_minutes: int,
+                disk_guard_enabled: bool = True,
+                **kwargs: object,
             ) -> None:
                 constructed.append(max_files)
 
