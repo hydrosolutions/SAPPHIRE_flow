@@ -256,19 +256,63 @@ unavailable and stopping at configured max age.
 uv run pytest tests/unit/adapters/test_recap_gateway_cycle_resolution.py
 ```
 
-#### Task 2C - Integrate NWP_DELIVERY watchdog semantics
+#### Task 2C - Integrate NWP_DELIVERY watchdog semantics + NWP source dispatch generalization
 
-**Scope in:** Emit/store pipeline health information that distinguishes stale
-delivery from unsupported HRU, out-of-coverage, auth, and transient Gateway
-failures.
+**Scope in:**
+1. Emit/store pipeline health information that distinguishes stale delivery from
+   unsupported HRU, out-of-coverage, auth, and transient Gateway failures.
+2. **NWP source dispatch generalization** (added per Plan 106 §4 — this is the
+   implementation home for the gateway-adapter wiring; without it the `RecapGatewayAdapter`
+   is dead code and every Nepal cycle emits a false-CRITICAL `NWP_DELIVERY` record):
+   - **(a)** Add a `RecapGatewayAdapter` construction branch to the `if adapter is None:`
+     block at `flows/run_forecast_cycle.py:964-997` (currently only builds
+     `MeteoSwissNwpAdapter`).
+   - **(b)** Parameterize `_check_nwp_grid_staleness` (`run_forecast_cycle.py:508-546`) on
+     the **active NWP source string** instead of the module-level `_ICON_NWP_SOURCE`,
+     wiring the call site at `:1244-1250`. On an IFS-only Nepal deployment (no ICON Zarr
+     store) the current `fetch_latest("icon_ch2_eps")` returns `None` every cycle and
+     writes `PipelineHealthStatus.CRITICAL` / `PipelineCheckType.NWP_DELIVERY` (`:536-545`)
+     — a permanent false alarm. Skip/redirect the ICON-grid staleness check for gateway
+     (pre-extracted, non-gridded) sources.
+   - **(c)** Add the analogous Flow-6 factory/dispatch branch at
+     `ingest_weather_history.py:168-202` (`build_production_reanalysis_adapter`) + call site
+     `:277-292`, and resolve the `NWP_SOURCE` Protocol gap for `_reanalysis_sources()`
+     (`:243-252`) — recommended default (b): expose `NWP_SOURCE: str` on the gateway adapter
+     to satisfy the local `_ReanalysisAdapter` Protocol (lowest blast radius; see Plan 106 §4).
+   - **(d)** Update the now-stale `_select_nwp_source` docstring (`run_forecast_cycle.py:83-86`,
+     "Phase A only stores ICON grid records…") to reflect multi-source support. `_select_nwp_source`
+     itself needs **no** logic change — its BASIN_AVERAGE second pass (`:95-97`) already returns
+     the gateway source.
+   - **Phase A→B storage-key round-trip:** confirm the gateway adapter's Phase A store path
+     writes records under its own `NWP_SOURCE` key (e.g. `"ifs_ecmwf"`), so Phase B's
+     `fetch_weather_forecasts(nwp_source=…)` (`services/operational_inputs.py:323-330`) finds
+     them — otherwise every Nepal station logs `operational_inputs.no_nwp` and returns None.
+
+**Cross-check (owned by the D5-2 DHM-obs/onboarding plan, verified here):** any
+`StationWeatherSource` binding for a gateway NWP source MUST carry
+`extraction_type = SpatialRepresentation.BASIN_AVERAGE` (`types/enums.py:73-77`), validated
+at onboarding — else `_select_nwp_source`'s fallback (`run_forecast_cycle.py:98`) silently
+routes the station through `_ICON_NWP_SOURCE`, defeating this fix while the 2C test still passes.
 
 **Scope out:** Do not collapse all adapter errors into stale NWP delivery.
+
+**Authoring dependency:** the dispatch regression test cannot compile until the
+`RecapGatewayAdapter` class exists (Plan 081). Per the 081→082 phase edge (`082:432`),
+sequence **081 WF2 merge → author the 2C dispatch test**; do not stall a WF2 agent on a
+missing import.
 
 **Verification:**
 
 ```bash
 uv run pytest tests/unit/flows/test_run_forecast_cycle.py::TestRecapNwpDeliveryWatchdog tests/integration/store/test_pipeline_health_store.py
 ```
+
+Plus a **completion-gate test**: route an IFS-bound station (`nwp_source="ifs_ecmwf"`,
+`extraction_type=BASIN_AVERAGE`) through the full dispatch and assert it (i) selects the
+gateway source, (ii) constructs the `RecapGatewayAdapter` (not `MeteoSwissNwpAdapter`), and
+(iii) does **not** emit a `PipelineHealthStatus.CRITICAL` `NWP_DELIVERY` record from an empty
+ICON store; plus an onboarding test asserting a `ConfigurationError` when a gateway binding
+uses a non-`BASIN_AVERAGE` `extraction_type`.
 
 #### Task 2D - Define and test temporal model-input join policy
 
