@@ -49,6 +49,12 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
 
 ## Active — v1 Nepal feature (B)
 
+- **106** — v1 (Nepal DHM) critical-path roadmap — `DRAFT` — **the sequencing plan.**
+  Locks the wave order (0 stabilize → 1 forcing → 2 obs/rating → 3 auth/deploy →
+  4 DHM go-live → 5 v1.x), classifies every remaining piece designable-now vs
+  blocked-on-external-knowledge, and lists the collaborator questions (DHM/HSOL/gateway
+  dev). v1.0 is **headless** (Flow 3/dashboard/bulletin/Bikram Sambat → v1.x). Read this
+  first for v1 planning. Goes through WF1 plan-review + one independent review.
 - **080** — FI wheel distribution — `DRAFT` (low-pri) — publish `forecastinterface`
   as a versioned wheel, migrate off the git-pin, drop the temporary CI wheel-guard
   (Plan 079). **Blocked externally** on FI hitting the private index. Packaging
