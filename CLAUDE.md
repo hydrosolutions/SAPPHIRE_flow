@@ -26,6 +26,7 @@ See `docs/workflow.md` for the full conventions. Key points:
 - **Plans are phase-based** with JSON dependency graphs for parallel/sequential execution
 - **Every code change updates affected docs** — no exceptions
 - **No subagent runs from a DRAFT plan** — user must confirm first
+- **Multi-model review is mandatory for all non-trivial plans and patches** (trivial-only exemption: typos, comments, single-line log text, mechanical no-behavior edits). Orchestrator builds a context packet first; Claude design + Codex repo-grounded (`file:line`) perspectives are the floor, not the ceiling; no model approves its own output; confirming review before READY and post-implementation review before PR; human owns READY and merge. See `docs/workflow.md` § Multi-Model Review.
 
 ### Avoid Task Jags
 
