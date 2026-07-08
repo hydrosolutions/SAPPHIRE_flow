@@ -137,7 +137,9 @@ context is an escalation trigger** (see Escalation).
 
 Use this map when a task touches ForecastInterface behavior, model adapters,
 model data requirements, operational input assembly, time-series preprocessing,
-prediction input assembly, model execution, or ModelFailure semantics.
+prediction input assembly, model execution, or ModelFailure semantics. For
+forecast-cycle control flow — phase sequence, assignment resolution, STATION/GROUP
+dispatch — see the **Forecast cycle / assignment selection** map below.
 
 Before planning or implementation, inspect the relevant touchpoints below and
 include them in the task context packet.
@@ -245,6 +247,132 @@ When this map applies, the context packet should name:
 - which upstream inputs were inspected
 - which downstream consumers are affected or explicitly unaffected
 - which contracts are at risk
+- which focused tests will prove the change
+
+### Touchpoint map: Forecast cycle / assignment selection
+
+Use this map when a task touches forecast-cycle control flow — the phase sequence, model-assignment resolution (priority / fallback / status filtering), STATION vs GROUP dispatch, fan-out / parallelisation, combination-mode selection, or where alerting and persistence attach. For the model boundary itself, `data_requirements`, operational input assembly, and time-series preprocessing, use the **ForecastInterface / model execution** map above — do not re-derive that detail here.
+
+Before planning or implementation, inspect the relevant touchpoints below and include them in the task context packet.
+
+**Common touch triggers:**
+
+- forecast-cycle phase ordering (`run_forecast_cycle_flow`)
+- model-assignment fetch / status filtering / priority sort
+- STATION vs GROUP dispatch, and the per-model fallback behavior
+- fan-out / `.submit` / `task.map` parallelisation
+- combination-mode selection (`ModelCombinationStrategy`)
+- where alerting (`check_station_alerts`) attaches to the cycle
+- where forecast / model-state persistence attaches
+- `clock` / `rng` / `config` / `qc_rules` injection at the flow boundary
+- cycle health / result assembly (`ForecastCycleResult`)
+- tests that exercise cycle sequencing or assignment resolution
+
+**Upstream inputs to inspect:**
+
+- operational station selection (`StationKind.RIVER` + `StationStatus.OPERATIONAL`)
+- station-level assignments (`fetch_model_assignments`) vs group-level
+  assignments (`fetch_groups_for_model`, `fetch_group_model_assignments`)
+- `ModelAssignment.status` / `ModelAssignmentStatus`, `priority`
+- `discover_models()` registry; `DeploymentConfig`
+  (`forecast_combination_strategy`, `enable_forecast_alerts`)
+- injected `clock` / `rng` / `config` / `qc_rules`
+- NWP cycle availability (`NwpCycleSource`) — extraction/coverage detail lives
+  in the FI map
+
+**Core implementation touchpoints:**
+
+- flow body / phase sequence: `run_forecast_cycle_flow` (setup → Phase A NWP
+  fetch → Phase B stations → Phase B2 groups → alert-eligibility partition →
+  Phase C alerting → result assembly)
+- STATION dispatch: `run_all_station_forecasts` (executor) with
+  `run_station_forecast` (PRIMARY selector) over `_run_single_model`
+- GROUP dispatch: `discover_group_runs` / `run_group_forecast`, dedup via
+  `group_produced_pairs`
+- combination (STATION / Phase B only — GROUP dispatch never combines):
+  `build_combined_forecasts`, `combine_ensembles_pooled`, `combine_ensembles_bma`
+  — `CONSENSUS` is unimplemented and BMA is not operationally wired (the flow
+  passes no weights)
+- fan-out: Phase A `_fetch_nwp_task.submit` + Step 1.6
+  `_fetch_obs_timestamps_task.submit` (the only concurrency in the flow)
+- drift guard: `_check_fallback_priority_drift`
+- health: `_forecast_cycle_health` → `ForecastCycleResult`
+
+**Downstream consumers to inspect when behavior changes:**
+
+- forecast persistence (`store_forecast`) and model-state persistence
+  (`store_state`) — inline per-record inside the Phase B / B2 loops
+- alerting (`check_station_alerts`), gated on the
+  `AlertEligibility.SKILL_FORECAST` partition
+- `ForecastCycleResult` readers and cycle observability logs
+- API / dashboard readers if dispatch or combination changes which forecasts
+  are emitted
+- tests / fixtures asserting phase order, assignment resolution, or
+  combination output shape
+
+**Contracts that must not change silently:**
+
+- STATION assignment resolution does **not** filter on `ModelAssignmentStatus`,
+  while GROUP resolution filters ACTIVE at both discovery and selection. Because
+  the STATION superset (`build_superset_requirements`) is built from the
+  *unfiltered* list, an INACTIVE station assignment still feeds both dispatch
+  and input assembly — the two paths have asymmetric status semantics.
+- STATION dispatch is **not** a short-circuiting fallback chain:
+  `run_all_station_forecasts` executes EVERY priority-sorted assignment each
+  cycle (no early exit). `run_station_forecast` (PRIMARY, the config default) is
+  a selector that persists only the highest-priority succeeded result;
+  lower-priority models still run and cost compute every cycle. GROUP dispatch
+  runs each discovered ACTIVE `(group, model)` assignment — a group may carry
+  several (schema key `(group_id, model_id)`), so it is not "one model per group".
+- Store/state failure handling is **not uniform** — it differs by call
+  (`store_forecast` vs `store_state`) and by path. STATION `store_forecast`
+  degrades (appends to `errors`); STATION `store_state` logs only. GROUP
+  re-raises `StoreError` (direct, plus connection-fatal errors promoted via
+  `_raise_store_error_if_connection_fatal`), aborting the whole cycle; GROUP
+  `store_state` non-`StoreError`s log only. Do not assume one store call's
+  failure semantics match another's — diff the specific branch before changing it.
+- Phase A NWP fetch has two opposite-consequence failure modes:
+  `NoCycleAvailableError` (`nwp_unavailable`) degrades to runoff-only for the
+  cycle, whereas any other Phase A failure (`_fetch_nwp_task` → `None`) aborts
+  the WHOLE cycle with `stations_attempted=0`, before Phase B/B2/C run.
+- Phase C alerting has a single outer guard around the whole `check_station_alerts`
+  call, which itself loops stations internally. A mid-loop exception **stops the
+  remaining stations' alert processing** and leaves `alerts_checked=False`, but
+  alerts already written for earlier stations are **not rolled back** (it is not
+  all-or-nothing); the exception is caught, so it does not abort the cycle.
+- `stations_failed` counts **STATION-loop (Phase B) failures only**;
+  `ForecastCycleResult.health` folds in those plus the `alert_suppressed` /
+  `nwp_grid_stale` / `fallback_priority_drift` flags. **GROUP-loop (Phase B2)
+  non-fatal failures never affect `stations_failed` or `health`** — a monitor
+  that assumes `health` covers GROUP failures will be wrong.
+- STATION and GROUP results must land in the shared accumulators so the
+  alert-eligibility partition and Phase C treat both dispatch paths identically.
+- repo-specific Task Exit Gate still applies before PR approval
+
+**Suggested verification:**
+
+- forecast-cycle test covering phase order and STATION → GROUP → alert
+  sequencing
+- assignment-resolution test: priority sort + all-models execution + primary
+  selection
+- STATION vs GROUP status-filter regression (INACTIVE-assignment behavior on
+  each path)
+- store-failure regression proving STATION degrades and GROUP `StoreError`
+  aborts (plus the NWP unavailable-vs-failed split)
+- combination-mode test per reachable `ModelCombinationStrategy` branch
+- `_check_fallback_priority_drift` coverage when changing priority semantics
+- full Task Exit Gate for implementation PRs
+
+**Context packet reminder:**
+
+When this map applies, the context packet should name:
+
+- which touch trigger applies
+- which upstream inputs (assignment source, config flags) were inspected
+- which downstream consumers (persistence, alerting, health) are affected or
+  explicitly unaffected
+- which contracts (status-filter asymmetry, fallback breadth, store-failure
+  asymmetry, NWP failure split, alert guard scope, health scope) are at risk
 - which focused tests will prove the change
 
 ### Required perspectives
