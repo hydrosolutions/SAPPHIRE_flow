@@ -1,11 +1,13 @@
 # Plan 105 — operational disk hygiene & NWP scratch cleanup (stop a full disk silently killing the feed)
 
-**Status**: DRAFT — **grill-me COMPLETE (2026-07-06)**: D1 finally-cleanup +
-prune-all-stale (safe, `forecast-cycle` is `concurrency_limit=1`); D2 **tiered**
-(soft → warn+degrade to fallback, hard → fail-closed red run) on **absolute free-GB**
-thresholds; D3 **weekly HOST-level launchd cron** for `docker image/builder prune`
-(NOT a Prefect flow — no Docker socket in the worker); D4 keep 4 GiB scratch, no
-`max_files` cap. See DECIDED DESIGN. Next: `plan-review` (WF1) → READY → implement.
+**Status**: READY (2026-07-08) — grill-me COMPLETE (2026-07-06) + **3 WF1 plan-review
+passes COMPLETE** (blocker count 2→2→0; design errors, then wiring, then refinements —
+all applied). Design: D1 finally-cleanup + prune-all-stale (safe, `forecast-cycle` is
+`concurrency_limit=1`); D2 **tiered** (soft → warn+degrade to fallback, hard →
+fail-closed red run) on **absolute free-GB** thresholds; D3 **weekly HOST-level launchd
+cron** for `docker image/builder prune` (NOT a Prefect flow — no Docker socket in the
+worker); D4 keep 4 GiB scratch, no `max_files` cap. See DECIDED DESIGN. Next: **WF2
+(vision-build) → hold-at-PR**.
 **Priority**: high — on 2026-07-06 a full disk **silently stopped the operational
 forecast feed** on the mac-mini: `nwp.fetch_failed: no space left on device`, the
 forecast-cycle completed **green** (the Prefect run returned normally — but the flow

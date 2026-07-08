@@ -25,8 +25,9 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
 
 - **103** — Prefect worker observability & home — `DRAFT` — persist flow-run logs to
   the Prefect store + writable `PREFECT_HOME`. **Supersedes 062.**
-- **105** — Operational disk hygiene & NWP scratch cleanup — `DRAFT` (grill-me done)
-  — scratch self-clean on failure + pre-fetch disk tripwire + weekly image prune.
+- **105** — Operational disk hygiene & NWP scratch cleanup — `READY` (grill-me + 3 WF1
+  passes, blockers→0) — scratch self-clean on failure + pre-fetch disk tripwire + weekly
+  image prune. **First Wave-0 lead; next = WF2 (hold-at-PR).**
 - **097** — Short-lookback observability — `DRAFT` — warn when the delivered lookback
   is shorter than requested.
 - **048** — restic encrypted backup + monthly restore rehearsal — `DRAFT (stub)` —
