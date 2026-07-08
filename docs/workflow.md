@@ -139,8 +139,9 @@ Reusable per-subsystem **routing checklists** — the concrete touchpoints, cont
 and verification a context packet points into when a task touches a given subsystem —
 live in **`docs/touchpoint-maps.md`**. Consult the relevant map when building the
 context packet. Current maps: **ForecastInterface / model execution**; **Forecast
-cycle / assignment selection**; **Persistence / API write path**. Their governance —
-the right-sizing fitness test — is below (see Right-sizing).
+cycle / assignment selection**; **Persistence / API write path**; **Prefect / Docker /
+deployment**. Their governance — the right-sizing fitness test — is below (see
+Right-sizing).
 
 ### Required perspectives
 

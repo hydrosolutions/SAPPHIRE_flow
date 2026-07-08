@@ -10,9 +10,10 @@ These are **routing signposts, not architecture docs**, governed by the right-si
 fitness test in `docs/workflow.md` § Multi-Model Review → Right-sizing: every bullet
 names a symbol/subsystem to go read; no bullet teaches how the code works; a “must not
 change silently” contract covers only a surprising, high-consequence, cross-cutting
-invariant. Symbol names only — no line numbers or file paths (they rot). Verify a map
-against the code (an independent code-grounded pass, e.g. `codex exec -s read-only`)
-whenever it is added or touched.
+invariant. Symbol names only — no line numbers, and no file paths *except* where the
+path itself is the routing target (Dockerfile, `docker-compose*.yml`, launchd plists,
+standards docs), as in the infra map. Verify a map against the code (an independent
+code-grounded pass, e.g. `codex exec -s read-only`) whenever it is added or touched.
 
 ## Maps
 
@@ -25,6 +26,9 @@ whenever it is added or touched.
 - **Persistence / API write path** — store write methods, transaction / commit
   scoping, optimistic locking, idempotency, the JSONB / PostGIS boundary,
   StoreError classification, the single API mutation.
+- **Prefect / Docker / deployment** — deployment registration, work-pool topology,
+  Docker build / compose / Caddy topology, entrypoint, DB migration sequencing,
+  the VERSION deploy convention, the Mac-mini launchd host.
 
 ---
 
@@ -356,3 +360,72 @@ When this map applies, the context packet should name:
 - which downstream consumers (flow callers, flow-side readers, API/dashboard readers, retry logic) are affected or explicitly unaffected
 - which contracts (transaction asymmetry, version-guard scope, idempotency guarantee, exception surfacing, UTC-on-write, JSONB shape) are at risk
 - which focused tests will prove the change
+
+### Touchpoint map: Prefect / Docker / deployment
+
+Use this map when a task touches the **infra/ops** layer that *runs* the flows (not the flow logic): Prefect deployment registration / scheduling / work-pools / concurrency, the Docker build, the `docker-compose` topology + overlays, the Caddy edge, the entrypoint, DB migrations, the `VERSION` / `.env` deploy convention, or the Mac-mini launchd host. For *what a flow does* once it runs, use the **Forecast cycle / assignment selection** and **Persistence / API write path** maps. Authoritative detail lives in `docs/standards/orchestration.md`, `docs/standards/cicd.md`, `docs/standards/security.md` — this map routes into them, it does not restate them. **Aspirational-vs-real is this layer's core hazard:** several standards-doc items are not implemented (and a few implemented flows are undocumented) — flagged below; verify before depending on one. File paths are named directly here because they *are* the routing targets.
+
+Before planning or implementation, inspect the relevant touchpoints below and include them in the task context packet.
+
+**Common touch triggers:**
+
+- Prefect deployment registration, schedules, work-pools, concurrency limits
+- Dockerfile change (builder/runtime stage, base-image pin, non-root user, apt deps) — CI CVE-gate + wheel-guard live in `.github/workflows/ci.yml`
+- `docker-compose.yml` service / volume / network / secret / capability / `mem_limit` change, or any overlay file
+- public routing / domain / TLS / security headers — `caddy` service + `Caddyfile`
+- container entrypoint (`docker/entrypoint.sh`) or DB init (`docker/init-db.sh`)
+- Alembic migration sequencing at deploy (the one-shot `init` service)
+- the `VERSION` / `.env` convention or the build-then-`up -d` flow
+- the NWP on/off toggle — `SAPPHIRE_REQUIRE_NWP` (compose-overlay env) **and** `[adapters.weather_forecast].enabled` in the `SAPPHIRE_CONFIG_OVERLAY` TOML (e.g. `config/overlays/mac-mini.toml`) — two distinct layers
+- Mac-mini host startup / watchdog (`scripts/launchd/*`, `scripts/bootstrap-mac-mini.sh`)
+- a new flow that must be registered / scheduled / pool-routed
+
+**Upstream inputs to inspect:**
+
+- `docs/standards/orchestration.md` (pools, scheduling, concurrency — its v0-vs-v1 caveats decide what is real), `docs/standards/cicd.md` (compose, volumes, migrations, tagging, upgrade/rollback, per-pool limits), `docs/standards/security.md` (non-root, capabilities, secrets)
+- `docs/deployment/mac-mini-staging.md` — the live-host runbook
+- `.env` — the `VERSION` operators pin (minted per CLAUDE.md § Version Bumping)
+
+**Core implementation touchpoints:**
+
+- **Deployment registration**: `register_deployments` (`src/sapphire_flow/cli/`) — a hand-rolled registrar (**no `prefect.yaml`**; uses `afrom_source().adeploy()`) that registers flows + creates pools + sets schedules/concurrency, run idempotently as the compose `init` service. It, not the standards tables, is the source of truth for what is deployed.
+- **Work pools**: `default` and `ingest` only. The `ops`/`training`/`hindcast` split in `orchestration.md` is **aspirational**; conversely `ingest_weather_history_flow` is implemented + scheduled but **absent from the orchestration tables** — drift runs both ways.
+- **Schedules / concurrency**: cron + env overrides + `concurrency_limit` in `register_deployments`; the only implemented named-resource slot is `model_training:{model_id}`. The `db_bulk_write` / `observation_write` slots, `retries=`, and `ThreadPoolTaskRunner(max_workers=)` in `orchestration.md` are **aspirational** — Prefect 3 defaults apply.
+- **Docker build**: two-stage `Dockerfile` (builder + slim non-root runtime; rationale in `cicd.md`). Net-new facts: **`git` is required in the builder** for the git-pinned `forecastinterface`; the actual base image is **`python:3.14.6-slim`** while `cicd.md` / `security.md` (and even the Dockerfile's own comments) are **stale**.
+- **Entrypoint**: `docker/entrypoint.sh` drops to non-root via `gosu` (rationale in `security.md`) and splices `DB_PASSWORD` from `/run/secrets/db_password` into the DB URLs. `docker/init-db.sh` creates the separate `prefect` DB.
+- **Compose topology**: `docker-compose.yml` — services (`postgres`, `prefect-server`, `prefect-worker`, `prefect-worker-ingest`, `api`, `caddy`, one-shot `init`), named volumes, `backend`/`frontend` nets, `cap_drop:[ALL]`, file-based `db_password` secret, and `image: sapphire-flow:${VERSION:?…}` on every built service. **All built services are `read_only: true`** — a new write path needs an explicit `tmpfs:` / volume or the container fails at start.
+- **Caddy edge**: `caddy` + `Caddyfile` — 80/443, `SAPPHIRE_DOMAIN`-gated TLS, CSP + security headers (no HSTS). The Prefect UI is **not** proxied (SSH-tunnel only); new public routes go here.
+- **Overlays**: `docker-compose.dev.yml`, `docker-compose.staging.yml`, `docker-compose.macmini.yml` — **not auto-merged**; the exact `-f` set is chosen per invocation.
+- **DB migrations**: `alembic/versions/` + `alembic.ini`, run as `alembic upgrade head` in the `init` service before registration.
+- **Host startup (Mac mini)**: `scripts/launchd/*.plist` → `start-sapphire.sh` (the sole `docker compose … up -d` per reboot), `install-launchd.sh`, `bootstrap-mac-mini.sh`; the watchdog surface = `src/sapphire_flow/ops/watchdog.py` + `scripts/launchd/watchdog.sh` + an operator-created host secret `secrets/slack_webhook_url` + a manually-installed `newsyslog` log-rotation conf. The `cicd.md` systemd unit is an **illustration, not shipped**.
+
+**Downstream consumers to inspect when behavior changes:**
+
+- the host-restart entry points (`start-sapphire.sh`, `bootstrap-mac-mini.sh`) if you add/rename any overlay or `-f` flag — they must stay in lockstep
+- the `init` service if a flow / pool / schedule / slot is added (must be registered *and* have a worker on its pool)
+- `.github/workflows/ci.yml` if the FI git-pin or build deps change
+- the affected standard / runbook doc (docs are an explicit consumer — a code change must update affected docs)
+- runtime NWP behavior in the forecast-cycle flow (it reads the toggle this layer sets — see the **Forecast cycle** map)
+
+**Contracts that must not change silently:**
+
+- **Every host-restart path must bring up the identical overlay set.** `start-sapphire.sh` and `bootstrap-mac-mini.sh` must use the same `-f` set — an overlay in one but not the other silently diverges on the next reboot (the Plan-100 "restart dropped the NWP overlay → NWP silently off → feed dark while flows stayed green" incident). Grep both whenever an overlay changes.
+- **No registry: `docker compose up -d` without `--build` reuses the existing `sapphire-flow:${VERSION}` image** — a code change deployed without `--build` is a **no-op that looks successful**. See `cicd.md` for the publish-gap + rollback procedure.
+- **`VERSION`-unset behavior diverges**: `docker-compose.yml`'s `${VERSION:?…}` hard-fails, while `bootstrap-mac-mini.sh` defaults to `latest`. Change one, check the other.
+- **Non-root by contract** — root exists only during `entrypoint.sh` (drops via `gosu`); `prefect-server` is the single documented root exception. Don't add a `user:` override or widen `cap_add` outside `security.md`.
+- **`mem_limit` is a tuned invariant**: `prefect-worker`'s `8g` bounds the NWP-tmpfs SIGKILL blast radius (Plan 086); `prefect-worker-ingest`'s `512m` must keep tmpfs headroom (the Plan-098 dead-feed mode). Re-check the tmpfs sizing before changing either.
+- **The builder needs `git`** for the git-pinned `forecastinterface` (with the Plan-079 CI wheel-guard) — a temporary arrangement to delete once FI ships as a wheel (Plan 080).
+- repo-specific Task Exit Gate still applies before PR approval
+
+**Suggested verification:**
+
+- `register_deployments` idempotent-re-registration test when adding/altering a deployment / schedule / pool / concurrency slot
+- local `docker compose build` + `up -d` on the changed service: comes up non-root, health passes, any new write path has a `tmpfs` / volume, and (for a code change) the image was actually rebuilt
+- migration dry-run through `init` (`alembic upgrade head`) with workers quiesced, if schema-adjacent
+- overlay-parity grep of both restart scripts, and a `VERSION`-unset check on both, when touching the deploy convention
+- doc-sync: update the affected standard / runbook in the same change, and correct any stale claim you touch
+- full Task Exit Gate for implementation PRs
+
+**Context packet reminder:**
+
+When this map applies, name: which touch trigger (Prefect-layer, image/compose-layer, or host/deploy-layer); which standards doc(s) + sibling map(s) were consulted and which items are implemented vs aspirational; which downstream consumers (restart scripts, `init`, CI, affected docs) are impacted; which contracts (overlay-parity, stale-image, `VERSION`-unset, non-root, `mem_limit`, builder-`git`) are at risk; which build / migration / registration checks will prove the change.
