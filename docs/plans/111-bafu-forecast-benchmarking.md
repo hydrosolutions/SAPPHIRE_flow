@@ -5,9 +5,11 @@
 **Type:** Research / publication artifact. If it ever becomes code: hold-at-PR.
 **Owner:** Bea (marti@hydrosolutions.ch)
 **Created:** 2026-07-08
-**Next action:** **Request forecast data from BAFU** (`abfragezentrale@bafu.admin.ch`)
-— see Gate G1. LINDAS carries no forecasts (Phase 0, below), so there is no self-serve
-path; everything else in this plan is blocked on that reply.
+**Next action:** **Request forecast data — and written licence clarity — from BAFU**
+(`abfragezentrale@bafu.admin.ch`); see Gate G1. LINDAS carries no forecasts (Phase 0).
+A scrape of `hydrodaten.admin.ch` *is* technically viable and fully characterised
+(Phase 0b) but is **forward-only** and **legally unresolved**, so it cannot substitute
+for the request — it complements it. Everything else here is blocked on that reply.
 **Related:** `docs/publication/publication-plan.md` (evaluation framing);
 Plan 058 (BAFU LINDAS archive collection); `docs/decisions/bafu-lindas-monday-window.md`;
 Flow 8 (skill computation) in `docs/architecture-context.md`.
@@ -71,6 +73,118 @@ and is described only so the gates can be evaluated against a real cost.
 
 ---
 
+## Phase 0b — Can we scrape the forecasts from hydrodaten? **INVESTIGATED (2026-07-08)**
+
+**Technical answer: yes, trivially. The blocker is licensing, not engineering.**
+
+The forecast plots on `hydrodaten.admin.ch` are **Plotly figures served as JSON**, not
+rendered images. The full chain, verified live:
+
+| Step | Endpoint | Yields |
+|---|---|---|
+| 1 | `GET /web-hydro-maps/hydro_sensor_pq_forecast.geojson` | The forecast-station inventory + `meta.produced_at` |
+| 2 | station `plot` property → `/web/hydro/{lang}/hydro_sensor_pq_forecast/{key}/plots` | HTML listing per-parameter plot assets |
+| 3 | **`GET /plots/q_forecast/{key}_q_forecast_{lang}.json`** | **The raw Plotly figure — numeric series** |
+
+Step 3 is the find: the path is referenced without extension in the page, but appending
+`.json` returns `application/json`, HTTP 200, unauthenticated, ~28 KB.
+(`.png`/`.svg`/`.csv` → 404; no extension → 302.) Discharge is `q_forecast`;
+water level is `p_forecast` (present on lake/level stations).
+
+**Station inventory (2026-07-08):** **54** forecast stations — 41 river
+(`metric: discharge_ms`, unit `m³/s`) and 13 lake (`metric: masl`, unit `m ü.M.`).
+The feature `key` (e.g. `2135` = *Aare – Bern, Schönau*) is the **BAFU station number**,
+i.e. the same identifier LINDAS uses. **The join to our observations is free** — no
+fuzzy name matching, no crosswalk table.
+
+**Payload shape** (station 2135, discharge):
+
+- Five traces: `Min. / Max.`, `Min / Max`, `25.-75. Percentile` (a `fill: tozerox`
+  polygon), `Median`, `Measured`.
+- **114 hourly steps**, horizon `2026-07-08T15:00+02:00 → 2026-07-13T08:00+02:00`
+  (**≈4.7 days**). `Measured` carries 25 trailing observed values.
+- Units in `trace.meta.unit` as the string `"m³/s"` — **byte-identical to our canonical
+  discharge unit**.
+- **Issue time is machine-readable**: `layout.annotations[1].x` =
+  `"2026-07-08T15:00:00.000+02:00"`, with `text: "Forecast as of 08.07.26 15:00"`.
+  Also `meta.produced_at` on the GeoJSON. (Reading issue time out of an annotation's
+  *array position* is brittle — match on the `text` prefix, not the index.)
+
+### Two findings that change the gates
+
+1. **G2 is partly answered without asking BAFU: they publish quantiles, not members.**
+   The product is min / p25 / median / p75 / max. Ensemble CRPS is therefore **not
+   computable** on the BAFU side, confirming the comparability worry in G2. What
+   survives a fair head-to-head: **pinball loss at q25/q50/q75**, MAE / NSE / KGE /
+   PBIAS on the median, POD / FAR / CSI against danger thresholds, and peak-timing
+   error. `Min`/`Max` are not quantile levels and cannot extend that set.
+2. **Forward-only, confirmed.** Every endpoint returns *the current* forecast. There is
+   no archive, no issue-time parameter, no history. A scraper therefore yields its first
+   scoreable sample only after months of collection — **the exact Plan 058 trap**. This
+   does not make route C wrong; it makes route C *slow*, and it means route C and route
+   A are complements, not alternatives: **A is the only way to get history.**
+
+### Licensing: unresolved, and it is the whole question
+
+Two sources are in tension and must be reconciled **before any collector is written**:
+
+- The general admin.ch legal notice (`https://www.admin.ch/en/terms-and-conditions`,
+  linked from hydrodaten's own footer) states: *"Copyright and any other rights relating
+  to texts, illustrations, photos or any other data available on the Federal
+  authorities' websites are the exclusive property of the federal authorities … **Any
+  reproduction requires the prior written consent of the copyright holder.**"*
+- **But** `opendata.swiss` publishes the dataset **"Hydrologische Stationen mit
+  Vorhersagen"** (`hydrologische-stationen-mit-vorhersagen`; publisher: *BAFU /
+  Abteilung Hydrologie*) with every resource carrying
+  `rights: https://opendata.swiss/terms-of-use#terms_open` — the **most permissive**
+  OGD tier (open use, commercial use permitted, attribution not even required).
+
+**The catch, stated plainly:** that OGD dataset's resources are the **station-location
+layer** (`ch.bafu.hydroweb-messstationen_vorhersage` — a WMS service and a `data.zip` of
+points), i.e. *which* stations have forecasts. It also lists `hydrodaten.admin.ch` itself
+as a resource under the same `terms_open` rights, which is **suggestive but not
+dispositive**. Nothing establishes that `terms_open` extends to the forecast *time
+series* served from the portal's internal plot endpoints. Those endpoints are the site's
+own React plumbing — **undocumented, unversioned, no stability contract, not a published
+API resource** — and they can change without notice.
+
+Supporting facts, neither of which settles it: `hydrodaten.admin.ch/robots.txt` is
+**404** (no crawl prohibition is expressed), and the data is public and unauthenticated.
+
+> **Assessment.** The probability that this is open Swiss OGD is high. "High
+> probability" is not the standard that should back a **published** benchmark against
+> the agency that also supplies our **only** Swiss observation feed. Get it in writing.
+> Route A's request (G1) should now *also* ask, explicitly: **"does `terms_open` as
+> declared for `hydrologische-stationen-mit-vorhersagen` cover the forecast time series
+> rendered at `/plots/q_forecast/…`, and may we archive and republish derived skill
+> scores from it?"** That single sentence converts route C from a legal gamble into a
+> sanctioned feed.
+
+### If (and only if) licensing clears — the collector's shape
+
+Small: a Prefect flow, hourly, that walks the 54-station GeoJSON, fetches each
+`q_forecast`/`p_forecast` JSON, parses the five traces + issue time, and appends to an
+archive keyed `(station_key, issued_at, valid_time)`. Notes that matter:
+
+- **Determine the real issue cadence empirically before choosing a poll interval.** On
+  2026-07-08 the figure's issue time was 15:00 while `produced_at` was 18:30 — issue and
+  publication are *not* the same clock. Dedupe on `issued_at`, not on fetch time; a poll
+  that re-fetches an unchanged forecast must be a no-op, not a duplicate row.
+- **Be a polite client**: modest rate limit across the 54 stations, a descriptive
+  `User-Agent` identifying SAPPHIRE/hydrosolutions with a contact address, conditional
+  requests where honoured, and a hard cap on retries. We are a guest.
+- **Expect the endpoint to break.** Undocumented internal endpoints change. The
+  collector must fail loudly into Flow 4 pipeline monitoring, never silently write empty
+  archives. (Compare the `live-lindas-weekly` Monday-window failures —
+  `docs/decisions/bafu-lindas-monday-window.md`.)
+- **Archive raw.** Persist the untouched Plotly JSON alongside the parsed rows. If our
+  trace-name parsing turns out wrong six months in, the raw payload is the only way to
+  recover the archive; re-fetching is impossible.
+- Storage is negligible: 54 stations × ~28 KB × 24/day ≈ **36 MB/day** raw, far less
+  parsed. Wire it into the Plan 105 disk-hygiene budget anyway.
+
+---
+
 ## Gate G1 (blocking) — can we lawfully obtain BAFU forecast time series?
 
 > **Owner decision (2026-07-08): take route A — request the data from BAFU.**
@@ -83,16 +197,22 @@ and is described only so the gates can be evaluated against a real cost.
 > 1. **Archived** forecast time series (not just real-time) on forecast-enabled
 >    gauges — *this is the make-or-break item*; see the latency warning below.
 > 2. Which gauges are forecast-enabled, and over what period the archive extends.
-> 3. Per record: issue time, lead time / valid time, and whether **ensemble members**
->    are available or only a median + spread (drives G2's metric-comparability
->    question — see the CRPS note).
+> 3. Whether **ensemble members** exist behind the published quantiles. The public
+>    product is min/p25/median/p75/max only (Phase 0b) — if members are available on
+>    request, full CRPS comparability is restored and G2 relaxes.
 > 4. Forecast product identity: which model(s) produce it, and whether the product
 >    changed over the archive period (a mid-archive model swap breaks a naive
 >    pooled comparison).
-> 5. Delivery format and cadence for any future/forward feed.
+> 5. Delivery format and cadence for any future/forward feed; and the **true issue
+>    cadence** (the plot's `issued_at` and `produced_at` differ — see Phase 0b).
 > 6. **Licence and publication rights** — explicit permission to compute and
 >    *publish* comparative skill scores naming BAFU as the reference. Without this,
 >    G3 is pointless: we could compute the benchmark and never show it.
+> 7. **The route-C question, in one sentence** (Phase 0b): *does the `terms_open`
+>    licence declared on opendata.swiss for `hydrologische-stationen-mit-vorhersagen`
+>    extend to the forecast time series served at `/plots/q_forecast/…json`, and may we
+>    archive it and publish derived skill scores?* A "yes" sanctions forward collection
+>    starting immediately, in parallel with whatever happens to the archive request.
 >
 > Frame it as scientific validation of a forecasting system, not as a competitive
 > exercise — note open question #2 below before sending. We already correspond with
@@ -109,7 +229,7 @@ should A be refused:
 |---|---|---|---|
 | **A** ✅ | **Ask BAFU directly** — *chosen, pending* | Written request to `abfragezentrale@bafu.admin.ch` (see the six items above). | Slow; may be refused. Cheapest and most honest. |
 | B | **GIN entitlement** | Establish whether hydrosolutions can hold a GIN account, and whether GIN terms permit *scientific comparison and publication*. | Likely authority-only; publication rights probably restricted. |
-| C | **Scrape `hydrodaten.admin.ch`** | Reverse-engineer whatever XHR feeds the forecast plots. | **Check terms of use before writing a single line.** A federal site's ToS may prohibit automated retrieval and/or redistribution. Also: real-time only (same trap as LINDAS, see Plan 058) — a scrape gives us **no history**, so a benchmark would need months of forward collection before it says anything. Do not start C without a ToS reading and a written note in this plan. |
+| C | **Scrape `hydrodaten.admin.ch`** — *technically proven, legally blocked* | Endpoint chain and payload fully characterised — see **Phase 0b**. Nothing left to reverse-engineer. | **Blocked on licensing, not effort.** `terms_open` is declared for the *station-location* dataset, not demonstrably for the forecast series; the general admin.ch notice demands prior written consent for reproduction. Also **forward-only — no history** (Plan 058 trap). Do not write a collector until G1's reply covers the plot endpoints in writing. |
 | D | **Abandon the external benchmark** | Keep climatology/persistence only; state the limitation explicitly in the paper. | Zero cost. **This is an acceptable outcome.** |
 
 **G1 exit:** a written answer in this doc naming the chosen route, the licence /
@@ -128,19 +248,24 @@ obtainable or only forward collection.
 Do not skip. A sloppy head-to-head against a national agency is worse than no
 head-to-head. Resolve on paper before any code:
 
-- **Station subset.** BAFU forecasts a *subset* of its gauges (count TBC). The
-  comparison population is that subset ∩ our onboarded stations, and results must
-  not be generalised beyond it.
+- **Station subset.** BAFU forecasts a *subset* of its gauges — **54 as of 2026-07-08**
+  (41 river discharge, 13 lake level; Phase 0b). The comparison population is that subset
+  ∩ our onboarded stations, and results must not be generalised beyond it. Station keys
+  join directly to LINDAS codes.
 - **Issue-time alignment.** Compare forecasts issued at (approximately) the same
   time, or explicitly model the offset. A forecast issued 6h later is not a
   competitor; it is a different product.
 - **Lead-time alignment.** Score per lead time, per the existing Flow 8 convention.
-- **Deterministic vs ensemble.** If BAFU publishes a median + spread rather than
-  members, CRPS is not directly comparable to our ensemble CRPS. Decide the
-  reconciliation (score both against a common deterministic reduction? compare only
-  on metrics both support — MAE, NSE, KGE, POD/FAR/CSI, peak-timing error?).
-  **Recommendation:** report the metrics both products support, and state that CRPS
-  is reported for SAPPHIRE only.
+- **Deterministic vs ensemble — RESOLVED by Phase 0b.** BAFU publishes **quantiles, not
+  members**: min / p25 / median / p75 / max. Ensemble CRPS is not computable on their
+  side. **Decision:** score the head-to-head on the metrics both products support —
+  **pinball loss at q25/q50/q75**, MAE / NSE / KGE / PBIAS on the median,
+  POD / FAR / CSI, peak-timing error — and report CRPS for SAPPHIRE only, saying so
+  explicitly. Reducing our ensemble to the same five statistics before scoring is the
+  fair move; do **not** compare our full-ensemble CRPS against a quantile-derived
+  approximation of theirs.
+- **Horizon mismatch.** BAFU's horizon is ≈4.7 days hourly (114 steps). Truncate both
+  products to the common horizon before scoring, per lead time.
 - **Truth series.** Use our QC'd observations (already ingested). Note that BAFU
   produced both the forecast *and* the observation — flag it, it is not a defect.
 - **No cherry-picking.** Pre-register the station set, period, and metric list in
@@ -189,18 +314,29 @@ product, combined into an ensemble, or used to raise an alert.
 ## Sequencing
 
 ```
-G1  request data from BAFU (route A)  ──refused / no archive──> option D:
-        │ granted (+ publication rights)   close plan, record the limitation
-        │                                  in publication-plan.md
-G2 (methodology, on paper)
+G1  request to BAFU: (a) archive?  (b) licence covers /plots/*.json?
+        │
+        ├─ (b) yes ──> route C collector may start NOW (forward-only clock starts)
+        │
+        ├─ (a) yes ──> historical benchmark possible immediately
+        │
+        └─ both no ──> option D: close plan, record the limitation
+                                 in publication-plan.md
+        │
+G2 (methodology, on paper — deterministic-vs-quantile already resolved)
         │ pass
-G3 (ModelTier.REFERENCE + ingest adapter + audit)  ──> offline skill run ──> paper
+G3 (ModelTier.REFERENCE + ingest adapter + audit)  ──> skill run ──> paper
 ```
+
+The two halves of the G1 reply are independent. A licence "yes" alone still starts the
+forward-collection clock today, which is the argument for asking now rather than later:
+**every week of delay is a week of archive we do not have.**
 
 Rough effort **if** G1 and G2 pass and a historical export exists: 2–4 days
 (one enum + call-site audit + importer + a scored run). Rough effort if only forward
-collection is possible: the same, **plus 6–12 months of latency** before the numbers
-mean anything.
+collection is possible: **+1 day** for the route-C collector (Phase 0b — the endpoints
+are known, the parse is five named traces), **plus 6–12 months of latency** before the
+numbers mean anything. Latency, not engineering, is this plan's cost.
 
 ## Open questions for the owner
 
@@ -220,3 +356,6 @@ mean anything.
 - Any change to Flow 1, alerting, or the API contract.
 - Comparing against non-BAFU forecast providers (out of scope; revisit only if this
   plan lands).
+- **Writing the route-C collector before G1's licence answer arrives.** The endpoints are
+  characterised (Phase 0b) precisely so this decision can be made on facts. Characterising
+  is not consent.
