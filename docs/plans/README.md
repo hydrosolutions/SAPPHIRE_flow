@@ -80,6 +80,9 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
 - **090** — NWP incomplete-cycle selection + horizon-coverage — **P1 shipped**
   (age-delay guard, #49); **P2 pending** (terminal-valid-time refetch).
 - **049** — Cloudflare public URL + Entra SSO for staging — `DRAFT` — depends on 046.
+- **108** — Swiss market standards posture — `DRAFT` (low-priority v1+) —
+  nFADP/DSG, OGC, INTERLIS, and SVGW W12 decision gates for future Swiss partner
+  readiness. Docs-first; no change to the v1.0 Nepal critical path.
 - **071** — v0b weather-history: MeteoSwiss daily reanalysis adapter — `DRAFT`.
 - **072** — v0b weather-history: hybrid forcing resolver — `DRAFT`.
 - **066** — Configurable retrain data-window — `DRAFT`.
