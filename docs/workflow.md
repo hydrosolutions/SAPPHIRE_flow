@@ -136,8 +136,8 @@ context is an escalation trigger** (see Escalation).
 ### Touchpoint map: ForecastInterface / model execution
 
 Use this map when a task touches ForecastInterface behavior, model adapters,
-model data requirements, prediction input assembly, model execution, or
-ModelFailure semantics.
+model data requirements, operational input assembly, time-series preprocessing,
+prediction input assembly, model execution, or ModelFailure semantics.
 
 Before planning or implementation, inspect the relevant touchpoints below and
 include them in the task context packet.
@@ -148,6 +148,10 @@ include them in the task context packet.
 - model `data_requirements` (SAP3 `ModelDataRequirements` / FI `InputRequirement`)
 - `ModelFailure` / `ModelOutputError` behavior
 - prediction input assembly
+- operational input assembly / source fetch
+- time-series preprocessing (resampling / aggregation / windowing)
+- requirement-superset construction
+- NWP coverage / input-quality gating
 - model discovery / registry wrapping (`adapt_if_fi`)
 - model assignment / selection
 - forecast cycle orchestration
@@ -181,6 +185,30 @@ include them in the task context packet.
 - alerting or quality gates that depend on model success/failure
 - tests and fixtures that assume current output shape or failure behavior
 
+**Operational inputs / time-series preprocessing**
+
+How raw source data becomes prediction inputs, *before* the model boundary above.
+Inspect on tasks touching source fetch, input assembly, resampling / aggregation,
+windowing, requirement-superset construction, or the NWP coverage / input-quality
+gates.
+
+- input assembly: `assemble_station_operational_inputs` /
+  `assemble_group_operational_inputs` build four channels — past_targets,
+  past_dynamic (reanalysis), future_dynamic (NWP), static — plus warm-up state
+- hindcast reimplements assembly independently (`_assemble_hindcast_inputs`): uses
+  neither `assemble_*_operational_inputs` nor `resample_to_time_step`, derives from
+  one model's `data_requirements` (not `build_superset_requirements`), and has its
+  own issue-time conventions — diff it separately on any assembly / issue-time /
+  requirements change
+- sources: observation store, reanalysis (`HybridForcingSource`), NWP store +
+  `GridExtractor` (basin-average, runs at flow level), basin store, model-state store
+- preprocessing: `resample_to_time_step` (precip SUM, temp/discharge MEAN), NWP
+  hourly→daily + issue-time filter + horizon cap, lookback wide-pivot, `ensure_utc`
+- the cycle assembles a **superset** (`build_superset_requirements`); each model
+  slices it
+- gates: `assess_future_coverage` (horizon truncation), `assess_input_quality`
+  (degraded / partial input flags)
+
 **Contracts that must not change silently:**
 
 - FI model anticipated failures return `ModelFailure` (never raised from inside
@@ -189,6 +217,12 @@ include them in the task context packet.
 - data requirements must match what input assembly actually provides
 - output shape and station / issue-time identity remain stable
 - assignment priority and fallback semantics remain explicit
+- **no imputation** — missing operational-input values are gated (`max_nan`), never
+  imputed / interpolated / filled
+- `resample_to_time_step` is shared with the **training** path (hindcast uses
+  neither) — a change there hits operational *and* training preprocessing
+- `HybridForcingSource` `priority` order decides which source's forcing wins per
+  `(station, valid_time, parameter)` — reordering it silently changes model inputs
 - repo-specific Task Exit Gate still applies before PR approval
 
 **Suggested verification:**
@@ -196,6 +230,10 @@ include them in the task context packet.
 - focused tests around the changed adapter or input-assembly path
 - forecast-cycle test covering assignment → input assembly → model execution
 - regression test for `ModelFailure` behavior when expected data is missing
+- regression test that missing operational data is *gated, not filled* (assert
+  `max_nan`, not imputation)
+- `assess_input_quality` coverage (`test_input_quality.py`) when changing staleness /
+  degraded-input thresholds or `OperationalInputMetadata` fields
 - log/observability assertion if changing operational warnings
 - full Task Exit Gate for implementation PRs
 
@@ -238,6 +276,31 @@ Rules that always hold:
   API, or workflow risk.
 - If reviewers disagree, or a reviewer returns "uncertain", **add another
   independent review or escalate to the human owner.**
+
+### Right-sizing (guard against over-engineering)
+
+Our review loops are **monotonically additive**: the completeness lens is rewarded
+for finding what's *missing*, and "progress" is measured as *fewer open findings* —
+so the loop's natural endpoint is "nothing left to add," which is the
+over-engineering attractor. Left unchecked, plans over-scope and detail-bearing docs
+accrete reference detail that rots. Counter it two ways:
+
+- **In-loop:** `plan-review` runs a standing **proportionality lens** that argues for
+  cuts each round (over-scope, gold-plating, speculative generality, and reference
+  detail that belongs in code/docstrings).
+- **Before READY** — for **detail-bearing artifacts** (docs, checklists, schemas; not
+  code): run one **subtractive right-sizing pass** that judges the artifact against
+  its *fitness test*, not against "is anything missing?".
+
+**Fitness test — state what the artifact is FOR, then keep only what serves it.** You
+cannot judge "too much detail" without it. Example (routing / touchpoint map): every
+bullet names a symbol/subsystem to go read; no bullet teaches how the code works; a
+"must not change silently" contract covers only a **surprising, high-consequence,
+cross-cutting** invariant — a localized fact the named symbol already reveals is not a
+contract.
+
+This guard is itself subject to the trivial-exemption rule: do not add process weight
+that exceeds the risk it removes.
 
 ### Verdicts and blockers
 

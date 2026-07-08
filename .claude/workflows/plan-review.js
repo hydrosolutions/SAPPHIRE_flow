@@ -16,8 +16,8 @@ export const meta = {
 // Returns: { converged, stalled, exhausted, residualBlockerCount, residualMajorCount,
 //            residualFindings, final:{ summary, residualQuestions, recommendation } }.
 //
-// WHAT IT DOES: an adversarial, code-grounded planner↔reviewer loop — 3 diverse
-//   reviewers (design / feasibility / completeness) critique the plan against the
+// WHAT IT DOES: an adversarial, code-grounded planner↔reviewer loop — 4 diverse
+//   reviewers (design / feasibility / completeness / proportionality) critique the plan against the
 //   REAL code each round (they cite file:line); a planner revises the doc; converges
 //   on no blockers+majors, then surfaces the residual design forks a HUMAN must
 //   decide (the grill-me). It is the useful half of vision-build/WF2 (planner↔reviewer)
@@ -76,11 +76,15 @@ const FINAL = {
   },
 }
 
-// Three adversarial lenses — perspective-diverse, all code-grounded.
+// Four adversarial lenses — perspective-diverse, all code-grounded.
+// NOTE: completeness and proportionality are deliberate opposites — missing coverage
+// vs. present-but-unnecessary detail/scope. Keep both: the tension is what stops the
+// additive loop from drifting into over-engineering.
 const LENSES = [
   'DESIGN SOUNDNESS — is the proposed approach correct, and is it the SIMPLEST correct approach? Name a better alternative if the plan ignores one. Flag internal contradictions.',
   'FEASIBILITY + CODE-GROUNDING — will this actually work against the REAL codebase? Verify every cited file:line / symbol / behavior with Read+Grep; flag any claim that assumes behavior the code does not have, or a citation that is stale/wrong.',
   'COMPLETENESS — what does the plan MISS? adjacent code paths, other callers, tests, config, migrations, the ForecastInterface contract, failure modes, backward-compat. What would break if implemented as written?',
+  'PROPORTIONALITY (guard against over-engineering) — is the proposed solution more complex than the problem requires? Flag over-scope, gold-plating, speculative generality, unnecessary phases/abstractions, and REFERENCE detail that belongs in code/docstrings rather than the doc (it will rot there). Judge detail against what the artifact is FOR — not "is anything missing" (that is the completeness lens). What can be cut or simplified WITHOUT losing what the artifact must deliver? Propose specific cuts. Return an empty findings array if it is already lean.',
 ]
 
 phase('Ground')
