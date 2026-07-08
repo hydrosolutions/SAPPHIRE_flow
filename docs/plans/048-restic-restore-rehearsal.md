@@ -2,8 +2,8 @@
 
 **Status**: DRAFT (stub)
 **Phase**: 10d (production backup hardening)
-**Depends on**: Plan 046 (Mac mini staging deployment, DONE — provides the staging host
-this plan validates against)
+**Depends on**: Plan 046 (Mac mini staging deployment, IN_PROGRESS — the staging host it
+provides is operational; Stream D validation open) — this plan validates against that host
 
 ---
 

@@ -1,9 +1,10 @@
 # Plan 106 — v1 (Nepal DHM) Critical-Path Roadmap
 
-**Status:** DRAFT
+**Status:** READY (locked 2026-07-08)
 **Type:** Roadmap / sequencing plan (no code — sequences other plans, identifies knowledge gaps)
 **Owner:** Bea (marti@hydrosolutions.ch)
 **Created:** 2026-07-08
+**Review provenance:** strategic grill-me → **2× WF1 plan-review** + **2× Codex independent review** (both LOCK-WITH-FIXES, all fixes applied) → owner grill-me on 3 sub-decisions. All forks resolved; the gateway-dispatch fix + the multi-year backfill window are owned in Plan 082 Tasks 2C/3B (applied). This locks the wave sequence — downstream gap-plans still get their own grill-me → WF1 → WF2.
 **Supersedes/organizes:** the "v1 gaps — no plan yet" list in `docs/plans/README.md`; places every category-**B** plan (015, 017, 035, 047, 080, 081, 082) and the deferred auth plan (042) into a locked wave sequence.
 
 > This is a **planning** deliverable. It does not implement anything. It (a) locks the

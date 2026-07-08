@@ -49,12 +49,14 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
 
 ## Active — v1 Nepal feature (B)
 
-- **106** — v1 (Nepal DHM) critical-path roadmap — `DRAFT` — **the sequencing plan.**
-  Locks the wave order (0 stabilize → 1 forcing → 2 obs/rating → 3 auth/deploy →
-  4 DHM go-live → 5 v1.x), classifies every remaining piece designable-now vs
-  blocked-on-external-knowledge, and lists the collaborator questions (DHM/HSOL/gateway
-  dev). v1.0 is **headless** (Flow 3/dashboard/bulletin/Bikram Sambat → v1.x). Read this
-  first for v1 planning. Goes through WF1 plan-review + one independent review.
+- **106** — v1 (Nepal DHM) critical-path roadmap — `READY` (locked 2026-07-08) — **the
+  sequencing plan. Read this first for v1 planning.** Locks the wave order (0 stabilize →
+  1 forcing → 2 obs/rating → 3 auth/deploy → 4 DHM go-live → 5 v1.x), classifies every
+  remaining piece designable-now vs blocked-on-external-knowledge, and lists the
+  collaborator questions (DHM/HSOL/gateway dev). v1.0 is **headless** (Flow 3/dashboard/
+  bulletin/Bikram Sambat → v1.x). Reviewed via 2× WF1 plan-review + 2× Codex independent
+  review (all fixes applied); the gateway-dispatch fix + multi-year backfill window are
+  owned in Plan 082 Tasks 2C/3B.
 - **080** — FI wheel distribution — `DRAFT` (low-pri) — publish `forecastinterface`
   as a versioned wheel, migrate off the git-pin, drop the temporary CI wheel-guard
   (Plan 079). **Blocked externally** on FI hitting the private index. Packaging
@@ -94,7 +96,11 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
 
 ## v1 gaps — work with NO plan yet (draft before the waves that need them)
 
-These are named in `architecture-context.md` / `v0-scope.md` but have no plan:
+> **All now sequenced + classified in Plan 106** (wave, owner, designable-now vs blocked).
+> This list is the raw inventory; Plan 106 is the ordered plan. Gap #4 (ERA5-Land) is
+> subsumed by 081/082; the training-forcing backfill window is owned in 082 Task 3B.
+
+These are named in `architecture-context.md` / `v0-scope.md` but have no dedicated plan:
 
 1. **Multi-tenant / deployment isolation** (east HSOL / west DHM) — blocks the
    multi-tenant wave.

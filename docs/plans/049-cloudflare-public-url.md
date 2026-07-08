@@ -2,9 +2,10 @@
 
 **Status**: DRAFT
 **Date**: 2026-04-17
-**Depends on**: Plan 046 (revised) DONE — Mac mini operational on LAN, `cloudflared` image
-verified, `scripts/cloudflared/config.yml` skeleton present, `docker-compose.macmini.yml`
-overlay skeleton present, `docs/standards/security.md` amended with edge-TLS and
+**Depends on**: Plan 046 (revised) IN_PROGRESS — the staging host is operational (Mac mini
+on LAN; Stream D validation open), `cloudflared` image verified, `scripts/cloudflared/config.yml`
+skeleton present, `docker-compose.macmini.yml` overlay skeleton present,
+`docs/standards/security.md` amended with edge-TLS and
 `slack_webhook_url` / `cloudflared_credentials` entries.
 **Scope**: Publish the Mac-mini staging API at `https://sapphire-staging.hydrosolutions.ch`
 using Cloudflare Tunnel (outbound-only from the Mac mini — no router config) + Cloudflare
@@ -594,7 +595,7 @@ Commit `docs/deployment/cloudflare-public-url-YYYY-MM-DD.md` with:
   "stream-a": {
     "tasks": ["A0", "A1", "A2", "A3", "A4"],
     "sequential": true,
-    "depends_on": ["Plan 046 DONE"]
+    "depends_on": ["Plan 046 IN_PROGRESS (staging host operational)"]
   },
   "stream-b": {
     "tasks": ["B1", "B2", "B3", "B4", "B5", "B6", "B7"],
