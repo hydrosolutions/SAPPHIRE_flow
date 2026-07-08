@@ -68,10 +68,11 @@ FI published to private index ─────────────► 080 (dr
 081 (offline adapter) ──► 082 (live smoke/coverage) ──► 047 (Nepal data-sources umbrella)
 035 (provenance, READY) ──► rating-curve h→Q ingestion ──► Stage 2 QC (2.5–2.7)
 water_level unit normalization ──► removes the Plan 101 cm-onboarding guard
-046 (staging validation, IN_PROGRESS) ──► 048 (restic + restore rehearsal)   [048/049 are PARALLEL, both downstream of 046; NO 048→049 edge]
-046 (staging validation, IN_PROGRESS) ──► 049 (Cloudflare public URL + SSO)  [049 depends_on 046 only — 049 line 5; 048 depends_on 046 only — 048 line 5]
+046 (staging validation, IN_PROGRESS) ──► 048a (local encrypted restic + restore rehearsal — NOW)  [048b off-site target/key custody = the BLOCKED tail, needs the hosting decision §3-7. 048/049 parallel under 046; NO 048→049 edge]
+046 (staging validation, IN_PROGRESS) ──► 049 (Cloudflare — SWISS STAGING access ONLY; NOT the Nepal prod access plan)  [Nepal prod network/access = SEPARATE plan, BLOCKED on host/domain/IdP §3-7]
 auth/RBAC foundation ──► tenant write-isolation ──► Flow 0 Nepal onboarding (owner-scoped)
 DHM obs adapter + unit-norm ──► Nepal obs ingest ──► rating-curve derivation (Stage 2 needs h→Q)
+Flow 4 pipeline monitoring (full build) ──► DHM go-live   [HARD pre-go-live gate — unmonitored Nepal prod is not acceptable]
 ```
 
 ### What parallelizes
@@ -116,7 +117,7 @@ config later; `BLOCKED` = core design needs an external answer first (see §3).
 | **water_level unit normalization** (cm/m-agl → m) | *to-draft (D5-2, same plan)* | gap | NOW* | removes Plan 101 cm-guard; DHM per-station units | 2 |
 | Rating-curve provenance | **035** | READY → implement | NOW | — | 2 |
 | Rating-curve h→Q ingestion + reprocessing (Flow 12-A / Flow 5) | *to-draft* | gap | BLOCKED | 035; DHM hQ table + correction-param semantics | 2 |
-| Stage 2 QC (2.5–2.7, conversion validation) | *to-draft* | gap | NOW* | h→Q ingestion | 2 |
+| Stage 2 QC (2.5–2.7, conversion validation) | *to-draft* | gap | NOW* | **generic QC buildable NOW** against canonical rating-curve objects (decouple from the blocked h→Q); only the DHM correction-parameter *semantics* (§3-3) are blocked | 2 |
 | Virtual / calculated station support | **015** | DRAFT (enum slice shipped `1a88f92`; v1 flow logic undesigned) | NOW | — | 2 |
 | Manual vs automatic station support | **017** | DRAFT | NOW | 015 (behavioral dep — 015 D6 QC-exemption + Flow 4 component-freshness contract, `017:49-58`; enum already shipped `1a88f92`; 015 must merge first) | 2 |
 | **Auth / RBAC / audit** foundation | *to-draft (D5-3)* | gap (042 deferral insufficient) | NOW* | HSOL role/ownership values | 3 |
@@ -124,10 +125,14 @@ config later; `BLOCKED` = core design needs an external answer first (see §3).
 | API key auth + client SDK | **042** | DEFERRED | NOW | folds under auth foundation | 3 |
 | Flow 0 Nepal deployment onboarding | *to-draft* | gap | BLOCKED | Nepal AoI + shapefiles + static datasets | 3 |
 | Mac-mini staging validation (Stream D) | **046** | IN_PROGRESS | NOW | — | 3 |
-| restic encrypted backup + monthly restore rehearsal | **048** | DRAFT (stub) | BLOCKED | 046; hosting location + off-site target + key mgmt | 3 |
-| Cloudflare public URL + SSO | **049** | DRAFT | NOW* | 046; hosting decision | 3 |
-| Flow 4 pipeline monitoring (full build) | *to-draft* | gap (039 folds in) | NOW | Swiss-testable | 3 |
-| **Nepal model training + onboarding** (Flow 6 + Flow 12-B) | *to-draft* | gap | BLOCKED | DHM historical obs archive (§3-4) + gateway forcing coverage (§3-11) + hQ/Snowmapper confirms (§3-3, §3-12) | 4 |
+| **048a** local encrypted restic + restore rehearsal | **048** (split) | DRAFT (stub) | NOW | 046 (`048:18-25` — local-only, restore rehearsal on the mini) | 3 |
+| **048b** off-site backup target + key custody | **048** (split) | DRAFT (stub) | BLOCKED | 048a; hosting location + off-site target + key mgmt (§3-7); `048:27-30` off-site out of stub scope | 3 (tail) |
+| Cloudflare public URL + SSO (**SWISS STAGING** access) | **049** | DRAFT | NOW | 046 | 3 (Swiss staging track — NOT Nepal prod) |
+| **Nepal prod network/access plan** (host + domain + IdP + admin ownership) | *to-draft* | gap | BLOCKED | hosting decision (§3-7); distinct from 049 which is `sapphire-staging.hydrosolutions.ch` (`049:1-12`) | 3 |
+| Flow 4 pipeline monitoring (full build) | *to-draft* | gap (039 folds in) | NOW | Swiss-testable | 3 (**HARD pre-go-live gate** — must complete before Wave 4) |
+| **v1.0 timezone / local-day aggregation audit** (correctness, NOT BS display) | *to-draft* | gap | NOW | Swiss-testable; daily NWP aggregation is **UTC-bucketed** (`services/operational_inputs.py:341-351`) but arch requires **station-local** day boundaries (`architecture-context.md:2711`, e.g. NPT 00:00) | 2 |
+| **Nepal model training + onboarding** (Flow 6 + Flow 12-B) | *to-draft* | gap | BLOCKED (**dry-run NOW on Swiss/fake data** in Wave 2/3 so go-live is a data-swap, not a first-ever run) | DHM historical obs archive (§3-4) + gateway forcing coverage (§3-11) + hQ/Snowmapper confirms (§3-3, §3-12) | 4 |
+| Flow 9 model retraining (Plan 066) | **066** | DRAFT (currently a **prod no-op** — `066:6`; cadence/window are research) | — | explicit v1.x defer (was untracked) | 5 |
 | **DHM live integration + go-live** | *config/wiring* | gate | BLOCKED | ALL of §3 DHM answers **+** trained Nepal artifacts + model assignments (row above) | 4 |
 | Flow 3 review/publish/adjust | — | v1.x | — | headless v1.0 (D6) | 5 |
 | Dashboard (099 P2, 102, 104 + full) | 099/102/104 | mixed | — | v1.x (D6) | 5 |
@@ -161,8 +166,9 @@ one of these.
 
 ### To the recap Data-Gateway dev
 
-11. **Live gateway credentials (`sapphire_dg_api_key`) + coverage/metadata strategy.** Issue the operational key; confirm whether any coverage endpoint exists or the training-readiness gate must self-detect covered-span from the first fetch (current assumption). — *Unblocks:* 082 live smoke + training-readiness coverage gate.
+11. **Live gateway credentials (`sapphire_dg_api_key`) + coverage-manifest ownership.** Issue the operational key. **Do NOT ask "does a coverage endpoint exist"** — Plan 082 already resolved that the gateway exposes **no** coverage metadata and SAP3 uses a **supervised coverage manifest** (`082:145-160`, `:381-386`; don't infer readiness from returned timestamps). The real open question: **who owns/signs the supervised coverage manifest, and what coverage window is acceptable per dataset / variable / HRU** before training is gated ready? — *Unblocks:* 082 live smoke + training-readiness coverage gate.
 12. **Snowmapper variable + lag confirmation for the eastern group models.** `hs/rof/swe` names are stable; confirm lag step-counts (FI Q9, owed by Sandro). — *Unblocks:* snow-forced model onboarding.
+13. **recap-dg-client private-clone credential (IMMEDIATE — needed at first CI/Docker build, not the eventual wheel).** `recap-dg-client` is a **private** repo; the git-pin needs a deploy key or fine-grained PAT scoped to it, the SSH/token URL form for `pyproject.toml`, a rotation policy, and Docker BUILDER-stage auth (the four CI/Docker entry-gates in §0). Distinct from Q10 (the eventual private *wheel*). Owner: **HSOL / recap-dg-client repo admin**. — *Unblocks:* 082's first CI-touching build + Plan 082 Task 2F.
 
 > **Already resolved — do NOT re-ask:** IFS `fc`+`pf` 51-member scheme; EPSG:4326 throughout; feature-`name` addressing (no leading `0`); string per-polygon column keys; single vs multi-polygon gpkg (SAP3 tests it); no gateway tenant isolation (accepted v1 limitation). See `project_recap_dg_client_geometry_lifecycle`.
 
@@ -219,11 +225,26 @@ Each plan above follows the standing workflow, unchanged by this roadmap:
 
 ---
 
-## 6. Open items for plan-review / independent review to challenge
+## 6. Open forks — RESOLVED (independent review, 2026-07-08) + 3 pending
 
-- Is **Flow 4 pipeline monitoring** truly Wave 3, or a hard prod-blocker that should precede DHM go-live (Wave 4)? (Argument for earlier: an unmonitored Nepal prod deploy is risky; argument for Wave 3: v0 basic health checks suffice until real DHM traffic exists.)
-- Should the **auth foundation** precede or follow the **DHM obs path** in drafting order? D5 puts obs second, auth third; a reviewer may argue auth is a longer pole and should start first.
-- **048** is classed BLOCKED on hosting, but a *local* encrypted-restic + restore-rehearsal mechanism is designable now — split 048 into a NOW mechanism half and a BLOCKED off-site half?
-- Does the **Stage 2 QC** design genuinely need DHM's hQ format, or can it be built `NOW*` against a generic rating-table shape with DHM values wiring in later (like the obs adapter)?
-- **RivRetrieve** is D2-optional — but is there a cheap, high-value subset (one UK/US gauge with a known rating curve) worth making a *soft* checkpoint inside Wave 2 to de-risk the obs+rating path before DHM?
-- **Nepal model training + onboarding** (new Wave-4 §2 row) is BLOCKED on the DHM obs archive — is any of it de-riskable now against Swiss/fake data (e.g. dry-run the Flow 6 + Flow 12-B path end-to-end on the mac-mini) so go-live is a data-swap, not a first-ever run?
+Independent Codex review verdict: **LOCK-WITH-FIXES** (it re-verified the §4 code claims
+as correct). The six original open forks are now **resolved** (fold-ins applied above);
+three sub-decisions the review surfaced remain for the owner grill-me.
+
+### Resolved (folded into §1–§4)
+1. **Flow 4 → Wave 3, HARD pre-go-live gate.** Unmonitored Nepal prod is not acceptable (§1 chain, §2 row).
+2. **Auth vs DHM-obs drafting order:** parallel if bandwidth allows; **auth first if serialized** (wider API/schema/security blast radius — §4 note to add at finalize).
+3. **048 split now** → 048a local restic + restore rehearsal (NOW, after 046) + 048b off-site/key-custody (BLOCKED) (§1, §2).
+4. **Stage 2 QC = generic NOW*** against canonical rating-curve objects; only DHM correction semantics blocked (§2 row).
+5. **RivRetrieve = one soft checkpoint** inside Wave 2 (not a gate) — a single UK/US gauge with a known rating curve to expose unit/datum/rating assumptions early.
+6. **Nepal training = dry-run Flow 6 + Flow 12-B NOW** on Swiss/fake data; real artifacts stay blocked on the DHM archive (§2 row).
+
+Plus review MAJOR fold-ins already applied: 049 re-scoped to Swiss staging + a separate
+Nepal-prod-access plan (§2); §3-11 coverage question reframed to manifest-ownership; new
+§3-13 recap private-clone credential ask; v1.0 timezone/local-day **correctness** audit
+row (§2); Flow 9 retraining classified as explicit v1.x defer (§2).
+
+### Pending — owner grill-me (3 sub-decisions)
+- **F1 — Plan 015 scope.** 015 hides a **hard** baseline/fallback-model prerequisite before **ungauged** support ships (`015:310-318` §D5a). Fork: scope v1.0 015 to **calculated-only** (defer ungauged + baseline-model plan) **vs** add a Wave-2 baseline-model row now.
+- **F2 — Nepal DB-scale gate weight.** v0 removed partitioning/DLQ/cold-retention "revisit above threshold" (`v0-scope.md:46-60`); Nepal scale crosses it (`architecture-context.md:3064,:3078`). Fork: a **lightweight decision-gate** (compute the row/disk projection, decide partition-or-not) **vs** a full partitioning/DLQ/retention design plan now.
+- **F3 — auth-plan task depth.** Include the known bypass + grant-audit tasks (legacy `.json` / `/tables/` routes `042:80-94`; `sapphire_worker` grant audit `035:672-680`) as explicit tasks in the new auth/write-isolation plan, or track them separately?
