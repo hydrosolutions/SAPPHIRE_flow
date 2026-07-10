@@ -1,6 +1,11 @@
 # Plan 111 — Benchmarking SAPPHIRE forecasts against BAFU's operational forecasts
 
-**Status:** DRAFT
+**Status:** READY (design) — plan-reviewed 2026-07-10 (3 rounds). **Execution BLOCKED on
+external gate G1**: the design is approved, but no code should ship until the BAFU request
+(archive availability, licence over the `/plots/*.json` endpoints, publication rights)
+returns — the whole plan is a gate ladder and G1 is unsent. The one piece that *could* be
+built pre-G1 (the route-C collector) is a **hard non-goal** here until the licence answer
+arrives; see Non-goals.
 **Priority:** Low — nice-to-have. Not on the v1.0 Nepal critical path (Plan 106).
 **Type:** Research / publication artifact. If it ever becomes code: hold-at-PR.
 **Owner:** Bea (marti@hydrosolutions.ch)
