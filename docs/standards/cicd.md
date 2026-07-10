@@ -536,7 +536,7 @@ including the current `sapphire-flow:${VERSION}` tag if the stack is down. The s
 therefore checks that the stack is running before pruning:
 
 ```bash
-if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q sapphire; then
+if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -Eq '^sapphire_flow-'; then
     log 'stack not running or daemon unreachable — skipping prune'
     exit 0
 fi

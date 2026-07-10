@@ -264,6 +264,31 @@ class TestScratchCleanupOnFailure:
         leftover_dirs = [p for p in tmp_path.iterdir() if p.is_dir()]
         assert leftover_dirs == [], f"scratch leftovers not cleaned: {leftover_dirs}"
 
+    def test_fetch_stage_failure_leaves_no_scratch_leftover(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Round-3 gap: a FETCH-stage failure (raise inside _fetch_grib_files,
+        after the scratch dir is created) must ALSO be cleaned by the centralized
+        fetch_forecasts handler — not only the parse-stage path."""
+        adapter = _make_guard_adapter(tmp_path, disk_guard_enabled=True)
+        _patch_free_gb(monkeypatch, 50.0)  # healthy disk; isolate the fetch failure
+
+        def _boom_fetch(_cycle: object) -> object:
+            # Mimic the real _fetch_grib_files: create the cycle's scratch dir,
+            # then fail mid-download, leaving a partial dir behind.
+            scratch = tmp_path / _CYCLE.strftime("%Y%m%dT%H%M")
+            scratch.mkdir(parents=True, exist_ok=True)
+            (scratch / "partial.grib2").write_bytes(b"GRIB")
+            raise exceptions.AdapterError("simulated fetch-stage failure")
+
+        monkeypatch.setattr(adapter, "_fetch_grib_files", _boom_fetch)
+        with pytest.raises(exceptions.AdapterError):
+            adapter.fetch_forecasts([], _CYCLE)
+        leftover_dirs = [p for p in tmp_path.iterdir() if p.is_dir()]
+        assert leftover_dirs == [], (
+            f"fetch-stage leftovers not cleaned: {leftover_dirs}"
+        )
+
     def test_fetch_prunes_pre_existing_stale_cycle_dirs(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
