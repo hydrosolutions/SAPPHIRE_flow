@@ -531,15 +531,28 @@ engineering, is this plan's dominant cost.
    relationship we depend on for LINDAS? LINDAS is our only Swiss observation source,
    and the same office owns both. Framing matters: "scientific validation against the
    operational reference" reads very differently from "we beat BAFU".
-3. Same question for Nepal DHM in v1: does a "we beat the national agency" framing
-   help or hurt the deployment? Whatever we settle on for BAFU sets the precedent.
+3. ~~Same question for Nepal DHM in v1: does a "we beat the national agency" framing
+   help or hurt the deployment?~~ **Moot (owner 2026-07-10): this feature is
+   Swiss-only — we are not benchmarking against DHM (see Scope). No Nepal precedent.**
 4. ~~G3 persistence: migrated DB table vs run-id parquet?~~ **Resolved 2026-07-10:
    run-id-tagged parquet** — near-zero infra for a low-priority research artifact that may
    never leave DRAFT; the migrated table is retained in G3 as the heavier alternative.
 
+## Scope — SWISS DEPLOYMENT ONLY (owner, 2026-07-10)
+
+This whole feature — collector, scorer, and any monitoring around it — is valuable
+**only for the Swiss / mac-mini deployment. It is NOT for the DHM / Nepal deployment**
+and is **not on the v1 Nepal critical path** (Plan 106). Do not carry it into the Nepal
+tenant; if the deferred Flow 4 staleness hook is ever built, keep it Swiss-scoped rather
+than generalising it as Nepal-v1 monitoring infrastructure. Consequence: the old
+"Nepal-precedent" framing worry (open question 3) is **moot** — we are not benchmarking
+against DHM, so the only live framing concern is the BAFU/LINDAS relationship itself
+(open question 2).
+
 ## Non-goals
 
 - Ingesting BAFU forecasts operationally.
+- **Any use of this feature in the DHM / Nepal deployment** (Swiss-only — see Scope above).
 - Any change to Flow 1, alerting, or the API contract.
 - Comparing against non-BAFU forecast providers (out of scope; revisit only if this
   plan lands).
