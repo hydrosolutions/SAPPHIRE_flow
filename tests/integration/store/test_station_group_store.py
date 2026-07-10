@@ -15,14 +15,44 @@ from sapphire_flow.types.station import GroupModelAssignment, StationGroup
 from tests.conftest import make_station_config
 
 
+class _SpyConn:
+    """Proxy that records every statement executed through it."""
+
+    def __init__(self, real: sa.Connection) -> None:
+        self._real = real
+        self.executed: list[object] = []
+
+    def execute(self, stmt: object, *a: object, **k: object) -> object:
+        self.executed.append(stmt)
+        return self._real.execute(stmt, *a, **k)  # type: ignore[arg-type]
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._real, name)
+
+
 @contextmanager
-def savepoint_txn(conn: sa.Connection):  # type: ignore[return]
+def _savepoint_spy_factory(conn: sa.Connection):  # type: ignore[return]
+    spy = _SpyConn(conn)
     with conn.begin_nested():
-        yield conn
+        yield spy
 
 
 def savepoint_factory(conn: sa.Connection):
-    return lambda: savepoint_txn(conn)
+    return lambda: _savepoint_spy_factory(conn)
+
+
+def _capturing_spy_factory(conn: sa.Connection) -> tuple[list[_SpyConn], object]:
+    """Return (spies list, factory) so tests can inspect the captured spy."""
+    spies: list[_SpyConn] = []
+
+    @contextmanager
+    def _factory():  # type: ignore[return]
+        spy = _SpyConn(conn)
+        spies.append(spy)
+        with conn.begin_nested():
+            yield spy
+
+    return spies, _factory
 
 
 _NOW = datetime(2025, 1, 1, tzinfo=UTC)
@@ -376,8 +406,14 @@ class TestStoreGroupAtomicityRollback:
     def test_members_insert_failure_rolls_back_header(
         self, db_connection: sa.Connection
     ) -> None:
-        # Use a non-existent station_id to force an FK violation on the members insert
-        # so the header upsert succeeds but the members insert fails.
+        """Prove the members insert fires AND the header is absent after rollback.
+
+        We use an FK violation on station_group_members (non-existent station_id)
+        to trigger the failure.  The spy confirms the members INSERT was actually
+        reached before failing, ruling out a pass caused by a header-level error.
+        """
+        import sqlalchemy.exc
+
         nonexistent_station = StationId(uuid.uuid4())
         group = StationGroup(
             id=StationGroupId(uuid.uuid4()),
@@ -386,25 +422,63 @@ class TestStoreGroupAtomicityRollback:
             description=None,
             created_at=_NOW,
         )
-        store = PgStationGroupStore(
-            db_connection, transaction_factory=savepoint_factory(db_connection)
-        )
 
-        import sqlalchemy.exc
+        hit_members_insert: dict[str, bool] = {"fired": False}
+
+        @contextmanager
+        def _failing_spy_factory():  # type: ignore[return]
+            spy = _SpyConn(db_connection)
+            real_spy_execute = spy.execute
+
+            def _patched(stmt: object, *a: object, **k: object) -> object:
+                if (
+                    isinstance(stmt, sa.sql.dml.Insert)
+                    and getattr(getattr(stmt, "table", None), "name", "")
+                    == "station_group_members"
+                ):
+                    hit_members_insert["fired"] = True
+                # Let the real execute run (FK violation will raise naturally)
+                return real_spy_execute(stmt, *a, **k)
+
+            spy.execute = _patched  # type: ignore[method-assign]
+            with db_connection.begin_nested():
+                yield spy
+
+        store = PgStationGroupStore(
+            db_connection, transaction_factory=_failing_spy_factory
+        )
 
         with pytest.raises(sqlalchemy.exc.IntegrityError):
             store.store_group(group)
 
+        # The members insert must have fired (rules out a header-level short-circuit)
+        assert hit_members_insert["fired"], (
+            "station_group_members INSERT was never reached"
+        )
+
+        # Both header and members must be absent (rollback was atomic)
         row = db_connection.execute(
             sa.select(station_groups.c.id).where(station_groups.c.id == group.id)
         ).first()
         assert row is None
 
+        member_row = db_connection.execute(
+            sa.select(station_group_members.c.group_id).where(
+                station_group_members.c.group_id == group.id
+            )
+        ).first()
+        assert member_row is None
+
 
 class TestStoreGroupAtomicitySuccess:
-    def test_both_header_and_members_visible_after_store(
+    def test_writes_routed_through_injected_txn(
         self, db_connection: sa.Connection
     ) -> None:
+        """Prove both INSERTs go through the spy (not self._conn).
+
+        A broken impl that bypasses the injected txn and writes directly on
+        self._conn (= db_connection) would NOT appear in spy.executed.
+        """
         s = _seed_station(db_connection, "ATOM-S-001")
         group = StationGroup(
             id=StationGroupId(uuid.uuid4()),
@@ -413,11 +487,29 @@ class TestStoreGroupAtomicitySuccess:
             description=None,
             created_at=_NOW,
         )
-        store = PgStationGroupStore(
-            db_connection, transaction_factory=savepoint_factory(db_connection)
-        )
+
+        spies, factory = _capturing_spy_factory(db_connection)
+        store = PgStationGroupStore(db_connection, transaction_factory=factory)
 
         store.store_group(group)
+
+        assert len(spies) == 1, "factory must have been called exactly once"
+        spy = spies[0]
+
+        # The spy must have recorded at least 2 statements: header upsert + members
+        assert len(spy.executed) >= 2, (
+            f"expected ≥2 statements via txn spy, got {len(spy.executed)}"
+        )
+
+        table_names = {
+            getattr(getattr(stmt, "table", None), "name", None) for stmt in spy.executed
+        }
+        assert "station_groups" in table_names, (
+            "station_groups header INSERT missing from spy"
+        )
+        assert "station_group_members" in table_names, (
+            "station_group_members INSERT missing from spy"
+        )
 
         header_row = db_connection.execute(
             sa.select(station_groups.c.id).where(station_groups.c.id == group.id)
@@ -430,3 +522,38 @@ class TestStoreGroupAtomicitySuccess:
             )
         ).scalar_one()
         assert member_count == 1
+
+
+class TestStoreGroupIsolationHolds:
+    def test_rolled_back_savepoint_invisible_from_fresh_connection(
+        self, db_connection: sa.Connection, db_engine: sa.Engine
+    ) -> None:
+        """Prove a rolled-back savepoint write is invisible from a fresh connection."""
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        group = StationGroup(
+            id=StationGroupId(uuid.uuid4()),
+            name="isolation-holds-group",
+            station_ids=frozenset(),
+            description=None,
+            created_at=_NOW,
+        )
+
+        # Write inside a savepoint then explicitly roll it back
+        with db_connection.begin_nested() as sp:
+            db_connection.execute(
+                pg_insert(station_groups).values(
+                    id=group.id,
+                    name=group.name,
+                    description=group.description,
+                    created_at=group.created_at,
+                )
+            )
+            sp.rollback()
+
+        # Verify the write is invisible from a separate connection
+        with db_engine.connect() as fresh_conn:
+            row = fresh_conn.execute(
+                sa.select(station_groups.c.id).where(station_groups.c.id == group.id)
+            ).first()
+        assert row is None, "rolled-back savepoint write leaked to a fresh connection"
