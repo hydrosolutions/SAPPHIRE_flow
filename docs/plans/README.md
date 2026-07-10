@@ -85,12 +85,15 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
 - **108** — Swiss market standards posture — `DRAFT` (low-priority v1+) —
   nFADP/DSG, OGC, INTERLIS, and SVGW W12 decision gates for future Swiss partner
   readiness. Docs-first; no change to the v1.0 Nepal critical path.
-- **111** — Benchmarking against BAFU's operational forecasts — `READY (design)`;
-  **BLOCKED on external gate G1** (low-priority, nice-to-have) — plan-reviewed (3
-  rounds). LINDAS ships observations only; hydrodaten scrape is technically proven
-  (Plotly-JSON, 54 stations) but **forward-only + licence unresolved**. Execution
-  gated on the BAFU request (archive + licence + publication rights). Research
-  artifact; never enters Flow 1.
+- **111** — Benchmarking against BAFU's operational forecasts — collector **MERGED
+  (#72)**; scorer/publication **BLOCKED on external gate G1** (low-priority). Route-C
+  hourly collector archives hydrodaten Plotly-JSON forecasts (54 stations, quantiles
+  not members, ~5-day horizon) to a quarantined parquet store; evaluation-only,
+  forward-only. Dev collection validated 2026-07-10. G3 scorer + any published
+  comparison stay gated on the (unsent) BAFU licence request.
+- **111b** — Mac-mini deployment runbook for the collector — `READY (runbook)` —
+  deploy wiring in PR #73; hourly schedule + quarantined volume + overlay switch.
+  See [111b-bafu-collector-macmini-deployment.md](111b-bafu-collector-macmini-deployment.md).
 - **071** — v0b weather-history: MeteoSwiss daily reanalysis adapter — `DRAFT`.
 - **072** — v0b weather-history: hybrid forcing resolver — `DRAFT`.
 - **066** — Configurable retrain data-window — `DRAFT`.
