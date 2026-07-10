@@ -281,6 +281,42 @@ The **Codex repo-grounded reviewer** checks:
 - **The patch may not go to human PR approval** until independent reviewers
   APPROVE, or the remaining concerns are explicitly accepted by the human owner.
 
+### Post-WF2 adversarial review rounds (Codex CLI) — MANDATORY before merge
+
+WF2's built-in quality gate is necessary but **not sufficient**. A green test
+suite plus one review pass can hide real correctness bugs. On **Plan 105** (the
+first WF2-track build, 2026-07-10) a *second* adversarial Codex round caught
+**3 blockers** — a self-defeating disk tripwire (checked before the sweep that
+frees space), a scratch-dir leak on the parse-stage failure path, and a hard
+disk breach masked as a soft one — that **159 green tests and the first review
+had both missed**, plus a locked test that passed *for the wrong reason*.
+
+So after ANY WF2 (or WF2-substitute conventional) build, **before merging the
+hold-at-PR**:
+
+1. **Run independent adversarial review on the COMMITTED diff** — `codex exec
+   -s read-only …` reading `git diff main...HEAD`, and/or a strong Claude
+   reviewer. Each round hunts for: regressions from the refactor, edge cases,
+   **silent-failure modes**, and whether the locked tests would catch a *subtly*
+   broken impl (not merely pass). Give each round a **distinct focus** — don't
+   re-run the same checklist.
+2. **Loop review → fix → re-review UNTIL the reviewer converges** (APPROVE / no
+   blockers). Target 3, **hard-max 5** rounds (same budget as `plan-review`).
+   **Escalate to the human on non-convergence after 5** — do not merge.
+3. **Prove test soundness, not just green.** For each blocker fixed, verify the
+   locking test **FAILS against the buggy code** (e.g. `git stash` the impl,
+   keep the test, run it — expect RED). Green ≠ correct.
+4. Only the human merges — once the loop converges clean, or the human
+   explicitly accepts the residuals.
+
+**Why this is a manual convention (for now):** WF2 (`vision-build`) is a
+*built-in* workflow, so its implementer↔reviewer quality-gate loop cannot be
+edited in-repo today. WF1 (`plan-review`) *was* updated to loop-until-converge +
+escalate-after-5 (2026-07-10, #69). **The eventual goal (tracked) is to
+reimplement `vision-build` as a repo-level `.claude/workflows/vision-build.js`
+with the same loop-until-converge + escalation baked into its quality gate** —
+then this convention becomes automatic rather than manual.
+
 ### Authority gates
 
 - The **human owner is the terminal authority.**
@@ -313,10 +349,17 @@ Notes:
 - **The policy is not auto-enforced.** No hook blocks a commit or PR for skipping
   multi-model review — the tools above run it, but the orchestrator is
   responsible for invoking them.
-- **WF2 (`vision-build`) has not yet been run against this repo.** Confirm the
-  manifest's gate commands locally before the first launch (see the manifest's
-  own `_comment`). Adoption stance is manual-deploy-first, then WF2 fix-mode on
-  confirmed bugs, **hold-at-PR — never auto-merge**.
+- **WF2 (`vision-build`) — first run 2026-07-10 (Plan 105).** It BLOCKED at the
+  locked-test-authoring soundness gate (twice): the auto-author kept writing
+  tests against the changing `_fetch_nwp_task` signature that *errored* instead
+  of failing RED. We pivoted to a **conventional build** — author-controlled
+  locked tests + a delegated implementation + the manual post-WF2 adversarial
+  rounds above (which caught 3 blockers). Lesson: for signature-changing work,
+  the auto-authored locked tests may not converge; be ready to author them by
+  hand and always run the post-WF2 adversarial rounds. Confirm the manifest's
+  gate commands locally before a launch (see the manifest's own `_comment`).
+  Adoption stance is manual-deploy-first, then WF2 fix-mode on confirmed bugs,
+  **hold-at-PR — never auto-merge**.
 
 ## Task Exit Gate
 
