@@ -87,9 +87,10 @@ rendered images. The full chain, verified live:
 | 3 | **`GET /plots/q_forecast/{key}_q_forecast_{lang}.json`** | **The raw Plotly figure — numeric series** |
 
 Step 3 is the find: the path is referenced without extension in the page, but appending
-`.json` returns `application/json`, HTTP 200, unauthenticated, ~28 KB.
-(`.png`/`.svg`/`.csv` → 404; no extension → 302.) Discharge is `q_forecast`;
-water level is `p_forecast` (present on lake/level stations).
+`.json` returns `application/json`, unauthenticated. Discharge is `q_forecast`;
+water level is `p_forecast` (present on lake/level stations). (Exact HTTP status codes
+per extension and the response byte size are endpoint-shape trivia that drive no gate
+decision; deliberately not pinned here.)
 
 **Station inventory (2026-07-08):** **54** forecast stations — 41 river
 (`metric: discharge_ms`, unit `m³/s`) and 13 lake (`metric: masl`, unit `m ü.M.`).
@@ -97,18 +98,20 @@ The feature `key` (e.g. `2135` = *Aare – Bern, Schönau*) is the **BAFU statio
 i.e. the same identifier LINDAS uses. **The join to our observations is free** — no
 fuzzy name matching, no crosswalk table.
 
-**Payload shape** (station 2135, discharge):
+**Payload shape** (station 2135, discharge) — only what the gates need:
 
-- Five traces: `Min. / Max.`, `Min / Max`, `25.-75. Percentile` (a `fill: tozerox`
-  polygon), `Median`, `Measured`.
-- **114 hourly steps**, horizon `2026-07-08T15:00+02:00 → 2026-07-13T08:00+02:00`
-  (**≈4.7 days**). `Measured` carries 25 trailing observed values.
-- Units in `trace.meta.unit` as the string `"m³/s"` — **byte-identical to our canonical
-  discharge unit**.
-- **Issue time is machine-readable**: `layout.annotations[1].x` =
-  `"2026-07-08T15:00:00.000+02:00"`, with `text: "Forecast as of 08.07.26 15:00"`.
-  Also `meta.produced_at` on the GeoJSON. (Reading issue time out of an annotation's
-  *array position* is brittle — match on the `text` prefix, not the index.)
+- Quantile summary, **not** members: min / p25 / median / p75 / max (drives G2's
+  metric choice — see Phase 0b finding 1).
+- **114 hourly steps**, horizon ≈**4.7 days** (drives G2's horizon truncation).
+- Units in `trace.meta.unit` as `"m³/s"` — **byte-identical to our canonical discharge
+  unit** (the join is free).
+- **Issue time is machine-readable** in the JSON, and `produced_at` on the GeoJSON;
+  the two differ (issue ≠ publication — see the collector note below).
+
+(The exact trace names, the `fill: tozerox` render style, and the
+annotation-array-index brittleness are scraper-implementation detail; they belong in
+the collector's docstring *if and when* it is written, not in a plan that outlives an
+undocumented endpoint. Deliberately not pinned here.)
 
 ### Two findings that change the gates
 
@@ -162,26 +165,21 @@ Supporting facts, neither of which settles it: `hydrodaten.admin.ch/robots.txt` 
 
 ### If (and only if) licensing clears — the collector's shape
 
-Small: a Prefect flow, hourly, that walks the 54-station GeoJSON, fetches each
-`q_forecast`/`p_forecast` JSON, parses the five traces + issue time, and appends to an
-archive keyed `(station_key, issued_at, valid_time)`. Notes that matter:
-
-- **Determine the real issue cadence empirically before choosing a poll interval.** On
-  2026-07-08 the figure's issue time was 15:00 while `produced_at` was 18:30 — issue and
-  publication are *not* the same clock. Dedupe on `issued_at`, not on fetch time; a poll
-  that re-fetches an unchanged forecast must be a no-op, not a duplicate row.
-- **Be a polite client**: modest rate limit across the 54 stations, a descriptive
-  `User-Agent` identifying SAPPHIRE/hydrosolutions with a contact address, conditional
-  requests where honoured, and a hard cap on retries. We are a guest.
-- **Expect the endpoint to break.** Undocumented internal endpoints change. The
-  collector must fail loudly into Flow 4 pipeline monitoring, never silently write empty
-  archives. (Compare the `live-lindas-weekly` Monday-window failures —
-  `docs/decisions/bafu-lindas-monday-window.md`.)
-- **Archive raw.** Persist the untouched Plotly JSON alongside the parsed rows. If our
-  trace-name parsing turns out wrong six months in, the raw payload is the only way to
-  recover the archive; re-fetching is impossible.
-- Storage is negligible: 54 stations × ~28 KB × 24/day ≈ **36 MB/day** raw, far less
-  parsed. Wire it into the Plan 105 disk-hygiene budget anyway.
+Deferred design — do not write before G1's licence answer (see Non-goals). In one
+paragraph: a small hourly Prefect flow over the 54-station GeoJSON, deduped on
+`issued_at` (**not** fetch time — issue ≠ publication; on 2026-07-08 issue was 15:00,
+`produced_at` 18:30), archiving the **raw** Plotly JSON alongside parsed rows (re-fetch
+is impossible — the endpoint is forward-only), polite client (contact `User-Agent`,
+rate limit, retry cap), failing **loudly into Flow 4** monitoring rather than writing
+empty archives (compare the `live-lindas-weekly` Monday-window failures,
+`docs/decisions/bafu-lindas-monday-window.md`). Storage ≈36 MB/day raw — wire into the
+Plan 105 disk-hygiene budget. Full collector design (poll cadence, dedup key, retry
+policy) is deferred to the collector's own code when/if G1 clears; the +1-day estimate
+already accounts for it, so there is no reason to pre-spend those decisions in this doc
+for an endpoint that can change without notice. **Caveat on "loudly into Flow 4":** that
+integration point does **not** exist yet for a non-Flow-1 producer — the collector has to
+add a `PipelineCheckType` member and a Flow 4 check itself (see G3's Flow-4 hook item); it
+is a task, not a free inheritance.
 
 ---
 
@@ -252,6 +250,19 @@ head-to-head. Resolve on paper before any code:
   (41 river discharge, 13 lake level; Phase 0b). The comparison population is that subset
   ∩ our onboarded stations, and results must not be generalised beyond it. Station keys
   join directly to LINDAS codes.
+- **Forecast-coverage overlap — pre-register it, do not assume it.** A head-to-head needs
+  SAPPHIRE forecasts *issued over the same window* the BAFU archive covers — not just BAFU
+  forecasts plus our observations. SAPPHIRE's `HindcastForecast` coverage per station is
+  bounded by that station's own onboarding/training history and forcing availability
+  (`docs/architecture-context.md` H.2/H.3), **not** guaranteed to reach back over a
+  multi-year BAFU archive: BAFU could plausibly return 10+ years, while most SAPPHIRE
+  stations will have far less hindcast depth. So before committing to the comparison window,
+  intersect the BAFU archive period with each candidate station's actual
+  `HindcastForecast` / `skill_scores` coverage and state the resulting (likely much smaller)
+  overlap explicitly. The real comparison population is the double intersection —
+  *BAFU-forecast stations ∩ our onboarded stations ∩ the per-station time window where both
+  sides have forecasts* — and the "historical benchmark possible immediately" framing in the
+  Sequencing diagram holds only for that overlap, not the full archive.
 - **Issue-time alignment.** Compare forecasts issued at (approximately) the same
   time, or explicitly model the offset. A forecast issued 6h later is not a
   competitor; it is a different product.
@@ -260,10 +271,32 @@ head-to-head. Resolve on paper before any code:
   members**: min / p25 / median / p75 / max. Ensemble CRPS is not computable on their
   side. **Decision:** score the head-to-head on the metrics both products support —
   **pinball loss at q25/q50/q75**, MAE / NSE / KGE / PBIAS on the median,
-  POD / FAR / CSI, peak-timing error — and report CRPS for SAPPHIRE only, saying so
+  POD / FAR / CSI on **median exceedance** (see the contingency caveat below),
+  peak-timing error — and report CRPS for SAPPHIRE only, saying so
   explicitly. Reducing our ensemble to the same five statistics before scoring is the
   fair move; do **not** compare our full-ensemble CRPS against a quantile-derived
   approximation of theirs.
+- **Contingency-table caveat — the same ban, applied to POD/FAR/CSI.** The existing
+  `compute_contingency` (`src/sapphire_flow/services/skill/metrics.py:62-86`) is **not** a
+  deterministic function: it derives an exceedance probability
+  `forecast_prob = np.mean(ensemble > threshold, axis=1)` over a 2-D
+  `(n_times, n_members)` matrix and cuts it at `decision_probability` (default 0.5,
+  `service.py:41`); its only caller always passes a full member stack. Feeding BAFU's five
+  quantile columns into it as if they were five equiprobable members is **the exact
+  pseudo-member substitution this gate forbids for CRPS** — the derived probability could
+  take only six coarse values (0/5…5/5) and would silently fold in `min`/`max`, which are
+  not quantile levels (Phase 0b finding 1). **Decision:** POD/FAR/CSI for the head-to-head
+  are computed **deterministically** — `forecast_yes = (median > danger level)` vs
+  `observed_yes = (obs > danger level)`, the same hit/miss/false-alarm arithmetic with
+  **no `decision_probability` axis-1 averaging** — applied **symmetrically** to both
+  products (BAFU median vs SAPPHIRE ensemble-median). This is a small **new helper**, not
+  a reuse of `compute_contingency`; see Gate G3.
+- **New-code note.** Both **pinball loss** and the **deterministic contingency helper**
+  are new code: `metrics.py` has no quantile-native or single-value-contingency function,
+  and the one existing QUANTILES path (`_ensemble_matrix`, `service.py:44-51`) feeds
+  quantiles into `compute_crps` as pseudo-members — precisely the approximation forbidden
+  here. These are two small new functions; their provenance (a thin `sklearn` wrapper, not a
+  from-scratch metric) and cost are stated once in Gate G3 — see there.
 - **Horizon mismatch.** BAFU's horizon is ≈4.7 days hourly (114 steps). Truncate both
   products to the common horizon before scoring, per lead time.
 - **Truth series.** Use our QC'd observations (already ingested). Note that BAFU
@@ -275,68 +308,200 @@ head-to-head. Resolve on paper before any code:
 
 ## Gate G3 — engineering shape (only if G1 and G2 both pass)
 
-The system has no concept of a *third-party* forecast. `forecast_values` is keyed by
-our `ModelId`. Two shapes:
+> This is a *gate*, not an implementation spec. G3 fires **only if G1 and G2 both pass**,
+> and both are still open. The subsystem-level entanglement below is enough to choose a
+> route; whoever eventually builds it should grep the then-current code for the real
+> touchpoints rather than trust file:line numbers frozen in a doc, which rot the moment
+> those files move.
 
-**Recommended — register BAFU as a pseudo-model.** A `ModelId` like
-`bafu_reference` whose "predictions" are ingested rather than computed. This
-**reuses the entire Flow 8 skill machinery for free** — CRPS, BSS, POD/FAR/CSI,
-peak timing, NSE, KGE, per-lead-time / per-season / per-flow-regime slicing,
-and the skill-score store. That is most of the work, already written and tested.
+Two shapes were weighed. **The recommendation flipped during design review: the standalone
+offline scorer is Recommended, the pseudo-model route is Rejected** — the accounting below
+is what flipped it.
 
-The cost is precisely one enum change plus its blast radius:
+**Recommended — a standalone offline scorer writing a run-id-tagged parquet archive**
+(owner decision 2026-07-10; the migrated-table variant is retained as the heavier
+alternative in the persistence bullet below). A one-off importer loads the BAFU series
+(from G1's export or the route-C archive), aligns it to our QC'd observations by station
+key, and — this is the load-bearing point the head-to-head turns on — **scores *both* sides
+through the same new metric functions**: the BAFU quantile series **and** SAPPHIRE's own
+forecast reduced to the same five statistics (G2), each run through the new pinball-loss
+wrapper and the new deterministic-contingency helper, then written as sibling rows
+discriminated by a `forecast_source` field (`bafu` vs `sapphire`). This is *not* a reuse of
+the existing `skill_scores` rows: those carry no pinball loss, and their POD/FAR/CSI come
+from the ensemble-probabilistic `compute_contingency` that G2 explicitly forbids here (see
+the natural-key bullet). The archive therefore holds a fresh, apples-to-apples SAPPHIRE
+score alongside the BAFU one so a single group-by answers the comparison. It **never mints a
+`ModelId`, never writes a `ModelAssignment`, and never touches the `FALLBACK_MODEL_IDS`
+keyspace** that combination, alerting, and fallback gate on — so it is *structurally
+impossible* for this route to leak into Flow 1. That safety property is a guarantee, not an
+audit. A flat parquet file for a one-off publication artifact also matches CLAUDE.md's
+"Ad-hoc Analyses and One-Time Scripts" convention and keeps a low-priority,
+off-critical-path plan out of the migration history entirely.
 
-- `ModelTier` (`src/sapphire_flow/types/enums.py:102`) is currently `SKILL |
-  FALLBACK`. A third member — `REFERENCE` (or `EXTERNAL`) — is required, because a
-  pseudo-model **must be excluded** from:
-  - **multi-model combination** (`POOLED` / `BMA`) — we must never blend a rival's
-    forecast into our own operational output;
-  - **alerting** — see `AlertEligibility`; a reference model must not raise alerts;
-  - **fallback selection** in the Flow 1 priority chain.
-- Audit every `ModelTier` call site. The `FALLBACK`-exclusion logic (Plan 100) is the
-  template — the same predicates likely need to become "tier is SKILL" rather than
-  "tier is not FALLBACK". **This is the one place a careless change leaks a
-  third-party forecast into operational output.** Treat as the plan's primary risk.
-- An ingest adapter, shaped by G1's answer. Not a `WeatherForecastSource` — that
-  Protocol is NWP. This is a new `ExternalForecastSource` concept, or a plain
-  offline importer if we get a one-time historical export (route A).
+Genuinely reusable, `ModelId`-free, safe to call directly: the **deterministic** pure-numpy
+functions in `src/sapphire_flow/services/skill/metrics.py` — `compute_nse`, `compute_kge`,
+`compute_pbias`, `compute_mae`, `compute_peak_timing_error` — which take arrays and
+thresholds, not a model registry. **`compute_contingency` is NOT in that list**: it is
+ensemble-probabilistic (`metrics.py:62-86`, `np.mean(ensemble > threshold, axis=1)` cut at
+`decision_probability`, `service.py:41`), so calling it on BAFU's five quantiles is the
+pseudo-member trick G2 bans — POD/FAR/CSI use the new deterministic helper instead (G2's
+contingency caveat). The existing QUANTILES path is off-limits for the same reason:
+`_ensemble_matrix` (`service.py:44-51`) treats quantile values as pseudo-members and
+`_compute_scores` (`service.py:191-229`) runs `compute_crps` over them — the standalone
+scorer avoids both by construction.
 
-**Rejected — a separate `external_forecast_values` table.** Duplicates the skill
-service, the stores, and the metric suite for no gain. Only revisit if the
-`ModelTier` blast radius turns out to be larger than the duplication.
+New code this route needs (none of it "free"):
 
-**Hard non-goal:** this never enters Flow 1's operational path. It is an offline /
-research comparison. No BAFU forecast is ever served by the API as a SAPPHIRE
-product, combined into an ensemble, or used to raise an alert.
+- **A pinball-loss wrapper** — a thin adapter over `sklearn.metrics.mean_pinball_loss`
+  (scikit-learn already a dependency, `pyproject.toml:37`; used for `Ridge` in
+  `models/nwp_regression.py:51`), scored at q25/q50/q75. Not a from-scratch metric. Note
+  WMO-1364 (`docs/standards/wmo.md:43,105`) names CRPS/Brier/reliability/rank histograms
+  as the normative verification set but is **silent on pinball/quantile loss** — a
+  WMO-anchor gap for this metric; flag it in the metric's docstring rather than restating a
+  definition `wmo.md` does not give (per `docs/touchpoint-maps.md:441`, "cite it, do not
+  restate it").
+- **A deterministic contingency helper** for POD/FAR/CSI on median exceedance (G2) — no
+  member-count dependency, applied symmetrically to both products.
+- **The importer + station-key alignment — scoring both sides.** It loads the BAFU series,
+  loads SAPPHIRE's own forecast for the same stations/leads (from `HindcastForecast` /
+  `skill_scores` provenance), reduces SAPPHIRE's ensemble to the same five statistics (G2),
+  aligns both to our QC'd observations, and runs **both** through the new pinball + new
+  deterministic-contingency functions, upserting `bafu` and `sapphire` rows.
+- **Persistence — run-id-tagged parquet (chosen).** A flat parquet, versioned by
+  `scorer_run_id`, deduped on read/aggregation. The multi-run/dedup need (re-runs during the
+  months-long BAFU-archive-arrival window, without double-counting) is met by grouping/
+  filtering on `scorer_run_id` at aggregation time, at near-zero infra cost — no migration,
+  no downgrade test, no schema doc. *Alternative (heavier, not chosen):* a migrated
+  `reference_benchmark_scores` table next to `skill_scores`, following the
+  migration-not-raw-DDL convention (`docs/standards/cicd.md` § Alembic) with a downgrade-path
+  test modelled on `test_migration_00XX_downgrade.py` under `tests/integration/db/`. Revisit
+  only if the scored rows genuinely need to be queried alongside `skill_scores` in SQL.
+- **A key / idempotency policy — with a `forecast_source` discriminator that is
+  load-bearing, not cosmetic.** Whether parquet or table, every scored record is keyed by
+  `(station_id, parameter, lead_time_hours, metric, computation_version, forecast_source,
+  scorer_run_id)` with `forecast_source ∈ {bafu, sapphire}`. Without `forecast_source` a
+  SAPPHIRE record and a BAFU record for the same station/lead/metric collide and one
+  silently overwrites the other, **destroying the head-to-head the archive exists to hold**.
+  Without `scorer_run_id` dedup the scorer inherits the `store_hindcast` hazard
+  (`docs/touchpoint-maps.md:342,487`: writers with no dedup silently duplicate on re-run),
+  so re-running during the multi-month archive-arrival window would inflate any downstream
+  mean (mean pinball loss, mean CSI). All aggregation MUST group/filter by `scorer_run_id`.
+- **A grouping loop** for per-lead / per-season slicing — Flow 8 wires this for `ModelId`
+  scores; the standalone route re-implements the small loop over its own returned scores.
+- **Doc updates (not optional — CLAUDE.md: "every code change updates affected docs").**
+  For the chosen parquet route this is light: a single note in the Training/hindcast/skill
+  `docs/touchpoint-maps.md` map recording that a standalone benchmark scorer writes a
+  parquet archive **structurally separate from `skill_scores`**, so future agents do not
+  conflate it with the skill-score writers, plus the frozen-dataclass domain type for a
+  scored record (per the type-driven-development mandate) noted where the scorer lives.
+  *(The heavier table alternative would additionally need a `types-and-protocols.md` entry
+  for the store Protocol and an `architecture-context.md` schema section, mirroring how
+  `skill_scores` is documented in both — that cost is one reason the parquet route was
+  chosen.)*
+- **A Flow-4 monitoring hook, only if the route-C collector is built** (Phase 0b promises
+  the collector "fails loudly into Flow 4"). That safety net is **not yet wired for a
+  non-Flow-1 producer**: `PipelineCheckType` (`src/sapphire_flow/types/enums.py:151-162`)
+  is a closed enum with no external-scraper-staleness member (`FORECAST_FRESHNESS` /
+  `OBSERVATION_FRESHNESS` are declared but not wired to any check logic beyond their
+  declaration), and `append_health_record` is today called only from
+  `flows/run_forecast_cycle.py` (Flow 1). So the collector must **add** a
+  `PipelineCheckType` member and a Flow 4 check for itself — it cannot inherit an
+  integration point that does not exist. `docs/touchpoint-maps.md` itself warns several of
+  this subsystem's automations are manual-trigger-only or DRAFT.
+
+**Verification** (a deliverable, not an afterthought — CLAUDE.md testing philosophy):
+
+- a pinball-loss unit test against a hand-computed reference value (and/or a direct
+  `sklearn.metrics.mean_pinball_loss` cross-check);
+- a deterministic-contingency unit test with known hit/miss/false-alarm counts;
+- an importer idempotency / re-run test asserting no record duplication on the
+  `(…, forecast_source, scorer_run_id)` key;
+- a reference fixture capturing one real BAFU `q_forecast` JSON payload shape (the
+  `tests/fixtures/reference/**` convention used for other external adapters, plans
+  019/020/021/045).
+
+**Rejected — register BAFU as a pseudo-`ModelId` and reuse Flow 8 end-to-end.** This was
+the original recommendation; the accounting flipped it. Registering BAFU as a pseudo-model
+entangles it with **three real gating subsystems** — the `FALLBACK_MODEL_IDS` /
+combinability keyspace (a non-fallback id reads everywhere as a combinable, skill-tier
+model, and a `ModelTier.REFERENCE` enum member does *not* fix it because the load-bearing
+sites test `FALLBACK_MODEL_IDS` membership, not the tier), the `AlertEligibility`
+declare-or-fail gate (no existing value is honest for a deliberately-hidden external
+forecast), and the `HindcastForecast` / `model_artifacts` / `ArtifactScope` schema (no
+representation for an ingested-not-trained series). Each would have to be generalized, which
+turns the plan's core non-goal from *structurally impossible* into merely *policed* — and it
+**still** needs the same new pinball + deterministic-contingency code on top. Net: strictly
+*more* total work than the standalone scorer, so it is rejected, not cheaper. (Current call
+sites rot the moment those files move; whoever revives this route should re-grep rather than
+trust a citation frozen here. If the subsystem audit trail has standalone value, it belongs
+in a scratch investigation note, not this plan.) `ForeignForecast` is the wrong precedent
+too — it is SAPPHIRE-to-SAPPHIRE federation (`upstream_instance_url`, no backing DB table),
+not an agency feed.
+
+- **Ingest adapter.** Shaped by G1's answer — not a `WeatherForecastSource` (that Protocol
+  is NWP). A plain offline importer for a one-time historical export (route A); a small
+  parser over the route-C archive otherwise.
+
+**Hard non-goal:** this never enters Flow 1's operational path. No BAFU forecast is ever
+served by the API as a SAPPHIRE product, combined into an ensemble, or used to raise an
+alert. The standalone route makes this non-goal *structurally true*; the pseudo-model route
+would make it merely *policed*.
 
 ---
 
 ## Sequencing
 
 ```
-G1  request to BAFU: (a) archive?  (b) licence covers /plots/*.json?
+G1  request to BAFU — THREE independent answers:
+      (a) archive available?   (b) licence covers /plots/*.json?   (c) publication
+                                                                       rights (item 6)?
         │
         ├─ (b) yes ──> route C collector may start NOW (forward-only clock starts)
         │
-        ├─ (a) yes ──> historical benchmark possible immediately
+        ├─ (a) yes ──> historical data obtainable — but the benchmark is only as wide
+        │              as SAPPHIRE's OWN forecast coverage over the archive window
+        │              (G2 coverage-overlap item); NOT "the full archive immediately"
         │
-        └─ both no ──> option D: close plan, record the limitation
-                                 in publication-plan.md
+        ├─ (c) NO ──> publication rights refused ──> DO NOT proceed to a published G3
+        │              run. Fall back to option D (or compute-only-internal, unpublished).
+        │              Data access alone does NOT green-light the G2/G3 build:
+        │              item 6 is the make-or-break for a "publication artifact" plan.
         │
-G2 (methodology, on paper — deterministic-vs-quantile already resolved)
-        │ pass
-G3 (ModelTier.REFERENCE + ingest adapter + audit)  ──> skill run ──> paper
+        └─ (a)&(b) both no ──> option D: close plan, record the limitation
+                                         in publication-plan.md
+        │
+G2 (methodology, on paper — deterministic-vs-quantile already resolved;
+        coverage-overlap window pre-registered)
+        │ pass  AND  (c) publication rights granted
+G3 (standalone scorer: pinball wrapper + deterministic contingency helper + importer
+        scoring BOTH bafu & sapphire sides → run-id-tagged parquet keyed by
+        forecast_source [migrated table = heavier alternative],
+        reusing the deterministic metrics.py functions)  ──> skill run ──> paper
 ```
 
-The two halves of the G1 reply are independent. A licence "yes" alone still starts the
-forward-collection clock today, which is the argument for asking now rather than later:
-**every week of delay is a week of archive we do not have.**
+The three parts of the G1 reply are independent, and **(c) publication rights gate the
+whole G3 build** — per G1 item 6, "without this, G3 is pointless: we could compute the
+benchmark and never show it." So archive-yes + licence-yes but publication-no must **not**
+trigger the several days of new metrics code, importer, and scoring work for output that can
+never appear in the paper. A licence "yes" (b) alone still starts the forward-collection clock
+today, which is the argument for asking now rather than later: **every week of delay is a
+week of archive we do not have.**
 
-Rough effort **if** G1 and G2 pass and a historical export exists: 2–4 days
-(one enum + call-site audit + importer + a scored run). Rough effort if only forward
-collection is possible: **+1 day** for the route-C collector (Phase 0b — the endpoints
-are known, the parse is five named traces), **plus 6–12 months of latency** before the
-numbers mean anything. Latency, not engineering, is this plan's cost.
+Rough effort **if** G1 (including publication rights, item 6) and G2 pass and a historical
+export exists, taking the Recommended standalone route (chosen parquet persistence): ~**3–4
+days** — the two small new metric functions (pinball wrapper + deterministic contingency
+helper; provenance costed in G3), a small importer + alignment that scores **both** the BAFU
+and SAPPHIRE sides, a run-id-tagged parquet archive with a `forecast_source`-discriminated
+key and dedup-on-aggregation, a grouping loop for per-lead/per-season slicing, the
+Verification tests listed in G3, the light doc update (a touchpoint-maps note), and a scored
+run. (The heavier migrated-table alternative adds ~1 day for the Alembic migration +
+downgrade test + schema docs — one reason parquet was chosen.) (The earlier "one enum
+change, 2–4 days" figure assumed the pseudo-model route reused Flow 8 for free; G3 shows it
+does not — that route is strictly *more* work, so it is rejected, not cheaper.) Rough effort
+if only forward collection is possible: **+1 day**
+for the route-C collector (Phase 0b — endpoints known, parse is five named traces),
+**plus 6–12 months of latency** before the numbers mean anything. Latency, not
+engineering, is this plan's dominant cost.
 
 ## Open questions for the owner
 
@@ -349,6 +514,9 @@ numbers mean anything. Latency, not engineering, is this plan's cost.
    operational reference" reads very differently from "we beat BAFU".
 3. Same question for Nepal DHM in v1: does a "we beat the national agency" framing
    help or hurt the deployment? Whatever we settle on for BAFU sets the precedent.
+4. ~~G3 persistence: migrated DB table vs run-id parquet?~~ **Resolved 2026-07-10:
+   run-id-tagged parquet** — near-zero infra for a low-priority research artifact that may
+   never leave DRAFT; the migrated table is retained in G3 as the heavier alternative.
 
 ## Non-goals
 
