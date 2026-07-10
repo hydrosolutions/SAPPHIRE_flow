@@ -1,8 +1,8 @@
 # Plan 040 — Hindcast Deduplication Constraint
 
-**Status**: DRAFT
+**Status**: DRAFT — grill-me COMPLETE (2026-07-10): conflict action = **ON CONFLICT DO UPDATE, full-replace** (header fields + value rows; return the existing header id). Depends-on Plan 038 is now MERGED (#71). Next: WF1 plan-review → build.
 **Phase**: Cross-cutting (schema + store)
-**Depends on**: Plan 038 (store write atomicity)
+**Depends on**: Plan 038 (store write atomicity) — MERGED (#71)
 
 ## Context
 
@@ -106,44 +106,67 @@ ON hindcast_forecasts (station_id, model_id, hindcast_step, parameter, hindcast_
 No partial-index exclusion is needed (hindcast has no `status` lifecycle like
 forecast's `superseded` state).
 
-### Upsert in `store_hindcast`
+### Upsert in `store_hindcast` — ON CONFLICT DO UPDATE, full-replace (grill-me 2026-07-10)
 
-Change the header insert from plain `pg_insert` to `pg_insert(...).on_conflict_do_nothing()`.
-With the unique constraint in place, a retry that attempts to re-insert the
-same hindcast is silently skipped. The values insert is already inside the
-`engine.begin()` transaction (Plan 038), so if the header is skipped, the
-values are also skipped (the `if rows:` block still fires, but the FK
-constraint on `hindcast_forecast_id` would fail since the header was not
-inserted — this needs careful handling).
+**Decision (owner):** a duplicate (same natural key) **overwrites** the existing
+hindcast — header fields AND the value-row payload — so the latest run's data
+fully wins (no stale values linger). This is the resolved answer to the former
+open question (§ Open questions).
 
-**Preferred approach**: Use `ON CONFLICT DO NOTHING` with a `RETURNING id`
-clause. If the returned result is empty (conflict occurred, row skipped),
-skip the values insert entirely and return the existing hindcast's ID:
+**Note (post-038):** Plan 038 reworked the store to an injectable transaction —
+use `self._begin()` (NOT `self._engine.begin()`). Both inserts + the value delete
+run inside the one `self._begin()` transaction, so the replace is atomic.
+
+**Header — `on_conflict_do_update` + `RETURNING id`.** The RETURNING id is the id
+**of the row actually in the DB**: the freshly-inserted `hindcast.id` on a clean
+insert, or the **EXISTING row's id** on a conflict/update (which DIFFERS from the
+new `hindcast.id`). Use that id for the values and return it.
+
+**Values — full replace keyed to the returned id.** Because on a conflict the
+header id is the existing id (not the new one), and a plain values INSERT would
+leave the prior run's value rows in place, the values are REPLACED: `DELETE FROM
+hindcast_values WHERE hindcast_forecast_id = <returned id>`, then INSERT the new
+rows keyed to `<returned id>`. On a clean insert the DELETE is a harmless no-op.
 
 ```python
 def store_hindcast(self, hindcast: HindcastForecast) -> HindcastForecastId:
-    with self._engine.begin() as txn:
-        result = txn.execute(
+    with self._begin() as txn:                       # Plan 038 injectable txn
+        header_id = txn.execute(
             pg_insert(hindcast_forecasts)
-            .values(...)
-            .on_conflict_do_nothing(
+            .values(id=hindcast.id, ...)
+            .on_conflict_do_update(
                 index_elements=[
                     "station_id", "model_id", "hindcast_step",
                     "parameter", "hindcast_run_id",
-                ]
+                ],
+                set_={  # every mutable NON-key header field; NOT the key or id
+                    "model_artifact_id": ...,
+                    "units": ...,
+                    "representation": ...,
+                    "forcing_type": ...,
+                    "created_at": ...,
+                },
             )
             .returning(hindcast_forecasts.c.id)
+        ).scalar_one()
+        # Full-replace the payload keyed to the row actually in the DB.
+        txn.execute(
+            sa.delete(hindcast_values).where(
+                hindcast_values.c.hindcast_forecast_id == header_id
+            )
         )
-        inserted = result.scalar_one_or_none()
-        if inserted is None:
-            # Duplicate — already stored in a previous attempt
-            return hindcast.id
-
-        rows = [...]
+        rows = [{..., "hindcast_forecast_id": header_id, ...} for ...]
         if rows:
             txn.execute(sa.insert(hindcast_values), rows)
-    return hindcast.id
+    return header_id
 ```
+
+**`set_` columns:** every mutable non-key header field (`model_artifact_id`,
+`units`, `representation`, `forcing_type`, `created_at`) is refreshed to the new
+run's values; the natural-key columns and `id` are NOT updated (`id` stays the
+existing row's — hence returning `header_id`, not `hindcast.id`). The new
+`ix_hindcast_values_forecast_id` index (below) also makes the per-header value
+DELETE efficient.
 
 ### Index on `hindcast_values`
 
@@ -207,13 +230,17 @@ sequentially so far). The migration should log how many rows were deleted.
 Log row counts before and after. Migration must be idempotent (check index
 existence before creating).
 
-### Step 2 — Update `store_hindcast` to upsert
+### Step 2 — Update `store_hindcast` to upsert (DO UPDATE full-replace)
 
 **File**: `hindcast_store.py`
 
-Change the header insert to `pg_insert(...).on_conflict_do_nothing().returning(...)`.
-Skip values insert if the header was a duplicate. This depends on Plan 038's
-`engine.begin()` wrapping being in place.
+Change the header insert to `pg_insert(...).on_conflict_do_update(index_elements=
+[natural key], set_={mutable non-key fields}).returning(id)`, take the RETURNING
+id (existing row's id on conflict, new id on insert), then DELETE the existing
+`hindcast_values` for that id and INSERT the new rows keyed to it, and return that
+id. Uses Plan 038's injectable `self._begin()` (already merged) — the header
+upsert, values DELETE, and values INSERT are all inside the one transaction, so
+the replace is atomic. See the design section for the code shape.
 
 ### Step 3 — Update schema definition
 
@@ -225,14 +252,21 @@ remain in sync.
 
 ### Step 4 — Tests
 
-1. Integration test: insert the same hindcast twice with the same `run_id` —
-   verify only one header row exists and the method returns successfully
-   (no `IntegrityError`).
-2. Integration test: insert two hindcasts with different `run_id`s for the
-   same `(station_id, model_id, hindcast_step, parameter)` — verify both
-   are stored (legitimate re-runs).
-3. Verify `fetch_hindcasts` returns correct results with the new index
-   (no behavioral change, just performance).
+1. **Dedup (same-run idempotent retry):** insert the SAME hindcast twice with the
+   same `run_id` and identical data — verify exactly one header row exists, no
+   `IntegrityError`, and the method returns the SAME id both times.
+2. **DO UPDATE full-replace (the load-bearing test):** insert a hindcast, then
+   re-insert with the SAME natural key but DIFFERENT payload (different value
+   rows AND a changed mutable header field, e.g. `model_artifact_id`). Verify:
+   (a) still exactly one header row; (b) the header's mutable fields now reflect
+   the SECOND write; (c) the value rows are the SECOND write's (the first write's
+   values are GONE — no stale rows, count matches the new payload); (d) the method
+   returns the EXISTING header's id (not the second call's `hindcast.id`).
+3. **Distinct runs preserved:** insert two hindcasts with different `run_id`s for
+   the same `(station_id, model_id, hindcast_step, parameter)` — verify BOTH are
+   stored (legitimate re-runs, no conflict).
+4. Verify `fetch_hindcasts` returns correct results with the new index (no
+   behavioral change, just performance) — and de-duplicated (one row per key).
 
 ### Step 5 — Schema checklist (preventive)
 
@@ -244,9 +278,14 @@ Add a "Schema constraint checklist" to conventions:
 - When adding a constraint to one table in a header+values pair, check the
   sibling table
 
-## Open questions
+## Open questions — RESOLVED (grill-me 2026-07-10)
 
-1. Should the `ON CONFLICT DO NOTHING` approach also update `created_at` or
-   `qc_status` on conflict (i.e., use `ON CONFLICT DO UPDATE` instead)?
-   Current design says no — if the data is identical, there is nothing to
-   update. If the caller needs to overwrite, they should delete first.
+1. ~~DO NOTHING vs DO UPDATE on conflict?~~ **RESOLVED: ON CONFLICT DO UPDATE,
+   full-replace.** A same-natural-key re-insert overwrites the existing hindcast —
+   the header's mutable non-key fields are refreshed AND the value-row payload is
+   replaced (DELETE old + INSERT new, keyed to the existing header id), so the
+   latest write fully wins and no stale value rows linger. The method returns the
+   EXISTING header id. Rationale: the owner wants a same-run re-insert to be a
+   true refresh, not a silent skip. (An idempotent retry with identical data
+   converges to the same state; a re-insert with corrected data overwrites.) See
+   the design § "Upsert in store_hindcast".
