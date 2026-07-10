@@ -87,10 +87,11 @@ class PgHindcastStore:
                         "forcing_type",
                     ],
                     set_={
+                        # created_at is NOT overwritten: it records first-storage
+                        # time and stays tied to the surviving header on replace.
                         "model_artifact_id": hindcast.model_artifact_id,
                         "units": hindcast.ensemble.units,
                         "representation": hindcast.representation.value,
-                        "created_at": hindcast.created_at,
                         "qc_status": hindcast.qc_status.value,
                         "qc_flags": qc_flags_json,
                     },

@@ -137,6 +137,7 @@ def _make_hindcast(
     representation: EnsembleRepresentation = EnsembleRepresentation.MEMBERS,
     n_members: int = 3,
     n_steps: int = 5,
+    created_at: datetime | None = None,
 ) -> HindcastForecast:
     step = hindcast_step if hindcast_step is not None else _utc(2025, 3, 1)
     run_id = hindcast_run_id or uuid4()
@@ -156,7 +157,7 @@ def _make_hindcast(
         representation=representation,
         hindcast_run_id=run_id,
         ensemble=ensemble,
-        created_at=_T0,
+        created_at=created_at if created_at is not None else _T0,
     )
 
 
@@ -938,6 +939,7 @@ class TestStoreHindcastDedupFullReplace:
             hindcast_run_id=run_id,
             n_members=5,  # different ensemble size — new values
             n_steps=2,
+            created_at=_utc(2026, 6, 1),  # later than hc_first's _T0
         )
         id_second = store.store_hindcast(hc_second)
 
@@ -965,6 +967,20 @@ class TestStoreHindcastDedupFullReplace:
             )
         ).scalar_one()
         assert header == aid_second, "model_artifact_id must reflect the second write"
+
+        # (b2) created_at is NOT in set_: it stays the FIRST write's value, tied
+        # to the surviving header (not overwritten by the later second write).
+        stored_created_at = db_connection.execute(
+            sa.select(hindcast_forecasts.c.created_at).where(
+                hindcast_forecasts.c.id == id_first
+            )
+        ).scalar_one()
+        assert ensure_utc(stored_created_at) == _T0, (
+            "created_at must remain the first write's value (not in set_)"
+        )
+        assert ensure_utc(stored_created_at) != hc_second.created_at, (
+            "created_at must NOT be overwritten by the second write"
+        )
 
         # (c) value rows are the second write's (5 members × 2 steps = 10 rows)
         expected_value_count = 5 * 2

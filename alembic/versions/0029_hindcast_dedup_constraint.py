@@ -22,8 +22,8 @@ Dry-run (run manually before backup):
           AND hf2.parameter = hf.parameter
           AND hf2.hindcast_run_id = hf.hindcast_run_id
           AND hf2.forcing_type = hf.forcing_type
-          AND (hf2.created_at < hf.created_at
-               OR (hf2.created_at = hf.created_at AND hf2.id < hf.id))
+          AND (hf2.created_at > hf.created_at
+               OR (hf2.created_at = hf.created_at AND hf2.id > hf.id))
     );
 
     -- Count duplicate hindcast_values that will be deleted (cascade from above):
@@ -38,8 +38,8 @@ Dry-run (run manually before backup):
               AND hf2.parameter = hf.parameter
               AND hf2.hindcast_run_id = hf.hindcast_run_id
               AND hf2.forcing_type = hf.forcing_type
-              AND (hf2.created_at < hf.created_at
-                   OR (hf2.created_at = hf.created_at AND hf2.id < hf.id))
+              AND (hf2.created_at > hf.created_at
+                   OR (hf2.created_at = hf.created_at AND hf2.id > hf.id))
         )
     );
 
@@ -72,8 +72,8 @@ def upgrade() -> None:
                 "  AND hf2.parameter = hf.parameter "
                 "  AND hf2.hindcast_run_id = hf.hindcast_run_id "
                 "  AND hf2.forcing_type = hf.forcing_type "
-                "  AND (hf2.created_at < hf.created_at "
-                "       OR (hf2.created_at = hf.created_at AND hf2.id < hf.id)))"
+                "  AND (hf2.created_at > hf.created_at "
+                "       OR (hf2.created_at = hf.created_at AND hf2.id > hf.id)))"
             )
         )
         .scalar_one()
@@ -94,15 +94,16 @@ def upgrade() -> None:
             "       AND hf2.parameter = hf.parameter"
             "       AND hf2.hindcast_run_id = hf.hindcast_run_id"
             "       AND hf2.forcing_type = hf.forcing_type"
-            "       AND (hf2.created_at < hf.created_at"
-            "            OR (hf2.created_at = hf.created_at AND hf2.id < hf.id))"
+            "       AND (hf2.created_at > hf.created_at"
+            "            OR (hf2.created_at = hf.created_at AND hf2.id > hf.id))"
             "   )"
             " )"
         )
     )
 
     # ── 2. Delete duplicate hindcast_forecasts
-    # Keep earliest created_at, tie-broken by id.
+    # Keep newest created_at, tie-broken by id (latest data wins, matching the
+    # full-replace upsert semantics).
     op.execute(
         sa.text(
             "DELETE FROM hindcast_forecasts hf"
@@ -114,8 +115,8 @@ def upgrade() -> None:
             "     AND hf2.parameter = hf.parameter"
             "     AND hf2.hindcast_run_id = hf.hindcast_run_id"
             "     AND hf2.forcing_type = hf.forcing_type"
-            "     AND (hf2.created_at < hf.created_at"
-            "          OR (hf2.created_at = hf.created_at AND hf2.id < hf.id))"
+            "     AND (hf2.created_at > hf.created_at"
+            "          OR (hf2.created_at = hf.created_at AND hf2.id > hf.id))"
             " )"
         )
     )
