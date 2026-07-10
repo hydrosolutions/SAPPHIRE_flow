@@ -1,11 +1,24 @@
 # Plan 111 — Benchmarking SAPPHIRE forecasts against BAFU's operational forecasts
 
-**Status:** READY (design) — plan-reviewed 2026-07-10 (3 rounds). **Execution BLOCKED on
-external gate G1**: the design is approved, but no code should ship until the BAFU request
-(archive availability, licence over the `/plots/*.json` endpoints, publication rights)
-returns — the whole plan is a gate ladder and G1 is unsent. The one piece that *could* be
-built pre-G1 (the route-C collector) is a **hard non-goal** here until the licence answer
-arrives; see Non-goals.
+**Status:** READY — plan-reviewed 2026-07-10 (3 rounds). **In implementation: the route-C
+collector only** (see the Override below). The scoring half (G2 pre-registration + G3
+scorer) stays **BLOCKED on external gate G1**: no benchmark can be computed or published
+until the BAFU request (archive, licence over `/plots/*.json`, publication rights) returns.
+
+> **Owner override (2026-07-10) — build the route-C collector NOW, pre-G1.** The owner
+> accepts the *collect-now / discard-if-refused* posture: start the forward-only archive
+> immediately (every week of delay is a week of history we never get back — the endpoint
+> holds no past), while the BAFU licence question is still open. This deliberately overrides
+> the "do not write the collector before G1" non-goal below. **Bounded by four conditions,
+> all mandatory:** (1) an honest, identifying `User-Agent` (SAPPHIRE / hydrosolutions +
+> contact) so BAFU can see who we are and object; (2) the archive is **quarantined** —
+> written to a dedicated path, never into the operational DB or any `ModelId`, so a single
+> `rm` discards it if BAFU refuses; (3) **evaluation-only** — no model ever trains or tunes
+> on this data (a discard cannot un-fit a parameter); (4) polite client (rate limit, retry
+> cap, raw-payload archival). **The BAFU letter is deferred** (framing undecided, owner
+> 2026-07-10) — so collection proceeds *without* proactively contacting BAFU; the honest
+> `User-Agent` is the transparency substitute until the letter is sent. Discarding protects
+> *publication*, not the *fact* of collection — the owner has weighed and accepted that.
 **Priority:** Low — nice-to-have. Not on the v1.0 Nepal critical path (Plan 106).
 **Type:** Research / publication artifact. If it ever becomes code: hold-at-PR.
 **Owner:** Bea (marti@hydrosolutions.ch)
@@ -168,9 +181,10 @@ Supporting facts, neither of which settles it: `hydrodaten.admin.ch/robots.txt` 
 > scores from it?"** That single sentence converts route C from a legal gamble into a
 > sanctioned feed.
 
-### If (and only if) licensing clears — the collector's shape
+### The collector's shape — **NOW BEING BUILT** (owner override 2026-07-10, see Status)
 
-Deferred design — do not write before G1's licence answer (see Non-goals). In one
+Building pre-G1 under the four bounding conditions in the Status override (identifying
+`User-Agent`, quarantined archive, evaluation-only, polite client). In one
 paragraph: a small hourly Prefect flow over the 54-station GeoJSON, deduped on
 `issued_at` (**not** fetch time — issue ≠ publication; on 2026-07-08 issue was 15:00,
 `produced_at` 18:30), archiving the **raw** Plotly JSON alongside parsed rows (re-fetch
@@ -529,6 +543,10 @@ engineering, is this plan's dominant cost.
 - Any change to Flow 1, alerting, or the API contract.
 - Comparing against non-BAFU forecast providers (out of scope; revisit only if this
   plan lands).
-- **Writing the route-C collector before G1's licence answer arrives.** The endpoints are
-  characterised (Phase 0b) precisely so this decision can be made on facts. Characterising
-  is not consent.
+- ~~Writing the route-C collector before G1's licence answer arrives.~~ **OVERRIDDEN by
+  the owner 2026-07-10** — the collector is being built now under four bounding conditions
+  (see the Status override). Characterising was not consent; this is a deliberate,
+  owner-accepted *collect-now / discard-if-refused* decision, not a silent workaround.
+- **Publishing** any BAFU-derived skill score before G1 returns publication rights. The
+  collector may archive; the *scorer* and the paper stay gated. (Unchanged.)
+- **Training or tuning any model on the collected BAFU data.** Evaluation-only, always.

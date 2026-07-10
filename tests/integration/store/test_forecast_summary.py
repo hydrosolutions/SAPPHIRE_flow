@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -24,6 +25,17 @@ from tests.conftest import make_forecast_ensemble, make_station_config
 
 if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
+
+
+@contextmanager
+def savepoint_txn(conn: sa.Connection):  # type: ignore[return]
+    with conn.begin_nested():
+        yield conn
+
+
+def savepoint_factory(conn: sa.Connection):
+    return lambda: savepoint_txn(conn)
+
 
 _NOW = ensure_utc(datetime(2025, 1, 1, tzinfo=UTC))
 _ISSUED_A = ensure_utc(datetime(2025, 1, 1, 0, tzinfo=UTC))
@@ -120,7 +132,9 @@ class TestFetchSummariesRoundTrip:
         sid = _seed_station(db_connection)
         mid = _seed_model(db_connection)
         aid = _seed_artifact(db_connection, sid, mid)
-        store = PgForecastStore(db_connection)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
 
         fc_a = _make_forecast(sid, mid, aid, issued_at=_ISSUED_A, rng=random.Random(1))
         fc_b = _make_forecast(sid, mid, aid, issued_at=_ISSUED_B, rng=random.Random(2))
@@ -154,7 +168,9 @@ class TestFetchSummariesFilterModel:
         mid_ar = _seed_model(db_connection, "arima_v1")
         aid_lr = _seed_artifact(db_connection, sid, mid_lr)
         aid_ar = _seed_artifact(db_connection, sid, mid_ar)
-        store = PgForecastStore(db_connection)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
 
         fc_lr = _make_forecast(
             sid, mid_lr, aid_lr, issued_at=_ISSUED_A, rng=random.Random(10)
@@ -182,7 +198,9 @@ class TestFetchSummariesFilterParam:
         sid = _seed_station(db_connection)
         mid = _seed_model(db_connection)
         aid = _seed_artifact(db_connection, sid, mid)
-        store = PgForecastStore(db_connection)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
 
         fc_discharge = _make_forecast(
             sid,
@@ -220,7 +238,9 @@ class TestFetchSummariesHalfOpen:
         sid = _seed_station(db_connection)
         mid = _seed_model(db_connection)
         aid = _seed_artifact(db_connection, sid, mid)
-        store = PgForecastStore(db_connection)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
 
         boundary = ensure_utc(datetime(2025, 1, 1, 12, tzinfo=UTC))
         fc = _make_forecast(sid, mid, aid, issued_at=boundary, rng=random.Random(30))
@@ -239,7 +259,9 @@ class TestFetchSummariesOrdering:
         sid = _seed_station(db_connection)
         mid = _seed_model(db_connection)
         aid = _seed_artifact(db_connection, sid, mid)
-        store = PgForecastStore(db_connection)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
 
         t1 = ensure_utc(datetime(2025, 1, 1, 0, tzinfo=UTC))
         t2 = ensure_utc(datetime(2025, 1, 1, 6, tzinfo=UTC))
@@ -267,7 +289,9 @@ class TestFetchSummariesPagination:
         sid = _seed_station(db_connection)
         mid = _seed_model(db_connection)
         aid = _seed_artifact(db_connection, sid, mid)
-        store = PgForecastStore(db_connection)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
 
         forecasts_stored = []
         for i in range(5):
@@ -313,7 +337,9 @@ class TestFetchSummariesPagination:
 class TestFetchSummariesEmpty:
     def test_no_forecasts_returns_empty(self, db_connection: sa.Connection) -> None:
         sid = _seed_station(db_connection)
-        store = PgForecastStore(db_connection)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
 
         start = ensure_utc(datetime(2025, 1, 1, 0, tzinfo=UTC))
         end = ensure_utc(datetime(2025, 1, 2, 0, tzinfo=UTC))

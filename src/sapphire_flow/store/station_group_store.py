@@ -1,6 +1,8 @@
 # pyright: reportUnknownMemberType=false, reportUnknownArgumentType=false
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
@@ -14,39 +16,54 @@ from sapphire_flow.types.enums import ModelAssignmentStatus
 from sapphire_flow.types.ids import ModelId, StationGroupId, StationId
 from sapphire_flow.types.station import GroupModelAssignment, StationGroup
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from contextlib import AbstractContextManager as ContextManager
+
 
 class PgStationGroupStore:
-    def __init__(self, conn: sa.Connection) -> None:
+    def __init__(
+        self,
+        conn: sa.Connection,
+        *,
+        transaction_factory: Callable[[], ContextManager[sa.Connection]] | None = None,
+    ) -> None:
         self._conn = conn
+        self._begin = (
+            transaction_factory
+            if transaction_factory is not None
+            else conn.engine.begin
+        )
 
     def store_group(self, group: StationGroup) -> None:
-        self._conn.execute(
-            pg_insert(station_groups)
-            .values(
-                id=group.id,
-                name=group.name,
-                description=group.description,
-                created_at=group.created_at,
-            )
-            .on_conflict_do_update(
-                index_elements=["id"],
-                set_={
-                    "name": group.name,
-                    "description": group.description,
-                },
-            )
-        )
-        if group.station_ids:
-            self._conn.execute(
-                pg_insert(station_group_members)
+        with self._begin() as txn:
+            txn.execute(
+                pg_insert(station_groups)
                 .values(
-                    [
-                        {"group_id": group.id, "station_id": sid}
-                        for sid in group.station_ids
-                    ]
+                    id=group.id,
+                    name=group.name,
+                    description=group.description,
+                    created_at=group.created_at,
                 )
-                .on_conflict_do_nothing()
+                .on_conflict_do_update(
+                    index_elements=["id"],
+                    set_={
+                        "name": group.name,
+                        "description": group.description,
+                    },
+                )
             )
+            if group.station_ids:
+                txn.execute(
+                    pg_insert(station_group_members)
+                    .values(
+                        [
+                            {"group_id": group.id, "station_id": sid}
+                            for sid in group.station_ids
+                        ]
+                    )
+                    .on_conflict_do_nothing()
+                )
 
     def fetch_group(self, group_id: StationGroupId) -> StationGroup | None:
         row = (

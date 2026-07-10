@@ -26,7 +26,8 @@ from sapphire_flow.types.forecast_summary import ForecastSummaryRow
 from sapphire_flow.types.ids import ArtifactId, ForecastId, ModelId, StationId
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
+    from contextlib import AbstractContextManager as ContextManager
 
     from sqlalchemy import RowMapping
 
@@ -34,54 +35,65 @@ if TYPE_CHECKING:
 
 
 class PgForecastStore:
-    def __init__(self, conn: sa.Connection) -> None:
+    def __init__(
+        self,
+        conn: sa.Connection,
+        *,
+        transaction_factory: Callable[[], ContextManager[sa.Connection]] | None = None,
+    ) -> None:
         self._conn = conn
+        self._begin = (
+            transaction_factory
+            if transaction_factory is not None
+            else conn.engine.begin
+        )
 
     def store_forecast(self, forecast: OperationalForecast) -> ForecastId:
-        self._conn.execute(
-            sa.insert(forecasts).values(
-                id=forecast.id,
-                station_id=forecast.station_id,
-                model_id=forecast.model_id,
-                model_artifact_id=forecast.model_artifact_id,
-                issued_at=forecast.issued_at,
-                nwp_cycle_reference_time=forecast.nwp_cycle_reference_time,
-                nwp_cycle_source=forecast.nwp_cycle_source.value,
-                representation=forecast.representation.value,
-                status=forecast.status.value,
-                version=forecast.version,
-                warm_up_source=(
-                    forecast.warm_up_source.value
-                    if forecast.warm_up_source is not None
-                    else None
-                ),
-                warm_up_state_age_hours=forecast.warm_up_state_age_hours,
-                observation_staleness_hours=forecast.observation_staleness_hours,
-                parameter=forecast.ensemble.parameter,
-                units=forecast.ensemble.units,
-                created_at=forecast.created_at,
-                updated_at=forecast.updated_at,
-                qc_status=forecast.qc_status.value,
-                qc_flags=[
-                    {
-                        "rule_id": f.rule_id,
-                        "rule_version": f.rule_version,
-                        "status": f.status.value,
-                        "detail": f.detail,
-                    }
-                    for f in forecast.qc_flags
-                ],
-                combination_strategy=forecast.combination_strategy,
-                source_model_ids=(
-                    [str(mid) for mid in forecast.source_model_ids]
-                    if forecast.source_model_ids is not None
-                    else None
-                ),
+        with self._begin() as txn:
+            txn.execute(
+                sa.insert(forecasts).values(
+                    id=forecast.id,
+                    station_id=forecast.station_id,
+                    model_id=forecast.model_id,
+                    model_artifact_id=forecast.model_artifact_id,
+                    issued_at=forecast.issued_at,
+                    nwp_cycle_reference_time=forecast.nwp_cycle_reference_time,
+                    nwp_cycle_source=forecast.nwp_cycle_source.value,
+                    representation=forecast.representation.value,
+                    status=forecast.status.value,
+                    version=forecast.version,
+                    warm_up_source=(
+                        forecast.warm_up_source.value
+                        if forecast.warm_up_source is not None
+                        else None
+                    ),
+                    warm_up_state_age_hours=forecast.warm_up_state_age_hours,
+                    observation_staleness_hours=forecast.observation_staleness_hours,
+                    parameter=forecast.ensemble.parameter,
+                    units=forecast.ensemble.units,
+                    created_at=forecast.created_at,
+                    updated_at=forecast.updated_at,
+                    qc_status=forecast.qc_status.value,
+                    qc_flags=[
+                        {
+                            "rule_id": f.rule_id,
+                            "rule_version": f.rule_version,
+                            "status": f.status.value,
+                            "detail": f.detail,
+                        }
+                        for f in forecast.qc_flags
+                    ],
+                    combination_strategy=forecast.combination_strategy,
+                    source_model_ids=(
+                        [str(mid) for mid in forecast.source_model_ids]
+                        if forecast.source_model_ids is not None
+                        else None
+                    ),
+                )
             )
-        )
-        rows = _build_value_rows(forecast)
-        if rows:
-            self._conn.execute(sa.insert(forecast_values), rows)
+            rows = _build_value_rows(forecast)
+            if rows:
+                txn.execute(sa.insert(forecast_values), rows)
         return forecast.id
 
     def fetch_forecast(self, forecast_id: ForecastId) -> OperationalForecast | None:

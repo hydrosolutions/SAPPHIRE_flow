@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import uuid
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -26,6 +27,17 @@ from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import ModelArtifactStatus, ModelAssignmentStatus
 from sapphire_flow.types.ids import ModelId, StationGroupId, StationId
 from sapphire_flow.types.station import GroupModelAssignment, StationGroup
+
+
+@contextmanager
+def savepoint_txn(conn: sa.Connection):  # type: ignore[return]
+    with conn.begin_nested():
+        yield conn
+
+
+def savepoint_factory(conn: sa.Connection):
+    return lambda: savepoint_txn(conn)
+
 
 _T0 = ensure_utc(datetime(2024, 1, 1, tzinfo=UTC))
 _T1 = ensure_utc(datetime(2024, 6, 1, tzinfo=UTC))
@@ -222,7 +234,9 @@ class TestGroupModelAssignments:
         station_id = _seed_station(db_connection)
         group_id = _seed_group(db_connection, station_id)
         model_id = _seed_model(db_connection, scope="group")
-        store = PgStationGroupStore(db_connection)
+        store = PgStationGroupStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
 
         group = StationGroup(
             id=group_id,
