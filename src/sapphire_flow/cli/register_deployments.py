@@ -40,6 +40,10 @@ def _build_specs() -> list[DeploymentSpec]:
     cron_weather_history = os.environ.get(
         "SCHEDULE_INGEST_WEATHER_HISTORY", "0 6 * * *"
     )
+    # Plan 111 route-C BAFU forecast collector. Hourly matches BAFU's issue
+    # rhythm; a run is ~70s and dedups on issued_at, so hourly never overlaps
+    # and re-fetches are cheap no-ops. Retune via the env var without a redeploy.
+    cron_bafu_forecast = os.environ.get("SCHEDULE_COLLECT_BAFU_FORECASTS", "0 * * * *")
 
     return [
         DeploymentSpec(
@@ -99,6 +103,13 @@ def _build_specs() -> list[DeploymentSpec]:
             flow_attr="ingest_weather_history_flow",
             deployment_name="ingest-weather-history",
             cron=cron_weather_history,
+            concurrency_limit=1,
+        ),
+        DeploymentSpec(
+            flow_module="sapphire_flow.flows.collect_bafu_forecasts",
+            flow_attr="collect_bafu_forecasts_flow",
+            deployment_name="collect-bafu-forecasts",
+            cron=cron_bafu_forecast,
             concurrency_limit=1,
         ),
     ]
