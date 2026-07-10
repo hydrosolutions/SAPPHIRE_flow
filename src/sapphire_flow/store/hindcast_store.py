@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 import polars as pl
 import sqlalchemy as sa
+import structlog
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from sapphire_flow.db.metadata import hindcast_forecasts, hindcast_values
@@ -18,40 +19,29 @@ from sapphire_flow.types.forecast import HindcastForecast
 from sapphire_flow.types.ids import ArtifactId, HindcastForecastId, ModelId, StationId
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+    from contextlib import AbstractContextManager as ContextManager
+
     from sapphire_flow.types.datetime import UtcDatetime
+
+log = structlog.get_logger(__name__)
 
 
 class PgHindcastStore:
-    def __init__(self, conn: sa.Connection) -> None:
+    def __init__(
+        self,
+        conn: sa.Connection,
+        *,
+        transaction_factory: Callable[[], ContextManager[sa.Connection]] | None = None,
+    ) -> None:
         self._conn = conn
-
-    def store_hindcast(self, hindcast: HindcastForecast) -> HindcastForecastId:
-        self._conn.execute(
-            pg_insert(hindcast_forecasts).values(
-                id=hindcast.id,
-                station_id=hindcast.station_id,
-                model_id=hindcast.model_id,
-                model_artifact_id=hindcast.model_artifact_id,
-                hindcast_step=hindcast.hindcast_step,
-                forcing_type=hindcast.forcing_type.value,
-                representation=hindcast.representation.value,
-                hindcast_run_id=hindcast.hindcast_run_id,
-                parameter=hindcast.ensemble.parameter,
-                units=hindcast.ensemble.units,
-                created_at=hindcast.created_at,
-                qc_status=hindcast.qc_status.value,
-                qc_flags=[
-                    {
-                        "rule_id": f.rule_id,
-                        "rule_version": f.rule_version,
-                        "status": f.status.value,
-                        "detail": f.detail,
-                    }
-                    for f in hindcast.qc_flags
-                ],
-            )
+        self._begin = (
+            transaction_factory
+            if transaction_factory is not None
+            else conn.engine.begin
         )
 
+    def store_hindcast(self, hindcast: HindcastForecast) -> HindcastForecastId:
         ens = hindcast.ensemble
         df = ens.values
         is_members = ens.representation == EnsembleRepresentation.MEMBERS
@@ -73,8 +63,34 @@ class PgHindcastStore:
             for row in df.to_dicts()
         ]
 
-        if rows:
-            self._conn.execute(sa.insert(hindcast_values), rows)
+        with self._begin() as txn:
+            txn.execute(
+                pg_insert(hindcast_forecasts).values(
+                    id=hindcast.id,
+                    station_id=hindcast.station_id,
+                    model_id=hindcast.model_id,
+                    model_artifact_id=hindcast.model_artifact_id,
+                    hindcast_step=hindcast.hindcast_step,
+                    forcing_type=hindcast.forcing_type.value,
+                    representation=hindcast.representation.value,
+                    hindcast_run_id=hindcast.hindcast_run_id,
+                    parameter=hindcast.ensemble.parameter,
+                    units=hindcast.ensemble.units,
+                    created_at=hindcast.created_at,
+                    qc_status=hindcast.qc_status.value,
+                    qc_flags=[
+                        {
+                            "rule_id": f.rule_id,
+                            "rule_version": f.rule_version,
+                            "status": f.status.value,
+                            "detail": f.detail,
+                        }
+                        for f in hindcast.qc_flags
+                    ],
+                )
+            )
+            if rows:
+                txn.execute(sa.insert(hindcast_values), rows)
 
         return hindcast.id
 
@@ -122,6 +138,13 @@ class PgHindcastStore:
         for header in header_rows:
             fid = header["id"]
             rows_for_id = values_by_id.get(fid, [])
+            if not rows_for_id:
+                log.warning(
+                    "hindcast.orphan_header_skipped",
+                    hindcast_forecast_id=fid,
+                    station_id=station_id,
+                )
+                continue
             ensemble = _reconstruct_ensemble(header, rows_for_id, station_id)
             result.append(
                 HindcastForecast(
@@ -183,6 +206,13 @@ class PgHindcastStore:
         for header in header_rows:
             fid = header["id"]
             rows_for_id = values_by_id.get(fid, [])
+            if not rows_for_id:
+                log.warning(
+                    "hindcast.orphan_header_skipped",
+                    hindcast_forecast_id=fid,
+                    station_id=station_id,
+                )
+                continue
             ensemble = _reconstruct_ensemble(header, rows_for_id, station_id)
             hindcast = HindcastForecast(
                 id=HindcastForecastId(fid),
