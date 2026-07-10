@@ -1,6 +1,6 @@
 export const meta = {
   name: 'plan-review',
-  description: 'Iteratively review + improve a DRAFT design-plan doc via an adversarial, code-grounded planner↔reviewer loop. Converges when NO blockers AND NO majors remain (or stops on no-progress / maxRounds), then surfaces the residual design forks a human must decide (the grill-me). Does NOT implement — it only edits the plan doc in place. hold-at-PR: the caller owns the branch/PR.',
+  description: 'Iteratively review + improve a DRAFT design-plan doc via an adversarial, code-grounded planner↔reviewer loop that runs UNTIL the author (planner) and reviewers CONVERGE (NO blockers AND NO majors). If it cannot converge within maxRounds (default 5) — or stalls with no progress — it ESCALATES loudly for a human. On convergence it surfaces the residual design forks a human must decide (the grill-me). Does NOT implement — it only edits the plan doc in place. hold-at-PR: the caller owns the branch/PR.',
   phases: [
     { title: 'Ground' },
     { title: 'Review loop' },
@@ -12,9 +12,13 @@ export const meta = {
 // Workflow({ name: 'plan-review', args: { planPath: 'docs/plans/NNN-....md', repo: '/abs/repo/path', maxRounds: 3 } })
 //   planPath  (required)  the DRAFT plan doc to review + improve — EDITED IN PLACE.
 //   repo      (optional)  repo root (default '.').
-//   maxRounds (optional)  max review↔revise rounds (default 3).
-// Returns: { converged, stalled, exhausted, residualBlockerCount, residualMajorCount,
-//            residualFindings, final:{ summary, residualQuestions, recommendation } }.
+//   maxRounds (optional)  max review↔revise rounds before ESCALATION (default 5).
+// Returns: { converged, stalled, exhausted, escalated, escalationReason,
+//            residualBlockerCount, residualMajorCount, residualFindings,
+//            final:{ summary, residualQuestions, recommendation } }.
+//   The loop runs UNTIL author+reviewers converge (no blockers/majors). If it cannot
+//   within maxRounds, or stalls (a revision fails to reduce the blocker+major count),
+//   it sets escalated=true and logs a loud ESCALATION — a human must intervene.
 //
 // WHAT IT DOES: an adversarial, code-grounded planner↔reviewer loop — 4 diverse
 //   reviewers (design / feasibility / completeness / proportionality) critique the plan against the
@@ -39,7 +43,7 @@ if (typeof A === 'string') {
 }
 const planPath = A.planPath
 const repo = A.repo || '.'
-const maxRounds = A.maxRounds || 3
+const maxRounds = A.maxRounds || 5
 if (!planPath) {
   throw new Error('plan-review requires args.planPath (the DRAFT plan doc to review + improve)')
 }
@@ -167,6 +171,22 @@ const residualBlockers = lastFindings.filter((f) => f.severity === 'blocker')
 const residualMajors = lastFindings.filter((f) => f.severity === 'major')
 const exhausted = !converged && !stalled && round === maxRounds
 
+// ESCALATION: the loop could NOT reach author↔reviewer convergence — a human must
+// intervene (resolve the residual blockers/majors, or rethink the plan/approach).
+// This is DISTINCT from the on-convergence residual grill-me (design forks a human
+// simply picks). Any non-converged exit (stalled OR exhausted at maxRounds) escalates.
+const escalated = !converged
+const escalationReason = converged
+  ? null
+  : stalled
+    ? `stalled after ${round} round(s): a revision failed to reduce the blocker+major count (stuck)`
+    : `did not converge within maxRounds=${maxRounds}: ${residualBlockers.length} blocker(s) + ${residualMajors.length} major(s) remain`
+if (escalated) {
+  log(`⚠️ ESCALATION — plan-review could NOT converge (${escalationReason}). ` +
+      `Do NOT treat this plan as READY. A human must resolve the residual ` +
+      `${residualBlockers.length} blocker(s) + ${residualMajors.length} major(s), or revise the approach.`)
+}
+
 phase('Finalize')
 const final = await agent(
   `Read the now-revised plan at ${planPath} (repo ${repo}). Spot-check its citations against the code (Read/Grep). ` +
@@ -184,6 +204,8 @@ return {
   converged,
   stalled,
   exhausted,
+  escalated,
+  escalationReason,
   residualBlockerCount: residualBlockers.length,
   residualMajorCount: residualMajors.length,
   residualFindings: lastFindings,
