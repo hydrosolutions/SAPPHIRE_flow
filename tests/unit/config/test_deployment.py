@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pydantic
 import pytest
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 from sapphire_flow.config.deployment import _resolve_env_vars, load_config
 from sapphire_flow.exceptions import ConfigurationError
@@ -242,6 +239,24 @@ class TestLoadConfig:
         config = load_config(cfg_file)
         assert not hasattr(config, "adapters")
         assert not hasattr(config, "models")
+
+    def test_bafu_forecast_archive_path_defaults_to_none(self, tmp_path: Path) -> None:
+        cfg_file = tmp_path / "deployment.toml"
+        cfg_file.write_text(_MINIMAL_TOML)
+        config = load_config(cfg_file)
+        assert config.bafu_forecast_archive_path is None
+
+    def test_bafu_forecast_archive_path_parsed_from_adapters_section(
+        self, tmp_path: Path
+    ) -> None:
+        toml = (
+            _MINIMAL_TOML
+            + '\n[adapters.bafu_forecast]\narchive_base_path = "/data/bafu_forecast"\n'
+        )
+        cfg_file = tmp_path / "deployment.toml"
+        cfg_file.write_text(toml)
+        config = load_config(cfg_file)
+        assert config.bafu_forecast_archive_path == Path("/data/bafu_forecast")
 
     def test_uses_sapphire_config_env_var(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

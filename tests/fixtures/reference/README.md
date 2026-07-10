@@ -28,6 +28,12 @@ discharge and water level, exercising the multi-parameter ingest path.
 - `stations.toml` — station metadata for the recording tool and replay tests
 - `bafu_observations.parquet` — synthetic stand-in observation data (see
   [Synthetic fixture — by design](#synthetic-fixture--by-design) below)
+- `bafu_forecast_stations.geojson` / `bafu_q_forecast_2135.json` — real,
+  live-captured payloads (2026-07-10) from the `hydrodaten.admin.ch` route-C
+  forecast collector (Plan 111); used by
+  `tests/unit/adapters/test_bafu_forecast.py` to test
+  `BafuForecastAdapter` parsing. Unrelated to the LINDAS dataset above —
+  BAFU's *forecast* endpoint, not the *observation* endpoint.
 
 ## Synthetic fixture — by design
 
