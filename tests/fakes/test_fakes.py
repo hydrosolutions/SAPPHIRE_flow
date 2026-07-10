@@ -370,6 +370,89 @@ class TestFakeHindcastStoreParameterFilter:
         assert result[0].ensemble.parameter == "discharge"
 
 
+class TestFakeHindcastStoreDedup:
+    """Dedup contract for FakeHindcastStore mirrors the real store's upsert."""
+
+    def test_same_natural_key_returns_original_id(self) -> None:
+        """A same-natural-key second insert returns the ORIGINAL id, not the new .id."""
+        from dataclasses import replace as dc_replace
+        from uuid import uuid4
+
+        from sapphire_flow.types.ids import HindcastForecastId
+
+        store = FakeHindcastStore()
+        h1 = _build_hindcast(parameter="discharge")
+        id_first = store.store_hindcast(h1)
+
+        # Second hindcast: different .id but same natural key (all 6 cols match)
+        h2 = dc_replace(h1, id=HindcastForecastId(uuid4()))
+        id_second = store.store_hindcast(h2)
+
+        assert id_second == id_first, (
+            "conflict insert must return the original id, not the new hindcast.id"
+        )
+        assert id_second != h2.id, (
+            "returned id must not be the conflicting hindcast's own .id"
+        )
+
+    def test_same_natural_key_only_one_stored(self) -> None:
+        """Two same-natural-key inserts leave exactly one stored hindcast."""
+        from dataclasses import replace as dc_replace
+        from uuid import uuid4
+
+        from sapphire_flow.types.ids import HindcastForecastId
+
+        store = FakeHindcastStore()
+        h1 = _build_hindcast(parameter="discharge")
+        store.store_hindcast(h1)
+
+        h2 = dc_replace(h1, id=HindcastForecastId(uuid4()))
+        store.store_hindcast(h2)
+
+        n = len(store._hindcasts)
+        assert n == 1, f"expected 1 stored hindcast after duplicate insert, got {n}"
+
+    def test_stored_object_id_consistent_with_returned_id(self) -> None:
+        """Stored object's .id must equal the returned id.
+
+        HindcastForecast is frozen — store must use dataclasses.replace to
+        carry the existing id into the stored object on the conflict path.
+        """
+        from dataclasses import replace as dc_replace
+        from uuid import uuid4
+
+        from sapphire_flow.types.ids import HindcastForecastId
+
+        store = FakeHindcastStore()
+        h1 = _build_hindcast(parameter="discharge")
+        returned_id = store.store_hindcast(h1)
+
+        h2 = dc_replace(h1, id=HindcastForecastId(uuid4()))
+        store.store_hindcast(h2)
+
+        stored = list(store._hindcasts.values())[0]
+        assert stored.id == returned_id, (
+            f"stored .id {stored.id} must match returned id {returned_id}"
+        )
+
+    def test_distinct_natural_keys_both_persist(self) -> None:
+        """Two inserts with distinct natural keys (different parameter) both persist."""
+        from dataclasses import replace as dc_replace
+
+        store = FakeHindcastStore()
+        h1 = _build_hindcast(parameter="discharge")
+        h2 = _build_hindcast(parameter="water_level")
+        # Share station_id and model_id so only parameter differs
+        h2 = dc_replace(h2, station_id=h1.station_id, model_id=h1.model_id)
+
+        store.store_hindcast(h1)
+        store.store_hindcast(h2)
+
+        assert len(store._hindcasts) == 2, (
+            f"distinct natural keys must both persist, got {len(store._hindcasts)}"
+        )
+
+
 class TestFakeSkillStoreParameterFilter:
     def test_fetch_scores_filters_by_parameter(self) -> None:
         from sapphire_flow.types.datetime import ensure_utc

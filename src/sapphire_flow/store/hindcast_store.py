@@ -44,28 +44,25 @@ class PgHindcastStore:
     def store_hindcast(self, hindcast: HindcastForecast) -> HindcastForecastId:
         ens = hindcast.ensemble
         df = ens.values
+        if df.is_empty():
+            raise ValueError("cannot store hindcast with empty ensemble")
+
         is_members = ens.representation == EnsembleRepresentation.MEMBERS
         hindcast_step_dt = hindcast.hindcast_step
-
-        rows = [
+        qc_flags_json = [
             {
-                "id": uuid4(),
-                "hindcast_forecast_id": hindcast.id,
-                "hindcast_step": hindcast_step_dt,
-                "valid_time": row["valid_time"],
-                "lead_time_hours": int(
-                    (row["valid_time"] - hindcast_step_dt).total_seconds() // 3600
-                ),
-                "member_id": row["member_id"] if is_members else None,
-                "quantile": None if is_members else row["quantile"],
-                "value": row["value"],
+                "rule_id": f.rule_id,
+                "rule_version": f.rule_version,
+                "status": f.status.value,
+                "detail": f.detail,
             }
-            for row in df.to_dicts()
+            for f in hindcast.qc_flags
         ]
 
         with self._begin() as txn:
-            txn.execute(
-                pg_insert(hindcast_forecasts).values(
+            header_id = txn.execute(
+                pg_insert(hindcast_forecasts)
+                .values(
                     id=hindcast.id,
                     station_id=hindcast.station_id,
                     model_id=hindcast.model_id,
@@ -78,21 +75,57 @@ class PgHindcastStore:
                     units=hindcast.ensemble.units,
                     created_at=hindcast.created_at,
                     qc_status=hindcast.qc_status.value,
-                    qc_flags=[
-                        {
-                            "rule_id": f.rule_id,
-                            "rule_version": f.rule_version,
-                            "status": f.status.value,
-                            "detail": f.detail,
-                        }
-                        for f in hindcast.qc_flags
+                    qc_flags=qc_flags_json,
+                )
+                .on_conflict_do_update(
+                    index_elements=[
+                        "station_id",
+                        "model_id",
+                        "hindcast_step",
+                        "parameter",
+                        "hindcast_run_id",
+                        "forcing_type",
                     ],
+                    set_={
+                        "model_artifact_id": hindcast.model_artifact_id,
+                        "units": hindcast.ensemble.units,
+                        "representation": hindcast.representation.value,
+                        "created_at": hindcast.created_at,
+                        "qc_status": hindcast.qc_status.value,
+                        "qc_flags": qc_flags_json,
+                    },
+                )
+                .returning(hindcast_forecasts.c.id)
+            ).scalar_one()
+
+            # Full-replace the value payload keyed to the row actually in the DB.
+            # On a clean insert the DELETE is a harmless no-op.
+            txn.execute(
+                sa.delete(hindcast_values).where(
+                    hindcast_values.c.hindcast_forecast_id == header_id
                 )
             )
+
+            # Build rows inside the txn, keyed to header_id (NOT hindcast.id).
+            rows = [
+                {
+                    "id": uuid4(),
+                    "hindcast_forecast_id": header_id,
+                    "hindcast_step": hindcast_step_dt,
+                    "valid_time": row["valid_time"],
+                    "lead_time_hours": int(
+                        (row["valid_time"] - hindcast_step_dt).total_seconds() // 3600
+                    ),
+                    "member_id": row["member_id"] if is_members else None,
+                    "quantile": None if is_members else row["quantile"],
+                    "value": row["value"],
+                }
+                for row in df.to_dicts()
+            ]
             if rows:
                 txn.execute(sa.insert(hindcast_values), rows)
 
-        return hindcast.id
+        return header_id
 
     def fetch_hindcasts(
         self,
