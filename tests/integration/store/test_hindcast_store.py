@@ -1,18 +1,38 @@
 from __future__ import annotations
 
 import uuid
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
+import pytest
 import sqlalchemy as sa
+import structlog.testing
 
-from sapphire_flow.db.metadata import model_artifacts, models, stations
+from sapphire_flow.db.metadata import (
+    hindcast_forecasts,
+    hindcast_values,
+    model_artifacts,
+    models,
+    stations,
+)
 from sapphire_flow.store.hindcast_store import PgHindcastStore
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import EnsembleRepresentation, ForcingType
 from sapphire_flow.types.forecast import HindcastForecast
 from sapphire_flow.types.ids import ArtifactId, HindcastForecastId, ModelId, StationId
 from tests.conftest import make_forecast_ensemble
+
+
+@contextmanager
+def savepoint_txn(conn: sa.Connection):  # type: ignore[return]
+    with conn.begin_nested():
+        yield conn
+
+
+def savepoint_factory(conn: sa.Connection):
+    return lambda: savepoint_txn(conn)
+
 
 _T0 = ensure_utc(datetime(2025, 1, 1, tzinfo=UTC))
 _T1 = ensure_utc(datetime(2025, 6, 1, tzinfo=UTC))
@@ -114,7 +134,9 @@ class TestStoreAndFetch:
         sid = _seed_station(db_connection)
         mid = _seed_model(db_connection)
         aid = _seed_artifact(db_connection, mid, sid)
-        store = PgHindcastStore(db_connection)
+        store = PgHindcastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
 
         step = _utc(2025, 3, 1)
         hindcast = _make_hindcast(sid, mid, aid, hindcast_step=step)
@@ -144,7 +166,9 @@ class TestFetchHalfOpenRange:
         sid = _seed_station(db_connection)
         mid = _seed_model(db_connection)
         aid = _seed_artifact(db_connection, mid, sid)
-        store = PgHindcastStore(db_connection)
+        store = PgHindcastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
         run_id = uuid4()
 
         step_before = _utc(2025, 4, 30)
@@ -173,7 +197,9 @@ class TestFetchWithForcingTypeFilter:
         sid = _seed_station(db_connection)
         mid = _seed_model(db_connection)
         aid = _seed_artifact(db_connection, mid, sid)
-        store = PgHindcastStore(db_connection)
+        store = PgHindcastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
 
         step = _utc(2025, 6, 1)
         run_id = uuid4()
@@ -230,7 +256,9 @@ class TestFetchWithRunIdFilter:
         sid = _seed_station(db_connection)
         mid = _seed_model(db_connection)
         aid = _seed_artifact(db_connection, mid, sid)
-        store = PgHindcastStore(db_connection)
+        store = PgHindcastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
 
         step = _utc(2025, 7, 1)
         run_a = uuid4()
@@ -274,7 +302,9 @@ class TestFetchHindcastsByStation:
         mid_b = _seed_model(db_connection)
         aid_a = _seed_artifact(db_connection, mid_a, sid)
         aid_b = _seed_artifact(db_connection, mid_b, sid)
-        store = PgHindcastStore(db_connection)
+        store = PgHindcastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
 
         step = _utc(2025, 3, 1)
         store.store_hindcast(_make_hindcast(sid, mid_a, aid_a, hindcast_step=step))
@@ -292,7 +322,9 @@ class TestFetchHindcastsByStation:
         sid = _seed_station(db_connection)
         mid = _seed_model(db_connection)
         aid = _seed_artifact(db_connection, mid, sid)
-        store = PgHindcastStore(db_connection)
+        store = PgHindcastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
 
         step = _utc(2025, 4, 1)
         discharge_hc = _make_hindcast(sid, mid, aid, hindcast_step=step)
@@ -330,7 +362,9 @@ class TestFetchHindcastsByStation:
         sid = _seed_station(db_connection)
         mid = _seed_model(db_connection)
         aid = _seed_artifact(db_connection, mid, sid)
-        store = PgHindcastStore(db_connection)
+        store = PgHindcastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
 
         step_in = _utc(2025, 5, 10)
         step_out = _utc(2025, 5, 20)
@@ -355,3 +389,182 @@ class TestFetchHindcastsByStation:
         )
 
         assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# Plan 038 locked atomicity tests
+# ---------------------------------------------------------------------------
+
+
+class TestStoreHindcastAtomicityDefaultFactory:
+    def test_default_factory_is_engine_begin(
+        self, db_connection: sa.Connection
+    ) -> None:
+        store = PgHindcastStore(db_connection)
+        # engine.begin is a bound method — new object each access;
+        # compare via __self__/__func__ to avoid identity failure
+        assert getattr(store._begin, "__self__", None) is db_connection.engine
+        engine_cls = type(db_connection.engine)
+        assert getattr(store._begin, "__func__", None) is engine_cls.begin
+
+
+class TestStoreHindcastAtomicityRollback:
+    def test_values_insert_failure_rolls_back_header(
+        self, db_connection: sa.Connection, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, mid, sid)
+        store = PgHindcastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+        hc = _make_hindcast(sid, mid, aid)
+
+        real_execute = db_connection.execute
+
+        def _fail_on_hindcast_values(stmt, *args, **kwargs):  # type: ignore[no-untyped-def]
+            if (
+                isinstance(stmt, sa.sql.dml.Insert)
+                and getattr(stmt.table, "name", "") == "hindcast_values"
+            ):
+                raise sa.exc.IntegrityError(
+                    "forced hindcast_values failure", None, Exception()
+                )
+            return real_execute(stmt, *args, **kwargs)
+
+        monkeypatch.setattr(db_connection, "execute", _fail_on_hindcast_values)
+
+        with pytest.raises(sa.exc.IntegrityError):
+            store.store_hindcast(hc)
+
+        monkeypatch.undo()
+
+        row = db_connection.execute(
+            sa.select(hindcast_forecasts.c.id).where(hindcast_forecasts.c.id == hc.id)
+        ).first()
+        assert row is None
+
+
+class TestStoreHindcastAtomicitySuccess:
+    def test_both_header_and_values_visible_after_store(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, mid, sid)
+        store = PgHindcastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+        hc = _make_hindcast(sid, mid, aid)
+
+        store.store_hindcast(hc)
+
+        header_row = db_connection.execute(
+            sa.select(hindcast_forecasts.c.id).where(hindcast_forecasts.c.id == hc.id)
+        ).first()
+        assert header_row is not None
+
+        value_count = db_connection.execute(
+            sa.select(sa.func.count()).where(
+                hindcast_values.c.hindcast_forecast_id == hc.id
+            )
+        ).scalar_one()
+        assert value_count > 0
+
+
+class TestFetchHindcastsOrphanSkip:
+    def test_orphan_header_skipped_valid_returned(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, mid, sid)
+        store = PgHindcastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+
+        # Seed a valid hindcast
+        valid_hc = _make_hindcast(sid, mid, aid, hindcast_step=_utc(2025, 8, 1))
+        store.store_hindcast(valid_hc)
+
+        # Seed an orphan header with no hindcast_values
+        orphan_id = HindcastForecastId(uuid4())
+        db_connection.execute(
+            sa.insert(hindcast_forecasts).values(
+                id=orphan_id,
+                station_id=sid,
+                model_id=mid,
+                model_artifact_id=aid,
+                hindcast_step=_utc(2025, 8, 2),
+                forcing_type=ForcingType.NWP_ARCHIVE.value,
+                representation=EnsembleRepresentation.MEMBERS.value,
+                hindcast_run_id=uuid4(),
+                parameter="discharge",
+                units="m³/s",
+                created_at=_T0,
+                qc_status="raw",
+                qc_flags=[],
+            )
+        )
+
+        with structlog.testing.capture_logs() as cap_logs:
+            results = store.fetch_hindcasts(
+                sid, mid, _utc(2025, 7, 31), _utc(2025, 8, 3)
+            )
+
+        assert len(results) == 1
+        assert results[0].id == valid_hc.id
+
+        warning_events = [
+            e for e in cap_logs if e.get("event") == "hindcast.orphan_header_skipped"
+        ]
+        assert len(warning_events) == 1
+        assert warning_events[0]["log_level"] == "warning"
+
+    def test_orphan_header_skipped_by_fetch_hindcasts_by_station(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, mid, sid)
+        store = PgHindcastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+
+        # Seed one valid hindcast
+        valid_hc = _make_hindcast(sid, mid, aid, hindcast_step=_utc(2025, 9, 1))
+        store.store_hindcast(valid_hc)
+
+        # Seed an orphan header (no values)
+        orphan_id = HindcastForecastId(uuid4())
+        db_connection.execute(
+            sa.insert(hindcast_forecasts).values(
+                id=orphan_id,
+                station_id=sid,
+                model_id=mid,
+                model_artifact_id=aid,
+                hindcast_step=_utc(2025, 9, 2),
+                forcing_type=ForcingType.NWP_ARCHIVE.value,
+                representation=EnsembleRepresentation.MEMBERS.value,
+                hindcast_run_id=uuid4(),
+                parameter="discharge",
+                units="m³/s",
+                created_at=_T0,
+                qc_status="raw",
+                qc_flags=[],
+            )
+        )
+
+        with structlog.testing.capture_logs() as cap_logs:
+            result = store.fetch_hindcasts_by_station(
+                sid, "discharge", _utc(2025, 8, 31), _utc(2025, 9, 3)
+            )
+
+        assert mid in result
+        assert len(result[mid]) == 1
+        assert result[mid][0].id == valid_hc.id
+
+        warning_events = [
+            e for e in cap_logs if e.get("event") == "hindcast.orphan_header_skipped"
+        ]
+        assert len(warning_events) == 1

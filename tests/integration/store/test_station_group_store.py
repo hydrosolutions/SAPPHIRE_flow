@@ -1,15 +1,29 @@
 from __future__ import annotations
 
 import uuid
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 
+import pytest
 import sqlalchemy as sa
 
+from sapphire_flow.db.metadata import station_group_members, station_groups
 from sapphire_flow.store.station_group_store import PgStationGroupStore
 from sapphire_flow.types.enums import ModelAssignmentStatus
 from sapphire_flow.types.ids import ModelId, StationGroupId, StationId
 from sapphire_flow.types.station import GroupModelAssignment, StationGroup
 from tests.conftest import make_station_config
+
+
+@contextmanager
+def savepoint_txn(conn: sa.Connection):  # type: ignore[return]
+    with conn.begin_nested():
+        yield conn
+
+
+def savepoint_factory(conn: sa.Connection):
+    return lambda: savepoint_txn(conn)
+
 
 _NOW = datetime(2025, 1, 1, tzinfo=UTC)
 
@@ -54,7 +68,9 @@ class TestStoreAndFetchGroup:
         s2 = _seed_station(db_connection, "G-002")
 
         group = _make_group("alpine", frozenset({s1, s2}))
-        store = PgStationGroupStore(db_connection)
+        store = PgStationGroupStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
         store.store_group(group)
 
         fetched = store.fetch_group(group.id)
@@ -72,7 +88,9 @@ class TestStoreAndFetchGroup:
             description="A description",
             created_at=_NOW,
         )
-        store = PgStationGroupStore(db_connection)
+        store = PgStationGroupStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
         store.store_group(group)
 
         fetched = store.fetch_group(group.id)
@@ -83,7 +101,9 @@ class TestStoreAndFetchGroup:
 class TestFetchGroupByName:
     def test_lookup_by_name(self, db_connection: sa.Connection) -> None:
         group = _make_group("named-group")
-        store = PgStationGroupStore(db_connection)
+        store = PgStationGroupStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
         store.store_group(group)
 
         fetched = store.fetch_group_by_name("named-group")
@@ -102,7 +122,9 @@ class TestFetchGroupsForStation:
         g2 = _make_group("sfg-group-b", frozenset({s}))
         other = _make_group("sfg-group-other")
 
-        store = PgStationGroupStore(db_connection)
+        store = PgStationGroupStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
         store.store_group(g1)
         store.store_group(g2)
         store.store_group(other)
@@ -117,7 +139,9 @@ class TestFetchGroupsForStation:
         self, db_connection: sa.Connection
     ) -> None:
         s = _seed_station(db_connection, "SFG-002")
-        store = PgStationGroupStore(db_connection)
+        store = PgStationGroupStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
         assert store.fetch_groups_for_station(s) == []
 
 
@@ -132,7 +156,9 @@ class TestFetchGroupsForModel:
         g_with = _make_group("fgm-with", frozenset({s1}))
         g_without = _make_group("fgm-without", frozenset({s2}))
 
-        store = PgStationGroupStore(db_connection)
+        store = PgStationGroupStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
         store.store_group(g_with)
         store.store_group(g_without)
 
@@ -150,7 +176,9 @@ class TestFetchGroupsForModel:
         _seed_model(db_connection, "ml_v2")
 
         g = _make_group("fgm-inactive", frozenset({s}))
-        store = PgStationGroupStore(db_connection)
+        store = PgStationGroupStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
         store.store_group(g)
 
         store.store_group_model_assignment(
@@ -169,7 +197,9 @@ class TestAddAndRemoveStation:
     def test_add_station_appears_in_fetch(self, db_connection: sa.Connection) -> None:
         s = _seed_station(db_connection, "AR-001")
         group = _make_group("ar-group")
-        store = PgStationGroupStore(db_connection)
+        store = PgStationGroupStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
         store.store_group(group)
 
         store.add_station_to_group(group.id, s)
@@ -181,7 +211,9 @@ class TestAddAndRemoveStation:
     def test_remove_station_gone_from_fetch(self, db_connection: sa.Connection) -> None:
         s = _seed_station(db_connection, "AR-002")
         group = _make_group("ar-remove-group", frozenset({s}))
-        store = PgStationGroupStore(db_connection)
+        store = PgStationGroupStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
         store.store_group(group)
 
         store.remove_station_from_group(group.id, s)
@@ -193,7 +225,9 @@ class TestAddAndRemoveStation:
     def test_add_idempotent(self, db_connection: sa.Connection) -> None:
         s = _seed_station(db_connection, "AR-003")
         group = _make_group("ar-idem-group")
-        store = PgStationGroupStore(db_connection)
+        store = PgStationGroupStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
         store.store_group(group)
 
         store.add_station_to_group(group.id, s)
@@ -240,7 +274,9 @@ class TestStoreGroupModelAssignment:
     def test_happy_path(self, db_connection: sa.Connection) -> None:
         group = _make_group("gma-happy")
         _seed_model(db_connection, "gma-model-1")
-        store = PgStationGroupStore(db_connection)
+        store = PgStationGroupStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
         store.store_group(group)
 
         assignment = _make_group_model_assignment(group.id, ModelId("gma-model-1"))
@@ -258,7 +294,9 @@ class TestStoreGroupModelAssignment:
     def test_upsert_second_write_wins(self, db_connection: sa.Connection) -> None:
         group = _make_group("gma-upsert")
         _seed_model(db_connection, "gma-model-2")
-        store = PgStationGroupStore(db_connection)
+        store = PgStationGroupStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
         store.store_group(group)
 
         first = _make_group_model_assignment(
@@ -299,7 +337,9 @@ class TestStoreGroupModelAssignment:
         g1 = _make_group("gma-filter-g1")
         g2 = _make_group("gma-filter-g2")
         _seed_model(db_connection, "gma-model-3")
-        store = PgStationGroupStore(db_connection)
+        store = PgStationGroupStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
         store.store_group(g1)
         store.store_group(g2)
 
@@ -313,3 +353,80 @@ class TestStoreGroupModelAssignment:
         results = store.fetch_group_model_assignments(g1.id)
         assert len(results) == 1
         assert results[0].group_id == g1.id
+
+
+# ---------------------------------------------------------------------------
+# Plan 038 locked atomicity tests
+# ---------------------------------------------------------------------------
+
+
+class TestStoreGroupAtomicityDefaultFactory:
+    def test_default_factory_is_engine_begin(
+        self, db_connection: sa.Connection
+    ) -> None:
+        store = PgStationGroupStore(db_connection)
+        # engine.begin is a bound method — new object each access;
+        # compare via __self__/__func__ to avoid identity failure
+        assert getattr(store._begin, "__self__", None) is db_connection.engine
+        engine_cls = type(db_connection.engine)
+        assert getattr(store._begin, "__func__", None) is engine_cls.begin
+
+
+class TestStoreGroupAtomicityRollback:
+    def test_members_insert_failure_rolls_back_header(
+        self, db_connection: sa.Connection
+    ) -> None:
+        # Use a non-existent station_id to force an FK violation on the members insert
+        # so the header upsert succeeds but the members insert fails.
+        nonexistent_station = StationId(uuid.uuid4())
+        group = StationGroup(
+            id=StationGroupId(uuid.uuid4()),
+            name="atomic-rollback-group",
+            station_ids=frozenset({nonexistent_station}),
+            description=None,
+            created_at=_NOW,
+        )
+        store = PgStationGroupStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+
+        import sqlalchemy.exc
+
+        with pytest.raises(sqlalchemy.exc.IntegrityError):
+            store.store_group(group)
+
+        row = db_connection.execute(
+            sa.select(station_groups.c.id).where(station_groups.c.id == group.id)
+        ).first()
+        assert row is None
+
+
+class TestStoreGroupAtomicitySuccess:
+    def test_both_header_and_members_visible_after_store(
+        self, db_connection: sa.Connection
+    ) -> None:
+        s = _seed_station(db_connection, "ATOM-S-001")
+        group = StationGroup(
+            id=StationGroupId(uuid.uuid4()),
+            name="atomic-success-group",
+            station_ids=frozenset({s}),
+            description=None,
+            created_at=_NOW,
+        )
+        store = PgStationGroupStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+
+        store.store_group(group)
+
+        header_row = db_connection.execute(
+            sa.select(station_groups.c.id).where(station_groups.c.id == group.id)
+        ).first()
+        assert header_row is not None
+
+        member_count = db_connection.execute(
+            sa.select(sa.func.count()).where(
+                station_group_members.c.group_id == group.id
+            )
+        ).scalar_one()
+        assert member_count == 1

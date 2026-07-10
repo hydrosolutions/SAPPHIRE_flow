@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -9,7 +10,7 @@ import pytest
 import sqlalchemy as sa
 import sqlalchemy.exc
 
-from sapphire_flow.db.metadata import model_artifacts, models
+from sapphire_flow.db.metadata import forecast_values, model_artifacts, models
 from sapphire_flow.exceptions import ConflictError
 from sapphire_flow.store.forecast_store import PgForecastStore
 from sapphire_flow.store.station_store import PgStationStore
@@ -25,6 +26,17 @@ from tests.conftest import make_forecast_ensemble, make_station_config
 
 if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
+
+
+@contextmanager
+def savepoint_txn(conn: sa.Connection):  # type: ignore[return]
+    with conn.begin_nested():
+        yield conn
+
+
+def savepoint_factory(conn: sa.Connection):
+    return lambda: savepoint_txn(conn)
+
 
 _NOW = ensure_utc(datetime(2025, 1, 1, tzinfo=UTC))
 _ISSUED_A = ensure_utc(datetime(2025, 1, 1, 0, tzinfo=UTC))
@@ -127,7 +139,9 @@ class TestStoreAndFetchForecast:
         sid = _seed_station(db_connection)
         mid = _seed_model(db_connection)
         aid = _seed_artifact(db_connection, sid, mid)
-        store = PgForecastStore(db_connection)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
 
         fc = _make_forecast(sid, mid, aid)
         returned_id = store.store_forecast(fc)
@@ -160,7 +174,9 @@ class TestStoreAndFetchForecast:
         sid = _seed_station(db_connection)
         mid = _seed_model(db_connection, "quantile_model")
         aid = _seed_artifact(db_connection, sid, mid)
-        store = PgForecastStore(db_connection)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
 
         fc = _make_forecast(
             sid,
@@ -183,7 +199,9 @@ class TestFetchLatest:
         sid = _seed_station(db_connection)
         mid = _seed_model(db_connection)
         aid = _seed_artifact(db_connection, sid, mid)
-        store = PgForecastStore(db_connection)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
 
         fc_old = _make_forecast(
             sid, mid, aid, issued_at=_ISSUED_A, rng=random.Random(1)
@@ -205,7 +223,9 @@ class TestFetchLatest:
         mid_b = _seed_model(db_connection, "model_b")
         aid_a = _seed_artifact(db_connection, sid, mid_a)
         aid_b = _seed_artifact(db_connection, sid, mid_b)
-        store = PgForecastStore(db_connection)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
 
         fc_a = _make_forecast(
             sid, mid_a, aid_a, issued_at=_ISSUED_A, rng=random.Random(3)
@@ -233,7 +253,9 @@ class TestFetchForecastsForCycle:
         sid = _seed_station(db_connection)
         mid = _seed_model(db_connection)
         aid = _seed_artifact(db_connection, sid, mid)
-        store = PgForecastStore(db_connection)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
 
         fc_a = _make_forecast(sid, mid, aid, issued_at=_ISSUED_A, rng=random.Random(5))
         fc_b = _make_forecast(sid, mid, aid, issued_at=_ISSUED_B, rng=random.Random(6))
@@ -253,7 +275,9 @@ class TestFetchForecastsForCycle:
         mid = _seed_model(db_connection)
         aid_1 = _seed_artifact(db_connection, sid_1, mid)
         aid_2 = _seed_artifact(db_connection, sid_2, mid)
-        store = PgForecastStore(db_connection)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
 
         fc_1 = _make_forecast(
             sid_1, mid, aid_1, issued_at=_ISSUED_A, rng=random.Random(7)
@@ -281,7 +305,9 @@ class TestFetchForecastsInRange:
         sid = _seed_station(db_connection)
         mid = _seed_model(db_connection)
         aid = _seed_artifact(db_connection, sid, mid)
-        store = PgForecastStore(db_connection)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
 
         fc_a = _make_forecast(sid, mid, aid, issued_at=_ISSUED_A, rng=random.Random(9))
         fc_b = _make_forecast(sid, mid, aid, issued_at=_ISSUED_B, rng=random.Random(10))
@@ -298,7 +324,9 @@ class TestFetchForecastsInRange:
         sid = _seed_station(db_connection)
         mid = _seed_model(db_connection)
         aid = _seed_artifact(db_connection, sid, mid)
-        store = PgForecastStore(db_connection)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
 
         fc_b = _make_forecast(sid, mid, aid, issued_at=_ISSUED_B, rng=random.Random(11))
         store.store_forecast(fc_b)
@@ -311,7 +339,9 @@ class TestFetchForecastsInRange:
         sid = _seed_station(db_connection)
         mid = _seed_model(db_connection)
         aid = _seed_artifact(db_connection, sid, mid)
-        store = PgForecastStore(db_connection)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
 
         end = ensure_utc(datetime(2025, 1, 2, tzinfo=UTC))
         fc = _make_forecast(
@@ -335,7 +365,9 @@ class TestTransitionStatus:
         sid = _seed_station(db_connection)
         mid = _seed_model(db_connection)
         aid = _seed_artifact(db_connection, sid, mid)
-        store = PgForecastStore(db_connection)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
 
         fc = _make_forecast(sid, mid, aid)
         store.store_forecast(fc)
@@ -352,7 +384,9 @@ class TestTransitionStatus:
         sid = _seed_station(db_connection)
         mid = _seed_model(db_connection)
         aid = _seed_artifact(db_connection, sid, mid)
-        store = PgForecastStore(db_connection)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
 
         fc = _make_forecast(sid, mid, aid)
         store.store_forecast(fc)
@@ -369,7 +403,9 @@ class TestParameterFilter:
         sid = _seed_station(db_connection)
         mid = _seed_model(db_connection)
         aid = _seed_artifact(db_connection, sid, mid)
-        store = PgForecastStore(db_connection)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
 
         fc_discharge = _make_forecast(
             sid,
@@ -409,7 +445,9 @@ class TestParameterFilter:
         sid = _seed_station(db_connection)
         mid = _seed_model(db_connection)
         aid = _seed_artifact(db_connection, sid, mid)
-        store = PgForecastStore(db_connection)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
 
         fc_discharge = _make_forecast(
             sid,
@@ -439,7 +477,9 @@ class TestParameterFilter:
         sid = _seed_station(db_connection)
         mid = _seed_model(db_connection)
         aid = _seed_artifact(db_connection, sid, mid)
-        store = PgForecastStore(db_connection)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
 
         fc_first = _make_forecast(
             sid,
@@ -476,7 +516,9 @@ class TestRunoffOnlyProvenanceRoundTrip:
         sid = _seed_station(db_connection)
         mid = _seed_model(db_connection, "runoff_only_model")
         aid = _seed_artifact(db_connection, sid, mid)
-        store = PgForecastStore(db_connection)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
 
         fc = _make_forecast(
             sid,
@@ -540,3 +582,94 @@ class TestForecastProvenanceConstraints:
                     units="m³/s",
                 )
             )
+
+
+# ---------------------------------------------------------------------------
+# Plan 038 locked atomicity tests
+# ---------------------------------------------------------------------------
+
+
+class TestStoreforecastAtomicityDefaultFactory:
+    def test_default_factory_is_engine_begin(
+        self, db_connection: sa.Connection
+    ) -> None:
+        store = PgForecastStore(db_connection)
+        # engine.begin is a bound method — new object each access;
+        # compare via __self__/__func__ to avoid identity failure
+        assert getattr(store._begin, "__self__", None) is db_connection.engine
+        engine_cls = type(db_connection.engine)
+        assert getattr(store._begin, "__func__", None) is engine_cls.begin
+
+
+class TestStoreForecastAtomicityRollback:
+    def test_values_insert_failure_rolls_back_header(
+        self, db_connection: sa.Connection, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection, "atomic_rollback_fc")
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+        fc = _make_forecast(sid, mid, aid)
+
+        real_execute = db_connection.execute
+
+        def _fail_on_forecast_values(stmt, *args, **kwargs):  # type: ignore[no-untyped-def]
+            if (
+                isinstance(stmt, sa.sql.dml.Insert)
+                and getattr(stmt.table, "name", "") == "forecast_values"
+            ):
+                raise sa.exc.IntegrityError(
+                    "forced forecast_values failure", None, Exception()
+                )
+            return real_execute(stmt, *args, **kwargs)
+
+        monkeypatch.setattr(db_connection, "execute", _fail_on_forecast_values)
+
+        with pytest.raises(sa.exc.IntegrityError):
+            store.store_forecast(fc)
+
+        monkeypatch.undo()
+
+        from sapphire_flow.db.metadata import forecasts as forecasts_table
+
+        # Both header and values must be absent (rollback was atomic)
+        header_row = db_connection.execute(
+            sa.select(forecasts_table.c.id).where(forecasts_table.c.id == fc.id)
+        ).first()
+        assert header_row is None
+
+        values_row = db_connection.execute(
+            sa.select(forecast_values.c.forecast_id).where(
+                forecast_values.c.forecast_id == fc.id
+            )
+        ).first()
+        assert values_row is None
+
+
+class TestStoreForecastAtomicitySuccess:
+    def test_both_header_and_values_visible_after_store(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection, "atomic_success_fc")
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+        fc = _make_forecast(sid, mid, aid)
+
+        store.store_forecast(fc)
+
+        from sapphire_flow.db.metadata import forecasts as forecasts_table
+
+        header_row = db_connection.execute(
+            sa.select(forecasts_table.c.id).where(forecasts_table.c.id == fc.id)
+        ).first()
+        assert header_row is not None
+
+        value_count = db_connection.execute(
+            sa.select(sa.func.count()).where(forecast_values.c.forecast_id == fc.id)
+        ).scalar_one()
+        assert value_count > 0

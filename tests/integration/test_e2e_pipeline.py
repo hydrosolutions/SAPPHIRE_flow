@@ -6,6 +6,7 @@ import math
 import os
 import random
 import time
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -45,6 +46,18 @@ from sapphire_flow.types.ids import ModelId
 from tests.fakes.fake_adapters import FakeWeatherReanalysisSource
 
 _FIXTURE_DIR = Path("tests/fixtures/reference")
+
+
+@contextmanager
+def savepoint_txn(conn: sa.Connection):  # type: ignore[return]
+    with conn.begin_nested():
+        yield conn
+
+
+def savepoint_factory(conn: sa.Connection):
+    return lambda: savepoint_txn(conn)
+
+
 _STATIONS_TOML = _FIXTURE_DIR / "stations.toml"
 _OBSERVATIONS_PARQUET = _FIXTURE_DIR / "bafu_observations.parquet"
 
@@ -193,8 +206,12 @@ class TestE2ePipeline:
             flow_regime_store = PgFlowRegimeConfigStore(conn)
             model_store = PgModelStore(conn)
             artifact_store = PgModelArtifactStore(conn, artifact_dir)
-            group_store = PgStationGroupStore(conn)
-            hindcast_store = PgHindcastStore(conn)
+            group_store = PgStationGroupStore(
+                conn, transaction_factory=savepoint_factory(conn)
+            )
+            hindcast_store = PgHindcastStore(
+                conn, transaction_factory=savepoint_factory(conn)
+            )
             skill_store = PgSkillStore(conn)
 
             result = _run_onboarding(
@@ -345,7 +362,9 @@ class TestE2ePipeline:
             obs_store = PgObservationStore(conn)
             basin_store = PgBasinStore(conn)
             artifact_store = PgModelArtifactStore(conn, artifact_dir)
-            hindcast_store = PgHindcastStore(conn)
+            hindcast_store = PgHindcastStore(
+                conn, transaction_factory=savepoint_factory(conn)
+            )
 
             for sc in station_configs:
                 sid = sc.id
@@ -552,7 +571,9 @@ class TestE2ePipeline:
             obs_store = PgObservationStore(conn)
             basin_store = PgBasinStore(conn)
             artifact_store = PgModelArtifactStore(conn, artifact_dir)
-            forecast_store = PgForecastStore(conn)
+            forecast_store = PgForecastStore(
+                conn, transaction_factory=savepoint_factory(conn)
+            )
             baseline_store = PgClimBaselineStore(conn)
 
             for sc in station_configs:
