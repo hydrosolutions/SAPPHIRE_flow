@@ -513,6 +513,61 @@ SAPPHIRE_CONFIG_OVERLAY=config/overlays/staging-5-stations.toml \
 uv run python -m sapphire_flow.cli.register_deployments
 ```
 
+## Host-level Docker image / build-cache prune (mac-mini, Plan 105 D3)
+
+A weekly launchd job on the mac-mini prunes accumulated Docker images and build
+cache that grow unbounded from version-bump rebuilds (~1.9 GB per bump). This is a
+**host-level** job — it is NOT a Prefect flow, because running `docker image prune`
+from a Prefect worker would require mounting the Docker socket into the container
+(a container-escape surface, forbidden by `docs/standards/security.md`).
+
+### Files
+
+| File | Purpose |
+|------|---------|
+| `scripts/launchd/prune-docker.sh` | Main script: reads `docker system df --format '{{json .}}'`, parses Images and Build Cache reclaimable figures, runs `docker image prune -a -f` (≥ 1 GB reclaimable) and `docker builder prune -f` (≥ 1 GB reclaimable) independently |
+| `scripts/launchd/ch.hydrosolutions.sapphire-docker-prune.plist` | launchd agent — label `ch.hydrosolutions.sapphire-docker-prune`, weekly `StartCalendarInterval` (Sunday 04:00 local) |
+| `scripts/launchd/install-launchd.sh` | Updated to include the new plist in the `PLISTS=(...)` array (alongside `ch.hydrosolutions.sapphire.plist` and `ch.hydrosolutions.sapphire-watchdog.plist`) |
+
+### Stack-up guard
+
+`docker image prune -a -f` removes ALL images not referenced by a running container —
+including the current `sapphire-flow:${VERSION}` tag if the stack is down. The script
+therefore checks that the stack is running before pruning:
+
+```bash
+if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -Eq '^sapphire_flow-'; then
+    log 'stack not running or daemon unreachable — skipping prune'
+    exit 0
+fi
+```
+
+Plain `docker ps` (not `docker compose ps`) is used because the launchd job runs from
+`scripts/launchd/` which has no `docker-compose.yml`; the compose form would always
+find no project and skip every run. If the Docker daemon is unreachable, `docker ps`
+exits non-zero, the `if !` condition is true, and the script exits cleanly (safe).
+
+### Upgrade runbook note
+
+After any operation that prunes images (weekly cron or a manual `docker system prune`),
+always restart the stack with:
+
+```bash
+docker compose up -d --build
+```
+
+A bare `docker compose up -d` (no `--build`) attempts to reuse the cached image. If
+the prune removed it, `up -d` will error or silently pull a different version. The
+`--build` flag ensures the current version is rebuilt from the Dockerfile before
+starting. This note applies equally to the upgrade procedure in § Upgrade procedure
+above — step 4 (`docker compose up -d`) should be `docker compose up -d --build`
+after any host-level image prune.
+
+### Registration
+
+Run `scripts/launchd/install-launchd.sh` once (or re-run after plist changes) to
+register all three launchd agents — the installer is idempotent.
+
 ## Host-level watchdog
 
 Independent of Docker and Prefect. A cron job on the host VM:

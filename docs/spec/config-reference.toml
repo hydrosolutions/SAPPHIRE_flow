@@ -469,6 +469,15 @@ max_cache_age_hours = 12
 #                                     # fetched per cycle (operator escape hatch /
 #                                     # sampled runs). Unset = unlimited (prod
 #                                     # default). Non-int → ConfigurationError.
+# disk_guard_scratch_soft_gb = 1.5   # Plan 105 D2: free-GB threshold on the NWP
+#                                     # scratch tmpfs. Below this → WARNING health
+#                                     # record + runoff-only mode. Must be > hard.
+#                                     # Default: 1.5 GB. Non-float → ConfigurationError.
+# disk_guard_scratch_hard_gb = 0.5   # Below this → CRITICAL health record + FAILED
+#                                     # cycle (fail-closed). Default: 0.5 GB.
+# disk_guard_archive_soft_gb = 8.0   # Same semantics for the NWP grid archive mount.
+#                                     # Default: 8.0 GB.
+# disk_guard_archive_hard_gb = 3.0   # Default: 3.0 GB.
 grid_extractor = "mesh"               # Plan 087: basin extractor. "mesh" (default)
 #                                     # handles the ICON-CH2-EPS unstructured mesh
 #                                     # via point-in-polygon; "exactextract" is the

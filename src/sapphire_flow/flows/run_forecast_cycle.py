@@ -16,8 +16,16 @@ from prefect import flow, task
 from prefect import runtime as prefect_runtime
 from prefect.cache_policies import NO_CACHE
 
+from sapphire_flow.adapters.meteoswiss_nwp import (
+    DEFAULT_DISK_GUARD_ARCHIVE_HARD_GB,
+    DEFAULT_DISK_GUARD_ARCHIVE_SOFT_GB,
+    DEFAULT_DISK_GUARD_SCRATCH_HARD_GB,
+    DEFAULT_DISK_GUARD_SCRATCH_SOFT_GB,
+)
 from sapphire_flow.exceptions import (
     ConfigurationError,
+    DiskHardLimitError,
+    DiskSoftLimitError,
     NoCycleAvailableError,
     StoreError,
 )
@@ -121,6 +129,12 @@ class _WeatherForecastAdapterConfig:
     max_files: int | None
     grid_extractor: str
     expected_delivery_offset_hours: float
+    # Plan 105 D2 — disk-guard thresholds (four TOML-configurable values;
+    # defaults are shared constants from meteoswiss_nwp to avoid divergence).
+    disk_guard_scratch_soft_gb: float = DEFAULT_DISK_GUARD_SCRATCH_SOFT_GB
+    disk_guard_scratch_hard_gb: float = DEFAULT_DISK_GUARD_SCRATCH_HARD_GB
+    disk_guard_archive_soft_gb: float = DEFAULT_DISK_GUARD_ARCHIVE_SOFT_GB
+    disk_guard_archive_hard_gb: float = DEFAULT_DISK_GUARD_ARCHIVE_HARD_GB
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -273,6 +287,44 @@ def _load_weather_forecast_adapter_config() -> _WeatherForecastAdapterConfig:
                 f"configured MeteoSwiss field(s): {joined}"
             )
 
+    # Plan 105 D2 — parse disk_guard_*_gb thresholds (same pattern as max_files).
+    def _parse_disk_guard_gb(key: str, default: float) -> float:
+        val = weather_forecast.get(key)
+        if val is None:
+            return default
+        if isinstance(val, bool) or not isinstance(val, (int, float)):
+            raise ConfigurationError(
+                f"[adapters.weather_forecast].{key} must be a TOML number"
+            )
+        if val <= 0:
+            raise ConfigurationError(f"[adapters.weather_forecast].{key} must be > 0")
+        return float(val)
+
+    disk_guard_scratch_soft_gb = _parse_disk_guard_gb(
+        "disk_guard_scratch_soft_gb", DEFAULT_DISK_GUARD_SCRATCH_SOFT_GB
+    )
+    disk_guard_scratch_hard_gb = _parse_disk_guard_gb(
+        "disk_guard_scratch_hard_gb", DEFAULT_DISK_GUARD_SCRATCH_HARD_GB
+    )
+    disk_guard_archive_soft_gb = _parse_disk_guard_gb(
+        "disk_guard_archive_soft_gb", DEFAULT_DISK_GUARD_ARCHIVE_SOFT_GB
+    )
+    disk_guard_archive_hard_gb = _parse_disk_guard_gb(
+        "disk_guard_archive_hard_gb", DEFAULT_DISK_GUARD_ARCHIVE_HARD_GB
+    )
+
+    # Cross-field validation: hard must be less than soft for each mount.
+    if disk_guard_scratch_hard_gb >= disk_guard_scratch_soft_gb:
+        raise ConfigurationError(
+            "[adapters.weather_forecast] disk_guard_scratch_hard_gb must be "
+            "< disk_guard_scratch_soft_gb"
+        )
+    if disk_guard_archive_hard_gb >= disk_guard_archive_soft_gb:
+        raise ConfigurationError(
+            "[adapters.weather_forecast] disk_guard_archive_hard_gb must be "
+            "< disk_guard_archive_soft_gb"
+        )
+
     return _WeatherForecastAdapterConfig(
         enabled=enabled_value,
         require_nwp=require_nwp,
@@ -286,6 +338,10 @@ def _load_weather_forecast_adapter_config() -> _WeatherForecastAdapterConfig:
         expected_delivery_offset_hours=_parse_expected_delivery_offset_hours(
             weather_forecast
         ),
+        disk_guard_scratch_soft_gb=disk_guard_scratch_soft_gb,
+        disk_guard_scratch_hard_gb=disk_guard_scratch_hard_gb,
+        disk_guard_archive_soft_gb=disk_guard_archive_soft_gb,
+        disk_guard_archive_hard_gb=disk_guard_archive_hard_gb,
     )
 
 
@@ -631,6 +687,12 @@ def _fetch_nwp_task(
     grid_extractor: GridExtractor | None = None,
     station_basins: dict[StationId, Basin] | None = None,
     grid_archive_base_path: str | None = None,
+    pipeline_health_store: object | None = None,
+    # NOTE: pipeline_health_store is passed by reference (thread-based task
+    # runner). If the runner is ever switched to process-based execution (e.g.
+    # for task.map parallelisation deferred from Phase 8), this and the other
+    # object params (weather_forecast_store, grid_store) would fail to
+    # serialize at .submit() time — revisit all of them at that point.
 ) -> _NwpFetchOutcome | None:
     """Fetch NWP forecast and store weather records.
 
@@ -657,6 +719,58 @@ def _fetch_nwp_task(
     t0 = time.perf_counter()
     try:
         result = adapter.fetch_forecasts(station_configs, cycle_time)
+    except DiskSoftLimitError as exc:
+        # Plan 105 D2: disk below soft threshold — degrade to runoff-only for
+        # this cycle (native/fallback models still forecast). DiskSoftLimitError
+        # subclasses AdapterError directly (NOT NoCycleAvailableError) so this
+        # clause MUST explicitly return the runoff-only outcome.
+        log.warning(
+            "nwp.disk_soft_limit",
+            path=exc.path,
+            free_gb=exc.free_gb,
+            threshold_gb=exc.threshold_gb,
+            subject=exc.subject,
+        )
+        _append_pipeline_health_record(
+            pipeline_health_store,
+            check_type=PipelineCheckType.DISK_USAGE,
+            checked_at=clock(),
+            status=PipelineHealthStatus.WARNING,
+            subject=exc.subject,
+            detail={
+                "path": exc.path,
+                "free_gb": exc.free_gb,
+                "threshold_gb": exc.threshold_gb,
+            },
+            cycle_time=cycle_time,
+        )
+        return _NwpFetchOutcome(
+            cycle_time=cycle_time, fallback_used=False, nwp_unavailable=True
+        )
+    except DiskHardLimitError as exc:
+        # Plan 105 D2: disk below hard threshold — fail-closed (CRITICAL record,
+        # return None so the existing nwp_outcome is None abort at ~:1210 fires).
+        log.error(
+            "nwp.disk_hard_limit",
+            path=exc.path,
+            free_gb=exc.free_gb,
+            threshold_gb=exc.threshold_gb,
+            subject=exc.subject,
+        )
+        _append_pipeline_health_record(
+            pipeline_health_store,
+            check_type=PipelineCheckType.DISK_USAGE,
+            checked_at=clock(),
+            status=PipelineHealthStatus.CRITICAL,
+            subject=exc.subject,
+            detail={
+                "path": exc.path,
+                "free_gb": exc.free_gb,
+                "threshold_gb": exc.threshold_gb,
+            },
+            cycle_time=cycle_time,
+        )
+        return None
     except NoCycleAvailableError as exc:
         # Plan 090 D3: no adequate cycle within the fallback budget. This is NOT
         # a flow-fatal failure — signal NWP-unavailable so the caller falls to
@@ -1004,6 +1118,15 @@ def run_forecast_cycle_flow(
                     ),
                     max_files=weather_forecast_config.max_files,
                     cycle_min_age_minutes=config.nwp_cycle_min_age_minutes,
+                    # Plan 105 D2: disk-guard thresholds from config; archive path
+                    # from DeploymentConfig (NOT _WeatherForecastAdapterConfig).
+                    disk_guard_scratch_soft_gb=weather_forecast_config.disk_guard_scratch_soft_gb,
+                    disk_guard_scratch_hard_gb=weather_forecast_config.disk_guard_scratch_hard_gb,
+                    disk_guard_archive_soft_gb=weather_forecast_config.disk_guard_archive_soft_gb,
+                    disk_guard_archive_hard_gb=weather_forecast_config.disk_guard_archive_hard_gb,
+                    nwp_grid_archive_path=Path(config.nwp_grid_archive_base_path)
+                    if config.nwp_grid_archive_base_path is not None
+                    else None,
                 )
             elif config_path_for_adapter is None:
                 log.warning(
@@ -1173,6 +1296,7 @@ def run_forecast_cycle_flow(
                 grid_extractor=grid_extractor,
                 station_basins=station_basins,
                 grid_archive_base_path=config.nwp_grid_archive_base_path,
+                pipeline_health_store=pipeline_health_store,
             )
 
         # --- Step 1.6: observation timestamps (parallel with Phase A) ---
@@ -1192,8 +1316,6 @@ def run_forecast_cycle_flow(
                 nwp_outcome is not None
                 and config.nwp_grid_archive_base_path is not None
             ):
-                from pathlib import Path
-
                 from sapphire_flow.store.zarr_nwp_grid_store import prune_old_cycles
 
                 try:

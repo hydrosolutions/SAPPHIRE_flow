@@ -302,6 +302,8 @@ def _run_nwp(args: argparse.Namespace) -> None:
             scratch_path=scratch_path,
             http_client=client,
             max_fallback_steps=max_fallback_steps,
+            # Plan 105: opt out of operational disk thresholds.
+            disk_guard_enabled=False,
         )
 
         for ct_str in args.cycle_time:

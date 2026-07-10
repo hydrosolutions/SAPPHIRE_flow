@@ -36,7 +36,8 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
 - **058** — BAFU LINDAS archive via operational collection — `DRAFT` — depends on 046.
 - **091** — Mac-mini NWP-on data-collection runbook — `DRAFT` — depends on 046.
 - **094** — Cap onboarding/hindcast window to actual data range — `DRAFT`.
-- **038** — Store write atomicity (transactional two-phase insert) — `DRAFT`.
+- **038** — Store write atomicity (two-phase insert) — `READY` (grill-me + 3 WF1
+  passes; injectable-transaction DI, D5 reversed) — **Wave-0; next = WF2. 040 depends on it.**
 - **040** — Hindcast deduplication unique constraint — `DRAFT`.
 - **083** — Human-readable `station_code` in structured logs — `DRAFT`.
 - **075** — Mac Mini Stream C: glue + one-command bootstrap — `READY`.

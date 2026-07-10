@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from urllib.parse import urlparse
 
 import httpx
@@ -20,6 +20,8 @@ import xarray as xr
 from sapphire_flow.exceptions import (
     AdapterError,
     BudgetExceededError,
+    DiskHardLimitError,
+    DiskSoftLimitError,
     NoCycleAvailableError,
 )
 from sapphire_flow.types.datetime import ensure_utc
@@ -79,6 +81,27 @@ _MAX_PAGINATION_PAGES: int = 800
 # exhausted, which at 100/page can be 40+ pages deep. 50 is a safe cap
 # that keeps probe latency under ~10 s.
 _MAX_PROBE_PAGES: int = 50
+
+# Plan 105 D2 — disk-guard thresholds (single source of truth; referenced by
+# both the adapter ctor and _WeatherForecastAdapterConfig in run_forecast_cycle.py).
+DEFAULT_DISK_GUARD_SCRATCH_SOFT_GB: float = 1.5
+DEFAULT_DISK_GUARD_SCRATCH_HARD_GB: float = 0.5
+DEFAULT_DISK_GUARD_ARCHIVE_SOFT_GB: float = 8.0
+DEFAULT_DISK_GUARD_ARCHIVE_HARD_GB: float = 3.0
+
+
+def disk_free_gb(path: Path) -> float | None:
+    """Return free gigabytes on the mount hosting *path*, or None on OSError.
+
+    Callers treat None as "unknown / healthy" (fail-open) so a missing or
+    unmounted path does not abort the fetch.
+    """
+    try:
+        usage = shutil.disk_usage(path)
+        return usage.free / (1024**3)
+    except OSError as exc:
+        log.warning("nwp.disk_check_probe_failed", path=str(path), error=str(exc))
+        return None
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -325,6 +348,12 @@ class MeteoSwissNwpAdapter:
         max_fallback_steps: int = 2,
         max_files: int | None = None,
         cycle_min_age_minutes: int = 0,
+        disk_guard_enabled: bool = True,
+        disk_guard_scratch_soft_gb: float = DEFAULT_DISK_GUARD_SCRATCH_SOFT_GB,
+        disk_guard_scratch_hard_gb: float = DEFAULT_DISK_GUARD_SCRATCH_HARD_GB,
+        disk_guard_archive_soft_gb: float = DEFAULT_DISK_GUARD_ARCHIVE_SOFT_GB,
+        disk_guard_archive_hard_gb: float = DEFAULT_DISK_GUARD_ARCHIVE_HARD_GB,
+        nwp_grid_archive_path: Path | None = None,
     ) -> None:
         # Plan 067 D2: max_fallback_steps is derived by the caller from
         # ``DeploymentConfig.nwp_max_fallback_age_hours`` as
@@ -356,10 +385,107 @@ class MeteoSwissNwpAdapter:
         # a freshly-published incomplete one. 0 = disabled (test-convenience
         # default); production threads DeploymentConfig.nwp_cycle_min_age_minutes.
         self._cycle_min_age_minutes = cycle_min_age_minutes
+        # Plan 105 D1/D2: operational disk-hygiene guard.
+        # disk_guard_enabled=False in the recording tool and all pre-existing
+        # test helpers so the D1 stale sweep + D2 pre-fetch tripwire do not
+        # fire in those paths.
+        self._disk_guard_enabled = disk_guard_enabled
+        self._disk_guard_scratch_soft_gb = disk_guard_scratch_soft_gb
+        self._disk_guard_scratch_hard_gb = disk_guard_scratch_hard_gb
+        self._disk_guard_archive_soft_gb = disk_guard_archive_soft_gb
+        self._disk_guard_archive_hard_gb = disk_guard_archive_hard_gb
+        self._nwp_grid_archive_path = nwp_grid_archive_path
 
     @property
     def max_fallback_steps(self) -> int:
         return self._max_fallback_steps
+
+    def _check_disk_space(self) -> None:
+        """Plan 105 D2 — check free disk on scratch + archive mounts.
+
+        Probes ALL configured mounts, collects their breach tiers, then raises
+        DiskHardLimitError if ANY mount is below its hard threshold, else
+        DiskSoftLimitError if ANY mount is below its soft threshold.  Hard
+        always wins over soft regardless of probe order.
+
+        Fail-open on OSError (missing / not-yet-mounted path).
+        """
+        mounts: list[tuple[Path, float, float, Literal["scratch", "nwp_archive"]]] = [
+            (
+                self._scratch_path,
+                self._disk_guard_scratch_soft_gb,
+                self._disk_guard_scratch_hard_gb,
+                "scratch",
+            ),
+        ]
+        if self._nwp_grid_archive_path is None:
+            log.warning(
+                "nwp.disk_check_archive_skipped", reason="archive_path_not_configured"
+            )
+        else:
+            mounts.append(
+                (
+                    self._nwp_grid_archive_path,
+                    self._disk_guard_archive_soft_gb,
+                    self._disk_guard_archive_hard_gb,
+                    "nwp_archive",
+                )
+            )
+
+        # Collect the first hard/soft breach across all mounts before raising
+        # so that a hard breach on any mount is not masked by a soft breach on
+        # a mount probed earlier.
+        first_hard: DiskHardLimitError | None = None
+        first_soft: DiskSoftLimitError | None = None
+        for path, soft_gb, hard_gb, subject in mounts:
+            err = self._probe_mount(
+                path=path,
+                soft_gb=soft_gb,
+                hard_gb=hard_gb,
+                subject=subject,
+            )
+            if isinstance(err, DiskHardLimitError) and first_hard is None:
+                first_hard = err
+            elif isinstance(err, DiskSoftLimitError) and first_soft is None:
+                first_soft = err
+
+        if first_hard is not None:
+            raise first_hard
+        if first_soft is not None:
+            raise first_soft
+
+    def _probe_mount(
+        self,
+        *,
+        path: Path,
+        soft_gb: float,
+        hard_gb: float,
+        subject: Literal["scratch", "nwp_archive"],
+    ) -> DiskHardLimitError | DiskSoftLimitError | None:
+        """Return a breach error for *path*, or None if healthy / unreachable."""
+        free = disk_free_gb(path)
+        if free is None:
+            # Probe failed (e.g. mount not yet created); fail-open.
+            return None
+        if free < hard_gb:
+            return DiskHardLimitError(
+                f"Disk {subject} hard limit: {free:.2f} GB free "
+                f"< {hard_gb} GB threshold",
+                path=str(path),
+                free_gb=free,
+                threshold_gb=hard_gb,
+                subject=subject,
+            )
+        if free < soft_gb:
+            return DiskSoftLimitError(
+                f"Disk {subject} soft limit: {free:.2f} GB free "
+                f"< {soft_gb} GB threshold",
+                path=str(path),
+                free_gb=free,
+                threshold_gb=soft_gb,
+                subject=subject,
+            )
+        return None
 
     def resolve_cycle(self, now_utc: UtcDatetime) -> CycleResolution:
         if now_utc.tzinfo is None:
@@ -475,8 +601,41 @@ class MeteoSwissNwpAdapter:
             cycle_time=resolved_cycle.isoformat(),
         )
         t0 = time.perf_counter()
+        scratch_dir = self._scratch_path / resolved_cycle.strftime("%Y%m%dT%H%M")
+
+        # Plan 105 D1 — stale-cycle sweep: remove every child DIRECTORY of
+        # scratch_path that is NOT the active scratch_dir. Runs BEFORE the disk
+        # tripwire so accumulated leftovers from previous cycles are freed first,
+        # preventing a permanent self-defeating block on the exact clog the sweep
+        # heals. Gated on disk_guard_enabled (same as the tripwire) — the
+        # recording tool and pre-existing tests disable both together.
+        # Safe because forecast-cycle is concurrency_limit=1 — only one fetch
+        # touches scratch at a time. If v0b ever parallelises the forecast-cycle,
+        # revisit this assumption.
+        if self._disk_guard_enabled:
+            # Ensure scratch_path exists before iterdir().
+            self._scratch_path.mkdir(parents=True, exist_ok=True)
+            for child in self._scratch_path.iterdir():
+                if child.is_dir() and child != scratch_dir:
+                    shutil.rmtree(child, ignore_errors=True)
+
+        # Plan 105 D2 — pre-fetch disk tripwire. Runs AFTER the stale sweep
+        # (above) so freed space is reflected in the probe. Inserted AFTER
+        # resolve_cycle (so a no-published-cycle run raises NoCycleAvailableError
+        # first and does NOT emit a misleading DISK_USAGE record) and OUTSIDE
+        # the try below (so DiskSoftLimitError / DiskHardLimitError are NOT
+        # swallowed by the broad `except Exception` at the bottom).
+        if self._disk_guard_enabled:
+            self._check_disk_space()
+
+        # Plan 105 D1 — centralized failure cleanup: wrap BOTH _fetch_grib_files
+        # AND _parse_grib_files so any raise removes the active scratch_dir.
+        # Cleanup runs on ANY exception (including AdapterError / BudgetExceededError)
+        # regardless of disk_guard_enabled — a failed fetch has no files worth
+        # keeping and the tmpfs accumulation invariant must hold unconditionally.
+        # On SUCCESS nothing is removed (record_fixtures needs the downloaded GRIBs).
         try:
-            grib_files = self._fetch_grib_files(resolved_cycle)
+            grib_files = self._fetch_grib_files(resolved_cycle, scratch_dir)
             ds = self._parse_grib_files(grib_files)
             duration_ms = int((time.perf_counter() - t0) * 1000)
             log.info(
@@ -492,13 +651,22 @@ class MeteoSwissNwpAdapter:
                 fallback_used=resolution.fallback_used,
             )
         except AdapterError:
+            shutil.rmtree(scratch_dir, ignore_errors=True)
             raise
         except Exception as exc:
+            shutil.rmtree(scratch_dir, ignore_errors=True)
             log.warning("nwp.fetch_failed", error=str(exc))
             raise AdapterError(f"NWP fetch failed: {exc}") from exc
 
-    def _fetch_grib_files(self, cycle_time: UtcDatetime) -> list[Path]:
-        scratch_dir = self._scratch_path / cycle_time.strftime("%Y%m%dT%H%M")
+    def _fetch_grib_files(
+        self, cycle_time: UtcDatetime, scratch_dir: Path | None = None
+    ) -> list[Path]:
+        # scratch_dir is normally computed and passed in by fetch_forecasts so
+        # that the stale sweep and failure cleanup are centralised there (Plan 105
+        # BLOCKER 1/2). When called directly (e.g. in legacy unit tests) it
+        # falls back to computing the default per-cycle subdirectory.
+        if scratch_dir is None:
+            scratch_dir = self._scratch_path / cycle_time.strftime("%Y%m%dT%H%M")
         if self._cleanup_scratch_on_fetch:
             shutil.rmtree(scratch_dir, ignore_errors=True)
         scratch_dir.mkdir(parents=True, exist_ok=True)

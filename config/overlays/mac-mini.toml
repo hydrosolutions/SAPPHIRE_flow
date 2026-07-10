@@ -2,3 +2,9 @@ enable_observation_alerts = true
 
 [adapters.weather_forecast]
 enabled = true
+# Plan 105 D2 — disk-guard thresholds (absolute free GB).
+# Scratch = /tmp/sapphire_nwp (4 GiB tmpfs); archive = /data/nwp_grids volume.
+disk_guard_scratch_soft_gb = 1.5
+disk_guard_scratch_hard_gb = 0.5
+disk_guard_archive_soft_gb = 8.0
+disk_guard_archive_hard_gb = 3.0

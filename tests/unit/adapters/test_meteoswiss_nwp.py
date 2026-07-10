@@ -226,12 +226,15 @@ _STAC_COLLECTION = "ch.meteoschweiz.ogd-forecasting-icon-ch2"
 def _make_adapter(
     transport: httpx.MockTransport, tmp_path: Path
 ) -> MeteoSwissNwpAdapter:
+    # disk_guard_enabled=False: pre-existing tests are not subjected to the
+    # D1 stale sweep or D2 pre-fetch disk check (Plan 105).
     client = httpx.Client(transport=transport, base_url="https://dummy")
     return MeteoSwissNwpAdapter(
         stac_base_url=_STAC_BASE,
         stac_collection=_STAC_COLLECTION,
         scratch_path=tmp_path,
         http_client=client,
+        disk_guard_enabled=False,
     )
 
 
@@ -952,6 +955,7 @@ class TestFetchGribFiles:
                 transport=httpx.MockTransport(handler), base_url="https://dummy"
             ),
             max_download_bytes=5 * huge,
+            disk_guard_enabled=False,
         )
         from sapphire_flow.exceptions import BudgetExceededError
 
@@ -1321,6 +1325,7 @@ class TestMaxFilesCap:
             scratch_path=tmp_path,
             http_client=client,
             max_files=5,
+            disk_guard_enabled=False,
         )
 
         with structlog.testing.capture_logs() as captured:
@@ -1346,6 +1351,7 @@ class TestMaxFilesCap:
             stac_collection=_STAC_COLLECTION,
             scratch_path=tmp_path,
             http_client=client,
+            disk_guard_enabled=False,
             # max_files defaults to None = unlimited.
         )
 
@@ -1372,6 +1378,7 @@ class TestMaxFilesCap:
             scratch_path=tmp_path,
             http_client=client,
             max_files=1000,
+            disk_guard_enabled=False,
         )
 
         with structlog.testing.capture_logs() as captured:
@@ -1396,6 +1403,7 @@ class TestMaxFilesCap:
             scratch_path=tmp_path,
             http_client=client,
             max_files=0,
+            disk_guard_enabled=False,
         )
 
         with structlog.testing.capture_logs() as captured:

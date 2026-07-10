@@ -72,6 +72,8 @@ def live_adapter(tmp_path: Path) -> MeteoSwissNwpAdapter:
         ),
         max_fallback_steps=2,
         max_files=4,
+        # Plan 105: live smoke test exercises STAC fetch, not disk limits.
+        disk_guard_enabled=False,
     )
 
 
