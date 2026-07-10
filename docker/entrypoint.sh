@@ -23,8 +23,11 @@ fi
 # Fix secret file permissions for non-root user
 chown -R app:app /run/secrets 2>/dev/null || true
 
-# Fix writable data directory ownership (backups + artifacts only — /data/raw is operator-staged, read-only in dev)
-chown app:app /data/backups /data/artifacts /data/nwp_grids 2>/dev/null || true
+# Fix writable data directory ownership so the non-root `app` user can write to
+# freshly-mounted named volumes (Docker creates empty volumes root-owned).
+# /data/raw is operator-staged, read-only in dev. Each chown no-ops (|| true)
+# in containers where a given volume isn't mounted.
+chown app:app /data/backups /data/artifacts /data/nwp_grids /data/bafu_forecasts 2>/dev/null || true
 
 # Drop to app user
 exec gosu app "$@"
