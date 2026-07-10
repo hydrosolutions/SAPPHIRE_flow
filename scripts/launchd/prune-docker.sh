@@ -43,7 +43,7 @@ log() { printf '[prune-docker] %s\n' "$1"; }
 # tripping `set -euo pipefail` (a tested `if !` branch is not an uncaught
 # failure). Guard-command errors default to SKIP — never prune when the
 # running state is unknown.
-if ! "${DOCKER}" ps --format '{{.Names}}' 2>/dev/null | grep -q sapphire; then
+if ! "${DOCKER}" ps --format '{{.Names}}' 2>/dev/null | grep -Eq '^sapphire_flow-'; then
     log "stack not running or daemon unreachable — skipping prune"
     exit 0
 fi

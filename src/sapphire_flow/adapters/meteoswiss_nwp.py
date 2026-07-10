@@ -403,42 +403,72 @@ class MeteoSwissNwpAdapter:
     def _check_disk_space(self) -> None:
         """Plan 105 D2 — check free disk on scratch + archive mounts.
 
-        Raises DiskHardLimitError when free space is critically low (fail-closed).
-        Raises DiskSoftLimitError when free space is below the soft threshold
-        (caller degrades to runoff-only).  Fail-open on OSError (missing mount).
+        Probes ALL configured mounts, collects their breach tiers, then raises
+        DiskHardLimitError if ANY mount is below its hard threshold, else
+        DiskSoftLimitError if ANY mount is below its soft threshold.  Hard
+        always wins over soft regardless of probe order.
+
+        Fail-open on OSError (missing / not-yet-mounted path).
         """
-        self._check_mount(
-            path=self._scratch_path,
-            soft_gb=self._disk_guard_scratch_soft_gb,
-            hard_gb=self._disk_guard_scratch_hard_gb,
-            subject="scratch",  # type: ignore[arg-type]
-        )
+        mounts: list[tuple[Path, float, float, Literal["scratch", "nwp_archive"]]] = [
+            (
+                self._scratch_path,
+                self._disk_guard_scratch_soft_gb,
+                self._disk_guard_scratch_hard_gb,
+                "scratch",
+            ),
+        ]
         if self._nwp_grid_archive_path is None:
             log.warning(
                 "nwp.disk_check_archive_skipped", reason="archive_path_not_configured"
             )
-            return
-        self._check_mount(
-            path=self._nwp_grid_archive_path,
-            soft_gb=self._disk_guard_archive_soft_gb,
-            hard_gb=self._disk_guard_archive_hard_gb,
-            subject="nwp_archive",  # type: ignore[arg-type]
-        )
+        else:
+            mounts.append(
+                (
+                    self._nwp_grid_archive_path,
+                    self._disk_guard_archive_soft_gb,
+                    self._disk_guard_archive_hard_gb,
+                    "nwp_archive",
+                )
+            )
 
-    def _check_mount(
+        # Collect the first hard/soft breach across all mounts before raising
+        # so that a hard breach on any mount is not masked by a soft breach on
+        # a mount probed earlier.
+        first_hard: DiskHardLimitError | None = None
+        first_soft: DiskSoftLimitError | None = None
+        for path, soft_gb, hard_gb, subject in mounts:
+            err = self._probe_mount(
+                path=path,
+                soft_gb=soft_gb,
+                hard_gb=hard_gb,
+                subject=subject,
+            )
+            if isinstance(err, DiskHardLimitError) and first_hard is None:
+                first_hard = err
+            elif isinstance(err, DiskSoftLimitError) and first_soft is None:
+                first_soft = err
+
+        if first_hard is not None:
+            raise first_hard
+        if first_soft is not None:
+            raise first_soft
+
+    def _probe_mount(
         self,
         *,
         path: Path,
         soft_gb: float,
         hard_gb: float,
         subject: Literal["scratch", "nwp_archive"],
-    ) -> None:
+    ) -> DiskHardLimitError | DiskSoftLimitError | None:
+        """Return a breach error for *path*, or None if healthy / unreachable."""
         free = disk_free_gb(path)
         if free is None:
             # Probe failed (e.g. mount not yet created); fail-open.
-            return
+            return None
         if free < hard_gb:
-            raise DiskHardLimitError(
+            return DiskHardLimitError(
                 f"Disk {subject} hard limit: {free:.2f} GB free "
                 f"< {hard_gb} GB threshold",
                 path=str(path),
@@ -447,7 +477,7 @@ class MeteoSwissNwpAdapter:
                 subject=subject,
             )
         if free < soft_gb:
-            raise DiskSoftLimitError(
+            return DiskSoftLimitError(
                 f"Disk {subject} soft limit: {free:.2f} GB free "
                 f"< {soft_gb} GB threshold",
                 path=str(path),
@@ -455,6 +485,7 @@ class MeteoSwissNwpAdapter:
                 threshold_gb=soft_gb,
                 subject=subject,
             )
+        return None
 
     def resolve_cycle(self, now_utc: UtcDatetime) -> CycleResolution:
         if now_utc.tzinfo is None:
@@ -570,15 +601,41 @@ class MeteoSwissNwpAdapter:
             cycle_time=resolved_cycle.isoformat(),
         )
         t0 = time.perf_counter()
-        # Plan 105 D2 — pre-fetch disk tripwire. Inserted AFTER resolve_cycle
-        # (so a no-published-cycle run raises NoCycleAvailableError first and
-        # does NOT emit a misleading DISK_USAGE record) and OUTSIDE the try
-        # below (so DiskSoftLimitError / DiskHardLimitError and any probe OSError
-        # are NOT swallowed by the broad `except Exception` at the bottom).
+        scratch_dir = self._scratch_path / resolved_cycle.strftime("%Y%m%dT%H%M")
+
+        # Plan 105 D1 — stale-cycle sweep: remove every child DIRECTORY of
+        # scratch_path that is NOT the active scratch_dir. Runs BEFORE the disk
+        # tripwire so accumulated leftovers from previous cycles are freed first,
+        # preventing a permanent self-defeating block on the exact clog the sweep
+        # heals. Gated on disk_guard_enabled (same as the tripwire) — the
+        # recording tool and pre-existing tests disable both together.
+        # Safe because forecast-cycle is concurrency_limit=1 — only one fetch
+        # touches scratch at a time. If v0b ever parallelises the forecast-cycle,
+        # revisit this assumption.
+        if self._disk_guard_enabled:
+            # Ensure scratch_path exists before iterdir().
+            self._scratch_path.mkdir(parents=True, exist_ok=True)
+            for child in self._scratch_path.iterdir():
+                if child.is_dir() and child != scratch_dir:
+                    shutil.rmtree(child, ignore_errors=True)
+
+        # Plan 105 D2 — pre-fetch disk tripwire. Runs AFTER the stale sweep
+        # (above) so freed space is reflected in the probe. Inserted AFTER
+        # resolve_cycle (so a no-published-cycle run raises NoCycleAvailableError
+        # first and does NOT emit a misleading DISK_USAGE record) and OUTSIDE
+        # the try below (so DiskSoftLimitError / DiskHardLimitError are NOT
+        # swallowed by the broad `except Exception` at the bottom).
         if self._disk_guard_enabled:
             self._check_disk_space()
+
+        # Plan 105 D1 — centralized failure cleanup: wrap BOTH _fetch_grib_files
+        # AND _parse_grib_files so any raise removes the active scratch_dir.
+        # Cleanup runs on ANY exception (including AdapterError / BudgetExceededError)
+        # regardless of disk_guard_enabled — a failed fetch has no files worth
+        # keeping and the tmpfs accumulation invariant must hold unconditionally.
+        # On SUCCESS nothing is removed (record_fixtures needs the downloaded GRIBs).
         try:
-            grib_files = self._fetch_grib_files(resolved_cycle)
+            grib_files = self._fetch_grib_files(resolved_cycle, scratch_dir)
             ds = self._parse_grib_files(grib_files)
             duration_ms = int((time.perf_counter() - t0) * 1000)
             log.info(
@@ -594,27 +651,25 @@ class MeteoSwissNwpAdapter:
                 fallback_used=resolution.fallback_used,
             )
         except AdapterError:
+            shutil.rmtree(scratch_dir, ignore_errors=True)
             raise
         except Exception as exc:
+            shutil.rmtree(scratch_dir, ignore_errors=True)
             log.warning("nwp.fetch_failed", error=str(exc))
             raise AdapterError(f"NWP fetch failed: {exc}") from exc
 
-    def _fetch_grib_files(self, cycle_time: UtcDatetime) -> list[Path]:
-        scratch_dir = self._scratch_path / cycle_time.strftime("%Y%m%dT%H%M")
+    def _fetch_grib_files(
+        self, cycle_time: UtcDatetime, scratch_dir: Path | None = None
+    ) -> list[Path]:
+        # scratch_dir is normally computed and passed in by fetch_forecasts so
+        # that the stale sweep and failure cleanup are centralised there (Plan 105
+        # BLOCKER 1/2). When called directly (e.g. in legacy unit tests) it
+        # falls back to computing the default per-cycle subdirectory.
+        if scratch_dir is None:
+            scratch_dir = self._scratch_path / cycle_time.strftime("%Y%m%dT%H%M")
         if self._cleanup_scratch_on_fetch:
             shutil.rmtree(scratch_dir, ignore_errors=True)
         scratch_dir.mkdir(parents=True, exist_ok=True)
-
-        # Plan 105 D1 — stale-cycle sweep: remove every child DIRECTORY of
-        # scratch_path that is NOT the active scratch_dir. Runs AFTER mkdir so
-        # scratch_path exists before iterdir(). Skips non-directory entries
-        # (stray files/symlinks). Safe because forecast-cycle is concurrency_limit=1
-        # — only one fetch touches scratch at a time. If v0b ever parallelises
-        # the forecast-cycle, revisit this assumption.
-        if self._disk_guard_enabled:
-            for child in self._scratch_path.iterdir():
-                if child.is_dir() and child != scratch_dir:
-                    shutil.rmtree(child, ignore_errors=True)
 
         target_ref_dt = cycle_time.strftime("%Y-%m-%dT%H:%M:%SZ")
         allow_tokens: list[str] = [row[0] for row in self.PARAM_GROUPS]
@@ -641,139 +696,125 @@ class MeteoSwissNwpAdapter:
         # after each page to unwind to the `return grib_files` path without
         # raising.
         max_files_reached = False
-        # Plan 105 D1: wrap the download body (lines :533–:649 per the plan) so
-        # any raise cleans the active scratch_dir (partial downloads accumulate
-        # until the tmpfs fills). Intentionally catches AdapterError /
-        # BudgetExceededError too — cleanup on ANY raise is the invariant;
-        # fetch_forecasts re-propagates them via its own `except AdapterError:
-        # raise`. The max_files=0 short-circuit below cannot raise (flag
-        # assignment only), so cleanup is a no-op on that sub-path.
-        try:
-            # Early-exit for the edge case `max_files=0`: nothing to fetch, skip
-            # the STAC walk entirely and emit the cap-reached log below.
-            if self._max_files is not None and self._max_files <= 0:
-                max_files_reached = True
-            while url and not max_files_reached:
-                page_count += 1
-                if page_count > _MAX_PAGINATION_PAGES:
-                    raise AdapterError(
-                        f"STAC pagination exceeded {_MAX_PAGINATION_PAGES} pages"
-                    )
-                try:
-                    resp = self._http_client.get(url)
-                    resp.raise_for_status()
-                except httpx.TimeoutException as exc:
-                    raise AdapterError(f"STAC request timed out: {exc}") from exc
-                except Exception as exc:
-                    raise AdapterError(f"STAC request failed: {exc}") from exc
+        # Early-exit for the edge case `max_files=0`: nothing to fetch, skip
+        # the STAC walk entirely and emit the cap-reached log below.
+        if self._max_files is not None and self._max_files <= 0:
+            max_files_reached = True
+        while url and not max_files_reached:
+            page_count += 1
+            if page_count > _MAX_PAGINATION_PAGES:
+                raise AdapterError(
+                    f"STAC pagination exceeded {_MAX_PAGINATION_PAGES} pages"
+                )
+            try:
+                resp = self._http_client.get(url)
+                resp.raise_for_status()
+            except httpx.TimeoutException as exc:
+                raise AdapterError(f"STAC request timed out: {exc}") from exc
+            except Exception as exc:
+                raise AdapterError(f"STAC request failed: {exc}") from exc
 
-                data = resp.json()
-                for item in data.get("features", []):
-                    if max_files_reached:
-                        break
-                    item_id = str(item.get("id", ""))
-                    # T2b (Plan 067): filter by forecast:reference_datetime property,
-                    # not ID prefix. MeteoSwiss STAC does not support CQL (Phase 1
-                    # T1.e confirmed: `filter=` is silently ignored on /items and
-                    # POST /search returns HTTP 400 "non-queriable parameter: filter"),
-                    # so the `?datetime=<cycle>/<cycle+120h>` range returns items
-                    # from every cycle whose forecast horizon overlaps that window.
-                    # Phase 1 H-C confirmed: 4 distinct ref_dts observed; only ~27.6%
-                    # belong to the target cycle. Drop the rest here — the server
-                    # won't do it for us. Property-based match also removes the
-                    # latent coupling to the undocumented item-ID convention
-                    # (Phase 1 T1.d).
-                    feature_ref_dt = item.get("properties", {}).get(
-                        "forecast:reference_datetime"
-                    )
-                    if feature_ref_dt != target_ref_dt:
-                        continue
-                    if not any(f"-{t}-" in item_id for t in allow_tokens):
-                        log.debug(
-                            "nwp.variable_skipped",
-                            item_id=item_id,
-                            reason="not_in_allowlist",
-                        )
-                        continue
-                    for asset_key, asset in item.get("assets", {}).items():
-                        if not _is_grib_asset(asset_key, asset):
-                            continue
-                        asset_size = asset.get("size")
-                        bytes_add = (
-                            int(asset_size)
-                            if isinstance(asset_size, int)
-                            else _ASSET_SIZE_ESTIMATE_BYTES
-                        )
-                        if accumulated_bytes + bytes_add > self._max_download_bytes:
-                            log.error(
-                                "nwp.size_cap_exceeded",
-                                accumulated_bytes=accumulated_bytes,
-                                max_download_bytes=self._max_download_bytes,
-                                item_id=item_id,
-                            )
-                            raise BudgetExceededError(
-                                f"Download size cap exceeded: "
-                                f"{accumulated_bytes + bytes_add} "
-                                f"> {self._max_download_bytes}"
-                            )
-                        href = str(asset.get("href", ""))
-                        file_path = self._download_asset(href, asset_key, scratch_dir)
-                        _verify_grib_magic(file_path)
-                        grib_files.append(file_path)
-                        accumulated_bytes += bytes_add
-                        log.debug(
-                            "nwp.file_downloaded",
-                            href=href,
-                            local_path=str(file_path),
-                        )
-                        if len(grib_files) > _MAX_FILE_COUNT:
-                            raise BudgetExceededError(
-                                f"GRIB file count exceeded: "
-                                f"{len(grib_files)} > {_MAX_FILE_COUNT}"
-                            )
-                        if (
-                            self._max_files is not None
-                            and len(grib_files) >= self._max_files
-                        ):
-                            # Scope-limiter cap reached. Stop gracefully — break
-                            # out of the asset loop; the outer `while url` loop
-                            # sees ``max_files_reached`` and unwinds to the
-                            # `return grib_files` path without raising.
-                            max_files_reached = True
-                            break
-                    if max_files_reached:
-                        break
-
+            data = resp.json()
+            for item in data.get("features", []):
                 if max_files_reached:
                     break
-                url = ""
-                for link in data.get("links", []):
-                    if link.get("rel") == "next":
-                        url = str(link["href"])
-                        if not url.startswith(self._stac_base_url + "/"):
-                            raise AdapterError(
-                                f"STAC pagination URL {url!r} does not match base URL"
-                            )
+                item_id = str(item.get("id", ""))
+                # T2b (Plan 067): filter by forecast:reference_datetime property,
+                # not ID prefix. MeteoSwiss STAC does not support CQL (Phase 1
+                # T1.e confirmed: `filter=` is silently ignored on /items and
+                # POST /search returns HTTP 400 "non-queriable parameter: filter"),
+                # so the `?datetime=<cycle>/<cycle+120h>` range returns items
+                # from every cycle whose forecast horizon overlaps that window.
+                # Phase 1 H-C confirmed: 4 distinct ref_dts observed; only ~27.6%
+                # belong to the target cycle. Drop the rest here — the server
+                # won't do it for us. Property-based match also removes the
+                # latent coupling to the undocumented item-ID convention
+                # (Phase 1 T1.d).
+                feature_ref_dt = item.get("properties", {}).get(
+                    "forecast:reference_datetime"
+                )
+                if feature_ref_dt != target_ref_dt:
+                    continue
+                if not any(f"-{t}-" in item_id for t in allow_tokens):
+                    log.debug(
+                        "nwp.variable_skipped",
+                        item_id=item_id,
+                        reason="not_in_allowlist",
+                    )
+                    continue
+                for asset_key, asset in item.get("assets", {}).items():
+                    if not _is_grib_asset(asset_key, asset):
+                        continue
+                    asset_size = asset.get("size")
+                    bytes_add = (
+                        int(asset_size)
+                        if isinstance(asset_size, int)
+                        else _ASSET_SIZE_ESTIMATE_BYTES
+                    )
+                    if accumulated_bytes + bytes_add > self._max_download_bytes:
+                        log.error(
+                            "nwp.size_cap_exceeded",
+                            accumulated_bytes=accumulated_bytes,
+                            max_download_bytes=self._max_download_bytes,
+                            item_id=item_id,
+                        )
+                        raise BudgetExceededError(
+                            f"Download size cap exceeded: "
+                            f"{accumulated_bytes + bytes_add} "
+                            f"> {self._max_download_bytes}"
+                        )
+                    href = str(asset.get("href", ""))
+                    file_path = self._download_asset(href, asset_key, scratch_dir)
+                    _verify_grib_magic(file_path)
+                    grib_files.append(file_path)
+                    accumulated_bytes += bytes_add
+                    log.debug(
+                        "nwp.file_downloaded",
+                        href=href,
+                        local_path=str(file_path),
+                    )
+                    if len(grib_files) > _MAX_FILE_COUNT:
+                        raise BudgetExceededError(
+                            f"GRIB file count exceeded: "
+                            f"{len(grib_files)} > {_MAX_FILE_COUNT}"
+                        )
+                    if (
+                        self._max_files is not None
+                        and len(grib_files) >= self._max_files
+                    ):
+                        # Scope-limiter cap reached. Stop gracefully — break
+                        # out of the asset loop; the outer `while url` loop
+                        # sees ``max_files_reached`` and unwinds to the
+                        # `return grib_files` path without raising.
+                        max_files_reached = True
                         break
+                if max_files_reached:
+                    break
 
             if max_files_reached:
-                log.info(
-                    "nwp.fetch_cap_reached",
-                    files_fetched=len(grib_files),
-                    max_files_cap=self._max_files,
-                    cycle_time=str(cycle_time),
-                )
-            if not grib_files and not max_files_reached:
-                raise AdapterError(
-                    f"No matching GRIB2 files for cycle_time={cycle_time.isoformat()} "
-                    f"(allowlist tokens: {allow_tokens})"
-                )
-        except Exception:
-            # Plan 105 D1: clean the active cycle's scratch dir on ANY raise
-            # (including AdapterError / BudgetExceededError) so partial downloads
-            # do not accumulate on the tmpfs.
-            shutil.rmtree(scratch_dir, ignore_errors=True)
-            raise
+                break
+            url = ""
+            for link in data.get("links", []):
+                if link.get("rel") == "next":
+                    url = str(link["href"])
+                    if not url.startswith(self._stac_base_url + "/"):
+                        raise AdapterError(
+                            f"STAC pagination URL {url!r} does not match base URL"
+                        )
+                    break
+
+        if max_files_reached:
+            log.info(
+                "nwp.fetch_cap_reached",
+                files_fetched=len(grib_files),
+                max_files_cap=self._max_files,
+                cycle_time=str(cycle_time),
+            )
+        if not grib_files and not max_files_reached:
+            raise AdapterError(
+                f"No matching GRIB2 files for cycle_time={cycle_time.isoformat()} "
+                f"(allowlist tokens: {allow_tokens})"
+            )
         return grib_files
 
     def _download_asset(self, href: str, asset_key: str, scratch_dir: Path) -> Path:

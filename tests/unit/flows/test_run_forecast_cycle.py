@@ -762,6 +762,78 @@ grid_extractor = "regrid"
         with pytest.raises(ConfigurationError, match="grid_extractor"):
             _load_weather_forecast_adapter_config()
 
+    def test_disk_guard_thresholds_thread_from_toml(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """TOML disk_guard_*_gb values must reach the constructed adapter via
+        _WeatherForecastAdapterConfig (Plan 105 config-threading gate)."""
+        config_path = _write_forecast_cycle_config(
+            tmp_path / "config.toml",
+            """
+[adapters.weather_forecast]
+enabled = false
+disk_guard_scratch_soft_gb = 3.0
+disk_guard_scratch_hard_gb = 1.0
+disk_guard_archive_soft_gb = 12.0
+disk_guard_archive_hard_gb = 6.0
+""",
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config_path))
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+
+        config = _load_weather_forecast_adapter_config()
+
+        assert config.disk_guard_scratch_soft_gb == 3.0
+        assert config.disk_guard_scratch_hard_gb == 1.0
+        assert config.disk_guard_archive_soft_gb == 12.0
+        assert config.disk_guard_archive_hard_gb == 6.0
+
+    def test_disk_guard_thresholds_use_defaults_when_absent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from sapphire_flow.adapters.meteoswiss_nwp import (
+            _DEFAULT_DISK_GUARD_ARCHIVE_HARD_GB,
+            _DEFAULT_DISK_GUARD_ARCHIVE_SOFT_GB,
+            _DEFAULT_DISK_GUARD_SCRATCH_HARD_GB,
+            _DEFAULT_DISK_GUARD_SCRATCH_SOFT_GB,
+        )
+
+        config_path = _write_forecast_cycle_config(
+            tmp_path / "config.toml",
+            """
+[adapters.weather_forecast]
+enabled = false
+""",
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config_path))
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+
+        config = _load_weather_forecast_adapter_config()
+
+        assert config.disk_guard_scratch_soft_gb == _DEFAULT_DISK_GUARD_SCRATCH_SOFT_GB
+        assert config.disk_guard_scratch_hard_gb == _DEFAULT_DISK_GUARD_SCRATCH_HARD_GB
+        assert config.disk_guard_archive_soft_gb == _DEFAULT_DISK_GUARD_ARCHIVE_SOFT_GB
+        assert config.disk_guard_archive_hard_gb == _DEFAULT_DISK_GUARD_ARCHIVE_HARD_GB
+
+    def test_disk_guard_hard_gte_soft_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """hard_gb >= soft_gb must raise ConfigurationError."""
+        config_path = _write_forecast_cycle_config(
+            tmp_path / "config.toml",
+            """
+[adapters.weather_forecast]
+enabled = false
+disk_guard_scratch_soft_gb = 1.0
+disk_guard_scratch_hard_gb = 1.0
+""",
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config_path))
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+
+        with pytest.raises(ConfigurationError, match="disk_guard_scratch_hard_gb"):
+            _load_weather_forecast_adapter_config()
+
 
 class TestGridExtractorSelection:
     def test_default_build_grid_constructs_mesh_extractor(

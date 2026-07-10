@@ -106,6 +106,31 @@ class TestPruneDockerStackGuard:
         combined = result.stdout + result.stderr
         assert "skipping prune" in combined
 
+    def test_skips_when_only_non_compose_sapphire_container(
+        self, tmp_path: Path
+    ) -> None:
+        """A container named 'sapphire-something' (without the 'sapphire_flow-'
+        Compose prefix) must NOT satisfy the stack-up guard.
+
+        The old guard used 'grep -q sapphire' which matched any container
+        containing the substring; the new guard requires the exact Compose
+        prefix '^sapphire_flow-'. This test locks the tighter pattern.
+        """
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        fake = _write_fake_docker(
+            bin_dir, containers=["sapphire-other", "not-the-real-stack"]
+        )
+
+        result = _run_prune_script(tmp_path, docker_cmd=fake)
+
+        assert result.returncode == 0, f"script failed: {result.stderr}"
+        combined = result.stdout + result.stderr
+        assert "skipping prune" in combined, (
+            "guard did not fire for non-compose 'sapphire-*' container; "
+            f"got:\n{combined}"
+        )
+
     def test_proceeds_when_sapphire_container_present(self, tmp_path: Path) -> None:
         """When a sapphire container is running the stack-up guard passes.
 
