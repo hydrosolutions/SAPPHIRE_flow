@@ -3,7 +3,8 @@ from __future__ import annotations
 import os
 import re
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any, Literal, Self, cast
+from pathlib import Path  # noqa: TC003
+from typing import Any, Literal, Self, cast
 
 from pydantic import BaseModel, field_validator, model_validator
 
@@ -24,10 +25,6 @@ from sapphire_flow.types.model_onboarding import (
     SUPPORTED_SKILL_METRICS,
     SkillGateMetric,
 )
-
-if TYPE_CHECKING:
-    from pathlib import Path
-
 
 # Priority assigned to a model that has no entry in [model_priorities]. Sits
 # between skill models (lower) and fallbacks (higher), so an unlisted new model
@@ -142,6 +139,12 @@ class DeploymentConfig(BaseModel):
 
     paths_data_dir: str | None = None
     nwp_grid_archive_base_path: str | None = None
+
+    # Plan 111 (Status override 2026-07-10): the route-C BAFU forecast
+    # collector's QUARANTINED archive root. Gated — unset means the collector
+    # flow no-ops; it never falls back to any operational path. Set from
+    # [adapters.bafu_forecast].archive_base_path (see load_config below).
+    bafu_forecast_archive_path: Path | None = None
 
     input_quality: InputQualityConfig = InputQualityConfig()
 
@@ -368,6 +371,26 @@ def load_config(path: Path | str | None = None) -> DeploymentConfig:
         if isinstance(_weather_forecast, dict)
         else None
     )
+    # Plan 111: extract the quarantined BAFU-forecast-collector archive path
+    # before popping the adapters section, mirroring nwp_grid_archive_base_path
+    # (same shape, same pre-existing pyright-ratchet tolerance — see
+    # tools/pyright_baseline.py).
+    _bafu_forecast = (
+        _adapters.get("bafu_forecast", {}) if isinstance(_adapters, dict) else {}
+    )
+    bafu_forecast_archive_path = (
+        _bafu_forecast.get("archive_base_path")
+        if isinstance(_bafu_forecast, dict)
+        else None
+    )
+    # Treat a blank/whitespace value (e.g. an unfilled config template or an
+    # env-var that resolved to "") as UNSET, so the collector's quarantine gate
+    # ("no-op unless explicitly configured") cannot be bypassed by Path("")
+    # silently resolving to the current working directory.
+    if isinstance(bafu_forecast_archive_path, str) and not (
+        bafu_forecast_archive_path.strip()
+    ):
+        bafu_forecast_archive_path = None
     # Remove adapter sections (not part of DeploymentConfig)
     data.pop("adapters", None)
     data.pop("monitoring", None)
@@ -377,4 +400,5 @@ def load_config(path: Path | str | None = None) -> DeploymentConfig:
     paths_section = data.pop("paths", {})
     data["paths_data_dir"] = paths_section.get("data_dir")
     data["nwp_grid_archive_base_path"] = nwp_grid_archive_base_path
+    data["bafu_forecast_archive_path"] = bafu_forecast_archive_path
     return DeploymentConfig.model_validate(data)

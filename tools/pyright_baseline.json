@@ -1,10 +1,10 @@
 {
-  "total": 538,
+  "total": 542,
   "by_file": {
     "src/sapphire_flow/api/routes/models.py": 1,
     "src/sapphire_flow/api/routes/stations.py": 19,
     "src/sapphire_flow/api/routes/tables.py": 1,
-    "src/sapphire_flow/config/deployment.py": 4,
+    "src/sapphire_flow/config/deployment.py": 8,
     "src/sapphire_flow/config/forecast_qc_rules.py": 7,
     "src/sapphire_flow/config/qc_rules.py": 7,
     "src/sapphire_flow/flows/backup.py": 2,
