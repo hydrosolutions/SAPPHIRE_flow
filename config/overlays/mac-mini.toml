@@ -1,5 +1,12 @@
 enable_observation_alerts = true
 
+# Plan 111 route-C BAFU forecast collector. Setting this path ENABLES the
+# hourly collect-bafu-forecasts flow (gated: unset = no-op). Quarantined,
+# host-persistent named volume (docker-compose.yml `bafu_forecast_archive`);
+# evaluation-only, forward-only. Discard with `docker volume rm`.
+[adapters.bafu_forecast]
+archive_base_path = "/data/bafu_forecasts"
+
 [adapters.weather_forecast]
 enabled = true
 # Plan 105 D2 — disk-guard thresholds (absolute free GB).

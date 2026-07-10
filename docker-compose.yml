@@ -106,6 +106,7 @@ services:
       - model_artifacts:/data/artifacts:rw
       - backups:/data/backups:rw
       - nwp_grids:/data/nwp_grids:rw
+      - bafu_forecast_archive:/data/bafu_forecasts:rw
       - ./config.toml:/app/config.toml:ro
       - type: tmpfs
         target: /tmp/sapphire_nwp
@@ -294,6 +295,7 @@ volumes:
   prefect_data:
   backups:
   nwp_grids: {}
+  bafu_forecast_archive: {}  # Plan 111 route-C collector — quarantined forecast archive
 
 secrets:
   db_password:
