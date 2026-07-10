@@ -101,8 +101,10 @@ the latest run's data fully wins (no stale values or stale QC linger). This is
 the resolved answer to the former open question (§ Open questions).
 
 **Note (post-038):** Plan 038 reworked the store to an injectable transaction —
-use `self._begin()` (NOT `self._engine.begin()`). Both inserts + the value delete
-run inside the one `self._begin()` transaction, so the replace is atomic.
+use `self._begin()` (NOT `self._conn.execute()` or `self._conn.engine.begin()`)
+— the real footgun is writing directly on `self._conn`, bypassing the injected
+txn. Both inserts + the value delete run inside the one `self._begin()`
+transaction, so the replace is atomic.
 
 **Header — `on_conflict_do_update` + `RETURNING id`.** The RETURNING id is the id
 **of the row actually in the DB**: the freshly-inserted `hindcast.id` on a clean
@@ -287,6 +289,13 @@ current head; see `alembic/versions/0028_orphan_header_cleanup.py:38-39`)
    forcing_type)` — use `IF NOT EXISTS` for idempotency.
 4. `CREATE INDEX IF NOT EXISTS ix_hindcast_values_forecast_id ON hindcast_values
    (hindcast_forecast_id)`.
+5. `DROP INDEX IF EXISTS ix_hindcast_forecasts_station_model_step` and
+   `DROP INDEX IF EXISTS ix_hindcast_forecasts_station_model_step_param`. Both
+   are strict prefixes of the new six-column unique index
+   (`station_id, model_id, hindcast_step[, parameter, ...]`): the query planner
+   can satisfy those shapes via the unique index, so keeping the two non-unique
+   indexes only adds write cost on every INSERT/UPDATE. The `IF EXISTS` guard
+   makes the drop idempotent (safe on a fresh DB that never had them).
 
 **Logging (reviewer majors, 2026-07-10 — RAISE NOTICE is silently dropped by
 psycopg3):** the original plan prescribed a SQL-level `RAISE NOTICE` in a `DO
@@ -305,8 +314,10 @@ Two mechanisms replace it, both of which actually reach the operator:
    manually before the backup (`0028` uses a docstring dry-run,
    `alembic/versions/0028_orphan_header_cleanup.py:14-31,44-60`).
 2. **Python-level count printed before the DELETE** — in `upgrade()`, run the
-   count through the bound connection and print it to Alembic's console (visible
-   on every driver, unlike `RAISE NOTICE`):
+   count through the bound connection using `op.get_bind().execute(sa.text(...))`
+   (precedent: `alembic/versions/0023_add_regional_basin_and_unique_constraint.py:24-36`)
+   and print it to Alembic's console (visible on every driver, unlike
+   `RAISE NOTICE`):
 
 ```python
 n = op.get_bind().execute(
@@ -330,11 +341,15 @@ are naturally no-ops on a clean DB, so `n == 0` prints on a clean run).
 `downgrade()` (reviewer minor, 2026-07-10 — prior migrations that add indexes
 provide a reversible downgrade: `0008_add_constraints_indexes_columns.py:166`,
 `0015_hindcast_parameter_index.py:17`, `0017_widen_forecast_unique_index.py:21`):
-drop both new indexes —
-`DROP INDEX IF EXISTS uq_hindcast_forecasts_station_model_step_param_run` and
-`DROP INDEX IF EXISTS ix_hindcast_values_forecast_id`. The dedup DELETEs are
-irreversible by design (as in `0028`, `alembic/versions/0028_orphan_header_cleanup.py:63-67`);
-document that recovery from the deletes is via DB restore, not Alembic.
+drop the two new indexes (`DROP INDEX IF EXISTS
+uq_hindcast_forecasts_station_model_step_param_run` and `DROP INDEX IF EXISTS
+ix_hindcast_values_forecast_id`) and recreate the two non-unique indexes that
+`upgrade()` dropped (`ix_hindcast_forecasts_station_model_step` on
+`(station_id, model_id, hindcast_step)` and
+`ix_hindcast_forecasts_station_model_step_param` on `(station_id, model_id,
+hindcast_step, parameter)`). The dedup DELETEs are irreversible by design (as
+in `0028`, `alembic/versions/0028_orphan_header_cleanup.py:63-67`); document
+that recovery from the deletes is via DB restore, not Alembic.
 
 ### Step 2 — Update `store_hindcast` to upsert (DO UPDATE full-replace)
 
@@ -375,11 +390,15 @@ Two structural points the implementer MUST NOT skip:
 Add the unique index (`uq_hindcast_forecasts_station_model_step_param_run` on
 the SIX-column key `station_id, model_id, hindcast_step, parameter,
 hindcast_run_id, forcing_type`) and the `hindcast_values` index
-(`ix_hindcast_values_forecast_id`) to the SQLAlchemy table definitions
-(alongside the existing `hindcast_forecasts` indexes at `metadata.py:762-768`)
-so that `metadata.create_all()` and future Alembic autogenerate remain in sync.
-`forcing_type` stays a required column with its CHECK constraint
-(`metadata.py:733-737`).
+(`ix_hindcast_values_forecast_id`) to the SQLAlchemy table definitions so that
+`metadata.create_all()` and future Alembic autogenerate remain in sync.
+**Remove** the two now-redundant non-unique `sa.Index` declarations
+(`ix_hindcast_forecasts_station_model_step` at `metadata.py:763-768` and
+`ix_hindcast_forecasts_station_model_step_param` at `metadata.py:769-775`) —
+both are strict prefixes of the new six-column unique index and are dropped by
+the migration; keeping them in the table definition would cause autogenerate to
+try to recreate them. `forcing_type` stays a required column with its CHECK
+constraint (`metadata.py:733-737`).
 
 ### Step 4 — Tests
 
@@ -423,28 +442,57 @@ so that `metadata.create_all()` and future Alembic autogenerate remain in sync.
    Add a companion assertion on a conflict re-insert that the `Delete` is
    recorded. Note this is an intentional edit to a Plan-038-locked test to keep
    its atomicity intent intact under the new DELETE, NOT a weakening.
-8. **Rollback test also confirms the DELETE (reviewer minor, 2026-07-10):**
-   `TestStoreHindcastAtomicityRollback`
+8. **Rollback test must exercise the CONFLICT path (reviewer minor,
+   2026-07-10):** `TestStoreHindcastAtomicityRollback`
    (`tests/integration/store/test_hindcast_store.py:441-497`) forces the
-   `IntegrityError` on the `hindcast_values` INSERT and asserts only
-   `hit_values_insert` fired (line 455-484). Post-upsert the in-txn sequence is
-   header upsert → DELETE → INSERT, so add a parallel `hit_delete_fired` flag
-   (analogous to `hit_values_insert`, matching `isinstance(stmt, sa.sql.dml.Delete)`
-   against table `hindcast_values`) and assert it fired — confirming the DELETE
-   was routed through the injected txn and is covered by the rollback, not just
-   the INSERT.
+   `IntegrityError` on the `hindcast_values` INSERT and currently asserts only
+   that `hit_values_insert` fired. On a **fresh insert** the in-txn DELETE is a
+   no-op, so asserting a `hit_delete_fired` flag on a fresh-insert rollback only
+   confirms routing — it cannot prove the conflict/replace path rolls back
+   atomically.
+
+   Replace (or augment) the fresh-insert scenario with a **conflict-scenario
+   rollback test**: (a) seed a prior header row AND its value rows into the DB;
+   (b) attempt a re-insert with the SAME natural key (triggering the real DELETE
+   of the old value rows) but force the subsequent value INSERT to raise
+   (inject an `IntegrityError` via the spy txn); (c) after rollback, assert
+   that the ORIGINAL header row is STILL PRESENT and that the ORIGINAL value
+   rows are STILL PRESENT (the full DELETE+INSERT rolled back atomically — no
+   data was lost and no partial state survived). This proves atomicity of the
+   conflict/replace path, not just insert routing.
 9. **Align `FakeHindcastStore` with the upsert contract (reviewer major,
    2026-07-10):** `FakeHindcastStore.store_hindcast`
    (`tests/fakes/fake_stores.py:332-334`) currently keys on `hindcast.id` and
    always returns `hindcast.id`, which diverges from the real implementation
    after this plan (real returns the EXISTING row's id on a same-natural-key
-   conflict). Update the fake to implement upsert semantics: key its internal
-   dict on the natural key `(station_id, model_id, hindcast_step, parameter,
-   hindcast_run_id, forcing_type)` (NOT `hindcast.id`), return the id of the
-   surviving entry (existing on conflict, new on insert), and replace the stored
-   value payload on conflict. Without this, any unit test that exercises a
-   conflict path via the fake and asserts on the returned id silently passes with
-   the wrong value.
+   conflict). Update the fake using option (a) — keep the id-keyed dict intact,
+   add a parallel natural-key map:
+
+   - **KEEP** `self._hindcasts: dict[HindcastForecastId, HindcastForecast]`
+     **UNCHANGED** (no type-annotation change, no pyright break). All existing
+     external accesses — `.values()`, `len(...)`, id lookups across
+     `test_hindcast.py`, `test_run_hindcast.py`, `test_train_models.py`,
+     `test_training_pipeline.py`, `test_hindcast_ensemble_mode.py` — continue
+     to work without modification.
+   - **ADD** a parallel `self._natural_key_to_id: dict[tuple[StationId,
+     ModelId, UtcDatetime, str, UUID, ForcingType], HindcastForecastId]` (the
+     six-column natural key: `station_id, model_id, hindcast_step, parameter,
+     hindcast_run_id, forcing_type`), initialized to `{}` in `__init__`.
+   - **`store_hindcast` logic:** compute the natural-key tuple from the
+     incoming `hindcast`. If the key is already in `_natural_key_to_id`
+     (conflict): look up the existing `existing_id`, fully replace
+     `_hindcasts[existing_id]` with the incoming `hindcast` (mirroring the real
+     store's DO UPDATE full-replace — header fields AND value payload), and
+     return `existing_id`. Otherwise (clean insert): store `hindcast` under
+     `hindcast.id`, register `_natural_key_to_id[nk] = hindcast.id`, and
+     return `hindcast.id`.
+
+   Because `_hindcasts` remains id-keyed, existing `len(_hindcasts) == 2 *
+   n_steps`-style count assertions (which store DISTINCT natural keys) are
+   unaffected. The fake now correctly dedupes only genuine same-natural-key
+   conflicts — not distinct-key inserts that happen to share a generated UUID.
+   Without this fix, any unit test that exercises a conflict path via the fake
+   and asserts on the returned id silently passes with the wrong value.
 
 ### Step 5 — Schema checklist (preventive)
 
