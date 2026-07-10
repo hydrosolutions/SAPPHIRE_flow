@@ -17,10 +17,10 @@ from prefect import runtime as prefect_runtime
 from prefect.cache_policies import NO_CACHE
 
 from sapphire_flow.adapters.meteoswiss_nwp import (
-    _DEFAULT_DISK_GUARD_ARCHIVE_HARD_GB,
-    _DEFAULT_DISK_GUARD_ARCHIVE_SOFT_GB,
-    _DEFAULT_DISK_GUARD_SCRATCH_HARD_GB,
-    _DEFAULT_DISK_GUARD_SCRATCH_SOFT_GB,
+    DEFAULT_DISK_GUARD_ARCHIVE_HARD_GB,
+    DEFAULT_DISK_GUARD_ARCHIVE_SOFT_GB,
+    DEFAULT_DISK_GUARD_SCRATCH_HARD_GB,
+    DEFAULT_DISK_GUARD_SCRATCH_SOFT_GB,
 )
 from sapphire_flow.exceptions import (
     ConfigurationError,
@@ -131,10 +131,10 @@ class _WeatherForecastAdapterConfig:
     expected_delivery_offset_hours: float
     # Plan 105 D2 — disk-guard thresholds (four TOML-configurable values;
     # defaults are shared constants from meteoswiss_nwp to avoid divergence).
-    disk_guard_scratch_soft_gb: float = _DEFAULT_DISK_GUARD_SCRATCH_SOFT_GB
-    disk_guard_scratch_hard_gb: float = _DEFAULT_DISK_GUARD_SCRATCH_HARD_GB
-    disk_guard_archive_soft_gb: float = _DEFAULT_DISK_GUARD_ARCHIVE_SOFT_GB
-    disk_guard_archive_hard_gb: float = _DEFAULT_DISK_GUARD_ARCHIVE_HARD_GB
+    disk_guard_scratch_soft_gb: float = DEFAULT_DISK_GUARD_SCRATCH_SOFT_GB
+    disk_guard_scratch_hard_gb: float = DEFAULT_DISK_GUARD_SCRATCH_HARD_GB
+    disk_guard_archive_soft_gb: float = DEFAULT_DISK_GUARD_ARCHIVE_SOFT_GB
+    disk_guard_archive_hard_gb: float = DEFAULT_DISK_GUARD_ARCHIVE_HARD_GB
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -301,16 +301,16 @@ def _load_weather_forecast_adapter_config() -> _WeatherForecastAdapterConfig:
         return float(val)
 
     disk_guard_scratch_soft_gb = _parse_disk_guard_gb(
-        "disk_guard_scratch_soft_gb", _DEFAULT_DISK_GUARD_SCRATCH_SOFT_GB
+        "disk_guard_scratch_soft_gb", DEFAULT_DISK_GUARD_SCRATCH_SOFT_GB
     )
     disk_guard_scratch_hard_gb = _parse_disk_guard_gb(
-        "disk_guard_scratch_hard_gb", _DEFAULT_DISK_GUARD_SCRATCH_HARD_GB
+        "disk_guard_scratch_hard_gb", DEFAULT_DISK_GUARD_SCRATCH_HARD_GB
     )
     disk_guard_archive_soft_gb = _parse_disk_guard_gb(
-        "disk_guard_archive_soft_gb", _DEFAULT_DISK_GUARD_ARCHIVE_SOFT_GB
+        "disk_guard_archive_soft_gb", DEFAULT_DISK_GUARD_ARCHIVE_SOFT_GB
     )
     disk_guard_archive_hard_gb = _parse_disk_guard_gb(
-        "disk_guard_archive_hard_gb", _DEFAULT_DISK_GUARD_ARCHIVE_HARD_GB
+        "disk_guard_archive_hard_gb", DEFAULT_DISK_GUARD_ARCHIVE_HARD_GB
     )
 
     # Cross-field validation: hard must be less than soft for each mount.

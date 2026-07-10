@@ -84,10 +84,10 @@ _MAX_PROBE_PAGES: int = 50
 
 # Plan 105 D2 — disk-guard thresholds (single source of truth; referenced by
 # both the adapter ctor and _WeatherForecastAdapterConfig in run_forecast_cycle.py).
-_DEFAULT_DISK_GUARD_SCRATCH_SOFT_GB: float = 1.5
-_DEFAULT_DISK_GUARD_SCRATCH_HARD_GB: float = 0.5
-_DEFAULT_DISK_GUARD_ARCHIVE_SOFT_GB: float = 8.0
-_DEFAULT_DISK_GUARD_ARCHIVE_HARD_GB: float = 3.0
+DEFAULT_DISK_GUARD_SCRATCH_SOFT_GB: float = 1.5
+DEFAULT_DISK_GUARD_SCRATCH_HARD_GB: float = 0.5
+DEFAULT_DISK_GUARD_ARCHIVE_SOFT_GB: float = 8.0
+DEFAULT_DISK_GUARD_ARCHIVE_HARD_GB: float = 3.0
 
 
 def disk_free_gb(path: Path) -> float | None:
@@ -349,10 +349,10 @@ class MeteoSwissNwpAdapter:
         max_files: int | None = None,
         cycle_min_age_minutes: int = 0,
         disk_guard_enabled: bool = True,
-        disk_guard_scratch_soft_gb: float = _DEFAULT_DISK_GUARD_SCRATCH_SOFT_GB,
-        disk_guard_scratch_hard_gb: float = _DEFAULT_DISK_GUARD_SCRATCH_HARD_GB,
-        disk_guard_archive_soft_gb: float = _DEFAULT_DISK_GUARD_ARCHIVE_SOFT_GB,
-        disk_guard_archive_hard_gb: float = _DEFAULT_DISK_GUARD_ARCHIVE_HARD_GB,
+        disk_guard_scratch_soft_gb: float = DEFAULT_DISK_GUARD_SCRATCH_SOFT_GB,
+        disk_guard_scratch_hard_gb: float = DEFAULT_DISK_GUARD_SCRATCH_HARD_GB,
+        disk_guard_archive_soft_gb: float = DEFAULT_DISK_GUARD_ARCHIVE_SOFT_GB,
+        disk_guard_archive_hard_gb: float = DEFAULT_DISK_GUARD_ARCHIVE_HARD_GB,
         nwp_grid_archive_path: Path | None = None,
     ) -> None:
         # Plan 067 D2: max_fallback_steps is derived by the caller from
