@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
 from uuid import uuid4
@@ -717,10 +718,54 @@ class TestShortLookbackWarning:
         assert _short_events(logs) == []
         assert any(e.get("event") == "operational_inputs.no_observations" for e in logs)
 
+    def test_sparse_present_target_uses_non_null_count(self) -> None:
+        # A PRESENT target with null rows after resample: discharge is healthy
+        # (10 non-null); water_level's column EXISTS but has only 5 non-null rows
+        # over the same 10-timestamp union window. lookback_got must be the
+        # non-null count (5), not the raw column height (10) — locks .drop_nulls().
+        sid = StationId(uuid4())
+        stores = _make_stores_and_sources(sid, with_obs=False, with_nwp=False)
+        obs_store = stores[2]
+        # Distinct RNGs so the two batches get distinct observation ids (a shared
+        # default seed would collide ids and the fake store would overwrite rows).
+        obs_store.store_observations(
+            make_observations(
+                n=10,
+                station_id=sid,
+                parameter="discharge",
+                start=ensure_utc(_ISSUE - timedelta(hours=10)),
+                interval=timedelta(hours=1),
+                rng=random.Random(1),
+            )
+        )
+        obs_store.store_observations(
+            make_observations(
+                n=5,
+                station_id=sid,
+                parameter="water_level",
+                start=ensure_utc(_ISSUE - timedelta(hours=10)),
+                interval=timedelta(hours=1),
+                rng=random.Random(2),
+            )
+        )
+        with capture_logs() as logs:
+            _assemble_short(
+                sid, stores, requirements_override=_reqs({"discharge", "water_level"})
+            )
+
+        events = _short_events(logs)
+        assert len(events) == 1
+        ev = events[0]
+        assert ev["per_target_counts"]["discharge"] == 10
+        assert ev["per_target_counts"]["water_level"] == 5
+        assert ev["lookback_got"] == 5
+
     def test_empty_target_parameters_emits_no_warning(self) -> None:
         sid = StationId(uuid4())
         stores = _make_stores_and_sources(sid, with_obs=False, with_nwp=False)
         with capture_logs() as logs:
             _assemble_short(sid, stores, requirements_override=_reqs(set()))
-        # empty target_parameters early-exits (no min()-of-empty crash, no warning).
+        # Empty target_parameters fetches NO observations, so latest_obs_ts is None
+        # and short_lookback stays silent; the reqs.target_parameters guard also
+        # defensively prevents a min()-of-empty crash on that path.
         assert _short_events(logs) == []
