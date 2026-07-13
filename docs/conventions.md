@@ -455,6 +455,29 @@ priorities to existing assignments (upsert).
 
 ---
 
+## Schema constraint checklist
+
+Apply this checklist whenever adding or modifying a database table:
+
+- **Every table with a natural key must have a unique constraint.** If rows in the
+  table represent a unique real-world event or entity identifiable by a combination
+  of domain columns, declare a unique index on those columns. A primary-key UUID
+  alone does not prevent logical duplicates.
+- **Every FK column used in WHERE or JOIN must have an index.** A foreign key column
+  without an index causes a sequential scan on the referencing table. For header+values
+  pairs (e.g. `forecast_values.forecast_id`, `hindcast_values.hindcast_forecast_id`),
+  add a non-unique index on the FK column after the table definition.
+- **When adding a constraint to a header table, check the sibling values table.**
+  Header+values pairs are always modified together. If the header table gets a new
+  unique index, check whether the values table's FK column already has a covering
+  index; if not, add one in the same migration.
+- **Use `IF NOT EXISTS` / `IF EXISTS` on all index operations in migrations.** Every
+  `op.create_index` in `upgrade()` should pass `if_not_exists=True` and every
+  `op.drop_index` in `downgrade()` should pass `if_exists=True` so migrations are
+  idempotent and safe to run on a DB that has already been partially migrated.
+
+---
+
 ## Invariants
 
 - **Foreign stations cannot have model assignments.** `model_assignments` must only reference stations with `ownership='own'`. Foreign stations are display-only and never run through local models. Enforced at application layer; DB trigger deferred to v1.

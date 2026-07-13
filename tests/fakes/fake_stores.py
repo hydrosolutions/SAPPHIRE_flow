@@ -328,9 +328,31 @@ class FakeForecastStore:
 class FakeHindcastStore:
     def __init__(self) -> None:
         self._hindcasts: dict[HindcastForecastId, HindcastForecast] = {}
+        # Maps the 6-column natural key to the stored HindcastForecastId.
+        self._natural_key_to_id: dict[
+            tuple[StationId, ModelId, UtcDatetime, str, UUID, ForcingType],
+            HindcastForecastId,
+        ] = {}
 
     def store_hindcast(self, hindcast: HindcastForecast) -> HindcastForecastId:
+        key = (
+            hindcast.station_id,
+            hindcast.model_id,
+            hindcast.hindcast_step,
+            hindcast.ensemble.parameter,
+            hindcast.hindcast_run_id,
+            hindcast.forcing_type,
+        )
+        existing_id = self._natural_key_to_id.get(key)
+        if existing_id is not None:
+            # Conflict: full-replace under the existing id.
+            # HindcastForecast is frozen — must use dataclasses.replace to
+            # swap in the existing id so fetched objects carry the correct id.
+            self._hindcasts[existing_id] = replace(hindcast, id=existing_id)
+            return existing_id
+        # Clean insert.
         self._hindcasts[hindcast.id] = hindcast
+        self._natural_key_to_id[key] = hindcast.id
         return hindcast.id
 
     def fetch_hindcasts(

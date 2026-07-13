@@ -18,7 +18,8 @@ from sapphire_flow.db.metadata import (
 )
 from sapphire_flow.store.hindcast_store import PgHindcastStore
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.enums import EnsembleRepresentation, ForcingType
+from sapphire_flow.types.domain import QcFlag
+from sapphire_flow.types.enums import EnsembleRepresentation, ForcingType, QcStatus
 from sapphire_flow.types.forecast import HindcastForecast
 from sapphire_flow.types.ids import ArtifactId, HindcastForecastId, ModelId, StationId
 from tests.conftest import make_forecast_ensemble
@@ -136,6 +137,9 @@ def _make_hindcast(
     representation: EnsembleRepresentation = EnsembleRepresentation.MEMBERS,
     n_members: int = 3,
     n_steps: int = 5,
+    created_at: datetime | None = None,
+    parameter: str = "discharge",
+    units: str = "m³/s",
 ) -> HindcastForecast:
     step = hindcast_step if hindcast_step is not None else _utc(2025, 3, 1)
     run_id = hindcast_run_id or uuid4()
@@ -144,6 +148,8 @@ def _make_hindcast(
         representation=representation,
         n_members=n_members,
         n_steps=n_steps,
+        parameter=parameter,
+        units=units,
     )
     return HindcastForecast(
         id=HindcastForecastId(uuid4()),
@@ -155,7 +161,7 @@ def _make_hindcast(
         representation=representation,
         hindcast_run_id=run_id,
         ensemble=ensemble,
-        created_at=_T0,
+        created_at=created_at if created_at is not None else _T0,
     )
 
 
@@ -496,15 +502,126 @@ class TestStoreHindcastAtomicityRollback:
         ).first()
         assert values_row is None
 
-
-class TestStoreHindcastAtomicitySuccess:
-    def test_writes_routed_through_injected_txn(
+    def test_conflict_values_insert_failure_rolls_back_keeping_original(
         self, db_connection: sa.Connection
     ) -> None:
-        """Prove both INSERTs go through the spy (not self._conn).
+        """On a conflict path, values-INSERT failure rolls back, preserving seeded data.
+
+        Scenario:
+          1. Seed a prior hindcast (seeded_id, original values).
+          2. Attempt a re-insert with the SAME natural key, forcing the values
+             INSERT to fail AFTER the DELETE of the old values has executed.
+          3. Assert the savepoint rolled back: the original header and values survive.
+
+        The spy intercepts Insert-on-hindcast_values only, letting the Delete pass
+        through — so the test actually exercises the DELETE→INSERT→rollback path.
+        """
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, mid, sid)
+        # A second active artifact (distinct model) so the conflict can carry a
+        # DIFFERENT mutable header field — proving the header upsert itself rolls
+        # back, not just that the value rows are restored.
+        mid_alt = _seed_model(db_connection)
+        aid_alt = _seed_artifact(db_connection, mid_alt, sid)
+        run_id = uuid4()
+
+        # Seed the original hindcast (clean insert)
+        hc_seed = _make_hindcast(
+            sid, mid, aid, hindcast_step=_utc(2025, 10, 1), hindcast_run_id=run_id
+        )
+        seeded_store = PgHindcastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+        seeded_id = seeded_store.store_hindcast(hc_seed)
+
+        # Confirm original value count
+        original_count = db_connection.execute(
+            sa.select(sa.func.count()).where(
+                hindcast_values.c.hindcast_forecast_id == seeded_id
+            )
+        ).scalar_one()
+        assert original_count > 0
+
+        # Build a conflicting hindcast (same natural key, DIFFERENT artifact so a
+        # leaked header update would be detectable)
+        hc_conflict = _make_hindcast(
+            sid, mid, aid_alt, hindcast_step=_utc(2025, 10, 1), hindcast_run_id=run_id
+        )
+        assert hc_conflict.id != seeded_id  # different object
+        assert aid_alt != aid  # different mutable header field
+
+        hit_values_insert: dict[str, bool] = {"fired": False}
+
+        @contextmanager
+        def _conflict_failing_factory():  # type: ignore[return]
+            spy = _SpyConn(db_connection)
+            real_spy_execute = spy.execute
+
+            def _patched(stmt: object, *a: object, **k: object) -> object:
+                # Intercept only Insert on hindcast_values; let Delete pass through.
+                if (
+                    isinstance(stmt, sa.sql.dml.Insert)
+                    and getattr(getattr(stmt, "table", None), "name", "")
+                    == "hindcast_values"
+                ):
+                    hit_values_insert["fired"] = True
+                    raise sa.exc.IntegrityError(
+                        "forced conflict-path hindcast_values failure",
+                        None,
+                        Exception(),
+                    )
+                return real_spy_execute(stmt, *a, **k)
+
+            spy.execute = _patched  # type: ignore[method-assign]
+            with db_connection.begin_nested():
+                yield spy
+
+        store = PgHindcastStore(
+            db_connection, transaction_factory=_conflict_failing_factory
+        )
+
+        with pytest.raises(sa.exc.IntegrityError):
+            store.store_hindcast(hc_conflict)
+
+        assert hit_values_insert["fired"], "hindcast_values INSERT was never reached"
+
+        # The original header must still exist AND retain its original mutable
+        # field — the conflict-path header upsert (which would have set
+        # model_artifact_id=aid_alt) must have rolled back with the values.
+        header_row = db_connection.execute(
+            sa.select(hindcast_forecasts.c.model_artifact_id).where(
+                hindcast_forecasts.c.id == seeded_id
+            )
+        ).first()
+        assert header_row is not None, (
+            "original header was lost after conflict rollback"
+        )
+        assert header_row[0] == aid, (
+            "header upsert leaked: model_artifact_id was not rolled back to the "
+            "seeded value"
+        )
+
+        # The original value rows must be fully restored
+        restored_count = db_connection.execute(
+            sa.select(sa.func.count()).where(
+                hindcast_values.c.hindcast_forecast_id == seeded_id
+            )
+        ).scalar_one()
+        assert restored_count == original_count, (
+            f"original {original_count} value rows not restored; got {restored_count}"
+        )
+
+
+class TestStoreHindcastAtomicitySuccess:
+    def test_clean_insert_routes_through_txn(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """Upsert + DELETE + INSERT all route through the spy (clean insert path).
 
         A broken impl that bypasses the injected txn and writes directly on
         self._conn (= db_connection) would NOT appear in spy.executed.
+        On a clean insert the DELETE is a no-op but must still fire through the txn.
         """
         sid = _seed_station(db_connection)
         mid = _seed_model(db_connection)
@@ -519,20 +636,25 @@ class TestStoreHindcastAtomicitySuccess:
         assert len(spies) == 1, "factory must have been called exactly once"
         spy = spies[0]
 
-        # The spy must have recorded at least 2 statements: header + values
-        assert len(spy.executed) >= 2, (
-            f"expected ≥2 statements via txn spy, got {len(spy.executed)}"
+        # header upsert + values DELETE + values INSERT = at least 3 statements
+        assert len(spy.executed) >= 3, (
+            f"expected ≥3 statements via txn spy, got {len(spy.executed)}"
         )
 
-        table_names = {
-            getattr(getattr(stmt, "table", None), "name", None) for stmt in spy.executed
-        }
-        assert "hindcast_forecasts" in table_names, (
-            "hindcast_forecasts header INSERT missing from spy"
-        )
-        assert "hindcast_values" in table_names, (
-            "hindcast_values INSERT missing from spy"
-        )
+        inserts = [
+            s
+            for s in spy.executed
+            if isinstance(s, sa.sql.dml.Insert)
+            and getattr(s, "table", None) is hindcast_values
+        ]
+        deletes = [
+            s
+            for s in spy.executed
+            if isinstance(s, sa.sql.dml.Delete)
+            and getattr(s, "table", None) is hindcast_values
+        ]
+        assert inserts, "hindcast_values INSERT missing from spy"
+        assert deletes, "hindcast_values DELETE missing from spy"
 
         header_row = db_connection.execute(
             sa.select(hindcast_forecasts.c.id).where(hindcast_forecasts.c.id == hc.id)
@@ -545,6 +667,67 @@ class TestStoreHindcastAtomicitySuccess:
             )
         ).scalar_one()
         assert value_count > 0
+
+    def test_conflict_upsert_routes_through_txn(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """Upsert + DELETE + INSERT all route through the spy (conflict path).
+
+        A broken conflict-path implementation that bypasses the transaction
+        (e.g. skips the DELETE or short-circuits the txn wrapper) would fail.
+        """
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, mid, sid)
+        run_id = uuid4()
+
+        # Clean insert first (uses its own savepoint factory)
+        clean_store = PgHindcastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+        hc_first = _make_hindcast(
+            sid, mid, aid, hindcast_step=_utc(2025, 11, 1), hindcast_run_id=run_id
+        )
+        clean_store.store_hindcast(hc_first)
+
+        # Second insert with the same natural key — triggers the conflict path
+        hc_second = _make_hindcast(
+            sid, mid, aid, hindcast_step=_utc(2025, 11, 1), hindcast_run_id=run_id
+        )
+        spies, factory = _capturing_spy_factory(db_connection)
+        conflict_store = PgHindcastStore(db_connection, transaction_factory=factory)
+
+        conflict_store.store_hindcast(hc_second)
+
+        assert len(spies) == 1, "factory must have been called exactly once"
+        spy = spies[0]
+
+        n_stmts = len(spy.executed)
+        assert n_stmts >= 3, (
+            f"expected ≥3 statements via txn spy on conflict path, got {n_stmts}"
+        )
+
+        inserts = [
+            s
+            for s in spy.executed
+            if isinstance(s, sa.sql.dml.Insert)
+            and getattr(s, "table", None) is hindcast_values
+        ]
+        deletes = [
+            s
+            for s in spy.executed
+            if isinstance(s, sa.sql.dml.Delete)
+            and getattr(s, "table", None) is hindcast_values
+        ]
+        header_inserts = [
+            s
+            for s in spy.executed
+            if isinstance(s, sa.sql.dml.Insert)
+            and getattr(s, "table", None) is hindcast_forecasts
+        ]
+        assert header_inserts, "hindcast_forecasts upsert missing from conflict spy"
+        assert deletes, "hindcast_values DELETE missing from conflict spy"
+        assert inserts, "hindcast_values INSERT missing from conflict spy"
 
 
 class TestStoreHindcastIsolationHolds:
@@ -691,3 +874,417 @@ class TestFetchHindcastsOrphanSkip:
         assert len(warning_events) == 1
         assert str(warning_events[0].get("station_id")) == str(sid)
         assert str(warning_events[0].get("hindcast_forecast_id")) == str(orphan_id)
+
+
+# ---------------------------------------------------------------------------
+# Plan 040 locked deduplication tests
+# ---------------------------------------------------------------------------
+
+
+class TestStoreHindcastDedupIdempotent:
+    def test_same_natural_key_same_data_returns_same_id(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """Re-inserting the SAME hindcast returns the SAME id, one row, no error."""
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, mid, sid)
+        store = PgHindcastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+        run_id = uuid4()
+        hc = _make_hindcast(
+            sid, mid, aid, hindcast_step=_utc(2026, 1, 1), hindcast_run_id=run_id
+        )
+
+        id_first = store.store_hindcast(hc)
+        id_second = store.store_hindcast(hc)
+
+        assert id_first == id_second, "idempotent re-insert must return the same id"
+
+        count = db_connection.execute(
+            sa.select(sa.func.count())
+            .select_from(hindcast_forecasts)
+            .where(
+                hindcast_forecasts.c.station_id == sid,
+                hindcast_forecasts.c.model_id == mid,
+                hindcast_forecasts.c.hindcast_run_id == run_id,
+            )
+        ).scalar_one()
+        assert count == 1, f"expected 1 header row, got {count}"
+
+
+class TestStoreHindcastDedupFullReplace:
+    def test_same_natural_key_different_payload_full_replace(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """DO UPDATE full-replace: same natural key, different payload.
+
+        One header (second write's mutable fields), second write's value rows,
+        and the EXISTING header id returned (not the new hindcast.id).
+        """
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        # Two distinct models so we can seed two distinct active artifacts for
+        # the same station — the unique index on model_artifacts allows one
+        # active artifact per (station_id, model_id) pair.
+        mid_alt = _seed_model(db_connection)
+        aid_first = _seed_artifact(db_connection, mid, sid)
+        aid_second = _seed_artifact(db_connection, mid_alt, sid)
+        store = PgHindcastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+        run_id = uuid4()
+        step = _utc(2026, 2, 1)
+
+        hc_first = _make_hindcast(
+            sid,
+            mid,
+            aid_first,
+            hindcast_step=step,
+            hindcast_run_id=run_id,
+            n_members=3,
+            n_steps=4,
+        )
+        id_first = store.store_hindcast(hc_first)
+
+        hc_second = _make_hindcast(
+            sid,
+            mid,
+            aid_second,  # different artifact — mutable header field
+            hindcast_step=step,
+            hindcast_run_id=run_id,
+            n_members=5,  # different ensemble size — new values
+            n_steps=2,
+            created_at=_utc(2026, 6, 1),  # later than hc_first's _T0
+            units="L/s",  # different units — mutable header field
+        )
+        id_second = store.store_hindcast(hc_second)
+
+        # (d) method returns the EXISTING id
+        assert id_second == id_first, (
+            "conflict upsert must return the existing header id"
+        )
+
+        # (a) exactly one header row
+        count = db_connection.execute(
+            sa.select(sa.func.count())
+            .select_from(hindcast_forecasts)
+            .where(
+                hindcast_forecasts.c.station_id == sid,
+                hindcast_forecasts.c.model_id == mid,
+                hindcast_forecasts.c.hindcast_run_id == run_id,
+            )
+        ).scalar_one()
+        assert count == 1, f"expected 1 header after conflict, got {count}"
+
+        # (b) mutable header field reflects second write
+        header = db_connection.execute(
+            sa.select(hindcast_forecasts.c.model_artifact_id).where(
+                hindcast_forecasts.c.id == id_first
+            )
+        ).scalar_one()
+        assert header == aid_second, "model_artifact_id must reflect the second write"
+
+        # (b1) units is in set_: the second write's units overwrites the first.
+        stored_units = db_connection.execute(
+            sa.select(hindcast_forecasts.c.units).where(
+                hindcast_forecasts.c.id == id_first
+            )
+        ).scalar_one()
+        assert stored_units == "L/s", "units must reflect the second write (in set_)"
+
+        # (b2) created_at is NOT in set_: it stays the FIRST write's value, tied
+        # to the surviving header (not overwritten by the later second write).
+        stored_created_at = db_connection.execute(
+            sa.select(hindcast_forecasts.c.created_at).where(
+                hindcast_forecasts.c.id == id_first
+            )
+        ).scalar_one()
+        assert ensure_utc(stored_created_at) == _T0, (
+            "created_at must remain the first write's value (not in set_)"
+        )
+        assert ensure_utc(stored_created_at) != hc_second.created_at, (
+            "created_at must NOT be overwritten by the second write"
+        )
+
+        # (c) value rows are the second write's (5 members × 2 steps = 10 rows)
+        expected_value_count = 5 * 2
+        actual_count = db_connection.execute(
+            sa.select(sa.func.count()).where(
+                hindcast_values.c.hindcast_forecast_id == id_first
+            )
+        ).scalar_one()
+        assert actual_count == expected_value_count, (
+            f"expected {expected_value_count} value rows (2nd write),"
+            f" got {actual_count}"
+        )
+
+    def test_representation_overwritten_on_conflict(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """representation is in set_: a MEMBERS→QUANTILES re-run overwrites it.
+
+        Guards against set_ omitting `representation` (a MEMBERS header left
+        behind quantile value rows would silently mis-describe the payload).
+        """
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, mid, sid)
+        store = PgHindcastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+        run_id = uuid4()
+        step = _utc(2026, 7, 1)
+
+        id_members = store.store_hindcast(
+            _make_hindcast(
+                sid,
+                mid,
+                aid,
+                hindcast_step=step,
+                hindcast_run_id=run_id,
+                representation=EnsembleRepresentation.MEMBERS,
+                n_members=3,
+                n_steps=2,
+            )
+        )
+        id_quantiles = store.store_hindcast(
+            _make_hindcast(
+                sid,
+                mid,
+                aid,
+                hindcast_step=step,
+                hindcast_run_id=run_id,
+                representation=EnsembleRepresentation.QUANTILES,
+                n_steps=2,
+            )
+        )
+
+        assert id_quantiles == id_members, "same natural key must upsert one header"
+
+        stored_repr = db_connection.execute(
+            sa.select(hindcast_forecasts.c.representation).where(
+                hindcast_forecasts.c.id == id_members
+            )
+        ).scalar_one()
+        assert stored_repr == EnsembleRepresentation.QUANTILES.value, (
+            "representation must reflect the second write (in set_)"
+        )
+
+        # Full-replace: the surviving value rows are quantiles (member_id NULL).
+        member_rows = db_connection.execute(
+            sa.select(sa.func.count()).where(
+                hindcast_values.c.hindcast_forecast_id == id_members,
+                hindcast_values.c.member_id.isnot(None),
+            )
+        ).scalar_one()
+        assert member_rows == 0, "old MEMBERS value rows must be fully replaced"
+
+    def test_qc_fields_overwritten_on_conflict(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """QC fields in set_ — re-run's corrected verdict overwrites stale QC."""
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, mid, sid)
+        store = PgHindcastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+        run_id = uuid4()
+        step = _utc(2026, 3, 1)
+
+        hc_raw = HindcastForecast(
+            id=HindcastForecastId(uuid4()),
+            station_id=sid,
+            model_id=mid,
+            model_artifact_id=aid,
+            hindcast_step=step,
+            forcing_type=ForcingType.NWP_ARCHIVE,
+            representation=EnsembleRepresentation.MEMBERS,
+            hindcast_run_id=run_id,
+            ensemble=make_forecast_ensemble(station_id=sid),
+            created_at=_T0,
+            qc_status=QcStatus.RAW,
+            qc_flags=(),
+        )
+        id_raw = store.store_hindcast(hc_raw)
+
+        hc_qc_passed = HindcastForecast(
+            id=HindcastForecastId(uuid4()),
+            station_id=sid,
+            model_id=mid,
+            model_artifact_id=aid,
+            hindcast_step=step,
+            forcing_type=ForcingType.NWP_ARCHIVE,
+            representation=EnsembleRepresentation.MEMBERS,
+            hindcast_run_id=run_id,
+            ensemble=make_forecast_ensemble(station_id=sid),
+            created_at=_T0,
+            qc_status=QcStatus.QC_PASSED,
+            qc_flags=(
+                QcFlag(
+                    rule_id="range_check",
+                    rule_version="1",
+                    status=QcStatus.QC_PASSED,
+                    detail="within range",
+                ),
+            ),
+        )
+        id_updated = store.store_hindcast(hc_qc_passed)
+        assert id_updated == id_raw
+
+        row = (
+            db_connection.execute(
+                sa.select(
+                    hindcast_forecasts.c.qc_status,
+                    hindcast_forecasts.c.qc_flags,
+                ).where(hindcast_forecasts.c.id == id_raw)
+            )
+            .mappings()
+            .one()
+        )
+        assert row["qc_status"] == QcStatus.QC_PASSED.value, (
+            "qc_status must be overwritten on conflict"
+        )
+        assert len(row["qc_flags"]) == 1, "qc_flags must reflect the second write"
+
+
+class TestStoreHindcastDedupForcingTypeKey:
+    def test_distinct_forcing_type_both_persist(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """forcing_type is a KEY column — distinct forcing_type hindcasts both persist.
+
+        Guards the forcing_type-in-key decision
+        (TestFetchWithForcingTypeFilter regression).
+        """
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, mid, sid)
+        store = PgHindcastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+        run_id = uuid4()
+        step = _utc(2026, 4, 1)
+
+        id_nwp = store.store_hindcast(
+            _make_hindcast(
+                sid,
+                mid,
+                aid,
+                hindcast_step=step,
+                forcing_type=ForcingType.NWP_ARCHIVE,
+                hindcast_run_id=run_id,
+            )
+        )
+        id_rean = store.store_hindcast(
+            _make_hindcast(
+                sid,
+                mid,
+                aid,
+                hindcast_step=step,
+                forcing_type=ForcingType.REANALYSIS,
+                hindcast_run_id=run_id,
+            )
+        )
+
+        assert id_nwp != id_rean, "distinct forcing_type must produce distinct ids"
+
+        count = db_connection.execute(
+            sa.select(sa.func.count())
+            .select_from(hindcast_forecasts)
+            .where(
+                hindcast_forecasts.c.station_id == sid,
+                hindcast_forecasts.c.model_id == mid,
+                hindcast_forecasts.c.hindcast_run_id == run_id,
+            )
+        ).scalar_one()
+        assert count == 2, f"both forcing-type hindcasts must persist, got {count}"
+
+
+class TestStoreHindcastDedupDistinctRunId:
+    def test_distinct_run_id_both_persist(self, db_connection: sa.Connection) -> None:
+        """Distinct run_ids for same station/model/step/parameter both persist."""
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, mid, sid)
+        store = PgHindcastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+        step = _utc(2026, 5, 1)
+        run_a = uuid4()
+        run_b = uuid4()
+
+        id_a = store.store_hindcast(
+            _make_hindcast(sid, mid, aid, hindcast_step=step, hindcast_run_id=run_a)
+        )
+        id_b = store.store_hindcast(
+            _make_hindcast(sid, mid, aid, hindcast_step=step, hindcast_run_id=run_b)
+        )
+
+        assert id_a != id_b
+
+        count = db_connection.execute(
+            sa.select(sa.func.count())
+            .select_from(hindcast_forecasts)
+            .where(
+                hindcast_forecasts.c.station_id == sid,
+                hindcast_forecasts.c.model_id == mid,
+                hindcast_forecasts.c.hindcast_step == step,
+            )
+        ).scalar_one()
+        assert count == 2, f"both run-id hindcasts must persist, got {count}"
+
+
+class TestStoreHindcastDedupDistinctParameter:
+    def test_distinct_parameter_both_persist(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """parameter is a KEY column — same station/model/step/run/forcing but
+        distinct parameter must produce two headers (not upsert into one)."""
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, mid, sid)
+        store = PgHindcastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+        step = _utc(2026, 8, 1)
+        run_id = uuid4()
+
+        id_discharge = store.store_hindcast(
+            _make_hindcast(
+                sid,
+                mid,
+                aid,
+                hindcast_step=step,
+                hindcast_run_id=run_id,
+                parameter="discharge",
+            )
+        )
+        id_water_level = store.store_hindcast(
+            _make_hindcast(
+                sid,
+                mid,
+                aid,
+                hindcast_step=step,
+                hindcast_run_id=run_id,
+                parameter="water_level",
+            )
+        )
+
+        assert id_discharge != id_water_level, (
+            "distinct parameter must produce distinct ids"
+        )
+
+        count = db_connection.execute(
+            sa.select(sa.func.count())
+            .select_from(hindcast_forecasts)
+            .where(
+                hindcast_forecasts.c.station_id == sid,
+                hindcast_forecasts.c.model_id == mid,
+                hindcast_forecasts.c.hindcast_step == step,
+                hindcast_forecasts.c.hindcast_run_id == run_id,
+            )
+        ).scalar_one()
+        assert count == 2, f"both parameter hindcasts must persist, got {count}"

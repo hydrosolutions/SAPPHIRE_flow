@@ -761,17 +761,14 @@ hindcast_forecasts = sa.Table(
 
 # Indexes on hindcast_forecasts
 sa.Index(
-    "ix_hindcast_forecasts_station_model_step",
-    hindcast_forecasts.c.station_id,
-    hindcast_forecasts.c.model_id,
-    hindcast_forecasts.c.hindcast_step,
-)
-sa.Index(
-    "ix_hindcast_forecasts_station_model_step_param",
+    "uq_hindcast_forecasts_station_model_step_param_run",
     hindcast_forecasts.c.station_id,
     hindcast_forecasts.c.model_id,
     hindcast_forecasts.c.hindcast_step,
     hindcast_forecasts.c.parameter,
+    hindcast_forecasts.c.hindcast_run_id,
+    hindcast_forecasts.c.forcing_type,
+    unique=True,
 )
 
 hindcast_values = sa.Table(
@@ -794,6 +791,11 @@ hindcast_values = sa.Table(
         "(member_id IS NOT NULL) != (quantile IS NOT NULL)",
         name="ck_hindcast_values_representation_xor",
     ),
+)
+
+sa.Index(
+    "ix_hindcast_values_forecast_id",
+    hindcast_values.c.hindcast_forecast_id,
 )
 
 forecast_qc_overrides = sa.Table(
