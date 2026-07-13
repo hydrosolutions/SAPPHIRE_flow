@@ -87,6 +87,11 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
   pending** (UTC↔Europe/Zurich toggle).
 - **090** — NWP incomplete-cycle selection + horizon-coverage — **P1 shipped**
   (age-delay guard, #49); **P2 pending** (terminal-valid-time refetch).
+- **113** — Align forecast schedule with NWP cycle delivery — `DRAFT` (low-pri) —
+  the forecast cron sits on the NWP cycle boundaries → every run uses a 6h-stale
+  `fallback` cycle and the **00:00 slot silently drops to obs-only** (1 clean daily
+  bucket short). Chosen direction = offset the schedule (opt B); documented, not urgent.
+  Diagnosed 2026-07-13.
 - **049** — Cloudflare public URL + Entra SSO for staging — `DRAFT` — depends on 046.
 - **108** — Swiss market standards posture — `DRAFT` (low-priority v1+) —
   nFADP/DSG, OGC, INTERLIS, and SVGW W12 decision gates for future Swiss partner
