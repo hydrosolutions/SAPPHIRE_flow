@@ -242,6 +242,53 @@ Error mapping is SAP3-owned:
 
 Add custom SAP3 exception subclasses only where callers need distinct behavior.
 
+### NWP-Source Dispatch Design (locked 2026-07-13 grill-me; implemented in Plan 082 Task 2C)
+
+The offline adapter is inert until the production dispatch points stop hardcoding
+the single Swiss source. Two Flow-1 sites and one Flow-6 site currently pin ICON /
+MeteoSwiss (verified against `main` 2026-07-13):
+
+- Flow 1: `_check_nwp_grid_staleness` (`run_forecast_cycle.py:564`) calls
+  `fetch_latest_cycle_time(_ICON_NWP_SOURCE)` (`:576`, constant at `:82`), and the
+  `if adapter is None:` constructor block only ever builds `MeteoSwissNwpAdapter`.
+  On an IFS-only Nepal deploy sharing `PgWeatherForecastStore`, the ICON lookup
+  returns `None` every cycle → a **permanent false-CRITICAL `NWP_DELIVERY` alarm**.
+- Flow 6: `build_production_reanalysis_adapter` (`ingest_weather_history.py:168`)
+  returns a hardcoded MeteoSwiss reanalysis adapter; `_reanalysis_sources` (`:243`)
+  filters station bindings on the *local* `_ReanalysisAdapter` Protocol's
+  `NWP_SOURCE: str` (`:70`, `:309`).
+
+**Locked decision (grill-me): the contained-resolution package (I + B + b).**
+
+- **(I) Source-aware parameterization** of `_check_nwp_grid_staleness` — pass the
+  *active* NWP source string in and query `fetch_latest_cycle_time(active_source)`,
+  rather than `isinstance`-skipping the check for non-ICON adapters (rejected
+  option II). This keeps the staleness watchdog alive for any future non-ICON
+  source that maintains cycle records; 082's completion-gate **positive control**
+  (a stale ICON-bound Swiss station still emits CRITICAL) enforces that the check
+  was made source-aware, not disabled.
+- **(B) Local resolution** of the active source string at the call site — do **not**
+  add `NWP_SOURCE` to the public `WeatherForecastSource` Protocol (rejected option A,
+  widest blast radius). Flow-1 selection already runs off the station binding
+  (`ws.nwp_source`), so no public-Protocol change is needed.
+- **(b) Keep Flow-6's existing local `_ReanalysisAdapter` Protocol** — do **not**
+  widen the public `WeatherReanalysisSource` Protocol (rejected option a). This is
+  already the pattern Flow 6 uses.
+
+**Consequence for this plan (081-side deliverable):** the single `RecapGatewayAdapter`
+that satisfies both Protocols must expose an `NWP_SOURCE: str` class attribute so it
+structurally satisfies Flow-6's local `_ReanalysisAdapter` Protocol. Because Flow-1
+dispatches on the station binding + local resolution (never `adapter.NWP_SOURCE`),
+one adapter carries its reanalysis identity with **no dual-identity conflict** — the
+"one adapter, two Protocols" design above holds. The exact source-string convention
+is confirmed in 082 live smoke; 081 only guarantees the attribute exists on the class.
+
+**Ownership:** the **design** is locked here; the **implementation** (the three edit
+sites, the docstring fix, the generic gateway-binding `BASIN_AVERAGE` validator, and
+the source-aware completion-gate test) is owned by **Plan 082 Task 2C** and gated on
+this plan's `RecapGatewayAdapter` existing (081 WF2 merge → author the 2C dispatch
+test). Plan 081 stays offline-only and does **not** edit any flow-dispatch code.
+
 ## Test Plan
 
 All required tests in Plan 081 are offline. They use `FakeRecapClient` objects
@@ -390,7 +437,10 @@ uv run pytest tests/unit/adapters/test_meteoswiss_nwp.py::TestParamGroups::test_
 **Scope in:** Implement `RecapGatewayAdapter` boundary validation (including splitting
 off the `source`/`source_run` provenance columns and capturing `source_run`),
 DataFrame-to-Polars conversion, typed request construction, station/band splitting, and
-fake-client unit tests.
+fake-client unit tests. Expose an `NWP_SOURCE: str` class attribute on the adapter so it
+structurally satisfies Flow-6's local `_ReanalysisAdapter` Protocol (per the locked
+NWP-Source Dispatch Design; flow wiring itself is Plan 082 Task 2C). Add a unit assertion
+that the attribute is present and non-empty.
 
 **Scope out:** No real network access in unit tests and no dependency metadata
 changes.
