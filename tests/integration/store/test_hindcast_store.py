@@ -138,6 +138,8 @@ def _make_hindcast(
     n_members: int = 3,
     n_steps: int = 5,
     created_at: datetime | None = None,
+    parameter: str = "discharge",
+    units: str = "m³/s",
 ) -> HindcastForecast:
     step = hindcast_step if hindcast_step is not None else _utc(2025, 3, 1)
     run_id = hindcast_run_id or uuid4()
@@ -146,6 +148,8 @@ def _make_hindcast(
         representation=representation,
         n_members=n_members,
         n_steps=n_steps,
+        parameter=parameter,
+        units=units,
     )
     return HindcastForecast(
         id=HindcastForecastId(uuid4()),
@@ -515,6 +519,11 @@ class TestStoreHindcastAtomicityRollback:
         sid = _seed_station(db_connection)
         mid = _seed_model(db_connection)
         aid = _seed_artifact(db_connection, mid, sid)
+        # A second active artifact (distinct model) so the conflict can carry a
+        # DIFFERENT mutable header field — proving the header upsert itself rolls
+        # back, not just that the value rows are restored.
+        mid_alt = _seed_model(db_connection)
+        aid_alt = _seed_artifact(db_connection, mid_alt, sid)
         run_id = uuid4()
 
         # Seed the original hindcast (clean insert)
@@ -534,11 +543,13 @@ class TestStoreHindcastAtomicityRollback:
         ).scalar_one()
         assert original_count > 0
 
-        # Build a conflicting hindcast (same natural key, different object id)
+        # Build a conflicting hindcast (same natural key, DIFFERENT artifact so a
+        # leaked header update would be detectable)
         hc_conflict = _make_hindcast(
-            sid, mid, aid, hindcast_step=_utc(2025, 10, 1), hindcast_run_id=run_id
+            sid, mid, aid_alt, hindcast_step=_utc(2025, 10, 1), hindcast_run_id=run_id
         )
         assert hc_conflict.id != seeded_id  # different object
+        assert aid_alt != aid  # different mutable header field
 
         hit_values_insert: dict[str, bool] = {"fired": False}
 
@@ -575,14 +586,20 @@ class TestStoreHindcastAtomicityRollback:
 
         assert hit_values_insert["fired"], "hindcast_values INSERT was never reached"
 
-        # The original header must still exist (query by seeded_id, NOT hc_conflict.id)
+        # The original header must still exist AND retain its original mutable
+        # field — the conflict-path header upsert (which would have set
+        # model_artifact_id=aid_alt) must have rolled back with the values.
         header_row = db_connection.execute(
-            sa.select(hindcast_forecasts.c.id).where(
+            sa.select(hindcast_forecasts.c.model_artifact_id).where(
                 hindcast_forecasts.c.id == seeded_id
             )
         ).first()
         assert header_row is not None, (
             "original header was lost after conflict rollback"
+        )
+        assert header_row[0] == aid, (
+            "header upsert leaked: model_artifact_id was not rolled back to the "
+            "seeded value"
         )
 
         # The original value rows must be fully restored
@@ -940,6 +957,7 @@ class TestStoreHindcastDedupFullReplace:
             n_members=5,  # different ensemble size — new values
             n_steps=2,
             created_at=_utc(2026, 6, 1),  # later than hc_first's _T0
+            units="L/s",  # different units — mutable header field
         )
         id_second = store.store_hindcast(hc_second)
 
@@ -968,6 +986,14 @@ class TestStoreHindcastDedupFullReplace:
         ).scalar_one()
         assert header == aid_second, "model_artifact_id must reflect the second write"
 
+        # (b1) units is in set_: the second write's units overwrites the first.
+        stored_units = db_connection.execute(
+            sa.select(hindcast_forecasts.c.units).where(
+                hindcast_forecasts.c.id == id_first
+            )
+        ).scalar_one()
+        assert stored_units == "L/s", "units must reflect the second write (in set_)"
+
         # (b2) created_at is NOT in set_: it stays the FIRST write's value, tied
         # to the surviving header (not overwritten by the later second write).
         stored_created_at = db_connection.execute(
@@ -993,6 +1019,67 @@ class TestStoreHindcastDedupFullReplace:
             f"expected {expected_value_count} value rows (2nd write),"
             f" got {actual_count}"
         )
+
+    def test_representation_overwritten_on_conflict(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """representation is in set_: a MEMBERS→QUANTILES re-run overwrites it.
+
+        Guards against set_ omitting `representation` (a MEMBERS header left
+        behind quantile value rows would silently mis-describe the payload).
+        """
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, mid, sid)
+        store = PgHindcastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+        run_id = uuid4()
+        step = _utc(2026, 7, 1)
+
+        id_members = store.store_hindcast(
+            _make_hindcast(
+                sid,
+                mid,
+                aid,
+                hindcast_step=step,
+                hindcast_run_id=run_id,
+                representation=EnsembleRepresentation.MEMBERS,
+                n_members=3,
+                n_steps=2,
+            )
+        )
+        id_quantiles = store.store_hindcast(
+            _make_hindcast(
+                sid,
+                mid,
+                aid,
+                hindcast_step=step,
+                hindcast_run_id=run_id,
+                representation=EnsembleRepresentation.QUANTILES,
+                n_steps=2,
+            )
+        )
+
+        assert id_quantiles == id_members, "same natural key must upsert one header"
+
+        stored_repr = db_connection.execute(
+            sa.select(hindcast_forecasts.c.representation).where(
+                hindcast_forecasts.c.id == id_members
+            )
+        ).scalar_one()
+        assert stored_repr == EnsembleRepresentation.QUANTILES.value, (
+            "representation must reflect the second write (in set_)"
+        )
+
+        # Full-replace: the surviving value rows are quantiles (member_id NULL).
+        member_rows = db_connection.execute(
+            sa.select(sa.func.count()).where(
+                hindcast_values.c.hindcast_forecast_id == id_members,
+                hindcast_values.c.member_id.isnot(None),
+            )
+        ).scalar_one()
+        assert member_rows == 0, "old MEMBERS value rows must be fully replaced"
 
     def test_qc_fields_overwritten_on_conflict(
         self, db_connection: sa.Connection
@@ -1148,3 +1235,56 @@ class TestStoreHindcastDedupDistinctRunId:
             )
         ).scalar_one()
         assert count == 2, f"both run-id hindcasts must persist, got {count}"
+
+
+class TestStoreHindcastDedupDistinctParameter:
+    def test_distinct_parameter_both_persist(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """parameter is a KEY column — same station/model/step/run/forcing but
+        distinct parameter must produce two headers (not upsert into one)."""
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, mid, sid)
+        store = PgHindcastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+        step = _utc(2026, 8, 1)
+        run_id = uuid4()
+
+        id_discharge = store.store_hindcast(
+            _make_hindcast(
+                sid,
+                mid,
+                aid,
+                hindcast_step=step,
+                hindcast_run_id=run_id,
+                parameter="discharge",
+            )
+        )
+        id_water_level = store.store_hindcast(
+            _make_hindcast(
+                sid,
+                mid,
+                aid,
+                hindcast_step=step,
+                hindcast_run_id=run_id,
+                parameter="water_level",
+            )
+        )
+
+        assert id_discharge != id_water_level, (
+            "distinct parameter must produce distinct ids"
+        )
+
+        count = db_connection.execute(
+            sa.select(sa.func.count())
+            .select_from(hindcast_forecasts)
+            .where(
+                hindcast_forecasts.c.station_id == sid,
+                hindcast_forecasts.c.model_id == mid,
+                hindcast_forecasts.c.hindcast_step == step,
+                hindcast_forecasts.c.hindcast_run_id == run_id,
+            )
+        ).scalar_one()
+        assert count == 2, f"both parameter hindcasts must persist, got {count}"
