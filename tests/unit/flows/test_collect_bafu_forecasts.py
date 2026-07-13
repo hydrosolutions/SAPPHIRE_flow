@@ -20,6 +20,8 @@ from sapphire_flow.types.bafu_forecast import (
     BafuVariantFetch,
 )
 from sapphire_flow.types.datetime import ensure_utc
+from sapphire_flow.types.enums import PipelineCheckType, PipelineHealthStatus
+from tests.fakes.fake_stores import FakePipelineHealthStore
 
 _PRODUCED_AT = ensure_utc(datetime(2026, 7, 10, 9, 43, 8, tzinfo=UTC))
 _ISSUED_AT = ensure_utc(datetime(2026, 7, 10, 5, 0, tzinfo=UTC))
@@ -402,3 +404,193 @@ class TestCollection:
             config=config, adapter=adapter, clock=clock, sleeper=_SleepSpy()
         )
         assert clock.calls == 1
+
+
+class _RaisingHealthStore:
+    def append_health_record(self, record: object) -> None:
+        raise RuntimeError("db unavailable")
+
+
+class TestDisposeConn:
+    def test_closes_connection_then_disposes_engine(self) -> None:
+        from sapphire_flow.flows.collect_bafu_forecasts import _dispose_conn
+
+        calls: list[str] = []
+
+        class _Engine:
+            def dispose(self) -> None:
+                calls.append("dispose")
+
+        class _Conn:
+            engine = _Engine()
+
+            def close(self) -> None:
+                calls.append("close")
+
+        _dispose_conn(_Conn())
+        assert calls == ["close", "dispose"]  # connection returned, then pool freed
+
+    def test_none_is_noop(self) -> None:
+        from sapphire_flow.flows.collect_bafu_forecasts import _dispose_conn
+
+        _dispose_conn(None)  # must not raise (injected-adapter/test path)
+
+    def test_close_error_is_swallowed(self) -> None:
+        from sapphire_flow.flows.collect_bafu_forecasts import _dispose_conn
+
+        class _Conn:
+            def close(self) -> None:
+                raise RuntimeError("boom")
+
+        _dispose_conn(_Conn())  # best-effort — never propagates
+
+
+class TestBuildHealthStoreBestEffort:
+    def test_returns_none_none_on_failure_so_collection_proceeds(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A health-store outage (missing DATABASE_URL / DB down) must NEVER abort
+        # the forward-only collection run — it returns (None, None) and the run
+        # proceeds with no heartbeat, rather than raising before any fetch.
+        from sapphire_flow.flows.collect_bafu_forecasts import (
+            _build_health_store_best_effort,
+        )
+
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+        conn, store = _build_health_store_best_effort()
+        assert conn is None
+        assert store is None
+
+
+class TestBafuHealthHeartbeat:
+    def test_ok_status_and_detail_counts_on_clean_run(self, tmp_path: Path) -> None:
+        river = _river_station("2135")
+        lake = _lake_station("3001")
+        inventory = BafuStationInventory(
+            stations=[river, lake], produced_at=_PRODUCED_AT
+        )
+        variant_results: dict[tuple[str, str], BafuVariantFetch | None | Exception] = {
+            ("2135", "q_forecast"): _fetch("2135", "q_forecast", n_rows=3),
+            ("3001", "q_forecast"): _fetch("3001", "q_forecast", n_rows=2),
+            ("3001", "p_forecast"): _fetch(
+                "3001", "p_forecast", metric="masl", n_rows=4
+            ),
+        }
+        adapter = _FakeAdapter(inventory, variant_results)
+        config = _make_config(bafu_forecast_archive_path=tmp_path)
+        health_store = FakePipelineHealthStore()
+
+        result = collect_bafu_forecasts_flow(
+            config=config,
+            adapter=adapter,
+            clock=_ClockSpy(_PRODUCED_AT),
+            sleeper=_SleepSpy(),
+            pipeline_health_store=health_store,
+        )
+
+        records = health_store.fetch_recent(PipelineCheckType.BAFU_FORECAST_FRESHNESS)
+        assert len(records) == 1
+        record = records[0]
+        assert record.check_type is PipelineCheckType.BAFU_FORECAST_FRESHNESS
+        assert record.status is PipelineHealthStatus.OK
+        assert record.subject == "bafu_forecast_collector"
+        assert record.cycle_time is None
+        assert record.checked_at == _PRODUCED_AT
+        assert record.created_at == _PRODUCED_AT
+        assert record.detail == {
+            "stations_seen": result.stations_seen,
+            "variants_fetched": result.variants_fetched,
+            "variants_absent": result.variants_absent,
+            "variants_skipped_dedup": result.variants_skipped_dedup,
+            "variants_failed": result.variants_failed,
+            "rows_archived": result.rows_archived,
+        }
+        assert record.detail == {
+            "stations_seen": 2,
+            "variants_fetched": 3,
+            "variants_absent": 0,
+            "variants_skipped_dedup": 0,
+            "variants_failed": 0,
+            "rows_archived": 9,
+        }
+
+    def test_warning_status_when_variants_failed(self, tmp_path: Path) -> None:
+        failing = _river_station("1111")
+        healthy = _river_station("2135")
+        inventory = BafuStationInventory(
+            stations=[failing, healthy], produced_at=_PRODUCED_AT
+        )
+        variant_results: dict[tuple[str, str], BafuVariantFetch | None | Exception] = {
+            ("1111", "q_forecast"): AdapterError("boom"),
+            ("2135", "q_forecast"): _fetch("2135", "q_forecast", n_rows=1),
+        }
+        adapter = _FakeAdapter(inventory, variant_results)
+        config = _make_config(bafu_forecast_archive_path=tmp_path)
+        health_store = FakePipelineHealthStore()
+
+        collect_bafu_forecasts_flow(
+            config=config,
+            adapter=adapter,
+            clock=_ClockSpy(_PRODUCED_AT),
+            sleeper=_SleepSpy(),
+            pipeline_health_store=health_store,
+        )
+
+        records = health_store.fetch_recent(PipelineCheckType.BAFU_FORECAST_FRESHNESS)
+        assert len(records) == 1
+        assert records[0].status is PipelineHealthStatus.WARNING
+        assert records[0].detail["variants_failed"] == 1
+
+    def test_health_write_failure_does_not_fail_the_collection_run(
+        self, tmp_path: Path
+    ) -> None:
+        station = _river_station("2135")
+        inventory = BafuStationInventory(stations=[station], produced_at=_PRODUCED_AT)
+        variant_results: dict[tuple[str, str], BafuVariantFetch | None | Exception] = {
+            ("2135", "q_forecast"): _fetch("2135", "q_forecast", n_rows=1),
+        }
+        adapter = _FakeAdapter(inventory, variant_results)
+        config = _make_config(bafu_forecast_archive_path=tmp_path)
+
+        result = collect_bafu_forecasts_flow(
+            config=config,
+            adapter=adapter,
+            clock=_ClockSpy(_PRODUCED_AT),
+            sleeper=_SleepSpy(),
+            pipeline_health_store=_RaisingHealthStore(),
+        )
+
+        # The archive/collection outcome is unaffected by the health-write
+        # failure — best-effort, never fatal to the run.
+        assert result.variants_fetched == 1
+        assert result.rows_archived == 1
+
+    def test_no_health_write_when_store_not_provided(self, tmp_path: Path) -> None:
+        # Default (no store injected, no DATABASE_URL) must not raise —
+        # _append_bafu_health_record no-ops on pipeline_health_store=None.
+        station = _river_station("2135")
+        inventory = BafuStationInventory(stations=[station], produced_at=_PRODUCED_AT)
+        variant_results: dict[tuple[str, str], BafuVariantFetch | None | Exception] = {
+            ("2135", "q_forecast"): _fetch("2135", "q_forecast", n_rows=1),
+        }
+        adapter = _FakeAdapter(inventory, variant_results)
+        config = _make_config(bafu_forecast_archive_path=tmp_path)
+
+        result = collect_bafu_forecasts_flow(
+            config=config,
+            adapter=adapter,
+            clock=_ClockSpy(_PRODUCED_AT),
+            sleeper=_SleepSpy(),
+        )
+        assert result.variants_fetched == 1
+
+
+class TestPipelineCheckTypeEnum:
+    def test_bafu_forecast_freshness_round_trips(self) -> None:
+        assert (
+            PipelineCheckType("bafu_forecast_freshness")
+            is PipelineCheckType.BAFU_FORECAST_FRESHNESS
+        )
+        assert PipelineCheckType.BAFU_FORECAST_FRESHNESS.value == (
+            "bafu_forecast_freshness"
+        )

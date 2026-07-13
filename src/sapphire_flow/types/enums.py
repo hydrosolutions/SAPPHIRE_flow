@@ -160,6 +160,7 @@ class PipelineCheckType(Enum):
     ALERT_SUPPRESSED_FALLBACK = "alert_suppressed_fallback"
     PRIORITY_MIGRATION_AUDIT = "priority_migration_audit"
     CLIMATOLOGY_THRESHOLD_REVIEW = "climatology_threshold_review"
+    BAFU_FORECAST_FRESHNESS = "bafu_forecast_freshness"
 
 
 class NotificationChannel(Enum):
