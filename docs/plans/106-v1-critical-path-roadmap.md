@@ -67,6 +67,7 @@ points: **Flow 0 Nepal onboarding** (needs forcing + obs + auth all present) and
 038 (store write atomicity) ──► 040 (hindcast dedup)   [Wave 0; 040 depends_on 038 — 040 line 5; 040 must not land before 038]
 FI published to private index ─────────────► 080 (drop git-pin + CI wheel-guard exception)
 081 (offline adapter) ──► 082 (live smoke/coverage) ──► 047 (Nepal data-sources umbrella)
+114 (WeatherSourceRole field) ──► 082 Task 2C (NWP-source dispatch)   [Swiss-testable prereq; surfaced by the 081 grill-me Codex review 2026-07-13. 081 offline build parallelizes; 082 dispatch must not land before 114]
 035 (provenance, READY) ──► rating-curve h→Q ingestion ──► Stage 2 QC (2.5–2.7)
 water_level unit normalization ──► removes the Plan 101 cm-onboarding guard
 046 (staging validation, IN_PROGRESS) ──► 048a (local encrypted restic + restore rehearsal — NOW)  [048b off-site target/key custody = the BLOCKED tail, needs the hosting decision §3-7. 048/049 parallel under 046; NO 048→049 edge]
@@ -109,6 +110,7 @@ config later; `BLOCKED` = core design needs an external answer first (see §3).
 | Prefect worker observability & home | **103** | DRAFT (grill-me PENDING — D2 mechanism + D3 level-split unresolved) | NOW | supersedes 062 | 0 (parallel) |
 | Short-lookback observability | **097** | DRAFT (grill-me done) | NOW | 093 (done — archived at `docs/plans/archive/093-*.md`, shipped #53) | 0 (parallel) |
 | recap-dg-client forcing adapter (offline) | **081** | DRAFT | NOW | — | 1 |
+| `WeatherSourceRole` field (forecast/reanalysis source disambiguation) | **114** | DRAFT | NOW | — (Swiss-testable; **blocks 082 Task 2C**) | 1 |
 | recap Gateway operational + training readiness (live) | **082** | DRAFT | BLOCKED | 081; gateway creds/coverage | 1 |
 | Nepal data-sources umbrella (IFS/DHM/ERA5-Land) | **047** | DRAFT (stub — **scope STALE, must be revised before READY**, see §4 action) | NOW* | 081/082; DHM+geometry | 1 |
 | ERA5-Land reanalysis source | — | *subsumed by 081/082* | NOW | 081 | 1 |

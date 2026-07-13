@@ -275,13 +275,25 @@ MeteoSwiss (verified against `main` 2026-07-13):
   widen the public `WeatherReanalysisSource` Protocol (rejected option a). This is
   already the pattern Flow 6 uses.
 
-**Consequence for this plan (081-side deliverable):** the single `RecapGatewayAdapter`
-that satisfies both Protocols must expose an `NWP_SOURCE: str` class attribute so it
-structurally satisfies Flow-6's local `_ReanalysisAdapter` Protocol. Because Flow-1
-dispatches on the station binding + local resolution (never `adapter.NWP_SOURCE`),
-one adapter carries its reanalysis identity with **no dual-identity conflict** — the
-"one adapter, two Protocols" design above holds. The exact source-string convention
-is confirmed in 082 live smoke; 081 only guarantees the attribute exists on the class.
+**Prerequisite — the source-role field (Plan 114).** An independent Codex review of
+this grill-me (2026-07-13) found that a single adapter cannot carry one `NWP_SOURCE`
+that is *both* the IFS forecast storage key *and* the ERA5-Land reanalysis selector,
+and that `_select_nwp_source` is non-deterministic when a station has two
+`BASIN_AVERAGE` bindings (forecast + reanalysis) — because the repo today
+disambiguates forecast vs reanalysis only *implicitly* by `extraction_type`, which
+collapses for Nepal's all-`BASIN_AVERAGE` gateway forcing. The root fix is an
+explicit `WeatherSourceRole` (FORECAST | REANALYSIS) field on `StationWeatherSource`,
+owned by **Plan 114** (Swiss-testable prerequisite; blocks Plan 082 Task 2C).
+
+**Consequence for this plan (081-side deliverable), given Plan 114:** the single
+`RecapGatewayAdapter` exposes an `NWP_SOURCE: str` class attribute carrying its
+**reanalysis** identity (e.g. `era5_land`), which satisfies Flow-6's local
+`_ReanalysisAdapter` Protocol. The **forecast** path never reads `adapter.NWP_SOURCE`:
+Flow-1 selects the `role==FORECAST` binding and keys forecast *storage* off *that
+binding's* `nwp_source` (e.g. `ifs_ecmwf`), not off the adapter — so the earlier
+"no dual-identity conflict" only holds once the role field disambiguates the two
+bindings. 081 only guarantees the `NWP_SOURCE` attribute exists on the class; the
+role-based selection and the forecast-storage-key correction live in Plans 114/082.
 
 **Ownership:** the **design** is locked here; the **implementation** (the three edit
 sites, the docstring fix, the generic gateway-binding `BASIN_AVERAGE` validator, and

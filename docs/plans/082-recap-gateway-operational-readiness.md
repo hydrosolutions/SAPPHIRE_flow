@@ -6,6 +6,7 @@ title: recap Gateway operational and training readiness
 scope: Nepal v1 live Gateway readiness
 depends_on:
   - 081-recap-dg-client-integration
+  - 114-weather-source-role-field
 ---
 
 # Plan 082 - recap Gateway operational and training readiness
@@ -267,9 +268,10 @@ uv run pytest tests/unit/adapters/test_recap_gateway_cycle_resolution.py
    - **(a)** Add a `RecapGatewayAdapter` construction branch to the `if adapter is None:`
      block at `flows/run_forecast_cycle.py:964-997` (currently only builds
      `MeteoSwissNwpAdapter`).
-   - **(b)** Parameterize `_check_nwp_grid_staleness` (`run_forecast_cycle.py:508-546`) on
-     the **active NWP source string** instead of the module-level `_ICON_NWP_SOURCE`,
-     wiring the call site at `:1244-1250`. On an IFS-only Nepal deployment the current
+   - **(b)** Parameterize `_check_nwp_grid_staleness` (`run_forecast_cycle.py:564-602`,
+     was `:508-546`) on the **active NWP source string** instead of the module-level
+     `_ICON_NWP_SOURCE`, wiring the call site (was `:1244-1250`; re-locate on current
+     `main`). On an IFS-only Nepal deployment the current
      `fetch_latest_cycle_time("icon_ch2_eps")` over `weather_forecasts` (NOT the Zarr grid
      archive — do not send the fix toward grid storage) returns `None` every cycle and
      writes `PipelineHealthStatus.CRITICAL` / `PipelineCheckType.NWP_DELIVERY` (`:536-545`)
@@ -284,10 +286,17 @@ uv run pytest tests/unit/adapters/test_recap_gateway_cycle_resolution.py
      "Phase A only stores ICON grid records…") to reflect multi-source support. `_select_nwp_source`
      itself needs **no** logic change — its BASIN_AVERAGE second pass (`:95-97`) already returns
      the gateway source.
-   - **Phase A→B storage-key round-trip:** confirm the gateway adapter's Phase A store path
-     writes records under its own `NWP_SOURCE` key (e.g. `"ifs_ecmwf"`), so Phase B's
-     `fetch_weather_forecasts(nwp_source=…)` (`services/operational_inputs.py:323-330`) finds
-     them — otherwise every Nepal station logs `operational_inputs.no_nwp` and returns None.
+   - **Phase A→B storage-key round-trip (corrected per Plan 114 + the 081 Codex review
+     2026-07-13):** the forecast storage key is the **`role==FORECAST` binding's
+     `nwp_source`** (e.g. `"ifs_ecmwf"`) as selected by `_select_nwp_source` — **not**
+     `adapter.NWP_SOURCE`, which under the locked design is the adapter's *reanalysis*
+     identity (`"era5_land"`, used only by Flow-6 `_reanalysis_sources`). Phase A must
+     write forecast records under that forecast binding's source string so Phase B's
+     `fetch_weather_forecasts(nwp_source=…)` (`services/operational_inputs.py`, re-locate
+     on `main`) finds them — otherwise every Nepal station logs `operational_inputs.no_nwp`
+     and returns None. This depends on **Plan 114** (the `WeatherSourceRole` field that makes
+     `_select_nwp_source` pick the forecast binding deterministically); do not implement 2C
+     dispatch before 114 lands.
 
 3. **Generic gateway-binding validator (owned HERE, not deferred to D5-2).** To remove a
    sequencing contradiction (the completion-gate test below asserts the invariant, so its
