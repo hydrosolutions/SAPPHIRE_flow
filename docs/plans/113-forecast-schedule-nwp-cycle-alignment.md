@@ -80,40 +80,57 @@ current; BAFU collection is healthy.
 | # | Fix | Change | Trade-off |
 |---|---|---|---|
 | A (mitigation) | Drop the broken 00:00 slot | `SCHEDULE_FORECAST_CYCLE=0 6,12,18 * * *` | Zero code, immediate. Loses the (obs-only) 00:00 run; 06:00 covers it. Still never `primary`. |
-| **B (chosen direction)** | **Offset the schedule past NWP delivery** | e.g. `0 5,11,17,23 * * *` | Each forecast runs after its cycle *should* be published → can select `primary`; keeps 4×/day. **CAVEAT (Codex): only sufficient with a *measured* delivery margin.** If the offset run still falls back (STAC hasn't published the current cycle yet), it inherits the SAME 4-bucket shortfall — it just moves the risk to a different slot. Must verify the chosen slots actually select `primary`, not merely offset the cron. |
+| **B (chosen direction)** | **Offset the schedule past NWP delivery** | e.g. `0 5,11,17,23 * * *` | Each forecast runs after its cycle *should* be published → can select `primary`; keeps 4×/day. **CAVEAT (Codex ×2): only sufficient with a *measured* delivery margin, AND the shortfall risk on fallback is 05:00-specific.** If the intended cycle isn't fully usable yet, only the **05:00** slot falls back to prev-day 18Z → 4 buckets (broken); 11/17/23 fall back to same-day 00/06/12 → still **5 buckets** (just `fallback` provenance, not `primary`). So B fixes the 00:00 dropout at any reasonable offset, but "all slots `primary`" needs the readiness measurement — see the decision-tree below. |
 | C | Shorten the model horizon | `required_steps` 5 → 4 | **Rejected.** `NwpRegression.predict` uses `horizon = len(future_times)` (`nwp_regression.py:216`), so relaxing only the guard reintroduces truncated NWP forecasts; changing the model horizon to 4 is a product/model change, not a scheduling fix. |
-| D (missed by the plan; deeper) | Fix the daily-bucketing / coverage semantics | e.g. label daily aggregates by bucket-**end** before the `>` filter, or make coverage check *expected* forecast-step timestamps instead of a non-null row count | Removes the 00Z boundary artifact across **all four** slots at once — but changes model input timestamp semantics → needs validation / retraining. A model-semantics change, not a quick operational patch. |
+| D (deeper; model-semantics) | Fix the daily-bucketing / coverage semantics | in `_filter_and_cap_daily_records` (`operational_inputs.py:111`): filter/cap by daily bucket **end** (pass `time_step`, use `effective_valid_time = valid_time + time_step`) before pivoting | Removes the 00Z boundary artifact across **all four** slots. **Confirmed by Codex ×2: NOT a harmless guard change** — it changes which aggregated weather-day feeds which forecast timestamp (at 06/12/18 today's bucket enters and the last drops). Artifact format is unchanged but model semantics shift → **retrain/backtest before production.** |
+| E (robust; resolver change) | Select a *specific intended cycle* instead of snapping from wall-clock `now` | change the `meteoswiss_nwp` cycle resolver so a late cycle can still be treated as the intended `primary` after the boundary | The only fix that makes every slot `primary` **even when readiness ≥ 6 h** (which no cron can). Larger change to the adapter/API; also fixes the always-`fallback` provenance. Consider only if `primary` provenance / freshness genuinely matters. |
 
 **Owner decision (2026-07-13): pursue B eventually, low priority.** Do not apply A/B now —
-leave as a documented finding. **Codex recommendation:** implement **B with a measured delivery
-margin** first (operational, low-risk); treat **D** (bucketing refactor) as a separate
-model-semantics change if the never-`primary` behaviour or the boundary artifact needs a real
-fix. Do NOT relax the coverage guard (C) alone.
+leave as a documented finding. **Codex recommendation (×2, converged):** the 00:00 dropout is
+the only user-visible defect — fix it with **B** (offset the cron), which kills the dropout at
+any reasonable offset. Reach `primary` at *all* slots only if the *measured* readiness allows
+(decision-tree below); if readiness ≥ 6 h, that requires **E** (resolver change), not a cron.
+**D** (bucketing) removes the boundary artifact everywhere but is a model-semantics change
+(retrain). Do NOT relax the coverage guard (C) alone, and do NOT rely on tuning
+`max_fallback_steps` / `nwp_cycle_min_age_minutes`.
 
 ## B — what a real fix needs (when picked up)
 
-1. **Measure real cycle *publication* timing** on the mini — for a few cycles, when does STAC
-   first serve the cycle, and how does that relate to the **105 min** `nwp_cycle_min_age_minutes`
-   gate? The offset must be late enough that the intended cycle is BOTH published on STAC AND
-   older than 105 min, so `_snap_to_cycle` selects it as `primary` (not a walk-back). Picking an
-   offset without this measurement is the trap — see the B caveat above.
-2. **Prove `primary` selection, not just a shifted cron.** After choosing the offset, confirm
-   the resulting forecasts carry `nwp_cycle_source = primary` and `available_steps = 5` at
-   **every** slot — otherwise B just relocated the 4-bucket shortfall.
-3. **Decide the schedule** — `0 5,11,17,23 * * *` (4×/day, offset) vs a once/daily run. For a
-   *daily* 5-day-horizon model, 4×/day may be more churn than value; weigh against alerting
-   freshness needs.
-4. **Reproduce on the dev stack first** (see the memory's dev-stack note) before touching the
+1. **Measure *end-to-end* readiness, not "STAC has an item."** Codex ×2 caveat:
+   `_cycle_is_published()` (`meteoswiss_nwp.py:549`) returns true on *any* matching
+   `forecast:reference_datetime` — it does NOT verify the cycle is complete, so a "published"
+   cycle can still fail coverage. Measure the real thing over a few cycles: after time T past the
+   cycle boundary, does the run get `nwp_cycle_source = primary` AND `available_steps == 5`
+   through the actual fetch/extract path?
+2. **Then pick the cron from the measured readiness (Codex ×2 decision-tree):**
+   - **≤ 5 h** → `0 5,11,17,23 * * *`.
+   - **5–6 h** → minute precision, e.g. `45 5,11,17,23 * * *` if p99 + margin ≤ 5 h 45 (must stay
+     *before* the next nominal cycle boundary).
+   - **≥ 6 h** → **no fixed cron can make all four slots `primary`** with the current
+     wall-clock `_snap_to_cycle`; after the next boundary the intended cycle is structurally
+     `fallback`. That's the case for **option E** (resolver change), not a schedule tweak.
+   Note: even where B doesn't reach `primary`, 11/17/23 still get 5 buckets — so B reliably kills
+   the 00:00 *dropout*; only `primary` provenance needs the readiness margin.
+3. **Prove it, don't assume.** Confirm `nwp_cycle_source` + `available_steps` at **every** slot
+   after the change — B "worked" means the 00:00 slot is NWP-driven, not merely a shifted cron.
+   Tuning `max_fallback_steps` is NOT a fix (only allows staler data); lowering
+   `nwp_cycle_min_age_minutes` risks selecting *incomplete* cycles unless readiness is genuinely
+   earlier.
+4. **Decide the cadence** — 4×/day (offset) vs a once/daily run. For a *daily* 5-day-horizon
+   model, 4×/day may be more churn than value; weigh against alerting freshness needs.
+5. **Reproduce on the dev stack first** (see the memory's dev-stack note) before touching the
    mini — verify the coverage count at each candidate slot.
-5. **Where the value lives:** the schedule is the env var `SCHEDULE_FORECAST_CYCLE`
+6. **Where the value lives:** the schedule is the env var `SCHEDULE_FORECAST_CYCLE`
    (`cli/register_deployments.py`) — a per-deployment cron. Changing it is an env/redeploy
    op (auto-registered on `up -d`), OR change the default in `register_deployments.py`
    (code, hold-at-PR + bump). Consider whether the offset belongs in the code default (all
    deployments) or only the mac-mini env (Swiss-specific NWP timing).
-6. **Interaction with Plan 090** — this does NOT touch the age-delay guard; it moves the
+7. **Interaction with Plan 090** — this does NOT touch the age-delay guard; it moves the
    *forecast* schedule so the guard's chosen cycle is well-covered. Keep them independent.
 
 ## Non-goals
-- Changing Plan 090's cycle-selection / age-delay logic.
+- Changing Plan 090's **age-delay guard** (the `nwp_cycle_min_age_minutes` min-age logic) — it
+  works as designed. (Option E's resolver change — target the *intended* cycle instead of
+  snapping from wall-clock `now` — is a deliberate, separate exception, only if pursued.)
 - Changing model requirements (`required_steps` / horizon).
 - Anything about the BAFU collector (Plan 111) — unrelated.
