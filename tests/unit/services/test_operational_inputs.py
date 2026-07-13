@@ -5,6 +5,7 @@ from datetime import UTC, date, datetime, timedelta
 from uuid import uuid4
 
 import pytest
+from structlog.testing import capture_logs
 
 from sapphire_flow.services.operational_inputs import (
     _aggregate_nwp_records_to_time_step,
@@ -19,6 +20,7 @@ from sapphire_flow.types.enums import (
     WeatherSourceStatus,
 )
 from sapphire_flow.types.ids import ModelId, StationId
+from sapphire_flow.types.model import ModelDataRequirements
 from sapphire_flow.types.weather import WeatherForecastRecord
 from tests.conftest import (
     make_observations,
@@ -175,7 +177,7 @@ def _make_stores_and_sources(
     )
 
     if with_obs:
-        obs_start = _utc(2026, 1, 9, 2)
+        obs_start = ensure_utc(_ISSUE - n_obs * timedelta(hours=1))
 
         obs = make_observations(
             n=n_obs,
@@ -591,3 +593,134 @@ class TestFutureFilterAndCap:
             ensure_utc(datetime(2026, 1, 10, tzinfo=UTC)),
         ]
         assert {p.member_id for p in kept} == set(range(_AGG_MEMBERS))
+
+
+def _assemble_short(
+    sid: StationId,
+    stores: tuple,
+    requirements_override: ModelDataRequirements | None = None,
+):
+    """Invoke assemble_station_operational_inputs with the shared fixture stores."""
+    station_store, basin_store, obs_store, nwp_store, state_store, reanalysis = stores
+    return assemble_station_operational_inputs(
+        station_id=sid,
+        model=_make_model(),
+        model_id=_MODEL_ID,
+        issue_time=_ISSUE,
+        cycle_time=_CYCLE,
+        nwp_source=_NWP_SOURCE,
+        forcing_source=reanalysis,
+        weather_forecast_store=nwp_store,
+        obs_store=obs_store,
+        station_store=station_store,
+        basin_store=basin_store,
+        model_state_store=state_store,
+        clock=_clock,
+        forecast_horizon_steps=5,
+        time_step=timedelta(hours=1),
+        requirements_override=requirements_override,
+    )
+
+
+def _reqs(targets: set[str], lookback: int = 10) -> ModelDataRequirements:
+    """A minimal requirements override with NO dynamic features (isolates the
+    short-lookback path from NWP / reanalysis handling)."""
+    return ModelDataRequirements(
+        target_parameters=frozenset(targets),
+        past_dynamic_features=frozenset(),
+        future_dynamic_features=frozenset(),
+        static_features=frozenset(),
+        supported_time_steps=frozenset({timedelta(hours=1)}),
+        lookback_steps=lookback,
+        forecast_horizon_steps=5,
+        spatial_input_type=SpatialRepresentation.POINT,
+    )
+
+
+def _short_events(logs: list[dict]) -> list[dict]:
+    return [e for e in logs if e.get("event") == "operational_inputs.short_lookback"]
+
+
+class TestShortLookbackWarning:
+    """Plan 097: warn at input-assembly when the delivered per-target lookback is
+    shorter than the model's declared ``lookback_steps``."""
+
+    def test_short_lookback_warns_with_per_target_counts(self) -> None:
+        sid = StationId(uuid4())
+        stores = _make_stores_and_sources(sid, with_obs=False, with_nwp=False)
+        obs_store = stores[2]
+        # 5 discharge obs, all inside the 10h lookback window [_ISSUE-10h, _ISSUE).
+        obs_store.store_observations(
+            make_observations(
+                n=5,
+                station_id=sid,
+                parameter="discharge",
+                start=ensure_utc(_ISSUE - timedelta(hours=5)),
+                interval=timedelta(hours=1),
+            )
+        )
+        with capture_logs() as logs:
+            _assemble_short(sid, stores, requirements_override=_reqs({"discharge"}))
+
+        events = _short_events(logs)
+        assert len(events) == 1
+        ev = events[0]
+        assert ev["log_level"] == "warning"
+        assert ev["per_target_counts"] == {"discharge": 5}
+        assert ev["lookback_needed"] == 10
+        assert ev["lookback_got"] == 5
+        assert ev["representative_model_id"] == str(_MODEL_ID)
+
+    def test_wholly_absent_target_counts_zero_and_warns(self) -> None:
+        sid = StationId(uuid4())
+        stores = _make_stores_and_sources(sid, with_obs=False, with_nwp=False)
+        obs_store = stores[2]
+        # discharge is healthy (10 in-window); water_level is wholly absent (no
+        # column) -> its count must be 0 (column-presence guard, no crash).
+        obs_store.store_observations(
+            make_observations(
+                n=10,
+                station_id=sid,
+                parameter="discharge",
+                start=ensure_utc(_ISSUE - timedelta(hours=10)),
+                interval=timedelta(hours=1),
+            )
+        )
+        with capture_logs() as logs:
+            _assemble_short(
+                sid, stores, requirements_override=_reqs({"discharge", "water_level"})
+            )
+
+        events = _short_events(logs)
+        assert len(events) == 1
+        ev = events[0]
+        assert ev["per_target_counts"]["discharge"] == 10
+        assert ev["per_target_counts"]["water_level"] == 0
+        assert ev["lookback_got"] == 0
+
+    def test_healthy_default_fixture_emits_no_warning(self) -> None:
+        # Locks the required _make_stores_and_sources fixture fix: with the fix,
+        # the default fixture supplies >= lookback_steps in-window obs, so a
+        # healthy station must NOT emit short_lookback.
+        sid = StationId(uuid4())
+        stores = _make_stores_and_sources(sid)
+        with capture_logs() as logs:
+            _assemble_short(sid, stores)
+        assert _short_events(logs) == []
+
+    def test_no_observations_does_not_double_warn(self) -> None:
+        sid = StationId(uuid4())
+        stores = _make_stores_and_sources(sid, with_obs=False)
+        with capture_logs() as logs:
+            _assemble_short(sid, stores)
+        # wholly-absent obs is owned by no_observations; short_lookback stays silent.
+        assert _short_events(logs) == []
+        assert any(e.get("event") == "operational_inputs.no_observations" for e in logs)
+
+    def test_empty_target_parameters_emits_no_warning(self) -> None:
+        sid = StationId(uuid4())
+        stores = _make_stores_and_sources(sid, with_obs=False, with_nwp=False)
+        with capture_logs() as logs:
+            _assemble_short(sid, stores, requirements_override=_reqs(set()))
+        # empty target_parameters early-exits (no min()-of-empty crash, no warning).
+        assert _short_events(logs) == []
