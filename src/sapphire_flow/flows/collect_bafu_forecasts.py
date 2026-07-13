@@ -9,9 +9,12 @@ see the four safeguards below.
 
 **Safeguard #2 (quarantined archive).** The flow is a no-op unless
 ``DeploymentConfig.bafu_forecast_archive_path`` is explicitly set — it never
-falls back to any operational path, never writes to the operational DB, and
-never mints a ``ModelId``. A single ``rm -rf`` of that directory discards the
-whole archive.
+falls back to any operational path, never writes BAFU forecast *data* to the
+operational DB, and never mints a ``ModelId``. A single ``rm -rf`` of that
+directory discards the whole archive. (The Flow 4 staleness heartbeat below
+writes one ``PipelineHealthRecord`` of run-stats *metadata* — station/variant
+counts, not forecast values — to the operational DB; see the note at the
+call site.)
 
 **Safeguard #3 (evaluation-only).** Nothing in this module is wired to
 training, model onboarding, or Flow 1. This is enforced by omission, not by a
@@ -27,12 +30,10 @@ re-fetched).
 Dedup is keyed on ``issued_at`` (the forecast's own issue time), not fetch
 time — issue time and publication time differ (Phase 0b).
 
-# TODO(plan-111): Flow 4 staleness check. ``PipelineCheckType``
-# (types/enums.py) has no member for a non-Flow-1 producer yet, and
-# ``append_health_record`` is only called from run_forecast_cycle.py today.
-# Wiring this collector into pipeline monitoring is a separate follow-up
-# task (Gate G3's "Flow-4 monitoring hook" item in
-# docs/plans/111-bafu-forecast-benchmarking.md) — not done here.
+Flow 4 staleness hook (Gate G3's "Flow-4 monitoring hook", implemented):
+each successful run emits one best-effort ``PipelineHealthRecord``
+(``check_type=BAFU_FORECAST_FRESHNESS``) so the watchdog can alert if this
+collector goes dark — see ``_append_bafu_health_record`` below.
 """
 
 from __future__ import annotations
@@ -51,6 +52,7 @@ from prefect import flow, task
 from prefect.cache_policies import NO_CACHE
 
 from sapphire_flow.types.datetime import ensure_utc
+from sapphire_flow.types.enums import PipelineCheckType, PipelineHealthStatus
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -113,6 +115,97 @@ _EMPTY_RESULT = BafuForecastCollectionResult(
     variants_failed=0,
     rows_archived=0,
 )
+
+
+def _build_health_store_best_effort() -> tuple[object, object | None]:
+    """Best-effort DB pipeline_health_store for the heartbeat, as ``(conn, store)``.
+
+    The heartbeat is metadata monitoring — a health-store outage (missing
+    ``DATABASE_URL``, DB unreachable, ``setup_production_stores`` failure) must
+    NEVER abort the forward-only collection run (that BAFU cycle is
+    unrecoverable). On any failure this returns ``(None, None)`` and the run
+    proceeds with no heartbeat.
+    """
+    try:
+        from sapphire_flow.flows._db import setup_production_stores
+
+        conn, stores = setup_production_stores(os.environ["DATABASE_URL"])
+        return conn, stores["pipeline_health_store"]
+    except Exception as exc:  # noqa: BLE001
+        log.warning("bafu_forecast.health_store_setup_failed", error=str(exc))
+        return None, None
+
+
+def _dispose_conn(conn: object) -> None:
+    """Best-effort release of a DB connection + its engine pool. Never raises.
+
+    The collector opens a connection only for the single heartbeat append on the
+    production path; without this the hourly schedule leaks one pooled
+    connection per run.
+    """
+    close = getattr(conn, "close", None)
+    if not callable(close):
+        return
+    try:
+        close()
+        dispose = getattr(getattr(conn, "engine", None), "dispose", None)
+        if callable(dispose):
+            dispose()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("bafu_forecast.db_conn_close_failed", error=str(exc))
+
+
+def _append_bafu_health_record(
+    pipeline_health_store: object | None,
+    *,
+    checked_at: UtcDatetime,
+    result: BafuForecastCollectionResult,
+) -> None:
+    # Best-effort heartbeat for the Flow 4 staleness hook: this is collector
+    # *run-stats metadata* (counts), never BAFU forecast values, so it does
+    # not violate the quarantine safeguard above. A health-write failure must
+    # never fail the collection run itself — mirrors
+    # run_forecast_cycle._append_pipeline_health_record.
+    if pipeline_health_store is None:
+        return
+    append = getattr(pipeline_health_store, "append_health_record", None)
+    if not callable(append):
+        return
+
+    from sapphire_flow.types.pipeline import PipelineHealthRecord
+
+    status = (
+        PipelineHealthStatus.OK
+        if result.variants_failed == 0
+        else PipelineHealthStatus.WARNING
+    )
+    detail: dict[str, object] = {
+        "stations_seen": result.stations_seen,
+        "variants_fetched": result.variants_fetched,
+        "variants_absent": result.variants_absent,
+        "variants_skipped_dedup": result.variants_skipped_dedup,
+        "variants_failed": result.variants_failed,
+        "rows_archived": result.rows_archived,
+    }
+    try:
+        append(
+            PipelineHealthRecord(
+                check_type=PipelineCheckType.BAFU_FORECAST_FRESHNESS,
+                checked_at=checked_at,
+                status=status,
+                subject="bafu_forecast_collector",
+                detail=detail,
+                cycle_time=None,
+                created_at=checked_at,
+            )
+        )
+    except Exception as exc:
+        log.warning(
+            "pipeline.health_record_write_failed",
+            check_type=PipelineCheckType.BAFU_FORECAST_FRESHNESS.value,
+            subject="bafu_forecast_collector",
+            error=str(exc),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -376,6 +469,7 @@ def collect_bafu_forecasts_flow(
     adapter: object = None,
     clock: object = None,
     sleeper: object = None,
+    pipeline_health_store: object | None = None,
 ) -> BafuForecastCollectionResult:
     if clock is None:
         clock = lambda: ensure_utc(datetime.now(UTC))  # noqa: E731
@@ -402,8 +496,17 @@ def collect_bafu_forecasts_flow(
     clock_t = cast("Callable[[], UtcDatetime]", clock)
     sleeper_t = cast("Callable[[float], None]", sleeper)
 
+    _conn: object = None
     if adapter is None:
         adapter = build_production_adapter()
+        # Real production run (no injected adapter) past the quarantine gate:
+        # construct the DB pipeline_health_store too, mirroring
+        # run_forecast_cycle.py's "station_store is None" production setup.
+        # Gating on `adapter is None` (rather than solely on
+        # `pipeline_health_store is None`) keeps every existing unit test —
+        # which always injects a fake adapter — from needing DATABASE_URL.
+        if pipeline_health_store is None:
+            _conn, pipeline_health_store = _build_health_store_best_effort()
     adapter_t = cast("_ForecastAdapter", adapter)
 
     archive_base_path = Path(_configured_path)
@@ -414,29 +517,44 @@ def collect_bafu_forecasts_flow(
         run_at=run_at.isoformat(),
     )
 
-    inventory = _fetch_inventory_task(adapter_t)
-    log.info(
-        "bafu_forecast.inventory_resolved",
-        station_count=len(inventory.stations),
-        produced_at=inventory.produced_at.isoformat(),
-    )
+    try:
+        inventory = _fetch_inventory_task(adapter_t)
+        log.info(
+            "bafu_forecast.inventory_resolved",
+            station_count=len(inventory.stations),
+            produced_at=inventory.produced_at.isoformat(),
+        )
 
-    result = _collect_forecasts_task(
-        adapter_t,
-        inventory.stations,
-        inventory.produced_at,
-        archive_base_path,
-        sleeper_t,
-        _DEFAULT_REQUEST_DELAY_SECONDS,
-    )
+        result = _collect_forecasts_task(
+            adapter_t,
+            inventory.stations,
+            inventory.produced_at,
+            archive_base_path,
+            sleeper_t,
+            _DEFAULT_REQUEST_DELAY_SECONDS,
+        )
 
-    log.info(
-        "bafu_forecast.complete",
-        stations_seen=result.stations_seen,
-        variants_fetched=result.variants_fetched,
-        variants_absent=result.variants_absent,
-        variants_skipped_dedup=result.variants_skipped_dedup,
-        variants_failed=result.variants_failed,
-        rows_archived=result.rows_archived,
-    )
-    return result
+        log.info(
+            "bafu_forecast.complete",
+            stations_seen=result.stations_seen,
+            variants_fetched=result.variants_fetched,
+            variants_absent=result.variants_absent,
+            variants_skipped_dedup=result.variants_skipped_dedup,
+            variants_failed=result.variants_failed,
+            rows_archived=result.rows_archived,
+        )
+
+        # Flow 4 staleness hook: one best-effort heartbeat per successful run.
+        # Reuses `run_at` (rather than a fresh clock() call) as both checked_at
+        # and created_at — a single canonical run timestamp, and keeps clock()
+        # call-count stable for existing callers/tests.
+        _append_bafu_health_record(
+            pipeline_health_store, checked_at=run_at, result=result
+        )
+
+        return result
+    finally:
+        # Dispose the DB connection we opened on the production path so the
+        # HOURLY schedule does not leak a pooled connection per run (the
+        # collector needs the store only for the single heartbeat append).
+        _dispose_conn(_conn)

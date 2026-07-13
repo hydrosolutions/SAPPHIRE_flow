@@ -1,7 +1,8 @@
 """Host-level watchdog for the SAPPHIRE Flow Mac-mini staging stack.
 
-Probes the API health endpoint and checks backup staleness on every
-invocation (scheduled by launchd every 5 min — see
+Probes the API health endpoint, checks backup staleness, and checks the
+BAFU forecast collector's freshness heartbeat on every invocation
+(scheduled by launchd every 5 min — see
 `scripts/launchd/ch.hydrosolutions.sapphire-watchdog.plist`).
 
 Hysteresis: alerts on the first failure, then only on every 6th
@@ -15,6 +16,14 @@ management). If the file is absent or empty the watchdog runs
 log-only — structured events are still emitted.
 
 Spec: docs/plans/046-mac-mini-staging-deployment.md §C3.
+
+Flow 4 staleness hook (Plan 111): the BAFU forecast collector
+(`flows/collect_bafu_forecasts.py`) is forward-only — a silent stop is
+an unrecoverable gap. It emits a `PipelineHealthRecord`
+(check_type=bafu_forecast_freshness) on every successful run; this
+watchdog probes `/health/detail?check_type=bafu_forecast_freshness`
+and alerts if the heartbeat is missing/stale or the last run reported
+warning/critical.
 """
 
 from __future__ import annotations
@@ -27,6 +36,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import httpx
 import structlog
@@ -39,8 +49,26 @@ DEFAULT_HEALTH_URL = "http://localhost:8000/api/v1/health"
 DEFAULT_BACKUP_DIR = Path("/Volumes/sapphire-backup/pg_dumps")
 DEFAULT_STATE_PATH = Path.home() / ".sapphire-watchdog-state.json"
 DEFAULT_SLACK_PATH = Path("./secrets/slack_webhook_url")
+# Same base as DEFAULT_HEALTH_URL — the JSON API route lives under the same
+# `/api/v1` prefix as `/health`, just with a `/detail` suffix + query params.
+DEFAULT_BAFU_HEALTH_DETAIL_URL = (
+    DEFAULT_HEALTH_URL + "/detail?check_type=bafu_forecast_freshness&limit=1"
+)
+
+
+def _bafu_url_from_health(health_url: str) -> str:
+    """Derive the BAFU freshness detail URL from the health URL, so overriding
+    ``--health-url`` (a different host/port/prefix) automatically retargets the
+    freshness probe too — otherwise it would silently keep probing the default
+    host and report false stale/missing heartbeats."""
+    base = health_url.rsplit("/health", 1)[0]
+    return f"{base}/health/detail?check_type=bafu_forecast_freshness&limit=1"
+
 
 BACKUP_STALE_THRESHOLD = timedelta(hours=26)
+# The BAFU collector runs hourly (Plan 111) — no heartbeat in 3h means it has
+# stopped, not merely running slow.
+BAFU_STALE_THRESHOLD = timedelta(hours=3)
 HEALTH_CHECK_TIMEOUT_S = 5.0
 SLACK_POST_TIMEOUT_S = 5.0
 ALERT_REPEAT_EVERY = 6  # every 6th consecutive failure (~30 min at 5 min tick)
@@ -52,6 +80,7 @@ class WatchdogState:
 
     consecutive_health_failures: int = 0
     last_backup_alert_iso: str | None = None
+    consecutive_bafu_failures: int = 0
 
     @classmethod
     def load(cls, path: Path) -> WatchdogState:
@@ -65,12 +94,16 @@ class WatchdogState:
         return cls(
             consecutive_health_failures=int(raw.get("consecutive_health_failures", 0)),
             last_backup_alert_iso=raw.get("last_backup_alert_iso"),
+            # Backward compatible with state files written before the Flow 4
+            # staleness hook: absent key defaults to 0.
+            consecutive_bafu_failures=int(raw.get("consecutive_bafu_failures", 0)),
         )
 
     def dump(self, path: Path) -> None:
         payload = {
             "consecutive_health_failures": self.consecutive_health_failures,
             "last_backup_alert_iso": self.last_backup_alert_iso,
+            "consecutive_bafu_failures": self.consecutive_bafu_failures,
         }
         path.write_text(json.dumps(payload, indent=2))
 
@@ -109,6 +142,72 @@ def probe_health(url: str, *, client: httpx.Client | None = None) -> HealthProbe
         return HealthProbeResult(ok=True, http_status=status)
     except httpx.HTTPError as exc:
         return HealthProbeResult(ok=False, http_status=None, error=str(exc))
+    finally:
+        if owns_client:
+            c.close()
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class BafuFreshnessResult:
+    found: bool
+    checked_at: datetime | None
+    status: str | None
+    error: str | None = None
+
+
+def probe_bafu_freshness(
+    url: str, *, client: httpx.Client | None = None
+) -> BafuFreshnessResult:
+    """Synchronous probe of `/health/detail?check_type=bafu_forecast_freshness`.
+
+    Returns found=False (never raises) on any HTTP error, non-2xx, invalid
+    JSON, or an empty `items` list — the caller treats all of these as
+    "no heartbeat found", which is the stale case.
+    """
+    owns_client = client is None
+    c = client or httpx.Client(timeout=HEALTH_CHECK_TIMEOUT_S)
+    try:
+        resp = c.get(url)
+        status_code = resp.status_code
+        if status_code < 200 or status_code >= 300:
+            return BafuFreshnessResult(
+                found=False,
+                checked_at=None,
+                status=None,
+                error=f"http_status:{status_code}",
+            )
+        try:
+            payload: dict[str, Any] = resp.json()
+        except ValueError as exc:
+            return BafuFreshnessResult(
+                found=False, checked_at=None, status=None, error=f"invalid_json: {exc}"
+            )
+        items: list[Any] = payload.get("items") or []
+        if not items:
+            return BafuFreshnessResult(
+                found=False, checked_at=None, status=None, error="no_records"
+            )
+        item: dict[str, Any] = items[0]
+        checked_at: datetime | None = None
+        checked_at_raw: str | None = item.get("checked_at")
+        if isinstance(checked_at_raw, str):
+            try:
+                checked_at = datetime.fromisoformat(checked_at_raw)
+            except ValueError:
+                checked_at = None
+            # Normalize to tz-aware UTC: the `now - checked_at` comparison in
+            # run_once is OUTSIDE this try/except, so a naive datetime there
+            # would raise TypeError and crash the whole watchdog tick.
+            if checked_at is not None and checked_at.tzinfo is None:
+                checked_at = checked_at.replace(tzinfo=UTC)
+        status: str | None = item.get("status")
+        return BafuFreshnessResult(
+            found=True, checked_at=checked_at, status=status, error=None
+        )
+    except httpx.HTTPError as exc:
+        return BafuFreshnessResult(
+            found=False, checked_at=None, status=None, error=str(exc)
+        )
     finally:
         if owns_client:
             c.close()
@@ -207,12 +306,43 @@ def _format_backup_alert(*, newest: datetime | None, threshold: timedelta) -> st
     )
 
 
+def _format_bafu_stale_alert(
+    *, hostname: str, now: datetime, result: BafuFreshnessResult
+) -> str:
+    last_str = (
+        result.checked_at.isoformat() if result.checked_at else "no heartbeat found"
+    )
+    hours = int(BAFU_STALE_THRESHOLD.total_seconds() // 3600)
+    return (
+        f"[SAPPHIRE staging] BAFU forecast collector STALE — host: {hostname}, "
+        f"time: {now.isoformat()}, last_heartbeat: {last_str}, threshold: {hours}h"
+    )
+
+
+def _format_bafu_degraded_alert(
+    *, hostname: str, now: datetime, result: BafuFreshnessResult
+) -> str:
+    return (
+        f"[SAPPHIRE staging] BAFU forecast collector DEGRADED — host: {hostname}, "
+        f"time: {now.isoformat()}, status: {result.status}"
+    )
+
+
+def _format_bafu_recovery_alert(*, hostname: str, now: datetime) -> str:
+    return (
+        f"[SAPPHIRE staging] BAFU forecast collector RECOVERED — host: {hostname}, "
+        f"time: {now.isoformat()}"
+    )
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class WatchdogConfig:
     health_url: str = DEFAULT_HEALTH_URL
     backup_dir: Path = DEFAULT_BACKUP_DIR
     state_path: Path = DEFAULT_STATE_PATH
     slack_path: Path = DEFAULT_SLACK_PATH
+    # None → derive from health_url at use (so --health-url retargets it too).
+    bafu_health_detail_url: str | None = None
 
 
 def run_once(
@@ -222,6 +352,7 @@ def run_once(
     probe: Callable[[str], HealthProbeResult],
     slack_poster: SlackPoster,
     hostname: str | None = None,
+    bafu_probe: Callable[[str], BafuFreshnessResult] = probe_bafu_freshness,
 ) -> WatchdogState:
     """Single watchdog tick. Returns the updated state (also persisted)."""
     now = clock()
@@ -293,6 +424,65 @@ def run_once(
             log.info("watchdog.slack_skipped_log_only")
         state = replace(state, last_backup_alert_iso=now.isoformat())
 
+    # --- BAFU forecast collector freshness (Flow 4 staleness hook) ---
+    bafu_url = config.bafu_health_detail_url or _bafu_url_from_health(config.health_url)
+    bafu_result = bafu_probe(bafu_url)
+    bafu_stale = (
+        not bafu_result.found
+        or bafu_result.checked_at is None
+        or (now - bafu_result.checked_at) > BAFU_STALE_THRESHOLD
+    )
+    bafu_degraded = bafu_result.status in {"warning", "critical"}
+    bafu_fail = bafu_stale or bafu_degraded
+    log.info(
+        "watchdog.bafu_freshness_check_completed",
+        url=bafu_url,
+        found=bafu_result.found,
+        checked_at=bafu_result.checked_at.isoformat()
+        if bafu_result.checked_at
+        else None,
+        status=bafu_result.status,
+        error=bafu_result.error,
+        stale=bafu_stale,
+        degraded=bafu_degraded,
+        prev_failures=state.consecutive_bafu_failures,
+    )
+
+    # Reuses the health-check hysteresis policy (1st failure, every 6th,
+    # recovery) — the decision function is generic, not health-specific.
+    bafu_alert_now = should_alert_health(
+        state.consecutive_bafu_failures,
+        current_ok=not bafu_fail,
+        current_fail=bafu_fail,
+    )
+
+    if bafu_alert_now:
+        if not bafu_fail:
+            message = _format_bafu_recovery_alert(hostname=host, now=now)
+            log.info("watchdog.bafu_recovery_alert", message=message)
+        elif bafu_stale:
+            message = _format_bafu_stale_alert(
+                hostname=host, now=now, result=bafu_result
+            )
+            log.warning("watchdog.bafu_stale_alert", message=message)
+        else:
+            message = _format_bafu_degraded_alert(
+                hostname=host, now=now, result=bafu_result
+            )
+            log.warning("watchdog.bafu_degraded_alert", message=message)
+        if webhook:
+            posted = slack_poster(webhook, message)
+            log.info("watchdog.slack_post_attempted", posted=posted)
+        else:
+            log.info("watchdog.slack_skipped_log_only")
+
+    if bafu_fail:
+        state = replace(
+            state, consecutive_bafu_failures=state.consecutive_bafu_failures + 1
+        )
+    else:
+        state = replace(state, consecutive_bafu_failures=0)
+
     state.dump(config.state_path)
     return state
 
@@ -326,6 +516,14 @@ def main(argv: list[str] | None = None) -> int:
         default=str(DEFAULT_SLACK_PATH),
         help="Path to file containing the Slack webhook URL (chmod 600)",
     )
+    parser.add_argument(
+        "--bafu-health-detail-url",
+        default=None,
+        help=(
+            "BAFU forecast collector freshness endpoint "
+            "(default: derived from --health-url)"
+        ),
+    )
     args = parser.parse_args(argv)
 
     configure_cli_logging("INFO")
@@ -335,6 +533,7 @@ def main(argv: list[str] | None = None) -> int:
         backup_dir=Path(args.backup_dir),
         state_path=Path(args.state_path),
         slack_path=Path(args.slack_path),
+        bafu_health_detail_url=args.bafu_health_detail_url,
     )
 
     try:
@@ -343,6 +542,7 @@ def main(argv: list[str] | None = None) -> int:
             clock=_utc_now,
             probe=probe_health,
             slack_poster=default_slack_poster,
+            bafu_probe=probe_bafu_freshness,
         )
     except Exception as exc:  # unrecoverable: let launchd see the non-zero
         log.error("watchdog.unrecoverable_error", error=str(exc))
