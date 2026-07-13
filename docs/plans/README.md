@@ -36,8 +36,9 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
 
 - **103** — Prefect worker observability & home — `DRAFT` — persist flow-run logs to
   the Prefect store + writable `PREFECT_HOME`. **Supersedes 062.**
-- **097** — Short-lookback observability — `DRAFT` — warn when the delivered lookback
-  is shorter than requested.
+- **097** — Short-lookback observability — `READY` (WF1 plan-review + independent
+  Codex review both converged clean, 2026-07-13) — warn when the delivered lookback
+  is shorter than requested. **Next = WF2 (hold-at-PR).**
 - **048** — restic encrypted backup + monthly restore rehearsal — `DRAFT (stub)` —
   **HARD prod prerequisite.** Depends on 046.
 - **046** — Mac Mini staging deployment + edge-case suite — `IN_PROGRESS`.
