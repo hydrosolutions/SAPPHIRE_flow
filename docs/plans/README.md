@@ -20,14 +20,22 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
   NWP-off gate + new-onboarding floor gate (6a, the incident-class fix) +
   staleness/health. Implemented via WF2, independently reviewed (the review caught
   the 6a gap in #65; #67 closed it, re-verified).
+- **105** — Operational disk hygiene & NWP scratch cleanup — **MERGED (#68),
+  ARCHIVED** — scratch self-clean on failure + pre-fetch disk tripwire + weekly
+  image prune. First Wave-0 lead; conventional build + adversarial review (round-2
+  caught 3 blockers a green suite missed).
+- **038** — Store write atomicity — **MERGED (#71), ARCHIVED** — injectable-
+  transaction DI replaces AUTOCOMMIT two-phase inserts; resilient reads + orphan
+  cleanup. Wave-0.
+- **040** — Hindcast deduplication constraint — **MERGED (#75), ARCHIVED** — 6-col
+  UNIQUE + ON CONFLICT DO UPDATE full-replace upsert (idempotent hindcast writes)
+  + migration 0029 dedup. Wave-0; 2 adversarial Codex rounds converged. **All 3
+  Wave-0 correctness bugs (105 + 038 + 040) now merged.**
 
 ## Active — operational hardening (A) — the gate to any v1 prod deploy
 
 - **103** — Prefect worker observability & home — `DRAFT` — persist flow-run logs to
   the Prefect store + writable `PREFECT_HOME`. **Supersedes 062.**
-- **105** — Operational disk hygiene & NWP scratch cleanup — `READY` (grill-me + 3 WF1
-  passes, blockers→0) — scratch self-clean on failure + pre-fetch disk tripwire + weekly
-  image prune. **First Wave-0 lead; next = WF2 (hold-at-PR).**
 - **097** — Short-lookback observability — `DRAFT` — warn when the delivered lookback
   is shorter than requested.
 - **048** — restic encrypted backup + monthly restore rehearsal — `DRAFT (stub)` —
@@ -36,9 +44,6 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
 - **058** — BAFU LINDAS archive via operational collection — `DRAFT` — depends on 046.
 - **091** — Mac-mini NWP-on data-collection runbook — `DRAFT` — depends on 046.
 - **094** — Cap onboarding/hindcast window to actual data range — `DRAFT`.
-- **038** — Store write atomicity (two-phase insert) — `READY` (grill-me + 3 WF1
-  passes; injectable-transaction DI, D5 reversed) — **Wave-0; next = WF2. 040 depends on it.**
-- **040** — Hindcast deduplication unique constraint — `DRAFT`.
 - **083** — Human-readable `station_code` in structured logs — `DRAFT`.
 - **075** — Mac Mini Stream C: glue + one-command bootstrap — `READY`.
 - **084** — Dev-machine deployment validation (2-station runoff-only) — `READY`
@@ -140,4 +145,4 @@ These are named in `architecture-context.md` / `v0-scope.md` but have no dedicat
 
 ## Archived
 
-See [archive/](archive/) for completed and archived plans (70 entries).
+See [archive/](archive/) for completed and archived plans (73 entries).
