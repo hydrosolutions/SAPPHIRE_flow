@@ -296,6 +296,31 @@ def assemble_station_operational_inputs(
             issue_time=str(issue_time),
         )
 
+    # Short-lookback check: warn when some target observations exist but the
+    # per-target minimum non-null count is fewer than reqs.lookback_steps.
+    # Skips the wholly-absent-obs case (owned by no_observations above) and
+    # early-exits for zero-target models (avoids min() of an empty sequence).
+    # Column-presence guard: a declared target with zero obs has no column in
+    # the resampled frame (_observations_to_wide_dataframe only builds a column
+    # when at least one obs exists); indexing an absent column raises
+    # ColumnNotFoundError, so count it as 0 instead.
+    if latest_obs_ts is not None and reqs.target_parameters:
+        per_target_counts = {
+            p: (past_targets[p].drop_nulls().len() if p in past_targets.columns else 0)
+            for p in reqs.target_parameters
+        }
+        lookback_got = min(per_target_counts.values())
+        if lookback_got < reqs.lookback_steps:
+            log.warning(
+                "operational_inputs.short_lookback",
+                station_id=str(station_id),
+                issue_time=str(issue_time),
+                representative_model_id=str(model_id),
+                per_target_counts=per_target_counts,
+                lookback_needed=reqs.lookback_steps,
+                lookback_got=lookback_got,
+            )
+
     # --- past_dynamic ---
     past_dynamic_features = list(reqs.past_dynamic_features)
     if past_dynamic_features:
