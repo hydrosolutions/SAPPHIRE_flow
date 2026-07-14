@@ -1,18 +1,38 @@
 ---
-status: DRAFT
+status: SUPERSEDED
+superseded_by: 115
 created: 2026-07-13
 plan: 114
 title: StationWeatherSource forecast/reanalysis role field
 scope: Swiss-testable schema + flow-filter change; prerequisite for 081/082 NWP-source dispatch
 depends_on: []
-blocks: [082]
+blocks: []
 ---
 
 # Plan 114 — `StationWeatherSource` forecast/reanalysis role field
 
+> ## ⛔ SUPERSEDED by [Plan 115](115-weather-source-identity-model.md) (2026-07-14)
+>
+> **Do not implement from this document.** Its reviewed content is carried forward into
+> Plan 115 — the role enum, the `0030`/`0031` migration split, the per-station containment
+> fix, the consumer table, and the retired ICON fallback.
+>
+> **Why it was superseded.** 114 correctly diagnosed *one facet* — the missing
+> forecast/reanalysis role — and then failed three successive reviews, each finding a
+> different unfiltered consumer or a false rationale. An independent investigation
+> (Codex, 2026-07-14) showed why: `nwp_source` is used as **four different things at
+> once** (station binding key, adapter selector, forecast storage key, historical
+> provenance tag), and 114 was patching a symptom of an identity problem it did not own.
+> It also surfaced a bigger defect 114 could not have caught from its scope — Flow 6
+> writes rows under *product tags* but the default reader looks them up by *binding name*,
+> so the scheduled reanalysis feed is unreadable even when it runs.
+>
+> Plan 115 owns the identity model end to end. This document is retained for its review
+> history.
+
 ## Status
 
-**DRAFT.** Do not implement or dispatch subagents until promoted to READY.
+**SUPERSEDED.** Retained for the record. See Plan 115.
 
 Review history: grill-me (2026-07-13, 7 decisions) → plan-review loop rounds 1-2 (escalated;
 owner-resolved) → **independent Codex review, round 3** (NOT-READY: 1 blocker + 3 majors, all
