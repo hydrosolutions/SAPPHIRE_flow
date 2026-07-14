@@ -30,27 +30,30 @@ dropped the `-nwp` overlay → NWP off → the forecast feed went dark for three
 reported green). Twice now, this host has failed in a way that produced **silence rather than a
 signal**.
 
-## Root cause — three independent defects
+## Root cause — two defects
 
-### 0. The network link does not come back — and this is NOT just sleep
-
-**Confirmed 2026-07-14, after the owner physically woke and logged into the machine:** the host was
-**still absent from the LAN**. Verified properly this time — an ICMP sweep is a **bad instrument**
-here (macOS stealth mode ignores ping, so "no reply" never proved absence). An **ARP/TCP scan**
-surfaced four hosts the ping sweep had missed — and the mini was **not among them**. Meanwhile:
-
-- `192.168.1.136` has **no ARP entry** — nothing is at that address;
-- **no host anywhere on the LAN listens on port 22**;
-- the router **still holds a stale DHCP lease** `mac-3 → 192.168.1.136`, i.e. a record of where the
-  mini *used to be*, not where it is;
-- this was reproduced with the agent sandbox disabled, so it is not a tooling artefact.
-
-So the machine can be **awake, logged in, and still not on the network.** That is a link/interface
-failure independent of sleep, and it means power settings alone will **not** fix this. Scope must
-include the network link itself: assert it, and recover it.
-
-**And it strengthens Phase 3 rather than weakening it:** a host that is fully awake but unreachable
-emits *exactly as much signal as one that is asleep* — none.
+> ### ⚠️ RETRACTED: "the host was awake but off the network"
+>
+> An earlier revision of this plan claimed a **Defect 0** — that the mini stayed off the LAN even
+> after being woken and logged in, i.e. a network-link failure independent of sleep. **That was
+> FALSE, and it is retracted in full.**
+>
+> The investigating machine (the dev laptop) was itself on a **client-isolated Wi-Fi network** (a
+> guest SSID). It could reach the gateway and **nothing else** — not the printer, not any other Mac,
+> not the mini. Every "the host is unreachable" probe was an artefact of that vantage point. The mini
+> was on the LAN the whole time, reaching its own peers fine.
+>
+> **What misled the diagnosis, recorded so it is not repeated:**
+> - ARP entries populate from *passive broadcast learning*, which works even under client isolation —
+>   so a populated ARP table looked like proof of reachability when it proved nothing.
+> - An ICMP sweep is a poor instrument (macOS stealth mode ignores ping), but the deeper error was
+>   **never running the control**: *"can I reach ANY peer at all?"* One `ping` at the printer would
+>   have exposed the isolation immediately and saved the whole detour.
+>
+> **The lesson, which is the same lesson as the rest of this plan:** before concluding that a remote
+> system is broken, prove your own observation path works. A blind observer and a dead host produce
+> identical evidence. *(This is exactly why Phase 3's heartbeat must be evaluated off-host — but it
+> is not evidence of a link defect, and this plan will not claim one.)*
 
 ### 1. The host has no power or network management. At all.
 
@@ -118,18 +121,24 @@ Verify with `pmset -g` and assert the settings, rather than assuming the command
 - **Auto-login** must survive reboots (already assumed by the LaunchAgents; make it an asserted
   prerequisite rather than a hope).
 
-**Network-link assertion + recovery (per Defect 0 — the machine was awake and still off-network):**
+**Networking — what is actually true (2026-07-14, verified):**
 
-- Assert **at boot and on a timer** that the interface has a carrier, holds a lease, and can reach
-  the gateway. Do not assume "the OS is up" implies "the box is on the network" — that assumption is
-  exactly what failed.
-- On failure, attempt recovery (cycle the interface / renew DHCP) and **log it loudly**. A link that
-  silently fails to come back after a wake is the observed failure, not a hypothetical one.
-- **Remote Login (sshd) must be on and asserted** — no host on the LAN was listening on 22, so
-  either it is off or the box is elsewhere. The runbook must not assume SSH access it has not verified.
-- Confirm the mini is on **this** LAN and not a guest SSID / second network. *(Open: needs a physical
-  check of System Settings → Network. Until then, "the host is on the LAN" is an assumption, not a
-  fact.)*
+- The mini runs on **Wi-Fi** (`en1`); Ethernet (`en0`) is **inactive**. It reaches its LAN peers
+  normally.
+- Its Wi-Fi MAC is a **randomized Private Wi-Fi Address** (`9a:a3:…`, locally-administered bit set).
+  **This is a real problem for a server, independent of everything else**: a rotating MAC means a
+  DHCP reservation cannot hold, so the address moves, and the documented SSH address goes stale — as
+  it repeatedly has.
+
+**Therefore, in scope:**
+
+- **Disable Private Wi-Fi Address** for this network on the mini → a stable MAC.
+- **DHCP reservation** on the router pinning the address → the runbook stops lying.
+- **Prefer wired Ethernet** if a cable can reach the machine — better for an unattended host (stable
+  MAC by construction, no Wi-Fi drop-on-sleep, and wake-on-LAN actually works). **Not** required to
+  fix a defect; the network itself is healthy. If no cable can reach it, Wi-Fi with a fixed MAC and a
+  reservation is acceptable.
+- **Auto-login** must survive reboots (the LaunchAgents assume it); assert it rather than hope.
 
 ### Phase 2 — LaunchAgent vs LaunchDaemon
 
