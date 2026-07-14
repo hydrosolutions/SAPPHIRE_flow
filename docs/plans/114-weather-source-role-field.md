@@ -13,10 +13,17 @@ blocks: [082]
 ## Status
 
 **DRAFT.** Do not implement or dispatch subagents until promoted to READY.
-Grill-me **DONE** (2026-07-13, 7 decisions locked below). Plan-review rounds 1 and 2
-folded in (2026-07-14 — see § Review deltas). Round 2 **escalated** with 2 blockers +
-2 majors; all four are now resolved by owner decision (2026-07-14, § Review deltas
-round 2). Next: 1 independent (Codex) review → owner READY → WF2.
+
+Review history: grill-me (2026-07-13, 7 decisions) → plan-review loop rounds 1-2 (escalated;
+owner-resolved) → **independent Codex review, round 3** (NOT-READY: 1 blocker + 3 majors, all
+folded). See the three § Review deltas sections.
+
+**One open item blocks READY** — the pre-flight audit in §3
+(`SELECT DISTINCT nwp_source, extraction_type FROM station_weather_sources;` against staging
+**and** production). It is not a formality: it settles whether Flow 6's reanalysis ingest is
+currently a silent no-op, and the migration's allowlist depends on the answer.
+
+Then: owner READY → WF2.
 
 ## Provenance
 
@@ -42,13 +49,21 @@ gateway forcing is `BASIN_AVERAGE` for *both* IFS (forecast) and ERA5-Land
   selector at once (Plan 081 "NWP-Source Dispatch Design"; Plan 082 Task 2C
   Phase A→B round-trip).
 
-The implicit scheme is **already leaking today, not only under Nepal**:
-`adapters/meteoswiss_open_data_reanalysis.py::fetch_reanalysis` — the adapter wired
-as the production `[adapters.weather_reanalysis]` in `config.toml` — selects its
-bindings on `extraction_type == BASIN_AVERAGE`, i.e. a *reanalysis* fetch keyed off
-the very attribute `_select_nwp_source` treats as the *forecast* marker. The two
-subsystems read the same field with opposite meanings. (Found in plan-review; it
-also breaks the naive backfill — see §3.)
+**Correction (independent review, 2026-07-14).** An earlier revision of this section
+claimed the scheme was "already leaking today" because
+`adapters/meteoswiss_open_data_reanalysis.py::fetch_reanalysis` selects bindings on
+`extraction_type == BASIN_AVERAGE`. **That claim was FALSE and is retracted.** Verified
+at `adapters/meteoswiss_open_data_reanalysis.py:155-162`, the match is
+`c.nwp_source == self.NWP_SOURCE` **and** `c.status == ACTIVE` **and**
+`c.extraction_type == BASIN_AVERAGE` — i.e. it matches on the **source name first**, and
+the `extraction_type` check is a genuine *emission-shape* guard (the adapter only emits
+basin-average rows), exactly as §6 says. It is **not** a role proxy, and the two
+subsystems do **not** read the field with opposite meanings.
+
+Do not "fix" that adapter by deleting its `extraction_type` check — the check is doing
+real work. The backfill still keys off the source **name** rather than `extraction_type`
+(§3), which remains the right rule for independent reasons; only the false justification
+is removed.
 
 Decision (owner grill-me 2026-07-13): fix it at the root with an **explicit role
 field**, not a fragile implicit proxy. This is the "invalid states unrepresentable"
@@ -119,16 +134,26 @@ functions, `store_weather_source` and `_row_to_weather_source`; grep, do not tru
 line number).
 
 **Backfill rule — by source name, NOT by `extraction_type`.** The original draft
-backfilled `WHEN extraction_type = 'point' THEN 'reanalysis' ELSE 'forecast'`. Plan-review
-falsified that: `adapters/meteoswiss_open_data_reanalysis.py::fetch_reanalysis` matches
-`extraction_type == BASIN_AVERAGE` for a **reanalysis** fetch, so any row it serves
-(`nwp_source = 'meteoswiss_open_data_reanalysis'`, `BASIN_AVERAGE`) would be backfilled
-`FORECAST` — the exact inversion of its real role — and then be silently dropped by the
-new role-filtered `_reanalysis_sources`. The correct invariant is that **`FORECAST` is the
-closed set**: the only writer of a forecast binding is `services/onboarding.py`, which
-hard-codes `nwp_source="icon_ch2_eps"` (the same literal as
-`run_forecast_cycle.py::_ICON_NWP_SOURCE`). Every other binding onboarding writes is a
-forcing/reanalysis binding whose name comes from the data (`forcing[0].source`).
+backfilled `WHEN extraction_type = 'point' THEN 'reanalysis' ELSE 'forecast'`. That rule is
+rejected, but **not** for the reason the first revision gave (see the retraction in
+Provenance). The real reason is simpler and stronger:
+
+**`FORECAST` is a closed set, and `extraction_type` is not a role.** `services/onboarding.py`
+is the **sole writer** of `station_weather_sources` rows — verified exhaustively: no script,
+no Alembic data migration, no API route, and no bootstrap importer writes one
+(`api/routes/stations.py:266` reflects the table for a **read-only** select). Onboarding emits
+exactly two shapes:
+
+| written by onboarding | `nwp_source` | `extraction_type` | role |
+|---|---|---|---|
+| forcing binding (`onboarding.py:365-370`) | `forcing[0].source` (e.g. `camels-ch`) | `POINT` | REANALYSIS |
+| ICON binding, non-weather stations only (`onboarding.py:379-386`) | hard-coded `"icon_ch2_eps"` | `BASIN_AVERAGE` | FORECAST |
+
+The only forecast binding anyone writes is the hard-coded `icon_ch2_eps` literal (the same
+string as `run_forecast_cycle.py::_ICON_NWP_SOURCE`). Every other binding is a
+forcing/reanalysis binding whose name comes from the data. So the name is the role; the
+`extraction_type` is incidental (and would become actively wrong for Nepal, where the
+reanalysis binding is `BASIN_AVERAGE` too).
 
 ```sql
 UPDATE station_weather_sources
@@ -143,10 +168,23 @@ against staging **and** production:
 SELECT DISTINCT nwp_source, extraction_type FROM station_weather_sources;
 ```
 
-Expected set: `icon_ch2_eps`/`BASIN_AVERAGE`, `camels-ch`/`POINT`,
-`meteoswiss_open_data_reanalysis`/`BASIN_AVERAGE`. The migration carries the same guard
-in code — it raises if any `nwp_source` falls outside that allowlist, rather than guessing
-a role for an unknown source. An unknown name is a human decision, not a `CASE` fallthrough.
+Expected set, per the writer inventory above: `icon_ch2_eps`/`BASIN_AVERAGE` and
+`camels-ch`/`POINT` (more precisely, whatever `forcing[0].source` values that deployment
+onboarded). The migration carries the same guard in code — it raises if any `nwp_source`
+falls outside the allowlist, rather than guessing a role for an unknown source. An unknown
+name is a human decision, not a `CASE` fallthrough.
+
+> **⚠️ Open question the audit must settle — do NOT skip it.** A previous revision of this
+> plan listed `meteoswiss_open_data_reanalysis`/`BASIN_AVERAGE` in the expected set. But per
+> the writer inventory above, **nothing in this repo ever writes such a row**: onboarding
+> writes the forcing binding as `POINT` under the *data's* source name. Yet Flow 6 selects
+> reanalysis bindings **by that name** (`_reanalysis_sources(store, adapter.NWP_SOURCE)`), and
+> the adapter returns `[]` before downloading anything when no config matches
+> (`meteoswiss_open_data_reanalysis.py:155-163`). If no such row exists in the live DB, then
+> **the scheduled `ingest-weather-history` deployment is currently ingesting nothing** — a
+> pre-existing production bug that Plan 114 does not cause but does expose. The audit query
+> settles it either way. If the rows are absent, file that as its own bug **before** 114 ships,
+> because 114's role filter would otherwise be blamed for a dark feed it did not create.
 
 **Release split (cicd.md compliance).** `docs/standards/cicd.md` § Rollback: *"Migrations
 must be backwards-compatible for one version (additive only: new columns nullable, no
@@ -171,6 +209,16 @@ NULL shim** — a NULL role (only reachable if the *old* image wrote a row durin
 is mapped by the same rule (`nwp_source == "icon_ch2_eps"` → FORECAST, else REANALYSIS) and
 logged at WARNING (`weather_source.legacy_null_role`). Explicitly marked `# Plan 114 §3.1:
 delete with revision 0031`.
+
+**The shim must carry the migration's allowlist, not an open `else` (independent review).**
+The migration's guard is one-time, but the rollback window lets the *old* image keep writing —
+and the old writer accepts an **arbitrary** `nwp_source` string with no role
+(`store/station_store.py:233-250`). With an unrestricted `else`, a NULL row under an unknown
+source name would be silently classified REANALYSIS, bypassing the allowlist and directly
+contradicting this plan's own "an unknown name is a human decision" rule. So the shim applies
+the **same allowlist**: `icon_ch2_eps` → FORECAST; a known reanalysis/forcing name → REANALYSIS;
+**anything else raises** `ConfigurationError` rather than guessing. Revision `0031` re-runs the
+allowlist guard over any remaining NULL rows *before* its final backfill, for the same reason.
 
 **Trade-off noted (not a silent regression):** this keeps the rollback window open at the
 cost of one release during which the DB *can* hold a NULL role. The type stays required; the
@@ -263,54 +311,89 @@ Loud, attributable, and isolated: the misconfigured station fails; the cycle doe
 > legitimate `inputs_result is None` path) and re-introduces the silent-wrong-source class of
 > bug this plan exists to kill. Raise + contain keeps the loud signal *and* the isolation.
 
-### 6. Role-based selection everywhere reanalysis is chosen
+### 6. Role-based selection at EVERY consumer of `fetch_weather_sources`
 
-An earlier draft of this section covered only Flow 6 and the MeteoSwiss adapter. Plan-review
-round 2 falsified that as **sufficient**: the *live* forecast path goes through **neither**.
-The full set of places that choose reanalysis bindings — all of which must filter on `role`:
+Two successive review rounds each found a *different* consumer of the raw weather-source list
+that the previous revision had missed (round 2: the reanalysis services; the independent review:
+the forecast fan-out). That is a pattern, not bad luck — patching consumers one at a time as
+reviewers find them does not converge. So this section is **exhaustive by construction**: the
+table below is the complete `grep -rn "fetch_weather_sources" src/` result, and **every** row is
+accounted for. Any future consumer must be added here.
 
-**6a. The service call sites (the ones that actually matter).** Four sites hand the **raw,
-unfiltered** `station_store.fetch_weather_sources(station_id)` list straight into
-`fetch_reanalysis(station_configs=...)`:
+**Two symmetric helpers** (one definition each of "the forecast bindings" / "the reanalysis
+bindings", used everywhere the question is asked):
 
-- `services/operational_inputs.py::assemble_station_operational_inputs` (~:327-329) — the
-  **live per-station past-dynamic assembly**, called from the operational forecast cycle,
-- `services/hindcast.py` (~:305-306 and ~:499-500) — both hindcast paths,
-- `services/training_data.py` (~:186-187).
+```python
+def forecast_bindings(sources) -> list[StationWeatherSource]:    # role is FORECAST
+def reanalysis_bindings(sources) -> list[StationWeatherSource]:  # role is REANALYSIS
+```
 
-Add a shared helper — `reanalysis_bindings(sources) -> list[StationWeatherSource]`, filtering
-`role is WeatherSourceRole.REANALYSIS` — and apply it at **all four** call sites before the
-list is passed as `station_configs`. One helper, one definition of "the reanalysis bindings",
-used everywhere the question is asked.
+**6a. Every consumer, and the role it needs:**
 
-**6b. Guard inside the source implementations too (owner decision 2026-07-14: belt-and-braces).**
-Call-site filtering alone leaves a future caller free to reintroduce the bug by passing the raw
-list. So each `WeatherReanalysisSource` implementation that iterates `station_configs` also
-skips non-REANALYSIS configs:
+| # | Consumer | Needs | Status |
+|---|---|---|---|
+| 1 | `flows/run_forecast_cycle.py:1243-1247` — Phase A `all_weather_sources` → `flat_weather_configs` → `_fetch_nwp_task(station_configs=…)` → the `WeatherForecastSource` | **FORECAST** | **NEW — the independent review's blocker** |
+| 2 | `flows/run_forecast_cycle.py` — Phase A `configs_for_source` (grid extraction) | **FORECAST** | **NEW** — filter by role **and** matching `nwp_source` |
+| 3 | `flows/run_forecast_cycle.py::_select_nwp_source` — Phase B per-station loop | **FORECAST** | §5 |
+| 4 | `flows/run_forecast_cycle.py::_select_nwp_source` — Phase B group loop | **FORECAST** | §5 |
+| 5 | `services/operational_inputs.py:327` — **live** per-station past-dynamic assembly | REANALYSIS | §6b |
+| 6 | `services/hindcast.py:287` — per-station hindcast | REANALYSIS | §6b |
+| 7 | `services/hindcast.py:455` — group hindcast | REANALYSIS | §6b |
+| 8 | `services/training_data.py:181` | REANALYSIS | §6b |
+| 9 | `flows/ingest_weather_history.py:250::_reanalysis_sources` (Flow 6) | REANALYSIS | §6b |
+| 10 | `api/routes/api_stations.py:181` — station-detail display | *none* — shows **all** bindings, with their role (§7) | ✓ |
 
-- `adapters/store_backed_reanalysis.py::StoreBackedReanalysisSource.fetch_reanalysis` — **this
-  is the concrete source wired behind all four call sites above** (via
-  `adapters/hybrid_reanalysis_factories.py::select_reanalysis_source`), and it does **no**
-  role/extraction filtering whatsoever today: it calls
-  `fetch_forcing(source=cfg.nwp_source, ...)` for **every** config it is handed. Add the
-  `role is REANALYSIS` skip.
-- `adapters/meteoswiss_open_data_reanalysis.py::fetch_reanalysis` — add
-  `c.role is WeatherSourceRole.REANALYSIS` to its `station_configs` match. Its existing
-  `extraction_type == BASIN_AVERAGE` check **stays**: there it is a genuine emission-shape
-  guard (the adapter only emits basin-average rows), not a role proxy.
+**6b. The reanalysis call sites (#5-#9)** hand the **raw, unfiltered** list straight into
+`fetch_reanalysis(station_configs=…)`. Wrap each in `reanalysis_bindings(...)`.
 
-**6c. Flow 6** — `flows/ingest_weather_history.py::_reanalysis_sources` — add
-`source.role is WeatherSourceRole.REANALYSIS` to the existing `nwp_source` name match.
+**6c. The forecast fan-out (#1, #2) — the independent review's blocker.** Phase A flattens
+**every** binding of **every** operational station into `flat_weather_configs` and passes it to
+the forecast adapter. For a correctly-onboarded Swiss station that list contains **both**
+`camels-ch` (REANALYSIS) and `icon_ch2_eps` (FORECAST). Wrap it in `forecast_bindings(...)`, and
+filter `configs_for_source` by role **and** `nwp_source` before grid extraction.
 
-**Why this is the blocker, not a nicety.** For a Nepal station carrying an IFS/FORECAST and an
-ERA5-Land/REANALYSIS binding (both `BASIN_AVERAGE`), the unguarded path issues a
-`fetch_forcing(source=<the FORECAST nwp_source>)` alongside the reanalysis one and **silently
-merges whatever rows exist under the forecast source name into the "past dynamic" (reanalysis)
-features** used for live forecasting, hindcast, and training. That is the exact
-silent-wrong-source class of bug this plan exists to eliminate — relocated into the data path
-that matters rather than removed. It is benign in Switzerland today only by accident (no
-forcing rows are stored under `icon_ch2_eps`); it would not be benign for Nepal, and Plan 082
-would inherit it.
+Why this has gone unnoticed: the **production** ICON adapter ignores `station_configs` entirely
+(`adapters/meteoswiss_nwp.py:587`, `# noqa: ARG002`) — it downloads the whole grid. But:
+- `adapters/replay/nwp.py:40-42` (`ReplayNwpAdapter`, an explicit v0 test adapter) derives the
+  source from `station_configs[0].nwp_source` and **raises `AdapterError` on a mixed list** — so
+  it is order-dependent or outright broken for a two-binding station.
+- **Decisively:** Plan 081's `RecapGatewayAdapter` is a *per-station* `WeatherForecastSource`
+  that returns `dict[StationId, WeatherForecastResult]` — it **will** read `station_configs`.
+  Handed the raw list, it receives the ERA5-Land REANALYSIS binding and tries to fetch a
+  *forecast* for it. This hole sits **directly on the 081/082 path this plan exists to unblock**,
+  which is what makes it a blocker rather than a tidy-up.
+
+**6d. Guard inside the source implementations too (belt-and-braces).** Call-site filtering alone
+lets a future caller reintroduce the bug by passing the raw list. Every implementation that
+iterates `station_configs` also enforces the role it expects:
+
+- `adapters/store_backed_reanalysis.py:31` — the concrete source behind call sites #5-#8 (via
+  `hybrid_reanalysis_factories.py::select_reanalysis_source`). Does **no** role/name filtering
+  today: it calls `fetch_forcing(source=cfg.nwp_source)` for **every** config handed to it. Add
+  the `role is REANALYSIS` skip.
+- `adapters/per_source_store_reader.py:45-52` — **worse, and missed by the previous revision**:
+  it *discards* `cfg.nwp_source` altogether, reducing configs to unique `station_id`s and
+  reading against a **fixed** source tag. So a FORECAST-only config list still yields
+  "reanalysis" rows for that station — it fabricates reads for stations that have no reanalysis
+  binding at all. Must filter to REANALYSIS before the `dict.fromkeys` reduction.
+- `adapters/hybrid_reanalysis.py:61` — `HybridForcingSource` fans the raw `station_configs` into
+  its child sources; hybrid mode is a real runtime option (`config/deployment.py:111-113`).
+  Filter to REANALYSIS before the fan-out.
+- `adapters/meteoswiss_open_data_reanalysis.py:155-162` — add `c.role is REANALYSIS` to its
+  existing match. Its `nwp_source == NWP_SOURCE`, `status == ACTIVE` and
+  `extraction_type == BASIN_AVERAGE` checks all **stay** (the last is an emission-shape guard —
+  see the Provenance retraction).
+- `adapters/replay/nwp.py:40-42` — its same-source homogeneity check **stays**; post-114 it only
+  ever sees FORECAST bindings, so the check becomes a real invariant instead of a tripwire.
+
+**Why this is the heart of the plan.** For a Nepal station carrying an IFS/FORECAST and an
+ERA5-Land/REANALYSIS binding (both `BASIN_AVERAGE`), the unguarded paths (a) merge whatever rows
+exist under the *forecast* source name into the "past dynamic" reanalysis features used for live
+forecasting, hindcast and training, and (b) hand the *reanalysis* binding to the forecast
+adapter. Both are the silent-wrong-source class of bug this plan exists to eliminate. Switzerland
+is spared today only by accident — no forcing rows are stored under `icon_ch2_eps`, and the
+production forecast adapter ignores its config list. Nepal would not be spared, and Plan 082
+would inherit both.
 
 ### 7. API + dashboard surface the role
 
@@ -348,7 +431,23 @@ construction site), so it is an explicit task:
   that passes the unfiltered `fetch_weather_sources()` list through. Equivalent coverage for
   `services/hindcast.py` and `services/training_data.py`.
 - The `StoreBackedReanalysisSource` role guard holds **even when handed a raw unfiltered
-  list** (locks §6b independently of the call-site helper).
+  list** (locks §6d independently of the call-site helper).
+- **The forecast fan-out (§6c):** a forecast cycle over a correctly-onboarded station carrying
+  **both** a `camels-ch`/REANALYSIS and an `icon_ch2_eps`/FORECAST binding passes **only** the
+  FORECAST binding to the `WeatherForecastSource`. Run it against `ReplayNwpAdapter`, which
+  raises `AdapterError` on a mixed `station_configs` list — so the test **fails** against an
+  implementation that forwards the raw `flat_weather_configs`. That adapter is the natural
+  positive control here; use it rather than a bespoke fake.
+- **Grid extraction** receives only configs whose role is FORECAST *and* whose `nwp_source`
+  matches the selected source.
+- **The hybrid stack (§6d):** `PerSourceStoreReader` and `HybridForcingSource`, handed a raw
+  list containing a FORECAST binding (and, separately, a FORECAST-**only** list), produce **no**
+  reanalysis rows for that station. `PerSourceStoreReader` needs its own case because it
+  discards `nwp_source` and keys on `station_id` — a call-site-only fix would leave it green
+  while still broken. Note `tests/unit/adapters/test_per_source_store_reader.py:190-199`
+  currently locks the mixed-config behaviour and will need updating.
+- **The NULL-role shim (§3):** a NULL role under an **unknown** source name raises
+  `ConfigurationError` rather than defaulting to REANALYSIS.
 - **Flow-level containment (locks the blocker fix):** in a cycle with several operational
   stations where exactly **one** has a broken role binding (0 or 2 FORECAST), the other
   stations still produce forecasts, the bad station is counted in `stations_failed` with an
@@ -422,6 +521,43 @@ against the code** before being actioned. All four are resolved below by owner d
   FORECAST/REANALYSIS bindings this plan introduces — the plan's own stated motivation. Rejecting
   it would leave the new field invisible to the people who must confirm it is right.
 
+## Review deltas (independent Codex review, 2026-07-14 — round 3)
+
+Run after the plan-review loop's escalation was owner-resolved, precisely because the loop had
+converged on its own output. Verdict **NOT-READY**; 1 blocker + 3 majors, **every one verified
+against the code before folding**. All are now resolved in the doc.
+
+- **BLOCKER — the plan had fixed the reanalysis direction and left the forecast direction open.**
+  Phase A flattens every binding into `flat_weather_configs` (`run_forecast_cycle.py:1243-1247`)
+  and hands the raw list to the `WeatherForecastSource` (`:1291`); `ReplayNwpAdapter` raises on a
+  mixed list (`replay/nwp.py:40-42`), and Plan 081's per-station `RecapGatewayAdapter` *will* read
+  it. → §6 rewritten around a **complete, grep-derived consumer table** with symmetric
+  `forecast_bindings` / `reanalysis_bindings` helpers. Two rounds each found a different missed
+  consumer; enumerating them all is the only fix that converges.
+- **MAJOR — the "belt-and-braces" guard missed the hybrid stack.** `PerSourceStoreReader`
+  (`per_source_store_reader.py:45-52`) *discards* `nwp_source` and keys on `station_id` against a
+  fixed source tag, so it fabricates reanalysis reads for stations with no reanalysis binding;
+  `HybridForcingSource` fans the raw list to its children. → both added to §6d, with tests.
+- **MAJOR — the NULL-role shim had an open `else`.** Rollback lets the *old* image write an
+  arbitrary `nwp_source` with no role, which the shim would have silently called REANALYSIS,
+  bypassing the migration allowlist. → §3: the shim carries the **same allowlist** and raises on
+  an unknown name.
+- **MAJOR — doc sync was incomplete.** `docs/spec/database-schema.md` and
+  `docs/architecture-context.md` both define `station_weather_sources` without `role`. → added to
+  Exit gates, along with a pre-existing `active`→`status` staleness in the same blocks.
+- **Also folded (found in parallel, not by Codex): the Provenance section was factually wrong** —
+  it claimed the MeteoSwiss reanalysis adapter reads role out of `extraction_type`, contradicting
+  §6d of the same plan. Retracted; the adapter matches on **source name** first. And the
+  migration's expected-set listed a `meteoswiss_open_data_reanalysis` binding that **no writer in
+  the repo creates** — which, if the live DB confirms it, means Flow 6's reanalysis ingest is
+  currently a **silent no-op in production**. The pre-flight audit must settle this before 114
+  ships (§3).
+
+**Codex positively verified** (not just "found no problem"): the four reanalysis call sites; the
+current `_select_nwp_source` heuristic and its uncontained per-station call site; the group loop's
+existing try/except containment; Alembic head `0029`; and that `PgStationStore.store_weather_source`
+is the only production writer of `station_weather_sources`.
+
 ## Exit gates
 
 ```bash
@@ -435,8 +571,20 @@ uv run pytest
 
 - `docs/spec/types-and-protocols.md` — the `StationWeatherSource` block gains `role:
   WeatherSourceRole`; add the `WeatherSourceRole` enum to the enums section.
+- `docs/spec/database-schema.md:88-92` **and** `:542-546` — the authoritative
+  `station_weather_sources` definitions; both omit `role`. *(Missed by the earlier revision —
+  found in independent review.)* **While here, fix the pre-existing staleness in these blocks:
+  they still show `active: BOOL`, but the column has been `status` since Alembic `0009`
+  (`db/metadata.py:179-185`).**
+- `docs/architecture-context.md:1718-1723` — same `station_weather_sources` block, same two
+  fixes (`role` added, stale `active` → `status`).
+- `docs/conventions.md:396` — the enum-value table lists
+  `station_weather_sources.extraction_type` / `SpatialRepresentation`; add a
+  `station_weather_sources.role` / `WeatherSourceRole` row (`forecast`, `reanalysis`).
 - `docs/standards/cicd.md` — note the `0030`→`0031` two-release sequence if the rollback
   section needs the pointer.
+- `docs/touchpoint-maps.md` — the operational-inputs / time-series-preprocessing map should name
+  the role filter, since `assemble_station_operational_inputs` is a listed touchpoint.
 
 ## References
 
