@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-07-14
 revised: 2026-07-14
 plan: 117
@@ -13,14 +13,20 @@ blocks: [047]  # basin/static architecture cleanup only — 047 also needs its o
 
 ## Status
 
-**DRAFT.** Do not implement or dispatch subagents until promoted to READY.
+**READY** (owner confirmed, 2026-07-14). Phase 1 may be dispatched.
 
 This is a documentation and architecture alignment plan. It does not integrate
 the basin/static extraction code into SAP3 and does not build a SAP3 importer.
 
-**The pre-READY multi-model review is a gate *on* this plan, not a task *inside* it**
-(`docs/workflow.md` § Multi-Model Review). A post-implementation review runs on the
-resulting doc diff before it merges. Neither is a phase in the dependency graph.
+**Pre-READY review: converged.** Multi-model review ran across several rounds
+(Claude design + Codex repo-grounded), final verdict APPROVE with no open findings.
+The review is a gate *on* this plan, not a task *inside* it (`docs/workflow.md`
+§ Multi-Model Review) — it is not a phase in the dependency graph. A
+post-implementation review still runs on the resulting doc diff before it merges.
+
+**Task 1A is partially executed already** (items 5–9, applied to the working-tree
+`04-…` draft at the owner's direction on 2026-07-14, together with the collaborator
+brief). Items 1–4 remain. See Task 1A.
 
 ## Baseline
 
@@ -28,11 +34,13 @@ Phase 1 operates on **drafted documents that exist only in the working tree**:
 `docs/requirements/04-basin-static-artifact-contract.md` (untracked, new) plus
 unstaged edits to `01-data-gateway-requirements.md` and `requirements/README.md`.
 
+Plus the collaborator brief `docs/requirements/basin-static-extraction-brief.md`
+(untracked, new).
+
 **These drafts are Phase-1 input, not a committed baseline.** They are NOT committed
-to `main` first. The drafted `04-…` is a collaborator-facing RFC-2119 contract that
-this plan already knows is wrong in two places (Owner decision 3; Open question 1) —
-landing it on `main` unfixed would publish a contract we know to be defective, even
-briefly.
+to `main` first. The drafted `04-…` is a collaborator-facing RFC-2119 contract still
+carrying known defects (the §4/§5 name rules, the "MAY combine" clause) — landing it
+on `main` unfixed would publish a contract we know to be wrong, even briefly.
 
 **Dispatch rule.** Phase 1 edits the drafts in place. Phase 1 + Phase 2 land together
 as **one reviewed docs commit** to `main` — the corrected `04-…`, the `01-…`/README
@@ -46,8 +54,11 @@ the plan must be re-reviewed — the drafts are load-bearing.
 ## Provenance
 
 On 2026-07-14, HSOL communicated the currently known GeoPackage requirements to
-the basin and static data extraction implementer. The model developer will
-separately define the static Parquet shape needed by the model.
+the basin and static data extraction implementer. Later the same day the model
+developer supplied their **actual producers** (`compute_forcing_attributes.py`,
+`extract_hydroatlas.py`, `hydroatlas.py`, `static_attributes.md`), which settled the
+static Parquet **shape** (Owner decision 3) and the ERA5-on-S3 question (Owner
+decision 6).
 
 Known GeoPackage requirements communicated so far:
 
@@ -110,8 +121,8 @@ extraction as adjacent helper tooling:
 - SAP3 does not own, vendor, or call the extraction tool's source code.
 - The naming layers above are disambiguated in every collaborator-facing doc, using
   the owner's resolved definitions (a Gateway HRU *is* a GeoPackage).
-- Static Parquet details are rolled back to TBD until the model developer
-  communicates the expected schema.
+- The static Parquet **shape** is stated as confirmed (wide, one row per gauge,
+  string key, `Float64` attributes); only the feature **list** stays the modeller's.
 
 ## Non-goals
 
@@ -172,9 +183,13 @@ extension.
      — a wide table, one row per gauge, one column per attribute, every attribute
      `Float64`. That is exactly SAP3's static-input contract
      (`docs/spec/types-and-protocols.md`: "Single row per station. Values are
-     `Float64`"). The earlier instruction to roll §6 back to TBD was an
-     over-correction: one-row-per-basin, numeric-only, and the boolean ban are
-     **SAP3 facts**, not modeller impositions. `04-…` §6 **keeps** them.
+     `Float64`"). One-row-per-gauge, numeric-only, and the boolean ban are **SAP3
+     facts**, not modeller impositions — `04-…` §6 **states and keeps** them.
+   - **The Parquet carries exactly one identity column, `gauge_id`.** `network`,
+     `station_code` and `basin_code` live in `basins.gpkg` (which also carries
+     `gauge_id`); SAP3 joins on `gauge_id`. This makes the Parquet byte-for-byte the
+     shape the modeller's producers already emit — no reshaping asked of the
+     extractor, and no second place for the identity columns to drift.
    - **Categoricals are already numeric.** The majority-class attributes (climate
      zone, land cover, lithology) resolve to a `float` class code in the modeller's
      own extractor, so "no string statics in v1" is satisfied, not violated.
@@ -186,23 +201,6 @@ extension.
      (`StationInputs.static: dict[str, int | float | str]`); SAP3 narrows to
      `Float64`. Narrowing is allowed. A future string static is a **SAP3** widening,
      not an FI gap.
-5. **Static attributes live in the DB, not as a file pointer.** SAP3 imports the
-   Parquet into `basins.attributes` JSONB; the package is the *interchange* artifact,
-   not the operational store. Storing only a path would force `ModelDataRequirements`
-   validation and model-onboarding compatibility checks to open a Parquet in a
-   directory layout the modeller owns and rewrites in place, add a filesystem
-   dependency to the forecast cycle, and lose per-basin provenance. Keep the
-   `package_id` + checksum as provenance.
-6. **Static attributes have a production ORDER.** The Caravan climate indices
-   (`p_mean`, PET mean, aridity, snow fraction, moisture index, seasonality,
-   high/low precipitation frequency and duration) are derived from the
-   **catchment-averaged daily forcing series**, not from geometry. A package producer
-   cannot deliver them from basin outlines + HydroATLAS alone. Order is: delineate →
-   register/back-extract forcing → *then* compute the forcing-derived group. A
-   Group-A-only package (forcing-derived columns `null`) MUST be acceptable for
-   onboarding; models requiring a Group-B feature simply cannot be assigned until a
-   package supplying it lands. **PET is a hard dependency** — no PET in the forcing
-   source means aridity/moisture/seasonality are permanently null.
 4. **A Gateway HRU is single-kind: basins OR bands, never mixed.** (Owner,
    2026-07-14 — previously undefined; the Gateway itself does not care, so this is a
    SAP3-side constraint we adopt because it is free.)
@@ -240,6 +238,42 @@ extension.
      (`src/sapphire_flow/types/model.py:270`). Nothing in Nepal v1 requires it —
      Plan 106 §0 says Nepal forcing arrives as basin/band time-series from the
      Gateway with no SAP3-side extraction.
+5. **Static attributes live in the DB, not as a file pointer.** SAP3 imports the
+   Parquet into `basins.attributes` JSONB; the package is the *interchange* artifact,
+   not the operational store. Storing only a path would force `ModelDataRequirements`
+   validation and model-onboarding compatibility checks to open a Parquet in a
+   directory layout the modeller owns and rewrites in place, add a filesystem
+   dependency to the forecast cycle, and lose per-basin provenance. Keep the
+   `package_id` + checksum as provenance.
+6. **The static package is self-contained — no SAP3/Gateway forcing dependency.**
+   *(Owner, 2026-07-14 — this REVERSES the ordering dependency drafted earlier today.)*
+
+   The Caravan climate indices (`p_mean`, PET mean, aridity, snow fraction, moisture
+   index, seasonality, high/low precipitation frequency and duration) are indeed
+   **forcing-derived rather than geometry-derived** — but the extraction implementer
+   has **the full global ERA5 archive on S3** and computes them from it directly.
+   They do **not** need SAP3's forcing, the Data Gateway, or a back-extraction step.
+
+   Consequences:
+   - **The package is complete in one delivery.** No Group-A/Group-B staging, no
+     two-package path, no `null` climate indices awaiting a later forcing run.
+   - **No Flow 0 ordering constraint.** Delineation and static extraction are one
+     step, independent of Gateway registration and historical back-extraction.
+   - **PET is not a SAP3 concern.** It comes from the extractor's own ERA5 archive,
+     not from the deployment's forcing source, so the "no PET ⇒ permanently null
+     aridity" risk drafted earlier does not apply.
+   - The indices are a **climatology descriptor**, computed per Caravan's definitions
+     over Caravan's fixed 1981-01-01 … 2020-12-31 window. They are deliberately
+     *not* tied to whatever forcing SAP3 later runs operationally — that is what
+     makes them comparable across Caravan datasets.
+
+   One thing to confirm with the implementer (Open question 2): the modeller's column
+   names encode **ERA5-Land** (`pet_mean_ERA5_LAND`, `aridity_ERA5_LAND`,
+   `moisture_index_ERA5_LAND`), and Caravan's published values are ERA5-Land. If the
+   S3 archive is plain **ERA5** (0.25°) rather than **ERA5-Land** (0.1°), the values
+   will not reproduce Caravan and the column names will be misleading. This is a
+   labelling/provenance question, not a blocker — `feature_catalog.json` records
+   `source_dataset` per column either way.
 
 ## Resolved questions (owner, 2026-07-14)
 
@@ -251,19 +285,27 @@ extension.
 3. **Are gauge IDs numeric / leading-zero?** IDs are **strings**; typically no
    leading zeros, but they **may be all-digits**, and for some hydromets contain
    `/`, `-`, `'`, `_`, and letters.
+4. **Can the extractor produce the forcing-derived climate indices without SAP3's
+   forcing?** **Yes.** The implementer holds the **full global ERA5 archive on S3**
+   and computes the Caravan indices from it directly. No Gateway round-trip, no
+   back-extraction step, no staged package. See Owner decision 6 — this reverses the
+   ordering dependency drafted earlier the same day.
+5. **Does the deployment's forcing source need PET?** **Not for these attributes.**
+   PET comes from the extractor's own ERA5 archive.
 
-These answers are now baked into Owner decision 2 and Task 1A. They do not reopen
-any decision — they *confirm* the `g_` convention and promote the leading-digit rule
-from assumption to normative requirement.
+These answers are now baked into Owner decisions 2, 3 and 6, and into Task 1A. They
+do not reopen any decision.
 
 ## Open questions (tracked, non-blocking)
 
 1. Which actor owns the durable regeneration path: DHM, HSOL, or the basin/static
    extraction tool maintainer?
-2. Does the Nepal forcing source expose **PET**? Without it the Caravan
-   PET-dependent indices (mean PET, aridity, moisture index, seasonality) are
-   permanently null, and no model may declare them. Needs an early answer — it
-   constrains the model developer's feature list, not this plan.
+2. **ERA5 or ERA5-Land?** The modeller's column names encode ERA5-**Land**
+   (`pet_mean_ERA5_LAND`, `aridity_ERA5_LAND`, `moisture_index_ERA5_LAND`), and
+   Caravan's published values are ERA5-Land (0.1°). If the S3 archive is plain ERA5
+   (0.25°), the values will not reproduce Caravan and the column names mislead. A
+   labelling/provenance question — `feature_catalog.json` records `source_dataset`
+   per column either way, so it does not block.
 3. Which string does SAP3 pass as the FI station key — the raw `station_code`, or
    the modeller's region-prefixed `gauge_id` (`nepal_5501`)? It MUST match whatever
    the trained artifact's station embeddings were fitted on. Resolved via the
@@ -323,11 +365,10 @@ Task 2C records this relationship in both directions.
    Add the collision policy (reject the package, name both colliding station codes,
    never resolve silently) and note that gauge IDs may contain `/`, `-`, `'`, `_`
    and letters, so normalization is not injective.
-5. ~~Roll §6 back to TBD.~~ **DONE 2026-07-14, and reversed** — see Owner decision 3.
-   The model developer supplied their producers; the shape is **confirmed**, so §6 now
-   *states* it (wide, one row per gauge, string key, every attribute `Float64`) and
-   **keeps** the numeric-only and no-boolean constraints, which are SAP3 facts rather
-   than modeller impositions. Only the feature *list* stays the modeller's.
+5. State the **confirmed** static shape in §6 (Owner decision 3): wide, one row per
+   gauge, `gauge_id` as the sole identity column, every attribute `Float64`; keep the
+   numeric-only and no-boolean constraints. Only the feature *list* stays the
+   modeller's. **DONE 2026-07-14.**
 6. Note the import target: static attributes land in `basins.attributes` JSONB and
    are surfaced to models as `Float64` (`docs/spec/types-and-protocols.md`
    `static` slot). Integer catalog columns are cast on import. **DONE 2026-07-14.**
@@ -337,9 +378,13 @@ Task 2C records this relationship in both directions.
 8. Add to §4 the columns the modeller's extractor **hard-requires** of the basin
    GeoPackage — `gauge_id`, `latitude`, `longitude` — which `read_basin_polygons()`
    raises on if absent. **DONE 2026-07-14.**
-9. Add §6.3: the **geometry-derived vs forcing-derived** split and its ordering
-   dependency (Owner decision 6), including PET as a hard dependency and the
-   two-stage package path. **DONE 2026-07-14.**
+9. Add §6.3: the **geometry-derived vs forcing-derived** split, recording that the
+   forcing-derived Caravan indices come from the **extractor's own global ERA5
+   archive (S3)** — so the package is **self-contained**: no Gateway round-trip, no
+   back-extraction step, no staged/two-package path, no PET dependency on the
+   deployment's forcing source (Owner decision 6). **DONE 2026-07-14** — but note the
+   first draft of §6.3 asserted the opposite (an ordering dependency); it MUST be
+   rewritten, not merely extended.
 
 **Already executed (working-tree draft, 2026-07-14).** At the owner's direction,
 items 5–9 above were applied to the `04-…` draft ahead of READY, together with the
@@ -376,9 +421,11 @@ must_appear = [
     "`basins.attributes`",
     "static features MUST be numeric",
     "boolean",
-    # Owner decision 6 — geometry-derived vs forcing-derived ordering.
+    # Owner decision 6 — the package is SELF-CONTAINED: the forcing-derived indices
+    # come from the extractor's own global ERA5 archive, not from SAP3/the Gateway.
     "forcing-derived",
-    "PET",
+    "ERA5",
+    "self-contained",
     # Identity: the modeller's key must be carried, not re-derived.
     "gauge_id",
 ]
@@ -386,6 +433,10 @@ must_be_gone = [
     "MUST be lowercase, unique within the Gateway HRU, and MUST NOT start with a digit",
     # Owner decision 4 — HRUs are single-kind, so there is no basin/band merge.
     "SAP3 MAY combine basin and band features",
+    # Owner decision 6 REVERSED the ordering dependency that the first §6.3 draft
+    # asserted. These phrasings must not survive.
+    "ORDERING MATTERS",
+    "PET is a hard dependency",
 ]
 
 missing = [t for t in must_appear if t not in text]
