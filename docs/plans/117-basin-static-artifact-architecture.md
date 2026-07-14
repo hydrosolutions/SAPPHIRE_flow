@@ -185,9 +185,27 @@ extension.
      "MAY combine" clause in `04-…` §5 is deleted.
    - **Independent lifecycle.** Bands can be re-extracted or backfilled without
      refetching basin forcing, and vice versa.
-   - **Cost accepted:** a station needing both basin-average *and* band forcing uses
-     two HRUs, not one. No model in the FI contract declares both, so this is
-     currently theoretical.
+   - **This costs no flexibility — it mirrors a constraint SAP3 already has.**
+     `station_weather_sources` is keyed `(station_id, nwp_source)` with
+     `extraction_type` as a column (`src/sapphire_flow/db/metadata.py:186`), so one
+     station already gets **exactly one extraction type per weather source**. Mixing
+     basins and bands in one `.gpkg` would not buy simultaneous basin+band forcing —
+     that PK blocks it first, regardless of how polygons are packed.
+   - **Retained flexibility:** a station may be basin-average from one source and
+     elevation-band from another; bands may be added, or a station migrated from
+     basins to bands, by registering a second HRU and flipping `extraction_type`.
+     Single-kind HRUs make that *easier* (independent lifecycle, no refetch of the
+     other kind).
+   - **What would be an architecture change** (explicitly out of scope): letting one
+     station consume basin-average **and** elevation-band forcing from the **same**
+     source simultaneously. That needs the `station_weather_sources` PK widened to
+     include `extraction_type`, `GridExtractor` to return a collection rather than a
+     `BasinAverageForecast | ElevationBandForecast` union
+     (`src/sapphire_flow/protocols/grid_extractor.py:24`), and
+     `ModelDataRequirements.spatial_input_type` to become a set rather than a scalar
+     (`src/sapphire_flow/types/model.py:270`). Nothing in Nepal v1 requires it —
+     Plan 106 §0 says Nepal forcing arrives as basin/band time-series from the
+     Gateway with no SAP3-side extraction.
 
 ## Resolved questions (owner, 2026-07-14)
 
