@@ -163,12 +163,46 @@ extension.
    - String-typing `station_code` is load-bearing: gauge IDs are defined as strings,
      and an integer-typed GeoPackage column would corrupt any that are all-digits
      (a leading-zero ID such as `0439` silently becomes `439`).
-3. **Static Parquet is pending.** The modeller owns the expected static feature
-   names, units, and Parquet shape. SAP3 docs mark this **TBD (modeller-owned)**
-   rather than inventing a schema. The drafted `04-…` §6 currently violates this —
-   it already fixes one-row-per-basin, required columns, numeric-only types, and a
-   boolean ban. Task 1A rolls that back to the generic FI/SAP3 static-feature
-   matching rule.
+3. **Static Parquet: the modeller owns the feature LIST; SAP3 owns the SHAPE.**
+   *(Revised 2026-07-14 after the model developer supplied their actual producers —
+   `compute_forcing_attributes.py`, `extract_hydroatlas.py`, `hydroatlas.py`,
+   `static_attributes.md`.)*
+   - **The shape is CONFIRMED, not TBD.** Both producers write
+     `schema = {"gauge_id": pl.Utf8, **{name: pl.Float64 for name in source_names}}`
+     — a wide table, one row per gauge, one column per attribute, every attribute
+     `Float64`. That is exactly SAP3's static-input contract
+     (`docs/spec/types-and-protocols.md`: "Single row per station. Values are
+     `Float64`"). The earlier instruction to roll §6 back to TBD was an
+     over-correction: one-row-per-basin, numeric-only, and the boolean ban are
+     **SAP3 facts**, not modeller impositions. `04-…` §6 **keeps** them.
+   - **Categoricals are already numeric.** The majority-class attributes (climate
+     zone, land cover, lithology) resolve to a `float` class code in the modeller's
+     own extractor, so "no string statics in v1" is satisfied, not violated.
+   - **Only the feature LIST stays the modeller's** — which attributes, their units,
+     and which a given model requires. `04-…` §6's generic matching rule already
+     handles an unknown list: every name in `InputRequirement.static` must appear as
+     a non-null column for the assigned stations.
+   - **FI note (no escalation).** FI permits string statics
+     (`StationInputs.static: dict[str, int | float | str]`); SAP3 narrows to
+     `Float64`. Narrowing is allowed. A future string static is a **SAP3** widening,
+     not an FI gap.
+5. **Static attributes live in the DB, not as a file pointer.** SAP3 imports the
+   Parquet into `basins.attributes` JSONB; the package is the *interchange* artifact,
+   not the operational store. Storing only a path would force `ModelDataRequirements`
+   validation and model-onboarding compatibility checks to open a Parquet in a
+   directory layout the modeller owns and rewrites in place, add a filesystem
+   dependency to the forecast cycle, and lose per-basin provenance. Keep the
+   `package_id` + checksum as provenance.
+6. **Static attributes have a production ORDER.** The Caravan climate indices
+   (`p_mean`, PET mean, aridity, snow fraction, moisture index, seasonality,
+   high/low precipitation frequency and duration) are derived from the
+   **catchment-averaged daily forcing series**, not from geometry. A package producer
+   cannot deliver them from basin outlines + HydroATLAS alone. Order is: delineate →
+   register/back-extract forcing → *then* compute the forcing-derived group. A
+   Group-A-only package (forcing-derived columns `null`) MUST be acceptable for
+   onboarding; models requiring a Group-B feature simply cannot be assigned until a
+   package supplying it lands. **PET is a hard dependency** — no PET in the forcing
+   source means aridity/moisture/seasonality are permanently null.
 4. **A Gateway HRU is single-kind: basins OR bands, never mixed.** (Owner,
    2026-07-14 — previously undefined; the Gateway itself does not care, so this is a
    SAP3-side constraint we adopt because it is free.)
@@ -224,12 +258,23 @@ from assumption to normative requirement.
 
 ## Open questions (tracked, non-blocking)
 
-1. Will the modeller require one static row per gauge, one row per basin, or a more
-   complex multi-index Parquet layout?
-2. Which actor owns the durable regeneration path: DHM, HSOL, or the basin/static
+1. Which actor owns the durable regeneration path: DHM, HSOL, or the basin/static
    extraction tool maintainer?
+2. Does the Nepal forcing source expose **PET**? Without it the Caravan
+   PET-dependent indices (mean PET, aridity, moisture index, seasonality) are
+   permanently null, and no model may declare them. Needs an early answer — it
+   constrains the model developer's feature list, not this plan.
+3. Which string does SAP3 pass as the FI station key — the raw `station_code`, or
+   the modeller's region-prefixed `gauge_id` (`nepal_5501`)? It MUST match whatever
+   the trained artifact's station embeddings were fitted on. Resolved via the
+   existing `station_code_resolver` seam
+   (`src/sapphire_flow/adapters/forecast_interface.py:170`) — a wiring decision at
+   model onboarding, not an FI change.
 
-Neither blocks READY. Both are recorded as TBD in `04-…` rather than guessed.
+**The static Parquet layout is no longer open** — the model developer supplied their
+producers on 2026-07-14 and the shape is confirmed (see Owner decision 3).
+
+None of these block READY.
 
 ## Relationship to Plan 047 and Flow 0
 
@@ -278,17 +323,33 @@ Task 2C records this relationship in both directions.
    Add the collision policy (reject the package, name both colliding station codes,
    never resolve silently) and note that gauge IDs may contain `/`, `-`, `'`, `_`
    and letters, so normalization is not injective.
-5. Roll §6 back to **TBD (modeller-owned)**: keep only the generic rule that every
-   name in `InputRequirement.static` / `ModelDataRequirements.static_features` must
-   appear as a column with a non-null value. Remove the one-row-per-basin
-   assertion, the fixed required-column table, the numeric-only type constraint,
-   and the boolean ban.
+5. ~~Roll §6 back to TBD.~~ **DONE 2026-07-14, and reversed** — see Owner decision 3.
+   The model developer supplied their producers; the shape is **confirmed**, so §6 now
+   *states* it (wide, one row per gauge, string key, every attribute `Float64`) and
+   **keeps** the numeric-only and no-boolean constraints, which are SAP3 facts rather
+   than modeller impositions. Only the feature *list* stays the modeller's.
 6. Note the import target: static attributes land in `basins.attributes` JSONB and
    are surfaced to models as `Float64` (`docs/spec/types-and-protocols.md`
-   `static` slot). Integer catalog columns are cast on import.
+   `static` slot). Integer catalog columns are cast on import. **DONE 2026-07-14.**
+7. Record the **three-identifier mapping** (`station_code` / modeller `gauge_id`,
+   region-prefixed / Gateway feature `name`) and require `gauge_id` as a column so
+   SAP3 need not re-derive the prefix rule. **DONE 2026-07-14.**
+8. Add to §4 the columns the modeller's extractor **hard-requires** of the basin
+   GeoPackage — `gauge_id`, `latitude`, `longitude` — which `read_basin_polygons()`
+   raises on if absent. **DONE 2026-07-14.**
+9. Add §6.3: the **geometry-derived vs forcing-derived** split and its ordering
+   dependency (Owner decision 6), including PET as a hard dependency and the
+   two-stage package path. **DONE 2026-07-14.**
 
-**Scope out:** Do not design the static Parquet schema. Do not add importer
-implementation detail. Do not touch `docs/spec/types-and-protocols.md`.
+**Already executed (working-tree draft, 2026-07-14).** At the owner's direction,
+items 5–9 above were applied to the `04-…` draft ahead of READY, together with the
+collaborator brief `docs/requirements/basin-static-extraction-brief.md`. Items 1–4
+(terminology section, name-rule normativity, uniqueness, single-kind HRUs, collision
+policy) are **still outstanding** and remain this task's work.
+
+**Scope out:** Do not invent the static feature *list* — that is the modeller's. Do
+not add importer implementation detail. Do not touch
+`docs/spec/types-and-protocols.md`.
 
 **Verification:**
 
@@ -305,18 +366,23 @@ must_appear = [
     "unique across all features in the GeoPackage",
     "basin polygons or band polygons, never both",
     "internal layer/table name",
-    # Static schema stays the modeller's.
-    "TBD (modeller-owned)",
-    "`basins.attributes`",
-    "Float64",
     # Owner decision 2 — the naming convention and its collision policy.
     "g_<station_code_normalized>",
     "colliding station codes",
+    # Owner decision 3 — the CONFIRMED static shape (NOT TBD). Keep the numeric
+    # constraints: they are SAP3 facts, satisfied by the modeller's own producers.
+    "one row per gauge",
+    "Float64",
+    "`basins.attributes`",
+    "static features MUST be numeric",
+    "boolean",
+    # Owner decision 6 — geometry-derived vs forcing-derived ordering.
+    "forcing-derived",
+    "PET",
+    # Identity: the modeller's key must be carried, not re-derived.
+    "gauge_id",
 ]
 must_be_gone = [
-    "contains one row per basin",
-    "Static features MUST be numeric (`int` or `float`)",
-    "Boolean static features MUST NOT be used",
     "MUST be lowercase, unique within the Gateway HRU, and MUST NOT start with a digit",
     # Owner decision 4 — HRUs are single-kind, so there is no basin/band merge.
     "SAP3 MAY combine basin and band features",
