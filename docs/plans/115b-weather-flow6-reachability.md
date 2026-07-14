@@ -117,8 +117,13 @@ following month** (a 3-6 week lag), so the preliminary window swings between rou
 and can approach **8 weeks** just before a publication. Every operational forecast in that window runs
 on preliminary precipitation.
 
-It must be **measured** (§8's live-tail comparison does exactly this, and it is the one part of §8 with
-**no confounds**) and **declared** — not discovered in production.
+> **✅ OWNER DECISION (2026-07-14): ACCEPTED.** All operational forecasts run on preliminary
+> precipitation for the current window, and **no extra API flag is required** — a forecast does not need
+> to advertise that its recent forcing is preliminary. This is now **policy, not an open risk.**
+>
+> It is still **measured** (§8's live-tail comparison — the one part of §8 with no confounds), because
+> knowing the size of the residual is worth having even when the residual is accepted. Measured and
+> declared; not flagged per-forecast.
 
 ## Scope
 
@@ -170,7 +175,17 @@ A one-shot, resumable backfill producing `historical_forcing` rows for **every o
 | `meteoswiss_tabsd` | temperature | 1981-01-01 → T-1d |
 | `meteoswiss_tmind` | temperature_min | 1981-01-01 → T-1d |
 | `meteoswiss_tmaxd` | temperature_max | 1981-01-01 → T-1d |
+| `meteoswiss_sreld` | *(relative sunshine duration)* | 1981-01-01 → T-1d |
 | `meteoswiss_rprelimd` | precipitation | **R** → T-1d *(live tail)* |
+
+> **✅ OWNER DECISION (2026-07-14): include `SrelD` now.** CAMELS-CH itself uses relative sunshine
+> duration (Höge et al., App. A1.2), no model requires it *yet*, and it is free (1971 → present). Adding
+> it to this backfill costs one more product; adding it **later** costs a **40-year re-run**. Take it now.
+>
+> **Implementation note:** it needs a canonical parameter string — the repo currently knows only
+> `precipitation`, `temperature`, `temperature_min`, `temperature_max`. Align the new name with the
+> ForecastInterface / model-requirement vocabulary **before** writing rows; a parameter name is a
+> contract, and renaming it later means re-writing the archive.
 
 > **⚠️ `T-45d` was a made-up constant and is RETRACTED.** Per the product docs, **`RhiresD` publishes
 > MONTHLY — typically around the 25th of the *following* month** (a 3-6 week lag), while `RprelimD` is
@@ -268,10 +283,22 @@ Onboarding also gains the binding, so both paths agree.
 > onboarded after this plan lands is silently forcing-less, and we have rebuilt the same class of bug in
 > a new place.
 
-> **Open item:** what becomes of the `camels-ch` binding once CAMELS is no longer a data tier? Under
-> `hybrid` the bindings only select *which stations participate* (`PerSourceStoreReader` keys on
-> `station_id` and ignores `nwp_source`), so leaving it is harmless — but it then describes a source we
-> no longer read. Decide: retire it, or keep it as a provenance marker. **Do not leave this implicit.**
+> **✅ OWNER DECISION (2026-07-14) — retire CAMELS for weather, keep it for runoff.**
+>
+> - **The `camels-ch` weather-source binding is RETIRED.** CAMELS is no longer a forcing/NWP data tier,
+>   so a `station_weather_sources` row pointing at it describes a source we no longer read. Remove it
+>   (migration + onboarding stops writing it). Post-115b a station carries exactly two weather bindings:
+>   `meteoswiss_open_data_reanalysis` (REANALYSIS) and `icon_ch2_eps` (FORECAST) — clean, and exactly
+>   the shape 115a's role model expects.
+> - **CAMELS remains the source of runoff/discharge observations**, plus static attributes and the basin
+>   polygons. Nothing there changes. Only its role as a *weather* source ends.
+> - **The CAMELS forcing ROWS in `historical_forcing` are NOT deleted** — they stay as the §8 validation
+>   reference, and as an audit trail of what models were previously trained on. They are simply absent
+>   from the priority chain, so no reader will ever select them.
+>
+> *(Retiring the binding while keeping the rows is coherent precisely because of D1: the binding says
+> "where do I get data", the provenance tag says "where did this number come from". The rows keep their
+> provenance; the station simply stops being bound to that source.)*
 
 ### 5. Fix hybrid's silent parameter drop — BEFORE the default flip
 
@@ -371,25 +398,46 @@ bound but silent."** Today both look identical — and both look like success.
 >    "daily" value spans).
 > 5. Any **gauge-undercatch or snow correction** CAMELS may apply that we would not.
 
-**So this is a *whole-pipeline reference comparison*, not an attributable control.** Design it honestly:
+**So this is a *whole-pipeline reference comparison*, not an attributable control.**
 
-- Compare our self-derived basin means against CAMELS' own — **same basins, same dates, 1981-2020**,
-  precipitation (`RhiresD`) and temperature (`TabsD`).
-- Report **per-basin bias, RMSE, and the seasonal + intensity structure** of the difference.
-  Precipitation biases are rarely uniform: expect them to concentrate in high-intensity and winter/snow
-  events — exactly where a flood-forecasting model is most sensitive.
-- **Set an explicit tolerance up front**, and state what each confound could plausibly contribute. A
-  difference inside tolerance is reassurance; a difference outside it is a **stop**, and then the
-  confounds get eliminated one at a time (start with the polygons — the cheapest to control).
-- **Do not claim attribution the design cannot support.** If we need a true control, it must reproduce
-  CAMELS' grid, vintage **and** polygons — a separate, larger piece of work. **Owner decision: honest
-  reference comparison with tolerances (cheap, and probably sufficient), or a true reproduction
-  (expensive)?**
+> ### ✅ OWNER DECISIONS (2026-07-14) — the confounds are ACCEPTED, not eliminated
+>
+> - **Grid discrepancies are accepted.** We will **not** attempt to source or reproduce CAMELS' grid
+>   vintage. *(So §8 is a reference comparison by choice — the cheap option was taken deliberately.)*
+> - **The aggregation method may differ slightly, and CAMELS' exact method is NOT currently known.**
+>   Treat this as a **named, unquantified confound**. Do not pretend to have matched it.
+> - **One confound IS eliminated, and it is the biggest one: the polygons are the same.** Our basins
+>   **are CAMELS-CH's own catchment geometries** — parsed from the CAMELS shapefiles
+>   (`camelsch_adapter.py:301` → `geometry_to_basin`) and stored at `onboarding.py:248`. We are not
+>   comparing across different catchment delineations.
+>
+> ### Tolerances (owner, 2026-07-14)
+>
+> | difference | action |
+> |---|---|
+> | **≤ 5%** | pass |
+> | **> 5%** | **FLAG** — report it, per basin, with the seasonal + intensity breakdown |
+> | **> 20%** | **Escalate to the owner.** Not an automatic stop. |
+>
+> **Why >20% is not an automatic stop** (owner's reasoning, recorded so nobody "fixes" it later):
+> **rainfall events genuinely differ between a 2 km and a 1 km grid.** A convective cell that is
+> smeared across one 2 km cell is resolved differently at 1 km, so large per-event discrepancies are
+> **physically expected**, not necessarily a pipeline bug. Even discrepancies above 20% may be
+> legitimate. They must be **explained**, not shrugged off — and not silently accepted either.
+
+Design it honestly:
+
+- Compare our self-derived basin means against CAMELS' own — **same basins** (literally the same
+  polygons), **same dates, 1981-2020** — precipitation (`RhiresD`) and temperature (`TabsD`).
+- Report **per-basin bias, RMSE, and the seasonal + intensity structure** of the difference. Expect the
+  precipitation differences to concentrate in high-intensity and winter/snow events — exactly where a
+  flood-forecasting model is most sensitive, and exactly where the grid-resolution effect lives.
+- Apply the tolerance table above.
 
 **Separately — and this one IS clean:** quantify the **live-tail residual**, `RprelimD` vs `RhiresD`
-over their overlap, same pipeline, same polygons, same vintage. **No confounds.** That number *is* the
-honest uncertainty on the most recent weeks of every operational forecast, and it is the single most
-decision-relevant figure this plan can produce.
+over their overlap, same pipeline, same polygons, same grid, same vintage. **No confounds.** It is the
+one genuinely attributable number in this plan, and it is worth having even though the residual itself
+is now accepted policy (§0).
 
 ### 9. Fix the CAMELS binding's `extraction_type`
 
@@ -502,3 +550,67 @@ yearly NetCDF + EPSG:2056 structure; and hybrid's silent parameter drop.
   our polygons) — the absence of exactly this note is what let the whole bug through.
 - `docs/conventions.md` — the `ForcingSource` values, incl. the new `METEOSWISS_RHIRESD`.
 - Annotations on **071** (falsified premise) and **072** (three defects) are already in place.
+
+## Dependency graph
+
+Ordering is not cosmetic here. Two hard constraints, both from the review:
+
+- **Bind before backfill** — the adapter only processes configs declaring its own `nwp_source`, so a
+  backfill with no binding in place does nothing *and reports success*.
+- **Fix the parameter drop before the flip** — flipping to `hybrid` while it still silently discards
+  unconfigured parameters is a data-loss regression.
+
+And one from judgement: **the reference comparison (§8) runs BEFORE the flip**, not after. There is no
+point re-sourcing every model's features and *then* asking whether the new series is sane.
+
+```json
+{
+  "phases": [
+    {
+      "id": "phase-1",
+      "name": "Adapter: RhiresD + SrelD + the archive asset family",
+      "tasks": ["1A-products", "1B-archive-asset-selection", "1C-real-lv95-fixture", "1D-dynamic-rhiresd-boundary"],
+      "parallel": false,
+      "depends_on": ["plan-115a"]
+    },
+    {
+      "id": "phase-2",
+      "name": "Bindings first (existing fleet + onboarding + retire camels-ch weather binding)",
+      "tasks": ["2A-backfill-meteoswiss-binding", "2B-onboarding-writes-binding", "2C-retire-camels-weather-binding", "2D-camels-extraction-type-fix"],
+      "parallel": false,
+      "depends_on": ["phase-1"]
+    },
+    {
+      "id": "phase-3",
+      "name": "Chunked, resumable backfill 1981 -> present through our polygons",
+      "tasks": ["3A-chunked-work-units", "3B-per-chunk-persistence", "3C-resumable-gap-detection", "3D-eligible-stations-only"],
+      "parallel": false,
+      "depends_on": ["phase-2"]
+    },
+    {
+      "id": "phase-4",
+      "name": "Reference comparison vs CAMELS + the clean live-tail measurement",
+      "tasks": ["4A-basin-mean-comparison-1981-2020", "4B-tolerance-report-5pct-20pct", "4C-live-tail-rprelimd-vs-rhiresd"],
+      "parallel": true,
+      "depends_on": ["phase-3"]
+    },
+    {
+      "id": "phase-5",
+      "name": "Reader: parameter-drop fix, then the priority chain, then the flip",
+      "tasks": ["5A-hybrid-parameter-drop-raise", "5B-chain-rhiresd-then-rprelimd-no-camels-tier", "5C-distribution-shift-gate", "5D-flip-default-to-hybrid"],
+      "parallel": false,
+      "depends_on": ["phase-4"]
+    },
+    {
+      "id": "phase-6",
+      "name": "Loudness + guards",
+      "tasks": ["6A-weather-history-ingest-check-type", "6B-health-by-effect-not-rows-stored", "6C-converter-guards", "6D-dashboard-provenance"],
+      "parallel": true,
+      "depends_on": ["phase-5"]
+    }
+  ]
+}
+```
+
+**Phase 4 is a gate, not a deliverable.** If the comparison trips the >5% flag, it gets explained before
+phase 5 proceeds; if it trips >20%, it escalates to the owner. Do not roll through it.
