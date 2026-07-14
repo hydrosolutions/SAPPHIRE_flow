@@ -689,6 +689,34 @@ if "re-scope per Plan 106" not in index:
 EOF
 ```
 
+## Review History
+
+All rounds 2026-07-14. Reviewers: **C** = Claude design/architecture perspective,
+**X** = Codex repo-grounded perspective (`file:line` evidence required). No model
+approved its own output; every revision was reviewed by a model that did not author
+it.
+
+| Round | Reviewer | Outcome | Blocking | Status | Key findings |
+|---|---|---|---|---|---|
+| 1 | C + X | NEEDS_CHANGES | 3 | resolved | DRAFT plan already partially executed; Phase 3 inverted the readiness gate (review ran *after* the work it authorized); `04-…` finalized the static Parquet schema that Owner decision 3 said must stay open. Plus: 4 of 8 gates passed with zero work done; `00-internal-gap-analysis.md` contradicted the boundary and was in no task; the "gauge ID as feature `name`" preference had an empty satisfying branch. |
+| 2 | X | ESCALATE | 1 | resolved | The round-1 fix itself introduced a blocker: the Baseline section directed committing the known-defective `04-…` contract to `main` before repairing it. |
+| 3 | X | NEEDS_CHANGES | 0 | resolved | Blockers closed. Gates for 1A/1B/2A/2B/2C under-verified their own scope; right-sizing cut requested. |
+| 4 | X | APPROVE | 0 | superseded | Converged. Superseded by the owner's answers to the open questions, which changed plan content. |
+| 5 | X | NEEDS_CHANGES | 1 | resolved | Owner decision 4 (single-kind HRUs) verified SOUND against the repo. But three sites in `01-data-gateway-requirements.md` still assumed mixed basin/band GeoPackages, contradicting it, and were in no task. |
+| 6 | X | APPROVE | 0 | superseded | Converged. Superseded by the model developer's producers landing, which changed Owner decisions 3 and 6. |
+| 7 | X | NEEDS_CHANGES | 2 | resolved | `04-…` demanded four Parquet identity columns the modeller's producers do not emit — contradicting the plan's own claim that the shape matched them byte-for-byte. Leftover "roll back to TBD" prose. |
+| 8 | X | APPROVE | 0 | user-confirmed | Both findings closed. FI claim independently verified TRUE (`gauge_id` is consistent with the ForecastInterface — no escalation). All 7 gates verified to fail against the current tree. Collaborator brief judged sendable. Owner promoted to READY. |
+
+**FI adherence check (round 8, verified).** `gauge_id` does **not** violate the
+ForecastInterface. The FI station key is an opaque string
+(`forecast_interface/input/bundle.py`, `ModelInputs.stations: dict[str,
+StationInputs]`) and SAP3 already owns the mapping seam (`station_code_resolver`,
+`src/sapphire_flow/adapters/forecast_interface.py:170`). FI permits string statics
+(`StationInputs.static: dict[str, int | float | str]`) while SAP3 narrows to
+`Float64` — narrowing is allowed. A future string static would therefore be a **SAP3**
+widening, not an FI gap, so no FI-repo issue is required (`CLAUDE.md`
+§ ForecastInterface Adherence).
+
 ## Dependency graph
 
 ```json
