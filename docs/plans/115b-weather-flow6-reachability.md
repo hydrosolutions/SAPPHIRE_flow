@@ -55,10 +55,21 @@ temperature_max). **Any other forcing parameter is silently dropped.**
 default as-is is a **silent data-loss regression**: precisely the bug family this whole track exists
 to eliminate.
 
-**Required fix:** a parameter with no configured chain must **not** vanish. Either pass it through
-(fall back to the row's own provenance when no chain is configured) or **raise** — never silently
-`continue`. Decide explicitly and test it. *A parameter that a model requests and the reader
-silently discards is indistinguishable from missing data.*
+**The rule (decided — a READY plan may not defer this to the implementer):**
+
+> A requested parameter with **no configured priority chain** raises `ConfigurationError` — **unless
+> exactly one source is configured for that parameter**, in which case that source wins.
+
+Rationale: "pass it through" is **ambiguous when two sources return the same unknown parameter** —
+there is no chain to break the tie, so a pass-through would pick nondeterministically, which is the
+`_select_nwp_source` bug all over again. Raising is the only deterministic answer that cannot
+silently return partial or arbitrary data. The single-source case is unambiguous, so it is allowed.
+
+Requires an **overlap test**: two sources both returning an unconfigured parameter must raise, not
+pick a winner.
+
+*A parameter that a model requests and the reader silently discards is indistinguishable from missing
+data — that is the whole disease this track is treating.*
 
 ### 2. Backfill the MeteoSwiss binding for EXISTING stations
 
@@ -66,12 +77,25 @@ silently discards is indistinguishable from missing data.*
 **nothing** for already-deployed stations: onboarding runs at *station onboarding*, not at deploy.
 Flow 6 would stay empty for the entire existing fleet.
 
-So the release must carry a **one-shot data backfill** inserting the
-`meteoswiss_open_data_reanalysis` / REANALYSIS binding for every eligible existing station
-(eligibility = the same rule onboarding will use — a non-weather station with a basin). Test Flow 6
-**against migrated data**, not just against a freshly-onboarded fixture.
+So the release must carry a **one-shot data backfill** inserting the binding for every eligible
+existing station (eligibility = the same rule onboarding will use — a non-weather station with a
+basin). Onboarding also gains the binding for new stations, so the two paths agree.
 
-Onboarding also gains the binding for new stations, so the two paths agree.
+**Pin all FOUR fields, not just the name and role.** The adapter's match
+(`meteoswiss_open_data_reanalysis.py:155-162`) requires **all** of:
+
+| field | value | why |
+|---|---|---|
+| `nwp_source` | `meteoswiss_open_data_reanalysis` | Flow 6 selects by adapter identity |
+| `role` | `REANALYSIS` | 115a's role filter |
+| `status` | `ACTIVE` | the adapter checks it explicitly |
+| `extraction_type` | `BASIN_AVERAGE` | the adapter's emission-shape guard |
+
+*(Missing any one of them leaves the feed dark in exactly the way this plan exists to fix — and the
+flow would still report green.)*
+
+**Test Flow 6 against MIGRATED data**, not a freshly-onboarded fixture, and **assert a non-zero
+`rows_stored`**. A green flow is not evidence.
 
 ### 3. Flip the reanalysis default to `hybrid`
 
@@ -83,14 +107,57 @@ Verify the flip is safe for **CAMELS-only** stations (i.e. every Swiss station t
 fall back to `CAMELS_CH`, so those rows still resolve — but this must be a **test**, not an
 assumption.
 
+#### ⚠️ 3a. Distribution-shift gate — the flip can silently change what a model is fed
+
+*(Major from review round 6. **Plan 072 §175 already recorded this risk** and it was about to be
+walked straight past.)*
+
+The flip changes **where a feature's value comes from**. A model fitted on **CAMELS-sourced**
+precipitation that suddenly reads **MeteoSwiss-sourced** precipitation is being fed a *different
+distribution than it was trained on* — the numbers still arrive, the flow still goes green, and the
+forecast is quietly wrong. This is not a wiring bug; it is a silent model-validity bug, and it would
+be very hard to attribute after the fact.
+
+The same path serves training (`training_data.py:177`), hindcast (`hindcast.py:292`) **and** the live
+forecast cycle's past-dynamic inputs (`operational_inputs.py:327`) — so a shift hits fitted
+artifacts and live inference together.
+
+**Required gate before the flip (audit A4 in the umbrella):**
+
+1. Enumerate **active** model artifacts and their `past_dynamic` / `future_dynamic` requirements.
+2. For each, determine whether the flip re-sources any feature it actually consumes.
+3. **If yes → retrain on hybrid-resolved forcing before the flip**, or hold the flip for those
+   stations. Do not flip under a fitted artifact whose training distribution has moved.
+
+Repo-level review suggests today's registered models are **probably** unaffected — native/fallback
+models declare no past/future dynamic features (`linear_regression_daily.py:54`), and the FI NWP model
+requires only *future* precipitation/temperature (`nwp_regression.py:126`), which comes from the
+forecast path, not this one. **That is an inference, not a fact**: only the live artifact/assignment
+tables settle which models are actually active. **NEEDS-LIVE-DB.**
+
 ### 4. Make an empty Flow 6 loud
 
 A scheduled ingest that matches **zero** stations is a misconfiguration, not a no-op. It must not
 report green. This is the observability hole that let the condition persist undetected — and the
 reason nobody noticed a production feed was dark.
 
-Emit at WARNING/ERROR with the source name and the station count, and surface it to the Flow 4
-pipeline-monitoring path the way other staleness signals are surfaced.
+**Specified, not hand-waved** *(blocker from review round 6 — "surface it to Flow 4" had no
+executable target)*. `ingest_weather_history_flow` has **no** `pipeline_health_store` parameter
+(`ingest_weather_history.py:256`), its production setup pulls only station/forcing/basin stores
+(`:267`), and `PipelineCheckType` (`types/enums.py:151`) has **no** weather-history check type. So
+this needs building, not wiring:
+
+1. Add a `WEATHER_HISTORY_INGEST` value to `PipelineCheckType` (+ the enum's DB constraint and a
+   migration, + `docs/conventions.md`'s enum table).
+2. Thread `pipeline_health_store` into `ingest_weather_history_flow` and its production setup.
+3. Record a health check per run: subject = the reanalysis `nwp_source`; **UNHEALTHY when
+   `stations_targeted == 0`** (a configuration fault — the feed cannot possibly be working), and
+   also when `stations_targeted > 0` but `rows_stored == 0` over a full window (the feed is
+   configured but delivering nothing).
+4. `rows_stored > 0` on a normal run is HEALTHY.
+
+Two distinct failures, deliberately distinguished: **"nobody is bound to this feed"** and **"the feed
+is bound but silent."** Today both look identical — and both look like success.
 
 ### 5. Fix the CAMELS binding's `extraction_type`
 
@@ -124,13 +191,17 @@ to see *which* source won.
 - **The double-dark regression test:** with the MeteoSwiss binding present and `hybrid` default,
   rows written under product tags are readable **end to end** by the default consumer.
   *Must fail against today's wiring.*
-- **The parameter-drop test (§1):** a forcing parameter with no configured chain is **not** silently
-  discarded. *Must fail against the current `continue`.*
+- **The parameter-drop test (§1):** a forcing parameter with no configured chain **raises
+  `ConfigurationError`** rather than being silently discarded. *Must fail against the current
+  `continue`.*
+- **The overlap test (§1):** two sources both returning an unconfigured parameter **raise** — they do
+  not pick a nondeterministic winner.
+- **Flow 6 health (§4):** `stations_targeted == 0` records UNHEALTHY, not a green zero; and
+  `stations_targeted > 0` with `rows_stored == 0` over a full window also records UNHEALTHY.
 - **CAMELS-only station survives the flip** — the chain falls back to `CAMELS_CH` and past-dynamic
   features are unchanged. This is the "did we break Switzerland" gate.
 - **Flow 6 against migrated data** (§2), not a fresh fixture — an existing station gets the binding
-  and ingests.
-- **Empty Flow 6 is loud**, not a green zero.
+  (all four fields pinned) and ingests, with `rows_stored > 0` asserted.
 - CAMELS binding `extraction_type` is `BASIN_AVERAGE`, at the write site and after migration.
 - Converter guards reject a reanalysis tag.
 

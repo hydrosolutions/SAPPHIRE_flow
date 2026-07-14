@@ -48,17 +48,16 @@ site), so it is an explicit task:
 Note `api/routes/stations.py:266` reflects the table and returns raw row dicts, so it will surface
 `role` automatically — including `NULL` during the migration window. Confirm that renders sanely.
 
-### 3. Doc sync (mandatory — CLAUDE.md "every code change updates affected docs")
+### 3. Doc sync — `0031` only
 
-- `docs/spec/database-schema.md:88-92` **and** `:542-546` — add `role`. **While here, fix the
-  pre-existing staleness**: both still show `active: BOOL`, but the column has been `status` since
-  Alembic `0009` (`db/metadata.py:179-185`).
-- `docs/architecture-context.md:1718-1723` — same `station_weather_sources` block, same two fixes.
-- `docs/conventions.md:396` — add a `station_weather_sources.role` / `WeatherSourceRole` row
-  (`forecast`, `reanalysis`) to the enum-value table.
-- `docs/touchpoint-maps.md` — the operational-inputs / time-series-preprocessing map must name the
-  role-scoped accessors, since `assemble_station_operational_inputs` is a listed touchpoint.
-- `docs/standards/cicd.md` — the `0030`→`0031` two-release sequence.
+*(The `role` column's docs — `database-schema.md`, `architecture-context.md`, `conventions.md`,
+`touchpoint-maps.md` — moved to **115a**, where the column is actually added. Review round 6 found
+that deferring them here violated "every code change updates affected docs" and made 115a
+non-standalone. 115c keeps only what `0031` itself changes.)*
+
+- `docs/standards/cicd.md` — close out the `0030`→`0031` sequence: the rollback window is over, the
+  NULL shim is gone, `role` is NOT NULL.
+- `docs/spec/database-schema.md` — flip `role` from nullable to NOT NULL in the column description.
 
 ### 4. Stale-plan cleanup
 

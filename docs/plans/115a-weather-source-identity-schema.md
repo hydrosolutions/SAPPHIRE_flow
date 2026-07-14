@@ -22,8 +22,16 @@ migration allowlist is complete.
 ## Objective
 
 Make the forecast/reanalysis distinction an explicit, type-enforced property of a station's
-weather-source binding, and route every consumer through it. **Schema and routing only — no
-behaviour flip, no default change.** This is the piece 081/082 are waiting on.
+weather-source binding, and route every consumer through it. This is the piece 081/082 are waiting on.
+
+**Schema and routing. No reader change, no default flip** — `single` stays the reanalysis default and
+Flow 6 stays dark until 115b.
+
+> **⚠️ It is NOT "no behaviour change" — an earlier draft claimed that and review falsified it.**
+> There is exactly **one**, named and accepted: a station with **zero** forecast bindings forecasts
+> today (via the retired fallback) and will be **loudly skipped** after this lands (§5). **Audit A1 in
+> the umbrella exists precisely to find those stations before they break** — it is the gating query,
+> and 115a cannot be READY until it returns zero rows or every row has an owner decision attached.
 
 ## Non-goals
 
@@ -220,6 +228,26 @@ uv run pyright src/
 uv run pytest
 ```
 
-Doc sync for this plan: `docs/spec/types-and-protocols.md` (the `role` field, the
-`WeatherSourceRole` enum, the role-scoped accessors on the `StationStore` Protocol). The remaining
-doc sync is 115c.
+### Doc sync — ALL of it lands with 115a
+
+*(Blocker from review round 6: an earlier draft deferred the schema docs to 115c. That violates the
+repo rule "every code change updates affected docs" (`AGENTS.md:27`) and meant 115a was **not** a
+standalone landing — 115c was holding 115a's exit-gate work. The `role` column is added **here**, so
+its docs ship **here**. 115c keeps only the `0031` tightening docs.)*
+
+- `docs/spec/types-and-protocols.md` — the `role` field, the `WeatherSourceRole` enum, and the
+  role-scoped accessors on the `StationStore` Protocol.
+- `docs/spec/database-schema.md:88-92` **and** `:542-546` — add `role`. **While here, fix the
+  pre-existing staleness**: both still show `active: BOOL`, but the column has been `status` since
+  Alembic `0009` (`db/metadata.py:179-185`).
+- `docs/architecture-context.md:1718-1723` — the `station_weather_sources` block: add `role`, fix
+  the stale `active` → `status`.
+- `docs/architecture-context.md:1733` — **the "active entries" source-intersection paragraph.** It
+  describes selection as intersecting on *active* entries, which **contradicts** this plan's
+  deliberate decision to add **no** status filter (§2). Correct it, or the docs assert an invariant
+  the code does not have.
+- `docs/conventions.md:396` — add a `station_weather_sources.role` / `WeatherSourceRole` row
+  (`forecast`, `reanalysis`) to the enum-value table.
+- `docs/touchpoint-maps.md` — the operational-inputs / time-series-preprocessing map must name the
+  role-scoped accessors (`assemble_station_operational_inputs` is a listed touchpoint).
+- `docs/standards/cicd.md` — the `0030`→`0031` two-release sequence.

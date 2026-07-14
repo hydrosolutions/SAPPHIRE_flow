@@ -121,20 +121,68 @@ legitimately wants every binding — now showing each one's role.
 
 ## Audit — BLOCKS 115a READY
 
-Read-only, staging **and** production:
+Read-only, staging **and** production.
+
+### A1 — Forecast-binding cardinality (THE gating query)
+
+*(Blocker from review round 6. The earlier audit could not prove 115a safe to land — it checked
+source names but never the thing 115a makes **fatal**.)*
+
+115a's `fetch_forecast_binding` **raises** on 0 forecast bindings, and retires the fallback that
+today silently returns `icon_ch2_eps` (`run_forecast_cycle.py:106`). **A station with zero forecast
+bindings currently forecasts fine** — the fallback covers it, and `operational_inputs.py:356` only
+hard-skips when *future* NWP features are required, which today's models mostly do not need. Such a
+station would **start failing on the day 115a ships**.
+
+So the audit must count roles **per operational forecast station**, applying the post-`0030` backfill
+rule:
 
 ```sql
-SELECT DISTINCT nwp_source, extraction_type FROM station_weather_sources;
+-- Forecast-binding count per operational station, under the 0030 backfill rule.
+-- Expected: exactly 1 for every operational forecast target. Anything else is a finding.
+SELECT s.id, s.name,
+       COUNT(*) FILTER (WHERE ws.nwp_source = 'icon_ch2_eps')  AS forecast_bindings,
+       COUNT(*) FILTER (WHERE ws.nwp_source <> 'icon_ch2_eps') AS reanalysis_bindings
+  FROM stations s
+  LEFT JOIN station_weather_sources ws ON ws.station_id = s.id
+ WHERE s.station_status = 'operational'
+   AND s.station_kind <> 'weather'
+ GROUP BY s.id, s.name
+HAVING COUNT(*) FILTER (WHERE ws.nwp_source = 'icon_ch2_eps') <> 1;
+```
+
+**Every row this returns is a station that forecasts today and would break under 115a.** Each needs
+an explicit owner decision — backfill the binding, or accept the loud skip. **115a cannot be READY
+until this returns zero rows, or every row it returns has a decision attached.**
+
+### A2 — Source allowlist (does the migration's `CASE` cover reality?)
+
+```sql
+SELECT DISTINCT nwp_source, extraction_type, status FROM station_weather_sources;
+```
+
+### A3 — Is the reanalysis feed dark, and is forcing frozen?
+
+```sql
 SELECT source, COUNT(*), MIN(valid_time), MAX(valid_time) FROM historical_forcing GROUP BY source;
 ```
 
-Or, without the DB: **is `weather_history.no_stations` firing** in the `ingest-weather-history`
-Prefect logs? That alone proves the dark feed.
+`MAX(valid_time)` per source shows instantly whether `historical_forcing` is **frozen at the CAMELS
+import**. **If frozen, 115b is a first implementation, not a fix** — and past-dynamic features have
+been stale in every forecast since onboarding.
 
-It settles three things: whether the migration allowlist is complete; whether Flow 6 has **ever**
-ingested a row; and whether `historical_forcing` is frozen at the CAMELS import (`MAX(valid_time)`
-shows it instantly). **If frozen, 115b is a first implementation, not a fix** — and past-dynamic
-features have been stale in every forecast since onboarding.
+Without the DB: **is `weather_history.no_stations` firing** in the `ingest-weather-history` Prefect
+logs? That alone proves the dark feed.
+
+### A4 — Active-model provenance (gates 115b's flip, not 115a)
+
+Which models are active, and do their `past_dynamic` / `future_dynamic` requirements draw on forcing
+that the hybrid flip would re-source? Plan 072 §175 already recorded the **distribution-shift risk**
+of a `single`→`hybrid` flip: a model trained on CAMELS-sourced features that suddenly reads
+MeteoSwiss-sourced features is being fed a different distribution than it was fitted on. Review
+found that today's registered models are **probably** unaffected (native/fallback models declare no
+past/future dynamic features; the FI NWP model needs only *future* precip/temperature) — but that is
+a repo-level inference, and the live artifact/assignment table is the only thing that settles it.
 
 **Blocked 2026-07-14:** mac-mini unreachable (full-subnet sweep: no ICMP, no SSH, no ARP). The
 host has **no power management configured anywhere in the repo** (`scripts/bootstrap-mac-mini.sh`
@@ -167,11 +215,32 @@ as the Plan 100 blackout.
 
 ## Review history
 
-- Grill-me (2026-07-13, as 114) → plan-review loop rounds 1-2 (escalated, owner-resolved) →
-  independent Codex review round 3 (NOT-READY, folded) → **architecture investigation** (Codex,
-  2026-07-14) which found the root cause and produced this track → **independent Codex review of
-  115** (NOT-READY: 3 blockers, 3 majors, 3 claims **falsified**) → this split.
-- **Falsified claims worth remembering:** "every consumer is accounted for" (false three times
-  running); "hybrid is the binding→provenance resolver" (false — it is a global priority chain);
-  "creating the binding at onboarding makes Flow 6 non-empty" (false for **existing** stations —
-  needs a data backfill).
+Six rounds. Each one falsified something the previous round was confident about.
+
+1. Grill-me (2026-07-13, as 114).
+2-3. Plan-review loop rounds 1-2 — **escalated** (stalled, 2 blockers + 2 majors), owner-resolved.
+   *The loop also **introduced** a bogus `status == ACTIVE` filter and a false Provenance rationale
+   of its own.*
+4. Independent Codex review of 114 — NOT-READY. Found the plan fixed the **reanalysis** direction and
+   left the **forecast** direction wide open.
+5. **Architecture investigation** (Codex) — found the actual root cause (`nwp_source` = four things),
+   the two colliding design lines, and the double-dark Flow 6. **114 superseded** → this track.
+6. Independent Codex review of 115 — NOT-READY, **3 claims falsified** → the 3-way split.
+7. Independent Codex review of 115a/b/c — **all three NOT-READY**, 4 blockers, and it falsified the
+   split's own claims (below). Folded 2026-07-14.
+
+**Falsified claims worth remembering** — the track's recurring failure mode is *confident
+completeness*:
+
+- "every consumer is accounted for" — **false three separate times**, each in a different consumer.
+- "hybrid is the binding→provenance resolver" — false; it is a deployment-global priority chain.
+- "creating the binding at onboarding makes Flow 6 non-empty" — false for **existing** stations.
+- "115a is no behaviour change" — false; it has exactly one, now named (zero-forecast-binding
+  stations start being skipped).
+- "the live DB audit gates 115a" — **incomplete**: the audit did not check the one thing 115a makes
+  fatal (forecast-binding cardinality). Now A1, and it is the gating query.
+- "115c is non-gating" — false while it held doc-sync that 115a's own schema change requires.
+
+**The lesson, recorded so the next agent does not relearn it:** every automated round converged on
+its own output and had to be caught from outside. When a plan fails review repeatedly, suspect the
+*unit of work*, not the reviewer.

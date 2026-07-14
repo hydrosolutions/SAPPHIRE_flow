@@ -30,7 +30,27 @@ dropped the `-nwp` overlay → NWP off → the forecast feed went dark for three
 reported green). Twice now, this host has failed in a way that produced **silence rather than a
 signal**.
 
-## Root cause — two independent defects
+## Root cause — three independent defects
+
+### 0. The network link does not come back — and this is NOT just sleep
+
+**Confirmed 2026-07-14, after the owner physically woke and logged into the machine:** the host was
+**still absent from the LAN**. Verified properly this time — an ICMP sweep is a **bad instrument**
+here (macOS stealth mode ignores ping, so "no reply" never proved absence). An **ARP/TCP scan**
+surfaced four hosts the ping sweep had missed — and the mini was **not among them**. Meanwhile:
+
+- `192.168.1.136` has **no ARP entry** — nothing is at that address;
+- **no host anywhere on the LAN listens on port 22**;
+- the router **still holds a stale DHCP lease** `mac-3 → 192.168.1.136`, i.e. a record of where the
+  mini *used to be*, not where it is;
+- this was reproduced with the agent sandbox disabled, so it is not a tooling artefact.
+
+So the machine can be **awake, logged in, and still not on the network.** That is a link/interface
+failure independent of sleep, and it means power settings alone will **not** fix this. Scope must
+include the network link itself: assert it, and recover it.
+
+**And it strengthens Phase 3 rather than weakening it:** a host that is fully awake but unreachable
+emits *exactly as much signal as one that is asleep* — none.
 
 ### 1. The host has no power or network management. At all.
 
@@ -97,6 +117,19 @@ Verify with `pmset -g` and assert the settings, rather than assuming the command
 - **Wired Ethernet, not Wi-Fi.** Wi-Fi drops on sleep and rejoins slowly and unreliably.
 - **Auto-login** must survive reboots (already assumed by the LaunchAgents; make it an asserted
   prerequisite rather than a hope).
+
+**Network-link assertion + recovery (per Defect 0 — the machine was awake and still off-network):**
+
+- Assert **at boot and on a timer** that the interface has a carrier, holds a lease, and can reach
+  the gateway. Do not assume "the OS is up" implies "the box is on the network" — that assumption is
+  exactly what failed.
+- On failure, attempt recovery (cycle the interface / renew DHCP) and **log it loudly**. A link that
+  silently fails to come back after a wake is the observed failure, not a hypothetical one.
+- **Remote Login (sshd) must be on and asserted** — no host on the LAN was listening on 22, so
+  either it is off or the box is elsewhere. The runbook must not assume SSH access it has not verified.
+- Confirm the mini is on **this** LAN and not a guest SSID / second network. *(Open: needs a physical
+  check of System Settings → Network. Until then, "the host is on the LAN" is an assumption, not a
+  fact.)*
 
 ### Phase 2 — LaunchAgent vs LaunchDaemon
 
