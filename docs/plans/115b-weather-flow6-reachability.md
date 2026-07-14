@@ -60,7 +60,7 @@ do we actually feed the models, and is it homogeneous end to end?*
   `ch.meteoschweiz.ogd-surface-derived-grid` — *the collection the adapter already points at*:
 
 ```
-rhiresd    71 files   1961-01-01 .. 2026-05-31   <- DEFINITIVE precip, free, ~45-day publication lag
+rhiresd    71 files   1961-01-01 .. 2026-05-31   <- DEFINITIVE precip, free; MONTHLY publication (~3-6 week lag)
 rprelimd   60 files   2026-05-15 .. 2026-07-13   <- PRELIMINARY, live tail ONLY
 tabsd     131 files   1961-01-01 .. 2026-07-13
 tmind     121 files   1971-01-01 .. 2026-07-13
@@ -74,8 +74,8 @@ the window `RhiresD`'s publication lag has not yet reached.
 ### The decision
 
 > **Derive the entire forcing series ourselves, through OUR basin polygons:**
-> **`RhiresD` + `TabsD` + `TminD` + `TmaxD`, from 1981-01-01 → T-45d, with `RprelimD` for the live tail
-> ONLY — superseded by `RhiresD` when it publishes.**
+> **`RhiresD` + `TabsD` + `TminD` + `TmaxD`, from 1981-01-01 → the latest published `RhiresD` date,
+> with `RprelimD` for the live tail ONLY — and `RhiresD` taking PRIORITY over it once published.**
 >
 > **CAMELS-CH forcing becomes a VALIDATION REFERENCE, not a data tier.**
 
@@ -84,9 +84,9 @@ is no splice anywhere.** This kills all three consistency axes at once:
 
 | axis | how it dies |
 |---|---|
-| **Product identity** | One product per parameter, end to end. The only product boundary is `RhiresD`↔`RprelimD` at the live tail — and it is **temporary**, resolved by supersession. |
+| **Product identity** | One product per parameter, end to end. The only product boundary is `RhiresD`↔`RprelimD` at the live tail — and it is **transient**: once `RhiresD` publishes for those dates, the priority chain prefers it. |
 | **Spatial aggregation** | **Our** polygons, **our** `exactextract`, throughout. CAMELS computed its basin means with *its* polygons and method; that mismatch simply leaves the series. |
-| **Version / supersession** | The preliminary tail is **replaced** by definitive data as it publishes. `historical_forcing` **already carries a `version` column with latest-version supersession** (`historical_forcing_store.py:55`) — the mechanism exists and nothing was ever wired to it. |
+| **Definitive over preliminary** | Handled by the **hybrid PRIORITY chain** (`RHIRESD → RPRELIMD`), **not** by `version` supersession — see §3, which corrects an error in an earlier revision. Both rows coexist; the reader decides. |
 
 **Backfill depth: 1981-01-01** (owner decision) — matching CAMELS' span exactly, so the validation
 experiment (§8) compares **40 full years** of our basin means against CAMELS'. *(`RhiresD` offers 1961;
@@ -109,10 +109,16 @@ discharge record. Only its **forcing** is superseded.
 
 ### The irreducible residual — name it, measure it, declare it
 
-For the most recent **~45 days**, inference runs on **preliminary** precipitation while the model was
-trained on **definitive**. **No real-time system can escape this** — definitive data does not exist in
-real time. But it must be **measured** (§8 quantifies exactly this) and **declared**, not discovered in
-production.
+For the most recent window, inference runs on **preliminary** precipitation while the model was trained
+on **definitive**. **No real-time system can escape this** — definitive data does not exist in real time.
+
+**That window is LARGER than first assumed.** `RhiresD` publishes **monthly, around the 25th of the
+following month** (a 3-6 week lag), so the preliminary window swings between roughly **25 and 55 days**
+and can approach **8 weeks** just before a publication. Every operational forecast in that window runs
+on preliminary precipitation.
+
+It must be **measured** (§8's live-tail comparison does exactly this, and it is the one part of §8 with
+**no confounds**) and **declared** — not discovered in production.
 
 ## Scope
 
@@ -127,14 +133,32 @@ Two changes:
 - **Add `RhiresD`** as the precipitation product (`ForcingSource.METEOSWISS_RHIRESD`,
   `raw_var="RhiresD"`, token `rhiresd`). `RprelimD` **stays** — it is the live-tail product, not a
   mistake to be deleted.
-- **Support the `archive` asset family.** The historical files are **per-year NetCDFs**
-  (`…-archive.rhiresd_ch01h.swiss.lv95_19810101000000_19811231000000.nc`), not per-day features. The
-  current per-day fetch cannot read them. The backfill (§2) needs a year-file path; the daily
-  operational path stays as-is.
+- **Support the `archive` asset family — and this is bigger than it looks.** The historical files are
+  **per-year NetCDFs** (`…-archive.rhiresd_ch01h.swiss.lv95_19810101000000_19811231000000.nc`), not
+  per-day features. The current adapter queries **per-day items only**
+  (`meteoswiss_open_data_reanalysis.py:174`), and `_asset_href` returns **the first matching product
+  asset with no year/span selection at all** (`:231`) — so it cannot even *address* the right archive
+  file. The backfill (§2) needs a year-file path; the daily operational path stays as-is.
 
-**Grid note:** `rhiresd` publishes on `ch01h`; the other products on `ch01r`. Confirm the CRS/geometry
-handling covers both, or the extraction will be silently wrong. *(Verify before implementing — do not
-assume.)*
+  **Required before this is trusted:** a **real archive fixture** (a genuine LV95 NetCDF, not a
+  synthetic one) and/or a live-gated smoke test proving **asset selection by year, variable names,
+  dimensions, CRS normalisation, and `exactextract` compatibility**. The existing tests use
+  **synthetic lat/lon NetCDFs** (`test_meteoswiss_open_data_reanalysis.py:89`) which prove nothing about
+  the real files — the adapter could pass every test and still be unable to read a single archive file.
+
+**Grid note — CORRECTED (an earlier revision had this wrong).** It is **not** "rhiresd is `ch01h`, the
+others `ch01r`". Per the MeteoSwiss product docs:
+
+| product | grid | note |
+|---|---|---|
+| `RhiresD` | **`ch01h`** | precipitation |
+| `RprelimD` | **`ch01h`** | precipitation — **same grid family as RhiresD** |
+| `TabsD` / `TminD` / `TmaxD` | **`ch01r`** | temperature |
+
+So the split is **precipitation (`ch01h`) vs temperature (`ch01r`)**, not definitive-vs-preliminary.
+That is *convenient* — the two precipitation products share a grid, so the chain
+`RHIRESD → RPRELIMD` composes over one geometry. But the CRS/geometry path **must** handle both
+families, or the extraction is silently wrong. **Verify against real archive files; do not assume.**
 
 ### 2. Backfill — derive 1981 → present through our polygons
 
@@ -142,27 +166,82 @@ A one-shot, resumable backfill producing `historical_forcing` rows for **every o
 
 | source tag | parameter | span |
 |---|---|---|
-| `meteoswiss_rhiresd` | precipitation | 1981-01-01 → T-45d |
+| `meteoswiss_rhiresd` | precipitation | 1981-01-01 → **R** *(see below)* |
 | `meteoswiss_tabsd` | temperature | 1981-01-01 → T-1d |
 | `meteoswiss_tmind` | temperature_min | 1981-01-01 → T-1d |
 | `meteoswiss_tmaxd` | temperature_max | 1981-01-01 → T-1d |
-| `meteoswiss_rprelimd` | precipitation | T-45d → T-1d *(live tail; superseded)* |
+| `meteoswiss_rprelimd` | precipitation | **R** → T-1d *(live tail)* |
 
-**Scale check before building:** rows ≈ `stations × days × parameters`. At 2 stations × 16,436 days ×
-4 = ~131k rows — trivial. **At the v0 target of ~1000 stations that is ~66M rows.** Size the backfill
-(and the extraction, which is the real cost — 45 years × 4 products of grid files) accordingly. It is a
-batch job, not a request path.
+> **⚠️ `T-45d` was a made-up constant and is RETRACTED.** Per the product docs, **`RhiresD` publishes
+> MONTHLY — typically around the 25th of the *following* month** (a 3-6 week lag), while `RprelimD` is
+> daily at D+1. So the boundary **R** is not a fixed offset: it **swings between roughly 25 and 55
+> days** and jumps at each monthly publication.
+>
+> **R must be DISCOVERED, not assumed** — query the STAC collection for the latest available `RhiresD`
+> date and derive the tail from it. A hardcoded offset would silently either (a) skip days RhiresD
+> already covers, or (b) request days it does not yet have.
+>
+> **And note what this does to the residual (§0):** the preliminary window is **up to ~8 weeks**, not
+> ~45 days. That makes §8's live-tail measurement *more* important, not less.
 
-### 3. Supersession — wire the mechanism that already exists
+**Eligibility:** "every operational station" means **every station with a valid basin polygon** —
+`ExactExtractGridExtractor` raises when a station has no usable geometry
+(`exact_extract_grid_extractor.py:64`). Enumerate eligible stations explicitly; do not assume the two
+sets coincide.
 
-`historical_forcing` has a `version` column and `fetch_forcing` applies **latest-version supersession**
-when `version` is absent (`historical_forcing_store.py:55`). Nothing uses it.
+**Scale — and the current path CANNOT do it.** Rows ≈ `stations × days × parameters`: at 2 stations ×
+16,436 days × 4 = ~131k rows (trivial), but **at the v0 target of ~1000 stations that is ~66M rows.**
+The existing path is **all-in-memory end to end** and will not survive that:
 
-Wire it so that when `RhiresD` publishes for a date already covered by `RprelimD`, the definitive row
-**supersedes** the preliminary one. This is the mechanism that makes the live-tail compromise
-acceptable rather than permanent.
+- the adapter returns **one full `list[RawHistoricalForcing]`** (`meteoswiss_open_data_reanalysis.py:134`);
+- Flow 6 stores **only after the entire fetch completes** (`ingest_weather_history.py:318`);
+- the store **copies the whole input** before batching into 5k-row SQL chunks
+  (`historical_forcing_store.py:35`).
 
-### 4. The MeteoSwiss binding — for EXISTING stations, not just new ones
+**So the backfill needs its own chunked path**, not a large call to the existing one:
+**work unit = (product, year, station-batch)**, with **per-chunk persistence** and **resumable gap
+detection** (re-run and it fills only what is missing). It is a batch job, not a request path — and it
+must be interruptible, because it will be interrupted.
+
+### 3. Definitive-over-preliminary is a PRIORITY decision, not version supersession
+
+> **⚠️ CORRECTED — an earlier revision of this plan was WRONG here, and the error was load-bearing.**
+>
+> It claimed `historical_forcing`'s `version` column would make an `RhiresD` row **supersede** an
+> `RprelimD` row. **False.** Verified:
+> - `fetch_forcing` filters **one `source` at a time** (`historical_forcing_store.py:65`) and partitions
+>   its latest-version rows **BY `source`** (`:91`);
+> - the natural key **includes `source` and `version`** (`db/metadata.py:413`), so two rows differing
+>   only by source are **both legal and both retained**.
+>
+> `version` supersession operates **within** a source (a reprocessed `RhiresD` v2 superseding
+> `RhiresD` v1). It **cannot** express "RhiresD beats RprelimD" — those are different sources.
+
+**Cross-source precedence is `HybridForcingSource`'s priority chain** (`hybrid_reanalysis.py:66`), and
+nothing else. So:
+
+- Both rows **coexist** in `historical_forcing` for an overlapping date — that is correct and desirable
+  (the preliminary value remains auditable; provenance is never destroyed, per D1).
+- **The reader decides.** The chain `precipitation: RHIRESD → RPRELIMD` means: if a definitive row
+  exists for that `(station, valid_time)`, it wins; otherwise the preliminary one is used.
+- **Version supersession stays wired for its real job:** MeteoSwiss *reprocesses*, so a re-issued
+  `RhiresD` must supersede an earlier `RhiresD` for the same date. That is within-source, and the
+  existing mechanism handles it — keep it.
+
+**Consequence for the backfill:** it does **not** need to delete or overwrite preliminary rows when the
+definitive data lands. It simply ingests `RhiresD` for those dates, and the priority chain does the rest.
+*(This is simpler than the mechanism the earlier draft invented.)*
+
+### 4. The MeteoSwiss binding — BIND FIRST, and for EXISTING stations
+
+> **⚠️ ORDERING (review finding): the binding must exist BEFORE the backfill runs.** The adapter only
+> processes configs that declare its own `nwp_source` (`meteoswiss_open_data_reanalysis.py:145`), and
+> Flow 6 selects its configs **from stored bindings** (`ingest_weather_history.py:243`). So a backfill
+> that runs through the production adapter/flow with no binding in place **does nothing — and reports
+> success**, which is the exact failure this plan exists to end.
+>
+> Either **bind first**, or have the backfill **construct its eligible basin-average configs explicitly**,
+> outside the production selector. Do not leave the order implicit.
 
 Creating the binding at onboarding does **nothing** for the deployed fleet — onboarding runs at
 *station onboarding*, not at deploy. A **one-shot data backfill** must insert it for every eligible
@@ -177,6 +256,17 @@ existing station. **Pin all four fields**; the adapter's match
 | `extraction_type` | `BASIN_AVERAGE` |
 
 Onboarding also gains the binding, so both paths agree.
+
+> **⚠️ But a binding alone does NOT give a new station any data (review finding).** Onboarding still
+> imports **CAMELS forcing only** (`camelsch_adapter.py:339`) and creates the CAMELS binding from
+> `forcing[0].source` (`onboarding.py:364`). A newly-onboarded station would therefore get a MeteoSwiss
+> **binding** and **zero MeteoSwiss rows** — no 1981-present series at all — while the one-shot fleet
+> backfill (§2) only covers stations that existed when it ran.
+>
+> **So onboarding must run the per-station MeteoSwiss backfill** before the station is promoted to
+> operational / trainable — or explicitly hold the station out until it has. Otherwise every station
+> onboarded after this plan lands is silently forcing-less, and we have rebuilt the same class of bug in
+> a new place.
 
 > **Open item:** what becomes of the `camels-ch` binding once CAMELS is no longer a data tier? Under
 > `hybrid` the bindings only select *which stations participate* (`PerSourceStoreReader` keys on
@@ -244,31 +334,62 @@ building, not wiring:
 1. Add `WEATHER_HISTORY_INGEST` to `PipelineCheckType` (+ DB constraint, migration, `conventions.md`).
 2. Thread `pipeline_health_store` into the flow and its production setup.
 3. Record per run: **UNHEALTHY when `stations_targeted == 0`** (a config fault — the feed *cannot* be
-   working), and when `stations_targeted > 0 and rows_stored == 0` over a full window (bound, but
-   silent). HEALTHY on `rows_stored > 0`.
+   working), and when `stations_targeted > 0` but no new data landed over a full window (bound, but
+   silent).
+
+> **⚠️ `rows_stored` is NOT a count of inserted rows (review finding) — do not build the health check on
+> it.** `_store_forcing_task` returns `len(records)` (`ingest_weather_history.py:230`) *after* an
+> `on_conflict_do_nothing()` insert (`historical_forcing_store.py:52`). So a run that inserts **nothing
+> because every row already existed** still reports a large `rows_stored` and looks perfectly healthy.
+>
+> **A stuck feed re-fetching the same window forever would be indistinguishable from a working one** —
+> which is precisely the disease this section exists to cure. Use the **actual DB rowcount**, or assert
+> that **`MAX(valid_time)` per source ADVANCES**. Health must be measured by *effect*, not by the size
+> of the input we handed to the writer.
 
 Two distinct failures, deliberately distinguished: **"nobody is bound to this feed"** vs **"the feed is
 bound but silent."** Today both look identical — and both look like success.
 
-### 8. 🔬 The validation experiment — our series vs CAMELS (do this EARLY)
+### 8. 🔬 The reference comparison — our series vs CAMELS (run EARLY, before §6's flip)
 
-**This is the payoff of the 1981 backfill depth, and it should run before §6's flip.**
+> **⚠️ CORRECTED — this is NOT the clean positive control an earlier revision claimed.**
+>
+> That revision asserted: *"both are RhiresD-derived, so any difference is **purely** our aggregation
+> method/polygons."* **False, and dangerously so** — a confounded control produces a difference you
+> **cannot attribute**, which is worse than no control at all.
+>
+> **The confounds, named:**
+> 1. **Grid resolution / vintage.** CAMELS-CH aggregated from **2 km** gridded products (Höge et al.
+>    2023, ESSD §"Meteorological data"); today's MeteoSwiss open-data grids are **1 km**-scale. Same
+>    product *name*, different grid.
+> 2. **Reprocessing.** The `RhiresD` served today is not necessarily the vintage CAMELS consumed in
+>    ~2022. MeteoSwiss reprocesses.
+> 3. **Polygons.** CAMELS used **its own catchment delineations**. Whether ours are identical is
+>    exactly what is unknown *(and note we source basin polygons FROM CAMELS — confirm whether they are
+>    the same set it used for forcing aggregation, or a different one)*.
+> 4. **Coverage masks and timestamp/day-boundary conventions** (UTC vs local, and which 24 h window a
+>    "daily" value spans).
+> 5. Any **gauge-undercatch or snow correction** CAMELS may apply that we would not.
 
-Compare our self-derived basin means against CAMELS' own, **same basins, same dates, 1981-2020**:
+**So this is a *whole-pipeline reference comparison*, not an attributable control.** Design it honestly:
 
-- **Precipitation** — ours (`RhiresD` via `exactextract`, our polygons) vs CAMELS'. Both are
-  RhiresD-derived, so **any difference is purely our aggregation method/polygons.** This is a positive
-  control on the whole extraction pipeline against a **published reference**.
-- **Temperature** — same, via `TabsD`.
+- Compare our self-derived basin means against CAMELS' own — **same basins, same dates, 1981-2020**,
+  precipitation (`RhiresD`) and temperature (`TabsD`).
 - Report **per-basin bias, RMSE, and the seasonal + intensity structure** of the difference.
   Precipitation biases are rarely uniform: expect them to concentrate in high-intensity and winter/snow
   events — exactly where a flood-forecasting model is most sensitive.
-- **Separately, quantify the live-tail residual**: `RprelimD` vs `RhiresD` over their overlap. That
-  number *is* the honest uncertainty on the most recent 45 days of every operational forecast.
+- **Set an explicit tolerance up front**, and state what each confound could plausibly contribute. A
+  difference inside tolerance is reassurance; a difference outside it is a **stop**, and then the
+  confounds get eliminated one at a time (start with the polygons — the cheapest to control).
+- **Do not claim attribution the design cannot support.** If we need a true control, it must reproduce
+  CAMELS' grid, vintage **and** polygons — a separate, larger piece of work. **Owner decision: honest
+  reference comparison with tolerances (cheap, and probably sufficient), or a true reproduction
+  (expensive)?**
 
-**If ours and CAMELS' disagree materially, stop.** Either our polygons differ from CAMELS' catchments,
-or our aggregation is wrong — and we would be about to retrain every model on a silently different
-series.
+**Separately — and this one IS clean:** quantify the **live-tail residual**, `RprelimD` vs `RhiresD`
+over their overlap, same pipeline, same polygons, same vintage. **No confounds.** That number *is* the
+honest uncertainty on the most recent weeks of every operational forecast, and it is the single most
+decision-relevant figure this plan can produce.
 
 ### 9. Fix the CAMELS binding's `extraction_type`
 
@@ -328,6 +449,50 @@ uv run pytest
 **Deploy gate (do not skip):** after the flip, confirm on staging that `ingest-weather-history` reports
 a **non-zero** `rows_stored`, and that `historical_forcing`'s `MAX(valid_time)` per source **advances**.
 **A green flow is not evidence** — that is the entire lesson of this plan.
+
+## Review deltas (independent Codex review, 2026-07-14) — verdict NOT-READY, all folded
+
+The review **falsified two load-bearing claims** this plan had made. Both are corrected above; recording
+them so they are not reintroduced:
+
+1. **"`version` supersession makes RhiresD replace RprelimD"** — **FALSE.** `fetch_forcing` filters one
+   `source` at a time and partitions latest-version rows **by source**; the natural key includes `source`,
+   so both rows legally coexist. Cross-source precedence is the **hybrid priority chain**, full stop
+   (§3). `version` supersession is for *within-source* reprocessing, and stays wired for that.
+2. **"Differences vs CAMELS are purely our aggregation/polygons"** — **FALSE, and dangerous.** CAMELS
+   aggregated from **2 km** grids with **its own** catchment delineations; today's open data is **1 km**.
+   Add reprocessing vintage, coverage masks and timestamp conventions, and the "control" is confounded —
+   it would produce a difference we **cannot attribute**. §8 is downgraded to an honest **reference
+   comparison with named confounds and explicit tolerances**, and the owner must choose between that and
+   a true (expensive) reproduction of CAMELS' grid/vintage/polygons.
+
+Also corrected:
+
+- **The grid note was simply wrong.** `RprelimD` is `ch01h` too — the split is **precipitation (`ch01h`)
+  vs temperature (`ch01r`)**, not definitive-vs-preliminary.
+- **`T-45d` was an invented constant.** `RhiresD` publishes **monthly (~25th of the following month)**, so
+  the boundary swings ~25-55 days and must be **discovered**, not assumed. The preliminary window reaches
+  **~8 weeks** — making §8's live-tail measurement more important, not less.
+- **The archive path cannot even address the right file** — `_asset_href` takes the first product match
+  with no year selection, and the tests use synthetic lat/lon NetCDFs. A real LV95 archive fixture is
+  required before any of this is trusted.
+- **The 66M-row backfill cannot use the existing all-in-memory path** (adapter returns one list; the flow
+  stores only after the full fetch; the store copies the whole input). It needs chunked
+  `(product, year, station-batch)` work units with per-chunk persistence and resumable gap detection.
+- **Bind before backfill** — the adapter needs its binding to exist, or the backfill silently does nothing.
+- **A binding alone gives a new station no data** — onboarding must run the per-station backfill, or the
+  next station onboarded is silently forcing-less.
+- **`rows_stored` is `len(records)` after `on_conflict_do_nothing`** — a stuck feed re-fetching the same
+  window forever would look healthy. Health must be measured by effect (DB rowcount / advancing
+  `MAX(valid_time)`).
+- **Minors:** add `METEOSWISS_RHIRESD` to `types/forcing_sources.py` and the converter guard constants
+  (`preprocessing/converters.py:17`), not just the docs; "every operational station" means **every station
+  with a valid basin polygon**; and this plan still needs the repo-required phase/task JSON dependency
+  graph (`docs/workflow.md:24,49`) before it goes READY.
+
+**Confirmed sound:** CAMELS-CH's RhiresD/TabsD/SrelD provenance; RhiresD being final daily precip
+1961-present with a 3-6 week lag and RprelimD being preliminary and later superseded; the `CH archive`
+yearly NetCDF + EPSG:2056 structure; and hybrid's silent parameter drop.
 
 ## Doc sync
 
