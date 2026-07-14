@@ -73,22 +73,34 @@ CAMELS-CH ends at **2020-12-31**. This plan fills the gap from **a different sou
 legitimate if the new source measures the same quantity the same way. **For precipitation, it does
 not.**
 
-| parameter | CAMELS-CH derives from *(TO BE CONFIRMED — see below)* | Flow 6 ingests | homogeneous? |
-|---|---|---|---|
-| precipitation | **`RhiresD`** — definitive daily precip, full station network incl. manual collectors | **`RprelimD`** — **preliminary**, automatic stations only (`meteoswiss_open_data_reanalysis.py:83`) | 🔴 **NO** |
-| temperature | `TabsD` | `TabsD` | ✅ likely |
-| temperature_min / max | `TminD` / `TmaxD` | `TminD` / `TmaxD` | ✅ likely |
+### 🟢 Plan 071's founding premise is FALSE — `RhiresD` *is* in open data
 
-**Plan 071 knew and proceeded anyway** (`071:66-68`, `071:117`): *"Daily RhresD / RhiresD: NOT in the
-open-data daily feed; only at monthly aggregate resolution. Daily RhiresD requires commercial
-delivery. Deferred."* So `RprelimD` was substituted — and **Plan 072's priority chain then encodes
-`METEOSWISS_RPRELIMD → CAMELS_CH` as interchangeable tiers of the same quantity** (`072:58`). They are
-not interchangeable: preliminary and definitive precipitation differ **systematically**, not randomly.
+**Verified against the live STAC API, 2026-07-14** (`ch.meteoschweiz.ogd-surface-derived-grid` — the
+collection the adapter **already points at**):
 
-072's only acknowledgement is a generic note that flipping to hybrid "may surface distribution-shift
-artifacts", deferring retrain policy to Plan 066 (`072:121`, `072:175`). That is about a **config
-flip**. It is not an acknowledgement that the two sources **measure the same thing differently** — and
-it is not a mitigation.
+```
+rhiresd    71 files   1961-01-01 .. 2026-05-31   <- DEFINITIVE precip, ~45-day publication lag
+rprelimd   60 files   2026-05-15 .. 2026-07-13   <- PRELIMINARY, live tail ONLY
+tabsd     131 files   1961-01-01 .. 2026-07-13
+tmind     121 files   1971-01-01 .. 2026-07-13
+tmaxd     121 files   1971-01-01 .. 2026-07-13
+```
+
+Plan 071 states (`071:66-68`, `071:117`): *"Daily RhresD / RhiresD: NOT in the open-data daily feed;
+only at monthly aggregate resolution. Daily RhiresD requires commercial delivery. Deferred."*
+**That is wrong.** Daily `rhiresd` is published, free, back to **1961**, in the same collection. 071
+therefore built the adapter around the **preliminary** product while the **definitive** one sat beside
+it — and Plan 072 then encoded `METEOSWISS_RPRELIMD → CAMELS_CH` as interchangeable tiers of the same
+quantity (`072:58`), which they are not.
+
+**The two products are COMPLEMENTARY, not alternatives:**
+
+- `RhiresD` — definitive, full station network (incl. manual collectors), **1961 → T-45d**.
+- `RprelimD` — preliminary, automatic stations only, **exists only for the recent ~2 months**,
+  precisely to cover the window where `RhiresD` does not exist yet.
+
+Using `RprelimD` where `RhiresD` is available is simply a mistake. Using it for the live tail is
+unavoidable and correct — **provided it is later superseded**.
 
 **Three consistency axes. Only one is currently on anyone's radar:**
 
@@ -123,15 +135,44 @@ Report per-basin bias, RMSE and the seasonal/intensity structure of the differen
 biases are rarely uniform — expect them to concentrate in high-intensity and winter/snow events, which
 is exactly where a flood-forecasting model is most sensitive).
 
+#### The resolution (RECOMMENDED — no licence, no bias correction, no splice)
+
+Because `RhiresD` reaches back to **1961**, it **fully covers CAMELS' own 1981–2020 window**. So we do
+not have to splice two products at all:
+
+> **Derive the entire forcing series ourselves: `RhiresD` + `TabsD`/`TminD`/`TmaxD`, 1961 → T-45d,
+> through OUR basin polygons — with `RprelimD` used ONLY for the live tail, and superseded by
+> `RhiresD` when it lands.**
+
+This eliminates **all three** consistency axes at once:
+
+1. **Product identity** — one product per parameter, end to end. No `RhiresD`/`RprelimD` splice except
+   at the live tail, where it is unavoidable *and* temporary.
+2. **Spatial aggregation** — our polygons, our `exactextract`, throughout. No CAMELS-vs-us polygon
+   mismatch, because CAMELS' basin means are no longer in the series.
+3. **Version / supersession** — the preliminary tail is *replaced* by definitive data as it publishes.
+   **The store already models this**: `historical_forcing` carries a `version` column and
+   `fetch_forcing` applies latest-version supersession (`historical_forcing_store.py:55`). The
+   mechanism exists; nothing was ever wired to it.
+
+**CAMELS-CH forcing then becomes a validation reference, not a dependency** — which is exactly what the
+overlap experiment below uses it for. *(CAMELS remains the source of static attributes, basin polygons
+and the discharge record; only its **forcing** is superseded.)*
+
+**Residual, and irreducible:** the live tail (~45 days) is preliminary at inference time. A model
+trained on `RhiresD` will see `RprelimD` for the most recent window. That is inherent to *any*
+real-time system — you cannot have definitive data in real time — but it must be **measured** (the
+experiment quantifies exactly this) and **declared**, not discovered later.
+
 #### Owner decisions this blocks
 
-- **Procure daily `RhiresD` commercially** (homogeneous with CAMELS, costs money and a licence), **or**
-- **bias-correct `RprelimD` → `RhiresD`** over the overlap (cheap, adds a correction step and its own
-  uncertainty), **or**
-- **rebuild the entire forcing archive from `RprelimD`** for homogeneity's sake (self-consistent, but
-  discards CAMELS' quality and its pre-2020 depth — likely unacceptable), **or**
-- **accept the discontinuity, documented and bounded**, and constrain models not to train across the
-  join.
+- **Adopt the RhiresD-derived series** (recommended above), **or**
+- **keep the CAMELS forcing and splice `RhiresD` onto it from 2021** — homogeneous in *product*, but
+  leaves the polygon/aggregation-method mismatch (axis 2) unvalidated at the join, **or**
+- **accept a documented, bounded discontinuity** and constrain models not to train across it.
+
+**Procuring `RhiresD` commercially is no longer on the table — it is free.** *(An earlier revision of
+this plan listed it as an option, on Plan 071's false premise.)*
 
 **Do not implement §1–§7 until this is decided.** A reachable feed delivering inhomogeneous data is
 worse than a dark one: the dark feed is at least honest about having no data.
