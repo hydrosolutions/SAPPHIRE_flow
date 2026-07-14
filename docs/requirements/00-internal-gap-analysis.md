@@ -45,8 +45,8 @@ developer and the model implementer so they plan accordingly.
 |---|---|---|---|
 | 1 | Deployment topology | **One shared local/on-prem deployment** = production (end state). Whole-country AOI, single DB/API. East/west = `station_group` + `regional_basin`, not separate instances. **Cloud = transitional bootstrap, then retained as a staging environment** (not deprecated). | ours |
 | 1b | Staging→prod model promotion | Initial bulk migration of HSOL's cloud-trained **model classes + trained artifacts** into local production, then an **ongoing staging→production promotion channel**. Hard requirement: **artifact portability** — deployment-independent artifacts; identical or remapped station/basin IDs across staging and production. | ours |
-| 2 | Geometry source-of-truth | **RESOLVED (2026-06-11): SAP3 = full SoT.** DHM uploads geometry to **SAP3** (not the Gateway). SAP3 runs rigorous validation + static extraction, then **uploads the validated GeoPackage to the Gateway**, which extracts and returns forcing as a wide-format DataFrame correlated to the submitted basin. No `gateway_basin_id` mapping — the Gateway's internal id is not exposed and not stored. Chosen for cross-deployment consistency + minimal Gateway dependency; build staged. See §5. | ours + Gateway |
-| 3 | Catchment auto-processing (ours) | Static attributes (HydroATLAS/MERIT) + baselines/flow-regime, automatically on new-basin add. **Elevation bands are NOT auto-generated** — see #3b. Pour-point snapping stays **manual**. | ours |
+| 2 | Geometry source-of-truth | **RESOLVED (2026-06-11): SAP3 = full SoT.** DHM uploads geometry to **SAP3** (not the Gateway). SAP3 runs rigorous validation, then **uploads the validated GeoPackage to the Gateway**, which extracts and returns forcing as a wide-format DataFrame correlated to the submitted basin. No `gateway_basin_id` mapping — the Gateway's internal id is not exposed and not stored. **AMENDED 2026-07-14 (Plan 117):** static-attribute *extraction* is no longer necessarily ours — it may be SAP3-side, or delivered by an **adjacent** basin/static extraction tool as a validated artifact package (`04-basin-static-artifact-contract.md`). SAP3 owns validation, import, and provenance either way; the geometry SoT decision is unchanged. | ours + Gateway |
+| 3 | Catchment auto-processing | Baselines/flow-regime automatically on new-basin add — **ours**. Static attributes (HydroATLAS/MERIT): **either** SAP3-side extraction **or** an accepted **adjacent** basin/static package (`04-basin-static-artifact-contract.md`) — see #2. **Elevation bands are NOT auto-generated** — see #3b. Pour-point snapping stays **manual**. | ours **or** adjacent tool |
 | 3b | Elevation bands | **Demoted to nice-to-have.** When a model needs bands, the **uploaded shapefile must already contain band polygons**; we ingest them into `basins.band_geometries` and reject at onboarding if a model declares `ELEVATION_BAND` but the shapefile lacks them. DEM-based band generation is a future item, not on the critical path. | ours + Gateway |
 | 4 | Model unit | **One model *class* → many per-group artifacts.** Model admin activates which artifact serves which `station_group`. Multiple conceptually-different models may be active at once, each with its own artifacts + groups (combination). | ours + modeller |
 | 5 | Retrain semantics | **Cold retrain required** in the contract; optional `warm_start_from` slot for capable ML models. | modeller + ours |
@@ -66,7 +66,7 @@ they arrive in the shapefile and the Gateway extracts forcing against them.
 | Shared deployment, whole-country AOI | Flow 0 AOI + `regional_basin` label exist (Plan 024) | None structural; needs whole-country config + station-group layout |
 | Staging→prod model promotion (cloud→local) | Single-instance design; no cross-instance model export/import; staging concept exists (Plan 046) | **Build:** export/import of model classes + artifacts; deployment-portable artifacts; station/basin ID remap at import |
 | Basin geometry store | `basins` table (PostGIS), `band_geometries` JSONB exists | **Build:** DHM upload + rigorous multi-polygon validation; upload validated gpkg(s) to the Gateway (one gpkg may hold many basins; each polygon keyed by a unique `name`, echoed back — no Gateway id mapping) |
-| Static catchment attributes | `exactextract` + attribute derivation exist | **Build:** wire HydroATLAS/MERIT datasets for Nepal into Flow 0 |
+| Static catchment attributes | `exactextract` + attribute derivation exist | **Build (Nepal):** accept a validated basin/static package from the **adjacent** extraction tool (`04-basin-static-artifact-contract.md`) — import + provenance, not extraction. SAP3-side HydroATLAS/MERIT wiring into Flow 0 stays the fallback path and remains the Swiss/v0 route. |
 | Elevation bands | `band_geometries` field + `GridExtractor` `ELEVATION_BAND` spatial type specced | **Light build:** ingest band polygons from uploaded shapefile; onboarding check. (Gateway does the extraction.) DEM generation deferred. |
 | NWP/forcing extraction | Self-extraction (Flow 1 1.2–1.4) for Swiss | **Nepal: skipped** — Gateway upstream. Consume pre-extracted banded forcing. |
 | One class → many group artifacts | `GroupForecastModel` Protocol + `model_artifacts` (group_id) + `ModelCombinationStrategy` types exist | **Build (v0b deferred):** operational `GroupForecastModel` in forecast cycle; per-group artifact activation; pooled combination |
@@ -80,10 +80,12 @@ they arrive in the shapefile and the Gateway extracts forcing against them.
 1. **Forcing consumption from the Gateway (Nepal path)** — ingest pre-extracted banded
    NWP + Snowmapper forcing; skip Flow 1 1.2–1.4 for Nepal config.
 2. **Geometry ingest into SAP3 (DHM upload → SAP3 → Gateway)** — DHM-facing upload
-   entry (staged: minimal first), rigorous multi-polygon validation + static extraction,
+   entry (staged: minimal first), rigorous multi-polygon validation, static attributes
+   (SAP3-side **or** from an accepted **adjacent** package — `04-…`),
    operational flip on our side, **upload validated gpkg(s) to the Gateway** (one gpkg may
-   hold many basins) and consume the wide-DataFrame forcing it returns **per polygon**
-   (catchment/band), each column keyed by a unique per-polygon `name` (SAP3's convention)
+   hold many basins, all of one kind) and consume the wide-DataFrame forcing it returns
+   **per polygon** (catchment/band), each column keyed by a unique per-polygon `name`
+   (SAP3's convention)
    that the Gateway echoes; SAP3 keeps the basin→(gpkg, `name`) map. **Risk:** single-polygon
    gpkg is untested on the Gateway — prefer the multi-polygon path or test it. (Decision #2
    resolved → unblocked.)
@@ -96,7 +98,10 @@ they arrive in the shapefile and the Gateway extracts forcing against them.
 6. **Staging→prod model promotion** — export/import of model classes + trained
    artifacts cloud→local; deployment-portable artifacts; station/basin ID remap at
    import. Initial bulk migration, then ongoing. Ties to staging infra (Plan 046).
-7. **Static-attribute datasets for Nepal** — HydroATLAS/MERIT wired into Flow 0.
+7. **Static-attribute datasets for Nepal** — accept a validated basin/static package from
+   the **adjacent** extraction tool (`04-basin-static-artifact-contract.md`): import,
+   validation, and provenance. SAP3-side HydroATLAS/MERIT wiring into Flow 0 is the
+   fallback and the Swiss/v0 path.
 8. **Band-polygon ingest** — read `band_geometries` from the uploaded shapefile;
    reject onboarding if a model declares `ELEVATION_BAND` and bands are absent.
 9. *(Nice-to-have, deferred)* DEM-based elevation-band generation.
@@ -148,9 +153,11 @@ failing loudly with a specific error.
 
 ## 5. Resolved decision — geometry source of truth (#2): SAP3 = full SoT
 
-**Decided 2026-06-11.** DHM uploads basin geometry to **SAP3** (not the Gateway). SAP3
-runs rigorous validation + static extraction, assigns `sapphire_basin_id`, then **uploads
-the validated GeoPackage to the Gateway** via API; the Gateway extracts and returns
+**Decided 2026-06-11** *(static-attribute clause amended 2026-07-14, Plan 117)*. DHM
+uploads basin geometry to **SAP3** (not the Gateway). SAP3 runs rigorous validation,
+obtains static attributes (SAP3-side extraction **or** an accepted **adjacent**
+basin/static package — `04-basin-static-artifact-contract.md`), assigns
+`sapphire_basin_id`, then **uploads the validated GeoPackage to the Gateway** via API; the Gateway extracts and returns
 forcing as a wide-format DataFrame correlated to the submitted basin (no reprojection, no
 re-snapping → no drift). The Gateway's internal basin id is **not exposed and not stored**
 — no `gateway_basin_id` mapping is needed.

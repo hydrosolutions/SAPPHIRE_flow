@@ -4,7 +4,7 @@
 > The Nepal v1 interface is deliberately minimal: **only operational forcing fetch is an
 > automated API; geometry registration and historical back-extraction are manual/supervised
 > for v1.0** (see the §1 table). A few items remain pending test/confirmation (§8). This
-> supersedes the earlier elaborate draft; the separate HTTP-contract doc (`04-…`) was
+> supersedes the earlier elaborate draft; the separate detailed HTTP-contract draft was
 > scrapped as over-engineered against this agreement.
 > **Audience:** SAPPHIRE Data Gateway development team.
 > **Scope: Nepal v1 only.** The Swiss deployment does not use the Gateway and is out of
@@ -22,11 +22,15 @@ itself in Nepal.
 **Agreed division (with the Gateway developer):**
 - **SAP3 owns basin geometry and its validation.** Each `sapphire_basin_id` is associated
   with a GeoPackage. DHM uploads geometry to SAP3; SAP3 performs **rigorous GeoPackage
-  multi-polygon validation** + static-attribute extraction.
+  multi-polygon validation** and either performs static-attribute extraction itself or
+  ingests an externally produced basin/static package. The file-based contract for
+  externally produced geometry and static attributes is
+  `04-basin-static-artifact-contract.md`.
 - **SAP3 uploads the validated GeoPackage to the Gateway via API; the Gateway extracts and
   returns the forcing as a wide-format pandas DataFrame**, **one series per polygon** in the
-  gpkg (a gpkg may hold several catchments and/or elevation-band polygons). Operational +
-  historical.
+  gpkg. A gpkg may hold several polygons, but **SAP3 submits single-kind GeoPackages**:
+  all catchments, or all elevation bands, never both in one file (see § Terminology).
+  Operational + historical.
 
 So the Gateway is **not** asked to validate geometry — it processes a GeoPackage SAP3 has
 already validated, extracting against exactly those bytes. **Addressing:** the forcing-fetch
@@ -74,18 +78,38 @@ multi-polygon validation is **SAP3's responsibility** (see `00-internal-gap-anal
   reprojection, simplification, re-snapping, or buffering (guarantees no drift).
 - **G4.** The Gateway performs **only minor structural validation** (file readable /
   parseable). On a parse failure it MUST return a clear error.
-- **G5.** A submitted gpkg MAY contain **several polygons** (multiple catchments and/or
-  band polygons). Each feature/polygon must have a unique `name` attribute (text,
-  lowercase). A feature can have basin polygons and/or band-elevated polygons.
-- The naming convention is up to the SAP3 implementer.
+- **G5.** A submitted gpkg MAY contain **several polygons** — catchments, elevation bands,
+  or a mix. Each feature/polygon must have a unique `name` attribute (text, lowercase).
+  *(This is a Gateway **capability** requirement and stands as agreed.)*
+- **G5a — SAP3-side narrowing (not a Gateway change).** In practice **SAP3 submits
+  single-kind GeoPackages**: one gpkg holds catchments **or** elevation bands, never both.
+  The Gateway does not care, so G5 is unchanged — the Gateway will simply never receive a
+  mixed file. SAP3 adopts this so `spatial_type` is a property of the HRU rather than of
+  each polygon, and so bands can be regenerated without touching catchments.
+- The naming convention is up to the SAP3 implementer. SAP3 uses
+  `g_<station_code_normalized>` — see `04-basin-static-artifact-contract.md` §4a.
+
+#### Terminology (see `04-basin-static-artifact-contract.md` §3a)
+
+Four distinct things are called some variant of "name". This doc uses them as follows:
+
+| Term | Meaning |
+|---|---|
+| **Gateway HRU** | the GeoPackage file itself. **One Gateway HRU = one GeoPackage.** |
+| **the HRUs proper** | the polygons inside it — the actual catchments or bands. |
+| **internal GeoPackage layer/table name** | the table inside the gpkg (`polygons`). |
+| **feature `name`** | the per-polygon attribute echoed back as the forcing column header. |
 
 #### Gateway-side validation
 1. GeoPackage format only
 2. Readable and non-empty
 3. CRS must be EPSG:4326
-4. Layer name must start with a letter or underscore — e.g. "polygons" recommended, "00003" rejected.
+4. The **internal GeoPackage layer/table name** MUST start with a letter or underscore —
+   e.g. "polygons" recommended, "00003" rejected. **The same rule binds the per-feature
+   `name` values**, which is why SAP3 prefixes them (`g_5501`, not `5501`): gauge IDs may
+   be composed entirely of digits.
 5. At least one polygon feature
-6. Each feature must carry attribut called "name" (text, lowercase)
+6. Each feature must carry an attribute called "name" (text, lowercase)
 7. attribute "name" values must be unique across all features
 
 ## 3. Operational forcing delivery
@@ -98,8 +122,9 @@ multi-polygon validation is **SAP3's responsibility** (see `00-internal-gap-anal
   - **Snowmapper:** snow water equivalent (SWE) and snowmelt.
 - **G8.** Forcing MUST preserve the **ensemble members** (not pre-reduced to a mean) so
   SAP3 can run ensemble forecasts.
-- **G9.** Spatial granularity MUST be **basin-average and, where bands are defined,
-  per elevation band** (§4).
+- **G9.** Spatial granularity is a property of the submitted HRU: a catchment gpkg yields
+  **basin-average** series, a band gpkg yields **per-elevation-band** series (§4). The
+  Gateway must support both; a single gpkg carries one or the other (G5a).
 - **G10.** Forecasts follow the ECMWF IFS cycles (00/06/12/18 UTC) and become available on
   the Gateway **~7–8 h after production time**. SAP3 does **not** wait on a per-cycle
   deadline: it runs the forecast **every 3 h** and **fetches the latest available** forecast

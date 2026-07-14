@@ -26,6 +26,19 @@ and is filled in when the plan is promoted from stub to DRAFT.
   into basin elevation bands, layered on top of the existing `GridExtractor`
   basin-average path.
 
+## Owned elsewhere — do not re-open here
+
+- **Basin geometry + static catchment attributes** are owned by **Plan 117**
+  (`docs/plans/117-basin-static-artifact-architecture.md`, READY). SAP3 consumes a
+  validated **basin/static** artifact package from an *adjacent* extraction tool and
+  does not integrate that tool's code. Do not add basin delineation or
+  static-attribute extraction to this plan's scope.
+- **This stub is stale.** Before 047 is promoted to DRAFT/READY it needs its own
+  **re-scope per Plan 106** — strip elevation-band extraction, the standalone
+  ERA5-Land CDS adapter, and the DHM observation adapter, and align the exit gates to
+  Plan 106 §0. Plan 117 unblocks only the basin/static piece; it does not make 047
+  ready.
+
 ## Not in scope
 
 - Anything v2 (multi-country generalisation, additional reanalysis products,

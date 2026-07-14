@@ -75,10 +75,13 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
   smoke, Nepal config, coverage gate, watchdog, runbooks. Depends on 081.
 - **047** — Nepal v1 data sources umbrella (IFS, DHM, ERA5-Land) — `DRAFT (stub)` —
   depends on 081/082.
-- **117** — Basin/static artifact architecture alignment — `DRAFT` — document the
-  adjacent basin/static extraction artifact boundary, GeoPackage requirements,
-  gauge-ID feature naming preference, and static-Parquet TBD path. Blocks cleanup
-  of the Flow 0 / Flow 5.2 Nepal onboarding architecture before Plan 047 advances.
+- **117** — Basin/static artifact architecture alignment — `READY` — documents the
+  **adjacent** basin/static extraction artifact boundary: SAP3 consumes a validated
+  package and does not integrate the extractor's code. Covers the GeoPackage
+  terminology + naming rules (`g_<station_code>`), single-kind Gateway HRUs, and the
+  confirmed static-Parquet shape. Unblocks the
+  **basin/static architecture cleanup only** — 047 separately needs its
+  **re-scope per Plan 106** before it advances.
 - **035** — Rating-curve provenance for skill integrity — `READY` — v1 DHM hQ.
 - **017** — Manual vs automatic station support — `DRAFT` — v1, DHM mixed networks.
 - **015** — Virtual / calculated station support — `DRAFT` — v1 (enum slice shipped).
