@@ -80,6 +80,31 @@ incoherent. Corrected after review.)*
 
 ### D2 — `hybrid` becomes the production default for reanalysis reads
 
+> ## ⚠️ D2 IS SUPERSEDED by [115b §0](115b-weather-flow6-reachability.md) (owner, 2026-07-14)
+>
+> **What survives:** `hybrid` still becomes the production default. It is the only reader that resolves
+> across provenance tags, and we need exactly that.
+>
+> **What changed — the chain contents.** D2 was written to read across **CAMELS + MeteoSwiss product
+> tags**. Under §0 there is **no CAMELS tier at all**:
+>
+> ```
+> precipitation:   RHIRESD → RPRELIMD     (definitive supersedes preliminary)
+> temperature:     TABSD
+> temperature_min: TMIND
+> temperature_max: TMAXD
+> ```
+>
+> **Why:** CAMELS-CH forcing is built on **`RhiresD`** (confirmed: Höge et al. 2023, *ESSD* 15, 5755,
+> App. A1.2), while Flow 6 was ingesting **`RprelimD`** — the *preliminary* product. Plan 071 chose it
+> on the false premise that daily `RhiresD` needs a commercial licence; **it is free in open data, daily,
+> back to 1961**, in the collection the adapter already points at. So we derive the **whole series
+> ourselves** (RhiresD + TabsD/TminD/TmaxD, 1981 → T-45d, **our** basin polygons), use `RprelimD` for the
+> live tail only, and **supersede** it when `RhiresD` publishes. **CAMELS forcing becomes a validation
+> reference, not a data tier.**
+>
+> Read D2 below as *"hybrid is the right reader"* — and 115b §0 for *what it reads*.
+
 **Corrected after review — the earlier rationale was wrong.** `HybridForcingSource` is **not** a
 binding→provenance resolver. It fans out to a **deployment-global, hardcoded per-parameter
 priority chain** (`hybrid_reanalysis_factories.py:26-32`: precipitation →

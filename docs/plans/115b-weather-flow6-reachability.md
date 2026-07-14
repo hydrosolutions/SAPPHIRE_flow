@@ -3,31 +3,26 @@ status: DRAFT
 created: 2026-07-14
 plan: 115b
 parent: 115
-title: Flow 6 reachability — hybrid parameter-drop fix, default flip, existing-station backfill
-scope: Makes the scheduled reanalysis feed actually work. The risky landing; isolated on purpose.
+title: Forcing pipeline — self-derived MeteoSwiss series (RhiresD), supersession, and a live Flow 6
+scope: Build the forcing data path properly. Re-authored 2026-07-14 after §0 was decided.
 depends_on: [115a]
 blocks: [115c]
 ---
 
-# Plan 115b — Flow 6 reachability + the hybrid default
+# Plan 115b — The forcing pipeline
 
-> Shared context and locked decisions D1–D3 live in the umbrella:
-> [Plan 115](115-weather-source-identity-model.md). Read it first.
+> Shared context and D1/D3 live in the umbrella: [Plan 115](115-weather-source-identity-model.md).
+> **D2 is superseded by §0 below.**
 
 ## Status
 
-**DRAFT — BLOCKED on a scientific-validity question (§0), not on engineering.** Depends on **115a**.
+**DRAFT — re-authored 2026-07-14.** Depends on **115a**.
 
-**§0 must be settled first: MeteoSwiss `RprelimD` (preliminary precipitation) is NOT the product
-CAMELS-CH is built from (`RhiresD`, definitive).** Splicing them produces an inhomogeneous
-precipitation series at the 2020/2021 join. Everything else in this plan is engineering; §0 is the
-question of whether the data is scientifically valid at all. **Do not build §1-§7 before §0 is decided.**
+This plan was originally "make Flow 6 reachable and flip the hybrid default." The audit and the §0
+investigation changed what it is: **it now builds the forcing data path, because there has never been
+one.**
 
-This is the **risky** landing — it changes what data reaches models. It is isolated precisely so that
-if it goes wrong in staging, it can be reverted **without dragging back the schema work 081/082 are
-waiting on**.
-
-> ## 🔴 THE AUDIT RAN (2026-07-14). This is a FIRST IMPLEMENTATION, not a fix.
+> ## 🔴 THE AUDIT (2026-07-14, staging)
 >
 > ```
 >   source   | count |   first    |    last
@@ -35,181 +30,162 @@ waiting on**.
 >  camels-ch | 58440 | 1981-01-01 | 2020-12-31
 > ```
 >
-> `historical_forcing` holds **one source**: `camels-ch`, frozen at **2020-12-31**. There is **no
-> MeteoSwiss reanalysis data at all** — the scheduled `ingest-weather-history` deployment has **never
-> stored a single row**, while reporting green for its entire operational life. And `A2` confirms **no
-> `meteoswiss_open_data_reanalysis` binding exists**, so Flow 6 has been matching zero stations and
-> returning `0/0/0` as a success since the day it shipped.
+> **One source. Frozen at 2020-12-31.** No MeteoSwiss rows — ever. The scheduled
+> `ingest-weather-history` deployment has **never stored a single row in production**, while reporting
+> green for its entire operational life: no station carries the binding it selects on, so it matches
+> zero stations and returns `0/0/0` **as a success** (`ingest_weather_history.py:309`).
 >
-> **Both halves of the double-dark diagnosis are now fact.** Nothing here is being *repaired* — the
-> feed has never worked. Size and schedule this plan accordingly: it is building a data path, not
-> patching one.
+> `58,440 = 2 stations × 14,610 days × 2 parameters` — so the archive holds **only** precipitation and
+> temperature. **No `temperature_min`/`temperature_max` exist at all**, yet Plan 072 chains them to a
+> `CAMELS_CH` fallback tier that contains no such rows (`hybrid_reanalysis_factories.py:29-30`).
 >
-> **Why it has not yet caused a visible incident:** today's models declare no *past-dynamic* weather
-> features, so nothing has been asking for the data that isn't there. That is luck. The moment a model
-> needs recent forcing — and Nepal's will — this becomes a hard blocker.
+> **This is a first implementation, not a repair.** It has not yet caused an incident only because
+> today's models declare no past-dynamic weather features. That is luck. Nepal's models will need this.
 
-## The problem, in one paragraph
+## §0 — LOCKED DECISION (owner, 2026-07-14): the self-derived MeteoSwiss series
 
-The scheduled MeteoSwiss reanalysis feed is dark **twice over**. (1) `services/onboarding.py` — the
-sole writer of bindings — never writes a `meteoswiss_open_data_reanalysis` row, so Flow 6's
-`_reanalysis_sources(store, adapter.NWP_SOURCE)` can match **zero** stations, log
-`weather_history.no_stations`, and return `0/0/0` **as a success** (`ingest_weather_history.py:309`).
-(2) Even when it runs, it writes rows under **product tags** (`meteoswiss_rprelimd`, `tabsd`,
-`tmind`, `tmaxd` — `meteoswiss_open_data_reanalysis.py:251`) while the default `single` reader looks
-them up by **binding name** (`store_backed_reanalysis.py:31`, default at `config/deployment.py:111`).
-Write-key ≠ read-key.
+**Supersedes umbrella D2.** The question §0 answers: *CAMELS-CH forcing ends 2020-12-31 — what series
+do we actually feed the models, and is it homogeneous end to end?*
 
-## Scope
+### The facts that forced this
 
-### 0. 🔴 BLOCKER — data homogeneity. Is MeteoSwiss a valid continuation of CAMELS at all?
-
-*(Raised by the owner (hydrologist) 2026-07-14. Confirmed against the code. **This is a
-scientific-validity blocker, and nothing in 071/072/115 addresses it.** It gates everything else in
-this plan — there is no point making a feed reachable if the data it delivers is inhomogeneous with
-the archive it extends.)*
-
-CAMELS-CH ends at **2020-12-31**. This plan fills the gap from **a different source**. That is only
-legitimate if the new source measures the same quantity the same way. **For precipitation, it does
-not.**
-
-**CAMELS-CH's forcing provenance — CONFIRMED** (Höge et al. 2023, *ESSD* 15, 5755, Appendix A1.2
-"MeteoSwiss data products"): daily precipitation = **`RhiresD`**; daily absolute temperature =
-**`TabsD`**; daily relative sunshine duration = **`SrelD`**. *(This is the fact the repo never recorded
-— see the documentation gap below. Now sourced, not inferred.)*
-
-**What our CAMELS import actually contains — and it is less than you think.** The adapter imports
-**only** `precipitation` and `temperature_mean` (`camelsch_adapter.py:113,350`). The audit's row count
-confirms it exactly: **58,440 = 2 stations × 14,610 days (1981-2020) × 2 parameters.** No `SrelD`, and
-**no `TminD`/`TmaxD` — CAMELS-CH's own forcing set does not carry them either.**
-
-> ⚠️ **Consequence nobody has noticed:** Plan 072's priority chains for `temperature_min` and
-> `temperature_max` fall back to `CAMELS_CH` (`hybrid_reanalysis_factories.py:29-30`) — **a tier that
-> contains no such rows.** Combined with the dark MeteoSwiss feed, those two parameters have **no
-> history at all**, pre- or post-2021. They do not exist. Any model declaring them would silently
-> receive nothing.
-
-### 🟢 Plan 071's founding premise is FALSE — `RhiresD` *is* in open data
-
-**Verified against the live STAC API, 2026-07-14** (`ch.meteoschweiz.ogd-surface-derived-grid` — the
-collection the adapter **already points at**):
+- **CAMELS-CH forcing provenance, CONFIRMED** — Höge et al. 2023, *ESSD* 15, 5755, App. A1.2
+  ("MeteoSwiss data products"): precipitation = **`RhiresD`**, temperature = **`TabsD`**, sunshine =
+  `SrelD`. *(The repo never recorded this. That omission is what let the bug through.)*
+- **Flow 6 ingests `RprelimD` for precipitation** (`meteoswiss_open_data_reanalysis.py:83`) — the
+  **preliminary** product (automatic stations only), **not** `RhiresD` (definitive, full network incl.
+  manual collectors). They differ **systematically**.
+- **Plan 071's founding premise is FALSE.** It claims (`071:66-68,117`) that daily `RhiresD` is not in
+  open data and "requires commercial delivery". **Verified against the live STAC API** in
+  `ch.meteoschweiz.ogd-surface-derived-grid` — *the collection the adapter already points at*:
 
 ```
-rhiresd    71 files   1961-01-01 .. 2026-05-31   <- DEFINITIVE precip, ~45-day publication lag
+rhiresd    71 files   1961-01-01 .. 2026-05-31   <- DEFINITIVE precip, free, ~45-day publication lag
 rprelimd   60 files   2026-05-15 .. 2026-07-13   <- PRELIMINARY, live tail ONLY
 tabsd     131 files   1961-01-01 .. 2026-07-13
 tmind     121 files   1971-01-01 .. 2026-07-13
 tmaxd     121 files   1971-01-01 .. 2026-07-13
+sreld     120 files   1971-01-01 .. 2026-07-13
 ```
 
-Plan 071 states (`071:66-68`, `071:117`): *"Daily RhresD / RhiresD: NOT in the open-data daily feed;
-only at monthly aggregate resolution. Daily RhiresD requires commercial delivery. Deferred."*
-**That is wrong.** Daily `rhiresd` is published, free, back to **1961**, in the same collection. 071
-therefore built the adapter around the **preliminary** product while the **definitive** one sat beside
-it — and Plan 072 then encoded `METEOSWISS_RPRELIMD → CAMELS_CH` as interchangeable tiers of the same
-quantity (`072:58`), which they are not.
+`RhiresD` and `RprelimD` are **complementary, not alternatives**: `RprelimD` exists *solely* to cover
+the window `RhiresD`'s publication lag has not yet reached.
 
-**The two products are COMPLEMENTARY, not alternatives:**
+### The decision
 
-- `RhiresD` — definitive, full station network (incl. manual collectors), **1961 → T-45d**.
-- `RprelimD` — preliminary, automatic stations only, **exists only for the recent ~2 months**,
-  precisely to cover the window where `RhiresD` does not exist yet.
+> **Derive the entire forcing series ourselves, through OUR basin polygons:**
+> **`RhiresD` + `TabsD` + `TminD` + `TmaxD`, from 1981-01-01 → T-45d, with `RprelimD` for the live tail
+> ONLY — superseded by `RhiresD` when it publishes.**
+>
+> **CAMELS-CH forcing becomes a VALIDATION REFERENCE, not a data tier.**
 
-Using `RprelimD` where `RhiresD` is available is simply a mistake. Using it for the live tail is
-unavoidable and correct — **provided it is later superseded**.
+Because `RhiresD` reaches back to **1961**, it fully covers CAMELS' own 1981-2020 window — **so there
+is no splice anywhere.** This kills all three consistency axes at once:
 
-**Three consistency axes. Only one is currently on anyone's radar:**
+| axis | how it dies |
+|---|---|
+| **Product identity** | One product per parameter, end to end. The only product boundary is `RhiresD`↔`RprelimD` at the live tail — and it is **temporary**, resolved by supersession. |
+| **Spatial aggregation** | **Our** polygons, **our** `exactextract`, throughout. CAMELS computed its basin means with *its* polygons and method; that mismatch simply leaves the series. |
+| **Version / supersession** | The preliminary tail is **replaced** by definitive data as it publishes. `historical_forcing` **already carries a `version` column with latest-version supersession** (`historical_forcing_store.py:55`) — the mechanism exists and nothing was ever wired to it. |
 
-1. **Product identity** — `RhiresD` vs `RprelimD`. **Confirmed broken for precipitation.**
-2. **Spatial aggregation** — CAMELS-CH computed catchment means with **its own polygons and its own
-   method**; we run `exactextract` over **our** basin geometries. Even an identical grid yields
-   different basin means under different polygons. **Never validated.**
-3. **Version / supersession** — MeteoSwiss reprocesses, and preliminary data is later superseded by
-   definitive. Our archive would permanently hold the preliminary values.
+**Backfill depth: 1981-01-01** (owner decision) — matching CAMELS' span exactly, so the validation
+experiment (§8) compares **40 full years** of our basin means against CAMELS'. *(`RhiresD` offers 1961;
+the extra 20 years are declined for now because they have no CAMELS counterpart to validate against,
+and `TminD`/`TmaxD` only begin in 1971 regardless. Revisit if more training depth is wanted.)*
 
-**Underlying documentation gap (fix this first):** the repo **nowhere** records what CAMELS-CH's
-forcing is actually derived from — not `v0-scope.md §A12`, not `architecture-context.md:140`, not
-`camelsch_adapter.py`. It is referred to only as "CAMELS-CH basin-averaged gridded data". **That
-undocumented provenance is what let this through.** Confirm it from the CAMELS-CH dataset
-documentation (Höge et al., ESSD 2023) and **write it down** before anything is spliced.
+**The priority chain becomes** — per parameter:
 
-#### The gating experiment (cheap, and settles all three axes at once)
+```
+precipitation:     RHIRESD → RPRELIMD          (definitive supersedes preliminary)
+temperature:       TABSD
+temperature_min:   TMIND
+temperature_max:   TMAXD
+```
 
-`RprelimD` exists for part of the window CAMELS already covers. So:
+**No `CAMELS_CH` tier.** *(Plan 072's `… → CAMELS_CH` chains are retired; see the annotation on 072.)*
 
-> **Run our MeteoSwiss extraction pipeline over an overlap period already covered by CAMELS-CH — same
-> basins, same dates — and compare our basin-mean series against CAMELS' own.**
+**What CAMELS still provides**, and keeps providing: static attributes, **basin polygons**, and the
+discharge record. Only its **forcing** is superseded.
 
-This is a **positive control against a known-good reference**, and it tests the product difference and
-our basin-averaging method *simultaneously*:
+### The irreducible residual — name it, measure it, declare it
 
-- **They agree** → splicing is defensible, and our extraction pipeline is validated end-to-end.
-- **They disagree** → we have directly quantified the inhomogeneity, and we know whether it needs a
-  bias correction, or whether daily `RhiresD` must actually be procured.
+For the most recent **~45 days**, inference runs on **preliminary** precipitation while the model was
+trained on **definitive**. **No real-time system can escape this** — definitive data does not exist in
+real time. But it must be **measured** (§8 quantifies exactly this) and **declared**, not discovered in
+production.
 
-Report per-basin bias, RMSE and the seasonal/intensity structure of the difference (precipitation
-biases are rarely uniform — expect them to concentrate in high-intensity and winter/snow events, which
-is exactly where a flood-forecasting model is most sensitive).
+## Scope
 
-#### The resolution (RECOMMENDED — no licence, no bias correction, no splice)
+### 1. Adapter — add `RhiresD`, and teach it the archive asset family
 
-Because `RhiresD` reaches back to **1961**, it **fully covers CAMELS' own 1981–2020 window**. So we do
-not have to splice two products at all:
+`MeteoSwissOpenDataReanalysisAdapter` today fetches **per-day** STAC features
+(`_fetch_day_feature(day_iso)`) and knows four products, precipitation being `RprelimD`
+(`_PRODUCT_REGISTRY`, `:81-106`).
 
-> **Derive the entire forcing series ourselves: `RhiresD` + `TabsD`/`TminD`/`TmaxD`, 1961 → T-45d,
-> through OUR basin polygons — with `RprelimD` used ONLY for the live tail, and superseded by
-> `RhiresD` when it lands.**
+Two changes:
 
-**MeteoSwiss open data supplies MORE than CAMELS does, with MORE history:**
+- **Add `RhiresD`** as the precipitation product (`ForcingSource.METEOSWISS_RHIRESD`,
+  `raw_var="RhiresD"`, token `rhiresd`). `RprelimD` **stays** — it is the live-tail product, not a
+  mistake to be deleted.
+- **Support the `archive` asset family.** The historical files are **per-year NetCDFs**
+  (`…-archive.rhiresd_ch01h.swiss.lv95_19810101000000_19811231000000.nc`), not per-day features. The
+  current per-day fetch cannot read them. The backfill (§2) needs a year-file path; the daily
+  operational path stays as-is.
 
-| parameter | product | open-data span | CAMELS-CH has it? |
-|---|---|---|---|
-| precipitation | `RhiresD` | **1961** → T-45d | ✅ (same product) |
-| temperature | `TabsD` | **1961** → T-1d | ✅ (same product) |
-| temperature_min | `TminD` | **1971** → T-1d | ❌ **not imported / not in CAMELS forcing** |
-| temperature_max | `TmaxD` | **1971** → T-1d | ❌ **not imported / not in CAMELS forcing** |
-| sunshine (rel.) | `SrelD` | **1971** → T-1d | ❌ not imported (CAMELS *does* use it) |
+**Grid note:** `rhiresd` publishes on `ch01h`; the other products on `ch01r`. Confirm the CRS/geometry
+handling covers both, or the extraction will be silently wrong. *(Verify before implementing — do not
+assume.)*
 
-So the recommended series is not merely *as good* as CAMELS' forcing — it is **strictly better**: same
-products where CAMELS has them, plus two parameters that currently **do not exist at all** in our
-archive, plus the sunshine variable CAMELS itself relies on.
+### 2. Backfill — derive 1981 → present through our polygons
 
-This eliminates **all three** consistency axes at once:
+A one-shot, resumable backfill producing `historical_forcing` rows for **every operational station**:
 
-1. **Product identity** — one product per parameter, end to end. No `RhiresD`/`RprelimD` splice except
-   at the live tail, where it is unavoidable *and* temporary.
-2. **Spatial aggregation** — our polygons, our `exactextract`, throughout. No CAMELS-vs-us polygon
-   mismatch, because CAMELS' basin means are no longer in the series.
-3. **Version / supersession** — the preliminary tail is *replaced* by definitive data as it publishes.
-   **The store already models this**: `historical_forcing` carries a `version` column and
-   `fetch_forcing` applies latest-version supersession (`historical_forcing_store.py:55`). The
-   mechanism exists; nothing was ever wired to it.
+| source tag | parameter | span |
+|---|---|---|
+| `meteoswiss_rhiresd` | precipitation | 1981-01-01 → T-45d |
+| `meteoswiss_tabsd` | temperature | 1981-01-01 → T-1d |
+| `meteoswiss_tmind` | temperature_min | 1981-01-01 → T-1d |
+| `meteoswiss_tmaxd` | temperature_max | 1981-01-01 → T-1d |
+| `meteoswiss_rprelimd` | precipitation | T-45d → T-1d *(live tail; superseded)* |
 
-**CAMELS-CH forcing then becomes a validation reference, not a dependency** — which is exactly what the
-overlap experiment below uses it for. *(CAMELS remains the source of static attributes, basin polygons
-and the discharge record; only its **forcing** is superseded.)*
+**Scale check before building:** rows ≈ `stations × days × parameters`. At 2 stations × 16,436 days ×
+4 = ~131k rows — trivial. **At the v0 target of ~1000 stations that is ~66M rows.** Size the backfill
+(and the extraction, which is the real cost — 45 years × 4 products of grid files) accordingly. It is a
+batch job, not a request path.
 
-**Residual, and irreducible:** the live tail (~45 days) is preliminary at inference time. A model
-trained on `RhiresD` will see `RprelimD` for the most recent window. That is inherent to *any*
-real-time system — you cannot have definitive data in real time — but it must be **measured** (the
-experiment quantifies exactly this) and **declared**, not discovered later.
+### 3. Supersession — wire the mechanism that already exists
 
-#### Owner decisions this blocks
+`historical_forcing` has a `version` column and `fetch_forcing` applies **latest-version supersession**
+when `version` is absent (`historical_forcing_store.py:55`). Nothing uses it.
 
-- **Adopt the RhiresD-derived series** (recommended above), **or**
-- **keep the CAMELS forcing and splice `RhiresD` onto it from 2021** — homogeneous in *product*, but
-  leaves the polygon/aggregation-method mismatch (axis 2) unvalidated at the join, **or**
-- **accept a documented, bounded discontinuity** and constrain models not to train across it.
+Wire it so that when `RhiresD` publishes for a date already covered by `RprelimD`, the definitive row
+**supersedes** the preliminary one. This is the mechanism that makes the live-tail compromise
+acceptable rather than permanent.
 
-**Procuring `RhiresD` commercially is no longer on the table — it is free.** *(An earlier revision of
-this plan listed it as an option, on Plan 071's false premise.)*
+### 4. The MeteoSwiss binding — for EXISTING stations, not just new ones
 
-**Do not implement §1–§7 until this is decided.** A reachable feed delivering inhomogeneous data is
-worse than a dark one: the dark feed is at least honest about having no data.
+Creating the binding at onboarding does **nothing** for the deployed fleet — onboarding runs at
+*station onboarding*, not at deploy. A **one-shot data backfill** must insert it for every eligible
+existing station. **Pin all four fields**; the adapter's match
+(`meteoswiss_open_data_reanalysis.py:155-162`) requires all of them:
 
-### 1. ⚠️ Fix hybrid's silent parameter drop — BEFORE the flip
+| field | value |
+|---|---|
+| `nwp_source` | `meteoswiss_open_data_reanalysis` |
+| `role` | `REANALYSIS` (115a) |
+| `status` | `ACTIVE` |
+| `extraction_type` | `BASIN_AVERAGE` |
 
-**This is the blocker on flipping the default.** `hybrid_reanalysis.py:66-72`:
+Onboarding also gains the binding, so both paths agree.
+
+> **Open item:** what becomes of the `camels-ch` binding once CAMELS is no longer a data tier? Under
+> `hybrid` the bindings only select *which stations participate* (`PerSourceStoreReader` keys on
+> `station_id` and ignores `nwp_source`), so leaving it is harmless — but it then describes a source we
+> no longer read. Decide: retire it, or keep it as a provenance marker. **Do not leave this implicit.**
+
+### 5. Fix hybrid's silent parameter drop — BEFORE the default flip
+
+`hybrid_reanalysis.py:66-72`:
 
 ```python
 chain = self._priority.get(key[2], ())          # key[2] is the parameter
@@ -218,160 +194,125 @@ if winner is None:
     continue                                     # <-- row silently discarded
 ```
 
-The priority chains are hardcoded to exactly four parameters
-(`hybrid_reanalysis_factories.py:26-32`: precipitation, temperature, temperature_min,
-temperature_max). **Any other forcing parameter is silently dropped.**
-`StoreBackedReanalysisSource` — today's default — passes **any** parameter through. So flipping the
-default as-is is a **silent data-loss regression**: precisely the bug family this whole track exists
-to eliminate.
+A parameter with **no configured chain is silently dropped**. `StoreBackedReanalysisSource` — today's
+default — passes *any* parameter through. So flipping the default as-is is a **silent data-loss
+regression**.
 
 **The rule (decided — a READY plan may not defer this to the implementer):**
 
 > A requested parameter with **no configured priority chain** raises `ConfigurationError` — **unless
 > exactly one source is configured for that parameter**, in which case that source wins.
 
-Rationale: "pass it through" is **ambiguous when two sources return the same unknown parameter** —
-there is no chain to break the tie, so a pass-through would pick nondeterministically, which is the
-`_select_nwp_source` bug all over again. Raising is the only deterministic answer that cannot
-silently return partial or arbitrary data. The single-source case is unambiguous, so it is allowed.
+"Pass through" is ambiguous when two sources return the same unconfigured parameter: with no chain to
+break the tie it would pick **nondeterministically** — the `_select_nwp_source` bug all over again.
+Raising is the only deterministic answer. Requires an **overlap test**.
 
-Requires an **overlap test**: two sources both returning an unconfigured parameter must raise, not
-pick a winner.
+### 6. Flip the reanalysis default to `hybrid`
 
-*A parameter that a model requests and the reader silently discards is indistinguishable from missing
-data — that is the whole disease this track is treating.*
+`config/deployment.py:111`. **Only after §5.** `tests/unit/config/test_deployment_reanalysis_source.py:25`
+locks the `"single"` default and must be updated deliberately.
 
-### 2. Backfill the MeteoSwiss binding for EXISTING stations
+Under §0 the reader must resolve `RHIRESD → RPRELIMD` and merge the four parameters — that is exactly
+what `HybridForcingSource` does. It remains the right component; **only its chain contents change.**
 
-*(Blocker from the 115 review — a falsified claim.)* Creating the binding at onboarding does
-**nothing** for already-deployed stations: onboarding runs at *station onboarding*, not at deploy.
-Flow 6 would stay empty for the entire existing fleet.
+#### 6a. Distribution-shift gate — the flip changes what a model is fed
 
-So the release must carry a **one-shot data backfill** inserting the binding for every eligible
-existing station (eligibility = the same rule onboarding will use — a non-weather station with a
-basin). Onboarding also gains the binding for new stations, so the two paths agree.
-
-**Pin all FOUR fields, not just the name and role.** The adapter's match
-(`meteoswiss_open_data_reanalysis.py:155-162`) requires **all** of:
-
-| field | value | why |
-|---|---|---|
-| `nwp_source` | `meteoswiss_open_data_reanalysis` | Flow 6 selects by adapter identity |
-| `role` | `REANALYSIS` | 115a's role filter |
-| `status` | `ACTIVE` | the adapter checks it explicitly |
-| `extraction_type` | `BASIN_AVERAGE` | the adapter's emission-shape guard |
-
-*(Missing any one of them leaves the feed dark in exactly the way this plan exists to fix — and the
-flow would still report green.)*
-
-**Test Flow 6 against MIGRATED data**, not a freshly-onboarded fixture, and **assert a non-zero
-`rows_stored`**. A green flow is not evidence.
-
-### 3. Flip the reanalysis default to `hybrid`
-
-`config/deployment.py:111`. Only after §1. Note
-`tests/unit/config/test_deployment_reanalysis_source.py:25` currently locks the `"single"` default
-and must be updated deliberately, not incidentally.
-
-Verify the flip is safe for **CAMELS-only** stations (i.e. every Swiss station today): the chains
-fall back to `CAMELS_CH`, so those rows still resolve — but this must be a **test**, not an
-assumption.
-
-#### ⚠️ 3a. Distribution-shift gate — the flip can silently change what a model is fed
-
-*(Major from review round 6. **Plan 072 §175 already recorded this risk** and it was about to be
-walked straight past.)*
-
-The flip changes **where a feature's value comes from**. A model fitted on **CAMELS-sourced**
-precipitation that suddenly reads **MeteoSwiss-sourced** precipitation is being fed a *different
-distribution than it was trained on* — the numbers still arrive, the flow still goes green, and the
-forecast is quietly wrong. This is not a wiring bug; it is a silent model-validity bug, and it would
-be very hard to attribute after the fact.
+*(Plan 072 §175 already recorded this risk and we were about to walk past it.)*
 
 The same path serves training (`training_data.py:177`), hindcast (`hindcast.py:292`) **and** the live
-forecast cycle's past-dynamic inputs (`operational_inputs.py:327`) — so a shift hits fitted
-artifacts and live inference together.
+forecast cycle's past-dynamic inputs (`operational_inputs.py:327`) — so a shift hits fitted artifacts
+and live inference together. Numbers still arrive, the flow still goes green, and the forecast is
+quietly wrong.
 
-**Required gate before the flip (audit A4 in the umbrella):**
+**Before the flip:** enumerate **active** model artifacts and their `past_dynamic`/`future_dynamic`
+requirements; determine whether the flip re-sources any feature they consume; **retrain on the new
+series, or hold the flip for those stations.** Review suggests today's models are *probably* unaffected
+(native/fallback models declare no past/future dynamic features, `linear_regression_daily.py:54`; the FI
+NWP model needs only *future* precip/temperature, `nwp_regression.py:126`) — **that is an inference, not
+a fact.** Confirm against the live artifact/assignment tables.
 
-1. Enumerate **active** model artifacts and their `past_dynamic` / `future_dynamic` requirements.
-2. For each, determine whether the flip re-sources any feature it actually consumes.
-3. **If yes → retrain on hybrid-resolved forcing before the flip**, or hold the flip for those
-   stations. Do not flip under a fitted artifact whose training distribution has moved.
+### 7. Make an empty Flow 6 loud
 
-Repo-level review suggests today's registered models are **probably** unaffected — native/fallback
-models declare no past/future dynamic features (`linear_regression_daily.py:54`), and the FI NWP model
-requires only *future* precipitation/temperature (`nwp_regression.py:126`), which comes from the
-forecast path, not this one. **That is an inference, not a fact**: only the live artifact/assignment
-tables settle which models are actually active. **NEEDS-LIVE-DB.**
+A scheduled ingest matching **zero** stations is a misconfiguration, not a no-op — and it is the
+observability hole that hid a dead feed for the deployment's entire life.
 
-### 4. Make an empty Flow 6 loud
-
-A scheduled ingest that matches **zero** stations is a misconfiguration, not a no-op. It must not
-report green. This is the observability hole that let the condition persist undetected — and the
-reason nobody noticed a production feed was dark.
-
-**Specified, not hand-waved** *(blocker from review round 6 — "surface it to Flow 4" had no
-executable target)*. `ingest_weather_history_flow` has **no** `pipeline_health_store` parameter
+`ingest_weather_history_flow` has **no** `pipeline_health_store` parameter
 (`ingest_weather_history.py:256`), its production setup pulls only station/forcing/basin stores
-(`:267`), and `PipelineCheckType` (`types/enums.py:151`) has **no** weather-history check type. So
-this needs building, not wiring:
+(`:267`), and `PipelineCheckType` (`types/enums.py:151`) has **no** weather-history type. So this is
+building, not wiring:
 
-1. Add a `WEATHER_HISTORY_INGEST` value to `PipelineCheckType` (+ the enum's DB constraint and a
-   migration, + `docs/conventions.md`'s enum table).
-2. Thread `pipeline_health_store` into `ingest_weather_history_flow` and its production setup.
-3. Record a health check per run: subject = the reanalysis `nwp_source`; **UNHEALTHY when
-   `stations_targeted == 0`** (a configuration fault — the feed cannot possibly be working), and
-   also when `stations_targeted > 0` but `rows_stored == 0` over a full window (the feed is
-   configured but delivering nothing).
-4. `rows_stored > 0` on a normal run is HEALTHY.
+1. Add `WEATHER_HISTORY_INGEST` to `PipelineCheckType` (+ DB constraint, migration, `conventions.md`).
+2. Thread `pipeline_health_store` into the flow and its production setup.
+3. Record per run: **UNHEALTHY when `stations_targeted == 0`** (a config fault — the feed *cannot* be
+   working), and when `stations_targeted > 0 and rows_stored == 0` over a full window (bound, but
+   silent). HEALTHY on `rows_stored > 0`.
 
-Two distinct failures, deliberately distinguished: **"nobody is bound to this feed"** and **"the feed
-is bound but silent."** Today both look identical — and both look like success.
+Two distinct failures, deliberately distinguished: **"nobody is bound to this feed"** vs **"the feed is
+bound but silent."** Today both look identical — and both look like success.
 
-### 5. Fix the CAMELS binding's `extraction_type`
+### 8. 🔬 The validation experiment — our series vs CAMELS (do this EARLY)
+
+**This is the payoff of the 1981 backfill depth, and it should run before §6's flip.**
+
+Compare our self-derived basin means against CAMELS' own, **same basins, same dates, 1981-2020**:
+
+- **Precipitation** — ours (`RhiresD` via `exactextract`, our polygons) vs CAMELS'. Both are
+  RhiresD-derived, so **any difference is purely our aggregation method/polygons.** This is a positive
+  control on the whole extraction pipeline against a **published reference**.
+- **Temperature** — same, via `TabsD`.
+- Report **per-basin bias, RMSE, and the seasonal + intensity structure** of the difference.
+  Precipitation biases are rarely uniform: expect them to concentrate in high-intensity and winter/snow
+  events — exactly where a flood-forecasting model is most sensitive.
+- **Separately, quantify the live-tail residual**: `RprelimD` vs `RhiresD` over their overlap. That
+  number *is* the honest uncertainty on the most recent 45 days of every operational forecast.
+
+**If ours and CAMELS' disagree materially, stop.** Either our polygons differ from CAMELS' catchments,
+or our aggregation is wrong — and we would be about to retrain every model on a silently different
+series.
+
+### 9. Fix the CAMELS binding's `extraction_type`
 
 Onboarding writes the CAMELS binding as `POINT` (`onboarding.py:364`) while its forcing records are
-`BASIN_AVERAGE` (`camelsch_adapter.py:130`). `extraction_type` is therefore **already wrong in the
-database**. Fix the write site **and** migrate existing rows.
+`BASIN_AVERAGE` (`camelsch_adapter.py:130`). `extraction_type` is **already wrong in the database**. Fix
+the write site **and** migrate existing rows. *(This is why 115a's backfill keys off the source name and
+never off `extraction_type` — the field cannot be trusted until this lands.)*
 
-*(This is why 115a's backfill keys off the source name and never off `extraction_type` — the field
-cannot be trusted until this lands.)*
+### 10. Converter guards Plan 071 specified but never landed
 
-### 6. Converter guards Plan 071 specified but never landed
+`preprocessing/converters.py:17,46` — `basin_avg_to_records` / `point_forecast_to_records` must reject
+reanalysis source tags, so a reanalysis row can never be written into the forecast table. Plan 071 §243
+called for this; the code has no such check.
 
-`preprocessing/converters.py:17,46` — `basin_avg_to_records` / `point_forecast_to_records` must
-reject reanalysis source tags, so a reanalysis row can never be written into the forecast table.
-Plan 071 §243 called for this; the code has no such check.
+### 11. The dashboard forcing endpoint merges provenance streams
 
-### 7. The dashboard forcing endpoint merges provenance streams
+`api/routes/stations.py:452-490` reads `historical_forcing` directly and **ignores `source`**. Once
+several provenance tags coexist for the same station/parameter — which is exactly what this plan
+creates — it silently merges them into one series.
 
-*(Major from the 115 review.)* `api/routes/stations.py:452-490` reads `historical_forcing` directly
-and **ignores `source`**. Once CAMELS and MeteoSwiss product rows coexist for the same station and
-parameter — which is exactly what this plan creates — it will silently merge multiple provenance
-streams into one series.
-
-**Decide:** does the dashboard show provenance-separated series (honest, and useful for spotting a
-dark feed), or the same hybrid-resolved view the models consume (consistent with what the forecast
-actually used)? Recommend **hybrid-resolved, with provenance shown per point** — the operator needs
-to see *which* source won.
+**Decide:** provenance-separated series (honest; makes a dark feed visible), or the same
+hybrid-resolved view the models consume (consistent with what the forecast actually used).
+**Recommend: hybrid-resolved, with the winning source shown per point** — the operator needs to see
+*which* source won.
 
 ## Tests
 
-- **The double-dark regression test:** with the MeteoSwiss binding present and `hybrid` default,
-  rows written under product tags are readable **end to end** by the default consumer.
-  *Must fail against today's wiring.*
-- **The parameter-drop test (§1):** a forcing parameter with no configured chain **raises
-  `ConfigurationError`** rather than being silently discarded. *Must fail against the current
-  `continue`.*
-- **The overlap test (§1):** two sources both returning an unconfigured parameter **raise** — they do
-  not pick a nondeterministic winner.
-- **Flow 6 health (§4):** `stations_targeted == 0` records UNHEALTHY, not a green zero; and
-  `stations_targeted > 0` with `rows_stored == 0` over a full window also records UNHEALTHY.
-- **CAMELS-only station survives the flip** — the chain falls back to `CAMELS_CH` and past-dynamic
-  features are unchanged. This is the "did we break Switzerland" gate.
-- **Flow 6 against migrated data** (§2), not a fresh fixture — an existing station gets the binding
-  (all four fields pinned) and ingests, with `rows_stored > 0` asserted.
+- **The validation experiment (§8) is a gate, not a test** — but its outputs get pinned: a regression
+  test asserts our basin-mean derivation is stable against a small committed fixture.
+- **The double-dark regression:** with the MeteoSwiss binding present and `hybrid` default, rows written
+  under product tags are readable **end to end** by the default consumer. *Must fail against today's
+  wiring.*
+- **Supersession (§3):** an `RhiresD` row **replaces** an `RprelimD` row for the same
+  `(station, valid_time, parameter)`. *Must fail against the current unwired version column.*
+- **Parameter drop (§5):** a parameter with no configured chain **raises**, and does not vanish. *Must
+  fail against the current `continue`.*
+- **Overlap (§5):** two sources returning the same unconfigured parameter **raise** — no
+  nondeterministic winner.
+- **Flow 6 against MIGRATED data** (§4), not a fresh fixture — an existing station gets the binding (all
+  four fields pinned) and ingests, with `rows_stored > 0` asserted.
+- **Flow 6 health (§7):** `stations_targeted == 0` records UNHEALTHY, not a green zero; and
+  `stations_targeted > 0 && rows_stored == 0` over a full window likewise.
+- **`temperature_min`/`temperature_max` now exist** — they resolve from `TminD`/`TmaxD`, with no CAMELS
+  tier to fall back to.
 - CAMELS binding `extraction_type` is `BASIN_AVERAGE`, at the write site and after migration.
 - Converter guards reject a reanalysis tag.
 
@@ -384,7 +325,15 @@ uv run pyright src/
 uv run pytest
 ```
 
-**Deploy gate (do not skip):** after the flip, confirm on staging that
-`ingest-weather-history` reports a **non-zero** `rows_stored`, and that `historical_forcing`'s
-`MAX(valid_time)` per source **advances**. A green flow is not evidence — that is the entire lesson
-of this plan.
+**Deploy gate (do not skip):** after the flip, confirm on staging that `ingest-weather-history` reports
+a **non-zero** `rows_stored`, and that `historical_forcing`'s `MAX(valid_time)` per source **advances**.
+**A green flow is not evidence** — that is the entire lesson of this plan.
+
+## Doc sync
+
+- `docs/v0-scope.md §A12` and `docs/architecture-context.md:140,574` — these describe CAMELS-CH as *the*
+  v0 training-forcing source. Under §0 it is a **validation reference**; the forcing series is
+  self-derived from MeteoSwiss. **Record the provenance explicitly** (`RhiresD`/`TabsD`/`TminD`/`TmaxD`,
+  our polygons) — the absence of exactly this note is what let the whole bug through.
+- `docs/conventions.md` — the `ForcingSource` values, incl. the new `METEOSWISS_RHIRESD`.
+- Annotations on **071** (falsified premise) and **072** (three defects) are already in place.
