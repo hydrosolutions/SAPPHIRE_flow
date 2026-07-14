@@ -67,12 +67,15 @@ points: **Flow 0 Nepal onboarding** (needs forcing + obs + auth all present) and
 038 (store write atomicity) ──► 040 (hindcast dedup)   [Wave 0; 040 depends_on 038 — 040 line 5; 040 must not land before 038]
 FI published to private index ─────────────► 080 (drop git-pin + CI wheel-guard exception)
 081 (offline adapter) ──► 082 (live smoke/coverage) ──► 047 (Nepal data-sources umbrella)
-live DB audit ──► 115 (weather-source identity model) ──► 081/082 dispatch ──► 082 Task 3B (multi-year backfill) ──► 113 (schedule alignment)
-   [115 SUPERSEDES 114. The single owning plan for weather ingest+management: splits binding identity from
-    data provenance, adds WeatherSourceRole + role-scoped store accessors, and repairs Flow 6 (which today
-    may select zero stations AND write rows the default reader cannot see). Surfaced by an independent Codex
-    architecture investigation 2026-07-14 after 114 failed three reviews. 081's offline build parallelizes;
-    082 dispatch must not land before 115. The live DB audit gates 115 READY.]
+live DB audit ──► 115a (identity/schema) ──► 081/082 dispatch ──► 115b (Flow 6 reachability) ──► 115c (cleanup) ──► 082 Task 3B ──► 113
+   [The 115 track SUPERSEDES 114 and is the single owner of weather ingest+management. Root cause: `nwp_source`
+    means four things at once (binding key, adapter selector, forecast storage key, provenance tag). 115a =
+    identity/schema (role field, role-scoped store accessors, consumer rewiring) — the piece 082 waits on.
+    115b = Flow 6 reachability (today it may select ZERO stations and return 0/0/0 as SUCCESS, and its
+    product-tag rows are unreadable by the default binding-name reader) — the RISKY landing, isolated so a
+    revert cannot drag back the schema. 115c = cleanup. Surfaced by an independent Codex architecture
+    investigation 2026-07-14 after 114 failed three reviews. 081's offline build parallelizes; 082 dispatch
+    must not land before 115a. The live DB audit gates 115a READY.]
 035 (provenance, READY) ──► rating-curve h→Q ingestion ──► Stage 2 QC (2.5–2.7)
 water_level unit normalization ──► removes the Plan 101 cm-onboarding guard
 046 (staging validation, IN_PROGRESS) ──► 048a (local encrypted restic + restore rehearsal — NOW)  [048b off-site target/key custody = the BLOCKED tail, needs the hosting decision §3-7. 048/049 parallel under 046; NO 048→049 edge]
@@ -115,7 +118,9 @@ config later; `BLOCKED` = core design needs an external answer first (see §3).
 | Prefect worker observability & home | **103** | DRAFT (grill-me PENDING — D2 mechanism + D3 level-split unresolved) | NOW | supersedes 062 | 0 (parallel) |
 | Short-lookback observability | **097** | DRAFT (grill-me done) | NOW | 093 (done — archived at `docs/plans/archive/093-*.md`, shipped #53) | 0 (parallel) |
 | recap-dg-client forcing adapter (offline) | **081** | DRAFT | NOW | — | 1 |
-| Weather-source identity model (binding vs provenance, roles, Flow 6 reachability) | **115** *(supersedes 114)* | DRAFT | NOW | live DB audit (**gates READY**); Swiss-testable; **blocks 081/082/113** | 1 |
+| Weather-source identity: role field + store accessors + consumer rewiring | **115a** *(115 track; supersedes 114)* | DRAFT | NOW | live DB audit (**gates READY**); Swiss-testable; **blocks 082** | 1 |
+| Flow 6 reachability: hybrid param-drop fix + default flip + existing-station backfill | **115b** | DRAFT | after 115a | **the risky landing** — isolated so a revert doesn't drag back the schema | 1 |
+| Weather identity cleanup: 0031 NOT NULL, API role column, doc sync | **115c** | DRAFT | after 115b | non-gating | 2 |
 | recap Gateway operational + training readiness (live) | **082** | DRAFT | BLOCKED | 081; gateway creds/coverage | 1 |
 | Nepal data-sources umbrella (IFS/DHM/ERA5-Land) | **047** | DRAFT (stub — **scope STALE, must be revised before READY**, see §4 action) | NOW* | 081/082; DHM+geometry | 1 |
 | ERA5-Land reanalysis source | — | *subsumed by 081/082* | NOW | 081 | 1 |

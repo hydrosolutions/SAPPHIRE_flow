@@ -6,7 +6,7 @@ title: recap Gateway operational and training readiness
 scope: Nepal v1 live Gateway readiness
 depends_on:
   - 081-recap-dg-client-integration
-  - 115-weather-source-identity-model
+  - 115a-weather-source-identity-schema
 ---
 
 # Plan 082 - recap Gateway operational and training readiness
@@ -294,9 +294,9 @@ uv run pytest tests/unit/adapters/test_recap_gateway_cycle_resolution.py
      write forecast records under that forecast binding's source string so Phase B's
      `fetch_weather_forecasts(nwp_source=…)` (`services/operational_inputs.py`, re-locate
      on `main`) finds them — otherwise every Nepal station logs `operational_inputs.no_nwp`
-     and returns None. This depends on **Plan 115** (the weather-source identity model, which owns the `WeatherSourceRole` field that makes
+     and returns None. This depends on **Plan 115a** (the identity/schema piece of the 115 track, which owns the `WeatherSourceRole` field that makes
      `_select_nwp_source` pick the forecast binding deterministically); do not implement 2C
-     dispatch before 115 lands.
+     dispatch before 115a lands.
 
 3. **Generic gateway-binding validator (owned HERE, not deferred to D5-2).** To remove a
    sequencing contradiction (the completion-gate test below asserts the invariant, so its

@@ -283,7 +283,7 @@ and that `_select_nwp_source` is non-deterministic when a station has two
 disambiguates forecast vs reanalysis only *implicitly* by `extraction_type`, which
 collapses for Nepal's all-`BASIN_AVERAGE` gateway forcing. The root fix is an
 explicit `WeatherSourceRole` (FORECAST | REANALYSIS) field on `StationWeatherSource`,
-owned by **Plan 115** (Swiss-testable prerequisite; blocks Plan 082 Task 2C).
+owned by **Plan 115a** (Swiss-testable prerequisite; blocks Plan 082 Task 2C). Note also: Nepal needs an ERA5-Land tier in the hybrid priority chain (`hybrid_reanalysis_factories.py:26-32` is Swiss-hardcoded), and `config.toml`'s adapter `type` is decorative — runtime hardcodes the adapter, so this adapter can be fully built and still be DEAD in production wiring.
 
 **Consequence for this plan (081-side deliverable), given Plan 115:** the single
 `RecapGatewayAdapter` exposes an `NWP_SOURCE: str` class attribute carrying its
@@ -293,7 +293,7 @@ Flow-1 selects the `role==FORECAST` binding and keys forecast *storage* off *tha
 binding's* `nwp_source` (e.g. `ifs_ecmwf`), not off the adapter — so the earlier
 "no dual-identity conflict" only holds once the role field disambiguates the two
 bindings. 081 only guarantees the `NWP_SOURCE` attribute exists on the class; the
-role-based selection and the forecast-storage-key correction live in Plans 115/082.
+role-based selection and the forecast-storage-key correction live in Plans 115a/082.
 
 **Ownership:** the **design** is locked here; the **implementation** (the three edit
 sites, the docstring fix, the generic gateway-binding `BASIN_AVERAGE` validator, and
