@@ -16,9 +16,16 @@ blocks: [115c]
 
 ## Status
 
-**DRAFT.** Depends on **115a**. This is the **risky** landing — it changes what data reaches
-models. It is isolated precisely so that if it goes wrong in staging, it can be reverted **without
-dragging back the schema work 081/082 are waiting on**.
+**DRAFT — BLOCKED on a scientific-validity question (§0), not on engineering.** Depends on **115a**.
+
+**§0 must be settled first: MeteoSwiss `RprelimD` (preliminary precipitation) is NOT the product
+CAMELS-CH is built from (`RhiresD`, definitive).** Splicing them produces an inhomogeneous
+precipitation series at the 2020/2021 join. Everything else in this plan is engineering; §0 is the
+question of whether the data is scientifically valid at all. **Do not build §1-§7 before §0 is decided.**
+
+This is the **risky** landing — it changes what data reaches models. It is isolated precisely so that
+if it goes wrong in staging, it can be reverted **without dragging back the schema work 081/082 are
+waiting on**.
 
 > ## 🔴 THE AUDIT RAN (2026-07-14). This is a FIRST IMPLEMENTATION, not a fix.
 >
@@ -54,6 +61,80 @@ them up by **binding name** (`store_backed_reanalysis.py:31`, default at `config
 Write-key ≠ read-key.
 
 ## Scope
+
+### 0. 🔴 BLOCKER — data homogeneity. Is MeteoSwiss a valid continuation of CAMELS at all?
+
+*(Raised by the owner (hydrologist) 2026-07-14. Confirmed against the code. **This is a
+scientific-validity blocker, and nothing in 071/072/115 addresses it.** It gates everything else in
+this plan — there is no point making a feed reachable if the data it delivers is inhomogeneous with
+the archive it extends.)*
+
+CAMELS-CH ends at **2020-12-31**. This plan fills the gap from **a different source**. That is only
+legitimate if the new source measures the same quantity the same way. **For precipitation, it does
+not.**
+
+| parameter | CAMELS-CH derives from *(TO BE CONFIRMED — see below)* | Flow 6 ingests | homogeneous? |
+|---|---|---|---|
+| precipitation | **`RhiresD`** — definitive daily precip, full station network incl. manual collectors | **`RprelimD`** — **preliminary**, automatic stations only (`meteoswiss_open_data_reanalysis.py:83`) | 🔴 **NO** |
+| temperature | `TabsD` | `TabsD` | ✅ likely |
+| temperature_min / max | `TminD` / `TmaxD` | `TminD` / `TmaxD` | ✅ likely |
+
+**Plan 071 knew and proceeded anyway** (`071:66-68`, `071:117`): *"Daily RhresD / RhiresD: NOT in the
+open-data daily feed; only at monthly aggregate resolution. Daily RhiresD requires commercial
+delivery. Deferred."* So `RprelimD` was substituted — and **Plan 072's priority chain then encodes
+`METEOSWISS_RPRELIMD → CAMELS_CH` as interchangeable tiers of the same quantity** (`072:58`). They are
+not interchangeable: preliminary and definitive precipitation differ **systematically**, not randomly.
+
+072's only acknowledgement is a generic note that flipping to hybrid "may surface distribution-shift
+artifacts", deferring retrain policy to Plan 066 (`072:121`, `072:175`). That is about a **config
+flip**. It is not an acknowledgement that the two sources **measure the same thing differently** — and
+it is not a mitigation.
+
+**Three consistency axes. Only one is currently on anyone's radar:**
+
+1. **Product identity** — `RhiresD` vs `RprelimD`. **Confirmed broken for precipitation.**
+2. **Spatial aggregation** — CAMELS-CH computed catchment means with **its own polygons and its own
+   method**; we run `exactextract` over **our** basin geometries. Even an identical grid yields
+   different basin means under different polygons. **Never validated.**
+3. **Version / supersession** — MeteoSwiss reprocesses, and preliminary data is later superseded by
+   definitive. Our archive would permanently hold the preliminary values.
+
+**Underlying documentation gap (fix this first):** the repo **nowhere** records what CAMELS-CH's
+forcing is actually derived from — not `v0-scope.md §A12`, not `architecture-context.md:140`, not
+`camelsch_adapter.py`. It is referred to only as "CAMELS-CH basin-averaged gridded data". **That
+undocumented provenance is what let this through.** Confirm it from the CAMELS-CH dataset
+documentation (Höge et al., ESSD 2023) and **write it down** before anything is spliced.
+
+#### The gating experiment (cheap, and settles all three axes at once)
+
+`RprelimD` exists for part of the window CAMELS already covers. So:
+
+> **Run our MeteoSwiss extraction pipeline over an overlap period already covered by CAMELS-CH — same
+> basins, same dates — and compare our basin-mean series against CAMELS' own.**
+
+This is a **positive control against a known-good reference**, and it tests the product difference and
+our basin-averaging method *simultaneously*:
+
+- **They agree** → splicing is defensible, and our extraction pipeline is validated end-to-end.
+- **They disagree** → we have directly quantified the inhomogeneity, and we know whether it needs a
+  bias correction, or whether daily `RhiresD` must actually be procured.
+
+Report per-basin bias, RMSE and the seasonal/intensity structure of the difference (precipitation
+biases are rarely uniform — expect them to concentrate in high-intensity and winter/snow events, which
+is exactly where a flood-forecasting model is most sensitive).
+
+#### Owner decisions this blocks
+
+- **Procure daily `RhiresD` commercially** (homogeneous with CAMELS, costs money and a licence), **or**
+- **bias-correct `RprelimD` → `RhiresD`** over the overlap (cheap, adds a correction step and its own
+  uncertainty), **or**
+- **rebuild the entire forcing archive from `RprelimD`** for homogeneity's sake (self-consistent, but
+  discards CAMELS' quality and its pre-2020 depth — likely unacceptable), **or**
+- **accept the discontinuity, documented and bounded**, and constrain models not to train across the
+  join.
+
+**Do not implement §1–§7 until this is decided.** A reachable feed delivering inhomogeneous data is
+worse than a dark one: the dark feed is at least honest about having no data.
 
 ### 1. ⚠️ Fix hybrid's silent parameter drop — BEFORE the flip
 
