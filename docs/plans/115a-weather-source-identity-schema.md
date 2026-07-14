@@ -16,8 +16,17 @@ blocks: [082, 115b, 115c]
 
 ## Status
 
-**DRAFT.** **⛔ READY is gated on the live DB audit** (umbrella §Audit) — it decides whether the
-migration allowlist is complete.
+**DRAFT — but the READY gate is now CLEARED.** The live DB audit ran 2026-07-14 against staging
+(umbrella §Audit):
+
+- **A1 (the gating query): PASS — 0 rows.** Both operational stations have **exactly one** forecast
+  binding, so no station breaks under `fetch_forecast_binding`'s new contract. The behaviour change
+  named below has **no victims** in the current fleet.
+- **A2: the backfill allowlist is complete.** The only bindings in existence are `camels-ch`/`point`
+  and `icon_ch2_eps`/`basin_average` — the `icon_ch2_eps → FORECAST, else REANALYSIS` rule covers
+  reality exactly.
+
+Nothing blocks this plan technically. **Owner promotes to READY.**
 
 ## Objective
 

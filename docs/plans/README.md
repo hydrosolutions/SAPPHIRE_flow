@@ -75,6 +75,10 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
   smoke, Nepal config, coverage gate, watchdog, runbooks. Depends on 081.
 - **047** — Nepal v1 data sources umbrella (IFS, DHM, ERA5-Land) — `DRAFT (stub)` —
   depends on 081/082.
+- **117** — Basin/static artifact architecture alignment — `DRAFT` — document the
+  adjacent basin/static extraction artifact boundary, GeoPackage requirements,
+  gauge-ID feature naming preference, and static-Parquet TBD path. Blocks cleanup
+  of the Flow 0 / Flow 5.2 Nepal onboarding architecture before Plan 047 advances.
 - **035** — Rating-curve provenance for skill integrity — `READY` — v1 DHM hQ.
 - **017** — Manual vs automatic station support — `DRAFT` — v1, DHM mixed networks.
 - **015** — Virtual / calculated station support — `DRAFT` — v1 (enum slice shipped).
@@ -135,8 +139,9 @@ These are named in `architecture-context.md` / `v0-scope.md` but have no dedicat
    adapter boundary (Plan 101 only *guards* the metres assumption).
 4. **ERA5-Land reanalysis adapter** (`WeatherReanalysisSource` for Nepal) — folded
    verbally into 081/047, no dedicated build plan.
-5. **Flow 0 Nepal deployment onboarding** — AoI definition, bulk static-attribute
-   fetch (HydroATLAS/MERIT/DHM GIS).
+5. **Flow 0 Nepal deployment onboarding** — AoI definition and full onboarding
+   flow still need a dedicated plan; the basin/static artifact boundary is now
+   tracked in Plan 117.
 6. **Rating-curve h→Q ingestion + reprocessing** (Flow 12 Branch A) — 035 covers
    provenance only.
 7. **Auth / RBAC / audit** for the multi-tenant handover (Plan 042 deferral is

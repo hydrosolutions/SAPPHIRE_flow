@@ -119,9 +119,42 @@ is the signature of a missing type, not of careless callers.
 `fetch_weather_sources` survives **only** for display (`api/routes/api_stations.py:181`), which
 legitimately wants every binding — now showing each one's role.
 
-## Audit — BLOCKS 115a READY
+## Audit — RUN 2026-07-14 (staging, mac-mini). Results below.
 
-Read-only, staging **and** production.
+> ## ✅ AUDIT COMPLETE — and it confirms the diagnosis
+>
+> | | result |
+> |---|---|
+> | **A1** forecast-binding cardinality | ✅ **PASS — 0 rows.** Both operational stations (`Porte_du_Scex`, `Rheinfelden-Messstation`) have **exactly 1** forecast binding + 1 reanalysis binding. **No station breaks under 115a.** 115a is cleared to land. |
+> | **A2** source allowlist | ✅ **Complete.** The only bindings that exist are `camels-ch`/`point`/`active` and `icon_ch2_eps`/`basin_average`/`active`. The backfill rule (`icon_ch2_eps` → FORECAST, else REANALYSIS) covers reality exactly, with nothing left over. |
+> | **A3** the dark feed | 🔴 **CONFIRMED — and worse than suspected.** |
+>
+> ### A3 — `historical_forcing`, in full:
+>
+> ```
+>   source   | count |   first    |    last
+> -----------+-------+------------+------------
+>  camels-ch | 58440 | 1981-01-01 | 2020-12-31
+> ```
+>
+> **One source. `camels-ch`. Nothing else.** No `meteoswiss_rprelimd`, no `tabsd`, no `tmind`, no
+> `tmaxd`. The scheduled `ingest-weather-history` deployment has **never stored a single row in
+> production** — and the forcing archive is **frozen at 2020-12-31**, five and a half years stale.
+>
+> The flow has been reporting **green** for its entire operational life while doing nothing at all.
+> Both halves of the double-dark diagnosis are now fact, not inference:
+> **(1)** no `meteoswiss_open_data_reanalysis` binding exists → Flow 6 matches zero stations and
+> returns `0/0/0` as a success; **(2)** even had it run, its product-tag rows were unreadable by the
+> `single` default reader.
+>
+> **Consequence: 115b is a FIRST IMPLEMENTATION, not a fix.** There is no MeteoSwiss reanalysis data
+> to repair — there has never been any. Any model needing recent past-dynamic forcing has been
+> unservable since 2020, and would be silently unservable for Nepal too.
+>
+> *(It has not yet bitten operationally only because today's models declare no past-dynamic weather
+> features — see A4. That is luck, not design.)*
+
+The queries, retained for re-running against production:
 
 ### A1 — Forecast-binding cardinality (THE gating query)
 

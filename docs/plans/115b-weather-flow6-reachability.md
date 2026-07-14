@@ -20,9 +20,27 @@ blocks: [115c]
 models. It is isolated precisely so that if it goes wrong in staging, it can be reverted **without
 dragging back the schema work 081/082 are waiting on**.
 
-**⚠️ The live DB audit changes what this plan IS.** If `historical_forcing` is frozen at the CAMELS
-import, this is a **first implementation**, not a fix — and past-dynamic features have been stale in
-every forecast since onboarding. Do not size or schedule this plan before the audit runs.
+> ## 🔴 THE AUDIT RAN (2026-07-14). This is a FIRST IMPLEMENTATION, not a fix.
+>
+> ```
+>   source   | count |   first    |    last
+> -----------+-------+------------+------------
+>  camels-ch | 58440 | 1981-01-01 | 2020-12-31
+> ```
+>
+> `historical_forcing` holds **one source**: `camels-ch`, frozen at **2020-12-31**. There is **no
+> MeteoSwiss reanalysis data at all** — the scheduled `ingest-weather-history` deployment has **never
+> stored a single row**, while reporting green for its entire operational life. And `A2` confirms **no
+> `meteoswiss_open_data_reanalysis` binding exists**, so Flow 6 has been matching zero stations and
+> returning `0/0/0` as a success since the day it shipped.
+>
+> **Both halves of the double-dark diagnosis are now fact.** Nothing here is being *repaired* — the
+> feed has never worked. Size and schedule this plan accordingly: it is building a data path, not
+> patching one.
+>
+> **Why it has not yet caused a visible incident:** today's models declare no *past-dynamic* weather
+> features, so nothing has been asking for the data that isn't there. That is luck. The moment a model
+> needs recent forcing — and Nepal's will — this becomes a hard blocker.
 
 ## The problem, in one paragraph
 
