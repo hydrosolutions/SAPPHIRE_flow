@@ -18,6 +18,7 @@ from sapphire_flow.types.enums import (
     SpatialRepresentation,
     StationKind,
     StationStatus,
+    WeatherSourceRole,
     WeatherSourceStatus,
 )
 from sapphire_flow.types.ids import (
@@ -625,6 +626,7 @@ class TestOnboardingSteps6Through8:
             nwp_source="camels_ch",
             extraction_type=SpatialRepresentation.BASIN_AVERAGE,
             status=WeatherSourceStatus.ACTIVE,
+            role=WeatherSourceRole.REANALYSIS,
         )
         s.station.store_weather_source(weather_source)
 
@@ -699,6 +701,7 @@ class TestOnboardingSteps6Through8:
             nwp_source="camels_ch",
             extraction_type=SpatialRepresentation.BASIN_AVERAGE,
             status=WeatherSourceStatus.ACTIVE,
+            role=WeatherSourceRole.REANALYSIS,
         )
         s.station.store_weather_source(weather_source)
 
@@ -762,6 +765,7 @@ class TestOnboardingSteps6Through8:
             nwp_source="camels_ch",
             extraction_type=SpatialRepresentation.BASIN_AVERAGE,
             status=WeatherSourceStatus.ACTIVE,
+            role=WeatherSourceRole.REANALYSIS,
         )
         s.station.store_weather_source(weather_source)
         reanalysis_records = [

@@ -126,21 +126,36 @@ def onboard_stations_flow(
         skill_store = stores["skill_store"]
         parameter_store = stores["parameter_store"]
 
-    # Build store-backed forcing source for training (CAMELS-CH data)
-    if forcing_source is None and forcing_store is not None:
-        from sapphire_flow.adapters.store_backed_reanalysis import (
-            StoreBackedReanalysisSource,
-        )
-
-        forcing_source = StoreBackedReanalysisSource(forcing_store)
-
-    # Load deployment config for skill gate thresholds (production path only)
-    if deployment_config is None and forcing_source is not None:
+    # Load deployment config for skill gate thresholds and to select the
+    # reanalysis-source mode below (production path only).
+    if deployment_config is None and forcing_store is not None:
         config_path = os.environ.get("SAPPHIRE_CONFIG")
         if config_path is not None:
             from sapphire_flow.config.deployment import load_config
 
             deployment_config = load_config(config_path)
+
+    # Route through the single reanalysis-source factory (Plan 115a §6) so the
+    # mode is a deployment decision made in exactly one place. Mode defaults to
+    # "single" when no deployment config is available, matching the prior
+    # hardcoded StoreBackedReanalysisSource behaviour.
+    if forcing_source is None and forcing_store is not None:
+        from typing import cast
+
+        from sapphire_flow.adapters.hybrid_reanalysis_factories import (
+            select_reanalysis_source,
+        )
+        from sapphire_flow.config.deployment import DeploymentConfig
+
+        resolved_config = cast("DeploymentConfig | None", deployment_config)
+        mode = (
+            resolved_config.reanalysis_source
+            if resolved_config is not None
+            else "single"
+        )
+        forcing_source = select_reanalysis_source(
+            forcing_store=forcing_store, mode=mode
+        )
 
     # Read basin_ids from config if not provided via argument
     water_level_datums_masl: dict[str, float] | None = None

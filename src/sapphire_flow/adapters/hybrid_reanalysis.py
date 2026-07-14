@@ -19,6 +19,8 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from sapphire_flow.types.enums import WeatherSourceRole
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
@@ -55,11 +57,19 @@ class HybridForcingSource:
     ) -> list[RawHistoricalForcing]:
         started = monotonic()
 
+        # Filter to REANALYSIS-role bindings before fanning out to child
+        # sources — a FORECAST binding must never be asked for reanalysis rows.
+        reanalysis_configs = [
+            cfg for cfg in station_configs if cfg.role is WeatherSourceRole.REANALYSIS
+        ]
+
         # Fan out serially; index every row by logical key, then by its source
         # tag so the priority walk is an O(1) lookup per tier.
         collected: dict[_RowKey, dict[str, RawHistoricalForcing]] = {}
         for source in self._sources.values():
-            for row in source.fetch_reanalysis(station_configs, start, end, parameters):
+            for row in source.fetch_reanalysis(
+                reanalysis_configs, start, end, parameters
+            ):
                 key: _RowKey = (row.station_id, row.valid_time, row.parameter)
                 collected.setdefault(key, {})[row.source] = row
 
@@ -87,7 +97,7 @@ class HybridForcingSource:
             source_counts[w.source] = source_counts.get(w.source, 0) + 1
         log.info(
             "forcing.resolution_completed",
-            station_count=len(station_configs),
+            station_count=len(reanalysis_configs),
             row_count=len(winners),
             source_counts=source_counts,
             elapsed_ms=round((monotonic() - started) * 1000, 3),

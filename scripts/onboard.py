@@ -244,8 +244,8 @@ def main(argv: list[str] | None = None) -> int:
             flow_regime_store = PgFlowRegimeConfigStore(conn)
 
             # Model infrastructure for steps 6-8
-            from sapphire_flow.adapters.store_backed_reanalysis import (
-                StoreBackedReanalysisSource,
+            from sapphire_flow.adapters.hybrid_reanalysis_factories import (
+                select_reanalysis_source,
             )
             from sapphire_flow.config.deployment import DeploymentConfig, load_config
             from sapphire_flow.config.paths import resolve_artifact_dir
@@ -260,13 +260,17 @@ def main(argv: list[str] | None = None) -> int:
             group_store = PgStationGroupStore(conn)
             hindcast_store = PgHindcastStore(conn)
             skill_store = PgSkillStore(conn)
-            forcing_source = StoreBackedReanalysisSource(forcing_store)
 
             config_path = os.environ.get("SAPPHIRE_CONFIG")
             deployment_config = (
                 load_config(config_path)
                 if config_path
                 else DeploymentConfig(max_retention_days=730)
+            )
+            # Route through the single reanalysis-source factory (Plan 115a §6)
+            # so the mode is a deployment decision made in exactly one place.
+            forcing_source = select_reanalysis_source(
+                forcing_store=forcing_store, mode=deployment_config.reanalysis_source
             )
 
             result = onboard_from_camelsch(

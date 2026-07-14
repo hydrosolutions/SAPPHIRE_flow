@@ -89,7 +89,8 @@ erDiagram
         UUID station_id PK, FK
         TEXT nwp_source PK
         TEXT extraction_type "point | basin_average | elevation_band"
-        BOOL active "default TRUE"
+        TEXT status "active | inactive, default active"
+        TEXT role "forecast | reanalysis, NULL-tolerant until 0031"
     }
 
     station_groups {
@@ -543,7 +544,8 @@ erDiagram
         UUID station_id PK, FK
         TEXT nwp_source PK
         TEXT extraction_type "point | basin_average | elevation_band"
-        BOOL active "default TRUE"
+        TEXT status "active | inactive, default active"
+        TEXT role "forecast | reanalysis, NULL-tolerant until 0031"
     }
 
     station_groups {

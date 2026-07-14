@@ -17,6 +17,7 @@ if TYPE_CHECKING:
         StationKind,
         StationOwnership,
         StationStatus,
+        WeatherSourceRole,
         WeatherSourceStatus,
     )
     from sapphire_flow.types.ids import BasinId, ModelId, StationGroupId, StationId
@@ -80,3 +81,4 @@ class StationWeatherSource:
     nwp_source: str
     extraction_type: SpatialRepresentation
     status: WeatherSourceStatus
+    role: WeatherSourceRole

@@ -526,6 +526,14 @@ class StationStore(Protocol):
     def store_weather_source(self, source: StationWeatherSource) -> None:
         raise NotImplementedError
 
+    def fetch_forecast_binding(self, station_id: StationId) -> StationWeatherSource:
+        raise NotImplementedError
+
+    def fetch_reanalysis_bindings(
+        self, station_id: StationId
+    ) -> list[StationWeatherSource]:
+        raise NotImplementedError
+
     def update_station_status(
         self, station_id: StationId, new_status: StationStatus
     ) -> None: ...

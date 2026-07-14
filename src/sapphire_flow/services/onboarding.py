@@ -29,6 +29,7 @@ from sapphire_flow.types.enums import (
     SpatialRepresentation,
     StationKind,
     StationStatus,
+    WeatherSourceRole,
     WeatherSourceStatus,
 )
 from sapphire_flow.types.ids import CLIMATOLOGY_FALLBACK_MODEL_ID
@@ -367,6 +368,7 @@ def _run_onboarding(
                 nwp_source=source_name,
                 extraction_type=SpatialRepresentation.POINT,
                 status=WeatherSourceStatus.ACTIVE,
+                role=WeatherSourceRole.REANALYSIS,
             )
             station_store.store_weather_source(ws)
 
@@ -382,6 +384,7 @@ def _run_onboarding(
                         nwp_source="icon_ch2_eps",
                         extraction_type=SpatialRepresentation.BASIN_AVERAGE,
                         status=WeatherSourceStatus.ACTIVE,
+                        role=WeatherSourceRole.FORECAST,
                     )
                 )
         except Exception as exc:

@@ -27,6 +27,7 @@ from prefect.cache_policies import NO_CACHE
 
 from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.types.datetime import ensure_utc
+from sapphire_flow.types.enums import WeatherSourceRole
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -243,12 +244,13 @@ def _store_forcing_task(
 def _reanalysis_sources(
     station_store: StationStore, nwp_source: str
 ) -> list[StationWeatherSource]:
-    """Every station weather-source bound to ``nwp_source``."""
+    """Every REANALYSIS-role station weather-source bound to ``nwp_source``."""
     return [
         source
         for station in station_store.fetch_all_stations()
         for source in station_store.fetch_weather_sources(station.id)
         if source.nwp_source == nwp_source
+        and source.role is WeatherSourceRole.REANALYSIS
     ]
 
 

@@ -18,6 +18,7 @@ from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.enums import (
     SpatialRepresentation,
     WarmUpSource,
+    WeatherSourceRole,
     WeatherSourceStatus,
 )
 from sapphire_flow.types.ids import ModelId, StationId
@@ -174,6 +175,7 @@ def _make_stores_and_sources(
             nwp_source=_NWP_SOURCE,
             extraction_type=SpatialRepresentation.BASIN_AVERAGE,
             status=WeatherSourceStatus.ACTIVE,
+            role=WeatherSourceRole.FORECAST,
         )
     )
 
@@ -435,6 +437,111 @@ class TestAssembleStationOperationalInputs:
         assert result is not None
         inputs, _ = result
         assert inputs.data.past_dynamic.is_empty()
+
+
+class _SourceSpyingForcingStore:
+    """Wraps ``FakeHistoricalForcingStore``, recording every ``source`` value
+    a caller queries ``fetch_forcing`` with. Used to prove the FORECAST
+    binding's ``nwp_source`` is never dereferenced against the forcing store
+    — regardless of which layer (call site or adapter) would otherwise be
+    responsible for the guard."""
+
+    def __init__(self) -> None:
+        from tests.fakes.fake_stores import FakeHistoricalForcingStore
+
+        self._inner = FakeHistoricalForcingStore()
+        self.queried_sources: list[str] = []
+
+    def store_forcing(self, records: object) -> None:
+        self._inner.store_forcing(records)  # type: ignore[arg-type]
+
+    def fetch_forcing(self, *, station_id: object, source: str, **kwargs: object):  # type: ignore[no-untyped-def]
+        self.queried_sources.append(source)
+        return self._inner.fetch_forcing(
+            station_id=station_id,
+            source=source,
+            **kwargs,  # type: ignore[arg-type]
+        )
+
+
+class TestReanalysisPathExcludesForecastBinding:
+    def test_forecast_bindings_nwp_source_never_queried_against_forcing_store(
+        self,
+    ) -> None:
+        # A station carries TWO BASIN_AVERAGE bindings: FORECAST (icon_ch2_eps)
+        # and REANALYSIS (camels-ch). Routed through the real production chain
+        # — assemble_station_operational_inputs -> select_reanalysis_source
+        # (mode="single") -> StoreBackedReanalysisSource — the FORECAST
+        # binding's nwp_source must NEVER reach the forcing store's
+        # fetch_forcing. Soundness: fails against an implementation that
+        # passes the unfiltered fetch_weather_sources() list through to
+        # forcing_source.fetch_reanalysis, since the spy would then observe a
+        # fetch_forcing(source="icon_ch2_eps") call.
+        from sapphire_flow.adapters.hybrid_reanalysis_factories import (
+            select_reanalysis_source,
+        )
+        from sapphire_flow.types.station import StationWeatherSource
+
+        sid = StationId(uuid4())
+        model = _make_model()
+        station_store, basin_store, obs_store, nwp_store, state_store, _ = (
+            _make_stores_and_sources(sid)
+        )
+        # _make_stores_and_sources already registered a FORECAST binding
+        # (icon_ch2_eps); add a REANALYSIS binding for the same station.
+        station_store.store_weather_source(
+            StationWeatherSource(
+                station_id=sid,
+                nwp_source="camels-ch",
+                extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+                status=WeatherSourceStatus.ACTIVE,
+                role=WeatherSourceRole.REANALYSIS,
+            )
+        )
+
+        spy_store = _SourceSpyingForcingStore()
+        obs_start = ensure_utc(_ISSUE - 20 * timedelta(hours=1))
+        spy_store.store_forcing(
+            [
+                make_raw_historical_forcing(
+                    station_id=sid,
+                    source="camels-ch",
+                    parameter=param,
+                    valid_time=ensure_utc(
+                        datetime.fromtimestamp(obs_start.timestamp() + i * 3600, tz=UTC)
+                    ),
+                    value=float(i % 10),
+                )
+                for i in range(48)
+                for param in ("precipitation", "temperature")
+            ]
+        )
+        forcing_source = select_reanalysis_source(
+            forcing_store=spy_store,  # type: ignore[arg-type]
+            mode="single",
+        )
+
+        result = assemble_station_operational_inputs(
+            station_id=sid,
+            model=model,
+            model_id=_MODEL_ID,
+            issue_time=_ISSUE,
+            cycle_time=_CYCLE,
+            nwp_source=_NWP_SOURCE,
+            forcing_source=forcing_source,
+            weather_forecast_store=nwp_store,
+            obs_store=obs_store,
+            station_store=station_store,
+            basin_store=basin_store,
+            model_state_store=state_store,
+            clock=_clock,
+            forecast_horizon_steps=120,
+            time_step=timedelta(hours=1),
+        )
+
+        assert result is not None
+        assert "icon_ch2_eps" not in spy_store.queried_sources
+        assert spy_store.queried_sources == ["camels-ch"]
 
 
 # --------------------------------------------------------------------------- #

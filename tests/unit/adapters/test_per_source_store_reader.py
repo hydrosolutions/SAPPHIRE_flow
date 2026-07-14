@@ -25,7 +25,11 @@ from datetime import UTC, datetime
 
 from sapphire_flow.adapters.per_source_store_reader import PerSourceStoreReader
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
-from sapphire_flow.types.enums import SpatialRepresentation, WeatherSourceStatus
+from sapphire_flow.types.enums import (
+    SpatialRepresentation,
+    WeatherSourceRole,
+    WeatherSourceStatus,
+)
 from sapphire_flow.types.forcing_sources import ForcingSource
 from sapphire_flow.types.historical_forcing import RawHistoricalForcing
 from sapphire_flow.types.ids import StationId
@@ -59,11 +63,19 @@ def _raw(
 
 
 def _cfg(station: str = "s1", nwp_source: str = "camels-ch") -> StationWeatherSource:
+    # Mirrors the migration 0030 backfill rule: icon_ch2_eps is the only
+    # FORECAST source; everything else here is REANALYSIS.
+    role = (
+        WeatherSourceRole.FORECAST
+        if nwp_source == "icon_ch2_eps"
+        else WeatherSourceRole.REANALYSIS
+    )
     return StationWeatherSource(
         station_id=StationId(station),
         nwp_source=nwp_source,
         extraction_type=SpatialRepresentation.BASIN_AVERAGE,
         status=WeatherSourceStatus.ACTIVE,
+        role=role,
     )
 
 
@@ -176,10 +188,11 @@ class TestPerSourceStoreReader:
         assert {r.station_id for r in result} == {StationId("s1"), StationId("s2")}
 
     def test_duplicate_station_configs_do_not_duplicate_rows(self) -> None:
-        # A station carrying multiple weather-source rows (e.g. an ICON source
-        # alongside a historical one) appears more than once in the flattened
+        # A station carrying multiple REANALYSIS-role weather-source rows
+        # (e.g. two historical tags) appears more than once in the flattened
         # config list. The fixed-source reader must fetch once per unique
-        # station — not re-read and duplicate rows.
+        # station — not re-read and duplicate rows. (Role filtering itself is
+        # covered separately below — this test isolates plain dedup.)
         store = FakeHistoricalForcingStore()
         store.store_forcing([_raw(source="camels-ch", station="s1", value=1.0)])
         reader = PerSourceStoreReader(
@@ -188,8 +201,8 @@ class TestPerSourceStoreReader:
 
         result = reader.fetch_reanalysis(
             station_configs=[
-                _cfg("s1", nwp_source="icon_ch2_eps"),
                 _cfg("s1", nwp_source="camels-ch"),
+                _cfg("s1", nwp_source="meteoswiss_rprelimd"),
             ],
             start=_START,
             end=_END,
@@ -198,3 +211,57 @@ class TestPerSourceStoreReader:
 
         assert len(result) == 1
         assert result[0].value == 1.0
+
+    def test_forecast_only_config_produces_no_rows(self) -> None:
+        # A station carrying ONLY a FORECAST binding must not be read, even
+        # though the store holds data under the reader's fixed source tag.
+        # The reader discards nwp_source and dedups on station_id alone — a
+        # role filter must run BEFORE that reduction, or a FORECAST-only
+        # station fabricates a reanalysis read. Soundness: fails (returns 1
+        # row) against the pre-fix implementation, which reduces station_ids
+        # with no role filter at all.
+        store = FakeHistoricalForcingStore()
+        store.store_forcing([_raw(source="camels-ch", station="s1", value=1.0)])
+        reader = PerSourceStoreReader(
+            forcing_store=store, source=ForcingSource.CAMELS_CH
+        )
+
+        result = reader.fetch_reanalysis(
+            station_configs=[_cfg("s1", nwp_source="icon_ch2_eps")],
+            start=_START,
+            end=_END,
+            parameters=["precipitation"],
+        )
+
+        assert result == []
+
+    def test_forecast_binding_in_mixed_list_does_not_leak_into_reanalysis_read(
+        self,
+    ) -> None:
+        # Raw unfiltered list: station "s1" carries only a FORECAST binding,
+        # "s2" carries a REANALYSIS one. "s1" must not appear in the result —
+        # even though the store holds data for "s1" under the reader's fixed
+        # source tag. Soundness: fails against an implementation that dedups
+        # on station_id without filtering by role first.
+        store = FakeHistoricalForcingStore()
+        store.store_forcing(
+            [
+                _raw(source="camels-ch", station="s1", value=1.0),
+                _raw(source="camels-ch", station="s2", value=2.0),
+            ]
+        )
+        reader = PerSourceStoreReader(
+            forcing_store=store, source=ForcingSource.CAMELS_CH
+        )
+
+        result = reader.fetch_reanalysis(
+            station_configs=[
+                _cfg("s1", nwp_source="icon_ch2_eps"),
+                _cfg("s2", nwp_source="camels-ch"),
+            ],
+            start=_START,
+            end=_END,
+            parameters=["precipitation"],
+        )
+
+        assert {r.station_id for r in result} == {StationId("s2")}

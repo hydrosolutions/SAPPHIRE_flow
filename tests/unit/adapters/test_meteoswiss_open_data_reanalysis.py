@@ -50,6 +50,7 @@ from sapphire_flow.types.basin import Basin
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
     SpatialRepresentation,
+    WeatherSourceRole,
     WeatherSourceStatus,
 )
 from sapphire_flow.types.forcing_schema import CANONICAL_FORCING_SCHEMA
@@ -253,6 +254,7 @@ def _make_config(station_id: StationId) -> StationWeatherSource:
         nwp_source="meteoswiss_open_data_reanalysis",
         extraction_type=SpatialRepresentation.BASIN_AVERAGE,
         status=WeatherSourceStatus.ACTIVE,
+        role=WeatherSourceRole.REANALYSIS,
     )
 
 
@@ -611,12 +613,14 @@ class TestFetchReanalysisConfigFiltering:
                 nwp_source="icon_ch2_eps",
                 extraction_type=SpatialRepresentation.BASIN_AVERAGE,
                 status=WeatherSourceStatus.ACTIVE,
+                role=WeatherSourceRole.FORECAST,
             ),
             StationWeatherSource(
                 station_id=inactive_sid,
                 nwp_source="meteoswiss_open_data_reanalysis",
                 extraction_type=SpatialRepresentation.BASIN_AVERAGE,
                 status=WeatherSourceStatus.INACTIVE,
+                role=WeatherSourceRole.REANALYSIS,
             ),
         ]
         rows = adapter.fetch_reanalysis(
@@ -627,6 +631,40 @@ class TestFetchReanalysisConfigFiltering:
         )
         assert rows
         assert {r.station_id for r in rows} == {match_sid}
+
+    def test_excludes_forecast_binding_sharing_the_reanalysis_source_name(
+        self,
+    ) -> None:
+        # Defense-in-depth (§7): a binding whose nwp_source string equals THIS
+        # adapter's NWP_SOURCE, is ACTIVE, and requests BASIN_AVERAGE — every
+        # other filter matches — must still be excluded when its role is
+        # FORECAST. Proves the guard is role-based, not name/status/
+        # extraction_type alone. Soundness: fails against a `matching` filter
+        # that omits the `c.role is WeatherSourceRole.REANALYSIS` clause.
+        sid = StationId(uuid.uuid4())
+
+        def _no_call_handler(request: httpx.Request) -> httpx.Response:
+            raise AssertionError("must not download when no config matches")
+
+        adapter = _make_adapter(
+            httpx.MockTransport(_no_call_handler), {sid: _make_basin(sid)}
+        )
+        configs = [
+            StationWeatherSource(
+                station_id=sid,
+                nwp_source="meteoswiss_open_data_reanalysis",
+                extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+                status=WeatherSourceStatus.ACTIVE,
+                role=WeatherSourceRole.FORECAST,
+            ),
+        ]
+        rows = adapter.fetch_reanalysis(
+            configs,
+            ensure_utc(datetime(2026, 4, 10, tzinfo=UTC)),
+            ensure_utc(datetime(2026, 4, 12, tzinfo=UTC)),
+            sorted(_CANONICAL_PARAMETERS),
+        )
+        assert rows == []
 
     def test_no_matching_configs_returns_empty_without_download(self) -> None:
         sid = StationId(uuid.uuid4())
@@ -643,6 +681,7 @@ class TestFetchReanalysisConfigFiltering:
                 nwp_source="icon_ch2_eps",
                 extraction_type=SpatialRepresentation.BASIN_AVERAGE,
                 status=WeatherSourceStatus.ACTIVE,
+                role=WeatherSourceRole.FORECAST,
             ),
         ]
         rows = adapter.fetch_reanalysis(
@@ -785,6 +824,7 @@ class TestFetchReanalysisRequestGuards:
                     nwp_source="meteoswiss_open_data_reanalysis",
                     extraction_type=SpatialRepresentation.POINT,
                     status=WeatherSourceStatus.ACTIVE,
+                    role=WeatherSourceRole.REANALYSIS,
                 )
             ],
             ensure_utc(datetime(2026, 4, 10, tzinfo=UTC)),

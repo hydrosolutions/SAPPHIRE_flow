@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from sapphire_flow.types.enums import WeatherSourceRole
 from sapphire_flow.types.historical_forcing import RawHistoricalForcing
 
 if TYPE_CHECKING:
@@ -38,12 +39,17 @@ class PerSourceStoreReader:
         parameters: list[str],
     ) -> list[RawHistoricalForcing]:
         results: list[RawHistoricalForcing] = []
-        # A station may carry several weather-source rows (e.g. an ICON source
-        # alongside a historical one); the source tag is fixed here, so fetch
-        # once per UNIQUE station_id (order-preserving) to avoid redundant reads
-        # + duplicate rows.
+        # A station may carry several weather-source rows (e.g. a FORECAST
+        # binding alongside a REANALYSIS one); filter to REANALYSIS-role
+        # bindings BEFORE reducing to unique station_ids, since the source tag
+        # is fixed here and does not distinguish role — a FORECAST binding must
+        # never fabricate a reanalysis read for its station.
         unique_station_ids = list(
-            dict.fromkeys(cfg.station_id for cfg in station_configs)
+            dict.fromkeys(
+                cfg.station_id
+                for cfg in station_configs
+                if cfg.role is WeatherSourceRole.REANALYSIS
+            )
         )
         for station_id in unique_station_ids:
             records = self._store.fetch_forcing(

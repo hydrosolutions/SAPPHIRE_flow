@@ -10,7 +10,11 @@ import pytest
 from sapphire_flow.services.hindcast import run_group_hindcast, run_station_hindcast
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.ensemble import ForecastEnsemble
-from sapphire_flow.types.enums import SpatialRepresentation, WeatherSourceStatus
+from sapphire_flow.types.enums import (
+    SpatialRepresentation,
+    WeatherSourceRole,
+    WeatherSourceStatus,
+)
 from sapphire_flow.types.ids import ArtifactId, ModelId, StationGroupId, StationId
 from sapphire_flow.types.station import StationGroup, StationWeatherSource
 
@@ -49,6 +53,7 @@ def _make_weather_source(station_id: StationId) -> StationWeatherSource:
         nwp_source="smn",
         extraction_type=SpatialRepresentation.POINT,
         status=WeatherSourceStatus.ACTIVE,
+        role=WeatherSourceRole.REANALYSIS,
     )
 
 

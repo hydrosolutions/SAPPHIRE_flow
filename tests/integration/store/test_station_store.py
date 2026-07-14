@@ -16,6 +16,7 @@ from sapphire_flow.types.enums import (
     StationOwnership,
     StationStatus,
     ThresholdSource,
+    WeatherSourceRole,
     WeatherSourceStatus,
 )
 from sapphire_flow.types.ids import ModelId, StationId
@@ -420,6 +421,7 @@ class TestStoreAndFetchWeatherSource:
             nwp_source="icon_ch2_eps",
             extraction_type=SpatialRepresentation.BASIN_AVERAGE,
             status=WeatherSourceStatus.ACTIVE,
+            role=WeatherSourceRole.FORECAST,
         )
         store.store_weather_source(source)
 
@@ -429,6 +431,7 @@ class TestStoreAndFetchWeatherSource:
         assert fetched[0].nwp_source == "icon_ch2_eps"
         assert fetched[0].extraction_type == SpatialRepresentation.BASIN_AVERAGE
         assert fetched[0].status == WeatherSourceStatus.ACTIVE
+        assert fetched[0].role == WeatherSourceRole.FORECAST
 
     def test_upsert_updates_status(self, db_connection: sa.Connection) -> None:
         store = PgStationStore(db_connection)
@@ -442,6 +445,7 @@ class TestStoreAndFetchWeatherSource:
             nwp_source="icon_ch2_eps",
             extraction_type=SpatialRepresentation.POINT,
             status=WeatherSourceStatus.ACTIVE,
+            role=WeatherSourceRole.FORECAST,
         )
         store.store_weather_source(s1)
 
@@ -450,6 +454,7 @@ class TestStoreAndFetchWeatherSource:
             nwp_source="icon_ch2_eps",
             extraction_type=SpatialRepresentation.BASIN_AVERAGE,
             status=WeatherSourceStatus.INACTIVE,
+            role=WeatherSourceRole.FORECAST,
         )
         store.store_weather_source(s2)
 

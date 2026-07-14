@@ -10,6 +10,7 @@ from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
     ModelAssignmentStatus,
     SpatialRepresentation,
+    WeatherSourceRole,
     WeatherSourceStatus,
 )
 from sapphire_flow.types.ids import (
@@ -123,6 +124,7 @@ def _setup_stores(
         nwp_source="smn",
         extraction_type=SpatialRepresentation.POINT,
         status=WeatherSourceStatus.ACTIVE,
+        role=WeatherSourceRole.REANALYSIS,
     )
     station_store.store_weather_source(weather_source)
 

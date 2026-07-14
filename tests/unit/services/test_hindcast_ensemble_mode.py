@@ -26,6 +26,7 @@ from sapphire_flow.types.enums import (
     ArtifactScope,
     EnsembleMode,
     SpatialRepresentation,
+    WeatherSourceRole,
     WeatherSourceStatus,
 )
 from sapphire_flow.types.ids import ArtifactId, ModelId, StationId
@@ -117,6 +118,7 @@ def _make_weather_source(station_id: StationId) -> StationWeatherSource:
         nwp_source="smn",
         extraction_type=SpatialRepresentation.POINT,
         status=WeatherSourceStatus.ACTIVE,
+        role=WeatherSourceRole.REANALYSIS,
     )
 
 

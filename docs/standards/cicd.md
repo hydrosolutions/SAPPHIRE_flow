@@ -138,6 +138,16 @@ Responsibilities are split across two stages:
 
 No schema downgrade path — rollback = restore from backup + redeploy previous image tag. Migrations must be backwards-compatible for one version (additive only: new columns nullable, no destructive changes in a single release). This means the previous image tag can run against the new schema during the migration window.
 
+**Two-release column tightening (Plan 115a/115c)** — `station_weather_sources.role`
+illustrates the additive-then-tighten pattern for a column that must eventually be
+`NOT NULL`: migration `0030` (115a) adds `role` **nullable**, backfills it, and applies
+a NULL-tolerant `CheckConstraint("role IS NULL OR role IN ('forecast','reanalysis')")`
+so the previous image tag can still write an unroled row during the rollback window. A
+later migration `0031` (115c) tightens the column to `NOT NULL` only once that rollback
+window has closed. Do not collapse the two into one release — the nullable step exists
+specifically so `0030` stays backwards-compatible with the pre-115a image per the rule
+above.
+
 **Ingest-worker rollback (Plan 098)** — if the combined deploy lands but `prefect-worker-ingest` then fails to start or crashes (e.g. missing `/data/artifacts` tmpfs, too-low `mem_limit`, missing `db_password`, or a wrong overlay path), `init` has already re-routed `ingest-observations` onto the `ingest` pool and the `default` worker no longer claims it, so the obs feed is **dead** until recovery. Restore the pre-098 state (LATE obs, not dead obs):
 
 0. **Before opening the upgrade window**, tag the current image as a rollback anchor. The project ships no registry-publish workflow (see "No image publish / release workflow" below), so images are local-only — if the pre-upgrade image is pruned there is nothing to roll back to. Confirm the current tag with `docker images sapphire-flow --format "{{.Tag}}"`, then `docker tag sapphire-flow:${OLD_VERSION} sapphire-flow:rollback-backup`.

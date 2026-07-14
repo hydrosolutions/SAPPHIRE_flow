@@ -1719,9 +1719,12 @@ station_weather_sources:
   station_id: UUID FK
   nwp_source: TEXT
   extraction_type: SpatialRepresentation   # 'basin_average', 'elevation_band', or 'point' only — 'gridded' is not valid here (gridded data is either consumed raw by the model or extracted into one of these three tabular types)
-  active: BOOL DEFAULT TRUE
+  status: WeatherSourceStatus DEFAULT 'active'  # 'active' | 'inactive'
+  role: WeatherSourceRole                  # 'forecast' | 'reanalysis' — required at the type level, NULL-tolerant in the DB until migration 0031 (Plan 115a/115c)
   PK: (station_id, nwp_source)
 ```
+
+One `nwp_source` string serves exactly one role for a station — the primary key is `(station_id, nwp_source)`, so a name holding two roles would silently overwrite on upsert. Runtime consumers route through role-scoped `StationStore` accessors (`fetch_forecast_binding` — exactly one, else `ConfigurationError`; `fetch_reanalysis_bindings` — 0..n) rather than filtering `fetch_weather_sources` themselves.
 
 Geometry is resolved at runtime from the `basins` table via `stations.basin_id`: `basins.geometry` for basin-average extraction, `basins.band_geometries` for elevation-band extraction. Basin geometry is a physical property of the catchment, not per-NWP-source config — storing it once in `basins` avoids duplication and inconsistency.
 
@@ -1730,7 +1733,7 @@ Most stations inherit the deployment default extraction type. Per-station overri
 ### Input preparation and merging
 
 When a model uses multiple weather sources, input preparation (Flow 1 step 1.7):
-0. **Source intersection:** computes the extraction set as `station_weather_sources` (active entries for this station) ∩ `config.toml [models.*.weather]` (sources the model expects). Only sources in both sets are extracted. If the intersection is empty — i.e. the model requires a source not mapped to the station — this is a hard error raised at onboarding validation (Flow 5 step 5.3 / Flow 13 step M.2), not at forecast time.
+0. **Source intersection:** computes the extraction set as `station_weather_sources` (all entries for this station returned by the role-scoped accessor for the path in question — no `status` filter; an INACTIVE binding is still selected, a deliberate Plan 115a decision, not a gap) ∩ `config.toml [models.*.weather]` (sources the model expects). Only sources in both sets are extracted. If the intersection is empty — i.e. the model requires a source not mapped to the station — this is a hard error raised at onboarding validation (Flow 5 step 5.3 / Flow 13 step M.2), not at forecast time.
 1. Runs each source through its configured post-processing pipeline
 2. Transforms all sources to the model's declared `spatial_input_type`
 3. Merges all parameters into a single forcing object (`polars.DataFrame` for tabular, `xarray.Dataset` for gridded)

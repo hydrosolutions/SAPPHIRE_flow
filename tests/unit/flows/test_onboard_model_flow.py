@@ -391,6 +391,7 @@ class TestBootstrapPath:
             "skill_store": MagicMock(),
             "flow_regime_store": MagicMock(),
             "parameter_store": MagicMock(),
+            "forcing_store": MagicMock(),
         }
         captured: dict[str, object] = {}
 
@@ -405,6 +406,31 @@ class TestBootstrapPath:
         monkeypatch.setattr(
             "sapphire_flow.services.model_registry.discover_models",
             lambda: {ModelId(_MODEL_ID): FakeStationForecastModel()},
+        )
+
+        # Spy on the real select_reanalysis_source (Plan 115a §6 single
+        # factory) so we can prove the bootstrapped forcing_store actually
+        # flows into a real reanalysis source, rather than the flow merely
+        # tolerating a missing "forcing_store" key.
+        from sapphire_flow.adapters.hybrid_reanalysis_factories import (
+            select_reanalysis_source as real_select_reanalysis_source,
+        )
+
+        reanalysis_calls: list[dict[str, object]] = []
+
+        def spy_select_reanalysis_source(
+            *, forcing_store: object, mode: object
+        ) -> object:
+            source = real_select_reanalysis_source(
+                forcing_store=forcing_store,
+                mode=mode,  # type: ignore[arg-type]
+            )
+            reanalysis_calls.append({"forcing_store": forcing_store, "source": source})
+            return source
+
+        monkeypatch.setattr(
+            "sapphire_flow.adapters.hybrid_reanalysis_factories.select_reanalysis_source",
+            spy_select_reanalysis_source,
         )
 
         with (
@@ -432,3 +458,13 @@ class TestBootstrapPath:
         assert mock_register.called
         args, _ = mock_register.call_args
         assert args[1] is stores_dict["model_store"]
+
+        # The bootstrap path wired the bootstrapped forcing_store into a real
+        # reanalysis source via select_reanalysis_source (Plan 115a §6).
+        assert len(reanalysis_calls) == 1
+        assert reanalysis_calls[0]["forcing_store"] is stores_dict["forcing_store"]
+        from sapphire_flow.adapters.store_backed_reanalysis import (
+            StoreBackedReanalysisSource,
+        )
+
+        assert isinstance(reanalysis_calls[0]["source"], StoreBackedReanalysisSource)

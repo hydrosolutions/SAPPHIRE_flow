@@ -15,7 +15,11 @@ from sapphire_flow.exceptions import ExtractionError
 from sapphire_flow.preprocessing.mesh_basin_extractor import MeshBasinExtractor
 from sapphire_flow.types.basin import Basin
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.enums import SpatialRepresentation, WeatherSourceStatus
+from sapphire_flow.types.enums import (
+    SpatialRepresentation,
+    WeatherSourceRole,
+    WeatherSourceStatus,
+)
 from sapphire_flow.types.ids import BasinId, StationId
 from sapphire_flow.types.station import StationWeatherSource
 from sapphire_flow.types.weather import BasinAverageForecast
@@ -81,6 +85,7 @@ def _make_config(station_id: StationId) -> StationWeatherSource:
         nwp_source="icon_ch2_eps",
         extraction_type=SpatialRepresentation.BASIN_AVERAGE,
         status=WeatherSourceStatus.ACTIVE,
+        role=WeatherSourceRole.FORECAST,
     )
 
 

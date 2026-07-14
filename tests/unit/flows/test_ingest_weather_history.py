@@ -46,7 +46,11 @@ from sapphire_flow.flows.ingest_weather_history import (
 )
 from sapphire_flow.types.basin import Basin
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.enums import SpatialRepresentation, WeatherSourceStatus
+from sapphire_flow.types.enums import (
+    SpatialRepresentation,
+    WeatherSourceRole,
+    WeatherSourceStatus,
+)
 from sapphire_flow.types.forcing_sources import ForcingSource
 from sapphire_flow.types.historical_forcing import (
     HistoricalForcingRecord,
@@ -218,12 +222,25 @@ def _weather_source(
     *,
     nwp_source: str = _REANALYSIS_SOURCE,
     status: WeatherSourceStatus = WeatherSourceStatus.ACTIVE,
+    role: WeatherSourceRole | None = None,
 ) -> StationWeatherSource:
+    # Mirrors the migration 0030 backfill rule: icon_ch2_eps is the only
+    # FORECAST source; everything else here is REANALYSIS. Callers testing
+    # the defense-in-depth role guard (§7) can override the derived role
+    # explicitly — e.g. to construct a FORECAST binding that (invalidly,
+    # per D1) shares a reanalysis source name.
+    if role is None:
+        role = (
+            WeatherSourceRole.FORECAST
+            if nwp_source == "icon_ch2_eps"
+            else WeatherSourceRole.REANALYSIS
+        )
     return StationWeatherSource(
         station_id=station_id,
         nwp_source=nwp_source,
         extraction_type=SpatialRepresentation.BASIN_AVERAGE,
         status=status,
+        role=role,
     )
 
 
@@ -365,6 +382,37 @@ class TestIngestWeatherHistoryFlow:
         )
 
         # No reanalysis-bound source => no fetch, no write.
+        assert adapter.calls == []
+        assert store.records == []
+
+    def test_excludes_forecast_binding_sharing_the_reanalysis_source_name(
+        self,
+    ) -> None:
+        # Defense-in-depth (§7): even a binding whose nwp_source string equals
+        # the reanalysis adapter's NWP_SOURCE must be excluded when its role is
+        # FORECAST — role, not name equality, is authoritative. D1 says one
+        # nwp_source string should carry exactly one role, but this proves the
+        # flow-level filter does not silently trust name equality alone.
+        # Soundness: fails against `_reanalysis_sources` filtering only on
+        # `source.nwp_source == nwp_source` (the pre-115a implementation),
+        # which would route this FORECAST-role binding straight into the fetch.
+        forecast_role_station = make_station_config(code="2135", name="Aare Bern")
+        station_store = FakeStationStore()
+        station_store.store_station(forecast_role_station)
+        station_store.store_weather_source(
+            _weather_source(forecast_role_station.id, role=WeatherSourceRole.FORECAST)
+        )
+
+        adapter = _SpyReanalysisAdapter([])
+        store = _SupersedingForcingStore()
+
+        ingest_weather_history_flow(
+            station_store=station_store,
+            forcing_store=store,
+            adapter=adapter,
+            clock=_fixed_clock,
+        )
+
         assert adapter.calls == []
         assert store.records == []
 

@@ -37,9 +37,9 @@ from sapphire_flow.types.enums import (
     NwpCycleSource,
     PipelineCheckType,
     PipelineHealthStatus,
-    SpatialRepresentation,
     StationKind,
     StationStatus,
+    WeatherSourceRole,
 )
 from sapphire_flow.types.ids import (
     ALERT_ELIGIBILITIES,
@@ -78,32 +78,12 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-# = MeteoSwissNwpAdapter.NWP_SOURCE. The operational NWP forcing path.
+# = MeteoSwissNwpAdapter.NWP_SOURCE. Used only by the grid-staleness check
+# below — NOT a selection fallback (that heuristic was retired; forecast-source
+# selection now goes exclusively through StationStore.fetch_forecast_binding).
 _ICON_NWP_SOURCE = "icon_ch2_eps"
 _NWP_CADENCE_HOURS = 6.0
 _DEFAULT_EXPECTED_DELIVERY_OFFSET_HOURS = 5.0
-
-
-def _select_nwp_source(weather_sources: list[StationWeatherSource]) -> str:
-    """Deterministically pick the operational ICON / BASIN_AVERAGE NWP source.
-
-    Independent of ``fetch_weather_sources`` ordering and two-pass so an EXACT
-    ICON binding always wins over any other ``BASIN_AVERAGE`` source (e.g. a
-    reanalysis binding that is also basin-average): Phase A only stores ICON
-    grid records, so selecting a non-ICON basin-average source in Phase B would
-    read the wrong ``nwp_source`` and skip the station.
-
-    First pass: any source whose ``nwp_source`` is exactly ICON. Second pass:
-    any ``BASIN_AVERAGE`` source (the binding onboarding Step 4b creates). Else
-    fall back to the ICON source string.
-    """
-    for ws in weather_sources:
-        if ws.nwp_source == _ICON_NWP_SOURCE:
-            return ws.nwp_source
-    for ws in weather_sources:
-        if ws.extraction_type is SpatialRepresentation.BASIN_AVERAGE:
-            return ws.nwp_source
-    return _ICON_NWP_SOURCE
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -818,9 +798,14 @@ def _fetch_nwp_task(
                 fallback_used=result_object.fallback_used,
             )
 
-        # Filter configs to only those matching this grid's NWP source
+        # Filter configs to only the FORECAST bindings matching this grid's NWP
+        # source. A REANALYSIS binding that happens to share the same
+        # nwp_source string must never be handed to the forecast extractor.
         configs_for_source = [
-            ws for ws in station_configs if ws.nwp_source == result_object.nwp_source
+            ws
+            for ws in station_configs
+            if ws.nwp_source == result_object.nwp_source
+            and ws.role == WeatherSourceRole.FORECAST
         ]
         if not configs_for_source:
             log.warning(
@@ -1239,14 +1224,33 @@ def run_forecast_cycle_flow(
             group_store,
         )
 
-        # Batch pre-fetch weather sources (eliminates per-station queries in Phase B)
-        all_weather_sources: dict[StationId, list] = {
-            s.id: station_store.fetch_weather_sources(s.id)  # type: ignore[union-attr]
-            for s in operational
-        }
-        flat_weather_configs = [
-            ws for sources in all_weather_sources.values() for ws in sources
-        ]
+        # Batch pre-fetch FORECAST bindings (eliminates per-station queries in
+        # Phase B). Resolution happens ONCE, up front, before Phase A (which
+        # consumes flat_weather_configs and runs first) — with per-station
+        # containment. A station whose binding resolution raises
+        # ConfigurationError (0 or >=2 FORECAST bindings) is excluded from
+        # flat_weather_configs so it cannot poison the shared NWP prefetch for
+        # every other station, and is recorded exactly once as failed. Phase B
+        # and the group loop below skip already-failed stations instead of
+        # re-resolving and re-counting them.
+        stations_failed = 0
+        errors: list[str] = []
+        failed_station_ids: set[StationId] = set()
+        forecast_bindings: dict[StationId, StationWeatherSource] = {}
+        for s in operational:
+            try:
+                forecast_bindings[s.id] = station_store.fetch_forecast_binding(s.id)  # type: ignore[union-attr]
+            except ConfigurationError as exc:
+                log.warning(
+                    "forecast_cycle.station_skipped_bad_weather_source_config",
+                    station_id=str(s.id),
+                    error=str(exc),
+                )
+                errors.append(f"Bad weather-source config for {s.id}: {exc}")
+                stations_failed += 1
+                failed_station_ids.add(s.id)
+
+        flat_weather_configs = list(forecast_bindings.values())
 
         # Build station→basin map for GridExtractor
         station_basins: dict[StationId, Basin] = {}
@@ -1417,16 +1421,21 @@ def run_forecast_cycle_flow(
         )
         from sapphire_flow.types.enums import ModelCombinationStrategy
 
+        # stations_failed / errors accumulate from the up-front forecast-binding
+        # resolution above (Phase A containment) as well as this loop.
         stations_succeeded = 0
-        stations_failed = 0
         forecasts_stored = 0
-        errors: list[str] = []
 
         # Accumulate for Phase C
         all_ensembles: dict[StationId, dict[ModelId, dict[str, ForecastEnsemble]]] = {}
 
         for station in operational:
             sid = station.id
+            if sid in failed_station_ids:
+                # Already recorded as failed during the up-front forecast-binding
+                # resolution (Phase A containment) — do not re-resolve or
+                # double-count.
+                continue
             structlog.contextvars.bind_contextvars(station_id=str(sid))
             station_t0 = time.perf_counter()
 
@@ -1495,9 +1504,8 @@ def run_forecast_cycle_flow(
                     used=str(time_step),
                 )
 
-            # Determine nwp_source for this station (deterministic ICON selection)
-            weather_sources = all_weather_sources.get(sid, [])
-            nwp_source: str = _select_nwp_source(weather_sources)
+            # sid is guaranteed present: failed_station_ids stations are skipped above.
+            nwp_source: str = forecast_bindings[sid].nwp_source
 
             try:
                 inputs_result = assemble_station_operational_inputs(
@@ -1822,9 +1830,20 @@ def run_forecast_cycle_flow(
                         continue
 
                     model = models[model_id]  # type: ignore[index]
+                    missing_binding_ids = [
+                        sid for sid in member_ids if sid not in forecast_bindings
+                    ]
+                    if missing_binding_ids:
+                        # A member with no valid FORECAST binding already failed
+                        # (and was counted once) during the up-front resolution
+                        # above — a group forecast needs all its members, so this
+                        # group fails too. Do not double-count stations_failed.
+                        raise ConfigurationError(
+                            f"group {group.id} has member(s) with no valid "
+                            f"FORECAST weather-source binding: {missing_binding_ids}"
+                        )
                     nwp_source_by_station = {
-                        sid: _select_nwp_source(all_weather_sources.get(sid, []))
-                        for sid in member_ids
+                        sid: forecast_bindings[sid].nwp_source for sid in member_ids
                     }
                     baselines_by_station = {
                         sid: all_baselines.get(sid, []) for sid in member_ids
