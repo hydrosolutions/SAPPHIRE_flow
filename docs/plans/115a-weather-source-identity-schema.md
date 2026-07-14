@@ -122,9 +122,18 @@ the backfill rule is never re-derived here.
 
 ### 5. Rewire every consumer through the accessors
 
-The complete consumer set. **Three separate reviews each found a different missed consumer**, so
-this table is exhaustive by construction: it is `grep -rn "fetch_weather_sources\|forcing_source" src/ scripts/`,
-and every row is accounted for. Any new consumer must be added here.
+**Three separate reviews each found a different missed consumer**, so be precise about what this table
+does and does not claim *(the earlier "the grep is complete" phrasing was falsified in review — the
+obligations were covered, the stated evidence overreached)*:
+
+- **This table = every runtime consumer of `fetch_weather_sources`** — i.e. everything that *routes*
+  on a binding. It is complete for that.
+- **Production `forcing_source` construction sites** (`train_models.py:248`, `onboard_model.py:527`,
+  `onboard.py:129`, `scripts/onboard.py:247`) are a **separate set**, owned by **§6** below.
+- **The reflected dashboard read** (`api/routes/stations.py:264-273`) returns raw row dicts and will
+  surface `role` automatically — **115c** owns its presentation.
+
+Any new consumer must be added here.
 
 | # | Consumer | Needs |
 |---|---|---|
@@ -143,12 +152,36 @@ first-`BASIN_AVERAGE` pass, the `_ICON_NWP_SOURCE` fallback, and the now-false d
 fallback *guesses* a Swiss source string: the guessing this track exists to kill, and simply wrong
 for Nepal.
 
-**Contain the raise per-station.** The group loop is already contained by its
-`try/except … continue`. The per-station call is **not**: it sits before the nearest `try`
-(`run_forecast_cycle.py:1498`), and the function-level `try` has **no `except`** — only a `finally`
-(`:2016`). An uncaught `ConfigurationError` there aborts the cycle for **every** station and group.
-Wrap it, mirroring the existing "configured model missing" pattern in the same loop: log,
-`errors.append`, `stations_failed += 1`, unbind the contextvar, `continue`.
+**Contain the raise per-station — and note the ORDERING, which is what makes it work.**
+
+*(Sharpened in final review: the containment cannot live only in the per-station loop, because
+forecast-binding resolution feeds **Phase A**, which runs **first**.)*
+
+The forecast binding is needed at **two** points, in this order:
+
+1. **Pre-Phase-A NWP prefetch** (`run_forecast_cycle.py:1242-1300`) — builds `flat_weather_configs`
+   and submits `_fetch_nwp_task`. **This runs before** the per-station loop.
+2. **Phase B per-station loop** (`:1498`) and the **group loop** (`:1824`).
+
+So **resolve every operational station's forecast binding ONCE, up-front, with per-station
+containment** — before Phase A:
+
+- A station whose binding resolution raises `ConfigurationError` is **excluded from
+  `flat_weather_configs`** (it must not poison the shared NWP fetch) and recorded **once** as failed:
+  log `forecast_cycle.station_skipped_bad_weather_source_config`, `errors.append(...)`,
+  `stations_failed += 1`.
+- The later per-station and group loops **skip already-failed stations** rather than re-resolving and
+  re-counting them. *(Do not double-count `stations_failed`.)*
+- A group containing a failed station fails that group — consistent with today's behaviour, since a
+  group forecast needs all its members.
+
+Why this ordering matters: the group loop is already contained by its `try/except … continue`, but the
+per-station call at `:1498` sits **before** the nearest `try`, and the function-level `try` has **no
+`except`** — only a `finally` (`:2016`). An uncaught `ConfigurationError` anywhere in this path aborts
+the cycle for **every** station and **every** group. Containing it only at `:1498` would still leave
+Phase A exposed.
+
+Mirror the existing "configured model missing" config-fault pattern already used in the same loop.
 
 **Named, accepted behaviour change:** a station with **zero** weather-source rows today still
 forecasts via the hardcoded fallback, and `test_falls_back_to_underscore_icon_source_string` locks
@@ -213,8 +246,13 @@ the exact Flow 6 unreadable-row bug for the next adapter — and Plan 081's gate
   FORECAST, one REANALYSIS) routes each path to the correct source.
 - `fetch_forecast_binding` raises on 0 and on 2+.
 - **Flow-level containment:** in a cycle where exactly one station has a broken binding, the others
-  still forecast, the bad one lands in `stations_failed`/`errors`, and the flow returns normally.
+  still forecast, the bad one lands in `stations_failed`/`errors` **exactly once** (not double-counted
+  by Phase A *and* the per-station loop), and the flow returns normally.
   *Soundness: must fail against an uncontained raise.*
+- **Containment covers Phase A, not just Phase B:** the broken station is excluded from
+  `flat_weather_configs`, so the shared NWP fetch still runs for everyone else. *Soundness: must fail
+  against an implementation that contains the raise only at the per-station loop (`:1498`), since the
+  prefetch at `:1242-1300` runs first.*
 - **Forecast fan-out:** a two-binding station passes **only** the FORECAST binding to the
   `WeatherForecastSource`. Run against `ReplayNwpAdapter`, which raises on a mixed list — the
   natural positive control. *Must fail against an implementation that forwards the raw list.*
