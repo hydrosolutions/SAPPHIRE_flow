@@ -1,5 +1,63 @@
 # Plan 072 — v0b weather-history: hybrid forcing resolver
 
+> # ⚠️ ANNOTATED 2026-07-14 — THREE DEFECTS. READ BEFORE TRUSTING THIS PLAN.
+>
+> Superseded on these points by [Plan 115b](115b-weather-flow6-reachability.md). This plan's
+> *machinery* is sound and worth keeping; three of its **decisions** are not.
+>
+> ## 1. 🔴 The priority chain treats two DIFFERENT products as interchangeable tiers
+>
+> This plan encodes (§58, `hybrid_reanalysis_factories.py:26-32`):
+>
+> ```
+> precipitation: METEOSWISS_RPRELIMD → CAMELS_CH
+> ```
+>
+> `RprelimD` is MeteoSwiss's **preliminary** precipitation (automatic stations only). `CAMELS_CH` is
+> built on **`RhiresD`** — the **definitive** product (full network, incl. manual collectors; Höge et
+> al. 2023, *ESSD* 15, 5755, App. A1.2). **These are not two tiers of the same quantity.** Chaining
+> them splices a systematically different product onto the archive at the 2020/2021 join.
+>
+> This plan's only acknowledgement is a generic note that a `single`→`hybrid` flip "may surface
+> distribution-shift artifacts", deferring retrain policy to Plan 066 (§121, §175). **That is about a
+> config flip. It is not an acknowledgement that the two sources measure the same thing differently,
+> and it is not a mitigation.**
+>
+> **The correct chain** (per 115b §0, now that `RhiresD` is known to be freely available daily back to
+> 1961): `RHIRESD → RPRELIMD` — *definitive supersedes preliminary* — with **no CAMELS tier at all**,
+> since a self-derived RhiresD series covers CAMELS' own 1981-2020 window. CAMELS forcing becomes a
+> **validation reference**, not a data tier.
+>
+> ## 2. 🔴 The `temperature_min` / `temperature_max` chains fall back to a tier with NO ROWS
+>
+> §D3 wires `temperature_min → (METEOSWISS_TMIND, CAMELS_CH)` and likewise for max. **But our CAMELS
+> import contains only `precipitation` and `temperature_mean`** (`camelsch_adapter.py:113,350`) —
+> confirmed by the live archive: 58,440 rows = 2 stations × 14,610 days × **2** parameters.
+>
+> So the `CAMELS_CH` fallback tier for those two parameters is **empty**. Combined with the dark
+> MeteoSwiss feed, `temperature_min` and `temperature_max` have **no history at all** — a model
+> declaring them silently receives nothing.
+>
+> ## 3. 🔴 `HybridForcingSource` SILENTLY DROPS any parameter outside its four chains
+>
+> `hybrid_reanalysis.py:66-72`: no configured chain → `winner is None` → `continue`, and **the row is
+> discarded without a trace**. `StoreBackedReanalysisSource` (today's default) passes *any* parameter
+> through. **So flipping the default to `hybrid`, as this plan intends, is a silent data-loss
+> regression.** Must be fixed first (115b §1: raise, unless exactly one source is configured for that
+> parameter).
+>
+> ## What IS sound here
+>
+> `PerSourceStoreReader`, `HybridForcingSource`, the per-parameter priority-chain *mechanism*, and the
+> `DeploymentConfig.reanalysis_source` switch. The resolver is the right shape — **it is the chain
+> contents and the drop behaviour that are wrong.**
+>
+> ## Also note
+>
+> - **Status says DRAFT, but this plan's code SHIPPED.** Do not trust the status field.
+> - `hybrid` was left **opt-in**, so production runs `single` — which cannot read the product-tag rows
+>   Flow 6 writes at all. See Plan 115b.
+
 **Status**: DRAFT
 **Date**: 2026-04-22 (revision 3 — post round-2 review; integrates B1
 decision to drop the NWP-archive tier from v0b, simplifies the plan

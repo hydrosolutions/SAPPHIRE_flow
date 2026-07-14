@@ -1,5 +1,53 @@
 # Plan 071 — v0b weather-history: MeteoSwiss open-data daily reanalysis adapter
 
+> # ⛔ FALSIFIED PREMISE — DO NOT BUILD FROM THIS PLAN
+>
+> **Annotated 2026-07-14. This plan's central factual claim is WRONG, and the code it produced is
+> using the wrong precipitation product as a direct result. Superseded on this point by
+> [Plan 115b §0](115b-weather-flow6-reachability.md).**
+>
+> ## The false claim
+>
+> This plan states (lines 66-68, 117):
+>
+> > *"Daily RhresD / RhiresD: NOT in the open-data daily feed; only at monthly aggregate resolution.
+> > Daily RhiresD requires commercial delivery. Deferred until MeteoSwiss publishes daily RhiresD via
+> > open data."*
+>
+> **That is false.** Verified against the live STAC API on 2026-07-14, in
+> `ch.meteoschweiz.ogd-surface-derived-grid` — **the very collection this adapter already points at**:
+>
+> ```
+> rhiresd    71 files   1961-01-01 .. 2026-05-31   <- DEFINITIVE daily precip, free, ~45-day lag
+> rprelimd   60 files   2026-05-15 .. 2026-07-13   <- PRELIMINARY, live tail ONLY (~2 months)
+> ```
+>
+> ## The consequence
+>
+> On that false premise, this plan substituted **`RprelimD`** (preliminary — automatic stations only)
+> as the precipitation product. But **CAMELS-CH — the archive this data extends — is built on
+> `RhiresD`** (definitive, full station network including manual collectors; confirmed: Höge et al.
+> 2023, *ESSD* 15, 5755, App. A1.2). The two differ **systematically**, not randomly.
+>
+> So `MeteoSwissOpenDataReanalysisAdapter` ingests a precipitation product **inhomogeneous with the
+> archive it extends**. The two products are **complementary, not alternatives**: `RprelimD` exists
+> *only* to cover the recent window `RhiresD`'s publication lag has not yet reached.
+>
+> ## What is still valid here
+>
+> The adapter's structure, the STAC/CRS pipeline, the `ForcingSource` registry, the content-hash
+> version + supersession design, and `TabsD`/`TminD`/`TmaxD` (all correct — CAMELS uses `TabsD` too).
+> **Only the precipitation product choice, and the reasoning behind it, are wrong.**
+>
+> ## Also note
+>
+> - **This plan's status says DRAFT, but its code SHIPPED.** Do not trust the status field here.
+> - The **converter guards** this plan specified (§243 — `basin_avg_to_records` /
+>   `point_forecast_to_records` must reject reanalysis tags) were **never implemented**
+>   (`preprocessing/converters.py:17,46`). Carried forward in 115b.
+> - The feed this plan built has **never ingested a single row in production** — no station ever
+>   carried the `meteoswiss_open_data_reanalysis` binding it selects on. See Plan 115b.
+
 **Status**: DRAFT
 **Date**: 2026-04-22 (revision 3 — post round-2 critical review;
 integrates A1 content-hash version + supersession, C2 converters
