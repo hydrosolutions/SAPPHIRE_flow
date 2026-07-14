@@ -69,7 +69,7 @@ resolved it:
 | Term | Meaning | Where it appears |
 |---|---|---|
 | **Gateway HRU** | **the GeoPackage itself** — a `.gpkg` holding ≥1 polygon. **One Gateway HRU = one GeoPackage file.** | `manifest.gateway_hru_names`, `gateway_hru_name` column |
-| **The HRUs proper** | **the polygons inside** that GeoPackage — the actual hydrological response units. One Gateway HRU may hold **one or several** of them, and they may be **basin outlines and/or elevation bands, mixed in the same `.gpkg`**. | features in the `.gpkg` |
+| **The HRUs proper** | **the polygons inside** that GeoPackage — the actual hydrological response units. One Gateway HRU holds **one or several** of them, **all of the same kind**: basin outlines **or** elevation bands, never both (Owner decision 4). | features in the `.gpkg` |
 | Internal layer/table name | the table inside the GeoPackage (`polygons` recommended) | GDAL/OGR, Gateway validation |
 | Feature `name` attribute | the per-polygon key the Gateway echoes in forcing columns | `name` column, forcing payload |
 
@@ -84,13 +84,11 @@ Two consequences the drafted `04-…` does not currently reflect:
    across all features in the GeoPackage" are the *same* statement. The contract
    should say it once, in the GeoPackage form, and additionally require that every
    row in a given `.gpkg` carries the same `gateway_hru_name`.
-3. Because one Gateway HRU may hold basin **and** band polygons together, feature
-   `name` uniqueness spans **both kinds at once** — a basin `name` and a band `name`
-   in the same `.gpkg` must not collide. The source package keeps `basins.gpkg` and
-   `bands.gpkg` separate (unambiguous schemas), but the Gateway-uploaded `.gpkg` may
-   merge them, so the naming scheme must be collision-free across the merge. The
-   `g_<code>` / `g_<code>_band_<id>` convention already is; the contract must say so
-   rather than leave it to chance.
+3. Because a Gateway HRU is **single-kind** (Owner decision 4), `spatial_type` is a
+   property of the **HRU**, not of each polygon: every forcing column from one fetch
+   shares it, and only band HRUs carry a `band_id`. There is no basin/band merge
+   step, so `04-…` §5's "SAP3 MAY combine basin and band features into the
+   Gateway-uploaded GeoPackage" clause is **deleted**.
 
 ### Gauge IDs — RESOLVED by the owner, 2026-07-14
 
@@ -171,6 +169,25 @@ extension.
    it already fixes one-row-per-basin, required columns, numeric-only types, and a
    boolean ban. Task 1A rolls that back to the generic FI/SAP3 static-feature
    matching rule.
+4. **A Gateway HRU is single-kind: basins OR bands, never mixed.** (Owner,
+   2026-07-14 — previously undefined; the Gateway itself does not care, so this is a
+   SAP3-side constraint we adopt because it is free.)
+   - **`spatial_type` becomes an HRU-level property.** Every forcing column returned
+     for one HRU shares it; only band HRUs carry a `band_id`. This matches the
+     existing DB invariant (`spatial_type = 'elevation_band'` ⟺ `band_id IS NOT
+     NULL`) and `GridExtractor`'s `BasinAverageForecast | ElevationBandForecast`
+     union — one spatial type per station per source. A mixed HRU would be the only
+     container in the system holding both.
+   - **No merge step.** The source package already separates `basins.gpkg` from
+     `bands.gpkg` because their schemas differ (bands carry `band_id`,
+     `min/max_elevation_m`). Single-kind HRUs carry that split through to the
+     Gateway unchanged, so basin/band feature-name collisions cannot arise and the
+     "MAY combine" clause in `04-…` §5 is deleted.
+   - **Independent lifecycle.** Bands can be re-extracted or backfilled without
+     refetching basin forcing, and vice versa.
+   - **Cost accepted:** a station needing both basin-average *and* band forcing uses
+     two HRUs, not one. No model in the FI contract declares both, so this is
+     currently theoretical.
 
 ## Resolved questions (owner, 2026-07-14)
 
@@ -231,10 +248,11 @@ Task 2C records this relationship in both directions.
 3. Restate feature-`name` uniqueness as **unique across all features in the
    GeoPackage**, noting that this is the same statement as "unique within the
    Gateway HRU" now that one HRU is one GeoPackage. Add the invariant that every row
-   in a `.gpkg` MUST carry the same `gateway_hru_name`. In §5, state that a Gateway
-   HRU may hold basin and band polygons together, so **uniqueness spans basins and
-   bands jointly** in any merged upload `.gpkg` — and that the `g_<code>` /
-   `g_<code>_band_<id>` convention satisfies this by construction.
+   in a `.gpkg` MUST carry the same `gateway_hru_name`.
+3b. Record Owner decision 4 in §5: a Gateway HRU is **single-kind** — it MUST hold
+   basin polygons **or** band polygons, never both — so `spatial_type` is an
+   HRU-level property. **Delete** the existing clause "SAP3 MAY combine basin and
+   band features into the Gateway-uploaded GeoPackage…"; there is no merge.
 4. Make the feature-name convention unconditional per Owner decision 2 — remove any
    "gauge ID when valid" phrasing and state `g_<station_code_normalized>` as the
    rule, with the raw string-typed gauge ID in `station_code`. Record *why*: gauge
@@ -263,11 +281,11 @@ from pathlib import Path
 text = Path("docs/requirements/04-basin-static-artifact-contract.md").read_text()
 
 must_appear = [
-    # Owner-resolved terminology: an HRU IS a GeoPackage, holding >=1 polygon
-    # which may be basin outlines and/or elevation bands.
+    # Owner-resolved terminology: an HRU IS a GeoPackage, holding >=1 polygon,
+    # all of one kind (Owner decision 4).
     "one Gateway HRU = one GeoPackage",
     "unique across all features in the GeoPackage",
-    "spans basins and bands jointly",
+    "basin polygons or band polygons, never both",
     "internal layer/table name",
     # Static schema stays the modeller's.
     "TBD (modeller-owned)",
@@ -282,6 +300,8 @@ must_be_gone = [
     "Static features MUST be numeric (`int` or `float`)",
     "Boolean static features MUST NOT be used",
     "MUST be lowercase, unique within the Gateway HRU, and MUST NOT start with a digit",
+    # Owner decision 4 — HRUs are single-kind, so there is no basin/band merge.
+    "SAP3 MAY combine basin and band features",
 ]
 
 missing = [t for t in must_appear if t not in text]
