@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-07-14
 plan: 115a
 parent: 115
@@ -16,8 +16,9 @@ blocks: [082, 115b, 115c]
 
 ## Status
 
-**DRAFT — but the READY gate is now CLEARED.** The live DB audit ran 2026-07-14 against staging
-(umbrella §Audit):
+**READY** (owner, 2026-07-14). Implementation authorised; hold at PR.
+
+The live DB audit ran 2026-07-14 against staging (umbrella §Audit):
 
 - **A1 (the gating query): PASS — 0 rows.** Both operational stations have **exactly one** forecast
   binding, so no station breaks under `fetch_forecast_binding`'s new contract. The behaviour change
@@ -26,7 +27,8 @@ blocks: [082, 115b, 115c]
   and `icon_ch2_eps`/`basin_average` — the `icon_ch2_eps → FORECAST, else REANALYSIS` rule covers
   reality exactly.
 
-Nothing blocks this plan technically. **Owner promotes to READY.**
+Final independent Codex review (2026-07-14): **READY-TO-IMPLEMENT** — no blockers, no majors. Both
+minors folded (the Phase-A containment ordering, and narrowing the consumer-table completeness claim).
 
 ## Objective
 
