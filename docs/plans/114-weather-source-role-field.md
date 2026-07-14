@@ -13,7 +13,8 @@ blocks: [082]
 ## Status
 
 **DRAFT.** Do not implement or dispatch subagents until promoted to READY.
-Needs grill-me → WF1 (plan-review) → WF2.
+Grill-me **DONE** (2026-07-13, 7 decisions locked below). Next: WF1 (plan-review)
+→ owner READY → WF2.
 
 ## Provenance
 
@@ -57,28 +58,92 @@ correct multi-source (Nepal) dispatch in Plans 081/082.
 - No change to `extraction_type` semantics or to the `(station_id, nwp_source)`
   uniqueness of a binding.
 
-## Scope (to be hardened in grill-me)
+## Scope — grill-me decisions (locked 2026-07-13)
 
-1. **Type** — add `WeatherSourceRole(Enum)` = `FORECAST | REANALYSIS` to
-   `types/enums.py`; add `role: WeatherSourceRole` to the frozen
-   `StationWeatherSource` (`types/station.py`). Parse-don't-validate at the boundary.
-2. **Store** — add a `role` column to `station_weather_sources` with a migration;
-   update `store_weather_source` / `_row_to_weather_source`
-   (`store/station_store.py:233-248`, `:219-231`).
-   **Backfill rule (grill-me to confirm):** existing rows are unambiguous under the
-   current Swiss scheme — `POINT` → `REANALYSIS`, non-`POINT` (`BASIN_AVERAGE` etc.)
-   → `FORECAST`. This is exact for current data because that IS the implicit rule
-   today; new (Nepal) rows set `role` explicitly.
-3. **Onboarding** — `services/onboarding.py:357-386` sets `role=REANALYSIS` on the
-   forcing-source binding (`camels-ch`) and `role=FORECAST` on the ICON binding.
-4. **Flow 1** — `_select_nwp_source` (`flows/run_forecast_cycle.py:87-106`) filters
-   `role==FORECAST` (deterministic); drop the reliance on `extraction_type` /
-   first-match for intent.
-5. **Flow 6** — `_reanalysis_sources` (`flows/ingest_weather_history.py:243-252`)
-   filters `role==REANALYSIS` in addition to the source-name match.
-6. **Tests** — Swiss round-trip unchanged; a station with two `BASIN_AVERAGE`
-   bindings (forecast + reanalysis) resolves each path deterministically by role;
-   migration backfill correctness; onboarding sets roles.
+### 1. Type — `role` is a required enum field, no default
+
+Add `WeatherSourceRole(Enum)` = `FORECAST = "forecast" | REANALYSIS = "reanalysis"`
+to `types/enums.py` (mirrors the `WeatherSourceStatus` / `SpatialRepresentation`
+lowercase-value convention). Add `role: WeatherSourceRole` to the frozen
+`StationWeatherSource` (`types/station.py:77-82`).
+
+**Required, with no default.** There is no sane default: a default would silently
+mis-role exactly the Nepal bindings this plan exists to disambiguate, which is the
+bug rather than a mitigation of it. A missing `role` must be a construction error,
+not a guess.
+
+**Two values suffice — no `BOTH`.** A source that serves both roles does not arise:
+snow forecast and snow reanalysis are distinct `nwp_source` strings, hence distinct
+bindings under the `(station_id, nwp_source)` primary key.
+
+### 2. Construction-site sweep
+
+`role=` must be added to **every** `StationWeatherSource(...)` call — currently 42
+across 22 files: `services/onboarding.py` (2), `store/station_store.py`
+(`_row_to_weather_source`), the fakes, and ~30 test fixtures. Because the field is
+required and keyword-only, pyright plus failing constructors surface every miss;
+no site can be silently skipped.
+
+### 3. Store + migration
+
+Add a `role` column to `station_weather_sources` in `db/metadata.py:164-187`, with
+`CheckConstraint("role IN ('forecast', 'reanalysis')")`, mirroring how
+`extraction_type` and `status` are declared. Thread it through
+`store_weather_source` (values **and** the `on_conflict_do_update` `set_` clause)
+and `_row_to_weather_source` (`store/station_store.py:219-249`).
+
+**Migration:** a standard incremental Alembic revision `0030` off the current head
+`0029` (`alembic/versions/0029_hindcast_dedup_constraint.py`) — the chain is
+committed and continuous. Three steps:
+
+1. `add_column` nullable,
+2. backfill `UPDATE station_weather_sources SET role = CASE WHEN extraction_type = 'point' THEN 'reanalysis' ELSE 'forecast' END`,
+3. `alter_column ... nullable=False` and add the check constraint.
+
+The backfill is **exact for all current data**, because `POINT`→reanalysis /
+non-`POINT`→forecast *is* the implicit rule the code applies today (Swiss:
+`camels-ch`/`POINT` reanalysis + `icon_ch2_eps`/`BASIN_AVERAGE` forecast). It is a
+faithful materialisation of existing behaviour, not a new policy. New (Nepal) rows
+set `role` explicitly and never rely on it.
+
+### 4. Onboarding sets the role explicitly
+
+`services/onboarding.py:357-386` — `camels-ch` binding → `role=REANALYSIS`,
+`icon_ch2_eps` binding → `role=FORECAST`. Explicit at the construction site; the
+backfill rule is never re-derived here.
+
+### 5. Flow 1 — `_select_nwp_source` becomes a role lookup that can fail loudly
+
+`flows/run_forecast_cycle.py:87-106` currently runs a two-pass heuristic: exact
+`icon_ch2_eps` match, then first `BASIN_AVERAGE` binding, then a
+`_ICON_NWP_SOURCE` fallback string. **Retire all three passes, the
+`_ICON_NWP_SOURCE` fallback, and the now-false docstring.**
+
+Replacement: select the single **active** binding with `role == FORECAST`. Raise
+`ConfigurationError` (`exceptions.py:84`) when there is **0** or **more than 1** —
+both are station-config faults that must surface at the boundary rather than be
+papered over by picking a member of the set. This is what makes the selection
+deterministic for a Nepal station carrying two `BASIN_AVERAGE` bindings; the old
+code's non-determinism came precisely from tolerating an ambiguous set.
+
+### 6. Flow 6 — `_reanalysis_sources` filters on role
+
+`flows/ingest_weather_history.py:243-252` — add `source.role is
+WeatherSourceRole.REANALYSIS` to the existing `nwp_source` name match, so a
+forecast binding that happens to share a source name can never be pulled into the
+training/reanalysis path.
+
+### 7. Tests
+
+- Swiss round-trip is **unchanged** (regression floor: the existing onboarding →
+  Flow 1 → Flow 6 behaviour must be byte-for-byte identical).
+- A station with **two `BASIN_AVERAGE` bindings** (one FORECAST, one REANALYSIS)
+  resolves each path to the correct source by role — the Nepal shape, testable on
+  Swiss infrastructure today.
+- A forecast target with **0 FORECAST bindings** raises `ConfigurationError`.
+- A forecast target with **2 FORECAST bindings** raises `ConfigurationError`.
+- Migration backfill correctness (POINT → reanalysis, non-POINT → forecast).
+- Onboarding sets both roles.
 
 ## Relationship to 081 / 082
 
