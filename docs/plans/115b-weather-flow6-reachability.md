@@ -73,6 +73,22 @@ CAMELS-CH ends at **2020-12-31**. This plan fills the gap from **a different sou
 legitimate if the new source measures the same quantity the same way. **For precipitation, it does
 not.**
 
+**CAMELS-CH's forcing provenance — CONFIRMED** (Höge et al. 2023, *ESSD* 15, 5755, Appendix A1.2
+"MeteoSwiss data products"): daily precipitation = **`RhiresD`**; daily absolute temperature =
+**`TabsD`**; daily relative sunshine duration = **`SrelD`**. *(This is the fact the repo never recorded
+— see the documentation gap below. Now sourced, not inferred.)*
+
+**What our CAMELS import actually contains — and it is less than you think.** The adapter imports
+**only** `precipitation` and `temperature_mean` (`camelsch_adapter.py:113,350`). The audit's row count
+confirms it exactly: **58,440 = 2 stations × 14,610 days (1981-2020) × 2 parameters.** No `SrelD`, and
+**no `TminD`/`TmaxD` — CAMELS-CH's own forcing set does not carry them either.**
+
+> ⚠️ **Consequence nobody has noticed:** Plan 072's priority chains for `temperature_min` and
+> `temperature_max` fall back to `CAMELS_CH` (`hybrid_reanalysis_factories.py:29-30`) — **a tier that
+> contains no such rows.** Combined with the dark MeteoSwiss feed, those two parameters have **no
+> history at all**, pre- or post-2021. They do not exist. Any model declaring them would silently
+> receive nothing.
+
 ### 🟢 Plan 071's founding premise is FALSE — `RhiresD` *is* in open data
 
 **Verified against the live STAC API, 2026-07-14** (`ch.meteoschweiz.ogd-surface-derived-grid` — the
@@ -143,6 +159,20 @@ not have to splice two products at all:
 > **Derive the entire forcing series ourselves: `RhiresD` + `TabsD`/`TminD`/`TmaxD`, 1961 → T-45d,
 > through OUR basin polygons — with `RprelimD` used ONLY for the live tail, and superseded by
 > `RhiresD` when it lands.**
+
+**MeteoSwiss open data supplies MORE than CAMELS does, with MORE history:**
+
+| parameter | product | open-data span | CAMELS-CH has it? |
+|---|---|---|---|
+| precipitation | `RhiresD` | **1961** → T-45d | ✅ (same product) |
+| temperature | `TabsD` | **1961** → T-1d | ✅ (same product) |
+| temperature_min | `TminD` | **1971** → T-1d | ❌ **not imported / not in CAMELS forcing** |
+| temperature_max | `TmaxD` | **1971** → T-1d | ❌ **not imported / not in CAMELS forcing** |
+| sunshine (rel.) | `SrelD` | **1971** → T-1d | ❌ not imported (CAMELS *does* use it) |
+
+So the recommended series is not merely *as good* as CAMELS' forcing — it is **strictly better**: same
+products where CAMELS has them, plus two parameters that currently **do not exist at all** in our
+archive, plus the sunshine variable CAMELS itself relies on.
 
 This eliminates **all three** consistency axes at once:
 
