@@ -292,6 +292,10 @@ extension.
    ordering dependency drafted earlier the same day.
 5. **Does the deployment's forcing source need PET?** **Not for these attributes.**
    PET comes from the extractor's own ERA5 archive.
+6. **ERA5 or ERA5-Land in the S3 archive?** **ERA5-Land** — matching Caravan's
+   published values and the `_ERA5_LAND` suffix the modeller's column names already
+   carry. `feature_catalog.json` still records `source_dataset` and the climatology
+   window per column, so provenance survives a future product change.
 
 These answers are now baked into Owner decisions 2, 3 and 6, and into Task 1A. They
 do not reopen any decision.
@@ -300,13 +304,7 @@ do not reopen any decision.
 
 1. Which actor owns the durable regeneration path: DHM, HSOL, or the basin/static
    extraction tool maintainer?
-2. **ERA5 or ERA5-Land?** The modeller's column names encode ERA5-**Land**
-   (`pet_mean_ERA5_LAND`, `aridity_ERA5_LAND`, `moisture_index_ERA5_LAND`), and
-   Caravan's published values are ERA5-Land (0.1°). If the S3 archive is plain ERA5
-   (0.25°), the values will not reproduce Caravan and the column names mislead. A
-   labelling/provenance question — `feature_catalog.json` records `source_dataset`
-   per column either way, so it does not block.
-3. Which string does SAP3 pass as the FI station key — the raw `station_code`, or
+2. Which string does SAP3 pass as the FI station key — the raw `station_code`, or
    the modeller's region-prefixed `gauge_id` (`nepal_5501`)? It MUST match whatever
    the trained artifact's station embeddings were fitted on. Resolved via the
    existing `station_code_resolver` seam
@@ -386,11 +384,18 @@ Task 2C records this relationship in both directions.
    first draft of §6.3 asserted the opposite (an ordering dependency); it MUST be
    rewritten, not merely extended.
 
-**Already executed (working-tree draft, 2026-07-14).** At the owner's direction,
-items 5–9 above were applied to the `04-…` draft ahead of READY, together with the
-collaborator brief `docs/requirements/basin-static-extraction-brief.md`. Items 1–4
-(terminology section, name-rule normativity, uniqueness, single-kind HRUs, collision
-policy) are **still outstanding** and remain this task's work.
+**Task 1A is COMPLETE (2026-07-14).** All nine items are applied to the `04-…`
+working-tree draft, and the 1A gate passes. Delivered alongside it: the collaborator
+brief `docs/requirements/basin-static-extraction-brief.md`.
+
+What landed: a new §3a terminology section (the four "name" layers; the
+letter/underscore rule as a confirmed normative MUST on both the layer name and the
+feature `name` values; one HRU = one GeoPackage; single-kind HRUs); §4a's
+unconditional `g_<station_code_normalized>` convention with the collision policy;
+identical `name` rules on the bands table in §5 (previously it carried neither the
+lowercase nor the leading-digit clause); the "MAY combine" merge clause deleted; §6's
+confirmed static shape with `gauge_id` as the sole identity column; and §6.3's
+self-contained ERA5-Land derivation.
 
 **Scope out:** Do not invent the static feature *list* — that is the modeller's. Do
 not add importer implementation detail. Do not touch
@@ -407,7 +412,7 @@ text = Path("docs/requirements/04-basin-static-artifact-contract.md").read_text(
 must_appear = [
     # Owner-resolved terminology: an HRU IS a GeoPackage, holding >=1 polygon,
     # all of one kind (Owner decision 4).
-    "one Gateway HRU = one GeoPackage",
+    "Gateway HRU = one GeoPackage",  # case-stable: matches "One Gateway HRU = one GeoPackage"
     "unique across all features in the GeoPackage",
     "basin polygons or band polygons, never both",
     "internal layer/table name",
@@ -492,7 +497,7 @@ from pathlib import Path
 text = Path("docs/requirements/01-data-gateway-requirements.md").read_text()
 required = [
     "internal GeoPackage layer/table name",
-    "one Gateway HRU = one GeoPackage",
+    "Gateway HRU = one GeoPackage",  # case-stable: matches "One Gateway HRU = one GeoPackage"
     "04-basin-static-artifact-contract.md",
     # Owner decision 4 — SAP3's narrowing convention on top of G5.
     "SAP3 submits single-kind GeoPackages",
