@@ -346,8 +346,25 @@ record the owner's definition that a Gateway HRU *is* a GeoPackage (one HRU = on
 `.gpkg`) whose polygons are the HRUs proper. Point at
 `04-basin-static-artifact-contract.md` for the full naming rules.
 
+Also reconcile the **mixed-GeoPackage language** that Owner decision 4 contradicts.
+Three places currently assume one `.gpkg` may hold basins *and* bands:
+
+| Line | Current text |
+|---|---|
+| `01:30` | "a gpkg may hold several catchments and/or elevation-band polygons" |
+| `01:80` (G5) | "A submitted gpkg MAY contain several polygons (multiple catchments **and/or** band polygons)" |
+| `01:104` (G9) | "Spatial granularity MUST be basin-average **and**, where bands are defined, per elevation band" |
+
+**Do not retract the Gateway's capability.** G5 is a requirement *on the Gateway*,
+AGREED 2026-06-18, and the owner confirms the Gateway does not care whether kinds
+are mixed. Renegotiating a capability they have already built buys nothing. Instead
+**add SAP3's narrowing convention alongside it**: SAP3 submits **single-kind**
+GeoPackages only (basins or bands, never both — Owner decision 4), so a mixed `.gpkg`
+never actually reaches the Gateway. Reword `01:30` and G9 so they describe per-HRU
+granularity rather than implying both kinds coexist in one file.
+
 **Scope out:** Do not reopen the Gateway API design. Do not add a programmatic
-geometry-upload requirement.
+geometry-upload requirement. Do not weaken or remove G5's Gateway-side permission.
 
 **Verification:**
 
@@ -360,10 +377,25 @@ required = [
     "internal GeoPackage layer/table name",
     "one Gateway HRU = one GeoPackage",
     "04-basin-static-artifact-contract.md",
+    # Owner decision 4 — SAP3's narrowing convention on top of G5.
+    "SAP3 submits single-kind GeoPackages",
 ]
 missing = [t for t in required if t not in text]
 if missing:
     raise SystemExit(f"1B: missing required text: {missing}")
+
+# The mixed-kind phrasings that contradict Owner decision 4 must be reworded.
+mixed = [
+    "a gpkg may hold several catchments and/or elevation-band polygons",
+    "(multiple catchments and/or",  # G5 — line-wrapped in the source, match the head
+]
+lingering = [m for m in mixed if m in text]
+if lingering:
+    raise SystemExit(f"1B: mixed basin/band GeoPackage wording survives: {lingering}")
+
+# ...but G5's Gateway-side capability must NOT be retracted.
+if "G5." not in text:
+    raise SystemExit("1B: G5 was removed — the Gateway capability must stay")
 
 # The ambiguous bare "Layer name" rule (§ Gateway-side validation, item 4) is the
 # defect being fixed — it must be rewritten, not merely supplemented.
