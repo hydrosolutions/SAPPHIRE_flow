@@ -3,7 +3,7 @@
 #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
 services:
   postgres:
-    image: postgis/postgis:16-3.4@sha256:44126d872ac91993766c341e369c539e8196614321765d36a6f1bab0419a5fa5  # postgis/postgis:16-3.4
+    image: postgis/postgis:17-3.4@sha256:d0b5a6ecab18997637f55a83cb4a9467391de5645916cfa1b6f2a8d19eee7be5  # postgis/postgis:16-3.4
     environment:
       POSTGRES_USER: ${DB_USER:-sapphire}
       POSTGRES_PASSWORD_FILE: /run/secrets/db_password
