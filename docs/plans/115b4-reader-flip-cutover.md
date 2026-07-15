@@ -45,7 +45,7 @@ dispositioned.
   native/fallback declare no past/future dynamic features; the FI NWP model needs only future
   precip/temp — but that is an inference; the live artifact/assignment tables settle it. NEEDS-LIVE-DB.)*
 - **5D — flip the reanalysis default to `hybrid`** (`config/deployment.py:111`). Only after 5A.
-  `test_deployment_reanalysis_source.py:25` locks the `single` default and updates deliberately. Verify
+  `tests/unit/config/test_deployment_reanalysis_source.py:24-39` locks the `single` default and updates deliberately. Verify
   CAMELS-only stations still resolve (the chain falls back correctly) — a test, not an assumption.
 - **5E — retire the camels-ch weather binding, ATOMIC with 5D.** `single` (default until 5D) reads
   `cfg.nwp_source` directly (`store_backed_reanalysis.py:35`); retiring the binding while `single` is still
@@ -60,20 +60,29 @@ dispositioned.
 ### Phase 6 — loudness + guards
 
 - **6A — `WEATHER_HISTORY_INGEST` check type.** `ingest_weather_history_flow` has no
-  `pipeline_health_store` param (`ingest_weather_history.py:256`) and `PipelineCheckType`
-  (`types/enums.py:151`) has no weather-history type — build both, plus the DB-constraint migration + doc.
+  `pipeline_health_store` param (`ingest_weather_history.py:255-262`) and `PipelineCheckType`
+  (`types/enums.py:151-164`) has no weather-history value — build both + thread the store. **Note:**
+  `pipeline_health.check_type` has **no** DB check constraint today (only `status` is constrained,
+  `db/metadata.py:1088-1108`, `0001_v0_schema.py:748-762`), so there is nothing to "extend" — either add a
+  NEW full check constraint enumerating all `PipelineCheckType` values, or add none (match the current
+  no-constraint state). Do not claim a constraint that isn't there.
 - **6B — health measured by EFFECT, never `rows_stored`.** `rows_stored` is `len(records)` after
   `on_conflict_do_nothing` (`ingest_weather_history.py:230`, `historical_forcing_store.py:52`), so a
   pure-duplicate re-fetch looks healthy. UNHEALTHY when `stations_targeted == 0` (config fault) and when a
   run inserts nothing over a full window — asserted via **actual DB rowcount** or a **non-advancing
   `MAX(valid_time)` per source**. Two distinct failures distinguished: "nobody bound" vs "bound but silent."
-- **6C — converter guards** (`preprocessing/converters.py:17,46`) — `basin_avg_to_records` /
-  `point_forecast_to_records` must reject reanalysis source tags so a reanalysis row can never be written
-  into the forecast table (Plan 071 §243 specified this; the code has no such check).
+- **6C — converter guards, ALL THREE (round-1 major).** `point_forecast_to_records`,
+  `elevation_band_to_records`, **and** `basin_avg_to_records` all write `WeatherForecastRecord.nwp_source`
+  (`converters.py:21,50,79`) — not just the two an earlier draft named. Centralize a single
+  **reanalysis-tag reject helper** and call it from all three, so a reanalysis row can never be written into
+  the forecast table (Plan 071 §243; the code has no such check). Tests for each converter.
 - **6D — dashboard forcing endpoint = HYBRID-RESOLVED** (decided). `api/routes/stations.py:452-490` today
   reads `historical_forcing` and ignores `source`, merging provenance streams. Route it through
-  `select_reanalysis_source(hybrid)` so it serves exactly what a forecast used, with the **winning `source`
-  tag per point** (so an operator can spot a stuck/preliminary tail).
+  `select_reanalysis_source(mode="hybrid")` so it serves exactly what a forecast used, with the **winning
+  `source` tag per point** (so an operator can spot a stuck/preliminary tail). **API wiring:** the route today
+  depends only on a raw SQL connection and selects `valid_time,parameter,value` grouped by parameter, ignoring
+  `source` (`stations.py:452-499`); rewire it to use `get_stores` → `station_store.fetch_reanalysis_bindings`
+  → `select_reanalysis_source(mode="hybrid")`.
 
 ## Tests
 
