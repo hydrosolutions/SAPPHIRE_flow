@@ -199,10 +199,12 @@ A one-shot, resumable backfill producing `historical_forcing` rows for **every o
 > **And note what this does to the residual (§0):** the preliminary window is **up to ~8 weeks**, not
 > ~45 days. That makes §8's live-tail measurement *more* important, not less.
 
-**Eligibility:** "every operational station" means **every station with a valid basin polygon** —
-`ExactExtractGridExtractor` raises when a station has no usable geometry
-(`exact_extract_grid_extractor.py:64`). Enumerate eligible stations explicitly; do not assume the two
-sets coincide.
+**Eligibility:** "every operational station" means **every station with a valid basin polygon**.
+**Pre-enumerate** the eligible set explicitly — do NOT rely on extractor behaviour: the extractor
+**skips** invalid-geometry stations and raises only if **none** are valid
+(`exact_extract_grid_extractor.py:67-89`), so a station silently missing a polygon would be silently
+dropped from the backfill, not flagged. Enumerate, and log any operational station excluded for lack of
+geometry.
 
 **Scale — and the current path CANNOT do it.** Rows ≈ `stations × days × parameters`: at 2 stations ×
 16,436 days × 4 = ~131k rows (trivial), but **at the v0 target of ~1000 stations that is ~66M rows.**
@@ -249,7 +251,17 @@ definitive data lands. It simply ingests `RhiresD` for those dates, and the prio
 
 ### 4. The MeteoSwiss binding — BIND FIRST, and for EXISTING stations
 
-> **⚠️ ORDERING (review finding): the binding must exist BEFORE the backfill runs.** The adapter only
+> **⚠️ ORDERING — TWO constraints (review rounds 1 & 2).**
+>
+> **(a) The camels-ch retirement (§4/2C) must NOT precede the hybrid flip (phase 5).** `single` — the
+> default reader until phase 5 — looks a binding up by `cfg.nwp_source` (`store_backed_reanalysis.py:31`).
+> If we retire the `camels-ch` binding while `single` is still default, and the MeteoSwiss rows live under
+> product tags (`meteoswiss_rhiresd`) that `single` cannot resolve from the `meteoswiss_open_data_reanalysis`
+> binding name, a station is left with **no readable reanalysis source at all** in the intermediate state.
+> **So: keep the camels-ch binding until the hybrid chain is the default (make retirement atomic with the
+> flip), or guard `single` first.** The dependency graph is corrected below — `2C` moves to phase 5.
+>
+> **(b) The MeteoSwiss binding must exist BEFORE the backfill runs.** The adapter only
 > processes configs that declare its own `nwp_source` (`meteoswiss_open_data_reanalysis.py:145`), and
 > Flow 6 selects its configs **from stored bindings** (`ingest_weather_history.py:243`). So a backfill
 > that runs through the production adapter/flow with no binding in place **does nothing — and reports
@@ -406,10 +418,13 @@ bound but silent."** Today both look identical — and both look like success.
 >   vintage. *(So §8 is a reference comparison by choice — the cheap option was taken deliberately.)*
 > - **The aggregation method may differ slightly, and CAMELS' exact method is NOT currently known.**
 >   Treat this as a **named, unquantified confound**. Do not pretend to have matched it.
-> - **One confound IS eliminated, and it is the biggest one: the polygons are the same.** Our basins
->   **are CAMELS-CH's own catchment geometries** — parsed from the CAMELS shapefiles
->   (`camelsch_adapter.py:301` → `geometry_to_basin`) and stored at `onboarding.py:248`. We are not
->   comparing across different catchment delineations.
+> - **The biggest confound is *probably* eliminated — verify before relying on it.** Our basins are
+>   loaded from **CAMELS-CH's own shipped geometry files** (`camelsch_adapter.py:262-301` →
+>   `geometry_to_basin`, stored at `onboarding.py:240-248`) — confirmed in code. **But that proves we use
+>   the shapefiles CAMELS SHIPS, not necessarily the exact masks CAMELS used to AGGREGATE its forcing**
+>   (a dataset can ship one catchment boundary and aggregate gridded forcing over a slightly different
+>   raster mask). ⚠️ **NEEDS-EXTERNAL-CHECK** against the CAMELS-CH paper/package before §8 leans on
+>   "same polygons". If they differ, that confound returns and §8's tolerances must widen.
 >
 > ### Tolerances (owner, 2026-07-14)
 >
@@ -436,15 +451,27 @@ Design it honestly:
 
 **Separately — and this one IS clean:** quantify the **live-tail residual**, `RprelimD` vs `RhiresD`
 over their overlap, same pipeline, same polygons, same grid, same vintage. **No confounds.** It is the
-one genuinely attributable number in this plan, and it is worth having even though the residual itself
-is now accepted policy (§0).
+one genuinely attributable number in this plan.
 
-### 9. Fix the CAMELS binding's `extraction_type`
+> ⚠️ **The overlap must be FETCHED for this — it does not exist in our DB (review round 2, blocker 3).**
+> The audit proved `historical_forcing` holds only `camels-ch`. And the §2 backfill table ingests
+> `RhiresD` up to boundary `R` and `RprelimD` from `R` onward — **by construction they do not overlap**.
+> So this comparison needs its own step: pull, for a recent window that STAC still serves BOTH products
+> (`RprelimD` is retained ~2 months, and `RhiresD` republishes over that same window with its lag), the
+> two products for the same basins/dates, and compare. It is a **one-off measurement fetch**, not part of
+> the archive backfill — add it as an explicit task in phase 4.
 
-Onboarding writes the CAMELS binding as `POINT` (`onboarding.py:364`) while its forcing records are
-`BASIN_AVERAGE` (`camelsch_adapter.py:130`). `extraction_type` is **already wrong in the database**. Fix
-the write site **and** migrate existing rows. *(This is why 115a's backfill keys off the source name and
-never off `extraction_type` — the field cannot be trusted until this lands.)*
+### 9. ~~Fix the CAMELS binding's `extraction_type`~~ — MOOT under decision 6
+
+*(An earlier revision fixed the CAMELS weather binding's `extraction_type` (`POINT` where its rows are
+`BASIN_AVERAGE`). **Decision 6 RETIRES that binding entirely**, so there is nothing to fix — you cannot
+both delete a binding and migrate its final value (review round 2, blocker 1).*
+
+**So §9 collapses into §4's retirement:** the `camels-ch` weather binding is removed; onboarding stops
+writing it. The only assertion that remains valid is **"no `camels-ch` weather binding exists after
+115b"**. The CAMELS forcing **rows** are untouched (they carry `spatial_type` on the
+`historical_forcing` row itself — `camelsch_adapter.py:130` — not on the retired binding, so their
+provenance is unaffected).
 
 ### 10. Converter guards Plan 071 specified but never landed
 
@@ -470,8 +497,10 @@ hybrid-resolved view the models consume (consistent with what the forecast actua
 - **The double-dark regression:** with the MeteoSwiss binding present and `hybrid` default, rows written
   under product tags are readable **end to end** by the default consumer. *Must fail against today's
   wiring.*
-- **Supersession (§3):** an `RhiresD` row **replaces** an `RprelimD` row for the same
-  `(station, valid_time, parameter)`. *Must fail against the current unwired version column.*
+- **Priority, not supersession (§3):** for a `(station, valid_time, parameter)` covered by BOTH sources,
+  a **direct source-keyed fetch returns BOTH rows** (they legally coexist), while the **hybrid reader
+  returns only the `RhiresD` winner**. *Two assertions, because §3's whole correction is that these are
+  different rows resolved by priority — not one row overwriting another.*
 - **Parameter drop (§5):** a parameter with no configured chain **raises**, and does not vanish. *Must
   fail against the current `continue`.*
 - **Overlap (§5):** two sources returning the same unconfigured parameter **raise** — no
@@ -482,7 +511,8 @@ hybrid-resolved view the models consume (consistent with what the forecast actua
   `stations_targeted > 0 && rows_stored == 0` over a full window likewise.
 - **`temperature_min`/`temperature_max` now exist** — they resolve from `TminD`/`TmaxD`, with no CAMELS
   tier to fall back to.
-- CAMELS binding `extraction_type` is `BASIN_AVERAGE`, at the write site and after migration.
+- **No `camels-ch` weather binding remains** after 115b (decision 6); the CAMELS forcing rows in
+  `historical_forcing` are untouched and still readable by a direct source-keyed fetch.
 - Converter guards reject a reanalysis tag.
 
 ## Exit gates
@@ -576,7 +606,7 @@ point re-sourcing every model's features and *then* asking whether the new serie
     {
       "id": "phase-2",
       "name": "Bindings first (existing fleet + onboarding + retire camels-ch weather binding)",
-      "tasks": ["2A-backfill-meteoswiss-binding", "2B-onboarding-writes-binding", "2C-retire-camels-weather-binding", "2D-camels-extraction-type-fix"],
+      "tasks": ["2A-backfill-meteoswiss-binding", "2B-onboarding-writes-binding"],
       "parallel": false,
       "depends_on": ["phase-1"]
     },
@@ -590,14 +620,14 @@ point re-sourcing every model's features and *then* asking whether the new serie
     {
       "id": "phase-4",
       "name": "Reference comparison vs CAMELS + the clean live-tail measurement",
-      "tasks": ["4A-basin-mean-comparison-1981-2020", "4B-tolerance-report-5pct-20pct", "4C-live-tail-rprelimd-vs-rhiresd"],
+      "tasks": ["4A-basin-mean-comparison-1981-2020", "4B-tolerance-report", "4C-fetch-rprelimd-rhiresd-overlap-window", "4D-live-tail-residual"],
       "parallel": true,
       "depends_on": ["phase-3"]
     },
     {
       "id": "phase-5",
       "name": "Reader: parameter-drop fix, then the priority chain, then the flip",
-      "tasks": ["5A-hybrid-parameter-drop-raise", "5B-chain-rhiresd-then-rprelimd-no-camels-tier", "5C-distribution-shift-gate", "5D-flip-default-to-hybrid"],
+      "tasks": ["5A-hybrid-parameter-drop-raise", "5B-chain-rhiresd-then-rprelimd-no-camels-tier", "5C-distribution-shift-gate", "5D-flip-default-to-hybrid", "5E-retire-camels-weather-binding-ATOMIC-with-flip"],
       "parallel": false,
       "depends_on": ["phase-4"]
     },
