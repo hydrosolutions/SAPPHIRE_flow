@@ -100,6 +100,7 @@ precipitation:     RHIRESD → RPRELIMD          (definitive supersedes prelimin
 temperature:       TABSD
 temperature_min:   TMIND
 temperature_max:   TMAXD
+rel_sunshine:      SRELD          (decision 5; reanalysis/past-only — see the SrelD contract)
 ```
 
 **No `CAMELS_CH` tier.** *(Plan 072's `… → CAMELS_CH` chains are retired; see the annotation on 072.)*
@@ -124,6 +125,31 @@ on preliminary precipitation.
 > It is still **measured** (§8's live-tail comparison — the one part of §8 with no confounds), because
 > knowing the size of the residual is worth having even when the residual is accepted. Measured and
 > declared; not flagged per-forecast.
+
+## §0a — Two-product precipitation: how the adapter DISAMBIGUATES (round-3 blocker 1)
+
+*(Round-3 review: once `RhiresD` and `RprelimD` both map to canonical `precipitation`, the adapter is
+ambiguous — it selects products only by `p.parameter in requested` (`meteoswiss_open_data_reanalysis.py:145`),
+and the `WeatherReanalysisSource` protocol passes only `parameters`, never a product/source
+(`protocols/adapters.py:47`). "Add `RhiresD` beside `RprelimD`" is underspecified without saying which one
+a precipitation request returns.)*
+
+**The fix — a source-scoped fetch, and Flow 6 splits precipitation by the discovered boundary `R`:**
+
+1. **Give the adapter a source-scoped fetch path.** Backfill and rolling ingest must be able to request a
+   **specific product** (`RhiresD` *or* `RprelimD`), not just "precipitation". Add an explicit
+   `products=` / source selector to the adapter's fetch entry point (or a dedicated backfill method) so the
+   caller — not the parameter name — chooses the product. The existing parameter-only path stays for the
+   other three products, which are unambiguous.
+2. **Flow 6 writes precipitation from the RIGHT product per date range**, keyed on the discovered `R`
+   (latest published `RhiresD` date, §2): `RhiresD` for `[1981-01-01, R]`, `RprelimD` for `(R, T-1d]`.
+   Both land in `historical_forcing` under their own source tags (`meteoswiss_rhiresd` / `meteoswiss_rprelimd`).
+3. **The READER (hybrid) resolves the overlap by PRIORITY, not the writer** — for any date where both
+   exist, `RHIRESD → RPRELIMD` prefers definitive (§3). The writer never has to overwrite; both rows coexist.
+
+So "which product" is answered in two places, cleanly separated: the **writer** picks by date-vs-`R`, the
+**reader** breaks any overlap tie by priority. The canonical parameter (`precipitation`) is never asked to
+carry product identity.
 
 ## Live STAC probe (2026-07-15) — phase-1 assumptions verified against real data
 
@@ -221,7 +247,16 @@ A one-shot, resumable backfill producing `historical_forcing` rows for **every o
 > 5. `adapters/hybrid_reanalysis_factories.py` — a **single-source** chain
 >    `relative_sunshine_duration: (METEOSWISS_SRELD,)` and add it to the default `parameters_in_scope`
 >    (`:26-38`).
-> 6. `config/deployment.py` — add it to `available_nwp_parameters` / model-compat advertising (`:125-127`).
+> 6. `config/deployment.py` — ⚠️ **do NOT add it to `available_nwp_parameters` (round-3 blocker 2).** That
+>    set gates **both** `past_dynamic_features` **and** `future_dynamic_features` — `onboard_model` passes it
+>    straight through as `available_features` (`onboard_model.py:258`, `model_onboarding.py:213`). But there
+>    is **no forecast sunshine product**: the forecast NWP adapter fetches only `tot_prec` + `t_2m`
+>    (`meteoswiss_nwp.py:56`), and operational future-dynamic input comes from `weather_forecasts`
+>    (`operational_inputs.py:348`). Advertising `relative_sunshine_duration` as NWP-available would let a
+>    model declare it as a **future** feature that can never be delivered. **SrelD is REANALYSIS / PAST-only.**
+>    So: add it to whatever set advertises *reanalysis/past* availability, and **not** to the forecast/future
+>    set — or, if the code has a single conflated set, split it (past-available vs forecast-available) as part
+>    of this task. Do not advertise SrelD as NWP/forecast-available until a forecast sunshine product exists.
 > 7. A parameter-table **seed/migration** if the DB enumerates valid parameter names, plus tests for the
 >    new five-parameter set.
 >
@@ -484,15 +519,18 @@ bound but silent."** Today both look identical — and both look like success.
 > The long-run total is the stable, physically-meaningful figure: it washes out per-day noise and the
 > grid-resolution event scatter, and answers directly "does our series carry the same water as CAMELS".
 >
-> **TEMPERATURE — gate on per-basin ABSOLUTE error in °C** (percent is banned — it explodes near 0 °C):
+> **TEMPERATURE — gate on per-basin ABSOLUTE error in °C** (percent is banned — it explodes near 0 °C).
+> **BOTH `mean_bias` AND `rmse` are thresholded (round-3 blocker 3 — an earlier revision named RMSE but
+> never gated it):**
 > ```
 > mean_bias = mean(ours − camels)   [°C]        rmse = sqrt(mean((ours−camels)²))   [°C]   per basin, 1981-2020
->   |mean_bias| ≤ 0.5 °C  → pass
->   |mean_bias| > 0.5 °C  → FLAG
->   |mean_bias| > 1.0 °C  → ESCALATE
+>   pass      ⟺  |mean_bias| ≤ 0.5 °C  AND  rmse ≤ 1.0 °C
+>   FLAG      ⟺  |mean_bias| > 0.5 °C  OR   rmse > 1.0 °C
+>   ESCALATE  ⟺  |mean_bias| > 1.0 °C  OR   rmse > 2.0 °C
 > ```
-> *(0.5 / 1.0 °C are the working thresholds — owner to confirm against the first results; they are a
-> hydrologist's call, not a code constant.)*
+> *(0.5 / 1.0 °C bias and 1.0 / 2.0 °C RMSE are the working thresholds — owner to confirm against the first
+> results; a hydrologist's call, not a code constant. The point locked here is that RMSE **has** a
+> pass/flag/escalate rule, not that these exact numbers are final.)*
 >
 > **NON-GATING DIAGNOSTICS (reported, never thresholded):** per-season totals, per-event maxima, and
 > wet-day RMSE for precipitation. **This is where the 2 km-vs-1 km grid effect legitimately lives** — a
@@ -510,8 +548,8 @@ Design it honestly:
   precipitation differences to concentrate in high-intensity and winter/snow events — exactly where a
   flood-forecasting model is most sensitive, and exactly where the grid-resolution effect lives.
 - Apply the **exact** gates above: precipitation on the 1981-2020 per-basin relative-bias of the TOTAL
-  (≤5 / >5 / >20 %); temperature on per-basin absolute mean-bias + RMSE in °C (≤0.5 / >0.5 / >1.0 °C,
-  owner to confirm). Per-season / per-event / wet-day-RMSE are diagnostics, reported but never gated.
+  (≤5 / >5 / >20 %); temperature on per-basin absolute error in °C, gating BOTH mean-bias AND RMSE (pass ⟺
+  |mean_bias|≤0.5 AND rmse≤1.0; owner to confirm the numbers). Per-season / per-event / wet-day-RMSE are diagnostics, reported but never gated.
 
 **Separately — and this one IS clean:** quantify the **live-tail residual**, `RprelimD` vs `RhiresD`
 over their overlap, same pipeline, same polygons, same grid, same vintage. **No confounds.** It is the
@@ -669,7 +707,7 @@ point re-sourcing every model's features and *then* asking whether the new serie
     },
     {
       "id": "phase-2",
-      "name": "Bindings first (existing fleet + onboarding + retire camels-ch weather binding)",
+      "name": "Bindings first — create the MeteoSwiss binding (existing fleet + onboarding). NOTE: camels-ch retirement is NOT here; it is 5E, atomic with the flip.",
       "tasks": ["2A-backfill-meteoswiss-binding", "2B-onboarding-writes-binding"],
       "parallel": false,
       "depends_on": ["phase-1"]
@@ -683,16 +721,19 @@ point re-sourcing every model's features and *then* asking whether the new serie
     },
     {
       "id": "phase-4",
-      "name": "Reference comparison vs CAMELS + the clean live-tail measurement",
+      "name": "Reference comparison vs CAMELS + the clean live-tail measurement (a GATE)",
       "tasks": ["4A-basin-mean-comparison-1981-2020", "4B-tolerance-report", "4C-fetch-rprelimd-rhiresd-overlap-window", "4D-live-tail-residual"],
-      "parallel": true,
+      "parallel": false,
+      "task_depends_on": {"4B-tolerance-report": ["4A-basin-mean-comparison-1981-2020"], "4D-live-tail-residual": ["4C-fetch-rprelimd-rhiresd-overlap-window"]},
+      "note": "NOT fully parallel (round-3 major 1): 4B needs 4A's basin means; 4D needs 4C's fetched overlap. 4A||4C may start together; 4B after 4A, 4D after 4C.",
       "depends_on": ["phase-3"]
     },
     {
       "id": "phase-5",
-      "name": "Reader: parameter-drop fix, then the priority chain, then the flip",
-      "tasks": ["5A-hybrid-parameter-drop-raise", "5B-chain-rhiresd-then-rprelimd-no-camels-tier", "5C-distribution-shift-gate", "5D-flip-default-to-hybrid", "5E-retire-camels-weather-binding-ATOMIC-with-flip"],
+      "name": "Reader: parameter-drop fix, then the priority chain, then the flip — and camels-ch retirement CHOREOGRAPHED with the flip",
+      "tasks": ["5A-hybrid-parameter-drop-raise", "5B-chain-rhiresd-then-rprelimd-no-camels-tier", "5C-distribution-shift-gate", "5D-flip-default-to-hybrid", "5E-retire-camels-weather-binding"],
       "parallel": false,
+      "note": "STRICT ORDER (round-3 major 2 — 5E is not merely 'adjacent' to 5D). See the deployment-choreography subsection below.",
       "depends_on": ["phase-4"]
     },
     {
@@ -708,3 +749,58 @@ point re-sourcing every model's features and *then* asking whether the new serie
 
 **Phase 4 is a gate, not a deliverable.** If the comparison trips the >5% flag, it gets explained before
 phase 5 proceeds; if it trips >20%, it escalates to the owner. Do not roll through it.
+
+### Phase-5 deployment choreography — why 5E is NOT just "adjacent" to 5D (round-3 major 2)
+
+`5E` (retire the `camels-ch` weather binding) and `5D` (flip the default to `hybrid`) are **not two
+independent tasks that happen to sit next to each other** — the wrong interleaving leaves a station with
+**no readable reanalysis source at all**. Today `single` is still the default (`config/deployment.py:111`)
+and `single`/`StoreBackedReanalysisSource` reads `cfg.nwp_source` **directly**
+(`store_backed_reanalysis.py:35`). So:
+
+- If `5E` lands **before** `5D` on a running deployment: the station loses its `camels-ch` binding while
+  the default reader is still `single`, which cannot resolve the MeteoSwiss product-tag rows from the
+  `meteoswiss_open_data_reanalysis` binding name → **the past-dynamic feed goes dark** in the window
+  between the two.
+
+**The required order, as a single atomic deployment step (not two commits shipped whenever):**
+
+1. Land the code for `5A`–`5C` and both `5D` and `5E` together.
+2. On deploy, **flip the default to `hybrid` FIRST** (config), confirm the hybrid reader is serving
+   (a station returns rows via the `RHIRESD → RPRELIMD`/`TABSD`/… chain), **then** run the `camels-ch`
+   binding-retirement migration. Never the reverse order.
+3. If the deployment must roll back, roll back **both** — the retirement migration's `downgrade()` restores
+   the `camels-ch` binding, and the config reverts to `single`, together.
+
+State this in the migration's docstring and the deploy runbook, so "atomic with the flip" is an
+**executable procedure**, not a task-name adjective.
+
+## Review deltas (independent Codex review round 3, 2026-07-15) — verdict NOT-READY, folded
+
+Run on a clean machine after two earlier round-3 attempts hung under codex congestion. All folded:
+
+- **BLOCKER — RhiresD/RprelimD product disambiguation.** Once both map to canonical `precipitation`, the
+  adapter (selects by `p.parameter in requested`) is ambiguous. → new **§0a**: a source-scoped fetch path;
+  Flow 6 writes the right product by date-vs-`R`; the hybrid reader breaks any overlap by priority. The
+  canonical parameter never carries product identity.
+- **BLOCKER — SrelD wrongly advertised as NWP/forecast-available.** `available_nwp_parameters` gates BOTH
+  past and future features, but there is no forecast sunshine product (`meteoswiss_nwp.py:56` fetches only
+  tot_prec+t_2m). → SrelD is REANALYSIS/PAST-only; wiring item 6 corrected to NOT add it to the forecast
+  set (split the set if the code conflates them).
+- **BLOCKER — temperature RMSE named but not thresholded.** → both `mean_bias` AND `rmse` now have explicit
+  pass/flag/escalate rules (pass ⟺ both within threshold).
+- **MAJOR — phase 4 marked parallel but 4B⟵4A and 4D⟵4C.** → phase 4 set non-parallel with explicit
+  task-level dependencies (4A‖4C may start; 4B after 4A; 4D after 4C).
+- **MAJOR — "5E atomic with 5D" was only a label.** → new phase-5 deployment-choreography subsection: flip
+  to hybrid FIRST, confirm serving, THEN run the binding-retirement migration; roll back both together.
+  Recorded as an executable procedure in the migration docstring + runbook.
+- **MINORS** — the priority-chain block now lists SrelD; phase-2's name no longer claims the camels
+  retirement (moved to 5E).
+
+**Codex CONFIRMED-SOUND:** cross-source precedence is hybrid priority not `version` supersession; hybrid's
+silent parameter drop is real; the extractor skips (not raises) per missing-geometry station; FI can
+already represent SrelD's `%` via `Unit.PERCENT`; the DB parameter seed (`0001_v0_schema.py:770`) is real
+and must be updated.
+
+Round-3 findings resolved. 115b decision-complete again; one more review pass advisable before READY given
+the §0a addition.
