@@ -12,7 +12,10 @@ from __future__ import annotations
 import subprocess
 from typing import TYPE_CHECKING
 
+import pytest
+
 from tools.dependency_safety import (
+    WATCHED_FILES,
     Finding,
     Verdict,
     classify_ci_workflow_diff,
@@ -28,8 +31,6 @@ from tools.dependency_safety import (
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    import pytest
 
 
 def _only(findings: list[Finding]) -> Finding:
@@ -73,7 +74,7 @@ services:
         )
         finding = _only(findings)
         assert finding.verdict is Verdict.BLOCK
-        assert finding.key == "docker-compose.yml:postgis/postgis"
+        assert finding.key == "docker-compose.yml:pgdata:postgis/postgis:16-3.4->17-3.4"
         assert "16-3.4" in finding.message
         assert "17-3.4" in finding.message
         assert "Plan 118" in finding.message
@@ -108,7 +109,9 @@ services:
 """
         finding = _only(classify_docker_compose_diff(old, new))
         assert finding.verdict is Verdict.BLOCK
-        assert finding.key == "docker-compose.yml:prefecthq/prefect"
+        assert finding.key == (
+            "docker-compose.yml:prefect_data:prefecthq/prefect:3-python3.11->4-python3.11"
+        )
         assert "Plan 118" not in finding.message
 
     def test_non_volume_service_major_bump_is_silent(self) -> None:
@@ -125,7 +128,9 @@ services:
 """
         assert classify_docker_compose_diff(old, new) == []
 
-    def test_patch_bump_on_stateful_image_is_silent(self) -> None:
+    def test_non_major_tag_bump_on_stateful_image_is_silent(self) -> None:
+        """A real (non-major, non-digest-only) tag bump on a stateful image
+        stays silent: the leading major-version digit is unchanged."""
         old = """\
 services:
   postgres:
@@ -136,7 +141,7 @@ services:
         new = """\
 services:
   postgres:
-    image: postgis/postgis:16-3.4@sha256:bbb  # postgis/postgis:16-3.4
+    image: postgis/postgis:16-3.5@sha256:aaa  # postgis/postgis:16-3.4
     volumes:
       - pgdata:/var/lib/postgresql/data
 """
@@ -172,7 +177,7 @@ FROM python:3.15.0-slim@sha256:bbb
 
         finding = _only(classify_dockerfile_diff(self._OLD, self._NEW))
         assert finding.verdict is Verdict.BLOCK
-        assert finding.key == "Dockerfile:python-base-image"
+        assert finding.key == "Dockerfile:python-base-image:3.14.6-slim->3.15.0-slim"
         assert "3.14.6-slim" in finding.message
         assert "3.15.0-slim" in finding.message
 
@@ -204,7 +209,7 @@ FROM python:3.15.0-slim@sha256:bbb
         new = "FROM debian:13-slim@sha256:bbb AS builder\n"
         finding = _only(classify_dockerfile_diff(old, new))
         assert finding.verdict is Verdict.BLOCK
-        assert finding.key == "Dockerfile:debian-base-image"
+        assert finding.key == "Dockerfile:python->debian-base-image"
 
 
 class TestClassifyPyproject:
@@ -213,7 +218,7 @@ class TestClassifyPyproject:
         new = 'requires-python = ">=3.13"\n'
         finding = _only(classify_pyproject_diff(old, new))
         assert finding.verdict is Verdict.BLOCK
-        assert finding.key == "pyproject.toml:requires-python"
+        assert finding.key == "pyproject.toml:requires-python:>=3.12->>=3.13"
         assert ">=3.12" in finding.message
         assert ">=3.13" in finding.message
 
@@ -347,6 +352,10 @@ class TestClassifyPrSkipPass:
 
 class TestAllowlistOverride:
     def test_allowlisted_key_downgrades_block_to_allow(self) -> None:
+        """The override key is EXACT (file + volume + repo + old->new tag),
+        not class-wide — see `TestAllowlistOverrideIsExactNotClassWide` for
+        the bypass this format closes (an override minted for 16->17 must
+        not silently clear 17->18 too)."""
         old = """\
 services:
   postgres:
@@ -365,14 +374,14 @@ services:
 
         blocked = classify_pr(changed)
         assert blocked.verdict is Verdict.BLOCK
+        expected_key = "docker-compose.yml:pgdata:postgis/postgis:16-3.4->17-3.4"
+        assert _only(list(blocked.findings)).key == expected_key
 
-        overridden = classify_pr(
-            changed, allowlist=frozenset({"docker-compose.yml:postgis/postgis"})
-        )
+        overridden = classify_pr(changed, allowlist=frozenset({expected_key}))
         assert overridden.verdict is Verdict.ALLOW
         assert overridden.findings == ()
         assert len(overridden.overridden) == 1
-        assert overridden.overridden[0].key == "docker-compose.yml:postgis/postgis"
+        assert overridden.overridden[0].key == expected_key
 
     def test_load_allowlist_skips_comments_and_blanks(self, tmp_path: Path) -> None:
         allowlist_file = tmp_path / ".dependency-safety-allowlist"
@@ -455,3 +464,293 @@ class TestMainSkipPassEndToEnd:
         exit_code = main(["--base-ref", base_sha])
         assert exit_code == 1
         assert "::error::" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# Adversarial-review hardening (2026-07-15): every class below reproduces a
+# concrete BLOCK-returns-ALLOW bypass found in review. Each test is proven
+# sound by running it against the pre-hardening classifier first (it fails —
+# the finding list is empty / verdict is ALLOW / exit code is 0) and only
+# then against the fixed classifier (it passes).
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyDockerfileMultiStageAndTagShapeBypasses:
+    def test_only_final_stage_bump_blocks(self) -> None:
+        """Bypass: only `old_images[0]`/`new_images[0]` (the FIRST `FROM`)
+        was ever compared. A PR bumping only the final (runtime) stage while
+        the builder stage stays pinned returned [] (ALLOW) pre-fix, because
+        the first FROM was identical on both sides.
+        """
+        old = (
+            "FROM python:3.14.6-slim@sha256:aaa AS builder\n"
+            "RUN true\n"
+            "FROM python:3.14.6-slim@sha256:aaa\n"
+        )
+        new = (
+            "FROM python:3.14.6-slim@sha256:aaa AS builder\n"
+            "RUN true\n"
+            "FROM python:3.15.0-slim@sha256:bbb\n"
+        )
+        finding = _only(classify_dockerfile_diff(old, new))
+        assert finding.verdict is Verdict.BLOCK
+        assert "3.14.6-slim" in finding.message
+        assert "3.15.0-slim" in finding.message
+
+    def test_two_component_cpython_tag_minor_bump_blocks(self) -> None:
+        """Bypass: `parse_cpython_tag` required a full `X.Y.Z` tag and
+        returned None for the valid two-component Docker Hub tag form
+        `X.Y` (e.g. `python:3.14-slim`), so `3.14-slim -> 3.15-slim` fell
+        through the `old_parts is None` early-return silently.
+        """
+        old = "FROM python:3.14-slim@sha256:aaa AS builder\n"
+        new = "FROM python:3.15-slim@sha256:bbb AS builder\n"
+        finding = _only(classify_dockerfile_diff(old, new))
+        assert finding.verdict is Verdict.BLOCK
+        assert finding.key.startswith("Dockerfile:python-base-image")
+
+    def test_platform_flag_is_not_mistaken_for_the_image(self) -> None:
+        """Bypass: `FROM --platform=... <image>` captured `--platform=...`
+        itself as "the image" (first whitespace-delimited token after
+        `FROM`). When the platform flag is identical old vs new but the
+        REAL image tag changed, `old_image == new_image` (both equal to the
+        platform-flag string) short-circuited to [] before the real image
+        was ever parsed.
+        """
+        old = "FROM --platform=linux/amd64 python:3.14.6-slim@sha256:aaa AS builder\n"
+        new = "FROM --platform=linux/amd64 python:3.15.0-slim@sha256:bbb AS builder\n"
+        finding = _only(classify_dockerfile_diff(old, new))
+        assert finding.verdict is Verdict.BLOCK
+
+
+class TestClassifyDockerComposeVolumeKeyedBypasses:
+    def test_service_renamed_reusing_volume_major_bump_still_blocks(self) -> None:
+        """Bypass: the classifier keyed on the service NAME
+        (`new_services.items()` / `old_services.get(name)`). Renaming
+        `postgres` -> `db` while reusing the same `pgdata` named volume and
+        bumping the major made `old_services.get("db")` return nothing, so
+        `old_image` was treated as absent and the whole service was
+        skipped -- a manual major bump slipped through as long as it came
+        with a rename.
+        """
+        old = """\
+services:
+  postgres:
+    image: postgis/postgis:16-3.4@sha256:aaa  # postgis/postgis:16-3.4
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+"""
+        new = """\
+services:
+  db:
+    image: postgis/postgis:17-3.4@sha256:bbb  # postgis/postgis:16-3.4
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+"""
+        finding = _only(classify_docker_compose_diff(old, new))
+        assert finding.verdict is Verdict.BLOCK
+        assert finding.key == "docker-compose.yml:pgdata:postgis/postgis:16-3.4->17-3.4"
+
+    def test_brand_new_volume_mounted_image_is_flagged_not_silent(self) -> None:
+        """Bypass: adding a wholly NEW volume-mounted stateful service was
+        silent -- `old_services.get(name)` found nothing for the new
+        service name, `old_image` was None, and the loop skipped it exactly
+        like the "not a real change" case. Post-fix: a brand-new
+        volume-backed image is at least REVIEW (no prior version exists to
+        diff a major against, so it cannot be BLOCK).
+        """
+        old = "services:\n  api:\n    image: sapphire-flow:1.0.0\n"
+        new = """\
+services:
+  api:
+    image: sapphire-flow:1.0.0
+  redis:
+    image: redis:7-alpine@sha256:ccc
+    volumes:
+      - redis_data:/data
+"""
+        finding = _only(classify_docker_compose_diff(old, new))
+        assert finding.verdict is not Verdict.ALLOW
+
+    def test_digest_only_change_on_stateful_volume_is_never_silent(self) -> None:
+        """Bypass: the classifier parsed the version from the `image:`
+        field AFTER dropping the `@sha256:...` digest
+        (`_parse_image_field`), then compared only the resulting tags. A
+        human can leave the tag `postgis/postgis:16-3.4` unchanged while
+        re-pinning to a completely different digest -- old_tag == new_tag
+        short-circuited to a silent ALLOW even though the actual image
+        content pulled could be any major version.
+        """
+        old = """\
+services:
+  postgres:
+    image: postgis/postgis:16-3.4@sha256:aaa  # postgis/postgis:16-3.4
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+"""
+        new = """\
+services:
+  postgres:
+    image: postgis/postgis:16-3.4@sha256:zzz  # postgis/postgis:16-3.4
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+"""
+        finding = _only(classify_docker_compose_diff(old, new))
+        assert finding.verdict is not Verdict.ALLOW
+        assert "aaa" in finding.message
+        assert "zzz" in finding.message
+
+
+class TestAllowlistOverrideIsExactNotClassWide:
+    _OLD_16 = """\
+services:
+  postgres:
+    image: postgis/postgis:16-3.4@sha256:aaa  # postgis/postgis:16-3.4
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+"""
+    _NEW_17 = """\
+services:
+  postgres:
+    image: postgis/postgis:17-3.4@sha256:bbb  # postgis/postgis:16-3.4
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+"""
+    _NEW_18 = """\
+services:
+  postgres:
+    image: postgis/postgis:18-3.4@sha256:ccc  # postgis/postgis:16-3.4
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+"""
+
+    def test_override_does_not_clear_a_different_major_transition(self) -> None:
+        """Bypass: pre-hardening, the override key was class-wide --
+        `docker-compose.yml:postgis/postgis` -- with no old->new tag
+        transition encoded. An entry minted (and code-reviewed) to clear
+        the 16->17 bump would ALSO silently clear every future major on
+        that image, e.g. 17->18, 18->19, forever. Proof: an allowlist
+        containing exactly that class-wide string must NOT clear a 17->18
+        bump post-fix -- the exact (tag-scoped) key format no longer
+        matches that string at all.
+        """
+        class_wide_key = "docker-compose.yml:postgis/postgis"  # pre-hardening shape
+
+        result = classify_pr(
+            {"docker-compose.yml": (self._NEW_17, self._NEW_18)},
+            allowlist=frozenset({class_wide_key}),
+        )
+        assert result.verdict is Verdict.BLOCK
+        assert result.overridden == ()
+        finding = _only(list(result.findings))
+        assert finding.key != class_wide_key
+        assert finding.key == "docker-compose.yml:pgdata:postgis/postgis:17-3.4->18-3.4"
+
+    def test_exact_key_still_clears_its_own_bump(self) -> None:
+        """Converse: an override minted for the CURRENT finding's exact key
+        still works -- this is not a regression to "nothing can ever be
+        overridden", just "the override must name the exact bump".
+        """
+        blocked = classify_pr({"docker-compose.yml": (self._OLD_16, self._NEW_17)})
+        finding = _only(list(blocked.findings))
+
+        overridden = classify_pr(
+            {"docker-compose.yml": (self._OLD_16, self._NEW_17)},
+            allowlist=frozenset({finding.key}),
+        )
+        assert overridden.verdict is Verdict.ALLOW
+        assert overridden.findings == ()
+        assert len(overridden.overridden) == 1
+
+
+class TestSelfPolicyFileChangeIsNeverSilent:
+    """Bypass: the gate excluded its OWN policy files from WATCHED_FILES /
+    `_CLASSIFIERS` entirely. A PR could weaken `tools/dependency_safety.py`,
+    its workflow, or `.github/dependabot.yml` while making a dangerous bump
+    elsewhere, and the neutered classifier would judge itself -- silently,
+    since none of these paths had a registered classifier.
+    """
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "tools/dependency_safety.py",
+            ".github/workflows/dependency-safety.yml",
+            ".github/dependabot.yml",
+            ".dependency-safety-allowlist",
+        ],
+    )
+    def test_self_policy_file_change_is_flagged(self, path: str) -> None:
+        result = classify_pr({path: ("old content\n", "new content\n")})
+        assert result.verdict is not Verdict.ALLOW
+        assert result.findings != ()
+
+    def test_watched_files_includes_gate_policy_files(self) -> None:
+        assert "tools/dependency_safety.py" in WATCHED_FILES
+        assert ".github/workflows/dependency-safety.yml" in WATCHED_FILES
+        assert ".github/dependabot.yml" in WATCHED_FILES
+        assert ".dependency-safety-allowlist" in WATCHED_FILES
+
+
+class TestGatherChangedWatchedFilesFailsClosed:
+    def _init_repo(self, repo: Path) -> None:
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "test@example.com"], cwd=repo, check=True
+        )
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+
+    def _commit(self, repo: Path, message: str) -> str:
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", message], cwd=repo, check=True)
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    def test_main_fails_closed_when_base_content_unreadable_for_modified_file(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Bypass: `_git_show` failures were swallowed and substituted with
+        `""` (empty old text) for ANY failure reason, not just a genuine
+        add. A transient `git show` failure on a MODIFIED watched file made
+        every classifier see an empty "old" -- indistinguishable from "this
+        file was just added" -- which for docker-compose.yml means
+        `old_image` is missing and the whole finding is skipped. Proof:
+        monkeypatch `_git_show` to always fail while a REAL dangerous major
+        bump sits in the working tree; pre-fix `main()` returns 0 (pass)
+        despite the failure. Post-fix it must fail closed (non-zero).
+        """
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        self._init_repo(repo)
+        (repo / "docker-compose.yml").write_text(
+            "services:\n"
+            "  postgres:\n"
+            "    image: postgis/postgis:16-3.4@sha256:aaa\n"
+            "    volumes:\n"
+            "      - pgdata:/var/lib/postgresql/data\n"
+        )
+        base_sha = self._commit(repo, "base")
+
+        (repo / "docker-compose.yml").write_text(
+            "services:\n"
+            "  postgres:\n"
+            "    image: postgis/postgis:17-3.4@sha256:bbb\n"
+            "    volumes:\n"
+            "      - pgdata:/var/lib/postgresql/data\n"
+        )
+        self._commit(repo, "bump postgis major")
+
+        monkeypatch.chdir(repo)
+        monkeypatch.setattr("tools.dependency_safety._git_show", lambda ref, path: None)
+
+        exit_code = main(["--base-ref", base_sha])
+        assert exit_code == 1
+        assert "base content" in capsys.readouterr().err.lower()
