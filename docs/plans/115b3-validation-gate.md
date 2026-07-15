@@ -31,15 +31,21 @@ CAMELS-CH's forcing (`RhiresD`/`TabsD`/`SrelD`, Höge et al. 2023) and ours shar
 comparison is **not** a clean attributable control — named confounds: grid vintage/resolution (CAMELS 2 km
 vs open-data 1 km), reprocessing, and (NEEDS-EXTERNAL-CHECK) whether CAMELS' shipped shapefiles are the exact
 masks it aggregated forcing over. The **biggest** confound is likely gone — our basins ARE CAMELS' shipped
-geometries (`camelsch_adapter.py:262-301` → stored `onboarding.py:240-248`) — but confirm before leaning on it.
+geometries (`camelsch_adapter.py:262-301` → stored `onboarding.py:240-248`) — but confirm before leaning on
+it. **If they turn out NOT to be CAMELS' aggregation masks, that confound WIDENS/reinterprets the
+tolerances (a systematic per-basin offset to explain), NOT a hard blocker to running the gate.**
 
 ### Tolerance gates (owner-locked, 115b §8)
 
-**PRECIPITATION** — per-basin relative bias of the **1981-2020 TOTAL**:
+**PRECIPITATION** — per-basin **absolute** relative bias of the **1981-2020 TOTAL** (gate on the
+magnitude; **report the SIGNED value** so direction is visible — a 15%-drier basin must NOT pass):
 ```
-rel_bias = (Σours − Σcamels) / Σcamels     per basin
-  ≤ 5%  → pass ;  > 5%  → FLAG ;  > 20% → ESCALATE to owner (NOT an auto-stop)
+rel_bias = (Σours − Σcamels) / Σcamels     per basin, signed, over [1981-01-01, 2021-01-01)
+  |rel_bias| ≤ 5%  → pass ;  |rel_bias| > 5%  → FLAG ;  |rel_bias| > 20% → ESCALATE (NOT an auto-stop)
 ```
+**Degenerate denominator:** if `Σcamels ≤ 0` or the CAMELS side is incomplete for a basin, do **not**
+divide — classify as a **data-quality escalation**, not a pass. (Should never occur for a real Swiss
+40-year total, but the gate must be total.)
 **TEMPERATURE** — per-basin absolute error in °C (percent banned near 0):
 ```
 pass ⟺ |mean_bias| ≤ 0.5 °C AND rmse ≤ 1.0 °C ;  FLAG if either exceeds ;  ESCALATE if |mean_bias|>1.0 or rmse>2.0
@@ -52,14 +58,29 @@ whole-period bias may be a legitimate grid-change consequence and must be **expl
 
 ## Tasks (phase 4)
 
-- **4A — basin-mean comparison 1981-2020** (precip `RhiresD` + temp `TabsD`, our polygons vs CAMELS').
+- **4A — basin-mean comparison 1981-2020.** Pin both sides explicitly (both read from `historical_forcing`
+  by `source` + canonical `parameter`, `spatial_type=BASIN_AVERAGE`, over the window
+  **`[1981-01-01T00:00Z, 2021-01-01T00:00Z)`**):
+
+  | axis | OURS (115b2 backfill) | CAMELS reference |
+  |---|---|---|
+  | precipitation | `source=meteoswiss_rhiresd`, `parameter=precipitation` | `source=camels-ch`, `parameter=precipitation` |
+  | temperature | `source=meteoswiss_tabsd`, `parameter=temperature` | `source=camels-ch`, `parameter=temperature` |
+
+  (CAMELS writes these at `camelsch_adapter.py:130`; source-keyed reads at `historical_forcing_store.py:55`.)
+  **Missing-data behaviour: a basin or date present on one side but not the other FAILS/escalates — do
+  NOT silently inner-join** (a silent join would hide exactly the coverage gap the gate must catch).
 - **4B — tolerance report** (per-basin bias/RMSE + the seasonal/intensity diagnostics; apply the gates).
   *(4B depends on 4A.)*
-- **4C — fetch the RprelimD/RhiresD overlap window.** The clean live-tail comparison has **no data in our
-  DB** (audit: only `camels-ch`) and the backfill spans are disjoint by construction — so this is a
-  SEPARATE one-off STAC fetch of a recent window where BOTH products are served (RprelimD retained ~2
-  months; RhiresD republishes over it with its lag). *(Live probe 2026-07-15: overlap ~16 days and moving —
-  accumulate over several monthly cycles; a single grab is only ~2 weeks of paired days.)*
+- **4C — fetch the RprelimD/RhiresD overlap window (executable rule).** The overlap window =
+  the **STAC date INTERSECTION of `RhiresD` and `RprelimD`** availability (both discovered via 115b1's
+  per-product high-water-mark helper). Fetch both products over that intersection via 115b1's
+  product-scoped adapter path (`fetch_products`), through our polygons. Compare **only paired basin/date
+  rows** (a date/basin present for one product but not the other is excluded, and the exclusion count
+  logged). **Done criterion: record the observed date range and the paired-sample count.** This is
+  SEPARATE from the backfill (the archive spans are disjoint by construction, 115b2). *(Live probe
+  2026-07-15: intersection ~16 days and moving — accumulate over several monthly cycles; a single grab is
+  only ~2 weeks of paired days, and 4D must say so.)*
 - **4D — live-tail residual** (`RprelimD` vs `RhiresD` over 4C's overlap: same pipeline, polygons, grid,
   vintage → **the one genuinely attributable number** in the plan; the honest uncertainty on the ~8-week
   preliminary window). *(4D depends on 4C.)*
@@ -94,9 +115,9 @@ whole-period bias may be a legitimate grid-change consequence and must be **expl
 ```bash
 uv run ruff check src/ tests/ && uv run pyright src/ && uv run pytest
 ```
-Plus: **run 4A–4D on staging and record the per-basin results.** If precip TOTAL rel-bias >5% or temp
-exceeds threshold on any basin, it is **FLAGGED and explained** before 115b4 proceeds; >20% / large temp
-**escalates to the owner**. 115b4 (the flip) does **not** start until this gate's result is recorded and,
+Plus: **run 4A–4D on staging and record the per-basin results.** If **`|precip TOTAL rel-bias|` > 5%** or
+temp exceeds threshold on any basin, it is **FLAGGED and explained** before 115b4 proceeds;
+**`|rel-bias|` > 20%** / large temp **escalates to the owner**. 115b4 (the flip) does **not** start until this gate's result is recorded and,
 if flagged, dispositioned.
 
 ## Provenance
