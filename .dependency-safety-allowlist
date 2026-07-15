@@ -6,8 +6,15 @@
 # safety-gate.md §2).
 #
 # One finding key per line. A finding's key is printed in its BLOCK message
-# (format: "<watched-file>:<identifier>", e.g.
-# "docker-compose.yml:postgis/postgis" or "pyproject.toml:requires-python").
+# and is EXACT-scoped to the specific old->new transition — an override clears
+# ONLY the bump it names, never the whole image class. Copy the key VERBATIM
+# from the BLOCK message; do not hand-write a generic one. Real key shapes:
+#   docker-compose.yml:<volume>:<repo>:<old-tag>-><new-tag>
+#     e.g. docker-compose.yml:pgdata:postgis/postgis:16-3.4->17-3.4
+#   Dockerfile:python-base-image:<old>-><new>
+#   pyproject.toml:requires-python:<old>-><new>
+# A too-generic key like "docker-compose.yml:postgis/postgis" matches NO real
+# BLOCK and so would silently fail to override it.
 # Blank lines and lines starting with `#` are ignored.
 #
 # --- No active entries as of 2026-07-15 ---

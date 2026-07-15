@@ -464,7 +464,11 @@ persistent volume.
    filter — see `cicd.md` § `dependency-safety.yml` for why) and diffs a
    fixed watched-file set against the PR base SHA:
    `docker-compose.yml`, `Dockerfile`, `pyproject.toml`, `uv.lock`,
-   `.github/workflows/ci.yml`.
+   `.github/workflows/ci.yml`, **plus the gate's own self-policy files**
+   (`tools/dependency_safety.py`, `.github/workflows/dependency-safety.yml`,
+   `.github/dependabot.yml`, `.dependency-safety-allowlist`) — added in the
+   2026-07-15 hardening so a PR cannot weaken the classifier, its trigger,
+   Dependabot's ignore rules, or the override allowlist silently.
 
    **BLOCK** (job fails, with an actionable message pointing at the fix —
    e.g. Plan 118 for a postgis bump):
@@ -480,6 +484,9 @@ persistent volume.
 
    **REVIEW** (job passes, writes an advisory notice to
    `$GITHUB_STEP_SUMMARY` — never a PR comment):
+   - a change to **any of the gate's own self-policy files** (the classifier,
+     its workflow, `dependabot.yml`, or `.dependency-safety-allowlist`) — so
+     self-modification and allowlist edits are surfaced, never silent;
    - a change to the FI/recap git-pin or the `wheel-only-guard` machinery;
    - a **major** bump of a native/compiled-extension runtime dependency
      (`cfgrib`, `rioxarray`, `exactextract`, `forecastinterface`) — ABI/GDAL/

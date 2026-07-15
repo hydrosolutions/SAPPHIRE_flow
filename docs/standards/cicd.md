@@ -405,8 +405,10 @@ Operational shape: checks out with `fetch-depth: 0` (needs the PR base
 commit for `git show <base-sha>:<path>`), then runs
 `tools/dependency_safety.py`, which diffs a fixed watched-file set
 (`docker-compose.yml`, `Dockerfile`, `pyproject.toml`, `uv.lock`,
-`.github/workflows/ci.yml`) against the PR base SHA and classifies the
-change BLOCK / REVIEW / ALLOW. If none of the watched files changed, the
+`.github/workflows/ci.yml`, plus the gate's own self-policy files —
+`tools/dependency_safety.py`, `.github/workflows/dependency-safety.yml`,
+`.github/dependabot.yml`, `.dependency-safety-allowlist`) against the PR
+base SHA and classifies the change BLOCK / REVIEW / ALLOW. If none of the watched files changed, the
 script exits 0 immediately (skip-pass) — the job always reports a concrete
 pass/fail, never GitHub's `Expected`/pending state, which is what makes it
 safe to mark as a required check later. Policy rationale (why the gate
