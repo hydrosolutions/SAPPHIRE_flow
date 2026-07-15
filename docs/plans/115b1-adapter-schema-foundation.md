@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-07-15
 plan: 115b1
 parent: 115b
@@ -18,8 +18,10 @@ blocks: [115b2]
 
 ## Status
 
-**DRAFT.** First of four chunks 115b was split into (115b1 foundation → 115b2 bindings+backfill → 115b3
-validation gate → 115b4 reader-flip). Iteratively reviewed by an independent Codex agent before READY.
+**READY** (2026-07-15). Two independent Codex plan-review rounds → READY-TO-IMPLEMENT (round 1 caught a
+real cross-chunk seam — the Flow-6 fail-closed break — fixed by owning the Flow-6 rewrite here as 1G;
+round 2 confirmed the seam closed, no other caller missed, effect-neutral). First of four chunks
+(**115b1** → 115b2 → 115b3 → 115b4). Implementation authorised; hold at PR.
 
 ## Why this is the safe first slice
 
@@ -52,7 +54,7 @@ behaviour change, because Flow 6 produces nothing either way today.
   variable names, dims, CRS normalisation, and `exactextract` compatibility.
 - **1D — dynamic `R` boundary.** `RhiresD` publishes **monthly** (~25th of the following month); the
   preliminary boundary `R` = the latest published `RhiresD` date, **discovered from STAC**, not a fixed
-  offset. Provide the helper the backfill (115b2) and Flow 6 (115b4) both consume.
+  offset. Provide the helper that **Flow 6 consumes in THIS plan via 1G**, and the 115b2 backfill consumes.
 - **1E — past-vs-future availability split (round-4/5 finding — a REQUIRED code change).**
   `DeploymentConfig.available_nwp_parameters` is today the **only** set (`config/deployment.py:124-127`),
   used for **both** past and future compatibility — `onboard_model` passes it as `available_features`
@@ -117,14 +119,14 @@ behaviour change, because Flow 6 produces nothing either way today.
     {
       "id": "phase-1",
       "name": "Adapter + schema foundation (additive; no behaviour change)",
-      "tasks": ["1A-products-rhiresd-sreld", "1B-archive-asset-selection", "1C-real-lv95-fixture", "1D-dynamic-rhiresd-boundary", "1E-past-vs-future-availability-split", "1F-writer-side-product-scoped-fetch"],
+      "tasks": ["1A-products-rhiresd-sreld", "1B-archive-asset-selection", "1C-real-lv95-fixture", "1D-dynamic-rhiresd-boundary", "1E-past-vs-future-availability-split", "1F-writer-side-product-scoped-fetch", "1G-flow6-fetch-products-rewrite"],
       "parallel": false,
       "depends_on": ["plan-115a"]
     }
   ]
 }
 ```
-*(1A before 1E/1F; 1B before 1C; 1D standalone. Sequential is fine — small phase.)*
+*(1A before 1E/1F; 1B before 1C; **1D before 1F/1G** (the boundary helper); 1G last (needs 1F + 1D). Sequential is fine — small phase.)*
 
 ## Exit gates
 
