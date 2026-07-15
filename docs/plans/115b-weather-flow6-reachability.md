@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-07-14
 plan: 115b
 parent: 115
@@ -16,7 +16,7 @@ blocks: [115c]
 
 ## Status
 
-**DRAFT — re-authored 2026-07-14.** Depends on **115a**.
+**READY** (owner, 2026-07-15). Depends on **115a** (MERGED). Implementation authorised; hold at PR.
 
 This plan was originally "make Flow 6 reachable and flip the hybrid default." The audit and the §0
 investigation changed what it is: **it now builds the forcing data path, because there has never been
@@ -142,7 +142,10 @@ a precipitation request returns.)*
    by `p.parameter in requested` (`meteoswiss_open_data_reanalysis.py:138-147`) — adding both precip
    products makes `"precipitation"` ambiguous on that path. **Resolution: add a SEPARATE writer-side
    product-scoped entry point on the concrete `MeteoSwissOpenDataReanalysisAdapter`** —
-   `fetch_products(products: list[ForcingSource], start, end, parameters) -> list[RawHistoricalForcing]`,
+   `fetch_products(products: list[ForcingSource], station_configs: list[StationWeatherSource], start, end,
+   parameters) -> list[RawHistoricalForcing]` (**`station_configs` is required** — it matches the existing
+   `fetch_reanalysis` shape; the adapter filters configs and passes them into extraction,
+   `meteoswiss_open_data_reanalysis.py:138,159,229` → `exact_extract_grid_extractor.py:47`; do NOT drop it),
    used ONLY by the backfill + Flow 6 ingest. **The SPLIT RULE (which product per date, relative to `R`)
    is one rule applied over TWO different windows by two different callers (round-5 blocker 1):**
    - **Phase-3 backfill** owns the historical span: `RHIRESD` over `[1981-01-01, R]`, `RPRELIMD` over
@@ -362,13 +365,14 @@ definitive data lands. It simply ingests `RhiresD` for those dates, and the prio
 
 > **⚠️ ORDERING — TWO constraints (review rounds 1 & 2).**
 >
-> **(a) The camels-ch retirement (§4/2C) must NOT precede the hybrid flip (phase 5).** `single` — the
+> **(a) The camels-ch retirement (task 5E) must NOT precede the hybrid flip (5D).** `single` — the
 > default reader until phase 5 — looks a binding up by `cfg.nwp_source` (`store_backed_reanalysis.py:31`).
 > If we retire the `camels-ch` binding while `single` is still default, and the MeteoSwiss rows live under
 > product tags (`meteoswiss_rhiresd`) that `single` cannot resolve from the `meteoswiss_open_data_reanalysis`
 > binding name, a station is left with **no readable reanalysis source at all** in the intermediate state.
 > **So: keep the camels-ch binding until the hybrid chain is the default (make retirement atomic with the
-> flip), or guard `single` first.** The dependency graph is corrected below — `2C` moves to phase 5.
+> flip), or guard `single` first.** In the dependency graph the retirement is **task 5E** (atomic with the
+> 5D flip); phase-2's `2C` is the onboarding per-station backfill, a different task.
 >
 > **(b) The MeteoSwiss binding must exist BEFORE the backfill runs.** The adapter only
 > processes configs that declare its own `nwp_source` (`meteoswiss_open_data_reanalysis.py:145`), and
@@ -659,9 +663,11 @@ misleading; the operator wants the served truth plus its provenance.)*
   `historical_forcing` are untouched and still readable by a direct source-keyed fetch.
 - Converter guards reject a reanalysis tag.
 - **Writer-side product-scoped fetch (§0a/1F):** the adapter's product-scoped entry point returns ONLY the
-  requested product; a `RHIRESD`-scoped call never yields `RprelimD` rows and vice versa. Flow 6 issues the
-  two calls split at `R` (`[1981-01-01,R]` RhiresD, `[R+1d,T-1d]` RprelimD) and the two archive spans do not
-  overlap. *Soundness: fails against the old single `_CANONICAL_PARAMETERS` call.*
+  requested product; a `RHIRESD`-scoped call never yields `RprelimD` rows and vice versa. **Split-rule
+  coverage (one rule, two callers/windows — §0a):** the *phase-3 backfill* issues the two calls over the
+  historical span (`RhiresD [1981-01-01,R]`, `RprelimD [R+1d,T-1d]`); *Flow 6* (rolling) issues them over
+  its window (`RhiresD [start, min(R+1d,end))`, `RprelimD [max(start,R+1d), end)`). Both are disjoint and
+  never overlap. *Soundness: fails against the old single `_CANONICAL_PARAMETERS` call.*
 - **SrelD priority resolution:** a `relative_sunshine_duration` request resolves via the single-source
   `SRELD` chain; the hybrid reader (keyed on exact `row.parameter`, `hybrid_reanalysis.py:77-84`) returns
   the `meteoswiss_sreld` row.
