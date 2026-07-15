@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-07-15
 plan: 115b2
 parent: 115b
@@ -17,7 +17,7 @@ blocks: [115b3]
 
 ## Status
 
-**DRAFT.** Second chunk (115b1 → **115b2** → 115b3 → 115b4). Independent Codex review before READY.
+**READY** (2026-07-15). Three independent Codex plan-review rounds → READY-TO-IMPLEMENT (round 1: two real scale blockers — resumability gap key, per-product availability bounds; round 2: content-hash version policy + stale-range propagation; round 3: clean). Second chunk (115b1 → **115b2** → 115b3 → 115b4). Implementation authorised; hold at PR.
 
 ## Why these two phases are one chunk
 
