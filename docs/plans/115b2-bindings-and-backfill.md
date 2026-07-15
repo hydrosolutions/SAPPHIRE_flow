@@ -59,10 +59,14 @@ a dedicated chunked path:
   So **gap detection keys on the LOGICAL key**: `(station_id, source, valid_time, parameter, spatial_type,
   band_id, member_id)` — a date is "present" if a row exists for that logical key regardless of version. A
   re-run inserts only logical keys with no existing row; `on_conflict_do_nothing` makes a duplicate insert a
-  no-op, so the backfill is idempotent. **Version policy:** the initial backfill writes version 1; a *later*
-  reprocessed MeteoSwiss file for the same logical key is a **within-source** supersession (a higher version
-  of the same product), handled by the existing latest-version mechanism — NOT a cross-source concern, and
-  NOT something the initial backfill must handle. Re-run interruptible, because it will be interrupted.
+  no-op, so the backfill is idempotent. **Version policy (round-2 correction — MeteoSwiss uses CONTENT-HASH
+  versions, not incrementing integers):** the backfill **preserves the adapter-produced content-hash
+  `version`** (`meteoswiss_open_data_reanalysis.py:10,242,259`); it does not assign "version 1". A *later*
+  reprocessed file for the same logical key is a **within-source** supersession — a **different content
+  hash inserted later** — and latest-row selection picks it by **`created_at`/`id`** (insertion order), NOT
+  by comparing version values (`historical_forcing_store.py:84-102`). So the initial backfill does nothing
+  special for versions; supersession is automatic and NOT a cross-source concern. Re-run interruptible,
+  because it will be interrupted.
 - **3D — eligible stations only.** "Every operational station" means **every station with a valid basin
   polygon**. `ExactExtractGridExtractor` **skips** invalid-geometry stations and raises only if none are
   valid (`exact_extract_grid_extractor.py:64-89`), so a station silently missing a polygon would be
@@ -94,8 +98,9 @@ not a request path.
   (product, year, station) chunks; no chunk is written twice, none skipped.
 - **Eligible-stations pre-enumeration (3D):** an operational station with no basin polygon is **logged and
   excluded**, not silently dropped; a run over N eligible stations writes exactly N stations' rows.
-- **Split-rule coverage (backfill window):** the historical backfill writes `RhiresD` over `[1981,R]` and
-  `RprelimD` over `[R+1d,T-1d]`, disjoint, under their own source tags.
+- **Split-rule coverage (backfill window):** the historical backfill writes `RhiresD` over
+  `[1981-01-01, R+1d)` and `RprelimD` over `[R+1d, hwm(rprelimd)+1d)`, disjoint (half-open), under their own
+  source tags; the four other products span `[1981-01-01, hwm(p)+1d)`.
 - **New-station onboarding (2C):** a station onboarded after this plan gets forcing rows (or is held out of
   operational), never a binding with zero rows.
 - **Resumability gap key (3C):** a backfill interrupted after writing some logical keys and re-run writes
@@ -139,7 +144,8 @@ uv run pytest
 
 **Deploy gate (staging, do not skip):** run the backfill for the 2 staging stations; confirm
 `historical_forcing` gains `meteoswiss_rhiresd`/`tabsd`/`tmind`/`tmaxd`/`sreld` (and `rprelimd` for the
-tail) with `MAX(valid_time)` advancing to ~T-1d. **A green flow is not evidence** — check the rows.
+tail) with **per-source `MAX(valid_time)` advancing to each product's STAC high-water mark** (`RhiresD` to
+`hwm(rhiresd)`, `RprelimD` to `hwm(rprelimd)`, etc.). **A green flow is not evidence** — check the rows.
 
 ## Provenance
 
