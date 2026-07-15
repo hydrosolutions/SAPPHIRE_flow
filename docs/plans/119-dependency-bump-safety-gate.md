@@ -328,6 +328,36 @@ that carries a dangerous bump**, and the neutered classifier would judge itself.
   §0 prevention + the classifier's fail-closed parsing. The self-modification vector is a different, and
   strictly harder, threat.
 
+### 3b. Enforcement-phase parser hardening (deferred WITH the required-check ruleset)
+
+Three adversarial cross-checks of the implementation converged: rounds 1-2's direct bypasses are **all
+closed** (multi-stage Dockerfile, compose rename/re-add/new-image, digest-only, class-wide allowlist,
+fail-open base resolution, unparseable/alias tags, shared-volume overwrite, mutable stateful tags). Round 3
+then found a residual tail of **adversarial-human-only** parser edge cases. They are tracked here and land
+**with §3a / the required-check ruleset**, not in the advisory first landing — because on an advisory gate
+(no branch protection) an adversarial human can ignore a red X outright, so evading the parser buys them
+nothing. Each requires a deliberately crafted PR, never an accidental Dependabot bump (which §0 prevents):
+
+- **Multi-service compose downgrade.** Rename the stateful service `postgres`→`db` at `17-3.4` **and** add
+  a second decoy service mounting the same `pgdata` — the "exactly one unmatched old/new" pairing is
+  skipped and both become REVIEW entrants instead of BLOCK. Fix: pair same-repo old/new candidates on a
+  shared volume before the new-entrant fallback.
+- **Bare/tagless stateful image.** `postgis/postgis:16-3.4@sha256:… → postgis/postgis` (no tag) parses as
+  repo `""` and only REVIEWs. Fix: parse a tagless ref as `(repo=value, tag="")` and BLOCK a tag→empty
+  transition on a stateful volume.
+- **`ci.yml` service rename.** The ephemeral-service REVIEW keys on service name, so a `services.postgres`
+  →`services.db` rename at a new major misses. Fix: compare postgis service images per job independent of
+  the service key.
+- **(minor) whole-file-added Dockerfile** returns early on empty `old_images` — not exploitable while
+  `Dockerfile` exists on `main`, but it contradicts the added-stage fail-closed logic; tighten when
+  convenient.
+
+**Disposition:** advisory first landing ships now (real value for the accidental #78 vector; §0 prevention
+is the airtight primary control). This tail + §3a (trusted-base execution) is one follow-up, gated on the
+owner enabling the required-check ruleset (§3). A parser is an unbounded adversarial surface; the principled
+stopping point for the advisory phase is "all accidental-merge vectors closed + fail-closed on ambiguity,"
+which is met.
+
 ### 4. Optional, higher-value: an "upgrade against real data" smoke
 
 For the stateful class specifically, a nightly (not per-PR — too slow/stateful) job that:
