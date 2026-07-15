@@ -140,13 +140,22 @@ the high/low precipitation frequency and duration indices.
 **You do not need anything from us to compute these.** No SAPPHIRE forcing, no Data
 Gateway round-trip, no waiting for us to back-extract a historical record. Delineation
 and static extraction are one self-contained step, and the package arrives complete in a
-single delivery. Please compute Group B over Caravan's standard
-**1981-01-01 … 2020-12-31** window so the values stay comparable with published Caravan.
+single delivery.
 
-The source is **ERA5-Land** (confirmed), which matches Caravan's published values and
-the `_ERA5_LAND` suffix your column names already carry. Please still record
-`source_dataset` and the climatology window per column in `feature_catalog.json`, so
-the provenance survives if the product ever changes.
+**Climatology window — please do NOT lock to the Caravan 1981–2020 window.** The main
+use case here is the v1 DHM deployment, where there is no Caravan dataset to reproduce,
+so comparability with published Caravan is not the goal. What we need instead is a
+**single fixed ~30-year window applied to every basin and region**, so the indices are
+internally comparable across the whole deployment. Our default is
+**`1991-01-01 … 2020-12-31`** (the WMO 30-year normal, fully covered by ERA5-Land) — use
+that unless we agree otherwise. The critical thing is that it is the **same window
+everywhere**: please don't default to each basin's own record length, which would make
+the indices incomparable. Record the window in `manifest.json` and in
+`feature_catalog.json`.
+
+The source is **ERA5-Land** (confirmed). Please still record `source_dataset` and the
+climatology window per column in `feature_catalog.json`, so the provenance survives if
+the product or window ever changes.
 
 ---
 
@@ -210,8 +219,10 @@ record which package produced every attribute value a model was trained on.
    region-prefixed regardless of what the GeoPackage carried? And can you write the
    already-prefixed `gauge_id` into `basins.gpkg` so both files agree? (Watch-out 1 —
    this is the one that fails silently.)
-3. Can you compute the climate indices over Caravan's **1981-01-01 … 2020-12-31**
-   window, so the values stay comparable with published Caravan?
+3. Can you compute the climate indices over a **fixed `1991-01-01 … 2020-12-31`
+   window** (WMO normal), applied identically to every basin and region? If ERA5-Land
+   coverage or your pipeline suggests a better fixed ~30-year window, propose it — the
+   only hard rule is that it is the same everywhere and documented.
 4. Do you have a view on who regenerates packages after handover — you, HSOL, or DHM?
 5. Are there DHM gauge IDs that are **not** unique after lowercasing and normalisation?
    (This is the collision case in §2 — we need to know before you build the package.)

@@ -405,6 +405,38 @@ as a column in this file and MUST have a non-null value for every basin assigned
 that model, unless the model-specific onboarding plan explicitly allows missing
 values.
 
+### 6.2a What SAP3 stores — the Parquet is interchange, not the store
+
+The Parquet is an **import artifact**. SAP3 does not keep it as the operational
+source. On import, SAP3 dissolves it into existing storage:
+
+| What | Where it lands | Form |
+|---|---|---|
+| Each basin's attribute **values** (every `Float64` column, including the climate indices) | `basins.attributes` **JSONB** (one dict per basin) | `{attribute_name: value}` |
+| Basin **geometry** (from `basins.gpkg`) | `basins.geometry` | 2-D `MultiPolygon`, EPSG:4326 |
+| `area_km2`, `regional_basin` | existing `basins` columns | scalar |
+| Band geometries (from `bands.gpkg`, if present) | `basins.band_geometries` JSONB | list |
+
+What SAP3 does **not** store:
+
+- **The Parquet or GeoPackage files themselves** — they are consumed and discarded
+  (checksums and `package_id` are retained as provenance; see §11).
+- **The daily ERA5-Land forcing series** behind the climate indices — only the reduced
+  scalar indices are kept. SAP3 never sees that series; the extractor computed it.
+- **`gauge_id` as an operational key** — it is used only to join the two package files
+  at import time; SAP3's operational identity is `station_code`.
+
+Two consequences worth stating:
+
+- **The full attribute set is stored, not just what current models use.** Models
+  filter `basins.attributes` down to their declared `static_features` at read time
+  (see the `static` slot in `docs/spec/types-and-protocols.md`), so an attribute no
+  model needs yet is stored, cost-free, against a future model that does.
+- **Per-attribute provenance (which `package_id`, which climatology window) has no
+  first-class field yet.** `basins.attributes` is a flat value dict. Recording *which
+  package* produced each value is the persistence gap noted in §5a and in
+  `architecture-context.md` (Flow 5 step 5.2a) — the implementing plan owns it.
+
 ### 6.3 Geometry-derived vs forcing-derived attributes — the package is self-contained
 
 The attribute set splits into two groups by **input**, but **both are produced by the
@@ -414,12 +446,27 @@ Gateway, or on any historical back-extraction step.
 | Group | Input | Source |
 |---|---|---|
 | **A — geometry-derived** | basin polygon + HydroATLAS / DEM / global rasters | the extractor's global raster archive |
-| **B — forcing-derived** (Caravan climate indices) | catchment-averaged daily precipitation, mean temperature, and PET | **the extractor's own global ERA5 archive (S3)** |
+| **B — forcing-derived** (Caravan-style climate indices) | catchment-averaged daily precipitation, mean temperature, and PET, over a fixed ~30-year window | **the extractor's own global ERA5-Land archive (S3)** |
 
-Group B is the Caravan climate index set — mean daily precipitation, mean PET,
+Group B is the Caravan-style climate index set — mean daily precipitation, mean PET,
 aridity, snow fraction, moisture index, seasonality, and the high/low precipitation
-frequency and duration indices — computed per Caravan's definitions over Caravan's
-fixed **1981-01-01 … 2020-12-31** window.
+frequency and duration indices — computed per Caravan's *definitions*.
+
+**Climatology window — a fixed, documented ~30-year window, NOT the Caravan window.**
+The primary use case for this package is the **v1 DHM deployment, where there is no
+Caravan dataset to reproduce**, so comparability with published Caravan is not the
+objective. Instead:
+
+- The extractor MUST compute Group B over a **single fixed ~30-year window applied to
+  every basin and every region**, so the indices are internally comparable across the
+  whole deployment.
+- **Default window: `1991-01-01 … 2020-12-31`** — the current WMO 30-year
+  climatological normal period, fully covered by ERA5-Land. The deployment owner MAY
+  set a different documented window, but it MUST be the same for all basins.
+- The chosen window MUST be recorded in `manifest.json` and per-column in
+  `feature_catalog.json`. Do **not** silently vary the window per basin or per region
+  (e.g. by defaulting to each basin's own record length) — that makes the indices
+  incomparable.
 
 Consequences:
 
@@ -428,18 +475,16 @@ Consequences:
 - **No ordering constraint on deployment onboarding.** Delineation and static
   extraction are independent of Gateway registration and of historical forcing
   back-extraction. They may run in any order.
-- **PET is not a deployment concern.** It comes from the extractor's ERA5 archive,
-  not from the forcing source SAP3 later runs operationally.
+- **PET is not a deployment concern.** It comes from the extractor's ERA5-Land
+  archive, not from the forcing source SAP3 later runs operationally.
 
 These indices are a **climatology descriptor**, deliberately decoupled from whatever
-forcing SAP3 uses operationally. That decoupling is what makes them comparable across
-Caravan datasets, and it is intentional — do not "fix" a divergence between an index
-and the deployment's operational forcing.
+forcing SAP3 uses operationally — do not "fix" a divergence between an index and the
+deployment's operational forcing.
 
-The Group-B source is **ERA5-Land** (confirmed 2026-07-14), matching Caravan's
-published values and the `_ERA5_LAND` suffix the column names already carry.
-`feature_catalog.json` MUST still record `source_dataset` and the climatology window
-per column, so the provenance survives a future product change.
+The Group-B source is **ERA5-Land** (confirmed 2026-07-14). `feature_catalog.json`
+MUST record `source_dataset` and the climatology window per column, so the provenance
+survives a future product or window change.
 
 ## 7. `feature_catalog.json`
 
