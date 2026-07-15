@@ -1283,11 +1283,28 @@ def run_forecast_cycle_flow(
         # --- Phase A: fetch NWP forcing (submit as task) ---
         nwp_future: Any = None
         nwp_outcome: _NwpFetchOutcome | None = None
+        # When EVERY operational station failed forecast-binding resolution
+        # above, flat_weather_configs is empty. Submitting Phase A against an
+        # empty station list reaches adapters (e.g. ReplayNwpAdapter) that
+        # raise on empty station_configs; _fetch_nwp_task converts that raise
+        # to None, which would otherwise take the fatal-abort return path
+        # below and ERASE the per-station failure accounting already
+        # recorded (stations_failed / errors / failed_station_ids). Treat
+        # this the same as runoff_only_mode from Phase A's point of view: no
+        # NWP fetch this cycle, fall through to the normal result path so
+        # every operational station is accounted for exactly once.
+        skip_nwp_fetch = runoff_only_mode or not flat_weather_configs
         if runoff_only_mode:
             log.info(
                 "forecast_cycle.nwp_disabled",
                 mode="runoff_only",
                 cycle_time=resolved_cycle_time.isoformat(),
+            )
+        elif not flat_weather_configs:
+            log.warning(
+                "forecast_cycle.nwp_skipped_no_forecast_bindings",
+                cycle_time=resolved_cycle_time.isoformat(),
+                stations_failed=stations_failed,
             )
         else:
             nwp_future = _fetch_nwp_task.submit(
@@ -1310,7 +1327,7 @@ def run_forecast_cycle_flow(
         )
 
         # Collect Phase A result
-        if not runoff_only_mode:
+        if not skip_nwp_fetch:
             nwp_outcome = nwp_future.result()
             # Plan 095: bound the nwp_grids disk footprint by pruning grid-cube
             # zarrs from cycles older than the retention window. Age-only; the
@@ -1355,7 +1372,7 @@ def run_forecast_cycle_flow(
         # models produce nothing; native/fallback models still forecast). This is
         # distinct from a genuine fatal error (handled by the abort above).
         nwp_unavailable_runtime = (
-            not runoff_only_mode
+            not skip_nwp_fetch
             and nwp_outcome is not None
             and nwp_outcome.nwp_unavailable
         )
@@ -1364,7 +1381,7 @@ def run_forecast_cycle_flow(
                 "forecast_cycle.nwp_unavailable_runoff_only",
                 cycle_time=resolved_cycle_time.isoformat(),
             )
-        effective_runoff_only = runoff_only_mode or nwp_unavailable_runtime
+        effective_runoff_only = skip_nwp_fetch or nwp_unavailable_runtime
         nwp_grid_stale = False
         if nwp_enabled:
             nwp_grid_stale = _check_nwp_grid_staleness(

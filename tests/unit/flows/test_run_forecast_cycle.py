@@ -14,7 +14,12 @@ import pytest
 import xarray as xr
 
 from sapphire_flow.config.deployment import DeploymentConfig
-from sapphire_flow.exceptions import ConfigurationError, ExtractionError, StoreError
+from sapphire_flow.exceptions import (
+    AdapterError,
+    ConfigurationError,
+    ExtractionError,
+    StoreError,
+)
 from sapphire_flow.flows.run_forecast_cycle import (
     ForecastCycleResult,
     _fetch_nwp_task,
@@ -4100,6 +4105,114 @@ class TestForecastBindingContainment:
         assert extracted_station_ids == {good_sid}
         assert result.stations_failed == 1
         assert result.stations_succeeded == 1
+
+    def test_all_stations_broken_binding_reports_failures_not_fatal_abort(
+        self,
+    ) -> None:
+        """Plan 115a §5 / adversarial-review blocker: when EVERY operational
+        station fails forecast-binding resolution, ``flat_weather_configs`` is
+        empty. Phase A must NOT be submitted in that case -- submitting it
+        against an empty station list reaches an adapter (e.g.
+        ``ReplayNwpAdapter``) that raises on empty ``station_configs``,
+        ``_fetch_nwp_task`` converts that to ``None``, and the flow used to
+        take the fatal-abort return path, ERASING the per-station failure
+        accounting already recorded (stations_failed / errors /
+        failed_station_ids) in favour of a bogus 0/0 result.
+
+        Soundness: the adapter below raises ``AdapterError`` if it is EVER
+        called with an empty ``station_configs`` list -- exactly like
+        ``ReplayNwpAdapter.fetch_forecasts``. Against the pre-fix code this
+        test fails (the flow surfaces a fatal 0/0 result, or the
+        AdapterError escapes). Against the fixed code, Phase A is skipped
+        entirely (adapter never called) and every operational station is
+        accounted for as failed.
+        """
+        bad_sid_1 = StationId(uuid4())
+        bad_sid_2 = StationId(uuid4())
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        for sid in (bad_sid_1, bad_sid_2):
+            _build_station_and_stores(
+                sid,
+                _MODEL_ID,
+                station_store,
+                obs_store,
+                nwp_store,
+                artifact_store,
+                forcing_store,
+                extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+                basin_store=basin_store,
+            )
+            # Break every station's binding the same way as
+            # TestForecastBindingContainment: a second FORECAST binding ->
+            # fetch_forecast_binding raises ConfigurationError (0 or 2+
+            # matches are both "broken"; 2+ is used here).
+            station_store.store_weather_source(
+                StationWeatherSource(
+                    station_id=sid,
+                    nwp_source="icon_ch2_eps_v2",
+                    extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+                    status=WeatherSourceStatus.ACTIVE,
+                    role=WeatherSourceRole.FORECAST,
+                )
+            )
+
+        class _RaisesOnEmptyAdapter:
+            call_count = 0
+
+            def fetch_forecasts(
+                self, station_configs: list[object], cycle_time: object
+            ) -> object:
+                _RaisesOnEmptyAdapter.call_count += 1
+                if not station_configs:
+                    raise AdapterError("station_configs is empty")
+                raise AssertionError(
+                    "adapter must not be called with non-empty configs in this test"
+                )
+
+        adapter = _RaisesOnEmptyAdapter()
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=adapter,  # type: ignore[arg-type]
+            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+            config=_make_config(),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+            grid_store=None,
+        )
+
+        # Phase A must not have been submitted at all -- the adapter is never
+        # reached when every operational station's binding is broken.
+        assert _RaisesOnEmptyAdapter.call_count == 0
+        assert isinstance(result, ForecastCycleResult)
+        assert result.stations_attempted == 2
+        assert result.stations_failed == 2
+        assert result.stations_succeeded == 0
+        assert result.forecasts_stored == 0
+        matching_errors_1 = [e for e in result.errors if str(bad_sid_1) in e]
+        matching_errors_2 = [e for e in result.errors if str(bad_sid_2) in e]
+        assert len(matching_errors_1) == 1
+        assert len(matching_errors_2) == 1
 
 
 class _MonotonicEnsembleModel(FakeStationForecastModel):
