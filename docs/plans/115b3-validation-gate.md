@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-07-15
 plan: 115b3
 parent: 115b
@@ -16,7 +16,7 @@ blocks: [115b4]
 
 ## Status
 
-**DRAFT.** Third chunk (115b1 → 115b2 → **115b3** → 115b4). Independent Codex review before READY.
+**READY** (2026-07-15). Two independent Codex plan-review rounds → READY-TO-IMPLEMENT (round 1 caught a real correctness bug — the extraction had dropped the absolute value from the precip gate, so a large negative bias would falsely PASS — plus unpinned comparison inputs and a non-executable 4C; round 2 clean). Third chunk (115b1 → 115b2 → **115b3** → 115b4). Implementation authorised; hold at PR.
 
 ## What this is — and why it is its own plan
 
