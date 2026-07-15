@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-07-15
 plan: 119
 title: Dependency-bump safety gate — make CI catch dangerous major bumps before merge
