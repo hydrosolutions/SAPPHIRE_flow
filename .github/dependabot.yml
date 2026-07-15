@@ -52,6 +52,20 @@ updates:
       docker-patch:
         patterns: ["*"]
         update-types: ["patch"]
+    # Plan 119 §0 — prevention-first ignore rules. Each entry lists the
+    # package, why it is dangerous to auto-bump, and the plan/condition that
+    # unblocks re-enabling it. Removing an entry is a deliberate, auditable
+    # act (a reviewed commit), not silent drift.
+    ignore:
+      # Python base image (Dockerfile FROM python:3.14.6-slim, builder +
+      # final stage, Dockerfile:3,29). For CPython's X.Y.Z tag scheme the
+      # risk axis is the MINOR (Y), not semver-major — "3.14 -> 3.15" is
+      # exactly the "CI may not even run 3.15 yet" threat described in Plan
+      # 119's Provenance — so both update-types are ignored, not just major.
+      # Re-enable once a target minor has been validated in CI/staging and
+      # the bump is done as a deliberate, reviewed PR.
+      - dependency-name: "python"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
     reviewers:
       - "mabesa"
 
@@ -65,6 +79,38 @@ updates:
       docker-compose-patch:
         patterns: ["*"]
         update-types: ["patch"]
+    # Plan 119 §0 — prevention-first ignore rules for every image in
+    # docker-compose.yml that holds a persistent named volume (the
+    # stateful-image class: a major bump can break the on-disk format/state
+    # underneath a volume that CI's always-empty containers never exercise).
+    # Each entry documents why and what unblocks re-enabling it — re-enabling
+    # is a deliberate, auditable act, never silent.
+    ignore:
+      # postgis/postgis (docker-compose.yml postgres service, pgdata volume)
+      # — the motivating incident (Dependabot PR #78): a PG major cannot boot
+      # against an existing older-major data directory without a migration.
+      # Re-enable together with the Plan 118 Postgres major-version migration
+      # (its exit gate) — the ignore-rule removal and the migration land in
+      # the same change.
+      - dependency-name: "postgis/postgis"
+        update-types: ["version-update:semver-major"]
+      # prefecthq/prefect (prefect-server service, prefect_data volume).
+      # Precautionary, not a proven data-loss vector like postgis: Prefect
+      # Server's authoritative state lives in the EXTERNAL Postgres
+      # (PREFECT_API_DATABASE_CONNECTION_URL=...@postgres:5432/prefect), so
+      # /data/prefect is not load-bearing the way pgdata is — but a server
+      # major can still skew the API schema against workers/clients. Re-enable
+      # once a documented, tested major-version upgrade path for
+      # prefect-server exists.
+      - dependency-name: "prefecthq/prefect"
+        update-types: ["version-update:semver-major"]
+      # caddy (caddy service, caddy_data + caddy_config volumes: TLS/ACME
+      # state). Same stateful-on-disk-format risk class as postgis/prefect —
+      # a major bump can change how Caddy's certificate/config state on disk
+      # is read. Re-enable once a documented, tested major-version upgrade
+      # path for caddy (including TLS state migration) exists.
+      - dependency-name: "caddy"
+        update-types: ["version-update:semver-major"]
     reviewers:
       - "mabesa"
 

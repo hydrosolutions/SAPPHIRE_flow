@@ -376,6 +376,9 @@ This subsection describes the operational topology of `.github/workflows/ci.yml`
 | 4 | `build-image-and-scan` | `aquasecurity/trivy-action` (image scan, `uses:`) | `unit` | `trivy image --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed sapphire-flow:local` | No (but requires the image to be built + trivy installed) |
 | 4 | `build-image-and-scan` | `anchore/sbom-action` (`uses:`) — generate SBOM with syft | `unit` | `syft sapphire-flow:local -o cyclonedx-json > sbom.cdx.json` | No (but requires syft installed) |
 | 5 | `e2e` | _(not yet implemented — dangling comment at line 206 of ci.yml)_ | `unit`, `integration`, `build-image-and-scan` | n/a | n/a |
+| **dependency-safety.yml** (Plan 119) | | | | | |
+| Unconditional (`pull_request`, every PR) | `dependency-safety` | `uv sync --frozen` | — | `uv sync` | No |
+| Unconditional (`pull_request`, every PR) | `dependency-safety` | `uv run python tools/dependency_safety.py --base-ref "${{ github.event.pull_request.base.sha }}"` (Classify dependency-bump risk) | — | `uv run python tools/dependency_safety.py --base-ref <base-sha>` (any base commit) | Yes — requires the PR base SHA from the `pull_request` event context |
 | **integration-nightly.yml** | | | | | |
 | N | `integration-nightly` | Install system deps for cfgrib / rioxarray / exactextract | — | Brew/apt on the dev host (developer responsibility) | Yes — system-package install, not project-managed |
 | N | `integration-nightly` | `uv sync --frozen` | — | `uv sync` | No |
@@ -388,6 +391,28 @@ This subsection describes the operational topology of `.github/workflows/ci.yml`
 | Scheduled (event-driven) | `retry` | `gh run list ...` (Cap retries at 12 per day) | live-lindas-weekly.yml failure | n/a (event-triggered automation) | Yes — automation responding to a workflow event |
 | Scheduled (event-driven) | `retry` | `sleep 300` (Wait 5 minutes for BAFU LINDAS to recover) | n/a | n/a (event-triggered automation) | Yes — bounded wait for upstream recovery |
 | Scheduled (event-driven) | `retry` | `gh workflow run live-lindas-weekly.yml` (Re-dispatch live-lindas-weekly.yml) | sleep | n/a (event-triggered automation) | Yes — automation responding to a workflow event |
+
+### `dependency-safety.yml` (Plan 119)
+
+A sibling workflow to `ci.yml`, kept separate so its trigger stays
+**unconditional** on `pull_request` (no top-level `paths:` filter). `ci.yml`'s
+`on:` block also fires on `push` to `main`; this gate only makes sense in a
+PR-diff-against-base context, so folding it into `ci.yml` would either widen
+`ci.yml`'s triggers or require a job-level `if:` — a separate file is
+cleaner.
+
+Operational shape: checks out with `fetch-depth: 0` (needs the PR base
+commit for `git show <base-sha>:<path>`), then runs
+`tools/dependency_safety.py`, which diffs a fixed watched-file set
+(`docker-compose.yml`, `Dockerfile`, `pyproject.toml`, `uv.lock`,
+`.github/workflows/ci.yml`) against the PR base SHA and classifies the
+change BLOCK / REVIEW / ALLOW. If none of the watched files changed, the
+script exits 0 immediately (skip-pass) — the job always reports a concrete
+pass/fail, never GitHub's `Expected`/pending state, which is what makes it
+safe to mark as a required check later. Policy rationale (why the gate
+exists, the BLOCK/REVIEW/ALLOW criteria, the committed-allowlist override)
+lives in [`security.md`](security.md) § Supply chain, per this doc's usual
+split between operational topology and policy rationale.
 
 ### Local gate helper — `uv run check`
 
