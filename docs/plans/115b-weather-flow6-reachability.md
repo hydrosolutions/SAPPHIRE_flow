@@ -182,10 +182,30 @@ A one-shot, resumable backfill producing `historical_forcing` rows for **every o
 > duration (Höge et al., App. A1.2), no model requires it *yet*, and it is free (1971 → present). Adding
 > it to this backfill costs one more product; adding it **later** costs a **40-year re-run**. Take it now.
 >
-> **Implementation note:** it needs a canonical parameter string — the repo currently knows only
-> `precipitation`, `temperature`, `temperature_min`, `temperature_max`. Align the new name with the
-> ForecastInterface / model-requirement vocabulary **before** writing rows; a parameter name is a
-> contract, and renaming it later means re-writing the archive.
+> **Canonical name (owner, 2026-07-15): `relative_sunshine_duration`, unit `%`.** Explicit and
+> unambiguous — SrelD is *relative* sunshine duration (% of the astronomically possible maximum), not
+> absolute hours; the short `sunshine_duration` would mislead and could collide with a future absolute
+> product. Consistent with the existing spelled-out pattern (`temperature_min`/`temperature_max`).
+>
+> **A parameter name is a permanent contract — round 2 found the repo LOCKS exactly four forcing
+> parameters in five places. All five must change together, BEFORE any `SrelD` row is written:**
+>
+> 1. `types/forcing_schema.py` — add `relative_sunshine_duration: "%"` to `CANONICAL_FORCING_SCHEMA`
+>    (`:37-46`), and update the tests that assert exactly four entries.
+> 2. `types/forcing_sources.py` — add `ForcingSource.METEOSWISS_SRELD = "meteoswiss_sreld"` (`:18`) and
+>    its `SOURCE_ATTRIBUTIONS` entry.
+> 3. adapter `_PRODUCT_REGISTRY` — add the `sreld` / `SrelD` product row.
+> 4. `flows/ingest_weather_history.py` — add it to the requested-parameters list (`:57-63`).
+> 5. `adapters/hybrid_reanalysis_factories.py` — a **single-source** chain
+>    `relative_sunshine_duration: (METEOSWISS_SRELD,)` and add it to the default `parameters_in_scope`
+>    (`:26-38`).
+> 6. `config/deployment.py` — add it to `available_nwp_parameters` / model-compat advertising (`:125-127`).
+> 7. A parameter-table **seed/migration** if the DB enumerates valid parameter names, plus tests for the
+>    new five-parameter set.
+>
+> Until a model actually *requests* `relative_sunshine_duration`, it is ingested-and-stored only — which
+> is the whole point of decision 5 (have it in the archive before a model needs it, so no second 40-year
+> re-run).
 
 > **⚠️ `T-45d` was a made-up constant and is RETRACTED.** Per the product docs, **`RhiresD` publishes
 > MONTHLY — typically around the 25th of the *following* month** (a 3-6 week lag), while `RprelimD` is
@@ -426,19 +446,39 @@ bound but silent."** Today both look identical — and both look like success.
 >   raster mask). ⚠️ **NEEDS-EXTERNAL-CHECK** against the CAMELS-CH paper/package before §8 leans on
 >   "same polygons". If they differ, that confound returns and §8's tolerances must widen.
 >
-> ### Tolerances (owner, 2026-07-14)
+> ### Tolerances (owner, 2026-07-14) — EXACT metrics, per parameter
 >
-> | difference | action |
-> |---|---|
-> | **≤ 5%** | pass |
-> | **> 5%** | **FLAG** — report it, per basin, with the seasonal + intensity breakdown |
-> | **> 20%** | **Escalate to the owner.** Not an automatic stop. |
+> *(Round 2 flagged "≤5% / >5% / >20%" as uncomputable — it named no metric, and "% error in °C" is
+> meaningless near 0. Fixed: precipitation gates on **relative bias of the long-run total**; temperature
+> gates on **absolute error in °C**.)*
 >
-> **Why >20% is not an automatic stop** (owner's reasoning, recorded so nobody "fixes" it later):
-> **rainfall events genuinely differ between a 2 km and a 1 km grid.** A convective cell that is
-> smeared across one 2 km cell is resolved differently at 1 km, so large per-event discrepancies are
-> **physically expected**, not necessarily a pipeline bug. Even discrepancies above 20% may be
-> legitimate. They must be **explained**, not shrugged off — and not silently accepted either.
+> **PRECIPITATION — gate on per-basin relative bias of the 1981-2020 TOTAL:**
+> ```
+> rel_bias = ( Σ(ours) − Σ(camels) ) / Σ(camels)     over all days 1981-2020, per basin
+>   |rel_bias| ≤  5%   → pass
+>   |rel_bias| >  5%   → FLAG   (report per basin)
+>   |rel_bias| > 20%   → ESCALATE to owner — NOT an automatic stop
+> ```
+> The long-run total is the stable, physically-meaningful figure: it washes out per-day noise and the
+> grid-resolution event scatter, and answers directly "does our series carry the same water as CAMELS".
+>
+> **TEMPERATURE — gate on per-basin ABSOLUTE error in °C** (percent is banned — it explodes near 0 °C):
+> ```
+> mean_bias = mean(ours − camels)   [°C]        rmse = sqrt(mean((ours−camels)²))   [°C]   per basin, 1981-2020
+>   |mean_bias| ≤ 0.5 °C  → pass
+>   |mean_bias| > 0.5 °C  → FLAG
+>   |mean_bias| > 1.0 °C  → ESCALATE
+> ```
+> *(0.5 / 1.0 °C are the working thresholds — owner to confirm against the first results; they are a
+> hydrologist's call, not a code constant.)*
+>
+> **NON-GATING DIAGNOSTICS (reported, never thresholded):** per-season totals, per-event maxima, and
+> wet-day RMSE for precipitation. **This is where the 2 km-vs-1 km grid effect legitimately lives** — a
+> convective cell smeared across one 2 km cell resolves differently at 1 km, so large per-*event*
+> discrepancies are physically expected and must not trip a gate. **Why >20% (on the TOTAL) still only
+> escalates and never auto-stops** (owner's reasoning, recorded so nobody "fixes" it into a hard stop):
+> even a large whole-period bias may be a legitimate consequence of the grid change and must be
+> **explained**, not shrugged off — and not silently accepted either.
 
 Design it honestly:
 
@@ -447,7 +487,9 @@ Design it honestly:
 - Report **per-basin bias, RMSE, and the seasonal + intensity structure** of the difference. Expect the
   precipitation differences to concentrate in high-intensity and winter/snow events — exactly where a
   flood-forecasting model is most sensitive, and exactly where the grid-resolution effect lives.
-- Apply the tolerance table above.
+- Apply the **exact** gates above: precipitation on the 1981-2020 per-basin relative-bias of the TOTAL
+  (≤5 / >5 / >20 %); temperature on per-basin absolute mean-bias + RMSE in °C (≤0.5 / >0.5 / >1.0 °C,
+  owner to confirm). Per-season / per-event / wet-day-RMSE are diagnostics, reported but never gated.
 
 **Separately — and this one IS clean:** quantify the **live-tail residual**, `RprelimD` vs `RhiresD`
 over their overlap, same pipeline, same polygons, same grid, same vintage. **No confounds.** It is the
