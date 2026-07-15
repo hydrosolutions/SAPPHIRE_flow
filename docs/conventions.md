@@ -93,6 +93,7 @@ names at ingest:
 | `radiation` | W/m² | `gre000h0` | deferred |
 | `wind_speed` | m/s | `fkl010h0` | `u_10m` / `v_10m` |
 | `snow_depth` | cm | `htoauths` | `sd` |
+| `snowmelt` | mm | — | — |
 | `reference_et` | mm/h | `erefaoh0` | — |
 | `swe` | mm | (if available) | — |
 

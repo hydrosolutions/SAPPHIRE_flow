@@ -5,6 +5,7 @@ import polars as pl
 
 from sapphire_flow.preprocessing.converters import (
     basin_avg_to_records,
+    elevation_band_to_records,
     point_forecast_to_records,
 )
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
@@ -12,6 +13,7 @@ from sapphire_flow.types.enums import SpatialRepresentation
 from sapphire_flow.types.ids import StationId
 from sapphire_flow.types.weather import (
     BasinAverageForecast,
+    ElevationBandForecast,
     PointForecast,
     WeatherForecastRecord,
 )
@@ -172,3 +174,77 @@ class TestPointForecastToRecords:
         forecast = PointForecast(nwp_source="icon_ch2_eps", cycle_time=ct, values=df)
         records = point_forecast_to_records(sid, forecast, _fixed_clock, uuid.uuid4)
         assert records == []
+
+
+def _make_band_forecast() -> tuple[
+    StationId, ElevationBandForecast, dict[tuple[int, int, datetime], float]
+]:
+    sid = StationId(uuid.uuid4())
+    ct = ensure_utc(datetime(2026, 4, 1, 6, tzinfo=UTC))
+    t1 = datetime(2026, 4, 1, 7, tzinfo=UTC)
+    t2 = datetime(2026, 4, 1, 8, tzinfo=UTC)
+
+    band_ids: list[int] = []
+    member_ids: list[int] = []
+    valid_times: list[datetime] = []
+    parameters: list[str] = []
+    values: list[float] = []
+    expected: dict[tuple[int, int, datetime], float] = {}
+
+    v = 0.0
+    for band in (1000, 2000):
+        for member in (0, 1):
+            for vt in (t1, t2):
+                band_ids.append(band)
+                member_ids.append(member)
+                valid_times.append(vt)
+                parameters.append("precipitation")
+                values.append(v)
+                expected[(band, member, vt)] = v
+                v += 1.0
+
+    df = pl.DataFrame(
+        {
+            "valid_time": valid_times,
+            "parameter": parameters,
+            "member_id": member_ids,
+            "band_id": band_ids,
+            "value": values,
+        },
+        schema={
+            "valid_time": pl.Datetime("us", "UTC"),
+            "parameter": pl.Utf8,
+            "member_id": pl.Int64,
+            "band_id": pl.Int64,
+            "value": pl.Float64,
+        },
+    )
+    forecast = ElevationBandForecast(nwp_source="ifs_ecmwf", cycle_time=ct, values=df)
+    return sid, forecast, expected
+
+
+class TestElevationBandToRecords:
+    def test_record_count_is_bands_times_members_times_timesteps(self) -> None:
+        sid, forecast, _ = _make_band_forecast()
+        records = elevation_band_to_records(sid, forecast, _fixed_clock, uuid.uuid4)
+        # 2 bands × 2 members × 2 timesteps
+        assert len(records) == 8
+
+    def test_every_record_is_elevation_band_with_non_null_band_and_member(self) -> None:
+        sid, forecast, _ = _make_band_forecast()
+        records = elevation_band_to_records(sid, forecast, _fixed_clock, uuid.uuid4)
+        for r in records:
+            assert r.spatial_type == SpatialRepresentation.ELEVATION_BAND
+            assert r.band_id is not None
+            assert r.member_id is not None
+
+    def test_distinct_band_ids_preserved(self) -> None:
+        sid, forecast, _ = _make_band_forecast()
+        records = elevation_band_to_records(sid, forecast, _fixed_clock, uuid.uuid4)
+        assert {r.band_id for r in records} == {1000, 2000}
+
+    def test_values_and_timestamps_preserved(self) -> None:
+        sid, forecast, expected = _make_band_forecast()
+        records = elevation_band_to_records(sid, forecast, _fixed_clock, uuid.uuid4)
+        got = {(r.band_id, r.member_id, r.valid_time): r.value for r in records}
+        assert got == expected

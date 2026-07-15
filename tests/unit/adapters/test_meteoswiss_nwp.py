@@ -871,6 +871,17 @@ class TestParamGroups:
             assert isinstance(short_name, str) and short_name
             assert isinstance(type_of_level, str) and type_of_level
 
+    def test_exact_param_group_tuples(self) -> None:
+        # Exact-value pin so the separate Recap variable catalog (Plan 081 Task 2A)
+        # cannot silently drift the Swiss STAC token / cfgrib shortName / typeOfLevel
+        # extraction keys.
+        from sapphire_flow.adapters.meteoswiss_nwp import PARAM_GROUPS
+
+        assert list(PARAM_GROUPS) == [
+            ("tot_prec", "tp", "surface"),
+            ("t_2m", "2t", "heightAboveGround"),
+        ]
+
 
 def _make_page(
     features: list[dict[str, object]], next_url: str | None = None

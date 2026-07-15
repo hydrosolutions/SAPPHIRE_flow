@@ -1644,6 +1644,100 @@ Module: `adapters/forecast_interface.py`
 
 ---
 
+### Recap Gateway polygon metadata and client boundary
+
+SAP3-owned typed metadata and structural Protocols for the `recap-dg-client` Data
+Gateway forcing adapters. These let `adapters/recap_gateway.py` name **no**
+`recap-dg-client` symbol — the injected client is duck-typed structurally, and returned
+DataFrames are validated at the boundary. Empirically grounded in the private
+`hydrosolutions/recap-dg-client` clone; the authoritative, empirically-grounded adapter
+contract lives in Plan 081 (§Contract-Fit Review and §Adapter Decisions).
+
+```python
+GatewayHruName = NewType("GatewayHruName", str)      # registered HRU/gpkg filename
+GatewayPolygonName = NewType("GatewayPolygonName", str)  # per-polygon Gateway feature name
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class GatewayPolygonRef:
+    hru_name: GatewayHruName
+    polygon_name: GatewayPolygonName
+    station_id: StationId
+    spatial_type: SpatialRepresentation
+    band_id: int | None  # None for BASIN_AVERAGE (Nepal v1 is basin-average-only)
+
+@runtime_checkable
+class GatewayPolygonResolver(Protocol):
+    def resolve(self, source: StationWeatherSource) -> GatewayPolygonRef | None: ...
+```
+
+`GatewayPolygonResolver` is a 1:1, basin-average-only resolver (a basin-average station
+occupies exactly one polygon, `band_id is None`). A `None` return is a resolver **miss**
+(unmappable / not-yet-onboarded station) that the adapter **skips-and-logs**; the concrete
+production resolver is owned by DHM onboarding (Flow 5), not by Plans 081/082. The
+elevation-band widening (list return) is a deferred future seam.
+
+```python
+@runtime_checkable
+class EcmwfApiLike(Protocol):
+    def ifs_forecast(self, *, variable: str, run_date: object, hru_code: str,
+                     ifs_type: str, member: str | None = None,
+                     **kwargs: object) -> object: ...
+    def era5_land_reanalysis(self, *, variable: str, start_date: object,
+                             end_date: object | None = None, hru_code: str,
+                             **kwargs: object) -> object: ...
+
+@runtime_checkable
+class SnowApiLike(Protocol):
+    def reanalysis(self, *, hru_code: str, variable: str, start_date: object,
+                   end_date: object, **kwargs: object) -> object: ...
+
+@runtime_checkable
+class RecapClientLike(Protocol):
+    ecmwf: EcmwfApiLike
+    snow: SnowApiLike
+```
+
+`RecapClientLike` (+ its `EcmwfApiLike` / `SnowApiLike` sub-Protocols) describes exactly the
+injected-client call surface both adapters use. All four are `@runtime_checkable`. The
+`recap-dg-client` error classes are intentionally **not** SAP3 types — the error mapper reads
+their discriminators structurally via `getattr` and takes a plain `BaseException`.
+
+`GatewayResolutionError(AdapterError)` carries a typed `station_id` (the `DiskSoftLimitError`
+typed-kwargs precedent) and is raised by an adapter **only** when every station in a batch is
+unmappable; per-station resolver misses are skipped-and-logged, not raised.
+
+Module: `adapters/recap_gateway.py`
+
+### RecapGatewayForecastAdapter
+
+Wraps an injected `RecapClientLike` and satisfies `WeatherForecastSource`
+(`fetch_forecasts(...) -> dict[StationId, WeatherForecastResult]`) without changing the
+Protocol signature. `NWP_SOURCE: ClassVar[str] = "ifs_ecmwf"` — the forecast storage key that
+every produced forecast record's `nwp_source` must equal (correct-by-construction: this is the
+single forecast-path value). Fetches ECMWF IFS forecasts (HRES `fc` = `member_id=0`, `pf`
+1..50 = `member_id=1..50` → 51-member ENS), converting units at the boundary (K→°C, m→mm).
+
+Module: `adapters/recap_gateway.py`
+
+### RecapGatewayReanalysisAdapter
+
+Wraps an injected `RecapClientLike` and satisfies `WeatherReanalysisSource`
+(`fetch_reanalysis(...) -> list[RawHistoricalForcing]`) without changing the Protocol
+signature. `NWP_SOURCE: ClassVar[str] = "era5_land"` — the reanalysis selector Flow 6 keys on.
+Fetches ERA5-Land (`ecmwf.era5_land_reanalysis`) and historical Snowmapper (`snow.reanalysis`)
+forcing, tagging endpoint provenance into `RawHistoricalForcing.source`
+(`recap_era5_land_reanalysis` / `recap_snow_reanalysis`).
+
+**Why two adapter classes, not one.** A single adapter carrying both Protocols would need one
+`NWP_SOURCE` that is simultaneously the IFS forecast storage key and the ERA5-Land reanalysis
+selector — a dual identity impossible to satisfy honestly. Splitting them mirrors the Swiss
+path (`MeteoSwissNwpAdapter` forecast-only, `MeteoSwissOpenDataReanalysisAdapter`
+reanalysis-only) and makes each `NWP_SOURCE` unambiguous.
+
+Module: `adapters/recap_gateway.py`
+
+---
+
 ### ModelAlertStrategy Protocol
 
 Pluggable strategy for combining or selecting model ensembles before threshold evaluation.
