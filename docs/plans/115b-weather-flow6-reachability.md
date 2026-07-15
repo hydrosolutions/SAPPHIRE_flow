@@ -100,7 +100,7 @@ precipitation:     RHIRESD → RPRELIMD          (definitive supersedes prelimin
 temperature:       TABSD
 temperature_min:   TMIND
 temperature_max:   TMAXD
-rel_sunshine:      SRELD          (decision 5; reanalysis/past-only — see the SrelD contract)
+relative_sunshine_duration:  SRELD   (decision 5; REANALYSIS/PAST-only — see the SrelD contract, §SrelD)
 ```
 
 **No `CAMELS_CH` tier.** *(Plan 072's `… → CAMELS_CH` chains are retired; see the annotation on 072.)*
@@ -136,14 +136,26 @@ a precipitation request returns.)*
 
 **The fix — a source-scoped fetch, and Flow 6 splits precipitation by the discovered boundary `R`:**
 
-1. **Give the adapter a source-scoped fetch path.** Backfill and rolling ingest must be able to request a
-   **specific product** (`RhiresD` *or* `RprelimD`), not just "precipitation". Add an explicit
-   `products=` / source selector to the adapter's fetch entry point (or a dedicated backfill method) so the
-   caller — not the parameter name — chooses the product. The existing parameter-only path stays for the
-   other three products, which are unambiguous.
+1. **Give the WRITER a product-scoped fetch — and DO NOT touch the reader protocol (build-scoping,
+   round-4 blocker 1).** The `WeatherReanalysisSource` protocol (`protocols/adapters.py:47-54`) and Flow
+   6's local protocol (`ingest_weather_history.py:66-78`) are **parameter-only**, and the adapter selects
+   by `p.parameter in requested` (`meteoswiss_open_data_reanalysis.py:138-147`) — adding both precip
+   products makes `"precipitation"` ambiguous on that path. **Resolution: add a SEPARATE writer-side
+   product-scoped entry point on the concrete `MeteoSwissOpenDataReanalysisAdapter`** (e.g.
+   `fetch_products(products=[RHIRESD], …)`), used ONLY by the backfill + Flow 6 ingest, and have Flow 6
+   call it **twice** — once for `RHIRESD` over `[1981-01-01, R]`, once for `RPRELIMD` over `[R+1d, T-1d]`
+   (`ingest_weather_history.py:215-222,318` currently makes a single `_CANONICAL_PARAMETERS` call; that
+   becomes the two product-scoped calls). **The read-side `WeatherReanalysisSource` protocol, its fakes,
+   and `PerSourceStoreReader`/`HybridForcingSource` are UNCHANGED** — the reader stays parameter-keyed and
+   the hybrid priority chain breaks any overlap (§3). This bounds the ripple to the one concrete adapter +
+   the Flow 6 caller; it does **not** widen the shared protocol or touch every implementation/fake.
 2. **Flow 6 writes precipitation from the RIGHT product per date range**, keyed on the discovered `R`
-   (latest published `RhiresD` date, §2): `RhiresD` for `[1981-01-01, R]`, `RprelimD` for `(R, T-1d]`.
-   Both land in `historical_forcing` under their own source tags (`meteoswiss_rhiresd` / `meteoswiss_rprelimd`).
+   (latest published `RhiresD` date, §2). **Canonical inclusivity (defined ONCE here, referenced
+   everywhere): `RhiresD` covers `[1981-01-01, R]` inclusive; `RprelimD` covers `[R+1d, T-1d]`.** The two
+   archive spans are therefore **disjoint by construction** — no overlapping rows in `historical_forcing`
+   from the backfill. Both land under their own source tags (`meteoswiss_rhiresd` / `meteoswiss_rprelimd`).
+   *(The `RhiresD`/`RprelimD` overlap that §8's live-tail measurement needs is a SEPARATE one-off fetch,
+   not part of this archive path — see §8.)*
 3. **The READER (hybrid) resolves the overlap by PRIORITY, not the writer** — for any date where both
    exist, `RHIRESD → RPRELIMD` prefers definitive (§3). The writer never has to overwrite; both rows coexist.
 
@@ -223,8 +235,8 @@ A one-shot, resumable backfill producing `historical_forcing` rows for **every o
 | `meteoswiss_tabsd` | temperature | 1981-01-01 → T-1d |
 | `meteoswiss_tmind` | temperature_min | 1981-01-01 → T-1d |
 | `meteoswiss_tmaxd` | temperature_max | 1981-01-01 → T-1d |
-| `meteoswiss_sreld` | *(relative sunshine duration)* | 1981-01-01 → T-1d |
-| `meteoswiss_rprelimd` | precipitation | **R** → T-1d *(live tail)* |
+| `meteoswiss_sreld` | `relative_sunshine_duration` | 1981-01-01 → T-1d |
+| `meteoswiss_rprelimd` | precipitation | **R+1d → T-1d** *(live tail; disjoint from RhiresD)* |
 
 > **✅ OWNER DECISION (2026-07-14): include `SrelD` now.** CAMELS-CH itself uses relative sunshine
 > duration (Höge et al., App. A1.2), no model requires it *yet*, and it is free (1971 → present). Adding
@@ -247,16 +259,19 @@ A one-shot, resumable backfill producing `historical_forcing` rows for **every o
 > 5. `adapters/hybrid_reanalysis_factories.py` — a **single-source** chain
 >    `relative_sunshine_duration: (METEOSWISS_SRELD,)` and add it to the default `parameters_in_scope`
 >    (`:26-38`).
-> 6. `config/deployment.py` — ⚠️ **do NOT add it to `available_nwp_parameters` (round-3 blocker 2).** That
->    set gates **both** `past_dynamic_features` **and** `future_dynamic_features` — `onboard_model` passes it
->    straight through as `available_features` (`onboard_model.py:258`, `model_onboarding.py:213`). But there
->    is **no forecast sunshine product**: the forecast NWP adapter fetches only `tot_prec` + `t_2m`
->    (`meteoswiss_nwp.py:56`), and operational future-dynamic input comes from `weather_forecasts`
->    (`operational_inputs.py:348`). Advertising `relative_sunshine_duration` as NWP-available would let a
->    model declare it as a **future** feature that can never be delivered. **SrelD is REANALYSIS / PAST-only.**
->    So: add it to whatever set advertises *reanalysis/past* availability, and **not** to the forecast/future
->    set — or, if the code has a single conflated set, split it (past-available vs forecast-available) as part
->    of this task. Do not advertise SrelD as NWP/forecast-available until a forecast sunshine product exists.
+> 6. `config/deployment.py` — the availability split is a **REQUIRED CODE CHANGE, not an "if conflated"**
+>    (round-4 blocker 3 confirmed the code IS conflated). Today `available_nwp_parameters` is the **only**
+>    set (`config/deployment.py:124-127`); `onboard_model` passes it straight through as `available_features`
+>    (`onboard_model.py:252-258`); and model-compat subtracts **both** past and future requirements from that
+>    one set (`model_onboarding.py:213-214`). There is **no forecast sunshine product** (ICON fetches only
+>    `tot_prec`+`t_2m`, `meteoswiss_nwp.py:56-62`; future-dynamic input comes from `weather_forecasts`,
+>    `operational_inputs.py:347-354`), so advertising `relative_sunshine_duration` in that single set would
+>    let a model declare it as a **future** feature that can never be delivered. **Required build:** introduce
+>    a **past-availability** set distinct from the **forecast/future-availability** set (or a per-parameter
+>    past/future flag), thread it through `onboard_model` + `model_onboarding` compatibility, and add
+>    `relative_sunshine_duration` to **past-available only**. This is its own phase task (**1E**, below) with
+>    tests proving it is **accepted as `past_dynamic` and REJECTED as `future_dynamic`**. `SrelD` is
+>    REANALYSIS/PAST-only.
 > 7. A parameter-table **seed/migration** if the DB enumerates valid parameter names, plus tests for the
 >    new five-parameter set.
 >
@@ -283,8 +298,10 @@ A one-shot, resumable backfill producing `historical_forcing` rows for **every o
 dropped from the backfill, not flagged. Enumerate, and log any operational station excluded for lack of
 geometry.
 
-**Scale — and the current path CANNOT do it.** Rows ≈ `stations × days × parameters`: at 2 stations ×
-16,436 days × 4 = ~131k rows (trivial), but **at the v0 target of ~1000 stations that is ~66M rows.**
+**Scale — and the current path CANNOT do it.** Rows ≈ `stations × days × source-rows`. Post-SrelD there
+are **5 canonical parameters but 6 source rows** (precipitation split across `RhiresD` + `RprelimD`). At 2
+stations × 16,436 days × ~6 ≈ ~200k rows (trivial); **at the v0 target of ~1000 stations that is ~99M
+rows.**
 The existing path is **all-in-memory end to end** and will not survive that:
 
 - the adapter returns **one full `list[RawHistoricalForcing]`** (`meteoswiss_open_data_reanalysis.py:134`);
@@ -418,8 +435,9 @@ Raising is the only deterministic answer. Requires an **overlap test**.
 `config/deployment.py:111`. **Only after §5.** `tests/unit/config/test_deployment_reanalysis_source.py:25`
 locks the `"single"` default and must be updated deliberately.
 
-Under §0 the reader must resolve `RHIRESD → RPRELIMD` and merge the four parameters — that is exactly
-what `HybridForcingSource` does. It remains the right component; **only its chain contents change.**
+Under §0 the reader resolves `RHIRESD → RPRELIMD` and merges the **five** canonical parameters
+(precipitation, temperature, temperature_min, temperature_max, relative_sunshine_duration) — exactly what
+`HybridForcingSource` does. It remains the right component; **only its chain contents change.**
 
 #### 6a. Distribution-shift gate — the flip changes what a model is fed
 
@@ -557,7 +575,7 @@ one genuinely attributable number in this plan.
 
 > ⚠️ **The overlap must be FETCHED for this — it does not exist in our DB (review round 2, blocker 3).**
 > The audit proved `historical_forcing` holds only `camels-ch`. And the §2 backfill table ingests
-> `RhiresD` up to boundary `R` and `RprelimD` from `R` onward — **by construction they do not overlap**.
+> `RhiresD` over `[1981-01-01, R]` and `RprelimD` over `[R+1d, T-1d]` — **disjoint by construction, no overlap**.
 > So this comparison needs its own step: pull, for a recent window that STAC still serves BOTH products
 > (`RprelimD` is retained ~2 months, and `RhiresD` republishes over that same window with its lag), the
 > two products for the same basins/dates, and compare. It is a **one-off measurement fetch**, not part of
@@ -608,14 +626,34 @@ hybrid-resolved view the models consume (consistent with what the forecast actua
 - **Overlap (§5):** two sources returning the same unconfigured parameter **raise** — no
   nondeterministic winner.
 - **Flow 6 against MIGRATED data** (§4), not a fresh fixture — an existing station gets the binding (all
-  four fields pinned) and ingests, with `rows_stored > 0` asserted.
-- **Flow 6 health (§7):** `stations_targeted == 0` records UNHEALTHY, not a green zero; and
-  `stations_targeted > 0 && rows_stored == 0` over a full window likewise.
+  four fields pinned) and ingests, asserted via an **advancing `MAX(valid_time)`** per source (not
+  `rows_stored`, per §7).
+- **Flow 6 health (§7) — measured by EFFECT, never `rows_stored`:** `stations_targeted == 0` records
+  UNHEALTHY (not a green zero); and a run that INSERTS nothing over a full window records UNHEALTHY too —
+  asserted via **actual DB rowcount** or a **non-advancing `MAX(valid_time)` per source**, NOT via
+  `rows_stored` (which is `len(records)` after `on_conflict_do_nothing`, so a pure-duplicate re-fetch
+  looks healthy — the exact bug §7 rejects).
 - **`temperature_min`/`temperature_max` now exist** — they resolve from `TminD`/`TmaxD`, with no CAMELS
   tier to fall back to.
 - **No `camels-ch` weather binding remains** after 115b (decision 6); the CAMELS forcing rows in
   `historical_forcing` are untouched and still readable by a direct source-keyed fetch.
 - Converter guards reject a reanalysis tag.
+- **Writer-side product-scoped fetch (§0a/1F):** the adapter's product-scoped entry point returns ONLY the
+  requested product; a `RHIRESD`-scoped call never yields `RprelimD` rows and vice versa. Flow 6 issues the
+  two calls split at `R` (`[1981-01-01,R]` RhiresD, `[R+1d,T-1d]` RprelimD) and the two archive spans do not
+  overlap. *Soundness: fails against the old single `_CANONICAL_PARAMETERS` call.*
+- **SrelD priority resolution:** a `relative_sunshine_duration` request resolves via the single-source
+  `SRELD` chain; the hybrid reader (keyed on exact `row.parameter`, `hybrid_reanalysis.py:77-84`) returns
+  the `meteoswiss_sreld` row.
+- **SrelD past-vs-future (§1E — the round-4 blocker):** a model declaring `relative_sunshine_duration` as a
+  **`past_dynamic`** feature onboards successfully; declaring it as a **`future_dynamic`** feature is
+  **rejected** by model-compat. *Soundness: fails against today's single conflated `available_nwp_parameters`.*
+- **Phase-5 ordering:** the retire-camels-binding migration cannot leave a station unreadable — a test (or
+  a documented deploy-gate check) that the hybrid default is serving BEFORE the binding is retired.
+- **Existing four-parameter pins updated, not just added-to:** `tests/unit/types/test_forcing_schema.py:24-29`,
+  `tests/unit/flows/test_ingest_weather_history.py:79-84`, and
+  `tests/unit/adapters/test_hybrid_reanalysis_factories.py:17-28,48` all assert exactly four parameters
+  today; each must move to the five-parameter set, not break.
 
 ## Exit gates
 
@@ -680,7 +718,9 @@ yearly NetCDF + EPSG:2056 structure; and hybrid's silent parameter drop.
   v0 training-forcing source. Under §0 it is a **validation reference**; the forcing series is
   self-derived from MeteoSwiss. **Record the provenance explicitly** (`RhiresD`/`TabsD`/`TminD`/`TmaxD`,
   our polygons) — the absence of exactly this note is what let the whole bug through.
-- `docs/conventions.md` — the `ForcingSource` values, incl. the new `METEOSWISS_RHIRESD`.
+- `docs/conventions.md` — the `ForcingSource` values, incl. the new `METEOSWISS_RHIRESD` **and
+  `METEOSWISS_SRELD`**.
+- Record the provenance line as `RhiresD`/`TabsD`/`TminD`/`TmaxD`/**`SrelD`** (five products), our polygons.
 - Annotations on **071** (falsified premise) and **072** (three defects) are already in place.
 
 ## Dependency graph
@@ -700,8 +740,8 @@ point re-sourcing every model's features and *then* asking whether the new serie
   "phases": [
     {
       "id": "phase-1",
-      "name": "Adapter: RhiresD + SrelD + the archive asset family",
-      "tasks": ["1A-products", "1B-archive-asset-selection", "1C-real-lv95-fixture", "1D-dynamic-rhiresd-boundary"],
+      "name": "Adapter: RhiresD + SrelD + archive asset family + writer-side product-scoped fetch + past/future availability split",
+      "tasks": ["1A-products-rhiresd-sreld", "1B-archive-asset-selection", "1C-real-lv95-fixture", "1D-dynamic-rhiresd-boundary", "1E-past-vs-future-availability-split", "1F-writer-side-product-scoped-fetch"],
       "parallel": false,
       "depends_on": ["plan-115a"]
     },
@@ -802,5 +842,33 @@ silent parameter drop is real; the extractor skips (not raises) per missing-geom
 already represent SrelD's `%` via `Unit.PERCENT`; the DB parameter seed (`0001_v0_schema.py:770`) is real
 and must be updated.
 
-Round-3 findings resolved. 115b decision-complete again; one more review pass advisable before READY given
-the §0a addition.
+Round-3 findings resolved.
+
+## Review deltas (Codex round 4, 2026-07-15) — verdict NOT-READY, folded
+
+Round 4 was a **cross-section consistency** pass — it found that round-3's §0a + SrelD folds were carried
+into some sections but not all (the sin a heavily-revised plan is prone to). All folded:
+
+- **BLOCKER — source-scoped fetch was under-scoped against the real protocol.** The reader protocol is
+  parameter-only; adding both precip products re-ambiguates `precipitation`. Resolved by a **writer-side
+  product-scoped entry point** on the concrete adapter (Flow 6 calls it twice, split at `R`); the read-side
+  protocol/fakes/`PerSourceStoreReader`/`HybridForcingSource` are UNCHANGED (§0a.1, phase 1F).
+- **BLOCKER — SrelD naming inconsistency.** The chain used `rel_sunshine` while the canonical name is
+  `relative_sunshine_duration`; the backfill table, §6, tests, doc-sync and row-count math all diverged.
+  Reconciled to `relative_sunshine_duration` / `METEOSWISS_SRELD` everywhere.
+- **BLOCKER — past-vs-future availability is a REQUIRED code change, not "if conflated."** The code has one
+  conflated `available_nwp_parameters` used for both. New phase task **1E**: introduce a past-availability
+  set, add SrelD to past-only, test accepted-as-past / rejected-as-future.
+- **MAJOR — `R` inclusivity defined ONCE** (`RhiresD [1981-01-01, R]`, `RprelimD [R+1d, T-1d]`, disjoint);
+  §0a, the backfill table and §8 now agree.
+- **MAJOR — tests added** for the writer-side fetch, SrelD priority + past/future, phase-5 ordering; and the
+  existing four-parameter pins are marked *migrate to five*, not merely add-to.
+- **MAJOR — the health test wording** dropped `rows_stored == 0` for advancing-`MAX(valid_time)` / DB
+  rowcount (§7's own metric).
+- **MINORS** — doc-sync + row-count math updated for SrelD (5 params, 6 source rows, ~99M at 1000 stations).
+
+**Codex CONFIRMED-SOUND:** hybrid-priority (not version) supersession; `available_nwp_parameters` genuinely
+unsafe for SrelD future availability; the extractor skip behaviour; the phase-5 ordering rationale.
+
+**Now internally consistent across all sections.** One more independent pass is reasonable before READY,
+but no design forks remain open — the residuals were all consistency/build-scoping, now resolved.
