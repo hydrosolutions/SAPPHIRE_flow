@@ -16,7 +16,11 @@ from sapphire_flow.preprocessing.exact_extract_grid_extractor import (
 from sapphire_flow.protocols.grid_extractor import GridExtractor
 from sapphire_flow.types.basin import Basin
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.enums import SpatialRepresentation, WeatherSourceStatus
+from sapphire_flow.types.enums import (
+    SpatialRepresentation,
+    WeatherSourceRole,
+    WeatherSourceStatus,
+)
 from sapphire_flow.types.ids import BasinId, StationId
 from sapphire_flow.types.station import StationWeatherSource
 from sapphire_flow.types.weather import BasinAverageForecast
@@ -85,6 +89,7 @@ def _make_config(station_id: StationId) -> StationWeatherSource:
         nwp_source="icon_ch2_eps",
         extraction_type=SpatialRepresentation.BASIN_AVERAGE,
         status=WeatherSourceStatus.ACTIVE,
+        role=WeatherSourceRole.FORECAST,
     )
 
 

@@ -394,6 +394,7 @@ All status/enum columns store TEXT matching the Python enum `.value` (lowercase)
 | `skill_scores.skill_source` / `SkillSource` | `hindcast_nwp_archive`, `hindcast_reanalysis`, `operational`, `transfer_validation` | — | v0+v1 |
 | `skill_scores.flow_regime` / `FlowRegime` | `low`, `high`, `flood` | — | v0+v1 |
 | `station_weather_sources.extraction_type` / `SpatialRepresentation` | `point`, `basin_average`, `elevation_band`, `gridded` | — | v0+v1 |
+| `station_weather_sources.role` / `WeatherSourceRole` | `forecast`, `reanalysis` | — | v0+v1 |
 | `station_thresholds.source` / `ThresholdSource` | `authority`, `inferred` | — | v0+v1 |
 | `DangerLevelDefinition.direction` / `ThresholdDirection` | `above`, `below` | — | v0+v1 |
 | `stations.regulation_type` / `RegulationType` | `unregulated`, `reservoir`, `irrigation_diversion`, `run_of_river_hydro` | — | v0+v1 |

@@ -15,6 +15,7 @@ from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
     ModelAssignmentStatus,
     SpatialRepresentation,
+    WeatherSourceRole,
     WeatherSourceStatus,
 )
 from sapphire_flow.types.ids import ArtifactId, ModelId, StationGroupId, StationId
@@ -183,6 +184,7 @@ def _setup_station_stores(
         nwp_source="smn",
         extraction_type=SpatialRepresentation.POINT,
         status=WeatherSourceStatus.ACTIVE,
+        role=WeatherSourceRole.REANALYSIS,
     )
     station_store.store_weather_source(weather_source)
 
@@ -326,6 +328,7 @@ class TestTrainModelsFlowModelNotFound:
                 nwp_source="smn",
                 extraction_type=SpatialRepresentation.POINT,
                 status=WeatherSourceStatus.ACTIVE,
+                role=WeatherSourceRole.REANALYSIS,
             )
         )
 
@@ -421,6 +424,7 @@ class TestTrainModelsFlowGroupModel:
                     nwp_source="smn",
                     extraction_type=SpatialRepresentation.POINT,
                     status=WeatherSourceStatus.ACTIVE,
+                    role=WeatherSourceRole.REANALYSIS,
                 )
             )
             obs = make_observations(
@@ -713,6 +717,7 @@ class TestBootstrapPath:
             "hindcast_store": MagicMock(),
             "skill_store": MagicMock(),
             "flow_regime_store": MagicMock(),
+            "forcing_store": MagicMock(),
         }
         captured: dict[str, object] = {}
 
@@ -723,6 +728,31 @@ class TestBootstrapPath:
         monkeypatch.setenv("DATABASE_URL", "sqlite://")
         monkeypatch.setattr(
             "sapphire_flow.flows._db.setup_production_stores", fake_setup
+        )
+
+        # Spy on the real select_reanalysis_source (Plan 115a §6 single
+        # factory) so we can prove the bootstrapped forcing_store actually
+        # flows into a real reanalysis source, rather than the flow merely
+        # tolerating a missing "forcing_store" key.
+        from sapphire_flow.adapters.hybrid_reanalysis_factories import (
+            select_reanalysis_source as real_select_reanalysis_source,
+        )
+
+        reanalysis_calls: list[dict[str, object]] = []
+
+        def spy_select_reanalysis_source(
+            *, forcing_store: object, mode: object
+        ) -> object:
+            source = real_select_reanalysis_source(
+                forcing_store=forcing_store,
+                mode=mode,  # type: ignore[arg-type]
+            )
+            reanalysis_calls.append({"forcing_store": forcing_store, "source": source})
+            return source
+
+        monkeypatch.setattr(
+            "sapphire_flow.adapters.hybrid_reanalysis_factories.select_reanalysis_source",
+            spy_select_reanalysis_source,
         )
 
         with (
@@ -747,3 +777,13 @@ class TestBootstrapPath:
         assert mock_register.called
         args, _ = mock_register.call_args
         assert args[1] is stores_dict["model_store"]
+
+        # The bootstrap path wired the bootstrapped forcing_store into a real
+        # reanalysis source via select_reanalysis_source (Plan 115a §6).
+        assert len(reanalysis_calls) == 1
+        assert reanalysis_calls[0]["forcing_store"] is stores_dict["forcing_store"]
+        from sapphire_flow.adapters.store_backed_reanalysis import (
+            StoreBackedReanalysisSource,
+        )
+
+        assert isinstance(reanalysis_calls[0]["source"], StoreBackedReanalysisSource)

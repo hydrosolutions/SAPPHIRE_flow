@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from sapphire_flow.types.enums import WeatherSourceRole
 from sapphire_flow.types.historical_forcing import RawHistoricalForcing
 
 if TYPE_CHECKING:
@@ -29,6 +30,8 @@ class StoreBackedReanalysisSource:
     ) -> list[RawHistoricalForcing]:
         results: list[RawHistoricalForcing] = []
         for cfg in station_configs:
+            if cfg.role is not WeatherSourceRole.REANALYSIS:
+                continue
             records = self._store.fetch_forcing(
                 station_id=cfg.station_id,
                 source=cfg.nwp_source,

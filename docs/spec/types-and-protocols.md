@@ -234,6 +234,10 @@ class WeatherSourceStatus(Enum):
     ACTIVE = "active"
     INACTIVE = "inactive"
 
+class WeatherSourceRole(Enum):
+    FORECAST = "forecast"      # operational NWP forecast binding
+    REANALYSIS = "reanalysis"  # historical forcing binding
+
 class SkillFreshness(Enum):
     CURRENT = "current"
     STALE = "stale"
@@ -803,7 +807,10 @@ class StationWeatherSource:
     nwp_source: str
     extraction_type: SpatialRepresentation  # POINT, BASIN_AVERAGE, or ELEVATION_BAND
     status: WeatherSourceStatus
+    role: WeatherSourceRole  # FORECAST or REANALYSIS — required, no default (Plan 115a)
 ```
+
+One `nwp_source` string serves exactly one role for a station: the `(station_id, nwp_source)` primary key means a name holding two roles would silently overwrite on upsert, so `role` is required and keyword-only rather than defaulted or inferred.
 
 Module: `types/station.py`
 
@@ -2170,8 +2177,15 @@ class StationStore(Protocol):
     def store_model_assignment(self, assignment: ModelAssignment) -> None: ...
         # Upsert keyed on (station_id, model_id).
     def fetch_weather_sources(self, station_id: StationId) -> list[StationWeatherSource]: ...
+        # Returns all bindings regardless of role. Display-only (api/routes/api_stations.py);
+        # routing consumers use the role-scoped accessors below (Plan 115a).
     def store_weather_source(self, source: StationWeatherSource) -> None: ...
         # Upsert keyed on (station_id, nwp_source).
+    def fetch_forecast_binding(self, station_id: StationId) -> StationWeatherSource: ...
+        # Exactly one FORECAST binding, else raises ConfigurationError (0 or >=2 bindings).
+    def fetch_reanalysis_bindings(self, station_id: StationId) -> list[StationWeatherSource]: ...
+        # 0..n REANALYSIS bindings. No status filter — an INACTIVE binding is still selected
+        # (deliberate; deactivation semantics are a separate, later decision).
 ```
 
 #### StationGroupStore

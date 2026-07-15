@@ -183,6 +183,12 @@ station_weather_sources = sa.Table(
         nullable=False,
         server_default="active",
     ),
+    sa.Column(
+        "role",
+        sa.Text,
+        sa.CheckConstraint("role IS NULL OR role IN ('forecast', 'reanalysis')"),
+        nullable=True,
+    ),
     sa.PrimaryKeyConstraint("station_id", "nwp_source"),
 )
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlalchemy as sa
+import structlog
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from sapphire_flow.db.metadata import (
@@ -10,6 +11,7 @@ from sapphire_flow.db.metadata import (
     station_weather_sources,
     stations,
 )
+from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.store._helpers import utc_from_row
 from sapphire_flow.types.domain import GeoCoord, StationThreshold
 from sapphire_flow.types.enums import (
@@ -21,6 +23,7 @@ from sapphire_flow.types.enums import (
     StationOwnership,
     StationStatus,
     ThresholdSource,
+    WeatherSourceRole,
     WeatherSourceStatus,
 )
 from sapphire_flow.types.ids import BasinId, ModelId, StationId
@@ -29,6 +32,28 @@ from sapphire_flow.types.station import (
     StationConfig,
     StationWeatherSource,
 )
+
+log = structlog.get_logger(__name__)
+
+# Plan 115a migration 0030's backfill allowlist. Kept in sync manually with
+# ``alembic/versions/0030_weather_source_role.py`` — an unknown nwp_source is a
+# human decision, never a silent guess.
+_KNOWN_FORECAST_SOURCES = frozenset({"icon_ch2_eps"})
+_KNOWN_REANALYSIS_SOURCES = frozenset({"camels-ch"})
+
+
+# Plan 115c: delete with revision 0031 (once role is NOT NULL, this shim and
+# its allowlist are dead code).
+def _legacy_role_for_source(nwp_source: str) -> WeatherSourceRole:
+    if nwp_source in _KNOWN_FORECAST_SOURCES:
+        return WeatherSourceRole.FORECAST
+    if nwp_source in _KNOWN_REANALYSIS_SOURCES:
+        return WeatherSourceRole.REANALYSIS
+    raise ConfigurationError(
+        f"weather source {nwp_source!r} has a NULL role and is not in the "
+        "legacy backfill allowlist (icon_ch2_eps, camels-ch); it must be "
+        "assigned a role explicitly rather than guessed"
+    )
 
 
 class PgStationStore:
@@ -231,6 +256,21 @@ class PgStationStore:
         return [_row_to_weather_source(row) for row in rows]
 
     def store_weather_source(self, source: StationWeatherSource) -> None:
+        existing_role = self._conn.execute(
+            sa.select(station_weather_sources.c.role).where(
+                sa.and_(
+                    station_weather_sources.c.station_id == source.station_id,
+                    station_weather_sources.c.nwp_source == source.nwp_source,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing_role is not None and existing_role != source.role.value:
+            raise ConfigurationError(
+                f"weather source {source.nwp_source!r} for station "
+                f"{source.station_id} already has role {existing_role!r}; "
+                f"refusing to silently overwrite it with {source.role.value!r} "
+                "(one nwp_source serves exactly one role per station)"
+            )
         stmt = (
             pg_insert(station_weather_sources)
             .values(
@@ -238,16 +278,41 @@ class PgStationStore:
                 nwp_source=source.nwp_source,
                 extraction_type=source.extraction_type.value,
                 status=source.status.value,
+                role=source.role.value,
             )
             .on_conflict_do_update(
                 index_elements=["station_id", "nwp_source"],
                 set_={
                     "extraction_type": source.extraction_type.value,
                     "status": source.status.value,
+                    "role": source.role.value,
                 },
             )
         )
         self._conn.execute(stmt)
+
+    def fetch_forecast_binding(self, station_id: StationId) -> StationWeatherSource:
+        matches = [
+            s
+            for s in self.fetch_weather_sources(station_id)
+            if s.role == WeatherSourceRole.FORECAST
+        ]
+        if len(matches) != 1:
+            found = [m.nwp_source for m in matches]
+            raise ConfigurationError(
+                f"station {station_id} has {len(matches)} FORECAST weather-source "
+                f"binding(s), expected exactly 1: {found!r}"
+            )
+        return matches[0]
+
+    def fetch_reanalysis_bindings(
+        self, station_id: StationId
+    ) -> list[StationWeatherSource]:
+        return [
+            s
+            for s in self.fetch_weather_sources(station_id)
+            if s.role == WeatherSourceRole.REANALYSIS
+        ]
 
     def update_station_status(
         self, station_id: StationId, new_status: StationStatus
@@ -317,9 +382,24 @@ def _row_to_assignment(row: sa.engine.row.RowMapping) -> ModelAssignment:
 
 
 def _row_to_weather_source(row: sa.engine.row.RowMapping) -> StationWeatherSource:
+    role_raw = row["role"]
+    if role_raw is None:
+        # Plan 115c: delete with revision 0031 — only reachable if a
+        # pre-115a image wrote this row during the rollback window.
+        nwp_source = row["nwp_source"]
+        role = _legacy_role_for_source(nwp_source)
+        log.warning(
+            "weather_source.legacy_null_role",
+            station_id=str(row["station_id"]),
+            nwp_source=nwp_source,
+            role=role.value,
+        )
+    else:
+        role = WeatherSourceRole(role_raw)
     return StationWeatherSource(
         station_id=StationId(row["station_id"]),
         nwp_source=row["nwp_source"],
         extraction_type=SpatialRepresentation(row["extraction_type"]),
         status=WeatherSourceStatus(row["status"]),
+        role=role,
     )

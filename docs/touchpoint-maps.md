@@ -110,6 +110,11 @@ gates.
   requirements change
 - sources: observation store, reanalysis (`HybridForcingSource`), NWP store +
   `GridExtractor` (basin-average, runs at flow level), basin store, model-state store
+- weather-source binding lookup goes through the role-scoped `StationStore` accessors
+  (Plan 115a) — `fetch_forecast_binding` (exactly one FORECAST binding, else
+  `ConfigurationError`) and `fetch_reanalysis_bindings` (0..n REANALYSIS bindings, no
+  `status` filter); `fetch_weather_sources` (all bindings, unfiltered by role) is
+  display-only, not for routing
 - preprocessing: `resample_to_time_step` (precip SUM, temp/discharge MEAN), NWP
   hourly→daily + issue-time filter + horizon cap, lookback wide-pivot, `ensure_utc`
 - the cycle assembles a **superset** (`build_superset_requirements`); each model

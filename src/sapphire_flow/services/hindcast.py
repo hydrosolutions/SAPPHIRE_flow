@@ -284,7 +284,7 @@ def run_station_hindcast(
         station_id=str(station_id),
     )
 
-    weather_sources = station_store.fetch_weather_sources(station_id)
+    weather_sources = station_store.fetch_reanalysis_bindings(station_id)
     static_df = _load_static_attributes(basin_store, station_config)
     # Fetch BOTH past- and future-known forcing from reanalysis: future-dynamic
     # forcing (e.g. NWP precip/temp) is teacher-forced in hindcast and must be
@@ -452,7 +452,7 @@ def run_group_hindcast(
         sid: station_store.fetch_station(sid) for sid in group.station_ids
     }
     weather_sources_map = {
-        sid: station_store.fetch_weather_sources(sid) for sid in group.station_ids
+        sid: station_store.fetch_reanalysis_bindings(sid) for sid in group.station_ids
     }
     static_map: dict[StationId, pl.DataFrame | None] = {
         sid: _load_static_attributes(basin_store, cfg)

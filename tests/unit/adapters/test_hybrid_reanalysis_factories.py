@@ -35,7 +35,11 @@ from sapphire_flow.adapters.hybrid_reanalysis_factories import (
     default_hybrid_forcing_source,
 )
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
-from sapphire_flow.types.enums import SpatialRepresentation, WeatherSourceStatus
+from sapphire_flow.types.enums import (
+    SpatialRepresentation,
+    WeatherSourceRole,
+    WeatherSourceStatus,
+)
 from sapphire_flow.types.historical_forcing import RawHistoricalForcing
 from sapphire_flow.types.ids import StationId
 from sapphire_flow.types.station import StationWeatherSource
@@ -74,6 +78,7 @@ def _cfg() -> StationWeatherSource:
         nwp_source="unused-by-hybrid",
         extraction_type=SpatialRepresentation.BASIN_AVERAGE,
         status=WeatherSourceStatus.ACTIVE,
+        role=WeatherSourceRole.REANALYSIS,
     )
 
 

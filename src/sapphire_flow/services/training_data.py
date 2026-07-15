@@ -178,7 +178,7 @@ def assemble_station_training_data(
     future_features = model.data_requirements.future_dynamic_features
     required_features = sorted(past_features | future_features)
     if required_features:
-        weather_sources = station_store.fetch_weather_sources(station_id)
+        weather_sources = station_store.fetch_reanalysis_bindings(station_id)
         if not weather_sources:
             log.warning("training_data.no_weather_sources", station_id=str(station_id))
             return None

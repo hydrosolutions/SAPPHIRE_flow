@@ -14,12 +14,16 @@ import pytest
 import xarray as xr
 
 from sapphire_flow.config.deployment import DeploymentConfig
-from sapphire_flow.exceptions import ConfigurationError, ExtractionError, StoreError
+from sapphire_flow.exceptions import (
+    AdapterError,
+    ConfigurationError,
+    ExtractionError,
+    StoreError,
+)
 from sapphire_flow.flows.run_forecast_cycle import (
     ForecastCycleResult,
     _fetch_nwp_task,
     _load_weather_forecast_adapter_config,
-    _select_nwp_source,
     run_forecast_cycle_flow,
 )
 from sapphire_flow.models.climatology_fallback import (
@@ -47,6 +51,7 @@ from sapphire_flow.types.enums import (
     StationKind,
     StationStatus,
     ThresholdSource,
+    WeatherSourceRole,
     WeatherSourceStatus,
 )
 from sapphire_flow.types.ids import (
@@ -393,6 +398,7 @@ def _build_station_and_stores(
         nwp_source=_NWP_SOURCE,
         extraction_type=extraction_type,
         status=WeatherSourceStatus.ACTIVE,
+        role=WeatherSourceRole.FORECAST,
     )
     station_store.store_weather_source(source)
 
@@ -3275,6 +3281,7 @@ enabled = false
             nwp_source="other_source",
             extraction_type=SpatialRepresentation.BASIN_AVERAGE,
             status=WeatherSourceStatus.ACTIVE,
+            role=WeatherSourceRole.REANALYSIS,
         )
         station_store.store_weather_source(other_source)
 
@@ -3416,6 +3423,7 @@ enabled = false
             nwp_source="other_source",
             extraction_type=SpatialRepresentation.BASIN_AVERAGE,
             status=WeatherSourceStatus.ACTIVE,
+            role=WeatherSourceRole.REANALYSIS,
         )
         station_store.store_weather_source(other_source)
 
@@ -3706,6 +3714,7 @@ class TestNwpExtractionSourceFilter:
             nwp_source=_NWP_SOURCE,  # icon_ch2_eps, matches the grid
             extraction_type=SpatialRepresentation.BASIN_AVERAGE,
             status=WeatherSourceStatus.ACTIVE,
+            role=WeatherSourceRole.FORECAST,
         )
 
         out = _fetch_nwp_task.fn(
@@ -3736,6 +3745,7 @@ class TestNwpExtractionSourceFilter:
             nwp_source="camels-ch",
             extraction_type=SpatialRepresentation.BASIN_AVERAGE,
             status=WeatherSourceStatus.ACTIVE,
+            role=WeatherSourceRole.REANALYSIS,
         )
 
         out = _fetch_nwp_task.fn(
@@ -3751,6 +3761,41 @@ class TestNwpExtractionSourceFilter:
         )
 
         # a skipped extraction is still a successful NWP no-op
+        assert out is not None and out.cycle_time == _NOW
+        assert extractor.call_count == 0
+        assert nwp_store._records == []
+
+    def test_reanalysis_role_with_matching_nwp_source_name_is_still_filtered_out(
+        self,
+    ) -> None:
+        """Plan 115a: configs_for_source filters by role == FORECAST AND a
+        matching nwp_source -- a name match alone is not enough. A REANALYSIS
+        binding whose nwp_source happens to equal the grid's nwp_source (e.g.
+        a Nepal reanalysis product sharing a name with the forecast product)
+        must never be handed to the forecast extractor."""
+        sid = StationId(uuid4())
+        extractor = FakeGridExtractor(result=_make_basin_avg_result([sid]))
+        nwp_store = FakeWeatherForecastStore()
+        source = StationWeatherSource(
+            station_id=sid,
+            nwp_source=_NWP_SOURCE,  # name matches the grid...
+            extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+            status=WeatherSourceStatus.ACTIVE,
+            role=WeatherSourceRole.REANALYSIS,  # ...but the role does not.
+        )
+
+        out = _fetch_nwp_task.fn(
+            adapter=FakeWeatherForecastSource(result=_make_gridded_forecast()),
+            station_configs=[source],
+            cycle_time=_NOW,
+            weather_forecast_store=nwp_store,
+            clock=_clock,
+            grid_store=None,
+            grid_extractor=extractor,
+            station_basins={},
+            grid_archive_base_path=None,
+        )
+
         assert out is not None and out.cycle_time == _NOW
         assert extractor.call_count == 0
         assert nwp_store._records == []
@@ -3771,6 +3816,7 @@ class TestNwpExtractionSourceFilter:
             nwp_source=_NWP_SOURCE,
             extraction_type=SpatialRepresentation.BASIN_AVERAGE,
             status=WeatherSourceStatus.ACTIVE,
+            role=WeatherSourceRole.FORECAST,
         )
         pre_extracted = _make_basin_avg_result(
             [sid], n_steps=5, n_members=3, cycle_time=resolved
@@ -3794,9 +3840,11 @@ class TestNwpExtractionSourceFilter:
 
 
 class TestDeterministicNwpSourceSelection:
-    """B. Phase B must select the ICON / BASIN_AVERAGE source explicitly (not the
-    order-dependent weather_sources[0]) AND fall back to the underscore spelling
-    ``icon_ch2_eps`` (= MeteoSwissNwpAdapter.NWP_SOURCE), not ``icon-ch2-eps``.
+    """B. Phase B must select the FORECAST-role binding explicitly, via
+    ``StationStore.fetch_forecast_binding`` — never by fetch order, by a
+    same-name heuristic, or by a hardcoded fallback string. Plan 115a retired
+    the ``_select_nwp_source`` heuristic (exact-ICON pass, first-BASIN_AVERAGE
+    pass, ``icon_ch2_eps`` fallback) entirely.
     """
 
     def test_prefers_icon_source_over_camels_when_both_present(self) -> None:
@@ -3817,6 +3865,7 @@ class TestDeterministicNwpSourceSelection:
                 nwp_source="camels-ch",
                 extraction_type=SpatialRepresentation.POINT,
                 status=WeatherSourceStatus.ACTIVE,
+                role=WeatherSourceRole.REANALYSIS,
             )
         )
         # Appends the icon_ch2_eps source + seeds icon NWP records for readback.
@@ -3835,7 +3884,16 @@ class TestDeterministicNwpSourceSelection:
         # Only reachable if icon_ch2_eps (BASIN_AVERAGE) was selected deterministically.
         assert result.forecasts_stored == 1
 
-    def test_falls_back_to_underscore_icon_source_string(self) -> None:
+    def test_zero_weather_sources_is_loudly_skipped_not_defaulted(self) -> None:
+        """Locks the ONE accepted behaviour change from Plan 115a (umbrella §5):
+        a station with zero weather-source bindings used to silently forecast
+        via the hardcoded ``icon_ch2_eps`` fallback string. That heuristic is
+        retired — ``fetch_forecast_binding`` now raises ``ConfigurationError``
+        (0 matches), and the flow must contain it: record the station as
+        failed exactly once, with an error message, and keep running the
+        cycle for everyone else (the function-level ``try`` has no ``except``,
+        only a ``finally``, so an uncontained raise here would abort the
+        entire cycle)."""
         sid = StationId(uuid4())
         stores = _make_m3_stores()
         station_store = stores[0]
@@ -3844,7 +3902,6 @@ class TestDeterministicNwpSourceSelection:
         artifact_store = stores[3]
         forcing_store = stores[9]
 
-        # Seeds icon NWP records under "icon_ch2_eps" (underscores).
         _build_station_and_stores(
             sid,
             _MODEL_ID,
@@ -3854,50 +3911,308 @@ class TestDeterministicNwpSourceSelection:
             artifact_store,
             forcing_store,
         )
-        # Remove ALL weather sources so Phase B takes the hardcoded fallback path.
+        # Remove ALL weather sources so fetch_forecast_binding has 0 matches.
         station_store._weather_sources.clear()
 
         result = _run_m3_cycle(stores, {_MODEL_ID: _SmallFakeModel()})
 
-        # The fallback must be "icon_ch2_eps"; the old "icon-ch2-eps" (hyphens)
-        # mismatches the stored records and skips the station.
-        assert result.forecasts_stored == 1
+        assert result.stations_failed == 1
+        assert result.forecasts_stored == 0
+        assert any("weather-source config" in e for e in result.errors)
 
-    def test_exact_icon_wins_over_earlier_basin_average_source(self) -> None:
-        """Two-pass: an EXACT icon_ch2_eps binding wins even when a non-ICON
-        BASIN_AVERAGE source appears FIRST in fetch order (Fix 1 regression)."""
+    def test_two_basin_average_bindings_route_forecast_by_role(self) -> None:
+        """The Nepal shape on Swiss infrastructure: a station with TWO
+        BASIN_AVERAGE bindings — one FORECAST, one REANALYSIS — routes the
+        forecast path to the FORECAST one, selected by role, never by name,
+        fetch order, or an ICON-name heuristic."""
         sid = StationId(uuid4())
-        sources = [
+        station_store = FakeStationStore()
+        station_store.store_weather_source(
             StationWeatherSource(
                 station_id=sid,
                 nwp_source="camels-ch",
                 extraction_type=SpatialRepresentation.BASIN_AVERAGE,
                 status=WeatherSourceStatus.ACTIVE,
-            ),
+                role=WeatherSourceRole.REANALYSIS,
+            )
+        )
+        station_store.store_weather_source(
             StationWeatherSource(
                 station_id=sid,
                 nwp_source="icon_ch2_eps",
                 extraction_type=SpatialRepresentation.BASIN_AVERAGE,
                 status=WeatherSourceStatus.ACTIVE,
-            ),
-        ]
+                role=WeatherSourceRole.FORECAST,
+            )
+        )
 
-        assert _select_nwp_source(sources) == "icon_ch2_eps"
+        binding = station_store.fetch_forecast_binding(sid)
 
-    def test_basin_average_non_icon_only_selects_that_source(self) -> None:
-        """With no ICON binding, the second pass returns the sole BASIN_AVERAGE
-        source's nwp_source (per the implemented fallback order)."""
+        assert binding.nwp_source == "icon_ch2_eps"
+        assert binding.role == WeatherSourceRole.FORECAST
+
+    def test_inactive_forecast_binding_is_still_selected(self) -> None:
+        """Locks the deliberate no-status-filter decision (Plan 115a §5): an
+        INACTIVE binding is still selected today (nothing filters on status),
+        and this plan adds no such filter — that is its own, separate plan.
+        This must not silently drift in later."""
         sid = StationId(uuid4())
-        sources = [
+        station_store = FakeStationStore()
+        station_store.store_weather_source(
             StationWeatherSource(
                 station_id=sid,
-                nwp_source="camels-ch",
+                nwp_source="icon_ch2_eps",
+                extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+                status=WeatherSourceStatus.INACTIVE,
+                role=WeatherSourceRole.FORECAST,
+            )
+        )
+
+        binding = station_store.fetch_forecast_binding(sid)
+
+        assert binding.nwp_source == "icon_ch2_eps"
+        assert binding.status == WeatherSourceStatus.INACTIVE
+
+
+class TestForecastBindingContainment:
+    """Plan 115a §5: forecast-binding resolution happens ONCE, up front, for
+    every operational station, before Phase A (the shared NWP prefetch, which
+    runs BEFORE the per-station loop). A single station with a broken binding
+    must not abort the whole cycle — the flow-level ``try`` has NO ``except``,
+    only a ``finally``, so an uncontained ``ConfigurationError`` anywhere in
+    this path aborts the cycle for every station and every group.
+    """
+
+    def test_one_broken_binding_does_not_abort_other_stations(self) -> None:
+        """Soundness: this must fail against an implementation that lets the
+        ConfigurationError from fetch_forecast_binding escape uncaught (the
+        whole call would raise instead of returning a result with the good
+        stations still forecast)."""
+        good_sid_1 = StationId(uuid4())
+        good_sid_2 = StationId(uuid4())
+        bad_sid = StationId(uuid4())
+        stores = _make_m3_stores()
+        station_store = stores[0]
+        obs_store = stores[1]
+        nwp_store = stores[2]
+        artifact_store = stores[3]
+        forcing_store = stores[9]
+
+        for sid in (good_sid_1, good_sid_2, bad_sid):
+            _build_station_and_stores(
+                sid,
+                _MODEL_ID,
+                station_store,
+                obs_store,
+                nwp_store,
+                artifact_store,
+                forcing_store,
+            )
+        # Give bad_sid a SECOND FORECAST binding (different nwp_source, so the
+        # upsert doesn't conflict) -> 2 FORECAST matches -> fetch_forecast_binding
+        # raises ConfigurationError instead of picking one.
+        station_store.store_weather_source(
+            StationWeatherSource(
+                station_id=bad_sid,
+                nwp_source="icon_ch2_eps_v2",
                 extraction_type=SpatialRepresentation.BASIN_AVERAGE,
                 status=WeatherSourceStatus.ACTIVE,
-            ),
-        ]
+                role=WeatherSourceRole.FORECAST,
+            )
+        )
 
-        assert _select_nwp_source(sources) == "camels-ch"
+        result = _run_m3_cycle(stores, {_MODEL_ID: _SmallFakeModel()})
+
+        assert result.stations_failed == 1
+        assert result.stations_succeeded == 2
+        assert result.forecasts_stored == 2
+        matching_errors = [e for e in result.errors if str(bad_sid) in e]
+        assert len(matching_errors) == 1
+        assert result.health != ForecastCycleHealth.FAILED
+
+    def test_broken_binding_excluded_from_phase_a_prefetch(self) -> None:
+        """Soundness: this must fail against an implementation that contains
+        the raise only inside the per-station loop (:1498), since the shared
+        NWP prefetch (:1242-1300) runs first and consumes flat_weather_configs
+        — the bad station's binding must never reach it, or it would poison
+        the shared fetch for every other station."""
+        good_sid = StationId(uuid4())
+        bad_sid = StationId(uuid4())
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        for sid in (good_sid, bad_sid):
+            _build_station_and_stores(
+                sid,
+                _MODEL_ID,
+                station_store,
+                obs_store,
+                nwp_store,
+                artifact_store,
+                forcing_store,
+                extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+                basin_store=basin_store,
+            )
+        # Break bad_sid's binding the same way: a second FORECAST binding.
+        station_store.store_weather_source(
+            StationWeatherSource(
+                station_id=bad_sid,
+                nwp_source="icon_ch2_eps_v2",
+                extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+                status=WeatherSourceStatus.ACTIVE,
+                role=WeatherSourceRole.FORECAST,
+            )
+        )
+
+        adapter = FakeWeatherForecastSource(result=_make_gridded_forecast())
+        grid_extractor = FakeGridExtractor(result=_make_basin_avg_result([good_sid]))
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=adapter,
+            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+            config=_make_config(),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+            grid_store=None,
+            grid_extractor=grid_extractor,
+        )
+
+        # Phase A still ran for the good station -- extraction was not aborted.
+        assert grid_extractor.call_count == 1
+        extracted_station_ids = {c.station_id for c in grid_extractor.last_configs}
+        # Only the good station's binding reached the shared prefetch; the bad
+        # station's binding was excluded before Phase A, not merely skipped
+        # later in the per-station loop.
+        assert extracted_station_ids == {good_sid}
+        assert result.stations_failed == 1
+        assert result.stations_succeeded == 1
+
+    def test_all_stations_broken_binding_reports_failures_not_fatal_abort(
+        self,
+    ) -> None:
+        """Plan 115a §5 / adversarial-review blocker: when EVERY operational
+        station fails forecast-binding resolution, ``flat_weather_configs`` is
+        empty. Phase A must NOT be submitted in that case -- submitting it
+        against an empty station list reaches an adapter (e.g.
+        ``ReplayNwpAdapter``) that raises on empty ``station_configs``,
+        ``_fetch_nwp_task`` converts that to ``None``, and the flow used to
+        take the fatal-abort return path, ERASING the per-station failure
+        accounting already recorded (stations_failed / errors /
+        failed_station_ids) in favour of a bogus 0/0 result.
+
+        Soundness: the adapter below raises ``AdapterError`` if it is EVER
+        called with an empty ``station_configs`` list -- exactly like
+        ``ReplayNwpAdapter.fetch_forecasts``. Against the pre-fix code this
+        test fails (the flow surfaces a fatal 0/0 result, or the
+        AdapterError escapes). Against the fixed code, Phase A is skipped
+        entirely (adapter never called) and every operational station is
+        accounted for as failed.
+        """
+        bad_sid_1 = StationId(uuid4())
+        bad_sid_2 = StationId(uuid4())
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        for sid in (bad_sid_1, bad_sid_2):
+            _build_station_and_stores(
+                sid,
+                _MODEL_ID,
+                station_store,
+                obs_store,
+                nwp_store,
+                artifact_store,
+                forcing_store,
+                extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+                basin_store=basin_store,
+            )
+            # Break every station's binding the same way as
+            # TestForecastBindingContainment: a second FORECAST binding ->
+            # fetch_forecast_binding raises ConfigurationError (0 or 2+
+            # matches are both "broken"; 2+ is used here).
+            station_store.store_weather_source(
+                StationWeatherSource(
+                    station_id=sid,
+                    nwp_source="icon_ch2_eps_v2",
+                    extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+                    status=WeatherSourceStatus.ACTIVE,
+                    role=WeatherSourceRole.FORECAST,
+                )
+            )
+
+        class _RaisesOnEmptyAdapter:
+            call_count = 0
+
+            def fetch_forecasts(
+                self, station_configs: list[object], cycle_time: object
+            ) -> object:
+                _RaisesOnEmptyAdapter.call_count += 1
+                if not station_configs:
+                    raise AdapterError("station_configs is empty")
+                raise AssertionError(
+                    "adapter must not be called with non-empty configs in this test"
+                )
+
+        adapter = _RaisesOnEmptyAdapter()
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=adapter,  # type: ignore[arg-type]
+            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+            config=_make_config(),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+            grid_store=None,
+        )
+
+        # Phase A must not have been submitted at all -- the adapter is never
+        # reached when every operational station's binding is broken.
+        assert _RaisesOnEmptyAdapter.call_count == 0
+        assert isinstance(result, ForecastCycleResult)
+        assert result.stations_attempted == 2
+        assert result.stations_failed == 2
+        assert result.stations_succeeded == 0
+        assert result.forecasts_stored == 0
+        matching_errors_1 = [e for e in result.errors if str(bad_sid_1) in e]
+        matching_errors_2 = [e for e in result.errors if str(bad_sid_2) in e]
+        assert len(matching_errors_1) == 1
+        assert len(matching_errors_2) == 1
 
 
 class _MonotonicEnsembleModel(FakeStationForecastModel):

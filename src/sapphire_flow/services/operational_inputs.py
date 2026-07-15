@@ -324,9 +324,9 @@ def assemble_station_operational_inputs(
     # --- past_dynamic ---
     past_dynamic_features = list(reqs.past_dynamic_features)
     if past_dynamic_features:
-        weather_sources = station_store.fetch_weather_sources(station_id)
+        reanalysis_bindings = station_store.fetch_reanalysis_bindings(station_id)
         raw_forcing = forcing_source.fetch_reanalysis(
-            station_configs=weather_sources,
+            station_configs=reanalysis_bindings,
             start=lookback_start,
             end=issue_time,
             parameters=past_dynamic_features,

@@ -29,7 +29,11 @@ import xarray as xr
 
 from sapphire_flow.exceptions import AdapterError
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.enums import SpatialRepresentation, WeatherSourceStatus
+from sapphire_flow.types.enums import (
+    SpatialRepresentation,
+    WeatherSourceRole,
+    WeatherSourceStatus,
+)
 from sapphire_flow.types.forcing_sources import ForcingSource
 from sapphire_flow.types.historical_forcing import RawHistoricalForcing
 
@@ -146,16 +150,17 @@ class MeteoSwissOpenDataReanalysisAdapter:
             return []
         cycle_time = self._clock()
 
-        # Only process configs that declare THIS source, are active, AND request
-        # basin-average extraction (the only representation this adapter emits —
-        # _rows_for_product hard-codes BASIN_AVERAGE). A mixed config list
-        # (ICON/CAMELS/inactive/non-basin sources, as service callers pass
-        # through verbatim) must not yield reanalysis rows; no match returns []
-        # without downloading.
+        # Only process configs that declare THIS source, are REANALYSIS-role,
+        # are active, AND request basin-average extraction (the only
+        # representation this adapter emits — _rows_for_product hard-codes
+        # BASIN_AVERAGE). A mixed config list (FORECAST/CAMELS/inactive/
+        # non-basin sources, as service callers pass through verbatim) must
+        # not yield reanalysis rows; no match returns [] without downloading.
         matching = [
             c
             for c in station_configs
             if c.nwp_source == self.NWP_SOURCE
+            and c.role is WeatherSourceRole.REANALYSIS
             and c.status == WeatherSourceStatus.ACTIVE
             and c.extraction_type == SpatialRepresentation.BASIN_AVERAGE
         ]

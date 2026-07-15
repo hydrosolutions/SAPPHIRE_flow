@@ -34,6 +34,7 @@ from sapphire_flow.types.enums import (
     SpatialRepresentation,
     StationKind,
     StationStatus,
+    WeatherSourceRole,
     WeatherSourceStatus,
 )
 from sapphire_flow.types.ids import ModelId, StationId
@@ -113,6 +114,7 @@ def _seed_minimal_station(
         nwp_source=_NWP_SOURCE,
         extraction_type=SpatialRepresentation.POINT,
         status=WeatherSourceStatus.ACTIVE,
+        role=WeatherSourceRole.FORECAST,
     )
     station_store.store_weather_source(source)
 

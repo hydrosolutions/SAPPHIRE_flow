@@ -8,7 +8,12 @@ from uuid import UUID, uuid4
 
 import polars as pl
 
-from sapphire_flow.exceptions import ArtifactIntegrityError, ConflictError, StoreError
+from sapphire_flow.exceptions import (
+    ArtifactIntegrityError,
+    ConfigurationError,
+    ConflictError,
+    StoreError,
+)
 from sapphire_flow.store.observation_store import _dedupe_raw_observations
 from sapphire_flow.types.alert import Alert  # noqa: TC001
 from sapphire_flow.types.basin import Basin  # noqa: TC001
@@ -34,6 +39,7 @@ from sapphire_flow.types.enums import (
     StationKind,
     StationOwnership,
     StationStatus,
+    WeatherSourceRole,
 )
 from sapphire_flow.types.forecast import (  # noqa: TC001
     ForecastAdjustment,
@@ -895,6 +901,22 @@ class FakeStationStore:
         return [s for s in self._weather_sources if s.station_id == station_id]
 
     def store_weather_source(self, source: StationWeatherSource) -> None:
+        existing = next(
+            (
+                s
+                for s in self._weather_sources
+                if s.station_id == source.station_id
+                and s.nwp_source == source.nwp_source
+            ),
+            None,
+        )
+        if existing is not None and existing.role != source.role:
+            raise ConfigurationError(
+                f"weather source {source.nwp_source!r} for station "
+                f"{source.station_id} already has role {existing.role.value!r}; "
+                f"refusing to silently overwrite it with {source.role.value!r} "
+                "(one nwp_source serves exactly one role per station)"
+            )
         self._weather_sources = [
             s
             for s in self._weather_sources
@@ -903,6 +925,29 @@ class FakeStationStore:
             )
         ]
         self._weather_sources.append(source)
+
+    def fetch_forecast_binding(self, station_id: StationId) -> StationWeatherSource:
+        matches = [
+            s
+            for s in self.fetch_weather_sources(station_id)
+            if s.role == WeatherSourceRole.FORECAST
+        ]
+        if len(matches) != 1:
+            found = [m.nwp_source for m in matches]
+            raise ConfigurationError(
+                f"station {station_id} has {len(matches)} FORECAST weather-source "
+                f"binding(s), expected exactly 1: {found!r}"
+            )
+        return matches[0]
+
+    def fetch_reanalysis_bindings(
+        self, station_id: StationId
+    ) -> list[StationWeatherSource]:
+        return [
+            s
+            for s in self.fetch_weather_sources(station_id)
+            if s.role == WeatherSourceRole.REANALYSIS
+        ]
 
     def stations(self) -> dict[StationId, StationConfig]:
         return dict(self._stations)

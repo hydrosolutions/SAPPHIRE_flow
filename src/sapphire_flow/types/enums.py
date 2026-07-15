@@ -208,6 +208,11 @@ class WeatherSourceStatus(Enum):
     INACTIVE = "inactive"
 
 
+class WeatherSourceRole(Enum):
+    FORECAST = "forecast"
+    REANALYSIS = "reanalysis"
+
+
 class SkillFreshness(Enum):
     CURRENT = "current"
     STALE = "stale"

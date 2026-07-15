@@ -17,6 +17,7 @@ from sapphire_flow.types.enums import (
     ObservationSource,
     QcStatus,
     SpatialRepresentation,
+    WeatherSourceRole,
     WeatherSourceStatus,
 )
 from sapphire_flow.types.ids import ObservationId, StationGroupId, StationId
@@ -77,6 +78,7 @@ def _weather_source(station_id: StationId) -> StationWeatherSource:
         nwp_source="smn",
         extraction_type=SpatialRepresentation.POINT,
         status=WeatherSourceStatus.ACTIVE,
+        role=WeatherSourceRole.REANALYSIS,
     )
 
 

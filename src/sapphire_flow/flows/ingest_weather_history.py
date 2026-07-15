@@ -243,11 +243,11 @@ def _store_forcing_task(
 def _reanalysis_sources(
     station_store: StationStore, nwp_source: str
 ) -> list[StationWeatherSource]:
-    """Every station weather-source bound to ``nwp_source``."""
+    """Every REANALYSIS-role station weather-source bound to ``nwp_source``."""
     return [
         source
         for station in station_store.fetch_all_stations()
-        for source in station_store.fetch_weather_sources(station.id)
+        for source in station_store.fetch_reanalysis_bindings(station.id)
         if source.nwp_source == nwp_source
     ]
 

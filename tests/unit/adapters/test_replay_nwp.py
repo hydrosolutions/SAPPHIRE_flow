@@ -12,7 +12,11 @@ from sapphire_flow.exceptions import AdapterError, ConfigurationError
 from sapphire_flow.protocols.adapters import WeatherForecastSource
 from sapphire_flow.store.zarr_nwp_grid_store import ZarrNwpGridStore
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
-from sapphire_flow.types.enums import SpatialRepresentation, WeatherSourceStatus
+from sapphire_flow.types.enums import (
+    SpatialRepresentation,
+    WeatherSourceRole,
+    WeatherSourceStatus,
+)
 from sapphire_flow.types.ids import StationId
 from sapphire_flow.types.station import StationWeatherSource
 from sapphire_flow.types.weather import GriddedForecast
@@ -24,6 +28,7 @@ def _make_config(nwp_source: str = "icon_ch2_eps") -> StationWeatherSource:
         nwp_source=nwp_source,
         extraction_type=SpatialRepresentation.BASIN_AVERAGE,
         status=WeatherSourceStatus.ACTIVE,
+        role=WeatherSourceRole.FORECAST,
     )
 
 

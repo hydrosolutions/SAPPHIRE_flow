@@ -52,6 +52,7 @@ from sapphire_flow.types.model_onboarding import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from sapphire_flow.protocols.stores import HistoricalForcingStore
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.ids import ArtifactId
     from sapphire_flow.types.model import (
@@ -478,12 +479,14 @@ def onboard_model_flow(
     skill_store: object = None,
     flow_regime_store: object = None,
     parameter_store: object = None,
+    forcing_store: object = None,
     forcing_source: object = None,
     deployment_config: object = None,
     clock: object = None,
     rng: object = None,
 ) -> ModelOnboardingResult:
     from datetime import UTC, datetime
+    from typing import cast
     from uuid import UUID
 
     import prefect.runtime
@@ -512,6 +515,7 @@ def onboard_model_flow(
         skill_store = stores["skill_store"]
         flow_regime_store = stores["flow_regime_store"]
         parameter_store = stores["parameter_store"]
+        forcing_store = stores["forcing_store"]
 
     if deployment_config is None:
         config_path = os.environ.get("SAPPHIRE_CONFIG")
@@ -524,10 +528,22 @@ def onboard_model_flow(
 
             deployment_config = DeploymentConfig(max_retention_days=600)
 
-    # forcing_source is passed through as-is. None is allowed for empty-scope
-    # (register-only) runs; the per-unit loop only dereferences it when the scope
-    # is non-empty. If a future plan wires deployment-triggerable adapter
-    # injection, revisit.
+    # Route through the single reanalysis-source factory (Plan 115a §6) so the
+    # mode is a deployment decision made in exactly one place. None stays
+    # allowed for empty-scope (register-only) runs, or when forcing_store is
+    # unavailable — the per-unit loop only dereferences forcing_source when
+    # the scope is non-empty.
+    if forcing_source is None and forcing_store is not None:
+        from sapphire_flow.adapters.hybrid_reanalysis_factories import (
+            select_reanalysis_source,
+        )
+        from sapphire_flow.config.deployment import DeploymentConfig
+
+        resolved_config = cast("DeploymentConfig", deployment_config)
+        forcing_source = select_reanalysis_source(
+            forcing_store=cast("HistoricalForcingStore", forcing_store),
+            mode=resolved_config.reanalysis_source,
+        )
 
     if model_store is None:
         raise ConfigurationError("model_store is required but was not provided")

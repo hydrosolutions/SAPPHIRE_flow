@@ -32,7 +32,11 @@ from datetime import UTC, datetime
 
 from sapphire_flow.adapters.hybrid_reanalysis import HybridForcingSource
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
-from sapphire_flow.types.enums import SpatialRepresentation, WeatherSourceStatus
+from sapphire_flow.types.enums import (
+    SpatialRepresentation,
+    WeatherSourceRole,
+    WeatherSourceStatus,
+)
 from sapphire_flow.types.forcing_sources import ForcingSource
 from sapphire_flow.types.historical_forcing import RawHistoricalForcing
 from sapphire_flow.types.ids import StationId
@@ -69,6 +73,17 @@ def _cfg(station: str = "s1") -> StationWeatherSource:
         nwp_source="unused-by-hybrid",
         extraction_type=SpatialRepresentation.BASIN_AVERAGE,
         status=WeatherSourceStatus.ACTIVE,
+        role=WeatherSourceRole.REANALYSIS,
+    )
+
+
+def _forecast_cfg(station: str = "s1") -> StationWeatherSource:
+    return StationWeatherSource(
+        station_id=StationId(station),
+        nwp_source="icon_ch2_eps",
+        extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+        status=WeatherSourceStatus.ACTIVE,
+        role=WeatherSourceRole.FORECAST,
     )
 
 
@@ -285,3 +300,42 @@ class TestHybridForcingSource:
         # Higher-priority MeteoSwiss wins both keys.
         assert {r.source for r in result} == {"meteoswiss_rprelimd"}
         assert {r.value for r in _by_key(result).values()} == {5.0, 6.0}
+
+    def test_forecast_binding_is_excluded_before_fan_out(self) -> None:
+        # A FORECAST binding must never be handed to a child reanalysis
+        # source — even though the stub has data for that station under a
+        # tag the priority chain recognises, the row must not leak into the
+        # result. Soundness: fails against an implementation that forwards
+        # the raw, unfiltered station_configs list to fan-out, since the stub
+        # source filters only on station_id, not role.
+        meteo = _StubReanalysisSource(
+            rows=(
+                _raw(source="meteoswiss_rprelimd", station="s1", value=5.0),
+                _raw(source="meteoswiss_rprelimd", station="s2", value=7.0),
+            )
+        )
+        hybrid = HybridForcingSource(
+            sources={ForcingSource.METEOSWISS_RPRELIMD: meteo},
+            priority={"precipitation": (ForcingSource.METEOSWISS_RPRELIMD,)},
+        )
+
+        result = hybrid.fetch_reanalysis(
+            [_forecast_cfg("s1"), _cfg("s2")], _START, _END, ["precipitation"]
+        )
+
+        assert {r.station_id for r in result} == {StationId("s2")}
+
+    def test_forecast_only_list_produces_no_rows(self) -> None:
+        meteo = _StubReanalysisSource(
+            rows=(_raw(source="meteoswiss_rprelimd", station="s1", value=5.0),)
+        )
+        hybrid = HybridForcingSource(
+            sources={ForcingSource.METEOSWISS_RPRELIMD: meteo},
+            priority={"precipitation": (ForcingSource.METEOSWISS_RPRELIMD,)},
+        )
+
+        result = hybrid.fetch_reanalysis(
+            [_forecast_cfg("s1")], _START, _END, ["precipitation"]
+        )
+
+        assert result == []
