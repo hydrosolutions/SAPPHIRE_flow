@@ -1,0 +1,17 @@
+# Plan 119 — committed override allowlist for the dependency-safety gate
+# (tools/dependency_safety.py). Mirrors the .trivyignore precedent: an
+# override is a committed, code-reviewed entry with a dated justification,
+# never an ephemeral PR label (a label applied after PR creation would not
+# re-run the dependency-safety job — see docs/plans/119-dependency-bump-
+# safety-gate.md §2).
+#
+# One finding key per line. A finding's key is printed in its BLOCK message
+# (format: "<watched-file>:<identifier>", e.g.
+# "docker-compose.yml:postgis/postgis" or "pyproject.toml:requires-python").
+# Blank lines and lines starting with `#` are ignored.
+#
+# --- No active entries as of 2026-07-15 ---
+# Add an entry here only after the flagged bump has been verified safe
+# (e.g. the target migration from Plan 118 has been executed on the target
+# host), with a dated comment explaining why and pointing at the plan/PR
+# that did the verification.

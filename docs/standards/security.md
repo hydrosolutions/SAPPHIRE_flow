@@ -433,6 +433,117 @@ Two Trivy scans run in CI. Both fail the build on `HIGH,CRITICAL` with `--ignore
 
 Known-accepted CVEs live in `.trivyignore`. Every entry must carry a dated comment explaining why it is ignored and when to re-review — no undated entries.
 
+### Dependency-bump safety gate (Plan 119)
+
+Green CI is not a merge criterion for dependency bumps that change stateful
+or environment-coupled behaviour. Dependabot PR #78
+(`postgis/postgis:16-3.4 → 17-3.4`) passed every CI check and was one click
+from merge — yet merging it would have taken staging down, because a
+PostgreSQL **major** version bump cannot boot against an existing PG16 data
+directory without a migration (see Plan 118). CI is structurally blind to
+this class: it always starts from an empty database and never sees a
+persistent volume.
+
+**Layered controls:**
+
+1. **Prevention — Dependabot `ignore:` rules.** `.github/dependabot.yml`
+   carries per-package `version-update:semver-major` (and, for the Python
+   base image, `semver-minor` too — see below) `ignore:` rules for every
+   image in `docker-compose.yml` that holds a persistent named volume:
+   `postgis/postgis`, `prefecthq/prefect`, `caddy`. The dangerous PR simply
+   never opens. Re-enabling an ignore rule is a deliberate, auditable
+   commit (documented inline in `dependabot.yml`), not silent drift —
+   e.g. the postgis rule is re-enabled together with the Plan 118 migration.
+2. **Classifier — the `dependency-safety` job** (`.github/workflows/dependency-safety.yml`,
+   logic in `tools/dependency_safety.py`). Prevention only binds
+   Dependabot; a human hand-editing `docker-compose.yml`, `Dockerfile`, or
+   `pyproject.toml` bypasses it entirely. The classifier is the
+   defense-in-depth backstop for exactly those manual edits, plus the
+   residual field (`requires-python`) Dependabot never touches at all. It
+   triggers **unconditionally** on every `pull_request` (no `paths:`
+   filter — see `cicd.md` § `dependency-safety.yml` for why) and diffs a
+   fixed watched-file set against the PR base SHA:
+   `docker-compose.yml`, `Dockerfile`, `pyproject.toml`, `uv.lock`,
+   `.github/workflows/ci.yml`.
+
+   **BLOCK** (job fails, with an actionable message pointing at the fix —
+   e.g. Plan 118 for a postgis bump):
+   - a **stateful-service image** major bump in `docker-compose.yml` —
+     detected generically as any `image:` with a `volumes:` mount whose
+     parsed version increased (no hardcoded per-image list);
+   - a **Dockerfile base-image** change — for CPython's `X.Y.Z` tag scheme
+     the risk axis is the **minor** (`Y`), not semver-major: `3.14 → 3.15`
+     is major `3` on both sides yet is exactly the "CI may not even run
+     3.15 yet" threat, so a generic "semver-major increased" test would
+     miss it;
+   - any **`requires-python`** change in `pyproject.toml`.
+
+   **REVIEW** (job passes, writes an advisory notice to
+   `$GITHUB_STEP_SUMMARY` — never a PR comment):
+   - a change to the FI/recap git-pin or the `wheel-only-guard` machinery;
+   - a **major** bump of a native/compiled-extension runtime dependency
+     (`cfgrib`, `rioxarray`, `exactextract`, `forecastinterface`) — ABI/GDAL/
+     wheel risk a fresh-env CI run may not surface. Ordinary pure-Python
+     library majors (pandas, pydantic, …) are **not** flagged: the
+     `unit`/`integration` jobs already exercise them, and flagging every
+     library major would reintroduce rubber-stamp fatigue for a risk PR #78
+     did not demonstrate;
+   - a postgis-major confined to `ci.yml`'s **ephemeral** `integration`
+     service container (`ci.yml:108`, no volume mount) — advisory only,
+     with a "keep in lockstep with `docker-compose.yml`" note, since the
+     data-directory break that motivates BLOCK cannot occur there.
+
+   **ALLOW** (silent): patch/minor of a normal library, action patch bumps,
+   dev-dependency patches.
+
+   The version comparison always parses the machine-readable `image:`
+   field value (before `@sha256:...`), **never** the trailing
+   `# name:tag` comment — Dependabot does not keep that comment in sync
+   (PR #78's branch left the comment reading the pre-bump tag), and a
+   comment-reading classifier would have silently passed the one PR this
+   gate exists to catch.
+
+   **Override — committed allowlist, not a PR label.** `ci.yml`/
+   `dependency-safety.yml` trigger only on `[opened, synchronize, reopened]`
+   (no `types: [labeled]`), so a label applied to an already-open PR would
+   not re-run the check — a BLOCK could never be cleared that way. Instead,
+   clearing a BLOCK requires a committed, code-reviewed entry in
+   `.dependency-safety-allowlist` (mirrors the `.trivyignore` precedent
+   above): one finding key per line, with a dated justification comment.
+   Pushing that commit re-runs the check via `synchronize` and leaves a
+   durable audit trail in git history.
+
+   **Enforcement status: advisory today.** `main` has no branch protection
+   or rulesets (`gh api repos/hydrosolutions/SAPPHIRE_flow/branches/main/protection`
+   → 404; `.../rulesets` → `[]`), so a BLOCK is a red check a human can
+   still bypass. Making `dependency-safety` a required check needs
+   repo-admin access and is an **owner-only manual action** — either full
+   required-checks branch protection, or (recommended, narrower) a ruleset
+   scoped to just this check:
+   ```bash
+   gh api --method POST repos/hydrosolutions/SAPPHIRE_flow/rulesets \
+     -f name="dependency-safety required" \
+     -f target="branch" \
+     -f enforcement="active" \
+     -f 'conditions[ref_name][include][]=refs/heads/main' \
+     -f 'rules[][type]=required_status_checks' \
+     -f 'rules[][parameters][required_status_checks][][context]=dependency-safety'
+   ```
+   (or Settings → Branches → Branch protection rules / Rulesets in the
+   GitHub UI). Until that lands, treat a `dependency-safety` BLOCK the same
+   as a manual policy gate: do not merge past it without the allowlist
+   override.
+
+3. **Out of scope (no Trivy duplication).** The gate does not diff
+   `uv.lock` for transitive CVEs — the existing Trivy fs scan (below)
+   already gates `HIGH`/`CRITICAL` fixable vulnerabilities on every PR. The
+   residual gap (yanked-but-not-CVE releases) is mitigated by the 48 h
+   Dependabot cooldown (`dependabot.yml`).
+
+See `docs/plans/119-dependency-bump-safety-gate.md` for the full design and
+`docs/standards/cicd.md` § `dependency-safety.yml` for the workflow's
+operational shape.
+
 ### SBOM generation
 
 `syft` runs after the CI image build and emits a CycloneDX JSON SBOM (`sbom.cdx.json`) uploaded as a workflow artifact on every run. SBOM gives the repo immediate recoverability value: when a future CVE lands, the artifact answers "which historical image contains the affected library?".

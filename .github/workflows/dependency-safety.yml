@@ -1,0 +1,45 @@
+# Plan 119 — dependency-bump safety gate.
+#
+# Kept as a SIBLING workflow (not a job inside ci.yml) so its trigger stays
+# unconditional: `ci.yml`'s `on:` block also fires on `push` to main, and
+# this gate only makes sense in a PR-diff-against-base context.
+#
+# Unconditional `pull_request` trigger — deliberately NO top-level `paths:`
+# filter. A required status check whose triggering workflow never runs
+# (because a `paths:` filter did not match) is held by GitHub as permanently
+# `Expected`/pending, not "passed" — that would wedge every PR that doesn't
+# touch the watched files once this becomes a required check (Plan 119 §1,
+# §3). The file-scoping happens INSIDE the job instead: the classifier
+# (tools/dependency_safety.py) diffs a fixed watched-file set against the PR
+# base SHA and exits 0 (skip-pass) the moment nothing in that set changed —
+# so this job always reports a concrete pass/fail, never "Expected".
+on:
+  pull_request:
+
+jobs:
+  dependency-safety:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # Full history so `git show <base-sha>:<path>` can resolve the PR
+          # base commit — every other checkout in this repo uses the default
+          # fetch-depth 1, which would not have the base commit available.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.11.7"
+          python-version: "3.12"
+      - run: uv sync --frozen
+      # BLOCK fails this job with a §2 actionable message (postgis BLOCKs
+      # point at Plan 118). REVIEW passes but writes an advisory notice to
+      # $GITHUB_STEP_SUMMARY — token-free, since GITHUB_TOKEN is read-only on
+      # Dependabot-triggered `pull_request` runs and no PR-comment permission
+      # is granted (Plan 119 §3). An unresolved BLOCK can be cleared only by
+      # a committed, code-reviewed entry in .dependency-safety-allowlist
+      # (mirrors the .trivyignore precedent) — never a PR label, since a
+      # label applied after PR creation would not re-run this job.
+      - name: Classify dependency-bump risk
+        run: >-
+          uv run python tools/dependency_safety.py
+          --base-ref "${{ github.event.pull_request.base.sha }}"

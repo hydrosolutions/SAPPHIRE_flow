@@ -43,6 +43,13 @@ CI_ONLY_ALLOWLIST: dict[tuple[str, str], str] = {
         "uv run pytest tests/integration/: requires postgres service + system deps; "
         "run locally as 'uv run pytest tests/integration/ -v -m not slow'"
     ),
+    # ── dependency-safety.yml (Plan 119) ─────────────────────────────────────
+    # (uv sync --frozen is covered-by-uv-sync)
+    ("dependency-safety", "Classify dependency-bump risk"): (
+        "requires a PR base SHA (${{ github.event.pull_request.base.sha }}); "
+        "run locally as 'uv run python tools/dependency_safety.py "
+        "--base-ref <base-sha>' against any base commit"
+    ),
     # ── integration-nightly.yml ──────────────────────────────────────────────
     (
         "integration-nightly",
