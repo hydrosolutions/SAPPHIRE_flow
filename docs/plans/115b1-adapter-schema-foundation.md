@@ -23,9 +23,11 @@ validation gate → 115b4 reader-flip). Iteratively reviewed by an independent C
 
 ## Why this is the safe first slice
 
-Like 115a, this is **additive and behaviour-neutral**: it adds products, a canonical parameter, a
-writer-side fetch path, and a schema split — but changes **no default**, flips **no flow**, and writes
-**no production data** (the backfill is 115b2). It can land and be verified in isolation.
+Like 115a, this is **behaviour-EFFECT-neutral**: it adds products, a canonical parameter, a writer-side
+fetch path, and a schema split — changes **no default**, writes **no production data** (backfill is 115b2),
+and Flow 6 **stays dark in effect** (it matches zero stations until 115b2 creates the binding). It **does**
+rewrite the Flow 6 *call shape* (1G) — this is REQUIRED for self-containment (see below), not a real
+behaviour change, because Flow 6 produces nothing either way today.
 
 ## Scope — phase 1 (see 115b §0a/§1 and the SrelD contract for the detailed spec + citations)
 
@@ -70,6 +72,16 @@ writer-side fetch path, and a schema split — but changes **no default**, flips
   parameters (1 product each) still resolve on the parameter path unchanged. **The read-side
   `WeatherReanalysisSource` protocol, its fakes, `PerSourceStoreReader`/`HybridForcingSource` are
   UNCHANGED.**
+- **1G — rewrite the Flow 6 caller to `fetch_products` (REQUIRED for self-containment — round-1 blocker).**
+  Flow 6 today calls `fetch_reanalysis(_CANONICAL_PARAMETERS)` (`ingest_weather_history.py:318`), which
+  includes `"precipitation"`. The moment 1A adds RhiresD (two precip products) and 1F makes the
+  parameter-keyed precip path fail closed, that call would **raise**. So 115b1 MUST also rewrite the Flow 6
+  ingest call to the two product-scoped calls over its rolling window (using 1D's `R` and 1F's
+  `fetch_products`): `RHIRESD` over `[start, min(R+1d, end))`, `RPRELIMD` over `[max(start, R+1d), end)`;
+  the other four parameters via one `fetch_products` (or the unchanged parameter path). **This does not
+  change Flow 6's EFFECT** — it still matches zero stations and stores nothing until 115b2's binding — but
+  it keeps the fail-closed guard and its only live caller in the SAME PR, so 115b1 never leaves a broken
+  seam. *(115b2 then just adds the binding + backfill; it does not touch the Flow 6 call.)*
 
 ## Tests
 
@@ -85,7 +97,17 @@ writer-side fetch path, and a schema split — but changes **no default**, flips
   products are registered.
 - **Archive asset selection (1B/1C):** the real/faithful LV95 fixture extracts correct basin-average values
   through `exactextract` for a `ch01h` (RhiresD) and a `ch01r` (SrelD) file.
-- **Four→five parameter pins migrated, not broken** (the three test files above).
+- **Four→five parameter pins migrated, not broken** — and this includes
+  `tests/unit/adapters/test_meteoswiss_open_data_reanalysis.py:72,82` (adapter product/parameter pins), not
+  just the three unit files, plus the **parameter-store integration test**
+  (`tests/integration/store/test_parameter_store.py:18` — updated seed count + `relative_sunshine_duration`,
+  unit `%`, weather domain, mean aggregation).
+- **Self-containment (1G — the round-1 blocker):** after 115b1 lands, Flow 6's ingest runs WITHOUT raising
+  (it uses `fetch_products`, not the now-fail-closed parameter path for precip), and still stores nothing
+  (zero-station, no binding yet). *Soundness: fails against a 115b1 that adds the guard but leaves the
+  `fetch_reanalysis(_CANONICAL_PARAMETERS)` call in place.*
+- **`R` discovery (1D):** the helper returns the latest published `RhiresD` date from STAC; handles an
+  empty collection and pagination/latest-date selection. Signature pinned.
 
 ## Dependency graph
 

@@ -24,8 +24,10 @@ blocks: [115b3]
 Binding and backfill are inseparable: **the adapter only processes configs that declare its
 `nwp_source`**, so a backfill with no binding does nothing *and reports success*
 (`ingest_weather_history.py:243`). Bind first, then backfill. Both write to `historical_forcing` but the
-default reader is still `single` and Flow 6 is unchanged, so **no live forecast behaviour changes** — the
-risk here is **scale and correctness of the write path**, not production impact.
+default reader is still `single`, and Flow 6's call shape was already rewritten to `fetch_products` in
+115b1 (1G) — so **no live forecast behaviour changes** here; the risk is **scale and correctness of the
+write path**, not production impact. *(This plan adds the binding that makes Flow 6's rolling ingest
+non-empty; it does not touch the Flow 6 call itself.)*
 
 ## Scope
 
