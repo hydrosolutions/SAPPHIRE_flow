@@ -305,6 +305,29 @@ making `dependency-safety` bite is a repo-governance decision, not a one-line ad
   org configs. Writing to `$GITHUB_STEP_SUMMARY` (the check-run summary) needs **no** write token and
   works uniformly for human- and Dependabot-authored PRs — adopt that instead of a sticky PR comment.
 
+### 3a. Follow-up — run the classifier from the TRUSTED BASE revision (documented residual)
+
+Two adversarial cross-checks of the implementation converged on one bypass this plan does **not** fully
+close in its first landing: the workflow checks out the **PR's** copy and runs the PR's
+`tools/dependency_safety.py`, so a determined PR could weaken or delete the classifier **in the same PR
+that carries a dangerous bump**, and the neutered classifier would judge itself.
+
+- **Shipped mitigation (in the first landing):** a change to any of the gate's own policy files
+  (`tools/dependency_safety.py`, `.github/workflows/dependency-safety.yml`, `.github/dependabot.yml`,
+  `.dependency-safety-allowlist`) is itself flagged **REVIEW** — so self-modification is never *silent*.
+- **The proper fix (this follow-up):** the workflow should run the classifier logic from the **trusted
+  base ref** (or an immutable pinned action / reusable workflow from a protected path) and point it at the
+  PR-head files — so the code doing the judging is the code on `main`, not the code in the PR.
+- **Why it is a follow-up, not a blocker:** it only *matters* once `dependency-safety` is a **required
+  check** under branch protection — and that is itself an owner-only action this plan defers (§3). Until
+  branch protection exists, **every** BLOCK is advisory and human-bypassable anyway, so trusted-base
+  execution buys nothing extra. When the owner enables the required-check ruleset (§3), this follow-up
+  should land **with** it.
+- **Threat-model note:** this residual is a defence against a *deliberate, adversarial* human PR. The
+  incident this plan exists for (#78) is an *accidental* merge of a tool-proposed bump — fully covered by
+  §0 prevention + the classifier's fail-closed parsing. The self-modification vector is a different, and
+  strictly harder, threat.
+
 ### 4. Optional, higher-value: an "upgrade against real data" smoke
 
 For the stateful class specifically, a nightly (not per-PR — too slow/stateful) job that:
