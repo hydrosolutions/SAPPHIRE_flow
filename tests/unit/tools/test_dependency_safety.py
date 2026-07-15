@@ -754,3 +754,218 @@ class TestGatherChangedWatchedFilesFailsClosed:
         exit_code = main(["--base-ref", base_sha])
         assert exit_code == 1
         assert "base content" in capsys.readouterr().err.lower()
+
+
+# ---------------------------------------------------------------------------
+# Fail-closed convergence (2026-07-15): re-review found the classifier still
+# default-ALLOWed on four concrete unparseable/ambiguous shapes instead of
+# failing closed. Each test below reproduces the dangerous change and asserts
+# BLOCK/REVIEW, never ALLOW/[] — the opposite of the invariant this section's
+# docstring block asserts for the earlier (already-hardened) bypasses.
+# ---------------------------------------------------------------------------
+
+
+class TestDockerfileAddedStageNeverSilent:
+    """Bypass: `zip(old_images, new_images, strict=False)` truncates to the
+    SHORTER list. Old two-stage build + a NEW final `FROM python:3.15...`
+    stage in the new Dockerfile made `new_images` longer than `old_images`;
+    the third (added) `FROM` had no positional pair and was silently
+    dropped, returning `[]` for a brand-new, unvetted base image.
+    """
+
+    def test_added_final_python_stage_blocks(self) -> None:
+        old = (
+            "FROM python:3.14.6-slim@sha256:aaa AS builder\n"
+            "RUN true\n"
+            "FROM python:3.14.6-slim@sha256:aaa\n"
+        )
+        new = (
+            "FROM python:3.14.6-slim@sha256:aaa AS builder\n"
+            "RUN true\n"
+            "FROM python:3.14.6-slim@sha256:aaa\n"
+            "FROM python:3.15-slim@sha256:ccc\n"
+        )
+        finding = _only(classify_dockerfile_diff(old, new))
+        assert finding.verdict is Verdict.BLOCK
+        assert "3.15-slim" in finding.message
+
+    def test_added_non_python_stage_reviews(self) -> None:
+        old = "FROM python:3.14.6-slim@sha256:aaa AS builder\n"
+        new = (
+            "FROM python:3.14.6-slim@sha256:aaa AS builder\n"
+            "FROM alpine:3.20@sha256:ddd\n"
+        )
+        finding = _only(classify_dockerfile_diff(old, new))
+        assert finding.verdict is Verdict.REVIEW
+        assert "alpine" in finding.message
+
+
+class TestDockerfilePythonTagUnparseableOrAliased:
+    """Bypass: `parse_cpython_tag` returning `None` for either side made
+    `_classify_one_from_change` `return []` — silent — instead of failing
+    closed. Three concrete shapes, all previously silent."""
+
+    def test_latest_alias_blocks(self) -> None:
+        old = "FROM python:3.14.6-slim@sha256:aaa AS builder\n"
+        new = "FROM python:latest@sha256:bbb AS builder\n"
+        finding = _only(classify_dockerfile_diff(old, new))
+        assert finding.verdict is Verdict.BLOCK
+        assert "latest" in finding.message
+
+    def test_arg_interpolated_tag_change_blocks(self) -> None:
+        old = "FROM python:3.14.6-slim@sha256:aaa AS builder\n"
+        new = "FROM python:${PYTHON_VERSION}-slim@sha256:bbb AS builder\n"
+        finding = _only(classify_dockerfile_diff(old, new))
+        assert finding.verdict is Verdict.BLOCK
+        assert "PYTHON_VERSION" in finding.message
+
+    def test_registry_prefixed_python_minor_bump_still_blocks(self) -> None:
+        """`docker.io/library/python` must still be recognised as the
+        Python base (repo canonicalization) so the CPython minor-axis rule
+        applies — pre-fix, `old_repo == "python"` was a literal string
+        check that never matched a registry-prefixed repo, so this fell
+        through to the generic `_leading_int` axis, which sees `3` == `3`
+        on both sides (14 vs 15 never inspected) and returns `[]`.
+        """
+        old = "FROM docker.io/library/python:3.14-slim@sha256:aaa AS builder\n"
+        new = "FROM docker.io/library/python:3.15-slim@sha256:bbb AS builder\n"
+        finding = _only(classify_dockerfile_diff(old, new))
+        assert finding.verdict is Verdict.BLOCK
+        assert "3.14-slim" in finding.message
+        assert "3.15-slim" in finding.message
+
+
+class TestDockerComposeMultiServiceSharedVolumeNotOverwritten:
+    """Bypass: `_volume_image_map` stored ONE `_VolumeImage` per volume name
+    in a plain dict — a later service iterated in `services.items()` order
+    overwrote an earlier one's entry for the same volume. Adding a new
+    `db: postgis/postgis:17-3.4` service on `pgdata` alongside the existing,
+    UNCHANGED `postgres: postgis/postgis:16-3.4` service hid the dangerous
+    addition entirely (the unchanged `postgres` entry was the last one
+    written into the map in the old-services pass, so nothing looked new)."""
+
+    def test_added_service_on_existing_volume_is_flagged_not_hidden(self) -> None:
+        """`db` is declared BEFORE `postgres` deliberately: a plain
+        service-keyed dict with `services.items()` insertion-order iteration
+        writes `db` into the volume map first, then `postgres` (unchanged,
+        same tag as the base ref) overwrites it LAST — so the final map
+        value for `pgdata` is the harmless unchanged entry and the
+        dangerous `db` addition is invisible. The list-based map must not
+        depend on which service happens to be declared last.
+        """
+        old = """\
+services:
+  postgres:
+    image: postgis/postgis:16-3.4@sha256:aaa
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+"""
+        new = """\
+services:
+  db:
+    image: postgis/postgis:17-3.4@sha256:bbb
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+  postgres:
+    image: postgis/postgis:16-3.4@sha256:aaa
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+"""
+        finding = _only(classify_docker_compose_diff(old, new))
+        assert finding.verdict is not Verdict.ALLOW
+        assert "db" in finding.message
+        assert "pgdata" in finding.message
+
+    def test_unchanged_service_alone_stays_silent(self) -> None:
+        """Converse/soundness: the SAME unchanged `postgres` service, with
+        no added entrant, must stay silent — proves the finding above comes
+        from the new `db` entrant, not from re-flagging `postgres`."""
+        old = """\
+services:
+  postgres:
+    image: postgis/postgis:16-3.4@sha256:aaa
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+"""
+        assert classify_docker_compose_diff(old, old) == []
+
+
+class TestDockerComposeMutableStatefulTagNeverSilent:
+    """Bypass: `_leading_int("latest")` is `None`, and the old code did
+    `if old_major is None or new_major is None or new_major <= old_major:
+    continue` — an unparseable major on either side of a CHANGED tag on a
+    stateful volume silently passed instead of failing closed."""
+
+    def test_move_to_latest_on_stateful_volume_blocks(self) -> None:
+        old = """\
+services:
+  postgres:
+    image: postgis/postgis:16-3.4@sha256:aaa
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+"""
+        new = """\
+services:
+  postgres:
+    image: postgis/postgis:latest@sha256:bbb
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+"""
+        finding = _only(classify_docker_compose_diff(old, new))
+        assert finding.verdict is Verdict.BLOCK
+        assert "latest" in finding.message
+
+    def test_move_off_latest_on_stateful_volume_also_blocks(self) -> None:
+        """'regardless of direction' — a MOVING tag is a footgun whether it
+        starts or ends on the mutable alias."""
+        old = """\
+services:
+  postgres:
+    image: postgis/postgis:latest@sha256:aaa
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+"""
+        new = """\
+services:
+  postgres:
+    image: postgis/postgis:16-3.4@sha256:bbb
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+"""
+        finding = _only(classify_docker_compose_diff(old, new))
+        assert finding.verdict is Verdict.BLOCK
+
+
+class TestNoOverBlockingRegressionGuard:
+    """Fixed-code sanity: none of the fail-closed hardening above should
+    make a legitimate patch-only bump BLOCK/REVIEW, and the original #78
+    stale-comment shape must classify exactly as before."""
+
+    def test_python_patch_bump_still_allows(self) -> None:
+        old = "FROM python:3.14.6-slim@sha256:aaa AS builder\n"
+        new = "FROM python:3.14.7-slim@sha256:bbb AS builder\n"
+        assert classify_dockerfile_diff(old, new) == []
+
+    def test_pr78_shape_still_blocks_with_unchanged_key(self) -> None:
+        old = """\
+services:
+  postgres:
+    image: postgis/postgis:16-3.4@sha256:aaa  # postgis/postgis:16-3.4
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+"""
+        new = """\
+services:
+  postgres:
+    image: postgis/postgis:17-3.4@sha256:bbb  # postgis/postgis:16-3.4
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+"""
+        finding = _only(classify_docker_compose_diff(old, new))
+        assert finding.verdict is Verdict.BLOCK
+        assert finding.key == "docker-compose.yml:pgdata:postgis/postgis:16-3.4->17-3.4"
+
+    def test_registry_prefixed_python_patch_bump_still_allows(self) -> None:
+        old = "FROM docker.io/library/python:3.14.6-slim@sha256:aaa AS builder\n"
+        new = "FROM docker.io/library/python:3.14.7-slim@sha256:bbb AS builder\n"
+        assert classify_dockerfile_diff(old, new) == []

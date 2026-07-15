@@ -187,6 +187,15 @@ def parse_cpython_tag(tag: str) -> tuple[int, int, int, str] | None:
     return int(x), int(y), z_value, flavor or ""
 
 
+def _is_python_repo(repo: str) -> bool:
+    """True for the official Python base image, allowing a leading
+    registry/namespace prefix (`docker.io/library/python`, `library/python`,
+    ...) — Dependabot and manual edits may add or strip these, and the bare
+    `repo == "python"` check silently fell through the CPython minor-axis
+    rule for any prefixed form (Plan 119 hardening)."""
+    return repo.rsplit("/", 1)[-1] == "python"
+
+
 def _override_note(key: str) -> str:
     return (
         f" Override (once verified safe, with a dated justification): add `{key}` "
@@ -235,14 +244,17 @@ class _VolumeImage:
     digest: str | None
 
 
-def _volume_image_map(services: dict[str, Any]) -> dict[str, _VolumeImage]:
-    """Map each persistent named-volume source to the image mounting it.
+def _volume_image_map(services: dict[str, Any]) -> dict[str, list[_VolumeImage]]:
+    """Map each persistent named-volume source to ALL images mounting it.
 
     Keying on the volume (not the service name) survives a service rename
-    or a delete+re-add of the same service — a service-name-keyed diff
-    misses both entirely.
+    or a delete+re-add of the same service. A LIST (not a last-wins single
+    entry) is required because more than one service can legitimately mount
+    the same named volume — a last-wins map lets a second image mounting an
+    already-persistent volume silently overwrite (and hide) the first one's
+    entry (Plan 119 hardening).
     """
-    result: dict[str, _VolumeImage] = {}
+    result: dict[str, list[_VolumeImage]] = {}
     for svc_name, svc_raw in services.items():
         svc = _as_dict(svc_raw)
         image = _as_str(svc.get("image"))
@@ -251,10 +263,141 @@ def _volume_image_map(services: dict[str, Any]) -> dict[str, _VolumeImage]:
         repo, tag = _parse_image_field(image)
         digest = _parse_digest(image)
         for volume_name in _named_volume_sources(svc):
-            result[volume_name] = _VolumeImage(
-                service=svc_name, repo=repo, tag=tag, digest=digest
+            result.setdefault(volume_name, []).append(
+                _VolumeImage(service=svc_name, repo=repo, tag=tag, digest=digest)
             )
     return result
+
+
+def _classify_volume_pair(
+    volume_name: str, old_vi: _VolumeImage, new_vi: _VolumeImage
+) -> list[Finding]:
+    """Compare two same-volume image observations — matched by service name,
+    or paired as a likely rename/delete-and-re-add — for the standard
+    REVIEW/BLOCK triggers: image-repo change, a mutable/unparseable tag
+    change, digest churn under an unchanged tag, or a major version bump.
+    """
+    if old_vi.repo != new_vi.repo:
+        key = f"docker-compose.yml:{volume_name}:{old_vi.repo}->{new_vi.repo}"
+        message = (
+            f"⚠️ volume `{volume_name}` is now backed by a different "
+            f"image repo: `{old_vi.repo}` (service `{old_vi.service}`) → "
+            f"`{new_vi.repo}` (service `{new_vi.service}`). A version delta cannot "
+            "be computed across image families — verify the new image can read "
+            "data written by the old one before merge."
+        )
+        return [
+            Finding(
+                verdict=Verdict.REVIEW,
+                file="docker-compose.yml",
+                key=key,
+                message=message,
+            )
+        ]
+
+    if old_vi.tag == new_vi.tag:
+        if old_vi.digest != new_vi.digest:
+            key = (
+                f"docker-compose.yml:{volume_name}:{new_vi.repo}:digest:"
+                f"{old_vi.digest}->{new_vi.digest}"
+            )
+            message = (
+                f"⚠️ `{new_vi.repo}` digest changed under an UNCHANGED "
+                f"tag `{new_vi.tag}` on stateful volume `{volume_name}`: "
+                f"`{old_vi.digest}` → `{new_vi.digest}`. The tag alone cannot "
+                "prove this is not a major-version change — verify the digest "
+                "manually before merge."
+            )
+            return [
+                Finding(
+                    verdict=Verdict.REVIEW,
+                    file="docker-compose.yml",
+                    key=key,
+                    message=message,
+                )
+            ]
+        return []
+
+    old_major, new_major = _leading_int(old_vi.tag), _leading_int(new_vi.tag)
+    if old_major is None or new_major is None:
+        # A CHANGED tag on a stateful volume whose leading major cannot be
+        # parsed (mutable `latest`, a bare/untagged reference, or any other
+        # non-numeric-leading tag) can silently point at ANY future major —
+        # a footgun regardless of direction. Fail closed to BLOCK rather
+        # than `continue`-ing past it (Plan 119 hardening).
+        key = (
+            f"docker-compose.yml:{volume_name}:{new_vi.repo}:mutable-tag:"
+            f"{old_vi.tag}->{new_vi.tag}"
+        )
+        message = (
+            f"\U0001f6d1 `{new_vi.repo}` tag changed to/from a mutable or "
+            f"non-numeric-leading form on stateful volume `{volume_name}`: "
+            f"`{old_vi.tag}` → `{new_vi.tag}`. A tag whose leading version axis "
+            "cannot be parsed cannot be proven safe from the tag alone — verify "
+            "the actual image content before merge."
+        ) + _override_note(key)
+        return [
+            Finding(
+                verdict=Verdict.BLOCK,
+                file="docker-compose.yml",
+                key=key,
+                message=message,
+            )
+        ]
+
+    if new_major <= old_major:
+        return []
+
+    key = f"docker-compose.yml:{volume_name}:{new_vi.repo}:{old_vi.tag}->{new_vi.tag}"
+    message = (
+        f"\U0001f6d1 `{new_vi.repo}` **{old_vi.tag} → {new_vi.tag}** is a major "
+        f"version bump of the stateful `{new_vi.service}` service (persistent "
+        f"volume `{volume_name}`). A major bump can break the on-disk data format "
+        "under that volume, which CI's always-empty containers never exercise. "
+        "This PR must not merge until a tested upgrade path exists."
+    )
+    if new_vi.repo == "postgis/postgis":
+        message += " See Plan 118 for the required migration."
+    message += _override_note(key)
+    return [
+        Finding(
+            verdict=Verdict.BLOCK, file="docker-compose.yml", key=key, message=message
+        )
+    ]
+
+
+def _classify_new_volume_entrant(
+    volume_name: str, new_vi: _VolumeImage, *, already_persistent: bool
+) -> list[Finding]:
+    """REVIEW: an image lands on a named volume with no same-service
+    predecessor to diff against. Two distinct cases, both fail-closed to
+    REVIEW rather than silence: the volume is brand new, or another service
+    is now ALSO mounting an already-persistent volume — a second/added
+    entrant must never be hidden behind an unrelated, unchanged service
+    sharing the same volume (Plan 119 hardening)."""
+    if already_persistent:
+        key = f"docker-compose.yml:{volume_name}:{new_vi.repo}:added-entrant"
+        message = (
+            f"⚠️ service `{new_vi.service}` (image `{new_vi.repo}:{new_vi.tag}`) "
+            f"now ALSO mounts the already-persistent volume `{volume_name}`, with "
+            "no same-service prior version on this volume to diff a major bump "
+            "against. Verify this image's on-disk data-format compatibility with "
+            "whatever else already writes to that volume before merge."
+        )
+    else:
+        key = f"docker-compose.yml:{volume_name}:{new_vi.repo}:new-volume"
+        message = (
+            f"⚠️ new persistent-volume-mounted image `{new_vi.repo}:"
+            f"{new_vi.tag}` on volume `{volume_name}` (service "
+            f"`{new_vi.service}`). No prior version on this volume to diff a "
+            "major bump against — verify this stateful image's data format / "
+            "upgrade story before merge."
+        )
+    return [
+        Finding(
+            verdict=Verdict.REVIEW, file="docker-compose.yml", key=key, message=message
+        )
+    ]
 
 
 def classify_docker_compose_diff(old_text: str, new_text: str) -> list[Finding]:
@@ -262,7 +405,12 @@ def classify_docker_compose_diff(old_text: str, new_text: str) -> list[Finding]:
 
     Generic rule — no hardcoded per-image list. Covers postgis, prefect-server,
     caddy, and any future stateful service uniformly, and survives a service
-    rename or delete+re-add that reuses the same volume.
+    rename or delete+re-add that reuses the same volume. Multiple services
+    sharing one volume are each tracked (never overwritten last-wins): a
+    same-service pair is diffed directly; an exactly-one-dropped +
+    exactly-one-added pair is treated as a likely rename and diffed
+    directly; anything else unmatched is a genuinely new entrant on that
+    volume and is flagged REVIEW rather than silently skipped.
     """
     old_services = _as_dict(_load_yaml_mapping(old_text).get("services"))
     new_services = _as_dict(_load_yaml_mapping(new_text).get("services"))
@@ -270,95 +418,34 @@ def classify_docker_compose_diff(old_text: str, new_text: str) -> list[Finding]:
     new_map = _volume_image_map(new_services)
 
     findings: list[Finding] = []
-    for volume_name, new_vi in new_map.items():
-        old_vi = old_map.get(volume_name)
+    for volume_name, new_vis in new_map.items():
+        old_vis = old_map.get(volume_name, [])
+        old_by_service = {vi.service: vi for vi in old_vis}
+        new_by_service = {vi.service: vi for vi in new_vis}
 
-        if old_vi is None:
-            key = f"docker-compose.yml:{volume_name}:{new_vi.repo}:new-volume"
-            message = (
-                f"⚠️ new persistent-volume-mounted image `{new_vi.repo}:"
-                f"{new_vi.tag}` on volume `{volume_name}` (service "
-                f"`{new_vi.service}`). No prior version on this volume to diff a "
-                "major bump against — verify this stateful image's data format / "
-                "upgrade story before merge."
-            )
-            findings.append(
-                Finding(
-                    verdict=Verdict.REVIEW,
-                    file="docker-compose.yml",
-                    key=key,
-                    message=message,
+        matched_services = old_by_service.keys() & new_by_service.keys()
+        for svc_name in matched_services:
+            findings.extend(
+                _classify_volume_pair(
+                    volume_name, old_by_service[svc_name], new_by_service[svc_name]
                 )
             )
-            continue
 
-        if old_vi.repo != new_vi.repo:
-            key = f"docker-compose.yml:{volume_name}:{old_vi.repo}->{new_vi.repo}"
-            message = (
-                f"⚠️ volume `{volume_name}` is now backed by a different "
-                f"image repo: `{old_vi.repo}` (service `{old_vi.service}`) → "
-                f"`{new_vi.repo}` (service `{new_vi.service}`). A version delta cannot "
-                "be computed across image families — verify the new image can read "
-                "data written by the old one before merge."
-            )
-            findings.append(
-                Finding(
-                    verdict=Verdict.REVIEW,
-                    file="docker-compose.yml",
-                    key=key,
-                    message=message,
-                )
+        unmatched_old = [vi for vi in old_vis if vi.service not in new_by_service]
+        unmatched_new = [vi for vi in new_vis if vi.service not in old_by_service]
+
+        if len(unmatched_old) == 1 and len(unmatched_new) == 1:
+            findings.extend(
+                _classify_volume_pair(volume_name, unmatched_old[0], unmatched_new[0])
             )
             continue
 
-        if old_vi.tag == new_vi.tag:
-            if old_vi.digest != new_vi.digest:
-                key = (
-                    f"docker-compose.yml:{volume_name}:{new_vi.repo}:digest:"
-                    f"{old_vi.digest}->{new_vi.digest}"
+        for new_vi in unmatched_new:
+            findings.extend(
+                _classify_new_volume_entrant(
+                    volume_name, new_vi, already_persistent=bool(old_vis)
                 )
-                message = (
-                    f"⚠️ `{new_vi.repo}` digest changed under an UNCHANGED "
-                    f"tag `{new_vi.tag}` on stateful volume `{volume_name}`: "
-                    f"`{old_vi.digest}` → `{new_vi.digest}`. The tag alone cannot "
-                    "prove this is not a major-version change — verify the digest "
-                    "manually before merge."
-                )
-                findings.append(
-                    Finding(
-                        verdict=Verdict.REVIEW,
-                        file="docker-compose.yml",
-                        key=key,
-                        message=message,
-                    )
-                )
-            continue
-
-        old_major, new_major = _leading_int(old_vi.tag), _leading_int(new_vi.tag)
-        if old_major is None or new_major is None or new_major <= old_major:
-            continue
-
-        key = (
-            f"docker-compose.yml:{volume_name}:{new_vi.repo}:{old_vi.tag}->{new_vi.tag}"
-        )
-        message = (
-            f"\U0001f6d1 `{new_vi.repo}` **{old_vi.tag} → {new_vi.tag}** is a major "
-            f"version bump of the stateful `{new_vi.service}` service (persistent "
-            f"volume `{volume_name}`). A major bump can break the on-disk data format "
-            "under that volume, which CI's always-empty containers never exercise. "
-            "This PR must not merge until a tested upgrade path exists."
-        )
-        if new_vi.repo == "postgis/postgis":
-            message += " See Plan 118 for the required migration."
-        message += _override_note(key)
-        findings.append(
-            Finding(
-                verdict=Verdict.BLOCK,
-                file="docker-compose.yml",
-                key=key,
-                message=message,
             )
-        )
     return findings
 
 
@@ -381,10 +468,27 @@ def _classify_one_from_change(old_image: str, new_image: str) -> list[Finding]:
             Finding(verdict=Verdict.BLOCK, file="Dockerfile", key=key, message=message)
         ]
 
-    if old_repo == "python":
+    if _is_python_repo(old_repo):
         old_parts, new_parts = parse_cpython_tag(old_tag), parse_cpython_tag(new_tag)
         if old_parts is None or new_parts is None:
-            return []
+            if old_tag == new_tag:
+                # Both sides identical (and both unparseable) is not a
+                # CHANGE on this axis — e.g. a digest-only rebuild of a
+                # `python:${ARG}` stage. Nothing to fail closed on.
+                return []
+            key = f"Dockerfile:python-base-image:unparseable:{old_tag}->{new_tag}"
+            message = (
+                f"\U0001f6d1 `Dockerfile` python base image tag changed to/from a "
+                f"form this classifier cannot parse: `{new_repo}:{old_tag}` → "
+                f"`{new_repo}:{new_tag}`. This includes an alias tag (`latest`), an "
+                "unresolved `${ARG}` interpolation, or an empty tag — none of "
+                "which can be proven a safe minor/patch bump. Failing closed."
+            ) + _override_note(key)
+            return [
+                Finding(
+                    verdict=Verdict.BLOCK, file="Dockerfile", key=key, message=message
+                )
+            ]
         old_x, old_y, _, old_flavor = old_parts
         new_x, new_y, _, new_flavor = new_parts
         if (old_x, old_y, old_flavor) == (new_x, new_y, new_flavor):
@@ -411,25 +515,66 @@ def _classify_one_from_change(old_image: str, new_image: str) -> list[Finding]:
     return [Finding(verdict=Verdict.BLOCK, file="Dockerfile", key=key, message=message)]
 
 
+def _classify_added_stage(new_image: str) -> list[Finding]:
+    """A `FROM` stage with no positional old-side counterpart — the stage
+    count changed (a stage was added, or the count otherwise shifted). Never
+    silently dropped: a new Python base is a base-image change (BLOCK, same
+    as the CPython rule); any other new base is at least REVIEW (Plan 119
+    hardening — fail closed on ambiguity rather than skip)."""
+    new_repo, new_tag = _parse_image_field(new_image)
+
+    if _is_python_repo(new_repo):
+        key = f"Dockerfile:python-base-image:added:{new_tag}"
+        message = (
+            f"\U0001f6d1 `Dockerfile` gained a new stage with base image "
+            f"`{new_repo}:{new_tag}` that has no positional counterpart in the "
+            "base ref (the `FROM` stage count changed). Treated as a base-image "
+            "change per the CPython rule — there is no prior stage to prove this "
+            "safe against."
+        ) + _override_note(key)
+        return [
+            Finding(verdict=Verdict.BLOCK, file="Dockerfile", key=key, message=message)
+        ]
+
+    key = f"Dockerfile:{new_repo}-base-image:added:{new_tag}"
+    message = (
+        f"⚠️ `Dockerfile` gained a new stage with base image `{new_repo}:"
+        f"{new_tag}` that has no positional counterpart in the base ref (the "
+        "`FROM` stage count changed). Verify this new base image before merge."
+    )
+    return [
+        Finding(verdict=Verdict.REVIEW, file="Dockerfile", key=key, message=message)
+    ]
+
+
 def classify_dockerfile_diff(old_text: str, new_text: str) -> list[Finding]:
     """BLOCK: any `FROM` stage's base-image family/CPython-minor/major change.
 
     Compares ALL `FROM` instructions (multi-stage builds), positionally —
     not just the first — so a PR bumping only the final (runtime) stage while
-    leaving the builder stage pinned is still caught.
+    leaving the builder stage pinned is still caught. A stage with no
+    positional counterpart (stage count grew) is classified on its own via
+    `_classify_added_stage` rather than silently dropped by `zip`.
     """
     old_images: list[str] = _FROM_RE.findall(old_text)
     new_images: list[str] = _FROM_RE.findall(new_text)
     if not old_images or not new_images:
         return []
 
+    paired = min(len(old_images), len(new_images))
     seen: set[tuple[str, str]] = set()
     findings: list[Finding] = []
-    for old_image, new_image in zip(old_images, new_images, strict=False):
+    for old_image, new_image in zip(
+        old_images[:paired], new_images[:paired], strict=True
+    ):
         if old_image == new_image or (old_image, new_image) in seen:
             continue
         seen.add((old_image, new_image))
         findings.extend(_classify_one_from_change(old_image, new_image))
+
+    for new_image in new_images[paired:]:
+        findings.extend(_classify_added_stage(new_image))
+
     return findings
 
 
