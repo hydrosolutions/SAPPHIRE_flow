@@ -125,6 +125,28 @@ on preliminary precipitation.
 > knowing the size of the residual is worth having even when the residual is accepted. Measured and
 > declared; not flagged per-forecast.
 
+## Live STAC probe (2026-07-15) — phase-1 assumptions verified against real data
+
+Run before build so nobody implements against a guessed shape. Collection
+`ch.meteoschweiz.ogd-surface-derived-grid`.
+
+| finding | result | consequence for the plan |
+|---|---|---|
+| **SrelD exists** | ✅ `sreld`, archive **1971 → 2025** (per-year), plus a `last` family for the recent months | decision 5 is buildable; token is `sreld` |
+| **SrelD grid** | **`ch01r`** (the *temperature* family), **not** `ch01h` | the CRS path must handle `ch01r` for sunshine too — same as TabsD/TminD/TmaxD |
+| **RhiresD archive is per-year addressable** | ✅ `…-archive.rhiresd_ch01h.swiss.lv95_19610101…_19611231….nc` — filename carries the full-year span | phase-1 `1B-archive-asset-selection` keys on the year in the filename; confirmed real |
+| **RhiresD reach** | archive **1961 → 2025**, `last` family extends to **2026-05-31** | definitive coverage currently ends **2026-05-31** (today is 07-15 → ~6-week lag, matches "monthly") |
+| **RprelimD shape** | per-**day** items under the **bare** collection name (no `archive`/`last` suffix), **2026-05-16 → 2026-07-13** (59 days) | it is the recent tail only, exactly as modelled; the adapter must address it by day, not by year |
+| **🎯 The live-tail overlap EXISTS and is fetchable** | RprelimD dates that fall within RhiresD's definitive coverage: **2026-05-16 → 2026-05-31 (16 days)**; RprelimD-only tail: **2026-06-01 → 2026-07-13 (43 days)** | **resolves round-2 blocker 3** — the phase-4 overlap fetch (`4C`) has real data to pull. **But the window is SMALL (~2-3 weeks) and MOVING**, so the live-tail measurement must be run opportunistically/periodically, not as a one-shot; a single grab yields only ~2 weeks of paired days |
+
+**Two things the builder must NOT assume:**
+- The **43-day RprelimD-only tail** (06-01 → 07-13) confirms the preliminary window is currently ~6
+  weeks and will swing with each monthly RhiresD publication — the boundary `R` (§2) is genuinely
+  dynamic, as the plan already says. Discover it from `rhiresd`'s max `last`-family date.
+- The overlap for §8's clean live-tail number is only **~16 days right now**. That is enough to
+  *start*, but a robust residual estimate needs the measurement **accumulated over several monthly
+  cycles**. Note this in `4D` — do not present a two-week sample as the definitive residual.
+
 ## Scope
 
 ### 1. Adapter — add `RhiresD`, and teach it the archive asset family
