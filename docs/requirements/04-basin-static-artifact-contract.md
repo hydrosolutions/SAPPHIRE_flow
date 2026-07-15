@@ -78,6 +78,7 @@ Required top-level fields:
 | `extractor` | object | MUST identify the producing tool and version. |
 | `source_datasets` | array | MUST list every dataset used for delineation or attributes. |
 | `gateway_hru_names` | array | MUST list the Gateway HRU/GPKG names referenced by basin or band rows. |
+| `climatology_window` | object | MUST be present when any forcing-derived climate index is included (§6.3). Fixed window applied to **every** basin. Shape: `{"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}`. Default `{"start": "1991-01-01", "end": "2020-12-31"}`. |
 | `files` | object | MUST map logical names to relative file paths. |
 | `checksums` | object | SHOULD contain SHA-256 checksums for every package file. |
 
@@ -96,6 +97,7 @@ Example:
     "git_commit": "abc1234"
   },
   "gateway_hru_names": ["nepal_dhm_v1"],
+  "climatology_window": { "start": "1991-01-01", "end": "2020-12-31" },
   "source_datasets": [
     {
       "name": "MERIT Hydro",
@@ -111,6 +113,11 @@ Example:
       "name": "MERIT DEM",
       "version": "2023-xx",
       "purpose": "static attributes"
+    },
+    {
+      "name": "ERA5-Land",
+      "version": "2024-xx",
+      "purpose": "forcing-derived climate indices"
     }
   ],
   "files": {
@@ -433,9 +440,12 @@ Two consequences worth stating:
   (see the `static` slot in `docs/spec/types-and-protocols.md`), so an attribute no
   model needs yet is stored, cost-free, against a future model that does.
 - **Per-attribute provenance (which `package_id`, which climatology window) has no
-  first-class field yet.** `basins.attributes` is a flat value dict. Recording *which
-  package* produced each value is the persistence gap noted in §5a and in
-  `architecture-context.md` (Flow 5 step 5.2a) — the implementing plan owns it.
+  first-class field yet.** `basins.attributes` is a flat value dict — it holds the
+  values but not their origin. This is a **distinct** gap from the Gateway
+  polygon-reference persistence gap in §5a (that one maps forcing columns back to
+  stations/bands; this one records which package produced each stored attribute). §11
+  already states the provenance questions SAP3 SHOULD be able to answer; giving them a
+  first-class home is left to the implementing plan.
 
 ### 6.3 Geometry-derived vs forcing-derived attributes — the package is self-contained
 
@@ -501,6 +511,7 @@ Required fields per feature:
 | `source_dataset` | string | MUST reference a dataset in `manifest.source_datasets`. |
 | `aggregation` | string | MUST describe how the basin value was derived. |
 | `description` | string | Human-readable meaning. |
+| `climatology_window` | object or null | For a **forcing-derived** index (§6.3), the fixed window it was computed over — same shape as `manifest.climatology_window`. `null` for geometry-derived attributes. When present it MUST equal `manifest.climatology_window`. |
 | `required_by_models` | array | SHOULD list known model IDs that require this feature. |
 
 Example:
@@ -509,21 +520,23 @@ Example:
 {
   "features": [
     {
-      "name": "catchment_area_km2",
-      "type": "float",
-      "unit": "km2",
-      "source_dataset": "MERIT Hydro",
-      "aggregation": "polygon_area",
-      "description": "Catchment area upstream of the gauge outlet.",
-      "required_by_models": ["nepal_lstm_v1"]
-    },
-    {
       "name": "mean_elev_m",
       "type": "float",
       "unit": "m",
       "source_dataset": "MERIT DEM",
       "aggregation": "area_weighted_mean",
       "description": "Area-weighted mean elevation inside the basin polygon.",
+      "climatology_window": null,
+      "required_by_models": ["nepal_lstm_v1"]
+    },
+    {
+      "name": "p_mean",
+      "type": "float",
+      "unit": "mm/day",
+      "source_dataset": "ERA5-Land",
+      "aggregation": "catchment_mean_daily_over_window",
+      "description": "Mean daily precipitation (Caravan definition).",
+      "climatology_window": { "start": "1991-01-01", "end": "2020-12-31" },
       "required_by_models": ["nepal_lstm_v1"]
     }
   ]

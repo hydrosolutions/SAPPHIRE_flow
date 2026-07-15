@@ -132,7 +132,7 @@ Your attributes split into two groups by input, but **you produce both**:
 | Group | Input | Source |
 |---|---|---|
 | **A — geometry-derived** | basin polygon + HydroATLAS / DEM | your global raster archive |
-| **B — forcing-derived** (Caravan climate indices) | catchment-averaged daily precipitation, temperature, PET | **your global ERA5 archive on S3** |
+| **B — forcing-derived** (Caravan climate indices) | catchment-averaged daily precipitation, temperature, PET | **your global ERA5-Land archive on S3** |
 
 Group B is `p_mean`, mean PET, aridity, snow fraction, moisture index, seasonality, and
 the high/low precipitation frequency and duration indices.
@@ -150,8 +150,9 @@ internally comparable across the whole deployment. Our default is
 **`1991-01-01 … 2020-12-31`** (the WMO 30-year normal, fully covered by ERA5-Land) — use
 that unless we agree otherwise. The critical thing is that it is the **same window
 everywhere**: please don't default to each basin's own record length, which would make
-the indices incomparable. Record the window in `manifest.json` and in
-`feature_catalog.json`.
+the indices incomparable. Record it once in `manifest.json` as
+`"climatology_window": {"start": "1991-01-01", "end": "2020-12-31"}`, and set the same
+object on each forcing-derived entry in `feature_catalog.json`.
 
 The source is **ERA5-Land** (confirmed). Please still record `source_dataset` and the
 climatology window per column in `feature_catalog.json`, so the provenance survives if
