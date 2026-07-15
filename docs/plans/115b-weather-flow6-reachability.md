@@ -1,5 +1,5 @@
 ---
-status: READY
+status: SPLIT
 created: 2026-07-14
 plan: 115b
 parent: 115
@@ -16,7 +16,23 @@ blocks: [115c]
 
 ## Status
 
-**READY** (owner, 2026-07-15). Depends on **115a** (MERGED). Implementation authorised; hold at PR.
+**SPLIT into four buildable children (owner, 2026-07-15).** This document remains the **authoritative
+design source** — all §0–§11 rationale, the STAC probe, the locked decisions, and the six-round review
+history live here — but it is **NOT itself implemented**. Build from the children, which reference this
+doc for the deep spec:
+
+- **[115b1](115b1-adapter-schema-foundation.md)** — adapter + schema foundation (phase 1). Additive, no
+  behaviour change. `depends_on: 115a`.
+- **[115b2](115b2-bindings-and-backfill.md)** — bindings + chunked 1981→present backfill (phases 2–3).
+  Writes ~100M rows. `depends_on: 115b1`.
+- **[115b3](115b3-validation-gate.md)** — reference comparison vs CAMELS + live-tail (phase 4). A GO/NO-GO
+  gate, no production change. `depends_on: 115b2`.
+- **[115b4](115b4-reader-flip-cutover.md)** — hybrid flip + camels-ch retirement + loudness/guards
+  (phases 5–6). The risky landing, isolated. `depends_on: 115b3`.
+
+Each child gets its own independent Codex plan-review → owner READY → build. Split because 115b — though
+design-complete over six review rounds — was judged too large to land safely as one unit (recent
+oversized plans produced avoidable implementation errors).
 
 This plan was originally "make Flow 6 reachable and flip the hybrid default." The audit and the §0
 investigation changed what it is: **it now builds the forcing data path, because there has never been
