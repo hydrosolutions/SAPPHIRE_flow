@@ -141,13 +141,24 @@ a precipitation request returns.)*
    6's local protocol (`ingest_weather_history.py:66-78`) are **parameter-only**, and the adapter selects
    by `p.parameter in requested` (`meteoswiss_open_data_reanalysis.py:138-147`) — adding both precip
    products makes `"precipitation"` ambiguous on that path. **Resolution: add a SEPARATE writer-side
-   product-scoped entry point on the concrete `MeteoSwissOpenDataReanalysisAdapter`** (e.g.
-   `fetch_products(products=[RHIRESD], …)`), used ONLY by the backfill + Flow 6 ingest, and have Flow 6
-   call it **twice** — once for `RHIRESD` over `[1981-01-01, R]`, once for `RPRELIMD` over `[R+1d, T-1d]`
-   (`ingest_weather_history.py:215-222,318` currently makes a single `_CANONICAL_PARAMETERS` call; that
-   becomes the two product-scoped calls). **The read-side `WeatherReanalysisSource` protocol, its fakes,
-   and `PerSourceStoreReader`/`HybridForcingSource` are UNCHANGED** — the reader stays parameter-keyed and
-   the hybrid priority chain breaks any overlap (§3). This bounds the ripple to the one concrete adapter +
+   product-scoped entry point on the concrete `MeteoSwissOpenDataReanalysisAdapter`** —
+   `fetch_products(products: list[ForcingSource], start, end, parameters) -> list[RawHistoricalForcing]`,
+   used ONLY by the backfill + Flow 6 ingest. **The SPLIT RULE (which product per date, relative to `R`)
+   is one rule applied over TWO different windows by two different callers (round-5 blocker 1):**
+   - **Phase-3 backfill** owns the historical span: `RHIRESD` over `[1981-01-01, R]`, `RPRELIMD` over
+     `[R+1d, T-1d]`. (This is NOT Flow 6 — Flow 6 is a rolling window, `ingest_weather_history.py:50,299`.)
+   - **Flow 6 (rolling ingest)** applies the SAME rule over ITS window `[start, end]`:
+     `RHIRESD` over `[start, min(R+1d, end))`, `RPRELIMD` over `[max(start, R+1d), end)` — two
+     `fetch_products` calls (the current single `_CANONICAL_PARAMETERS` call at
+     `ingest_weather_history.py:318` becomes these two).
+   **`fetch_reanalysis(..., ["precipitation"])` — the OLD parameter-keyed path — must FAIL CLOSED once
+   `_PRODUCT_REGISTRY` holds two precipitation products (round-5 blocker 2):** it raises
+   `ConfigurationError` when a requested parameter maps to >1 product, so precipitation is served ONLY via
+   `fetch_products`. The other four parameters (1 product each) still resolve on the parameter path
+   unchanged. **The read-side `WeatherReanalysisSource` protocol, its fakes, and
+   `PerSourceStoreReader`/`HybridForcingSource` are UNCHANGED** — the reader reads the STORE (not the
+   adapter) and the hybrid priority chain breaks any overlap (§3). This bounds the ripple to the one
+   concrete adapter (a new `fetch_products` + a fail-closed guard on `fetch_reanalysis`) + the Flow 6 caller +
    the Flow 6 caller; it does **not** widen the shared protocol or touch every implementation/fake.
 2. **Flow 6 writes precipitation from the RIGHT product per date range**, keyed on the discovered `R`
    (latest published `RhiresD` date, §2). **Canonical inclusivity (defined ONCE here, referenced
@@ -218,6 +229,7 @@ others `ch01r`". Per the MeteoSwiss product docs:
 |---|---|---|
 | `RhiresD` | **`ch01h`** | precipitation |
 | `RprelimD` | **`ch01h`** | precipitation — **same grid family as RhiresD** |
+| `SrelD` | **`ch01r`** | relative sunshine duration (decision 5) — the `ch01r` family, same as TabsD/Tmin/Tmax |
 | `TabsD` / `TminD` / `TmaxD` | **`ch01r`** | temperature |
 
 So the split is **precipitation (`ch01h`) vs temperature (`ch01r`)**, not definitive-vs-preliminary.
@@ -268,12 +280,15 @@ A one-shot, resumable backfill producing `historical_forcing` rows for **every o
 >    `operational_inputs.py:347-354`), so advertising `relative_sunshine_duration` in that single set would
 >    let a model declare it as a **future** feature that can never be delivered. **Required build:** introduce
 >    a **past-availability** set distinct from the **forecast/future-availability** set (or a per-parameter
->    past/future flag), thread it through `onboard_model` + `model_onboarding` compatibility, and add
->    `relative_sunshine_duration` to **past-available only**. This is its own phase task (**1E**, below) with
->    tests proving it is **accepted as `past_dynamic` and REJECTED as `future_dynamic`**. `SrelD` is
->    REANALYSIS/PAST-only.
-> 7. A parameter-table **seed/migration** if the DB enumerates valid parameter names, plus tests for the
->    new five-parameter set.
+>    past/future flag). Thread it through **BOTH** compatibility paths — the unit path
+>    (`model_onboarding.py:213`) AND the older station-level helper (`model_onboarding.py:126`), both of
+>    which today subtract the one set from both past and future — plus `onboard_model.py` and the service
+>    onboarding callers. Add `relative_sunshine_duration` to **past-available only**. Its own phase task
+>    (**1E**) with tests proving it is **accepted as `past_dynamic` and REJECTED as `future_dynamic`**.
+>    `SrelD` is REANALYSIS/PAST-only.
+> 7. A parameter-table **seed/migration** — the DB DOES enumerate valid parameter names
+>    (`alembic/versions/0001_v0_schema.py:770` seeds `parameters`), so this is **required, not "if"**: add
+>    the `relative_sunshine_duration` seed row via a migration, plus tests for the new five-parameter set.
 >
 > Until a model actually *requests* `relative_sunshine_duration`, it is ingested-and-stored only — which
 > is the whole point of decision 5 (have it in the archive before a model needs it, so no second 40-year
@@ -299,9 +314,9 @@ dropped from the backfill, not flagged. Enumerate, and log any operational stati
 geometry.
 
 **Scale — and the current path CANNOT do it.** Rows ≈ `stations × days × source-rows`. Post-SrelD there
-are **5 canonical parameters but 6 source rows** (precipitation split across `RhiresD` + `RprelimD`). At 2
-stations × 16,436 days × ~6 ≈ ~200k rows (trivial); **at the v0 target of ~1000 stations that is ~99M
-rows.**
+are **5 canonical parameters but 6 source rows** (precipitation split across `RhiresD` + `RprelimD`). Over
+1981-01-01 → T-1d (~16,630 days) at 2 stations × ~6 source rows ≈ ~200k rows (trivial); **at the v0 target
+of ~1000 stations that is ~100M rows.**
 The existing path is **all-in-memory end to end** and will not survive that:
 
 - the adapter returns **one full `list[RawHistoricalForcing]`** (`meteoswiss_open_data_reanalysis.py:134`);
@@ -605,10 +620,15 @@ called for this; the code has no such check.
 several provenance tags coexist for the same station/parameter — which is exactly what this plan
 creates — it silently merges them into one series.
 
-**Decide:** provenance-separated series (honest; makes a dark feed visible), or the same
-hybrid-resolved view the models consume (consistent with what the forecast actually used).
-**Recommend: hybrid-resolved, with the winning source shown per point** — the operator needs to see
-*which* source won.
+**DECIDED (round-5 major 1 — no longer "decide"): HYBRID-RESOLVED, winning source shown per point.**
+The endpoint resolves the same way the models consume the data — route it through
+`select_reanalysis_source(mode=hybrid)` so it returns exactly what a forecast would have used — and the
+response carries, per data point, the **winning `source` tag** (e.g. `meteoswiss_rhiresd` vs
+`meteoswiss_rprelimd`) so an operator can see which product won and spot a stuck/preliminary tail.
+Concretely: `stations.py:452-490` stops grouping by parameter-only over the raw
+`historical_forcing` read and instead serves the hybrid-resolved series with a `source` field on each
+point. *(Rationale: a provenance-separated raw view would show overlapping rows the models never see —
+misleading; the operator wants the served truth plus its provenance.)*
 
 ## Tests
 
@@ -747,8 +767,9 @@ point re-sourcing every model's features and *then* asking whether the new serie
     },
     {
       "id": "phase-2",
-      "name": "Bindings first — create the MeteoSwiss binding (existing fleet + onboarding). NOTE: camels-ch retirement is NOT here; it is 5E, atomic with the flip.",
-      "tasks": ["2A-backfill-meteoswiss-binding", "2B-onboarding-writes-binding"],
+      "name": "Bindings first + per-station onboarding backfill. NOTE: camels-ch retirement is NOT here; it is 5E, atomic with the flip.",
+      "tasks": ["2A-backfill-meteoswiss-binding", "2B-onboarding-writes-binding", "2C-onboarding-per-station-meteoswiss-backfill-or-hold"],
+      "note": "2C (round-5 blocker 3): a binding alone gives a NEW station no forcing rows — onboarding still imports CAMELS only (onboarding.py:341,365). Onboarding must run the per-station MeteoSwiss backfill BEFORE the station is promoted operational/trainable, or explicitly HOLD it out. Task + test, not just the 2B binding write.",
       "parallel": false,
       "depends_on": ["phase-1"]
     },
@@ -870,5 +891,30 @@ into some sections but not all (the sin a heavily-revised plan is prone to). All
 **Codex CONFIRMED-SOUND:** hybrid-priority (not version) supersession; `available_nwp_parameters` genuinely
 unsafe for SrelD future availability; the extractor skip behaviour; the phase-5 ordering rationale.
 
-**Now internally consistent across all sections.** One more independent pass is reasonable before READY,
-but no design forks remain open — the residuals were all consistency/build-scoping, now resolved.
+## Review deltas (Codex round 5, 2026-07-15) — verdict NOT-READY, folded. DESIGN CONFIRMED SOUND.
+
+Round 5 was a fresh-eyes **buildability** pass. It confirmed the design (5 CONFIRMED-SOUND items:
+hybrid-priority supersession, the genuinely-conflated past/future availability, the single Flow-6 call,
+the dashboard provenance-merge, FI `Unit.PERCENT` for SrelD). Every finding was "make the spec
+executable," not "the design is wrong" — the signature of convergence. Folded:
+
+- **BLOCKER — the `[1981, R]` split was attributed to Flow 6, but Flow 6 is a ROLLING 60-day ingest.** The
+  1981-present span is **phase-3 backfill**, not Flow 6. §0a now states the split as ONE rule over TWO
+  windows: backfill covers `[1981, R]`/`[R+1d, T-1d]`; Flow 6 applies the same rule over its rolling
+  `[start, end]`.
+- **BLOCKER — `fetch_reanalysis(["precipitation"])` becomes ambiguous** with two precip products in the
+  registry. Now specified: the parameter-keyed path **fails closed** (raises when a parameter maps to >1
+  product); precipitation is served ONLY via the new `fetch_products(...)`. Signature pinned.
+- **BLOCKER — per-station onboarding backfill had no phase task** (only the binding write, 2B). Added
+  **2C**: onboarding runs the per-station MeteoSwiss backfill before promotion, or holds the station out.
+- **MAJOR — `6D-dashboard-provenance` was still "decide."** DECIDED: hybrid-resolved via
+  `select_reanalysis_source(hybrid)`, winning `source` shown per point.
+- **MAJOR — SrelD missing from the grid table** (probe says `ch01r`). Added.
+- **MINORS** — both model-compat functions (`:126` and `:213`); parameter seed is required not "if"
+  (`0001_v0_schema.py:770`); row-count days corrected (~16,630 → ~100M at 1000 stations).
+
+**Assessment:** five rounds in, the design is settled and the spec is now executable task-by-task. No open
+design forks remain. A final confirmation pass is reasonable, but the arc has converged — each round now
+finds smaller, more mechanical items. **This is close to READY; owner's call on whether one more
+confirmation pass or straight to READY.** *(The plan is large — ~6 phases, ~25 tasks — but the reviewer
+did not require a split; it is a coherent single track with a valid phase DAG.)*
