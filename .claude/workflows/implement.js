@@ -203,9 +203,15 @@ const verifyPromptText =
   `Independently VERIFY the committed state in repo ${repo} — trust nothing that was claimed. ` +
   `Run and report: 'git rev-parse HEAD' (headSha); 'git diff ${baseBranch}...HEAD --stat' — is there a REAL ` +
   `non-empty diff (diffNonEmpty)?; 'git status --porcelain' — is the worktree CLEAN with nothing uncommitted ` +
-  `left (worktreeClean)?; and RE-RUN the exit gates yourself — uv run ruff check src/ tests/ && uv run ruff ` +
-  `format --check src/ tests/ ; uv run pyright src/ ; uv run pytest — reporting gatesPassed=true ONLY if ALL ` +
-  `pass. Put anything odd in notes. Do NOT edit, stage, commit, push, or merge anything.`
+  `left (worktreeClean)?; and RE-RUN THE EXIT-GATE COMMANDS EXACTLY AS THE PLAN'S "Exit gates" SECTION ` +
+  `SPECIFIES (read ${planPath} for them) — typically ruff check + ruff format --check + a pyright check + ` +
+  `pytest. **CRITICAL — judge pyright by the REPO'S policy, not raw exit code:** this repo gates pyright by a ` +
+  `RATCHET against a baseline (run it the repo's way, e.g. 'uv run pyright --outputjson src/ > live.json && ` +
+  `uv run python tools/pyright_ratchet.py live.json tools/pyright_baseline.json'). Hundreds of PRE-EXISTING ` +
+  `errors are expected; a non-zero raw 'pyright src/' caused ONLY by pre-existing baseline errors (no NEW ` +
+  `errors introduced by this diff) is a PASS, not a failure. Report gatesPassed=true ONLY if every gate passes ` +
+  `by the repo's ACTUAL convention. Put the exact commands you ran + their outcomes in notes. Do NOT edit, ` +
+  `stage, commit, push, or merge anything.`
 
 const implementerReport = await agent(
   `You are the IMPLEMENTER of the READY plan at ${planPath} (repo ${repo}). Read the plan and its dependency ` +
@@ -215,13 +221,17 @@ const implementerReport = await agent(
   `failure, NOT a collection/import ERROR. If a target symbol does not exist yet, write the test so it still ` +
   `fails as a RED assertion (guard the import and assert the expected behavior), never an ImportError. If a ` +
   `criterion CANNOT be made to fail cleanly red (e.g. signature churn — the Plan-105 trap), set ` +
-  `acceptanceTestsRedFirst=false and STOP so a human can hand-author the locked test rather than skipping it. ` +
-  `THEN implement to make them green. (If the plan has no testable acceptance criteria, acceptanceTestsRedFirst=true.) ` +
+  `acceptanceTestsRedFirst=false and NOTE which criteria in acceptanceTests — but STILL complete the ` +
+  `implementation (do NOT stop): the independent diff review will scrutinize test meaningfulness and a human ` +
+  `is flagged. Otherwise implement to make the red tests green. (If the plan has no testable acceptance ` +
+  `criteria, acceptanceTestsRedFirst=true.) ` +
   `Obey CLAUDE.md: type hints, frozen dataclasses at boundaries, structlog, no bare except, tests for new behavior. ` +
   `UPDATE every affected doc (CLAUDE.md §Documentation Hygiene: no code change without its doc sync — specs, ` +
-  `conventions, touchpoint maps as relevant). Then run the plan's exit gates (typically: uv run ruff check ` +
-  `src/ tests/ && uv run ruff format --check src/ tests/ ; uv run pyright src/ ; uv run pytest) and make them ` +
-  `ALL pass. For each locking test of a CORRECTNESS/BUG FIX (not every feature test), PROVE it is sound: ` +
+  `conventions, touchpoint maps as relevant). Then run the plan's exit gates (from the plan's "Exit gates" ` +
+  `section — typically ruff check + ruff format --check + a pyright check + pytest) and make them pass. For ` +
+  `PYRIGHT, use the repo's RATCHET (e.g. tools/pyright_ratchet.py vs baseline) — hundreds of PRE-EXISTING ` +
+  `errors are expected and are NOT the gate; only NEW errors introduced by your diff fail it. For each ` +
+  `locking test of a CORRECTNESS/BUG FIX (not every feature test), PROVE it is sound: ` +
   `confirm it FAILS against the buggy/absent code (stash the impl, keep the test, run it, expect RED), then ` +
   `restore. This is CODE, so follow the FULL mandatory version workflow (CLAUDE.md §Version Bumping): ` +
   `uv run bump-my-version bump patch; STAGE the version files with your changes; commit with a conventional ` +
@@ -255,21 +265,34 @@ const verified = !!verify && verify.diffNonEmpty && verify.worktreeClean && veri
 log(`Verify: preHead=${preHead || '(none)'}, headSha=${verify?.headSha || '(none)'}, freshCommit=${freshCommit}, ` +
     `diffNonEmpty=${verify?.diffNonEmpty}, worktreeClean=${verify?.worktreeClean}, gatesPassed=${verify?.gatesPassed}`)
 
-if (!implementerReport || !implementerReport.committed || !implementerReport.testSoundnessProved ||
-    !implementerReport.acceptanceTestsRedFirst || !verified) {
+// HARD gate — a genuinely unverifiable build (no commit, unsound tests, empty/stale/
+// dirty diff, or gates that FAIL by the repo's real convention) aborts before review.
+// Red-first is NOT here (see below): a red-first miss is a soft flag, not an abort —
+// the independent diff review still adds value and should run.
+if (!implementerReport || !implementerReport.committed || !implementerReport.testSoundnessProved || !verified) {
   log(`⚠️ ESCALATION — implementation not independently verified ` +
       `(committed=${implementerReport?.committed}, testSoundness=${implementerReport?.testSoundnessProved}, ` +
-      `acceptanceRedFirst=${implementerReport?.acceptanceTestsRedFirst}, freshCommit=${freshCommit}, ` +
-      `diffNonEmpty=${verify?.diffNonEmpty}, worktreeClean=${verify?.worktreeClean}, ` +
-      `gatesPassed=${verify?.gatesPassed}). A human must intervene before review (an acceptanceTestsRedFirst=false ` +
-      `is the Plan-105 case — hand-author the locked test). Do NOT proceed to the diff review over an ` +
-      `unverified/empty/stale/failing diff.`)
+      `freshCommit=${freshCommit}, diffNonEmpty=${verify?.diffNonEmpty}, worktreeClean=${verify?.worktreeClean}, ` +
+      `gatesPassed=${verify?.gatesPassed}). A human must intervene before review — do NOT proceed to the diff ` +
+      `review over an unverified/empty/stale/failing diff.`)
   return {
     planPath, rounds: 0, converged: false, stalled: false, exhausted: false,
-    escalated: true, escalationReason: 'implementation not independently verified (fresh commit / non-empty diff / clean worktree / green gates / test-soundness / red-first acceptance)',
+    escalated: true, escalationReason: 'implementation not independently verified (fresh commit / non-empty diff / clean worktree / green gates / test-soundness)',
     residualBlockerCount: 0, residualMajorCount: 0, residualFindings: [], codexFailedRounds: 0,
     implementerReport, verify, final: null,
   }
+}
+
+// SOFT flag — red-first not achieved (e.g. the Plan-105 case, or the implementer built
+// test-alongside rather than test-first). Do NOT abort: `testSoundnessProved` already
+// gives the "test catches the absent code" guarantee, and the independent diff review
+// below is a SECOND line of defence on test meaningfulness / spec-conformance. Carry it
+// as a residual risk for the human instead of skipping the review entirely.
+const redFirstMissed = !implementerReport.acceptanceTestsRedFirst
+if (redFirstMissed) {
+  log(`⚠️ Red-first acceptance NOT achieved (acceptanceTestsRedFirst=false) — proceeding to the independent ` +
+      `Codex-diff review, which scrutinises test meaningfulness; surfacing as a residual risk. ` +
+      `(If this is the Plan-105 case, a human should hand-author the locked test before merge.)`)
 }
 
 phase('Review loop')
@@ -414,9 +437,10 @@ const final = await agent(
   `Read the plan at ${planPath} and the final \`git diff ${baseBranch}...HEAD\` (repo ${repo}). ` +
   `The review loop ended: converged=${converged}, stalled=${stalled}, exhausted=${exhausted}, ` +
   `residual blockers=${residualBlockers.length}, residual majors=${residualMajors.length}, ` +
-  `rounds where the Codex pass failed=${codexFailedRounds}. ` +
+  `rounds where the Codex pass failed=${codexFailedRounds}, red-first acceptance achieved=${!redFirstMissed}. ` +
   `Return: (1) 'summary' — a <=6-line summary of what was built + how it was verified; ` +
-  `(2) 'residualRisks' — anything a human PR reviewer should still eyeball; ` +
+  `(2) 'residualRisks' — anything a human PR reviewer should still eyeball` +
+  (redFirstMissed ? ` — you MUST include that red-first acceptance was NOT achieved (a human should confirm the acceptance tests genuinely lock the spec, or hand-author them)` : ``) + `; ` +
   `(3) 'recommendation' — 'PR-READY' (ready for a HUMAN to open/approve the PR — NOT auto-mergeable) only if ` +
   `no residual blockers/majors AND the exit gates passed; else 'NOT-READY'. ` +
   `Remember: hold-at-PR — you are NOT merging; only the human merges. This is advice to the PR owner.`,
@@ -443,6 +467,7 @@ return {
   residualMajorCount: residualMajors.length,
   residualFindings: lastFindings,
   codexFailedRounds,
+  redFirstMissed,
   implementerReport,
   verify,
   final,
