@@ -338,3 +338,134 @@ class TestDataDirResolution:
 
         mock_download.assert_called_once_with(resolved_path)
         assert result.stations_created == 1
+
+
+class TestReanalysisAdapterProductionWiring:
+    """Plan 115b2 §2B/§2C: the MeteoSwiss backfill adapter is built ONLY on
+    the production DB-auto-setup path (``basin_store is None``), never for a
+    caller that injects its own stores (e.g. every other test in this file,
+    which must stay network-free)."""
+
+    def test_reanalysis_adapter_built_and_threaded_on_production_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sid = StationId(uuid4())
+        station = make_station_config(station_id=sid, code="PROD001")
+        basin = _make_basin("PROD001")
+        stores = _inject_stores()
+        sentinel_adapter = object()
+
+        full_stores = {
+            **stores,
+            "model_store": None,
+            "artifact_store": None,
+            "group_store": None,
+            "hindcast_store": None,
+            "skill_store": None,
+            "parameter_store": None,
+        }
+
+        monkeypatch.setenv("DATABASE_URL", "postgresql://stub")
+        monkeypatch.setattr(
+            "sapphire_flow.flows._db.setup_production_stores",
+            lambda database_url: (None, full_stores),
+        )
+        build_stub = lambda **kwargs: sentinel_adapter  # noqa: E731
+        monkeypatch.setattr(
+            "sapphire_flow.flows.ingest_weather_history.build_production_reanalysis_adapter",
+            build_stub,
+        )
+        monkeypatch.setattr(
+            "sapphire_flow.flows.ingest_weather_history._load_reanalysis_stac_config",
+            lambda: object(),
+        )
+
+        with (
+            patch(
+                "sapphire_flow.adapters.camelsch_adapter.load_stations",
+                return_value=([station], [basin]),
+            ),
+            patch(
+                "sapphire_flow.adapters.camelsch_adapter.load_observations",
+                return_value={sid: _make_raw_obs(sid, 10)},
+            ),
+            patch(
+                "sapphire_flow.adapters.camelsch_adapter.load_forcing",
+                return_value={sid: _make_forcing(sid, 10)},
+            ),
+            patch("sapphire_flow.flows.onboard.onboard_from_camelsch") as onboard_stub,
+        ):
+            from sapphire_flow.types.onboarding import OnboardingResult
+
+            onboard_stub.return_value = OnboardingResult(
+                stations_created=0,
+                stations_skipped=0,
+                basins_created=0,
+                basins_skipped=0,
+                observations_imported=0,
+                forcing_records_imported=0,
+                observations_qc_passed=0,
+                observations_qc_failed=0,
+                observations_qc_suspect=0,
+                baselines_computed=0,
+                flow_regimes_computed=0,
+                errors=[],
+            )
+            onboard_stations_flow(
+                data_dir="./data/CAMELS_CH",
+                qc_rules=_TEST_RULES,
+                clock=_fixed_clock,
+            )
+
+        onboard_stub.assert_called_once()
+        _, kwargs = onboard_stub.call_args
+        assert kwargs["reanalysis_adapter"] is sentinel_adapter
+
+    def test_reanalysis_adapter_not_built_when_caller_injects_stores(self) -> None:
+        # The common test-injection shape (every other test in this file) —
+        # NEVER builds a real network-touching adapter.
+        sid = StationId(uuid4())
+        station = make_station_config(station_id=sid, code="INJ001")
+        basin = _make_basin("INJ001")
+        stores = _inject_stores()
+
+        with (
+            patch(
+                "sapphire_flow.adapters.camelsch_adapter.load_stations",
+                return_value=([station], [basin]),
+            ),
+            patch(
+                "sapphire_flow.adapters.camelsch_adapter.load_observations",
+                return_value={sid: _make_raw_obs(sid, 10)},
+            ),
+            patch(
+                "sapphire_flow.adapters.camelsch_adapter.load_forcing",
+                return_value={sid: _make_forcing(sid, 10)},
+            ),
+            patch("sapphire_flow.flows.onboard.onboard_from_camelsch") as onboard_stub,
+        ):
+            from sapphire_flow.types.onboarding import OnboardingResult
+
+            onboard_stub.return_value = OnboardingResult(
+                stations_created=0,
+                stations_skipped=0,
+                basins_created=0,
+                basins_skipped=0,
+                observations_imported=0,
+                forcing_records_imported=0,
+                observations_qc_passed=0,
+                observations_qc_failed=0,
+                observations_qc_suspect=0,
+                baselines_computed=0,
+                flow_regimes_computed=0,
+                errors=[],
+            )
+            onboard_stations_flow(
+                data_dir="./data/CAMELS_CH",
+                qc_rules=_TEST_RULES,
+                clock=_fixed_clock,
+                **stores,
+            )
+
+        _, kwargs = onboard_stub.call_args
+        assert kwargs["reanalysis_adapter"] is None

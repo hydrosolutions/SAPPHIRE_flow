@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import structlog
 from prefect import flow, runtime, task
@@ -10,6 +11,12 @@ from prefect.cache_policies import NO_CACHE
 
 from sapphire_flow.services.onboarding import onboard_from_camelsch
 from sapphire_flow.types.datetime import ensure_utc
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from sapphire_flow.protocols.stores import BasinStore, StationStore
+    from sapphire_flow.types.datetime import UtcDatetime
 
 log = structlog.get_logger(__name__)
 
@@ -98,6 +105,7 @@ def onboard_stations_flow(
     qc_rules: object = None,
     clock: object = None,
     hindcast_days: int | None = None,
+    reanalysis_adapter: object = None,
 ) -> object:
     if clock is None:
         clock = lambda: ensure_utc(datetime.now(UTC))  # noqa: E731
@@ -125,6 +133,27 @@ def onboard_stations_flow(
         hindcast_store = stores["hindcast_store"]
         skill_store = stores["skill_store"]
         parameter_store = stores["parameter_store"]
+
+        # Plan 115b2 §2B/§2C: the MeteoSwiss reanalysis binding + per-station
+        # backfill-or-hold. Built ONLY on this production DB-backed path (not
+        # when a caller injects its own stores, e.g. tests/replay) — building
+        # it here means the §2C gate is unconditionally live for the real
+        # deployed flow, matching how forcing_source/deployment_config are
+        # resolved for this same path below.
+        if reanalysis_adapter is None:
+            from typing import cast
+
+            from sapphire_flow.flows.ingest_weather_history import (
+                _load_reanalysis_stac_config,  # pyright: ignore[reportPrivateUsage]
+                build_production_reanalysis_adapter,
+            )
+
+            reanalysis_adapter = build_production_reanalysis_adapter(
+                config=_load_reanalysis_stac_config(),
+                station_store=cast("StationStore", station_store),
+                basin_store=cast("BasinStore", basin_store),
+                clock=cast("Callable[[], UtcDatetime]", clock),
+            )
 
     # Load deployment config for skill gate thresholds and to select the
     # reanalysis-source mode below (production path only).
@@ -216,6 +245,7 @@ def onboard_stations_flow(
         parameter_store=parameter_store,  # type: ignore[arg-type]
         water_level_datums_masl=water_level_datums_masl,
         water_level_units=water_level_units,
+        reanalysis_adapter=reanalysis_adapter,  # type: ignore[arg-type]
     )
 
     log.info(

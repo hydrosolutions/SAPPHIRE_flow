@@ -477,6 +477,7 @@ Use this map when a task touches the **offline model lifecycle** — training-da
 **Core implementation touchpoints:**
 
 - entry flows: `train_models_flow` (retrain/refresh, sequential per-unit loop) and `onboard_model_flow` (first-time onboarding: `adapt_if_fi` → register → per-unit compat → smoke → train → hindcast → skill-gate → promote → assignment). A *separate* Flow-5 flow, `onboard_stations_flow` / `onboard_from_camelsch`, also runs its own hindcast + skill wiring — it is not the only hindcast/skill producer
+- `onboard_stations_flow` (Plan 115b2) ALSO builds a `reanalysis_adapter` — but ONLY on the production DB-auto-setup path (`basin_store is None` at flow entry), never when a caller injects its own stores (tests/replay) — this is what makes the §2C promotion hold-out gate live for the real deployed flow; a test-injected-stores caller gets the binding write (§2B) but not the gate
 - train/serialize service: `train_station_model` / `train_group_model`
 - artifact store + promotion: `store_and_promote_artifact` (retrain), store-as-TRAINING then `promote_artifact` on passed gate (onboarding) — write semantics in the Persistence map
 - `register_models` / `build_registry_entry` → `register_model` (model-class catalog row, distinct from artifacts)
