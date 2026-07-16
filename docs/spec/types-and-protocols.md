@@ -2681,13 +2681,17 @@ def classify_temperature(mean_bias: float, rmse: float) -> GateVerdict: ...
 def evaluate_precip_basin(
     station_id: StationId, code: str,
     ours: dict[date, float], camels: dict[date, float],
+    expected_dates: frozenset[date],
 ) -> BasinPrecipResult: ...
 def evaluate_temperature_basin(
     station_id: StationId, code: str,
     ours: dict[date, float], camels: dict[date, float],
+    expected_dates: frozenset[date],
 ) -> BasinTemperatureResult: ...
-    # §4A/§4B — a basin/date present on one side but not the other is a
-    # coverage gap: forces DATA_QUALITY_ESCALATE, never silently inner-joined.
+    # §4A/§4B — `expected_dates` is the FULL comparison-window date set; a
+    # basin/date present on one side but not the other (or absent from either
+    # vs expected_dates) is a coverage gap: forces DATA_QUALITY_ESCALATE,
+    # never silently inner-joined.
     # A non-positive CAMELS total does the same (never divides by it).
 
 def run_reference_comparison(
