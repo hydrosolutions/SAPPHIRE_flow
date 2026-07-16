@@ -1,0 +1,25 @@
+# Nepal v1 ONLY — recap Data Gateway API-key secret overlay (Plan 082 Task 2A).
+#
+# Usage (Nepal):  docker compose -f docker-compose.yml -f docker-compose.recap.yml up
+#
+# Swiss deployments OMIT this file (plain `docker compose up` / only the base
+# docker-compose.yml) and therefore need NO ./secrets/sapphire_dg_api_key file:
+# the Recap adapters are never constructed on Swiss (Task 2C/2D `type` selector).
+#
+# Compose merges service-level `secrets` sequences ADDITIVELY, so re-listing only
+# `sapphire_dg_api_key` here appends it to each worker's base secrets (db_password
+# stays). Verify with:
+#   docker compose -f docker-compose.yml -f docker-compose.recap.yml config
+# Each worker must show BOTH db_password AND sapphire_dg_api_key (no dupes/losses).
+services:
+  prefect-worker:
+    secrets:
+      - sapphire_dg_api_key
+
+  prefect-worker-ingest:
+    secrets:
+      - sapphire_dg_api_key
+
+secrets:
+  sapphire_dg_api_key:
+    file: ./secrets/sapphire_dg_api_key

@@ -134,7 +134,9 @@ table for this deployment.
 `RecapAuthError` (HTTP 401/403) — the API key is missing, expired, or
 revoked. Rotate `./secrets/sapphire_dg_api_key` (or the `RECAP_API_KEY` env
 var in local dev) with a valid key and confirm the Docker secret file exists
-and is readable by the worker containers.
+and is readable by the worker containers. (This category only arises on a
+Nepal deployment started with the `docker-compose.recap.yml` overlay — see
+§ API-key handling.)
 
 ### source_data_missing
 
@@ -163,20 +165,28 @@ CRITICAL from the (permanently absent) MeteoSwiss grid.
 
 ## API-key handling (`RECAP_API_KEY`)
 
-- Production: `./secrets/sapphire_dg_api_key` (Docker secret, mounted at
-  `/run/secrets/sapphire_dg_api_key`), read via
-  `config.recap_gateway.load_recap_api_key()`. Never logged, never returned
-  in any object that might be logged.
+The recap API-key secret is **Nepal-only**, provided by the
+`docker-compose.recap.yml` overlay — it is NOT in the base `docker-compose.yml`.
+
+- **Nepal deployment**: start with
+  `docker compose -f docker-compose.yml -f docker-compose.recap.yml up`. The
+  overlay declares the top-level `secrets.sapphire_dg_api_key.file:
+  ./secrets/sapphire_dg_api_key` and adds the secret to both `prefect-worker`
+  and `prefect-worker-ingest` (Compose merges service `secrets` additively, so
+  each worker ends up with both `db_password` and `sapphire_dg_api_key`).
+  Create `./secrets/sapphire_dg_api_key` with the Gateway API key. The secret
+  is mounted at `/run/secrets/sapphire_dg_api_key` and read via
+  `config.recap_gateway.load_recap_api_key()`. Never logged, never returned in
+  any object that might be logged.
+- **Swiss hosts**: omit the overlay (plain `docker compose up` / only the base
+  file). No `./secrets/sapphire_dg_api_key` file is needed at all — the base
+  compose declares no such secret, and the Recap adapters are never
+  constructed on a Swiss deployment (`type` selector stays `meteoswiss_nwp`).
 - Local dev fallback: `RECAP_API_KEY` env var (same pattern as
   `DB_PASSWORD`/`db_password`).
-- **Swiss hosts**: `sapphire_dg_api_key` is declared unconditionally on both
-  worker services in `docker-compose.yml`, so Swiss operators must still
-  create a placeholder `./secrets/sapphire_dg_api_key` file (Compose refuses
-  to start a service whose declared secret file is missing) even though the
-  Recap adapters are never constructed on a Swiss deployment (`type` selector
-  stays `meteoswiss_nwp`).
-- Rotation: per Gateway operator schedule; rotate by replacing the secret
-  file and restarting the worker containers.
+- Rotation (Nepal / overlay in use): per Gateway operator schedule; rotate by
+  replacing the `./secrets/sapphire_dg_api_key` file and restarting the worker
+  containers — unchanged by moving the secret into the overlay.
 
 ## Snow-variable status
 
