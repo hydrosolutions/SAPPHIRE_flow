@@ -27,6 +27,13 @@ Environment:
     SAPPHIRE_CONFIG  Path to TOML config file with [adapters.weather_reanalysis]
                      STAC overrides (optional; defaults to MeteoSwiss open data)
     SAPPHIRE_ENV     Set to "dev" for human-readable console log output
+
+Exit code: 0 only when the 4A/4B reference comparison ran over a non-empty
+result set AND every basin PASSes (Plan 115b3 exit-gate criterion — the run
+must "record the per-basin results", not print a vacuous "All basins
+PASS."). Any FLAGGED/ESCALATED/DATA_QUALITY_ESCALATE basin, or zero
+stations/result rows, exits 1. The 4C/4D live-tail measurement is
+diagnostic-only and never affects the exit code on its own.
 """
 
 from __future__ import annotations
@@ -56,13 +63,43 @@ configure_api_logging()
 log = structlog.get_logger(__name__)
 
 
-def _print_reference_report(report: ReferenceComparisonReport) -> None:
+def _print_reference_report(report: ReferenceComparisonReport) -> bool:
+    """Prints the 4A/4B reference-comparison report and returns whether the
+    run counts as a genuine PASS. An empty result set (zero stations, or a
+    station store/store wiring bug that yields zero rows) is a data-quality
+    FAILURE, not a vacuous pass — the gate must never print "All basins
+    PASS." when nothing was actually compared (Plan 115b3 exit-gate
+    criterion: "run 4A-4D ... and record the per-basin results")."""
+    if not report.precipitation and not report.temperature:
+        print()
+        print("=== Reference comparison — precipitation/temperature ===")
+        print(
+            "NO BASINS EVALUATED — zero stations or zero result rows. This is "
+            "a DATA-QUALITY FAILURE, not a pass: nothing was compared."
+        )
+        return False
+
     print()
     print("=== Reference comparison — precipitation (RhiresD vs CAMELS-CH) ===")
     print(f"{'basin':<20}{'rel_bias':>10}{'verdict':>24}")
     for r in report.precipitation:
         bias_str = f"{r.rel_bias:+.2%}" if r.rel_bias is not None else "n/a"
         print(f"{r.code:<20}{bias_str:>10}{r.verdict.value:>24}")
+
+    print()
+    print("=== Reference comparison — precipitation diagnostics (non-gating) ===")
+    print(
+        f"{'basin':<20}{'event_max_ours':>16}{'event_max_camels':>18}{'wet_rmse':>10}"
+    )
+    for r in report.precipitation:
+        ours_max = f"{r.event_max_ours:.2f}" if r.event_max_ours is not None else "n/a"
+        camels_max = (
+            f"{r.event_max_camels:.2f}" if r.event_max_camels is not None else "n/a"
+        )
+        wet_rmse = f"{r.wet_day_rmse:.2f}" if r.wet_day_rmse is not None else "n/a"
+        print(f"{r.code:<20}{ours_max:>16}{camels_max:>18}{wet_rmse:>10}")
+        print(f"    season totals (ours):   {r.season_totals_ours}")
+        print(f"    season totals (camels): {r.season_totals_camels}")
 
     print()
     print("=== Reference comparison — temperature (TabsD vs CAMELS-CH) ===")
@@ -86,9 +123,11 @@ def _print_reference_report(report: ReferenceComparisonReport) -> None:
             f"FLAGGED/ESCALATED basins requiring disposition before 115b4: "
             f"{sorted(set(flagged))}"
         )
-    else:
-        print()
-        print("All basins PASS.")
+        return False
+
+    print()
+    print("All basins PASS.")
+    return True
 
 
 def _print_live_tail_result(result: LiveTailResidualResult | None) -> None:
@@ -165,10 +204,10 @@ def main(argv: list[str] | None = None) -> int:
                 "reference_comparison_complete",
                 basins=len(report.precipitation),
             )
-            _print_reference_report(report)
+            reference_ok = _print_reference_report(report)
 
             if args.skip_live_tail:
-                return 0
+                return 0 if reference_ok else 1
 
             from sapphire_flow.flows.ingest_weather_history import (
                 _load_reanalysis_stac_config,  # pyright: ignore[reportPrivateUsage]
@@ -188,7 +227,7 @@ def main(argv: list[str] | None = None) -> int:
             if window is None:
                 log.warning("live_tail_no_overlap")
                 _print_live_tail_result(None)
-                return 0
+                return 0 if reference_ok else 1
 
             log.info(
                 "live_tail_fetch_starting",
@@ -213,7 +252,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\nERROR: validation gate run failed — {exc}", file=sys.stderr)
         return 1
 
-    return 0
+    return 0 if reference_ok else 1
 
 
 if __name__ == "__main__":

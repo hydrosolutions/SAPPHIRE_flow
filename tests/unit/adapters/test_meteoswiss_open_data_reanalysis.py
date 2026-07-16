@@ -1501,6 +1501,77 @@ class TestDiscoverProductAvailabilityRange:
             is None
         )
 
+    def test_daily_item_product_derives_span_from_properties_datetime(self) -> None:
+        # RprelimD is daily-only (Plan 115b1 §1B) — its per-day STAC items
+        # embed a SINGLE date in the filename (e.g.
+        # "RprelimD_ch.swiss.lv95_2026-04-10"), not an archive-style
+        # start_end span. Soundness: fails RED against a scan that only
+        # recognises the archive span regex — it would find zero spans and
+        # report None, so 4C's overlap-window discovery could never see
+        # RprelimD's daily fixture shape (independent Codex review of Plan
+        # 115b3).
+        sid = StationId(uuid.uuid4())
+
+        def _feature(day: str) -> dict[str, object]:
+            return {
+                "id": f"{day.replace('-', '')}-ch",
+                "properties": {"datetime": f"{day}T00:00:00Z"},
+                "assets": {
+                    f"RprelimD_ch.swiss.lv95_{day}": {
+                        "href": f"https://dummy/assets/rprelimd_{day}.swiss.lv95.nc",
+                        "type": "application/x-netcdf",
+                    }
+                },
+            }
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            if "/items?limit=100" in url:
+                return httpx.Response(
+                    200,
+                    json={
+                        "features": [_feature("2026-04-10"), _feature("2026-04-25")],
+                        "links": [],
+                    },
+                )
+            raise AssertionError(f"unexpected request: {url}")
+
+        adapter = _make_adapter(httpx.MockTransport(handler), {sid: _make_basin(sid)})
+        assert adapter.discover_product_availability_range(
+            ForcingSource.METEOSWISS_RPRELIMD
+        ) == (date(2026, 4, 10), date(2026, 4, 25))
+
+    def test_daily_item_product_falls_back_to_id_when_datetime_missing(self) -> None:
+        # Same daily-item shape, but ``properties.datetime`` is absent — the
+        # fallback must parse the date out of the item id instead of
+        # returning None for the whole item.
+        sid = StationId(uuid.uuid4())
+
+        def _feature(day: str) -> dict[str, object]:
+            return {
+                "id": f"{day.replace('-', '')}-ch",
+                "properties": {},
+                "assets": {
+                    f"RprelimD_ch.swiss.lv95_{day}": {
+                        "href": f"https://dummy/assets/rprelimd_{day}.swiss.lv95.nc",
+                        "type": "application/x-netcdf",
+                    }
+                },
+            }
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            if "/items?limit=100" in url:
+                return httpx.Response(
+                    200, json={"features": [_feature("2026-04-10")], "links": []}
+                )
+            raise AssertionError(f"unexpected request: {url}")
+
+        adapter = _make_adapter(httpx.MockTransport(handler), {sid: _make_basin(sid)})
+        assert adapter.discover_product_availability_range(
+            ForcingSource.METEOSWISS_RPRELIMD
+        ) == (date(2026, 4, 10), date(2026, 4, 10))
+
 
 # ---------------------------------------------------------------------------
 # Plan 115b1 §1B/§1C — real (faithfully-shaped) LV95 archive fixture

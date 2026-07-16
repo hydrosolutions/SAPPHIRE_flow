@@ -34,11 +34,19 @@ TEMPERATURE (per basin, absolute error in degC):
     ESCALATE  <=> |mean_bias| >  1.0  OR   rmse >  2.0
 ```
 
-A basin/date present on one side but not the other is a coverage gap, not a
-silently-inner-joined comparison — it forces ``DATA_QUALITY_ESCALATE``
-regardless of what the computed bias would otherwise have been (Plan 115b3
-§4A). A non-positive CAMELS total (degenerate denominator) does the same,
-rather than dividing.
+Coverage is checked against the FULL comparison window (every calendar day
+in ``[1981-01-01, 2021-01-01)``, see ``expected_daily_dates``), not merely
+against the symmetric difference between the two sides — a basin where
+BOTH sides are sparse but happen to agree on the days they do have would
+otherwise show zero missing-in-ours/missing-in-camels and silently pass on
+a fraction of the intended 40-year total. Any date missing from that full
+window on either side is a coverage gap, not a silently-inner-joined
+comparison — it forces ``DATA_QUALITY_ESCALATE`` regardless of what the
+computed bias would otherwise have been (Plan 115b3 §4A). A non-positive
+CAMELS total (degenerate denominator) does the same, rather than dividing.
+Both comparison sides are also pinned to ``spatial_type=BASIN_AVERAGE``
+(excluding any POINT/per-band/per-member rows the store may also hold for
+the same station/source/parameter/date) — see ``_records_to_daily``.
 """
 
 from __future__ import annotations
@@ -51,7 +59,9 @@ from typing import TYPE_CHECKING, Protocol
 
 import structlog
 
+from sapphire_flow.exceptions import StoreError
 from sapphire_flow.types.datetime import ensure_utc
+from sapphire_flow.types.enums import SpatialRepresentation
 from sapphire_flow.types.forcing_sources import ForcingSource
 
 if TYPE_CHECKING:
@@ -126,16 +136,37 @@ def classify_temperature(mean_bias: float, rmse: float) -> GateVerdict:
     return GateVerdict.PASS
 
 
+def expected_daily_dates(start: UtcDatetime, end: UtcDatetime) -> frozenset[date]:
+    """Every calendar day in the half-open ``[start, end)`` window — the
+    "40-year total" gate must verify FULL coverage against this set, not
+    merely the dates the two sides happen to share (Plan 115b3 §4A). Without
+    this, a basin where BOTH sides are sparse but happen to agree on the same
+    handful of days would show zero symmetric difference between ``ours``
+    and ``camels`` and silently PASS on a fraction of the intended 40-year
+    total."""
+    start_date = start.date()
+    end_date = end.date()
+    days: list[date] = []
+    day = start_date
+    while day < end_date:
+        days.append(day)
+        day += timedelta(days=1)
+    return frozenset(days)
+
+
 def _daily_coverage(
-    ours: dict[date, float], camels: dict[date, float]
+    ours: dict[date, float], camels: dict[date, float], expected: frozenset[date]
 ) -> tuple[set[date], set[date], set[date]]:
-    """Returns ``(common_dates, missing_in_ours, missing_in_camels)``."""
+    """Returns ``(common_dates, missing_in_ours, missing_in_camels)`` —
+    "missing" is relative to the FULL ``expected`` window, not merely to the
+    dates present on the other side. A date absent from BOTH sides is still a
+    coverage gap and must not silently cancel out (Plan 115b3 §4A)."""
     ours_dates = set(ours)
     camels_dates = set(camels)
     return (
         ours_dates & camels_dates,
-        camels_dates - ours_dates,
-        ours_dates - camels_dates,
+        set(expected) - ours_dates,
+        set(expected) - camels_dates,
     )
 
 
@@ -196,9 +227,15 @@ def evaluate_precip_basin(
     code: str,
     ours: dict[date, float],
     camels: dict[date, float],
+    expected_dates: frozenset[date],
 ) -> BasinPrecipResult:
-    """Plan 115b3 §4B — one basin's precipitation gate evaluation."""
-    common, missing_in_ours, missing_in_camels = _daily_coverage(ours, camels)
+    """Plan 115b3 §4B — one basin's precipitation gate evaluation.
+    ``expected_dates`` is the FULL comparison-window date set (Plan 115b3
+    §4A) — a date missing from ``expected_dates`` on either side escalates,
+    even if it is also missing (i.e. "agrees") on the other side."""
+    common, missing_in_ours, missing_in_camels = _daily_coverage(
+        ours, camels, expected_dates
+    )
     ours_total = sum(ours.values())
     camels_total = sum(camels.values())
     has_gap = bool(missing_in_ours or missing_in_camels)
@@ -236,9 +273,15 @@ def evaluate_temperature_basin(
     code: str,
     ours: dict[date, float],
     camels: dict[date, float],
+    expected_dates: frozenset[date],
 ) -> BasinTemperatureResult:
-    """Plan 115b3 §4B — one basin's temperature gate evaluation."""
-    common, missing_in_ours, missing_in_camels = _daily_coverage(ours, camels)
+    """Plan 115b3 §4B — one basin's temperature gate evaluation.
+    ``expected_dates`` is the FULL comparison-window date set (Plan 115b3
+    §4A) — a date missing from ``expected_dates`` on either side escalates,
+    even if it is also missing (i.e. "agrees") on the other side."""
+    common, missing_in_ours, missing_in_camels = _daily_coverage(
+        ours, camels, expected_dates
+    )
     has_gap = bool(missing_in_ours or missing_in_camels)
 
     if has_gap or not common:
@@ -269,7 +312,34 @@ def evaluate_temperature_basin(
 
 
 def _records_to_daily(records: list[HistoricalForcingRecord]) -> dict[date, float]:
-    return {r.valid_time.date(): r.value for r in records}
+    """Collapse to BASIN_AVERAGE, non-banded, non-ensemble-member daily
+    rows — Plan 115b3 §4A pins ``spatial_type=BASIN_AVERAGE`` for both
+    comparison sides. ``fetch_forcing`` returns every distinct
+    (spatial_type, band_id, member_id) combination stored for the
+    requested station/source/parameter/date; a plain date-keyed dict
+    comprehension would let a POINT or per-band/per-member row silently
+    overwrite (or be overwritten by) the basin-mean row for the same date.
+    Also guards against two BASIN_AVERAGE rows landing on the same date —
+    that would be a genuine store inconsistency, not a value to silently
+    pick one of."""
+    daily: dict[date, float] = {}
+    for r in records:
+        if (
+            r.spatial_type is not SpatialRepresentation.BASIN_AVERAGE
+            or r.band_id is not None
+            or r.member_id is not None
+        ):
+            continue
+        day = r.valid_time.date()
+        if day in daily:
+            raise StoreError(
+                "duplicate BASIN_AVERAGE row for "
+                f"station_id={r.station_id} source={r.source} "
+                f"parameter={r.parameter} date={day} — expected exactly one "
+                "logical row per day"
+            )
+        daily[day] = r.value
+    return daily
 
 
 def fetch_basin_daily_series(
@@ -304,6 +374,7 @@ def run_reference_comparison(
     ``[1981-01-01, 2021-01-01)``."""
     precip: list[BasinPrecipResult] = []
     temperature: list[BasinTemperatureResult] = []
+    expected_dates = expected_daily_dates(COMPARISON_START, COMPARISON_END)
 
     for station in stations:
         ours_precip = fetch_basin_daily_series(
@@ -323,7 +394,9 @@ def run_reference_comparison(
             COMPARISON_END,
         )
         precip.append(
-            evaluate_precip_basin(station.id, station.code, ours_precip, camels_precip)
+            evaluate_precip_basin(
+                station.id, station.code, ours_precip, camels_precip, expected_dates
+            )
         )
 
         ours_temp = fetch_basin_daily_series(
@@ -343,7 +416,9 @@ def run_reference_comparison(
             COMPARISON_END,
         )
         temperature.append(
-            evaluate_temperature_basin(station.id, station.code, ours_temp, camels_temp)
+            evaluate_temperature_basin(
+                station.id, station.code, ours_temp, camels_temp, expected_dates
+            )
         )
 
         log.info(

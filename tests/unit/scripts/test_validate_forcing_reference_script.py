@@ -52,9 +52,16 @@ class TestValidateScriptMain:
         monkeypatch.delenv("DATABASE_URL", raising=False)
         assert mod.main([]) == 1
 
-    def test_skip_live_tail_runs_reference_comparison_only(
+    def test_skip_live_tail_with_sparse_coverage_escalates_not_passes(
         self, mod, monkeypatch, capsys
     ) -> None:
+        # Plan 115b3 §4A: the gate must verify FULL [1981-01-01, 2021-01-01)
+        # coverage, not merely that ours/camels dates match each other. A
+        # single shared day (both sides agreeing on exactly one day out of
+        # ~14610) must escalate as a coverage gap, never print "All basins
+        # PASS." and never exit 0. Soundness: fails RED against a gate that
+        # only diffs ours-dates vs camels-dates (a symmetric-sparse pair
+        # would show zero missing dates and falsely pass).
         monkeypatch.setenv("DATABASE_URL", "postgresql://stub")
         monkeypatch.setattr(mod.sa, "create_engine", MagicMock())
 
@@ -99,10 +106,33 @@ class TestValidateScriptMain:
 
         result = mod.main(["--skip-live-tail"])
 
-        assert result == 0
+        assert result == 1
         out = capsys.readouterr().out
         assert "BASIN-1" in out
-        assert "All basins PASS." in out
+        assert "All basins PASS." not in out
+        assert "FLAGGED/ESCALATED basins requiring disposition" in out
+
+    def test_empty_station_set_is_a_failure_not_a_pass(
+        self, mod, monkeypatch, capsys
+    ) -> None:
+        # Zero stations -> zero result rows is a data-quality failure (a
+        # broken station_store wiring must not silently read as "nothing to
+        # flag, therefore PASS").
+        monkeypatch.setenv("DATABASE_URL", "postgresql://stub")
+        monkeypatch.setattr(mod.sa, "create_engine", MagicMock())
+
+        station_store = FakeStationStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+        _stub_pg_stores(monkeypatch, station_store, basin_store, forcing_store)
+
+        result = mod.main(["--skip-live-tail"])
+
+        assert result == 1
+        out = capsys.readouterr().out
+        assert "All basins PASS." not in out
+        assert "NO BASINS EVALUATED" in out
+        assert "DATA-QUALITY FAILURE" in out
 
     def test_full_run_includes_live_tail_residual(
         self, mod, monkeypatch, capsys
@@ -153,7 +183,11 @@ class TestValidateScriptMain:
 
         result = mod.main([])
 
-        assert result == 0
+        # This station has NO reference-comparison rows seeded (the fixture
+        # only exercises the live-tail path), so 4A/4B correctly escalates
+        # on a coverage gap — exit code reflects that, it must NOT report 0
+        # just because the live-tail measurement itself ran cleanly.
+        assert result == 1
         out = capsys.readouterr().out
         assert "Live-tail residual" in out
         assert "Paired samples:     1" in out
