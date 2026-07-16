@@ -115,6 +115,14 @@ gates.
   `ConfigurationError`) and `fetch_reanalysis_bindings` (0..n REANALYSIS bindings, no
   `status` filter); `fetch_weather_sources` (all bindings, unfiltered by role) is
   display-only, not for routing
+- MeteoSwiss REANALYSIS bindings (Plan 115b2) are written by THREE paths that must
+  stay in agreement: `bind_meteoswiss_reanalysis_fleet` (one-shot, existing fleet —
+  `scripts/backfill_meteoswiss_history.py`), station onboarding's Step 4c
+  (`services/onboarding.py`, new stations), and — for CAMELS-CH weather rows —
+  Step 4b's unrelated `camels-ch`/POINT binding. Eligibility for the MeteoSwiss
+  binding is `eligible_meteoswiss_configs` (§3D — valid basin polygon only); a
+  binding write with no matching backfill rows leaves a station forcing-less (the
+  bug class Plan 115b2 exists to end) — see the onboarding Step 8 hold-out gate
 - preprocessing: `resample_to_time_step` (precip SUM, temp/discharge MEAN), NWP
   hourly→daily + issue-time filter + horizon cap, lookback wide-pivot, `ensure_utc`
 - the cycle assembles a **superset** (`build_superset_requirements`); each model
@@ -469,6 +477,7 @@ Use this map when a task touches the **offline model lifecycle** — training-da
 **Core implementation touchpoints:**
 
 - entry flows: `train_models_flow` (retrain/refresh, sequential per-unit loop) and `onboard_model_flow` (first-time onboarding: `adapt_if_fi` → register → per-unit compat → smoke → train → hindcast → skill-gate → promote → assignment). A *separate* Flow-5 flow, `onboard_stations_flow` / `onboard_from_camelsch`, also runs its own hindcast + skill wiring — it is not the only hindcast/skill producer
+- `onboard_stations_flow` (Plan 115b2) ALSO builds a `reanalysis_adapter` — but ONLY on the production DB-auto-setup path (`basin_store is None` at flow entry), never when a caller injects its own stores (tests/replay) — this is what makes the §2C promotion hold-out gate live for the real deployed flow; a test-injected-stores caller gets the binding write (§2B) but not the gate
 - train/serialize service: `train_station_model` / `train_group_model`
 - artifact store + promotion: `store_and_promote_artifact` (retrain), store-as-TRAINING then `promote_artifact` on passed gate (onboarding) — write semantics in the Persistence map
 - `register_models` / `build_registry_entry` → `register_model` (model-class catalog row, distinct from artifacts)

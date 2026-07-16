@@ -18,6 +18,8 @@ from sapphire_flow.types.historical_forcing import (
 from sapphire_flow.types.ids import HistoricalForcingId, StationId
 
 if TYPE_CHECKING:
+    from datetime import date
+
     from sapphire_flow.types.datetime import UtcDatetime
 
 
@@ -142,6 +144,46 @@ class PgHistoricalForcingStore:
         )
         rows = self._conn.execute(q).all()
         return [row[0] for row in rows]
+
+    def fetch_covered_days(
+        self,
+        station_ids: list[StationId],
+        source: str,
+        parameter: str,
+        spatial_type: SpatialRepresentation,
+        start: UtcDatetime,
+        end: UtcDatetime,
+    ) -> dict[StationId, set[date]]:
+        # Plan 115b2 §3C gap-detection presence check. The plan's LOGICAL key is
+        # (station_id, source, valid_time, parameter, spatial_type, band_id,
+        # member_id). This method DELIBERATELY narrows it to
+        # (station_id, source, parameter, spatial_type): it serves only the
+        # MeteoSwiss BASIN_AVERAGE backfill, whose rows always carry
+        # band_id=None / member_id=None, so those two dimensions are constant
+        # here and add no discrimination. Do NOT reuse this for an
+        # elevation-band or ensemble source without adding band_id/member_id to
+        # the signature and predicate.
+        out: dict[StationId, set[date]] = {sid: set() for sid in station_ids}
+        if not station_ids:
+            return out
+        q = (
+            sa.select(historical_forcing.c.station_id, historical_forcing.c.valid_time)
+            .where(
+                sa.and_(
+                    historical_forcing.c.station_id.in_(station_ids),
+                    historical_forcing.c.source == source,
+                    historical_forcing.c.parameter == parameter,
+                    historical_forcing.c.spatial_type == spatial_type.value,
+                    historical_forcing.c.valid_time >= start,
+                    historical_forcing.c.valid_time < end,
+                )
+            )
+            .distinct()
+        )
+        for row in self._conn.execute(q).all():
+            sid = StationId(row[0])
+            out.setdefault(sid, set()).add(utc_from_row(row[1]).date())
+        return out
 
 
 def _row_to_record(row: sa.engine.row.RowMapping) -> HistoricalForcingRecord:
