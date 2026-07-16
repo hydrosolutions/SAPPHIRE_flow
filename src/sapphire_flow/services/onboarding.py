@@ -56,6 +56,7 @@ if TYPE_CHECKING:
         StationGroupStore,
         StationStore,
     )
+    from sapphire_flow.services.reanalysis_backfill import MeteoSwissBackfillAdapter
     from sapphire_flow.types.basin import Basin
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.domain import QcRuleSet
@@ -216,6 +217,7 @@ def _run_onboarding(
     deployment_config: DeploymentConfig | None = None,
     hindcast_days: int | None = None,
     parameter_store: ParameterStore | None = None,
+    reanalysis_adapter: MeteoSwissBackfillAdapter | None = None,
 ) -> OnboardingResult:
     errors: list[str] = []
     stations_created = 0
@@ -393,6 +395,64 @@ def _run_onboarding(
                 station_id=str(station_id),
                 error=str(exc),
             )
+
+    # Step 4c: MeteoSwiss reanalysis binding (Plan 115b2 §2B) for every
+    # eligible station resolved this run (§3D — valid basin polygon; not
+    # limited to stations with CAMELS forcing, unlike Step 4b), followed by a
+    # per-station backfill-or-hold (§2C). A binding alone gives a station ZERO
+    # rows — the same class of bug this plan exists to end — so Step 8 below
+    # withholds OPERATIONAL promotion from a MeteoSwiss-eligible station until
+    # its backfill has landed at least one row.
+    from sapphire_flow.services.reanalysis_backfill import (
+        eligible_meteoswiss_configs,
+        run_backfill,
+    )
+
+    resolved_stations = [
+        station_by_id[sid] for sid in resolved_station_ids if sid in station_by_id
+    ]
+    meteoswiss_configs = eligible_meteoswiss_configs(resolved_stations, basin_store)
+    meteoswiss_eligible_ids = {c.station_id for c in meteoswiss_configs}
+    meteoswiss_backfilled: set[StationId] = set()
+    for ws in meteoswiss_configs:
+        try:
+            station_store.store_weather_source(ws)
+        except Exception as exc:
+            errors.append(
+                f"Failed to store MeteoSwiss weather source for {ws.station_id}: {exc}"
+            )
+            log.error(
+                "meteoswiss_binding_error",
+                station_id=str(ws.station_id),
+                error=str(exc),
+            )
+
+    # The backfill itself only runs when a reanalysis_adapter is wired in
+    # (production onboarding always supplies one via scripts/onboard.py; unit
+    # tests that pass no adapter get Step 4c's binding write only — matching
+    # how model_store/forcing_source already gate their own optional steps in
+    # this same function).
+    if reanalysis_adapter is not None and meteoswiss_configs:
+        try:
+            backfill_result = run_backfill(
+                adapter=reanalysis_adapter,
+                forcing_store=forcing_store,
+                station_configs=meteoswiss_configs,
+            )
+            log.info(
+                "onboarding.meteoswiss_backfill_complete",
+                stations=backfill_result.stations,
+                rows_written=backfill_result.rows_written,
+                chunks_processed=backfill_result.chunks_processed,
+                chunks_skipped=backfill_result.chunks_skipped,
+            )
+        except Exception as exc:
+            errors.append(f"MeteoSwiss backfill failed: {exc}")
+            log.error("meteoswiss_backfill_error", error=str(exc))
+        for ws in meteoswiss_configs:
+            sources = forcing_store.fetch_available_sources(ws.station_id)
+            if any(s.startswith("meteoswiss_") for s in sources):
+                meteoswiss_backfilled.add(ws.station_id)
 
     # Step 5: Run QC (per station, using the station's target parameter)
     checker = Stage1QualityChecker()
@@ -734,6 +794,24 @@ def _run_onboarding(
         station = station_store.fetch_station(station_id)
         if station is None:
             continue
+        # Plan 115b2 §2C: a MeteoSwiss-eligible station is held out of
+        # promotion until its per-station backfill has landed at least one
+        # row — never promoted with a live binding and zero forcing data.
+        if (
+            reanalysis_adapter is not None
+            and station_id in meteoswiss_eligible_ids
+            and station_id not in meteoswiss_backfilled
+        ):
+            errors.append(
+                f"Cannot mark station {station_id} operational: MeteoSwiss "
+                "reanalysis binding exists but the per-station backfill "
+                "produced zero rows (Plan 115b2 §2C — held out)"
+            )
+            log.warning(
+                "onboarding.station_held_out_meteoswiss_backfill",
+                station_id=str(station_id),
+            )
+            continue
         if station.station_kind == StationKind.WEATHER:
             try:
                 station_store.update_station_status(
@@ -819,6 +897,7 @@ def onboard_from_camelsch(
     parameter_store: ParameterStore | None = None,
     water_level_datums_masl: dict[str, float] | None = None,
     water_level_units: dict[str, str] | None = None,
+    reanalysis_adapter: MeteoSwissBackfillAdapter | None = None,
 ) -> OnboardingResult:
     from sapphire_flow.adapters.camelsch_adapter import (
         load_forcing,
@@ -887,6 +966,7 @@ def onboard_from_camelsch(
         deployment_config=deployment_config,
         hindcast_days=hindcast_days,
         parameter_store=parameter_store,
+        reanalysis_adapter=reanalysis_adapter,
     )
 
     log.info(

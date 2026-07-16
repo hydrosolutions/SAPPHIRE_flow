@@ -2392,6 +2392,22 @@ class HistoricalForcingStore(Protocol):
     def fetch_available_sources(self, station_id: StationId) -> list[str]: ...
         # Returns distinct source strings for the station. Used during training scope
         # determination to verify forcing is available before launching a training run.
+    def fetch_covered_days(
+        self,
+        station_ids: list[StationId],
+        source: str,
+        parameter: str,
+        spatial_type: SpatialRepresentation,
+        start: UtcDatetime,
+        end: UtcDatetime,
+    ) -> dict[StationId, set[date]]: ...
+        # Plan 115b2 §3C — resumable gap-detection presence check for the
+        # chunked MeteoSwiss backfill. For each station_id, the set of
+        # calendar days (UTC, from valid_time) already stored for
+        # (source, parameter, spatial_type) within [start, end) — keyed on
+        # the LOGICAL key, i.e. regardless of version (a day counts as
+        # "covered" if ANY version exists for it). Every requested station_id
+        # is present in the result (empty set if it has no rows).
 ```
 
 Module: `protocols/stores.py`
@@ -2570,6 +2586,60 @@ products are registered (RhiresD + RprelimD), the parameter-keyed
 cannot disambiguate which product the caller wants. Precipitation is served ONLY
 via `fetch_products`; the other four canonical parameters (one product each)
 still resolve on the parameter path unchanged.
+
+**Per-product high-water-mark discovery (Plan 115b2 §3A/§3C).** Generalises
+1D's RhiresD-only `discover_rhiresd_boundary()` (kept as a thin wrapper) to
+every product:
+
+```python
+def discover_product_boundary(self, product: ForcingSource) -> UtcDatetime | None: ...
+    # Latest date any asset of `product` has been published, scanning the
+    # archive/last-monthly/daily STAC asset families. None = no asset yet
+    # (never substituted with "today" — the caller must handle it).
+```
+
+**MeteoSwiss reanalysis binding + chunked backfill (Plan 115b2, `services/reanalysis_backfill.py`).**
+Bind-before-backfill: the adapter only processes configs declaring its own
+`nwp_source`, so a backfill with no binding does nothing and reports success.
+
+```python
+def eligible_meteoswiss_configs(
+    stations: list[StationConfig], basin_store: BasinStore,
+) -> list[StationWeatherSource]: ...
+    # §3D — every station with a VALID basin polygon (Polygon/MultiPolygon);
+    # a station lacking one is logged and excluded, never silently dropped.
+
+def bind_meteoswiss_reanalysis_fleet(
+    station_store: StationStore, basin_store: BasinStore,
+) -> BindingBackfillResult: ...
+    # §2A — one-shot binding backfill for the EXISTING fleet. Idempotent.
+
+def discover_backfill_spans(adapter: MeteoSwissBackfillAdapter) -> list[BackfillSpan]: ...
+    # §3A split rule as half-open [start, end) windows bounded by EACH
+    # product's own high-water mark (never a single shared T): RhiresD over
+    # [1981-01-01, R+1d), RprelimD over [R+1d, hwm(rprelimd)+1d), and one
+    # span each for TabsD/TminD/TmaxD/SrelD over [1981-01-01, hwm(p)+1d).
+    # A product with no published asset yet is OMITTED, not substituted.
+
+def run_backfill(
+    *, adapter: MeteoSwissBackfillAdapter, forcing_store: HistoricalForcingStore,
+    station_configs: list[StationWeatherSource], spans: list[BackfillSpan] | None = None,
+    station_batch_size: int = 50,
+) -> BackfillResult: ...
+    # §3A-§3C — chunked (product, year, station-batch) work units, each
+    # persisted before the next (never holds the full series in memory).
+    # Resumable: fetch_covered_days() gap-detects on the LOGICAL key
+    # (excluding version) BEFORE fetching, so an already-covered chunk is
+    # skipped with ZERO network calls, and a re-run over complete data is a
+    # no-op.
+```
+
+Station onboarding (`services/onboarding.py`) wires this: Step 4c writes the
+MeteoSwiss binding for every eligible station resolved that run (§2B), then —
+when a `reanalysis_adapter` is supplied (production onboarding always
+supplies one; unit tests using fakes are unaffected) — runs the per-station
+backfill and withholds OPERATIONAL promotion (Step 8) from a MeteoSwiss-eligible
+station until its backfill has landed at least one row (§2C).
 
 #### ForeignForecastSource
 

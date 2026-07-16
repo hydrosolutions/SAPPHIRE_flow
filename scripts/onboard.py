@@ -145,6 +145,17 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="Limit hindcast to last N days (default: full period)",
     )
+    parser.add_argument(
+        "--skip-meteoswiss-backfill",
+        action="store_true",
+        default=False,
+        help=(
+            "Write the MeteoSwiss reanalysis binding (Plan 115b2 §2B) without "
+            "running the per-station backfill (§2C) — stations onboarded this "
+            "way are held out of OPERATIONAL promotion until a later backfill "
+            "run lands their forcing rows."
+        ),
+    )
     return parser
 
 
@@ -273,6 +284,27 @@ def main(argv: list[str] | None = None) -> int:
                 forcing_store=forcing_store, mode=deployment_config.reanalysis_source
             )
 
+            # Plan 115b2 §2B/§2C: the MeteoSwiss reanalysis binding + a
+            # per-station backfill-or-hold. Wired here (the production
+            # entrypoint) rather than defaulted inside onboarding.py, so unit
+            # tests using fakes are unaffected. ``--skip-meteoswiss-backfill``
+            # writes the binding only (§2B) without the network-heavy §2C
+            # backfill — every station onboarded that way is held out of
+            # OPERATIONAL promotion until a subsequent backfill run.
+            reanalysis_adapter = None
+            if not args.skip_meteoswiss_backfill:
+                from sapphire_flow.flows.ingest_weather_history import (
+                    _load_reanalysis_stac_config,  # pyright: ignore[reportPrivateUsage]
+                    build_production_reanalysis_adapter,
+                )
+
+                reanalysis_adapter = build_production_reanalysis_adapter(
+                    config=_load_reanalysis_stac_config(),
+                    station_store=station_store,
+                    basin_store=basin_store,
+                    clock=clock,
+                )
+
             result = onboard_from_camelsch(
                 data_dir=data_dir,
                 basin_store=basin_store,
@@ -294,6 +326,7 @@ def main(argv: list[str] | None = None) -> int:
                 forcing_source=forcing_source,
                 deployment_config=deployment_config,
                 hindcast_days=args.hindcast_days,
+                reanalysis_adapter=reanalysis_adapter,
             )
     except Exception as exc:
         log.error("onboarding_failed", error=str(exc))

@@ -5,6 +5,7 @@ from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
+from shapely.geometry import box
 
 from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.onboarding import _run_onboarding
@@ -21,6 +22,7 @@ from sapphire_flow.types.enums import (
     WeatherSourceRole,
     WeatherSourceStatus,
 )
+from sapphire_flow.types.forcing_sources import ForcingSource
 from sapphire_flow.types.ids import (
     CLIMATOLOGY_FALLBACK_MODEL_ID,
     BasinId,
@@ -196,6 +198,7 @@ def _run(
     end_utc: UtcDatetime = _END,
     forcing_source: object = None,
     deployment_config: object = None,
+    reanalysis_adapter: object = None,
 ):
     return _run_onboarding(
         stations=stations,
@@ -219,6 +222,7 @@ def _run(
         skill_store=s.skill,
         forcing_source=forcing_source,  # type: ignore[arg-type]
         deployment_config=deployment_config,  # type: ignore[arg-type]
+        reanalysis_adapter=reanalysis_adapter,  # type: ignore[arg-type]
     )
 
 
@@ -941,6 +945,178 @@ class TestIconWeatherSourceBinding:
             obs_by_station={sid: _make_raw_obs(sid, 20)},
             forcing_by_station={sid: _make_forcing(sid, 20)},
         )
+
+
+def _make_geo_basin(code: str) -> Basin:
+    """A basin with a real geometry (unlike ``_make_basin``, which is
+    ``geometry=None`` — the shape most existing fixtures use, since those
+    tests never touch basin-average extraction)."""
+    return Basin(
+        id=BasinId(uuid4()),
+        code=code,
+        name=f"Basin {code}",
+        geometry=box(6.0, 46.0, 10.0, 48.0),
+        area_km2=100.0,
+        attributes=None,
+        band_geometries=None,
+        created_at=_EPOCH,
+        network="bafu",
+    )
+
+
+class _FakeMeteoswissBackfillAdapter:
+    """Test double for ``MeteoSwissBackfillAdapter`` (Plan 115b2 §2C) — a
+    single product publishes a tiny high-water mark just past the backfill
+    start, so ``run_backfill`` does exactly one (product, year, batch) chunk;
+    every other product has no published asset (omitted from spans)."""
+
+    def __init__(self, *, rows: list | None = None) -> None:
+        self._rows = rows or []
+        self.fetch_calls = 0
+
+    def discover_product_boundary(self, product: ForcingSource) -> UtcDatetime | None:
+        if product is ForcingSource.METEOSWISS_TABSD:
+            return ensure_utc(datetime(1981, 1, 2, tzinfo=UTC))
+        return None
+
+    def fetch_products(self, products, station_configs, start, end, parameters):  # type: ignore[no-untyped-def]
+        self.fetch_calls += 1
+        return list(self._rows)
+
+
+class TestMeteoswissBindingAndBackfillOrHold:
+    """Plan 115b2 §2B/§2C — the MeteoSwiss reanalysis binding is written for
+    every eligible station (valid basin polygon), and Step 8 withholds
+    OPERATIONAL promotion from a MeteoSwiss-eligible station until its
+    per-station backfill has landed at least one row."""
+
+    def test_binding_written_and_station_promoted_when_backfill_lands_rows(
+        self,
+    ) -> None:
+        sid = StationId(uuid4())
+        basin = _make_geo_basin("MSW001")
+        station = make_station_config(
+            station_id=sid,
+            code="MSW001",
+            basin_id=basin.id,
+            station_kind=StationKind.WEATHER,
+            station_status=StationStatus.ONBOARDING,
+        )
+        s = _Stores()
+        row = make_raw_historical_forcing(
+            station_id=sid,
+            source=ForcingSource.METEOSWISS_TABSD.value,
+            parameter="temperature",
+            valid_time=datetime(1981, 1, 1, tzinfo=UTC),
+        )
+        adapter = _FakeMeteoswissBackfillAdapter(rows=[row])
+
+        result = _run(
+            s,
+            stations=[station],
+            basins=[basin],
+            obs_by_station={sid: _make_raw_obs(sid, 20)},
+            forcing_by_station={},
+            reanalysis_adapter=adapter,
+        )
+
+        bindings = {ws.nwp_source: ws for ws in s.station.fetch_weather_sources(sid)}
+        assert "meteoswiss_open_data_reanalysis" in bindings
+        assert (
+            bindings["meteoswiss_open_data_reanalysis"].extraction_type
+            is SpatialRepresentation.BASIN_AVERAGE
+        )
+        assert result.stations_marked_operational == 1
+        assert result.errors == []
+        assert s.station.fetch_station(sid).station_status is StationStatus.OPERATIONAL
+
+    def test_station_held_out_when_backfill_produces_zero_rows(self) -> None:
+        # Soundness: fails against a Step 8 that promotes on the binding
+        # alone (today's bug class — a live binding with zero forcing rows).
+        sid = StationId(uuid4())
+        basin = _make_geo_basin("MSW002")
+        station = make_station_config(
+            station_id=sid,
+            code="MSW002",
+            basin_id=basin.id,
+            station_kind=StationKind.WEATHER,
+            station_status=StationStatus.ONBOARDING,
+        )
+        s = _Stores()
+        adapter = _FakeMeteoswissBackfillAdapter(rows=[])  # backfill yields nothing
+
+        result = _run(
+            s,
+            stations=[station],
+            basins=[basin],
+            obs_by_station={sid: _make_raw_obs(sid, 20)},
+            forcing_by_station={},
+            reanalysis_adapter=adapter,
+        )
+
+        bindings = {ws.nwp_source: ws for ws in s.station.fetch_weather_sources(sid)}
+        assert "meteoswiss_open_data_reanalysis" in bindings  # §2B still ran
+        assert result.stations_marked_operational == 0
+        assert any("MeteoSwiss" in e and str(sid) in e for e in result.errors)
+        assert s.station.fetch_station(sid).station_status is StationStatus.ONBOARDING
+
+    def test_no_gate_when_reanalysis_adapter_not_supplied(self) -> None:
+        # DI default (no adapter wired, e.g. every OTHER existing test in this
+        # file): the binding write still happens for an eligible station, but
+        # the hold-out gate is inactive — matches how model_store/
+        # forcing_source already gate their own optional steps.
+        sid = StationId(uuid4())
+        basin = _make_geo_basin("MSW003")
+        station = make_station_config(
+            station_id=sid,
+            code="MSW003",
+            basin_id=basin.id,
+            station_kind=StationKind.WEATHER,
+            station_status=StationStatus.ONBOARDING,
+        )
+        s = _Stores()
+
+        result = _run(
+            s,
+            stations=[station],
+            basins=[basin],
+            obs_by_station={sid: _make_raw_obs(sid, 20)},
+            forcing_by_station={},
+        )
+
+        bindings = {ws.nwp_source: ws for ws in s.station.fetch_weather_sources(sid)}
+        assert "meteoswiss_open_data_reanalysis" in bindings
+        assert result.stations_marked_operational == 1
+        assert result.errors == []
+
+    def test_ineligible_station_no_geometry_gets_no_binding(self) -> None:
+        sid = StationId(uuid4())
+        basin = _make_basin("MSW004")  # geometry=None
+        station = make_station_config(
+            station_id=sid,
+            code="MSW004",
+            basin_id=basin.id,
+            station_kind=StationKind.WEATHER,
+            station_status=StationStatus.ONBOARDING,
+        )
+        s = _Stores()
+        adapter = _FakeMeteoswissBackfillAdapter(rows=[])
+
+        result = _run(
+            s,
+            stations=[station],
+            basins=[basin],
+            obs_by_station={sid: _make_raw_obs(sid, 20)},
+            forcing_by_station={},
+            reanalysis_adapter=adapter,
+        )
+
+        bindings = {ws.nwp_source: ws for ws in s.station.fetch_weather_sources(sid)}
+        assert "meteoswiss_open_data_reanalysis" not in bindings
+        # Not MeteoSwiss-eligible, so the §2C gate does not apply — WEATHER
+        # stations promote unconditionally after QC.
+        assert result.stations_marked_operational == 1
+        assert adapter.fetch_calls == 0  # never fetched for an ineligible station
 
         sources = s.station.fetch_weather_sources(sid)
         assert all(ws.nwp_source != "icon_ch2_eps" for ws in sources)

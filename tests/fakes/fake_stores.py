@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import replace
+from datetime import date  # noqa: TC003
 from pathlib import Path
 from typing import Literal
 from uuid import UUID, uuid4
@@ -36,6 +37,7 @@ from sapphire_flow.types.enums import (
     QcStatus,
     SkillFreshness,
     SkillSource,
+    SpatialRepresentation,
     StationKind,
     StationOwnership,
     StationStatus,
@@ -1244,6 +1246,28 @@ class FakeHistoricalForcingStore:
 
     def fetch_available_sources(self, station_id: StationId) -> list[str]:
         return sorted({r.source for r in self._records if r.station_id == station_id})
+
+    def fetch_covered_days(
+        self,
+        station_ids: list[StationId],
+        source: str,
+        parameter: str,
+        spatial_type: SpatialRepresentation,
+        start: UtcDatetime,
+        end: UtcDatetime,
+    ) -> dict[StationId, set[date]]:
+        out: dict[StationId, set[date]] = {sid: set() for sid in station_ids}
+        station_id_set = set(station_ids)
+        for r in self._records:
+            if (
+                r.station_id in station_id_set
+                and r.source == source
+                and r.parameter == parameter
+                and r.spatial_type == spatial_type
+                and start <= r.valid_time < end
+            ):
+                out[r.station_id].add(r.valid_time.date())
+        return out
 
 
 class FakeClimBaselineStore:

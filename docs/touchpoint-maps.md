@@ -115,6 +115,14 @@ gates.
   `ConfigurationError`) and `fetch_reanalysis_bindings` (0..n REANALYSIS bindings, no
   `status` filter); `fetch_weather_sources` (all bindings, unfiltered by role) is
   display-only, not for routing
+- MeteoSwiss REANALYSIS bindings (Plan 115b2) are written by THREE paths that must
+  stay in agreement: `bind_meteoswiss_reanalysis_fleet` (one-shot, existing fleet —
+  `scripts/backfill_meteoswiss_history.py`), station onboarding's Step 4c
+  (`services/onboarding.py`, new stations), and — for CAMELS-CH weather rows —
+  Step 4b's unrelated `camels-ch`/POINT binding. Eligibility for the MeteoSwiss
+  binding is `eligible_meteoswiss_configs` (§3D — valid basin polygon only); a
+  binding write with no matching backfill rows leaves a station forcing-less (the
+  bug class Plan 115b2 exists to end) — see the onboarding Step 8 hold-out gate
 - preprocessing: `resample_to_time_step` (precip SUM, temp/discharge MEAN), NWP
   hourly→daily + issue-time filter + horizon cap, lookback wide-pivot, `ensure_utc`
 - the cycle assembles a **superset** (`build_superset_requirements`); each model
