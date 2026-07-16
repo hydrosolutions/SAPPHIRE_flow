@@ -27,7 +27,7 @@ import re
 import tempfile
 import uuid
 from collections import Counter
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -1406,6 +1406,171 @@ class TestDiscoverProductBoundary:
 
         adapter = _make_adapter(httpx.MockTransport(handler), {sid: _make_basin(sid)})
         assert adapter.discover_product_boundary(ForcingSource.METEOSWISS_TMIND) is None
+
+
+# ---------------------------------------------------------------------------
+# Plan 115b3 §4C — full availability RANGE discovery (earliest start, latest
+# end), generalising §3A/§3C's high-water-mark-only scan. Needed to compute
+# the RhiresD/RprelimD overlap window for the live-tail residual measurement.
+# ---------------------------------------------------------------------------
+
+
+class TestDiscoverProductAvailabilityRange:
+    def test_returns_earliest_start_and_latest_end_across_assets(self) -> None:
+        # Soundness: fails RED against a range helper that (like the pre-115b3
+        # boundary scan) only tracks the max END — it would report start ==
+        # end == the 2025 span's start, never noticing the earlier 2024 asset.
+        sid = StationId(uuid.uuid4())
+        assets = dict(_rhiresd_archive_asset(2024, "https://dummy/a2024.nc"))
+        assets.update(_rhiresd_archive_asset(2025, "https://dummy/a2025.nc"))
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            if "/items?limit=100" in url:
+                return httpx.Response(
+                    200, json={"features": [_archive_item(assets)], "links": []}
+                )
+            raise AssertionError(f"unexpected request: {url}")
+
+        adapter = _make_adapter(httpx.MockTransport(handler), {sid: _make_basin(sid)})
+        result = adapter.discover_product_availability_range(
+            ForcingSource.METEOSWISS_RHIRESD
+        )
+        assert result == (date(2024, 1, 1), date(2025, 12, 31))
+
+    def test_follows_pagination(self) -> None:
+        sid = StationId(uuid.uuid4())
+        page2_url = "https://dummy/stac/items-page2"
+        page1_assets = _rhiresd_archive_asset(2024, "https://dummy/a2024.nc")
+        page2_assets = _rhiresd_archive_asset(2026, "https://dummy/a2026.nc")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            if url == page2_url:
+                return httpx.Response(
+                    200,
+                    json={"features": [_archive_item(page2_assets)], "links": []},
+                )
+            if "/items?limit=100" in url:
+                return httpx.Response(
+                    200,
+                    json={
+                        "features": [_archive_item(page1_assets)],
+                        "links": [{"rel": "next", "href": page2_url}],
+                    },
+                )
+            raise AssertionError(f"unexpected request: {url}")
+
+        adapter = _make_adapter(httpx.MockTransport(handler), {sid: _make_basin(sid)})
+        result = adapter.discover_product_availability_range(
+            ForcingSource.METEOSWISS_RHIRESD
+        )
+        assert result == (date(2024, 1, 1), date(2026, 12, 31))
+
+    def test_ignores_distractor_product(self) -> None:
+        sid = StationId(uuid.uuid4())
+        assets = dict(_rhiresd_archive_asset(2024, "https://dummy/a2024.nc"))
+        assets.update(
+            _archive_asset("rprelimd", "ch01h", 2026, "https://dummy/p2026.nc")
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            if "/items?limit=100" in url:
+                return httpx.Response(
+                    200, json={"features": [_archive_item(assets)], "links": []}
+                )
+            raise AssertionError(f"unexpected request: {url}")
+
+        adapter = _make_adapter(httpx.MockTransport(handler), {sid: _make_basin(sid)})
+        assert adapter.discover_product_availability_range(
+            ForcingSource.METEOSWISS_RHIRESD
+        ) == (date(2024, 1, 1), date(2024, 12, 31))
+
+    def test_empty_collection_returns_none(self) -> None:
+        sid = StationId(uuid.uuid4())
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"features": [], "links": []})
+
+        adapter = _make_adapter(httpx.MockTransport(handler), {sid: _make_basin(sid)})
+        assert (
+            adapter.discover_product_availability_range(
+                ForcingSource.METEOSWISS_RHIRESD
+            )
+            is None
+        )
+
+    def test_daily_item_product_derives_span_from_properties_datetime(self) -> None:
+        # RprelimD is daily-only (Plan 115b1 §1B) — its per-day STAC items
+        # embed a SINGLE date in the filename (e.g.
+        # "RprelimD_ch.swiss.lv95_2026-04-10"), not an archive-style
+        # start_end span. Soundness: fails RED against a scan that only
+        # recognises the archive span regex — it would find zero spans and
+        # report None, so 4C's overlap-window discovery could never see
+        # RprelimD's daily fixture shape (independent Codex review of Plan
+        # 115b3).
+        sid = StationId(uuid.uuid4())
+
+        def _feature(day: str) -> dict[str, object]:
+            return {
+                "id": f"{day.replace('-', '')}-ch",
+                "properties": {"datetime": f"{day}T00:00:00Z"},
+                "assets": {
+                    f"RprelimD_ch.swiss.lv95_{day}": {
+                        "href": f"https://dummy/assets/rprelimd_{day}.swiss.lv95.nc",
+                        "type": "application/x-netcdf",
+                    }
+                },
+            }
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            if "/items?limit=100" in url:
+                return httpx.Response(
+                    200,
+                    json={
+                        "features": [_feature("2026-04-10"), _feature("2026-04-25")],
+                        "links": [],
+                    },
+                )
+            raise AssertionError(f"unexpected request: {url}")
+
+        adapter = _make_adapter(httpx.MockTransport(handler), {sid: _make_basin(sid)})
+        assert adapter.discover_product_availability_range(
+            ForcingSource.METEOSWISS_RPRELIMD
+        ) == (date(2026, 4, 10), date(2026, 4, 25))
+
+    def test_daily_item_product_falls_back_to_id_when_datetime_missing(self) -> None:
+        # Same daily-item shape, but ``properties.datetime`` is absent — the
+        # fallback must parse the date out of the item id instead of
+        # returning None for the whole item.
+        sid = StationId(uuid.uuid4())
+
+        def _feature(day: str) -> dict[str, object]:
+            return {
+                "id": f"{day.replace('-', '')}-ch",
+                "properties": {},
+                "assets": {
+                    f"RprelimD_ch.swiss.lv95_{day}": {
+                        "href": f"https://dummy/assets/rprelimd_{day}.swiss.lv95.nc",
+                        "type": "application/x-netcdf",
+                    }
+                },
+            }
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            if "/items?limit=100" in url:
+                return httpx.Response(
+                    200, json={"features": [_feature("2026-04-10")], "links": []}
+                )
+            raise AssertionError(f"unexpected request: {url}")
+
+        adapter = _make_adapter(httpx.MockTransport(handler), {sid: _make_basin(sid)})
+        assert adapter.discover_product_availability_range(
+            ForcingSource.METEOSWISS_RPRELIMD
+        ) == (date(2026, 4, 10), date(2026, 4, 10))
 
 
 # ---------------------------------------------------------------------------
