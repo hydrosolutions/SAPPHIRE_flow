@@ -130,9 +130,16 @@ class StoreBackedGatewayPolygonResolver:
     Recap v1 is basin-average-only (``_validate_resolved_ref``): a station
     with zero or only ``ELEVATION_BAND`` bindings resolves to ``None``. When a
     station carries more than one ``BASIN_AVERAGE`` row (not expected — the
-    resolver is 1:1, see ``_group_by_hru``), the first is used and a warning
-    is logged rather than raising, since the ambiguity is a data-quality
-    concern for the Plan 120 importer, not a fetch-time abort.
+    resolver is 1:1, see ``_group_by_hru``), the first (by ``created_at``,
+    the store orders deterministically) is used and a warning is logged
+    rather than raising, since the ambiguity is a data-quality concern for
+    the Plan 120 importer, not a fetch-time abort. A DB-level partial UNIQUE
+    index on ``(station_id) WHERE spatial_type = 'basin_average'``
+    (``db/metadata.py``, migration ``0032``) is the actual invariant
+    enforcement (Codex review Finding 3) — this warning is defense-in-depth
+    only. Plan 120's importer MUST upsert-REPLACE the basin_average binding
+    for a station (never accumulate additional rows) to satisfy that
+    constraint.
     """
 
     def __init__(self, store: GatewayPolygonBindingStoreLike) -> None:
@@ -313,6 +320,11 @@ def _map_recap_error(exc: BaseException) -> AdapterError:
 
 _IFS_CADENCE_HOURS = 6.0
 _PROBE_VARIABLE = "tp"
+# Plan 082 Task 2B/2D (Codex review Finding 1): default fallback bound when
+# `resolve_latest_cycle` is wired into `fetch_forecasts` -- walk back up to 3
+# IFS cycles (3 * 6h) from the nominal cycle before giving up and degrading
+# to runoff-only (RecapDataUnavailableError, Task 2G WARNING path).
+DEFAULT_MAX_CYCLE_AGE_HOURS = 18.0
 
 
 def _floor_to_cadence(moment: UtcDatetime, cadence_hours: float) -> UtcDatetime:
@@ -640,9 +652,42 @@ class RecapGatewayForecastAdapter:
         *,
         client: RecapClientLike,
         resolver: GatewayPolygonResolver,
+        max_cycle_age_hours: float = DEFAULT_MAX_CYCLE_AGE_HOURS,
     ) -> None:
         self._client = client
         self._resolver = resolver
+        self._max_cycle_age_hours = max_cycle_age_hours
+
+    def _resolve_effective_cycle(
+        self,
+        resolved: list[GatewayPolygonRef],
+        nominal_cycle_time: UtcDatetime,
+    ) -> UtcDatetime:
+        """Resolve the newest AVAILABLE IFS cycle once per batch (Task 2B).
+
+        IFS publication cadence is global across HRUs, so ONE already-resolved
+        in-scope HRU is used as the probe -- never one probe per station.
+        Falls back to an older cycle within ``max_cycle_age_hours`` when the
+        nominal cycle is not yet published; raises
+        ``RecapDataUnavailableError`` (the existing Task 2G WARNING /
+        degrade-to-runoff-only signal) when every candidate within that
+        window is missing, so the caller degrades exactly as it does today
+        for an outright Gateway ``source_data_missing`` response.
+        """
+        probe_hru = resolved[0].hru_name
+        resolved_cycle = resolve_latest_cycle(
+            self._client,
+            hru_code=probe_hru,
+            now=nominal_cycle_time,
+            max_age_hours=self._max_cycle_age_hours,
+        )
+        if resolved_cycle is None:
+            raise RecapDataUnavailableError(
+                f"no IFS cycle published within {self._max_cycle_age_hours}h "
+                f"of {nominal_cycle_time.isoformat()} (probed HRU {probe_hru})",
+                code="source_data_missing",
+            )
+        return resolved_cycle
 
     def fetch_forecasts(
         self,
@@ -658,8 +703,14 @@ class RecapGatewayForecastAdapter:
             return {}
         resolved, skipped = _resolve_all(self._resolver, in_scope)
         _require_some_resolved(in_scope, resolved, skipped)
-
+        # `_group_by_hru` (a config-error check, no Gateway call) MUST run
+        # before the cycle-resolution probe: a duplicate-polygon config error
+        # must fail loud with zero Gateway calls made, matching the existing
+        # `TestDuplicatePolygonResolution` contract.
         by_hru = _group_by_hru(resolved)
+
+        effective_cycle_time = self._resolve_effective_cycle(resolved, cycle_time)
+
         station_ref = {ref.station_id: ref for ref in resolved}
         acc: dict[StationId, list[dict[str, object]]] = {}
         cycle_source_run: object | None = None
@@ -675,7 +726,7 @@ class RecapGatewayForecastAdapter:
                     variable=variable,
                     ifs_name=ifs_name,
                     hru_name=hru_name,
-                    cycle_time=cycle_time,
+                    cycle_time=effective_cycle_time,
                     ifs_type="fc",
                     member=None,
                     member_id=_FC_MEMBER_ID,
@@ -688,14 +739,14 @@ class RecapGatewayForecastAdapter:
                         variable=variable,
                         ifs_name=ifs_name,
                         hru_name=hru_name,
-                        cycle_time=cycle_time,
+                        cycle_time=effective_cycle_time,
                         ifs_type="pf",
                         member=str(member),
                         member_id=_pf_member_id(member),
                         prior=cycle_source_run,
                     )
 
-        cycle = _normalize_source_run_to_utc(cycle_source_run) or cycle_time
+        cycle = _normalize_source_run_to_utc(cycle_source_run) or effective_cycle_time
         return {
             station_id: _build_forecast_result(
                 station_ref[station_id], rows, cycle, self.NWP_SOURCE

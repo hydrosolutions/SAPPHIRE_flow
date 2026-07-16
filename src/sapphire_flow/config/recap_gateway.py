@@ -10,11 +10,11 @@ file, falling back to the ``RECAP_API_KEY`` env var for local dev only.
 
 from __future__ import annotations
 
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from sapphire_flow.adapters.recap_gateway import DEFAULT_MAX_CYCLE_AGE_HOURS
 from sapphire_flow.exceptions import ConfigurationError
 
 if TYPE_CHECKING:
@@ -49,6 +49,11 @@ class RecapGatewayConfig:
     # http.py:167,192) — retries are a Prefect task-level concern
     # (@task(retries=...)), this field documents the configured count.
     max_retries: int
+    # Plan 082 Task 2B/2D (Codex review Finding 1): fallback bound for
+    # `resolve_latest_cycle` when the nominal IFS cycle is not yet published.
+    # Optional in TOML (defaults to `DEFAULT_MAX_CYCLE_AGE_HOURS`) so existing
+    # `[adapters.recap_gateway]` sections keep working unchanged.
+    max_cycle_age_hours: float = DEFAULT_MAX_CYCLE_AGE_HOURS
 
 
 def load_recap_api_key(*, secret_path: Path | None = None) -> str:
@@ -89,9 +94,26 @@ def build_recap_client_config(
 
 
 def load_recap_gateway_config(config_path: Path) -> RecapGatewayConfig:
-    """Read ``[adapters.recap_gateway]`` from a SAPPHIRE_CONFIG TOML file."""
-    with config_path.open("rb") as f:
-        data: dict[str, Any] = tomllib.load(f)
+    """Read ``[adapters.recap_gateway]`` from the MERGED SAPPHIRE_CONFIG TOML.
+
+    Uses the same ``load_merged_toml`` + ``SAPPHIRE_CONFIG_OVERLAY`` resolution
+    as the Flow-1 forecast selector (``run_forecast_cycle.py``'s
+    ``_load_weather_forecast_adapter_config``/``_build_recap_forecast_adapter``)
+    — Codex review Finding 4. A Nepal overlay-driven deployment supplies
+    ``type = "recap_gateway"`` and this whole section from an overlay layered
+    on the base (Swiss) config; reading the base file alone would raise
+    "missing section" even though the selector picked Recap. No-overlay
+    behavior (``SAPPHIRE_CONFIG_OVERLAY`` unset) is unchanged.
+    """
+    from sapphire_flow.config._overlay import (
+        _resolve_overlay_paths,  # pyright: ignore[reportPrivateUsage]
+        load_merged_toml,
+    )
+
+    data = cast(
+        "dict[str, Any]",
+        load_merged_toml(config_path, _resolve_overlay_paths()),
+    )
 
     adapters = data.get("adapters", {})
     section = cast(
@@ -118,6 +140,11 @@ def load_recap_gateway_config(config_path: Path) -> RecapGatewayConfig:
             f"[adapters.recap_gateway] missing required field(s): {', '.join(missing)}"
         )
 
+    max_cycle_age_hours = cast(
+        "float",
+        section.get("max_cycle_age_hours", DEFAULT_MAX_CYCLE_AGE_HOURS),
+    )
+
     return RecapGatewayConfig(
         base_url=cast("str", section["base_url"]),
         timeout_s=cast("int", section["timeout_s"]),
@@ -125,4 +152,5 @@ def load_recap_gateway_config(config_path: Path) -> RecapGatewayConfig:
         staleness_threshold_hours=cast("float", section["staleness_threshold_hours"]),
         hru_metadata_source=cast("str", section["hru_metadata_source"]),
         max_retries=cast("int", section["max_retries"]),
+        max_cycle_age_hours=max_cycle_age_hours,
     )

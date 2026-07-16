@@ -19,11 +19,16 @@ class RecapGatewayPolygonStore:
     def fetch_bindings_for_station(
         self, station_id: StationId
     ) -> list[GatewayPolygonBindingRow]:
+        # Deterministic order (Codex review Finding 3, defense-in-depth
+        # alongside the DB partial-unique constraint on basin_average rows
+        # below): a lingering stale row must never win an arbitrary fetch
+        # order. `StoreBackedGatewayPolygonResolver` still logs a warning if
+        # it ever sees >1 basin_average row for one station.
         rows = (
             self._conn.execute(
-                sa.select(recap_gateway_polygon_bindings).where(
-                    recap_gateway_polygon_bindings.c.station_id == station_id
-                )
+                sa.select(recap_gateway_polygon_bindings)
+                .where(recap_gateway_polygon_bindings.c.station_id == station_id)
+                .order_by(recap_gateway_polygon_bindings.c.created_at)
             )
             .mappings()
             .all()

@@ -24,6 +24,27 @@ depends_on:
   REUSES `NWP_DELIVERY` with a reason field; selector reuses the existing config `type` key.
   Fixed dependency ordering (git-pin split), extended watchdog to Flow-6, made gates
   test-selector style, tightened secret/leakage/name gates.
+- **2026-07-16 post-implementation Codex diff-review fixer round (1 blocker + 3 majors, all
+  verified against the committed code and resolved):** **BLOCKER (Task 2B/2D)** —
+  `resolve_latest_cycle` was built and unit-tested but never called from `fetch_forecasts`;
+  wired in as a once-per-batch probe (one resolved in-scope HRU) BEFORE the main fetch loop,
+  falling back to an older IFS cycle within a new `RecapGatewayConfig.max_cycle_age_hours`
+  (default 18h / 3 cycles) and raising the existing `RecapDataUnavailableError` degrade signal
+  only on exhaustion. **MAJOR (Task 2G)** — the watchdog always derived its staleness threshold
+  from the MeteoSwiss `expected_delivery_offset_hours * 6h` heuristic, silently ignoring
+  `RecapGatewayConfig.staleness_threshold_hours` for a Recap deployment; `_check_nwp_grid_staleness`
+  now accepts a `staleness_max_age_hours` override the flow populates from the Recap config when
+  the active source is `ifs_ecmwf`. **MAJOR (Task 2D)** — the §5a table's PK allowed multiple
+  `basin_average` rows per station, so a lingering stale binding could be picked arbitrarily by
+  `GatewayPolygonResolver`; added a partial UNIQUE index (`(station_id) WHERE spatial_type =
+  'basin_average'`, both in `db/metadata.py` and migration `0032`, edited in place) plus a
+  deterministic `ORDER BY created_at` in the store fetch as defense-in-depth. Plan 120's importer
+  must upsert-REPLACE the basin_average binding, never accumulate. **MAJOR (Task 2A/2C)** —
+  `load_recap_gateway_config` read only the base TOML file, but the Flow-1 selector dispatches on
+  the MERGED overlay config; a Nepal `SAPPHIRE_CONFIG_OVERLAY` deployment supplying
+  `type = "recap_gateway"` from an overlay would pick Recap and then fail to load its own config.
+  `load_recap_gateway_config` now reads the same `load_merged_toml` + `SAPPHIRE_CONFIG_OVERLAY`
+  view the selector uses.
 
 ## Status
 

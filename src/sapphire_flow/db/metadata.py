@@ -222,6 +222,21 @@ recap_gateway_polygon_bindings = sa.Table(
     sa.PrimaryKeyConstraint("station_id", "gateway_hru_name", "name"),
 )
 
+# At most one basin_average binding per station (Codex review Finding 3):
+# `GatewayPolygonResolver.resolve` picks `basin_average[0]` from
+# `fetch_bindings_for_station` — the PK alone (station_id, gateway_hru_name,
+# name) permits multiple basin_average rows per station (e.g. a lingering
+# `g_5501_old` alongside `g_5501`), which would make resolution silently
+# arbitrary/stale. Invalid states unrepresentable: Plan 120's §5a importer
+# must upsert-REPLACE the basin_average binding for a station (delete-then-
+# insert or an explicit replace), never accumulate additional rows.
+sa.Index(
+    "uq_recap_gateway_polygon_bindings_one_basin_average_per_station",
+    recap_gateway_polygon_bindings.c.station_id,
+    unique=True,
+    postgresql_where=recap_gateway_polygon_bindings.c.spatial_type == "basin_average",
+)
+
 station_groups = sa.Table(
     "station_groups",
     metadata,

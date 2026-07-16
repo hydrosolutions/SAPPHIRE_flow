@@ -489,7 +489,10 @@ class TestDataFrameParsing:
             _CYCLE,
         )
         tp_calls = [c for c in ecmwf.calls if c["variable"] == "tp"]
-        assert len(tp_calls) == 51
+        # 51 real (1 fc + 50 pf) + 1 resolve_latest_cycle probe call (Codex
+        # review Finding 1) -- the probe shares the exact fc/tp call shape,
+        # so it is indistinguishable from a real call by kwargs alone.
+        assert len(tp_calls) == 52
         assert set(result.keys()) == {_SID_A, _SID_B}
         # Each station must receive ITS polygon's values, not the other's — a
         # swapped/mis-mapped demux (station A gets B's column) would still pass
@@ -711,7 +714,9 @@ class TestIfsEnsembleAssembly:
         tp_calls = [c for c in ecmwf.calls if c["variable"] == "tp"]
         fc_calls = [c for c in tp_calls if c["ifs_type"] == "fc"]
         pf_calls = [c for c in tp_calls if c["ifs_type"] == "pf"]
-        assert len(fc_calls) == 1
+        # 1 real fc/tp call + 1 resolve_latest_cycle probe call (Codex review
+        # Finding 1) -- the probe shares the exact fc/tp call shape.
+        assert len(fc_calls) == 2
         assert len(pf_calls) == 50
 
     def test_fc_sends_no_member(self) -> None:
@@ -736,6 +741,93 @@ class TestIfsEnsembleAssembly:
         assert isinstance(forecast, BasinAverageForecast)
         member_ids = set(forecast.values["member_id"].to_list())
         assert member_ids == set(range(0, 51))
+
+
+class _FallbackFakeClientError(Exception):
+    def __init__(self, message: str, **attrs: object) -> None:
+        super().__init__(message)
+        for key, value in attrs.items():
+            setattr(self, key, value)
+
+
+class _CycleFallbackEcmwf:
+    """Raises ``source_data_missing`` for configured ``run_hour``s, succeeds
+    otherwise. Both the ``resolve_latest_cycle`` PROBE call (``ifs_type="fc"``,
+    ``variable="tp"``) and the real per-variable/per-member data calls go
+    through this SAME ``ifs_forecast`` method, matching the real Gateway API
+    (Codex review Finding 1)."""
+
+    def __init__(self, *, missing_hours: set[int]) -> None:
+        self.calls: list[dict[str, object]] = []
+        self._missing_hours = missing_hours
+
+    def ifs_forecast(self, **kwargs: object) -> object:
+        self.calls.append(dict(kwargs))
+        run_hour = int(kwargs["run_hour"])  # type: ignore[arg-type]
+        if run_hour in self._missing_hours:
+            raise _FallbackFakeClientError(
+                "not published yet", code="source_data_missing"
+            )
+        return _wide_df(
+            [_POLY_A],
+            value=1.0,
+            with_provenance=True,
+            source="ifs",
+            source_run=pd.Timestamp(f"2026-01-01T{run_hour:02d}:00:00Z"),
+        )
+
+
+class TestCycleFallbackWiring:
+    """Codex review Finding 1 (blocker): fetch_forecasts must resolve the
+    newest AVAILABLE IFS cycle via resolve_latest_cycle instead of blindly
+    passing the nominal cycle_time through to every Gateway call, degrading
+    to runoff-only whenever the nominal cycle happens to be unpublished."""
+
+    def test_falls_back_to_older_cycle_when_nominal_unpublished(self) -> None:
+        nominal_cycle = ensure_utc(datetime(2026, 1, 1, 12, tzinfo=UTC))
+        ecmwf = _CycleFallbackEcmwf(missing_hours={12})
+        adapter = _forecast_adapter(
+            ecmwf, _MapResolver({_SID_A: _ref(_SID_A, _POLY_A)})
+        )
+
+        result = adapter.fetch_forecasts(
+            [_ws(_SID_A, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST)],
+            nominal_cycle,
+        )
+
+        assert _SID_A in result
+        forecast = result[_SID_A]
+        assert isinstance(forecast, BasinAverageForecast)
+        # 12Z was unpublished; the adapter must fall back to 06Z (the next
+        # older 6h-cadence candidate) and fetch the FULL forecast at that
+        # resolved cycle -- not degrade to an empty/no-op result.
+        assert forecast.cycle_time == ensure_utc(datetime(2026, 1, 1, 6, tzinfo=UTC))
+        assert not forecast.values.is_empty()
+        pf_run_hours = {c["run_hour"] for c in ecmwf.calls if c.get("ifs_type") == "pf"}
+        assert pf_run_hours == {6}
+
+    def test_degrades_when_all_candidates_within_max_age_missing(self) -> None:
+        nominal_cycle = ensure_utc(datetime(2026, 1, 1, 12, tzinfo=UTC))
+        ecmwf = _CycleFallbackEcmwf(missing_hours={12, 6})
+        adapter = RecapGatewayForecastAdapter(
+            client=_Client(ecmwf, _GoodSnow()),  # type: ignore[arg-type]
+            resolver=_MapResolver(  # type: ignore[arg-type]
+                {_SID_A: _ref(_SID_A, _POLY_A)}
+            ),
+            max_cycle_age_hours=6.0,
+        )
+
+        with pytest.raises(RecapDataUnavailableError) as excinfo:
+            adapter.fetch_forecasts(
+                [_ws(_SID_A, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST)],
+                nominal_cycle,
+            )
+
+        assert excinfo.value.code == "source_data_missing"
+        # Only the two probe candidates within max_cycle_age_hours=6h were
+        # tried -- the adapter must bail out BEFORE the 102-call member
+        # fan-out, not attempt it first.
+        assert len(ecmwf.calls) == 2
 
 
 class TestReanalysisConversion:

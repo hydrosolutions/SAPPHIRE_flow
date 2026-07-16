@@ -98,3 +98,72 @@ class TestLoadRecapGatewayConfig:
         config_path.write_text("[adapters.weather_forecast]\nenabled = false\n")
         with pytest.raises(ConfigurationError, match="recap_gateway"):
             load_recap_gateway_config(config_path)
+
+    def test_defaults_max_cycle_age_hours_when_absent(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[adapters.recap_gateway]\n"
+            'base_url = "https://recap.example.org"\n'
+            "timeout_s = 120\n"
+            "verify_tls = true\n"
+            "staleness_threshold_hours = 12.0\n"
+            'hru_metadata_source = "manual_gpkg_upload"\n'
+            "max_retries = 5\n"
+        )
+        config = load_recap_gateway_config(config_path)
+        assert config.max_cycle_age_hours == 18.0
+
+
+class TestLoadRecapGatewayConfigOverlay:
+    """Codex review Finding 4 (major): a Nepal deployment supplies
+    `type = "recap_gateway"` + `[adapters.recap_gateway]` from an OVERLAY
+    layered on the base (Swiss) config via SAPPHIRE_CONFIG_OVERLAY -- the
+    same merge the Flow-1 selector uses (run_forecast_cycle.py's
+    `_load_weather_forecast_adapter_config`). The loader must read that same
+    merged view, not just the base file."""
+
+    def test_reads_recap_section_supplied_by_overlay(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        base_path = tmp_path / "config.toml"
+        base_path.write_text(
+            '[adapters.weather_forecast]\nenabled = false\ntype = "meteoswiss_nwp"\n'
+        )
+        overlay_path = tmp_path / "nepal_overlay.toml"
+        overlay_path.write_text(
+            "[adapters.weather_forecast]\n"
+            "enabled = true\n"
+            'type = "recap_gateway"\n\n'
+            "[adapters.recap_gateway]\n"
+            'base_url = "https://recap.example.org"\n'
+            "timeout_s = 120\n"
+            "verify_tls = true\n"
+            "staleness_threshold_hours = 6.0\n"
+            'hru_metadata_source = "manual_gpkg_upload"\n'
+            "max_retries = 5\n"
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG_OVERLAY", str(overlay_path))
+
+        config = load_recap_gateway_config(base_path)
+
+        assert config.base_url == "https://recap.example.org"
+        assert config.staleness_threshold_hours == 6.0
+
+    def test_no_overlay_env_var_reads_base_only_unchanged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[adapters.recap_gateway]\n"
+            'base_url = "https://recap.example.org"\n'
+            "timeout_s = 120\n"
+            "verify_tls = true\n"
+            "staleness_threshold_hours = 12.0\n"
+            'hru_metadata_source = "manual_gpkg_upload"\n'
+            "max_retries = 5\n"
+        )
+
+        config = load_recap_gateway_config(config_path)
+
+        assert config.base_url == "https://recap.example.org"

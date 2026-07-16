@@ -412,6 +412,11 @@ def _build_recap_forecast_adapter(
             api_key=load_recap_api_key(), config=recap_gateway_config
         )
         recap_client = RecapClient(client_config)
+        return RecapGatewayForecastAdapter(
+            client=cast("RecapClientLike", recap_client),
+            resolver=StoreBackedGatewayPolygonResolver(gateway_polygon_store),
+            max_cycle_age_hours=recap_gateway_config.max_cycle_age_hours,
+        )
     return RecapGatewayForecastAdapter(
         client=cast("RecapClientLike", recap_client),
         resolver=StoreBackedGatewayPolygonResolver(gateway_polygon_store),
@@ -480,6 +485,25 @@ def _load_expected_delivery_offset_hours() -> float:
     return _parse_expected_delivery_offset_hours(
         cast("dict[str, object]", weather_forecast)
     )
+
+
+def _load_recap_staleness_threshold_hours(config_path: str | None) -> float | None:
+    """Read ``RecapGatewayConfig.staleness_threshold_hours`` for the watchdog.
+
+    Plan 082 Task 2G (Codex review Finding 2): for a Recap (``ifs_ecmwf``)
+    deployment, ``[adapters.recap_gateway].staleness_threshold_hours`` is the
+    SAP3-side staleness threshold — it must be used DIRECTLY as the max grid
+    age, not derived from the MeteoSwiss ``expected_delivery_offset_hours *
+    6h`` cadence heuristic (that formula is meaningless for Recap and was
+    silently overriding the configured value with the MeteoSwiss default).
+    Returns ``None`` when there is no config path to read (mirrors the other
+    ``_load_*`` helpers' unset-``SAPPHIRE_CONFIG`` default).
+    """
+    if config_path is None:
+        return None
+    from sapphire_flow.config.recap_gateway import load_recap_gateway_config
+
+    return load_recap_gateway_config(Path(config_path)).staleness_threshold_hours
 
 
 def _load_forecast_qc_rules() -> ForecastQcRuleSet:
@@ -642,13 +666,28 @@ def _check_nwp_grid_staleness(
     checked_at: UtcDatetime,
     cycle_time: UtcDatetime,
     forecast_source: str = _ICON_NWP_SOURCE,
+    staleness_max_age_hours: float | None = None,
 ) -> bool:
+    """Check whether the latest stored ``forecast_source`` grid is stale.
+
+    ``staleness_max_age_hours``, when given, is used DIRECTLY as the max
+    allowed age (Plan 082 Task 2G, Codex review Finding 2) — this is how a
+    Recap (``ifs_ecmwf``) deployment's ``RecapGatewayConfig.
+    staleness_threshold_hours`` overrides the MeteoSwiss ``expected_delivery_
+    offset_hours * 6h`` cadence heuristic, which does not apply to Recap.
+    ``None`` (the MeteoSwiss/default call shape) preserves the existing
+    offset*cadence computation unchanged.
+    """
     fetch_latest = getattr(weather_forecast_store, "fetch_latest_cycle_time", None)
     if not callable(fetch_latest):
         return False
 
     latest_cycle_time = cast("UtcDatetime | None", fetch_latest(forecast_source))
-    max_age_hours = expected_delivery_offset_hours * _NWP_CADENCE_HOURS
+    max_age_hours = (
+        staleness_max_age_hours
+        if staleness_max_age_hours is not None
+        else expected_delivery_offset_hours * _NWP_CADENCE_HOURS
+    )
     if latest_cycle_time is None:
         detail: dict[str, object] = {
             "last_grid_age_hours": None,
@@ -1231,11 +1270,20 @@ def run_forecast_cycle_flow(
         # queries `weather_forecasts` for. Defaults to the MeteoSwiss ICON
         # source (an injected adapter, e.g. tests, keeps this default).
         active_forecast_source = _ICON_NWP_SOURCE
+        # Codex review Finding 2: for Recap this OVERRIDES
+        # expected_delivery_offset_hours * 6h with the configured
+        # RecapGatewayConfig.staleness_threshold_hours directly (None keeps
+        # the MeteoSwiss offset*cadence computation).
+        recap_staleness_max_age_hours: float | None = None
         if adapter is None:
             weather_forecast_config = _load_weather_forecast_adapter_config()
             nwp_enabled = weather_forecast_config.enabled
             if weather_forecast_config.type == "recap_gateway":
                 active_forecast_source = _IFS_NWP_SOURCE
+                if weather_forecast_config.enabled:
+                    recap_staleness_max_age_hours = (
+                        _load_recap_staleness_threshold_hours(config_path_for_adapter)
+                    )
             expected_delivery_offset_hours = (
                 weather_forecast_config.expected_delivery_offset_hours
             )
@@ -1573,6 +1621,7 @@ def run_forecast_cycle_flow(
                 checked_at=clock(),
                 cycle_time=resolved_cycle_time,
                 forecast_source=active_forecast_source,
+                staleness_max_age_hours=recap_staleness_max_age_hours,
             )
 
         # --- Honest NWP provenance (epic-088 M4) ---

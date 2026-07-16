@@ -13,6 +13,14 @@ keyed by ``station_id + gateway_hru_name + name``. Does not touch the
 ``GatewayPolygonResolver`` that reads it; Plan 120 (the §5a importer) owns
 POPULATING it from an accepted basin/static package.
 
+Also adds a partial UNIQUE index enforcing at most one ``basin_average``
+binding per station (Codex review Finding 3): the PK alone permits multiple
+``basin_average`` rows per station, which would make
+``GatewayPolygonResolver.resolve`` (picks ``basin_average[0]``) silently
+arbitrary/stale if a stale row lingers alongside a fresh one. Plan 120's
+importer must upsert-REPLACE the basin_average binding for a station, never
+accumulate additional rows.
+
 NOTE for the Plan 115c implementer: ``alembic/versions/0030_weather_source_role.py``
 earmarked revision 0032 for the ``station_weather_sources.role`` NOT NULL
 tightening. 082 landed first and takes 0032 here (chronological landing
@@ -65,7 +73,18 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("station_id", "gateway_hru_name", "name"),
     )
+    op.create_index(
+        "uq_recap_gateway_polygon_bindings_one_basin_average_per_station",
+        "recap_gateway_polygon_bindings",
+        ["station_id"],
+        unique=True,
+        postgresql_where=sa.text("spatial_type = 'basin_average'"),
+    )
 
 
 def downgrade() -> None:
+    op.drop_index(
+        "uq_recap_gateway_polygon_bindings_one_basin_average_per_station",
+        table_name="recap_gateway_polygon_bindings",
+    )
     op.drop_table("recap_gateway_polygon_bindings")

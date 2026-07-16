@@ -1149,6 +1149,105 @@ class TestRecapNwpDeliveryWatchdog:
         assert record.status == PipelineHealthStatus.CRITICAL
 
 
+class TestRecapStalenessThresholdWiring:
+    """Codex review Finding 2 (major): the Flow-1 watchdog must use
+    RecapGatewayConfig.staleness_threshold_hours DIRECTLY for a Recap
+    deployment, not the MeteoSwiss expected_delivery_offset_hours * 6h
+    cadence heuristic (which silently overrides it with the ~30h default)."""
+
+    def _write_recap_config(
+        self, tmp_path: Path, *, staleness_threshold_hours: float
+    ) -> Path:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[adapters.recap_gateway]\n"
+            'base_url = "https://recap.example.org"\n'
+            "timeout_s = 120\n"
+            "verify_tls = true\n"
+            f"staleness_threshold_hours = {staleness_threshold_hours}\n"
+            'hru_metadata_source = "manual_gpkg_upload"\n'
+            "max_retries = 3\n"
+        )
+        return config_path
+
+    def test_loader_reads_configured_threshold_not_default(
+        self, tmp_path: Path
+    ) -> None:
+        from sapphire_flow.flows.run_forecast_cycle import (
+            _load_recap_staleness_threshold_hours,
+        )
+
+        config_path = self._write_recap_config(tmp_path, staleness_threshold_hours=6.0)
+
+        threshold = _load_recap_staleness_threshold_hours(str(config_path))
+
+        assert threshold == 6.0
+
+    def test_recap_threshold_trips_critical_where_default_offset_would_not(
+        self, tmp_path: Path
+    ) -> None:
+        from sapphire_flow.flows.run_forecast_cycle import (
+            _load_recap_staleness_threshold_hours,
+        )
+
+        config_path = self._write_recap_config(tmp_path, staleness_threshold_hours=6.0)
+        threshold = _load_recap_staleness_threshold_hours(str(config_path))
+
+        nwp_store = FakeWeatherForecastStore()
+        old_cycle = ensure_utc(_NOW - timedelta(hours=12))
+        nwp_store.store_weather_forecasts(
+            [
+                WeatherForecastRecord(
+                    id=uuid4(),
+                    station_id=StationId(uuid4()),
+                    nwp_source="ifs_ecmwf",
+                    cycle_time=old_cycle,
+                    valid_time=old_cycle,
+                    parameter="precipitation",
+                    spatial_type=SpatialRepresentation.BASIN_AVERAGE,
+                    band_id=None,
+                    member_id=0,
+                    value=1.0,
+                    created_at=old_cycle,
+                )
+            ]
+        )
+
+        # Baseline: the OLD (buggy) call shape -- MeteoSwiss default
+        # expected_delivery_offset_hours=5.0 * 6h cadence = 30h -- must NOT
+        # flag a 12h-old grid as stale. This pins the pre-fix behavior this
+        # finding exploited (the configured 6h Recap threshold was silently
+        # ignored in favor of this ~30h default).
+        baseline_health_store = FakePipelineHealthStore()
+        baseline_stale = _check_nwp_grid_staleness(
+            nwp_store,
+            baseline_health_store,
+            expected_delivery_offset_hours=5.0,
+            checked_at=_NOW,
+            cycle_time=_NOW,
+            forecast_source="ifs_ecmwf",
+        )
+        assert baseline_stale is False
+        assert baseline_health_store._records == []
+
+        # Fixed wiring: the SAME 12h-old grid, fed the RecapGatewayConfig
+        # threshold this test loaded from the TOML file, DOES trip CRITICAL.
+        health_store = FakePipelineHealthStore()
+        stale = _check_nwp_grid_staleness(
+            nwp_store,
+            health_store,
+            expected_delivery_offset_hours=5.0,
+            checked_at=_NOW,
+            cycle_time=_NOW,
+            forecast_source="ifs_ecmwf",
+            staleness_max_age_hours=threshold,
+        )
+
+        assert stale is True
+        record = _only_nwp_delivery_record(health_store)
+        assert record.status == PipelineHealthStatus.CRITICAL
+
+
 class TestGridExtractorSelection:
     def test_default_build_grid_constructs_mesh_extractor(
         self, monkeypatch: pytest.MonkeyPatch
