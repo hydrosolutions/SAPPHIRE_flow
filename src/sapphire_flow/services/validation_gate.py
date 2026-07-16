@@ -54,7 +54,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from enum import StrEnum
-from math import sqrt
+from math import isfinite, sqrt
 from typing import TYPE_CHECKING, Protocol
 
 import structlog
@@ -154,6 +154,17 @@ def expected_daily_dates(start: UtcDatetime, end: UtcDatetime) -> frozenset[date
     return frozenset(days)
 
 
+def _has_non_finite(*series: dict[date, float]) -> bool:
+    """True if ANY value across the given daily series is non-finite
+    (``nan``/``inf``). A non-finite forcing value poisons every downstream
+    ``sum``/diff (they all become ``nan``), and every threshold comparison
+    against ``nan`` is ``False`` — so the gate would fall through to a
+    computed PASS on garbage data. This is a data-quality problem, handled
+    exactly like a coverage gap / degenerate denominator (Plan 115b3 §4A):
+    ``DATA_QUALITY_ESCALATE``, never a silent pass."""
+    return any(not isfinite(value) for s in series for value in s.values())
+
+
 def _daily_coverage(
     ours: dict[date, float], camels: dict[date, float], expected: frozenset[date]
 ) -> tuple[set[date], set[date], set[date]]:
@@ -239,10 +250,14 @@ def evaluate_precip_basin(
     ours_total = sum(ours.values())
     camels_total = sum(camels.values())
     has_gap = bool(missing_in_ours or missing_in_camels)
+    non_finite = _has_non_finite(ours, camels)
+    # A non-finite value makes camels_total NaN, and ``NaN <= 0`` is False, so
+    # the degenerate-denominator guard alone would NOT catch it — check
+    # non-finite explicitly.
     degenerate = camels_total <= 0
 
     rel_bias: float | None
-    if has_gap or degenerate:
+    if has_gap or degenerate or non_finite:
         rel_bias = None
         verdict = GateVerdict.DATA_QUALITY_ESCALATE
     else:
@@ -283,8 +298,9 @@ def evaluate_temperature_basin(
         ours, camels, expected_dates
     )
     has_gap = bool(missing_in_ours or missing_in_camels)
+    non_finite = _has_non_finite(ours, camels)
 
-    if has_gap or not common:
+    if has_gap or not common or non_finite:
         return BasinTemperatureResult(
             station_id=station_id,
             code=code,

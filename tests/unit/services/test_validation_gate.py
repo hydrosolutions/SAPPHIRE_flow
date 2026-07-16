@@ -13,6 +13,7 @@ Tests split by the plan's own "Tests" section:
 
 from __future__ import annotations
 
+import math
 from datetime import UTC, date, datetime
 from uuid import uuid4
 
@@ -249,6 +250,69 @@ class TestCoverageGapHandling:
     def test_temperature_no_overlap_at_all_forces_data_quality_escalate(self) -> None:
         result = evaluate_temperature_basin(_SID, "TEST-BASIN", {}, {}, _FIVE_DAYS)
         assert result.verdict is GateVerdict.DATA_QUALITY_ESCALATE
+
+
+# ---------------------------------------------------------------------------
+# Non-finite forcing values (Plan 115b3 §4A) — a nan/inf on either side is a
+# data-quality problem that MUST escalate, never a silent computed PASS.
+#
+# Soundness: every test here fails RED against the pre-fix evaluators, which
+# have no finite-check. With full coverage, sum()/diffs over the nan/inf poison
+# every downstream number to nan, and the threshold comparisons in
+# classify_precip_rel_bias / classify_temperature (abs(...) <= 5.0, etc.) are
+# ALL False for nan — so the evaluator falls through and returns a computed
+# PASS (precip: rel_bias=nan -> PASS; temperature: mean_bias/rmse=nan -> PASS)
+# instead of DATA_QUALITY_ESCALATE.
+# ---------------------------------------------------------------------------
+
+
+class TestNonFiniteForcingValues:
+    def test_precip_nan_in_ours_forces_data_quality_escalate(self) -> None:
+        ours = dict(_OURS_PRECIP)
+        ours[date(2020, 1, 3)] = math.nan
+        result = evaluate_precip_basin(
+            _SID, "TEST-BASIN", ours, _CAMELS_PRECIP, _FIVE_DAYS
+        )
+        assert result.verdict is GateVerdict.DATA_QUALITY_ESCALATE
+        assert result.rel_bias is None
+
+    def test_precip_inf_in_ours_forces_data_quality_escalate(self) -> None:
+        ours = dict(_OURS_PRECIP)
+        ours[date(2020, 1, 3)] = math.inf
+        result = evaluate_precip_basin(
+            _SID, "TEST-BASIN", ours, _CAMELS_PRECIP, _FIVE_DAYS
+        )
+        assert result.verdict is GateVerdict.DATA_QUALITY_ESCALATE
+        assert result.rel_bias is None
+
+    def test_precip_nan_in_camels_forces_data_quality_escalate(self) -> None:
+        camels = dict(_CAMELS_PRECIP)
+        camels[date(2020, 1, 3)] = math.nan
+        result = evaluate_precip_basin(
+            _SID, "TEST-BASIN", _OURS_PRECIP, camels, _FIVE_DAYS
+        )
+        assert result.verdict is GateVerdict.DATA_QUALITY_ESCALATE
+        assert result.rel_bias is None
+
+    def test_temperature_nan_in_ours_forces_data_quality_escalate(self) -> None:
+        ours = dict(_OURS_TEMP)
+        ours[date(2020, 1, 3)] = math.nan
+        result = evaluate_temperature_basin(
+            _SID, "TEST-BASIN", ours, _CAMELS_TEMP, _FIVE_DAYS
+        )
+        assert result.verdict is GateVerdict.DATA_QUALITY_ESCALATE
+        assert result.mean_bias is None
+        assert result.rmse is None
+
+    def test_temperature_inf_in_camels_forces_data_quality_escalate(self) -> None:
+        camels = dict(_CAMELS_TEMP)
+        camels[date(2020, 1, 3)] = math.inf
+        result = evaluate_temperature_basin(
+            _SID, "TEST-BASIN", _OURS_TEMP, camels, _FIVE_DAYS
+        )
+        assert result.verdict is GateVerdict.DATA_QUALITY_ESCALATE
+        assert result.mean_bias is None
+        assert result.rmse is None
 
 
 # ---------------------------------------------------------------------------
