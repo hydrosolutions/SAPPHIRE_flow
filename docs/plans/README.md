@@ -71,8 +71,16 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
   prerequisite for a Nepal handover.
 - **081** — recap-dg-client forcing adapter — `DRAFT` — the Nepal forcing foundation
   (IFS/ERA5-Land time-series from the gateway). **Offline-completable** against fakes.
-- **082** — recap Gateway operational + training readiness — `DRAFT` — live gateway
-  smoke, Nepal config, coverage gate, watchdog, runbooks. Depends on 081.
+- **082** — recap Gateway operational + training readiness — `READY` — Flow-1
+  forecast dispatch, cycle fallback, source-aware watchdog, coverage manifest, §5a
+  polygon store/resolver, secret plumbing, runbook. **Implemented + Codex-reviewed to
+  convergence (3 rounds), open in PR #91** (hold-at-PR; CI blocked on the
+  `RECAP_DG_CLIENT_TOKEN` secret). Depends on 081/115a. Flow-6 reanalysis wiring +
+  the training-gate/snow wiring are **carved out to Plan 121**.
+- **121** — Recap Gateway: Flow-6 reanalysis + deferred integration follow-ons —
+  `DRAFT (stub)` — carved out of 082: the Flow-6 `_ReanalysisAdapter` Protocol fork
+  (115b1 mismatch), coverage training-gate wiring, snow-forecast Flow-1 wiring, and
+  the `RECAP_DG_CLIENT_TOKEN` CI-secret follow-up. Needs the `plan` workflow before READY.
 - **047** — Nepal v1 data sources umbrella (IFS, DHM, ERA5-Land) — `DRAFT (stub)` —
   depends on 081/082.
 - **117** — Basin/static artifact architecture alignment — `READY` — documents the
