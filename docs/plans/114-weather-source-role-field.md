@@ -14,7 +14,7 @@ blocks: []
 > ## ⛔ SUPERSEDED by [Plan 115](115-weather-source-identity-model.md) (2026-07-14)
 >
 > **Do not implement from this document.** Its reviewed content is carried forward into
-> Plan 115 — the role enum, the `0030`/`0031` migration split, the per-station containment
+> Plan 115 — the role enum, the `0030`/`0032` migration split, the per-station containment
 > fix, the consumer table, and the retired ICON fallback.
 >
 > **Why it was superseded.** 114 correctly diagnosed *one facet* — the missing
@@ -228,7 +228,7 @@ site, so the new image never emits a NULL. `_row_to_weather_source` carries a **
 NULL shim** — a NULL role (only reachable if the *old* image wrote a row during the window)
 is mapped by the same rule (`nwp_source == "icon_ch2_eps"` → FORECAST, else REANALYSIS) and
 logged at WARNING (`weather_source.legacy_null_role`). Explicitly marked `# Plan 114 §3.1:
-delete with revision 0031`.
+delete with revision 0032`.
 
 **The shim must carry the migration's allowlist, not an open `else` (independent review).**
 The migration's guard is one-time, but the rollback window lets the *old* image keep writing —
@@ -237,7 +237,7 @@ and the old writer accepts an **arbitrary** `nwp_source` string with no role
 source name would be silently classified REANALYSIS, bypassing the allowlist and directly
 contradicting this plan's own "an unknown name is a human decision" rule. So the shim applies
 the **same allowlist**: `icon_ch2_eps` → FORECAST; a known reanalysis/forcing name → REANALYSIS;
-**anything else raises** `ConfigurationError` rather than guessing. Revision `0031` re-runs the
+**anything else raises** `ConfigurationError` rather than guessing. Revision `0032` re-runs the
 allowlist guard over any remaining NULL rows *before* its final backfill, for the same reason.
 
 **Trade-off noted (not a silent regression):** this keeps the rollback window open at the
@@ -246,7 +246,7 @@ shim is a boundary parse, not a default (§1).
 
 #### 3.1 Follow-on release (tracked here, ships after the rollback window closes)
 
-**Revision `0031`**: re-run the backfill for any straggler NULLs, `alter_column role
+**Revision `0032`**: re-run the backfill for any straggler NULLs, `alter_column role
 nullable=False`, tighten the check to `role IN ('forecast', 'reanalysis')`, and delete the
 `_row_to_weather_source` NULL shim. This is a ~30-line follow-up; it is listed in this plan
 so it is not lost, but it does **not** gate Plans 081/082 (which need the field, not the
@@ -491,14 +491,14 @@ construction site), so it is an explicit task:
 - **Plan 082 Task 2C** (dispatch implementation) **depends on this plan** — its Phase A→B
   round-trip and `_select_nwp_source`/`_reanalysis_sources` wiring assume role-based
   selection. `082.depends_on` gains `114`. It depends on revision `0030` (the field), **not**
-  on `0031` (the NOT NULL tightening).
+  on `0032` (the NOT NULL tightening).
 
 ## Review deltas (plan-review round 1, 2026-07-14)
 
 - **Blocker** — uncontained `ConfigurationError` at the per-station call site would abort the
   whole cycle → §5 now mandates a per-station `try/except` + a flow-level containment test.
 - **Major** — single-release NOT NULL violated `cicd.md`'s one-version-backward-compatible
-  rule → §3 split into `0030` (nullable + backfill) and `0031` (NOT NULL, §3.1).
+  rule → §3 split into `0030` (nullable + backfill) and `0032` (NOT NULL, §3.1).
 - **Major** — the `extraction_type`-based backfill would invert the role of
   `meteoswiss_open_data_reanalysis` rows → §3 backfills by source name with a pre-flight
   allowlist audit; §6 also role-fixes that adapter's own matching.
@@ -601,7 +601,7 @@ uv run pytest
 - `docs/conventions.md:396` — the enum-value table lists
   `station_weather_sources.extraction_type` / `SpatialRepresentation`; add a
   `station_weather_sources.role` / `WeatherSourceRole` row (`forecast`, `reanalysis`).
-- `docs/standards/cicd.md` — note the `0030`→`0031` two-release sequence if the rollback
+- `docs/standards/cicd.md` — note the `0030`→`0032` two-release sequence if the rollback
   section needs the pointer.
 - `docs/touchpoint-maps.md` — the operational-inputs / time-series-preprocessing map should name
   the role filter, since `assemble_station_operational_inputs` is a listed touchpoint.

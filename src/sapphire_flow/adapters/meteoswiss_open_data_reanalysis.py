@@ -96,15 +96,23 @@ def _days_in_range(start: UtcDatetime, end: UtcDatetime) -> list[date]:
 @dataclass(frozen=True, kw_only=True, slots=True)
 class _Product:
     """A daily MeteoSwiss product: raw NetCDF variable, canonical parameter,
-    provenance tag, the STAC asset token used to locate its href, and its grid
+    provenance tag, the STAC asset token used to locate its href, its grid
     family (documentation only — the CRS/reprojection path in ``_reproject``
-    handles both families generically via the grid's own N/E dimensions)."""
+    handles both families generically via the grid's own N/E dimensions), and
+    whether it is served by the yearly ARCHIVE asset family.
+
+    ``archive_backed`` is ``True`` for every product carried in the yearly
+    archive (RhiresD + the ch01r temperature/sunshine grids) — these MUST be
+    addressed through the archive/last family for any historical fetch, because
+    the archive years are not published as per-day STAC items. Only ``RprelimD``
+    (the preliminary live tail) is daily-only (Plan 115b1 §1B)."""
 
     token: str
     raw_var: str
     parameter: str
     source: ForcingSource
     grid: str
+    archive_backed: bool
 
 
 _PRODUCT_REGISTRY: tuple[_Product, ...] = (
@@ -114,6 +122,7 @@ _PRODUCT_REGISTRY: tuple[_Product, ...] = (
         parameter="precipitation",
         source=ForcingSource.METEOSWISS_RPRELIMD,
         grid="ch01h",
+        archive_backed=False,
     ),
     _Product(
         token="rhiresd",
@@ -121,6 +130,7 @@ _PRODUCT_REGISTRY: tuple[_Product, ...] = (
         parameter="precipitation",
         source=ForcingSource.METEOSWISS_RHIRESD,
         grid="ch01h",
+        archive_backed=True,
     ),
     _Product(
         token="tabsd",
@@ -128,6 +138,7 @@ _PRODUCT_REGISTRY: tuple[_Product, ...] = (
         parameter="temperature",
         source=ForcingSource.METEOSWISS_TABSD,
         grid="ch01r",
+        archive_backed=True,
     ),
     _Product(
         token="tmind",
@@ -135,6 +146,7 @@ _PRODUCT_REGISTRY: tuple[_Product, ...] = (
         parameter="temperature_min",
         source=ForcingSource.METEOSWISS_TMIND,
         grid="ch01r",
+        archive_backed=True,
     ),
     _Product(
         token="tmaxd",
@@ -142,6 +154,7 @@ _PRODUCT_REGISTRY: tuple[_Product, ...] = (
         parameter="temperature_max",
         source=ForcingSource.METEOSWISS_TMAXD,
         grid="ch01r",
+        archive_backed=True,
     ),
     _Product(
         token="sreld",
@@ -149,6 +162,7 @@ _PRODUCT_REGISTRY: tuple[_Product, ...] = (
         parameter="relative_sunshine_duration",
         source=ForcingSource.METEOSWISS_SRELD,
         grid="ch01r",
+        archive_backed=True,
     ),
 )
 
@@ -220,7 +234,17 @@ class MeteoSwissOpenDataReanalysisAdapter:
         # before any STAC download.
         if not products:
             return []
-        return self._fetch_daily_range(products, station_configs, start, end)
+        # Operational read path: only RhiresD has no per-day STAC item (it
+        # publishes monthly), so it alone routes through the archive/last
+        # family here. The ch01r temperature/sunshine grids still publish as
+        # per-day items over this recent read window and resolve per-day —
+        # unchanged from Plan 071. (Historical archive addressing for those
+        # products is the WRITER path's job: see ``fetch_products``.)
+        archive_products = [p for p in products if p.token == "rhiresd"]
+        daily_products = [p for p in products if p.token != "rhiresd"]
+        return self._fetch_range(
+            archive_products, daily_products, station_configs, start, end
+        )
 
     def fetch_products(
         self,
@@ -249,7 +273,17 @@ class MeteoSwissOpenDataReanalysisAdapter:
         ]
         if not selected:
             return []
-        return self._fetch_daily_range(selected, station_configs, start, end)
+        # Writer path: EVERY archive-backed product (RhiresD + the ch01r
+        # temperature/sunshine grids) resolves through the yearly archive/last
+        # family so a historical product-year fetch selects
+        # "...archive.<var>_<grid>...YYYY..." instead of silently gapping out on
+        # absent per-day items (Plan 115b1 §1B — the 115b2 backfill depends on
+        # this). Only RprelimD (the preliminary live tail) is daily-only.
+        archive_products = [p for p in selected if p.archive_backed]
+        daily_products = [p for p in selected if not p.archive_backed]
+        return self._fetch_range(
+            archive_products, daily_products, station_configs, start, end
+        )
 
     def discover_rhiresd_boundary(self) -> UtcDatetime | None:
         """Discover R (Plan 115b1 §1D): the latest date for which the
@@ -283,13 +317,21 @@ class MeteoSwissOpenDataReanalysisAdapter:
                 assets = feature.get("assets", {})
                 if not isinstance(assets, dict):
                     continue
-                for key in assets:
-                    match = _RHIRESD_ASSET_RE.search(str(key))
-                    if match is None:
-                        continue
-                    end = datetime.strptime(match.group("end"), "%Y%m%d").date()
-                    if latest is None or end > latest:
-                        latest = end
+                # Parse BOTH the asset key AND its href filename — STAC keys may
+                # be opaque (e.g. "data") while the date span lives only in the
+                # href filename (or vice versa). Checking only one side would
+                # miss the boundary and silently fall back to RprelimD for the
+                # whole window (Plan 115b1 §1D).
+                for key, asset in assets.items():
+                    href = str(asset.get("href", "")) if isinstance(asset, dict) else ""
+                    for candidate in (str(key), href):
+                        match = _RHIRESD_ASSET_RE.search(candidate)
+                        if match is None:
+                            continue
+                        end = datetime.strptime(match.group("end"), "%Y%m%d").date()
+                        if latest is None or end > latest:
+                            latest = end
+                        break
             url = _next_link(body.get("links", []))
 
         if latest is None:
@@ -344,28 +386,27 @@ class MeteoSwissOpenDataReanalysisAdapter:
             and c.extraction_type == SpatialRepresentation.BASIN_AVERAGE
         ]
 
-    def _fetch_daily_range(
+    def _fetch_range(
         self,
-        products: list[_Product],
+        archive_products: list[_Product],
+        daily_products: list[_Product],
         station_configs: list[StationWeatherSource],
         start: UtcDatetime,
         end: UtcDatetime,
     ) -> list[RawHistoricalForcing]:
+        """Fetch a date range, routing ``archive_products`` through the yearly
+        archive/last family (per-year NetCDFs — the only addressing that works
+        for historical years, which are not published as per-day items) and
+        ``daily_products`` through the per-day STAC item loop. The caller
+        (``fetch_reanalysis`` vs ``fetch_products``) decides the split (Plan
+        115b1 §1B)."""
         matching = self._matching_configs(station_configs)
         if not matching:
             return []
 
-        # RhiresD is NOT published as a per-day STAC item at all (it publishes
-        # MONTHLY, ~3-6 week lag) — the daily-item loop below can never
-        # address it, and would raise (no asset on any daily feature). Route
-        # it through the archive/"last"-family addressing instead (Plan
-        # 115b1 §1B/§1G); every other product still resolves per-day.
-        rhiresd_products = [p for p in products if p.token == "rhiresd"]
-        daily_products = [p for p in products if p.token != "rhiresd"]
-
         rows: list[RawHistoricalForcing] = []
-        for product in rhiresd_products:
-            rows.extend(self._fetch_rhiresd_range(product, matching, start, end))
+        for product in archive_products:
+            rows.extend(self._fetch_archive_backed_range(product, matching, start, end))
         if daily_products:
             rows.extend(
                 self._fetch_daily_items_range(daily_products, matching, start, end)
@@ -401,18 +442,21 @@ class MeteoSwissOpenDataReanalysisAdapter:
                     )
         return rows
 
-    def _fetch_rhiresd_range(
+    def _fetch_archive_backed_range(
         self,
         product: _Product,
         matching: list[StationWeatherSource],
         start: UtcDatetime,
         end: UtcDatetime,
     ) -> list[RawHistoricalForcing]:
-        """RhiresD has no per-day item — address it via the yearly ARCHIVE
-        family where the year is already fully archived, falling back to the
-        monthly "last" family for the current/recent months that are not
-        (Plan 115b1 §1B/§1G). Each resolved asset covers a whole year/month;
-        fetched rows are filtered back down to ``[start, end)``."""
+        """Address an archive-backed product via the yearly ARCHIVE family
+        where the year is already fully archived, falling back to the monthly
+        "last" family for the current/recent months that are not (Plan
+        115b1 §1B/§1G). Applies to RhiresD (which has no per-day item at all)
+        and to the ch01r temperature/sunshine grids for any historical fetch —
+        their archive years are likewise not published as per-day items. Each
+        resolved asset covers a whole year/month; fetched rows are filtered
+        back down to ``[start, end)``."""
         cycle_time = self._clock()
         days = _days_in_range(start, end)
         if not days:
@@ -436,7 +480,7 @@ class MeteoSwissOpenDataReanalysisAdapter:
             href = self._last_family_asset_href(product, year, month)
             if href is None:
                 log.info(
-                    "reanalysis.rhiresd_month_gap",
+                    "reanalysis.archive_month_gap",
                     product=product.token,
                     year=year,
                     month=month,

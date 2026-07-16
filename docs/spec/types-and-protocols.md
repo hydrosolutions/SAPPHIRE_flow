@@ -2540,6 +2540,37 @@ class WeatherReanalysisSource(Protocol):
         # (e.g. ERA5 ensemble members) via member_id field.
 ```
 
+**Writer-side product-scoped fetch (Plan 115b1 §1F).** The concrete
+`MeteoSwissOpenDataReanalysisAdapter` adds a second, product-keyed entry point
+used ONLY by the writer side (Flow 6 ingest and the 115b2 backfill) — the
+read-side `WeatherReanalysisSource` protocol above is unchanged:
+
+```python
+def fetch_products(
+    self,
+    products: list[ForcingSource],   # exact product tags to fetch
+    station_configs: list[StationWeatherSource],
+    start: UtcDatetime,
+    end: UtcDatetime,
+    parameters: list[str],           # additionally restricts by canonical parameter
+) -> list[RawHistoricalForcing]: ...
+```
+
+`fetch_products` selects EXACTLY the given `products` (both the product tag AND
+the canonical parameter must match), so it is never ambiguous the way the
+parameter-keyed path becomes once >1 product serves one parameter. Archive-backed
+products (RhiresD + the ch01r temperature/sunshine grids) route through the
+yearly archive/last family so a historical product-year fetch selects the
+per-year NetCDF instead of gapping out; only `RprelimD` (the preliminary live
+tail) is daily-only.
+
+**Fail-closed precipitation rule (Plan 115b1 §1F).** Once two precipitation
+products are registered (RhiresD + RprelimD), the parameter-keyed
+`fetch_reanalysis(..., ["precipitation"])` **raises `ConfigurationError`** — it
+cannot disambiguate which product the caller wants. Precipitation is served ONLY
+via `fetch_products`; the other four canonical parameters (one product each)
+still resolve on the parameter path unchanged.
+
 #### ForeignForecastSource
 
 Pulls published forecasts from an upstream SAPPHIRE instance. Implementation deferred to v1.

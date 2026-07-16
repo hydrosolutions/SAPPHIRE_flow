@@ -26,6 +26,7 @@ import hashlib
 import re
 import tempfile
 import uuid
+from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -40,6 +41,7 @@ from shapely.geometry import box
 
 from sapphire_flow.adapters.forecast_interface import fi_unit_to_canonical
 from sapphire_flow.adapters.meteoswiss_open_data_reanalysis import (
+    _PRODUCT_REGISTRY,  # pyright: ignore[reportPrivateUsage]
     MeteoSwissOpenDataReanalysisAdapter,
 )
 from sapphire_flow.exceptions import AdapterError, ConfigurationError
@@ -926,6 +928,58 @@ class TestFailClosedPrecipitation:
 
 
 # ---------------------------------------------------------------------------
+# Plan 115b1 §1A — adapter product/parameter registry pin (4 -> 5 parameters)
+# ---------------------------------------------------------------------------
+
+
+class TestAdapterProductRegistryPin:
+    """Locked contract for the adapter's product registry (Plan 115b1 §1A
+    migrated the canonical set 4 -> 5): the adapter serves EXACTLY SIX
+    MeteoSwiss products across FIVE canonical parameters — the four
+    single-product parameters PLUS precipitation, which is served by TWO
+    products (RhiresD + RprelimD, §0a) reachable only via the product-scoped
+    ``fetch_products`` path. Soundness: fails RED if a product/source mapping is
+    dropped or precipitation is (re)excluded.
+    """
+
+    def test_five_canonical_parameters(self) -> None:
+        assert {p.parameter for p in _PRODUCT_REGISTRY} == {
+            "precipitation",
+            "temperature",
+            "temperature_min",
+            "temperature_max",
+            "relative_sunshine_duration",
+        }
+
+    def test_all_six_product_source_mappings(self) -> None:
+        assert {
+            (p.token, p.raw_var, p.parameter, p.source) for p in _PRODUCT_REGISTRY
+        } == {
+            (
+                "rprelimd",
+                "RprelimD",
+                "precipitation",
+                ForcingSource.METEOSWISS_RPRELIMD,
+            ),
+            ("rhiresd", "RhiresD", "precipitation", ForcingSource.METEOSWISS_RHIRESD),
+            ("tabsd", "TabsD", "temperature", ForcingSource.METEOSWISS_TABSD),
+            ("tmind", "TminD", "temperature_min", ForcingSource.METEOSWISS_TMIND),
+            ("tmaxd", "TmaxD", "temperature_max", ForcingSource.METEOSWISS_TMAXD),
+            (
+                "sreld",
+                "SrelD",
+                "relative_sunshine_duration",
+                ForcingSource.METEOSWISS_SRELD,
+            ),
+        }
+
+    def test_precipitation_is_the_only_multi_product_parameter(self) -> None:
+        counts = Counter(p.parameter for p in _PRODUCT_REGISTRY)
+        assert counts["precipitation"] == 2
+        assert all(c == 1 for param, c in counts.items() if param != "precipitation")
+
+
+# ---------------------------------------------------------------------------
 # Plan 115b1 §1F/§0a — writer-side product-scoped fetch (fetch_products)
 # ---------------------------------------------------------------------------
 
@@ -934,12 +988,20 @@ def _archive_item(assets: dict[str, dict[str, object]]) -> dict[str, object]:
     return {"id": "archive-ch", "properties": {}, "assets": assets, "links": []}
 
 
-def _rhiresd_archive_asset(year: int, href: str) -> dict[str, dict[str, object]]:
+def _archive_asset(
+    token: str, grid: str, year: int, href: str
+) -> dict[str, dict[str, object]]:
+    """A yearly ARCHIVE-family asset for any product — the filename embeds the
+    product token, grid family (ch01h / ch01r), and the full-year date span."""
     key = (
-        f"ogd-surface-derived-grid-archive.rhiresd_ch01h.swiss.lv95_"
+        f"ogd-surface-derived-grid-archive.{token}_{grid}.swiss.lv95_"
         f"{year}0101000000_{year}1231000000.nc"
     )
     return {key: {"href": href, "type": "application/x-netcdf"}}
+
+
+def _rhiresd_archive_asset(year: int, href: str) -> dict[str, dict[str, object]]:
+    return _archive_asset("rhiresd", "ch01h", year, href)
 
 
 class TestFetchProductsWriterSideScopedFetch:
@@ -1206,6 +1268,61 @@ class TestDiscoverRhiresdBoundary:
         adapter = _make_adapter(httpx.MockTransport(handler), {sid: _make_basin(sid)})
         assert adapter.discover_rhiresd_boundary() is None
 
+    def test_discovers_boundary_from_href_when_key_is_opaque(self) -> None:
+        # Real STAC assets may key on an opaque token ("data") while the date
+        # span lives ONLY in the href filename. R discovery must parse the href,
+        # not just the key — otherwise R is None and Flow 6 silently serves
+        # RprelimD for the whole window (Plan 115b1 §1D). Soundness: fails RED
+        # against a key-only parse.
+        sid = StationId(uuid.uuid4())
+        assets: dict[str, dict[str, object]] = {
+            "data": {
+                "href": (
+                    "https://dummy/ogd-surface-derived-grid-archive."
+                    "rhiresd_ch01h.swiss.lv95_20250101000000_20251231000000.nc"
+                ),
+                "type": "application/x-netcdf",
+            }
+        }
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            if "/items?limit=100" in url:
+                return httpx.Response(
+                    200, json={"features": [_archive_item(assets)], "links": []}
+                )
+            raise AssertionError(f"unexpected request: {url}")
+
+        adapter = _make_adapter(httpx.MockTransport(handler), {sid: _make_basin(sid)})
+        assert adapter.discover_rhiresd_boundary() == ensure_utc(
+            datetime(2025, 12, 31, tzinfo=UTC)
+        )
+
+    def test_ignores_non_rhiresd_distractor_asset(self) -> None:
+        # A TabsD (ch01r) archive asset with a LATER end date must NOT be
+        # mistaken for the RhiresD boundary — only rhiresd_ch01h assets define
+        # R. Soundness: fails RED against a regex too loose to be
+        # product-specific (which would return the 2026 distractor end).
+        sid = StationId(uuid.uuid4())
+        assets = dict(_rhiresd_archive_asset(2024, "https://dummy/a2024.nc"))
+        assets[
+            "ogd-surface-derived-grid-archive.tabsd_ch01r.swiss.lv95_"
+            "20260101000000_20261231000000.nc"
+        ] = {"href": "https://dummy/tabsd2026.nc", "type": "application/x-netcdf"}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            if "/items?limit=100" in url:
+                return httpx.Response(
+                    200, json={"features": [_archive_item(assets)], "links": []}
+                )
+            raise AssertionError(f"unexpected request: {url}")
+
+        adapter = _make_adapter(httpx.MockTransport(handler), {sid: _make_basin(sid)})
+        assert adapter.discover_rhiresd_boundary() == ensure_utc(
+            datetime(2024, 12, 31, tzinfo=UTC)
+        )
+
 
 # ---------------------------------------------------------------------------
 # Plan 115b1 §1B/§1C — real (faithfully-shaped) LV95 archive fixture
@@ -1223,23 +1340,73 @@ def _real_fixture_bytes(name: str) -> bytes:
     return (_FIXTURE_DIR / name).read_bytes()
 
 
+def _real_fixture_basin() -> Basin:
+    return Basin(
+        id=BasinId(uuid.uuid4()),
+        code="bern",
+        name="Bern",
+        geometry=_REAL_FIXTURE_BASIN,
+        area_km2=100.0,
+        attributes=None,
+        band_geometries=None,
+        created_at=ensure_utc(datetime(2026, 1, 1, tzinfo=UTC)),
+        network="test",
+    )
+
+
+def _real_fixture_adapter(
+    sid: StationId, handler: Callable[[httpx.Request], httpx.Response]
+) -> MeteoSwissOpenDataReanalysisAdapter:
+    """A real-extractor adapter (NOT the echo double) over a mock transport."""
+    client = httpx.Client(
+        transport=httpx.MockTransport(handler), base_url="https://dummy"
+    )
+    return MeteoSwissOpenDataReanalysisAdapter(
+        stac_base_url=_STAC_BASE,
+        stac_collection=_STAC_COLLECTION,
+        http_client=client,
+        extractor=ExactExtractGridExtractor(),
+        basins={sid: _real_fixture_basin()},
+        clock=_clock,
+    )
+
+
+# Basin means computed from the REAL fixture bytes through the adapter's own
+# _open_grid -> reproject -> ExactExtractGridExtractor path (live probe,
+# 2026-07-16). These are EXACT expected values — the test FAILS if asset
+# selection routes to the wrong file, the CRS/dim normalisation regresses, or
+# the extraction math changes. (RhiresD is mm of daily precip near Bern in
+# early Jan 2020; SrelD is % of the astronomical sunshine maximum.)
+_RHIRESD_EXPECTED: dict[datetime, float] = {
+    datetime(2020, 1, 1, tzinfo=UTC): 2.919777691320872e-05,
+    datetime(2020, 1, 2, tzinfo=UTC): 7.208270440754337e-05,
+}
+_SRELD_EXPECTED: dict[datetime, float] = {
+    datetime(2026, 7, 9, tzinfo=UTC): 99.70962845719922,
+    datetime(2026, 7, 10, tzinfo=UTC): 91.68713106471749,
+}
+
+
 class TestRealShapeFixtureExtraction:
     """Proves asset selection, variable names, dims, CRS normalisation, and
     ``exactextract`` compatibility against REAL (not synthetic) MeteoSwiss
-    NetCDF bytes — for a ch01h (RhiresD, via the archive family) and a ch01r
-    (SrelD, via the daily family) file (Plan 115b1 §1B/§1C).
+    NetCDF bytes — for a ch01h (RhiresD) and a ch01r (SrelD) file, BOTH via the
+    yearly ARCHIVE family (Plan 115b1 §1B/§1C).
 
-    The synthetic fixtures elsewhere in this module use lat/lon dims
-    directly and prove nothing about real LV95 (N/E dims + 2D curvilinear
-    lon/lat auxiliary coordinates) files — this class is what actually
-    exercises that path, using the REAL extractor (not the echo double).
+    The synthetic fixtures elsewhere in this module use lat/lon dims directly
+    and prove nothing about real LV95 (N/E dims + 2D curvilinear lon/lat
+    auxiliary coordinates) files — this class is what actually exercises that
+    path, using the REAL extractor (not the echo double). Each test pins the
+    EXACT valid_times and basin means, so it fails RED against wrong archive
+    selection (ch01h vs ch01r) or broken extraction math — not merely a
+    finite/in-range check that a NaN-or-anything result would slip through.
     """
 
-    def test_rhiresd_ch01h_archive_fixture_extracts_real_value(self) -> None:
+    def test_rhiresd_ch01h_archive_fixture_extracts_known_basin_means(self) -> None:
         sid = StationId(uuid.uuid4())
         asset_url = "https://dummy/assets/rhiresd_real.nc"
         data = _real_fixture_bytes("rhiresd_ch01h_real_shape.nc")
-        assets = _rhiresd_archive_asset(2020, asset_url)
+        assets = _archive_asset("rhiresd", "ch01h", 2020, asset_url)
 
         def handler(request: httpx.Request) -> httpx.Response:
             url = str(request.url)
@@ -1251,30 +1418,7 @@ class TestRealShapeFixtureExtraction:
                 return httpx.Response(200, json=_archive_item(assets))
             raise AssertionError(f"unexpected request: {url}")
 
-        basin_id = BasinId(uuid.uuid4())
-        basin = Basin(
-            id=basin_id,
-            code="bern",
-            name="Bern",
-            geometry=_REAL_FIXTURE_BASIN,
-            area_km2=100.0,
-            attributes=None,
-            band_geometries=None,
-            created_at=ensure_utc(datetime(2026, 1, 1, tzinfo=UTC)),
-            network="test",
-        )
-        client = httpx.Client(
-            transport=httpx.MockTransport(handler), base_url="https://dummy"
-        )
-        adapter = MeteoSwissOpenDataReanalysisAdapter(
-            stac_base_url=_STAC_BASE,
-            stac_collection=_STAC_COLLECTION,
-            http_client=client,
-            extractor=ExactExtractGridExtractor(),
-            basins={sid: basin},
-            clock=_clock,
-        )
-
+        adapter = _real_fixture_adapter(sid, handler)
         rows = adapter.fetch_archive_year(
             ForcingSource.METEOSWISS_RHIRESD, 2020, [_make_config(sid)]
         )
@@ -1282,16 +1426,21 @@ class TestRealShapeFixtureExtraction:
         assert rows
         assert all(r.parameter == "precipitation" for r in rows)
         assert all(r.source == ForcingSource.METEOSWISS_RHIRESD.value for r in rows)
-        # A real, finite, non-negative basin-average precipitation value —
-        # not NaN (which is what a broken CRS/dim path would silently emit).
-        for row in rows:
-            assert row.value == row.value  # not NaN
-            assert row.value >= 0.0
+        means = {r.valid_time: r.value for r in rows}
+        assert set(means) == set(_RHIRESD_EXPECTED)
+        for valid_time, expected in _RHIRESD_EXPECTED.items():
+            assert means[valid_time] == pytest.approx(expected, rel=1e-9)
 
-    def test_sreld_ch01r_daily_fixture_extracts_real_value(self) -> None:
+    def test_sreld_ch01r_archive_fixture_extracts_known_basin_means(self) -> None:
+        # The ch01r SrelD case goes through the WRITER product-scoped
+        # ``fetch_products`` path, which routes archive-backed products through
+        # the yearly archive family — the same code path the 115b2 backfill
+        # uses. Proves ch01r archive asset selection AND extraction math (not a
+        # daily fetch, which never touches archive addressing).
         sid = StationId(uuid.uuid4())
         asset_url = "https://dummy/assets/sreld_real.nc"
         data = _real_fixture_bytes("sreld_ch01r_real_shape.nc")
+        assets = _archive_asset("sreld", "ch01r", 2026, asset_url)
 
         def handler(request: httpx.Request) -> httpx.Response:
             url = str(request.url)
@@ -1299,60 +1448,25 @@ class TestRealShapeFixtureExtraction:
                 return httpx.Response(
                     200, content=data, headers={"content-type": "application/x-netcdf"}
                 )
-            if "/collections/" in url:
-                feature = {
-                    "id": "20260709-ch",
-                    "properties": {
-                        "datetime": "2026-07-09T00:00:00Z",
-                        "updated": "2026-07-09T05:00:00Z",
-                    },
-                    "assets": {
-                        "ogd-surface-derived-grid.sreld_ch01r.swiss.lv95_"
-                        "20260709000000_20260709000000.nc": {
-                            "href": asset_url,
-                            "type": "application/x-netcdf",
-                        }
-                    },
-                    "links": [],
-                }
-                return httpx.Response(200, json={"features": [feature], "links": []})
-            return httpx.Response(200, json={"features": [], "links": []})
+            if url.endswith("/items/archive-ch"):
+                return httpx.Response(200, json=_archive_item(assets))
+            # A daily-item lookup here would mean archive routing regressed —
+            # fail loudly rather than silently gap out.
+            raise AssertionError(f"unexpected request (must use archive): {url}")
 
-        basin_id = BasinId(uuid.uuid4())
-        basin = Basin(
-            id=basin_id,
-            code="bern",
-            name="Bern",
-            geometry=_REAL_FIXTURE_BASIN,
-            area_km2=100.0,
-            attributes=None,
-            band_geometries=None,
-            created_at=ensure_utc(datetime(2026, 1, 1, tzinfo=UTC)),
-            network="test",
-        )
-        client = httpx.Client(
-            transport=httpx.MockTransport(handler), base_url="https://dummy"
-        )
-        adapter = MeteoSwissOpenDataReanalysisAdapter(
-            stac_base_url=_STAC_BASE,
-            stac_collection=_STAC_COLLECTION,
-            http_client=client,
-            extractor=ExactExtractGridExtractor(),
-            basins={sid: basin},
-            clock=_clock,
-        )
-
-        rows = adapter.fetch_reanalysis(
+        adapter = _real_fixture_adapter(sid, handler)
+        rows = adapter.fetch_products(
+            [ForcingSource.METEOSWISS_SRELD],
             [_make_config(sid)],
             ensure_utc(datetime(2026, 7, 9, tzinfo=UTC)),
-            ensure_utc(datetime(2026, 7, 10, tzinfo=UTC)),
+            ensure_utc(datetime(2026, 7, 11, tzinfo=UTC)),
             ["relative_sunshine_duration"],
         )
 
         assert rows
         assert all(r.parameter == "relative_sunshine_duration" for r in rows)
         assert all(r.source == ForcingSource.METEOSWISS_SRELD.value for r in rows)
-        # Sunshine duration is a percentage of the astronomical maximum.
-        for row in rows:
-            assert row.value == row.value  # not NaN
-            assert 0.0 <= row.value <= 100.0
+        means = {r.valid_time: r.value for r in rows}
+        assert set(means) == set(_SRELD_EXPECTED)
+        for valid_time, expected in _SRELD_EXPECTED.items():
+            assert means[valid_time] == pytest.approx(expected, rel=1e-9)
