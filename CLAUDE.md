@@ -28,6 +28,7 @@ See `docs/workflow.md` for the full conventions. Key points:
 - **Every code change updates affected docs** — no exceptions
 - **No subagent runs from a DRAFT plan** — user must confirm first
 - **Multi-model review is mandatory for all non-trivial plans and patches** (trivial-only exemption: typos, comments, single-line log text, mechanical no-behavior edits). Orchestrator builds a context packet first; Claude design + Codex repo-grounded (`file:line`) perspectives are the floor, not the ceiling; no model approves its own output; confirming review before READY and post-implementation review before PR; human owns READY and merge. See `docs/workflow.md` § Multi-Model Review.
+- **Run that review with the repo workflows — the default, not an afterthought:** for a non-trivial **plan**, run the **`plan`** workflow (a real independent Codex pass is a required reviewer every round); to build a **READY** plan, run the **`implement`** workflow (red-first acceptance tests → independent verify → Codex diff-review loop with re-verified fixer rounds, hold-at-PR). `plan-review` is the older Sonnet-only plan variant, kept as a fallback (no Codex). `plan` and `implement` shell out to Codex, so they need `codex exec --sandbox read-only` permitted in the local allowlist. See `docs/workflow.md` § Tooling.
 
 ### Avoid Task Jags
 

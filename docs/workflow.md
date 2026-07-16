@@ -182,9 +182,9 @@ so the loop's natural endpoint is "nothing left to add," which is the
 over-engineering attractor. Left unchecked, plans over-scope and detail-bearing docs
 accrete reference detail that rots. Counter it two ways:
 
-- **In-loop:** `plan-review` runs a standing **proportionality lens** that argues for
-  cuts each round (over-scope, gold-plating, speculative generality, and reference
-  detail that belongs in code/docstrings).
+- **In-loop:** the `plan` workflow (and its Sonnet-only predecessor `plan-review`) runs a
+  standing **proportionality lens** that argues for cuts each round (over-scope, gold-plating,
+  speculative generality, and reference detail that belongs in code/docstrings).
 - **Before READY** — for **detail-bearing artifacts** (docs, checklists, schemas; not
   code): run one **subtractive right-sizing pass** that judges the artifact against
   its *fitness test*, not against "is anything missing?".
@@ -309,13 +309,17 @@ hold-at-PR**:
 4. Only the human merges — once the loop converges clean, or the human
    explicitly accepts the residuals.
 
-**Why this is a manual convention (for now):** WF2 (`vision-build`) is a
-*built-in* workflow, so its implementer↔reviewer quality-gate loop cannot be
-edited in-repo today. WF1 (`plan-review`) *was* updated to loop-until-converge +
-escalate-after-5 (2026-07-10, #69). **The eventual goal (tracked) is to
-reimplement `vision-build` as a repo-level `.claude/workflows/vision-build.js`
-with the same loop-until-converge + escalation baked into its quality gate** —
-then this convention becomes automatic rather than manual.
+**Now automated by the `implement` workflow (manual fallback retained).** The rounds
+above — independent Codex review of the committed diff → fix → re-review until converge,
+test-soundness proof, hold-at-PR — are exactly what `.claude/workflows/implement.js` runs
+for you on a READY plan (it also locks the plan's key acceptance criteria *red-first* and
+re-verifies the gates after every fixer round). So for a normal build, run `implement`
+rather than hand-rolling these rounds. Keep running them **by hand** when `implement`
+isn't used, or when the Codex CLI hangs (a known intermittent failure) — the convention
+is the policy; the workflow is one way to execute it. The plan-side loop `plan` (and its
+predecessor `plan-review`) already loops-until-converge + escalates-after-5. *(Distinct
+from this: Plan 112 tracks reimplementing the manifest-driven WF2 `vision-build`
+auto-test-authoring path — a different contract than `implement`'s conventional build.)*
 
 ### Authority gates
 
@@ -338,10 +342,12 @@ a tool as follows:
 
 | Policy stage | Tool | Where it lives |
 |---|---|---|
-| Plan-doc review loop (pre-READY / confirming round) | `plan-review` skill | `.claude/skills/…` + `.claude/workflows/plan-review.js` |
+| Plan-doc review loop (pre-READY / confirming round) — **default** | **`plan` workflow** — a real independent Codex pass (`codex exec`) is a required reviewer EVERY round, alongside Claude design/proportionality lenses | `.claude/workflows/plan.js` |
+| — lighter Sonnet-only variant of the above (legacy fallback; no Codex) | `plan-review` workflow | `.claude/workflows/plan-review.js` |
 | Interactive plan stress-test / surface design forks | `grill-me` skill | `.claude/skills/grill-me/` |
+| READY-plan build + post-implementation Codex gate — **default** | **`implement` workflow** — red-first acceptance tests → independent verify (re-runs the gates) → Codex-diff review loop with re-verified fixer rounds; hold-at-PR | `.claude/workflows/implement.js` |
 | Vision → ordered, human-approved milestone list (WF1) | `vision-decompose` skill | skill |
-| Milestone implementation + post-implementation gate (WF2) | `vision-build` skill | skill, driven by `.claude/workflow-capabilities.json` |
+| Manifest-driven milestone build w/ auto-test-authoring (WF2 — **separate track, currently unused**; see Plan 112) | `vision-build` skill | skill, driven by `.claude/workflow-capabilities.json` |
 | Task Exit Gate / acceptance gates for WF2 | gate manifest | `.claude/workflow-capabilities.json` (mirrors `.github/workflows/ci.yml`) |
 
 Notes:
@@ -349,6 +355,12 @@ Notes:
 - **The policy is not auto-enforced.** No hook blocks a commit or PR for skipping
   multi-model review — the tools above run it, but the orchestrator is
   responsible for invoking them.
+- **`plan` / `implement` are the DEFAULT Codex-backed workflows** (the manual,
+  hand-rolled `codex exec` review is now baked in as a reflexive step). `plan-review`
+  is the older **Sonnet-only** plan variant, kept as a fallback (it does NOT run Codex).
+  `plan` and `implement` shell out to Codex, so they require **`codex exec --sandbox
+  read-only`** to be permitted in the local allowlist (`.claude/settings.local.json`) —
+  they hang or are denied without it.
 - **WF2 (`vision-build`) — first run 2026-07-10 (Plan 105).** It BLOCKED at the
   locked-test-authoring soundness gate (twice): the auto-author kept writing
   tests against the changing `_fetch_nwp_task` signature that *errored* instead
