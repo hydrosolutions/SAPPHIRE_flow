@@ -422,6 +422,14 @@ uv run pytest tests/unit/services/test_gateway_coverage_gate.py::TestGatewayCove
    training unless the covered span contains the requested window for every required key
    `(gateway_hru_name, name, dataset, variable, band_id)`. A required key **absent** from the
    manifest is treated as no-coverage (refuse).
+   This is a **training-readiness** gate, and its consequence is enforced by the *model lifecycle*,
+   not by a second operational check: a model that cannot be trained (coverage refused) produces no
+   artifact → gets no `ACTIVE` assignment → **never runs operationally** by construction. So there
+   is no separate "operational training-coverage" gate. The gate produces a **signal**, not an
+   irreversible block: a **head hydrologist retains the existing manual-promotion authority**
+   (`promote_artifact`, `ModelArtifactStatus.PENDING_APPROVAL`,
+   `services/model_onboarding.py:1445-1447`) to declare a model operational despite short
+   auto-coverage.
 2. **`assert_returned_span_covers_request(requested, returned)`** — HARD-BLOCK (raise) when the
    returned data span is shorter than requested. **Training hard-blocks. Operational forecast
    fetches log WARNING and continue** (a short horizon is still usable), consistent with the
@@ -516,13 +524,18 @@ RECAP_API_KEY=... uv run pytest tests/integration/live/test_recap_gateway_live.p
 | Table populated only by future importer | Resolver returns `None` for every station until then. | Fixture-tested now; production readiness gated on Plan 120 + accepted package (2D note). |
 
 Recommendation: **do not promote to READY until Plan 120 (the §5a importer) is sequenced** and the
-one residual span-check default below is confirmed by the owner.
+the span-check design below is confirmed by the owner.
 
 ## Residual OWNER DECISIONs
 
-- **Operational span-check behavior (3B item 2)** was not explicitly ruled on. Closed at the
-  code-grounded default (training hard-blocks; operational WARNs+continues, matching the existing
-  per-station `operational_inputs.no_nwp` graceful path). Owner to confirm or override.
+- **Coverage = training-readiness gate + manual override — RESOLVED (owner, 2026-07-16).** Short
+  training-history coverage refuses *automatic* training/promotion; an untrainable model never
+  reaches operation *by construction* (no artifact → no assignment), so there is no separate
+  "operational training-coverage" gate. A head hydrologist can manually promote despite short
+  coverage (existing promotion authority — Task 3B item 1). The **distinct per-cycle returned-span
+  check** (3B item 2) hard-blocks *training* but only WARNs+continues *operationally* — a short
+  forecast **horizon** is still usable — matching the existing `operational_inputs.no_nwp` graceful
+  path (`:358`). Confirmed at that default. *(No residual span-check fork remains.)*
 
 All other forks are settled: resolver (082 ships store-backed + §5a table, importer = Plan 120);
 error behavior (hard-abort); watchdog mechanism (reuse `NWP_DELIVERY` + reason); selector (existing
