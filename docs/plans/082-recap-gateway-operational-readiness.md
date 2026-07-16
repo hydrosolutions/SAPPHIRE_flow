@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-06-25
 plan: 082
 title: recap Gateway operational and training readiness
@@ -27,8 +27,9 @@ depends_on:
 
 ## Status
 
-This plan is **DRAFT**. Do not begin implementation and do not dispatch subagents until the
-user promotes it to READY. Both dependencies (081, 115a) are merged.
+**READY** (owner-confirmed 2026-07-16). Both dependencies (081, 115a) are merged; 082's build +
+tests are fixture-backed and do not wait on Plan 120 (120 gates only the live production run). See
+§ Review History — the `plan` workflow + independent Codex converged, final verdict APPROVE.
 
 ## Objective
 
@@ -540,6 +541,24 @@ the span-check design below is confirmed by the owner.
 All other forks are settled: resolver (082 ships store-backed + §5a table, importer = Plan 120);
 error behavior (hard-abort); watchdog mechanism (reuse `NWP_DELIVERY` + reason); selector (existing
 `type` key); snow-forecast (added now).
+
+## Review History
+
+Adversarial, code-grounded review — the repo `plan` workflow (Claude design/proportionality
+lenses + a REQUIRED independent Codex `codex exec` pass every round) plus separate independent
+Codex passes. No model approved its own output. Rounds 2026-07-15/16.
+
+| Round | Reviewer | Outcome | Blocking | Status | Key result |
+|---|---|---|---|---|---|
+| 1 | plan-review (pre-081-merge) | ESCALATE | — | superseded | Parked until Plan 081 merged — 082 had been written against 081 *assumptions*; grounding needed the real merged adapter. |
+| 2 | plan-review + Codex (post-081-merge) | ESCALATE | 4 | resolved | Built on misdiagnosed code: a "homogeneity invariant" citing the GriddedForecast branch the dict-returning Recap adapter never hits; the Flow-1 config-validation collision; Flow-6 dispatch mirroring a non-existent mechanism; coverage gate not executable. |
+| 3 | owner | decisions | — | resolved | Owner settled the forks: 082 ships a store-backed resolver + §5a table (importer = Plan 120); config/resolution/auth errors HARD-ABORT; snow-forecast added; watchdog reuses `NWP_DELIVERY`; selector reuses `type`. |
+| 4 | independent Codex | NEEDS_CHANGES | 1 | resolved | §5a table-ownership contradiction (082 claimed the table while Plan 120's stub also claimed it). Split clarified: 082 owns the §5a base schema + resolver; 120 owns population + provenance. |
+| 5 | independent Codex + owner | APPROVE | 0 | user-confirmed | Full review verified correct against merged code; the span-check fork resolved (coverage = training-readiness gate + head-hydrologist manual-promotion override; per-cycle horizon WARNs+continues). No residual findings. Owner directed `/implement`. |
+
+Production-run prerequisite (not a build gate): 082's live run needs Plan 120 (the §5a
+importer) + an accepted basin/static package populating the mapping. 082's build + tests are
+independent (fixture-backed).
 
 ## Dependency Graph
 
