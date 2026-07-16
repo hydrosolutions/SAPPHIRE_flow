@@ -21,7 +21,7 @@ the locked decisions so the three child plans need not repeat them.
   routing. No behaviour flip. **This is what unblocks 081/082.**
 - **[115b — Flow 6 reachability + hybrid default](115b-weather-flow6-reachability.md)** — the
   risky one. Deserves to fail alone.
-- **[115c — cleanup](115c-weather-identity-cleanup.md)** — `0031` NOT NULL, API/dashboard, docs.
+- **[115c — cleanup](115c-weather-identity-cleanup.md)** — `0032` NOT NULL, API/dashboard, docs.
 
 **⛔ The live DB audit (§Audit) gates 115a READY.** Mac-mini unreachable 2026-07-14.
 
@@ -266,7 +266,7 @@ as the Plan 100 blackout.
 2. **115a** — identity, accessors, consumer rewiring, migration `0030`, containment.
 3. **081/082** — gateway adapter + dispatch, on a correct foundation. *(Parallel with 115b.)*
 4. **115b** — Flow 6 reachability, hybrid parameter-drop fix + default flip, existing-station backfill.
-5. **115c** — `0031` NOT NULL, API/dashboard role, doc sync.
+5. **115c** — `0032` NOT NULL, API/dashboard role, doc sync.
 6. **082 Task 3B** — parametric multi-year backfill (Flow 6 is hardcoded to 60 days,
    `ingest_weather_history.py:50`).
 7. **113** — schedule alignment.

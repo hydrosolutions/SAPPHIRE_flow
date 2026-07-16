@@ -15,7 +15,7 @@ class TestPgParameterStore:
     ) -> None:
         store = PgParameterStore(db_connection)
         results = store.fetch_all()
-        assert len(results) == 10
+        assert len(results) == 11
         names = {p.name for p in results}
         assert names == {
             "discharge",
@@ -28,7 +28,19 @@ class TestPgParameterStore:
             "snow_depth",
             "reference_et",
             "swe",
+            "relative_sunshine_duration",
         }
+
+    def test_relative_sunshine_duration_seeded(
+        self, db_connection: sa.Connection
+    ) -> None:
+        # Plan 115b1 §1A: the fifth canonical forcing parameter's seed row.
+        store = PgParameterStore(db_connection)
+        result = store.fetch_by_name("relative_sunshine_duration")
+        assert result is not None
+        assert result.unit == "%"
+        assert result.parameter_domain == ParameterDomain.WEATHER
+        assert result.aggregation_method == AggregationMethod.MEAN
 
     def test_fetch_by_name_found(self, db_connection: sa.Connection) -> None:
         store = PgParameterStore(db_connection)

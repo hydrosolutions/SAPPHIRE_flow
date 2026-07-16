@@ -47,7 +47,7 @@ Flow 6 stays dark until 115b.
 ## Non-goals
 
 Flow 6 reachability, the hybrid default flip, the existing-station binding backfill, and the
-CAMELS `extraction_type` repair are **115b**. `0031` NOT NULL, the API/dashboard role column and
+CAMELS `extraction_type` repair are **115b**. `0032` NOT NULL, the API/dashboard role column and
 doc sync are **115c**.
 
 ## Scope
@@ -114,7 +114,7 @@ UPDATE station_weather_sources
 wrote a row during the rollback window) maps by the same rule and logs
 `weather_source.legacy_null_role` at WARNING. **It carries the same allowlist and raises on an
 unknown name** — an open `else` would silently classify an unknown source as REANALYSIS, bypassing
-the guard. Marked `# Plan 115c: delete with revision 0031`.
+the guard. Marked `# Plan 115c: delete with revision 0032`.
 
 ### 4. Onboarding sets the role explicitly
 
@@ -282,7 +282,7 @@ uv run pytest
 *(Blocker from review round 6: an earlier draft deferred the schema docs to 115c. That violates the
 repo rule "every code change updates affected docs" (`AGENTS.md:27`) and meant 115a was **not** a
 standalone landing — 115c was holding 115a's exit-gate work. The `role` column is added **here**, so
-its docs ship **here**. 115c keeps only the `0031` tightening docs.)*
+its docs ship **here**. 115c keeps only the `0032` tightening docs.)*
 
 - `docs/spec/types-and-protocols.md` — the `role` field, the `WeatherSourceRole` enum, and the
   role-scoped accessors on the `StationStore` Protocol.
@@ -299,4 +299,4 @@ its docs ship **here**. 115c keeps only the `0031` tightening docs.)*
   (`forecast`, `reanalysis`) to the enum-value table.
 - `docs/touchpoint-maps.md` — the operational-inputs / time-series-preprocessing map must name the
   role-scoped accessors (`assemble_station_operational_inputs` is a listed touchpoint).
-- `docs/standards/cicd.md` — the `0030`→`0031` two-release sequence.
+- `docs/standards/cicd.md` — the `0030`→`0032` two-release sequence.

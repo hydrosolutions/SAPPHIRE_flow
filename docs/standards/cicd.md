@@ -143,7 +143,7 @@ illustrates the additive-then-tighten pattern for a column that must eventually 
 `NOT NULL`: migration `0030` (115a) adds `role` **nullable**, backfills it, and applies
 a NULL-tolerant `CheckConstraint("role IS NULL OR role IN ('forecast','reanalysis')")`
 so the previous image tag can still write an unroled row during the rollback window. A
-later migration `0031` (115c) tightens the column to `NOT NULL` only once that rollback
+later migration `0032` (115c) tightens the column to `NOT NULL` only once that rollback
 window has closed. Do not collapse the two into one release — the nullable step exists
 specifically so `0030` stays backwards-compatible with the pre-115a image per the rule
 above.

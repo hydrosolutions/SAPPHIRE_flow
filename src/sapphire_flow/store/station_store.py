@@ -42,8 +42,10 @@ _KNOWN_FORECAST_SOURCES = frozenset({"icon_ch2_eps"})
 _KNOWN_REANALYSIS_SOURCES = frozenset({"camels-ch"})
 
 
-# Plan 115c: delete with revision 0031 (once role is NOT NULL, this shim and
-# its allowlist are dead code).
+# Plan 115c: delete with revision 0032 (once role is NOT NULL, this shim and
+# its allowlist are dead code). Revision 0031 is taken by Plan 115b1 (the
+# relative_sunshine_duration parameter seed), so the NOT NULL tightening lands
+# at 0032.
 def _legacy_role_for_source(nwp_source: str) -> WeatherSourceRole:
     if nwp_source in _KNOWN_FORECAST_SOURCES:
         return WeatherSourceRole.FORECAST
@@ -384,7 +386,7 @@ def _row_to_assignment(row: sa.engine.row.RowMapping) -> ModelAssignment:
 def _row_to_weather_source(row: sa.engine.row.RowMapping) -> StationWeatherSource:
     role_raw = row["role"]
     if role_raw is None:
-        # Plan 115c: delete with revision 0031 — only reachable if a
+        # Plan 115c: delete with revision 0032 — only reachable if a
         # pre-115a image wrote this row during the rollback window.
         nwp_source = row["nwp_source"]
         role = _legacy_role_for_source(nwp_source)

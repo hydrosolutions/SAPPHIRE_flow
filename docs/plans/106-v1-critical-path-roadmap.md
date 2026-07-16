@@ -120,7 +120,7 @@ config later; `BLOCKED` = core design needs an external answer first (see §3).
 | recap-dg-client forcing adapter (offline) | **081** | DRAFT | NOW | — | 1 |
 | Weather-source identity: role field + store accessors + consumer rewiring | **115a** *(115 track; supersedes 114)* | DRAFT | NOW | live DB audit (**gates READY**); Swiss-testable; **blocks 082** | 1 |
 | Flow 6 reachability: hybrid param-drop fix + default flip + existing-station backfill | **115b** | DRAFT | after 115a | **the risky landing** — isolated so a revert doesn't drag back the schema | 1 |
-| Weather identity cleanup: 0031 NOT NULL, API role column, doc sync | **115c** | DRAFT | after 115b | non-gating | 2 |
+| Weather identity cleanup: 0032 NOT NULL, API role column, doc sync | **115c** | DRAFT | after 115b | non-gating | 2 |
 | recap Gateway operational + training readiness (live) | **082** | DRAFT | BLOCKED | 081; gateway creds/coverage | 1 |
 | Nepal data-sources umbrella (IFS/DHM/ERA5-Land) | **047** | DRAFT (stub — **scope STALE, must be revised before READY**, see §4 action) | NOW* | 081/082; DHM+geometry | 1 |
 | ERA5-Land reanalysis source | — | *subsumed by 081/082* | NOW | 081 | 1 |

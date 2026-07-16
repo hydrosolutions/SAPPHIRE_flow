@@ -122,8 +122,19 @@ class DeploymentConfig(BaseModel):
     infer_missing_thresholds: bool = False
 
     skill_gate_thresholds: dict[str, SkillGateMetric] = {}
+    # Forecast/future-dynamic availability: parameters an NWP forecast product
+    # actually delivers (ICON-CH2-EPS fetches only tot_prec + t_2m today).
     available_nwp_parameters: frozenset[str] = frozenset(
         {"precipitation", "temperature"}
+    )
+    # Past-dynamic-ONLY reanalysis parameters (Plan 115b1 §1E): parameters with
+    # a self-derived MeteoSwiss reanalysis product but NO forecast counterpart —
+    # e.g. SrelD (relative_sunshine_duration) has no NWP forecast product
+    # (meteoswiss_nwp.py fetches only tot_prec/t_2m). Advertising these in
+    # ``available_nwp_parameters`` would let a model declare them as
+    # future-dynamic, which can never be delivered operationally.
+    available_past_only_nwp_parameters: frozenset[str] = frozenset(
+        {"relative_sunshine_duration"}
     )
 
     # model_id -> priority (lower = preferred; tried first in the PRIMARY
@@ -268,6 +279,16 @@ class DeploymentConfig(BaseModel):
                     f"{FALLBACK_PRIORITY_THRESHOLD}, got {configured}"
                 )
         return self
+
+    @property
+    def available_past_nwp_parameters(self) -> frozenset[str]:
+        """Past-dynamic availability: reanalysis parameters usable as
+        historical model inputs — the forecast/future set PLUS any past-only
+        reanalysis parameters (Plan 115b1 §1E). Distinct from
+        ``available_nwp_parameters`` (forecast/future-dynamic availability)
+        because some reanalysis products have no forecast counterpart.
+        """
+        return self.available_nwp_parameters | self.available_past_only_nwp_parameters
 
     def priority_for_model(self, model_id: str) -> int:
         """Resolve a model's assignment priority (lower = preferred).

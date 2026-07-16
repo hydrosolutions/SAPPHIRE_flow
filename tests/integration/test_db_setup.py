@@ -54,6 +54,7 @@ class TestDatabaseSetup:
             "snow_depth",
             "reference_et",
             "swe",
+            "relative_sunshine_duration",
         }
         assert expected == names
 

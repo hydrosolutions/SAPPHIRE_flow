@@ -23,11 +23,17 @@ if TYPE_CHECKING:
 
 # Per-parameter v0b priority chains (Plan 072 §Priority chains): the MeteoSwiss
 # open-data source first, then CAMELS-CH as the pre-2020 fallback.
+#
+# ``relative_sunshine_duration`` (Plan 115b1 §1A) is a SINGLE-source chain —
+# SrelD, no CAMELS fallback — added additively here; it does not touch the
+# precipitation/temperature chains (those are Plan 115b phase 5's job, not
+# this plan's).
 _PRIORITY_CHAINS: dict[str, tuple[ForcingSource, ...]] = {
     "precipitation": (ForcingSource.METEOSWISS_RPRELIMD, ForcingSource.CAMELS_CH),
     "temperature": (ForcingSource.METEOSWISS_TABSD, ForcingSource.CAMELS_CH),
     "temperature_min": (ForcingSource.METEOSWISS_TMIND, ForcingSource.CAMELS_CH),
     "temperature_max": (ForcingSource.METEOSWISS_TMAXD, ForcingSource.CAMELS_CH),
+    "relative_sunshine_duration": (ForcingSource.METEOSWISS_SRELD,),
 }
 
 _DEFAULT_PARAMETERS: tuple[str, ...] = (
@@ -35,6 +41,7 @@ _DEFAULT_PARAMETERS: tuple[str, ...] = (
     "temperature",
     "temperature_min",
     "temperature_max",
+    "relative_sunshine_duration",
 )
 
 
