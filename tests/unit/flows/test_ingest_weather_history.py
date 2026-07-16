@@ -395,6 +395,16 @@ class TestIngestWeatherHistoryFlow:
             "temperature_max",
             "relative_sunshine_duration",
         }
+        # Pin the EXACT non-precip product set (not just the parameters) —
+        # otherwise dropping e.g. METEOSWISS_SRELD from _NON_PRECIP_PRODUCTS
+        # would leave the parameter list unchanged and slip through silently
+        # (Plan 115b1 §1A — SrelD is one of the four non-precip products).
+        assert set(other_calls[0].products) == {
+            ForcingSource.METEOSWISS_TABSD,
+            ForcingSource.METEOSWISS_TMIND,
+            ForcingSource.METEOSWISS_TMAXD,
+            ForcingSource.METEOSWISS_SRELD,
+        }
 
         # The adapter's rows were persisted verbatim (known-answer).
         assert _project(store.records) == _project_raw([precip_row, other_row])
