@@ -1807,6 +1807,10 @@ class RecapGatewayConfig:
     staleness_threshold_hours: float
     hru_metadata_source: str
     max_retries: int
+    # Optional; default DEFAULT_MAX_CYCLE_AGE_HOURS = 18.0 (3 IFS cycles).
+    # The fallback probe bound: how far `resolve_latest_cycle` walks back from
+    # the nominal IFS cycle before degrading to runoff-only (Task 2B/2D).
+    max_cycle_age_hours: float = 18.0
 
 def load_recap_api_key(*, secret_path: Path | None = None) -> str: ...
 def build_recap_client_config(*, api_key: str, config: RecapGatewayConfig) -> ApiClientConfig: ...

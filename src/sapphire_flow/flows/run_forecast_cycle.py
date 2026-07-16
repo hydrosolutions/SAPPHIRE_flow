@@ -1103,7 +1103,19 @@ def _fetch_nwp_task(
     resolved_cycle = (
         next(iter(result_object.values())).cycle_time if result_object else cycle_time
     )
-    return _NwpFetchOutcome(cycle_time=resolved_cycle, fallback_used=False)
+    # Provenance (Codex round 2 Finding): a pre-extracted/dict adapter (Recap)
+    # may have walked back to an OLDER published cycle when the nominal cycle was
+    # unpublished. That is a FALLBACK, not PRIMARY — the downstream loop maps
+    # `fallback_used` to `NwpCycleSource`. Detect it by comparing the resolved
+    # cycle against the nominal cycle, BOTH floored to the IFS publication
+    # cadence the same way `resolve_latest_cycle` floors, so a non-cadence-
+    # aligned nominal request (e.g. 12:30) is never a false-positive fallback.
+    from sapphire_flow.adapters.recap_gateway import floor_to_ifs_cadence
+
+    fallback_used = floor_to_ifs_cadence(resolved_cycle) != floor_to_ifs_cadence(
+        cycle_time
+    )
+    return _NwpFetchOutcome(cycle_time=resolved_cycle, fallback_used=fallback_used)
 
 
 # ---------------------------------------------------------------------------

@@ -334,6 +334,18 @@ def _floor_to_cadence(moment: UtcDatetime, cadence_hours: float) -> UtcDatetime:
     return ensure_utc(datetime.fromtimestamp(floored, tz=UTC))
 
 
+def floor_to_ifs_cadence(moment: UtcDatetime) -> UtcDatetime:
+    """Floor a moment to the IFS publication cadence (``_IFS_CADENCE_HOURS``).
+
+    Public helper so callers (e.g. the Flow-1 provenance code, Codex round 2
+    Finding) can decide whether a resolved cycle is a fallback by comparing it
+    against the nominal cycle floored the SAME way ``resolve_latest_cycle``
+    floors — a non-cadence-aligned nominal (e.g. 12:30) must not be read as a
+    fallback.
+    """
+    return _floor_to_cadence(moment, _IFS_CADENCE_HOURS)
+
+
 def resolve_latest_cycle(
     client: RecapClientLike,
     *,

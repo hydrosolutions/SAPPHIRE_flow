@@ -4246,6 +4246,144 @@ class TestNwpExtractionSourceFilter:
         assert len(nwp_store._records) > 0
 
 
+class TestPreExtractedDictFallbackProvenance:
+    """Codex round 2 (new MAJOR): the dict-return (Recap) path must record
+    ``fallback_used=True`` when the adapter walked back to an OLDER published
+    cycle. Pre-fix it returned ``fallback_used=False`` unconditionally, so a
+    fallback forecast was mis-recorded as ``NwpCycleSource.PRIMARY``, hiding
+    that fallback data was used."""
+
+    def _run(self, resolved_cycle: UtcDatetime) -> _NwpFetchOutcome | None:
+        sid = StationId(uuid4())
+        nwp_store = FakeWeatherForecastStore()
+        source = StationWeatherSource(
+            station_id=sid,
+            nwp_source=_NWP_SOURCE,
+            extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+            status=WeatherSourceStatus.ACTIVE,
+            role=WeatherSourceRole.FORECAST,
+        )
+        pre_extracted = _make_basin_avg_result([sid], cycle_time=resolved_cycle)
+        return _fetch_nwp_task.fn(
+            adapter=FakeWeatherForecastSource(result=pre_extracted),
+            station_configs=[source],
+            cycle_time=_NOW,  # nominal request, on a 6h cadence boundary
+            weather_forecast_store=nwp_store,
+            clock=_clock,
+            grid_store=None,
+            grid_extractor=FakeGridExtractor(result={}),
+            station_basins={},
+            grid_archive_base_path=None,
+        )
+
+    def test_older_resolved_cycle_marks_fallback(self) -> None:
+        # Nominal cycle (_NOW) unpublished; the adapter returned data at the
+        # previous 6h IFS cycle. That is a FALLBACK.
+        resolved = ensure_utc(_NOW - timedelta(hours=6))
+        out = self._run(resolved)
+        assert out is not None
+        assert out.cycle_time == resolved
+        assert out.fallback_used is True
+
+    def test_nominal_resolved_cycle_marks_primary(self) -> None:
+        # Negative control: the adapter returned data at the nominal cycle ->
+        # PRIMARY, not fallback.
+        out = self._run(_NOW)
+        assert out is not None
+        assert out.cycle_time == _NOW
+        assert out.fallback_used is False
+
+
+class TestDictPathFallbackFullFlowProvenance:
+    """Codex round 2 (new MAJOR), end-to-end: a dict-return adapter whose
+    forecast carries an older resolved cycle must yield a STORED forecast with
+    ``nwp_cycle_source=FALLBACK`` and ``nwp_cycle_reference_time`` = the older
+    resolved cycle — not PRIMARY @ nominal."""
+
+    def _stores(self, sid: StationId) -> tuple[object, ...]:
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+            extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+            basin_store=basin_store,
+        )
+        return (
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forecast_store,
+            state_store,
+            alert_store,
+            baseline_store,
+            basin_store,
+            forcing_store,
+        )
+
+    def test_dict_fallback_forecast_records_fallback_source(self) -> None:
+        sid = StationId(uuid4())
+        (
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forecast_store,
+            state_store,
+            alert_store,
+            baseline_store,
+            basin_store,
+            forcing_store,
+        ) = self._stores(sid)
+
+        resolved_cycle = ensure_utc(_NOW - timedelta(hours=6))
+        # A pre-extracted dict result (as RecapGatewayForecastAdapter returns)
+        # whose forecast cycle_time is the OLDER published cycle.
+        dict_result = _make_basin_avg_result([sid], cycle_time=resolved_cycle)
+        adapter = FakeWeatherForecastSource(result=dict_result)
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=adapter,
+            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+            config=_make_config(nwp_grid_archive_base_path="/tmp/test_grids"),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+            grid_store=FakeNwpGridStore(),
+            grid_extractor=FakeGridExtractor(result={}),
+        )
+
+        assert result.forecasts_stored >= 1
+        stored = list(forecast_store._forecasts.values())
+        assert stored, "expected a stored forecast; station was skipped"
+        assert all(fc.nwp_cycle_source == NwpCycleSource.FALLBACK for fc in stored)
+        assert all(fc.nwp_cycle_reference_time == resolved_cycle for fc in stored)
+
+
 class TestDeterministicNwpSourceSelection:
     """B. Phase B must select the FORECAST-role binding explicitly, via
     ``StationStore.fetch_forecast_binding`` — never by fetch order, by a
