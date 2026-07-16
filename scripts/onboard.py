@@ -33,6 +33,7 @@ import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
 import structlog
@@ -46,6 +47,9 @@ from sapphire_flow.store.historical_forcing_store import PgHistoricalForcingStor
 from sapphire_flow.store.observation_store import PgObservationStore
 from sapphire_flow.store.station_store import PgStationStore
 from sapphire_flow.types.datetime import ensure_utc
+
+if TYPE_CHECKING:
+    from sapphire_flow.services.reanalysis_backfill import MeteoSwissBackfillAdapter
 
 configure_api_logging()
 log = structlog.get_logger(__name__)
@@ -287,23 +291,35 @@ def main(argv: list[str] | None = None) -> int:
             # Plan 115b2 §2B/§2C: the MeteoSwiss reanalysis binding + a
             # per-station backfill-or-hold. Wired here (the production
             # entrypoint) rather than defaulted inside onboarding.py, so unit
-            # tests using fakes are unaffected. ``--skip-meteoswiss-backfill``
-            # writes the binding only (§2B) without the network-heavy §2C
-            # backfill — every station onboarded that way is held out of
-            # OPERATIONAL promotion until a subsequent backfill run.
-            reanalysis_adapter = None
+            # tests using fakes are unaffected.
+            #
+            # The hold gate (``require_meteoswiss_backfill``) is ALWAYS on in
+            # production and is DECOUPLED from whether the fetch runs: with
+            # ``--skip-meteoswiss-backfill`` we write the binding (§2B) but run
+            # no fetch (factory is None), and every eligible station is still
+            # held out of OPERATIONAL/trainable promotion until a subsequent
+            # backfill run lands its rows — never promoted with a zero-row
+            # binding.
+            #
+            # The adapter is built via a FACTORY that onboarding invokes only
+            # AFTER the basins/stations are persisted, so its per-station basin
+            # snapshot includes genuinely new stations onboarded this run.
+            reanalysis_adapter_factory = None
             if not args.skip_meteoswiss_backfill:
                 from sapphire_flow.flows.ingest_weather_history import (
                     _load_reanalysis_stac_config,  # pyright: ignore[reportPrivateUsage]
                     build_production_reanalysis_adapter,
                 )
 
-                reanalysis_adapter = build_production_reanalysis_adapter(
-                    config=_load_reanalysis_stac_config(),
-                    station_store=station_store,
-                    basin_store=basin_store,
-                    clock=clock,
-                )
+                def _build_reanalysis_adapter() -> MeteoSwissBackfillAdapter:
+                    return build_production_reanalysis_adapter(
+                        config=_load_reanalysis_stac_config(),
+                        station_store=station_store,
+                        basin_store=basin_store,
+                        clock=clock,
+                    )
+
+                reanalysis_adapter_factory = _build_reanalysis_adapter
 
             result = onboard_from_camelsch(
                 data_dir=data_dir,
@@ -326,7 +342,8 @@ def main(argv: list[str] | None = None) -> int:
                 forcing_source=forcing_source,
                 deployment_config=deployment_config,
                 hindcast_days=args.hindcast_days,
-                reanalysis_adapter=reanalysis_adapter,
+                reanalysis_adapter_factory=reanalysis_adapter_factory,
+                require_meteoswiss_backfill=True,
             )
     except Exception as exc:
         log.error("onboarding_failed", error=str(exc))

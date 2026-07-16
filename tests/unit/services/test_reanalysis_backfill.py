@@ -4,11 +4,18 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
+from unittest.mock import patch
 from uuid import uuid4
 
-from shapely.geometry import box
+from shapely.geometry import Polygon, box
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+from sapphire_flow.services import reanalysis_backfill
 from sapphire_flow.services.reanalysis_backfill import (
     BackfillSpan,
     bind_meteoswiss_reanalysis_fleet,
@@ -36,6 +43,31 @@ from tests.fakes.fake_stores import (
 _EPOCH = ensure_utc(datetime(2026, 1, 1, tzinfo=UTC))
 
 
+class _LogSpy:
+    """Records structured log calls on the module logger. Config-independent —
+    unlike ``structlog.testing.capture_logs``, which another test can defeat by
+    importing a script that calls ``configure_api_logging`` at module load
+    (switching structlog into stdlib-bridge mode + proxy caching)."""
+
+    def __init__(self) -> None:
+        self.events: list[dict[str, Any]] = []
+
+    def _record(self, event: str, **kw: Any) -> None:
+        self.events.append({"event": event, **kw})
+
+    warning = _record
+    info = _record
+    error = _record
+    debug = _record
+
+
+@contextmanager
+def _captured_logs() -> Iterator[list[dict[str, Any]]]:
+    spy = _LogSpy()
+    with patch.object(reanalysis_backfill, "log", spy):
+        yield spy.events
+
+
 def _valid_basin(network: str = "bafu") -> Basin:
     return Basin(
         id=BasinId(uuid4()),
@@ -56,6 +88,38 @@ def _invalid_basin(network: str = "bafu") -> Basin:
         code=f"basin-{uuid4().hex[:6]}",
         name="Invalid basin (no geometry)",
         geometry=None,
+        area_km2=100.0,
+        attributes=None,
+        band_geometries=None,
+        created_at=_EPOCH,
+        network=network,
+    )
+
+
+def _empty_polygon_basin(network: str = "bafu") -> Basin:
+    return Basin(
+        id=BasinId(uuid4()),
+        code=f"basin-{uuid4().hex[:6]}",
+        name="Empty-polygon basin",
+        geometry=Polygon(),  # correct type, but geometrically empty
+        area_km2=100.0,
+        attributes=None,
+        band_geometries=None,
+        created_at=_EPOCH,
+        network=network,
+    )
+
+
+def _self_intersecting_basin(network: str = "bafu") -> Basin:
+    # A bow-tie polygon: right type (Polygon) but self-intersecting, so
+    # ``is_valid`` is False and it must be excluded like a missing geometry.
+    bowtie = Polygon([(0.0, 0.0), (1.0, 1.0), (1.0, 0.0), (0.0, 1.0)])
+    assert not bowtie.is_valid
+    return Basin(
+        id=BasinId(uuid4()),
+        code=f"basin-{uuid4().hex[:6]}",
+        name="Self-intersecting basin",
+        geometry=bowtie,
         area_km2=100.0,
         attributes=None,
         band_geometries=None,
@@ -97,6 +161,48 @@ class TestEligibleMeteoswissConfigs:
         configs = eligible_meteoswiss_configs([station], basin_store)
 
         assert configs == []
+
+    def test_station_with_empty_polygon_is_excluded_and_logged(self) -> None:
+        # MAJOR: a geometrically EMPTY polygon has the right TYPE but no usable
+        # geometry — a type-only check would wrongly pass it.
+        basin = _empty_polygon_basin()
+        station = make_station_config(basin_id=basin.id)
+        basin_store = FakeBasinStore()
+        basin_store.store_basin(basin)
+
+        with _captured_logs() as cap:
+            configs = eligible_meteoswiss_configs([station], basin_store)
+
+        assert configs == []
+        excluded = [
+            e for e in cap if e.get("event") == "reanalysis_backfill.station_excluded"
+        ]
+        assert any(
+            e.get("station_id") == str(station.id)
+            and e.get("reason") == "no_valid_basin_geometry"
+            for e in excluded
+        )
+
+    def test_station_with_self_intersecting_polygon_is_excluded_and_logged(
+        self,
+    ) -> None:
+        # MAJOR: a self-intersecting (invalid) polygon likewise passes the
+        # type check but is not a usable extraction geometry.
+        basin = _self_intersecting_basin()
+        station = make_station_config(basin_id=basin.id)
+        basin_store = FakeBasinStore()
+        basin_store.store_basin(basin)
+
+        with _captured_logs() as cap:
+            configs = eligible_meteoswiss_configs([station], basin_store)
+
+        assert configs == []
+        assert any(
+            e.get("event") == "reanalysis_backfill.station_excluded"
+            and e.get("station_id") == str(station.id)
+            and e.get("reason") == "no_valid_basin_geometry"
+            for e in cap
+        )
 
     def test_station_with_dangling_basin_id_is_excluded(self) -> None:
         # basin_id points at a basin that was never stored.

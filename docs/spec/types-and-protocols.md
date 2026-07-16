@@ -2404,10 +2404,14 @@ class HistoricalForcingStore(Protocol):
         # Plan 115b2 §3C — resumable gap-detection presence check for the
         # chunked MeteoSwiss backfill. For each station_id, the set of
         # calendar days (UTC, from valid_time) already stored for
-        # (source, parameter, spatial_type) within [start, end) — keyed on
-        # the LOGICAL key, i.e. regardless of version (a day counts as
-        # "covered" if ANY version exists for it). Every requested station_id
-        # is present in the result (empty set if it has no rows).
+        # (source, parameter, spatial_type) within [start, end) — regardless of
+        # version (a day counts as "covered" if ANY version exists for it).
+        # Every requested station_id is present in the result (empty set if it
+        # has no rows). SCOPE NOTE: the plan's full LOGICAL key also includes
+        # band_id + member_id, but this method serves only the BASIN_AVERAGE
+        # backfill where both are always None, so it narrows the key to
+        # (station_id, source, parameter, spatial_type). Extend the signature
+        # before reusing it for an elevation-band or ensemble source.
 ```
 
 Module: `protocols/stores.py`

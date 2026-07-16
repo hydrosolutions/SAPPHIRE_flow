@@ -98,7 +98,12 @@ class MeteoSwissBackfillAdapter(Protocol):
 
 
 def _has_valid_geometry(geometry: object) -> bool:
-    return isinstance(geometry, (Polygon, MultiPolygon))
+    # Type alone is not enough (MAJOR): an empty or self-intersecting polygon
+    # is still a Polygon/MultiPolygon but yields no usable extraction geometry
+    # and would be silently dropped downstream by ``ExactExtractGridExtractor``.
+    if not isinstance(geometry, (Polygon, MultiPolygon)):
+        return False
+    return not geometry.is_empty and geometry.is_valid
 
 
 def _make_binding(station: StationConfig) -> StationWeatherSource:

@@ -217,7 +217,8 @@ def _run_onboarding(
     deployment_config: DeploymentConfig | None = None,
     hindcast_days: int | None = None,
     parameter_store: ParameterStore | None = None,
-    reanalysis_adapter: MeteoSwissBackfillAdapter | None = None,
+    reanalysis_adapter_factory: Callable[[], MeteoSwissBackfillAdapter] | None = None,
+    require_meteoswiss_backfill: bool = False,
 ) -> OnboardingResult:
     errors: list[str] = []
     stations_created = 0
@@ -400,9 +401,10 @@ def _run_onboarding(
     # eligible station resolved this run (§3D — valid basin polygon; not
     # limited to stations with CAMELS forcing, unlike Step 4b), followed by a
     # per-station backfill-or-hold (§2C). A binding alone gives a station ZERO
-    # rows — the same class of bug this plan exists to end — so Step 8 below
-    # withholds OPERATIONAL promotion from a MeteoSwiss-eligible station until
-    # its backfill has landed at least one row.
+    # rows — the same class of bug this plan exists to end — so the held-out
+    # set computed here withholds a MeteoSwiss-eligible station from model
+    # assignment (Step 6), training (Step 7), and OPERATIONAL promotion (Step 8)
+    # until its backfill has landed at least one row.
     from sapphire_flow.services.reanalysis_backfill import (
         eligible_meteoswiss_configs,
         run_backfill,
@@ -427,12 +429,19 @@ def _run_onboarding(
                 error=str(exc),
             )
 
-    # The backfill itself only runs when a reanalysis_adapter is wired in
-    # (production onboarding always supplies one via scripts/onboard.py; unit
-    # tests that pass no adapter get Step 4c's binding write only — matching
-    # how model_store/forcing_source already gate their own optional steps in
-    # this same function).
-    if reanalysis_adapter is not None and meteoswiss_configs:
+    # The backfill fetch only runs when a factory is wired in (production
+    # onboarding always supplies one via scripts/onboard.py + the deployed
+    # flow; unit tests that pass no factory get Step 4c's binding write only —
+    # matching how model_store/forcing_source already gate their own optional
+    # steps in this same function).
+    #
+    # BLOCKER (ordering): the adapter is built HERE — AFTER Step 1 stored the
+    # basins and Step 2 stored the stations — never before. The production
+    # adapter snapshots the per-station basin map at construction, so building
+    # it earlier would leave a genuinely NEW station's basin absent from that
+    # snapshot and its per-station backfill would silently fetch nothing.
+    if reanalysis_adapter_factory is not None and meteoswiss_configs:
+        reanalysis_adapter = reanalysis_adapter_factory()
         try:
             backfill_result = run_backfill(
                 adapter=reanalysis_adapter,
@@ -453,6 +462,22 @@ def _run_onboarding(
             sources = forcing_store.fetch_available_sources(ws.station_id)
             if any(s.startswith("meteoswiss_") for s in sources):
                 meteoswiss_backfilled.add(ws.station_id)
+
+    # Plan 115b2 §2C: a held-out station is NOT operational OR trainable. The
+    # hold requirement (``require_meteoswiss_backfill``) is DELIBERATELY
+    # decoupled from whether the fetch actually ran — the production
+    # ``--skip-meteoswiss-backfill`` path writes the binding but runs no fetch,
+    # yet must still HOLD every eligible station out (never promote a live
+    # binding with zero forcing rows). When the requirement is off (fake-store
+    # unit tests) the held-out set is empty and nothing is withheld.
+    held_out_ids: set[StationId] = set()
+    if require_meteoswiss_backfill:
+        held_out_ids = meteoswiss_eligible_ids - meteoswiss_backfilled
+        for sid in sorted(held_out_ids, key=str):
+            log.warning(
+                "onboarding.station_held_out_meteoswiss_backfill",
+                station_id=str(sid),
+            )
 
     # Step 5: Run QC (per station, using the station's target parameter)
     checker = Stage1QualityChecker()
@@ -607,6 +632,10 @@ def _run_onboarding(
         if discovered:
             register_models(discovered, model_store, clock)
         for station_id in resolved_station_ids:
+            # Plan 115b2 §2C: a held-out station is not trainable — skip model
+            # assignment for it too (not only OPERATIONAL promotion at Step 8).
+            if station_id in held_out_ids:
+                continue
             station = station_store.fetch_station(station_id)
             if station is None or station.station_kind == StationKind.WEATHER:
                 continue
@@ -670,10 +699,15 @@ def _run_onboarding(
 
             discovered = discover_models()
 
+        # Plan 115b2 §2C: a held-out station is not trainable — exclude it from
+        # the training scope alongside weather stations.
+        # Plan 115b2 §2C: a held-out station is not trainable — exclude it from
+        # the training scope alongside weather stations.
         non_weather_ids = frozenset(
             sid
             for sid in resolved_station_ids
-            if (s := station_store.fetch_station(sid)) is not None
+            if sid not in held_out_ids
+            and (s := station_store.fetch_station(sid)) is not None
             and s.station_kind != StationKind.WEATHER
         )
         for model_id, model in discovered.items():
@@ -796,20 +830,14 @@ def _run_onboarding(
             continue
         # Plan 115b2 §2C: a MeteoSwiss-eligible station is held out of
         # promotion until its per-station backfill has landed at least one
-        # row — never promoted with a live binding and zero forcing data.
-        if (
-            reanalysis_adapter is not None
-            and station_id in meteoswiss_eligible_ids
-            and station_id not in meteoswiss_backfilled
-        ):
+        # row — never promoted with a live binding and zero forcing data. The
+        # held-out set was computed right after Step 4c (and already excluded
+        # this station from Steps 6/7); enforce it here as the final gate.
+        if station_id in held_out_ids:
             errors.append(
                 f"Cannot mark station {station_id} operational: MeteoSwiss "
                 "reanalysis binding exists but the per-station backfill "
                 "produced zero rows (Plan 115b2 §2C — held out)"
-            )
-            log.warning(
-                "onboarding.station_held_out_meteoswiss_backfill",
-                station_id=str(station_id),
             )
             continue
         if station.station_kind == StationKind.WEATHER:
@@ -897,7 +925,8 @@ def onboard_from_camelsch(
     parameter_store: ParameterStore | None = None,
     water_level_datums_masl: dict[str, float] | None = None,
     water_level_units: dict[str, str] | None = None,
-    reanalysis_adapter: MeteoSwissBackfillAdapter | None = None,
+    reanalysis_adapter_factory: Callable[[], MeteoSwissBackfillAdapter] | None = None,
+    require_meteoswiss_backfill: bool = False,
 ) -> OnboardingResult:
     from sapphire_flow.adapters.camelsch_adapter import (
         load_forcing,
@@ -966,7 +995,8 @@ def onboard_from_camelsch(
         deployment_config=deployment_config,
         hindcast_days=hindcast_days,
         parameter_store=parameter_store,
-        reanalysis_adapter=reanalysis_adapter,
+        reanalysis_adapter_factory=reanalysis_adapter_factory,
+        require_meteoswiss_backfill=require_meteoswiss_backfill,
     )
 
     log.info(

@@ -154,6 +154,15 @@ class PgHistoricalForcingStore:
         start: UtcDatetime,
         end: UtcDatetime,
     ) -> dict[StationId, set[date]]:
+        # Plan 115b2 §3C gap-detection presence check. The plan's LOGICAL key is
+        # (station_id, source, valid_time, parameter, spatial_type, band_id,
+        # member_id). This method DELIBERATELY narrows it to
+        # (station_id, source, parameter, spatial_type): it serves only the
+        # MeteoSwiss BASIN_AVERAGE backfill, whose rows always carry
+        # band_id=None / member_id=None, so those two dimensions are constant
+        # here and add no discrimination. Do NOT reuse this for an
+        # elevation-band or ensemble source without adding band_id/member_id to
+        # the signature and predicate.
         out: dict[StationId, set[date]] = {sid: set() for sid in station_ids}
         if not station_ids:
             return out

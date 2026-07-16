@@ -199,7 +199,18 @@ def _run(
     forcing_source: object = None,
     deployment_config: object = None,
     reanalysis_adapter: object = None,
+    require_meteoswiss_backfill: bool | None = None,
 ):
+    # Translate a pre-built adapter into the factory the service now takes.
+    # ``require`` defaults to "adapter was supplied" (production supplies one),
+    # but a test can force it on with no adapter to exercise the
+    # skip-backfill-but-still-hold path.
+    factory = (lambda: reanalysis_adapter) if reanalysis_adapter is not None else None
+    require = (
+        require_meteoswiss_backfill
+        if require_meteoswiss_backfill is not None
+        else reanalysis_adapter is not None
+    )
     return _run_onboarding(
         stations=stations,
         basins=basins,
@@ -222,7 +233,8 @@ def _run(
         skill_store=s.skill,
         forcing_source=forcing_source,  # type: ignore[arg-type]
         deployment_config=deployment_config,  # type: ignore[arg-type]
-        reanalysis_adapter=reanalysis_adapter,  # type: ignore[arg-type]
+        reanalysis_adapter_factory=factory,  # type: ignore[arg-type]
+        require_meteoswiss_backfill=require,
     )
 
 
@@ -1059,6 +1071,169 @@ class TestMeteoswissBindingAndBackfillOrHold:
         assert result.stations_marked_operational == 0
         assert any("MeteoSwiss" in e and str(sid) in e for e in result.errors)
         assert s.station.fetch_station(sid).station_status is StationStatus.ONBOARDING
+
+    def test_held_out_river_station_excluded_from_assignment_and_training(
+        self,
+    ) -> None:
+        # BLOCKER: a held-out station is NOT operational OR trainable. Step 8
+        # alone is not enough — a held-out station must be excluded from Step 6
+        # (model assignment) and Step 7 (training) too.
+        #
+        # Soundness: fails against a hold-out applied only at/after Step 8 —
+        # the held station would then still receive a Step-6 model assignment
+        # (fetch_model_assignments(held) != []) and could train a Step-7
+        # artifact.
+        from sapphire_flow.types.enums import SpatialRepresentation, WeatherSourceStatus
+        from sapphire_flow.types.station import StationWeatherSource
+        from tests.fakes.fake_models import FakeStationForecastModel
+
+        landed_sid = StationId(uuid4())
+        held_sid = StationId(uuid4())
+        landed_basin = _make_geo_basin("LAND01")
+        held_basin = _make_geo_basin("HELD01")
+        landed = make_station_config(
+            station_id=landed_sid,
+            code="LAND01",
+            basin_id=landed_basin.id,
+            station_status=StationStatus.ONBOARDING,
+        )
+        held = make_station_config(
+            station_id=held_sid,
+            code="HELD01",
+            basin_id=held_basin.id,
+            station_status=StationStatus.ONBOARDING,
+        )
+        s = _Stores()
+        s.wire_model_stores()
+        assert s.model is not None and s.artifact is not None
+        _seed_active_climatology_floor(s.artifact, landed_sid)
+        _seed_active_climatology_floor(s.artifact, held_sid)
+
+        for sid in (landed_sid, held_sid):
+            s.station.store_weather_source(
+                StationWeatherSource(
+                    station_id=sid,
+                    nwp_source="camels_ch",
+                    extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+                    status=WeatherSourceStatus.ACTIVE,
+                    role=WeatherSourceRole.REANALYSIS,
+                )
+            )
+
+        reanalysis_records = [
+            make_raw_historical_forcing(
+                station_id=sid,
+                parameter=param,
+                valid_time=datetime.fromtimestamp(
+                    _START.timestamp() + i * 86400, tz=UTC
+                ),
+                value=float(i % 10),
+            )
+            for sid in (landed_sid, held_sid)
+            for i in range(400)
+            for param in ("precipitation", "temperature")
+        ]
+        forcing_source = FakeWeatherReanalysisSource(records=reanalysis_records)
+
+        # The backfill lands a MeteoSwiss row ONLY for the landed station, so
+        # the held station ends the run with a live binding but zero rows.
+        landed_row = make_raw_historical_forcing(
+            station_id=landed_sid,
+            source=ForcingSource.METEOSWISS_TABSD.value,
+            parameter="temperature",
+            valid_time=datetime(1981, 1, 1, tzinfo=UTC),
+        )
+        adapter = _FakeMeteoswissBackfillAdapter(rows=[landed_row])
+
+        fake_model = FakeStationForecastModel()
+        discovered = {_FAKE_MODEL_ID: fake_model}
+
+        with patch(
+            "sapphire_flow.services.model_registry.discover_models",
+            return_value=discovered,
+        ):
+            result = _run(
+                s,
+                stations=[landed, held],
+                basins=[landed_basin, held_basin],
+                obs_by_station={
+                    landed_sid: _make_raw_obs(landed_sid, 400),
+                    held_sid: _make_raw_obs(held_sid, 400),
+                },
+                forcing_by_station={
+                    landed_sid: _make_forcing(landed_sid, 10),
+                    held_sid: _make_forcing(held_sid, 10),
+                },
+                forcing_source=forcing_source,
+                deployment_config=make_deployment_config(),
+                reanalysis_adapter=adapter,
+            )
+
+        # Step 6: the landed station is assigned the model; the held one is not.
+        landed_assignments = s.station.fetch_model_assignments(landed_sid)
+        held_assignments = s.station.fetch_model_assignments(held_sid)
+        assert any(a.model_id == _FAKE_MODEL_ID for a in landed_assignments)
+        assert held_assignments == []
+
+        # Step 7: the landed station trains an active artifact; the held one
+        # never does.
+        landed_active = s.artifact.fetch_artifacts_by_status(
+            model_id=_FAKE_MODEL_ID,
+            status=ModelArtifactStatus.ACTIVE,
+            station_id=landed_sid,
+        )
+        held_active = s.artifact.fetch_artifacts_by_status(
+            model_id=_FAKE_MODEL_ID,
+            status=ModelArtifactStatus.ACTIVE,
+            station_id=held_sid,
+        )
+        assert len(landed_active) >= 1
+        assert held_active == []
+
+        # Step 8: promotion status matches.
+        assert (
+            s.station.fetch_station(landed_sid).station_status
+            is StationStatus.OPERATIONAL
+        )
+        assert (
+            s.station.fetch_station(held_sid).station_status is StationStatus.ONBOARDING
+        )
+        assert any("MeteoSwiss" in e and str(held_sid) in e for e in result.errors)
+
+    def test_skip_backfill_still_holds_eligible_station(self) -> None:
+        # BLOCKER: ``--skip-meteoswiss-backfill`` writes the binding but runs
+        # NO fetch (factory is None) — yet the hold requirement is still ON, so
+        # the eligible station must be HELD OUT (a live binding with zero
+        # forcing rows is never promoted).
+        #
+        # Soundness: fails against a hold gate coupled to adapter/factory
+        # presence (skip → factory None → gate off → promoted).
+        sid = StationId(uuid4())
+        basin = _make_geo_basin("SKIP01")
+        station = make_station_config(
+            station_id=sid,
+            code="SKIP01",
+            basin_id=basin.id,
+            station_kind=StationKind.WEATHER,
+            station_status=StationStatus.ONBOARDING,
+        )
+        s = _Stores()
+
+        result = _run(
+            s,
+            stations=[station],
+            basins=[basin],
+            obs_by_station={sid: _make_raw_obs(sid, 20)},
+            forcing_by_station={},
+            reanalysis_adapter=None,  # skip: no fetch
+            require_meteoswiss_backfill=True,  # but hold requirement stays ON
+        )
+
+        bindings = {ws.nwp_source: ws for ws in s.station.fetch_weather_sources(sid)}
+        assert "meteoswiss_open_data_reanalysis" in bindings  # §2B binding written
+        assert result.stations_marked_operational == 0  # held out
+        assert s.station.fetch_station(sid).station_status is StationStatus.ONBOARDING
+        assert any("MeteoSwiss" in e and str(sid) in e for e in result.errors)
 
     def test_no_gate_when_reanalysis_adapter_not_supplied(self) -> None:
         # DI default (no adapter wired, e.g. every OTHER existing test in this
