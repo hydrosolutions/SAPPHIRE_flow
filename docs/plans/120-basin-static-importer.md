@@ -60,10 +60,27 @@ corrected versions of existing ones) over shared underlying static datasets. The
 **Decision B — basin state is VERSIONED by `package_id`, not overwritten and lost.** A
 correction (new `package_id` for an existing `(network, code)`) creates a **new version
 snapshot** of the basin's geometry + attributes + §5a mapping; the prior version is
-**retained (superseded, not deleted)**, and model artifacts reference the basin version
-they trained on — so `04` §11 bullet 4 ("which artifacts trained on the OLD data") is
-answerable by construction. Concrete mechanism and its one honest trade-off are in
-**Versioned basin state**, below.
+**retained (superseded, not deleted)**, and every model artifact records **the exact
+basin version(s) it trained on** via a lineage join table — so `04` §11 bullet 4 ("which
+artifacts trained on the OLD data") is answerable by construction, and a correction can
+deterministically name the artifacts to retrain. Concrete mechanism, the group-artifact
+lineage design, and the correction→retrain payoff are in **Versioned basin state**,
+below.
+
+---
+
+## Multi-tenant / professional-service posture
+
+This importer is built for **professional service provision to multiple hydromets** over
+the coming years, so auditability and cross-tenant automated retraining are first-class,
+not afterthoughts. Three design choices carry that intent: **network-scoped import**
+(`04:181` — `manifest.network` scopes every basin, so tenants never collide, Decision A);
+**complete per-basin version lineage** (`basin_versions` retains every superseded
+snapshot, and the artifact↔version join table records exactly which basin versions each
+artifact trained on); and **correction→retrain automation** (Task 2C emits the affected-
+artifact set for Flow 9). Together these mean a single tenant's basin correction is fully
+auditable and deterministically identifies the exact models to retrain — the
+differentiators for billing this as a service rather than a one-off deployment.
 
 ---
 
@@ -73,13 +90,14 @@ answerable by construction. Concrete mechanism and its one honest trade-off are 
 |---|---|
 | §5a mapping table **base** schema (`station_id, basin_id, gateway_hru_name, name, spatial_type, band_id`) + the resolver that reads it | **082** Task 2D (`082:279-283`) |
 | §5a **provenance columns** (`package_id`, `imported_at`), additive on 082's base table | **120** (Task 0A) |
-| `basin_static_packages` provenance table; `basin_versions` history table; `basins.package_id`; `model_artifacts.basin_version_id` | **120** (Task 0A) |
+| `basin_static_packages` provenance table; `basin_versions` history table; `basins.package_id`; `model_artifact_basin_versions` lineage join table | **120** (Task 0A) |
+| Additive `store_artifact` interface arg + train-time write of the lineage join rows | **120** (Task 2D — reaches into the training artifact-creation path) |
 | Populating all of the above from an accepted package | **120** (Phases 1–3) |
 
 Each schema **object** has one owner: 082 owns the §5a base table + resolver; 120 owns
 the additive provenance layer, the provenance table, and the basin-versioning schema.
-Basin versioning (`basin_versions` + `model_artifacts.basin_version_id`) is a larger
-change than 082's additive §5a columns, and it lives entirely in 120 — there is **no
+Basin versioning (`basin_versions` + `model_artifact_basin_versions`) is a larger change
+than 082's additive §5a columns, and it lives entirely in 120 — there is **no
 co-ownership of one object**. 120 layers additive migrations onto 082's already-settled
 base table (082 ships the store-backed resolver + §5a table, fixture-tested,
 `082:275-293`); it does not redefine 082's six base columns. The 120↔082 relationship
@@ -98,8 +116,8 @@ does **not** force 082's resolver to learn about supersession.
 ## Versioned basin state (Decision B — concrete mechanism)
 
 **Chosen mechanism: an additive `basin_versions` history table, keyed to the stable
-`basins.id`, plus `model_artifacts.basin_version_id`.** Not a version column on
-`basins`.
+`basins.id`, plus a `model_artifact_basin_versions` lineage join table.** Not a version
+column on `basins`, and not a singular FK on `model_artifacts`.
 
 Why a table, not a version column on `basins` (the `historical_forcing` pattern):
 `historical_forcing` (`db/metadata.py:372-429`) versions rows in place — a `version`
@@ -127,20 +145,18 @@ Schema (all additive; Task 0A):
   `area_km2`/`regional_basin`/`band_geometries` (existing readers and the Swiss v0
   CAMELS-CH basins are untouched — no data migration), plus an additive nullable
   **`basins.package_id`** FK naming the package that produced the current state.
-- **`model_artifacts` → basin-version provenance** — stamped at artifact-creation time.
-  `04` §11 bullet 4 becomes a query: artifacts trained on a now-`superseded_at IS NOT NULL`
-  version.
-  > **OWNER DECISION NEEDED — group-scoped artifacts (independent Codex review, 2026-07-16).**
-  > A singular `model_artifacts.basin_version_id` FK works only for **station-scoped**
-  > artifacts. But an artifact may be **`group_id`-scoped** (`db/metadata.py:461,467,495`),
-  > and a station group holds many stations → many basins → many `basin_versions`, so one FK
-  > cannot record what a group artifact trained on. Two options: **(a)** an artifact↔basin-version
-  > **join table** (`model_artifact_id, basin_version_id`) capturing every basin a station- OR
-  > group-scoped artifact used — full §11 fidelity; **(b)** scope §11 lineage to station-scoped
-  > artifacts only, and for group artifacts fall back to the group's member stations at correction
-  > time (coarser, documented gap). This couples with the stamp-site fork (where the stamp is
-  > wired: `stores.py:393` has no basin-version arg; training passes only station/group scope,
-  > `onboard_model.py:363`, `model_onboarding.py:1261`).
+- **`model_artifact_basin_versions`** (lineage join table, SETTLED — replaces a singular
+  FK). Columns `model_artifact_id` (FK → `model_artifacts.id`), `basin_version_id`
+  (FK → `basin_versions.id`); PK the pair. A **join table, not a singular
+  `model_artifacts.basin_version_id` FK**, because ML models train per **station GROUP**
+  (`GroupForecastModel`; `model_artifacts.group_id` `db/metadata.py:467`,
+  `models.artifact_scope='group'` `db/metadata.py:443`), and a group artifact spans many
+  stations → many basins → many `basin_versions`. A singular FK could record only a
+  station-scoped artifact's single basin; the join table records full §11 lineage for
+  **both** station- and group-scoped artifacts. `04` §11 bullet 4 becomes a join query:
+  `SELECT DISTINCT model_artifact_id FROM model_artifact_basin_versions JOIN
+  basin_versions … WHERE basin_versions.superseded_at IS NOT NULL` — the artifacts
+  trained on now-old data. `model_artifacts` itself gains **no** new column.
 
 On a correction (Task 2C): append a new `basin_versions` row (new `package_id`,
 `version+1`, `superseded_at NULL`); set the prior version's `superseded_at`; refresh the
@@ -148,16 +164,16 @@ On a correction (Task 2C): append a new `basin_versions` row (new `package_id`,
 package. The prior geometry/attributes/§5a mapping survive verbatim in the superseded
 `basin_versions` snapshot.
 
-> **Honest trade-off (stated, not hidden).** The `basins` *projection* row's
-> geometry/attributes ARE updated in place on a correction. Nothing is lost, because the
-> prior version's full snapshot is written to `basin_versions` **before** the projection
-> is refreshed — so "prior version retained, superseded, not deleted" and "artifacts
-> answerable by construction" both hold, which is Decision B's stated intent. The
-> alternative — `basins` as a thin identity row with geometry/attributes living ONLY in
-> `basin_versions` (zero in-place mutation) — costs a data migration of every existing
-> Swiss basin and a read-path refactor of `PgBasinStore`, for no gain against §11. That
-> alternative is left as a residual **OWNER DECISION** (Open questions) rather than
-> silently adopted.
+> **Trade-off — SETTLED (owner, 2026-07-16): keep projection-with-history.** The `basins`
+> *projection* row's geometry/attributes ARE updated in place on a correction, but the
+> prior version's full snapshot is written to `basin_versions` **within the same
+> one-package transaction, before** the projection is refreshed — so the version history
+> is **audit-complete either way**, and "prior version retained, superseded, not deleted"
+> plus "artifacts answerable by construction" both hold. The strict-no-mutation
+> alternative (`basins` as a thin identity row, geometry/attributes SoT only in
+> `basin_versions`) adds a data migration of every existing Swiss basin and a
+> `PgBasinStore` read-path refactor for **no audit benefit**, so it is rejected. Fork
+> resolved.
 
 ---
 
@@ -177,20 +193,24 @@ package. The prior geometry/attributes/§5a mapping survive verbatim in the supe
 3. Additive nullable `basins.package_id` FK → `basin_static_packages` (additive on
    `db/metadata.py:42-65`; no change to existing columns or `uq_basins_network_code`
    `:64`).
-4. Additive nullable `model_artifacts.basin_version_id` FK → `basin_versions.id`
-   (additive on `db/metadata.py:455-499`; no change to `ck_model_artifacts_scope_xor`).
+4. `model_artifact_basin_versions` lineage join table: `model_artifact_id` (FK →
+   `model_artifacts.id`), `basin_version_id` (FK → `basin_versions.id`), PK the pair.
+   New table only — **no** column added to `model_artifacts` (`db/metadata.py:455-499`
+   unchanged, `ck_model_artifacts_scope_xor` intact).
 5. Additive nullable `package_id` (FK) + `imported_at` on 082's §5a base table
    (`082:279-283`); no redefinition of its six base columns.
 
-**Scope out:** No change to 082's base §5a columns; no per-attribute (sub-basin)
-provenance table; no removal of any `basins` column.
+**Scope out:** No change to 082's base §5a columns; no change to `model_artifacts`
+columns; no per-attribute (sub-basin) provenance table; no removal of any `basins`
+column.
 
-**Verification** — structural introspection (not a substring scan): `basin_static_packages`
-and `basin_versions` exist with the stated PKs/FKs/`uq(basin_id, version)`; `basins`
-gains a nullable `package_id` FK while every pre-existing `basins` column and
-`uq_basins_network_code` are unchanged; `model_artifacts` gains a nullable
-`basin_version_id` FK with `ck_model_artifacts_scope_xor` intact; the §5a table gains
-nullable `package_id`/`imported_at` with its six base columns intact.
+**Verification** — structural introspection (not a substring scan): `basin_static_packages`,
+`basin_versions`, and `model_artifact_basin_versions` exist with the stated
+PKs/FKs/`uq(basin_id, version)` (join-table PK = the `(model_artifact_id,
+basin_version_id)` pair); `basins` gains a nullable `package_id` FK while every
+pre-existing `basins` column and `uq_basins_network_code` are unchanged;
+`model_artifacts` is structurally unchanged (`ck_model_artifacts_scope_xor` intact); the
+§5a table gains nullable `package_id`/`imported_at` with its six base columns intact.
 
 ```bash
 uv run pytest tests/unit/db/test_basin_static_provenance_schema.py::TestProvenanceSchema
@@ -355,11 +375,19 @@ Decision A/B:
   `basins.package_id` + the current §5a rows, add a `basin_static_packages` row, and set
   a **material-change flag** in the report. The insert-only store cannot do this today —
   this task adds an upsert/`update_basin_from_package` path keyed on `(network, code)`.
+- **Correction → affected-artifact set (professional-service payoff).** On superseding a
+  basin version, query `model_artifact_basin_versions` for the artifacts whose lineage
+  includes the now-superseded `basin_version_id`, and **emit that exact affected-artifact
+  set** to the retraining path (Flow 9 / the `04` §11 "material data change → retrain"
+  behavior). This is what makes a single basin correction deterministically name the
+  models to retrain — auditable and complete for both station- and group-scoped
+  artifacts. The set is returned in the acceptance report; the retrain itself is Flow 9.
 - **New `(network, code)`** → delegates to Task 2A insert (`version=1`).
 - **Material-change cascade (`04:688-695` steps 2–5: re-extract forcing, recompute
-  static attributes, retrain, recompute skill)** is **operator-triggered and OUT OF
-  SCOPE** — the importer records the correction + provenance + material-change flag; it
-  does not auto-retrain.
+  static attributes, retrain, recompute skill)** is **operator/Flow-9-triggered and OUT
+  OF SCOPE** — the importer records the correction + provenance + material-change flag
+  **and emits the affected-artifact set** (above); it does not itself re-extract or
+  retrain.
 
 **Scope out:** No automated retrain/hindcast cascade; no station deactivation.
 
@@ -373,8 +401,52 @@ intact, and the material-change flag is set; a basin already in the DB but absen
 the package → unchanged (no delete, no flag). The re-run and correction tests fail today
 because `store_basin` (`basin_store.py:43`) only inserts.
 
+**Affected-artifact gate (discriminating).** Seed basin `B`: two artifacts trained on
+`B` version `v1` and one trained on `v2` (each via `model_artifact_basin_versions` rows,
+mixing a station- and a group-scoped artifact). Correct `B` (→ `v3`, superseding `v2`):
+the emitted affected set MUST be **exactly the artifacts trained on the version current
+at their train time that is now superseded** — not all three, not none. (The fixture
+pins which artifacts each version carried, so "return everything" and "return nothing"
+both fail.)
+
 ```bash
-uv run pytest tests/integration/store/test_basin_importer_idempotency.py::TestReimportAndCorrections
+uv run pytest tests/integration/store/test_basin_importer_idempotency.py::TestReimportAndCorrections tests/integration/store/test_basin_importer_idempotency.py::TestCorrectionAffectedArtifacts
+```
+
+#### Task 2D — Train-time lineage write wiring — 120 OWNS this (SETTLED)
+
+**Scope in:** An unpopulated lineage table is worthless for a billed service, so 120
+**reaches into the training artifact-creation path** and wires it to write the
+`model_artifact_basin_versions` rows for every basin a station- OR group-scoped artifact
+trained on. **`store_artifact` (`protocols/stores.py:393`) is the single chokepoint** —
+*every* artifact-creation path funnels through it — so the lineage write is wired THERE,
+driven by the `station_id`/`group_id` scope the store already receives (station-scoped →
+its single basin's current version; group-scoped → the current version of **every**
+member-station basin, resolved via `TrainingUnit.station_ids` `types/training.py:18` →
+`stations.basin_id` `db/metadata.py:84` → current `basin_versions`). Wiring it inside the
+store (caller-agnostic) rather than per-caller is deliberate: it **structurally prevents a
+missed path**.
+
+**ALL artifact-creation callers this must cover (verified — a per-caller wiring would miss
+one):** onboarding — `services/model_onboarding.py:1261`, `flows/onboard_model.py:363`;
+**and the training/retraining flow** — `flows/train_models.py:377` (`_store_artifact_task`)
+→ `services/training.py:82` (`store_and_promote_artifact`) → `store_artifact`. Flow 6
+retraining artifacts are the ones MOST likely to be regenerated after a correction, so
+missing them would break the correction→retrain payoff for exactly the wrong artifacts.
+
+**Scope out:** No change to how artifacts are trained or promoted; no change to
+`model_artifacts` columns (the join table carries the lineage).
+
+**Verification (discriminating):** (a) a **station-scoped** artifact via `store_artifact`
+writes exactly one `model_artifact_basin_versions` row (its basin's current version); (b) a
+**group-scoped** artifact over N member-station basins writes N rows (one current version
+each); (c) an artifact created through the **training/retraining flow**
+(`store_and_promote_artifact`, not just onboarding) ALSO writes its lineage rows — a test
+that drives the Flow-6 path and asserts the join rows exist, so a wiring that only covered
+onboarding would FAIL this case.
+
+```bash
+uv run pytest tests/integration/store/test_model_artifact_lineage.py::TestLineageWriteOnStore
 ```
 
 ### Phase 3 — Import entrypoint + docs
@@ -384,9 +456,9 @@ uv run pytest tests/integration/store/test_basin_importer_idempotency.py::TestRe
 **Scope in:** The top-level import function/CLI wiring that composes 1A→1B→2A/2C→2B in
 one transaction per package, returning a structured **acceptance report** (accepted
 basins, `onboarding`-held basins with reasons, package-level rejections, warnings,
-material-change flags, and — where an artifact-creation site exists — the
-`basin_version_id` stamped) so the §9 "warnings MUST remain visible in onboarding
-reports" requirement (`04:653-655`) is met. The importer MUST NOT synthesize missing
+material-change flags, and — for corrections — the emitted affected-artifact set from
+Task 2C) so the §9 "warnings MUST remain visible in onboarding reports" requirement
+(`04:653-655`) is met. The importer MUST NOT synthesize missing
 attributes, edit geometry to pass validation, or fall back to another basin without a
 recorded operator decision (`04:670-672`).
 
@@ -407,12 +479,13 @@ uv run pytest tests/integration/services/test_basin_importer.py::TestImporterAcc
 - Update `04-basin-static-artifact-contract.md` §5a (`:305-310`), §6.2a (`:442-448`),
   and §11 (`:679-686`) to point at the realized persistence targets
   (`basin_static_packages`, `basin_versions`, `basins.package_id`,
-  `model_artifacts.basin_version_id`, §5a `package_id`/`imported_at`), replacing the "no
-  first-class field yet / left to the implementing plan" language.
+  `model_artifact_basin_versions` lineage, §5a `package_id`/`imported_at`) and to note
+  that a correction emits the affected-artifact set (§11 bullet 4 + the retrain cascade),
+  replacing the "no first-class field yet / left to the implementing plan" language.
 - Update `docs/spec/database-schema.md` (`:42`) and `docs/architecture-context.md`
   (`:2650`) — both still describe `basins` without the new provenance/version — to add
-  `basin_static_packages`, `basin_versions`, `basins.package_id`, and
-  `model_artifacts.basin_version_id`.
+  `basin_static_packages`, `basin_versions`, `basins.package_id`, and the
+  `model_artifact_basin_versions` lineage join table.
 - Add an importer runbook (`docs/operations/basin-static-importer-runbook.md`) covering
   package placement, running the importer, reading the acceptance report, and the
   correction/new-`package_id` procedure.
@@ -447,23 +520,22 @@ uv run pytest tests/unit/docs/test_basin_importer_docs.py::TestImporterDocs
 - Banding in the resolver / operational fetch — bands are persisted (Task 2B) but Recap
   v1 stays basin-average-only (`081:213`).
 
-## Open questions (residual owner decisions — resolve before READY)
+## Settled owner decisions (2026-07-16 — recorded, not open)
 
-- **`basins` mutation model (Decision B residual).** Chosen design keeps `basins` as a
-  mutable current-state projection with an append-only `basin_versions` history. The
-  strict-no-mutation alternative (`basins` as thin identity; geometry/attributes SoT in
-  `basin_versions`) is heavier (Swiss-basin data migration + `PgBasinStore` read-path
-  refactor) for no §11 gain. **Owner: confirm the projection design or accept the
-  migration cost.**
-- **`model_artifacts.basin_version_id` stamping site.** 120 adds the FK column and the
-  acceptance-report plumbing; the actual stamp happens at artifact creation in the
-  model-training/onboarding path. Is wiring that stamp in-scope for 120, or a thin
-  follow-on owned by the training flow? (Column-only without a stamp leaves §11 bullet 4
-  answerable-by-construction only once training populates it.)
-- **Correction UX.** On a correction that supersedes basins with existing trained
-  artifacts/forecasts, does the importer merely *flag* the material change (current
-  design) or additionally *quarantine* the affected station until the operator runs the
-  §11 cascade? Current design: flag only.
+- **`basins` mutation model → projection-with-history** (not strict-no-mutation). See the
+  Versioned-basin-state trade-off blockquote.
+- **Group-artifact provenance → `model_artifact_basin_versions` join table** (not a
+  singular FK).
+- **Stamp site → 120 owns the join-table schema AND the train-time write wiring**
+  (Task 2D), including the additive `store_artifact` parameter.
+
+## Open questions (resolve before READY)
+
+- **Correction UX beyond emit-to-retrain.** Task 2C now flags the material change **and**
+  emits the affected-artifact set to Flow 9 (retrain automation). Residual: should the
+  importer additionally *quarantine* the affected station/forecast path until Flow 9
+  completes, or leave it live until the operator promotes the retrained artifact? Current
+  design: emit + flag, no quarantine.
 - **Coverage check source (`04:651`).** "Basin outside required coverage" reuses 082's
   coverage manifest (082 Task 3A/3B) vs a standalone check. Prefer reuse; 082 is already
   a `depends_on`.
@@ -479,9 +551,13 @@ uv run pytest tests/unit/docs/test_basin_importer_docs.py::TestImporterDocs
 - `docs/plans/081-recap-dg-client-integration.md:213` (basin-average-only DECISION)
 - `src/sapphire_flow/types/basin.py:11-22`; `src/sapphire_flow/db/metadata.py:42-65`
   (`basins`), `:172-178`/`:319-324` (`elevation_band` usage), `:372-429`
-  (`historical_forcing` version+supersession precedent), `:455-499` (`model_artifacts`);
+  (`historical_forcing` version+supersession precedent), `:443`/`:467` (`group` artifact
+  scope + `group_id`), `:455-499` (`model_artifacts`, no basin lineage today);
   `src/sapphire_flow/store/basin_store.py:43-59`/`:71` (insert-only, `json.dumps` JSONB
   bug); `src/sapphire_flow/adapters/recap_gateway.py:327`/`:366` (basin-average-only)
+- Train-time lineage-write sites (Task 2D): `src/sapphire_flow/protocols/stores.py:393`
+  (`store_artifact` — no basin-version arg today); `src/sapphire_flow/services/model_onboarding.py:1261`
+  and `src/sapphire_flow/flows/onboard_model.py:363` (artifact-creation call sites)
 - `docs/spec/database-schema.md:42`, `docs/architecture-context.md:2650` (doc-update
   targets)
 
@@ -491,8 +567,8 @@ uv run pytest tests/unit/docs/test_basin_importer_docs.py::TestImporterDocs
   which contradicts the split above. Corrected (with this rework) to: 120 owns package
   import/validation, the §5a-row **population**, the provenance layer
   (`basin_static_packages` + additive `package_id`/`imported_at`), and **basin-state
-  versioning** (`basin_versions` + `model_artifacts.basin_version_id`); 082 owns the §5a
-  **base** table + resolver.
+  versioning** (`basin_versions` + the `model_artifact_basin_versions` lineage join
+  table); 082 owns the §5a **base** table + resolver.
 - **082 / `04`** should carry an "incremental/regional, versioned" package-completeness
   clarification (Decision A) — flagged for those docs' owners, not edited here.
 
@@ -518,7 +594,7 @@ uv run pytest tests/unit/docs/test_basin_importer_docs.py::TestImporterDocs
     {
       "id": "phase-2",
       "name": "Persistence (write side)",
-      "tasks": ["2A", "2B", "2C"],
+      "tasks": ["2A", "2B", "2C", "2D"],
       "parallel": false,
       "depends_on": ["phase-1"]
     },
@@ -535,7 +611,8 @@ uv run pytest tests/unit/docs/test_basin_importer_docs.py::TestImporterDocs
     "1B": ["1A"],
     "2A": ["0A", "1B"],
     "2B": ["2A"],
-    "2C": ["2A", "2B"],
+    "2D": ["0A"],
+    "2C": ["2A", "2B", "2D"],
     "3A": ["2C"],
     "3B": ["3A"]
   }

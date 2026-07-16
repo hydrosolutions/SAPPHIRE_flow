@@ -86,9 +86,10 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
   `DRAFT` — the importer the `04` contract §5a calls for (117 is docs-only and builds
   none). Owns package import/validation, the §5a-row **population**, the provenance layer
   (`basin_static_packages` + additive `package_id`/`imported_at`), and **basin-state
-  versioning** (`basin_versions` + `model_artifacts.basin_version_id`); Plan 082 owns the
-  §5a **base** table + the store-backed resolver that reads it. **Blocks 082's production
-  run** (not its build).
+  versioning** (`basin_versions` + the `model_artifact_basin_versions` lineage join
+  table, so a basin correction names exactly which artifacts to retrain); Plan 082 owns
+  the §5a **base** table + the store-backed resolver that reads it. **Blocks 082's
+  production run** (not its build).
 - **035** — Rating-curve provenance for skill integrity — `READY` — v1 DHM hQ.
 - **017** — Manual vs automatic station support — `DRAFT` — v1, DHM mixed networks.
 - **015** — Virtual / calculated station support — `DRAFT` — v1 (enum slice shipped).
