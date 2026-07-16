@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-07-15
 plan: 115b4
 parent: 115b
@@ -17,9 +17,15 @@ blocks: [115c]
 
 ## Status
 
-**DRAFT.** Fourth and final chunk (115b1 → 115b2 → 115b3 → **115b4**). Independent Codex review before
-READY. **This is the high-risk landing** — it changes what data reaches models, so it is isolated: a
-staging problem reverts here without dragging back the schema (115b1) or the backfilled data (115b2).
+**READY** (2026-07-16). Three independent Codex plan-review rounds → READY-TO-IMPLEMENT (round 1: 3
+blockers — the non-executable single-deploy choreography, the false `downgrade()`-restores-binding rollback
+claim, and an underspecified distribution-shift gate — the first two ESCALATED to and decided by the owner
+[two-step release + standard backup-restore rollback]; round 2: 1 blocker [deploy gate conflated the two
+releases] + 2 majors [phase-6 label / 5A returned-rows rule], all folded; round 3: no blockers, converged
+on two text-consistency leftovers now fixed). Fourth and final chunk (115b1 → 115b2 → 115b3 → **115b4**).
+**This is the high-risk landing** — it changes what data reaches models, so it is isolated as TWO sequenced
+releases: a staging problem reverts without dragging back the schema (115b1) or the backfilled data (115b2).
+Implementation authorised; hold at PR.
 
 **⚠️ Gated on 115b3.** Do not flip until the validation gate's result is recorded and any flag
 dispositioned.
@@ -30,10 +36,13 @@ dispositioned.
 
 - **5A — hybrid parameter-drop fix (BEFORE the flip).** `hybrid_reanalysis.py:78-84` silently `continue`s
   (drops the row) for any parameter with no configured chain; `StoreBackedReanalysisSource` (today's
-  default) passes any parameter through. Flipping as-is is a **silent data-loss regression**. Rule: a
-  requested parameter with **no configured chain raises `ConfigurationError`** — **unless exactly one
-  source is configured for that parameter**, in which case that source wins. *(Overlap test: two sources
-  for the same unconfigured parameter → raise, not a nondeterministic winner.)*
+  default) passes any parameter through. Flipping as-is is a **silent data-loss regression**. Rule
+  (decided from the ROWS ACTUALLY RETURNED for that parameter/logical key, NOT a static source map —
+  owner, round-1 MAJOR): **zero** sources returned rows → the parameter is genuinely absent, behave as
+  today (no row); **exactly one** source returned rows → that source wins (do not raise); **two or more**
+  distinct sources returned rows for a parameter with **no configured priority chain** → raise
+  `ConfigurationError` (a nondeterministic winner is the bug). The decision is made per resolved
+  parameter/key from the fetched rows, so it cannot drift from a stale config table.
 - **5B — the priority chain, no CAMELS tier.** `precipitation: RHIRESD → RPRELIMD`; `temperature: TABSD`;
   `temperature_min: TMIND`; `temperature_max: TMAXD`; `relative_sunshine_duration: SRELD`. Plan 072's
   `… → CAMELS_CH` chains are retired.
@@ -56,8 +65,9 @@ dispositioned.
   is any running system to confirm hybrid is serving.
 
   **Resolution — TWO SEQUENCED RELEASES on the standard deploy path (no bespoke alembic targets):**
-  - **Release A = 5A–5D** (param-drop fix, priority chain, distribution-shift gate, **flip default to
-    `hybrid`**). **No retire migration.** Deploy; **confirm the hybrid reader is serving** past-dynamic
+  - **Release A = 5A–5D + phase-6** (param-drop fix, priority chain, distribution-shift gate, **flip
+    default to `hybrid`**, plus the loudness/guards of phase-6). **No retire migration.** Deploy; **confirm
+    the hybrid reader is serving** past-dynamic
     features on staging (the deploy gate below).
   - **Release B = 5E** (the `camels-ch` binding-retirement migration), shipped **only after** Release A is
     confirmed serving. Deploy on the standard path.
