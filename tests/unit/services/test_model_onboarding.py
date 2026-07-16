@@ -122,7 +122,11 @@ class TestValidateCompatibility:
         available_features: frozenset[str],
         available_static: frozenset[str],
         time_step: timedelta,
+        available_past_features: frozenset[str] | None = None,
+        available_future_features: frozenset[str] | None = None,
     ) -> object:
+        # ``available_features`` seeds BOTH the past- and future-dynamic sides
+        # (Plan 115b1 §1E) unless a caller passes an explicit override for one.
         station = make_station_config(forecast_targets=station_forecast_targets)
         station_store = FakeStationStore()
         station_store.store_station(station)
@@ -133,7 +137,12 @@ class TestValidateCompatibility:
             unit=unit,
             station_store=station_store,
             group_store=None,  # type: ignore[arg-type]
-            available_features=available_features,
+            available_past_features=available_past_features
+            if available_past_features is not None
+            else available_features,
+            available_future_features=available_future_features
+            if available_future_features is not None
+            else available_features,
             available_static_by_station={station.id: available_static},
             requested_time_step=time_step,
         )
@@ -240,6 +249,70 @@ class TestValidateCompatibility:
         assert not report.is_compatible  # type: ignore[union-attr]
         assert "precipitation" in report.missing_future_dynamic  # type: ignore[union-attr]
         assert "temperature" in report.missing_future_dynamic  # type: ignore[union-attr]
+
+
+class TestPastVsFutureAvailabilitySplit:
+    """Plan 115b1 §1E (round-4 blocker): a reanalysis-only parameter (SrelD /
+    relative_sunshine_duration) has no forecast counterpart. It must be
+    accepted when declared past_dynamic and REJECTED when declared
+    future_dynamic — proving the past/future availability sets are genuinely
+    distinct, not a single conflated set.
+
+    Soundness: fails against a single ``available_features`` set shared by
+    both past and future checks (today's ``available_nwp_parameters``), which
+    would incorrectly accept the future_dynamic declaration too.
+    """
+
+    def _call(
+        self,
+        model: FakeStationForecastModel,
+        *,
+        available_past_features: frozenset[str],
+        available_future_features: frozenset[str],
+    ) -> object:
+        station = make_station_config(forecast_targets=frozenset({"discharge"}))
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        unit = make_training_unit(model_id=ModelId("test_model"), station_id=station.id)
+        return validate_compatibility_for_unit(
+            model_id=ModelId("test_model"),
+            model=model,
+            unit=unit,
+            station_store=station_store,
+            group_store=None,  # type: ignore[arg-type]
+            available_past_features=available_past_features,
+            available_future_features=available_future_features,
+            available_static_by_station={station.id: frozenset()},
+            requested_time_step=timedelta(days=1),
+        )
+
+    def test_sreld_accepted_as_past_dynamic(self) -> None:
+        model = _make_model_with_reqs(
+            past_dynamic=frozenset({"relative_sunshine_duration"}),
+            future_dynamic=frozenset(),
+        )
+        report = self._call(
+            model,
+            available_past_features=frozenset({"relative_sunshine_duration"}),
+            available_future_features=frozenset(),
+        )
+        assert report.is_compatible  # type: ignore[union-attr]
+        assert not report.missing_past_dynamic  # type: ignore[union-attr]
+
+    def test_sreld_rejected_as_future_dynamic(self) -> None:
+        model = _make_model_with_reqs(
+            past_dynamic=frozenset(),
+            future_dynamic=frozenset({"relative_sunshine_duration"}),
+        )
+        report = self._call(
+            model,
+            available_past_features=frozenset({"relative_sunshine_duration"}),
+            available_future_features=frozenset(),  # NOT future-available
+        )
+        assert not report.is_compatible  # type: ignore[union-attr]
+        assert (
+            "relative_sunshine_duration" in report.missing_future_dynamic  # type: ignore[union-attr]
+        )
 
 
 class TestSmokeTestModel:

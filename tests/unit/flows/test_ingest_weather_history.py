@@ -8,18 +8,23 @@ Design choices pinned by these tests (see the task summary for rationale):
   branch ``fix/071-ingest-flow``).
 * **Window**: ``[clock() - 60 days, clock()]`` — the rolling 60-day window
   ending at the injected clock's "now".
-* **Canonical parameters**: ``{"precipitation", "temperature",
-  "temperature_min", "temperature_max"}`` (the four MeteoSwiss daily products).
+* **Canonical parameters (Plan 115b1 §1A/§1G)**: five —
+  ``{"precipitation", "temperature", "temperature_min", "temperature_max",
+  "relative_sunshine_duration"}``. Precipitation is split across TWO products
+  by the discovered boundary R (§0a/§1D): ``fetch_products([RHIRESD], ...)``
+  over ``[start, min(R+1d, now))`` and ``fetch_products([RPRELIMD], ...)`` over
+  ``[max(start, R+1d), now)``; the other four parameters go through ONE more
+  ``fetch_products`` call (never the parameter-keyed ``fetch_reanalysis``,
+  which fails closed on "precipitation" once RhiresD exists — the whole point
+  of this rewrite, round-1 blocker).
 * **Station-config sourcing**: from the injected ``station_store``; the flow
   filters station weather-sources to those whose ``nwp_source`` matches the
   adapter's ``NWP_SOURCE`` and passes only those to the adapter. No reanalysis-
-  bound sources => no fetch, no write.
+  bound sources => no fetch, no write (and — self-containment — no STAC call
+  at all: R discovery is skipped too).
 * **Idempotency**: persistence relies on the merged ``HistoricalForcingStore``
   content-hash ``version`` supersession — a republished day (same logical key,
   new version) reads back as a single latest-version row.
-
-These tests fail-first: the flow module does not exist yet, so collection
-raises ``ModuleNotFoundError`` until the implementer creates it.
 """
 
 from __future__ import annotations
@@ -81,13 +86,16 @@ _CANONICAL_PARAMS = {
     "temperature",
     "temperature_min",
     "temperature_max",
+    "relative_sunshine_duration",
 }
 
 _REANALYSIS_SOURCE_TAGS = {
+    ForcingSource.METEOSWISS_RHIRESD.value,
     ForcingSource.METEOSWISS_RPRELIMD.value,
     ForcingSource.METEOSWISS_TABSD.value,
     ForcingSource.METEOSWISS_TMIND.value,
     ForcingSource.METEOSWISS_TMAXD.value,
+    ForcingSource.METEOSWISS_SRELD.value,
 }
 
 
@@ -101,7 +109,8 @@ def _fixed_clock() -> UtcDatetime:
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
-class _AdapterCall:
+class _ProductsCall:
+    products: list[ForcingSource]
     station_configs: list[StationWeatherSource]
     start: UtcDatetime
     end: UtcDatetime
@@ -109,8 +118,11 @@ class _AdapterCall:
 
 
 class _SpyReanalysisAdapter:
-    """Fake ``WeatherReanalysisSource`` recording every ``fetch_reanalysis``
-    call and replaying pre-canned ``RawHistoricalForcing`` responses.
+    """Fake ``_ReanalysisAdapter`` (Plan 115b1 §1G shape) recording every
+    ``fetch_products``/``discover_rhiresd_boundary`` call and replaying
+    pre-canned ``RawHistoricalForcing`` responses, keyed by WHICH product set
+    was requested (the flow issues up to three distinct calls per run:
+    RhiresD-scoped, RprelimD-scoped, and the four non-precip products).
 
     Exposes ``NWP_SOURCE`` so the flow can filter station weather-sources by
     the adapter's source identity (mirrors the real adapter ClassVar).
@@ -118,29 +130,71 @@ class _SpyReanalysisAdapter:
 
     NWP_SOURCE: ClassVar[str] = _REANALYSIS_SOURCE
 
-    def __init__(self, responses: list[list[RawHistoricalForcing]]) -> None:
-        self._responses = responses
-        self.calls: list[_AdapterCall] = []
-
-    def fetch_reanalysis(
+    def __init__(
         self,
+        *,
+        rhiresd_rows: list[RawHistoricalForcing] | None = None,
+        rprelimd_rows: list[RawHistoricalForcing] | None = None,
+        other_rows: list[RawHistoricalForcing] | None = None,
+        rhiresd_responses: list[list[RawHistoricalForcing]] | None = None,
+        rprelimd_responses: list[list[RawHistoricalForcing]] | None = None,
+        other_responses: list[list[RawHistoricalForcing]] | None = None,
+        rhiresd_boundary: UtcDatetime | None = None,
+    ) -> None:
+        # ``*_responses`` is a per-product-set QUEUE consumed one entry per
+        # matching call (the last entry repeats once exhausted) — for tests
+        # that invoke the flow more than once and expect a different result
+        # each time. ``*_rows`` is sugar for the common single-response case.
+        self._rhiresd_responses = (
+            rhiresd_responses if rhiresd_responses is not None else [rhiresd_rows or []]
+        )
+        self._rprelimd_responses = (
+            rprelimd_responses
+            if rprelimd_responses is not None
+            else [rprelimd_rows or []]
+        )
+        self._other_responses = (
+            other_responses if other_responses is not None else [other_rows or []]
+        )
+        self._rhiresd_boundary = rhiresd_boundary
+        self.calls: list[_ProductsCall] = []
+        self.boundary_calls = 0
+        self._rhiresd_idx = 0
+        self._rprelimd_idx = 0
+        self._other_idx = 0
+
+    def fetch_products(
+        self,
+        products: list[ForcingSource],
         station_configs: list[StationWeatherSource],
         start: UtcDatetime,
         end: UtcDatetime,
         parameters: list[str],
     ) -> list[RawHistoricalForcing]:
-        idx = len(self.calls)
         self.calls.append(
-            _AdapterCall(
+            _ProductsCall(
+                products=list(products),
                 station_configs=list(station_configs),
                 start=start,
                 end=end,
                 parameters=list(parameters),
             )
         )
-        if not self._responses:
-            return []
-        return self._responses[min(idx, len(self._responses) - 1)]
+        if ForcingSource.METEOSWISS_RHIRESD in products:
+            idx = min(self._rhiresd_idx, len(self._rhiresd_responses) - 1)
+            self._rhiresd_idx += 1
+            return list(self._rhiresd_responses[idx])
+        if ForcingSource.METEOSWISS_RPRELIMD in products:
+            idx = min(self._rprelimd_idx, len(self._rprelimd_responses) - 1)
+            self._rprelimd_idx += 1
+            return list(self._rprelimd_responses[idx])
+        idx = min(self._other_idx, len(self._other_responses) - 1)
+        self._other_idx += 1
+        return list(self._other_responses[idx])
+
+    def discover_rhiresd_boundary(self) -> UtcDatetime | None:
+        self.boundary_calls += 1
+        return self._rhiresd_boundary
 
 
 class _SupersedingForcingStore:
@@ -289,23 +343,26 @@ class TestIngestWeatherHistoryFlow:
         station_store.store_station(station)
         station_store.store_weather_source(_weather_source(station.id))
 
-        rows = [
-            _row(
-                station.id,
-                parameter="precipitation",
-                source=ForcingSource.METEOSWISS_RPRELIMD.value,
-                value=12.5,
-                version="v1",
-            ),
-            _row(
-                station.id,
-                parameter="temperature",
-                source=ForcingSource.METEOSWISS_TABSD.value,
-                value=9.0,
-                version="v1",
-            ),
-        ]
-        adapter = _SpyReanalysisAdapter([rows])
+        precip_row = _row(
+            station.id,
+            parameter="precipitation",
+            source=ForcingSource.METEOSWISS_RPRELIMD.value,
+            value=12.5,
+            version="v1",
+        )
+        other_row = _row(
+            station.id,
+            parameter="temperature",
+            source=ForcingSource.METEOSWISS_TABSD.value,
+            value=9.0,
+            version="v1",
+        )
+        # No rhiresd_boundary => R is undiscovered => the whole window is
+        # preliminary (RprelimD-scoped only; the RhiresD-scoped call is
+        # skipped, §0a/§1G).
+        adapter = _SpyReanalysisAdapter(
+            rprelimd_rows=[precip_row], other_rows=[other_row]
+        )
         store = _SupersedingForcingStore()
 
         ingest_weather_history_flow(
@@ -315,15 +372,32 @@ class TestIngestWeatherHistoryFlow:
             clock=_fixed_clock,
         )
 
-        # Exactly one fetch over the rolling 60-day window ending at now.
-        assert len(adapter.calls) == 1
-        call = adapter.calls[0]
-        assert call.start == _START
-        assert call.end == _NOW
-        assert set(call.parameters) == _CANONICAL_PARAMS
+        # Two fetches (RprelimD-scoped + the four non-precip products), both
+        # over the rolling 60-day window ending at now; no RhiresD-scoped
+        # call (R is undiscovered).
+        assert len(adapter.calls) == 2
+        assert all(c.start == _START and c.end == _NOW for c in adapter.calls)
+        assert not any(
+            ForcingSource.METEOSWISS_RHIRESD in c.products for c in adapter.calls
+        )
+        rprelimd_calls = [
+            c for c in adapter.calls if ForcingSource.METEOSWISS_RPRELIMD in c.products
+        ]
+        assert len(rprelimd_calls) == 1
+        assert rprelimd_calls[0].parameters == ["precipitation"]
+        other_calls = [
+            c for c in adapter.calls if ForcingSource.METEOSWISS_TABSD in c.products
+        ]
+        assert len(other_calls) == 1
+        assert set(other_calls[0].parameters) == {
+            "temperature",
+            "temperature_min",
+            "temperature_max",
+            "relative_sunshine_duration",
+        }
 
         # The adapter's rows were persisted verbatim (known-answer).
-        assert _project(store.records) == _project_raw(rows)
+        assert _project(store.records) == _project_raw([precip_row, other_row])
 
     def test_targets_only_reanalysis_bound_stations(self) -> None:
         bound = make_station_config(code="2135", name="Aare Bern")
@@ -338,16 +412,14 @@ class TestIngestWeatherHistoryFlow:
         )
 
         adapter = _SpyReanalysisAdapter(
-            [
-                [
-                    _row(
-                        bound.id,
-                        parameter="precipitation",
-                        source=ForcingSource.METEOSWISS_RPRELIMD.value,
-                        value=3.0,
-                        version="v1",
-                    )
-                ]
+            rprelimd_rows=[
+                _row(
+                    bound.id,
+                    parameter="precipitation",
+                    source=ForcingSource.METEOSWISS_RPRELIMD.value,
+                    value=3.0,
+                    version="v1",
+                )
             ]
         )
         store = _SupersedingForcingStore()
@@ -359,9 +431,10 @@ class TestIngestWeatherHistoryFlow:
             clock=_fixed_clock,
         )
 
-        assert len(adapter.calls) == 1
-        config_station_ids = {c.station_id for c in adapter.calls[0].station_configs}
-        assert config_station_ids == {bound.id}
+        assert len(adapter.calls) == 2
+        for call in adapter.calls:
+            config_station_ids = {c.station_id for c in call.station_configs}
+            assert config_station_ids == {bound.id}
 
     def test_no_op_when_no_reanalysis_bound_stations(self) -> None:
         station = make_station_config(code="2135", name="Aare Bern")
@@ -371,7 +444,7 @@ class TestIngestWeatherHistoryFlow:
             _weather_source(station.id, nwp_source="icon_ch2_eps")
         )
 
-        adapter = _SpyReanalysisAdapter([])
+        adapter = _SpyReanalysisAdapter()
         store = _SupersedingForcingStore()
 
         ingest_weather_history_flow(
@@ -381,8 +454,10 @@ class TestIngestWeatherHistoryFlow:
             clock=_fixed_clock,
         )
 
-        # No reanalysis-bound source => no fetch, no write.
+        # No reanalysis-bound source => no fetch, no write, and — self-
+        # containment — no R discovery either (zero-station short-circuit).
         assert adapter.calls == []
+        assert adapter.boundary_calls == 0
         assert store.records == []
 
     def test_excludes_forecast_binding_sharing_the_reanalysis_source_name(
@@ -403,7 +478,7 @@ class TestIngestWeatherHistoryFlow:
             _weather_source(forecast_role_station.id, role=WeatherSourceRole.FORECAST)
         )
 
-        adapter = _SpyReanalysisAdapter([])
+        adapter = _SpyReanalysisAdapter()
         store = _SupersedingForcingStore()
 
         ingest_weather_history_flow(
@@ -417,7 +492,7 @@ class TestIngestWeatherHistoryFlow:
         assert store.records == []
 
     def test_no_op_when_no_stations(self) -> None:
-        adapter = _SpyReanalysisAdapter([])
+        adapter = _SpyReanalysisAdapter()
         store = _SupersedingForcingStore()
 
         ingest_weather_history_flow(
@@ -451,7 +526,7 @@ class TestIngestWeatherHistoryFlow:
             value=11.0,
             version="hash-v2",
         )
-        adapter = _SpyReanalysisAdapter([[v1], [v2]])
+        adapter = _SpyReanalysisAdapter(rprelimd_responses=[[v1], [v2]])
         store = _SupersedingForcingStore()
 
         ingest_weather_history_flow(
@@ -491,7 +566,7 @@ class TestIngestWeatherHistoryFlow:
             value=10.0,
             version="hash-v1",
         )
-        adapter = _SpyReanalysisAdapter([[row]])
+        adapter = _SpyReanalysisAdapter(rprelimd_rows=[row])
         store = _SupersedingForcingStore()
 
         ingest_weather_history_flow(
@@ -525,23 +600,23 @@ class TestIngestWeatherHistoryFlow:
         station_store.store_station(station)
         station_store.store_weather_source(_weather_source(station.id))
 
-        rows = [
-            _row(
-                station.id,
-                parameter="precipitation",
-                source=ForcingSource.METEOSWISS_RPRELIMD.value,
-                value=2.0,
-                version="v1",
-            ),
-            _row(
-                station.id,
-                parameter="temperature_min",
-                source=ForcingSource.METEOSWISS_TMIND.value,
-                value=1.0,
-                version="v1",
-            ),
-        ]
-        adapter = _SpyReanalysisAdapter([rows])
+        precip_row = _row(
+            station.id,
+            parameter="precipitation",
+            source=ForcingSource.METEOSWISS_RPRELIMD.value,
+            value=2.0,
+            version="v1",
+        )
+        tmin_row = _row(
+            station.id,
+            parameter="temperature_min",
+            source=ForcingSource.METEOSWISS_TMIND.value,
+            value=1.0,
+            version="v1",
+        )
+        adapter = _SpyReanalysisAdapter(
+            rprelimd_rows=[precip_row], other_rows=[tmin_row]
+        )
         store = _SupersedingForcingStore()
 
         ingest_weather_history_flow(
@@ -631,16 +706,14 @@ class TestIngestWeatherHistoryProductionPath:
         store = _SupersedingForcingStore()
 
         spy = _SpyReanalysisAdapter(
-            [
-                [
-                    _row(
-                        station.id,
-                        parameter="precipitation",
-                        source=ForcingSource.METEOSWISS_RPRELIMD.value,
-                        value=1.0,
-                        version="v1",
-                    )
-                ]
+            rprelimd_rows=[
+                _row(
+                    station.id,
+                    parameter="precipitation",
+                    source=ForcingSource.METEOSWISS_RPRELIMD.value,
+                    value=1.0,
+                    version="v1",
+                )
             ]
         )
         captured: dict[str, _ReanalysisStacConfig] = {}
@@ -669,7 +742,9 @@ class TestIngestWeatherHistoryProductionPath:
             clock=_fixed_clock,
         )
 
-        assert len(spy.calls) == 1
+        # Two calls (RprelimD-scoped + non-precip); no RhiresD-scoped call
+        # (undiscovered R -> default spy boundary is None).
+        assert len(spy.calls) == 2
         assert result.rows_fetched == 1
         assert captured["config"].stac_collection == _DEFAULT_REANALYSIS_STAC_COLLECTION
 
@@ -712,3 +787,175 @@ class TestIngestWeatherHistoryProductionPath:
                 adapter=None,
                 clock=_fixed_clock,
             )
+
+
+# ---------------------------------------------------------------------------
+# Plan 115b1 §0a/§1D/§1G — precipitation split by the discovered boundary R
+# ---------------------------------------------------------------------------
+
+
+class TestPrecipitationSplitByBoundary:
+    def test_boundary_inside_window_splits_both_calls(self) -> None:
+        # R = 2026-05-20 -> RhiresD covers [_START, 2026-05-21), RprelimD
+        # covers [2026-05-21, _NOW).
+        station = make_station_config(code="2135", name="Aare Bern")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        station_store.store_weather_source(_weather_source(station.id))
+
+        r = ensure_utc(datetime(2026, 5, 20, tzinfo=UTC))
+        split = ensure_utc(datetime(2026, 5, 21, tzinfo=UTC))
+        adapter = _SpyReanalysisAdapter(rhiresd_boundary=r)
+        store = _SupersedingForcingStore()
+
+        ingest_weather_history_flow(
+            station_store=station_store,
+            forcing_store=store,
+            adapter=adapter,
+            clock=_fixed_clock,
+        )
+
+        assert adapter.boundary_calls == 1
+        assert len(adapter.calls) == 3
+        rhiresd_call = next(
+            c for c in adapter.calls if ForcingSource.METEOSWISS_RHIRESD in c.products
+        )
+        assert rhiresd_call.start == _START
+        assert rhiresd_call.end == split
+        assert rhiresd_call.parameters == ["precipitation"]
+
+        rprelimd_call = next(
+            c for c in adapter.calls if ForcingSource.METEOSWISS_RPRELIMD in c.products
+        )
+        assert rprelimd_call.start == split
+        assert rprelimd_call.end == _NOW
+        assert rprelimd_call.parameters == ["precipitation"]
+
+    def test_boundary_at_or_after_now_skips_rprelimd_call(self) -> None:
+        # RhiresD already covers the entire window -> the RprelimD-scoped
+        # call's span collapses to empty and must be SKIPPED, not issued with
+        # a degenerate [now, now) range.
+        station = make_station_config(code="2135", name="Aare Bern")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        station_store.store_weather_source(_weather_source(station.id))
+
+        r = ensure_utc(datetime(2026, 6, 20, tzinfo=UTC))  # after _NOW
+        adapter = _SpyReanalysisAdapter(rhiresd_boundary=r)
+        store = _SupersedingForcingStore()
+
+        ingest_weather_history_flow(
+            station_store=station_store,
+            forcing_store=store,
+            adapter=adapter,
+            clock=_fixed_clock,
+        )
+
+        assert len(adapter.calls) == 2  # RhiresD-scoped + non-precip only
+        rhiresd_call = next(
+            c for c in adapter.calls if ForcingSource.METEOSWISS_RHIRESD in c.products
+        )
+        assert rhiresd_call.start == _START
+        assert rhiresd_call.end == _NOW
+        assert not any(
+            ForcingSource.METEOSWISS_RPRELIMD in c.products for c in adapter.calls
+        )
+
+    def test_boundary_before_window_skips_rhiresd_call(self) -> None:
+        # R sits entirely before the rolling window -> RhiresD's span
+        # collapses to empty and must be SKIPPED; the whole window is
+        # preliminary.
+        station = make_station_config(code="2135", name="Aare Bern")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        station_store.store_weather_source(_weather_source(station.id))
+
+        r = ensure_utc(datetime(2020, 1, 1, tzinfo=UTC))  # long before _START
+        adapter = _SpyReanalysisAdapter(rhiresd_boundary=r)
+        store = _SupersedingForcingStore()
+
+        ingest_weather_history_flow(
+            station_store=station_store,
+            forcing_store=store,
+            adapter=adapter,
+            clock=_fixed_clock,
+        )
+
+        assert len(adapter.calls) == 2  # RprelimD-scoped + non-precip only
+        assert not any(
+            ForcingSource.METEOSWISS_RHIRESD in c.products for c in adapter.calls
+        )
+        rprelimd_call = next(
+            c for c in adapter.calls if ForcingSource.METEOSWISS_RPRELIMD in c.products
+        )
+        assert rprelimd_call.start == _START
+        assert rprelimd_call.end == _NOW
+
+
+# ---------------------------------------------------------------------------
+# Plan 115b1 §1G — self-containment (round-1 blocker)
+# ---------------------------------------------------------------------------
+
+
+class TestSelfContainment:
+    """After 115b1 lands, Flow 6's ingest runs WITHOUT raising — it uses
+    ``fetch_products`` (Plan 115b1 §1F), not the now-fail-closed parameter
+    path — through the REAL adapter, with a REAL station binding (not the
+    zero-station short-circuit, which would mask the old broken call shape).
+
+    Soundness: fails against a 115b1 that adds the fail-closed guard to
+    ``fetch_reanalysis`` but leaves the flow's call at
+    ``fetch_reanalysis(_CANONICAL_PARAMETERS)`` (which includes
+    "precipitation") in place — that call would raise ``ConfigurationError``
+    the moment ANY station is bound (proven directly against the real
+    adapter class here, not a fake that simply lacks the old method).
+    """
+
+    def test_flow_completes_through_real_adapter_with_a_bound_station(self) -> None:
+        import httpx
+
+        from sapphire_flow.preprocessing.exact_extract_grid_extractor import (
+            ExactExtractGridExtractor,
+        )
+
+        station = make_station_config(code="2135", name="Aare Bern")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        station_store.store_weather_source(_weather_source(station.id))
+        store = _SupersedingForcingStore()
+
+        # Every STAC query returns "no features" (a documented gap, per the
+        # adapter's own contract) — real, empty responses, not a raised
+        # network error. If the flow had regressed to the pre-115b1 single
+        # ``fetch_reanalysis(_CANONICAL_PARAMETERS)`` call instead of
+        # ``fetch_products``, THIS specific real adapter would raise
+        # ``ConfigurationError`` (fail-closed on "precipitation") before ever
+        # reaching this handler — proving the call-shape rewrite landed.
+        def _handler(request: httpx.Request) -> httpx.Response:
+            if str(request.url).endswith("/items/archive-ch"):
+                return httpx.Response(200, json={"assets": {}})
+            return httpx.Response(200, json={"features": [], "links": []})
+
+        real_adapter = MeteoSwissOpenDataReanalysisAdapter(
+            stac_base_url=_DEFAULT_REANALYSIS_STAC_BASE_URL,
+            stac_collection=_DEFAULT_REANALYSIS_STAC_COLLECTION,
+            http_client=httpx.Client(transport=httpx.MockTransport(_handler)),
+            extractor=ExactExtractGridExtractor(),
+            basins={},
+            clock=_fixed_clock,
+        )
+
+        # Must NOT raise ConfigurationError (the §1F fail-closed guard) even
+        # though a REANALYSIS-role, ACTIVE, BASIN_AVERAGE binding exists.
+        result = ingest_weather_history_flow(
+            station_store=station_store,
+            forcing_store=store,
+            adapter=real_adapter,
+            clock=_fixed_clock,
+        )
+
+        assert result.stations_targeted == 1
+        # No RhiresD ever published (R discovery found nothing) and every
+        # day query is a documented gap -> nothing to store — but the
+        # important assertion is that the call above did not raise.
+        assert result.rows_stored == 0

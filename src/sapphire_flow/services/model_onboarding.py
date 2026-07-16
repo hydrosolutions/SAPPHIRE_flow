@@ -100,7 +100,8 @@ def _assert_assignment_priority_invariant(model_id: ModelId, priority: int) -> N
 def validate_compatibility(
     model: ForecastModel,
     station_config: StationConfig,
-    available_features: frozenset[str],
+    available_past_features: frozenset[str],
+    available_future_features: frozenset[str],
     available_static: frozenset[str],
     requested_time_step: timedelta,
 ) -> CompatibilityReport:
@@ -123,8 +124,11 @@ def validate_compatibility(
     else:
         missing_targets = req.target_parameters - station_config.forecast_targets
 
-    missing_past = req.past_dynamic_features - available_features
-    missing_future = req.future_dynamic_features - available_features
+    # Past-dynamic and future-dynamic availability are distinct (Plan 115b1
+    # §1E): a reanalysis-only parameter (e.g. relative_sunshine_duration) may
+    # be past-available with no forecast counterpart.
+    missing_past = req.past_dynamic_features - available_past_features
+    missing_future = req.future_dynamic_features - available_future_features
     missing_static = req.static_features - available_static
     time_step_ok = requested_time_step in req.supported_time_steps
 
@@ -192,7 +196,8 @@ def validate_compatibility_for_unit(
     unit: TrainingUnit,
     station_store: StationStore,
     group_store: StationGroupStore,
-    available_features: frozenset[str],
+    available_past_features: frozenset[str],
+    available_future_features: frozenset[str],
     available_static_by_station: dict[StationId, frozenset[str]],
     requested_time_step: timedelta,
     canonical_units: Mapping[str, str] | None = None,
@@ -210,8 +215,11 @@ def validate_compatibility_for_unit(
         StationForecastModel | GroupForecastModel,
     )  # pyright: ignore[reportUnnecessaryIsInstance]  # 2026-06-01: re-review 2026-12-01
     req: ModelDataRequirements = model.data_requirements
-    missing_past = req.past_dynamic_features - available_features
-    missing_future = req.future_dynamic_features - available_features
+    # Past-dynamic and future-dynamic availability are distinct (Plan 115b1
+    # §1E): a reanalysis-only parameter (e.g. relative_sunshine_duration) may
+    # be past-available with no forecast counterpart.
+    missing_past = req.past_dynamic_features - available_past_features
+    missing_future = req.future_dynamic_features - available_future_features
     time_step_ok = requested_time_step in req.supported_time_steps
 
     # Union of all missing targets/static across member stations
@@ -1075,7 +1083,8 @@ def onboard_model(
             unit=unit,
             station_store=station_store,
             group_store=group_store,
-            available_features=config.available_nwp_parameters,
+            available_past_features=config.available_past_nwp_parameters,
+            available_future_features=config.available_nwp_parameters,
             available_static_by_station=avail_static,
             requested_time_step=unit.time_step,
             canonical_units=canonical_units,

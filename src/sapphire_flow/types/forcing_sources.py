@@ -23,10 +23,12 @@ class ForcingSource(Enum):
     hyphenated on-disk literal to avoid a migration.
     """
 
+    METEOSWISS_RHIRESD = "meteoswiss_rhiresd"
     METEOSWISS_RPRELIMD = "meteoswiss_rprelimd"
     METEOSWISS_TABSD = "meteoswiss_tabsd"
     METEOSWISS_TMIND = "meteoswiss_tmind"
     METEOSWISS_TMAXD = "meteoswiss_tmaxd"
+    METEOSWISS_SRELD = "meteoswiss_sreld"
     CAMELS_CH = "camels-ch"
     # Reserved (no v0b consumer); kept for a potential v0c re-introduction of an
     # NWP-archive forcing source with a train/test-matched design.
@@ -34,10 +36,12 @@ class ForcingSource(Enum):
 
 
 SOURCE_ATTRIBUTIONS: dict[ForcingSource, str] = {
+    ForcingSource.METEOSWISS_RHIRESD: "MeteoSwiss (CC-BY)",
     ForcingSource.METEOSWISS_RPRELIMD: "MeteoSwiss (CC-BY)",
     ForcingSource.METEOSWISS_TABSD: "MeteoSwiss (CC-BY)",
     ForcingSource.METEOSWISS_TMIND: "MeteoSwiss (CC-BY)",
     ForcingSource.METEOSWISS_TMAXD: "MeteoSwiss (CC-BY)",
+    ForcingSource.METEOSWISS_SRELD: "MeteoSwiss (CC-BY)",
     ForcingSource.CAMELS_CH: "CAMELS-CH (CC-BY 4.0, Höge et al. 2023)",
     ForcingSource.NWP_ARCHIVE: "NWP archive (attribution per source NWP model)",
 }

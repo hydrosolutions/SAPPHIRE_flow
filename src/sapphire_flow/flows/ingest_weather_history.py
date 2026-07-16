@@ -27,6 +27,7 @@ from prefect.cache_policies import NO_CACHE
 
 from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.types.datetime import ensure_utc
+from sapphire_flow.types.forcing_sources import ForcingSource
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -54,28 +55,44 @@ _WINDOW_DAYS = 60
 _DEFAULT_REANALYSIS_STAC_BASE_URL = "https://data.geo.admin.ch/api/stac/v1"
 _DEFAULT_REANALYSIS_STAC_COLLECTION = "ch.meteoschweiz.ogd-surface-derived-grid"
 
-# The four canonical MeteoSwiss daily products this flow requests.
-_CANONICAL_PARAMETERS: list[str] = [
-    "precipitation",
+# The five canonical MeteoSwiss daily parameters this flow requests (Plan
+# 115b1 §1A adds relative_sunshine_duration). Precipitation is split across
+# TWO products (RhiresD/RprelimD, §0a) and is therefore requested separately
+# via the product-scoped calls below — it is NOT in this list.
+_NON_PRECIP_PARAMETERS: list[str] = [
     "temperature",
     "temperature_min",
     "temperature_max",
+    "relative_sunshine_duration",
+]
+_NON_PRECIP_PRODUCTS: list[ForcingSource] = [
+    ForcingSource.METEOSWISS_TABSD,
+    ForcingSource.METEOSWISS_TMIND,
+    ForcingSource.METEOSWISS_TMAXD,
+    ForcingSource.METEOSWISS_SRELD,
 ]
 
 
 class _ReanalysisAdapter(Protocol):
     """Structural view of the reanalysis adapter the flow needs: a source
-    identity to filter station weather-sources by, and ``fetch_reanalysis``."""
+    identity to filter station weather-sources by, the writer-side product-
+    scoped fetch (Plan 115b1 §1F), and R discovery (§1D). The flow uses
+    ``fetch_products`` exclusively — never the parameter-keyed
+    ``fetch_reanalysis``, which fails closed on "precipitation" once RhiresD
+    is registered (two products, ambiguous)."""
 
     NWP_SOURCE: str
 
-    def fetch_reanalysis(
+    def fetch_products(
         self,
+        products: list[ForcingSource],
         station_configs: list[StationWeatherSource],
         start: UtcDatetime,
         end: UtcDatetime,
         parameters: list[str],
     ) -> list[RawHistoricalForcing]: ...
+
+    def discover_rhiresd_boundary(self) -> UtcDatetime | None: ...
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -176,8 +193,9 @@ def build_production_reanalysis_adapter(
     fields, an ``httpx.Client``, an ``ExactExtractGridExtractor``, and the
     per-station basin map.
 
-    The ``httpx.Client`` is created but only used at ``fetch_reanalysis`` time,
-    so this factory is fully constructible without network access.
+    The ``httpx.Client`` is created but only used at fetch time (``fetch_products``
+    / ``discover_rhiresd_boundary``), so this factory is fully constructible
+    without network access.
     """
     import httpx
 
@@ -208,18 +226,30 @@ def build_production_reanalysis_adapter(
 
 
 @task(
-    name="fetch-weather-history",
-    task_run_name="fetch-weather-history",
+    name="fetch-weather-history-products",
+    task_run_name="fetch-weather-history-products",
     cache_policy=NO_CACHE,
 )
-def _fetch_reanalysis_task(
+def _fetch_products_task(
     adapter: _ReanalysisAdapter,
+    products: list[ForcingSource],
     station_configs: list[StationWeatherSource],
     start: UtcDatetime,
     end: UtcDatetime,
     parameters: list[str],
 ) -> list[RawHistoricalForcing]:
-    return adapter.fetch_reanalysis(station_configs, start, end, parameters)
+    return adapter.fetch_products(products, station_configs, start, end, parameters)
+
+
+@task(
+    name="discover-rhiresd-boundary",
+    task_run_name="discover-rhiresd-boundary",
+    cache_policy=NO_CACHE,
+)
+def _discover_rhiresd_boundary_task(
+    adapter: _ReanalysisAdapter,
+) -> UtcDatetime | None:
+    return adapter.discover_rhiresd_boundary()
 
 
 @task(
@@ -315,7 +345,53 @@ def ingest_weather_history_flow(
 
     log.info("weather_history.stations_resolved", stations=len(configs))
 
-    rows = _fetch_reanalysis_task(adapter_t, configs, start, now, _CANONICAL_PARAMETERS)
+    # Precipitation is split across two products by the discovered boundary R
+    # (Plan 115b1 §0a/§1D/§1G): RhiresD (definitive) covers
+    # [start, min(R+1d, now)), RprelimD (preliminary live tail) covers
+    # [max(start, R+1d), now). Both spans are disjoint by construction. R is
+    # None when NO RhiresD has ever been published (nothing definitive yet) —
+    # then the entire window is preliminary.
+    r = _discover_rhiresd_boundary_task(adapter_t)
+    rhiresd_end = (
+        min(ensure_utc(r + timedelta(days=1)), now) if r is not None else start
+    )
+
+    rows: list[RawHistoricalForcing] = []
+    if start < rhiresd_end:
+        rows.extend(
+            _fetch_products_task(
+                adapter_t,
+                [ForcingSource.METEOSWISS_RHIRESD],
+                configs,
+                start,
+                rhiresd_end,
+                ["precipitation"],
+            )
+        )
+
+    rprelimd_start = max(start, rhiresd_end)
+    if rprelimd_start < now:
+        rows.extend(
+            _fetch_products_task(
+                adapter_t,
+                [ForcingSource.METEOSWISS_RPRELIMD],
+                configs,
+                rprelimd_start,
+                now,
+                ["precipitation"],
+            )
+        )
+
+    rows.extend(
+        _fetch_products_task(
+            adapter_t,
+            _NON_PRECIP_PRODUCTS,
+            configs,
+            start,
+            now,
+            _NON_PRECIP_PARAMETERS,
+        )
+    )
     log.info("weather_history.fetch_complete", rows=len(rows))
 
     stored = _store_forcing_task(forcing_store_t, rows) if rows else 0

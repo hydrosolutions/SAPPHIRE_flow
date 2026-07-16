@@ -255,7 +255,8 @@ def _validate_compatibility_task(
         unit=unit,
         station_store=station_store,  # type: ignore[arg-type]
         group_store=group_store,  # type: ignore[arg-type]
-        available_features=deployment_config.available_nwp_parameters,  # type: ignore[union-attr]
+        available_past_features=deployment_config.available_past_nwp_parameters,  # type: ignore[union-attr]
+        available_future_features=deployment_config.available_nwp_parameters,  # type: ignore[union-attr]
         available_static_by_station=avail_static_by_station,
         requested_time_step=unit.time_step,
         canonical_units=canonical_units,

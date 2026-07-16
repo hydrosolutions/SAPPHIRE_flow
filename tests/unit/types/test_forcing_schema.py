@@ -26,6 +26,7 @@ _CANONICAL_PARAMETERS = {
     "temperature",
     "temperature_min",
     "temperature_max",
+    "relative_sunshine_duration",
 }
 
 
@@ -60,6 +61,11 @@ class TestCanonicalForcingSchemaDeclaration:
     def test_temperature_units_are_fi_degree_celsius(self, parameter: str) -> None:
         assert CANONICAL_FORCING_SCHEMA.units[parameter] == Unit.DEG_C
 
+    def test_relative_sunshine_duration_unit_is_fi_percent(self) -> None:
+        assert (
+            CANONICAL_FORCING_SCHEMA.units["relative_sunshine_duration"] == Unit.PERCENT
+        )
+
     def test_units_cover_every_declared_parameter(self) -> None:
         assert set(CANONICAL_FORCING_SCHEMA.units) == set(
             CANONICAL_FORCING_SCHEMA.parameters
@@ -85,6 +91,7 @@ class TestCanonicalForcingSchemaDeclaration:
         assert canonical["temperature"] == "°C"
         assert canonical["temperature_min"] == "°C"
         assert canonical["temperature_max"] == "°C"
+        assert canonical["relative_sunshine_duration"] == "%"
 
 
 class TestPrecipitationUnitRejectsMmPerDay:

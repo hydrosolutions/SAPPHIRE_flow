@@ -2651,9 +2651,26 @@ class DeploymentConfig(BaseModel):
     # --- Model onboarding ---
     skill_gate_thresholds: dict[str, float] = {}  # metric_name → minimum value; empty = pass-through (auto-promote)
     available_nwp_parameters: frozenset[str] = frozenset({"precipitation", "temperature"})
-        # NWP parameters available in this deployment's NWP source. Used by model
-        # onboarding compatibility check (M.2) to validate future_dynamic_features.
-        # v0 default: ICON-CH2-EPS provides precipitation and temperature.
+        # Forecast/future-dynamic availability: NWP parameters this deployment's NWP
+        # source actually delivers. Used by model onboarding compatibility (M.2) to
+        # validate future_dynamic_features. v0 default: ICON-CH2-EPS provides
+        # precipitation and temperature.
+    available_past_only_nwp_parameters: frozenset[str] = frozenset({"relative_sunshine_duration"})
+        # Past-dynamic-ONLY reanalysis parameters (Plan 115b1 §1E): parameters with a
+        # self-derived MeteoSwiss reanalysis product but no forecast counterpart (e.g.
+        # SrelD — ICON-CH2-EPS fetches only precipitation/temperature). Advertising
+        # these in available_nwp_parameters would let a model declare them as
+        # future-dynamic, which can never be delivered operationally.
+
+    @property
+    def available_past_nwp_parameters(self) -> frozenset[str]:
+        # Past-dynamic availability = available_nwp_parameters | available_past_only_nwp_parameters.
+        # validate_compatibility (and validate_compatibility_for_unit) now take
+        # available_past_features and available_future_features SEPARATELY —
+        # past_dynamic_features is checked against this property, future_dynamic_features
+        # against available_nwp_parameters. Before Plan 115b1 a single conflated set served
+        # both checks.
+        ...
 
     # --- NWP lateness ---
     nwp_max_wait_hours: float = 3.0            # max wait for expected NWP delivery

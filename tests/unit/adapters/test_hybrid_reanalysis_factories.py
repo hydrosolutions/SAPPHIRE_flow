@@ -17,14 +17,17 @@ Expected implementation contract
         parameters_in_scope: tuple[str, ...] = (
             "precipitation", "temperature",
             "temperature_min", "temperature_max",
+            "relative_sunshine_duration",
         ),
     ) -> HybridForcingSource``
 
-Priority chains wired by the factory (Plan 072 §Priority chains):
-    precipitation     : METEOSWISS_RPRELIMD -> CAMELS_CH
-    temperature       : METEOSWISS_TABSD    -> CAMELS_CH
-    temperature_min   : METEOSWISS_TMIND    -> CAMELS_CH
-    temperature_max   : METEOSWISS_TMAXD    -> CAMELS_CH
+Priority chains wired by the factory (Plan 072 §Priority chains; Plan 115b1 §1A
+adds the fifth, single-source chain):
+    precipitation                : METEOSWISS_RPRELIMD -> CAMELS_CH
+    temperature                  : METEOSWISS_TABSD    -> CAMELS_CH
+    temperature_min              : METEOSWISS_TMIND    -> CAMELS_CH
+    temperature_max              : METEOSWISS_TMAXD    -> CAMELS_CH
+    relative_sunshine_duration   : METEOSWISS_SRELD (single source, no fallback)
 """
 
 from __future__ import annotations
@@ -45,7 +48,14 @@ from sapphire_flow.types.ids import StationId
 from sapphire_flow.types.station import StationWeatherSource
 from tests.fakes.fake_stores import FakeHistoricalForcingStore
 
-_ALL_PARAMS = ["precipitation", "temperature", "temperature_min", "temperature_max"]
+# The four legacy (Plan 072) parameters — CAMELS-CH carries a pre-2020 fallback
+# row for each of these, so pre-2020 coverage is total for this set.
+_LEGACY_PARAMS = ["precipitation", "temperature", "temperature_min", "temperature_max"]
+_SRELD_PARAM = "relative_sunshine_duration"
+# The full Plan 115b1 default scope. ``relative_sunshine_duration`` has NO
+# CAMELS-CH tier in its chain (single-source SRELD only, §1A) — a pre-2020 row
+# for it is intentionally absent from the seed store below.
+_ALL_PARAMS = [*_LEGACY_PARAMS, _SRELD_PARAM]
 _WINDOW_START: UtcDatetime = ensure_utc(datetime(2019, 1, 1, tzinfo=UTC))
 _WINDOW_END: UtcDatetime = ensure_utc(datetime(2026, 6, 1, tzinfo=UTC))
 _PRE = ensure_utc(datetime(2019, 6, 1, tzinfo=UTC))
@@ -121,6 +131,14 @@ def _seed_store() -> FakeHistoricalForcingStore:
             _raw(
                 source="camels-ch", parameter="precipitation", when=_POST, value=111.0
             ),
+            # SrelD (§1A): single-source chain, no CAMELS-CH tier — only a
+            # post-window row exists; pre-2020 has NO seeded row (no fallback).
+            _raw(
+                source="meteoswiss_sreld",
+                parameter="relative_sunshine_duration",
+                when=_POST,
+                value=42.0,
+            ),
         ]
     )
     return store
@@ -135,7 +153,10 @@ class TestDefaultHybridForcingSource:
         )
         pre = {r.parameter: r for r in result if r.valid_time == _PRE}
 
-        assert set(pre) == set(_ALL_PARAMS)
+        # Only the four legacy parameters resolve pre-2020 — SrelD's chain has
+        # no CAMELS-CH tier, so it is absent (a coverage gap, not invented).
+        assert set(pre) == set(_LEGACY_PARAMS)
+        assert _SRELD_PARAM not in pre
         assert {r.source for r in pre.values()} == {"camels-ch"}
 
     def test_post_window_resolves_to_per_parameter_meteoswiss(self) -> None:
@@ -151,6 +172,23 @@ class TestDefaultHybridForcingSource:
         assert post["temperature"].source == "meteoswiss_tabsd"
         assert post["temperature_min"].source == "meteoswiss_tmind"
         assert post["temperature_max"].source == "meteoswiss_tmaxd"
+        assert post[_SRELD_PARAM].source == "meteoswiss_sreld"
+        assert post[_SRELD_PARAM].value == 42.0
+
+    def test_sreld_resolves_via_single_source_chain(self) -> None:
+        # SrelD priority resolution (Plan 115b1 §1A): the hybrid reader,
+        # keyed on the exact row.parameter, returns the meteoswiss_sreld row
+        # for relative_sunshine_duration — with no other source competing.
+        hybrid = default_hybrid_forcing_source(forcing_store=_seed_store())
+
+        result = hybrid.fetch_reanalysis(
+            [_cfg()], _WINDOW_START, _WINDOW_END, [_SRELD_PARAM]
+        )
+
+        assert len(result) == 1
+        assert result[0].source == "meteoswiss_sreld"
+        assert result[0].parameter == _SRELD_PARAM
+        assert result[0].value == 42.0
 
     def test_no_duplicate_station_validtime_parameter_rows(self) -> None:
         hybrid = default_hybrid_forcing_source(forcing_store=_seed_store())

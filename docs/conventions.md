@@ -418,6 +418,7 @@ All status/enum columns store TEXT matching the Python enum `.value` (lowercase)
 | `ForeignForecastStatus` | `published` | `published` | v0+v1 |
 | `FlowRunState` | `pending`, `running`, `completed`, `failed`, `crashed`, `cancelling`, `cancelled` | — | v0+v1 |
 | `ForcingProvenance` | `nwp_direct`, `observed`, `interpolated`, `gap_filled_climatology`, `gap_filled_persistence`, `reanalysis`, `derived`, `unknown` | — | v0+v1 |
+| `historical_forcing.source` / `ForcingSource` (TEXT, not check-constrained) | `meteoswiss_rhiresd` *(definitive precip, monthly publication — Plan 115b1)*, `meteoswiss_rprelimd` *(preliminary precip, live tail)*, `meteoswiss_tabsd`, `meteoswiss_tmind`, `meteoswiss_tmaxd`, `meteoswiss_sreld` *(relative sunshine duration — Plan 115b1)*, `camels-ch`, `nwp_archive` *(reserved, unused in v0b)* | — | v0+v1 |
 | `model_assignments.status` / `ModelAssignmentStatus` | `active`, `inactive` | `inactive` | v0+v1 |
 | `OnboardingOutcome` (in-memory only) | `promoted`, `gate_rejected`, `skipped_compat`, `skipped_no_data`, `skipped_insufficient_eval`, `failed_smoke_test`, `failed_training`, `failed_hindcast`, `failed_skill`, `failed_assignment` | all terminal | v0+v1 |
 | Forecast QC rule IDs (string, not enum) | `negative_value`, `range_check`, `flat_ensemble`, `ensemble_spread`, `climatology_outlier`, `temporal_consistency`, `quantile_crossing` | — | v0+v1 |

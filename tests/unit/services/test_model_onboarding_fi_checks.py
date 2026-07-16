@@ -117,7 +117,8 @@ def _report(
         unit=unit,
         station_store=station_store,
         group_store=None,  # type: ignore[arg-type]
-        available_features=frozenset({"precipitation", "temperature_forecast"}),
+        available_past_features=frozenset({"precipitation", "temperature_forecast"}),
+        available_future_features=frozenset({"precipitation", "temperature_forecast"}),
         available_static_by_station={station.id: frozenset()},
         requested_time_step=_STEP,
         canonical_units=canonical_units or _CANONICAL_UNITS,

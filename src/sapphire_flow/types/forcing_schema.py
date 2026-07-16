@@ -36,13 +36,20 @@ class ForcingSchema:
 
 CANONICAL_FORCING_SCHEMA = ForcingSchema(
     parameters=frozenset(
-        {"precipitation", "temperature", "temperature_min", "temperature_max"}
+        {
+            "precipitation",
+            "temperature",
+            "temperature_min",
+            "temperature_max",
+            "relative_sunshine_duration",
+        }
     ),
     units={
         "precipitation": Unit.MM,
         "temperature": Unit.DEG_C,
         "temperature_min": Unit.DEG_C,
         "temperature_max": Unit.DEG_C,
+        "relative_sunshine_duration": Unit.PERCENT,
     },
     spatial_representation=SpatialRepresentation.BASIN_AVERAGE,
     resolution=ForcingResolution.DAILY,

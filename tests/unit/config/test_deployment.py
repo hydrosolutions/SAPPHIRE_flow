@@ -71,6 +71,30 @@ class TestAvailableNwpParameters:
         )
 
 
+class TestAvailablePastNwpParameters:
+    """Plan 115b1 §1E: past-dynamic availability is the future set PLUS any
+    past-only reanalysis parameters (e.g. SrelD has no forecast product)."""
+
+    def test_default_includes_sunshine_but_future_set_does_not(self) -> None:
+        config = make_deployment_config()
+        assert "relative_sunshine_duration" in config.available_past_nwp_parameters
+        assert "relative_sunshine_duration" not in config.available_nwp_parameters
+
+    def test_past_set_is_superset_of_future_set(self) -> None:
+        config = make_deployment_config()
+        assert config.available_nwp_parameters <= config.available_past_nwp_parameters
+
+    def test_past_only_override_is_isolated_from_future_set(self) -> None:
+        config = make_deployment_config(
+            available_nwp_parameters=frozenset({"precipitation"}),
+            available_past_only_nwp_parameters=frozenset({"custom_past_param"}),
+        )
+        assert config.available_past_nwp_parameters == frozenset(
+            {"precipitation", "custom_past_param"}
+        )
+        assert config.available_nwp_parameters == frozenset({"precipitation"})
+
+
 class TestNwpGridRetention:
     """Plan 095: retention floor >= ceil(nwp_max_fallback_age_hours / 24) + 1."""
 
