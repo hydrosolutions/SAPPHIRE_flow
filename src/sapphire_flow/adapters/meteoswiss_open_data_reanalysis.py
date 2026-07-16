@@ -169,13 +169,16 @@ _PRODUCT_REGISTRY: tuple[_Product, ...] = (
 
 # Every MeteoSwiss asset filename (archive / last-monthly / daily families)
 # embeds a start/end date span — e.g.
-# "...rhiresd_ch01h.swiss.lv95_20200101000000_20201231000000.nc". The END date
-# is what boundary discovery (§1D/§3A/§3C) needs, parameterised by product
-# token + grid family so any product's high-water mark can be discovered, not
-# just RhiresD's.
-def _product_asset_re(token: str, grid: str) -> re.Pattern[str]:
+# "...rhiresd_ch01h.swiss.lv95_20200101000000_20201231000000.nc", parameterised
+# by product token + grid family. Captures BOTH tokens — ``discover_product_
+# boundary`` uses only the max END (the high-water mark, §1D/§3A/§3C);
+# ``discover_product_availability_range`` (Plan 115b3 §4C) additionally needs
+# the min START (the earliest published date), since the RhiresD/RprelimD
+# overlap window is bounded by RprelimD's rolling-tail start.
+def _product_asset_span_re(token: str, grid: str) -> re.Pattern[str]:
     return re.compile(
-        rf"{re.escape(token)}_{re.escape(grid)}\.swiss\.lv95_\d{{8}}\d{{6}}_(?P<end>\d{{8}})\d{{6}}"
+        rf"{re.escape(token)}_{re.escape(grid)}\.swiss\.lv95_"
+        rf"(?P<start>\d{{8}})\d{{6}}_(?P<end>\d{{8}})\d{{6}}"
     )
 
 
@@ -318,15 +321,52 @@ class MeteoSwissOpenDataReanalysisAdapter:
         ``None`` when no asset for this product exists yet (an empty
         collection) — callers must handle that.
         """
+        spans = self._scan_product_asset_spans(product)
+        if not spans:
+            return None
+        latest = max(end for _, end in spans)
+        return ensure_utc(datetime.combine(latest, time(0, 0), tzinfo=UTC))
+
+    def discover_product_availability_range(
+        self, product: ForcingSource
+    ) -> tuple[date, date] | None:
+        """Discover ``product``'s full published availability: the earliest
+        and latest date any asset of that product has ever covered (Plan
+        115b3 §4C — generalises the same STAC-scanning infrastructure
+        ``discover_product_boundary`` uses from "latest only" to a full
+        ``(earliest_start, latest_end)`` range).
+
+        Used to compute the RhiresD/RprelimD overlap window: the live-tail
+        product (`RprelimD`) is a rolling ~2-month tail, so its *earliest*
+        available date — not just its high-water mark — determines how much
+        of RhiresD's definitive-but-lagged coverage it actually overlaps.
+        Returns ``None`` when no asset for this product exists yet.
+        """
+        spans = self._scan_product_asset_spans(product)
+        if not spans:
+            return None
+        earliest = min(start for start, _ in spans)
+        latest = max(end for _, end in spans)
+        return earliest, latest
+
+    def _scan_product_asset_spans(
+        self, product: ForcingSource
+    ) -> list[tuple[date, date]]:
+        """Scan every STAC item's assets (archive / "last" monthly / daily
+        families, following pagination) for ``product``'s asset, returning
+        every embedded ``(start, end)`` date span found. Shared by
+        ``discover_product_boundary`` (latest END) and
+        ``discover_product_availability_range`` (earliest START, latest END)
+        so both read from the same single scan implementation."""
         prod = next((p for p in _PRODUCT_REGISTRY if p.source is product), None)
         if prod is None:
             raise AdapterError(f"unknown product source={product.value}")
-        asset_re = _product_asset_re(prod.token, prod.grid)
+        span_re = _product_asset_span_re(prod.token, prod.grid)
 
         url: str | None = (
             f"{self._stac_base_url}/collections/{self._stac_collection}/items?limit=100"
         )
-        latest: date | None = None
+        spans: list[tuple[date, date]] = []
         seen: set[str] = set()
         max_pages = 50
         while url is not None and len(seen) < max_pages and url not in seen:
@@ -352,18 +392,16 @@ class MeteoSwissOpenDataReanalysisAdapter:
                 for key, asset in assets.items():
                     href = str(asset.get("href", "")) if isinstance(asset, dict) else ""
                     for candidate in (str(key), href):
-                        match = asset_re.search(candidate)
+                        match = span_re.search(candidate)
                         if match is None:
                             continue
+                        start = datetime.strptime(match.group("start"), "%Y%m%d").date()
                         end = datetime.strptime(match.group("end"), "%Y%m%d").date()
-                        if latest is None or end > latest:
-                            latest = end
+                        spans.append((start, end))
                         break
             url = _next_link(body.get("links", []))
 
-        if latest is None:
-            return None
-        return ensure_utc(datetime.combine(latest, time(0, 0), tzinfo=UTC))
+        return spans
 
     def fetch_archive_year(
         self,

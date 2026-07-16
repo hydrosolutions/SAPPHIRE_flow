@@ -2645,6 +2645,83 @@ supplies one; unit tests using fakes are unaffected) — runs the per-station
 backfill and withholds OPERATIONAL promotion (Step 8) from a MeteoSwiss-eligible
 station until its backfill has landed at least one row (§2C).
 
+**Full availability-range discovery (Plan 115b3 §4C).** Generalises
+`discover_product_boundary` (latest END only) to the FULL range, reusing the
+same STAC-scanning infrastructure:
+
+```python
+def discover_product_availability_range(
+    self, product: ForcingSource,
+) -> tuple[date, date] | None: ...
+    # (earliest_start, latest_end) across every asset published for
+    # `product`, scanning the archive/last-monthly/daily STAC asset
+    # families. None = no asset yet.
+```
+
+**Validation gate — reference comparison + live-tail residual (Plan 115b3
+§4A-§4D, `services/validation_gate.py`).** A GO/NO-GO analysis gate, not a
+production step: reads `historical_forcing`, writes nothing. Runs after the
+115b2 backfill and before the 115b4 reader flip.
+
+```python
+class GateVerdict(StrEnum):
+    PASS = "pass"
+    FLAG = "flag"
+    ESCALATE = "escalate"
+    DATA_QUALITY_ESCALATE = "data_quality_escalate"  # coverage gap / degenerate denominator
+
+def classify_precip_rel_bias(rel_bias: float) -> GateVerdict: ...
+    # |rel_bias| <=5% pass, >5% flag, >20% escalate (SIGNED input, gated on
+    # the ABSOLUTE VALUE — a large negative bias must not falsely pass).
+
+def classify_temperature(mean_bias: float, rmse: float) -> GateVerdict: ...
+    # BOTH mean_bias and rmse thresholded in degC: pass <=> |mean_bias|<=0.5
+    # AND rmse<=1.0; escalate <=> |mean_bias|>1.0 OR rmse>2.0.
+
+def evaluate_precip_basin(
+    station_id: StationId, code: str,
+    ours: dict[date, float], camels: dict[date, float],
+) -> BasinPrecipResult: ...
+def evaluate_temperature_basin(
+    station_id: StationId, code: str,
+    ours: dict[date, float], camels: dict[date, float],
+) -> BasinTemperatureResult: ...
+    # §4A/§4B — a basin/date present on one side but not the other is a
+    # coverage gap: forces DATA_QUALITY_ESCALATE, never silently inner-joined.
+    # A non-positive CAMELS total does the same (never divides by it).
+
+def run_reference_comparison(
+    store: HistoricalForcingStore, stations: list[StationConfig],
+) -> ReferenceComparisonReport: ...
+    # Per station: meteoswiss_rhiresd/precipitation vs camels-ch/precipitation,
+    # meteoswiss_tabsd/temperature vs camels-ch/temperature, over
+    # [1981-01-01, 2021-01-01).
+
+def discover_overlap_window(adapter: MeteoSwissBoundaryAdapter) -> OverlapWindow | None: ...
+    # §4C — the STAC date INTERSECTION of RhiresD and RprelimD availability
+    # (discover_product_availability_range on both). None if either product
+    # has no asset yet, or the ranges don't overlap.
+
+def fetch_overlap_products(
+    adapter: MeteoSwissBoundaryAdapter, station_configs: list[StationWeatherSource],
+    window: OverlapWindow,
+) -> tuple[list[RawHistoricalForcing], list[RawHistoricalForcing]]: ...
+    # One-off measurement fetch (RhiresD, RprelimD) over the SAME overlap
+    # window — separate from the 115b2 archive backfill.
+
+def compute_live_tail_residual(
+    rhiresd_rows: list[RawHistoricalForcing], rprelimd_rows: list[RawHistoricalForcing],
+    window: OverlapWindow,
+) -> LiveTailResidualResult: ...
+    # §4D — the one genuinely attributable number. Compares ONLY paired
+    # (station, date) rows; unpaired rows are excluded and counted, never
+    # silently dropped.
+```
+
+`scripts/validate_forcing_reference.py` runs 4A-4D against a live database +
+STAC and prints the per-basin report (read-only; the 4C/4D fetch is never
+persisted).
+
 #### ForeignForecastSource
 
 Pulls published forecasts from an upstream SAPPHIRE instance. Implementation deferred to v1.
