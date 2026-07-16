@@ -28,7 +28,7 @@ dispositioned.
 
 ### Phase 5 — the reader
 
-- **5A — hybrid parameter-drop fix (BEFORE the flip).** `hybrid_reanalysis.py:66-72` silently `continue`s
+- **5A — hybrid parameter-drop fix (BEFORE the flip).** `hybrid_reanalysis.py:78-84` silently `continue`s
   (drops the row) for any parameter with no configured chain; `StoreBackedReanalysisSource` (today's
   default) passes any parameter through. Flipping as-is is a **silent data-loss regression**. Rule: a
   requested parameter with **no configured chain raises `ConfigurationError`** — **unless exactly one
@@ -44,7 +44,7 @@ dispositioned.
   hold the flip for affected stations. *(Repo review suggests today's models are probably unaffected —
   native/fallback declare no past/future dynamic features; the FI NWP model needs only future
   precip/temp — but that is an inference; the live artifact/assignment tables settle it. NEEDS-LIVE-DB.)*
-- **5D — flip the reanalysis default to `hybrid`** (`config/deployment.py:111`) — the last step of **Release A**. Only after 5A.
+- **5D — flip the reanalysis default to `hybrid`** (`config/deployment.py:111-113`) — the last step of **Release A**. Only after 5A.
   `tests/unit/config/test_deployment_reanalysis_source.py:24-39` locks the `single` default and updates deliberately. Verify
   CAMELS-only stations still resolve (the chain falls back correctly) — a test, not an assumption.
 - **5E — retire the camels-ch weather binding, as a SEPARATE SECOND RELEASE (owner decision 2026-07-16,
@@ -108,8 +108,10 @@ dispositioned.
 - **Priority, not supersession (§3):** for a `(station, valid_time, parameter)` covered by BOTH precip
   sources, a **direct source-keyed fetch returns BOTH rows**, while the **hybrid reader returns only the
   `RhiresD` winner**. *Two assertions.*
-- **Parameter drop (5A):** a parameter with no chain **raises**, does not vanish; **overlap** (two sources,
-  unconfigured parameter) also raises.
+- **Parameter drop (5A), all three returned-row cases:** for a parameter with **no configured chain** —
+  **zero** sources returned rows → behaves as today (absent, no raise); **exactly one** source returned rows
+  → that single source **wins**, no raise; **two+** sources returned rows → **raises** `ConfigurationError`
+  (nondeterministic winner). *Decided from returned rows, not a static map.*
 - **CAMELS-only station survives the flip (5D)** — the chain resolves; past-dynamic features unchanged.
 - **Flow 6 health (6B):** `stations_targeted == 0` → UNHEALTHY; bound-but-no-inserts over a full window →
   UNHEALTHY (via DB rowcount / non-advancing `MAX(valid_time)`), NOT via `rows_stored`.
@@ -139,12 +141,12 @@ dispositioned.
       "name": "Release B (SEPARATE deploy) — retire the camels-ch weather binding, only after Release A is confirmed serving hybrid",
       "tasks": ["5E-retire-camels-weather-binding-migration"],
       "parallel": false,
-      "note": "Second release on the standard deploy path. depends_on the Release-A staging deploy-gate, NOT just the 5D code. Rollback = backup-restore + previous image (cicd.md), not schema downgrade.",
-      "depends_on": ["phase-5"]
+      "note": "Second release on the standard deploy path. depends_on the WHOLE of Release A (phase-5 = 5A-5D AND phase-6 = loudness/guards) being deployed and the Release-A staging deploy-gate confirmed serving — NOT just the 5D code. Rollback = backup-restore + previous image (cicd.md), not schema downgrade.",
+      "depends_on": ["phase-5", "phase-6"]
     },
     {
       "id": "phase-6",
-      "name": "Loudness + guards (part of Release A)",
+      "name": "Loudness + guards — ships WITHIN Release A (alongside 5A-5D, before the Release-A deploy gate)",
       "tasks": ["6A-weather-history-ingest-check-type", "6B-health-by-effect", "6C-converter-guards", "6D-dashboard-hybrid-resolved"],
       "parallel": true,
       "depends_on": ["phase-5"]
@@ -161,10 +163,15 @@ uv run pyright src/
 uv run pytest
 ```
 
-**Deploy gate (staging, do not skip):** after the flip, confirm `ingest-weather-history` reports a
-**non-zero** effect (advancing `MAX(valid_time)`), a station serves past-dynamic features via the
-`RHIRESD → RPRELIMD`/`TABSD`/… chain, and the `camels-ch` weather binding is gone while its forcing rows
-remain. Confirm a forecast cycle completes on the new series. **A green flow is not evidence.**
+**Deploy gates (staging, do not skip) — TWO gates, one per release (round-2 blocker: do not conflate them):**
+- **Release A gate (after 5A–5D + phase-6, NO retire migration):** `ingest-weather-history` reports a
+  **non-zero** effect (advancing `MAX(valid_time)` per source), a station serves past-dynamic features via
+  the `RHIRESD → RPRELIMD`/`TABSD`/… chain, and a forecast cycle completes on the new series. The
+  `camels-ch` weather binding is **still present** at this gate (it is retired only in Release B). Confirm
+  the retire migration is **absent from Release A's `head`**. **A green flow is not evidence.**
+- **Release B gate (after 5E ships, only once Release A is confirmed serving):** the `camels-ch` weather
+  binding is **gone**, its forcing ROWS remain readable by a direct source-keyed fetch, and a forecast
+  cycle still completes on the hybrid chain.
 
 **Doc sync:** `docs/v0-scope.md §A12` + `docs/architecture-context.md:140,574` (CAMELS is now a validation
 reference, not the training-forcing source; record the self-derived provenance
