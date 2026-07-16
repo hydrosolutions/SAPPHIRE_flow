@@ -529,16 +529,26 @@ uv run pytest tests/unit/docs/test_basin_importer_docs.py::TestImporterDocs
 - **Stamp site → 120 owns the join-table schema AND the train-time write wiring**
   (Task 2D), including the additive `store_artifact` parameter.
 
-## Open questions (resolve before READY)
+## Open questions
 
-- **Correction UX beyond emit-to-retrain.** Task 2C now flags the material change **and**
-  emits the affected-artifact set to Flow 9 (retrain automation). Residual: should the
-  importer additionally *quarantine* the affected station/forecast path until Flow 9
-  completes, or leave it live until the operator promotes the retrained artifact? Current
-  design: emit + flag, no quarantine.
-- **Coverage check source (`04:651`).** "Basin outside required coverage" reuses 082's
-  coverage manifest (082 Task 3A/3B) vs a standalone check. Prefer reuse; 082 is already
-  a `depends_on`.
+None blocking. The two former residuals are settled below; the only remaining gate on a
+real production run is external (an accepted basin/static package to import), not a design
+question.
+
+### Settled (2026-07-16, owner)
+
+- **Correction UX = emit + flag + KEEP SERVING; no automatic quarantine.** On a correction,
+  Task 2C flags the material change and emits the affected-artifact set to Flow 9 (retrain
+  automation) — but the station **stays live on its current artifact** until the operator
+  promotes the retrained one. Rationale (professional-service posture): auto-quarantining a
+  station on every correction would take it dark for the full retrain cycle (potentially
+  days) — an availability hit a billed service can't default to. Transparency instead of
+  darkness: the pending-retrain state is surfaced (the material-change flag + "forecast from
+  a superseded basin version" indicator). A head hydrologist **may** quarantine a
+  station for a genuinely material correction — an operator/policy decision, not automatic.
+- **Coverage check source = REUSE 082's coverage manifest** (082 Task 3A/3B), not a
+  standalone check — 082 is already a `depends_on`, so "basin outside required coverage"
+  reads the same manifest. No duplicate coverage machinery.
 
 ## References
 
