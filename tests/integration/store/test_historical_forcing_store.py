@@ -260,3 +260,143 @@ class TestFetchAvailableSources:
         store = PgHistoricalForcingStore(db_connection)
 
         assert store.fetch_available_sources(sid) == []
+
+
+class TestFetchCoveredDays:
+    """Plan 115b2 §3C — resumable gap detection keys on the LOGICAL key
+    (station, source, valid_time, parameter, spatial_type), excluding
+    ``version``: a day is "covered" if ANY version exists for it."""
+
+    def test_covered_days_within_window(self, db_connection: sa.Connection) -> None:
+        sid = _seed_station(db_connection)
+        store = PgHistoricalForcingStore(db_connection)
+        store.store_forcing(
+            [
+                make_raw_historical_forcing(
+                    station_id=sid,
+                    source="meteoswiss_tabsd",
+                    version="v1",
+                    valid_time=_utc(2020, 1, 1),
+                    parameter="temperature",
+                    value=1.0,
+                ),
+                make_raw_historical_forcing(
+                    station_id=sid,
+                    source="meteoswiss_tabsd",
+                    version="v1",
+                    valid_time=_utc(2020, 1, 3),
+                    parameter="temperature",
+                    value=1.0,
+                ),
+            ]
+        )
+
+        covered = store.fetch_covered_days(
+            [sid],
+            "meteoswiss_tabsd",
+            "temperature",
+            SpatialRepresentation.BASIN_AVERAGE,
+            _utc(2020, 1, 1),
+            _utc(2020, 1, 4),
+        )
+
+        assert covered[sid] == {_utc(2020, 1, 1).date(), _utc(2020, 1, 3).date()}
+
+    def test_every_requested_station_id_present_even_with_no_rows(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        store = PgHistoricalForcingStore(db_connection)
+
+        covered = store.fetch_covered_days(
+            [sid],
+            "meteoswiss_tabsd",
+            "temperature",
+            SpatialRepresentation.BASIN_AVERAGE,
+            _utc(2020, 1, 1),
+            _utc(2020, 1, 4),
+        )
+
+        assert covered == {sid: set()}
+
+    def test_a_day_is_covered_regardless_of_version(
+        self, db_connection: sa.Connection
+    ) -> None:
+        # Soundness: fails against gap detection keyed on the full unique key
+        # (including version) — two DIFFERENT versions of the same logical
+        # day would then look like two separate, still-incomplete entries
+        # instead of one covered day.
+        sid = _seed_station(db_connection)
+        store = PgHistoricalForcingStore(db_connection)
+        store.store_forcing(
+            [
+                make_raw_historical_forcing(
+                    station_id=sid,
+                    source="meteoswiss_tabsd",
+                    version="v1-old-content-hash",
+                    valid_time=_utc(2020, 1, 1),
+                    parameter="temperature",
+                    value=1.0,
+                )
+            ]
+        )
+        store.store_forcing(
+            [
+                make_raw_historical_forcing(
+                    station_id=sid,
+                    source="meteoswiss_tabsd",
+                    version="v2-reprocessed-content-hash",
+                    valid_time=_utc(2020, 1, 1),
+                    parameter="temperature",
+                    value=1.1,
+                )
+            ]
+        )
+
+        covered = store.fetch_covered_days(
+            [sid],
+            "meteoswiss_tabsd",
+            "temperature",
+            SpatialRepresentation.BASIN_AVERAGE,
+            _utc(2020, 1, 1),
+            _utc(2020, 1, 2),
+        )
+
+        assert covered[sid] == {_utc(2020, 1, 1).date()}
+
+    def test_filters_by_source_parameter_and_spatial_type(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        store = PgHistoricalForcingStore(db_connection)
+        store.store_forcing(
+            [
+                make_raw_historical_forcing(
+                    station_id=sid,
+                    source="meteoswiss_tabsd",
+                    version="v1",
+                    valid_time=_utc(2020, 1, 1),
+                    parameter="temperature",
+                    value=1.0,
+                ),
+                make_raw_historical_forcing(
+                    station_id=sid,
+                    source="meteoswiss_rhiresd",
+                    version="v1",
+                    valid_time=_utc(2020, 1, 1),
+                    parameter="precipitation",
+                    value=1.0,
+                ),
+            ]
+        )
+
+        covered = store.fetch_covered_days(
+            [sid],
+            "meteoswiss_rhiresd",
+            "precipitation",
+            SpatialRepresentation.BASIN_AVERAGE,
+            _utc(2020, 1, 1),
+            _utc(2020, 1, 2),
+        )
+
+        assert covered[sid] == {_utc(2020, 1, 1).date()}

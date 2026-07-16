@@ -1325,6 +1325,90 @@ class TestDiscoverRhiresdBoundary:
 
 
 # ---------------------------------------------------------------------------
+# Plan 115b2 §3A/§3C — per-product high-water-mark discovery, generalising
+# §1D's RhiresD-only boundary to every product the chunked backfill needs.
+# ---------------------------------------------------------------------------
+
+
+class TestDiscoverProductBoundary:
+    def test_discover_rhiresd_boundary_delegates_to_generalised_method(self) -> None:
+        # discover_rhiresd_boundary() must remain a thin wrapper — same result
+        # as discover_product_boundary(METEOSWISS_RHIRESD).
+        sid = StationId(uuid.uuid4())
+        assets = _rhiresd_archive_asset(2024, "https://dummy/a2024.nc")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            if "/items?limit=100" in url:
+                return httpx.Response(
+                    200, json={"features": [_archive_item(assets)], "links": []}
+                )
+            raise AssertionError(f"unexpected request: {url}")
+
+        adapter = _make_adapter(httpx.MockTransport(handler), {sid: _make_basin(sid)})
+        expected = ensure_utc(datetime(2024, 12, 31, tzinfo=UTC))
+        assert adapter.discover_rhiresd_boundary() == expected
+        assert (
+            adapter.discover_product_boundary(ForcingSource.METEOSWISS_RHIRESD)
+            == expected
+        )
+
+    def test_discovers_tabsd_boundary_ignoring_rhiresd_distractor(self) -> None:
+        # Soundness: fails RED against a boundary discovery hardcoded to the
+        # RhiresD token/grid (would return None or the wrong end date for a
+        # ch01r product like TabsD).
+        sid = StationId(uuid.uuid4())
+        assets = dict(_archive_asset("tabsd", "ch01r", 2022, "https://dummy/t2022.nc"))
+        assets.update(_rhiresd_archive_asset(2026, "https://dummy/r2026.nc"))
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            if "/items?limit=100" in url:
+                return httpx.Response(
+                    200, json={"features": [_archive_item(assets)], "links": []}
+                )
+            raise AssertionError(f"unexpected request: {url}")
+
+        adapter = _make_adapter(httpx.MockTransport(handler), {sid: _make_basin(sid)})
+        assert adapter.discover_product_boundary(
+            ForcingSource.METEOSWISS_TABSD
+        ) == ensure_utc(datetime(2022, 12, 31, tzinfo=UTC))
+
+    def test_discovers_sreld_boundary(self) -> None:
+        sid = StationId(uuid.uuid4())
+        assets = _archive_asset("sreld", "ch01r", 2023, "https://dummy/s2023.nc")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            if "/items?limit=100" in url:
+                return httpx.Response(
+                    200, json={"features": [_archive_item(assets)], "links": []}
+                )
+            raise AssertionError(f"unexpected request: {url}")
+
+        adapter = _make_adapter(httpx.MockTransport(handler), {sid: _make_basin(sid)})
+        assert adapter.discover_product_boundary(
+            ForcingSource.METEOSWISS_SRELD
+        ) == ensure_utc(datetime(2023, 12, 31, tzinfo=UTC))
+
+    def test_missing_product_asset_returns_none(self) -> None:
+        sid = StationId(uuid.uuid4())
+        # Collection has RhiresD assets but nothing for TminD.
+        assets = _rhiresd_archive_asset(2024, "https://dummy/a2024.nc")
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            if "/items?limit=100" in url:
+                return httpx.Response(
+                    200, json={"features": [_archive_item(assets)], "links": []}
+                )
+            raise AssertionError(f"unexpected request: {url}")
+
+        adapter = _make_adapter(httpx.MockTransport(handler), {sid: _make_basin(sid)})
+        assert adapter.discover_product_boundary(ForcingSource.METEOSWISS_TMIND) is None
+
+
+# ---------------------------------------------------------------------------
 # Plan 115b1 §1B/§1C — real (faithfully-shaped) LV95 archive fixture
 # ---------------------------------------------------------------------------
 

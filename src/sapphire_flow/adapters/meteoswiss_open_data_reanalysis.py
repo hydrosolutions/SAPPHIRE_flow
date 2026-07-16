@@ -166,14 +166,18 @@ _PRODUCT_REGISTRY: tuple[_Product, ...] = (
     ),
 )
 
-# RhiresD asset filenames embed a start/end date span (archive: full year;
-# "last" family: full month) — e.g.
+
+# Every MeteoSwiss asset filename (archive / last-monthly / daily families)
+# embeds a start/end date span — e.g.
 # "...rhiresd_ch01h.swiss.lv95_20200101000000_20201231000000.nc". The END date
-# is what R discovery (§1D) needs; the pattern is shared by every asset family
-# (archive / last / daily) the RhiresD token appears under.
-_RHIRESD_ASSET_RE = re.compile(
-    r"rhiresd_ch01h\.swiss\.lv95_\d{8}\d{6}_(?P<end>\d{8})\d{6}"
-)
+# is what boundary discovery (§1D/§3A/§3C) needs, parameterised by product
+# token + grid family so any product's high-water mark can be discovered, not
+# just RhiresD's.
+def _product_asset_re(token: str, grid: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"{re.escape(token)}_{re.escape(grid)}\.swiss\.lv95_\d{{8}}\d{{6}}_(?P<end>\d{{8}})\d{{6}}"
+    )
+
 
 _ARCHIVE_ITEM_ID = "archive-ch"
 
@@ -295,8 +299,30 @@ class MeteoSwissOpenDataReanalysisAdapter:
         daily asset families) and taking the maximum embedded END date.
         Returns ``None`` when no RhiresD asset exists yet (an empty
         collection) — callers must handle that (there is no definitive data
-        at all; everything is preliminary).
+        at all; everything is preliminary). Thin wrapper over
+        ``discover_product_boundary`` (Plan 115b2 §3A/§3C generalises this to
+        every product's high-water mark).
         """
+        return self.discover_product_boundary(ForcingSource.METEOSWISS_RHIRESD)
+
+    def discover_product_boundary(self, product: ForcingSource) -> UtcDatetime | None:
+        """Discover ``product``'s published high-water mark: the latest date
+        for which ANY asset of that product has been published (Plan 115b2
+        §3A/§3C — extends 1D's RhiresD-only ``R`` discovery to every product,
+        so the chunked backfill never requests a date a product does not yet
+        serve).
+
+        Scans every STAC item's assets (across the archive / "last" monthly /
+        daily asset families, following pagination) for an asset matching
+        ``{token}_{grid}...`` and takes the maximum embedded END date. Returns
+        ``None`` when no asset for this product exists yet (an empty
+        collection) — callers must handle that.
+        """
+        prod = next((p for p in _PRODUCT_REGISTRY if p.source is product), None)
+        if prod is None:
+            raise AdapterError(f"unknown product source={product.value}")
+        asset_re = _product_asset_re(prod.token, prod.grid)
+
         url: str | None = (
             f"{self._stac_base_url}/collections/{self._stac_collection}/items?limit=100"
         )
@@ -310,7 +336,8 @@ class MeteoSwissOpenDataReanalysisAdapter:
                 resp.raise_for_status()
             except Exception as exc:
                 raise AdapterError(
-                    f"STAC search failed during R discovery: {exc}"
+                    f"STAC search failed during boundary discovery for "
+                    f"product={prod.token}: {exc}"
                 ) from exc
             body = resp.json()
             for feature in body.get("features", []):
@@ -325,7 +352,7 @@ class MeteoSwissOpenDataReanalysisAdapter:
                 for key, asset in assets.items():
                     href = str(asset.get("href", "")) if isinstance(asset, dict) else ""
                     for candidate in (str(key), href):
-                        match = _RHIRESD_ASSET_RE.search(candidate)
+                        match = asset_re.search(candidate)
                         if match is None:
                             continue
                         end = datetime.strptime(match.group("end"), "%Y%m%d").date()

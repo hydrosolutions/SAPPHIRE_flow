@@ -9,6 +9,7 @@ from sapphire_flow.types.enums import ModelArtifactStatus
 # Fakes must match: start <= x < end (not start <= x <= end).
 
 if TYPE_CHECKING:
+    from datetime import date
     from pathlib import Path
     from uuid import UUID
 
@@ -38,6 +39,7 @@ if TYPE_CHECKING:
         PipelineCheckType,
         QcStatus,
         SkillSource,
+        SpatialRepresentation,
         StationKind,
         StationOwnership,
         StationStatus,
@@ -701,6 +703,23 @@ class HistoricalForcingStore(Protocol):
         raise NotImplementedError
 
     def fetch_available_sources(self, station_id: StationId) -> list[str]:
+        raise NotImplementedError
+
+    def fetch_covered_days(
+        self,
+        station_ids: list[StationId],
+        source: str,
+        parameter: str,
+        spatial_type: SpatialRepresentation,
+        start: UtcDatetime,
+        end: UtcDatetime,
+    ) -> dict[StationId, set[date]]:
+        # Gap-detection presence check (Plan 115b2 §3C): for each station in
+        # ``station_ids``, the set of calendar days (UTC, from ``valid_time``)
+        # already stored for (source, parameter, spatial_type) within the
+        # half-open [start, end) window — keyed on the LOGICAL key, i.e.
+        # regardless of ``version``. Every station in ``station_ids`` is
+        # present in the result (with an empty set if it has no rows).
         raise NotImplementedError
 
 

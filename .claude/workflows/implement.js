@@ -209,9 +209,13 @@ const verifyPromptText =
   `RATCHET against a baseline (run it the repo's way, e.g. 'uv run pyright --outputjson src/ > live.json && ` +
   `uv run python tools/pyright_ratchet.py live.json tools/pyright_baseline.json'). Hundreds of PRE-EXISTING ` +
   `errors are expected; a non-zero raw 'pyright src/' caused ONLY by pre-existing baseline errors (no NEW ` +
-  `errors introduced by this diff) is a PASS, not a failure. Report gatesPassed=true ONLY if every gate passes ` +
-  `by the repo's ACTUAL convention. Put the exact commands you ran + their outcomes in notes. Do NOT edit, ` +
-  `stage, commit, push, or merge anything.`
+  `errors introduced by this diff) is a PASS, not a failure. **PYTEST TAKES SEVERAL MINUTES (this repo has ` +
+  `~2000 tests, ~4+ min):** run it in the FOREGROUND to completion with a GENEROUS Bash timeout (e.g. ` +
+  `600000ms) and WAIT for the actual pass/fail line — do NOT background it and give up / submit early. You ` +
+  `MUST observe the final pytest summary before reporting; an unfinished/unobserved pytest is NOT a pass, but ` +
+  `waiting the full duration is expected and required, not a reason to bail. Report gatesPassed=true ONLY if ` +
+  `every gate passes by the repo's ACTUAL convention. Put the exact commands you ran + their outcomes ` +
+  `(including the final pytest summary line) in notes. Do NOT edit, stage, commit, push, or merge anything.`
 
 const implementerReport = await agent(
   `You are the IMPLEMENTER of the READY plan at ${planPath} (repo ${repo}). Read the plan and its dependency ` +

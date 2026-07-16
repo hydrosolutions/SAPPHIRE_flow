@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import structlog
 from prefect import flow, runtime, task
@@ -10,6 +11,13 @@ from prefect.cache_policies import NO_CACHE
 
 from sapphire_flow.services.onboarding import onboard_from_camelsch
 from sapphire_flow.types.datetime import ensure_utc
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from sapphire_flow.protocols.stores import BasinStore, StationStore
+    from sapphire_flow.services.reanalysis_backfill import MeteoSwissBackfillAdapter
+    from sapphire_flow.types.datetime import UtcDatetime
 
 log = structlog.get_logger(__name__)
 
@@ -98,6 +106,8 @@ def onboard_stations_flow(
     qc_rules: object = None,
     clock: object = None,
     hindcast_days: int | None = None,
+    reanalysis_adapter_factory: object = None,
+    require_meteoswiss_backfill: bool = False,
 ) -> object:
     if clock is None:
         clock = lambda: ensure_utc(datetime.now(UTC))  # noqa: E731
@@ -125,6 +135,43 @@ def onboard_stations_flow(
         hindcast_store = stores["hindcast_store"]
         skill_store = stores["skill_store"]
         parameter_store = stores["parameter_store"]
+
+        # Plan 115b2 §2B/§2C: the MeteoSwiss reanalysis binding + per-station
+        # backfill-or-hold, wired ONLY on this production DB-backed path (not
+        # when a caller injects its own stores, e.g. tests/replay) — so the
+        # §2C hold gate is unconditionally live for the real deployed flow,
+        # matching how forcing_source/deployment_config are resolved below.
+        #
+        # A FACTORY (not a pre-built adapter) is threaded so onboarding can
+        # build the adapter AFTER it has persisted the basins/stations — the
+        # production adapter snapshots its per-station basin map at
+        # construction, so an earlier build would miss a genuinely new
+        # station's basin. ``require_meteoswiss_backfill`` is set True here so
+        # eligible stations are held out of promotion whether or not the fetch
+        # produces rows.
+        if reanalysis_adapter_factory is None:
+            from typing import cast
+
+            from sapphire_flow.flows.ingest_weather_history import (
+                _load_reanalysis_stac_config,  # pyright: ignore[reportPrivateUsage]
+                build_production_reanalysis_adapter,
+            )
+
+            _stac_config = _load_reanalysis_stac_config()
+            _station_store = cast("StationStore", station_store)
+            _basin_store = cast("BasinStore", basin_store)
+            _clock = cast("Callable[[], UtcDatetime]", clock)
+
+            def _build_reanalysis_adapter() -> MeteoSwissBackfillAdapter:
+                return build_production_reanalysis_adapter(
+                    config=_stac_config,
+                    station_store=_station_store,
+                    basin_store=_basin_store,
+                    clock=_clock,
+                )
+
+            reanalysis_adapter_factory = _build_reanalysis_adapter
+            require_meteoswiss_backfill = True
 
     # Load deployment config for skill gate thresholds and to select the
     # reanalysis-source mode below (production path only).
@@ -216,6 +263,8 @@ def onboard_stations_flow(
         parameter_store=parameter_store,  # type: ignore[arg-type]
         water_level_datums_masl=water_level_datums_masl,
         water_level_units=water_level_units,
+        reanalysis_adapter_factory=reanalysis_adapter_factory,  # type: ignore[arg-type]
+        require_meteoswiss_backfill=require_meteoswiss_backfill,
     )
 
     log.info(
