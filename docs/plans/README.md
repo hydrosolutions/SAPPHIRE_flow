@@ -82,6 +82,10 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
   confirmed static-Parquet shape. Unblocks the
   **basin/static architecture cleanup only** — 047 separately needs its
   **re-scope per Plan 106** before it advances.
+- **120** — Basin/static importer + §5a Gateway polygon-reference persistence —
+  `DRAFT (stub)` — the importer the `04` contract §5a calls for (117 is docs-only and
+  builds none). Owns package import/validation + the §5a mapping table that Plan 082's
+  store-backed resolver reads. **Blocks 082's production run** (not its build).
 - **035** — Rating-curve provenance for skill integrity — `READY` — v1 DHM hQ.
 - **017** — Manual vs automatic station support — `DRAFT` — v1, DHM mixed networks.
 - **015** — Virtual / calculated station support — `DRAFT` — v1 (enum slice shipped).
