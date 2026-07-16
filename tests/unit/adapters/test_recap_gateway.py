@@ -15,6 +15,7 @@ from sapphire_flow.adapters.recap_gateway import (
     GatewayPolygonRef,
     GatewayPolygonResolver,
     GatewayResolutionError,
+    RecapAuthError,
     RecapClientLike,
     RecapConfigurationError,
     RecapDataUnavailableError,
@@ -133,6 +134,17 @@ class _GoodSnow:
         variable: str,
         start_date: object,
         end_date: object,
+        **kwargs: object,
+    ) -> object:
+        return None
+
+    def forecast(
+        self,
+        *,
+        hru_code: str,
+        variable: str,
+        run_date: object,
+        run_hour: int = 0,
         **kwargs: object,
     ) -> object:
         return None
@@ -923,6 +935,36 @@ class TestErrorMapping:
             mapped, RecapDataUnavailableError | RecapConfigurationError
         )
 
+    def test_status_401_maps_to_auth_error(self) -> None:
+        mapped = _map_recap_error(_FakeClientError("unauthorized", status_code=401))
+        assert isinstance(mapped, RecapAuthError)
+        assert mapped.status_code == 401
+
+    def test_status_403_maps_to_auth_error(self) -> None:
+        mapped = _map_recap_error(_FakeClientError("forbidden", status_code=403))
+        assert isinstance(mapped, RecapAuthError)
+        assert mapped.status_code == 403
+
+    def test_status_500_does_not_map_to_auth_error(self) -> None:
+        # Negative control: a non-auth status code must not be swept into
+        # RecapAuthError — it stays the generic (retriable) AdapterError.
+        mapped = _map_recap_error(_FakeClientError("server error", status_code=500))
+        assert not isinstance(mapped, RecapAuthError)
+        assert isinstance(mapped, AdapterError)
+
+    def test_config_error_code_takes_priority_over_status_code(self) -> None:
+        # A structured validation error with BOTH a code and a 401 status
+        # must map to RecapConfigurationError (more specific), not auth.
+        mapped = _map_recap_error(
+            _FakeClientError(
+                "bad hru",
+                field="hru_code",
+                supported_values=["a"],
+                status_code=401,
+            )
+        )
+        assert isinstance(mapped, RecapConfigurationError)
+
 
 # --- Regression fixtures for the three Codex-fixed majors -------------------
 
@@ -1071,3 +1113,150 @@ class TestBasinAverageOnlyLock:
                 _CYCLE,
             )
         assert ecmwf.calls == []
+
+
+class _RecordingForecastSnow:
+    """Captures every ``forecast(**kwargs)`` call; returns a fixed frame."""
+
+    def __init__(self, df: pd.DataFrame) -> None:
+        self.calls: list[dict[str, object]] = []
+        self._df = df
+
+    def reanalysis(self, **kwargs: object) -> object:
+        raise AssertionError("snow-forecast test must not call reanalysis")
+
+    def forecast(self, **kwargs: object) -> object:
+        self.calls.append(dict(kwargs))
+        return self._df
+
+
+class TestSnowForecastFetch:
+    """Plan 082 Task 2H-snow: deterministic snow-forecast fetch, member_id=None."""
+
+    def _client(self, snow: object) -> object:
+        return _Client(_GoodEcmwf(), snow)
+
+    def test_run_hour_is_sent(self) -> None:
+        # A non-zero cycle hour (12Z) proves run_hour is threaded from
+        # cycle_time.hour, not left at the client's default (0).
+        cycle = ensure_utc(datetime(2026, 1, 1, 12, tzinfo=UTC))
+        snow = _RecordingForecastSnow(_wide_df([_POLY_A], value=5.0))
+        resolver = _GoodResolver()
+        adapter = RecapGatewayForecastAdapter(
+            client=self._client(snow),  # type: ignore[arg-type]
+            resolver=resolver,  # type: ignore[arg-type]
+        )
+
+        adapter.fetch_snow_forecast(
+            [_ws(_SID, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST)],
+            cycle,
+        )
+
+        assert len(snow.calls) == 3  # hs, rof, swe
+        for call in snow.calls:
+            assert call["run_hour"] == 12
+
+    def test_returns_member_id_none_rows(self) -> None:
+        cycle = ensure_utc(datetime(2026, 1, 1, 0, tzinfo=UTC))
+        snow = _RecordingForecastSnow(_wide_df([_POLY_A], value=5.0))
+        adapter = RecapGatewayForecastAdapter(
+            client=self._client(snow),  # type: ignore[arg-type]
+            resolver=_GoodResolver(),  # type: ignore[arg-type]
+        )
+
+        result = adapter.fetch_snow_forecast(
+            [_ws(_SID, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST)],
+            cycle,
+        )
+
+        assert _SID in result
+        forecast = result[_SID]
+        assert isinstance(forecast, BasinAverageForecast)
+        member_ids = forecast.values["member_id"].unique().to_list()
+        assert member_ids == [None]
+        parameters = set(forecast.values["parameter"].unique().to_list())
+        assert parameters == {"snow_depth", "snowmelt", "swe"}
+
+    def test_no_stations_returns_empty(self) -> None:
+        snow = _RecordingForecastSnow(_wide_df([_POLY_A], value=5.0))
+        adapter = RecapGatewayForecastAdapter(
+            client=self._client(snow),  # type: ignore[arg-type]
+            resolver=_GoodResolver(),  # type: ignore[arg-type]
+        )
+
+        result = adapter.fetch_snow_forecast([], _CYCLE)
+
+        assert result == {}
+        assert snow.calls == []
+
+
+class _MixedSourceSnow:
+    """Reanalysis snow fake returning a frame with per-row mixed provenance."""
+
+    def __init__(self, df: pd.DataFrame) -> None:
+        self.calls: list[dict[str, object]] = []
+        self._df = df
+
+    def reanalysis(self, **kwargs: object) -> object:
+        self.calls.append(dict(kwargs))
+        return self._df
+
+
+def _mixed_source_snow_frame() -> pd.DataFrame:
+    index = pd.DatetimeIndex(
+        [
+            pd.Timestamp("2026-01-01T00:00:00Z"),
+            pd.Timestamp("2026-01-01T12:00:00Z"),
+        ],
+        name="time",
+    )
+    df = pd.DataFrame({_POLY_A: [1.0, 2.0]}, index=index)
+    # Row 0 is observed (era5-land-analogous reanalysis); row 1 is
+    # forecast-fill leaking into what should be a pure reanalysis window.
+    df["source"] = ["jsnow_reanalysis", "jsnow_forecast"]
+    df["source_run"] = [_SOURCE_RUN, _SOURCE_RUN]
+    return df
+
+
+class TestReanalysisLeakageGuard:
+    """Plan 082 Task 3B item 3: forecast-fill rows must never leak into
+    reanalysis (training-history) admission."""
+
+    def test_jsnow_forecast_row_dropped_jsnow_reanalysis_admitted(self) -> None:
+        snow = _MixedSourceSnow(_mixed_source_snow_frame())
+        adapter = _reanalysis_adapter(
+            _GoodEcmwf(), snow, _MapResolver({_SID_A: _ref(_SID_A, _POLY_A)})
+        )
+
+        rows = adapter.fetch_reanalysis(
+            [_ws(_SID_A, nwp_source="era5_land", role=WeatherSourceRole.REANALYSIS)],
+            _START,
+            _END,
+            ["snow_depth"],
+        )
+
+        assert len(rows) == 1
+        assert rows[0].value == 1.0
+
+    def test_era5_land_admitted_ifs_forecast_fill_dropped(self) -> None:
+        index = pd.DatetimeIndex(
+            [
+                pd.Timestamp("2026-01-01T00:00:00Z"),
+                pd.Timestamp("2026-01-01T12:00:00Z"),
+            ],
+            name="time",
+        )
+        df = pd.DataFrame({_POLY_A: [1.0, 2.0]}, index=index)
+        df["source"] = ["era5_land", "ifs"]
+        df["source_run"] = [_SOURCE_RUN, _SOURCE_RUN]
+        adapter = _era5_source(df)
+
+        rows = adapter.fetch_reanalysis(
+            [_ws(_SID_A, nwp_source="era5_land", role=WeatherSourceRole.REANALYSIS)],
+            _START,
+            _END,
+            ["precipitation"],
+        )
+
+        assert len(rows) == 1
+        assert rows[0].value == pytest.approx(1000.0)  # 1.0 m -> 1000 mm

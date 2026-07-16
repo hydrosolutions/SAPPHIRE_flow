@@ -82,3 +82,21 @@ class StationWeatherSource:
     extraction_type: SpatialRepresentation
     status: WeatherSourceStatus
     role: WeatherSourceRole
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class GatewayPolygonBindingRow:
+    """One §5a mapping-table row (``04-basin-static-artifact-contract.md`` §5a).
+
+    Maps a recap Data Gateway forcing column back to a SAP3 station/band.
+    Keyed by ``station_id + gateway_hru_name + name`` (Plan 082 Task 2D).
+    Schema owner: 082 (this type + the additive table). Population owner:
+    Plan 120 (the §5a basin/static package importer).
+    """
+
+    station_id: StationId
+    basin_id: BasinId
+    gateway_hru_name: str
+    name: str
+    spatial_type: SpatialRepresentation
+    band_id: int | None

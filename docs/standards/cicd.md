@@ -357,6 +357,7 @@ This subsection describes the operational topology of `.github/workflows/ci.yml`
 | Tier | Job | `run:` step | Depends on | Local equivalent | CI only? Reason |
 |------|-----|-------------|------------|-----------------|-----------------|
 | **ci.yml** | | | | | |
+| 1 | `lint` | `Configure git auth for the private recap-dg-client clone` (Plan 082 Task 2H) | — | `git config --global url."https://<token>@github.com/hydrosolutions/recap-dg-client.git".insteadOf "https://github.com/hydrosolutions/recap-dg-client.git"` (developer needs a token with read access) | No — requires the `RECAP_DG_CLIENT_TOKEN` repo secret in CI |
 | 1 | `lint` | `uv sync --frozen` | — | `uv sync` (developers typically have a synced venv already) | No |
 | 1 | `lint` | `uv run ruff check src/ tests/` | — | `uv run ruff check src/ tests/` (also via `uv run check` and pre-commit) | No |
 | 1 | `lint` | `uv run ruff format --check src/ tests/` | — | `uv run ruff format --check src/ tests/` (also via `uv run check` and pre-commit) | No |
@@ -365,14 +366,17 @@ This subsection describes the operational topology of `.github/workflows/ci.yml`
 | 1 | `lint` | `uv run python tools/pyright_ratchet.py /tmp/pyright.json tools/pyright_baseline.json` | — | `uv run pyright src/` (then compare against `tools/pyright_baseline.json`) | No |
 | 1 | `lint` | `aquasecurity/trivy-action` (fs scan, `uses:`) | — | `trivy fs --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed --scanners vuln --skip-dirs .venv .` | No (but requires trivy installed) |
 | 2 | `unit` | Install system deps for cfgrib / rioxarray / exactextract | — | Brew/apt on the dev host (developer responsibility) | Yes — system-package install, not project-managed |
+| 2 | `unit` | `Configure git auth for the private recap-dg-client clone` (Plan 082 Task 2H) | — | Same as `lint` row above | No — requires `RECAP_DG_CLIENT_TOKEN` |
 | 2 | `unit` | `uv sync --frozen` | — | `uv sync` | No |
 | 2 | `unit` | `uv run pytest tests/unit/ --cov=src/sapphire_flow --cov-report=term-missing -v` | — | `uv run pytest tests/unit/` (requires system deps above) | No (but requires system deps) |
-| 2 | `wheel-only-guard` | Step 1 = "the wheel-only guard": `uv sync --frozen --no-build --no-cache --no-install-project --no-install-package forecastinterface` | — | `uv sync --frozen --no-build --no-cache --no-install-project --no-install-package forecastinterface` | No |
-| 2 | `wheel-only-guard` | Step 2 = "post-guard temporary forecastinterface exception install": `uv sync --frozen --no-cache --no-install-project --reinstall-package forecastinterface` | Step 1 guard | `uv sync --frozen --no-cache --no-install-project --reinstall-package forecastinterface` | No |
+| 2 | `wheel-only-guard` | `Configure git auth for the private recap-dg-client clone` (Plan 082 Task 2H) | — | Same as `lint` row above | No — requires `RECAP_DG_CLIENT_TOKEN` |
+| 2 | `wheel-only-guard` | Step 1 = "the wheel-only guard": `uv sync --frozen --no-build --no-cache --no-install-project --no-install-package forecastinterface --no-install-package recap-dg-client` | — | Same command | No |
+| 2 | `wheel-only-guard` | Step 2 = "post-guard temporary exception install": `uv sync --frozen --no-cache --no-install-project --reinstall-package forecastinterface --reinstall-package recap-dg-client` | Step 1 guard | Same command | No |
 | 3 | `integration` | Install system deps for cfgrib / rioxarray / exactextract | `unit` | Brew/apt on the dev host (developer responsibility) | Yes — system-package install, not project-managed |
+| 3 | `integration` | `Configure git auth for the private recap-dg-client clone` (Plan 082 Task 2H) | `unit` | Same as `lint` row above | No — requires `RECAP_DG_CLIENT_TOKEN` |
 | 3 | `integration` | `uv sync --frozen` | `unit` | `uv sync` | No |
 | 3 | `integration` | `uv run pytest tests/integration/ -v -m "not slow"` | `unit` | `uv run pytest tests/integration/ -v -m "not slow"` (requires postgres service + system deps) | No (but requires postgres) |
-| 4 | `build-image-and-scan` | `docker/build-push-action` (`uses:`) — build app image | `unit` | `docker buildx build -f Dockerfile -t sapphire-flow:local .` | No (but requires Docker daemon) |
+| 4 | `build-image-and-scan` | `docker/build-push-action` (`uses:`) — build app image, passing `secrets: recap_dg_client_token=<RECAP_DG_CLIENT_TOKEN>` (Plan 082 Task 2H) | `unit` | `docker buildx build -f Dockerfile -t sapphire-flow:local --secret id=recap_dg_client_token,env=RECAP_DG_CLIENT_TOKEN .` | No (but requires Docker daemon + a local `RECAP_DG_CLIENT_TOKEN` env var) |
 | 4 | `build-image-and-scan` | `aquasecurity/trivy-action` (image scan, `uses:`) | `unit` | `trivy image --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed sapphire-flow:local` | No (but requires the image to be built + trivy installed) |
 | 4 | `build-image-and-scan` | `anchore/sbom-action` (`uses:`) — generate SBOM with syft | `unit` | `syft sapphire-flow:local -o cyclonedx-json > sbom.cdx.json` | No (but requires syft installed) |
 | 5 | `e2e` | _(not yet implemented — dangling comment at line 206 of ci.yml)_ | `unit`, `integration`, `build-image-and-scan` | n/a | n/a |

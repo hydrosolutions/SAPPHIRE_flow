@@ -192,6 +192,36 @@ station_weather_sources = sa.Table(
     sa.PrimaryKeyConstraint("station_id", "nwp_source"),
 )
 
+# §5a mapping table (docs/requirements/04-basin-static-artifact-contract.md
+# §5a; Plan 082 Task 2D). Additive — does not touch `basins`. Schema + reader
+# owned by 082; rows populated by Plan 120's basin/static package importer.
+recap_gateway_polygon_bindings = sa.Table(
+    "recap_gateway_polygon_bindings",
+    metadata,
+    sa.Column(
+        "station_id", UUID(as_uuid=True), sa.ForeignKey("stations.id"), nullable=False
+    ),
+    sa.Column(
+        "basin_id", UUID(as_uuid=True), sa.ForeignKey("basins.id"), nullable=False
+    ),
+    sa.Column("gateway_hru_name", sa.Text, nullable=False),
+    sa.Column("name", sa.Text, nullable=False),
+    sa.Column(
+        "spatial_type",
+        sa.Text,
+        sa.CheckConstraint("spatial_type IN ('basin_average', 'elevation_band')"),
+        nullable=False,
+    ),
+    sa.Column("band_id", sa.Integer, nullable=True),
+    sa.Column(
+        "created_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+    ),
+    sa.PrimaryKeyConstraint("station_id", "gateway_hru_name", "name"),
+)
+
 station_groups = sa.Table(
     "station_groups",
     metadata,

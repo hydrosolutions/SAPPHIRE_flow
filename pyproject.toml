@@ -1,6 +1,6 @@
 [project]
 name = "sapphire-flow"
-version = "0.1.577"
+version = "0.1.579"
 description = "Add your description here"
 readme = "README.md"
 license = "MIT"
@@ -34,6 +34,7 @@ dependencies = [
     "psycopg[binary]>=3.3.3",
     "pydantic>=2.12.5",
     "pygments>=2.20.0",
+    "recap-dg-client",
     "requests>=2.33.1",
     "rioxarray>=0.19.0",
     "scikit-learn>=1.8.0",
@@ -81,6 +82,7 @@ default = true
 
 [tool.uv.sources]
 forecastinterface = { git = "https://github.com/hydrosolutions/ForecastInterface.git", rev = "v0.1.17" }
+recap-dg-client = { git = "https://github.com/hydrosolutions/recap-dg-client.git", rev = "60e5d736dec663d013ce2c05a6f067b82254cd7f" }
 
 [tool.ruff]
 target-version = "py311"
@@ -103,12 +105,13 @@ markers = [
     "live: tests that hit external APIs and are excluded from default CI (run nightly)",
     "live_lindas: calls live LINDAS endpoint; excluded by default, run by weekly workflow",
     "live_stac: calls live MeteoSwiss STAC endpoint; excluded by default, run manually or on a schedule",
+    "live_recap: calls live recap Data Gateway; excluded by default (needs RECAP_API_KEY)",
     "slow: long-running tests excluded from default CI integration job (runs nightly)",
 ]
 addopts = "-m 'not deployment and not live and not live_lindas and not live_stac and not slow'"
 
 [tool.bumpversion]
-current_version = "0.1.577"
+current_version = "0.1.579"
 commit = false
 tag = false
 allow_dirty = true

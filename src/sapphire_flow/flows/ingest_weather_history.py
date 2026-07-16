@@ -289,9 +289,14 @@ def ingest_weather_history_flow(
     basin_store: object = None,
     adapter: object = None,
     clock: object = None,
+    # Plan 082 Task 3B item 4: parametric backfill window for multi-year
+    # Nepal historical back-extraction (e.g. window_days=730). None keeps
+    # the Swiss rolling-ingest default (_WINDOW_DAYS = 60) unchanged.
+    window_days: int | None = None,
 ) -> WeatherHistoryIngestResult:
     if clock is None:
         clock = lambda: ensure_utc(datetime.now(UTC))  # noqa: E731
+    effective_window_days = window_days if window_days is not None else _WINDOW_DAYS
 
     # --- Production setup ---
     if station_store is None or forcing_store is None:
@@ -327,7 +332,7 @@ def ingest_weather_history_flow(
     clock_t = cast("Callable[[], UtcDatetime]", clock)
 
     now = clock_t()
-    start = ensure_utc(now - timedelta(days=_WINDOW_DAYS))
+    start = ensure_utc(now - timedelta(days=effective_window_days))
 
     log.info(
         "weather_history.starting",

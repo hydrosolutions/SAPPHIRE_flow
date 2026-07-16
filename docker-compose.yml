@@ -96,6 +96,7 @@ services:
       - FOWNER
     secrets:
       - db_password
+      - sapphire_dg_api_key
     read_only: true
     tmpfs:
       - /tmp
@@ -147,6 +148,7 @@ services:
       - FOWNER
     secrets:
       - db_password
+      - sapphire_dg_api_key
     read_only: true
     tmpfs:
       - /tmp
@@ -300,6 +302,12 @@ volumes:
 secrets:
   db_password:
     file: ./secrets/db_password
+  # Nepal v1: recap Data Gateway API key (Plan 082 Task 2A). Absent on Swiss
+  # deployments — Recap adapters are never constructed there (Task 2C/2D
+  # `type` selector), so the file need not exist on Swiss hosts even though
+  # both worker services declare the secret unconditionally.
+  sapphire_dg_api_key:
+    file: ./secrets/sapphire_dg_api_key
 
 networks:
   backend:

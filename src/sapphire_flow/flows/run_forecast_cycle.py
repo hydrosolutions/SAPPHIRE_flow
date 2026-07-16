@@ -22,6 +22,12 @@ from sapphire_flow.adapters.meteoswiss_nwp import (
     DEFAULT_DISK_GUARD_SCRATCH_HARD_GB,
     DEFAULT_DISK_GUARD_SCRATCH_SOFT_GB,
 )
+from sapphire_flow.adapters.recap_gateway import (
+    GatewayResolutionError,
+    RecapAuthError,
+    RecapConfigurationError,
+    RecapDataUnavailableError,
+)
 from sapphire_flow.exceptions import (
     ConfigurationError,
     DiskHardLimitError,
@@ -51,6 +57,10 @@ from sapphire_flow.types.ids import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from sapphire_flow.adapters.recap_gateway import (
+        GatewayPolygonBindingStoreLike,
+        RecapClientLike,
+    )
     from sapphire_flow.config.deployment import DeploymentConfig
     from sapphire_flow.protocols.adapters import WeatherForecastSource
     from sapphire_flow.protocols.forecast_model import ForecastModel
@@ -82,6 +92,11 @@ log = structlog.get_logger(__name__)
 # below — NOT a selection fallback (that heuristic was retired; forecast-source
 # selection now goes exclusively through StationStore.fetch_forecast_binding).
 _ICON_NWP_SOURCE = "icon_ch2_eps"
+# = RecapGatewayForecastAdapter.NWP_SOURCE. Plan 082 Task 2G: the grid-
+# staleness check is parameterized on the ACTIVE forecast source so an
+# IFS-only Nepal deploy checks weather_forecasts freshness for "ifs_ecmwf",
+# never the (permanently absent) "icon_ch2_eps" Zarr grid.
+_IFS_NWP_SOURCE = "ifs_ecmwf"
 _NWP_CADENCE_HOURS = 6.0
 _DEFAULT_EXPECTED_DELIVERY_OFFSET_HOURS = 5.0
 
@@ -103,6 +118,13 @@ class ForecastCycleResult:
 class _WeatherForecastAdapterConfig:
     enabled: bool
     require_nwp: bool
+    # Plan 082 Task 2C: the [adapters.weather_forecast].type selector — the
+    # single source of truth the Flow-1 dispatch (Task 2D) branches on.
+    # "meteoswiss_nwp" (default, unchanged behavior) or "recap_gateway"
+    # (Nepal v1). Determines which adapter's required-field set is validated
+    # below: recap_gateway skips the MeteoSwiss-only fields and instead
+    # requires a valid [adapters.recap_gateway] section.
+    type: str
     stac_base_url: str | None
     stac_collection: str | None
     scratch_path: Path | None
@@ -141,6 +163,10 @@ class _NwpFetchOutcome:
 
 _GRID_EXTRACTOR_CHOICES: tuple[str, ...] = ("mesh", "exactextract")
 _DEFAULT_GRID_EXTRACTOR: Literal["mesh"] = "mesh"
+
+# Plan 082 Task 2C: [adapters.weather_forecast].type selector.
+_WEATHER_FORECAST_TYPES: tuple[str, ...] = ("meteoswiss_nwp", "recap_gateway")
+_DEFAULT_WEATHER_FORECAST_TYPE = "meteoswiss_nwp"
 
 
 # ---------------------------------------------------------------------------
@@ -192,6 +218,7 @@ def _load_weather_forecast_adapter_config() -> _WeatherForecastAdapterConfig:
         return _WeatherForecastAdapterConfig(
             enabled=False,
             require_nwp=require_nwp,
+            type=_DEFAULT_WEATHER_FORECAST_TYPE,
             stac_base_url="https://data.geo.admin.ch/api/stac/v1",
             stac_collection="ch.meteoschweiz.ogd-forecasting-icon-ch2",
             scratch_path=Path("/tmp/sapphire_nwp"),
@@ -223,6 +250,12 @@ def _load_weather_forecast_adapter_config() -> _WeatherForecastAdapterConfig:
             "[adapters.weather_forecast].enabled must be a TOML boolean"
         )
 
+    type_value = weather_forecast.get("type", _DEFAULT_WEATHER_FORECAST_TYPE)
+    if not isinstance(type_value, str) or type_value not in _WEATHER_FORECAST_TYPES:
+        raise ConfigurationError(
+            f"[adapters.weather_forecast].type must be one of {_WEATHER_FORECAST_TYPES}"
+        )
+
     stac_base_url = weather_forecast.get("stac_base_url")
     stac_collection = weather_forecast.get("stac_collection")
     scratch_path_value = weather_forecast.get("scratch_path")
@@ -250,7 +283,7 @@ def _load_weather_forecast_adapter_config() -> _WeatherForecastAdapterConfig:
             f"{_GRID_EXTRACTOR_CHOICES}"
         )
 
-    if enabled_value:
+    if enabled_value and type_value == "meteoswiss_nwp":
         missing = [
             key
             for key, value in (
@@ -266,6 +299,14 @@ def _load_weather_forecast_adapter_config() -> _WeatherForecastAdapterConfig:
                 "[adapters.weather_forecast] enabled=true requires "
                 f"configured MeteoSwiss field(s): {joined}"
             )
+    elif enabled_value and type_value == "recap_gateway":
+        # Plan 082 Task 2C: validate the Recap-specific config instead — the
+        # shared [adapters.recap_gateway] section (Task 2A), never the
+        # MeteoSwiss-only fields above. Raises ConfigurationError (propagates)
+        # when the section is missing/incomplete.
+        from sapphire_flow.config.recap_gateway import load_recap_gateway_config
+
+        load_recap_gateway_config(Path(config_path))
 
     # Plan 105 D2 — parse disk_guard_*_gb thresholds (same pattern as max_files).
     def _parse_disk_guard_gb(key: str, default: float) -> float:
@@ -308,6 +349,7 @@ def _load_weather_forecast_adapter_config() -> _WeatherForecastAdapterConfig:
     return _WeatherForecastAdapterConfig(
         enabled=enabled_value,
         require_nwp=require_nwp,
+        type=type_value,
         stac_base_url=stac_base_url if isinstance(stac_base_url, str) else None,
         stac_collection=stac_collection if isinstance(stac_collection, str) else None,
         scratch_path=Path(scratch_path_value)
@@ -322,6 +364,57 @@ def _load_weather_forecast_adapter_config() -> _WeatherForecastAdapterConfig:
         disk_guard_scratch_hard_gb=disk_guard_scratch_hard_gb,
         disk_guard_archive_soft_gb=disk_guard_archive_soft_gb,
         disk_guard_archive_hard_gb=disk_guard_archive_hard_gb,
+    )
+
+
+def _build_recap_forecast_adapter(
+    *,
+    config_path: str | None,
+    gateway_polygon_store: GatewayPolygonBindingStoreLike | None,
+    recap_client: object | None,
+) -> object:
+    """Plan 082 Task 2D Flow-1 dispatch: build the Nepal v1 Recap adapter.
+
+    Config validity (a valid ``[adapters.recap_gateway]`` section) was
+    already enforced by :func:`_load_weather_forecast_adapter_config` (Task
+    2C) — this only wires the already-validated pieces together. Extracted
+    from ``run_forecast_cycle_flow`` so the dispatch decision is unit-testable
+    without running the full flow.
+    """
+    from sapphire_flow.adapters.recap_gateway import (
+        RecapGatewayForecastAdapter,
+        StoreBackedGatewayPolygonResolver,
+    )
+    from sapphire_flow.config.recap_gateway import (
+        build_recap_client_config,
+        load_recap_api_key,
+        load_recap_gateway_config,
+    )
+
+    if gateway_polygon_store is None:
+        raise ConfigurationError(
+            "recap Gateway forecast dispatch (type=recap_gateway) requires a "
+            "gateway_polygon_store (§5a table reader) but none was available"
+        )
+    if recap_client is None:
+        if config_path is None:
+            # Pyright narrowing: unreachable — enabled=true with
+            # type=recap_gateway requires SAPPHIRE_CONFIG to have been
+            # readable (Task 2C validated it before this is called).
+            raise ConfigurationError(
+                "[adapters.weather_forecast].type is recap_gateway but "
+                "SAPPHIRE_CONFIG is unset"
+            )
+        from recap_client import RecapClient
+
+        recap_gateway_config = load_recap_gateway_config(Path(config_path))
+        client_config = build_recap_client_config(
+            api_key=load_recap_api_key(), config=recap_gateway_config
+        )
+        recap_client = RecapClient(client_config)
+    return RecapGatewayForecastAdapter(
+        client=cast("RecapClientLike", recap_client),
+        resolver=StoreBackedGatewayPolygonResolver(gateway_polygon_store),
     )
 
 
@@ -548,12 +641,13 @@ def _check_nwp_grid_staleness(
     expected_delivery_offset_hours: float,
     checked_at: UtcDatetime,
     cycle_time: UtcDatetime,
+    forecast_source: str = _ICON_NWP_SOURCE,
 ) -> bool:
     fetch_latest = getattr(weather_forecast_store, "fetch_latest_cycle_time", None)
     if not callable(fetch_latest):
         return False
 
-    latest_cycle_time = cast("UtcDatetime | None", fetch_latest(_ICON_NWP_SOURCE))
+    latest_cycle_time = cast("UtcDatetime | None", fetch_latest(forecast_source))
     max_age_hours = expected_delivery_offset_hours * _NWP_CADENCE_HOURS
     if latest_cycle_time is None:
         detail: dict[str, object] = {
@@ -756,6 +850,67 @@ def _fetch_nwp_task(
         # a flow-fatal failure — signal NWP-unavailable so the caller falls to
         # runoff-only for THIS cycle (native/fallback models still forecast).
         log.warning("nwp.no_cycle_available", error=str(exc))
+        return _NwpFetchOutcome(
+            cycle_time=cycle_time, fallback_used=False, nwp_unavailable=True
+        )
+    except RecapConfigurationError as exc:
+        # Plan 082 Task 2G: config/metadata error (HRU/variable rejected) —
+        # HARD-ABORT, not degrade. Distinct from the generic catch-all so it
+        # is recorded (and alertable) rather than silently swallowed.
+        log.error("nwp.recap_config_error", error=str(exc), field=exc.field)
+        _append_pipeline_health_record(
+            pipeline_health_store,
+            check_type=PipelineCheckType.NWP_DELIVERY,
+            checked_at=clock(),
+            status=PipelineHealthStatus.CRITICAL,
+            subject="recap_gateway",
+            detail={"reason": "config_error", "field": exc.field},
+            cycle_time=cycle_time,
+        )
+        return None
+    except GatewayResolutionError as exc:
+        # Plan 082 Task 2G: every station in the batch was unmappable to a
+        # Gateway polygon — a caller/config error, HARD-ABORT.
+        log.error("nwp.recap_all_unmappable", error=str(exc))
+        _append_pipeline_health_record(
+            pipeline_health_store,
+            check_type=PipelineCheckType.NWP_DELIVERY,
+            checked_at=clock(),
+            status=PipelineHealthStatus.CRITICAL,
+            subject="recap_gateway",
+            detail={"reason": "all_unmappable"},
+            cycle_time=cycle_time,
+        )
+        return None
+    except RecapAuthError as exc:
+        # Plan 082 Task 2G: Gateway rejected the request as unauthorized —
+        # HARD-ABORT (an expired/misconfigured API key needs operator action,
+        # not a per-station skip).
+        log.error("nwp.recap_auth_error", error=str(exc), status_code=exc.status_code)
+        _append_pipeline_health_record(
+            pipeline_health_store,
+            check_type=PipelineCheckType.NWP_DELIVERY,
+            checked_at=clock(),
+            status=PipelineHealthStatus.CRITICAL,
+            subject="recap_gateway",
+            detail={"reason": "auth", "status_code": exc.status_code},
+            cycle_time=cycle_time,
+        )
+        return None
+    except RecapDataUnavailableError as exc:
+        # Plan 082 Task 2G: Gateway reports the requested cycle's source data
+        # is not yet published — retriable, matching the NoCycleAvailableError
+        # precedent: degrade to runoff-only for THIS cycle.
+        log.warning("nwp.recap_data_unavailable", error=str(exc), code=exc.code)
+        _append_pipeline_health_record(
+            pipeline_health_store,
+            check_type=PipelineCheckType.NWP_DELIVERY,
+            checked_at=clock(),
+            status=PipelineHealthStatus.WARNING,
+            subject="recap_gateway",
+            detail={"reason": "source_data_missing"},
+            cycle_time=cycle_time,
+        )
         return _NwpFetchOutcome(
             cycle_time=cycle_time, fallback_used=False, nwp_unavailable=True
         )
@@ -988,6 +1143,12 @@ def run_forecast_cycle_flow(
     grid_store: object | None = None,
     grid_extractor: object | None = None,
     cycle_time: str | None = None,
+    # Plan 082 Task 2D: §5a-table-backed store for the Recap Gateway
+    # forecast dispatch resolver. Unused (and unbuilt) on Swiss deployments.
+    gateway_polygon_store: object | None = None,
+    # Plan 082 Task 2D: injectable recap-dg-client RecapClient, for tests.
+    # None on the production path constructs a real RecapClient from config.
+    recap_client: object | None = None,
 ) -> ForecastCycleResult:
     flow_t0 = time.perf_counter()
 
@@ -1013,6 +1174,9 @@ def run_forecast_cycle_flow(
         rng = cast("random.Random | None", rng)
         grid_store = cast("NwpGridStore | None", grid_store)
         grid_extractor = cast("GridExtractor | None", grid_extractor)
+        gateway_polygon_store = cast(
+            "GatewayPolygonBindingStoreLike | None", gateway_polygon_store
+        )
 
         if clock is None:
             clock = lambda: ensure_utc(datetime.now(UTC))  # noqa: E731
@@ -1040,6 +1204,9 @@ def run_forecast_cycle_flow(
             basin_store = cast("BasinStore", stores["basin_store"])
             group_store = stores["group_store"]
             forcing_store = cast("HistoricalForcingStore", stores["forcing_store"])
+            gateway_polygon_store = cast(
+                "GatewayPolygonBindingStoreLike", stores["gateway_polygon_store"]
+            )
 
         if config is None:
             config_path = os.environ.get("SAPPHIRE_CONFIG")
@@ -1060,9 +1227,15 @@ def run_forecast_cycle_flow(
         grid_extractor_choice = _load_grid_extractor_choice()
         nwp_enabled = adapter is not None
         expected_delivery_offset_hours = _load_expected_delivery_offset_hours()
+        # Plan 082 Task 2G: which forecast_source the grid-staleness check
+        # queries `weather_forecasts` for. Defaults to the MeteoSwiss ICON
+        # source (an injected adapter, e.g. tests, keeps this default).
+        active_forecast_source = _ICON_NWP_SOURCE
         if adapter is None:
             weather_forecast_config = _load_weather_forecast_adapter_config()
             nwp_enabled = weather_forecast_config.enabled
+            if weather_forecast_config.type == "recap_gateway":
+                active_forecast_source = _IFS_NWP_SOURCE
             expected_delivery_offset_hours = (
                 weather_forecast_config.expected_delivery_offset_hours
             )
@@ -1071,7 +1244,16 @@ def run_forecast_cycle_flow(
                     "SAPPHIRE_REQUIRE_NWP is set but "
                     "[adapters.weather_forecast].enabled is false"
                 )
-            if weather_forecast_config.enabled:
+            if (
+                weather_forecast_config.enabled
+                and weather_forecast_config.type == "recap_gateway"
+            ):
+                adapter = _build_recap_forecast_adapter(
+                    config_path=config_path_for_adapter,
+                    gateway_polygon_store=gateway_polygon_store,
+                    recap_client=recap_client,
+                )
+            elif weather_forecast_config.enabled:
                 import httpx
 
                 from sapphire_flow.adapters.meteoswiss_nwp import MeteoSwissNwpAdapter
@@ -1390,6 +1572,7 @@ def run_forecast_cycle_flow(
                 expected_delivery_offset_hours=expected_delivery_offset_hours,
                 checked_at=clock(),
                 cycle_time=resolved_cycle_time,
+                forecast_source=active_forecast_source,
             )
 
         # --- Honest NWP provenance (epic-088 M4) ---

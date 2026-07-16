@@ -969,3 +969,48 @@ class TestSelfContainment:
         # day query is a documented gap -> nothing to store — but the
         # important assertion is that the call above did not raise.
         assert result.rows_stored == 0
+
+
+class TestParametricBackfillWindow:
+    """Plan 082 Task 3B item 4: explicit window_days for multi-year Nepal
+    historical back-extraction; the Swiss 60-day default stays unchanged."""
+
+    def test_window_days_730_starts_730_days_before_now(self) -> None:
+        station = make_station_config(code="2135", name="Aare Bern")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        station_store.store_weather_source(_weather_source(station.id))
+
+        adapter = _SpyReanalysisAdapter()
+        store = _SupersedingForcingStore()
+
+        ingest_weather_history_flow(
+            station_store=station_store,
+            forcing_store=store,
+            adapter=adapter,
+            clock=_fixed_clock,
+            window_days=730,
+        )
+
+        expected_start = ensure_utc(_NOW - timedelta(days=730))
+        assert len(adapter.calls) == 2
+        assert all(c.start == expected_start and c.end == _NOW for c in adapter.calls)
+
+    def test_default_window_unchanged_at_60_days(self) -> None:
+        station = make_station_config(code="2135", name="Aare Bern")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        station_store.store_weather_source(_weather_source(station.id))
+
+        adapter = _SpyReanalysisAdapter()
+        store = _SupersedingForcingStore()
+
+        ingest_weather_history_flow(
+            station_store=station_store,
+            forcing_store=store,
+            adapter=adapter,
+            clock=_fixed_clock,
+        )
+
+        assert len(adapter.calls) == 2
+        assert all(c.start == _START and c.end == _NOW for c in adapter.calls)
