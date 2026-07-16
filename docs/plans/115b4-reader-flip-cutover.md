@@ -44,18 +44,35 @@ dispositioned.
   hold the flip for affected stations. *(Repo review suggests today's models are probably unaffected —
   native/fallback declare no past/future dynamic features; the FI NWP model needs only future
   precip/temp — but that is an inference; the live artifact/assignment tables settle it. NEEDS-LIVE-DB.)*
-- **5D — flip the reanalysis default to `hybrid`** (`config/deployment.py:111`). Only after 5A.
+- **5D — flip the reanalysis default to `hybrid`** (`config/deployment.py:111`) — the last step of **Release A**. Only after 5A.
   `tests/unit/config/test_deployment_reanalysis_source.py:24-39` locks the `single` default and updates deliberately. Verify
   CAMELS-only stations still resolve (the chain falls back correctly) — a test, not an assumption.
-- **5E — retire the camels-ch weather binding, ATOMIC with 5D.** `single` (default until 5D) reads
-  `cfg.nwp_source` directly (`store_backed_reanalysis.py:35`); retiring the binding while `single` is still
-  default leaves a station with **no readable reanalysis source**. **Deployment choreography (executable
-  procedure, not a task adjective):** land all of 5A–5E together; on deploy, **flip to hybrid FIRST**,
-  confirm the hybrid reader is serving, **then** run the binding-retirement migration; roll back **both**
-  together (the migration `downgrade()` restores the binding, config reverts to `single`). State this in
-  the migration docstring + deploy runbook. **The CAMELS forcing ROWS are NOT deleted** — they stay as the
-  115b3 validation reference and audit trail; only the *weather binding* is retired. (CAMELS remains the
-  runoff/discharge + static-attribute + basin-polygon source.)
+- **5E — retire the camels-ch weather binding, as a SEPARATE SECOND RELEASE (owner decision 2026-07-16,
+  round-1 blockers 1+2).** `single` (default until 5D) reads `cfg.nwp_source` directly
+  (`store_backed_reanalysis.py:35`); retiring the binding while `single` is still default leaves a station
+  with **no readable reanalysis source**. The original "flip first, then migrate, in one deploy" is
+  **NOT executable** — the repo runs `alembic upgrade head` in the `init` container **before** workers start
+  (`docker-compose.yml:247-253`, `cicd.md:111-119`), so a retire migration in `head` would fire before there
+  is any running system to confirm hybrid is serving.
+
+  **Resolution — TWO SEQUENCED RELEASES on the standard deploy path (no bespoke alembic targets):**
+  - **Release A = 5A–5D** (param-drop fix, priority chain, distribution-shift gate, **flip default to
+    `hybrid`**). **No retire migration.** Deploy; **confirm the hybrid reader is serving** past-dynamic
+    features on staging (the deploy gate below).
+  - **Release B = 5E** (the `camels-ch` binding-retirement migration), shipped **only after** Release A is
+    confirmed serving. Deploy on the standard path.
+
+  This is reflected in the phase graph (phase-5 splits into 5A–5D then 5E; **5E `depends_on` the Release-A
+  deploy-gate**, not merely on 5D as a code task). *(If cleaner, 5E may become its own tiny plan 115b5 — but
+  it stays gated on Release A serving either way.)*
+
+  **Rollback = the repo's standard path (backup restore + previous image, `cicd.md:137-139`)** — NOT a
+  schema `downgrade()`. Do not claim a special reversible downgrade. The retire migration is destructive of
+  the `camels-ch` binding rows, but that is safe to roll back by restore because the binding shape is
+  deterministic (`nwp_source=forcing[0].source`, `extraction_type=POINT`, `status=ACTIVE`, `role=REANALYSIS`,
+  `onboarding.py:365-371`; PK `(station_id, nwp_source)`, `db/metadata.py:164-193`). **The CAMELS forcing
+  ROWS are NOT deleted** — they stay as the 115b3 validation reference + audit trail; only the *weather
+  binding* is retired. (CAMELS remains the runoff/discharge + static-attribute + basin-polygon source.)
 
 ### Phase 6 — loudness + guards
 
@@ -96,8 +113,10 @@ dispositioned.
 - **CAMELS-only station survives the flip (5D)** — the chain resolves; past-dynamic features unchanged.
 - **Flow 6 health (6B):** `stations_targeted == 0` → UNHEALTHY; bound-but-no-inserts over a full window →
   UNHEALTHY (via DB rowcount / non-advancing `MAX(valid_time)`), NOT via `rows_stored`.
-- **Phase-5 ordering (5E):** the retire-camels migration cannot leave a station unreadable — test/deploy-gate
-  that hybrid is serving BEFORE the binding is retired.
+- **Two-release ordering (5E):** the retire-camels migration (Release B) cannot leave a station unreadable —
+  a deploy-gate that Release A's hybrid default is confirmed **serving past-dynamic features** BEFORE
+  Release B ships. (Unit-testable: a station on the hybrid reader serves rows; a test that the retire
+  migration is absent from Release A's head.)
 - **No `camels-ch` weather binding remains** after this plan; CAMELS forcing rows are untouched and still
   readable by a direct source-keyed fetch.
 - **Converter guards (6C)** reject a reanalysis tag.
@@ -110,14 +129,22 @@ dispositioned.
     {
       "id": "phase-5",
       "name": "Reader: param-drop fix -> chain -> distribution-shift gate -> flip; camels-ch retirement choreographed with the flip",
-      "tasks": ["5A-hybrid-parameter-drop-raise", "5B-chain-rhiresd-then-rprelimd-no-camels-tier", "5C-distribution-shift-gate", "5D-flip-default-to-hybrid", "5E-retire-camels-weather-binding"],
+      "tasks": ["5A-hybrid-parameter-drop-raise", "5B-chain-rhiresd-then-rprelimd-no-camels-tier", "5C-distribution-shift-gate", "5D-flip-default-to-hybrid"],
       "parallel": false,
-      "note": "STRICT ORDER; 5E choreographed atomic with 5D (flip first, confirm serving, then retire; roll back both together).",
+      "note": "Release A. STRICT ORDER 5A->5D. 5E is NOT here — it is a separate SECOND release (phase-5b) gated on Release-A confirmed serving; rollback is standard backup-restore, not schema downgrade.",
       "depends_on": ["plan-115b3"]
     },
     {
+      "id": "phase-5b",
+      "name": "Release B (SEPARATE deploy) — retire the camels-ch weather binding, only after Release A is confirmed serving hybrid",
+      "tasks": ["5E-retire-camels-weather-binding-migration"],
+      "parallel": false,
+      "note": "Second release on the standard deploy path. depends_on the Release-A staging deploy-gate, NOT just the 5D code. Rollback = backup-restore + previous image (cicd.md), not schema downgrade.",
+      "depends_on": ["phase-5"]
+    },
+    {
       "id": "phase-6",
-      "name": "Loudness + guards",
+      "name": "Loudness + guards (part of Release A)",
       "tasks": ["6A-weather-history-ingest-check-type", "6B-health-by-effect", "6C-converter-guards", "6D-dashboard-hybrid-resolved"],
       "parallel": true,
       "depends_on": ["phase-5"]
