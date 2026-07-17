@@ -1,0 +1,31 @@
+{
+  "basins": [
+    {
+      "network": "dhm",
+      "basin_code": "123",
+      "station_code": "123",
+      "gateway_hru_name": "nepal_dhm_v1",
+      "name": "g_123",
+      "status": "passed",
+      "checks": {
+        "geometry_present": true,
+        "geometry_valid": true,
+        "crs_epsg_4326": true,
+        "geometry_2d": true,
+        "area_positive": true,
+        "ids_unique": true,
+        "static_row_present": true,
+        "required_static_features_present": true,
+        "outlet_snap_distance_m": 37.5674009861306,
+        "coverage_status": "inside"
+      },
+      "warnings": [],
+      "errors": []
+    }
+  ],
+  "summary": {
+    "passed": 1,
+    "failed": 0,
+    "warnings": 0
+  }
+}

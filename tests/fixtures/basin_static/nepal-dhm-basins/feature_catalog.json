@@ -1,0 +1,954 @@
+{
+  "features": [
+    {
+      "name": "area",
+      "type": "float",
+      "unit": "km2",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "delineated_polygon_area",
+      "description": "Area of the complete delineated basin polygon in square kilometres.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "gauge_lat",
+      "type": "float",
+      "unit": "degrees",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "basin_latitude",
+      "description": "Gauge latitude sourced directly from the canonical basin latitude.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "gauge_lon",
+      "type": "float",
+      "unit": "degrees",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "basin_longitude",
+      "description": "Gauge longitude sourced directly from the canonical basin longitude.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "ele_mt_sav",
+      "type": "float",
+      "unit": "m",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted mean elevation within the basin.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "slp_dg_sav",
+      "type": "float",
+      "unit": "degrees",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted mean terrain slope within the basin.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "sgr_dk_sav",
+      "type": "float",
+      "unit": "dm/km",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted mean stream gradient within the basin.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "lka_pc_sse",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted lake extent as a percentage of basin area.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "dor_pc_pva",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "pour_point",
+      "description": "Degree of regulation from the most-downstream intersecting HydroATLAS polygon.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "clz_cl_smj",
+      "type": "integer",
+      "unit": null,
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_majority",
+      "description": "Area-majority climate-zone class code within the basin.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "tmp_dc_syr",
+      "type": "float",
+      "unit": "deg C",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted mean annual air temperature.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "pre_mm_syr",
+      "type": "float",
+      "unit": "mm/yr",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted mean annual precipitation.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "pet_mm_syr",
+      "type": "float",
+      "unit": "mm/yr",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted mean annual potential evapotranspiration.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "aet_mm_syr",
+      "type": "float",
+      "unit": "mm/yr",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted mean annual actual evapotranspiration.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "ari_ix_sav",
+      "type": "float",
+      "unit": null,
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted mean aridity index.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "cmi_ix_syr",
+      "type": "float",
+      "unit": null,
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted mean annual climate moisture index.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "snw_pc_syr",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted mean annual snow-cover extent.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "snw_pc_smx",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted maximum monthly snow-cover extent.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "snw_pc_smn",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "monthly_min",
+      "description": "Minimum of the twelve area-weighted monthly snow-cover extents.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "for_pc_sse",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted forest extent as a percentage of basin area.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "crp_pc_sse",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted cropland extent as a percentage of basin area.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "pst_pc_sse",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted pasture extent as a percentage of basin area.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "ire_pc_sse",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted irrigated-area extent as a percentage of basin area.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "gla_pc_sse",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted glacier extent as a percentage of basin area.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "prm_pc_sse",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted permafrost extent as a percentage of basin area.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "glc_cl_smj",
+      "type": "integer",
+      "unit": null,
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_majority",
+      "description": "Area-majority GLC2000 land-cover class code within the basin.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "cly_pc_sav",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted clay content of basin soils.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "slt_pc_sav",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted silt content of basin soils.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "snd_pc_sav",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted sand content of basin soils.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "soc_th_sav",
+      "type": "float",
+      "unit": "t/ha",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted soil organic carbon content.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "swc_pc_syr",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted annual soil water content.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "lit_cl_smj",
+      "type": "integer",
+      "unit": null,
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_majority",
+      "description": "Area-majority lithological class code within the basin.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "kar_pc_sse",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted karst extent as a percentage of basin area.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "rdd_mk_sav",
+      "type": "float",
+      "unit": "m/km2",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted road density within the basin.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "hdi_ix_sav",
+      "type": "float",
+      "unit": null,
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted Human Development Index.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "glc_pc_s01",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of GLC2000 land-cover class 01.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "glc_pc_s02",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of GLC2000 land-cover class 02.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "glc_pc_s03",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of GLC2000 land-cover class 03.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "glc_pc_s04",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of GLC2000 land-cover class 04.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "glc_pc_s05",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of GLC2000 land-cover class 05.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "glc_pc_s06",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of GLC2000 land-cover class 06.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "glc_pc_s07",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of GLC2000 land-cover class 07.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "glc_pc_s08",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of GLC2000 land-cover class 08.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "glc_pc_s09",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of GLC2000 land-cover class 09.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "glc_pc_s10",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of GLC2000 land-cover class 10.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "glc_pc_s11",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of GLC2000 land-cover class 11 (closed-to-open evergreen shrub cover).",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "glc_pc_s12",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of GLC2000 land-cover class 12.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "glc_pc_s13",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of GLC2000 land-cover class 13.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "glc_pc_s14",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of GLC2000 land-cover class 14.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "glc_pc_s15",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of GLC2000 land-cover class 15.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "glc_pc_s16",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of GLC2000 land-cover class 16.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "glc_pc_s17",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of GLC2000 land-cover class 17.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "glc_pc_s18",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of GLC2000 land-cover class 18.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "glc_pc_s19",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of GLC2000 land-cover class 19.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "glc_pc_s20",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of GLC2000 land-cover class 20.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "glc_pc_s21",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of GLC2000 land-cover class 21.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "glc_pc_s22",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of GLC2000 land-cover class 22.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "pnv_pc_s01",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of potential-natural-vegetation class 01.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "pnv_pc_s02",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of potential-natural-vegetation class 02.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "pnv_pc_s03",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of potential-natural-vegetation class 03.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "pnv_pc_s04",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of potential-natural-vegetation class 04.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "pnv_pc_s05",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of potential-natural-vegetation class 05.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "pnv_pc_s06",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of potential-natural-vegetation class 06.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "pnv_pc_s07",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of potential-natural-vegetation class 07.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "pnv_pc_s08",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of potential-natural-vegetation class 08.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "pnv_pc_s09",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of potential-natural-vegetation class 09.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "pnv_pc_s10",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of potential-natural-vegetation class 10.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "pnv_pc_s11",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of potential-natural-vegetation class 11.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "pnv_pc_s12",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of potential-natural-vegetation class 12.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "pnv_pc_s13",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of potential-natural-vegetation class 13.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "pnv_pc_s14",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of potential-natural-vegetation class 14.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "pnv_pc_s15",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of potential-natural-vegetation class 15.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "wet_pc_s01",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of GLWD wetland class 01.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "wet_pc_s02",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of GLWD wetland class 02.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "wet_pc_s03",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of GLWD wetland class 03.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "wet_pc_s04",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of GLWD wetland class 04.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "wet_pc_s05",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of GLWD wetland class 05.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "wet_pc_s06",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of GLWD wetland class 06.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "wet_pc_s07",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of GLWD wetland class 07.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "wet_pc_s08",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of GLWD wetland class 08.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "wet_pc_s09",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of GLWD intermittent wetland/lake class 09.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "wet_pc_sg1",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of GLWD grouped wetland class 1.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "wet_pc_sg2",
+      "type": "float",
+      "unit": "%",
+      "source_dataset": "HydroATLAS",
+      "aggregation": "area_weighted_mean",
+      "description": "Area-weighted extent of GLWD grouped wetland class 2.",
+      "climatology_window": null,
+      "required_by_models": []
+    },
+    {
+      "name": "p_mean",
+      "type": "float",
+      "unit": "mm/day",
+      "source_dataset": "ERA5-Land",
+      "aggregation": "coverage_fraction_area_weighted_catchment_mean_daily_over_window",
+      "description": "Mean daily catchment precipitation over the climatology window.",
+      "climatology_window": {
+        "start": "1991-01-01",
+        "end": "2020-12-31"
+      },
+      "required_by_models": []
+    },
+    {
+      "name": "pet_mean_ERA5_LAND",
+      "type": "float",
+      "unit": "mm/day",
+      "source_dataset": "ERA5-Land",
+      "aggregation": "coverage_fraction_area_weighted_catchment_mean_daily_over_window",
+      "description": "Mean daily ERA5-Land potential evapotranspiration over the climatology window.",
+      "climatology_window": {
+        "start": "1991-01-01",
+        "end": "2020-12-31"
+      },
+      "required_by_models": []
+    },
+    {
+      "name": "aridity_ERA5_LAND",
+      "type": "float",
+      "unit": null,
+      "source_dataset": "ERA5-Land",
+      "aggregation": "coverage_fraction_area_weighted_catchment_mean_daily_over_window",
+      "description": "Ratio of mean ERA5-Land potential evapotranspiration to mean precipitation.",
+      "climatology_window": {
+        "start": "1991-01-01",
+        "end": "2020-12-31"
+      },
+      "required_by_models": []
+    },
+    {
+      "name": "frac_snow",
+      "type": "float",
+      "unit": null,
+      "source_dataset": "ERA5-Land",
+      "aggregation": "coverage_fraction_area_weighted_catchment_mean_daily_over_window",
+      "description": "Fraction of monthly precipitation occurring in months with mean temperature below zero degrees Celsius.",
+      "climatology_window": {
+        "start": "1991-01-01",
+        "end": "2020-12-31"
+      },
+      "required_by_models": []
+    },
+    {
+      "name": "moisture_index_ERA5_LAND",
+      "type": "float",
+      "unit": null,
+      "source_dataset": "ERA5-Land",
+      "aggregation": "coverage_fraction_area_weighted_catchment_mean_daily_over_window",
+      "description": "Mean monthly ERA5-Land moisture index over the climatology window.",
+      "climatology_window": {
+        "start": "1991-01-01",
+        "end": "2020-12-31"
+      },
+      "required_by_models": []
+    },
+    {
+      "name": "seasonality_ERA5_LAND",
+      "type": "float",
+      "unit": null,
+      "source_dataset": "ERA5-Land",
+      "aggregation": "coverage_fraction_area_weighted_catchment_mean_daily_over_window",
+      "description": "Range of monthly ERA5-Land moisture-index values over the climatology window.",
+      "climatology_window": {
+        "start": "1991-01-01",
+        "end": "2020-12-31"
+      },
+      "required_by_models": []
+    },
+    {
+      "name": "high_prec_freq",
+      "type": "float",
+      "unit": null,
+      "source_dataset": "ERA5-Land",
+      "aggregation": "coverage_fraction_area_weighted_catchment_mean_daily_over_window",
+      "description": "Fraction of observed days with precipitation at least five times mean daily precipitation.",
+      "climatology_window": {
+        "start": "1991-01-01",
+        "end": "2020-12-31"
+      },
+      "required_by_models": []
+    },
+    {
+      "name": "high_prec_dur",
+      "type": "float",
+      "unit": "days",
+      "source_dataset": "ERA5-Land",
+      "aggregation": "coverage_fraction_area_weighted_catchment_mean_daily_over_window",
+      "description": "Mean duration of consecutive high-precipitation spells.",
+      "climatology_window": {
+        "start": "1991-01-01",
+        "end": "2020-12-31"
+      },
+      "required_by_models": []
+    },
+    {
+      "name": "low_prec_freq",
+      "type": "float",
+      "unit": null,
+      "source_dataset": "ERA5-Land",
+      "aggregation": "coverage_fraction_area_weighted_catchment_mean_daily_over_window",
+      "description": "Fraction of observed days with precipitation below one millimetre.",
+      "climatology_window": {
+        "start": "1991-01-01",
+        "end": "2020-12-31"
+      },
+      "required_by_models": []
+    },
+    {
+      "name": "low_prec_dur",
+      "type": "float",
+      "unit": "days",
+      "source_dataset": "ERA5-Land",
+      "aggregation": "coverage_fraction_area_weighted_catchment_mean_daily_over_window",
+      "description": "Mean duration of consecutive low-precipitation spells.",
+      "climatology_window": {
+        "start": "1991-01-01",
+        "end": "2020-12-31"
+      },
+      "required_by_models": []
+    }
+  ]
+}

@@ -1,0 +1,48 @@
+{
+  "contract_version": "basin-static-artifact/v1",
+  "package_id": "nepal-dhm-basins",
+  "created_at": "2026-07-17T06:32:31.098889Z",
+  "network": "dhm",
+  "crs": "EPSG:4326",
+  "extractor": {
+    "name": "static-attrs-nepal",
+    "version": "0.1.2"
+  },
+  "source_datasets": [
+    {
+      "name": "Nepal HFX",
+      "version": "local",
+      "purpose": "basin delineation"
+    },
+    {
+      "name": "HydroATLAS",
+      "version": "local",
+      "purpose": "static attributes"
+    },
+    {
+      "name": "ERA5-Land",
+      "version": "local",
+      "purpose": "forcing-derived climate indices"
+    }
+  ],
+  "gateway_hru_names": [
+    "nepal_dhm_v1"
+  ],
+  "climatology_window": {
+    "start": "1991-01-01",
+    "end": "2020-12-31"
+  },
+  "files": {
+    "basins": "basins.gpkg",
+    "static_attributes": "static_attributes.parquet",
+    "feature_catalog": "feature_catalog.json",
+    "validation_report": "validation_report.json"
+  },
+  "checksums": {
+    "basins.gpkg": "sha256:5a377e293b40dac9a5b211120efcc0213087eeca2218a65b801921716a434e9d",
+    "static_attributes.parquet": "sha256:3ee9c582233f68c0a3bfdbf59d3b4d3b52e1bd60d8511ef22d029c9aae63d472",
+    "feature_catalog.json": "sha256:f0159d78c1d0300f9b409f58c2a4d4ca9d6fca478f157c1f5f7b2945541c9161",
+    "validation_report.json": "sha256:56a67af840b5231262497404e2458846ea189eead0cff3b7e6a73cc69d605409",
+    "README.md": "sha256:0553d569197e24f06a926bc249de954a65e4825e48f0ff74c93a44960e5305d8"
+  }
+}
