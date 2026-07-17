@@ -81,6 +81,12 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
   `DRAFT (stub)` — carved out of 082: the Flow-6 `_ReanalysisAdapter` Protocol fork
   (115b1 mismatch), coverage training-gate wiring, snow-forecast Flow-1 wiring, and
   the `RECAP_DG_CLIENT_TOKEN` CI-secret follow-up. Needs the `plan` workflow before READY.
+- **123** — Model-driven forcing membership — `DRAFT (stub)` — the forecast adapter
+  hardcodes a 51-member (1 fc + 50 pf) fetch and hard-aborts when `pf` is missing, but
+  Sandro's models use **`fc` control-only** and ECMWF disseminates the control ahead of
+  the perturbed members (Cycle 50r1 preserves the lag). Make membership model-driven
+  (fetch only what the FI requirement declares) + requirement-aware cycle resolution.
+  Surfaced by live-testing 082 against HRU `12300`. Needs the `plan` workflow + FI check.
 - **047** — Nepal v1 data sources umbrella (IFS, DHM, ERA5-Land) — `DRAFT (stub)` —
   depends on 081/082.
 - **117** — Basin/static artifact architecture alignment — `READY` — documents the
