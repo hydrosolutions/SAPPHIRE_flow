@@ -84,7 +84,7 @@ Applying the rule (each row cites the evidence):
 | `backfill_meteoswiss_history.py` | OPERATIONAL | ran vs deployed image on mini (115b2); failed absent | **YES** |
 | `validate_forcing_reference.py` | OPERATIONAL | 115b3 GO/NO-GO ran vs deployed image; failed absent | **YES** |
 | `plan100_forecast_feed_resilience.py` | OPERATIONAL | runbook: run from worker environment (`mac-mini-staging.md:333`) | **YES** |
-| `onboard.py` | **NEEDS-CONFIRM** | README usage is a *local dev* bootstrap (`SAPPHIRE_ENV=dev`, `localhost`, CAMELS-CH download — `README.md:126-129`; `architecture-context.md:651`). Whether station onboarding is ever run against the **deployed image** on the mini is unconfirmed. | **gated** |
+| `onboard.py` | OPERATIONAL (owner decision 2026-07-17) | The *deployed* onboarding path is the registered Prefect deployment `onboard-stations` → `sapphire_flow.flows.onboard` (`register_deployments.py:91-93`), which is **already in-image** via `COPY src/` — so `scripts/onboard.py` is a **CLI convenience wrapper** (the README `--download` CAMELS bootstrap for a *fresh* setup, `README.md:121-138`), not a hard blocker. **Owner still wants it shipped:** they will re-run a fresh onboarding at least once for operational testing, and want a **complete, distributable package**. | **YES** |
 | `check_readiness.py` | DEV (docs tooling) | reads plan-doc frontmatter (`scripts/check_readiness.py:2-8`); docs are excluded from the image (`.dockerignore:9` `docs/`), so its inputs are not even present; never DB/API/runtime | **NO** |
 | `regenerate_icon_grid_asset.py` | DEV (one-shot local recipe) | "One-shot regeneration recipe" writing the committed repo asset `src/sapphire_flow/data/icon_ch2_eps_grid.npz` (`scripts/regenerate_icon_grid_asset.py:1-6`); run once from a checkout before committing; worker containers are `read_only: true` (`docker-compose.yml:99,150`) so it *cannot* write there anyway | **NO** |
 | `063_e2e_verify.py` | DEV (verification harness) | e2e harness, not a host procedure | **NO** |
@@ -92,7 +92,9 @@ Applying the rule (each row cites the evidence):
 **Result of re-triage vs. the earlier draft:** `plan100_…` moves DEV→OPERATIONAL (in
 scope); `check_readiness.py` and `regenerate_icon_grid_asset.py` move OPERATIONAL→DEV
 (explicitly **out of scope** — not a deployment concern, not "leave loose for now");
-`onboard.py` is gated on a confirmation rather than assumed.
+`onboard.py` is **now confirmed IN scope** (owner decision 2026-07-17 — see the row above:
+the deployed onboarding *flow* is already in-image, but the owner wants the `onboard.py`
+CLI shipped too for fresh operational-test setups and a complete distributable package).
 
 ## Options
 
@@ -140,11 +142,11 @@ gate that proves they run with **no bind-mount**. No code, test, or doc-invocati
   64), add a plain-context COPY naming exactly the operational files:
 
   ```dockerfile
-  COPY --chown=app:app scripts/backfill_meteoswiss_history.py scripts/validate_forcing_reference.py scripts/plan100_forecast_feed_resilience.py scripts/
+  COPY --chown=app:app scripts/backfill_meteoswiss_history.py scripts/validate_forcing_reference.py scripts/plan100_forecast_feed_resilience.py scripts/onboard.py scripts/
   ```
 
-  (+ `scripts/onboard.py` iff Task 1C confirms it). Do **not** copy `063_e2e_verify.py`,
-  `check_readiness.py`, or `regenerate_icon_grid_asset.py`.
+  (`scripts/onboard.py` is included per the confirmed owner decision — Task 1C). Do **not**
+  copy `063_e2e_verify.py`, `check_readiness.py`, or `regenerate_icon_grid_asset.py`.
   - **Why context-copy, not `--from=builder` (correctness — a prior draft was unbuildable):**
     `COPY --from=builder` can only copy paths that already exist in the builder stage's
     filesystem, and the builder stage **never copies `scripts/`** — its only COPY set is
@@ -173,12 +175,16 @@ gate that proves they run with **no bind-mount**. No code, test, or doc-invocati
   - *Verify:* every listed invocation exits 0 against a freshly built image with **no
     `scripts/` `-v` mount**; the same commands fail (`No such file`) against the pre-Plan-122
     image (proves the gate is real).
-- **1C — Resolve `onboard.py` classification.** Confirm with the owner whether station
-  onboarding is ever run against the **deployed image** on the mini (vs. only the local
-  `SAPPHIRE_ENV=dev` CAMELS-CH bootstrap in `README.md:126-129`). If YES → add it to the 1A
-  `COPY` set and the 1B matrix. If NO → it stays loose and out of scope; record the decision
-  in the plan.
-  - *Verify:* the plan states the confirmed answer and the `COPY` set matches it.
+- **1C — `onboard.py` classification: RESOLVED (owner, 2026-07-17) → IN scope.** Investigation:
+  the *deployed* onboarding path is the registered Prefect deployment `onboard-stations`
+  (`register_deployments.py:91-93`, flow `sapphire_flow.flows.onboard`), already in-image via
+  `COPY src/` — nothing on the mini invokes `scripts/onboard.py` directly (no launchd/cron/
+  runbook step; the two LaunchAgents are `ch.hydrosolutions.sapphire`(.watchdog)). So the CLI
+  is **convenience, not a blocker**. The owner nonetheless wants it shipped (fresh
+  operational-test setups + a complete distributable package), so it **is** in the 1A `COPY`
+  set and the 1B smoke matrix.
+  - *Verify:* the `COPY` set includes `scripts/onboard.py`; the 1B matrix runs `onboard.py
+    --help` (and any subcommands) against the built image with no bind-mount.
 - **1D — Doc sync (grep-driven, enumerated).** Phase 1 keeps the `python scripts/<name>.py`
   invocation form, so **no invocation strings change**; the doc work is limited to
   documenting the new guarantee. Add to `docs/standards/cicd.md`: *operational scripts named
@@ -195,10 +201,17 @@ gate that proves they run with **no bind-mount**. No code, test, or doc-invocati
     no longer implies a manual mount is required for the shipped scripts; `cicd.md` states the
     baked-vs-loose rule **and** no longer says the runtime stage "copies only `.venv`".
 
-## Phase 2 — OPTIONAL: promote to `cli/` console entry points (discoverability only)
+## Phase 2 — promote to `cli/` console entry points (owner-favoured for public distribution)
 
-**Do not start Phase 2 unless the owner elects discoverability as worth the cost.** It is
-strictly additive over Phase 1 and carries the correctness work the earlier draft omitted.
+**Owner lean (2026-07-17): DESIRED, cost-permitting.** The owner wants a *complete,
+distributable package* — a clean `onboard` / `backfill-meteoswiss-history` / `validate-forcing`
+command set reads far better for public distribution than loose `python scripts/foo.py`. So
+Phase 2 is no longer "elect only if you want discoverability"; it is the intended end-state
+**if it is not disproportionate** (owner: "if it's not too much work"). It remains **strictly
+additive over Phase 1** (the defect fix ships first, standalone) and carries the correctness
+work the earlier draft omitted (the `_REPO_ROOT` fix in 2A). Sequence Phase 1 → confirm cost
+of Phase 2 at that point → do Phase 2 unless the `_REPO_ROOT`/test/doc-retarget work proves
+heavier than the distribution benefit warrants.
 
 > **Citation-drift caveat (Phase 2 is gated, not scheduled).** The `file:line` citations
 > below (especially the enumerated doc-invocation set in 2E) are accurate as of 2026-07-17 but
