@@ -25,22 +25,34 @@ Environment:
     DATABASE_URL  PostgreSQL connection string (required)
 
 Exit code: 0 if no ACTIVE assignment (station or group) resolves to a model
-declaring one of the affected past-dynamic parameters; 1 if any is flagged
-(requires a human disposition before the flip) or the run cannot enumerate
-assignments at all (a DB/store failure — a silent pass would be worse than a
-loud failure here).
+declaring one of the affected parameters as EITHER a past- OR a future-dynamic
+feature; 1 if any is flagged (requires a human disposition before the flip) or
+the run cannot enumerate assignments at all (a DB/store failure — a silent pass
+would be worse than a loud failure here).
+
+Both dynamic slots matter: the read path that this flip changes (training,
+hindcast, and live forecast) fetches BOTH past- AND future-dynamic features
+from the reanalysis source (services/training_data.py, services/hindcast.py).
+The FI NWP model declares its precip/temp as FUTURE-dynamic only — it IS
+affected by the reader flip, so a past-only enumeration would let it pass
+silently. The audit enumerates the UNION of both slots and reports which slot
+each flagged feature came from.
 """
 
 from __future__ import annotations
 
 import os
 import sys
+from typing import TYPE_CHECKING
 
 import sqlalchemy as sa
 import structlog
 
 from sapphire_flow.logging import configure_api_logging
 from sapphire_flow.types.enums import ModelAssignmentStatus
+
+if TYPE_CHECKING:
+    from sapphire_flow.types.model import ModelDataRequirements
 
 configure_api_logging()
 log = structlog.get_logger(__name__)
@@ -56,6 +68,25 @@ _AFFECTED_PARAMETERS = frozenset(
         "relative_sunshine_duration",
     }
 )
+
+
+def audit_requirements(reqs: ModelDataRequirements) -> dict[str, list[str]]:
+    """Return the affected features per dynamic slot; empty dict means clear.
+
+    Enumerates the UNION of ``past_dynamic_features`` and
+    ``future_dynamic_features`` (§5C): a model declaring an affected parameter
+    in EITHER slot reads it from the reanalysis source and is therefore exposed
+    to the reader flip. Keys are ``"past"`` / ``"future"``; each maps to the
+    sorted affected parameter names found in that slot.
+    """
+    past_overlap = sorted(set(reqs.past_dynamic_features) & _AFFECTED_PARAMETERS)
+    future_overlap = sorted(set(reqs.future_dynamic_features) & _AFFECTED_PARAMETERS)
+    affected: dict[str, list[str]] = {}
+    if past_overlap:
+        affected["past"] = past_overlap
+    if future_overlap:
+        affected["future"] = future_overlap
+    return affected
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -125,16 +156,25 @@ def main(argv: list[str] | None = None) -> int:
         if model is None:
             print(
                 f"  {model_id}: NOT DISCOVERABLE via entry points — cannot "
-                "inspect its declared past_dynamic_features. Disposition "
-                "manually."
+                "inspect its declared past/future dynamic features. "
+                "Disposition manually."
             )
             flagged.append(str(model_id))
             continue
-        past_dynamic = set(model.data_requirements.past_dynamic_features)
-        overlap = past_dynamic & _AFFECTED_PARAMETERS
-        status = f"FLAGGED (overlap={sorted(overlap)})" if overlap else "clear"
-        print(f"  {model_id}: past_dynamic_features={sorted(past_dynamic)} -> {status}")
-        if overlap:
+        reqs = model.data_requirements
+        affected = audit_requirements(reqs)
+        if affected:
+            slot_desc = ", ".join(f"{slot}={feats}" for slot, feats in affected.items())
+            status = f"FLAGGED ({slot_desc})"
+        else:
+            status = "clear"
+        print(
+            f"  {model_id}: "
+            f"past_dynamic_features={sorted(reqs.past_dynamic_features)} "
+            f"future_dynamic_features={sorted(reqs.future_dynamic_features)} "
+            f"-> {status}"
+        )
+        if affected:
             flagged.append(str(model_id))
 
     print()

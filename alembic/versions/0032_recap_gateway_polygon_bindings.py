@@ -25,7 +25,9 @@ NOTE for the Plan 115c implementer: ``alembic/versions/0030_weather_source_role.
 earmarked revision 0032 for the ``station_weather_sources.role`` NOT NULL
 tightening. 082 landed first and takes 0032 here (chronological landing
 order, same pattern by which 0031 already superseded an earlier prose
-earmark) — 115c's migration must take **0033**, not 0032.
+earmark) — 115c's migration must take the **next free revision at
+implementation time**, not a hardcoded number (115b5 / Release B holds the
+camels-ch retire migration and will claim a revision when it lands).
 """
 
 from collections.abc import Sequence

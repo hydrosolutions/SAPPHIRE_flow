@@ -314,13 +314,20 @@ function loadCharts() {
       const traces = [];
       const colors = {"precipitation": "#1976D2", "temperature": "#E53935", "snow_depth": "#7B1FA2"};
       for (const [param_name, series] of Object.entries(data.series)) {
+        // §6D: forcing.json returns a per-point winning `source` tag (hybrid
+        // reader). Surface it in the hover so an operator can spot a stuck or
+        // preliminary (e.g. RprelimD) tail; markers make source changes visible.
+        const sources = series.sources || [];
         traces.push({
           type: "scatter",
           x: series.timestamps,
           y: series.values,
-          mode: "lines",
+          customdata: sources,
+          mode: "lines+markers",
+          marker: {size: 4},
           name: param_name,
           line: {color: colors[param_name] || "#666"},
+          hovertemplate: "%{x}<br>%{y}<br>source: %{customdata}<extra>" + param_name + "</extra>",
         });
       }
       if (traces.length === 0) {

@@ -484,7 +484,14 @@ def station_forcing_json(
     station_store = cast("StationStore", stores["station_store"])
     forcing_store = cast("HistoricalForcingStore", stores["forcing_store"])
 
-    bindings = station_store.fetch_reanalysis_bindings(StationId(UUID(station_id)))
+    try:
+        parsed_station_id = StationId(UUID(station_id))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail="Invalid station_id format"
+        ) from exc
+
+    bindings = station_store.fetch_reanalysis_bindings(parsed_station_id)
     if not bindings:
         return JSONResponse({"series": {}})
 

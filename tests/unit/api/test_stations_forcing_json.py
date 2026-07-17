@@ -95,3 +95,18 @@ class TestStationForcingJson:
 
         assert resp.status_code == 200
         assert resp.json() == {"series": {}}
+
+    def test_malformed_station_id_returns_400_not_500(
+        self, client: TestClient, fake_stores: dict[str, Any]
+    ) -> None:
+        # A non-UUID station_id must not crash the route with a 500 from an
+        # unguarded UUID(...) ValueError — it is a client error (400).
+        resp = client.get(
+            "/api/v1/stations/not-a-uuid/forcing.json",
+            params={
+                "start": "2026-04-01T00:00:00+00:00",
+                "end": "2026-06-01T00:00:00+00:00",
+            },
+        )
+
+        assert resp.status_code == 400
