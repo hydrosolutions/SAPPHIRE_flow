@@ -244,12 +244,24 @@ class TestDefaultHybridForcingSource:
 
         assert all(r.valid_time != gap for r in result)
 
-    def test_camels_only_station_survives_the_flip_with_no_row_no_raise(self) -> None:
+    def test_camels_only_binding_still_serves_backfilled_past_dynamic_features(
+        self,
+    ) -> None:
         # Plan 115b4 §5D: a station whose weather-source binding literally
-        # reads nwp_source="camels-ch" (a pre-flip artifact) must still
-        # resolve cleanly through the (now CAMELS-tier-free) hybrid chain —
-        # "resolves" here means completes without raising and yields an
-        # empty, well-typed result, not that CAMELS-CH values are served.
+        # still reads nwp_source="camels-ch" (a pre-flip artifact) must
+        # SURVIVE the flip with its past-dynamic features UNCHANGED, not just
+        # "resolve without raising" — that weaker bar would also pass if the
+        # whole hybrid chain were dark (always empty), proving nothing.
+        #
+        # The hybrid resolver ignores ``cfg.nwp_source`` entirely (it fans out
+        # to every wired per-source reader keyed on station_id + role, see
+        # ``PerSourceStoreReader.fetch_reanalysis`` / ``hybrid_reanalysis.py``)
+        # — so once a station has been backfilled with MeteoSwiss product rows
+        # under its station_id, hybrid serves them regardless of what the
+        # legacy binding's ``nwp_source`` literal says. This test proves that
+        # end to end: a camels-ch-bound station with MeteoSwiss backfill rows
+        # in the store gets those MeteoSwiss rows back — non-empty, correct
+        # values, no camels-ch rows, no raise.
         camels_only_cfg = StationWeatherSource(
             station_id=StationId("s1"),
             nwp_source="camels-ch",
@@ -257,21 +269,20 @@ class TestDefaultHybridForcingSource:
             status=WeatherSourceStatus.ACTIVE,
             role=WeatherSourceRole.REANALYSIS,
         )
-        store = FakeHistoricalForcingStore()
-        store.store_forcing(
-            [
-                _raw(
-                    source="camels-ch",
-                    parameter="precipitation",
-                    when=_CAMELS_ERA,
-                    value=1.0,
-                )
-            ]
-        )
-        hybrid = default_hybrid_forcing_source(forcing_store=store)
+        # `_seed_store()` holds both the untouched camels-ch audit-trail row
+        # AND the full MeteoSwiss backfill for station "s1" — exactly the
+        # post-115b3-backfill, pre-115b4-flip state of a real station.
+        hybrid = default_hybrid_forcing_source(forcing_store=_seed_store())
 
         result = hybrid.fetch_reanalysis(
             [camels_only_cfg], _WINDOW_START, _WINDOW_END, _ALL_PARAMS
         )
 
-        assert result == []
+        assert result != []
+        assert all(r.source != "camels-ch" for r in result)
+        by_parameter_at_post = {r.parameter: r for r in result if r.valid_time == _POST}
+        assert by_parameter_at_post["temperature"].source == "meteoswiss_tabsd"
+        assert by_parameter_at_post["temperature"].value == 8.0
+        assert by_parameter_at_post["temperature_min"].source == "meteoswiss_tmind"
+        assert by_parameter_at_post["temperature_max"].source == "meteoswiss_tmaxd"
+        assert by_parameter_at_post[_SRELD_PARAM].source == "meteoswiss_sreld"

@@ -328,24 +328,43 @@ def _append_weather_history_health_record(
         )
 
 
-def _horizon_present(
+def _snapshot_latest_valid_times(
     forcing_store: HistoricalForcingStore,
     *,
     station_ids: list[StationId],
     sources: list[ForcingSource],
     start: UtcDatetime,
     end: UtcDatetime,
+) -> dict[ForcingSource, UtcDatetime | None]:
+    """Per-source ``MAX(valid_time)`` in ``[start, end)`` — a real DB readback
+    via ``fetch_latest_valid_time``'s O(1)-per-source aggregate. Call once
+    BEFORE the fetch/store step and once AFTER; ``_horizon_advanced`` compares
+    the two snapshots to detect a run with zero EFFECT (Plan 115b4 §6B)."""
+    return {
+        source: forcing_store.fetch_latest_valid_time(
+            station_ids, source.value, start, end
+        )
+        for source in sources
+    }
+
+
+def _horizon_advanced(
+    before: dict[ForcingSource, UtcDatetime | None],
+    after: dict[ForcingSource, UtcDatetime | None],
+    *,
+    sources: list[ForcingSource],
 ) -> bool:
-    """Health-by-EFFECT (Plan 115b4 §6B): True iff the store ACTUALLY holds at
-    least one row, for at least one of ``sources``, within [start, end) —
-    a real DB readback via ``fetch_latest_valid_time``'s O(1)-per-source
-    aggregate, never the flow's own ``rows_stored`` counter (which is
-    ``len(records)`` post ``on_conflict_do_nothing`` and looks healthy even
-    when nothing new landed for a store that has never held anything).
+    """Health-by-EFFECT (Plan 115b4 §6B): True iff at least one of ``sources``
+    shows an ADVANCING ``MAX(valid_time)`` between the ``before`` and ``after``
+    snapshots — i.e. the store actually gained a later row this run, never
+    just "a row exists" (which is trivially true once the rolling window has
+    ever been populated by a prior run, and is blind to a stuck duplicate
+    re-fetch that persists nothing new). ``before=None -> after=<value>``
+    counts as an advance (first-ever data for that source/window).
     """
     return any(
-        forcing_store.fetch_latest_valid_time(station_ids, source.value, start, end)
-        is not None
+        after.get(source) is not None
+        and (before.get(source) is None or after[source] > before[source])  # type: ignore[operator]
         for source in sources
     )
 
@@ -441,13 +460,33 @@ def ingest_weather_history_flow(
     )
 
     # Every product actually targeted this run — used both for the fetch
-    # calls below AND the post-store health-by-effect readback (§6B), so the
-    # two never drift out of sync.
+    # calls below AND the before/after health-by-effect readback (§6B), so
+    # the two never drift out of sync.
     targeted_products: list[ForcingSource] = []
+    rprelimd_start = max(start, rhiresd_end)
+    if start < rhiresd_end:
+        targeted_products.append(ForcingSource.METEOSWISS_RHIRESD)
+    if rprelimd_start < now:
+        targeted_products.append(ForcingSource.METEOSWISS_RPRELIMD)
+    targeted_products.extend(_NON_PRECIP_PRODUCTS)
+
+    # Health-by-EFFECT (Plan 115b4 §6B): snapshot each targeted source's
+    # MAX(valid_time) in the run's window BEFORE fetching/storing anything, so
+    # the post-run snapshot can be compared against it. Checking "a row
+    # exists" alone (the pre-fix behaviour) is trivially true once the
+    # rolling window has ever been populated by a PRIOR run — it cannot
+    # detect THIS run silently persisting nothing new.
+    station_ids = [cfg.station_id for cfg in configs]
+    latest_before = _snapshot_latest_valid_times(
+        forcing_store_t,
+        station_ids=station_ids,
+        sources=targeted_products,
+        start=start,
+        end=now,
+    )
 
     rows: list[RawHistoricalForcing] = []
     if start < rhiresd_end:
-        targeted_products.append(ForcingSource.METEOSWISS_RHIRESD)
         rows.extend(
             _fetch_products_task(
                 adapter_t,
@@ -459,9 +498,7 @@ def ingest_weather_history_flow(
             )
         )
 
-    rprelimd_start = max(start, rhiresd_end)
     if rprelimd_start < now:
-        targeted_products.append(ForcingSource.METEOSWISS_RPRELIMD)
         rows.extend(
             _fetch_products_task(
                 adapter_t,
@@ -473,7 +510,6 @@ def ingest_weather_history_flow(
             )
         )
 
-    targeted_products.extend(_NON_PRECIP_PRODUCTS)
     rows.extend(
         _fetch_products_task(
             adapter_t,
@@ -489,28 +525,31 @@ def ingest_weather_history_flow(
     stored = _store_forcing_task(forcing_store_t, rows) if rows else 0
     log.info("weather_history.store_complete", rows_stored=stored)
 
-    # Health-by-EFFECT (Plan 115b4 §6B): a real DB readback, never
-    # ``rows_stored`` (which reports len(records) regardless of whether
-    # anything was actually persisted).
-    station_ids = [cfg.station_id for cfg in configs]
-    horizon_present = _horizon_present(
+    # Health-by-EFFECT (Plan 115b4 §6B): a real DB readback comparing the
+    # post-run snapshot against the pre-run one, never ``rows_stored`` (which
+    # reports len(records) regardless of whether anything was actually
+    # persisted, and is blind to a stuck duplicate re-fetch).
+    latest_after = _snapshot_latest_valid_times(
         forcing_store_t,
         station_ids=station_ids,
         sources=targeted_products,
         start=start,
         end=now,
     )
+    horizon_advanced = _horizon_advanced(
+        latest_before, latest_after, sources=targeted_products
+    )
     _append_weather_history_health_record(
         pipeline_health_store,
         checked_at=now,
         status=(
             PipelineHealthStatus.OK
-            if horizon_present
+            if horizon_advanced
             else PipelineHealthStatus.CRITICAL
         ),
         detail=(
             {"stations_targeted": len(configs), "rows_stored": stored}
-            if horizon_present
+            if horizon_advanced
             else {
                 "reason": "no_horizon_advance",
                 "stations_targeted": len(configs),

@@ -197,10 +197,14 @@ class PipelineCheckType(Enum):
     # drift, not introduced here).
     WEATHER_HISTORY_INGEST = "weather_history_ingest"
         # Plan 115b4 §6A — ingest_weather_history_flow's health-by-EFFECT
-        # check (§6B): CRITICAL when zero stations are bound, or when the
-        # store's on-disk horizon has zero rows for every source this run
-        # targeted (a real DB readback via fetch_latest_valid_time, never
-        # rows_stored). OK otherwise.
+        # check (§6B): CRITICAL when zero stations are bound, or when EVERY
+        # source this run targeted shows a NON-ADVANCING MAX(valid_time) —
+        # snapshotted via fetch_latest_valid_time BEFORE the fetch/store step
+        # and compared against the same snapshot taken AFTER (never
+        # rows_stored, and never a single post-run "does a row exist" check,
+        # which is trivially true once the rolling window has ever been
+        # populated by a PRIOR run and is blind to a stuck duplicate
+        # re-fetch). OK when at least one targeted source advances.
 
 class NotificationChannel(Enum):
     EMAIL = "email"

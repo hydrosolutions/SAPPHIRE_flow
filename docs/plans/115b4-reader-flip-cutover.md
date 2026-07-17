@@ -30,6 +30,15 @@ Implementation authorised; hold at PR.
 **⚠️ Gated on 115b3.** Do not flip until the validation gate's result is recorded and any flag
 dispositioned.
 
+**Fixer-round note (2026-07-17):** an independent Codex review of the implementation found
+that `0033_retire_camels_ch_weather_binding.py` (§5E, Release B) had been committed
+alongside Release A (5A–5D + phase-6) in the SAME commit — reproducing the exact
+single-deploy-choreography hazard round 1 rejected. **5E has been split out to
+[Plan 115b5](115b5-camels-ch-retire-migration.md)**, on a separate branch, not part of
+this plan's `main` diff. `tests/unit/db/test_alembic_head_release_a.py` mechanically
+enforces that `alembic/versions/` on `main` carries no camels-ch retire migration until
+115b5's merge gate (Release-A staging confirmation) passes.
+
 ## Scope
 
 ### Phase 5 — the reader
@@ -122,13 +131,21 @@ dispositioned.
   **zero** sources returned rows → behaves as today (absent, no raise); **exactly one** source returned rows
   → that single source **wins**, no raise; **two+** sources returned rows → **raises** `ConfigurationError`
   (nondeterministic winner). *Decided from returned rows, not a static map.*
-- **CAMELS-only station survives the flip (5D)** — the chain resolves; past-dynamic features unchanged.
+- **CAMELS-only station survives the flip (5D)** — a station whose binding still literally reads
+  `nwp_source="camels-ch"` (a pre-flip artifact) continues to serve its **backfilled MeteoSwiss
+  past-dynamic features unchanged** through the hybrid chain (hybrid resolves by `station_id` + `role`,
+  never by the binding's `nwp_source` literal) — not merely "returns empty without raising", which would
+  also pass if the whole hybrid chain were dark.
 - **Flow 6 health (6B):** `stations_targeted == 0` → UNHEALTHY; bound-but-no-inserts over a full window →
-  UNHEALTHY (via DB rowcount / non-advancing `MAX(valid_time)`), NOT via `rows_stored`.
+  UNHEALTHY (via a **before/after `MAX(valid_time)` comparison** per targeted source — captured BEFORE the
+  fetch/store step and compared AFTER — not merely "does a row exist post-run", which is trivially true once
+  the rolling window has ever been populated by a prior run), NOT via `rows_stored`.
 - **Two-release ordering (5E):** the retire-camels migration (Release B) cannot leave a station unreadable —
   a deploy-gate that Release A's hybrid default is confirmed **serving past-dynamic features** BEFORE
-  Release B ships. (Unit-testable: a station on the hybrid reader serves rows; a test that the retire
-  migration is absent from Release A's head.)
+  Release B ships. Split out to [Plan 115b5](115b5-camels-ch-retire-migration.md) on a separate branch
+  (fixer round, 2026-07-17) — `main` never carries the retire migration until 115b5's merge gate passes.
+  (Unit-testable, on `main`: `tests/unit/db/test_alembic_head_release_a.py` asserts the retire migration is
+  **absent from `main`'s Alembic head**; a station on the hybrid reader serves rows.)
 - **No `camels-ch` weather binding remains** after this plan; CAMELS forcing rows are untouched and still
   readable by a direct source-keyed fetch.
 - **Converter guards (6C)** reject a reanalysis tag.
@@ -178,7 +195,10 @@ uv run pytest
   **non-zero** effect (advancing `MAX(valid_time)` per source), a station serves past-dynamic features via
   the `RHIRESD → RPRELIMD`/`TABSD`/… chain, and a forecast cycle completes on the new series. The
   `camels-ch` weather binding is **still present** at this gate (it is retired only in Release B). Confirm
-  the retire migration is **absent from Release A's `head`**. **A green flow is not evidence.**
+  the retire migration is **absent from Release A's `head`** — mechanically enforced by
+  `tests/unit/db/test_alembic_head_release_a.py` on `main` (fails if a camels-ch retire migration file
+  exists in `alembic/versions/`, or if revision `0032` is no longer the true leaf), not merely documented.
+  **A green flow is not evidence.**
 - **Release B gate (after 5E ships, only once Release A is confirmed serving):** the `camels-ch` weather
   binding is **gone**, its forcing ROWS remain readable by a direct source-keyed fetch, and a forecast
   cycle still completes on the hybrid chain.

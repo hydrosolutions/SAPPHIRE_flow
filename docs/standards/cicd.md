@@ -143,17 +143,25 @@ illustrates the additive-then-tighten pattern for a column that must eventually 
 `NOT NULL`: migration `0030` (115a) adds `role` **nullable**, backfills it, and applies
 a NULL-tolerant `CheckConstraint("role IS NULL OR role IN ('forecast','reanalysis')")`
 so the previous image tag can still write an unroled row during the rollback window. A
-later migration `0034` (115c — revision reallocated by 082's `0032` and 115b4's `0033`
-landing first) tightens the column to `NOT NULL` only once that rollback window has
-closed. Do not collapse the two into one release — the nullable step exists
-specifically so `0030` stays backwards-compatible with the pre-115a image per the rule
-above.
+later migration (115c — revision number TBD at implementation time; `0032` was taken by
+082's recap Gateway polygon-binding table, and `0033` is reserved-but-not-yet-on-`main`
+by 115b4 §5E's Release B, see below — run `alembic heads` against `main` to pick the next
+free slot) tightens the column to `NOT NULL` only once that rollback window has closed.
+Do not collapse the two into one release — the nullable step exists specifically so
+`0030` stays backwards-compatible with the pre-115a image per the rule above.
 
 **Two-release reader flip + camels-ch retirement (Plan 115b4)** — the reanalysis-reader
 default flip is deliberately isolated from the CAMELS-CH weather-binding retirement as
 TWO SEQUENCED releases on this standard deploy path (no bespoke alembic targets), because
 `init` runs `alembic upgrade head` **before** any worker/API confirms the new reader is
-actually serving:
+actually serving. Concretely, this means the Release B migration must not merely be
+*documented* as later — it must be physically **absent from `main`'s Alembic head** until
+Release A is confirmed serving: Release A's code (this plan's `main` commit) ships with
+**no `0033` file in `alembic/versions/`**; the migration is authored on a separate branch
+(`115b5`, see `docs/plans/115b5-camels-ch-retire-migration.md`) that is merged to `main`
+**only after** the Release-A staging deploy-gate below has passed. `git log --oneline -1
+alembic/versions/` (or `alembic heads`) on `main` must show 115b4's flip with no retire
+migration until that merge happens.
 
 - **Before Release A** (§5C, distribution-shift gate): run
   `uv run python scripts/audit_distribution_shift.py` against the target deployment's
@@ -173,9 +181,11 @@ actually serving:
   past-dynamic features via the MeteoSwiss chain, and a forecast cycle completes on the
   new series. **A green flow is not evidence** — check the `weather_history_ingest`
   `PipelineHealthRecord`s and a direct dashboard forcing-endpoint read.
-- **Release B** (§5E, migration `0033`): retires the `camels-ch` `station_weather_sources`
-  binding — ships **only after** Release A is confirmed serving on staging. Deploy on the
-  same standard upgrade procedure (`alembic upgrade head` now includes `0033`). The
+- **Release B** (§5E, plan `115b5`, migration `0033` on that branch only): retires the
+  `camels-ch` `station_weather_sources` binding — the `115b5` branch is merged to `main`,
+  and only THEN deployed, **only after** Release A is confirmed serving on staging (the
+  gate immediately above). Deploy on the same standard upgrade procedure (`alembic
+  upgrade head` now includes `0033`, because the merge just added it to `main`). The
   `historical_forcing` rows tagged `camels-ch` are **not** touched by this migration — they
   remain the Plan 115b3 validation reference + audit trail, readable by a direct
   source-keyed fetch. Confirm after deploying: the `camels-ch` weather binding is gone, its

@@ -1129,15 +1129,15 @@ class TestWeatherHistoryHealthByEffect:
         assert len(records) == 1
         assert records[0].status == PipelineHealthStatus.OK
 
-    def test_duplicate_rerun_that_advances_nothing_new_is_still_healthy_if_horizon_already_covers_now(  # noqa: E501
-        self,
-    ) -> None:
-        # A second identical (pure-duplicate) re-fetch must NOT be flagged
-        # unhealthy: the store already holds a row for the targeted source
-        # within the window (from the first run), so the post-store DB
-        # readback finds it — proving the effect check does not cry wolf on
-        # a legitimate steady-state re-run, even though this run's own
-        # ``rows_stored`` counter is identically shaped to the first run's.
+    def test_duplicate_rerun_that_advances_nothing_new_is_unhealthy(self) -> None:
+        # A second identical (pure-duplicate) re-fetch — same clock, same
+        # adapter rows, so the store's MAX(valid_time) for the targeted
+        # source in this run's window is IDENTICAL before and after — must be
+        # flagged UNHEALTHY, even though the store already holds a row for
+        # that source within the window (from the first run) and this run's
+        # own ``rows_stored`` counter is identically shaped to the first
+        # run's. A "row exists" check alone would wrongly call this healthy;
+        # only a before/after comparison catches a run with zero EFFECT.
         station = make_station_config(code="2135", name="Aare Bern")
         station_store = FakeStationStore()
         station_store.store_station(station)
@@ -1171,7 +1171,60 @@ class TestWeatherHistoryHealthByEffect:
 
         records = health.fetch_recent(PipelineCheckType.WEATHER_HISTORY_INGEST)
         assert len(records) == 2
-        # The horizon (MAX valid_time) is the same before/after the second
-        # run since the row already covers it — but the store DOES hold data
-        # for the targeted sources, so this is healthy, not "no_horizon_advance".
+        # The first run advances the horizon from nothing to the row's
+        # valid_time (healthy); the second run is a stuck duplicate with
+        # IDENTICAL before/after MAX(valid_time) — zero effect, unhealthy.
+        assert records[0].status == PipelineHealthStatus.OK
+        assert records[1].status == PipelineHealthStatus.CRITICAL
+        assert records[1].detail["reason"] == "no_horizon_advance"
+
+    def test_second_run_with_genuinely_new_data_is_healthy(self) -> None:
+        # Guards against an over-broad fix: a second run that DOES land a
+        # later row for the targeted source (e.g. the next day's data
+        # appearing) must still be reported healthy — the before/after
+        # comparison detects advancement, not merely "ran twice".
+        station = make_station_config(code="2135", name="Aare Bern")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        station_store.store_weather_source(_weather_source(station.id))
+
+        first_row = _row(
+            station.id,
+            parameter="precipitation",
+            source=ForcingSource.METEOSWISS_RPRELIMD.value,
+            value=5.0,
+            version="v1",
+            valid_time=_DAY,
+        )
+        second_row = _row(
+            station.id,
+            parameter="precipitation",
+            source=ForcingSource.METEOSWISS_RPRELIMD.value,
+            value=6.0,
+            version="v1",
+            valid_time=ensure_utc(_DAY + timedelta(days=1)),
+        )
+        adapter = _SpyReanalysisAdapter(rprelimd_responses=[[first_row], [second_row]])
+        store = _SupersedingForcingStore()
+        health = FakePipelineHealthStore()
+
+        ingest_weather_history_flow(
+            station_store=station_store,
+            forcing_store=store,
+            adapter=adapter,
+            clock=_fixed_clock,
+            pipeline_health_store=health,
+        )
+
+        ingest_weather_history_flow(
+            station_store=station_store,
+            forcing_store=store,
+            adapter=adapter,
+            clock=_fixed_clock,
+            pipeline_health_store=health,
+        )
+
+        records = health.fetch_recent(PipelineCheckType.WEATHER_HISTORY_INGEST)
+        assert len(records) == 2
+        assert records[0].status == PipelineHealthStatus.OK
         assert records[1].status == PipelineHealthStatus.OK
