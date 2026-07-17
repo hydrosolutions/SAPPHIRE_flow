@@ -41,13 +41,22 @@ No IFS dataset found`, instead of using the newest **complete** ensemble cycle
 ## Goal
 
 Make forcing membership **model-driven**, per the ForecastInterface principle (models declare
-requirements; SAP3 delivers exactly what is required):
+requirements; SAP3 delivers exactly what is required). **Neither membership is privileged or
+blocked** — the adapter fetches exactly the members the assigned models require, hardcoded
+neither way. Both of the following must be first-class:
 
 - **Control-only models → fetch `fc`, skip `pf` entirely, never abort on missing `pf`.**
-- **Ensemble models → fetch the full 1×`fc` + 50×`pf` set.**
+  (All *current* Nepal models — Sandro uses `fc` for efficiency.)
+- **Ensemble models → fetch the full 1×`fc` + 50×`pf` set, and abort only on a genuinely
+  incomplete *required* ensemble.** No current model needs this, but it is a **first-class,
+  expected future case** — the ensemble/`pf` path must stay fully supported and correct, not
+  dropped or degraded in favour of the `fc`-only path. (Mixed fleets are possible too: some
+  stations control-only, others ensemble, in the same cycle.)
 - **Requirement-aware cycle resolution:** resolve to the newest cycle where the *required*
-  members are available — a control-only model can ride the earliest control cycle; an
-  ensemble model resolves to the newest *complete* cycle (since `pf` lags `fc`).
+  members are available — a control-only model rides the earliest control cycle; an ensemble
+  model resolves to the newest *complete* cycle (since `pf` lags `fc`). Resolution is
+  per-requirement, so a control-only and an ensemble model in the same run may legitimately
+  land on different cycles.
 
 ## Open design forks (decide in the `plan` workflow)
 
