@@ -194,22 +194,23 @@ def run_hindcast_flow(
             select_reanalysis_source,
         )
 
-        # Plan 072: opt-in hybrid resolver via DeploymentConfig.reanalysis_source;
-        # absent config keeps the v0a single-source path.
+        # Plan 115b4 §5D: mode is a deployment decision made in exactly one
+        # place — DeploymentConfig.reanalysis_source (default "hybrid").
+        # Absent config still resolves through DeploymentConfig's own
+        # built-in default, not a hard-coded "single" bypass.
         if config is None:
             config_path = os.environ.get("SAPPHIRE_CONFIG")
             if config_path is not None:
                 from sapphire_flow.config.deployment import load_config
 
                 config = load_config(config_path)
-        resolved_config = cast("DeploymentConfig | None", config)
-        mode = (
-            resolved_config.reanalysis_source
-            if resolved_config is not None
-            else "single"
-        )
+            else:
+                from sapphire_flow.config.deployment import DeploymentConfig
+
+                config = DeploymentConfig(max_retention_days=600)
+        resolved_config = cast("DeploymentConfig", config)
         forcing_source = select_reanalysis_source(
-            forcing_store=forcing_store, mode=mode
+            forcing_store=forcing_store, mode=resolved_config.reanalysis_source
         )
 
     if model is None:

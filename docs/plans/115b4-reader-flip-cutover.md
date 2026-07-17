@@ -146,8 +146,9 @@ enforces that `alembic/versions/` on `main` carries no camels-ch retire migratio
   (fixer round, 2026-07-17) — `main` never carries the retire migration until 115b5's merge gate passes.
   (Unit-testable, on `main`: `tests/unit/db/test_alembic_head_release_a.py` asserts the retire migration is
   **absent from `main`'s Alembic head**; a station on the hybrid reader serves rows.)
-- **No `camels-ch` weather binding remains** after this plan; CAMELS forcing rows are untouched and still
-  readable by a direct source-keyed fetch.
+- **No `camels-ch` weather binding remains** after Release B ([Plan 115b5](115b5-camels-ch-retire-migration.md));
+  this plan (Release A) leaves the binding in place. CAMELS forcing rows are untouched and still readable by
+  a direct source-keyed fetch.
 - **Converter guards (6C)** reject a reanalysis tag.
 
 ## Dependency graph

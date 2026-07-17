@@ -110,3 +110,22 @@ class TestReleaseAAlembicHeadHasNoRetireMigration:
             "landing, update _RELEASE_A_HEAD only as part of that gated "
             "merge, not incidentally."
         )
+
+    def test_alembic_has_exactly_one_head_and_it_is_release_a(self) -> None:
+        # A leaf is any revision that is not itself a down_revision of some
+        # other revision. Checking only "nothing builds on 0032" (the test
+        # above) misses a rogue migration that branches off an EARLIER
+        # revision (e.g. down_revision = "0031") — that would create a
+        # SECOND head while leaving 0032 untouched, and Alembic would refuse
+        # to run (multiple heads) even though the check above still passes.
+        # Assert the full leaf set is exactly {0032} so any such stray branch
+        # is caught here instead of surfacing as an opaque Alembic runtime
+        # error during deploy.
+        graph = _down_revisions()
+        leaves = set(graph) - {down for down in graph.values() if down is not None}
+        assert leaves == {_RELEASE_A_HEAD}, (
+            f"expected exactly one Alembic head ({_RELEASE_A_HEAD}), found "
+            f"{sorted(leaves)} — a migration branches off an earlier "
+            "revision instead of chaining onto Release A's head, which "
+            "would give Alembic multiple heads at deploy time."
+        )

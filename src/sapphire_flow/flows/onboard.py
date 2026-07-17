@@ -181,11 +181,14 @@ def onboard_stations_flow(
             from sapphire_flow.config.deployment import load_config
 
             deployment_config = load_config(config_path)
+        else:
+            from sapphire_flow.config.deployment import DeploymentConfig
+
+            deployment_config = DeploymentConfig(max_retention_days=600)
 
     # Route through the single reanalysis-source factory (Plan 115a §6) so the
-    # mode is a deployment decision made in exactly one place. Mode defaults to
-    # "single" when no deployment config is available, matching the prior
-    # hardcoded StoreBackedReanalysisSource behaviour.
+    # mode is a deployment decision made in exactly one place —
+    # DeploymentConfig.reanalysis_source (Plan 115b4 §5D default "hybrid").
     if forcing_source is None and forcing_store is not None:
         from typing import cast
 
@@ -194,14 +197,9 @@ def onboard_stations_flow(
         )
         from sapphire_flow.config.deployment import DeploymentConfig
 
-        resolved_config = cast("DeploymentConfig | None", deployment_config)
-        mode = (
-            resolved_config.reanalysis_source
-            if resolved_config is not None
-            else "single"
-        )
+        resolved_config = cast("DeploymentConfig", deployment_config)
         forcing_source = select_reanalysis_source(
-            forcing_store=forcing_store, mode=mode
+            forcing_store=forcing_store, mode=resolved_config.reanalysis_source
         )
 
     # Read basin_ids from config if not provided via argument

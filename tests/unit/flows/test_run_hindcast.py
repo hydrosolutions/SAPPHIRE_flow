@@ -739,6 +739,113 @@ class TestRunHindcastFlowSelfResolution:
         assert isinstance(results, list)
         assert len(results) == 3
 
+    def test_full_self_resolution_no_config_defaults_to_hybrid(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Plan 115b4 §5D: the bootstrap path (no ``config`` argument, no
+        ``SAPPHIRE_CONFIG`` env var) must still resolve
+        ``DeploymentConfig.reanalysis_source`` via its own built-in default
+        ("hybrid"), not a hard-coded "single" bypass that reintroduces the
+        double-dark regression on this documented default path.
+        """
+        from unittest.mock import patch
+
+        rng = random.Random(0)
+        sid = StationId(uuid4())
+        run_id = uuid4()
+
+        station_store, obs_store, forcing_source_fake, hindcast_store, basin_store = (
+            _build_station_stores(sid)
+        )
+
+        artifact_store = FakeModelArtifactStore()
+        aid, _ = artifact_store.store_artifact(
+            model_id=_MODEL_ID,
+            artifact_bytes=b"fake_artifact",
+            training_period_start=_PERIOD_START,
+            training_period_end=_PERIOD_END,
+            trained_at=_utc(2022, 6, 1),
+            station_id=sid,
+        )
+
+        forcing_hist_store = FakeHistoricalForcingStore()
+        records = []
+        data_start = ensure_utc(datetime(2021, 1, 1, tzinfo=UTC))
+        n_days = 400
+        for i in range(n_days * 24):
+            ts = ensure_utc(
+                datetime.fromtimestamp(data_start.timestamp() + i * 3600, tz=UTC)
+            )
+            for param in ("precipitation", "temperature"):
+                records.append(
+                    make_raw_historical_forcing(
+                        station_id=sid,
+                        parameter=param,
+                        valid_time=ts,
+                        value=float(i % 20),
+                    )
+                )
+        forcing_hist_store.store_forcing(records)
+
+        stores_dict = {
+            "station_store": station_store,
+            "group_store": FakeStationGroupStore(),
+            "obs_store": obs_store,
+            "hindcast_store": hindcast_store,
+            "basin_store": basin_store,
+            "artifact_store": artifact_store,
+            "forcing_store": forcing_hist_store,
+        }
+        monkeypatch.setenv("DATABASE_URL", "sqlite://")
+        monkeypatch.delenv("SAPPHIRE_CONFIG", raising=False)
+        monkeypatch.setattr(
+            "sapphire_flow.flows._db.setup_production_stores",
+            lambda _url: (None, stores_dict),
+        )
+        monkeypatch.setattr(
+            "sapphire_flow.services.model_registry.discover_models",
+            lambda: {_MODEL_ID: FakeStationForecastModel()},
+        )
+
+        from sapphire_flow.adapters.hybrid_reanalysis_factories import (
+            select_reanalysis_source as real_select_reanalysis_source,
+        )
+
+        reanalysis_calls: list[dict[str, object]] = []
+
+        def spy_select_reanalysis_source(
+            *, forcing_store: object, mode: object
+        ) -> object:
+            source = real_select_reanalysis_source(
+                forcing_store=forcing_store,
+                mode=mode,  # type: ignore[arg-type]
+            )
+            reanalysis_calls.append({"mode": mode, "source": source})
+            return source
+
+        with patch(
+            "sapphire_flow.adapters.hybrid_reanalysis_factories.select_reanalysis_source",
+            spy_select_reanalysis_source,
+        ):
+            results = run_hindcast_flow.fn(
+                model_id=_MODEL_ID,
+                artifact_id=aid,
+                station_id=sid,
+                period_start=_PERIOD_START,
+                period_end=_PERIOD_END,
+                time_step=_STEP,
+                clock=_fixed_clock,
+                rng=rng,
+                hindcast_run_id=run_id,
+            )
+
+        assert isinstance(results, list)
+        assert len(reanalysis_calls) == 1
+        assert reanalysis_calls[0]["mode"] == "hybrid"
+        from sapphire_flow.adapters.hybrid_reanalysis import HybridForcingSource
+
+        assert isinstance(reanalysis_calls[0]["source"], HybridForcingSource)
+
     def test_self_resolution_skipped_when_stores_provided(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
