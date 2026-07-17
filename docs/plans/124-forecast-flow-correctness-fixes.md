@@ -50,6 +50,24 @@ under a mixed assignment; confirm whether any current/near config hits it. Fix: 
 retaining suffixed columns for fan-out. Regression: a `SINGLE` and an `ENSEMBLE` model both
 forecast in one mixed run. (This is the D8 territory shared with 123 — decide ownership.)
 
+## Verification (2026-07-17, orchestrator — read against the code, all CONFIRMED)
+
+- **#1 CONFIRMED.** `run_forecast_cycle.py:1626` computes `effective_runoff_only = skip_nwp_fetch
+  or nwp_unavailable_runtime`, but `:1628` gates `_check_nwp_grid_staleness` on `nwp_enabled`
+  alone — so a no-NWP-needed run still runs the staleness check. Fix = also gate on
+  `not effective_runoff_only` (or specifically `not skip_nwp_fetch`).
+- **#2 CONFIRMED.** `station_store.py:212` `fetch_model_assignments` has NO status filter (returns
+  all); station path consumes them unfiltered (`:1440-1443`; `run_station_forecast.py` has no
+  assignment-status filter — grep clean); group path filters `status == ACTIVE` (`:2039`). Real
+  asymmetry: station forecasting includes INACTIVE assignments.
+- **#3 CONFIRMED — on the `fc`-first critical path, NOT merely latent.** `_pivot_nwp_records`
+  (`operational_inputs.py:181`) enters the suffixed-column branch whenever ANY record has a
+  `member_id`; since `fc` = `member_id=0`, even a **control-only** fetch emits `precipitation_0`,
+  and FI `SINGLE`'s `_frame_with_column` (`forecast_interface.py:987`) requires the **bare**
+  `precipitation` → `ConfigurationError`. So this **directly blocks Sandro's control-only
+  models**. **Ownership note:** this is the D8 normalization — decide whether it lands here (124)
+  or as the first task of 123's control-only slice; either way it is `fc`-critical.
+
 ## Notes / non-goals
 
 - Does **not** implement Plan 123's model-driven membership feature — only the pre-existing
