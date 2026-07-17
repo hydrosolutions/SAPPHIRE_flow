@@ -21,9 +21,15 @@ constraint.
 
 ## Scope
 
-### 1. Revision `0032` — tighten
+### 1. Revision `0034` — tighten
 
-*(Revision `0031` is taken by Plan 115b1 — the `relative_sunshine_duration` parameter seed — which lands before this cleanup. The NOT NULL tightening is therefore `0032`, the next free slot after `0031`.)*
+*(Revision `0031` was taken by Plan 115b1 — the `relative_sunshine_duration` parameter seed.
+Revision `0032` was then taken by Plan 082 Task 2D — the recap Gateway polygon-binding table — which
+landed before this cleanup and left a note earmarking `0032` for this plan's NOT NULL tightening;
+that earmark is now itself stale. Revision `0033` was taken by Plan 115b4 §5E — the camels-ch
+weather-binding retirement migration (Release B of the reader flip), which also lands before this
+cleanup. The NOT NULL tightening below is therefore `0034`, the next free slot after `0033` — update
+every "`0032`" reference below to `0034` when implementing.)*
 
 Ships **after the rollback window closes** (i.e. once no pre-115a image remains in the rollback
 path — a deployment judgement, not a timer).

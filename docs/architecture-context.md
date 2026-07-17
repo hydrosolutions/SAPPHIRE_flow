@@ -137,11 +137,11 @@ Cascading fallback: `bma` → `pooled` → `primary` (if weights missing or sing
 #### Resolved: ML model lookback window forcing source
 
 ML models (e.g. LSTM) require a lookback window (typically 365 days) of historical weather forcing concatenated with the NWP forecast. Candidate historical sources considered:
-- **Basin-averaged gridded reanalysis/forcing** (CAMELS-CH for v0, ERA5-Land for v1) — spatially consistent, gap-free, matches the spatial representation used operationally after NWP basin-averaging.
+- **Basin-averaged gridded reanalysis/forcing** (self-derived MeteoSwiss products for v0, ERA5-Land for v1) — spatially consistent, gap-free, matches the spatial representation used operationally after NWP basin-averaging.
 - **Co-located station observations** — simple and immediately available, but introduces a spatial-representation mismatch with basin-average operational forcing.
 - **Archived NWP extractions** — from the NWP archive (step 1.4). Only covers the operational period, not the full lookback window.
 
-**Decision (v0)**: v0 training-forcing: CAMELS-CH basin-averaged gridded data (per Plan 021, 2026-04-08 — supersedes Plan 013). SMN station observations remain used for real-time observation ingest (Flow 2) but are no longer the training forcing source. **v1**: Switch to ERA5-Land via `WeatherReanalysisSource` Protocol for Nepal (same basin-average spatial representation, better coverage). The forcing source must remain injectable in `prepare_model_inputs()` and training data assembly — see v0-scope.md §I2.
+**Decision (v0, updated by Plan 115b4)**: v0 training-forcing is basin-averaged, self-derived **MeteoSwiss** products on SAP3's own basin polygons — `RhiresD → RprelimD` (precipitation), `TabsD`/`TminD`/`TmaxD` (temperature/min/max), `SrelD` (relative sunshine duration) — resolved through the `hybrid` reader's per-parameter priority chain (Plan 115b4 §5B). This **supersedes Plan 021's CAMELS-CH-for-training decision (2026-04-08)**: CAMELS-CH is now a **validation reference + audit trail** (Plan 115b3) — its `historical_forcing` rows remain and are readable via a direct source-keyed fetch, but the `camels-ch` weather-source binding is retired (Plan 115b4 §5E) and no live training/hindcast/forecast path reads it. CAMELS-CH remains the v0 runoff/discharge, static-attribute, and basin-polygon source — only the weather (forcing) role moved. SMN station observations remain used for real-time observation ingest (Flow 2) but are not the training forcing source. **v1**: Switch to ERA5-Land via `WeatherReanalysisSource` Protocol for Nepal (same basin-average spatial representation, better coverage). The forcing source must remain injectable in `prepare_model_inputs()` and training data assembly — see v0-scope.md §I2.
 
 This choice affects model skill and must be consistent between training (Flows 6/9) and operational inference.
 
@@ -572,7 +572,7 @@ Deployment onboarding prepares area-wide datasets **before** individual stations
   Downloads are resumable and cached. Re-running step 0.2 skips already-downloaded datasets (verified by checksum).
 
 - **0.3**: Historical dynamic datasets are time-varying gridded or point data needed for model training and hindcast generation. Sources by deployment:
-  - **v0 (Switzerland)**: CAMELS-CH basin-averaged forcing (daily precipitation + temperature, bundled with 0.2 — the sole v0 historical training-forcing source per Plan 021)
+  - **v0 (Switzerland)**: self-derived MeteoSwiss basin-averaged forcing (daily precipitation via RhiresD/RprelimD, temperature via TabsD/TminD/TmaxD, relative sunshine duration via SrelD — the v0 historical training-forcing source per Plan 115b4 §5B, superseding Plan 021's CAMELS-CH-for-training decision). CAMELS-CH forcing rows remain as a validation reference + audit trail (Plan 115b3) but are no longer the live training-forcing source; CAMELS-CH continues to supply basin geometry/static attributes (0.2 above) and runoff/discharge, which this change does not affect.
   - **v1 (Nepal)**: ERA5-Land reanalysis (hourly, multi-variable, fetched via **SAPPHIRE Data Gateway** — see below)
 
   For large reanalysis archives (ERA5-Land), this step may take hours. It runs in the background and can be monitored via Flow 4.

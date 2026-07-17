@@ -2,18 +2,24 @@ from __future__ import annotations
 
 import statistics
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any, cast
+from uuid import UUID
 
 import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from sapphire_flow.api.deps import get_connection
+from sapphire_flow.api.deps import get_connection, get_stores
 from sapphire_flow.api.model_visibility import (
     model_tier_for_model_id,
     station_has_active_floor,
 )
 from sapphire_flow.api.routes.tables import get_reflected
+from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.ids import ModelId, StationId
+
+if TYPE_CHECKING:
+    from sapphire_flow.protocols.stores import HistoricalForcingStore, StationStore
 
 router = APIRouter(tags=["stations"])
 
@@ -454,16 +460,20 @@ def station_forcing_json(
     station_id: str,
     start: str = Query(..., description="ISO datetime"),
     end: str = Query(..., description="ISO datetime"),
-    conn: sa.Connection = Depends(get_connection),
+    stores: dict[str, Any] = Depends(get_stores),
 ) -> JSONResponse:
-    reflected = get_reflected(conn)
-    forcing = reflected.tables.get("historical_forcing")
-    if forcing is None:
-        return JSONResponse({"timestamps": [], "series": {}})
+    # Plan 115b4 §6D: HYBRID-RESOLVED, not the raw un-prioritized merge of
+    # every provenance stream — this is exactly what a forecast used, with
+    # the winning `source` tag per point so an operator can spot a
+    # stuck/preliminary tail.
+    from sapphire_flow.adapters.hybrid_reanalysis_factories import (
+        DEFAULT_PARAMETERS,
+        select_reanalysis_source,
+    )
 
     try:
-        start_dt = datetime.fromisoformat(start).replace(tzinfo=UTC)
-        end_dt = datetime.fromisoformat(end).replace(tzinfo=UTC)
+        start_dt = ensure_utc(datetime.fromisoformat(start).replace(tzinfo=UTC))
+        end_dt = ensure_utc(datetime.fromisoformat(end).replace(tzinfo=UTC))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid datetime format") from exc
     if (end_dt - start_dt).days > 25 * 366:
@@ -471,30 +481,32 @@ def station_forcing_json(
             status_code=400, detail="Date range exceeds 25-year maximum"
         )
 
-    rows = (
-        conn.execute(
-            sa.select(forcing.c.valid_time, forcing.c.parameter, forcing.c.value)
-            .where(
-                sa.and_(
-                    forcing.c.station_id == station_id,
-                    forcing.c.valid_time >= start_dt,
-                    forcing.c.valid_time < end_dt,
-                )
-            )
-            .order_by(forcing.c.valid_time)
-        )
-        .mappings()
-        .all()
+    station_store = cast("StationStore", stores["station_store"])
+    forcing_store = cast("HistoricalForcingStore", stores["forcing_store"])
+
+    bindings = station_store.fetch_reanalysis_bindings(StationId(UUID(station_id)))
+    if not bindings:
+        return JSONResponse({"series": {}})
+
+    reanalysis_source = select_reanalysis_source(
+        forcing_store=forcing_store, mode="hybrid"
+    )
+    rows = reanalysis_source.fetch_reanalysis(
+        station_configs=bindings,
+        start=start_dt,
+        end=end_dt,
+        parameters=list(DEFAULT_PARAMETERS),
     )
 
-    # Group by parameter
+    # Group by parameter, carrying the winning source tag per point.
     series: dict[str, dict[str, list[object]]] = {}
-    for r in rows:
-        param = r["parameter"]
+    for r in sorted(rows, key=lambda r: r.valid_time):
+        param = r.parameter
         if param not in series:
-            series[param] = {"timestamps": [], "values": []}
-        series[param]["timestamps"].append(r["valid_time"].isoformat())
-        series[param]["values"].append(r["value"])
+            series[param] = {"timestamps": [], "values": [], "sources": []}
+        series[param]["timestamps"].append(r.valid_time.isoformat())
+        series[param]["values"].append(r.value)
+        series[param]["sources"].append(r.source)
 
     return JSONResponse({"series": series})
 

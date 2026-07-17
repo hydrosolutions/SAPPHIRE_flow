@@ -30,7 +30,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+import pytest
+
 from sapphire_flow.adapters.hybrid_reanalysis import HybridForcingSource
+from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.enums import (
     SpatialRepresentation,
@@ -339,3 +342,69 @@ class TestHybridForcingSource:
         )
 
         assert result == []
+
+
+class TestParameterDropRule:
+    """Plan 115b4 §5A — a parameter with NO configured priority chain is
+    decided from the rows ACTUALLY RETURNED for that key, never a static
+    source map: zero sources returned rows -> absent (no raise, matches
+    today); exactly one source returned rows -> that source wins (no raise);
+    two or more distinct sources returned rows -> raise ConfigurationError
+    (a nondeterministic winner is a bug, not a fallback to pick from).
+    """
+
+    def test_zero_sources_returned_behaves_as_today_no_row(self) -> None:
+        precip_only = _StubReanalysisSource(
+            rows=(
+                _raw(
+                    source="meteoswiss_rprelimd", parameter="precipitation", value=1.0
+                ),
+            )
+        )
+        hybrid = HybridForcingSource(
+            sources={ForcingSource.METEOSWISS_RPRELIMD: precip_only},
+            priority={},  # no configured chain for ANY parameter
+        )
+
+        result = hybrid.fetch_reanalysis([_cfg()], _START, _END, ["temperature"])
+
+        assert result == []
+
+    def test_exactly_one_source_wins_with_no_configured_chain(self) -> None:
+        source = _StubReanalysisSource(
+            rows=(
+                _raw(
+                    source="meteoswiss_sreld",
+                    parameter="relative_sunshine_duration",
+                    value=42.0,
+                ),
+            )
+        )
+        hybrid = HybridForcingSource(
+            sources={ForcingSource.METEOSWISS_SRELD: source},
+            priority={},  # no configured chain
+        )
+
+        result = hybrid.fetch_reanalysis(
+            [_cfg()], _START, _END, ["relative_sunshine_duration"]
+        )
+
+        assert len(result) == 1
+        assert result[0].source == "meteoswiss_sreld"
+        assert result[0].value == 42.0
+
+    def test_two_sources_with_no_configured_chain_raises_configuration_error(
+        self,
+    ) -> None:
+        a = _StubReanalysisSource(rows=(_raw(source="meteoswiss_rprelimd", value=1.0),))
+        b = _StubReanalysisSource(rows=(_raw(source="meteoswiss_rhiresd", value=2.0),))
+        hybrid = HybridForcingSource(
+            sources={
+                ForcingSource.METEOSWISS_RPRELIMD: a,
+                ForcingSource.METEOSWISS_RHIRESD: b,
+            },
+            priority={},  # no configured chain for "precipitation"
+        )
+
+        with pytest.raises(ConfigurationError, match="precipitation"):
+            hybrid.fetch_reanalysis([_cfg()], _START, _END, ["precipitation"])

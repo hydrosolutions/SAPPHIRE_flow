@@ -1,33 +1,19 @@
-"""Plan 072 T3 — LOCKED acceptance tests for ``default_hybrid_forcing_source``.
+"""Plan 072 T3 — acceptance tests for ``default_hybrid_forcing_source``,
+UPDATED by Plan 115b4 §5B — the CAMELS-CH tier is retired from every chain
+(Plan 072's ``... -> CAMELS_CH`` chains no longer apply; CAMELS-CH is now a
+validation reference + audit trail, not a live weather-forcing tier).
 
-The factory wires the v0b priority chain (MeteoSwiss -> CAMELS-CH, per
-parameter) over a ``HistoricalForcingStore``. This test seeds a mixed-regime
-window (CAMELS-CH pre-2020 / MeteoSwiss post-2026-04) and asserts the
-per-parameter source distribution resolves to the documented winners with no
-duplicate ``(station_id, valid_time, parameter)`` rows.
+Priority chains wired by the factory (Plan 115b4 §5B):
+    precipitation                : METEOSWISS_RHIRESD -> METEOSWISS_RPRELIMD
+    temperature                  : METEOSWISS_TABSD    (single source)
+    temperature_min              : METEOSWISS_TMIND    (single source)
+    temperature_max              : METEOSWISS_TMAXD    (single source)
+    relative_sunshine_duration   : METEOSWISS_SRELD     (single source)
 
-REDs on the current tree because
-``sapphire_flow.adapters.hybrid_reanalysis_factories`` does not exist yet.
-
-Expected implementation contract
---------------------------------
-``sapphire_flow.adapters.hybrid_reanalysis_factories.default_hybrid_forcing_source``
-    ``default_hybrid_forcing_source(*,
-        forcing_store: HistoricalForcingStore,
-        parameters_in_scope: tuple[str, ...] = (
-            "precipitation", "temperature",
-            "temperature_min", "temperature_max",
-            "relative_sunshine_duration",
-        ),
-    ) -> HybridForcingSource``
-
-Priority chains wired by the factory (Plan 072 §Priority chains; Plan 115b1 §1A
-adds the fifth, single-source chain):
-    precipitation                : METEOSWISS_RPRELIMD -> CAMELS_CH
-    temperature                  : METEOSWISS_TABSD    -> CAMELS_CH
-    temperature_min              : METEOSWISS_TMIND    -> CAMELS_CH
-    temperature_max              : METEOSWISS_TMAXD    -> CAMELS_CH
-    relative_sunshine_duration   : METEOSWISS_SRELD (single source, no fallback)
+A ``camels-ch``-tagged row in the store is NEVER returned by the hybrid
+chain — it is simply not wired in (proven below), even though the row itself
+remains in ``historical_forcing`` and is readable by a direct source-keyed
+fetch (a different code path, not exercised here).
 """
 
 from __future__ import annotations
@@ -48,18 +34,14 @@ from sapphire_flow.types.ids import StationId
 from sapphire_flow.types.station import StationWeatherSource
 from tests.fakes.fake_stores import FakeHistoricalForcingStore
 
-# The four legacy (Plan 072) parameters — CAMELS-CH carries a pre-2020 fallback
-# row for each of these, so pre-2020 coverage is total for this set.
 _LEGACY_PARAMS = ["precipitation", "temperature", "temperature_min", "temperature_max"]
 _SRELD_PARAM = "relative_sunshine_duration"
-# The full Plan 115b1 default scope. ``relative_sunshine_duration`` has NO
-# CAMELS-CH tier in its chain (single-source SRELD only, §1A) — a pre-2020 row
-# for it is intentionally absent from the seed store below.
 _ALL_PARAMS = [*_LEGACY_PARAMS, _SRELD_PARAM]
 _WINDOW_START: UtcDatetime = ensure_utc(datetime(2019, 1, 1, tzinfo=UTC))
 _WINDOW_END: UtcDatetime = ensure_utc(datetime(2026, 6, 1, tzinfo=UTC))
-_PRE = ensure_utc(datetime(2019, 6, 1, tzinfo=UTC))
+_CAMELS_ERA = ensure_utc(datetime(2019, 6, 1, tzinfo=UTC))
 _POST = ensure_utc(datetime(2026, 5, 1, tzinfo=UTC))
+_RHIRESD_DAY = ensure_utc(datetime(2026, 4, 1, tzinfo=UTC))
 
 
 def _raw(
@@ -96,12 +78,37 @@ def _seed_store() -> FakeHistoricalForcingStore:
     store = FakeHistoricalForcingStore()
     store.store_forcing(
         [
-            # Pre-2020: only CAMELS-CH covers all four parameters.
-            _raw(source="camels-ch", parameter="precipitation", when=_PRE, value=1.0),
-            _raw(source="camels-ch", parameter="temperature", when=_PRE, value=2.0),
-            _raw(source="camels-ch", parameter="temperature_min", when=_PRE, value=3.0),
-            _raw(source="camels-ch", parameter="temperature_max", when=_PRE, value=4.0),
-            # Post-2026-04: MeteoSwiss per-parameter sources.
+            # CAMELS-CH-era rows exist in the store (audit trail, Plan 115b3)
+            # but must NEVER surface through the hybrid chain post-115b4.
+            _raw(
+                source="camels-ch",
+                parameter="precipitation",
+                when=_CAMELS_ERA,
+                value=1.0,
+            ),
+            _raw(
+                source="camels-ch", parameter="temperature", when=_CAMELS_ERA, value=2.0
+            ),
+            _raw(
+                source="camels-ch",
+                parameter="temperature_min",
+                when=_CAMELS_ERA,
+                value=3.0,
+            ),
+            _raw(
+                source="camels-ch",
+                parameter="temperature_max",
+                when=_CAMELS_ERA,
+                value=4.0,
+            ),
+            # RhiresD (definitive) covers an earlier day than RprelimD.
+            _raw(
+                source="meteoswiss_rhiresd",
+                parameter="precipitation",
+                when=_RHIRESD_DAY,
+                value=6.0,
+            ),
+            # Post-window MeteoSwiss per-parameter sources (the live tail).
             _raw(
                 source="meteoswiss_rprelimd",
                 parameter="precipitation",
@@ -126,13 +133,14 @@ def _seed_store() -> FakeHistoricalForcingStore:
                 when=_POST,
                 value=10.0,
             ),
-            # Overlap: CAMELS-CH also has a post-window precip row — MeteoSwiss
-            # must win on priority (not merely on coverage).
+            # Overlap: both RhiresD and RprelimD cover the SAME day — RhiresD
+            # (definitive) must win.
             _raw(
-                source="camels-ch", parameter="precipitation", when=_POST, value=111.0
+                source="meteoswiss_rprelimd",
+                parameter="precipitation",
+                when=_RHIRESD_DAY,
+                value=999.0,
             ),
-            # SrelD (§1A): single-source chain, no CAMELS-CH tier — only a
-            # post-window row exists; pre-2020 has NO seeded row (no fallback).
             _raw(
                 source="meteoswiss_sreld",
                 parameter="relative_sunshine_duration",
@@ -145,19 +153,37 @@ def _seed_store() -> FakeHistoricalForcingStore:
 
 
 class TestDefaultHybridForcingSource:
-    def test_pre_2020_window_resolves_to_camels_ch(self) -> None:
+    def test_camels_ch_never_surfaces_through_the_hybrid_chain(self) -> None:
         hybrid = default_hybrid_forcing_source(forcing_store=_seed_store())
 
         result = hybrid.fetch_reanalysis(
             [_cfg()], _WINDOW_START, _WINDOW_END, _ALL_PARAMS
         )
-        pre = {r.parameter: r for r in result if r.valid_time == _PRE}
 
-        # Only the four legacy parameters resolve pre-2020 — SrelD's chain has
-        # no CAMELS-CH tier, so it is absent (a coverage gap, not invented).
-        assert set(pre) == set(_LEGACY_PARAMS)
-        assert _SRELD_PARAM not in pre
-        assert {r.source for r in pre.values()} == {"camels-ch"}
+        assert all(r.source != "camels-ch" for r in result)
+        assert all(r.valid_time != _CAMELS_ERA for r in result)
+
+    def test_rhiresd_wins_over_rprelimd_on_the_same_day(self) -> None:
+        hybrid = default_hybrid_forcing_source(forcing_store=_seed_store())
+
+        result = hybrid.fetch_reanalysis(
+            [_cfg()], _WINDOW_START, _WINDOW_END, ["precipitation"]
+        )
+        by_day = {r.valid_time: r for r in result}
+
+        assert by_day[_RHIRESD_DAY].source == "meteoswiss_rhiresd"
+        assert by_day[_RHIRESD_DAY].value == 6.0
+
+    def test_rprelimd_wins_when_rhiresd_absent(self) -> None:
+        hybrid = default_hybrid_forcing_source(forcing_store=_seed_store())
+
+        result = hybrid.fetch_reanalysis(
+            [_cfg()], _WINDOW_START, _WINDOW_END, ["precipitation"]
+        )
+        by_day = {r.valid_time: r for r in result}
+
+        assert by_day[_POST].source == "meteoswiss_rprelimd"
+        assert by_day[_POST].value == 7.0
 
     def test_post_window_resolves_to_per_parameter_meteoswiss(self) -> None:
         hybrid = default_hybrid_forcing_source(forcing_store=_seed_store())
@@ -167,8 +193,6 @@ class TestDefaultHybridForcingSource:
         )
         post = {r.parameter: r for r in result if r.valid_time == _POST}
 
-        assert post["precipitation"].source == "meteoswiss_rprelimd"
-        assert post["precipitation"].value == 7.0  # MeteoSwiss beats CAMELS overlap
         assert post["temperature"].source == "meteoswiss_tabsd"
         assert post["temperature_min"].source == "meteoswiss_tmind"
         assert post["temperature_max"].source == "meteoswiss_tmaxd"
@@ -176,9 +200,6 @@ class TestDefaultHybridForcingSource:
         assert post[_SRELD_PARAM].value == 42.0
 
     def test_sreld_resolves_via_single_source_chain(self) -> None:
-        # SrelD priority resolution (Plan 115b1 §1A): the hybrid reader,
-        # keyed on the exact row.parameter, returns the meteoswiss_sreld row
-        # for relative_sunshine_duration — with no other source competing.
         hybrid = default_hybrid_forcing_source(forcing_store=_seed_store())
 
         result = hybrid.fetch_reanalysis(
@@ -212,7 +233,8 @@ class TestDefaultHybridForcingSource:
         assert all(r.source != "nwp_archive" for r in result)
 
     def test_uncovered_date_yields_no_row(self) -> None:
-        # 2022 sits in the documented coverage gap (post-CAMELS, pre-MeteoSwiss).
+        # 2022 sits in the documented coverage gap (post-CAMELS-CH-retirement,
+        # pre-MeteoSwiss).
         hybrid = default_hybrid_forcing_source(forcing_store=_seed_store())
 
         result = hybrid.fetch_reanalysis(
@@ -221,3 +243,35 @@ class TestDefaultHybridForcingSource:
         gap = ensure_utc(datetime(2022, 1, 1, tzinfo=UTC))
 
         assert all(r.valid_time != gap for r in result)
+
+    def test_camels_only_station_survives_the_flip_with_no_row_no_raise(self) -> None:
+        # Plan 115b4 §5D: a station whose weather-source binding literally
+        # reads nwp_source="camels-ch" (a pre-flip artifact) must still
+        # resolve cleanly through the (now CAMELS-tier-free) hybrid chain —
+        # "resolves" here means completes without raising and yields an
+        # empty, well-typed result, not that CAMELS-CH values are served.
+        camels_only_cfg = StationWeatherSource(
+            station_id=StationId("s1"),
+            nwp_source="camels-ch",
+            extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+            status=WeatherSourceStatus.ACTIVE,
+            role=WeatherSourceRole.REANALYSIS,
+        )
+        store = FakeHistoricalForcingStore()
+        store.store_forcing(
+            [
+                _raw(
+                    source="camels-ch",
+                    parameter="precipitation",
+                    when=_CAMELS_ERA,
+                    value=1.0,
+                )
+            ]
+        )
+        hybrid = default_hybrid_forcing_source(forcing_store=store)
+
+        result = hybrid.fetch_reanalysis(
+            [camels_only_cfg], _WINDOW_START, _WINDOW_END, _ALL_PARAMS
+        )
+
+        assert result == []

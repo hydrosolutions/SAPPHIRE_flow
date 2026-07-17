@@ -2,7 +2,9 @@ import uuid
 from datetime import UTC, datetime
 
 import polars as pl
+import pytest
 
+from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.preprocessing.converters import (
     basin_avg_to_records,
     elevation_band_to_records,
@@ -248,3 +250,65 @@ class TestElevationBandToRecords:
         records = elevation_band_to_records(sid, forecast, _fixed_clock, uuid.uuid4)
         got = {(r.band_id, r.member_id, r.valid_time): r.value for r in records}
         assert got == expected
+
+
+class TestReanalysisTagGuard:
+    """Plan 115b4 §6C — a reanalysis provenance tag (e.g. ``meteoswiss_rhiresd``,
+    ``camels-ch``) must never be written into ``weather_forecasts`` via any of
+    the three converters. All three write ``WeatherForecastRecord.nwp_source``
+    (``converters.py``), so all three must reject it.
+    """
+
+    @pytest.mark.parametrize(
+        "reanalysis_tag",
+        [
+            "meteoswiss_rhiresd",
+            "meteoswiss_rprelimd",
+            "meteoswiss_tabsd",
+            "meteoswiss_tmind",
+            "meteoswiss_tmaxd",
+            "meteoswiss_sreld",
+            "camels-ch",
+        ],
+    )
+    def test_basin_avg_to_records_rejects_reanalysis_tag(
+        self, reanalysis_tag: str
+    ) -> None:
+        sid, forecast = _make_forecast()
+        tagged = BasinAverageForecast(
+            nwp_source=reanalysis_tag,
+            cycle_time=forecast.cycle_time,
+            values=forecast.values,
+        )
+
+        with pytest.raises(ConfigurationError, match=reanalysis_tag):
+            basin_avg_to_records(sid, tagged, _fixed_clock, uuid.uuid4)
+
+    def test_point_forecast_to_records_rejects_reanalysis_tag(self) -> None:
+        sid, forecast = _make_point_forecast()
+        tagged = PointForecast(
+            nwp_source="camels-ch",
+            cycle_time=forecast.cycle_time,
+            values=forecast.values,
+        )
+
+        with pytest.raises(ConfigurationError, match="camels-ch"):
+            point_forecast_to_records(sid, tagged, _fixed_clock, uuid.uuid4)
+
+    def test_elevation_band_to_records_rejects_reanalysis_tag(self) -> None:
+        sid, forecast, _ = _make_band_forecast()
+        tagged = ElevationBandForecast(
+            nwp_source="meteoswiss_tabsd",
+            cycle_time=forecast.cycle_time,
+            values=forecast.values,
+        )
+
+        with pytest.raises(ConfigurationError, match="meteoswiss_tabsd"):
+            elevation_band_to_records(sid, tagged, _fixed_clock, uuid.uuid4)
+
+    def test_genuine_forecast_source_is_not_rejected(self) -> None:
+        sid, forecast = _make_forecast()
+        # icon_ch2_eps is a FORECAST product tag, not a reanalysis one — must
+        # pass straight through.
+        records = basin_avg_to_records(sid, forecast, _fixed_clock, uuid.uuid4)
+        assert len(records) == 3

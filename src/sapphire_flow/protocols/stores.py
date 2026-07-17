@@ -722,6 +722,23 @@ class HistoricalForcingStore(Protocol):
         # present in the result (with an empty set if it has no rows).
         raise NotImplementedError
 
+    def fetch_latest_valid_time(
+        self,
+        station_ids: list[StationId],
+        source: str,
+        start: UtcDatetime,
+        end: UtcDatetime,
+    ) -> UtcDatetime | None:
+        # Health-by-effect (Plan 115b4 §6B): the single latest ``valid_time``
+        # stored for ``source`` across ALL of ``station_ids`` within the
+        # half-open [start, end) window — an O(1) aggregate query, NOT an
+        # O(stations) loop over ``fetch_forcing``. ``None`` when nothing is
+        # stored for this source/window. Comparing this before vs after an
+        # ingest run detects a run with zero EFFECT even when the run
+        # "successfully" re-persisted already-covered rows (``rows_stored``
+        # would look healthy; this would not).
+        raise NotImplementedError
+
 
 @runtime_checkable
 class ClimBaselineStore(Protocol):

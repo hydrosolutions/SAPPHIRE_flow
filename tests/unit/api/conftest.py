@@ -15,6 +15,7 @@ from sapphire_flow.types.enums import AlertStatus
 from tests.fakes.fake_stores import (
     FakeAlertStore,
     FakeForecastStore,
+    FakeHistoricalForcingStore,
     FakeModelArtifactStore,
     FakeObservationStore,
     FakePipelineHealthStore,
@@ -51,6 +52,7 @@ def fake_stores() -> dict[str, Any]:
         "station_store": FakeStationStore(),
         "obs_store": FakeObservationStore(),
         "forecast_store": FakeForecastStore(),
+        "forcing_store": FakeHistoricalForcingStore(),
         "alert_store": AckAwareFakeAlertStore(),
         "artifact_store": FakeModelArtifactStore(),
         "pipeline_health_store": FakePipelineHealthStore(),

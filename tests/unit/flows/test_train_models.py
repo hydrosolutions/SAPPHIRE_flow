@@ -779,11 +779,12 @@ class TestBootstrapPath:
         assert args[1] is stores_dict["model_store"]
 
         # The bootstrap path wired the bootstrapped forcing_store into a real
-        # reanalysis source via select_reanalysis_source (Plan 115a §6).
+        # reanalysis source via select_reanalysis_source (Plan 115a §6). The
+        # default DeploymentConfig.reanalysis_source is "hybrid" (Plan 115b4
+        # §5D), so the default (unconfigured) mode resolves to
+        # HybridForcingSource, not StoreBackedReanalysisSource.
         assert len(reanalysis_calls) == 1
         assert reanalysis_calls[0]["forcing_store"] is stores_dict["forcing_store"]
-        from sapphire_flow.adapters.store_backed_reanalysis import (
-            StoreBackedReanalysisSource,
-        )
+        from sapphire_flow.adapters.hybrid_reanalysis import HybridForcingSource
 
-        assert isinstance(reanalysis_calls[0]["source"], StoreBackedReanalysisSource)
+        assert isinstance(reanalysis_calls[0]["source"], HybridForcingSource)

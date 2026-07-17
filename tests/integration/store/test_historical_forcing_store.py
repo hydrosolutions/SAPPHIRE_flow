@@ -400,3 +400,89 @@ class TestFetchCoveredDays:
         )
 
         assert covered[sid] == {_utc(2020, 1, 1).date()}
+
+
+class TestFetchLatestValidTime:
+    """Plan 115b4 §6B — health-by-EFFECT: a single O(1) aggregate MAX(valid_time)
+    across MULTIPLE stations, not an O(stations) loop over ``fetch_forcing``.
+    """
+
+    def test_returns_the_max_across_multiple_stations(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid_a = _seed_station(db_connection)
+        sid_b = _seed_station(db_connection)
+        store = PgHistoricalForcingStore(db_connection)
+        store.store_forcing(
+            [
+                make_raw_historical_forcing(
+                    station_id=sid_a,
+                    source="meteoswiss_tabsd",
+                    version="v1",
+                    valid_time=_utc(2020, 1, 1),
+                    parameter="temperature",
+                    value=1.0,
+                ),
+                make_raw_historical_forcing(
+                    station_id=sid_b,
+                    source="meteoswiss_tabsd",
+                    version="v1",
+                    valid_time=_utc(2020, 1, 5),
+                    parameter="temperature",
+                    value=2.0,
+                ),
+            ]
+        )
+
+        latest = store.fetch_latest_valid_time(
+            [sid_a, sid_b],
+            "meteoswiss_tabsd",
+            _utc(2020, 1, 1),
+            _utc(2020, 2, 1),
+        )
+
+        assert latest == _utc(2020, 1, 5)
+
+    def test_none_when_nothing_stored_for_source(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        store = PgHistoricalForcingStore(db_connection)
+
+        latest = store.fetch_latest_valid_time(
+            [sid], "meteoswiss_tabsd", _utc(2020, 1, 1), _utc(2020, 2, 1)
+        )
+
+        assert latest is None
+
+    def test_none_when_station_ids_empty(self, db_connection: sa.Connection) -> None:
+        store = PgHistoricalForcingStore(db_connection)
+
+        latest = store.fetch_latest_valid_time(
+            [], "meteoswiss_tabsd", _utc(2020, 1, 1), _utc(2020, 2, 1)
+        )
+
+        assert latest is None
+
+    def test_respects_the_half_open_window(self, db_connection: sa.Connection) -> None:
+        sid = _seed_station(db_connection)
+        store = PgHistoricalForcingStore(db_connection)
+        store.store_forcing(
+            [
+                make_raw_historical_forcing(
+                    station_id=sid,
+                    source="meteoswiss_tabsd",
+                    version="v1",
+                    valid_time=_utc(2020, 1, 10),
+                    parameter="temperature",
+                    value=1.0,
+                )
+            ]
+        )
+
+        # The row's valid_time sits AT the window's exclusive end -> excluded.
+        latest = store.fetch_latest_valid_time(
+            [sid], "meteoswiss_tabsd", _utc(2020, 1, 1), _utc(2020, 1, 10)
+        )
+
+        assert latest is None

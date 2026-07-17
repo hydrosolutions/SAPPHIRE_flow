@@ -10,6 +10,15 @@ keyed on ``(station_id, valid_time, parameter)``, and for each key walk
 ``priority[parameter]`` in order, keeping the first row whose ``.source`` tag
 equals a ``ForcingSource.value`` in that list. Serial execution is the only
 safe default against ``PgHistoricalForcingStore``'s single ``sa.Connection``.
+
+Parameter-drop rule (Plan 115b4 §5A): a parameter with NO configured priority
+chain is decided from the rows ACTUALLY RETURNED for that key, never a static
+source map — zero sources returned rows means the key never reaches this
+resolver at all (absent, matching pre-115b4 behaviour); exactly one source
+returned rows means that source wins outright (no raise); two or more
+distinct sources returned rows raises ``ConfigurationError`` — a
+nondeterministic winner is a bug, not something to silently drop or pick
+arbitrarily.
 """
 
 from __future__ import annotations
@@ -19,6 +28,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.types.enums import WeatherSourceRole
 
 if TYPE_CHECKING:
@@ -76,12 +86,32 @@ class HybridForcingSource:
         winners: list[RawHistoricalForcing] = []
         for key, by_source in collected.items():
             chain = self._priority.get(key[2], ())
-            winner = next(
-                (by_source[tier.value] for tier in chain if tier.value in by_source),
-                None,
-            )
-            if winner is None:
-                continue
+            if chain:
+                winner = next(
+                    (
+                        by_source[tier.value]
+                        for tier in chain
+                        if tier.value in by_source
+                    ),
+                    None,
+                )
+                if winner is None:
+                    continue
+            elif len(by_source) == 1:
+                # No configured chain for this parameter (5A): exactly one
+                # source returned a row for this key, so it wins outright.
+                winner = next(iter(by_source.values()))
+            else:
+                # 2+ distinct sources returned rows with no configured chain
+                # to arbitrate between them — a nondeterministic winner would
+                # be a silent bug, so this must be loud instead.
+                raise ConfigurationError(
+                    f"parameter {key[2]!r} has no configured priority chain "
+                    f"but {len(by_source)} distinct sources returned rows "
+                    f"for station_id={key[0]} valid_time={key[1]}: "
+                    f"{sorted(by_source)} — add a priority chain for this "
+                    "parameter so the winner is deterministic."
+                )
             winners.append(winner)
             log.debug(
                 "forcing.source_selected",

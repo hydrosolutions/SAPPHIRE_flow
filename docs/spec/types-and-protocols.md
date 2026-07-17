@@ -191,6 +191,16 @@ class PipelineCheckType(Enum):
     DISK_USAGE = "disk_usage"
     BACKUP_FRESHNESS = "backup_freshness"
     BACKUP_RESTORE_TEST = "backup_restore_test"
+    # NOTE: types/enums.py additionally carries FORECAST_STATION_DARK,
+    # ALERT_SUPPRESSED_FALLBACK, PRIORITY_MIGRATION_AUDIT,
+    # CLIMATOLOGY_THRESHOLD_REVIEW, BAFU_FORECAST_FRESHNESS (pre-existing doc
+    # drift, not introduced here).
+    WEATHER_HISTORY_INGEST = "weather_history_ingest"
+        # Plan 115b4 §6A — ingest_weather_history_flow's health-by-EFFECT
+        # check (§6B): CRITICAL when zero stations are bound, or when the
+        # store's on-disk horizon has zero rows for every source this run
+        # targeted (a real DB readback via fetch_latest_valid_time, never
+        # rows_stored). OK otherwise.
 
 class NotificationChannel(Enum):
     EMAIL = "email"
@@ -2531,6 +2541,21 @@ class HistoricalForcingStore(Protocol):
         # backfill where both are always None, so it narrows the key to
         # (station_id, source, parameter, spatial_type). Extend the signature
         # before reusing it for an elevation-band or ensemble source.
+    def fetch_latest_valid_time(
+        self,
+        station_ids: list[StationId],
+        source: str,
+        start: UtcDatetime,
+        end: UtcDatetime,
+    ) -> UtcDatetime | None: ...
+        # Plan 115b4 §6B — health-by-EFFECT: the single latest valid_time
+        # stored for `source` across ALL of station_ids within [start, end) —
+        # an O(1) aggregate query (SELECT MAX(valid_time) ... WHERE
+        # station_id IN (...)), NOT an O(stations) loop over fetch_forcing.
+        # None when nothing is stored for this source/window. Used by
+        # ingest_weather_history_flow to detect a run with zero EFFECT even
+        # when the run "successfully" re-persisted already-covered rows
+        # (rows_stored would look healthy; this would not).
 ```
 
 Module: `protocols/stores.py`

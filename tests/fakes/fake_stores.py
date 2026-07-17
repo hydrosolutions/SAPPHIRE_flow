@@ -1269,6 +1269,23 @@ class FakeHistoricalForcingStore:
                 out[r.station_id].add(r.valid_time.date())
         return out
 
+    def fetch_latest_valid_time(
+        self,
+        station_ids: list[StationId],
+        source: str,
+        start: UtcDatetime,
+        end: UtcDatetime,
+    ) -> UtcDatetime | None:
+        station_id_set = set(station_ids)
+        candidates = [
+            r.valid_time
+            for r in self._records
+            if r.station_id in station_id_set
+            and r.source == source
+            and start <= r.valid_time < end
+        ]
+        return max(candidates) if candidates else None
+
 
 class FakeClimBaselineStore:
     def __init__(self) -> None:

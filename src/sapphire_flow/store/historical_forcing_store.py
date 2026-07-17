@@ -9,7 +9,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from sapphire_flow.db.metadata import historical_forcing
-from sapphire_flow.store._helpers import utc_from_row
+from sapphire_flow.store._helpers import utc_from_row, utc_or_none
 from sapphire_flow.types.enums import SpatialRepresentation
 from sapphire_flow.types.historical_forcing import (
     HistoricalForcingRecord,
@@ -184,6 +184,26 @@ class PgHistoricalForcingStore:
             sid = StationId(row[0])
             out.setdefault(sid, set()).add(utc_from_row(row[1]).date())
         return out
+
+    def fetch_latest_valid_time(
+        self,
+        station_ids: list[StationId],
+        source: str,
+        start: UtcDatetime,
+        end: UtcDatetime,
+    ) -> UtcDatetime | None:
+        if not station_ids:
+            return None
+        q = sa.select(sa.func.max(historical_forcing.c.valid_time)).where(
+            sa.and_(
+                historical_forcing.c.station_id.in_(station_ids),
+                historical_forcing.c.source == source,
+                historical_forcing.c.valid_time >= start,
+                historical_forcing.c.valid_time < end,
+            )
+        )
+        result = self._conn.execute(q).scalar()
+        return utc_or_none(result)
 
 
 def _row_to_record(row: sa.engine.row.RowMapping) -> HistoricalForcingRecord:

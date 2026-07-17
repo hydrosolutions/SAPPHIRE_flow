@@ -159,8 +159,12 @@ max_cache_age_hours = 24
 
 Each adapter class lives in `adapters/{type}.py` and satisfies the
 corresponding Protocol (`WeatherForecastSource`, `StationDataSource`,
-or `WeatherReanalysisSource`). `WeatherReanalysisSource` is retained for v1 (Nepal)
-but not implemented in v0 — training uses basin-averaged gridded data (CAMELS-CH). Config loading
+or `WeatherReanalysisSource`). `WeatherReanalysisSource` is implemented in v0
+by several `PerSourceStoreReader`/`StoreBackedReanalysisSource`/
+`HybridForcingSource` adapters (Plan 072/115b4) — training/hindcast/live
+past-dynamic forcing reads basin-averaged gridded data via the `hybrid`
+default (self-derived MeteoSwiss products; CAMELS-CH is retained only as a
+validation reference, see `historical_forcing.source` below). Config loading
 resolves `${VAR}` references from `os.environ` at startup; unresolved references
 raise immediately.
 
