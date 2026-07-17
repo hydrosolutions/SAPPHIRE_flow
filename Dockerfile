@@ -17,7 +17,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY pyproject.toml uv.lock README.md ./
 RUN mkdir -p src/sapphire_flow && touch src/sapphire_flow/__init__.py
 
-RUN uv sync --frozen --no-dev
+# recap-dg-client (Plan 082 Task 2H) is a private git dependency
+# (hydrosolutions/recap-dg-client) with no published wheel — `uv sync`
+# clones it, so the builder needs authenticated HTTPS git access. Build with:
+#   docker build --secret id=recap_dg_client_token,env=RECAP_DG_CLIENT_TOKEN .
+# The secret is mounted only for this RUN's environment; the git credential
+# rewrite is written to /root/.gitconfig and removed again inside the SAME
+# RUN so the token never lands in a committed image layer. Removal trigger:
+# once recap-dg-client publishes to the hydrosolutions private package
+# index and this can install as a wheel with no source build, drop this
+# step (IT-specialist Plan 080-style follow-up).
+RUN --mount=type=secret,id=recap_dg_client_token \
+    git config --global url."https://x-access-token:$(cat /run/secrets/recap_dg_client_token)@github.com/hydrosolutions/recap-dg-client.git".insteadOf "https://github.com/hydrosolutions/recap-dg-client.git" \
+    && uv sync --frozen --no-dev \
+    && rm -f /root/.gitconfig
 
 COPY src/ src/
 COPY alembic.ini ./

@@ -108,6 +108,47 @@ def _aggregate_nwp_records_to_time_step(
     return aggregated
 
 
+def _broadcast_deterministic_features_to_members(
+    records: list[_AggregatedNwpPoint],
+) -> list[_AggregatedNwpPoint]:
+    """Broadcast deterministic (``member_id=None``) daily points across every
+    ensemble member present in the SAME batch (Plan 082 Task 2H-snow).
+
+    recap Gateway snow forecasts are deterministic (single run, no ensemble)
+    while IFS precipitation/temperature carry 51 members (``fc``=0, ``pf``
+    1-50). A model declaring both as ``future_dynamic_features`` needs the
+    SAME snow value repeated under every member's column so
+    ``_pivot_nwp_records`` (ensemble path) produces ``snow_depth_0``,
+    ``snow_depth_1``, ... alongside ``precipitation_0``, ``precipitation_1``,
+    ... rather than a single unsuffixed ``snow_depth`` column that only the
+    deterministic pivot branch would ever populate.
+
+    No resampling happens here — inputs are already daily-aggregated by
+    :func:`_aggregate_nwp_records_to_time_step`. If no real (non-None)
+    member is present in the batch, records are returned unchanged (a purely
+    deterministic model receives the single ``member_id=None`` series as-is).
+    """
+    member_ids = sorted({r.member_id for r in records if r.member_id is not None})
+    if not member_ids:
+        return records
+
+    broadcast: list[_AggregatedNwpPoint] = []
+    for r in records:
+        if r.member_id is not None:
+            broadcast.append(r)
+            continue
+        broadcast.extend(
+            _AggregatedNwpPoint(
+                valid_time=r.valid_time,
+                parameter=r.parameter,
+                member_id=member_id,
+                value=r.value,
+            )
+            for member_id in member_ids
+        )
+    return broadcast
+
+
 def _filter_and_cap_daily_records(
     records: list[_AggregatedNwpPoint],
     issue_time: UtcDatetime,
@@ -367,6 +408,10 @@ def assemble_station_operational_inputs(
     # BARE parameter name (precip SUM, temp MEAN) BEFORE pivoting to member-
     # suffixed columns, so the aggregation methods resolve correctly.
     daily_nwp_records = _aggregate_nwp_records_to_time_step(nwp_records, time_step)
+    # Plan 082 Task 2H-snow: broadcast deterministic (member_id=None) daily
+    # points (recap Gateway snow) across every real ensemble member (IFS)
+    # present in the same batch. A no-op when no real member is present.
+    daily_nwp_records = _broadcast_deterministic_features_to_members(daily_nwp_records)
     # Daily UTC-calendar-day bucketing of a non-midnight cycle backdates the
     # issue-day bucket to UTC midnight (< issue_time) and can add a partial
     # end-day bucket. Drop backdated buckets (keep valid_time > issue_time) and

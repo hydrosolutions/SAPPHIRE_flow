@@ -30,6 +30,11 @@ jobs:
           version: "0.11.7"
           enable-cache: true
 
+      - name: Configure git auth for the private recap-dg-client clone
+        run: |
+          git config --global url."https://x-access-token:${RECAP_DG_CLIENT_TOKEN}@github.com/hydrosolutions/recap-dg-client.git".insteadOf "https://github.com/hydrosolutions/recap-dg-client.git"
+        env:
+          RECAP_DG_CLIENT_TOKEN: ${{ secrets.RECAP_DG_CLIENT_TOKEN }}
       - name: Install dependencies
         run: uv sync --frozen
 

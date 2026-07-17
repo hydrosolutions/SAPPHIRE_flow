@@ -75,6 +75,7 @@ if TYPE_CHECKING:
     from sapphire_flow.types.rating_curve import RatingCurve
     from sapphire_flow.types.skill import FlowRegimeConfig, SkillDiagram, SkillScore
     from sapphire_flow.types.station import (
+        GatewayPolygonBindingRow,
         GroupModelAssignment,
         ModelAssignment,
         StationConfig,
@@ -645,6 +646,20 @@ class BasinStore(Protocol):
         raise NotImplementedError
 
     def store_basin(self, basin: Basin) -> BasinId:
+        raise NotImplementedError
+
+
+@runtime_checkable
+class GatewayPolygonBindingStore(Protocol):
+    """§5a mapping-table persistence (Plan 082 Task 2D). Schema + reader owned
+    by 082; rows populated by Plan 120's basin/static package importer."""
+
+    def fetch_bindings_for_station(
+        self, station_id: StationId
+    ) -> list[GatewayPolygonBindingRow]:
+        raise NotImplementedError
+
+    def store_binding(self, binding: GatewayPolygonBindingRow) -> None:
         raise NotImplementedError
 
 

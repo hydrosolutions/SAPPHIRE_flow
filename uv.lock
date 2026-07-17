@@ -3270,6 +3270,16 @@ wheels = [
 ]
 
 [[package]]
+name = "recap-dg-client"
+version = "0.1.0"
+source = { git = "https://github.com/hydrosolutions/recap-dg-client.git?rev=60e5d736dec663d013ce2c05a6f067b82254cd7f#60e5d736dec663d013ce2c05a6f067b82254cd7f" }
+dependencies = [
+    { name = "pandas" },
+    { name = "pyarrow" },
+    { name = "requests" },
+]
+
+[[package]]
 name = "redis"
 version = "7.4.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3652,7 +3662,7 @@ wheels = [
 
 [[package]]
 name = "sapphire-flow"
-version = "0.1.589"
+version = "0.1.590"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
@@ -3680,6 +3690,7 @@ dependencies = [
     { name = "psycopg", extra = ["binary"] },
     { name = "pydantic" },
     { name = "pygments" },
+    { name = "recap-dg-client" },
     { name = "requests" },
     { name = "rioxarray" },
     { name = "scikit-learn" },
@@ -3737,6 +3748,7 @@ requires-dist = [
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.3" },
     { name = "pydantic", specifier = ">=2.12.5" },
     { name = "pygments", specifier = ">=2.20.0" },
+    { name = "recap-dg-client", git = "https://github.com/hydrosolutions/recap-dg-client.git?rev=60e5d736dec663d013ce2c05a6f067b82254cd7f" },
     { name = "requests", specifier = ">=2.33.1" },
     { name = "rioxarray", specifier = ">=0.19.0" },
     { name = "scikit-learn", specifier = ">=1.8.0" },

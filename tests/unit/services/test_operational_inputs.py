@@ -11,7 +11,9 @@ from structlog.testing import capture_logs
 from sapphire_flow.services.operational_inputs import (
     _aggregate_nwp_records_to_time_step,
     _AggregatedNwpPoint,
+    _broadcast_deterministic_features_to_members,
     _filter_and_cap_daily_records,
+    _pivot_nwp_records,
     assemble_station_operational_inputs,
 )
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
@@ -876,3 +878,122 @@ class TestShortLookbackWarning:
         # and short_lookback stays silent; the reqs.target_parameters guard also
         # defensively prevents a min()-of-empty crash on that path.
         assert _short_events(logs) == []
+
+
+class TestRecapTemporalFeatureJoin:
+    """Plan 082 Task 2H-snow item 2: daily-snow -> sub-daily 51-member IFS
+    broadcast, performed in the model-input service, never inside the
+    adapter (which stays a pure per-station fetch)."""
+
+    def test_deterministic_point_broadcast_across_every_present_member(self) -> None:
+        vt = ensure_utc(datetime(2026, 1, 10, tzinfo=UTC))
+        records = [
+            _AggregatedNwpPoint(
+                valid_time=vt, parameter="precipitation", member_id=0, value=1.0
+            ),
+            _AggregatedNwpPoint(
+                valid_time=vt, parameter="precipitation", member_id=1, value=2.0
+            ),
+            _AggregatedNwpPoint(
+                valid_time=vt, parameter="snow_depth", member_id=None, value=5.0
+            ),
+        ]
+
+        broadcast = _broadcast_deterministic_features_to_members(records)
+
+        snow_points = [p for p in broadcast if p.parameter == "snow_depth"]
+        assert {p.member_id for p in snow_points} == {0, 1}
+        assert all(p.value == 5.0 for p in snow_points)
+        # Real-member records pass through unchanged (not duplicated).
+        precip_points = [p for p in broadcast if p.parameter == "precipitation"]
+        assert len(precip_points) == 2
+
+    def test_no_real_members_present_leaves_records_unchanged(self) -> None:
+        """A wholly deterministic model (no IFS ensemble) must NOT be
+        rewritten — nothing to broadcast against."""
+        vt = ensure_utc(datetime(2026, 1, 10, tzinfo=UTC))
+        records = [
+            _AggregatedNwpPoint(
+                valid_time=vt, parameter="snow_depth", member_id=None, value=5.0
+            ),
+        ]
+
+        broadcast = _broadcast_deterministic_features_to_members(records)
+
+        assert broadcast == records
+
+    def test_broadcast_value_is_not_resampled_or_recomputed(self) -> None:
+        """No aggregation/resample happens at broadcast time — every member's
+        copy carries the EXACT same pre-aggregated value."""
+        vt1 = ensure_utc(datetime(2026, 1, 10, tzinfo=UTC))
+        vt2 = ensure_utc(datetime(2026, 1, 11, tzinfo=UTC))
+        records = [
+            _AggregatedNwpPoint(
+                valid_time=vt1, parameter="swe", member_id=None, value=12.5
+            ),
+            _AggregatedNwpPoint(
+                valid_time=vt2, parameter="swe", member_id=None, value=13.5
+            ),
+            _AggregatedNwpPoint(
+                valid_time=vt1, parameter="temperature", member_id=3, value=9.0
+            ),
+        ]
+
+        broadcast = _broadcast_deterministic_features_to_members(records)
+
+        by_vt = {(p.valid_time, p.member_id): p.value for p in broadcast}
+        assert by_vt[(vt1, 3)] == pytest.approx(9.0)  # untouched real-member record
+        swe_at_vt1 = [
+            p for p in broadcast if p.parameter == "swe" and p.valid_time == vt1
+        ]
+        assert len(swe_at_vt1) == 1
+        assert swe_at_vt1[0].member_id == 3
+        assert swe_at_vt1[0].value == 12.5
+
+    def test_full_pipeline_produces_member_suffixed_snow_columns(self) -> None:
+        """End-to-end through aggregation + broadcast + pivot: a mixed batch
+        of hourly IFS members and a daily deterministic snow record ends up
+        with per-member snow columns, not one bare unsuffixed column."""
+        sid = StationId(uuid4())
+        cycle = ensure_utc(datetime(2026, 1, 9, 0, tzinfo=UTC))
+        records = [
+            WeatherForecastRecord(
+                id=uuid4(),
+                station_id=sid,
+                nwp_source="ifs_ecmwf",
+                cycle_time=cycle,
+                valid_time=ensure_utc(datetime(2026, 1, 10, h, tzinfo=UTC)),
+                parameter="precipitation",
+                spatial_type=SpatialRepresentation.BASIN_AVERAGE,
+                band_id=None,
+                member_id=m,
+                value=1.0,
+                created_at=cycle,
+            )
+            for h in range(24)
+            for m in (0, 1)
+        ] + [
+            WeatherForecastRecord(
+                id=uuid4(),
+                station_id=sid,
+                nwp_source="ifs_ecmwf",
+                cycle_time=cycle,
+                valid_time=ensure_utc(datetime(2026, 1, 10, tzinfo=UTC)),
+                parameter="snow_depth",
+                spatial_type=SpatialRepresentation.BASIN_AVERAGE,
+                band_id=None,
+                member_id=None,
+                value=42.0,
+                created_at=cycle,
+            )
+        ]
+
+        daily = _aggregate_nwp_records_to_time_step(records, timedelta(days=1))
+        broadcast = _broadcast_deterministic_features_to_members(daily)
+        wide = _pivot_nwp_records(broadcast, frozenset({"precipitation", "snow_depth"}))
+
+        assert "snow_depth_0" in wide.columns
+        assert "snow_depth_1" in wide.columns
+        assert "snow_depth" not in wide.columns
+        assert wide["snow_depth_0"][0] == 42.0
+        assert wide["snow_depth_1"][0] == 42.0

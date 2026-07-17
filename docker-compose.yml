@@ -300,6 +300,11 @@ volumes:
 secrets:
   db_password:
     file: ./secrets/db_password
+  # Nepal v1: the recap Data Gateway API key (`sapphire_dg_api_key`) is NOT
+  # declared here. It is a Nepal-only secret provided by the
+  # `docker-compose.recap.yml` overlay (Plan 082 Task 2A). Swiss deployments
+  # never construct the Recap adapters (Task 2C/2D `type` selector) and need
+  # no `./secrets/sapphire_dg_api_key` file at all.
 
 networks:
   backend:

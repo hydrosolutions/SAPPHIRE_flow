@@ -4,6 +4,7 @@ import builtins
 import random
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -22,8 +23,10 @@ from sapphire_flow.exceptions import (
 )
 from sapphire_flow.flows.run_forecast_cycle import (
     ForecastCycleResult,
+    _check_nwp_grid_staleness,
     _fetch_nwp_task,
     _load_weather_forecast_adapter_config,
+    _NwpFetchOutcome,
     run_forecast_cycle_flow,
 )
 from sapphire_flow.models.climatology_fallback import (
@@ -92,6 +95,9 @@ from tests.fakes.fake_stores import (
     FakeStationStore,
     FakeWeatherForecastStore,
 )
+
+if TYPE_CHECKING:
+    from sapphire_flow.types.pipeline import PipelineHealthRecord
 
 _NOW = ensure_utc(datetime(2026, 4, 1, 6, 0, tzinfo=UTC))
 _NWP_SOURCE = "icon_ch2_eps"
@@ -839,6 +845,407 @@ disk_guard_scratch_hard_gb = 1.0
 
         with pytest.raises(ConfigurationError, match="disk_guard_scratch_hard_gb"):
             _load_weather_forecast_adapter_config()
+
+    def test_type_defaults_to_meteoswiss_nwp_when_absent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_path = _write_forecast_cycle_config(
+            tmp_path / "config.toml",
+            """
+[adapters.weather_forecast]
+enabled = false
+""",
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config_path))
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+
+        assert _load_weather_forecast_adapter_config().type == "meteoswiss_nwp"
+
+
+class TestWeatherForecastConfigTypeBranch:
+    """Plan 082 Task 2C: the `type` selector, not `enabled` alone, decides
+    which adapter's required-field set is validated."""
+
+    def test_recap_gateway_type_skips_meteoswiss_field_requirement(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_path = _write_forecast_cycle_config(
+            tmp_path / "config.toml",
+            """
+[adapters.weather_forecast]
+enabled = true
+type = "recap_gateway"
+
+[adapters.recap_gateway]
+base_url = "https://recap.example.org"
+timeout_s = 300
+verify_tls = true
+staleness_threshold_hours = 6.0
+hru_metadata_source = "manual_gpkg_upload"
+max_retries = 3
+""",
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config_path))
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+
+        config = _load_weather_forecast_adapter_config()
+
+        assert config.type == "recap_gateway"
+        assert config.enabled is True
+
+    def test_meteoswiss_nwp_type_still_requires_meteoswiss_fields(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_path = _write_forecast_cycle_config(
+            tmp_path / "config.toml",
+            """
+[adapters.weather_forecast]
+enabled = true
+type = "meteoswiss_nwp"
+stac_base_url = "https://example.test/stac"
+""",
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config_path))
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+
+        with pytest.raises(ConfigurationError, match="stac_collection"):
+            _load_weather_forecast_adapter_config()
+
+    def test_recap_gateway_type_missing_recap_section_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_path = _write_forecast_cycle_config(
+            tmp_path / "config.toml",
+            """
+[adapters.weather_forecast]
+enabled = true
+type = "recap_gateway"
+""",
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config_path))
+        monkeypatch.delenv("SAPPHIRE_CONFIG_OVERLAY", raising=False)
+
+        with pytest.raises(ConfigurationError, match="recap_gateway"):
+            _load_weather_forecast_adapter_config()
+
+
+class _FakeRecapEcmwf:
+    def ifs_forecast(self, **kwargs: object) -> object:
+        raise AssertionError("dispatch test must not actually fetch")
+
+    def era5_land_reanalysis(self, **kwargs: object) -> object:
+        raise AssertionError("dispatch test must not actually fetch")
+
+
+class _FakeRecapClient:
+    def __init__(self) -> None:
+        self.ecmwf = _FakeRecapEcmwf()
+
+
+class _FakeGatewayPolygonBindingStore:
+    def fetch_bindings_for_station(self, station_id: object) -> list[object]:
+        return []
+
+
+class TestRecapForecastDispatch:
+    """Plan 082 Task 2D: Flow-1 dispatch builds RecapGatewayForecastAdapter,
+    never MeteoSwissNwpAdapter, when type=recap_gateway."""
+
+    def test_builds_recap_gateway_forecast_adapter_not_meteoswiss(self) -> None:
+        from sapphire_flow.adapters.recap_gateway import RecapGatewayForecastAdapter
+        from sapphire_flow.flows.run_forecast_cycle import (
+            _build_recap_forecast_adapter,
+        )
+
+        adapter = _build_recap_forecast_adapter(
+            config_path=None,
+            gateway_polygon_store=_FakeGatewayPolygonBindingStore(),
+            recap_client=_FakeRecapClient(),
+        )
+
+        assert isinstance(adapter, RecapGatewayForecastAdapter)
+        assert adapter.NWP_SOURCE == "ifs_ecmwf"
+
+    def test_raises_when_gateway_polygon_store_unavailable(self) -> None:
+        from sapphire_flow.flows.run_forecast_cycle import (
+            _build_recap_forecast_adapter,
+        )
+
+        with pytest.raises(ConfigurationError, match="gateway_polygon_store"):
+            _build_recap_forecast_adapter(
+                config_path=None,
+                gateway_polygon_store=None,
+                recap_client=_FakeRecapClient(),
+            )
+
+
+class _RaisingAdapter:
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+
+    def fetch_forecasts(self, *args: object, **kwargs: object) -> object:
+        raise self._exc
+
+
+def _only_nwp_delivery_record(
+    health_store: FakePipelineHealthStore,
+) -> PipelineHealthRecord:
+    records = [
+        r
+        for r in health_store._records
+        if r.check_type == PipelineCheckType.NWP_DELIVERY
+    ]
+    assert len(records) == 1, records
+    return records[0]
+
+
+class TestRecapNwpDeliveryWatchdog:
+    """Plan 082 Task 2G (Flow-1 half): per-category NWP_DELIVERY records +
+    HARD-ABORT vs degrade-to-runoff-only outcome."""
+
+    def _run_with_adapter(
+        self, adapter: object
+    ) -> tuple[object, FakePipelineHealthStore]:
+        health_store = FakePipelineHealthStore()
+        outcome = _fetch_nwp_task(
+            adapter,  # type: ignore[arg-type]
+            [],
+            _NOW,
+            FakeWeatherForecastStore(),
+            _clock,
+            pipeline_health_store=health_store,
+        )
+        return outcome, health_store
+
+    def test_config_error_hard_aborts_with_critical_record(self) -> None:
+        from sapphire_flow.adapters.recap_gateway import RecapConfigurationError
+
+        outcome, health_store = self._run_with_adapter(
+            _RaisingAdapter(RecapConfigurationError("bad hru", field="hru_code"))
+        )
+
+        assert outcome is None
+        record = _only_nwp_delivery_record(health_store)
+        assert record.status == PipelineHealthStatus.CRITICAL
+        assert record.detail["reason"] == "config_error"
+        assert record.detail["field"] == "hru_code"
+
+    def test_all_unmappable_hard_aborts_with_critical_record(self) -> None:
+        from sapphire_flow.adapters.recap_gateway import GatewayResolutionError
+
+        sid = StationId(uuid4())
+        outcome, health_store = self._run_with_adapter(
+            _RaisingAdapter(GatewayResolutionError("all unmappable", station_id=sid))
+        )
+
+        assert outcome is None
+        record = _only_nwp_delivery_record(health_store)
+        assert record.status == PipelineHealthStatus.CRITICAL
+        assert record.detail["reason"] == "all_unmappable"
+
+    def test_auth_error_hard_aborts_with_critical_record(self) -> None:
+        from sapphire_flow.adapters.recap_gateway import RecapAuthError
+
+        outcome, health_store = self._run_with_adapter(
+            _RaisingAdapter(RecapAuthError("unauthorized", status_code=401))
+        )
+
+        assert outcome is None
+        record = _only_nwp_delivery_record(health_store)
+        assert record.status == PipelineHealthStatus.CRITICAL
+        assert record.detail["reason"] == "auth"
+        assert record.detail["status_code"] == 401
+
+    def test_source_data_missing_degrades_to_runoff_only_with_warning_record(
+        self,
+    ) -> None:
+        from sapphire_flow.adapters.recap_gateway import RecapDataUnavailableError
+
+        outcome, health_store = self._run_with_adapter(
+            _RaisingAdapter(
+                RecapDataUnavailableError(
+                    "not published yet", code="source_data_missing"
+                )
+            )
+        )
+
+        assert isinstance(outcome, _NwpFetchOutcome)
+        assert outcome.nwp_unavailable is True
+        record = _only_nwp_delivery_record(health_store)
+        assert record.status == PipelineHealthStatus.WARNING
+        assert record.detail["reason"] == "source_data_missing"
+
+    def test_recap_staleness_negative_control_no_icon_rows(self) -> None:
+        # An IFS-only Nepal deploy with a fresh ifs_ecmwf cycle and NO
+        # icon_ch2_eps rows must NOT trip CRITICAL staleness.
+        nwp_store = FakeWeatherForecastStore()
+        nwp_store.store_weather_forecasts(
+            [
+                WeatherForecastRecord(
+                    id=uuid4(),
+                    station_id=StationId(uuid4()),
+                    nwp_source="ifs_ecmwf",
+                    cycle_time=_NOW,
+                    valid_time=_NOW,
+                    parameter="precipitation",
+                    spatial_type=SpatialRepresentation.BASIN_AVERAGE,
+                    band_id=None,
+                    member_id=0,
+                    value=1.0,
+                    created_at=_NOW,
+                )
+            ]
+        )
+        health_store = FakePipelineHealthStore()
+
+        stale = _check_nwp_grid_staleness(
+            nwp_store,
+            health_store,
+            expected_delivery_offset_hours=5.0,
+            checked_at=_NOW,
+            cycle_time=_NOW,
+            forecast_source="ifs_ecmwf",
+        )
+
+        assert stale is False
+        assert health_store._records == []
+
+    def test_meteoswiss_staleness_positive_control_still_critical(self) -> None:
+        # Converse: MeteoSwiss provider + an old icon_ch2_eps cycle still
+        # trips CRITICAL — parameterizing the source did not disable the
+        # existing MeteoSwiss check.
+        nwp_store = FakeWeatherForecastStore()
+        old_cycle = ensure_utc(_NOW - timedelta(hours=100))
+        nwp_store.store_weather_forecasts(
+            [
+                WeatherForecastRecord(
+                    id=uuid4(),
+                    station_id=StationId(uuid4()),
+                    nwp_source="icon_ch2_eps",
+                    cycle_time=old_cycle,
+                    valid_time=old_cycle,
+                    parameter="precipitation",
+                    spatial_type=SpatialRepresentation.BASIN_AVERAGE,
+                    band_id=None,
+                    member_id=0,
+                    value=1.0,
+                    created_at=old_cycle,
+                )
+            ]
+        )
+        health_store = FakePipelineHealthStore()
+
+        stale = _check_nwp_grid_staleness(
+            nwp_store,
+            health_store,
+            expected_delivery_offset_hours=5.0,
+            checked_at=_NOW,
+            cycle_time=_NOW,
+            forecast_source="icon_ch2_eps",
+        )
+
+        assert stale is True
+        record = _only_nwp_delivery_record(health_store)
+        assert record.status == PipelineHealthStatus.CRITICAL
+
+
+class TestRecapStalenessThresholdWiring:
+    """Codex review Finding 2 (major): the Flow-1 watchdog must use
+    RecapGatewayConfig.staleness_threshold_hours DIRECTLY for a Recap
+    deployment, not the MeteoSwiss expected_delivery_offset_hours * 6h
+    cadence heuristic (which silently overrides it with the ~30h default)."""
+
+    def _write_recap_config(
+        self, tmp_path: Path, *, staleness_threshold_hours: float
+    ) -> Path:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[adapters.recap_gateway]\n"
+            'base_url = "https://recap.example.org"\n'
+            "timeout_s = 120\n"
+            "verify_tls = true\n"
+            f"staleness_threshold_hours = {staleness_threshold_hours}\n"
+            'hru_metadata_source = "manual_gpkg_upload"\n'
+            "max_retries = 3\n"
+        )
+        return config_path
+
+    def test_loader_reads_configured_threshold_not_default(
+        self, tmp_path: Path
+    ) -> None:
+        from sapphire_flow.flows.run_forecast_cycle import (
+            _load_recap_staleness_threshold_hours,
+        )
+
+        config_path = self._write_recap_config(tmp_path, staleness_threshold_hours=6.0)
+
+        threshold = _load_recap_staleness_threshold_hours(str(config_path))
+
+        assert threshold == 6.0
+
+    def test_recap_threshold_trips_critical_where_default_offset_would_not(
+        self, tmp_path: Path
+    ) -> None:
+        from sapphire_flow.flows.run_forecast_cycle import (
+            _load_recap_staleness_threshold_hours,
+        )
+
+        config_path = self._write_recap_config(tmp_path, staleness_threshold_hours=6.0)
+        threshold = _load_recap_staleness_threshold_hours(str(config_path))
+
+        nwp_store = FakeWeatherForecastStore()
+        old_cycle = ensure_utc(_NOW - timedelta(hours=12))
+        nwp_store.store_weather_forecasts(
+            [
+                WeatherForecastRecord(
+                    id=uuid4(),
+                    station_id=StationId(uuid4()),
+                    nwp_source="ifs_ecmwf",
+                    cycle_time=old_cycle,
+                    valid_time=old_cycle,
+                    parameter="precipitation",
+                    spatial_type=SpatialRepresentation.BASIN_AVERAGE,
+                    band_id=None,
+                    member_id=0,
+                    value=1.0,
+                    created_at=old_cycle,
+                )
+            ]
+        )
+
+        # Baseline: the OLD (buggy) call shape -- MeteoSwiss default
+        # expected_delivery_offset_hours=5.0 * 6h cadence = 30h -- must NOT
+        # flag a 12h-old grid as stale. This pins the pre-fix behavior this
+        # finding exploited (the configured 6h Recap threshold was silently
+        # ignored in favor of this ~30h default).
+        baseline_health_store = FakePipelineHealthStore()
+        baseline_stale = _check_nwp_grid_staleness(
+            nwp_store,
+            baseline_health_store,
+            expected_delivery_offset_hours=5.0,
+            checked_at=_NOW,
+            cycle_time=_NOW,
+            forecast_source="ifs_ecmwf",
+        )
+        assert baseline_stale is False
+        assert baseline_health_store._records == []
+
+        # Fixed wiring: the SAME 12h-old grid, fed the RecapGatewayConfig
+        # threshold this test loaded from the TOML file, DOES trip CRITICAL.
+        health_store = FakePipelineHealthStore()
+        stale = _check_nwp_grid_staleness(
+            nwp_store,
+            health_store,
+            expected_delivery_offset_hours=5.0,
+            checked_at=_NOW,
+            cycle_time=_NOW,
+            forecast_source="ifs_ecmwf",
+            staleness_max_age_hours=threshold,
+        )
+
+        assert stale is True
+        record = _only_nwp_delivery_record(health_store)
+        assert record.status == PipelineHealthStatus.CRITICAL
 
 
 class TestGridExtractorSelection:
@@ -3837,6 +4244,144 @@ class TestNwpExtractionSourceFilter:
         # resolved cycle comes from the forecasts, NOT the nominal request (_NOW)
         assert out is not None and out.cycle_time == resolved
         assert len(nwp_store._records) > 0
+
+
+class TestPreExtractedDictFallbackProvenance:
+    """Codex round 2 (new MAJOR): the dict-return (Recap) path must record
+    ``fallback_used=True`` when the adapter walked back to an OLDER published
+    cycle. Pre-fix it returned ``fallback_used=False`` unconditionally, so a
+    fallback forecast was mis-recorded as ``NwpCycleSource.PRIMARY``, hiding
+    that fallback data was used."""
+
+    def _run(self, resolved_cycle: UtcDatetime) -> _NwpFetchOutcome | None:
+        sid = StationId(uuid4())
+        nwp_store = FakeWeatherForecastStore()
+        source = StationWeatherSource(
+            station_id=sid,
+            nwp_source=_NWP_SOURCE,
+            extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+            status=WeatherSourceStatus.ACTIVE,
+            role=WeatherSourceRole.FORECAST,
+        )
+        pre_extracted = _make_basin_avg_result([sid], cycle_time=resolved_cycle)
+        return _fetch_nwp_task.fn(
+            adapter=FakeWeatherForecastSource(result=pre_extracted),
+            station_configs=[source],
+            cycle_time=_NOW,  # nominal request, on a 6h cadence boundary
+            weather_forecast_store=nwp_store,
+            clock=_clock,
+            grid_store=None,
+            grid_extractor=FakeGridExtractor(result={}),
+            station_basins={},
+            grid_archive_base_path=None,
+        )
+
+    def test_older_resolved_cycle_marks_fallback(self) -> None:
+        # Nominal cycle (_NOW) unpublished; the adapter returned data at the
+        # previous 6h IFS cycle. That is a FALLBACK.
+        resolved = ensure_utc(_NOW - timedelta(hours=6))
+        out = self._run(resolved)
+        assert out is not None
+        assert out.cycle_time == resolved
+        assert out.fallback_used is True
+
+    def test_nominal_resolved_cycle_marks_primary(self) -> None:
+        # Negative control: the adapter returned data at the nominal cycle ->
+        # PRIMARY, not fallback.
+        out = self._run(_NOW)
+        assert out is not None
+        assert out.cycle_time == _NOW
+        assert out.fallback_used is False
+
+
+class TestDictPathFallbackFullFlowProvenance:
+    """Codex round 2 (new MAJOR), end-to-end: a dict-return adapter whose
+    forecast carries an older resolved cycle must yield a STORED forecast with
+    ``nwp_cycle_source=FALLBACK`` and ``nwp_cycle_reference_time`` = the older
+    resolved cycle — not PRIMARY @ nominal."""
+
+    def _stores(self, sid: StationId) -> tuple[object, ...]:
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+            extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+            basin_store=basin_store,
+        )
+        return (
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forecast_store,
+            state_store,
+            alert_store,
+            baseline_store,
+            basin_store,
+            forcing_store,
+        )
+
+    def test_dict_fallback_forecast_records_fallback_source(self) -> None:
+        sid = StationId(uuid4())
+        (
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forecast_store,
+            state_store,
+            alert_store,
+            baseline_store,
+            basin_store,
+            forcing_store,
+        ) = self._stores(sid)
+
+        resolved_cycle = ensure_utc(_NOW - timedelta(hours=6))
+        # A pre-extracted dict result (as RecapGatewayForecastAdapter returns)
+        # whose forecast cycle_time is the OLDER published cycle.
+        dict_result = _make_basin_avg_result([sid], cycle_time=resolved_cycle)
+        adapter = FakeWeatherForecastSource(result=dict_result)
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=adapter,
+            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+            config=_make_config(nwp_grid_archive_base_path="/tmp/test_grids"),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+            grid_store=FakeNwpGridStore(),
+            grid_extractor=FakeGridExtractor(result={}),
+        )
+
+        assert result.forecasts_stored >= 1
+        stored = list(forecast_store._forecasts.values())
+        assert stored, "expected a stored forecast; station was skipped"
+        assert all(fc.nwp_cycle_source == NwpCycleSource.FALLBACK for fc in stored)
+        assert all(fc.nwp_cycle_reference_time == resolved_cycle for fc in stored)
 
 
 class TestDeterministicNwpSourceSelection:

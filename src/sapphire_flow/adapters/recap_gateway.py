@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, ClassVar, NewType, Protocol, cast, runtime_checkable
 
 import pandas as pd
@@ -25,7 +25,10 @@ if TYPE_CHECKING:
 
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.ids import StationId
-    from sapphire_flow.types.station import StationWeatherSource
+    from sapphire_flow.types.station import (
+        GatewayPolygonBindingRow,
+        StationWeatherSource,
+    )
     from sapphire_flow.types.weather import WeatherForecastResult
 
 log = structlog.get_logger(__name__)
@@ -115,6 +118,57 @@ class GatewayPolygonResolver(Protocol):
 
 
 @runtime_checkable
+class GatewayPolygonBindingStoreLike(Protocol):
+    def fetch_bindings_for_station(
+        self, station_id: StationId
+    ) -> list[GatewayPolygonBindingRow]: ...
+
+
+class StoreBackedGatewayPolygonResolver:
+    """§5a-table-backed :class:`GatewayPolygonResolver` (Plan 082 Task 2D).
+
+    Recap v1 is basin-average-only (``_validate_resolved_ref``): a station
+    with zero or only ``ELEVATION_BAND`` bindings resolves to ``None``. When a
+    station carries more than one ``BASIN_AVERAGE`` row (not expected — the
+    resolver is 1:1, see ``_group_by_hru``), the first (by ``created_at``,
+    the store orders deterministically) is used and a warning is logged
+    rather than raising, since the ambiguity is a data-quality concern for
+    the Plan 120 importer, not a fetch-time abort. A DB-level partial UNIQUE
+    index on ``(station_id) WHERE spatial_type = 'basin_average'``
+    (``db/metadata.py``, migration ``0032``) is the actual invariant
+    enforcement (Codex review Finding 3) — this warning is defense-in-depth
+    only. Plan 120's importer MUST upsert-REPLACE the basin_average binding
+    for a station (never accumulate additional rows) to satisfy that
+    constraint.
+    """
+
+    def __init__(self, store: GatewayPolygonBindingStoreLike) -> None:
+        self._store = store
+
+    def resolve(self, source: StationWeatherSource) -> GatewayPolygonRef | None:
+        bindings = self._store.fetch_bindings_for_station(source.station_id)
+        basin_average = [
+            b for b in bindings if b.spatial_type is SpatialRepresentation.BASIN_AVERAGE
+        ]
+        if not basin_average:
+            return None
+        if len(basin_average) > 1:
+            log.warning(
+                "recap.resolver_multiple_basin_average_bindings",
+                station_id=str(source.station_id),
+                count=len(basin_average),
+            )
+        row = basin_average[0]
+        return GatewayPolygonRef(
+            hru_name=GatewayHruName(row.gateway_hru_name),
+            polygon_name=GatewayPolygonName(row.name),
+            station_id=row.station_id,
+            spatial_type=row.spatial_type,
+            band_id=row.band_id,
+        )
+
+
+@runtime_checkable
 class EcmwfApiLike(Protocol):
     def ifs_forecast(
         self,
@@ -147,6 +201,18 @@ class SnowApiLike(Protocol):
         variable: str,
         start_date: object,
         end_date: object,
+        **kwargs: object,
+    ) -> object: ...
+
+    # Plan 082 Task 2H-snow. Matches the client (../recap-dg-client
+    # recap_client/snow.py:63-86): run_hour:int default 0, valid 0/6/12/18.
+    def forecast(
+        self,
+        *,
+        hru_code: str,
+        variable: str,
+        run_date: object,
+        run_hour: int = 0,
         **kwargs: object,
     ) -> object: ...
 
@@ -188,12 +254,43 @@ class RecapConfigurationError(AdapterError):
         self.supported_values = supported_values
 
 
+class RecapAuthError(AdapterError):
+    """Gateway rejected the request as unauthorized/forbidden (Plan 082 Task 2G).
+
+    Structurally discriminated from ``ApiRequestError.status_code`` (client
+    ``http.py:28``) — a 401/403 with no structured error body, which
+    ``_map_recap_error`` previously fell through to the generic
+    ``AdapterError`` (Plan 081 note).
+    """
+
+    def __init__(self, message: str, *, status_code: int | None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
 _PROVENANCE_COLUMNS: tuple[str, str] = ("source", "source_run")
 _ERA5_SOURCE = "recap_era5_land_reanalysis"
 _SNOW_SOURCE = "recap_snow_reanalysis"
 _FC_MEMBER_ID = 0
 _PF_MEMBER_MIN = 1
 _PF_MEMBER_MAX = 50
+
+# Plan 082 Task 3B item 3: client per-row provenance literals (client
+# README.md:102-105) — observed (admitted into reanalysis) vs forecast-fill
+# (dropped). The client's forecast tail / gap-fill rows must never leak into
+# training-history admission.
+_OBSERVED_SOURCES = frozenset({"era5_land", "jsnow_reanalysis"})
+
+
+def _drop_forecast_fill_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """Leakage guard: keep only OBSERVED (``era5_land``/``jsnow_reanalysis``)
+    rows, reading the client's raw per-row ``source`` column BEFORE
+    ``_split_provenance`` drops it. A frame with no ``source`` column is
+    returned unchanged (nothing to filter on)."""
+    if "source" not in df.columns:
+        return df
+    mask = df["source"].isin(list(_OBSERVED_SOURCES))
+    return cast("pd.DataFrame", df[mask])
 
 
 def _map_recap_error(exc: BaseException) -> AdapterError:
@@ -209,13 +306,82 @@ def _map_recap_error(exc: BaseException) -> AdapterError:
     code = getattr(exc, "code", None)
     field = getattr(exc, "field", None)
     supported_values = getattr(exc, "supported_values", None)
+    status_code = getattr(exc, "status_code", None)
     if code == "source_data_missing":
         return RecapDataUnavailableError(str(exc), code=code)
     if supported_values is not None or field == "hru_code":
         return RecapConfigurationError(
             str(exc), field=field, supported_values=supported_values
         )
+    if status_code in (401, 403):
+        return RecapAuthError(str(exc), status_code=status_code)
     return AdapterError(str(exc))
+
+
+_IFS_CADENCE_HOURS = 6.0
+_PROBE_VARIABLE = "tp"
+# Plan 082 Task 2B/2D (Codex review Finding 1): default fallback bound when
+# `resolve_latest_cycle` is wired into `fetch_forecasts` -- walk back up to 3
+# IFS cycles (3 * 6h) from the nominal cycle before giving up and degrading
+# to runoff-only (RecapDataUnavailableError, Task 2G WARNING path).
+DEFAULT_MAX_CYCLE_AGE_HOURS = 18.0
+
+
+def _floor_to_cadence(moment: UtcDatetime, cadence_hours: float) -> UtcDatetime:
+    cadence_seconds = cadence_hours * 3600.0
+    elapsed = moment.timestamp()
+    floored = elapsed - (elapsed % cadence_seconds)
+    return ensure_utc(datetime.fromtimestamp(floored, tz=UTC))
+
+
+def floor_to_ifs_cadence(moment: UtcDatetime) -> UtcDatetime:
+    """Floor a moment to the IFS publication cadence (``_IFS_CADENCE_HOURS``).
+
+    Public helper so callers (e.g. the Flow-1 provenance code, Codex round 2
+    Finding) can decide whether a resolved cycle is a fallback by comparing it
+    against the nominal cycle floored the SAME way ``resolve_latest_cycle``
+    floors — a non-cadence-aligned nominal (e.g. 12:30) must not be read as a
+    fallback.
+    """
+    return _floor_to_cadence(moment, _IFS_CADENCE_HOURS)
+
+
+def resolve_latest_cycle(
+    client: RecapClientLike,
+    *,
+    hru_code: str,
+    now: UtcDatetime,
+    max_age_hours: float,
+    cadence_hours: float = _IFS_CADENCE_HOURS,
+) -> UtcDatetime | None:
+    """Probe candidate IFS ``run_date``/``run_hour`` newest-first.
+
+    No Gateway health/latest-cycle endpoint exists (Resolved Gateway
+    Question 5) — this issues real ``ifs_forecast`` probe calls, walking back
+    in ``cadence_hours`` steps from the cadence-floored ``now`` until either a
+    candidate returns data or ``max_age_hours`` is exhausted. A
+    ``source_data_missing`` response marks a candidate unavailable and moves
+    to the next older one; any other mapped error propagates immediately
+    (not swallowed as "unavailable").
+    """
+    candidate = _floor_to_cadence(now, cadence_hours)
+    steps = int(max_age_hours // cadence_hours) + 1
+    for _ in range(steps):
+        try:
+            _guarded_fetch(
+                client.ecmwf.ifs_forecast,
+                variable=_PROBE_VARIABLE,
+                run_date=candidate,
+                run_hour=candidate.hour,
+                hru_code=hru_code,
+                ifs_type="fc",
+            )
+        except RecapDataUnavailableError:
+            candidate = ensure_utc(candidate - timedelta(hours=cadence_hours))
+            continue
+        else:
+            return candidate
+    return None
 
 
 def _guarded_fetch(fn: Callable[..., object], /, **kwargs: object) -> object:
@@ -431,6 +597,10 @@ def _ifs_variables() -> list[RecapVariable]:
     return [v for v in RECAP_VARIABLES.values() if v.ifs_name is not None]
 
 
+def _snow_variables() -> list[RecapVariable]:
+    return [v for v in RECAP_VARIABLES.values() if v.snow_name is not None]
+
+
 def _pf_member_id(member: int) -> int:
     # Guard: a pf member must be 1..50 and can never collide with fc's member_id=0.
     if member == _FC_MEMBER_ID or not (_PF_MEMBER_MIN <= member <= _PF_MEMBER_MAX):
@@ -494,9 +664,42 @@ class RecapGatewayForecastAdapter:
         *,
         client: RecapClientLike,
         resolver: GatewayPolygonResolver,
+        max_cycle_age_hours: float = DEFAULT_MAX_CYCLE_AGE_HOURS,
     ) -> None:
         self._client = client
         self._resolver = resolver
+        self._max_cycle_age_hours = max_cycle_age_hours
+
+    def _resolve_effective_cycle(
+        self,
+        resolved: list[GatewayPolygonRef],
+        nominal_cycle_time: UtcDatetime,
+    ) -> UtcDatetime:
+        """Resolve the newest AVAILABLE IFS cycle once per batch (Task 2B).
+
+        IFS publication cadence is global across HRUs, so ONE already-resolved
+        in-scope HRU is used as the probe -- never one probe per station.
+        Falls back to an older cycle within ``max_cycle_age_hours`` when the
+        nominal cycle is not yet published; raises
+        ``RecapDataUnavailableError`` (the existing Task 2G WARNING /
+        degrade-to-runoff-only signal) when every candidate within that
+        window is missing, so the caller degrades exactly as it does today
+        for an outright Gateway ``source_data_missing`` response.
+        """
+        probe_hru = resolved[0].hru_name
+        resolved_cycle = resolve_latest_cycle(
+            self._client,
+            hru_code=probe_hru,
+            now=nominal_cycle_time,
+            max_age_hours=self._max_cycle_age_hours,
+        )
+        if resolved_cycle is None:
+            raise RecapDataUnavailableError(
+                f"no IFS cycle published within {self._max_cycle_age_hours}h "
+                f"of {nominal_cycle_time.isoformat()} (probed HRU {probe_hru})",
+                code="source_data_missing",
+            )
+        return resolved_cycle
 
     def fetch_forecasts(
         self,
@@ -512,8 +715,14 @@ class RecapGatewayForecastAdapter:
             return {}
         resolved, skipped = _resolve_all(self._resolver, in_scope)
         _require_some_resolved(in_scope, resolved, skipped)
-
+        # `_group_by_hru` (a config-error check, no Gateway call) MUST run
+        # before the cycle-resolution probe: a duplicate-polygon config error
+        # must fail loud with zero Gateway calls made, matching the existing
+        # `TestDuplicatePolygonResolution` contract.
         by_hru = _group_by_hru(resolved)
+
+        effective_cycle_time = self._resolve_effective_cycle(resolved, cycle_time)
+
         station_ref = {ref.station_id: ref for ref in resolved}
         acc: dict[StationId, list[dict[str, object]]] = {}
         cycle_source_run: object | None = None
@@ -529,7 +738,7 @@ class RecapGatewayForecastAdapter:
                     variable=variable,
                     ifs_name=ifs_name,
                     hru_name=hru_name,
-                    cycle_time=cycle_time,
+                    cycle_time=effective_cycle_time,
                     ifs_type="fc",
                     member=None,
                     member_id=_FC_MEMBER_ID,
@@ -542,14 +751,14 @@ class RecapGatewayForecastAdapter:
                         variable=variable,
                         ifs_name=ifs_name,
                         hru_name=hru_name,
-                        cycle_time=cycle_time,
+                        cycle_time=effective_cycle_time,
                         ifs_type="pf",
                         member=str(member),
                         member_id=_pf_member_id(member),
                         prior=cycle_source_run,
                     )
 
-        cycle = _normalize_source_run_to_utc(cycle_source_run) or cycle_time
+        cycle = _normalize_source_run_to_utc(cycle_source_run) or effective_cycle_time
         return {
             station_id: _build_forecast_result(
                 station_ref[station_id], rows, cycle, self.NWP_SOURCE
@@ -600,6 +809,90 @@ class RecapGatewayForecastAdapter:
                 }
             )
         return prior if prior is not None else source_run
+
+    def fetch_snow_forecast(
+        self,
+        station_configs: list[StationWeatherSource],
+        cycle_time: UtcDatetime,
+    ) -> dict[StationId, WeatherForecastResult]:
+        """Deterministic snow-forecast fetch (Plan 082 Task 2H-snow).
+
+        NOT part of the ``WeatherForecastSource`` Protocol — called separately
+        by the model-input service, which performs the daily-snow ->
+        sub-daily 51-member IFS broadcast (no resample/broadcast happens
+        here). Snow rows carry ``member_id=None`` (deterministic, single
+        run) — see ``RecapGatewayReanalysisAdapter`` for the same convention
+        on the reanalysis side.
+        """
+        in_scope = _prefilter(
+            station_configs,
+            nwp_source=self.NWP_SOURCE,
+            role=WeatherSourceRole.FORECAST,
+        )
+        if not in_scope:
+            return {}
+        resolved, skipped = _resolve_all(self._resolver, in_scope)
+        _require_some_resolved(in_scope, resolved, skipped)
+
+        by_hru = _group_by_hru(resolved)
+        station_ref = {ref.station_id: ref for ref in resolved}
+        acc: dict[StationId, list[dict[str, object]]] = {}
+
+        for hru_name, refs_by_polygon in by_hru.items():
+            for variable in _snow_variables():
+                snow_name = variable.snow_name
+                if snow_name is None:
+                    continue
+                self._accumulate_snow(
+                    acc,
+                    refs_by_polygon,
+                    variable=variable,
+                    snow_name=snow_name,
+                    hru_name=hru_name,
+                    cycle_time=cycle_time,
+                )
+
+        return {
+            station_id: _build_forecast_result(
+                station_ref[station_id], rows, cycle_time, self.NWP_SOURCE
+            )
+            for station_id, rows in acc.items()
+        }
+
+    def _accumulate_snow(
+        self,
+        acc: dict[StationId, list[dict[str, object]]],
+        refs_by_polygon: dict[GatewayPolygonName, GatewayPolygonRef],
+        *,
+        variable: RecapVariable,
+        snow_name: str,
+        hru_name: GatewayHruName,
+        cycle_time: UtcDatetime,
+    ) -> None:
+        # run_hour is mandatory for the same reason as the IFS fetch: the
+        # client's _iso_date strips run_date to a bare date and defaults
+        # run_hour=0 (client snow.py:63-86 default valid_hour 0/6/12/18).
+        call_kwargs: dict[str, object] = {
+            "hru_code": hru_name,
+            "variable": snow_name,
+            "run_date": cycle_time,
+            "run_hour": cycle_time.hour,
+        }
+        df = cast(
+            "pd.DataFrame",
+            _guarded_fetch(self._client.snow.forecast, **call_kwargs),
+        )
+        rows, _ = _iter_long_rows(df, refs_by_polygon, variable.convert)
+        for ref, valid_time, value, _row_run in rows:
+            acc.setdefault(ref.station_id, []).append(
+                {
+                    "valid_time": valid_time,
+                    "parameter": variable.canonical,
+                    "band_id": ref.band_id,
+                    "member_id": None,
+                    "value": value,
+                }
+            )
 
 
 class RecapGatewayReanalysisAdapter:
@@ -688,6 +981,11 @@ class RecapGatewayReanalysisAdapter:
             source = _SNOW_SOURCE
         else:
             return []
+        # Leakage guard (Task 3B item 3): drop forecast-fill rows BEFORE
+        # reshaping — reads the client's raw source column, which
+        # `_split_provenance`/`_iter_long_rows` would otherwise discard
+        # without ever inspecting per-row values.
+        df = _drop_forecast_fill_rows(df)
         rows, _ = _iter_long_rows(df, refs_by_polygon, variable.convert)
         # Two boundary guards on the reshaped rows:
         #  - version is the row's OWN source_run (per-row provenance), not a single

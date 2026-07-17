@@ -1736,6 +1736,125 @@ reanalysis-only) and makes each `NWP_SOURCE` unambiguous.
 
 Module: `adapters/recap_gateway.py`
 
+### §5a mapping table + store-backed resolver (Plan 082 Task 2D)
+
+`GatewayPolygonResolver` (above) has a Protocol only in Plan 081. Plan 082 ships the
+concrete production resolver, backed by an additive persistence table
+(`docs/requirements/04-basin-static-artifact-contract.md` §5a):
+
+```python
+@dataclass(frozen=True, kw_only=True, slots=True)
+class GatewayPolygonBindingRow:
+    station_id: StationId
+    basin_id: BasinId
+    gateway_hru_name: str
+    name: str
+    spatial_type: SpatialRepresentation
+    band_id: int | None
+
+@runtime_checkable
+class GatewayPolygonBindingStore(Protocol):
+    def fetch_bindings_for_station(self, station_id: StationId) -> list[GatewayPolygonBindingRow]: ...
+    def store_binding(self, binding: GatewayPolygonBindingRow) -> None: ...
+
+class StoreBackedGatewayPolygonResolver:
+    def __init__(self, store: GatewayPolygonBindingStoreLike) -> None: ...
+    def resolve(self, source: StationWeatherSource) -> GatewayPolygonRef | None: ...
+```
+
+Table `recap_gateway_polygon_bindings`, keyed `station_id + gateway_hru_name + name`
+(migration `0032`). Schema + reader owned by Plan 082; **rows populated by Plan 120**'s
+basin/static package importer — until populated, `resolve()` returns `None` for every
+station (fixture-tested now; production readiness gated on Plan 120). Only
+`BASIN_AVERAGE` bindings resolve (Recap v1 is basin-average-only); a station with only
+`ELEVATION_BAND` rows resolves to `None`.
+
+Modules: `types/station.py` (`GatewayPolygonBindingRow`), `protocols/stores.py`
+(`GatewayPolygonBindingStore`), `store/recap_gateway_polygon_store.py`
+(`RecapGatewayPolygonStore`), `adapters/recap_gateway.py`
+(`StoreBackedGatewayPolygonResolver`).
+
+### RecapAuthError + snow-forecast fetch (Plan 082 Task 2G / 2H-snow)
+
+`RecapAuthError(AdapterError)` carries `status_code: int | None`; `_map_recap_error` maps
+`getattr(exc, "status_code", None) in (401, 403)` to it (checked after the
+`source_data_missing`/config-error discriminators, so a structured validation error with
+an incidental 401 still maps to `RecapConfigurationError`, the more specific category).
+
+`SnowApiLike` widens with `forecast(*, hru_code, variable, run_date, run_hour: int = 0,
+**kwargs) -> object`, matching the client's `snow.forecast` (0/6/12/18Z).
+`RecapGatewayForecastAdapter.fetch_snow_forecast(station_configs, cycle_time) ->
+dict[StationId, WeatherForecastResult]` is a SEPARATE method, **not** part of
+`WeatherForecastSource` — snow forecasts are deterministic (`member_id=None`), fetched
+independently from the 51-member IFS `fetch_forecasts`. No resample/broadcast happens in
+the adapter; `services/operational_inputs.py
+._broadcast_deterministic_features_to_members` performs the daily-snow → sub-daily
+51-member IFS broadcast at model-input-assembly time. **Not yet wired into the Flow-1
+storage path** — `fetch_snow_forecast`'s output needs a separate persistence step before
+the broadcast sees it operationally (see `docs/operations/recap-gateway-runbook.md`
+§ Snow-variable status).
+
+Module: `adapters/recap_gateway.py`, `services/operational_inputs.py`.
+
+### RecapGatewayConfig + coverage manifest (Plan 082 Tasks 2A / Phase 3)
+
+```python
+@dataclass(frozen=True, kw_only=True, slots=True)
+class RecapGatewayConfig:
+    base_url: str
+    timeout_s: int
+    verify_tls: bool
+    staleness_threshold_hours: float
+    hru_metadata_source: str
+    max_retries: int
+    # Optional; default DEFAULT_MAX_CYCLE_AGE_HOURS = 18.0 (3 IFS cycles).
+    # The fallback probe bound: how far `resolve_latest_cycle` walks back from
+    # the nominal IFS cycle before degrading to runoff-only (Task 2B/2D).
+    max_cycle_age_hours: float = 18.0
+
+def load_recap_api_key(*, secret_path: Path | None = None) -> str: ...
+def build_recap_client_config(*, api_key: str, config: RecapGatewayConfig) -> ApiClientConfig: ...
+def load_recap_gateway_config(config_path: Path) -> RecapGatewayConfig: ...
+```
+
+`load_recap_api_key` reads the `sapphire_dg_api_key` Docker secret file (default
+`/run/secrets/sapphire_dg_api_key`), falling back to the `RECAP_API_KEY` env var for
+local dev — never logged. `[adapters.recap_gateway]` TOML section is validated
+independently of `[adapters.weather_forecast]`'s MeteoSwiss-only fields (Task 2C's
+`type` selector branches on this).
+
+Coverage (Gateway exposes none — SAP3-side supervised manifest):
+
+```python
+@dataclass(frozen=True, kw_only=True, slots=True)
+class GatewayCoverageKey:  # member_id deliberately NOT part of the key
+    gateway_hru_name: str
+    name: str
+    dataset: str
+    variable: str
+    band_id: int | None
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class GatewayCoverageSpan:
+    start: UtcDatetime
+    end: UtcDatetime
+
+def coverage_spans_window(manifest, requested_window, required_keys: list[GatewayCoverageKey]) -> bool: ...
+def assert_returned_span_covers_request(requested: GatewayCoverageSpan, returned: GatewayCoverageSpan) -> None: ...
+```
+
+`coverage_spans_window` is the **training-readiness gate** (Flow 6): a required key
+absent from the manifest is refused, never inferred. `GatewayCoverageManifest` has no
+constructor path that derives a span from row counts/non-empty data — every entry
+requires an explicit `start`/`end` in the supervised manifest row. Short auto-coverage
+is a signal, not an irreversible block: the existing `promote_artifact` manual-promotion
+authority still applies. `assert_returned_span_covers_request` HARD-BLOCKS (raises) only
+on the **training** path; the **operational** forecast path logs a WARNING and continues
+(matching the `operational_inputs.no_nwp` graceful-degrade precedent) — it must never call
+this assertion.
+
+Module: `config/recap_gateway.py`, `services/gateway_coverage.py`.
+
 ---
 
 ### ModelAlertStrategy Protocol

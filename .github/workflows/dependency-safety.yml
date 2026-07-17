@@ -30,6 +30,11 @@ jobs:
         with:
           version: "0.11.7"
           python-version: "3.12"
+      - name: Configure git auth for the private recap-dg-client clone
+        run: |
+          git config --global url."https://x-access-token:${RECAP_DG_CLIENT_TOKEN}@github.com/hydrosolutions/recap-dg-client.git".insteadOf "https://github.com/hydrosolutions/recap-dg-client.git"
+        env:
+          RECAP_DG_CLIENT_TOKEN: ${{ secrets.RECAP_DG_CLIENT_TOKEN }}
       - run: uv sync --frozen
       # BLOCK fails this job with a §2 actionable message (postgis BLOCKs
       # point at Plan 118). REVIEW passes but writes an advisory notice to

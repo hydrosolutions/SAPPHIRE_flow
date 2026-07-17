@@ -15,6 +15,14 @@ jobs:
         with:
           version: "0.11.7"
           python-version: "3.12"
+      # recap-dg-client is a private repo (Plan 082 Task 2H) — every job that
+      # runs `uv sync` clones it, so git needs authenticated HTTPS access.
+      # Scoped via insteadOf to ONLY this repo URL.
+      - name: Configure git auth for the private recap-dg-client clone
+        run: |
+          git config --global url."https://x-access-token:${RECAP_DG_CLIENT_TOKEN}@github.com/hydrosolutions/recap-dg-client.git".insteadOf "https://github.com/hydrosolutions/recap-dg-client.git"
+        env:
+          RECAP_DG_CLIENT_TOKEN: ${{ secrets.RECAP_DG_CLIENT_TOKEN }}
       - run: uv sync --frozen
       - run: uv run ruff check src/ tests/
       - run: uv run ruff format --check src/ tests/
@@ -56,6 +64,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libeccodes0 libexpat1 libgeos-c1v5
+      - name: Configure git auth for the private recap-dg-client clone
+        run: |
+          git config --global url."https://x-access-token:${RECAP_DG_CLIENT_TOKEN}@github.com/hydrosolutions/recap-dg-client.git".insteadOf "https://github.com/hydrosolutions/recap-dg-client.git"
+        env:
+          RECAP_DG_CLIENT_TOKEN: ${{ secrets.RECAP_DG_CLIENT_TOKEN }}
       - run: uv sync --frozen
       - run: uv run pytest tests/unit/ --cov=src/sapphire_flow --cov-report=term-missing -v
 
@@ -78,9 +91,15 @@ jobs:
   #
   # Known source-build exceptions: `forecastinterface` is the temporary CI
   # exception and is installed only after step 1 succeeds; `exactextract` may
-  # require a source build in the linux/arm64 Docker builder path. Any new
-  # exception must be documented in docs/standards/security.md per Plan 064 A4
-  # step 3.
+  # require a source build in the linux/arm64 Docker builder path.
+  # `recap-dg-client` (Plan 082 Task 2H) is a second temporary git-pin
+  # exception, same shape as forecastinterface — Nepal v1 recap Gateway
+  # client, no published wheel index. Removal trigger: once
+  # `recap-dg-client` is published to the hydrosolutions private package
+  # index and CI/Docker can install it as a wheel with no source build,
+  # drop this exception (tracked as an IT-specialist Plan 080-style
+  # follow-up). Any new exception must be documented in
+  # docs/standards/security.md per Plan 064 A4 step 3.
   wheel-only-guard:
     runs-on: ubuntu-latest
     steps:
@@ -95,11 +114,20 @@ jobs:
           # explicitly disabling here makes the job v4/v8 compatible
           # (Dependabot PR #4 surfaced this).
           enable-cache: false
+      # recap-dg-client is a PRIVATE repo (hydrosolutions/recap-dg-client) —
+      # both wheel-guard steps below clone it, so git needs authenticated
+      # HTTPS access before either `uv sync` runs. Scoped via insteadOf to
+      # ONLY this repo URL (never a blanket github.com credential rewrite).
+      - name: Configure git auth for the private recap-dg-client clone
+        run: |
+          git config --global url."https://x-access-token:${RECAP_DG_CLIENT_TOKEN}@github.com/hydrosolutions/recap-dg-client.git".insteadOf "https://github.com/hydrosolutions/recap-dg-client.git"
+        env:
+          RECAP_DG_CLIENT_TOKEN: ${{ secrets.RECAP_DG_CLIENT_TOKEN }}
       - run: |
           set -euo pipefail
-          # step 1 IS the guard — must keep --no-build and must precede step 2; step 2 has no --no-build and may build ONLY forecastinterface.
-          uv sync --frozen --no-build --no-cache --no-install-project --no-install-package forecastinterface
-          uv sync --frozen --no-cache --no-install-project --reinstall-package forecastinterface
+          # step 1 IS the guard — must keep --no-build and must precede step 2; step 2 has no --no-build and may build ONLY the excepted packages.
+          uv sync --frozen --no-build --no-cache --no-install-project --no-install-package forecastinterface --no-install-package recap-dg-client
+          uv sync --frozen --no-cache --no-install-project --reinstall-package forecastinterface --reinstall-package recap-dg-client
 
   integration:
     runs-on: ubuntu-latest
@@ -128,6 +156,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libeccodes0 libexpat1 libgeos-c1v5
+      - name: Configure git auth for the private recap-dg-client clone
+        run: |
+          git config --global url."https://x-access-token:${RECAP_DG_CLIENT_TOKEN}@github.com/hydrosolutions/recap-dg-client.git".insteadOf "https://github.com/hydrosolutions/recap-dg-client.git"
+        env:
+          RECAP_DG_CLIENT_TOKEN: ${{ secrets.RECAP_DG_CLIENT_TOKEN }}
       - run: uv sync --frozen
       - run: uv run pytest tests/integration/ --ignore=tests/integration/live -v -m "not slow"
         env:
@@ -157,6 +190,11 @@ jobs:
           tags: sapphire-flow:ci-${{ github.sha }}
           load: true
           push: false
+          # recap-dg-client is a private repo (Plan 082 Task 2H) — the
+          # builder stage's `uv sync` clones it via a BuildKit secret mount
+          # (Dockerfile), never baked into an image layer.
+          secrets: |
+            recap_dg_client_token=${{ secrets.RECAP_DG_CLIENT_TOKEN }}
       # B3 — Trivy image scan. Covers OS-level layers the fs scan (A2) does
       # not see. Fails CI on HIGH/CRITICAL unfixed CVEs; SARIF is uploaded
       # as a workflow artifact for audit.

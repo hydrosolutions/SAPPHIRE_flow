@@ -192,6 +192,51 @@ station_weather_sources = sa.Table(
     sa.PrimaryKeyConstraint("station_id", "nwp_source"),
 )
 
+# §5a mapping table (docs/requirements/04-basin-static-artifact-contract.md
+# §5a; Plan 082 Task 2D). Additive — does not touch `basins`. Schema + reader
+# owned by 082; rows populated by Plan 120's basin/static package importer.
+recap_gateway_polygon_bindings = sa.Table(
+    "recap_gateway_polygon_bindings",
+    metadata,
+    sa.Column(
+        "station_id", UUID(as_uuid=True), sa.ForeignKey("stations.id"), nullable=False
+    ),
+    sa.Column(
+        "basin_id", UUID(as_uuid=True), sa.ForeignKey("basins.id"), nullable=False
+    ),
+    sa.Column("gateway_hru_name", sa.Text, nullable=False),
+    sa.Column("name", sa.Text, nullable=False),
+    sa.Column(
+        "spatial_type",
+        sa.Text,
+        sa.CheckConstraint("spatial_type IN ('basin_average', 'elevation_band')"),
+        nullable=False,
+    ),
+    sa.Column("band_id", sa.Integer, nullable=True),
+    sa.Column(
+        "created_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+    ),
+    sa.PrimaryKeyConstraint("station_id", "gateway_hru_name", "name"),
+)
+
+# At most one basin_average binding per station (Codex review Finding 3):
+# `GatewayPolygonResolver.resolve` picks `basin_average[0]` from
+# `fetch_bindings_for_station` — the PK alone (station_id, gateway_hru_name,
+# name) permits multiple basin_average rows per station (e.g. a lingering
+# `g_5501_old` alongside `g_5501`), which would make resolution silently
+# arbitrary/stale. Invalid states unrepresentable: Plan 120's §5a importer
+# must upsert-REPLACE the basin_average binding for a station (delete-then-
+# insert or an explicit replace), never accumulate additional rows.
+sa.Index(
+    "uq_recap_gateway_polygon_bindings_one_basin_average_per_station",
+    recap_gateway_polygon_bindings.c.station_id,
+    unique=True,
+    postgresql_where=recap_gateway_polygon_bindings.c.spatial_type == "basin_average",
+)
+
 station_groups = sa.Table(
     "station_groups",
     metadata,
