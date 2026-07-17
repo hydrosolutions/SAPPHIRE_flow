@@ -1,9 +1,17 @@
-"""Hybrid forcing-resolver factories (Plan 072 T3).
+"""Hybrid forcing-resolver factories (Plan 072 T3; Plan 115b4 §5B retires the
+CAMELS-CH tier).
 
-``default_hybrid_forcing_source`` wires the v0b priority chain (MeteoSwiss
-per-parameter source -> CAMELS-CH) over a ``HistoricalForcingStore``.
-``select_reanalysis_source`` is the read-side selector used by the hindcast and
-forecast-cycle flows to honour ``DeploymentConfig.reanalysis_source``.
+``default_hybrid_forcing_source`` wires the per-parameter MeteoSwiss priority
+chain over a ``HistoricalForcingStore``. ``select_reanalysis_source`` is the
+read-side selector used by the hindcast and forecast-cycle flows to honour
+``DeploymentConfig.reanalysis_source``.
+
+No CAMELS-CH tier (Plan 115b4 §5B): Plan 072's ``... -> CAMELS_CH`` chains are
+retired — CAMELS-CH is now a validation reference + audit trail
+(Plan 115b3), not a live weather-forcing tier. ``historical_forcing`` rows
+tagged ``camels-ch`` are untouched and remain readable by a direct
+source-keyed fetch (``PerSourceStoreReader``/``fetch_forcing``); they are
+simply never wired into this hybrid chain.
 
 No NWP-archive tier: ``ForcingSource.NWP_ARCHIVE`` is reserved-but-unused in
 v0b (rev-3 dropped it); it is never wired here.
@@ -21,22 +29,26 @@ if TYPE_CHECKING:
     from sapphire_flow.protocols.adapters import WeatherReanalysisSource
     from sapphire_flow.protocols.stores import HistoricalForcingStore
 
-# Per-parameter v0b priority chains (Plan 072 §Priority chains): the MeteoSwiss
-# open-data source first, then CAMELS-CH as the pre-2020 fallback.
-#
-# ``relative_sunshine_duration`` (Plan 115b1 §1A) is a SINGLE-source chain —
-# SrelD, no CAMELS fallback — added additively here; it does not touch the
-# precipitation/temperature chains (those are Plan 115b phase 5's job, not
-# this plan's).
+# Per-parameter v0b priority chains (Plan 115b4 §5B): MeteoSwiss self-derived
+# products only — NO CAMELS_CH tier. Precipitation prefers the definitive
+# archive-backed RhiresD, falling back to the preliminary live-tail RprelimD
+# for days RhiresD has not yet published; every other parameter is a single-
+# source chain (each has exactly one MeteoSwiss product, no fallback).
 _PRIORITY_CHAINS: dict[str, tuple[ForcingSource, ...]] = {
-    "precipitation": (ForcingSource.METEOSWISS_RPRELIMD, ForcingSource.CAMELS_CH),
-    "temperature": (ForcingSource.METEOSWISS_TABSD, ForcingSource.CAMELS_CH),
-    "temperature_min": (ForcingSource.METEOSWISS_TMIND, ForcingSource.CAMELS_CH),
-    "temperature_max": (ForcingSource.METEOSWISS_TMAXD, ForcingSource.CAMELS_CH),
+    "precipitation": (
+        ForcingSource.METEOSWISS_RHIRESD,
+        ForcingSource.METEOSWISS_RPRELIMD,
+    ),
+    "temperature": (ForcingSource.METEOSWISS_TABSD,),
+    "temperature_min": (ForcingSource.METEOSWISS_TMIND,),
+    "temperature_max": (ForcingSource.METEOSWISS_TMAXD,),
     "relative_sunshine_duration": (ForcingSource.METEOSWISS_SRELD,),
 }
 
-_DEFAULT_PARAMETERS: tuple[str, ...] = (
+# Public: the canonical parameter set the hybrid chain resolves. Also used by
+# the §6D dashboard forcing endpoint (api/routes/stations.py) to request the
+# full hybrid-resolved series, not just this factory's own default scope.
+DEFAULT_PARAMETERS: tuple[str, ...] = (
     "precipitation",
     "temperature",
     "temperature_min",
@@ -48,7 +60,7 @@ _DEFAULT_PARAMETERS: tuple[str, ...] = (
 def default_hybrid_forcing_source(
     *,
     forcing_store: HistoricalForcingStore,
-    parameters_in_scope: tuple[str, ...] = _DEFAULT_PARAMETERS,
+    parameters_in_scope: tuple[str, ...] = DEFAULT_PARAMETERS,
 ) -> HybridForcingSource:
     priority = {
         parameter: _PRIORITY_CHAINS[parameter]

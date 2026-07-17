@@ -42,10 +42,10 @@ _KNOWN_FORECAST_SOURCES = frozenset({"icon_ch2_eps"})
 _KNOWN_REANALYSIS_SOURCES = frozenset({"camels-ch"})
 
 
-# Plan 115c: delete with revision 0032 (once role is NOT NULL, this shim and
-# its allowlist are dead code). Revision 0031 is taken by Plan 115b1 (the
-# relative_sunshine_duration parameter seed), so the NOT NULL tightening lands
-# at 0032.
+# Plan 115c: delete at the next free revision at implementation time (once role
+# is NOT NULL, this shim and its allowlist are dead code). Do not hardcode a
+# number — revisions land in chronological order (115b5 / Release B holds the
+# camels-ch retire migration and claims a revision when it lands).
 def _legacy_role_for_source(nwp_source: str) -> WeatherSourceRole:
     if nwp_source in _KNOWN_FORECAST_SOURCES:
         return WeatherSourceRole.FORECAST

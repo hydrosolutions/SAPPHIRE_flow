@@ -52,6 +52,8 @@ from sapphire_flow.flows.ingest_weather_history import (
 from sapphire_flow.types.basin import Basin
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
+    PipelineCheckType,
+    PipelineHealthStatus,
     SpatialRepresentation,
     WeatherSourceRole,
     WeatherSourceStatus,
@@ -64,7 +66,11 @@ from sapphire_flow.types.historical_forcing import (
 from sapphire_flow.types.ids import BasinId, HistoricalForcingId
 from sapphire_flow.types.station import StationWeatherSource
 from tests.conftest import make_raw_historical_forcing, make_station_config
-from tests.fakes.fake_stores import FakeBasinStore, FakeStationStore
+from tests.fakes.fake_stores import (
+    FakeBasinStore,
+    FakePipelineHealthStore,
+    FakeStationStore,
+)
 
 if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
@@ -264,6 +270,23 @@ class _SupersedingForcingStore:
             if key not in latest or seq > latest[key][0]:
                 latest[key] = (seq, r)
         return [r for _, r in latest.values()]
+
+    def fetch_latest_valid_time(
+        self,
+        station_ids: list[StationId],
+        source: str,
+        start: UtcDatetime,
+        end: UtcDatetime,
+    ) -> UtcDatetime | None:
+        station_id_set = set(station_ids)
+        candidates = [
+            r.valid_time
+            for _, r in self._rows
+            if r.station_id in station_id_set
+            and r.source == source
+            and start <= r.valid_time < end
+        ]
+        return max(candidates) if candidates else None
 
 
 # ---------------------------------------------------------------------------
@@ -1014,3 +1037,194 @@ class TestParametricBackfillWindow:
 
         assert len(adapter.calls) == 2
         assert all(c.start == _START and c.end == _NOW for c in adapter.calls)
+
+
+# ---------------------------------------------------------------------------
+# Plan 115b4 §6A/§6B — health-by-EFFECT, never rows_stored
+# ---------------------------------------------------------------------------
+
+
+class TestWeatherHistoryHealthByEffect:
+    """Plan 115b4 §6B: health is measured by ACTUAL EFFECT (a real DB
+    readback), never ``rows_stored`` (which is ``len(records)`` post
+    ``on_conflict_do_nothing`` and looks healthy even for a pure-duplicate
+    re-fetch). Two distinct UNHEALTHY reasons distinguished: nobody bound
+    (config fault) vs bound but the run had zero effect on the store's
+    on-disk horizon (silent failure).
+    """
+
+    def test_zero_stations_bound_is_unhealthy(self) -> None:
+        adapter = _SpyReanalysisAdapter()
+        store = _SupersedingForcingStore()
+        health = FakePipelineHealthStore()
+
+        ingest_weather_history_flow(
+            station_store=FakeStationStore(),
+            forcing_store=store,
+            adapter=adapter,
+            clock=_fixed_clock,
+            pipeline_health_store=health,
+        )
+
+        records = health.fetch_recent(PipelineCheckType.WEATHER_HISTORY_INGEST)
+        assert len(records) == 1
+        assert records[0].status == PipelineHealthStatus.CRITICAL
+        assert records[0].detail["reason"] == "no_stations_bound"
+
+    def test_bound_stations_but_zero_effect_is_unhealthy(self) -> None:
+        # A station is bound, but the adapter returns nothing AND the store
+        # has never held a row for the sources this run targets — the run
+        # had ZERO effect on the store's on-disk horizon, which
+        # rows_stored == 0 would ALSO catch here, but critically this is
+        # asserted via the store's actual MAX(valid_time) readback (§6B),
+        # not the flow's own in-memory counter.
+        station = make_station_config(code="2135", name="Aare Bern")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        station_store.store_weather_source(_weather_source(station.id))
+
+        adapter = _SpyReanalysisAdapter()  # returns nothing for every call
+        store = _SupersedingForcingStore()
+        health = FakePipelineHealthStore()
+
+        ingest_weather_history_flow(
+            station_store=station_store,
+            forcing_store=store,
+            adapter=adapter,
+            clock=_fixed_clock,
+            pipeline_health_store=health,
+        )
+
+        records = health.fetch_recent(PipelineCheckType.WEATHER_HISTORY_INGEST)
+        assert len(records) == 1
+        assert records[0].status == PipelineHealthStatus.CRITICAL
+        assert records[0].detail["reason"] == "no_horizon_advance"
+
+    def test_bound_stations_with_effect_is_healthy(self) -> None:
+        station = make_station_config(code="2135", name="Aare Bern")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        station_store.store_weather_source(_weather_source(station.id))
+
+        row = _row(
+            station.id,
+            parameter="precipitation",
+            source=ForcingSource.METEOSWISS_RPRELIMD.value,
+            value=5.0,
+            version="v1",
+        )
+        adapter = _SpyReanalysisAdapter(rprelimd_rows=[row])
+        store = _SupersedingForcingStore()
+        health = FakePipelineHealthStore()
+
+        ingest_weather_history_flow(
+            station_store=station_store,
+            forcing_store=store,
+            adapter=adapter,
+            clock=_fixed_clock,
+            pipeline_health_store=health,
+        )
+
+        records = health.fetch_recent(PipelineCheckType.WEATHER_HISTORY_INGEST)
+        assert len(records) == 1
+        assert records[0].status == PipelineHealthStatus.OK
+
+    def test_duplicate_rerun_that_advances_nothing_new_is_unhealthy(self) -> None:
+        # A second identical (pure-duplicate) re-fetch — same clock, same
+        # adapter rows, so the store's MAX(valid_time) for the targeted
+        # source in this run's window is IDENTICAL before and after — must be
+        # flagged UNHEALTHY, even though the store already holds a row for
+        # that source within the window (from the first run) and this run's
+        # own ``rows_stored`` counter is identically shaped to the first
+        # run's. A "row exists" check alone would wrongly call this healthy;
+        # only a before/after comparison catches a run with zero EFFECT.
+        station = make_station_config(code="2135", name="Aare Bern")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        station_store.store_weather_source(_weather_source(station.id))
+
+        row = _row(
+            station.id,
+            parameter="precipitation",
+            source=ForcingSource.METEOSWISS_RPRELIMD.value,
+            value=5.0,
+            version="v1",
+        )
+        adapter = _SpyReanalysisAdapter(rprelimd_rows=[row])
+        store = _SupersedingForcingStore()
+        health = FakePipelineHealthStore()
+
+        ingest_weather_history_flow(
+            station_store=station_store,
+            forcing_store=store,
+            adapter=adapter,
+            clock=_fixed_clock,
+            pipeline_health_store=health,
+        )
+        ingest_weather_history_flow(
+            station_store=station_store,
+            forcing_store=store,
+            adapter=adapter,
+            clock=_fixed_clock,
+            pipeline_health_store=health,
+        )
+
+        records = health.fetch_recent(PipelineCheckType.WEATHER_HISTORY_INGEST)
+        assert len(records) == 2
+        # The first run advances the horizon from nothing to the row's
+        # valid_time (healthy); the second run is a stuck duplicate with
+        # IDENTICAL before/after MAX(valid_time) — zero effect, unhealthy.
+        assert records[0].status == PipelineHealthStatus.OK
+        assert records[1].status == PipelineHealthStatus.CRITICAL
+        assert records[1].detail["reason"] == "no_horizon_advance"
+
+    def test_second_run_with_genuinely_new_data_is_healthy(self) -> None:
+        # Guards against an over-broad fix: a second run that DOES land a
+        # later row for the targeted source (e.g. the next day's data
+        # appearing) must still be reported healthy — the before/after
+        # comparison detects advancement, not merely "ran twice".
+        station = make_station_config(code="2135", name="Aare Bern")
+        station_store = FakeStationStore()
+        station_store.store_station(station)
+        station_store.store_weather_source(_weather_source(station.id))
+
+        first_row = _row(
+            station.id,
+            parameter="precipitation",
+            source=ForcingSource.METEOSWISS_RPRELIMD.value,
+            value=5.0,
+            version="v1",
+            valid_time=_DAY,
+        )
+        second_row = _row(
+            station.id,
+            parameter="precipitation",
+            source=ForcingSource.METEOSWISS_RPRELIMD.value,
+            value=6.0,
+            version="v1",
+            valid_time=ensure_utc(_DAY + timedelta(days=1)),
+        )
+        adapter = _SpyReanalysisAdapter(rprelimd_responses=[[first_row], [second_row]])
+        store = _SupersedingForcingStore()
+        health = FakePipelineHealthStore()
+
+        ingest_weather_history_flow(
+            station_store=station_store,
+            forcing_store=store,
+            adapter=adapter,
+            clock=_fixed_clock,
+            pipeline_health_store=health,
+        )
+
+        ingest_weather_history_flow(
+            station_store=station_store,
+            forcing_store=store,
+            adapter=adapter,
+            clock=_fixed_clock,
+            pipeline_health_store=health,
+        )
+
+        records = health.fetch_recent(PipelineCheckType.WEATHER_HISTORY_INGEST)
+        assert len(records) == 2
+        assert records[0].status == PipelineHealthStatus.OK
+        assert records[1].status == PipelineHealthStatus.OK

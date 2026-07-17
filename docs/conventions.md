@@ -159,8 +159,12 @@ max_cache_age_hours = 24
 
 Each adapter class lives in `adapters/{type}.py` and satisfies the
 corresponding Protocol (`WeatherForecastSource`, `StationDataSource`,
-or `WeatherReanalysisSource`). `WeatherReanalysisSource` is retained for v1 (Nepal)
-but not implemented in v0 — training uses basin-averaged gridded data (CAMELS-CH). Config loading
+or `WeatherReanalysisSource`). `WeatherReanalysisSource` is implemented in v0
+by several `PerSourceStoreReader`/`StoreBackedReanalysisSource`/
+`HybridForcingSource` adapters (Plan 072/115b4) — training/hindcast/live
+past-dynamic forcing reads basin-averaged gridded data via the `hybrid`
+default (self-derived MeteoSwiss products; CAMELS-CH is retained only as a
+validation reference, see `historical_forcing.source` below). Config loading
 resolves `${VAR}` references from `os.environ` at startup; unresolved references
 raise immediately.
 
@@ -404,7 +408,7 @@ All status/enum columns store TEXT matching the Python enum `.value` (lowercase)
 | `parameters.aggregation_method` / `AggregationMethod` | `sum`, `mean` | — | v0+v1 |
 | `stations.station_kind` / `StationKind` | `weather`, `river`, `lake` | — | v0+v1 |
 | `pipeline_health.status` / `PipelineHealthStatus` | `ok`, `warning`, `critical` | — | v0+v1 |
-| `pipeline_health.check_type` / `PipelineCheckType` | `nwp_delivery`, `observation_freshness`, `forecast_freshness`, `flow_run_health`, `disk_usage`, `backup_freshness`, `backup_restore_test` | — | v0+v1 |
+| `pipeline_health.check_type` / `PipelineCheckType` (TEXT, not check-constrained — `types/enums.py::PipelineCheckType` is authoritative) | `nwp_delivery`, `observation_freshness`, `forecast_freshness`, `flow_run_health`, `disk_usage`, `backup_freshness`, `backup_restore_test`, `forecast_station_dark`, `alert_suppressed_fallback`, `priority_migration_audit`, `climatology_threshold_review`, `bafu_forecast_freshness`, `weather_history_ingest` *(Plan 115b4 §6A)* | — | v0+v1 |
 | `dead_letter_queue.resolution` / `DlqResolution` | `replayed`, `discarded` (NULL = unresolved) | `replayed`, `discarded` | **v1** |
 | `users.role` / `UserRole` | `org_admin`, `it_admin`, `model_admin`, `forecaster` | — | **v1** |
 | `observations.source` / `ObservationSource` | `measured`, `rating_curve_derived`, `manual_import`, `component_derived` *(v1 only)* | — | v0+v1 |

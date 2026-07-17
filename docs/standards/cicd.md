@@ -143,10 +143,59 @@ illustrates the additive-then-tighten pattern for a column that must eventually 
 `NOT NULL`: migration `0030` (115a) adds `role` **nullable**, backfills it, and applies
 a NULL-tolerant `CheckConstraint("role IS NULL OR role IN ('forecast','reanalysis')")`
 so the previous image tag can still write an unroled row during the rollback window. A
-later migration `0032` (115c) tightens the column to `NOT NULL` only once that rollback
-window has closed. Do not collapse the two into one release — the nullable step exists
-specifically so `0030` stays backwards-compatible with the pre-115a image per the rule
-above.
+later migration (115c — revision number TBD at implementation time; `0032` was taken by
+082's recap Gateway polygon-binding table, and `0033` is reserved-but-not-yet-on-`main`
+by 115b4 §5E's Release B, see below — run `alembic heads` against `main` to pick the next
+free slot) tightens the column to `NOT NULL` only once that rollback window has closed.
+Do not collapse the two into one release — the nullable step exists specifically so
+`0030` stays backwards-compatible with the pre-115a image per the rule above.
+
+**Two-release reader flip + camels-ch retirement (Plan 115b4)** — the reanalysis-reader
+default flip is deliberately isolated from the CAMELS-CH weather-binding retirement as
+TWO SEQUENCED releases on this standard deploy path (no bespoke alembic targets), because
+`init` runs `alembic upgrade head` **before** any worker/API confirms the new reader is
+actually serving. Concretely, this means the Release B migration must not merely be
+*documented* as later — it must be physically **absent from `main`'s Alembic head** until
+Release A is confirmed serving: Release A's code (this plan's `main` commit) ships with
+**no `0033` file in `alembic/versions/`**; the migration is authored on a separate branch
+(`115b5`, see `docs/plans/115b5-camels-ch-retire-migration.md`) that is merged to `main`
+**only after** the Release-A staging deploy-gate below has passed. `git log --oneline -1
+alembic/versions/` (or `alembic heads`) on `main` must show 115b4's flip with no retire
+migration until that merge happens.
+
+- **Before Release A** (§5C, distribution-shift gate): run
+  `uv run python scripts/audit_distribution_shift.py` against the target deployment's
+  `DATABASE_URL` — it enumerates every ACTIVE station/group model assignment and flags
+  any whose declared `past_dynamic_features` overlap the parameters whose SOURCE changes
+  under the flip (precipitation/temperature/temperature_min/temperature_max/
+  relative_sunshine_duration). This is a LIVE-DB check, not a repo-review inference —
+  disposition (retrain, or hold the flip for affected stations/groups) any flagged model
+  BEFORE proceeding.
+- **Release A** (§5A–5D + phase-6 loudness/guards): the hybrid parameter-drop fix, the
+  MeteoSwiss-only priority chain (no CAMELS-CH tier), and flipping
+  `DeploymentConfig.reanalysis_source` default to `"hybrid"`. **Ships with NO new
+  migration** — it is a pure code/config deploy on the existing schema (the `camels-ch`
+  weather binding, if present, is simply never read by the hybrid chain post-flip).
+  Follow the standard upgrade procedure above, then confirm on staging: `ingest-weather-history`
+  reports a non-zero effect (§6B health-by-effect, not `rows_stored`), a station serves
+  past-dynamic features via the MeteoSwiss chain, and a forecast cycle completes on the
+  new series. **A green flow is not evidence** — check the `weather_history_ingest`
+  `PipelineHealthRecord`s and a direct dashboard forcing-endpoint read.
+- **Release B** (§5E, plan `115b5`, migration `0033` on that branch only): retires the
+  `camels-ch` `station_weather_sources` binding — the `115b5` branch is merged to `main`,
+  and only THEN deployed, **only after** Release A is confirmed serving on staging (the
+  gate immediately above). Deploy on the same standard upgrade procedure (`alembic
+  upgrade head` now includes `0033`, because the merge just added it to `main`). The
+  `historical_forcing` rows tagged `camels-ch` are **not** touched by this migration — they
+  remain the Plan 115b3 validation reference + audit trail, readable by a direct
+  source-keyed fetch. Confirm after deploying: the `camels-ch` weather binding is gone, its
+  forcing rows are still readable directly, and a forecast cycle still completes.
+
+**Rollback for both releases is the standard path** (restore from backup + redeploy
+previous image tag, per the rule above) — `0033`'s `downgrade()` is a deliberate NO-OP
+(logs a warning, does not raise, keeps the migration chain mechanically traversable)
+rather than claiming a schema-level reversal it cannot honestly provide (the deleted
+binding rows' station set cannot be reconstructed from what remains in the database).
 
 **Ingest-worker rollback (Plan 098)** — if the combined deploy lands but `prefect-worker-ingest` then fails to start or crashes (e.g. missing `/data/artifacts` tmpfs, too-low `mem_limit`, missing `db_password`, or a wrong overlay path), `init` has already re-routed `ingest-observations` onto the `ingest` pool and the `default` worker no longer claims it, so the obs feed is **dead** until recovery. Restore the pre-098 state (LATE obs, not dead obs):
 

@@ -161,6 +161,7 @@ class PipelineCheckType(Enum):
     PRIORITY_MIGRATION_AUDIT = "priority_migration_audit"
     CLIMATOLOGY_THRESHOLD_REVIEW = "climatology_threshold_review"
     BAFU_FORECAST_FRESHNESS = "bafu_forecast_freshness"
+    WEATHER_HISTORY_INGEST = "weather_history_ingest"
 
 
 class NotificationChannel(Enum):

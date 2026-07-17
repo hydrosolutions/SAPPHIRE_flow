@@ -238,6 +238,69 @@ class TestOnboardFlowWithFakes:
         assert result.errors == []
 
 
+class TestOnboardFlowReanalysisSourceDefault:
+    def test_no_deployment_config_defaults_to_hybrid(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Plan 115b4 §5D: onboard_stations_flow's forcing_store is injected
+        but no ``deployment_config`` is passed and no ``SAPPHIRE_CONFIG`` env
+        var is set. The reanalysis-source mode must still resolve through
+        ``DeploymentConfig``'s own built-in default ("hybrid"), not a
+        hard-coded "single" bypass that reintroduces the double-dark
+        regression on this documented default path.
+        """
+        monkeypatch.delenv("SAPPHIRE_CONFIG", raising=False)
+        stores = _inject_stores()
+
+        from sapphire_flow.adapters.hybrid_reanalysis_factories import (
+            select_reanalysis_source as real_select_reanalysis_source,
+        )
+
+        reanalysis_calls: list[dict[str, object]] = []
+
+        def spy_select_reanalysis_source(
+            *, forcing_store: object, mode: object
+        ) -> object:
+            source = real_select_reanalysis_source(
+                forcing_store=forcing_store,
+                mode=mode,  # type: ignore[arg-type]
+            )
+            reanalysis_calls.append({"mode": mode, "source": source})
+            return source
+
+        with (
+            patch(
+                "sapphire_flow.adapters.camelsch_adapter.load_stations",
+                return_value=([], []),
+            ),
+            patch(
+                "sapphire_flow.adapters.camelsch_adapter.load_observations",
+                return_value={},
+            ),
+            patch(
+                "sapphire_flow.adapters.camelsch_adapter.load_forcing",
+                return_value={},
+            ),
+            patch(
+                "sapphire_flow.adapters.hybrid_reanalysis_factories."
+                "select_reanalysis_source",
+                spy_select_reanalysis_source,
+            ),
+        ):
+            onboard_stations_flow(
+                data_dir="./data/CAMELS_CH",
+                qc_rules=_TEST_RULES,
+                clock=_fixed_clock,
+                **stores,
+            )
+
+        assert len(reanalysis_calls) == 1
+        assert reanalysis_calls[0]["mode"] == "hybrid"
+        from sapphire_flow.adapters.hybrid_reanalysis import HybridForcingSource
+
+        assert isinstance(reanalysis_calls[0]["source"], HybridForcingSource)
+
+
 class TestDataDirResolution:
     def test_empty_data_dir_triggers_resolution(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

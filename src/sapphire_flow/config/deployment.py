@@ -108,9 +108,13 @@ class DeploymentConfig(BaseModel):
     enable_pipeline_alerts: bool = False
     threshold_check_mode: Literal["raw", "published", "both"] = "raw"
 
-    # v0b opt-in (Plan 072): "single" preserves v0a per-station single-source
-    # reads; "hybrid" chains MeteoSwiss -> CAMELS-CH per parameter at read time.
-    reanalysis_source: Literal["single", "hybrid"] = "single"
+    # Plan 115b4 §5D (Release A): default flipped "single" -> "hybrid".
+    # "single" reads a station's ONE nwp_source binding directly and can no
+    # longer see MeteoSwiss's per-product source tags (RhiresD/RprelimD/...) —
+    # the "double-dark" regression this flip fixes. "hybrid" resolves the
+    # per-parameter MeteoSwiss priority chain (Plan 115b4 §5B; no CAMELS-CH
+    # tier) at read time. "single" remains selectable as an explicit opt-out.
+    reanalysis_source: Literal["single", "hybrid"] = "hybrid"
 
     alert_model_strategy: ModelCombinationStrategy = ModelCombinationStrategy.PRIMARY
     forecast_combination_strategy: ModelCombinationStrategy = (
