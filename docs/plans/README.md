@@ -81,12 +81,18 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
   `DRAFT (stub)` — carved out of 082: the Flow-6 `_ReanalysisAdapter` Protocol fork
   (115b1 mismatch), coverage training-gate wiring, snow-forecast Flow-1 wiring, and
   the `RECAP_DG_CLIENT_TOKEN` CI-secret follow-up. Needs the `plan` workflow before READY.
-- **123** — Model-driven forcing membership — `DRAFT (stub)` — the forecast adapter
-  hardcodes a 51-member (1 fc + 50 pf) fetch and hard-aborts when `pf` is missing, but
-  Sandro's models use **`fc` control-only** and ECMWF disseminates the control ahead of
-  the perturbed members (Cycle 50r1 preserves the lag). Make membership model-driven
-  (fetch only what the FI requirement declares) + requirement-aware cycle resolution.
-  Surfaced by live-testing 082 against HRU `12300`. Needs the `plan` workflow + FI check.
+- **124** — Forecast-flow correctness fixes — `DRAFT (stub)` — **near-term priority.**
+  Pre-existing bugs in the live forecast flow surfaced by the 123 review: (1) runoff-only
+  runs trigger false NWP-staleness health; (2) station-vs-group active-assignment
+  inconsistency (station forecasts inactive assignments); (3) mixed-run forcing columns break
+  FI `SINGLE` consumers. Verify red-first → fix. **Gates 123** ("can't afford bugs"; fc-first).
+- **123** — Model-driven forcing membership — `DRAFT (PAUSED)` — the forecast adapter
+  hardcodes a 51-member (1 fc + 50 pf) fetch and hard-aborts when `pf` is missing; make
+  membership model-driven (`NONE`/`CONTROL_ONLY`/`ENSEMBLE`) using the existing FI
+  `ensemble_mode` signal (**no FI gap** — review-confirmed). Developed by the `plan` workflow
+  but **ESCALATED** (2 blockers + 4 majors); **PAUSED behind 124**. Critical path = `fc`/
+  control-only first, `pf`/ensemble deferred (non-critical). Surfaced by live-testing 082 vs
+  HRU `12300`.
 - **047** — Nepal v1 data sources umbrella (IFS, DHM, ERA5-Land) — `DRAFT (stub)` —
   depends on 081/082.
 - **117** — Basin/static artifact architecture alignment — `READY` — documents the

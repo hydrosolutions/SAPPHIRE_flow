@@ -1,13 +1,32 @@
 ---
 id: 123
 title: Model-driven forcing membership (fetch what models require; run-level cycle resolution)
-status: DRAFT
-depends_on: [082]
+status: DRAFT (PAUSED)
+depends_on: [082, 124]
 owner: unassigned
 created: 2026-07-17
 ---
 
 # Plan 123 — Model-driven forcing membership
+
+> **PAUSED 2026-07-17 (owner decision).** The `plan` workflow escalated (stalled at
+> 2 blockers + 4 majors — see "Open blockers" below). Root realisation: this is a
+> deeper forecast-flow change than "fetch fc", and several residual issues are
+> **pre-existing correctness bugs in the live forecast flow** (`run_forecast_cycle.py`),
+> not new to this feature. **Sequence: fix the pre-existing bugs FIRST ([[Plan 124]]),
+> then resume 123.**
+>
+> **Critical path (owner):** deployment-readiness is **`fc`/control-only first**; the
+> `pf`/ENSEMBLE membership is **not currently critical** (Sandro's live models are
+> control-only). But *"we cannot afford bugs"* — so the pre-existing forecast-flow
+> correctness fixes (Plan 124) gate everything. When 123 resumes, scope its critical
+> part to `CONTROL_ONLY` + `NONE` (make the live `fc`-only path work, no hard-abort);
+> treat full `ENSEMBLE`/mixed-run membership as a deferred, non-critical follow-on.
+>
+> **Pending decisions before 123 can be READY** (the grill-me): (1) does 123 own the
+> ENSEMBLE mixed-run column normalization, or is that carved to 124/a follow-on?
+> (2) the bare-vs-suffixed forcing-column contract (D8); (3) confirm the `fc`-first /
+> `pf`-later scope split. Do NOT implement 123 until 124 lands and these are decided.
 
 > Surfaced by live-testing the merged Plan 082 adapter against the real Gateway
 > HRU `12300` (2026-07-17). Touches merged adapter behaviour and the forecast
