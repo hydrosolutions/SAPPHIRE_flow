@@ -745,18 +745,35 @@ class RecapGatewayForecastAdapter:
                     prior=cycle_source_run,
                 )
                 for member in range(_PF_MEMBER_MIN, _PF_MEMBER_MAX + 1):
-                    cycle_source_run = self._accumulate_member(
-                        acc,
-                        refs_by_polygon,
-                        variable=variable,
-                        ifs_name=ifs_name,
-                        hru_name=hru_name,
-                        cycle_time=effective_cycle_time,
-                        ifs_type="pf",
-                        member=str(member),
-                        member_id=_pf_member_id(member),
-                        prior=cycle_source_run,
-                    )
+                    # Plan 127 Fix 1: ECMWF disseminates fc before pf, so during
+                    # that window every pf member is absent. Tolerate ONLY a
+                    # data-unavailable pf fetch (never config/auth/other errors)
+                    # -- log and stop probing pf for this variable, keeping fc
+                    # (+ any pf members already accumulated) rather than
+                    # aborting the whole NWP fetch. The first missing pf member
+                    # is enough (all pf are absent together in that window), so
+                    # this costs ~1 wasted call/cycle, not 50.
+                    try:
+                        cycle_source_run = self._accumulate_member(
+                            acc,
+                            refs_by_polygon,
+                            variable=variable,
+                            ifs_name=ifs_name,
+                            hru_name=hru_name,
+                            cycle_time=effective_cycle_time,
+                            ifs_type="pf",
+                            member=str(member),
+                            member_id=_pf_member_id(member),
+                            prior=cycle_source_run,
+                        )
+                    except RecapDataUnavailableError:
+                        log.warning(
+                            "recap.pf_unavailable_control_only",
+                            hru_name=hru_name,
+                            variable=variable.canonical,
+                            member=member,
+                        )
+                        break
 
         cycle = _normalize_source_run_to_utc(cycle_source_run) or effective_cycle_time
         return {
