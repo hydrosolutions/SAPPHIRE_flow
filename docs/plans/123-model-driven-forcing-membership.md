@@ -9,24 +9,50 @@ created: 2026-07-17
 
 # Plan 123 — Model-driven forcing membership
 
-> **PAUSED 2026-07-17 (owner decision).** The `plan` workflow escalated (stalled at
-> 2 blockers + 4 majors — see "Open blockers" below). Root realisation: this is a
-> deeper forecast-flow change than "fetch fc", and several residual issues are
-> **pre-existing correctness bugs in the live forecast flow** (`run_forecast_cycle.py`),
-> not new to this feature. **Sequence: fix the pre-existing bugs FIRST ([[Plan 124]]),
-> then resume 123.**
+> **PAUSED 2026-07-17; re-scoped 2026-07-18 (owner decisions).** The `plan` workflow
+> escalated (stalled at 2 blockers + 4 majors — see "Open blockers"). The 124 review
+> then re-assessed the "pre-existing bugs": only the **active-assignment** inconsistency
+> is a standalone live bug ([[Plan 124]], now narrowed to that one fix). The other two
+> are **folded into THIS plan** — see "Folded-in from 124" below:
+> - **Staleness gating** (ex-124 #1): only a bug once `NONE` membership skips the fetch by
+>   model requirement — so it lives with 123's `NONE` handling, gated on `not skip_nwp_fetch`.
+> - **Control-only forcing-column normalization** (ex-124 #3): this **is** D8; key it on a
+>   control-only fetch (`member_id ∈ {None,0}` run-wide), not "member 0 present."
 >
-> **Critical path (owner):** deployment-readiness is **`fc`/control-only first**; the
-> `pf`/ENSEMBLE membership is **not currently critical** (Sandro's live models are
-> control-only). But *"we cannot afford bugs"* — so the pre-existing forecast-flow
-> correctness fixes (Plan 124) gate everything. When 123 resumes, scope its critical
-> part to `CONTROL_ONLY` + `NONE` (make the live `fc`-only path work, no hard-abort);
-> treat full `ENSEMBLE`/mixed-run membership as a deferred, non-critical follow-on.
+> **Critical path (owner):** deployment-readiness is **`fc`/control-only first**; `pf`/ENSEMBLE
+> membership is **not currently critical** (Sandro's live models are control-only). Sequence:
+> land 124 (active-assignment) → resume 123 scoped to `CONTROL_ONLY` + `NONE` (make the live
+> `fc`-only path work: no hard-abort, correct staleness gating, bare control column for FI
+> `SINGLE`) → defer full `ENSEMBLE`/mixed-run membership as a non-critical follow-on.
 >
-> **Pending decisions before 123 can be READY** (the grill-me): (1) does 123 own the
-> ENSEMBLE mixed-run column normalization, or is that carved to 124/a follow-on?
-> (2) the bare-vs-suffixed forcing-column contract (D8); (3) confirm the `fc`-first /
-> `pf`-later scope split. Do NOT implement 123 until 124 lands and these are decided.
+> **Pending decisions before 123 can be READY** (the grill-me): (1) the bare-vs-suffixed
+> forcing-column contract (D8) — bare column only for a control-only fetch, suffixed retained
+> for ensemble; (2) confirm the `fc`-first / `pf`-later scope split; (3) the residual blockers/
+> majors below. Do NOT implement 123 until these are decided (124 may land first, independently).
+
+## Folded-in from Plan 124 (2026-07-18)
+
+Two forecast-flow issues moved here from the original 3-defect Plan 124, because both only become
+real *as part of* 123's model-driven membership (verified during the 124 review):
+
+- **NWP-staleness gating (ex-124 #1).** Today `_check_nwp_grid_staleness` runs whenever
+  `nwp_enabled` (`run_forecast_cycle.py:1628`), but `skip_nwp_fetch` is NOT model-driven, so there
+  is no observable false-positive today. Once 123's `NONE` membership skips the fetch because no
+  assigned model needs NWP, staleness must be gated on **`not skip_nwp_fetch`** (NOT
+  `not effective_runoff_only` — that would also suppress the `nwp_unavailable_runtime` case, whose
+  `NoCycleAvailableError` handler writes NO health record, so the staleness check is the *only*
+  detector of a genuine "NWP needed but unavailable" failure; deleting it = a false-negative on the
+  "can't afford" axis). Acceptance: a `NONE` run emits no `nwp_grid_stale`; an NWP-needed run with
+  an unavailable cycle STILL degrades.
+- **Control-only forcing-column normalization = D8 (ex-124 #3).** `_pivot_nwp_records`
+  (`operational_inputs.py:181`) emits suffixed columns whenever any record has a `member_id`; since
+  `fc`=`member_id=0`, a control-only fetch yields `precipitation_0`, but FI `SINGLE`'s
+  `_frame_with_column` (`forecast_interface.py:987`) needs bare `precipitation` → `ConfigurationError`
+  — blocks Sandro's control-only models. Fix keys on **control-only fetch** (`{r.member_id} ⊆ {None,0}`
+  run-wide), NOT "member 0 present": in a full 51-member Recap ENS, member 0 is a normal ensemble
+  member with no control status, so aliasing it to a bare column would silently change `SINGLE`
+  semantics. Acceptance: (a) control-only run → bare column present, FI `SINGLE` forecasts;
+  (b) full-ensemble run incl. member 0 → NO bare column (suffixed only), fan-out intact.
 
 > Surfaced by live-testing the merged Plan 082 adapter against the real Gateway
 > HRU `12300` (2026-07-17). Touches merged adapter behaviour and the forecast
