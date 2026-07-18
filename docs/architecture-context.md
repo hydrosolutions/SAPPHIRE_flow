@@ -1725,7 +1725,7 @@ station_weather_sources:
   nwp_source: TEXT
   extraction_type: SpatialRepresentation   # 'basin_average', 'elevation_band', or 'point' only — 'gridded' is not valid here (gridded data is either consumed raw by the model or extracted into one of these three tabular types)
   status: WeatherSourceStatus DEFAULT 'active'  # 'active' | 'inactive'
-  role: WeatherSourceRole                  # 'forecast' | 'reanalysis' — required at the type level, NULL-tolerant in the DB until migration 0032 (Plan 115a/115c)
+  role: WeatherSourceRole                  # 'forecast' | 'reanalysis' — required at the type level, NULL-tolerant in the DB until the Plan 115c NOT-NULL cleanup (next free revision after 0033; TBD)
   PK: (station_id, nwp_source)
 ```
 

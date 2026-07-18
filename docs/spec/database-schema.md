@@ -90,7 +90,7 @@ erDiagram
         TEXT nwp_source PK
         TEXT extraction_type "point | basin_average | elevation_band"
         TEXT status "active | inactive, default active"
-        TEXT role "forecast | reanalysis, NULL-tolerant until 0032"
+        TEXT role "forecast | reanalysis, NULL until 115c cleanup (rev TBD)"
     }
 
     station_groups {
@@ -545,7 +545,7 @@ erDiagram
         TEXT nwp_source PK
         TEXT extraction_type "point | basin_average | elevation_band"
         TEXT status "active | inactive, default active"
-        TEXT role "forecast | reanalysis, NULL-tolerant until 0032"
+        TEXT role "forecast | reanalysis, NULL until 115c cleanup (rev TBD)"
     }
 
     station_groups {

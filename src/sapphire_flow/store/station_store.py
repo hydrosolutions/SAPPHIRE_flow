@@ -386,8 +386,9 @@ def _row_to_assignment(row: sa.engine.row.RowMapping) -> ModelAssignment:
 def _row_to_weather_source(row: sa.engine.row.RowMapping) -> StationWeatherSource:
     role_raw = row["role"]
     if role_raw is None:
-        # Plan 115c: delete with revision 0032 — only reachable if a
-        # pre-115a image wrote this row during the rollback window.
+        # Plan 115c: delete with the NOT-NULL cleanup migration (next free
+        # revision after 0033; TBD) — only reachable if a pre-115a image
+        # wrote this row during the rollback window.
         nwp_source = row["nwp_source"]
         role = _legacy_role_for_source(nwp_source)
         log.warning(

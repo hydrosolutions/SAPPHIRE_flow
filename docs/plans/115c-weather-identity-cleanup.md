@@ -3,13 +3,13 @@ status: DRAFT
 created: 2026-07-14
 plan: 115c
 parent: 115
-title: Weather-source identity cleanup — 0032 NOT NULL, API/dashboard role, doc sync
+title: Weather-source identity cleanup — NOT NULL (next free revision after 0033), API/dashboard role, doc sync
 scope: Tightening + surfaces. Non-gating; ships after the rollback window closes.
 depends_on: [115a, 115b]
 blocks: []
 ---
 
-# Plan 115c — Cleanup: `0032`, surfaces, docs
+# Plan 115c — Cleanup: NOT NULL (revision TBD), surfaces, docs
 
 > Shared context and locked decisions live in the umbrella:
 > [Plan 115](115-weather-source-identity-model.md).
@@ -42,7 +42,7 @@ path — a deployment judgement, not a timer).
 2. Re-run the backfill for stragglers.
 3. `alter_column role nullable=False`.
 4. Tighten the check to `role IN ('forecast','reanalysis')`.
-5. **Delete the `_row_to_weather_source` NULL shim** (marked `# Plan 115c: delete with revision 0032`).
+5. **Delete the `_row_to_weather_source` NULL shim** (marked `# Plan 115c: delete with the NOT-NULL cleanup migration`).
 
 ### 2. API + dashboard surface the role
 
@@ -59,14 +59,14 @@ site), so it is an explicit task:
 Note `api/routes/stations.py:266` reflects the table and returns raw row dicts, so it will surface
 `role` automatically — including `NULL` during the migration window. Confirm that renders sanely.
 
-### 3. Doc sync — `0032` only
+### 3. Doc sync — the NOT-NULL migration only
 
 *(The `role` column's docs — `database-schema.md`, `architecture-context.md`, `conventions.md`,
 `touchpoint-maps.md` — moved to **115a**, where the column is actually added. Review round 6 found
 that deferring them here violated "every code change updates affected docs" and made 115a
-non-standalone. 115c keeps only what `0032` itself changes.)*
+non-standalone. 115c keeps only what the NOT-NULL migration itself changes.)*
 
-- `docs/standards/cicd.md` — close out the `0030`→`0032` sequence: the rollback window is over, the
+- `docs/standards/cicd.md` — close out the `0030`→NOT-NULL sequence: the rollback window is over, the
   NULL shim is gone, `role` is NOT NULL.
 - `docs/spec/database-schema.md` — flip `role` from nullable to NOT NULL in the column description.
 
@@ -80,8 +80,8 @@ trap for the next agent.
 ## Tests
 
 - `WeatherSourceResponse` exposes `role`; the detail page renders the Role column.
-- `0032` refuses to complete if any NULL row carries an unknown source name.
-- After `0032`, a `StationWeatherSource` row cannot be written without a role (DB-level).
+- The NOT-NULL migration refuses to complete if any NULL row carries an unknown source name.
+- After the NOT-NULL migration, a `StationWeatherSource` row cannot be written without a role (DB-level).
 
 ## Exit gates
 
