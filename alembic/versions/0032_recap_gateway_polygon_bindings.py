@@ -26,8 +26,10 @@ earmarked revision 0032 for the ``station_weather_sources.role`` NOT NULL
 tightening. 082 landed first and takes 0032 here (chronological landing
 order, same pattern by which 0031 already superseded an earlier prose
 earmark) — 115c's migration must take the **next free revision at
-implementation time**, not a hardcoded number (115b5 / Release B holds the
-camels-ch retire migration and will claim a revision when it lands).
+implementation time**, not a hardcoded number. 115b5 / Release B has since
+claimed revision 0033 for the camels-ch retire migration
+(``0033_retire_camels_ch_weather_binding.py``), so 115c takes the next free
+slot after that.
 """
 
 from collections.abc import Sequence

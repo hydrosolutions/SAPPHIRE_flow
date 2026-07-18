@@ -27,13 +27,12 @@ constraint.
 Revision `0032` was then taken by Plan 082 Task 2D — the recap Gateway polygon-binding table — which
 landed before this cleanup and left a note earmarking `0032` for this plan's NOT NULL tightening;
 that earmark is now itself stale.
-`0033` is RESERVED, not yet claimed on `main`: Plan 115b4 §5E's camels-ch weather-binding retirement
-migration (Release B of the reader flip) is authored on a separate branch (`115b5`,
-`docs/plans/115b5-camels-ch-retire-migration.md`) and stays OFF `main` until the Release-A staging
-deploy-gate passes (115b4 round-1/round-2 blocker: a retire migration must never share `main`'s
-Alembic head with the un-confirmed flip). Whichever of Release B (115b5) or this cleanup merges to
-`main` FIRST takes `0033`; the other takes the next free slot after it. Do not hardcode a revision
-number here — run `alembic heads` against `main` at implementation time and take the next free slot.)*
+`0033` has been claimed by Plan 115b5's camels-ch weather-binding retirement migration (Release B of
+the reader flip, `docs/plans/115b5-camels-ch-retire-migration.md`,
+`0033_retire_camels_ch_weather_binding.py`) — it landed after Release A was confirmed serving on
+staging (2026-07-17). This cleanup's migration takes the **next free revision after `0033`**. Do not
+hardcode a revision number here — run `alembic heads` against `main` at implementation time and take
+the next free slot.)*
 
 Ships **after the rollback window closes** (i.e. once no pre-115a image remains in the rollback
 path — a deployment judgement, not a timer).

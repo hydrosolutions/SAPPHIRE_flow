@@ -44,8 +44,8 @@ _KNOWN_REANALYSIS_SOURCES = frozenset({"camels-ch"})
 
 # Plan 115c: delete at the next free revision at implementation time (once role
 # is NOT NULL, this shim and its allowlist are dead code). Do not hardcode a
-# number — revisions land in chronological order (115b5 / Release B holds the
-# camels-ch retire migration and claims a revision when it lands).
+# number — 115b5 / Release B already claimed revision 0033 for the camels-ch
+# retire migration; 115c takes the next free slot after that.
 def _legacy_role_for_source(nwp_source: str) -> WeatherSourceRole:
     if nwp_source in _KNOWN_FORECAST_SOURCES:
         return WeatherSourceRole.FORECAST
