@@ -32,6 +32,7 @@ from sapphire_flow.types.enums import (
     ForcingType,
     ForecastStatus,
     ModelArtifactStatus,
+    ModelAssignmentStatus,
     ObservationSource,
     PipelineCheckType,
     QcStatus,
@@ -992,8 +993,8 @@ class FakeStationGroupStore:
     def fetch_groups_for_model(self, model_id: ModelId) -> list[StationGroup]:
         assigned_group_ids = {
             group_id
-            for (group_id, mid) in self._group_model_assignments
-            if mid == model_id
+            for (group_id, mid), assignment in self._group_model_assignments.items()
+            if mid == model_id and assignment.status == ModelAssignmentStatus.ACTIVE
         }
         return [g for g in self._groups.values() if g.id in assigned_group_ids]
 

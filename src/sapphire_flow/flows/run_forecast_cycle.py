@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar, cast
 from uuid import uuid4
 
 import structlog
@@ -713,6 +713,26 @@ def _check_nwp_grid_staleness(
         cycle_time=cycle_time,
     )
     return True
+
+
+class _StatusBearingAssignment(Protocol):
+    """Structural shape shared by `ModelAssignment` and `GroupModelAssignment`."""
+
+    status: ModelAssignmentStatus
+
+
+_AssignmentT = TypeVar("_AssignmentT", bound=_StatusBearingAssignment)
+
+
+def _active_only(assignments: list[_AssignmentT]) -> list[_AssignmentT]:
+    """Filter station/group model-assignments down to ACTIVE only.
+
+    This is the single shared definition of "active-only" for the
+    operational (forecasting / input-assembly / alert-priority) consumers.
+    It must NOT be applied to `_check_fallback_priority_drift`, which is a
+    Plan 100 all-status DB-drift detector by design.
+    """
+    return [a for a in assignments if a.status == ModelAssignmentStatus.ACTIVE]
 
 
 def _check_fallback_priority_drift(
@@ -1441,6 +1461,14 @@ def run_forecast_cycle_flow(
             s.id: station_store.fetch_model_assignments(s.id)  # type: ignore[union-attr]
             for s in operational
         }
+        # ALL-status view above stays as-is for `_check_fallback_priority_drift`
+        # (Plan 100's locked all-status DB-drift contract). The ACTIVE-only view
+        # below is what forecasting, input assembly, and alert-priority consume
+        # (Plan 124 — station path must match the group path's active-only rule).
+        active_model_assignments: dict[StationId, list] = {
+            sid: _active_only(assignments)
+            for sid, assignments in model_assignments.items()
+        }
         all_thresholds: dict[StationId, list] = {
             s.id: station_store.fetch_thresholds(s.id)  # type: ignore[union-attr]
             for s in operational
@@ -1456,11 +1484,13 @@ def run_forecast_cycle_flow(
             s.id: s.water_level_datum_masl for s in operational
         }
 
-        # Build priority index for alert checker
+        # Build priority index for alert checker (active-only, Plan 124)
         all_priorities: dict[StationId, dict[ModelId, int]] = {
-            s.id: {a.model_id: a.priority for a in model_assignments[s.id]}
+            s.id: {a.model_id: a.priority for a in active_model_assignments[s.id]}
             for s in operational
         }
+        # Drift check reads the RAW all-status dict — Plan 100's locked
+        # all-status DB-drift contract. Do NOT swap in active_model_assignments.
         fallback_priority_drift = _check_fallback_priority_drift(
             model_assignments,
             group_store,
@@ -1700,7 +1730,7 @@ def run_forecast_cycle_flow(
             structlog.contextvars.bind_contextvars(station_id=str(sid))
             station_t0 = time.perf_counter()
 
-            assignments = model_assignments[sid]
+            assignments = active_model_assignments[sid]
             if not assignments:
                 log.debug("forecast_cycle.no_assignments")
                 structlog.contextvars.unbind_contextvars("station_id")
@@ -2032,11 +2062,8 @@ def run_forecast_cycle_flow(
                         group.id
                     )
                     active_assignments = sorted(
-                        (
-                            assignment
-                            for assignment in group_assignments
-                            if assignment.model_id == model_id
-                            and assignment.status == ModelAssignmentStatus.ACTIVE
+                        _active_only(
+                            [a for a in group_assignments if a.model_id == model_id]
                         ),
                         key=lambda assignment: assignment.priority,
                     )
