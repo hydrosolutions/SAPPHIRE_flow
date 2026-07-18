@@ -156,3 +156,15 @@ Extracted from 115b4 §5E; Release A deployed + confirmed serving 2026-07-17 (ga
 for an in-migration guard, 0023/0030 precedent) and an independent Codex review then caught the
 load-bearing correctness issue: the guard/delete predicate must match the reader's effective-membership
 (role-only, no status filter, NULL→legacy-reanalysis). READY (owner, 2026-07-18) — implementation authorised; hold at PR; deploy as the separate Release B.
+
+**Post-implementation fixer round (2026-07-18):** an independent Codex pass over the committed diff
+caught a gap the plan itself never scoped — `services/onboarding.py` Step 4b wrote a fresh
+`camels-ch`/POINT `station_weather_sources` REANALYSIS row from CAMELS `historical_forcing` on
+*every* onboarding run, so any future CAMELS-based onboarding would silently re-create the binding
+`0033` just deleted (migrations are one-shot; the DB has no lasting memory of the retirement).
+Fixed: Step 4b now skips the `station_weather_sources` write when `forcing[0].source == "camels-ch"`
+(still stores the `historical_forcing` rows — 115b3 validation reference + audit trail — and still
+writes the non-weather `icon_ch2_eps`/BASIN_AVERAGE forecast binding). `docs/touchpoint-maps.md`'s
+"three paths write MeteoSwiss bindings" note updated to two (the camels-ch path no longer exists).
+Also added a migration-0033 positive case (inactive surviving MeteoSwiss binding still passes) and
+fixed a stale revision-ownership note in `0030_weather_source_role.py`'s docstring.

@@ -333,6 +333,57 @@ class TestMigration0033GuardPassesAndDeletesOnlyTheBinding:
             "(115b3 validation reference + audit trail)"
         )
 
+    def test_deletes_camels_ch_when_survivor_meteoswiss_binding_is_inactive(
+        self, migration_engine: tuple[sa.Engine, str]
+    ) -> None:
+        """The survivor subquery has NO ``status`` filter (matches
+        ``fetch_reanalysis_bindings`` exactly). An inactive MeteoSwiss
+        reanalysis binding still counts as a surviving binding, so 0033 must
+        pass and delete only camels-ch.
+
+        Soundness: fails against a future regression that adds a
+        ``status = 'active'`` filter to the survivor subquery — that variant
+        would wrongly treat the station as stranded and raise instead of
+        deleting.
+        """
+        from alembic import command
+
+        engine, url = migration_engine
+        cfg = _alembic_cfg(url)
+        command.upgrade(cfg, "0032")
+
+        with engine.begin() as conn:
+            station_id = _seed_station(conn, code="INACTSURV-01", seed=108)
+            _insert_weather_source(
+                conn,
+                station_id=station_id,
+                nwp_source="camels-ch",
+                role="reanalysis",
+            )
+            _insert_weather_source(
+                conn,
+                station_id=station_id,
+                nwp_source="meteoswiss_open_data_reanalysis",
+                role="reanalysis",
+                status="inactive",
+            )
+
+        command.upgrade(cfg, "0033")
+
+        with engine.connect() as conn:
+            remaining = (
+                conn.execute(
+                    sa.select(station_weather_sources.c.nwp_source).where(
+                        station_weather_sources.c.station_id == station_id
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+        assert "camels-ch" not in remaining
+        assert "meteoswiss_open_data_reanalysis" in remaining
+
 
 class TestMigration0033HybridReaderStillServesAfterRetire:
     def test_positive_station_resolves_reanalysis_forcing_via_meteoswiss_binding(

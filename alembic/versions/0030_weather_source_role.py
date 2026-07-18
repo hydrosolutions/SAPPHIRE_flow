@@ -8,8 +8,11 @@ Plan 115a. Adds a NULL-tolerant ``role`` column to ``station_weather_sources``
 and backfills it from ``nwp_source``. NULL-tolerant so a previous-image
 container can still write rows during the rollback window (`cicd.md` §
 Rollback: backwards-compatible for one version). Tightening to NOT NULL is
-Plan 115c (revision 0033 — 0031 is taken by Plan 115b1's parameter seed and
-0032 by Plan 082's §5a mapping table, `0032_recap_gateway_polygon_bindings.py`).
+Plan 115c, which takes the next free revision after 0033 (0031 is taken by
+Plan 115b1's parameter seed, 0032 by Plan 082's §5a mapping table
+(`0032_recap_gateway_polygon_bindings.py`), and 0033 by Plan 115b5's
+camels-ch weather-binding retirement,
+`0033_retire_camels_ch_weather_binding.py`).
 
 The backfill allowlist below MUST match the one in
 ``store/station_store.py``'s ``_row_to_weather_source`` NULL-role shim — both
