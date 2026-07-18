@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-07-17
 plan: 115b5
 parent: 115b
@@ -155,4 +155,4 @@ Extracted from 115b4 §5E; Release A deployed + confirmed serving 2026-07-17 (ga
 2026-07-18 after the `/plan` run over-engineered a standalone init-guard script (reviewers rejected it
 for an in-migration guard, 0023/0030 precedent) and an independent Codex review then caught the
 load-bearing correctness issue: the guard/delete predicate must match the reader's effective-membership
-(role-only, no status filter, NULL→legacy-reanalysis). DRAFT — owner READY before implement.
+(role-only, no status filter, NULL→legacy-reanalysis). READY (owner, 2026-07-18) — implementation authorised; hold at PR; deploy as the separate Release B.
