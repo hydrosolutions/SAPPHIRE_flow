@@ -90,13 +90,15 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
 - **125** — Inactive assignments fully inert — `DRAFT (stub)` — follow-up to 124: also make INACTIVE
   invisible to the fallback-priority-drift detector, which **requires an owner-ratified supersession
   of Plan 100 C1c**. Coherence/cleanup; not deployment-critical. Depends on 124.
-- **123** — Model-driven forcing membership — `DRAFT (PAUSED)` — the forecast adapter
-  hardcodes a 51-member (1 fc + 50 pf) fetch and hard-aborts when `pf` is missing; make
-  membership model-driven (`NONE`/`CONTROL_ONLY`/`ENSEMBLE`) using the existing FI
-  `ensemble_mode` signal (**no FI gap** — review-confirmed). `plan` workflow **ESCALATED**
-  (2 blockers + 4 majors). **Now also owns** the ex-124 NWP-staleness gating + D8 control-only
-  forcing-column normalization. Critical path = `fc`/control-only first, `pf`/ensemble deferred.
-  Surfaced by live-testing 082 vs HRU `12300`.
+- **123** — Model-driven forcing membership (**CONTROL_ONLY + NONE**) — `DRAFT` —
+  **THE deployment-critical forcing item; re-scoped 2026-07-18 to the `fc`-first slice.** Decide
+  run-level membership from the ACTIVE models' FI `ensemble_mode`: `NONE` → skip fetch + gate
+  staleness; `CONTROL_ONLY` → fetch `fc` only, skip `pf`, no abort + D8 bare-column normalization
+  so FI `SINGLE` (Sandro's models) can consume it. **ENSEMBLE left unchanged** (deferred to 126).
+  No FI gap (signal already exists). Makes the live `fc`-only Nepal path actually forecast.
+- **126** — Ensemble forcing membership — `DRAFT (stub)` — deferred from 123: requirement-aware
+  complete-ensemble cycle resolution (`fc`-before-`pf` window) + mixed-run bare+suffixed columns.
+  **Not deployment-critical** (no ensemble models in the live Nepal deployment yet). Depends on 123.
 - **047** — Nepal v1 data sources umbrella (IFS, DHM, ERA5-Land) — `DRAFT (stub)` —
   depends on 081/082.
 - **117** — Basin/static artifact architecture alignment — `READY` — documents the
