@@ -81,12 +81,15 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
   `DRAFT (stub)` — carved out of 082: the Flow-6 `_ReanalysisAdapter` Protocol fork
   (115b1 mismatch), coverage training-gate wiring, snow-forecast Flow-1 wiring, and
   the `RECAP_DG_CLIENT_TOKEN` CI-secret follow-up. Needs the `plan` workflow before READY.
-- **124** — Station-vs-group active-assignment consistency — `DRAFT` — **narrowed 2026-07-18
-  to ONE bounded fix:** the station path forecasts INACTIVE model-assignments while the group
-  path filters `ACTIVE`. (The original 3-defect version's other two — NWP-staleness gating +
-  control-only forcing-column normalization — were **folded into 123**, since they only become
-  real as part of 123's membership work.) Small; likely `implement`-able directly with a
-  red-first test after the `plan` pass confirms call-site impact.
+- **124** — Station active-assignment consistency — `DRAFT` — **scope-locked, ready to implement
+  directly (owner 2026-07-18).** NARROW: INACTIVE station assignments stop forecasting + leave the
+  alert-priority index (match the group path); the fallback-priority-drift health check stays
+  **all-status** (Plan 100 untouched). Fix = a separate active-filtered view for forecasting/alerts,
+  raw dict kept for drift. (`plan` workflow escalated 3× by over-scoping a tiny fix — implementing
+  directly with a red-first test instead.) Store stays all-status (real callers); no group-side bug.
+- **125** — Inactive assignments fully inert — `DRAFT (stub)` — follow-up to 124: also make INACTIVE
+  invisible to the fallback-priority-drift detector, which **requires an owner-ratified supersession
+  of Plan 100 C1c**. Coherence/cleanup; not deployment-critical. Depends on 124.
 - **123** — Model-driven forcing membership — `DRAFT (PAUSED)` — the forecast adapter
   hardcodes a 51-member (1 fc + 50 pf) fetch and hard-aborts when `pf` is missing; make
   membership model-driven (`NONE`/`CONTROL_ONLY`/`ENSEMBLE`) using the existing FI

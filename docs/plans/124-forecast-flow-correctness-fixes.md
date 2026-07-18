@@ -1,86 +1,93 @@
 ---
 id: 124
-title: Station-vs-group active-assignment consistency (forecast-flow correctness)
+title: Station active-assignment consistency (forecasting + alert-priority)
 status: DRAFT
 depends_on: []
 owner: unassigned
 created: 2026-07-17
 ---
 
-# Plan 124 — Station-vs-group active-assignment consistency
+# Plan 124 — Station active-assignment consistency
 
-> **Narrowed 2026-07-18 (owner).** Originally a 3-defect "pre-existing forecast-flow bugs"
-> stub. The Plan 123 `plan`-workflow review re-assessed those: only the active-assignment
-> inconsistency (below) is a genuine, standalone, currently-live correctness bug. The other
-> two were **folded into [[Plan 123]]**: the NWP-staleness gating (defect #1) only becomes real
-> once 123 introduces model-requirement-driven skip (`NONE` membership), and the control-only
-> forcing-column normalization (defect #3 / D8) is part of 123's control-only slice. So 124 is
-> now **one bounded fix** — small enough that it can likely go straight to `implement` with a
-> red-first test after this `plan` pass confirms the call-site impact.
+> **Scope locked (owner, 2026-07-18) — ready to implement directly** (no further `plan`
+> rounds; the `plan` workflow kept over-scoping this tiny fix). NARROW scope only: make INACTIVE
+> station model-assignments stop **forecasting** and stop appearing in the **alert-priority
+> index**. The fallback-priority-drift **health** check stays **all-status** (Plan 100's locked
+> DB-drift contract is NOT touched here). Making inactive assignments *fully* inert — incl. the
+> drift detector — is a **separate follow-up** ([[Plan 125]]) that must supersede Plan 100 C1c.
 
 ## Problem
 
 The station and group forecast paths treat model-assignment **status** inconsistently:
 
 - `StationStore.fetch_model_assignments` returns **all** statuses, unfiltered
-  (`src/sapphire_flow/store/station_store.py:212` — `select … where station_id == …`, no status
-  predicate).
-- The **station** path consumes every fetched assignment as-is — batch-fetched at
-  `src/sapphire_flow/flows/run_forecast_cycle.py:1440-1443` and used for input-superset assembly
-  and forecasting (`src/sapphire_flow/services/run_station_forecast.py:327`), with **no**
-  assignment-status filter anywhere on the path (grep-confirmed clean).
-- The **group** path filters to `status == ModelAssignmentStatus.ACTIVE`
-  (`src/sapphire_flow/flows/run_forecast_cycle.py:2039`).
+  (`store/station_store.py:212`).
+- The **station** path consumes the batch-fetched dict as-is (`flows/run_forecast_cycle.py:1440-1443`)
+  with **no** status filter on forecasting/assembly (`:1703`, `services/run_station_forecast.py:327`
+  only sorts by priority — grep-clean of any status check).
+- The **group** path filters `status == ModelAssignmentStatus.ACTIVE` at point-of-use
+  (`flows/run_forecast_cycle.py:2034-2039`).
 
-**Consequence:** an **INACTIVE** station model-assignment is still forecast on the station path,
-i.e. a retired/disabled model keeps producing operational forecasts — while the same status on a
-group assignment is correctly excluded. This is a live correctness inconsistency, not latent.
+**Consequence:** an **INACTIVE** station assignment is still forecast (a retired/disabled model
+keeps producing operational forecasts), while the same status on a group assignment is correctly
+excluded. Live inconsistency, not latent. `ModelAssignmentStatus` has only `ACTIVE`/`INACTIVE`, so
+"filter to active" fully defines the intended behaviour. (Re-confirmed against `main`, 2026-07-18.)
 
-Scope is bounded: `ModelAssignmentStatus` has only `ACTIVE` / `INACTIVE`, so "filter to active"
-fully defines the intended behaviour.
+## Goal (narrow)
 
-## Verification (2026-07-17, orchestrator — CONFIRMED against the code)
+Only `ACTIVE` station model-assignments drive **forecasting**, **input assembly**, and the
+**alert-priority index**. INACTIVE assignments produce no forecasts and no alert-priority entries.
 
-`fetch_model_assignments` (`station_store.py:212`) has no status filter; the station path
-(`run_forecast_cycle.py:1440-1443`) consumes all statuses and `run_station_forecast.py` applies no
-status filter (grep clean); the group path filters `ACTIVE` (`run_forecast_cycle.py:2039`). The
-asymmetry is real and reproducible: an inactive station assignment reaches forecasting today.
+## What stays UNCHANGED (explicit non-goals — verified boundaries)
 
-## Goal
+- **`fetch_model_assignments` stays all-status.** Filtering it in the store would break real
+  callers: onboarding's skip-if-inactive idempotency (`services/model_onboarding.py:869-878`; PK
+  `(station_id, model_id)` at `db/metadata.py:593`, upsert at `store/station_store.py:224` — a
+  filtered fetch would hide the inactive row and reactivate it on upsert), the admin detail
+  endpoint that serializes `status` (`api/routes/api_stations.py:180`), and the contract test
+  (`tests/integration/store/test_station_store.py:397`). ⇒ the ACTIVE filter lives at the
+  **forecast-consumption call sites**, not the store.
+- **`_check_fallback_priority_drift` stays all-status** (`flows/run_forecast_cycle.py:718-758`).
+  Plan 100 deliberately made this an all-status DB-drift detector (fires on any fallback row
+  drifting below threshold, incl. inactive / raw-DB-edited rows). Owner decision 2026-07-18: do
+  **not** touch it here — that is Plan 125's job (with an explicit Plan 100 supersession).
+- **The group path already filters active** (`:2034-2039`); the group *drift* loop reads
+  `fetch_groups_for_model`, which the real store already filters to active
+  (`store/station_group_store.py:107`, protocol `protocols/stores.py:559`, integration test
+  `tests/integration/store/test_station_group_store.py:204`) — so there is **no group-side bug**.
+  (The earlier "group degrades on inactive" claim was FALSE; dropped.)
 
-Make station and group paths agree: **only `ACTIVE` model-assignments forecast**, on both paths.
+## Fix
 
-## Open questions for the `plan` workflow (decide before implement)
+Because the drift check must keep reading **all** statuses, do NOT filter the dict in place. Keep
+the raw `model_assignments` for the drift check; derive a **separate active-only view** for the
+operational consumers:
 
-1. **Fix shape.** One shared `active-assignment` helper/filter called from both the station and
-   group paths (single source of truth), or filter at each path independently? The plan should
-   pick the shared abstraction's location + signature (e.g. filter at the store method, or a
-   small pure helper applied right after fetch).
-2. **Call-site impact (the risk to walk).** Filtering to ACTIVE at the station path touches both
-   input-superset assembly and forecasting (`run_forecast_cycle.py:1440`,
-   `run_station_forecast.py:327`). Confirm this does **not** change `forecasts_stored` counts,
-   health status, or superset shape for **currently-passing** runs (i.e. runs whose assignments
-   are already all ACTIVE) — the fix must be a no-op there and only exclude genuinely-inactive
-   assignments. Add a regression proving a currently-all-active run is unchanged.
-3. **Should the store filter, or the caller?** If `fetch_model_assignments` itself filters ACTIVE,
-   verify no other caller relies on receiving inactive assignments (e.g. admin/reporting reads).
+1. Add one small active-filter (implementer's choice of typing — a `Union[ModelAssignment,
+   GroupModelAssignment]` param, a structural `Protocol`+`TypeVar`, or two thin wrappers; the
+   requirement is a single shared definition of "active-only", not a mandated mechanism).
+2. Build `active_model_assignments = {sid: <active filter>(v) for sid, v in model_assignments.items()}`
+   right after `flows/run_forecast_cycle.py:1440-1443`.
+3. Route through `active_model_assignments`: the forecasting/assembly loop (`:1703`) and the
+   alert-priority index build (`:1460`). **Leave the drift-check call (`:1464`) reading the raw
+   `model_assignments`** (all-status — Plan 100).
+4. (Optional, cosmetic) refactor the group forecast-dispatch inline active filter (`:2034-2039`)
+   to reuse the same shared helper, so "same active-only rule" is one definition.
+5. (Minor test-fidelity) `tests/fakes/fake_stores.py` — `FakeStationGroupStore.fetch_groups_for_model`
+   ignores status while the real store filters active; align the fake so tests don't mask the
+   real contract. (Not a production bug; keeps fakes honest.)
 
 ## Acceptance (red-first)
 
-- An **inactive** station model-assignment is **excluded** from station forecasting and input
-  assembly (red against current code: it is currently included).
-- A station whose assignments are **all active** produces the **same** forecasts / health as
-  before (no regression).
-- Station and group paths apply the **same** active-only rule.
-
-## Non-goals
-
-- Defect #1 (NWP-staleness gating) and defect #3 / D8 (control-only forcing-column normalization)
-  are **out of scope — moved to [[Plan 123]]** (they only become real as part of 123's
-  model-driven membership). See 123's "Folded-in from 124" note.
-- Does not touch model-driven forcing membership (that is 123).
+- **Bug fix:** an INACTIVE station assignment is EXCLUDED from forecasting + input assembly (RED
+  against current code — currently included).
+- **Plan-100 guard (must NOT regress):** an INACTIVE fallback assignment STILL counts in
+  `_check_fallback_priority_drift` health (proves the drift detector was left all-status).
+- **No-regression:** a station whose assignments are all ACTIVE produces the SAME forecasts /
+  `forecasts_stored` / health as before (the active view is a no-op there).
+- Station and group operational paths apply the same active-only rule (one shared definition).
 
 ## Source
 
-Plan 123 `plan`-workflow escalation (2026-07-17) + its 124-review re-assessment; narrowed by owner
-decision 2026-07-18. Prior 3-defect history is in git (`717d57b` and earlier).
+Plan 123 `plan`-workflow escalation (2026-07-17) → 124-review re-assessment → owner narrowing
+(2026-07-18: keep drift all-status here, defer full inertness to Plan 125). Prior history in git.
