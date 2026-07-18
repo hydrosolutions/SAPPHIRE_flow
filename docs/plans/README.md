@@ -90,12 +90,19 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
 - **125** — Inactive assignments fully inert — `DRAFT (stub)` — follow-up to 124: also make INACTIVE
   invisible to the fallback-priority-drift detector, which **requires an owner-ratified supersession
   of Plan 100 C1c**. Coherence/cleanup; not deployment-critical. Depends on 124.
-- **123** — Model-driven forcing membership (**CONTROL_ONLY + NONE**) — `DRAFT` —
-  **THE deployment-critical forcing item; re-scoped 2026-07-18 to the `fc`-first slice.** Decide
-  run-level membership from the ACTIVE models' FI `ensemble_mode`: `NONE` → skip fetch + gate
-  staleness; `CONTROL_ONLY` → fetch `fc` only, skip `pf`, no abort + D8 bare-column normalization
-  so FI `SINGLE` (Sandro's models) can consume it. **ENSEMBLE left unchanged** (deferred to 126).
-  No FI gap (signal already exists). Makes the live `fc`-only Nepal path actually forecast.
+- **127** — fc-first minimal unblock — `DRAFT` — **THE deployment-critical forcing item (owner
+  2026-07-18); ready to implement directly.** Two localized fixes so Sandro's control-only
+  (`SINGLE`) models forecast on the live Gateway: (1) tolerant `pf` fetch (missing `pf` → keep `fc`,
+  don't abort); (2) `SINGLE`-model **bare** columns keyed on `ensemble_mode` (works whether or not
+  `pf` is present). No flow-membership machinery, no protocol change, no NONE work. Supersedes 123's
+  deployment-criticality.
+- **123** — Model-driven forcing membership (CONTROL_ONLY + NONE) — `DRAFT (DEFERRED)` — the full
+  flow-level membership design (skip `pf` entirely for control-only + real `NONE` skip +
+  staleness/provenance). Genuinely multi-part; **ESCALATED 2×**. **No longer the blocker** (127
+  unblocks the deployment); this is the efficiency/completeness follow-up, revisit after 127.
+- **126** — Ensemble forcing membership — `DRAFT (stub)` — deferred from 123: requirement-aware
+  complete-ensemble cycle resolution (`fc`-before-`pf` window) + mixed-run bare+suffixed columns.
+  **Not deployment-critical** (no ensemble models in the live Nepal deployment yet). Depends on 123.
 - **126** — Ensemble forcing membership — `DRAFT (stub)` — deferred from 123: requirement-aware
   complete-ensemble cycle resolution (`fc`-before-`pf` window) + mixed-run bare+suffixed columns.
   **Not deployment-critical** (no ensemble models in the live Nepal deployment yet). Depends on 123.

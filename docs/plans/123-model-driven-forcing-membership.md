@@ -9,6 +9,15 @@ created: 2026-07-17
 
 # Plan 123 — Model-driven forcing membership (CONTROL_ONLY + NONE)
 
+> **DEFERRED 2026-07-18 — no longer the deployment blocker.** [[Plan 127]] (a minimal adapter-local
+> unblock: tolerant `pf` fetch + `SINGLE`-model bare columns keyed on `ensemble_mode`) makes the
+> live control-only path forecast without this machinery. 123 remains the **efficiency /
+> completeness** follow-up: skip the `pf` fetch entirely for `CONTROL_ONLY` runs (127 still probes
+> `pf` once/cycle) and add real `NONE` skip + staleness/provenance. It kept ESCALATING (see the
+> Escalation section) because the full flow-level membership design is genuinely multi-part; pick
+> it back up only after 127 ships and only if the efficiency/`NONE` gains are worth the blast
+> radius. Not deployment-critical.
+
 > **Re-scoped 2026-07-18 (owner) to the `fc`-first deployment-critical slice.** The earlier
 > full 3-membership plan escalated (2 blockers + 4 majors) because it tangled with the
 > ENSEMBLE / mixed-run path — which is **deferred and non-critical** (no ensemble models in the
