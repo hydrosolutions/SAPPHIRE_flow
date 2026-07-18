@@ -2463,6 +2463,217 @@ enabled = false
             for event in captured
         )
 
+    def test_inactive_station_assignment_excluded_from_forecasting(self) -> None:
+        # Plan 124: an INACTIVE station model-assignment must NOT be forecast,
+        # even if it has the highest (lowest-numbered) priority. Pre-fix, the
+        # station path consumed the all-status assignment dict, so the
+        # INACTIVE assignment (priority 0) won PRIMARY selection over the
+        # ACTIVE one (priority 1) and its forecast was stored instead.
+        sid = StationId(uuid4())
+        inactive_id = ModelId("inactive_native")
+        active_id = ModelId("active_native")
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            inactive_id,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+            seed_model_assignment=False,
+            seed_artifact=False,
+        )
+
+        for model_id, priority, status in (
+            (inactive_id, 0, ModelAssignmentStatus.INACTIVE),
+            (active_id, 1, ModelAssignmentStatus.ACTIVE),
+        ):
+            station_store.store_model_assignment(
+                ModelAssignment(
+                    station_id=sid,
+                    model_id=model_id,
+                    time_step=timedelta(hours=1),
+                    status=status,
+                    priority=priority,
+                    created_at=_NOW,
+                )
+            )
+            artifact_store.store_artifact(
+                model_id=model_id,
+                artifact_bytes=b"fake_artifact",
+                training_period_start=ensure_utc(datetime(2020, 1, 1, tzinfo=UTC)),
+                training_period_end=ensure_utc(datetime(2025, 12, 31, tzinfo=UTC)),
+                trained_at=_NOW,
+                station_id=sid,
+                status=ModelArtifactStatus.ACTIVE,
+            )
+
+        models = {inactive_id: _NativeFakeModel(), active_id: _NativeFakeModel()}
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=FakeWeatherForecastSource(result={}),
+            models=models,  # type: ignore[arg-type]
+            config=_make_config(),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+        )
+
+        assert result.forecasts_stored == 1
+        assert forecast_store.fetch_latest_forecast(sid, model_id=inactive_id) is None
+        assert forecast_store.fetch_latest_forecast(sid, model_id=active_id) is not None
+
+    def test_inactive_fallback_assignment_still_trips_drift_check(self) -> None:
+        # Plan 124 boundary guard: the fallback-priority-drift HEALTH check
+        # (Plan 100's locked all-status DB-drift contract) must keep seeing
+        # INACTIVE rows even though the same INACTIVE assignment is now
+        # excluded from forecasting. This proves the fix did NOT touch
+        # `_check_fallback_priority_drift` or the raw `model_assignments` it
+        # reads.
+        import structlog.testing
+
+        sid = StationId(uuid4())
+        fallback_id = ModelId("persistence_fallback")
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        pipeline_health_store = FakePipelineHealthStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            fallback_id,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+            seed_model_assignment=False,
+        )
+        # Same low-priority fallback assignment as the ACTIVE-status drift
+        # test above, but INACTIVE — the drift detector must still trip.
+        station_store.store_model_assignment(
+            ModelAssignment(
+                station_id=sid,
+                model_id=fallback_id,
+                time_step=timedelta(hours=1),
+                status=ModelAssignmentStatus.INACTIVE,
+                priority=1,
+                created_at=_NOW,
+            )
+        )
+
+        with structlog.testing.capture_logs() as captured:
+            result = run_forecast_cycle_flow(
+                station_store=station_store,
+                obs_store=obs_store,
+                weather_forecast_store=nwp_store,
+                forecast_store=forecast_store,
+                model_state_store=state_store,
+                artifact_store=artifact_store,
+                alert_store=alert_store,
+                pipeline_health_store=pipeline_health_store,
+                baseline_store=baseline_store,
+                basin_store=basin_store,
+                forcing_store=forcing_store,
+                adapter=FakeWeatherForecastSource(result={}),
+                models={fallback_id: _SmallFakeModel()},  # type: ignore[dict-item]
+                config=_make_config(),
+                qc_rules=_empty_qc_rules(),
+                clock=_clock,
+                rng=random.Random(42),
+            )
+
+        # The all-status drift detector still sees the INACTIVE row and
+        # degrades health (Plan 100 boundary, unchanged by Plan 124).
+        assert result.health is ForecastCycleHealth.DEGRADED
+        assert any(
+            event.get("event") == "forecast_cycle.fallback_priority_drift"
+            and event.get("log_level") == "error"
+            for event in captured
+        )
+
+    def test_all_active_assignments_forecast_unchanged_by_active_filter(
+        self,
+    ) -> None:
+        # No-regression: when every assignment is already ACTIVE, the new
+        # active-only filter is a no-op and behavior matches pre-fix.
+        sid = StationId(uuid4())
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+        )
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=FakeWeatherForecastSource(result={}),
+            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+            config=_make_config(),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+        )
+
+        assert result.stations_succeeded == 1
+        assert result.forecasts_stored == 1
+        assert result.health is ForecastCycleHealth.HEALTHY
+        assert forecast_store.fetch_latest_forecast(sid, model_id=_MODEL_ID) is not None
+
     def test_accepts_group_store_kwarg_without_group_runs(self) -> None:
         sid = StationId(uuid4())
 
