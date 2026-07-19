@@ -7,9 +7,10 @@ from typing import TYPE_CHECKING
 import polars as pl
 import structlog
 
+from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.training_data import resample_to_time_step
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.enums import QcStatus, WarmUpSource
+from sapphire_flow.types.enums import EnsembleMode, QcStatus, WarmUpSource
 from sapphire_flow.types.model import (
     ModelDataRequirements,
     StationInputData,
@@ -168,17 +169,33 @@ def _filter_and_cap_daily_records(
 
 
 def _pivot_nwp_records(
-    records: list,
+    records: list[_AggregatedNwpPoint],
     future_dynamic_features: frozenset[str],
+    ensemble_mode: EnsembleMode,
 ) -> pl.DataFrame:
+    """Pivot aggregated NWP points to a wide per-timestamp frame.
+
+    Column naming is keyed on the MODEL's ``ensemble_mode`` (the requirement),
+    never on which members happen to be present (Plan 127 Fix 2): a ``SINGLE``
+    model must get BARE columns even on a complete-ensemble cycle, so it
+    selects the CONTROL rows (``member_id`` in ``{None, 0}`` -- snow is
+    ``None``, IFS ``fc``/control is ``0``) and drops any ``pf`` members
+    (``member_id >= 1``) before pivoting. ``ENSEMBLE`` is unchanged: columns
+    are member-suffixed (``precipitation_0``, ...) whenever a real member is
+    present, falling back to bare columns for a wholly deterministic batch.
+    """
     if not records:
         return pl.DataFrame()
 
     feature_cols = list(future_dynamic_features)
+
+    if ensemble_mode is EnsembleMode.SINGLE:
+        records = [r for r in records if r.member_id in (None, 0)]
+
     all_times = sorted({r.valid_time for r in records})
     members = sorted({r.member_id for r in records if r.member_id is not None})
 
-    if members:
+    if ensemble_mode is EnsembleMode.ENSEMBLE and members:
         # Ensemble: columns are param_member (e.g. precipitation_0, precipitation_1)
         pivot: dict[object, dict] = {ts: {"timestamp": ts} for ts in all_times}
         for r in records:
@@ -193,7 +210,8 @@ def _pivot_nwp_records(
             pivot[ts][col] = r.value
         return pl.DataFrame(list(pivot.values()))
     else:
-        # Deterministic: columns are param names
+        # SINGLE (control-only, bare columns) or a deterministic batch (no
+        # real member present): columns are bare param names.
         pivot2: dict[object, dict] = {ts: {"timestamp": ts} for ts in all_times}
         for r in records:
             if r.parameter not in feature_cols:
@@ -248,12 +266,31 @@ def build_superset_requirements(
     starves the others. This unions feature sets and takes the MAX of the step
     counts so a single per-station assembly covers every assigned model. Feeding
     a model more columns than it needs is harmless — each model slices/reads only
-    what it declares. ``spatial_input_type`` / ``ensemble_mode`` /
-    ``supported_time_steps`` are not consumed by assembly; the first model's
-    values are carried through (with ``supported_time_steps`` unioned).
+    what it declares. ``spatial_input_type`` / ``supported_time_steps`` are not
+    consumed by assembly; the first model's values are carried through (with
+    ``supported_time_steps`` unioned). ``ensemble_mode`` IS consumed (Plan 127 —
+    NWP forcing-column shape) and is derived from the NWP-consuming models, with a
+    fail-fast guard on a mixed SINGLE/ENSEMBLE station (see below).
     """
     if not requirements:
         raise ValueError("Cannot build superset requirements from an empty list")
+
+    # Plan 127: ``ensemble_mode`` IS now consumed by assembly (the NWP forcing-
+    # column shape keys on it). Derive it from the models that actually consume
+    # NWP (``future_dynamic_features`` non-empty), not blindly from the first
+    # model. A station mixing SINGLE and ENSEMBLE NWP-consuming models would need
+    # both bare AND member-suffixed columns from one assembly — not supported
+    # here; that is deferred to Plan 126. Fail fast rather than silently serve one
+    # model the wrong column shape.
+    nwp_modes = {r.ensemble_mode for r in requirements if r.future_dynamic_features}
+    if len(nwp_modes) > 1:
+        raise ConfigurationError(
+            "Station assigns both SINGLE and ENSEMBLE NWP-consuming models; a "
+            "single input assembly cannot serve both bare and member-suffixed "
+            "forcing columns (deferred to Plan 126). Assign homogeneous "
+            "ensemble_mode NWP models per station."
+        )
+    superset_ensemble_mode = next(iter(nwp_modes), requirements[0].ensemble_mode)
 
     return ModelDataRequirements(
         target_parameters=frozenset[str]().union(
@@ -274,7 +311,7 @@ def build_superset_requirements(
         lookback_steps=max(r.lookback_steps for r in requirements),
         forecast_horizon_steps=max(r.forecast_horizon_steps for r in requirements),
         spatial_input_type=requirements[0].spatial_input_type,
-        ensemble_mode=requirements[0].ensemble_mode,
+        ensemble_mode=superset_ensemble_mode,
     )
 
 
@@ -424,7 +461,7 @@ def assemble_station_operational_inputs(
         forecast_horizon_steps=forecast_horizon_steps,
     )
     future_dynamic = _pivot_nwp_records(
-        kept_daily_records, reqs.future_dynamic_features
+        kept_daily_records, reqs.future_dynamic_features, reqs.ensemble_mode
     )
     nwp_age_hours = (now - cycle_time).total_seconds() / 3600.0
     if nwp_age_hours < 0:

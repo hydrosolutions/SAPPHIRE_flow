@@ -830,6 +830,62 @@ class TestCycleFallbackWiring:
         assert len(ecmwf.calls) == 2
 
 
+class _PfUnavailableEcmwf:
+    """fc (and the resolve_latest_cycle probe) succeed; every pf member fetch
+    raises a data-unavailable client error (the fc-before-pf dissemination
+    window). Both go through the SAME ifs_forecast method, matching the real
+    Gateway API (Plan 127 Fix 1)."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def ifs_forecast(self, **kwargs: object) -> object:
+        self.calls.append(dict(kwargs))
+        if kwargs.get("ifs_type") == "pf":
+            raise _FallbackFakeClientError(
+                "No IFS dataset found", code="source_data_missing"
+            )
+        return _wide_df(
+            [_POLY_A],
+            value=1.0,
+            with_provenance=True,
+            source="ifs",
+            source_run=_SOURCE_RUN,
+        )
+
+    def era5_land_reanalysis(self, **kwargs: object) -> object:
+        raise AssertionError("forecast adapter must not call era5_land_reanalysis")
+
+
+class TestPfUnavailableControlOnly:
+    """Plan 127 Fix 1: a data-unavailable pf fetch (fc-before-pf window) must not
+    abort the whole NWP fetch — keep the fc (control) records, break the pf
+    loop. RED against pre-fix: the pf RecapDataUnavailableError propagates out of
+    fetch_forecasts and raises."""
+
+    def test_pf_unavailable_returns_fc_only_records(self) -> None:
+        ecmwf = _PfUnavailableEcmwf()
+        adapter = _forecast_adapter(
+            ecmwf, _MapResolver({_SID_A: _ref(_SID_A, _POLY_A)})
+        )
+
+        result = adapter.fetch_forecasts(
+            [_ws(_SID_A, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST)],
+            _CYCLE,
+        )
+
+        assert set(result.keys()) == {_SID_A}
+        forecast = result[_SID_A]
+        assert isinstance(forecast, BasinAverageForecast)
+        # Only the fc control member (member_id=0) survived; no pf members.
+        member_ids = set(forecast.values["member_id"].to_list())
+        assert member_ids == {0}
+        # The pf loop broke on the FIRST missing member — one pf probe per
+        # variable, not 50. Two IFS variables (tp, 2t) -> 2 pf calls.
+        pf_calls = [c for c in ecmwf.calls if c.get("ifs_type") == "pf"]
+        assert all(int(str(c["member"])) == 1 for c in pf_calls)
+
+
 class TestReanalysisConversion:
     def _run(
         self,

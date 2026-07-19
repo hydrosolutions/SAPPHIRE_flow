@@ -8,6 +8,7 @@ from uuid import uuid4
 import pytest
 from structlog.testing import capture_logs
 
+from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.operational_inputs import (
     _aggregate_nwp_records_to_time_step,
     _AggregatedNwpPoint,
@@ -15,9 +16,11 @@ from sapphire_flow.services.operational_inputs import (
     _filter_and_cap_daily_records,
     _pivot_nwp_records,
     assemble_station_operational_inputs,
+    build_superset_requirements,
 )
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.enums import (
+    EnsembleMode,
     SpatialRepresentation,
     WarmUpSource,
     WeatherSourceRole,
@@ -990,10 +993,146 @@ class TestRecapTemporalFeatureJoin:
 
         daily = _aggregate_nwp_records_to_time_step(records, timedelta(days=1))
         broadcast = _broadcast_deterministic_features_to_members(daily)
-        wide = _pivot_nwp_records(broadcast, frozenset({"precipitation", "snow_depth"}))
+        wide = _pivot_nwp_records(
+            broadcast,
+            frozenset({"precipitation", "snow_depth"}),
+            EnsembleMode.ENSEMBLE,
+        )
 
         assert "snow_depth_0" in wide.columns
         assert "snow_depth_1" in wide.columns
         assert "snow_depth" not in wide.columns
         assert wide["snow_depth_0"][0] == 42.0
         assert wide["snow_depth_1"][0] == 42.0
+
+
+# --------------------------------------------------------------------------- #
+# Plan 127 Fix 2: column naming keys on the MODEL's ensemble_mode, not on which
+# members are present. A SINGLE (control-only / FI `SINGLE`) model must get BARE
+# columns (`precipitation`) it can read — selecting the control rows
+# (member_id in {None, 0}) and dropping any pf members — EVEN on a
+# complete-ensemble cycle. ENSEMBLE stays member-suffixed (unchanged).
+# --------------------------------------------------------------------------- #
+
+_VT = ensure_utc(datetime(2026, 1, 10, tzinfo=UTC))
+
+
+def _agg_point(member_id: int | None, value: float) -> _AggregatedNwpPoint:
+    return _AggregatedNwpPoint(
+        valid_time=_VT, parameter="precipitation", member_id=member_id, value=value
+    )
+
+
+class TestPivotEnsembleModeColumnNaming:
+    def test_single_fc_only_yields_bare_precipitation(self) -> None:
+        # fc-only records (member_id=0). A SINGLE model needs the BARE column.
+        # RED against pre-fix: any member present -> suffixed `precipitation_0`.
+        points = [_agg_point(0, 5.0)]
+        wide = _pivot_nwp_records(
+            points, frozenset({"precipitation"}), EnsembleMode.SINGLE
+        )
+        assert "precipitation" in wide.columns
+        assert "precipitation_0" not in wide.columns
+        assert wide["precipitation"][0] == 5.0
+
+    def test_single_fc_plus_pf_takes_control_and_drops_pf(self) -> None:
+        # fc + pf members (member_id 0..3). The bare column is the CONTROL
+        # member (member_id=0); pf (>=1) are dropped. RED against pre-fix:
+        # members present -> every member suffixed, no bare `precipitation`.
+        points = [
+            _agg_point(0, 5.0),  # control
+            _agg_point(1, 11.0),
+            _agg_point(2, 12.0),
+            _agg_point(3, 13.0),
+        ]
+        wide = _pivot_nwp_records(
+            points, frozenset({"precipitation"}), EnsembleMode.SINGLE
+        )
+        assert "precipitation" in wide.columns
+        assert wide["precipitation"][0] == 5.0  # control member value, not pf
+        assert not any(c.startswith("precipitation_") for c in wide.columns)
+
+    def test_single_snow_none_member_yields_bare(self) -> None:
+        # Deterministic snow control rows carry member_id=None; SINGLE keeps them
+        # as the bare column too.
+        points = [
+            _AggregatedNwpPoint(
+                valid_time=_VT, parameter="snow_depth", member_id=None, value=7.0
+            )
+        ]
+        wide = _pivot_nwp_records(
+            points, frozenset({"snow_depth"}), EnsembleMode.SINGLE
+        )
+        assert "snow_depth" in wide.columns
+        assert wide["snow_depth"][0] == 7.0
+
+    def test_ensemble_keeps_member_suffixed_columns(self) -> None:
+        # No-regression: ENSEMBLE still fans out to member-suffixed columns.
+        points = [_agg_point(0, 5.0), _agg_point(1, 6.0), _agg_point(2, 7.0)]
+        wide = _pivot_nwp_records(
+            points, frozenset({"precipitation"}), EnsembleMode.ENSEMBLE
+        )
+        assert "precipitation_0" in wide.columns
+        assert "precipitation_1" in wide.columns
+        assert "precipitation_2" in wide.columns
+        assert "precipitation" not in wide.columns
+        assert wide["precipitation_0"][0] == 5.0
+
+
+class TestBuildSupersetEnsembleMode:
+    """Plan 127: ``ensemble_mode`` is derived from the NWP-consuming models, with
+    a fail-fast guard on a mixed SINGLE/ENSEMBLE station (a single assembly cannot
+    serve both bare and member-suffixed forcing columns — deferred to Plan 126)."""
+
+    @staticmethod
+    def _req(
+        *, ensemble_mode: EnsembleMode, future: frozenset[str]
+    ) -> ModelDataRequirements:
+        return ModelDataRequirements(
+            target_parameters=frozenset({"discharge"}),
+            past_dynamic_features=frozenset(),
+            future_dynamic_features=future,
+            static_features=frozenset(),
+            supported_time_steps=frozenset({timedelta(days=1)}),
+            lookback_steps=10,
+            forecast_horizon_steps=5,
+            spatial_input_type=SpatialRepresentation.BASIN_AVERAGE,
+            ensemble_mode=ensemble_mode,
+        )
+
+    def test_mixed_single_and_ensemble_nwp_models_raises(self) -> None:
+        reqs = [
+            self._req(
+                ensemble_mode=EnsembleMode.SINGLE, future=frozenset({"precipitation"})
+            ),
+            self._req(
+                ensemble_mode=EnsembleMode.ENSEMBLE,
+                future=frozenset({"precipitation"}),
+            ),
+        ]
+        with pytest.raises(ConfigurationError, match="both SINGLE and ENSEMBLE"):
+            build_superset_requirements(reqs)
+
+    def test_homogeneous_ensemble_nwp_uses_ensemble(self) -> None:
+        reqs = [
+            self._req(
+                ensemble_mode=EnsembleMode.ENSEMBLE,
+                future=frozenset({"precipitation"}),
+            ),
+            self._req(
+                ensemble_mode=EnsembleMode.ENSEMBLE, future=frozenset({"temperature"})
+            ),
+        ]
+        assert build_superset_requirements(reqs).ensemble_mode is EnsembleMode.ENSEMBLE
+
+    def test_native_none_model_does_not_trip_mixed_guard(self) -> None:
+        # A native model (no future features, default SINGLE) alongside an ENSEMBLE
+        # NWP model must NOT trip the guard — only NWP-consuming models' modes count.
+        reqs = [
+            self._req(ensemble_mode=EnsembleMode.SINGLE, future=frozenset()),
+            self._req(
+                ensemble_mode=EnsembleMode.ENSEMBLE,
+                future=frozenset({"precipitation"}),
+            ),
+        ]
+        assert build_superset_requirements(reqs).ensemble_mode is EnsembleMode.ENSEMBLE
