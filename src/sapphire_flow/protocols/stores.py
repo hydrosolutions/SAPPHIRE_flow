@@ -623,6 +623,13 @@ class RatingCurveStore(Protocol):
     ) -> dict[StationId, RatingCurve]:
         raise NotImplementedError
 
+    def fetch_active_curves_batch_at(
+        self, station_ids: list[StationId], at: UtcDatetime
+    ) -> dict[StationId, RatingCurve]:
+        """Curve active for each station at ``at`` (valid_from <= at < valid_to,
+        valid_to NULL = unbounded). Stations without a matching curve are absent."""
+        raise NotImplementedError
+
 
 @runtime_checkable
 class FlowRegimeConfigStore(Protocol):
