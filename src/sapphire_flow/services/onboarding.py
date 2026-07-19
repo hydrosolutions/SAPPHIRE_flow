@@ -358,7 +358,13 @@ def _run_onboarding(
             log.error("forcing_store_error", station_id=str(station_id), error=str(exc))
             errors.append(msg)
 
-    # Step 4b: Create weather source mappings for stations with forcing data
+    # Step 4b: Create weather source mappings for stations with forcing data.
+    # Plan 115b5 retires the camels-ch REANALYSIS binding (migration 0033,
+    # `alembic/versions/0033_retire_camels_ch_weather_binding.py`) — onboarding
+    # must never recreate it, or a one-shot migration would be undone by the
+    # next onboarding run. CAMELS historical_forcing rows are still stored
+    # (Step 4) as the validation reference + audit trail; only the
+    # station_weather_sources BINDING for camels-ch is skipped here.
     for station_id, forcing in forcing_by_station.items():
         if station_id not in resolved_station_ids or not forcing:
             continue
@@ -366,19 +372,21 @@ def _run_onboarding(
             from sapphire_flow.types.station import StationWeatherSource
 
             source_name = forcing[0].source  # e.g. "camels-ch"
-            ws = StationWeatherSource(
-                station_id=station_id,
-                nwp_source=source_name,
-                extraction_type=SpatialRepresentation.POINT,
-                status=WeatherSourceStatus.ACTIVE,
-                role=WeatherSourceRole.REANALYSIS,
-            )
-            station_store.store_weather_source(ws)
+            if source_name != "camels-ch":
+                ws = StationWeatherSource(
+                    station_id=station_id,
+                    nwp_source=source_name,
+                    extraction_type=SpatialRepresentation.POINT,
+                    status=WeatherSourceStatus.ACTIVE,
+                    role=WeatherSourceRole.REANALYSIS,
+                )
+                station_store.store_weather_source(ws)
 
             # M3: bind non-weather river stations to the operational ICON forcing
-            # path (icon_ch2_eps / BASIN_AVERAGE) alongside the camels-ch / POINT
-            # reanalysis binding. Weather stations are forcing SOURCES, not
-            # forecast targets, so they get no ICON binding.
+            # path (icon_ch2_eps / BASIN_AVERAGE) regardless of the (retired)
+            # camels-ch / POINT reanalysis binding. Weather stations are
+            # forcing SOURCES, not forecast targets, so they get no ICON
+            # binding.
             station = station_store.fetch_station(station_id)
             if station is not None and station.station_kind != StationKind.WEATHER:
                 station_store.store_weather_source(

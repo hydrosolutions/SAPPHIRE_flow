@@ -904,13 +904,18 @@ class TestRerunIdempotency:
 
 class TestIconWeatherSourceBinding:
     """M3 owner decision (Step 4b): every non-weather river station also gets an
-    ``icon_ch2_eps`` / ``BASIN_AVERAGE`` / ``ACTIVE`` ``StationWeatherSource``
-    ALONGSIDE the existing ``camels-ch`` / ``POINT`` binding. This is what makes
-    the operational ICON forcing path reach the station. RED until Step 4b writes
-    the second binding.
+    ``icon_ch2_eps`` / ``BASIN_AVERAGE`` / ``ACTIVE`` ``StationWeatherSource``.
+    This is what makes the operational ICON forcing path reach the station.
+    RED until Step 4b writes the second binding.
+
+    Plan 115b5 (migration 0033) retires the camels-ch REANALYSIS binding —
+    onboarding must NOT recreate it (a one-shot migration would otherwise be
+    silently undone by the next onboarding run), so a camels-ch-sourced
+    forcing set must yield ONLY the icon_ch2_eps binding, never a camels-ch
+    ``StationWeatherSource`` row.
     """
 
-    def test_river_station_gets_both_camels_and_icon_bindings(self) -> None:
+    def test_river_station_gets_icon_binding_and_no_camels_ch_binding(self) -> None:
         sid = StationId(uuid4())
         basin = _make_basin("RIV001")
         station = make_station_config(
@@ -929,9 +934,9 @@ class TestIconWeatherSourceBinding:
         sources = s.station.fetch_weather_sources(sid)
         by_source = {ws.nwp_source: ws for ws in sources}
 
-        # Existing camels-ch / POINT binding is preserved.
-        assert "camels-ch" in by_source
-        assert by_source["camels-ch"].extraction_type is SpatialRepresentation.POINT
+        # Plan 115b5: onboarding must never recreate the retired camels-ch
+        # reanalysis binding (migration 0033 deleted it DB-side).
+        assert "camels-ch" not in by_source
 
         # New M3 icon_ch2_eps / BASIN_AVERAGE / ACTIVE binding.
         assert "icon_ch2_eps" in by_source
