@@ -32,9 +32,11 @@ from pathlib import Path
 
 _ALEMBIC_VERSIONS_DIR = Path(__file__).resolve().parents[3] / "alembic" / "versions"
 
-# Release B's confirmed Alembic head (Plan 115b5 — the camels-ch
-# weather-binding retirement, migration 0033).
-_RELEASE_B_HEAD = "0033"
+# Release B's confirmed Alembic head was 0033 (Plan 115b5 — the camels-ch
+# weather-binding retirement). Plan 035 Task 1 chained migration 0034
+# (rating_curves table) onto 0033 — a deliberate, reviewed migration
+# addition per the guidance below — advancing the pinned head to 0034.
+_RELEASE_B_HEAD = "0034"
 
 
 def _down_revisions() -> dict[str, str | None]:

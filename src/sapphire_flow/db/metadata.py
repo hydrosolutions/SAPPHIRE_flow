@@ -343,6 +343,54 @@ sa.Index(
 )
 
 # ──────────────────────────────────────────────
+# RATING CURVE DOMAIN
+# Plan 035 Task 1. uploaded_by has no FK yet — users table does not exist in
+# the migration chain; a later v1 migration adds the FK once it does.
+# ──────────────────────────────────────────────
+
+rating_curves = sa.Table(
+    "rating_curves",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True),
+    sa.Column(
+        "station_id", UUID(as_uuid=True), sa.ForeignKey("stations.id"), nullable=False
+    ),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("valid_from", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("valid_to", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("points", JSONB, nullable=False),
+    sa.Column(
+        "interpolation",
+        sa.Text,
+        nullable=False,
+        server_default="linear",
+    ),
+    sa.Column("uploaded_by", UUID(as_uuid=True), nullable=True),
+    sa.Column(
+        "created_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+    ),
+    sa.UniqueConstraint(
+        "station_id", "version", name="uq_rating_curves_station_version"
+    ),
+)
+
+# Indexes on rating_curves
+sa.Index(
+    "ix_rating_curves_station_valid_from",
+    rating_curves.c.station_id,
+    rating_curves.c.valid_from.desc(),
+)
+sa.Index(
+    "uq_rating_curves_station_active",
+    rating_curves.c.station_id,
+    unique=True,
+    postgresql_where=rating_curves.c.valid_to.is_(None),
+)
+
+# ──────────────────────────────────────────────
 # WEATHER / NWP DOMAIN
 # v0: no is_gap, no gap_status
 # ──────────────────────────────────────────────

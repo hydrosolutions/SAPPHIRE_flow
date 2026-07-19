@@ -925,7 +925,7 @@ class RatingCurve:
     valid_from: UtcDatetime
     valid_to: UtcDatetime | None   # NULL = currently active
     points: list[dict]             # list of {"water_level": float, "discharge": float}
-    interpolation: Literal["linear", "log-linear"]
+    interpolation: InterpolationMethod   # enum: linear | log_linear (Plan 035 Task 1)
     uploaded_by: UUID | None
     created_at: UtcDatetime
 ```
@@ -2457,6 +2457,10 @@ class RatingCurveStore(Protocol):
         # Returns the curve valid at the given time (valid_from <= at < valid_to).
     def supersede_curve(self, curve_id: RatingCurveId, valid_to: UtcDatetime) -> None: ...
         # Sets valid_to on the current active curve when a new one is uploaded.
+    def fetch_curves_in_range(self, station_id: StationId, start: UtcDatetime, end: UtcDatetime) -> list[RatingCurve]: ...
+        # Curves overlapping the half-open [start, end) window (Flow 8/10 epoch queries). Plan 035 Task 1.
+    def fetch_active_curves_batch(self, station_ids: list[StationId]) -> dict[StationId, RatingCurve]: ...
+        # Active curve (valid_to IS NULL) per station, one query (Flow 1 batch lookup). Plan 035 Task 1.
 ```
 
 #### FlowRegimeConfigStore

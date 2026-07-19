@@ -274,3 +274,8 @@ class InputQualityCategory(Enum):
     OBSERVATION = "observation"
     NWP = "nwp"
     WARM_UP = "warm_up"
+
+
+class InterpolationMethod(Enum):
+    LINEAR = "linear"
+    LOG_LINEAR = "log_linear"

@@ -390,6 +390,7 @@ All status/enum columns store TEXT matching the Python enum `.value` (lowercase)
 | `forecasts.status` / `ForecastStatus` | `raw`, `reviewed`, `published` | `published` | v0+v1 |
 | `forecasts.representation` / `EnsembleRepresentation` | `members`, `quantiles` | — | v0+v1 |
 | `forecasts.warm_up_source` / `WarmUpSource` | `fresh`, `snapshot`, `cold_start` | — | v0+v1 |
+| `rating_curves.interpolation` / `InterpolationMethod` | `linear`, `log_linear` | — | v1 |
 | `alerts.status` / `AlertStatus` | `raised`, `acknowledged`, `resolved` | `resolved` | v0+v1 |
 | `alerts.source` / `AlertSource` | `forecast`, `observation`, `pipeline` | — | v0+v1 |
 | `models.artifact_scope` / `ArtifactScope` | `station`, `group` | — | v0+v1 |

@@ -1077,6 +1077,28 @@ class FakeRatingCurveStore:
         c = self._curves[curve_id]
         self._curves[curve_id] = replace(c, valid_to=valid_to)
 
+    def fetch_curves_in_range(
+        self, station_id: StationId, start: UtcDatetime, end: UtcDatetime
+    ) -> list[RatingCurve]:
+        return [
+            c
+            for c in self._curves.values()
+            if c.station_id == station_id
+            # Half-open overlap [valid_from, valid_to) vs [start, end).
+            and c.valid_from < end
+            and (c.valid_to is None or c.valid_to > start)
+        ]
+
+    def fetch_active_curves_batch(
+        self, station_ids: list[StationId]
+    ) -> dict[StationId, RatingCurve]:
+        wanted = set(station_ids)
+        return {
+            c.station_id: c
+            for c in self._curves.values()
+            if c.station_id in wanted and c.valid_to is None
+        }
+
 
 class FakeFlowRegimeConfigStore:
     def __init__(self) -> None:
