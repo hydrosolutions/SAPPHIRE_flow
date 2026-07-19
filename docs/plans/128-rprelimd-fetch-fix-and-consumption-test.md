@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-07-19
 plan: 128
 title: RprelimD live-tail — fix the silent id-fetch defect so preliminary-precip rows get written
@@ -75,7 +75,7 @@ follow-up (128b), reviewed on its own merits — keeping this plan narrow.)*
 
 - **A1 — id-fetch + daily asset-absent gap in `_fetch_day_feature`/`_rows_for_product`.** (1) fetch
   `items/{YYYYMMDD}-ch` (404 = gap); (2) daily item-present-but-product-asset-absent → `warning` + gap, no
-  raise (archive path unchanged). Resolve grill-me #1 first.
+  raise (archive path unchanged). Id-only — no `?datetime=` range fallback (grill-me #1).
 - **A2 — regression tests (soundness-critical).** Simulate the real server in the fake handler and add:
   - **drifted-datetime** fixture: item id `{YYYYMMDD}-ch` with `properties.datetime` ~2 months forward;
     `items?datetime={day}`→0 features, `items/{YYYYMMDD}-ch`→200. **Must fail against current
@@ -98,13 +98,12 @@ follow-up (128b), reviewed on its own merits — keeping this plan narrow.)*
 - **D1 — doc sync.** Record the RprelimD id-fetch behaviour, the ~2-month retention, and the
   item-then-asset edge race (asset-absent daily = warn+gap) in the adapter/reanalysis docs + weather-track.
 
-## Grill-me (owner decisions before READY)
+## Grill-me (owner-resolved 2026-07-19)
 
-1. **Range-fallback in A1(1)?** After id-fetch, keep a bounded `?datetime=` range fallback for the day, or
-   id-only? **Recommend id-only** — the `?datetime=` filter is the bug; a fallback re-introduces the drift
-   blind spot.
-2. **Deep RprelimD backfill?** Confirm we do NOT attempt to backfill deep RprelimD history (aged out; RhiresD
-   covers deep history). Live-tail-only. **Recommend: confirmed, no deep backfill.**
+1. **Range-fallback in A1(1)? — RESOLVED: id-only.** No bounded `?datetime=` range fallback — the
+   `?datetime=` filter is the bug and a fallback re-introduces the drift blind spot.
+2. **Deep RprelimD backfill? — RESOLVED: no.** No deep RprelimD backfill (aged out; RhiresD covers deep
+   history). Live-tail-only.
 3. **~~Item/asset atomicity~~ — RESOLVED by Probe B (2026-07-19): NON-atomic.** The latest item(s) exist
    before the RprelimD asset attaches, so the asset-absent-daily case is real and MUST be handled — as the
    uniform `warning`+gap of A1(2) (not the recency-tiered policy an earlier review draft over-built; not the
@@ -166,4 +165,4 @@ fix; that bloat was rejected, but the run surfaced a **real** issue — the item
 which **Probe B then confirmed live** (`20260719-ch` item present, asset absent). This plan folds the SIMPLE
 correct handling (uniform `warning`+gap on the daily path), plus two genuine review findings (stale day-gap
 fixtures; a real before/after C1 effect-gate). Boundary-drift discovery is left as a potential 128b follow-up.
-DRAFT — owner grill-me (#1, #2) before READY; then build via `implement`.
+**READY (owner, 2026-07-19 — id-only, no deep backfill).** Build via `implement`; hold-at-PR.
