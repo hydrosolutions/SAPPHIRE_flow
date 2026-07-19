@@ -118,12 +118,21 @@ class FakeObservationStore:
                 ),
                 None,
             )
-            if existing is not None and existing.value == raw.value:
-                continue
             if existing is not None:
+                provenance_unchanged = (
+                    existing.rating_curve_id == raw.rating_curve_id
+                    and existing.rating_curve_correction_version
+                    == raw.rating_curve_correction_version
+                )
+                if existing.value == raw.value and provenance_unchanged:
+                    continue
                 self._observations[existing.id] = replace(
                     existing,
                     value=raw.value,
+                    rating_curve_id=raw.rating_curve_id,
+                    rating_curve_correction_version=(
+                        raw.rating_curve_correction_version
+                    ),
                     qc_status=QcStatus.RAW,
                     qc_flags=[],
                     qc_rule_version=None,

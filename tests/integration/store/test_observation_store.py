@@ -4,17 +4,27 @@ import random
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    import sqlalchemy as sa
+import pytest
+import sqlalchemy as sa
 
+if TYPE_CHECKING:
     from sapphire_flow.types.ids import StationId
 
+from uuid import uuid4
+
 from sapphire_flow.store.observation_store import PgObservationStore
+from sapphire_flow.store.rating_curve_store import PgRatingCurveStore
 from sapphire_flow.store.station_store import PgStationStore
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.domain import QcFlag
-from sapphire_flow.types.enums import ObservationSource, QcStatus
+from sapphire_flow.types.enums import (
+    InterpolationMethod,
+    ObservationSource,
+    QcStatus,
+)
+from sapphire_flow.types.ids import RatingCurveId
 from sapphire_flow.types.observation import RawObservation
+from sapphire_flow.types.rating_curve import RatingCurve
 from tests.conftest import make_observation, make_station_config
 
 
@@ -301,3 +311,155 @@ class TestStoreRawDuplicateSkip:
             end=_utc(hour=1),
         )
         assert len(fetched) == 1
+
+
+_RC_NOW = ensure_utc(datetime(2025, 1, 1, tzinfo=UTC))
+
+
+def _seed_rating_curve(
+    conn: sa.Connection, station_id: StationId, version: int = 1
+) -> RatingCurveId:
+    curve_id = RatingCurveId(uuid4())
+    PgRatingCurveStore(conn).store_rating_curve(
+        RatingCurve(
+            id=curve_id,
+            station_id=station_id,
+            version=version,
+            valid_from=_RC_NOW,
+            valid_to=None,
+            points=[
+                {"water_level": 1.0, "discharge": 10.0},
+                {"water_level": 2.0, "discharge": 45.0},
+            ],
+            interpolation=InterpolationMethod.LINEAR,
+            uploaded_by=None,
+            created_at=_RC_NOW,
+        )
+    )
+    return curve_id
+
+
+class TestRatingCurveProvenance:
+    def test_round_trip_preserves_provenance(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection, rng_seed=41)
+        curve_id = _seed_rating_curve(db_connection, sid)
+        store = PgObservationStore(db_connection)
+
+        raw = RawObservation(
+            station_id=sid,
+            timestamp=_utc(hour=0),
+            parameter="discharge",
+            value=12.3,
+            source=ObservationSource.RATING_CURVE_DERIVED,
+            rating_curve_id=curve_id,
+            rating_curve_correction_version="corr-v1",
+        )
+        store.store_raw_observations([raw])
+
+        fetched = store.fetch_observations(
+            station_id=sid,
+            parameter="discharge",
+            start=_utc(hour=0),
+            end=_utc(hour=1),
+        )
+        assert len(fetched) == 1
+        assert fetched[0].source == ObservationSource.RATING_CURVE_DERIVED
+        assert fetched[0].rating_curve_id == curve_id
+        assert fetched[0].rating_curve_correction_version == "corr-v1"
+
+    def test_measured_observations_keep_null_provenance(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection, rng_seed=42)
+        store = PgObservationStore(db_connection)
+        store.store_raw_observations([_raw(sid, hour=0)])
+
+        fetched = store.fetch_observations(
+            station_id=sid,
+            parameter="discharge",
+            start=_utc(hour=0),
+            end=_utc(hour=1),
+        )
+        assert len(fetched) == 1
+        assert fetched[0].rating_curve_id is None
+        assert fetched[0].rating_curve_correction_version is None
+
+    def test_reupsert_refreshes_provenance_at_unchanged_value(
+        self, db_connection: sa.Connection
+    ) -> None:
+        # BLOCKER regression: a restated curve changes provenance without
+        # changing the numeric value. The upsert WHERE gate must fire on a
+        # provenance-only change, and the set_ clause must refresh it.
+        sid = _seed_station(db_connection, rng_seed=43)
+        curve_id = _seed_rating_curve(db_connection, sid)
+        store = PgObservationStore(db_connection)
+
+        base = RawObservation(
+            station_id=sid,
+            timestamp=_utc(hour=0),
+            parameter="discharge",
+            value=12.3,
+            source=ObservationSource.RATING_CURVE_DERIVED,
+            rating_curve_id=curve_id,
+            rating_curve_correction_version="corr-v1",
+        )
+        store.store_raw_observations([base])
+
+        from dataclasses import replace
+
+        restated = replace(base, rating_curve_correction_version="corr-v2")
+        store.store_raw_observations([restated])
+
+        fetched = store.fetch_observations(
+            station_id=sid,
+            parameter="discharge",
+            start=_utc(hour=0),
+            end=_utc(hour=1),
+        )
+        assert len(fetched) == 1
+        assert fetched[0].rating_curve_correction_version == "corr-v2"
+
+    def test_source_check_admits_rating_curve_derived(
+        self, db_connection: sa.Connection
+    ) -> None:
+        # The widened CHECK must accept the new source; against the old
+        # two-value CHECK this insert raised IntegrityError.
+        sid = _seed_station(db_connection, rng_seed=44)
+        curve_id = _seed_rating_curve(db_connection, sid)
+        store = PgObservationStore(db_connection)
+
+        raw = RawObservation(
+            station_id=sid,
+            timestamp=_utc(hour=0),
+            parameter="discharge",
+            value=99.0,
+            source=ObservationSource.RATING_CURVE_DERIVED,
+            rating_curve_id=curve_id,
+            rating_curve_correction_version=None,
+        )
+        ids = store.store_raw_observations([raw])
+        assert len(ids) == 1
+
+    def test_cross_station_rating_curve_rejected(
+        self, db_connection: sa.Connection
+    ) -> None:
+        # Composite FK (station_id, rating_curve_id) -> rating_curves: an
+        # observation may not bind a curve belonging to a DIFFERENT station.
+        station_a = _seed_station(db_connection, rng_seed=45, code="RC-A")
+        station_b = _seed_station(db_connection, rng_seed=46, code="RC-B")
+        curve_b = _seed_rating_curve(db_connection, station_b)
+        store = PgObservationStore(db_connection)
+
+        wrong = RawObservation(
+            station_id=station_a,
+            timestamp=_utc(hour=0),
+            parameter="discharge",
+            value=5.0,
+            source=ObservationSource.RATING_CURVE_DERIVED,
+            rating_curve_id=curve_b,
+            rating_curve_correction_version=None,
+        )
+        with pytest.raises(sa.exc.IntegrityError):
+            store.store_raw_observations([wrong])

@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         ForeignForecastId,
         HindcastForecastId,
         ModelId,
+        RatingCurveId,
         StationId,
     )
 
@@ -67,6 +68,12 @@ class OperationalForecast:
     input_quality_flags: tuple[InputQualityFlag, ...] = ()
     combination_strategy: str | None = None
     source_model_ids: list[ModelId] | None = None
+    rating_curve_id: RatingCurveId | None = None
+    """Active rating curve bound to this forecast's station at ``issued_at``.
+
+    NULL for stations that report discharge directly (Swiss BAFU, weather-only).
+    Set at forecast-storage time by Task 4; Task 2 only plumbs the column.
+    """
 
     @property
     def provenance(self) -> ForecastProvenance:

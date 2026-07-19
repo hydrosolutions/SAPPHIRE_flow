@@ -48,12 +48,18 @@ class PgObservationStore:
                         "qc_status": obs.qc_status.value,
                         "qc_flags": _serialize_flags(obs.qc_flags),
                         "qc_rule_version": obs.qc_rule_version,
+                        # A restated curve changes provenance without necessarily
+                        # changing the value — refresh it too (Plan 035 Task 2).
+                        "rating_curve_id": obs.rating_curve_id,
+                        "rating_curve_correction_version": (
+                            obs.rating_curve_correction_version
+                        ),
                     },
                 )
             )
             self._conn.execute(stmt)
 
-    _BATCH_SIZE = 5000  # same as PgHistoricalForcingStore; 9 cols × 5000 = 45K params
+    _BATCH_SIZE = 5000  # same as PgHistoricalForcingStore; 11 cols × 5000 = 55K params
 
     def store_raw_observations(
         self, observations: list[RawObservation]
@@ -70,6 +76,10 @@ class PgObservationStore:
                 "parameter": raw.parameter,
                 "value": raw.value,
                 "source": raw.source.value,
+                "rating_curve_id": raw.rating_curve_id,
+                "rating_curve_correction_version": (
+                    raw.rating_curve_correction_version
+                ),
                 "qc_status": QcStatus.RAW.value,
                 "qc_flags": None,
                 "qc_rule_version": None,
@@ -88,12 +98,26 @@ class PgObservationStore:
                 index_elements=_OBSERVATION_NATURAL_KEY_COLUMNS,
                 set_={
                     "value": insert_stmt.excluded.value,
+                    "rating_curve_id": insert_stmt.excluded.rating_curve_id,
+                    "rating_curve_correction_version": (
+                        insert_stmt.excluded.rating_curve_correction_version
+                    ),
                     "qc_status": QcStatus.RAW.value,
                     "qc_flags": None,
                     "qc_rule_version": None,
                 },
-                where=observations_table.c.value.is_distinct_from(
-                    insert_stmt.excluded.value
+                # Fire when value OR provenance changed, so a restated curve
+                # refreshes provenance even at an unchanged value (Plan 035 Task 2).
+                where=sa.or_(
+                    observations_table.c.value.is_distinct_from(
+                        insert_stmt.excluded.value
+                    ),
+                    observations_table.c.rating_curve_id.is_distinct_from(
+                        insert_stmt.excluded.rating_curve_id
+                    ),
+                    observations_table.c.rating_curve_correction_version.is_distinct_from(
+                        insert_stmt.excluded.rating_curve_correction_version
+                    ),
                 ),
             ).returning(observations_table.c.id)
             written_ids = [
@@ -261,6 +285,8 @@ def _obs_to_values(obs: Observation) -> dict[str, object]:
         "parameter": obs.parameter,
         "value": obs.value,
         "source": obs.source.value,
+        "rating_curve_id": obs.rating_curve_id,
+        "rating_curve_correction_version": obs.rating_curve_correction_version,
         "qc_status": obs.qc_status.value,
         "qc_flags": _serialize_flags(obs.qc_flags),
         "qc_rule_version": obs.qc_rule_version,
@@ -276,8 +302,12 @@ def _row_to_domain(row: sa.engine.row.RowMapping) -> Observation:
         parameter=row["parameter"],
         value=row["value"],
         source=ObservationSource(row["source"]),
-        rating_curve_id=None,
-        rating_curve_correction_version=None,
+        rating_curve_id=(
+            RatingCurveId(row["rating_curve_id"])
+            if row["rating_curve_id"] is not None
+            else None
+        ),
+        rating_curve_correction_version=row["rating_curve_correction_version"],
         qc_status=QcStatus(row["qc_status"]),
         qc_flags=_deserialize_flags(row["qc_flags"]),
         qc_rule_version=row["qc_rule_version"],
