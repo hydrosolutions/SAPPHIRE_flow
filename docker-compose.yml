@@ -1,6 +1,19 @@
 # SAPPHIRE Flow — production base config (no internal ports exposed).
 # For local dev, add the dev overlay to expose postgres, prefect, and API ports:
 #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+# Shared build config for the four services that build the sapphire-flow image
+# (prefect-worker, prefect-worker-ingest, api, init — all share the same image).
+# The recap_dg_client_token BUILD-time secret authenticates the private
+# hydrosolutions/recap-dg-client git clone during the builder's `uv sync`
+# (Dockerfile lines 20-33; docs/standards/security.md § recap-dg-client
+# distribution). Wiring it here lets `docker compose up --build` succeed without
+# the manual `docker build --secret id=recap_dg_client_token,env=... .` workaround.
+x-app-build: &app-build
+  context: .
+  secrets:
+    - recap_dg_client_token
+
 services:
   postgres:
     image: postgis/postgis:16-3.4@sha256:44126d872ac91993766c341e369c539e8196614321765d36a6f1bab0419a5fa5  # postgis/postgis:16-3.4
@@ -65,7 +78,7 @@ services:
         max-file: "5"
 
   prefect-worker:
-    build: .
+    build: *app-build
     image: sapphire-flow:${VERSION:?VERSION is required; set in .env or export before compose up}
     command: prefect worker start --pool default --type process
     # Plan 086: bound the blast radius of an over-budget NWP-on forecast cycle.
@@ -123,7 +136,7 @@ services:
   # 5-minute observation cadence cannot be starved by long forecast/NWP runs on
   # the shared `default` worker.
   prefect-worker-ingest:
-    build: .
+    build: *app-build
     image: sapphire-flow:${VERSION:?VERSION is required; set in .env or export before compose up}
     command: prefect worker start --pool ingest --type process
     mem_limit: 512m
@@ -164,7 +177,7 @@ services:
         max-file: "5"
 
   api:
-    build: .
+    build: *app-build
     image: sapphire-flow:${VERSION:?VERSION is required; set in .env or export before compose up}
     command: uvicorn sapphire_flow.api:app --host 0.0.0.0 --port 8000
     environment:
@@ -245,7 +258,7 @@ services:
         max-file: "5"
 
   init:
-    build: .
+    build: *app-build
     image: sapphire-flow:${VERSION:?VERSION is required; set in .env or export before compose up}
     command: >
       sh -c "
@@ -300,6 +313,15 @@ volumes:
 secrets:
   db_password:
     file: ./secrets/db_password
+  # BUILD-time secret (NOT a runtime secret): authenticates the private
+  # hydrosolutions/recap-dg-client git clone during the image build's `uv sync`
+  # step (Dockerfile lines 20-33). Env-sourced — matches the
+  # `--secret id=recap_dg_client_token,env=RECAP_DG_CLIENT_TOKEN` form in
+  # docs/standards/security.md § recap-dg-client distribution, and keeps the
+  # token out of any repo file. The host/CI must export RECAP_DG_CLIENT_TOKEN
+  # before `docker compose up --build`; compose plumbs it into the build.
+  recap_dg_client_token:
+    environment: RECAP_DG_CLIENT_TOKEN
   # Nepal v1: the recap Data Gateway API key (`sapphire_dg_api_key`) is NOT
   # declared here. It is a Nepal-only secret provided by the
   # `docker-compose.recap.yml` overlay (Plan 082 Task 2A). Swiss deployments
