@@ -127,10 +127,11 @@ Responsibilities are split across two stages:
 
 ### Upgrade procedure
 
-1. Pull new image tag: `docker compose pull`
+0. Export the private-clone build token so `--build` steps can fetch `recap-dg-client`: `export RECAP_DG_CLIENT_TOKEN=$(cat secrets/recap_dg_client_token)` (or supply it from the CI/host secret store). The base `docker-compose.yml` declares this as an env-sourced build secret (`recap_dg_client_token`) and passes it into the four building services (`prefect-worker`, `prefect-worker-ingest`, `api`, `init`), so plain `docker compose ... up -d --build` now clones the private dependency — the manual `docker build --secret id=recap_dg_client_token,env=RECAP_DG_CLIENT_TOKEN .` pre-build is no longer required (it remains a valid fallback). The token must still be provided by the host/CI; compose only plumbs it through.
+1. Pull external images: `docker compose pull --ignore-buildable` (local-build-only — the `sapphire-flow` app image is built in step 3, not pulled; `--ignore-buildable` pulls only the external `postgres`/`prefect`/`caddy` images and skips the buildable app services, which have no registry)
 2. Stop workers (graceful): `docker compose stop prefect-worker prefect-worker-ingest` (v0 both workers; v1: `prefect-worker-ops prefect-worker-training`)
-3. Run init: `docker compose run --rm init` (applies migrations, creates both pools, reroutes deployments)
-4. Restart all: `docker compose up -d`
+3. Build the fresh image + run init: `docker compose run --rm --build init` (`--build` rebuilds the local `sapphire-flow:${VERSION}` image FIRST so migrations run on the new image, then applies migrations, creates both pools, reroutes deployments; requires `RECAP_DG_CLIENT_TOKEN` exported per step 0. Compose supports `--build` on `run` since v2.13)
+4. Restart all: `docker compose up -d` (step 3 already built the image, so `up -d` reuses it — no redundant second build; add `--build` only if the image is not already present, e.g. after a host-level image prune)
 
 > **Plan 098 note**: both v0 workers must be quiesced in step 2 before `init`/`alembic upgrade head` re-runs — leaving `prefect-worker-ingest` running during the upgrade breaks the sequence. Phase 1 (routing `ingest-observations` to the `ingest` pool) and Phase 2 (the `prefect-worker-ingest` container that serves it) ship together in a single image build + compose update; a partial deploy leaves the `ingest` pool workerless and the obs feed dead.
 
@@ -657,6 +658,13 @@ the prune removed it, `up -d` will error or silently pull a different version. T
 starting. This note applies equally to the upgrade procedure in § Upgrade procedure
 above — step 4 (`docker compose up -d`) should be `docker compose up -d --build`
 after any host-level image prune.
+
+Because the builder clones the private `recap-dg-client`, any `--build` invocation
+needs `RECAP_DG_CLIENT_TOKEN` exported first — e.g.
+`export RECAP_DG_CLIENT_TOKEN=$(cat secrets/recap_dg_client_token)`. The base compose
+file declares the `recap_dg_client_token` env-sourced build secret and passes it into
+the building services, so no manual `docker build --secret ...` is needed; that raw
+build remains a fallback.
 
 ### Registration
 

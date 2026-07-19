@@ -136,6 +136,30 @@ Flags:
   place so re-install is fast.
 - `--help` — show usage.
 
+### Build-time secret — `RECAP_DG_CLIENT_TOKEN`
+
+Any image build (a first `up -d --build`, or a rebuild after an image
+prune) clones the private `hydrosolutions/recap-dg-client` dependency
+during `uv sync`, which needs a read-scoped GitHub token. Export it
+before building:
+
+```bash
+export RECAP_DG_CLIENT_TOKEN=$(cat secrets/recap_dg_client_token)
+docker compose -f docker-compose.yml -f docker-compose.macmini.yml up -d --build
+```
+
+The base `docker-compose.yml` declares `recap_dg_client_token` as an
+env-sourced build secret and passes it into the four building services
+(`prefect-worker`, `prefect-worker-ingest`, `api`, `init`), so plain
+`docker compose ... up -d --build` now clones the private dependency —
+the old manual `docker build --secret id=recap_dg_client_token,env=RECAP_DG_CLIENT_TOKEN .`
+pre-build is no longer required (it stays a valid fallback). The token
+is never stored in a repo file; the host must supply it (keep it in
+`secrets/recap_dg_client_token`, which is git-ignored, or the CI secret
+store). The launchd `up -d` wrapper reuses the already-built
+`sapphire-flow:${VERSION}` image and does not build, so it needs no
+token at boot.
+
 ## What the bootstrap does
 
 1. **Arch check** — aborts if not `arm64`.
