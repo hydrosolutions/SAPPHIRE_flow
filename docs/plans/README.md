@@ -115,13 +115,12 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
   **basin/static architecture cleanup only** — 047 separately needs its
   **re-scope per Plan 106** before it advances.
 - **120** — Basin/static importer + §5a persistence + versioned basin state —
-  `DRAFT` — the importer the `04` contract §5a calls for (117 is docs-only and builds
-  none). Owns package import/validation, the §5a-row **population**, the provenance layer
-  (`basin_static_packages` + additive `package_id`/`imported_at`), and **basin-state
-  versioning** (`basin_versions` + the `model_artifact_basin_versions` lineage join
-  table, so a basin correction names exactly which artifacts to retrain); Plan 082 owns
-  the §5a **base** table + the store-backed resolver that reads it. **Blocks 082's
-  production run** (not its build).
+  `DRAFT (PAUSED)` — the importer the `04` contract §5a calls for: package import/validation,
+  §5a-row population, provenance layer, and basin-state versioning + artifact lineage. `plan`
+  workflow **ESCALATED** (2 blockers + 8 majors — real design gaps, code-grounded; see the plan's
+  Escalation section) + 3 owner grill-me decisions. **Paused** — its real-package run is gated on
+  the extractor's full package (~2026-07-22); revisit with a focused revision then. Blocks 082's
+  *production* run (not its build).
 - **035** — Rating-curve provenance for skill integrity — `READY` — v1 DHM hQ.
 - **017** — Manual vs automatic station support — `DRAFT` — v1, DHM mixed networks.
 - **015** — Virtual / calculated station support — `DRAFT` — v1 (enum slice shipped).
