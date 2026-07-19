@@ -613,6 +613,16 @@ class RatingCurveStore(Protocol):
     def supersede_curve(self, curve_id: RatingCurveId, valid_to: UtcDatetime) -> None:
         raise NotImplementedError
 
+    def fetch_curves_in_range(
+        self, station_id: StationId, start: UtcDatetime, end: UtcDatetime
+    ) -> list[RatingCurve]:
+        raise NotImplementedError
+
+    def fetch_active_curves_batch(
+        self, station_ids: list[StationId]
+    ) -> dict[StationId, RatingCurve]:
+        raise NotImplementedError
+
 
 @runtime_checkable
 class FlowRegimeConfigStore(Protocol):
