@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import os
 from datetime import UTC, datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from recap_client import ApiClientConfig, RecapClient
@@ -38,6 +38,7 @@ from sapphire_flow.adapters.recap_gateway import (
     _kelvin_to_celsius,  # pyright: ignore[reportPrivateUsage]
     _metres_to_mm,  # pyright: ignore[reportPrivateUsage]
 )
+from sapphire_flow.preprocessing.converters import basin_avg_to_records
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
     SpatialRepresentation,
@@ -122,24 +123,34 @@ class TestReanalysisAdapterLive:
 
 
 class TestForecastAdapterLive:
-    """End-to-end: our forecast adapter assembles the IFS ensemble.
+    """Control-only forecast fetch over the live Gateway (Plan 127).
 
-    xfail until the HRU is subscribed to IFS ``pf`` — the adapter requires the
-    full 1×fc + 50×pf ensemble and hard-aborts on a missing pf subscription.
+    The adapter tolerates the ECMWF fc-before-pf window — a missing ``pf`` member
+    no longer aborts the fetch — so a control-only fetch succeeds with the ``fc``
+    control member. (The SINGLE-model bare-column normalization is unit-tested in
+    ``operational_inputs``; this live test covers the tolerant fetch on real data.)
     """
 
-    @pytest.mark.xfail(
-        reason="HRU not yet subscribed to IFS pf; xpasses once subscribed",
-        strict=False,
-    )
-    def test_fetch_forecasts_assembles_ensemble(self, client: RecapClient) -> None:
+    def test_control_only_fetch_succeeds_with_control_member(
+        self, client: RecapClient
+    ) -> None:
         adapter = RecapGatewayForecastAdapter(client=client, resolver=_LiveResolver())
         result = adapter.fetch_forecasts(
             [_station(nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST)],
             ensure_utc(datetime.now(UTC)),
         )
         assert _SID in result
-        assert getattr(result[_SID], "cycle_time", None) is not None
+        forecast = result[_SID]
+        assert getattr(forecast, "cycle_time", None) is not None
+        # Tolerant pf: even in the fc-before-pf window the fetch returns usable
+        # records with the fc control member (member_id 0) present.
+        records = basin_avg_to_records(
+            _SID, forecast, lambda: ensure_utc(datetime.now(UTC)), uuid4
+        )
+        assert records, "expected forecast records (fc control at minimum)"
+        assert 0 in {r.member_id for r in records}, (
+            "fc control member (member_id 0) must be present"
+        )
 
 
 class TestRawClientForecastShape:
