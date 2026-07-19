@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-07-19
 plan: 129
 title: Continuous precipitation knit (RhiresD → RprelimD → NWP) + a regression model that consumes it (Swiss staging test)
@@ -221,5 +221,7 @@ gate must read raw provenance rows (the pivot drops `source`); the FI NaN path r
 SHORT-window path is the model's `ModelFailure` to return); M2 must assert past-precip routing specifically;
 registration needs the entry point + tier/alert classification; T1 must verify via DB not debug logs and use
 the `meteoswiss_rprelimd` literal; run-only is not viable (train+promote required); the base already declares
-temperature. DRAFT — one more `plan`/independent review after this fold, then READY. Depends on Plan 128.
-Relates to the 115b weather-identity track and the FI adherence contract.
+temperature. A confirming independent Codex review (2026-07-19) then verified every fold sound + citations
+accurate — clean, no blockers/majors/minors. **READY (owner + confirming review, 2026-07-19).** Build via
+`implement` after Plan 128 lands; hold-at-PR. Depends on Plan 128. Relates to the 115b weather-identity track
+and the FI adherence contract.
