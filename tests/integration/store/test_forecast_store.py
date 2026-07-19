@@ -13,15 +13,24 @@ import sqlalchemy.exc
 from sapphire_flow.db.metadata import forecast_values, model_artifacts, models
 from sapphire_flow.exceptions import ConflictError
 from sapphire_flow.store.forecast_store import PgForecastStore
+from sapphire_flow.store.rating_curve_store import PgRatingCurveStore
 from sapphire_flow.store.station_store import PgStationStore
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
     EnsembleRepresentation,
     ForecastStatus,
+    InterpolationMethod,
     NwpCycleSource,
 )
 from sapphire_flow.types.forecast import OperationalForecast
-from sapphire_flow.types.ids import ArtifactId, ForecastId, ModelId, StationId
+from sapphire_flow.types.ids import (
+    ArtifactId,
+    ForecastId,
+    ModelId,
+    RatingCurveId,
+    StationId,
+)
+from sapphire_flow.types.rating_curve import RatingCurve
 from tests.conftest import make_forecast_ensemble, make_station_config
 
 if TYPE_CHECKING:
@@ -133,6 +142,7 @@ def _make_forecast(
     parameter: str = "discharge",
     nwp_cycle_source: NwpCycleSource = NwpCycleSource.PRIMARY,
     nwp_cycle_reference_time: UtcDatetime | None = _NWP_CYCLE,
+    rating_curve_id: RatingCurveId | None = None,
     rng: random.Random | None = None,
 ) -> OperationalForecast:
     rng = rng or random.Random(42)
@@ -161,7 +171,29 @@ def _make_forecast(
         ensemble=ensemble,
         created_at=_NOW,
         updated_at=_NOW,
+        rating_curve_id=rating_curve_id,
     )
+
+
+def _seed_rating_curve(conn: sa.Connection, station_id: StationId) -> RatingCurveId:
+    curve_id = RatingCurveId(uuid4())
+    PgRatingCurveStore(conn).store_rating_curve(
+        RatingCurve(
+            id=curve_id,
+            station_id=station_id,
+            version=1,
+            valid_from=_NOW,
+            valid_to=None,
+            points=[
+                {"water_level": 1.0, "discharge": 10.0},
+                {"water_level": 2.0, "discharge": 45.0},
+            ],
+            interpolation=InterpolationMethod.LINEAR,
+            uploaded_by=None,
+            created_at=_NOW,
+        )
+    )
+    return curve_id
 
 
 class TestStoreAndFetchForecast:
@@ -784,3 +816,60 @@ class TestStoreForecastIsolationHolds:
                 sa.select(forecasts_table.c.id).where(forecasts_table.c.id == fc.id)
             ).first()
         assert row is None, "rolled-back savepoint write leaked to a fresh connection"
+
+
+class TestRatingCurveBinding:
+    def test_round_trip_preserves_rating_curve_id(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        curve_id = _seed_rating_curve(db_connection, sid)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+
+        fc = _make_forecast(sid, mid, aid, rating_curve_id=curve_id)
+        store.store_forecast(fc)
+
+        fetched = store.fetch_forecast(fc.id)
+        assert fetched is not None
+        assert fetched.rating_curve_id == curve_id
+
+    def test_rating_curve_id_defaults_to_none(
+        self, db_connection: sa.Connection
+    ) -> None:
+        sid = _seed_station(db_connection)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, sid, mid)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+
+        fc = _make_forecast(sid, mid, aid)
+        store.store_forecast(fc)
+
+        fetched = store.fetch_forecast(fc.id)
+        assert fetched is not None
+        assert fetched.rating_curve_id is None
+
+    def test_cross_station_rating_curve_rejected(
+        self, db_connection: sa.Connection
+    ) -> None:
+        # Composite FK (station_id, rating_curve_id) -> rating_curves: a forecast
+        # may not bind a curve belonging to a DIFFERENT station.
+        station_a = make_station_config(code="RC-FA", rng=random.Random(77))
+        station_b = make_station_config(code="RC-FB", rng=random.Random(88))
+        PgStationStore(db_connection).store_station(station_a)
+        PgStationStore(db_connection).store_station(station_b)
+        mid = _seed_model(db_connection)
+        aid = _seed_artifact(db_connection, station_a.id, mid)
+        curve_b = _seed_rating_curve(db_connection, station_b.id)
+        store = PgForecastStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+
+        fc = _make_forecast(station_a.id, mid, aid, rating_curve_id=curve_b)
+        with pytest.raises(sqlalchemy.exc.IntegrityError):
+            store.store_forecast(fc)

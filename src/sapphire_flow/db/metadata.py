@@ -295,9 +295,21 @@ observations = sa.Table(
     sa.Column(
         "source",
         sa.Text,
-        sa.CheckConstraint("source IN ('measured', 'manual_import')"),
+        # Plan 035 Task 2: 'rating_curve_derived' (DHM level->discharge) and
+        # 'component_derived' (Plan 015, forward-compat) join the v0 set.
+        sa.CheckConstraint(
+            "source IN ('measured', 'manual_import', 'rating_curve_derived', "
+            "'component_derived')",
+            name="ck_observations_source",
+        ),
         nullable=False,
     ),
+    # Plan 035 Task 2: provenance for rating-curve-derived discharge. NULL for
+    # directly-measured values. The composite FK below (station_id,
+    # rating_curve_id) enforces that a row can only bind a curve for its OWN
+    # station — MATCH SIMPLE skips the check when rating_curve_id IS NULL.
+    sa.Column("rating_curve_id", UUID(as_uuid=True), nullable=True),
+    sa.Column("rating_curve_correction_version", sa.Text, nullable=True),
     sa.Column(
         "qc_status",
         sa.Text,
@@ -318,6 +330,13 @@ observations = sa.Table(
     sa.CheckConstraint(
         "(qc_status = 'missing') = (value IS NULL)",
         name="ck_observations_missing_value",
+    ),
+    # Plan 035 Task 2: a rating-curve-derived observation may only reference a
+    # curve belonging to its own station (MATCH SIMPLE → skipped when NULL).
+    sa.ForeignKeyConstraint(
+        ["station_id", "rating_curve_id"],
+        ["rating_curves.station_id", "rating_curves.id"],
+        name="fk_observations_rating_curve_station",
     ),
 )
 
@@ -340,6 +359,13 @@ sa.Index(
     observations.c.parameter,
     observations.c.source,
     unique=True,
+)
+# Plan 035 Task 2 — Flow 12 Branch A provenance queries (by station + source).
+sa.Index(
+    "ix_observations_station_source_ts",
+    observations.c.station_id,
+    observations.c.source,
+    observations.c.timestamp,
 )
 
 # ──────────────────────────────────────────────
@@ -375,6 +401,10 @@ rating_curves = sa.Table(
     sa.UniqueConstraint(
         "station_id", "version", name="uq_rating_curves_station_version"
     ),
+    # Plan 035 Task 2: target for the composite same-station FK on observations
+    # and forecasts (id is already the PK; this makes (id, station_id) a valid
+    # FK reference so a row cannot bind another station's curve).
+    sa.UniqueConstraint("id", "station_id", name="uq_rating_curves_id_station"),
 )
 
 # Indexes on rating_curves
@@ -764,6 +794,16 @@ forecasts = sa.Table(
         server_default="raw",
     ),
     sa.Column("qc_flags", JSONB, nullable=False, server_default="[]"),
+    # Plan 035 Task 2: active rating curve for this station at issued_at. NULL
+    # for directly-measured-discharge stations. Value set at storage time (Task 4).
+    # Same-station enforced by the composite FK below (MATCH SIMPLE → skipped
+    # when NULL).
+    sa.Column("rating_curve_id", UUID(as_uuid=True), nullable=True),
+    sa.ForeignKeyConstraint(
+        ["station_id", "rating_curve_id"],
+        ["rating_curves.station_id", "rating_curves.id"],
+        name="fk_forecasts_rating_curve_station",
+    ),
 )
 
 forecast_values = sa.Table(
@@ -811,6 +851,11 @@ sa.Index(
     forecasts.c.parameter,
     unique=True,
     postgresql_where=forecasts.c.status != "superseded",
+)
+# Plan 035 Task 2 — join forecasts back to their rating curve.
+sa.Index(
+    "ix_forecasts_rating_curve",
+    forecasts.c.rating_curve_id,
 )
 
 hindcast_forecasts = sa.Table(

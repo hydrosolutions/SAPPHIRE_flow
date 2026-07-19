@@ -23,7 +23,13 @@ from sapphire_flow.types.enums import (
 )
 from sapphire_flow.types.forecast import OperationalForecast
 from sapphire_flow.types.forecast_summary import ForecastSummaryRow
-from sapphire_flow.types.ids import ArtifactId, ForecastId, ModelId, StationId
+from sapphire_flow.types.ids import (
+    ArtifactId,
+    ForecastId,
+    ModelId,
+    RatingCurveId,
+    StationId,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -89,6 +95,7 @@ class PgForecastStore:
                         if forecast.source_model_ids is not None
                         else None
                     ),
+                    rating_curve_id=forecast.rating_curve_id,
                 )
             )
             rows = _build_value_rows(forecast)
@@ -374,6 +381,11 @@ def _rows_to_domain(rows: Sequence[RowMapping]) -> OperationalForecast:
         source_model_ids=(
             [ModelId(mid) for mid in header["source_model_ids"]]
             if header.get("source_model_ids") is not None
+            else None
+        ),
+        rating_curve_id=(
+            RatingCurveId(header["rating_curve_id"])
+            if header.get("rating_curve_id") is not None
             else None
         ),
     )

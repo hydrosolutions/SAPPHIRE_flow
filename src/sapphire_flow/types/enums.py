@@ -180,6 +180,7 @@ class StationStatus(Enum):
 class ObservationSource(Enum):
     MEASURED = "measured"
     RATING_CURVE_DERIVED = "rating_curve_derived"
+    COMPONENT_DERIVED = "component_derived"
     MANUAL_IMPORT = "manual_import"
 
 

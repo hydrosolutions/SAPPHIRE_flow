@@ -225,6 +225,7 @@ class GaugingStatus(Enum):
 class ObservationSource(Enum):
     MEASURED = "measured"                          # direct sensor reading
     RATING_CURVE_DERIVED = "rating_curve_derived"  # derived via rating curve conversion (Flow 2 step 2.5)
+    COMPONENT_DERIVED = "component_derived"         # derived from calculated-station formulas (v1 — plan 015)
     MANUAL_IMPORT = "manual_import"                # CSV upload (Flow 12 Branch B, Flow 5 step 5.4)
 
 class AuditActorType(Enum):
