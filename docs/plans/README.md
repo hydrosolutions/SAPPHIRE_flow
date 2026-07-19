@@ -90,12 +90,11 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
 - **125** — Inactive assignments fully inert — `DRAFT (stub)` — follow-up to 124: also make INACTIVE
   invisible to the fallback-priority-drift detector, which **requires an owner-ratified supersession
   of Plan 100 C1c**. Coherence/cleanup; not deployment-critical. Depends on 124.
-- **127** — fc-first minimal unblock — `DRAFT` — **THE deployment-critical forcing item (owner
-  2026-07-18); ready to implement directly.** Two localized fixes so Sandro's control-only
-  (`SINGLE`) models forecast on the live Gateway: (1) tolerant `pf` fetch (missing `pf` → keep `fc`,
-  don't abort); (2) `SINGLE`-model **bare** columns keyed on `ensemble_mode` (works whether or not
-  `pf` is present). No flow-membership machinery, no protocol change, no NONE work. Supersedes 123's
-  deployment-criticality.
+- **127** — fc-first minimal unblock — **MERGED (#97 → `d317af0`, 2026-07-19)** — the
+  deployment-critical forcing path is COMPLETE (082 + 124 + 127). Tolerant `pf` fetch + `SINGLE`-model
+  bare columns keyed on `ensemble_mode` + a mixed-model fail-fast guard. Critical Codex review caught
+  a ratchet-masked type bug + a mixed-model regression (both fixed, round-2 APPROVE). Sandro's live
+  control-only models now forecast end-to-end.
 - **123** — Model-driven forcing membership (CONTROL_ONLY + NONE) — `DRAFT (DEFERRED)` — the full
   flow-level membership design (skip `pf` entirely for control-only + real `NONE` skip +
   staleness/provenance). Genuinely multi-part; **ESCALATED 2×**. **No longer the blocker** (127
