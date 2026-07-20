@@ -225,3 +225,18 @@ temperature. A confirming independent Codex review (2026-07-19) then verified ev
 accurate — clean, no blockers/majors/minors. **READY (owner + confirming review, 2026-07-19).** Build via
 `implement` after Plan 128 lands; hold-at-PR. Depends on Plan 128. Relates to the 115b weather-identity track
 and the FI adherence contract.
+
+**Post-implementation review fixes (2026-07-20):** an independent Codex pass over the committed diff found
+two residual gaps, both fixed and locking-test-proven. (1) The "no gap before NWP future precip" continuity
+test asserted only that `past_dynamic` reached issue-time, never that the first `future_dynamic` precip
+bucket actually abuts it — for the test's midnight issue-time fixture, `_filter_and_cap_daily_records`
+(`services/operational_inputs.py`) dropped the whole issue-day NWP bucket via a strict `valid_time >
+issue_time`, silently opening a one-day seam gap. Fixed to `>=`: a non-midnight cycle still backdates (and
+correctly drops) the issue-day bucket, but a midnight-exact issue-time's issue-day bucket is genuinely all
+future and is now kept. The test now asserts `future_dynamic["timestamp"].min() - latest_past_precip_ts ==
+time_step` directly, proving the seam rather than a same-step proxy. (2) `seam_gate.py`'s window builders
+(`seam_window_from_forcing_rows`/`seam_window_from_nwp_rows`) filtered raw rows only by source/parameter,
+not by `station_id` (or, for NWP, `nwp_source`/`cycle_time`) — a T1 query spanning both staging stations, or
+an NWP fetch spanning multiple cycles, could silently mix another station's or run's rows into the seam
+window. Both builders now take explicit `station_id`/`nwp_source`/`cycle_time` and filter to them before
+windowing.

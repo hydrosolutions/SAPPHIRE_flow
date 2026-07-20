@@ -112,14 +112,24 @@ class TestLegitimateMetDifferenceIsNotFlagged:
         assert result.verdict is SeamGateVerdict.PASS
 
 
+_NWP_CYCLE = datetime(2026, 5, 1, tzinfo=UTC)
+
+
 def _nwp_row(
-    *, ts: datetime, parameter: str, member_id: int, value: float
+    *,
+    ts: datetime,
+    parameter: str,
+    member_id: int,
+    value: float,
+    station_id: StationId = _SID,
+    nwp_source: str = "icon_ch2_eps",
+    cycle_time: datetime = _NWP_CYCLE,
 ) -> WeatherForecastRecord:
     return WeatherForecastRecord(
         id=uuid4(),
-        station_id=_SID,
-        nwp_source="icon_ch2_eps",
-        cycle_time=ts,
+        station_id=station_id,
+        nwp_source=nwp_source,
+        cycle_time=cycle_time,
         valid_time=ts,
         parameter=parameter,
         spatial_type=SpatialRepresentation.BASIN_AVERAGE,
@@ -161,6 +171,42 @@ class TestSeamWindowBuildersReadRawProvenance:
 
         window = seam_window_from_forcing_rows(
             rows,
+            station_id=_SID,
+            source=ForcingSource.METEOSWISS_RHIRESD,
+            parameter="precipitation",
+            label="rhiresd",
+            edge=SeamEdge.BEFORE,
+            window_size=5,
+        )
+
+        assert window.values == (4.0,)
+
+    def test_seam_window_from_forcing_rows_filters_by_station_id(self) -> None:
+        # A raw multi-station fetch (e.g. a T1 query over both staging
+        # stations) must not interleave another station's rows into this
+        # station's seam window.
+        ts = datetime(2026, 6, 1, tzinfo=UTC)
+        other_sid = StationId(uuid4())
+        rows = [
+            make_raw_historical_forcing(
+                station_id=_SID,
+                source=ForcingSource.METEOSWISS_RHIRESD.value,
+                parameter="precipitation",
+                valid_time=ts,
+                value=4.0,
+            ),
+            make_raw_historical_forcing(
+                station_id=other_sid,
+                source=ForcingSource.METEOSWISS_RHIRESD.value,
+                parameter="precipitation",
+                valid_time=ts,
+                value=9999.0,  # other station's value — must be excluded
+            ),
+        ]
+
+        window = seam_window_from_forcing_rows(
+            rows,
+            station_id=_SID,
             source=ForcingSource.METEOSWISS_RHIRESD,
             parameter="precipitation",
             label="rhiresd",
@@ -179,6 +225,54 @@ class TestSeamWindowBuildersReadRawProvenance:
 
         window = seam_window_from_nwp_rows(
             rows,
+            station_id=_SID,
+            nwp_source="icon_ch2_eps",
+            cycle_time=_NWP_CYCLE,
+            parameter="precipitation",
+            label="nwp",
+            edge=SeamEdge.AFTER,
+            window_size=5,
+        )
+
+        assert window.values == (3.0,)
+
+    def test_seam_window_from_nwp_rows_filters_by_station_source_and_cycle(
+        self,
+    ) -> None:
+        # A raw fetch spanning another station, another NWP source, or an
+        # earlier/later cycle must not leak into this seam window.
+        ts = datetime(2026, 6, 1, tzinfo=UTC)
+        other_sid = StationId(uuid4())
+        rows = [
+            _nwp_row(ts=ts, parameter="precipitation", member_id=0, value=3.0),
+            _nwp_row(
+                ts=ts,
+                parameter="precipitation",
+                member_id=0,
+                value=9999.0,  # other station — must be excluded
+                station_id=other_sid,
+            ),
+            _nwp_row(
+                ts=ts,
+                parameter="precipitation",
+                member_id=0,
+                value=8888.0,  # other nwp_source — must be excluded
+                nwp_source="icon_eu",
+            ),
+            _nwp_row(
+                ts=ts,
+                parameter="precipitation",
+                member_id=0,
+                value=7777.0,  # other cycle_time — must be excluded
+                cycle_time=_NWP_CYCLE - _DAY,
+            ),
+        ]
+
+        window = seam_window_from_nwp_rows(
+            rows,
+            station_id=_SID,
+            nwp_source="icon_ch2_eps",
+            cycle_time=_NWP_CYCLE,
             parameter="precipitation",
             label="nwp",
             edge=SeamEdge.AFTER,
@@ -217,6 +311,7 @@ class TestSeamWindowBuildersReadRawProvenance:
 
         window = seam_window_from_forcing_rows(
             far_history + seam_local,
+            station_id=_SID,
             source=ForcingSource.METEOSWISS_RHIRESD,
             parameter="precipitation",
             label="rhiresd",
@@ -248,6 +343,9 @@ class TestSeamWindowBuildersReadRawProvenance:
 
         window = seam_window_from_nwp_rows(
             far_future + seam_local,
+            station_id=_SID,
+            nwp_source="icon_ch2_eps",
+            cycle_time=_NWP_CYCLE,
             parameter="precipitation",
             label="nwp",
             edge=SeamEdge.AFTER,
@@ -271,6 +369,9 @@ class TestSeamWindowBuildersReadRawProvenance:
 
         window = seam_window_from_nwp_rows(
             rows,
+            station_id=_SID,
+            nwp_source="icon_ch2_eps",
+            cycle_time=_NWP_CYCLE,
             parameter="precipitation",
             label="nwp",
             edge=SeamEdge.AFTER,
@@ -296,6 +397,9 @@ class TestSeamWindowBuildersReadRawProvenance:
         ]
         nwp = seam_window_from_nwp_rows(
             nwp_rows,
+            station_id=_SID,
+            nwp_source="icon_ch2_eps",
+            cycle_time=_NWP_CYCLE,
             parameter="precipitation",
             label="nwp",
             edge=SeamEdge.AFTER,

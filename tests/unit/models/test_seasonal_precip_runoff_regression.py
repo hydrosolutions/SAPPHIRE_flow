@@ -299,6 +299,24 @@ class TestContinuousSeriesAssembly:
         gap = _ISSUE - ensure_utc(latest_past_precip_ts)
         assert gap <= _STEP
 
+        # The Plan 129 claim itself is "no gap before the NWP future precip"
+        # (past_dynamic reaching issue-time is only a proxy) — assert the
+        # actual seam: the first FUTURE precip bucket must pick up exactly
+        # one time_step after the last PAST precip bucket, not a calendar
+        # day beyond it.
+        future_dynamic = inputs.data.future_dynamic
+        precip_cols = [
+            c
+            for c in future_dynamic.columns
+            if c == "precipitation" or c.startswith("precipitation_")
+        ]
+        assert precip_cols
+        assert not future_dynamic.is_empty()
+        earliest_future_ts = future_dynamic["timestamp"].min()
+        assert isinstance(earliest_future_ts, datetime)
+        seam_gap = ensure_utc(earliest_future_ts) - ensure_utc(latest_past_precip_ts)
+        assert seam_gap == _STEP
+
     def test_stale_reanalysis_feed_does_not_falsely_reach_issue_time(self) -> None:
         # Contrast case proving the assertion above discriminates: seed
         # forcing rows only up to a stale boundary (simulating RprelimD NOT

@@ -33,6 +33,7 @@ if TYPE_CHECKING:
 
     from sapphire_flow.types.forcing_sources import ForcingSource
     from sapphire_flow.types.historical_forcing import RawHistoricalForcing
+    from sapphire_flow.types.ids import StationId
     from sapphire_flow.types.weather import WeatherForecastRecord
 
 # Generous Alpine daily-precip sanity ceiling (mm/day). A value outside
@@ -157,6 +158,7 @@ def _select_seam_local(
 def seam_window_from_forcing_rows(
     rows: Sequence[RawHistoricalForcing],
     *,
+    station_id: StationId,
     source: ForcingSource,
     parameter: str,
     label: str,
@@ -170,13 +172,18 @@ def seam_window_from_forcing_rows(
     frames) — this is why the gate must run over raw rows, not assembled ones.
     Selects by ``valid_time`` proximity to the seam (``edge``), not merely
     every matching row — an unbounded raw fetch would otherwise pull in
-    history far from the seam and change the verdict.
+    history far from the seam and change the verdict. Filters by
+    ``station_id`` — a multi-station raw fetch (e.g. a T1 query over both
+    staging stations) would otherwise interleave rows from different basins
+    and silently check the wrong seam.
     """
     matched: list[tuple[datetime, float]] = sorted(
         (
             (row.valid_time, row.value)
             for row in rows
-            if row.source == source.value and row.parameter == parameter
+            if row.station_id == station_id
+            and row.source == source.value
+            and row.parameter == parameter
         ),
         key=lambda pair: pair[0],
     )
@@ -189,6 +196,9 @@ def seam_window_from_forcing_rows(
 def seam_window_from_nwp_rows(
     rows: Sequence[WeatherForecastRecord],
     *,
+    station_id: StationId,
+    nwp_source: str,
+    cycle_time: datetime,
     parameter: str,
     label: str,
     edge: SeamEdge,
@@ -202,11 +212,19 @@ def seam_window_from_nwp_rows(
     magnitude of one deterministic reanalysis row at the same valid times, so
     summing member values into the window's scale statistic
     (``_representative_magnitude``) would inflate the NWP side and falsely
-    flag a correctly-scaled seam.
+    flag a correctly-scaled seam. Filters by ``station_id``, ``nwp_source``,
+    and ``cycle_time`` — a raw multi-station or multi-cycle fetch would
+    otherwise mix rows from a different basin or an earlier/later model run
+    into the same window and silently check the wrong seam.
     """
     by_valid_time: dict[datetime, list[float]] = {}
     for row in rows:
-        if row.parameter != parameter:
+        if (
+            row.station_id != station_id
+            or row.nwp_source != nwp_source
+            or row.cycle_time != cycle_time
+            or row.parameter != parameter
+        ):
             continue
         by_valid_time.setdefault(row.valid_time, []).append(row.value)
 

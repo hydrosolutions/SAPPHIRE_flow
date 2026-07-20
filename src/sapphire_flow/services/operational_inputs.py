@@ -157,13 +157,21 @@ def _filter_and_cap_daily_records(
 ) -> list[_AggregatedNwpPoint]:
     """Drop backdated daily buckets and cap to the forecast horizon.
 
-    Keeps only buckets whose ``valid_time`` is strictly after ``issue_time``
-    (dropping the UTC-midnight issue-day bucket that a non-midnight cycle
-    backdates), then keeps the earliest ``forecast_horizon_steps`` distinct
-    future valid_times. The retained valid_time set is identical across all
-    members, so every ensemble member yields the same daily buckets.
+    Keeps only buckets whose ``valid_time`` is at or after ``issue_time``
+    (``>=``, not ``>``): a non-midnight cycle backdates the UTC-midnight
+    issue-day bucket to strictly BEFORE ``issue_time`` (it mixes already-
+    elapsed hours with future ones) and that bucket is correctly dropped. A
+    midnight-exact ``issue_time`` (a daily cycle issued at UTC 00:00) instead
+    labels the issue-day bucket AT ``issue_time`` itself — the whole day is
+    still ahead of "now" with zero elapsed-hour contamination, so ``>``
+    would wrongly drop a full day of genuinely future NWP precip and open a
+    day-wide gap against the past array's last day (Plan 129's "no gap"
+    seam-continuity claim). Then keeps the earliest ``forecast_horizon_steps``
+    distinct future valid_times. The retained valid_time set is identical
+    across all members, so every ensemble member yields the same daily
+    buckets.
     """
-    future_times = sorted({r.valid_time for r in records if r.valid_time > issue_time})
+    future_times = sorted({r.valid_time for r in records if r.valid_time >= issue_time})
     kept_times = frozenset(future_times[:forecast_horizon_steps])
     return [r for r in records if r.valid_time in kept_times]
 
