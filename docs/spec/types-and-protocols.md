@@ -948,6 +948,27 @@ class RatingCurve:
 
 Module: `types/rating_curve.py`
 
+```python
+# v1 — Plan 131: pure level→discharge (h→Q) conversion service (services/rating_conversion.py)
+class RatingRange(Enum):          # which side of the tabulated stage domain a level fell on
+    IN_RANGE; BELOW; ABOVE
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ConversionResult:
+    discharge: float
+    range_flag: RatingRange       # caller maps a non-IN_RANGE flag to a QC flag
+
+class RatingConverter:            # built once per curve (validates + sorts), then pure
+    @classmethod
+    def from_curve(cls, curve: RatingCurve) -> RatingConverter: ...
+    def convert(self, level: float) -> ConversionResult: ...
+        # linear | log_linear interpolation; out-of-range clamps to the nearest endpoint
+        # and reports range_flag (no extrapolation). Raises RatingConversionError on an
+        # invalid curve/level.
+```
+
+Module: `services/rating_conversion.py`
+
 ### FlowRegimeConfig
 
 ```python
