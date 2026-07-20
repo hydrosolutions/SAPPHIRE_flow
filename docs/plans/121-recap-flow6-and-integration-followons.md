@@ -90,6 +90,61 @@ leg). Probed 2026-07-16: the key authenticates and ERA5-Land returns data, but
 confirming per-HRU × per-parameter entitlement. Register a subscribed test HRU
 or mark the snow leg xfail-on-entitlement.
 
+## Live probe — ERA5-Land latency / resolution / the past→future bridge (2026-07-20)
+
+Live-probed the Gateway (`https://recap.ieasyhydro.org/sdk`, owner-supplied key, **test HRU
+`12300`** — caveat below) to verify a claim that "10 days of ERA5-Land returns sub-daily data up
+to today, recent tail backfilled from old IFS forecasts." **Partly confirmed, with two material
+corrections and one design gap.**
+
+**Confirmed**
+- **Observed ERA5-Land is hourly.** A clean past window (2024-06-01..10) returned 240 rows, every
+  step 1.0 h, `source=era5_land`. Matches the "ERA5-Land: hourly" assumption in 081/082.
+- **IFS forecast native cadence is 3-hourly → 6-hourly.** `ifs_forecast(fc, run=2026-07-19)`
+  returned 84 steps: 48 × 3 h then 35 × 6 h out to +15 d — exactly the 081/082 "3-hourly→144 h,
+  then 6-hourly" shape. **This is the "3-hourly" the tail claim refers to** — it is the IFS
+  *forecast* cadence (and thus the gap-fill source), not an ERA5-Land property.
+
+**Corrections**
+- **Lag is ~8 days and ragged, not 5–6.** Newest served ERA5 date was 2026-07-12 (today−8), with
+  scattered holes near the edge (errors named 07-13/15/16/17). The window boundary floats; do not
+  hardcode a day count (our adapter correctly keys on the row `source`, not a fixed lag).
+- **`subdaily_resolution=3` is not rejected at validation** (the client's `# 6/12/24` inline
+  comment understates the accepted set) — but no data returned, so 3 h fill output is unconfirmed.
+  `operational`/`ifs_gap_fill` *resample* to `subdaily_resolution`; only raw `ifs_forecast` is
+  native 3 h/6 h.
+
+**The design gap (the real finding)**
+- **Our `RecapGatewayReanalysisAdapter` calls the pure `era5_land_reanalysis` endpoint**
+  (`adapters/recap_gateway.py::era5_land_reanalysis` → `_drop_forecast_fill_rows`), which **hard-errors**
+  (`ApiDataUnavailableError` → our `RecapDataUnavailableError`) the moment the requested window
+  crosses the latency edge — it neither truncates nor gap-fills. So "ask for 10 days → get up to
+  today" is **false via our path**: it raises and degrades to runoff-only. Confirmed live (every
+  end-date past today−8 errored).
+- The gap-fill tail the seam-closing idea depends on comes from the **separate** `operational` /
+  `ifs_gap_fill` endpoints, which **we do not call**. Right now they also could not stitch for HRU
+  12300 (gap-fill reached for an aged-out IFS run 2026-07-04; `operational` hit a missing ERA5 date
+  07-03) — so the bridge could not be observed end-to-end live.
+- This is the **Nepal analogue of the Swiss RprelimD→NWP seam** (see 115b1 § Access-model
+  correction and the earlier seam-3 discussion). Two channels are needed off the same Gateway
+  response, and only the first exists today: **(1) leakage-free training** — observed `era5_land`
+  only, fill stripped (built) — and **(2) an operational past→future bridge** — the `ifs` gap-fill
+  tail, used *only* at inference to close the ERA5→forecast lag, **never** admitted to training
+  (not built; nothing calls `operational`/`ifs_gap_fill`).
+
+**Follow-on actions (for the plan workflow, not pre-committed)**
+1. Decide whether the operational bridge (channel 2) is in Nepal v1 scope and where it lives — it
+   interacts with 2E's A/B/C fork, since Flow-6 is the reanalysis path.
+2. **Re-probe a real registered operational HRU** before drawing coverage conclusions — 12300 is a
+   test HRU with ragged, possibly incomplete archives; the missing-date holes may be HRU-specific,
+   not a Gateway-wide outage.
+3. Record in 081/082 that "ERA5-Land: hourly" is correct for the observed body **but** the endpoint
+   hard-errors past a ~1-week ragged latency edge, and that the fill/stitch lives on endpoints we do
+   not currently call.
+
+*(Probe scripts were run against the live Gateway with the key passed via environment only; the key
+is not stored in the repo, this plan, or any script.)*
+
 ## Onboarding invariant (capture, don't lose)
 
 Forcing is model-driven: a basin's required Gateway subscription set = the union
