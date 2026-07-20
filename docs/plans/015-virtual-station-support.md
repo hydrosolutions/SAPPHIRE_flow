@@ -1,60 +1,93 @@
 ---
 status: DRAFT
 created: 2026-03-30
-updated: 2026-07-08
-# NOTE: only the v0 GaugingStatus enum slice shipped (1a88f92). The v1 flow logic
-# (calculated_station_formulas, COMPONENT_DERIVED, Flow 2/5 branching, QC propagation)
-# is undesigned — needs grill-me + WF1 re-draft before WF2. Reverted READY→DRAFT per
-# Plan 106 §4 (v1 critical-path roadmap). Must merge before Plan 017 starts.
-scope: design — virtual station types, calculated station formulas, flow impacts, QC propagation
-depends_on: [014, 013]  # both DONE/archived; target: v1 (types and schema land in v0)
+updated: 2026-07-20
+# RE-DRAFT 2026-07-20 (grill-me owner-resolved): narrowed to CALCULATED (component-
+# derived) stations only. UNGAUGED support split to a separate deferred plan. Formula
+# audit via structlog now (audit_log/AuditEventType rows deferred to the Wave-3
+# auth/audit plan). Flow 12-triggered re-derivation deferred to a follow-up. The v0
+# GaugingStatus enum slice shipped (1a88f92); COMPONENT_DERIVED + GaugingStatus.CALCULATED
+# now exist in code (Plan 035 Task 2 shipped COMPONENT_DERIVED). Reverted READY→DRAFT per
+# Plan 106 §4. Must merge before Plan 017 starts.
+scope: design — CALCULATED station formulas, Flow 2 step-2.5 derivation, QC propagation, Flow 5 CALCULATED onboarding
+depends_on: [014, 013]  # both DONE/archived; target: v1 (types + GaugingStatus enum landed in v0)
 ---
 
-# 015 — Virtual Station Support
+# 015 — Calculated Station Support (component-derived observations)
+
+## Re-draft scope (2026-07-20) — calculated stations only
+
+Originally "Virtual Station Support" covering **two** kinds of virtual station. Per an
+owner grill-me it is narrowed to the buildable, self-contained half:
+
+- **IN SCOPE — Calculated stations** (`GaugingStatus.CALCULATED`): discharge derived from
+  gauged tributaries by a config-driven weighted sum `Q_virtual = Σ(wᵢ · Qᵢ)`, stored
+  with `source = 'component_derived'`. Self-contained and testable now (even against Swiss
+  BAFU gauged discharge). Covers: `calculated_station_formulas` table + triggers (D2),
+  the Flow 2 step-2.5 derivation, QC propagation (D6), and the Flow 5 CALCULATED
+  onboarding branch.
+- **SPLIT OUT — Ungauged stations** (`GaugingStatus.UNGAUGED`, no observations): moved to
+  a **separate deferred plan**, hard-blocked on two unbuilt plans — the **baseline-model
+  design** (D5a) and **basin-outline upload** (D7, with a `security.md` file-upload gate).
+  The ungauged-specific content below is **reference-only** and moves to that plan:
+  D3-ungauged, D4-ungauged, **D5**, **D5a**, **D7**, the **UNGAUGED branch of the Flow 5
+  onboarding spec** (steps 5.1–5.12 + its checklist), the file-upload `security.md`
+  requirements, the WMO/WIGOS virtual-station identity items in D8/§Standards, and the
+  **"Ungauged stations" column of the Flow Impact table**. Each such section below now
+  carries an inline `⚠ REFERENCE-ONLY (ungauged plan)` marker.
+
+  > **NOTE:** the ungauged material should ultimately move into a stub
+  > `016-ungauged-station-support.md`, but this revision is constrained to editing *this*
+  > file only, so it is marked `⚠ REFERENCE-ONLY` in place; creating the stub is a
+  > mechanical follow-up for the owner. Implementers MUST NOT build any `⚠ REFERENCE-ONLY`
+  > section from this plan.
+
+**Owner-resolved forks (this re-draft implements):**
+1. **Formula audit** — `FORMULA_CONFIGURED` / `FORMULA_CLOSED` need `audit_log` /
+   `AuditEventType`, which are not built. **Decision: log formula create/close via
+   structlog now; the `audit_log` rows land with the Wave-3 auth/audit plan.** Not a gate.
+2. **Flow 12-triggered re-derivation** — couples to the `reprocess_observations` flow
+   (blocked on the DHM producer). **Decision: build Flow 2 forward-derivation now; the
+   Flow 12 Branch A/C re-derivation is a follow-up** once that flow exists.
+
+**Already shipped since first draft:** the `GaugingStatus` enum + `stations.gauging_status`
+column (v0, `1a88f92`); `GaugingStatus.CALCULATED`; and `ObservationSource.COMPONENT_DERIVED`
+(Plan 035 Task 2, `#101`) — so those "add the enum value" tasks are done; this plan wires
+the flow logic that writes it.
 
 ## Problem
 
-SAPPHIRE Flow defers virtual stations to v2.0 (plan 011 §B categorization). Virtual
+SAPPHIRE Flow defers virtual stations to v2.0 (plan 011 §B categorization). Calculated
 station support is a core modelling capability needed for v1 — one of our modellers
-specialises in ungauged catchment prediction and calculated station derivation. This
-plan promotes the design to v1.
+specialises in calculated station derivation (Central Asia: reservoir inflow = weighted
+sum of upstream gauged tributaries). This plan promotes that design to v1.
 
 ## v0 Scope
 
-Types and schema land in v0; flow logic is v1-only. Specifically:
+Types and enum values already landed in v0; the table + flow logic are this plan's v1
+work. Specifically:
 
-**v0 (Phase 1a — types + DB schema):**
-- `GaugingStatus` enum added to `types-and-protocols.md` and implemented alongside
-  other enums per §G ("implement the full type system"). Once added to the spec,
-  `GaugingStatus` falls under §G's blanket "all enums (minus deferred ones)" rule —
-  no §G exclusion-list update needed; the exclusion list must **not** include
-  `GaugingStatus`. (The spec update is a prerequisite: §G implements what
-  `types-and-protocols.md` defines, so the enum must be added there first.)
-- `gauging_status TEXT NOT NULL DEFAULT 'gauged'` column on `stations` table
-- `conventions.md` enum master list updated with `GaugingStatus`
+**Already shipped in v0 (do NOT re-implement):**
+- `GaugingStatus` enum + `gauging_status TEXT NOT NULL DEFAULT 'gauged'` column on
+  `stations` (`1a88f92`; enum at `src/sapphire_flow/types/enums.py:187-190`, DB CHECK at
+  `src/sapphire_flow/db/metadata.py:122-126`), including `GaugingStatus.CALCULATED`.
+- `ObservationSource.COMPONENT_DERIVED` (Plan 035 Task 2, `#101`) — the enum member
+  exists (`src/sapphire_flow/types/enums.py:183`, ordered third, before `MANUAL_IMPORT`)
+  **and** is already admitted by the `observations.source` CHECK constraint
+  (`src/sapphire_flow/db/metadata.py:296-303`). No enum/CHECK change is in scope; only
+  the Flow 2 logic that *writes* `COMPONENT_DERIVED` rows is v1 work.
+- `conventions.md` enum master list already carries `GaugingStatus` and
+  `component_derived`.
 
-The `calculated_station_formulas` table and `COMPONENT_DERIVED` enum value are
-**deferred to v1** per v0-scope.md §B ("empty 'for later' tables add migration
-maintenance burden"). `COMPONENT_DERIVED` is a single enum *value*, not a whole enum —
-§G's blanket "all enums" rule covers whole enums, not individual values. To avoid
-ambiguity, `COMPONENT_DERIVED` must be explicitly carved out in v0-scope.md §G (as a
-deferred value of the non-deferred `ObservationSource` enum) rather than in §B (which
-lists tables and full schema items, not individual enum values). The
-`calculated_station_formulas` table belongs in §B as usual. The `ObservationSource` enum
-is implemented in v0 with its three existing values; `COMPONENT_DERIVED` is added in v1
-alongside the flow logic that writes it.
-
-All v0 stations are `GAUGED` and no flow logic branches on `GaugingStatus` in v0. The
-cost of carrying the enum and column is negligible; the benefit is that v1
-implementation builds on a stable, tested schema.
+So the "add the enum value" and "carve out in v0-scope.md §G" tasks from the original
+draft are **done** — struck here to avoid directing edits for already-merged code.
 
 **v1 (this plan's flow logic):**
-- `calculated_station_formulas` table + DB triggers (§D2)
-- `COMPONENT_DERIVED` value added to `ObservationSource` enum
+- `calculated_station_formulas` table + DB trigger (§D2)
 - Flow 2 tiered derivation, Flow 5 branching, QC propagation, all other flow
   changes described below
 - ForecastInterface contract suggestions for input requirements declaration and
-  structured error types (see §D5)
+  structured error types (see §D5, reference-only)
 
 ## Two Kinds of Virtual Stations
 
@@ -81,26 +114,16 @@ value, virtual stations on lakes (e.g. calculated lake inflow) would use
 `StationKind.LAKE` + `GaugingStatus.CALCULATED` — the two axes are orthogonal and
 compose correctly regardless of which `StationKind` values exist.
 
-```python
-class GaugingStatus(Enum):
-    GAUGED = "gauged"
-    UNGAUGED = "ungauged"
-    CALCULATED = "calculated"
-```
-
-New field on `StationConfig`: `gauging_status: GaugingStatus = GaugingStatus.GAUGED`.
-Convention: place after existing fields. (`kw_only=True` removes the positional
-ordering restriction, so placement is flexible — but appending is clearest.)
-
-New column on `stations` table: `gauging_status TEXT DEFAULT 'gauged'` with CHECK
-constraint. Added as **nullable with default** in migration N, then `NOT NULL`
-constraint added in migration N+1 — two-step pattern consistent with `cicd.md`
-§Rollback's additive-only rule (previous image must be able to insert rows without
-knowledge of new columns during rolling deployment). The explicit two-step procedure
-is proposed as a new documented pattern in §Standards Document Updates. Existing stations are all `GAUGED` — both
-migrations are no-op backfills.
-
-Must be added to `conventions.md` enum master list with scope `v0+v1`.
+The `GaugingStatus` enum, the `StationConfig.gauging_status` field, and the
+`stations.gauging_status TEXT NOT NULL DEFAULT 'gauged'` column with CHECK constraint
+are **already shipped** — see §v0 Scope "Already shipped" (`1a88f92`;
+`src/sapphire_flow/types/enums.py:187-190`, `src/sapphire_flow/db/metadata.py:122-129`
+with `nullable=False`, `docs/spec/types-and-protocols.md:788`). Do **NOT** run an
+add-column migration: the column already exists and is already `NOT NULL`, so a
+migration N (add column) would fail outright and a migration N+1 (add NOT NULL) is
+redundant. D1 exists only to establish the StationKind-vs-GaugingStatus orthogonality
+rationale above; no enum, field, migration, or `conventions.md` change is in this plan's
+scope.
 
 ### D2. Calculated station formula — config-driven weighted sum
 
@@ -111,9 +134,23 @@ by `security.md` OWASP mitigations, (c) violates the model code trust boundary
 
 Weighted sum covers 90%+ of Central Asia use cases. Weights are physical scaling
 factors (e.g. catchment area ratios), not normalized probabilities — they need **not**
-sum to 1. Validation requires only that each weight is positive and finite (`0 < w <
-1e6`); no constraint on the sum. This is intentional: the formula `Q_virtual = Σ(wᵢ ×
-Qᵢ)` is a physical aggregation, not a statistical mixture.
+sum to 1. This is intentional: the formula `Q_virtual = Σ(wᵢ × Qᵢ)` is a physical
+aggregation, not a statistical mixture.
+
+**Signed weights (contract alignment — blocker fix).** The committed schema in
+`architecture-context.md:2637-2655` defines this table with **signed** weights
+("difference formulas use negative weights", e.g. reach gain/loss = downstream −
+upstream) and a per-**parameter** formula. An earlier draft of this plan proposed
+positive-only weights (`0 < w < 1e6`), a composite PK, and `valid_from/valid_to` naming —
+a direct conflict with that contract. **Decision: this plan conforms to the committed
+architecture** rather than rewriting it. Weights are therefore signed; validation
+requires each weight be **finite and nonzero** with bounded magnitude
+(`w != 0 AND -1e6 < w < 1e6`) — a zero weight is a configuration error (the component
+would contribute nothing), and the magnitude bound guards against fat-finger overflow.
+The formula is **parameter-scoped** (`parameter` column). Because weights are signed,
+any QC/severity aggregation over components MUST NOT divide by a naive `Σ wᵢ` (which can
+be zero or negative) — see §D6, which uses `max()` over component severities and never
+touches the weights.
 
 **Separate table** (not a field on `StationConfig`) — the component-weight relation is
 a queryable dependency graph used by Flow 2 for derivation ordering:
@@ -121,134 +158,200 @@ a queryable dependency graph used by Flow 2 for derivation ordering:
 ```python
 @dataclass(frozen=True, kw_only=True, slots=True)
 class ComponentWeight:
-    station_id: StationId    # the calculated station
-    component_station_id: StationId  # upstream gauged tributary
-    weight: float
-    valid_from: UtcDatetime
-    valid_to: UtcDatetime | None  # None = current; non-None = superseded
+    id: FormulaId                    # surrogate UUID PK (matches committed schema)
+    calculated_station_id: StationId  # the calculated station (gauging_status = 'calculated')
+    component_station_id: StationId   # contributing gauged station
+    parameter: str                    # canonical parameter this formula derives, e.g. "discharge"
+    weight: float                     # signed wᵢ (negative allowed for difference formulas)
+    effective_from: UtcDatetime
+    effective_to: UtcDatetime | None  # None = current; non-None = superseded
     created_at: UtcDatetime
 
     def __post_init__(self) -> None:
-        if not (0 < self.weight < 1e6):
+        if not (self.weight != 0 and -1e6 < self.weight < 1e6):
             raise ValueError(
-                f"weight must be positive and finite, got {self.weight}"
+                f"weight must be nonzero and finite (|w| < 1e6), got {self.weight}"
             )
 ```
 
-Weight is validated at construction via `__post_init__` (`0 < value < 1e6`), matching
-the established pattern for domain types with invariants (`GeoCoord`, `QcFlag`). A
-`PositiveWeight` NewType was considered but rejected: `NewType` on `float` provides
-zero runtime enforcement — the invariant (`0 < w < 1e6`) can only be enforced via
-`__post_init__` validation, making a `NewType` wrapper redundant. The DB CHECK
-constraint is the second line of defense, not the only one.
+Weight validated via `__post_init__` (nonzero, finite, `|w| < 1e6`), following the
+`GeoCoord`/`QcFlag` pattern — no `NewType` wrapper (a `NewType` on `float` carries zero
+runtime enforcement). The DB CHECK is the second line of defense.
 
-**Composite primary key**: `calculated_station_formulas` uses `PK: (station_id,
-component_station_id, valid_from)` — a composite key, not a surrogate `id UUID`. This
-follows the established pattern for junction/configuration tables (`model_assignments`,
-`station_weather_sources`, `station_thresholds`, `station_group_members`,
-`group_model_assignments` — all use composite PKs). Formula rows are not independently
-addressable entities; they are always accessed through the station they configure. The
-`conventions.md` PK convention ("Primary keys: `id` UUID") does not explicitly list
-composite PKs as an exception, but the schema precedent across 5 existing tables is
-unambiguous. `conventions.md` should be updated to document this secondary pattern.
+**Surrogate PK (`id UUID`), matching the committed schema.** `architecture-context.md`
+already defines this table with `id: UUID PK`, `calculated_station_id`,
+`component_station_id`, `parameter`, `effective_from`/`effective_to`. This plan adopts
+that verbatim (the earlier composite-PK / `valid_from` proposal is dropped as a contract
+conflict). No `conventions.md` "secondary composite-PK pattern" change is needed.
 
-`valid_from`/`valid_to` enable formula history: when weights
-change, the old row is closed (`valid_to = now()`) and a new row inserted. Derivation
-queries filter on `valid_to IS NULL` for the current formula. Historical re-derivation
-(Flow 12) uses the formula valid at the observation's timestamp.
+`effective_from`/`effective_to` enable formula history: when weights change, the old row
+is closed (`effective_to = now()`) and a new row inserted. Derivation queries filter on
+`effective_to IS NULL` for the current formula. Historical re-derivation (Flow 12) uses
+the formula valid at the observation's timestamp.
 
 ```sql
 CREATE TABLE calculated_station_formulas (
-    station_id           UUID NOT NULL REFERENCES stations(id),
+    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    calculated_station_id UUID NOT NULL REFERENCES stations(id),
     component_station_id UUID NOT NULL REFERENCES stations(id),
+    parameter            TEXT NOT NULL,        -- e.g. "discharge"
     weight               DOUBLE PRECISION NOT NULL,
-    valid_from           TIMESTAMPTZ NOT NULL,
-    valid_to             TIMESTAMPTZ,          -- NULL = current formula
+    effective_from       TIMESTAMPTZ NOT NULL,
+    effective_to         TIMESTAMPTZ,          -- NULL = current formula
     created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
-    validity              TSTZRANGE NOT NULL GENERATED ALWAYS AS (
-        tstzrange(valid_from, valid_to, '[)')
-    ) STORED,
-    PRIMARY KEY (station_id, component_station_id, valid_from),
-    CHECK (station_id != component_station_id),
-    CHECK (weight > 0 AND weight < 1e6),
-    CHECK (valid_to IS NULL OR valid_to > valid_from),
-    EXCLUDE USING gist (
-        station_id WITH =,
-        component_station_id WITH =,
-        validity WITH &&
-    )
+    CHECK (calculated_station_id != component_station_id),
+    CHECK (weight != 0 AND weight > -1e6 AND weight < 1e6),  -- signed, nonzero, bounded
+    CHECK (effective_to IS NULL OR effective_to > effective_from)
 );
 CREATE INDEX idx_csf_component ON calculated_station_formulas(component_station_id);
-CREATE INDEX idx_csf_current ON calculated_station_formulas(station_id)
-    WHERE valid_to IS NULL;
+-- At most one CURRENT formula per (calculated_station, component, parameter) triple.
+-- Partial UNIQUE index — mirrors the rating_curves precedent
+-- (architecture-context.md:2236: `(station_id) WHERE valid_to IS NULL`); no extension
+-- required. Doubles as the derivation-ordering lookup index for current formulas.
+CREATE UNIQUE INDEX idx_csf_current ON calculated_station_formulas(
+    calculated_station_id, component_station_id, parameter
+) WHERE effective_to IS NULL;
 ```
 
-The `EXCLUDE USING gist` constraint prevents overlapping validity periods for the same
-`(station_id, component_station_id)` pair at the DB level. This requires the `btree_gist`
-extension (`CREATE EXTENSION IF NOT EXISTS btree_gist`). The generated `validity` column
-converts the `valid_from`/`valid_to` pair into a `TSTZRANGE` (`NULL` `valid_to` maps to
-an open upper bound). This is enforced on every INSERT and UPDATE — application code
-cannot create overlapping formula histories regardless of the code path.
+The partial `UNIQUE` index enforces the load-bearing invariant — **at most one current
+formula per `(calculated_station_id, component_station_id, parameter)` triple** — at the
+DB level on every INSERT and UPDATE, so application code cannot create two live rows for
+the same triple regardless of the code path. This deliberately mirrors the existing
+`rating_curves` "at most one active curve per station" pattern
+(`architecture-context.md:2236`: `(station_id) WHERE valid_to IS NULL`) and needs **no
+new Postgres extension**. The earlier draft's `EXCLUDE USING gist` — which would have
+required the `btree_gist` extension plus a dedicated migration-ordering provisioning rule
+(extension availability on managed/staging Postgres, an init-db.sh-vs-Alembic ordering
+hazard) — is dropped as disproportionate for an admin-edited, low-volume config table
+whose actual invariant is fully covered here. The committed schema itself only lists
+EXCLUDE as a *commented-out suggestion*, not a requirement
+(`architecture-context.md:2653-2654`), so this is contract-aligned.
 
-Weight validation: values must be positive and finite. The CHECK constraint enforces
-this at the DB level. The partial index `idx_csf_current` optimises the common query
-path (fetch current formula for derivation).
+**Overlapping historical ranges — follow-up, not now.** The partial unique index does
+not prevent two *already-closed* (`effective_to IS NOT NULL`) rows from having
+overlapping validity windows. That is admin config hygiene, not derivation correctness:
+forward derivation reads only `effective_to IS NULL`, and Flow-12 historical
+re-derivation is itself deferred (§Flow 12). App-level validation at 5.C2 closes the
+prior row before opening a new one. If strict historical non-overlap is ever required,
+add it as a follow-up (a `btree_gist` EXCLUDE or an equivalent check) rather than paying
+the extension/migration-ordering cost now.
 
-**DB-level enforcement of the component-must-be-gauged invariant**: A trigger on
-`calculated_station_formulas` (INSERT/UPDATE) verifies that the referenced
-`component_station_id` has `gauging_status = 'gauged'` in the `stations` table.
-Application-level validation in step 5.C2 catches errors at onboarding time, but the
-trigger is the safety net: it prevents direct DB inserts, migration scripts, or
-post-onboarding status changes from silently violating the constraint. This invariant
-is load-bearing for the two-wave derivation ordering in Flow 2 (see §Tiered
-Derivation Design) — if it breaks, the pipeline silently computes from stale data.
+**Trigger — both-invariant enforcement on the formula table (major fix).** A single
+`BEFORE INSERT OR UPDATE` trigger on `calculated_station_formulas` validates **both**
+sides of the relation against the `stations` table:
+- the **target** `calculated_station_id` has `gauging_status = 'calculated'`, and
+- the **component** `component_station_id` has `gauging_status = 'gauged'`
+  **and** `station_status = 'operational'`.
 
-A complementary trigger on `stations` (UPDATE of `gauging_status`) must reject
-changing a station from `GAUGED` to another status if it is referenced as a **current**
-component in `calculated_station_formulas` (i.e., rows with `valid_to IS NULL`). The
-trigger error message must be actionable: "Cannot change gauging_status: station {id}
-is a current component of calculated station {id}. Close the formula first
-(`valid_to = now()`)."
+**Closure-only updates are exempt (blocker fix).** The check above must run **only** on
+`INSERT` and on **relation-changing** `UPDATE`s. A closure-only `UPDATE` — one that sets
+`effective_to` (closes the row) while leaving `calculated_station_id`, `component_station_id`,
+`parameter`, `weight`, and `effective_from` unchanged — is **allowed even when the
+component is no longer operational**. This is required by the plan's own decommissioning
+path (§D2 below): an admin suspends a component (a `station_status` change), *then* closes
+the affected formula rows — that close is an `UPDATE`, and without this exemption the
+trigger would reject the very operation it documents. The trigger function detects a
+closure-only update as `NEW.effective_to IS NOT NULL AND (NEW.calculated_station_id,
+NEW.component_station_id, NEW.parameter, NEW.weight, NEW.effective_from) IS NOT DISTINCT FROM
+(OLD.calculated_station_id, OLD.component_station_id, OLD.parameter, OLD.weight,
+OLD.effective_from)` and returns `NEW` without re-validating component eligibility.
+(Column is `calculated_station_id`, not `station_id` — per the D2 schema.) Integration tests MUST cover "suspend
+component → close formula row succeeds" and "reopen/re-point formula with a suspended
+component → rejected".
 
-**Component decommissioning resolution path**: To decommission a component station, a
-model admin must first close all formula rows referencing it (`valid_to = now()`). From
-that point, the calculated station's derivation produces `qc_status = 'missing'`
-(missing-component skip policy, §Tiered Derivation Design). The model admin then either
-configures a replacement formula or suspends the calculated station. This is a deliberate
-two-step process — the trigger prevents accidental formula breakage while keeping the
-decommissioning path explicit and auditable.
+`gauging_status` and `station_status` are orthogonal axes (§D1): `gauging_status` never
+changes for a physical station, but `station_status` does — a component can be
+SUSPENDED/DECOMMISSIONED (`src/sapphire_flow/types/enums.py:173-178`) while still
+`gauging_status = 'gauged'` (there is no "decommissioned" `GaugingStatus` value). Checking
+**both** mirrors the live Flow 2 eligibility gate
+(`src/sapphire_flow/flows/ingest_observations.py:307-309`, which requires
+`gauging_status == GAUGED` **and** `station_status.value == 'operational'`), so the
+trigger is a real DB-level backstop for the 5.C2 onboarding precondition ("all components
+must already be OPERATIONAL", line ~639) rather than a gauging-status-only half-check that
+a suspended/decommissioned component would sail through.
+Application-level validation in step 5.C2 catches errors at onboarding time; this trigger
+is the safety net against direct DB inserts / migration scripts. Both gauging-status
+invariants are load-bearing for the step-2.5 derivation ordering in Flow 2 (§Tiered
+Derivation Design): the target-must-be-CALCULATED half keeps derived stations out of the
+normal fetch/QC path, and the component-must-be-GAUGED half keeps the dependency graph exactly two
+tiers deep. The trigger function uses `RAISE EXCEPTION`, surfaced as a SQLAlchemy
+`IntegrityError` (production stores use **sync SQLAlchemy + psycopg**, `flows/_db.py:73`;
+not asyncpg), with an actionable message naming the offending station id and its actual
+status.
 
-**Audit trail for formula changes**: Formula creation and closure are tracked via
-`audit_log` entries, consistent with the codebase pattern (no inline `created_by` /
-`modified_by` columns on configuration tables — attribution lives in the append-only
-`audit_log`). New `AuditEventType` values: `FORMULA_CONFIGURED` (formula row inserted)
-and `FORMULA_CLOSED` (formula row's `valid_to` set). Both log `actor_id` = the model
-admin, `target_type` = `"calculated_station_formula"`, `target_id` = the calculated
-station ID, `detail` = component station IDs and weights. The `model_admin` role is the
-appropriate principal — they already manage model assignments and station configurations.
+**No second trigger on `stations` (proportionality fix — read-time check instead).** No
+trigger is added on `stations` UPDATE to reject transitioning a referenced component: a
+hard DB-level block on a legitimate, low-frequency admin operation (suspension /
+decommissioning) is disproportionate. The real risk — "pipeline silently computes from
+stale data" — is closed at the point that matters, **step-2.5 derivation read-time**: the
+derivation step re-reads each component's **current `gauging_status` *and*
+`station_status`** and treats a component that is not
+(`gauging_status = 'gauged'` **and** `station_status = 'operational'`) exactly like a
+missing observation (skip + store `qc_status = 'missing'` + log
+`station.formula_component_not_gauged`), mirroring both the existing missing-component
+skip and the live Flow 2 eligibility gate (`ingest_observations.py:307-309`). Checking
+`station_status` too is essential: decommissioning/suspension is a `station_status`
+transition, **not** a `gauging_status` one (`GaugingStatus` has no "decommissioned" value —
+`enums.py:187-190`), so a gauging-status-only re-check would let a suspended or
+decommissioned component (which stays `gauging_status = 'gauged'` forever) produce a stale
+derived value. Combined with the app-level check in 5.C2 and the formula-table trigger,
+this covers the operational path without a bespoke migration-per-trigger.
 
-**Trigger migration strategy**: Both triggers are created via Alembic migrations using
-`op.execute()` with raw SQL `CREATE OR REPLACE FUNCTION` + `CREATE TRIGGER` statements.
-Each trigger gets its own migration revision (not bundled with table DDL) so that
-rollback is granular: `op.execute("DROP TRIGGER ...")` + `op.execute("DROP FUNCTION
-...")` in the downgrade path. Trigger functions use `RAISE EXCEPTION` for constraint
-violations (surfaced as `IntegrityError` by asyncpg). `cicd.md` must be updated to
-document this pattern (see §Standards Document Updates).
+> **NOTE (resolution):** the *stations*-side protection lives at step-2.5 read-time (soft
+> skip + log on any non-operational or non-gauged component), not in a hard `stations`
+> trigger; the cheap both-axes invariant check stays on the *formula* table where a write
+> is already happening. A hard block on decommissioning would be disproportionate, and the
+> read-time check closes the stale-data window at the only point a stale value could
+> actually be produced.
+
+**Component decommissioning resolution path**: Decommissioning/suspension is a
+**`station_status`** transition — the admin routes it through the **existing**
+`update_station_status()` store method (`protocols/stores.py:545`,
+`store/station_store.py:319`) to move the component to `SUSPENDED`/`DECOMMISSIONED`.
+`gauging_status` stays unchanged — it answers "does this station have real observations",
+which decommissioning does not change — and is therefore effectively immutable
+post-creation (no `update_gauging_status()` method is introduced). From the moment the
+component is non-operational, the step-2.5 read-time check above makes the calculated
+station's derivation produce `qc_status = 'missing'` (no stale value), independent of
+formula-close timing. The admin then closes the affected formula rows
+(`effective_to = now()`) and either configures a replacement formula or suspends the
+calculated station.
+
+**Audit trail for formula changes** *(re-draft decision — structlog now, `audit_log`
+deferred)*: `audit_log` / `AuditEventType` do not exist yet (they land with the Wave-3
+auth/audit plan). Until then, formula creation and closure are logged via **structlog**
+— events `station.formula_configured` / `station.formula_closed` (scoped under the
+`station` entity, not `formula` — formulas are configuration artifacts), carrying the
+calculated `station_id`, the component `station_id`s + weights, and the actor. When the
+Wave-3 plan lands, these become append-only `audit_log` rows with new `AuditEventType`
+values `FORMULA_CONFIGURED` / `FORMULA_CLOSED` (`actor_id` = the `model_admin`,
+`target_type` = `"calculated_station_formula"`, `target_id` = the formula row `id`,
+`detail` = components + weights). No inline `created_by`/`modified_by` columns on the
+formula table — attribution lives in structlog now, `audit_log` later.
+
+**Trigger migration strategy**: the (single) trigger + its function are added via a
+rollback-safe Alembic migration; the exact `op.execute()` DDL mechanics belong in the
+migration PR, not this design doc. `cicd.md` gains a one-line note on the pattern (see
+§Standards Document Updates).
 
 ### D3. Model assignment — all virtual stations require models
 
 Both ungauged and calculated stations **must** have forecast models assigned:
-- Ungauged stations need models deployed via transfer learning (5.11 Branch A:
-  existing `GroupForecastModel` applied to new station) or trained with regionalized
-  parameters (a `StationForecastModel` implementation detail, not a new model type).
-  Both rely on NWP forcing + basin characteristics.
+- ⚠ REFERENCE-ONLY (ungauged plan): Ungauged stations need models deployed via transfer
+  learning (5.11 Branch A: existing `GroupForecastModel` applied to new station) or
+  trained with regionalized parameters (a `StationForecastModel` implementation detail,
+  not a new model type). Both rely on NWP forcing + basin characteristics.
 - Calculated stations need models to produce forecasts — the formula only derives
   observations, not forecasts
 
 The formula applies to **observations only** (Flow 2). Forecasts are always produced
 by model runs (Flow 1). `OperationalForecast.model_id` and `model_artifact_id` remain
 non-optional. The standard go-live precondition (`≥1 active model artifact`) applies
-to all station types including calculated stations.
+to all station types including calculated stations. For calculated stations this is the
+**only** model-related go-live gate — there is **no** baseline-model precondition in this
+plan (D5a's baseline-model requirement is ungauged-scoped and deferred). Note that
+calculated stations *do* compute baseline **artifacts** (climatology) at 5.8 for skill
+scoring; that is distinct from the fallback baseline **model** discussed in D5a.
 
 **Future extension (low priority)**: A `DerivedForecast` type could allow computing
 forecasts from component station forecasts via the weighted-sum formula, analogous to
@@ -256,26 +359,26 @@ how derived observations work. This is deferred — not needed for v1.
 
 ### D4. Observation handling
 
-**Ungauged stations**: No observations → no observation QC, no skill scores against
-observations, no rating curves. Flow 2 pre-filters to exclude ungauged stations
-before the fan-out.
+**Ungauged stations** — ⚠ REFERENCE-ONLY (ungauged plan): No observations → no
+observation QC, no skill scores against observations, no rating curves. Flow 2
+pre-filters to exclude ungauged stations before the fan-out.
 
 **Calculated stations**: After component observations are ingested and QC'd by the
 standard Flow 2 path, a derivation step computes `Q_virtual = Σ(wᵢ × Qᵢ)` and stores
-the result with a new `ObservationSource` value:
+the result with `ObservationSource.COMPONENT_DERIVED` — which **already exists** in the
+shipped enum (ordered third, before `MANUAL_IMPORT`) and is already admitted by the DB
+CHECK (§v0 Scope). No enum or `conventions.md` change is in scope; only the Flow 2 write
+path is new:
 
 ```python
 class ObservationSource(Enum):
     MEASURED = "measured"
     RATING_CURVE_DERIVED = "rating_curve_derived"
+    COMPONENT_DERIVED = "component_derived"   # SHIPPED (enums.py:183); this plan writes it
     MANUAL_IMPORT = "manual_import"
-    COMPONENT_DERIVED = "component_derived"   # v1 only: calculated station aggregation
 ```
 
-`conventions.md` enum master list: `COMPONENT_DERIVED` is added to the
-`ObservationSource` row in v1 alongside the flow logic that writes it.
-
-### D5. `past_targets` for ungauged stations
+### D5. `past_targets` for ungauged stations — ⚠ REFERENCE-ONLY (ungauged plan)
 
 `StationInputData.past_targets` (the data payload within `StationModelInputs`) stays
 `pl.DataFrame` (non-optional). For ungauged stations, it is a **zero-row DataFrame
@@ -307,22 +410,23 @@ The 4-slot model input contract wording in `architecture-context.md` ("Always pr
 for stateful models") must be updated to: "Always non-None. May be zero-row for
 ungauged stations (`GaugingStatus.UNGAUGED`)."
 
-### D5a. Baseline model dependency
+### D5a. Baseline model dependency — ⚠ REFERENCE-ONLY (ungauged plan)
 
-All stations (gauged, ungauged, calculated) require a **baseline model** — a simple,
-always-available forecast (e.g. climate norm, linear regression) that serves as both
-skill comparison reference and fallback when the primary model fails. For ungauged
-stations, the baseline is the initial operational model until a more sophisticated model
-is trained. The baseline model design (model types, assignment policy, Flow 1 execution
-pattern) is out of scope for this plan — see Plan TBD (Related Plans). **Hard
-dependency**: baseline model plan must be completed before ungauged station support
-ships.
+**Ungauged** stations require a **baseline model** — a simple, always-available forecast
+(e.g. climate norm, linear regression) that serves as both skill-comparison reference and
+the initial operational model until a more sophisticated model is trained. (A
+baseline/fallback model may be a desirable cross-cutting default for *all* station types,
+but that is a separate concern owned by the baseline-model plan — it is explicitly **not**
+a calculated-station go-live gate in this plan; see §D3. Calculated stations go live on
+the standard `≥1 active model artifact` precondition alone.) The baseline-model design
+(model types, assignment policy, Flow 1 execution pattern) is out of scope here — see Plan
+TBD (Related Plans). **Hard dependency**: the baseline-model plan must complete before
+ungauged station support ships.
 
 ### D6. QC flag propagation for calculated stations
 
 When component stations have QC flags, the calculated station's derived observation
-inherits **weighted QC status** — severity is weighted by the component's contribution
-weight in the formula.
+inherits the **worst** component QC status. Weights do **not** enter the QC aggregation.
 
 New **observation** QC rule convention (distinct from the existing forecast QC rule
 ID list in `conventions.md` — a new observation QC rule ID row must be added to the
@@ -331,34 +435,41 @@ enum master list):
 - `rule_id`: `"upstream_propagated"`
 - `detail`: structured JSON string encoding provenance, e.g.
   `{"component_station_id": "...", "component_status": "qc_suspect", "weight": 0.4}`
+  (`weight` is recorded for provenance only — it is signed and does not affect the
+  derived status)
 
-**Aggregation policy**: Derivation only proceeds when all components have `QC_PASSED`
-or `QC_SUSPECT` status (see §Missing component observations — `QC_FAILED` and missing
-observations trigger a skip). Each component's worst QC status is mapped to a numeric
-severity (`QC_PASSED`=0, `QC_SUSPECT`=1) — the same mapping used by the existing
-`aggregate_qc_status()` function. The calculated station's propagated severity is the
-weight-averaged severity across components, rounded **up** to the nearest integer:
-`severity = ceil(Σ(wᵢ × severityᵢ) / Σ(wᵢ))`. This means:
-- All components `QC_PASSED` → `QC_PASSED` (`ceil(0) = 0`)
-- Any `QC_SUSPECT` component → `QC_SUSPECT` (`ceil()` of any positive value ≥ 1)
+**Aggregation policy (simplified — major fix).** Derivation only proceeds when all
+components have `QC_PASSED` or `QC_SUSPECT` status (§Missing component observations —
+`QC_FAILED`/missing trigger a skip). Under that policy the propagated status is simply:
 
-In practice, with the skip-on-`QC_FAILED` policy, the severity range is [0, 1] and
-`ceil()` produces a binary outcome: either all components passed (→ `QC_PASSED`) or at
-least one is suspect (→ `QC_SUSPECT`). This is the correct conservative behavior — a
-derived value that incorporates any suspect input is itself suspect. The `ceil()`
-formulation is retained (rather than simplifying to `max()`) because it generalises
-cleanly if the skip policy is ever relaxed to admit `QC_FAILED` components in the
-future.
+> **any component `QC_SUSPECT` ⇒ derived `QC_SUSPECT`, else `QC_PASSED`**
 
-`ceil()` is chosen over `round()` for conservatism: when ambiguous, escalate. Python's
-`round()` uses banker's rounding (`round(0.5) = 0`), which would silently resolve
-ambiguous cases toward the less severe status — unacceptable for a safety-critical
-propagation path.
+i.e. `max()` over component severities, exactly matching the codebase's existing
+`aggregate_qc_status()` (`src/sapphire_flow/types/domain.py:104-109`, which uses `max`,
+**not** a weighted average). The earlier draft's `ceil(Σ(wᵢ·severityᵢ)/Σ wᵢ)` is dropped:
+(1) it mis-cited `aggregate_qc_status()` as weighted when it is `max`; (2) with signed
+weights (§D2) `Σ wᵢ` can be zero or negative, making the quotient undefined or
+sign-flipped; (3) even with positive weights a tiny `wᵢ/Σw` can underflow to `0.0` in
+IEEE-754 and silently misreport a `QC_SUSPECT` component as `QC_PASSED` — a
+safety-relevant misclassification `max()` is structurally immune to. `max()` produces
+identical output to the intended behavior with none of these failure modes. (If a future
+N-tier design ever admits `QC_FAILED` components and needs graded severity, revisit then —
+a one-line code comment preserves the idea; we do not build speculative generality now.)
 
 Propagated flags are added alongside any locally-computed flags on the derived
 observation. `aggregate_qc_status()` then picks the worst across all flags as usual.
 
-### D7. Basin delineation
+**Downstream handling of `QC_SUSPECT` derived observations (minor fix).** Operational
+input loading, training, and hindcast all fetch **`QC_PASSED` only**
+(`src/sapphire_flow/services/operational_inputs.py:352`,
+`src/sapphire_flow/services/training_data.py:161`,
+`src/sapphire_flow/services/hindcast.py:160`). This plan does **not** relax those filters:
+a `QC_SUSPECT` derived observation is **review-only** — it is stored (visible in Flow 3
+review and staleness monitoring) but is **not** fed to models. This is deliberate and
+conservative; admitting suspect derived values into training/inference would be a separate,
+explicitly-scoped change to those three filters, out of scope here.
+
+### D7. Basin delineation — ⚠ REFERENCE-ONLY (ungauged plan; incl. file-upload security)
 
 Virtual stations need basin outlines for NWP extraction. Two paths:
 - **HydroSHEDS** — our own product, pre-computed basin outlines worldwide
@@ -386,76 +497,102 @@ are owned by the same organization as their component stations.
 
 ## Flow Impact Analysis
 
-All flows that touch station processing are affected. When no calculated stations are
-present (including all of v0), existing flow logic is unmodified — Flow 2 remains a
-single homogeneous fan-out. When calculated stations exist (v1), Flow 2 is restructured
-into a two-wave fan-out with a sync barrier (see §Tiered Derivation Design). Other
-changes are additive (pre-filters, new branches).
+All flows that touch station processing are affected. Note the starting point: Flow 2
+today already carries a `GAUGED` + operational guard
+(`src/sapphire_flow/flows/ingest_observations.py:305-310`) and runs **sequentially**
+(single fetch task → store → QC `for`-loop), **not** a `task.map` fan-out. This plan
+**keeps** that guard (so calculated stations stay excluded from the normal fetch/QC path)
+and **appends a sequential derivation step 2.5** after the QC loop (see §Tiered Derivation
+Design). When no calculated stations are present (including all of v0), the new step is a
+no-op and Flow 2 behavior is unchanged. Other changes are additive.
 
-| Flow | Ungauged stations | Calculated stations |
+The "Ungauged stations" column below is **⚠ REFERENCE-ONLY (ungauged plan)** — retained
+for context, not in scope here.
+
+| Flow | Ungauged stations ⚠ REFERENCE-ONLY | Calculated stations |
 |------|-------------------|---------------------|
 | **Flow 0** (deployment onboarding) | Basin delineation for ungauged sites (HydroSHEDS / user upload) | Same |
 | **Flow 1** (forecast cycle) | Model runs with zero-row `past_targets`; input prep step 1.7 passes zero-row DataFrame with correct schema | Standard model run — model uses `COMPONENT_DERIVED` observations as `past_targets` like any other observation source |
 | **Flow 2** (observation ingest) | **Skipped** — pre-filter excludes ungauged stations | New derivation step after standard QC: compute `Q_virtual = Σ(wᵢ × Qᵢ)` from component observations with `QC_PASSED` or `QC_SUSPECT` status (skip on `QC_FAILED` or missing — see §Tiered Derivation Design), store with `source=COMPONENT_DERIVED`, propagate QC flags (D6). Ordering: calculated stations derived after their components complete QC |
 | **Flow 3** (forecast review) | No observation overlay in review UI | Display formula breakdown (component contributions) alongside forecast |
-| **Flow 4** (pipeline monitoring) | **Exclude** from observation staleness checks — no expected observations | Monitor that component stations are fresh; derived freshness is implicit |
+| **Flow 4** (pipeline monitoring) | **Exclude** from observation staleness checks — no expected observations | *(no monitor in this plan — Flow 4 is deferred; skipped derivations surface via structlog + a `qc_status='missing'` placeholder. A component-freshness monitor is future Flow 4 work.)* |
 | **Flow 5** (station onboarding) | Modified path — see below. **v1 impl note**: `services/onboarding.py:_run_onboarding()` currently runs QC/baselines/flow-regimes for all stations unconditionally — must add `gauging_status` branching (ungauged skips steps 5.4–5.9) | Modified path — see below |
 | **Flow 5w** (weather station onboarding) | No impact — virtual stations are non-weather (`StationKind.RIVER` etc.) | No impact |
 | **Flow 6/9** (model training/retraining) | Standard training path — `past_targets` may be zero-row for ungauged stations; model implementation handles regionalized parameters internally. **v1 impl note**: `services/scope.py:determine_training_scope()` filters by `station_status` only — must also consider `gauging_status` for ungauged stations with regionalized training | Standard training path — model trains on `COMPONENT_DERIVED` observations |
 | **Flow 7** (hindcast generation) | Hindcast with zero-row `past_targets`; model must handle this | Standard hindcast — model uses historical `COMPONENT_DERIVED` observations |
 | **Flow 8/10** (skill computation) | **No skill scores** — no observations to verify against. Alternative: cross-validation on regionalized model parameters (future work) | Standard skill computation — model forecasts verified against `COMPONENT_DERIVED` observations. Note: baselines (5.8) and flow regimes (5.9) computed from accumulated `COMPONENT_DERIVED` history — see onboarding notes |
 | **Flow 11** (NWP archive) | No change — ungauged stations still consume NWP | No change |
-| **Flow 12** (observation reprocessing) | No impact — no observations to reprocess | **Branch A** (rating curve reprocessing): changes component `rating_curve_derived` observations → must re-derive downstream calculated stations using the two-wave pattern (post-Branch-A step). **Branch B** (source correction): if the correction changes observation **values** (not just source metadata), must re-derive downstream calculated stations using the same two-wave pattern; if only source metadata changes, no re-derivation needed. Conservative default: always re-derive after Branch B on component stations. **Branch C** (QC re-evaluation): after Branch C completes on component stations, re-derive calculated stations using the same two-wave pattern. This is a post-Branch-C step, not part of Branch C itself |
+| **Flow 12** (observation reprocessing) | No impact — no observations to reprocess | **DEFERRED to a follow-up plan (re-draft decision).** Re-deriving calculated stations after a component reprocessing (Branch A/B/C) couples to the `reprocess_observations` flow, which is not built (blocked on the DHM producer). **No implementation requirement here.** Until then, a component reprocessing leaves downstream calculated stations on their prior derived values (documented gap). See §Flow 12 for the follow-up forward-pointer. |
 | **Flow 13** (model onboarding) | No new model types. Ungauged stations use existing `GroupForecastModel` (via 5.11 Branch A transfer learning) or `StationForecastModel` with regionalized parameters — both are training/deployment strategies, not new Protocols | No new model types needed — uses standard models |
 
 ## Tiered Derivation Design (Flow 2 + Flow 12)
 
-### Two-wave fan-out
+### Derivation is a sequential post-QC step (Flow 2 step 2.5) — NOT a task.map fan-out
 
-Calculated station observations depend on their component stations' QC-completed
-observations (status `QC_PASSED` or `QC_SUSPECT` — see §Missing component observations). The standard `task.map()` fan-out is homogeneous and cannot express
-inter-station dependencies. Solution: a **two-wave fan-out with an explicit sync
-barrier**, combining `task.map()` with a `.result()` gather (a new pattern proposed for
-`orchestration.md` — see §Standards Document Updates).
+**Grounding (corrects the earlier "two-wave fan-out" design).** The real Flow 2
+(`flows/ingest_observations.py`) is **not** a per-station `task.map` fan-out. It runs
+sequentially: step 2.0 selects `eligible` stations with an explicit **`GAUGED` +
+operational guard** (`ingest_observations.py:305-310`), so calculated stations are
+*already excluded*; step 2.1 fetches all observations in a **single** task
+(`_fetch_observations_task(adapter, eligible, since)`, `:339`); step 2.2 stores them
+(`:357`); steps 2.3–2.4 run QC in a **sequential `for` loop** over `(station, parameter)`
+pairs (`:373-395`), not `task.map`. There is therefore no fan-out to add a second wave
+to, and no `ThreadPoolTaskRunner` pressure to reason about.
 
-```
-Wave 1:  task.map(gauged_stations)       → [f.result() for f in futures]  ← sync
-Wave 2:  task.map(calculated_stations)   → derive from wave 1 results
-```
+Calculated-station derivation is a **new sequential step 2.5**, inserted *after* the QC
+loop completes (line ~402) and before the result assembly. Because the flow is
+sequential, the QC loop finishing **is** the barrier — no `task.map` + `.result()` sync
+gather is needed. The step:
 
-Ungauged stations are excluded entirely (no observations to process).
+1. Selects calculated stations separately from `eligible`:
+   `calculated = [s for s in all_stations if s.gauging_status == CALCULATED and
+   s.station_status.value == "operational"]` (they were filtered out of `eligible` by the
+   `GAUGED` guard). Empty in v0 → the step is a no-op and Flow 2 behavior is unchanged.
+2. Pre-fetches formulas once: `formula_store.fetch_formulas_for_stations([s.id for s in
+   calculated])` — a single cheap query (calculated stations are a small minority even at
+   ~1000 stations).
+3. For each calculated station, derives from its components' just-QC'd observations (see
+   §Missing component observations for source-precedence + exact-timestamp matching), then
+   `obs_store.store_observations([...])` under the station's write lock.
 
-**Thread pool pressure**: The two-wave pattern issues two `task.map()` calls per
-Flow 2 invocation. Per `orchestration.md`, the default `ThreadPoolTaskRunner` spawns
-one OS thread per mapped item — at ~1000 stations, Wave 1 already saturates the pool.
-Wave 2 (calculated stations, a small minority) runs after Wave 1 completes, so the
-peak thread count is `max(len(gauged), len(calculated))`, not the sum. Still, the
-`max_workers` cap recommended in `orchestration.md` must apply to both waves.
-
-This works because the DB-level trigger (§D2) guarantees that component stations are
-always `GAUGED` at formula-insertion time — so the dependency graph is always exactly
-two tiers. No topological sort is needed. Note: the trigger provides a *schema-time*
-guarantee, not a *read-time* guarantee — during a live Wave 2 derivation, a concurrent
-admin could theoretically close a formula and change a component's status between Wave 1
-completion and Wave 2's read. This is an accepted trade-off: the window is extremely
-narrow, the per-station write lock serialises observation writes, and the component reads
-see the latest committed state. See §Flow 12 interaction below for the full concurrency
-analysis. If the constraint is relaxed in the future (calculated stations with calculated
-components), the two-wave approach must be replaced with an N-tier topological sort using
-`graphlib.TopologicalSorter`.
-
-### Pre-fetch formulas at flow start
-
-`formula_store.fetch_formulas_for_stations()` is called once at flow start for all
-calculated stations, not inside each task. At v1 scale (~1000 stations), calculated
-stations will be a small minority — the pre-fetch is a single cheap query. Pass the
-result via `unmapped()`.
+The **two-tier depth is guaranteed** by the §D2 formula trigger (components must be
+`GAUGED`), so no topological sort is needed — derivation reads component observations that
+step 2.4 already QC'd in the same run. Because the derivation reads happen *after* the
+whole QC loop, they see the latest committed component state. A **read-time defensive
+check** is still applied (the trigger is a write-time, not read-time, guarantee, and this
+plan deliberately adds no `stations`-side trigger; see §D2): before deriving, re-read each
+component's current `gauging_status` **and** `station_status`, and treat a component that
+is not (`gauging_status = 'gauged'` **and** `station_status = 'operational'`) exactly like
+a missing observation (skip + `qc_status = 'missing'` + log). Checking `station_status` is
+required because suspension/decommissioning is a `station_status` transition, not a
+`gauging_status` one (§D2). If the two-tier invariant is ever relaxed (calculated
+components), replace this single step with an N-tier topological pass
+(`graphlib.TopologicalSorter`) over the formula dependency graph.
 
 ### Missing component observations
 
 **Derivation proceeds** when all component stations have an observation for the current
-time window with QC status `QC_PASSED` or `QC_SUSPECT`. The QC propagation rule (§D6)
-then determines the derived observation's QC status based on weighted component severity.
+time window **and the formula's `parameter`** with QC status `QC_PASSED` or `QC_SUSPECT`.
+The QC propagation rule (§D6) then determines the derived observation's QC status.
+
+**Component observation selection — deterministic source (major fix).** The `observations`
+natural key includes `source` (unique index `uq_observations_natural_key` at
+`src/sapphire_flow/db/metadata.py:359-365`; `:296-303` is only the `source` CHECK,
+`store/observation_store.py:254` keys on `(station_id, timestamp, parameter, source)`),
+and `fetch_observations_batch(..., source=None)` returns rows for **all** sources
+(`store/observation_store.py:196-217`). A component station can therefore legitimately
+have several rows for the same `(timestamp, parameter)` — e.g. a `measured` row and a
+`rating_curve_derived` row, or a `manual_import` backfill. Selecting "an observation" is
+underspecified. Derivation MUST apply a **deterministic source precedence** per component,
+highest-trust first:
+`measured` > `rating_curve_derived` > `manual_import` > `component_derived`.
+Concretely: fetch with an explicit source-precedence resolution (or per-source queries
+walked in that order), take the **single** highest-precedence row present for each
+`(component_station_id, timestamp, parameter)`, and derive from those. `component_derived`
+is last so that a calculated-of-calculated row (which the two-tier invariant forbids as a
+current component anyway) can never be silently preferred. Tests MUST cover a component
+carrying duplicate `measured`/`manual_import`/`rating_curve_derived` rows and assert the
+precedence winner.
 
 **Derivation is skipped** when any component station has no observation for the current
 time window (data gap, source outage) **or** has an observation with `QC_FAILED` status.
@@ -464,32 +601,34 @@ A placeholder observation is stored for the calculated station with
 the formula semantics require all components. `QC_FAILED` observations are excluded
 because they represent known-bad data that should not propagate into derived values.
 Missing data propagates honestly rather than producing a silently degraded value.
-Pipeline monitoring (Flow 4) detects the missing derivation via component station
-freshness checks.
+
+**No automated monitor in this plan.** Flow 4 (pipeline monitoring) is deferred in v0
+scope (`docs/v0-scope.md`) and there is no component-dependency freshness monitor today.
+A skipped derivation is surfaced only via structlog (`observation.derivation_skipped`
+with the missing/failed component id + reason) and the stored `qc_status = 'missing'`
+placeholder. Wiring a component-freshness monitor is left to the future Flow 4 plan; this
+plan states the gap rather than assuming a monitor exists.
 
 The distinction: `QC_SUSPECT` means "possibly degraded, flagged for review" and is safe
 to propagate with appropriate QC flag inheritance (§D6). `QC_FAILED` means "known bad"
 and must not enter the derivation.
 
-### Flow 12 Branches A and C — same two-wave pattern
+### Flow 12 Branches A and C — sequential re-derivation *(DEFERRED to a follow-up)*
 
-When reprocessing a time window that affects calculated stations (Branch A: rating
-curve reprocessing changes component `rating_curve_derived` observations; Branch C:
-QC re-evaluation changes component QC status), apply the same two-wave structure:
-reprocess component stations first (wave 1), then re-derive calculated stations
-(wave 2). The existing per-station write lock
-(`concurrency("observation_write:{station_id}")`) guards each station's write
-independently — no chain-wide lock is needed.
+> **Re-draft decision:** Flow 12-triggered re-derivation is **out of scope for this
+> plan** — it couples to the `reprocess_observations` flow (Flow 12 Branch A), which is
+> not built and is blocked on the DHM producer of `rating_curve_derived` observations.
+> This plan builds only **Flow 2 forward-derivation**. Until the reprocess flow exists, a
+> curve/QC reprocessing on a component station leaves downstream calculated stations on
+> their previously-derived values (a documented, acceptable gap for v1-now).
 
-Edge case: if Flow 2 and Flow 12 overlap on the same calculated station, the
-per-station concurrency slot serialises the writes. The component *reads* during
-re-derivation are not locked, so they see the latest committed state. In steady-state
-operation this is correct (component observations are already committed before the
-calculated station's wave 2 runs). The theoretical race — Flow 12 re-deriving while
-Flow 2 is mid-write on a component — produces an observation derived from the
-pre-update component values. This is an accepted trade-off: Flow 12 is
-operator-triggered on historical windows, Flow 2 runs on current data, and temporal
-overlap is rare.
+**Forward-pointer for the follow-up plan:** re-derivation should reuse the same sequential step-2.5 derivation (reprocess components first, then re-derive calculated stations) once Flow 12
+Branch A/C exists. The concurrency semantics — whether the per-station write lock
+(`concurrency("observation_write:{station_id}")`) suffices, and how a Flow 2 / Flow 12
+temporal overlap on a shared component resolves (component reads are unlocked) — must be
+**re-derived against Flow 12's actual implementation at that time**, not pinned here
+against a flow that does not yet exist. That analysis belongs in the follow-up plan,
+consistent with how the ungauged content is split out.
 
 ## Onboarding Flow Modifications (Flow 5)
 
@@ -499,7 +638,7 @@ Flow 5 needs three branches based on `GaugingStatus`. Step numbers reference
 **GAUGED** (existing path, unchanged):
 Steps 5.1–5.12 as currently defined.
 
-**UNGAUGED**:
+**UNGAUGED** — ⚠ REFERENCE-ONLY (moves to the ungauged plan; not implemented here):
 - 5.1 Register station metadata (with `gauging_status = 'ungauged'`)
 - 5.2 Fetch catchment attributes (basin geometry from HydroSHEDS / user upload)
 - 5.3 Configure weather source mappings (NWP extraction config — critical for
@@ -524,19 +663,35 @@ Onboarding checklist for ungauged stations:
 - 5.1 Register station metadata (with `gauging_status = 'calculated'`)
 - 5.2 Fetch catchment attributes (basin geometry required for NWP extraction)
 - 5.3 Configure weather source mappings
-- 5.C1 Configure formula: specify component stations + weights (all components must
-  already be `OPERATIONAL`)
-- 5.C2 Validate formula: check components exist, weights are positive and finite,
-  component stations have `gauging_status = 'gauged'`, no circular dependencies
-  (note: the circular dependency check is technically redundant — the gauging-status
-  check already prevents calculated→calculated references, which makes cycles
-  impossible by construction. Retained as belt-and-suspenders defense.)
+- 5.1 (calculated) also sets the station's `measured_parameters` to include the
+  **formula-derived parameter** (e.g. `"discharge"`). *(major fix)* Flow 1 uses
+  `measured_parameters` to pick the observation parameter for staleness + baselines
+  (`run_forecast_cycle.py`), and onboarding requires it — a calculated station that omits
+  its derived parameter would lose staleness/baseline context. The parameter is derived,
+  not sensor-measured, but it **is** the station's reportable/observed parameter.
+- 5.C1 Configure formula: specify component stations + weights **and an explicit initial
+  `effective_from`** for the formula. *(major fix — bootstrap validity)* `effective_from`
+  defaults to the **earliest component observation timestamp** available (so the retroactive
+  bootstrap in 5.C3 is covered by a validity window), not `now()`; the admin may override
+  it. All components must already be `OPERATIONAL`.
+- 5.C2 Validate formula: check components exist; each weight is **nonzero and finite**
+  (`w != 0 AND |w| < 1e6`; signed — see §D2); the target has `gauging_status = 'calculated'`;
+  and every component has `gauging_status = 'gauged'` **AND `station_status = 'operational'`**
+  *(major fix — mirrors the D2 trigger + the live Flow 2 gate at
+  `ingest_observations.py:305-310`; a gauged-but-suspended component must be rejected at
+  onboarding)*. No explicit circular-dependency check is needed: the gauging-status
+  invariant forbids calculated→calculated references, so cycles are impossible by
+  construction — recorded as a code comment, not a separate runtime check.
 - Skip 5.4–5.7 (no direct historical obs import, no rating curves)
-- 5.C3 Bootstrap derived observation history: apply formula retroactively to available
-  component observation history, store with `source = 'component_derived'`. Derived
-  observations **skip Stage 1/Stage 2 QC** (sensor-range validation is meaningless
-  for computed values) — they inherit QC status from their components via the D6
-  propagation rule
+- 5.C3 Bootstrap derived observation history: for each historical timestamp, apply the
+  formula **valid at that timestamp** (query `calculated_station_formulas` by
+  `effective_from <= t < effective_to`, per the D2 validity semantics — **not** blindly the
+  just-configured row), compute `Q_virtual`, and store with `source = 'component_derived'`.
+  With a single initial formula whose `effective_from` covers the component history, this
+  derives the whole history; timestamps before `effective_from` are left underived. Derived
+  observations **skip Stage 1/Stage 2 QC** (sensor-range validation is meaningless for
+  computed values) — they inherit QC status from their components via the D6 propagation
+  rule. Tests MUST span a timestamp before and after `effective_from`.
 - 5.8 Compute baseline artifacts from `COMPONENT_DERIVED` observation history
   (required for skill computation in Flows 8/10)
 - 5.9 Compute flow regime boundaries from `COMPONENT_DERIVED` observation history
@@ -556,81 +711,119 @@ Onboarding checklist for calculated stations:
 - ✅ At least one model artifact active
 - ⬜ Alert thresholds defined (optional)
 
+## Implementation surface (code touchpoints)
+
+The design above touches these concrete code sites — each is a task for the build (the
+earlier draft named only the spec-doc change, which understated the work):
+
+1. **`types/ids.py`** — add `FormulaId = NewType("FormulaId", UUID)` (the `ComponentWeight`
+   row uses a surrogate UUID PK; there is no such id type today).
+2. **`types/` (new module, e.g. `types/calculated_station.py`)** — `ComponentWeight` frozen
+   dataclass with signed-weight `__post_init__` (`w != 0 and |w| < 1e6`), fields
+   `calculated_station_id`, `component_station_id`, `parameter`, `weight`,
+   `effective_from`, `effective_to`, `created_at`.
+3. **`db/metadata.py`** — `calculated_station_formulas` table (surrogate `id` PK + the
+   **partial UNIQUE index** `(calculated_station_id, component_station_id, parameter)
+   WHERE effective_to IS NULL` per §D2 — mirrors the `rating_curves` active-curve
+   precedent, **no `btree_gist`/`EXCLUDE` extension**, the CHECKs, and the component index).
+4. **Alembic migration(s)** — the table (no extension needed); the eligibility trigger +
+   function in its
+   **own** revision (`op.execute` `CREATE OR REPLACE FUNCTION` / `CREATE TRIGGER`;
+   `DROP` in downgrade), including the closure-only-update exemption (§D2).
+5. **`protocols/stores.py`** — `FormulaStore` Protocol: `store_formula`, `close_formula`,
+   `fetch_current_formula(station_id)`, `fetch_formula_at(station_id, at)`,
+   `fetch_formulas_for_stations(station_ids)`.
+6. **`store/calculated_station_formula_store.py`** — `PgFormulaStore` implementing it.
+7. **`tests/fakes/fake_stores.py`** — `FakeFormulaStore` + a `test_fakes.py` conformance case.
+8. **`flows/_db.py` `make_pg_stores()`** — add the `"formula_store"` slot (it has no such
+   slot today) so production Flow 2 receives it.
+9. **`flows/ingest_observations.py`** — the new sequential **step 2.5** derivation (select
+   calculated stations, pre-fetch formulas, source-precedence + exact-timestamp match,
+   weighted sum, QC propagation, store `component_derived` / `missing` placeholder), plus
+   the `structlog` formula-audit + derivation events.
+10. **`services/onboarding.py`** — the CALCULATED branch (5.C1–5.C3, `measured_parameters`).
+11. **`services/rating_conversion.py`-style pure helper (optional)** — a pure
+    `derive_component_value(components, weights) -> value` for unit-testability.
+12. **Integration tests** — formula store round-trip + overlap-exclusion; suspend-then-close;
+    exact-timestamp derivation with source precedence; missing/failed-component skip;
+    bootstrap spanning `effective_from`.
+
 ## Standards Document Updates Required
 
-The following standards documents need updates when this plan is implemented:
+Each bullet states *what changes and why*; exact replacement prose belongs in the
+implementing PR, not this plan.
 
-- **`types-and-protocols.md`**: ~~Add `GaugingStatus` enum~~ (done, v0); ~~add
-  `gauging_status` field to `StationConfig`~~ (done, v0); add `ComponentWeight`
-  dataclass (with `__post_init__` weight validation); add `FormulaStore` Protocol
-  (entity-based store for `calculated_station_formulas`); add optional
-  `gauging_status: GaugingStatus | None` parameter to `StationStore.fetch_all_stations()`
-  and `fetch_stations_by_ownership()` (required for v1 two-wave fan-out partitioning in
-  Flow 2); add `FORMULA_CONFIGURED` and `FORMULA_CLOSED` to
-  `AuditEventType` (v1 only — `AuditEventType` is §G-deferred, so these values land
-  alongside the v1 flow logic, not in Phase 1a); add `COMPONENT_DERIVED` to
-  `ObservationSource` (v1)
-- **`architecture-context.md`**: Update 4-slot model input contract wording for
-  `past_targets` — replace "Always present for stateful models" with "Always non-None.
-  May be zero-row for ungauged stations (`GaugingStatus.UNGAUGED`)" (also fix
-  pre-existing H.3→H.4 error in same paragraph); add `COMPONENT_DERIVED` to
-  `ObservationSource` enum definition **and** `observations` table column comment; add
-  `calculated_station_formulas` table to DB schema; add `gauging_status` column to
-  `stations` table; add pre-filter step to Flow 2 step table (ungauged station
-  exclusion); add ungauged exclusion note to Flow 4 step 4.2; update Flow 5 sequencing
-  diagram — for CALCULATED stations, steps 5.8/5.9 depend on 5.C3 (not 5.5/5.7);
-  update `suspended → operational` transition note to acknowledge `GaugingStatus`
-  context; document ForecastInterface as the model contract (see Related Plans)
-- **`v0-scope.md`**: ~~Update §C `stations` table entry to include `gauging_status`
-  column~~ (done, v0); ~~add `calculated_station_formulas` table to §B deferred-items
-  list~~ (done, v0); ~~add `COMPONENT_DERIVED` as a deferred value of
-  `ObservationSource` in §G~~ (done, v0); ~~add §I entry warning against hard-coding
-  "all stations are GAUGED" assumptions in v0 flow code~~ (done, v0)
-- **`conventions.md`**: ~~Add `GaugingStatus` to enum master list~~ (done, v0);
-  ~~add `component_derived` to `ObservationSource` values~~ (done, v0);
-  add new **observation QC rule ID** row to enum master list (distinct from existing
-  forecast QC rule IDs) — register all known observation rule IDs (`range_check`,
-  `rate_of_change`, `frozen_sensor`, `spike`, `gross_outlier`, `upstream_propagated`)
-  to avoid an incomplete registry. Note: `range_check` intentionally appears in both
-  forecast and observation lists — the rule ID string is shared but the implementations
-  are domain-specific (sensor-range validation for observations, physical-range
-  validation for forecasts); document composite PK as a secondary convention for
-  junction/configuration tables (5 existing tables already follow this pattern);
-  add `FORMULA_CONFIGURED` and `FORMULA_CLOSED` to `AuditEventType` values
-- **`orchestration.md`**: Add note to Flow 5 table entry about UNGAUGED/CALCULATED
-  branches; document the two-wave derivation pattern in Flow 2 as a new pattern (sync
-  barrier between gauged and calculated station processing — this extends the existing
-  `task.map()` convention, not an existing pattern), the formula pre-fetch convention
-  via `unmapped()`, the missing-component skip policy, and the same two-wave pattern
-  for Flow 12 Branches A and C; update concurrency controls section to cover the
-  inter-station dependency read gap in the two-wave pattern (component reads are
-  unprotected by the per-station write lock — accepted trade-off, must be documented)
-- **`logging.md`**: Add `gauging_status` as recommended context field bound inside
-  each Wave 2 derivation task (per-task scope via `bound_contextvars()`, not
-  flow-level); add event taxonomy entries for `observation.derivation_started` /
-  `observation.derivation_completed` (paired per `_started`/`_completed` convention,
-  with `duration_ms`), `station.formula_validation_failed` (scoped under `station`
-  entity, not `formula` — formulas are configuration artifacts, not runtime domain
-  objects); Wave 2 derivation tasks inherit `log_prints=False` from the existing
-  "all tasks in Flows 1 and 2" rule
-- **`security.md`**: Add file upload validation section (MIME types, size limits,
-  geometry complexity) before basin outline upload ships; add authorization matrix
-  entry for basin outline upload endpoint
-- **`cicd.md`**: Document trigger migration pattern — triggers managed via dedicated
-  Alembic revisions using `op.execute()` with `CREATE OR REPLACE FUNCTION` /
-  `CREATE TRIGGER` in upgrade and `DROP TRIGGER` / `DROP FUNCTION` in downgrade;
-  document the two-step column addition pattern for `NOT NULL` columns with defaults
-  (nullable + default in migration N, `NOT NULL` constraint in migration N+1);
-  add `btree_gist` to the `init` service's first-boot extension list alongside
-  `postgis`, `pg_partman`, and `pg_cron` (consistent with the existing pattern where
-  all extensions are created in the init step, not via Alembic migrations); document
-  the `btree_gist` requirement for exclusion constraints on
-  `calculated_station_formulas`
-- **`wmo.md`**: Note that `GaugingStatus` has no direct WMO-49 Vol III or WMO-168
-  precedent (WMO-168 discusses ungauged catchments in hydrological practice but has no
-  formal enum equivalent); clarify WIGOS ID policy for virtual stations (`wigos_id =
-  NULL` is acceptable — column is already nullable; virtual stations are excluded from
-  WIGOS-compliant station exchange)
+- **`types-and-protocols.md`**: add `ComponentWeight` dataclass (signed-weight
+  `__post_init__`, `parameter` field, `effective_from/to` — §D2); add `FormulaStore`
+  Protocol for `calculated_station_formulas`. (`GaugingStatus`, `gauging_status` field,
+  and `COMPONENT_DERIVED` are already shipped — no change.) `FORMULA_CONFIGURED` /
+  `FORMULA_CLOSED` `AuditEventType` values are **deferred** to the Wave-3 auth/audit plan
+  (§D2 audit note) — not added here.
+
+- **Store & code touchpoints (major fix — the step-2.5 derivation needs a real
+  status filter):**
+  - Add an optional `gauging_status: GaugingStatus | None = None` parameter to
+    `StationStore.fetch_all_stations()` and `fetch_stations_by_ownership()` in the
+    Protocol (`src/sapphire_flow/protocols/stores.py:499-509` — neither has it today),
+    the production store (`src/sapphire_flow/store/station_store.py:93`, which applies no
+    status filter), **and** the fake (`tests/fakes/fake_stores.py:860,867`, likewise
+    unfiltered). Add tests asserting the filter on both implementations. step 2.5's
+    read-time re-check (§D2) additionally needs each component's current `station_status`;
+    it reads the full station rows it already fetches — no new write method is required.
+  - **No `update_gauging_status()` method.** `gauging_status` is set once at station
+    creation (5.1 registers the station with `gauging_status = 'calculated'`/`'gauged'`)
+    and is effectively immutable thereafter — it answers "does this station have real
+    observations", which neither suspension nor decommissioning changes. Decommissioning
+    is a **`station_status`** transition and routes through the **existing**
+    `update_station_status()` (`protocols/stores.py:545`, `store/station_store.py:319`) —
+    no new store method. (There is a pre-existing latent divergence — `update_station()`
+    at `store/station_store.py:155-174` does not write `gauging_status` while the fake
+    replaces the whole station — but this plan exercises no gauging_status *update* path,
+    so it is left as-is rather than widened here.)
+
+- **`architecture-context.md`**: update the `past_targets` 4-slot wording ("Always
+  present for stateful models" → "Always non-None; may be zero-row for ungauged
+  stations") — *ungauged, reference-only, lands with the ungauged plan*; add the Flow 2
+  step-2.5 sequential-derivation note (after the QC loop); update the Flow 5 sequencing so CALCULATED 5.8/5.9 depend on
+  5.C3. The pre-existing **H.3→H.4 typo is dropped from this plan's scope** — fix it in a
+  separate trivial commit, not folded here. (`COMPONENT_DERIVED`, the formula table, and
+  `gauging_status` are already in the schema doc.)
+
+- **`conventions.md`**: add a new **observation QC rule ID** row registering
+  `range_check`, `rate_of_change`, `frozen_sensor`, `spike`, `gross_outlier`,
+  `upstream_propagated` (`range_check` intentionally shared with the forecast list —
+  domain-specific implementations). No composite-PK convention change (this plan uses the
+  standard UUID PK — §D2). (`GaugingStatus` / `component_derived` already present.)
+
+- **`orchestration.md`**: document the Flow 2 **sequential step-2.5 derivation** (a new
+  step after the existing QC `for`-loop — Flow 2 is not a `task.map` fan-out, so there is
+  no wave/`unmapped()` pattern to add; the QC loop completing is the ordering barrier), the
+  formula pre-fetch at flow start, the missing-component + non-`GAUGED`-component skip policy,
+  the deterministic component source precedence, and the concurrency read-gap trade-off
+  (component reads unprotected by the per-station write lock; covered by the step-2.5
+  read-time status re-check). Flow 12 re-derivation is deferred (§Flow 12), so it is a
+  forward note only.
+
+- **`logging.md`**: add `gauging_status` as a per-task bound context field in the step-2.5 derivation
+  (`bound_contextvars()`); add paired `observation.derivation_started` /
+  `observation.derivation_completed` (with `duration_ms`),
+  `station.formula_validation_failed`, `station.formula_component_not_gauged` events;
+  step-2.5 derivation inherits `log_prints=False` from the Flows 1/2 rule.
+
+- **`cicd.md`**: a one-line note that the formula trigger + function are added via a
+  rollback-safe Alembic migration. **No `btree_gist` provisioning note** — the plan now
+  enforces the one-current-formula invariant with a plain partial `UNIQUE` index and has
+  **no** Postgres-extension dependency (§D2). The two-step `NOT NULL`-column-with-default
+  pattern is already documented from the shipped `gauging_status` column and needs no new
+  entry here.
+
+- **`security.md`** — ⚠ REFERENCE-ONLY (ungauged plan): file-upload validation section
+  (MIME, size, geometry complexity) + authorization-matrix entry for basin-outline
+  upload. Not in scope here.
+
+- **`wmo.md`** — ⚠ REFERENCE-ONLY (ungauged plan for the virtual-station identity parts):
+  `GaugingStatus` has no direct WMO-49 Vol III / WMO-168 enum precedent; WIGOS ID policy
+  for virtual stations (`wigos_id = NULL` acceptable; excluded from WIGOS exchange).
 
 ## Urgency
 
