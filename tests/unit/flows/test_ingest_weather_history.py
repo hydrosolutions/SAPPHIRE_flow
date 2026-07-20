@@ -29,6 +29,7 @@ Design choices pinned by these tests (see the task summary for rationale):
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, ClassVar
@@ -957,16 +958,26 @@ class TestSelfContainment:
         station_store.store_weather_source(_weather_source(station.id))
         store = _SupersedingForcingStore()
 
-        # Every STAC query returns "no features" (a documented gap, per the
-        # adapter's own contract) — real, empty responses, not a raised
-        # network error. If the flow had regressed to the pre-115b1 single
+        # Every STAC query returns a documented gap, per the adapter's own
+        # contract — real empty/404 responses, not a raised network error. If
+        # the flow had regressed to the pre-115b1 single
         # ``fetch_reanalysis(_CANONICAL_PARAMETERS)`` call instead of
         # ``fetch_products``, THIS specific real adapter would raise
         # ``ConfigurationError`` (fail-closed on "precipitation") before ever
         # reaching this handler — proving the call-shape rewrite landed.
+        # Daily per-day items (RprelimD; Plan 128 A1's id-fetch,
+        # ``/items/{YYYYMMDD}-ch``) 404 = a genuine gap, not an empty search
+        # result. Everything else (the "last"-family monthly items the
+        # non-precip archive-backed products may probe, and the boundary
+        # search) is unaffected by Plan 128 — unmatched here, not 404.
         def _handler(request: httpx.Request) -> httpx.Response:
-            if str(request.url).endswith("/items/archive-ch"):
+            url = str(request.url)
+            if url.endswith("/items/archive-ch"):
                 return httpx.Response(200, json={"assets": {}})
+            if "/items?limit=100" in url:
+                return httpx.Response(200, json={"features": [], "links": []})
+            if re.search(r"/items/\d{8}-ch$", url):
+                return httpx.Response(404, json={"error": "not found"})
             return httpx.Response(200, json={"features": [], "links": []})
 
         real_adapter = MeteoSwissOpenDataReanalysisAdapter(
