@@ -67,10 +67,12 @@ Decide (A/B/C) in the review loop; do not pre-commit.
 
 ## Operational follow-ons (IT-specialist)
 
-- **`RECAP_DG_CLIENT_TOKEN` GitHub Actions secret** must be created so CI can
-  `uv sync` the private `recap-dg-client` git-pin. Until then every `uv sync`
-  CI job and the Docker build fail closed. (Wiring is in 082's diff; the secret
-  itself cannot be created from a sandbox.)
+- ~~**`RECAP_DG_CLIENT_TOKEN` GitHub Actions secret** must be created so CI can
+  `uv sync` the private `recap-dg-client` git-pin.~~ **RESOLVED (owner-confirmed
+  2026-07-20):** the secret exists and is wired into every workflow job
+  (`secrets.RECAP_DG_CLIENT_TOKEN` in `ci.yml`, `integration-nightly.yml`,
+  `dependency-safety.yml`, `live-lindas-weekly.yml` — git-auth for the private
+  clone). CI and the Docker build resolve the git-pin normally.
 - ~~Swiss deployments require a placeholder `./secrets/sapphire_dg_api_key`
   file.~~ **RESOLVED in Plan 082 (PR #91):** the Recap secret moved out of base
   `docker-compose.yml` into a Nepal-only `docker-compose.recap.yml` overlay
