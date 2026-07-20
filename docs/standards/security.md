@@ -289,7 +289,7 @@ All service containers:
 - Create a named non-root user in the Dockerfile (`RUN groupadd -g 1000 app && useradd -u 1000 -g 1000 -m app`)
 - Use an entrypoint script that starts as root, fixes permissions on mounted volumes and secrets, then drops to the `app` user via `gosu` before executing the application (see "Entrypoint pattern" below)
 - Drop all capabilities (`cap_drop: [ALL]` in `docker-compose.yml`)
-- Read-only root filesystem where possible (`read_only: true`), with explicit `tmpfs` for writable paths
+- Read-only root filesystem where possible (`read_only: true`), with explicit `tmpfs` for writable paths. Code that resolves paths under the data root must tolerate this — see the `resolve_data_dir` invariant in `docs/conventions.md` § Invariants.
 - Docker socket is never mounted in application containers
 
 ### Capabilities

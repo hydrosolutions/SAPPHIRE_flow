@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import errno
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Any
+
+import pytest
 
 from sapphire_flow.config.paths import resolve_artifact_dir, resolve_data_dir
-
-if TYPE_CHECKING:
-    import pytest
 
 
 class TestTierPrecedence:
@@ -140,6 +140,60 @@ class TestSubdirectoryCreation:
 
         assert deep_path.is_dir()
         assert (deep_path / "raw").is_dir()
+
+
+class TestReadOnlyRoot:
+    """EROFS-tolerant eager loop (Plan 133) — simulate a read-only root FS.
+
+    A `read_only: true` container root raises OSError(errno=EROFS), not
+    PermissionError/EACCES (that's what `chmod 0o555` produces — a different
+    errno the fix deliberately does NOT swallow). We patch `Path.mkdir`
+    directly to reproduce EROFS for the absent `raw`/`cache` subdirs while
+    letting a pre-existing `artifacts` succeed (EEXIST no-op), matching the
+    real API-container posture: a mounted `artifacts` volume, no `/data/raw`.
+    """
+
+    def test_tolerates_read_only_root_missing_subdirs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        data_root = tmp_path / "root"
+        data_root.mkdir()
+        (data_root / "artifacts").mkdir(mode=0o750)
+        monkeypatch.setenv("SAPPHIRE_DATA_DIR", str(data_root))
+
+        original_mkdir = Path.mkdir
+
+        def fake_mkdir(self: Path, *args: Any, **kwargs: Any) -> None:
+            if self.name in ("raw", "cache"):
+                raise OSError(errno.EROFS, "Read-only file system")
+            original_mkdir(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "mkdir", fake_mkdir)
+
+        data_result = resolve_data_dir()
+        artifact_result = resolve_artifact_dir()
+
+        assert data_result == data_root.resolve()
+        assert artifact_result == data_root.resolve() / "artifacts"
+        assert not (data_root / "raw").exists()
+        assert not (data_root / "cache").exists()
+        assert (data_root / "artifacts").is_dir()
+
+    def test_eacces_still_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        data_root = tmp_path / "root"
+        monkeypatch.setenv("SAPPHIRE_DATA_DIR", str(data_root))
+
+        def fake_mkdir(self: Path, *args: Any, **kwargs: Any) -> None:
+            raise OSError(errno.EACCES, "Permission denied")
+
+        monkeypatch.setattr(Path, "mkdir", fake_mkdir)
+
+        with pytest.raises(OSError) as exc_info:
+            resolve_data_dir()
+
+        assert exc_info.value.errno == errno.EACCES
 
 
 class TestResolveArtifactDir:
