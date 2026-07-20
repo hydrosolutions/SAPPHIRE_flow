@@ -227,14 +227,23 @@ whose actual invariant is fully covered here. The committed schema itself only l
 EXCLUDE as a *commented-out suggestion*, not a requirement
 (`architecture-context.md:2653-2654`), so this is contract-aligned.
 
-**Overlapping historical ranges — follow-up, not now.** The partial unique index does
-not prevent two *already-closed* (`effective_to IS NOT NULL`) rows from having
-overlapping validity windows. That is admin config hygiene, not derivation correctness:
-forward derivation reads only `effective_to IS NULL`, and Flow-12 historical
-re-derivation is itself deferred (§Flow 12). App-level validation at 5.C2 closes the
-prior row before opening a new one. If strict historical non-overlap is ever required,
-add it as a follow-up (a `btree_gist` EXCLUDE or an equivalent check) rather than paying
-the extension/migration-ordering cost now.
+**Overlapping historical ranges — deterministic lookup now; strict non-overlap deferred.**
+The partial unique index guarantees at most **one current** (`effective_to IS NULL`) row
+per `(calculated_station_id, component_station_id, parameter)`, but does not prevent two
+*already-closed* rows from having overlapping historical windows. Forward derivation (step
+2.5) reads only the current row, so it is unaffected. But the **5.C3 bootstrap** and any
+future valid-at-time lookup query the formula *valid at a past timestamp* `t`, and could in
+principle hit two overlapping closed rows. **Resolution (major fix): the valid-at-time
+lookup is deterministic by rule, independent of any DB overlap constraint** — for each
+`(component_station_id, parameter)`, pick the single row with the **greatest
+`effective_from ≤ t`** (`... WHERE effective_from <= t AND (effective_to IS NULL OR
+effective_to > t) ORDER BY effective_from DESC LIMIT 1` per component). "Latest-configured
+wins" is the intuitive admin semantics. In v1-now a calculated station is configured with
+**one** formula version at onboarding and not re-weighted (re-weighting/formula history is
+itself later work), so overlaps do not arise in practice; the deterministic rule makes the
+lookup well-defined regardless. Strict DB-level historical non-overlap (a `btree_gist`
+`EXCLUDE` or equivalent) is a follow-up if ever required — not worth the extension /
+migration-ordering cost now, given the deterministic rule already resolves ambiguity.
 
 **Trigger — both-invariant enforcement on the formula table (major fix).** A single
 `BEFORE INSERT OR UPDATE` trigger on `calculated_station_formulas` validates **both**
@@ -553,7 +562,14 @@ gather is needed. The step:
    ~1000 stations).
 3. For each calculated station, derives from its components' just-QC'd observations (see
    §Missing component observations for source-precedence + exact-timestamp matching), then
-   `obs_store.store_observations([...])` under the station's write lock.
+   `obs_store.store_observations([...])`. **Concurrency (grounding fix): there is no
+   `observation_write` Prefect lock in Flow 2 today** — `_store_raw_task` writes directly
+   (`ingest_observations.py:356`) and the store upserts on the natural key
+   (`store/observation_store.py`, `on_conflict_do_update`). Derivation writes rely on that
+   same idempotent natural-key upsert `(station_id, timestamp, parameter, source)`; a re-run
+   overwrites rather than duplicates. A per-station observation-write lock does **not** exist
+   and is **not introduced by this plan**; concurrent Flow 2 / future-Flow 12 writes to the
+   same calculated station are a shared concern for the Flow 12 follow-up (§Flow 12).
 
 The **two-tier depth is guaranteed** by the §D2 formula trigger (components must be
 `GAUGED`), so no topological sort is needed — derivation reads component observations that
@@ -594,13 +610,22 @@ current component anyway) can never be silently preferred. Tests MUST cover a co
 carrying duplicate `measured`/`manual_import`/`rating_curve_derived` rows and assert the
 precedence winner.
 
-**Derivation is skipped** when any component station has no observation for the current
-time window (data gap, source outage) **or** has an observation with `QC_FAILED` status.
-A placeholder observation is stored for the calculated station with
-`qc_status = 'missing'`. Rationale: a partial weighted sum is not a valid derivation —
-the formula semantics require all components. `QC_FAILED` observations are excluded
-because they represent known-bad data that should not propagate into derived values.
-Missing data propagates honestly rather than producing a silently degraded value.
+**Derivation is skipped** when — **for a timestamp `t` that at least one component
+reported this run** — any component has no observation at `t` (data gap, source outage)
+**or** has one with `QC_FAILED` status. A placeholder observation is stored for the
+calculated station at `t` with `qc_status = 'missing'`. Rationale: a partial weighted sum
+is not a valid derivation — the formula requires all components. `QC_FAILED` is excluded as
+known-bad. Missing data propagates honestly rather than silently degrading.
+
+**Placeholders are per-reported-timestamp, and step 2.5 runs only when the QC loop ran
+(grounding fix).** The derivation window is the set of timestamps present in *this run's*
+QC'd component observations; a placeholder is written only for a `t` where some component
+reported but another is missing/failed — never for timestamps no component reported. This
+matters because Flow 2 **returns early when `raw_obs` is empty**
+(`ingest_observations.py:342`), *before* the QC loop and step 2.5. That is correct and
+intentional: an empty run means **no** component reported new data, so there is no timestamp
+to derive at and no placeholder to write. Step 2.5 therefore lives after the QC loop (which
+only executes on a non-empty run); it never needs to run on the empty-run early-return path.
 
 **No automated monitor in this plan.** Flow 4 (pipeline monitoring) is deferred in v0
 scope (`docs/v0-scope.md`) and there is no component-dependency freshness monitor today.
@@ -623,11 +648,12 @@ and must not enter the derivation.
 > their previously-derived values (a documented, acceptable gap for v1-now).
 
 **Forward-pointer for the follow-up plan:** re-derivation should reuse the same sequential step-2.5 derivation (reprocess components first, then re-derive calculated stations) once Flow 12
-Branch A/C exists. The concurrency semantics — whether the per-station write lock
-(`concurrency("observation_write:{station_id}")`) suffices, and how a Flow 2 / Flow 12
-temporal overlap on a shared component resolves (component reads are unlocked) — must be
-**re-derived against Flow 12's actual implementation at that time**, not pinned here
-against a flow that does not yet exist. That analysis belongs in the follow-up plan,
+Branch A/C exists. The concurrency semantics — **including whether to introduce a
+per-station observation-write lock (`concurrency("observation_write:{station_id}")`),
+which does NOT exist today** (only the natural-key upsert serialises writes; grep confirms
+no such lock in Flow 2), and how a Flow 2 / Flow 12 temporal overlap on a shared component
+resolves (component reads are unlocked) — must be **decided against Flow 12's actual
+implementation at that time**, not pinned here against a flow that does not yet exist. That analysis belongs in the follow-up plan,
 consistent with how the ungauged content is split out.
 
 ## Onboarding Flow Modifications (Flow 5)
@@ -730,9 +756,14 @@ earlier draft named only the spec-doc change, which understated the work):
    function in its
    **own** revision (`op.execute` `CREATE OR REPLACE FUNCTION` / `CREATE TRIGGER`;
    `DROP` in downgrade), including the closure-only-update exemption (§D2).
-5. **`protocols/stores.py`** — `FormulaStore` Protocol: `store_formula`, `close_formula`,
-   `fetch_current_formula(station_id)`, `fetch_formula_at(station_id, at)`,
-   `fetch_formulas_for_stations(station_ids)`.
+5. **`protocols/stores.py`** — `FormulaStore` Protocol (**parameter-scoped** — the table
+   keys on `(calculated_station_id, component_station_id, parameter)`, §D2, and a station
+   may report >1 parameter via `measured_parameters`): `store_formula`, `close_formula`,
+   `fetch_current_formula(station_id, parameter) -> Sequence[ComponentWeight]`,
+   `fetch_formula_at(station_id, parameter, at) -> Sequence[ComponentWeight]`,
+   `fetch_formulas_for_stations(station_ids) -> dict[tuple[StationId, str],
+   Sequence[ComponentWeight]]` (current formula rows grouped by `(station_id, parameter)`).
+   Each "formula" is the *set* of component-weight rows for one `(station, parameter)`.
 6. **`store/calculated_station_formula_store.py`** — `PgFormulaStore` implementing it.
 7. **`tests/fakes/fake_stores.py`** — `FakeFormulaStore` + a `test_fakes.py` conformance case.
 8. **`flows/_db.py` `make_pg_stores()`** — add the `"formula_store"` slot (it has no such
@@ -800,8 +831,10 @@ implementing PR, not this plan.
   no wave/`unmapped()` pattern to add; the QC loop completing is the ordering barrier), the
   formula pre-fetch at flow start, the missing-component + non-`GAUGED`-component skip policy,
   the deterministic component source precedence, and the concurrency read-gap trade-off
-  (component reads unprotected by the per-station write lock; covered by the step-2.5
-  read-time status re-check). Flow 12 re-derivation is deferred (§Flow 12), so it is a
+  (component reads are unprotected by **any observation-write lock — none exists today**;
+  `observation_write` is aspirational in `orchestration.md`/`touchpoint-maps.md` and is not
+  introduced here; the risk is covered by the step-2.5 read-time status re-check + the
+  idempotent natural-key upsert). Flow 12 re-derivation is deferred (§Flow 12), so it is a
   forward note only.
 
 - **`logging.md`**: add `gauging_status` as a per-task bound context field in the step-2.5 derivation
@@ -816,6 +849,12 @@ implementing PR, not this plan.
   **no** Postgres-extension dependency (§D2). The two-step `NOT NULL`-column-with-default
   pattern is already documented from the shipped `gauging_status` column and needs no new
   entry here.
+
+- **`v0-scope.md`** *(minor cleanup — stale)*: `v0-scope.md:481` still lists
+  `ObservationSource.COMPONENT_DERIVED` as *deferred to v1*, but it has shipped (enum
+  `types/enums.py:180`, admitted by the `observations.source` CHECK
+  `db/metadata.py:296-303`, Plan 035 Task 2). Update that §G/§B line to "shipped" so the
+  scope doc stops contradicting the code. Small, fold into this plan's implementation PR.
 
 - **`security.md`** — ⚠ REFERENCE-ONLY (ungauged plan): file-upload validation section
   (MIME, size, geometry complexity) + authorization-matrix entry for basin-outline
