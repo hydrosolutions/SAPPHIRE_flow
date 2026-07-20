@@ -37,8 +37,10 @@ _ALEMBIC_VERSIONS_DIR = Path(__file__).resolve().parents[3] / "alembic" / "versi
 # (rating_curves table) onto 0033, and Task 2 chained 0035 (observation +
 # forecast rating-curve binding) onto 0034, and Task 3 chained 0036
 # (observation_versions archive table) onto 0035 — deliberate, reviewed migration
-# additions per the guidance below — advancing the pinned head to 0036.
-_RELEASE_B_HEAD = "0036"
+# additions per the guidance below — advancing the pinned head to 0036. Plan 015
+# then chained 0037 (calculated_station_formulas table) + 0038 (its eligibility
+# trigger) onto 0036 — advancing the pinned head to 0038.
+_RELEASE_B_HEAD = "0038"
 
 
 def _down_revisions() -> dict[str, str | None]:
