@@ -12,9 +12,11 @@ blocks: []
 
 ## Status
 
-**DRAFT.** Do not implement until promoted to READY. Reviewed via the `plan` workflow (adversarial
-Codex-in-the-loop, 3 rounds) — this revision folds in all residual findings; the design fork it
-surfaced (docker-exec vs host-git-auth) is **owner-resolved** below.
+**DRAFT.** Do not implement until promoted to READY. Reviewed via the `plan` workflow (3 rounds,
+escalated) + two focused independent Codex passes. Round-2 Codex confirmed **9/12 findings resolved**
+and raised 3 residual majors + 2 minors (non-hermetic test paths, the `--env-file` false premise, a
+weak key guard, a citation, a test-soundness claim) — **all folded into this revision**. The design
+fork it surfaced (docker-exec vs host-git-auth) is **owner-resolved** below.
 
 ## Context — the drift
 
@@ -130,24 +132,36 @@ Spec:
   produced records under launchd on 2026-07-20 (proven). (`docs/deployment/mac-mini-staging.md`
   mentions a permission-denied scenario under a different CLI context; the socket value is what works
   here — reconcile only if it regresses.)
-- **Key-file guard first.** If the `0600` key file is absent, write one line to stderr and exit
-  non-zero **before** invoking docker — never run with an empty key.
+- **Host paths are env-overridable for tests** (production values are the defaults, so production is
+  unchanged and the pytest in §6 can point them at `tmp_path` — same override pattern as `DOCKER_CMD`):
+  `KEY_FILE="${RECAP_PROBE_KEY_FILE:-/Users/sapphire/.config/sapphire/recap_api_key}"`,
+  `HOST_JSONL="${RECAP_PROBE_HOST_LOG:-/Users/sapphire/Library/Logs/sapphire-recap-probe.jsonl}"`,
+  `HOST_SUMMARY="${RECAP_PROBE_HOST_SUMMARY:-/Users/sapphire/Library/Logs/sapphire-recap-probe.summary.log}"`.
+  (These override the *host-side* paths only; the container-side `RECAP_PROBE_LOG=/dev/stderr` is fixed.)
+- **Key-file guard first.** Before invoking docker, require the key file to exist, be **readable**, and
+  read a **non-empty** value (`[[ -r "$KEY_FILE" ]]`, and the captured value is non-empty) — because
+  with `set -e` off, `$(cat "$KEY_FILE")` on a missing/unreadable/empty file silently yields an empty
+  string and the probe would otherwise run with no key. On any of those, write one line to stderr and
+  exit non-zero. Never invoke docker with an absent/empty key.
 - **Non-root:** invoke `docker exec -i --user app --workdir /tmp …`. Without `--user app` the exec runs
   as root (the entrypoint's `gosu app` is bypassed); `--workdir /tmp` because `app` need not own the
   workdir.
-- **Key delivery: `-e RECAP_API_KEY="$(cat "$KEY_FILE")"`** — the deployed mechanism. Documented
-  trade-off (state it, do not hide it): the key is briefly visible in host `ps` and in the container's
-  process env for the exec window. Accepted for a single-user staging host running a 3-hourly,
-  read-only probe; `docker exec` has no `--env-file`, and the leak-free alternatives (mount the key as
-  a container secret, or `docker cp` a temp file in and out) cost a compose change or a
-  copy/chown/cleanup dance disproportionate to the exposure. If this probe is ever promoted beyond an
-  experiment, revisit.
+- **Key delivery: `-e RECAP_API_KEY="$KEY"`** (the pre-validated value from the guard above) — the
+  deployed mechanism. Documented trade-off (state it, do not hide it): the key is briefly visible in
+  host `ps` and in the container's process env for the exec window. **`docker exec` *does* support
+  `--env-file`** (an earlier draft wrongly claimed it did not) — a `0600` file in `KEY=VALUE` format
+  would avoid the `ps` exposure. Owner accepts plain `-e` anyway: on a single-user staging host, for a
+  3-hourly read-only probe, the few-seconds `ps` window is negligible, and `--env-file` would require
+  maintaining a second key-file representation (the probe's own `RECAP_API_KEY_FILE` contract expects a
+  raw-value file, not `KEY=VALUE`). If this probe is ever promoted beyond an experiment, switch to
+  `--env-file`.
 - The probe is fed via `python -` (stdin): `scripts/` is **never** in the image by design (the final
   image `COPY`s only `.venv`, `src/`, `alembic.ini`, `alembic/` — `Dockerfile`; Plan 122). So
   stdin-piping is the permanent mechanism, not a stale-build stopgap.
 - Pass `-e RECAP_TEST_HRU=12300` and `-e RECAP_PROBE_LOG=/dev/stderr` (the probe reads these —
-  `scripts/recap_probe_loop.py:47-48`). `/dev/stderr` is the **container-side** in-process JSONL sink;
-  the host JSONL path is a hardcoded wrapper value, not this env var.
+  `scripts/recap_probe_loop.py:47-52`, `RECAP_PROBE_LOG` at :50). `/dev/stderr` is the
+  **container-side** in-process JSONL sink; the host JSONL path is the wrapper's `HOST_JSONL`, not this
+  env var.
 - **JSONL purity.** Capture the container's stderr into a temp buffer (not straight into the JSONL).
   Append the buffer to the host JSONL **only if** the exec exited 0 **and** every non-empty buffered
   line parses as JSON (a per-line check — a stray warning can reach stderr even on a 0 exit). Otherwise
@@ -215,7 +229,9 @@ Replace the host-venv narrative with the container-exec one actually deployed:
 ### 6. Test the wrapper — `tests/unit/ops/test_recap_probe_wrapper.py`
 
 A pytest that runs `scripts/launchd/run-recap-probe.sh` as a subprocess with `DOCKER_CMD` pointed at a
-**fake docker** (a temp script), under `tests/unit/` so CI's pytest run reaches it
+**fake docker** (a temp script) **and** the host paths overridden to `tmp_path` (via
+`RECAP_PROBE_KEY_FILE` / `RECAP_PROBE_HOST_LOG` / `RECAP_PROBE_HOST_SUMMARY` from §1, so CI never
+touches `/Users/sapphire/...`), under `tests/unit/` so CI's pytest run reaches it
 (`.github/workflows/ci.yml`). It locks the three JSONL-purity branches:
 
 - (a) exec exits 0 emitting only valid JSON on stderr → those lines land in the JSONL, nothing else;
@@ -224,9 +240,12 @@ A pytest that runs `scripts/launchd/run-recap-probe.sh` as a subprocess with `DO
 - (c) exec exits non-zero → JSONL untouched, error → the launchd log.
 
 The fake docker also asserts the exec is invoked with `--user app` and `-e RECAP_API_KEY=…` (locking
-the non-root invariant and that the key is passed, without asserting the secret value). *Soundness: (a)
-must fail against a wrapper that pipes raw stderr into the JSONL — i.e. it fails against the currently
-deployed wrapper, proving the fix.*
+the non-root invariant and that the key is passed, without asserting the secret value). It also covers
+the key guard: a missing/unreadable/empty key file exits non-zero **without** invoking docker.
+*Soundness: branches **(b)** and **(c)** are what prove the fix — each must fail against a wrapper that
+pipes raw container stderr straight into the JSONL (the currently deployed wrapper), which would let a
+non-JSON line or a failed-exec error into the JSONL. (Branch (a) passes against both, so it is a
+guard-rail, not the discriminating case.)*
 
 ## Post-merge cutover
 
