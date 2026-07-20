@@ -18,6 +18,25 @@ carry geographic ``latitude``/``longitude`` DIMENSIONS; native MeteoSwiss LV95
 grids (real files carry N/E dimensions in metres, PLUS 2D curvilinear lon/lat
 AUXILIARY coordinates that are not themselves a usable regular grid) are
 reprojected via the ``rioxarray`` accessor.
+
+**Daily per-day item addressing (Plan 128, RprelimD live-tail fix,
+2026-07-19)**: RprelimD (and any other daily-only, non-archive-backed
+product) is fetched by ``_fetch_day_feature`` via a **direct STAC item-id
+GET** (``items/{YYYYMMDD}-ch``, e.g. ``items/20260520-ch``) — never a
+``properties.datetime``-filtered search. Live probing confirmed that field
+drifts ~2 months forward of the item's real data date, so a search filtering
+on it silently returns 0 features for a day that in fact exists (the
+now-fixed defect). HTTP 404 on the id-fetch is the genuine gap (RprelimD has
+a rolling **~2-month retention window**; older days age out). Separately,
+MeteoSwiss publishes a per-day item **before** attaching that day's product
+asset (an item-then-asset publication race that by nature affects only the
+newest day(s)) — ``_rows_for_product`` degrades that to a ``WARNING``-logged
+gap on the daily path only, never raising, so the scheduled
+``ingest-weather-history`` run cannot crash on it. The archive-backed path
+(``_rows_for_href`` via the yearly archive / "last" monthly family) treats an
+absent archive-year href as an ``archive_year_gap`` and an absent last-family
+month href as an ``archive_month_gap`` — both return no rows, not an error;
+only a failed archive item fetch or asset download is a hard ``AdapterError``.
 """
 
 from __future__ import annotations
@@ -58,13 +77,6 @@ if TYPE_CHECKING:
     from sapphire_flow.types.station import StationWeatherSource
 
 log = structlog.get_logger(__name__)
-
-
-def _item_updated(feature: dict[str, object]) -> str:
-    properties = feature.get("properties", {})
-    if isinstance(properties, dict):
-        return str(properties.get("updated", ""))
-    return ""
 
 
 _ITEM_ID_DATE_RE = re.compile(r"(?P<date>\d{4}-?\d{2}-?\d{2})")
@@ -616,33 +628,33 @@ class MeteoSwissOpenDataReanalysisAdapter:
         return [r for r in rows if start <= r.valid_time < end]
 
     def _fetch_day_feature(self, day_iso: str) -> dict[str, object] | None:
-        url: str | None = (
-            f"{self._stac_base_url}/collections/{self._stac_collection}/items"
-            f"?datetime={day_iso}T00:00:00Z&limit=100"
+        """Fetch the per-day STAC item by its deterministic id
+        (``{YYYYMMDD}-ch``, e.g. ``20260520-ch``) — a direct ``GET``, never a
+        ``properties.datetime``-filtered search. MeteoSwiss keys per-day items
+        by the DATA date in the item id, but ``properties.datetime`` drifts
+        ~2 months forward of that date in production (Plan 128 Probe A) —
+        a search filtering on ``properties.datetime`` silently returns 0
+        features for the requested day. HTTP 404 on the id-fetch is the
+        genuine "no data for this day" gap (not yet published, or aged out of
+        the ~2-month rolling retention window). No bounded ``?datetime=``
+        range fallback (Plan 128 grill-me #1) — that filter is the defect."""
+        item_id = f"{day_iso.replace('-', '')}-ch"
+        url = (
+            f"{self._stac_base_url}/collections/{self._stac_collection}/items/{item_id}"
         )
-        # Accumulate features across STAC pages, following ``rel == "next"``
-        # links. The per-day query usually returns a single page; the loop is
-        # capped and de-duplicates hrefs to guard against pagination cycles.
-        features: list[dict[str, object]] = []
-        seen: set[str] = set()
-        max_pages = 50
-        while url is not None and len(seen) < max_pages and url not in seen:
-            seen.add(url)
-            try:
-                resp = self._http_client.get(url)
-                resp.raise_for_status()
-            except Exception as exc:
-                raise AdapterError(f"STAC search failed for {day_iso}: {exc}") from exc
-            body = resp.json()
-            features.extend(body.get("features", []))
-            url = _next_link(body.get("links", []))
-
-        if not features:
+        try:
+            resp = self._http_client.get(url)
+        except Exception as exc:
+            raise AdapterError(f"STAC item fetch failed for {item_id}: {exc}") from exc
+        if resp.status_code == 404:
             log.info("reanalysis.day_gap", day=day_iso)
             return None
-        # Most-recently-published item wins when a day has revised content;
-        # the content-hash version makes exact-duplicate republications no-ops.
-        return max(features, key=_item_updated)
+        try:
+            resp.raise_for_status()
+        except Exception as exc:
+            raise AdapterError(f"STAC item fetch failed for {item_id}: {exc}") from exc
+        feature: dict[str, object] = resp.json()
+        return feature
 
     def _rows_for_product(
         self,
@@ -654,7 +666,25 @@ class MeteoSwissOpenDataReanalysisAdapter:
     ) -> list[RawHistoricalForcing]:
         href = self._asset_href(feature, product)
         if href is None:
-            raise AdapterError(f"no asset for product={product.token} on day={day_iso}")
+            # Daily path only (Plan 128 A1(2), Probe B, live 2026-07-19):
+            # MeteoSwiss publishes a per-day item BEFORE attaching the
+            # product's asset — a routine item-then-asset publication race
+            # affecting only the newest day(s), not a matcher bug. Degrade to
+            # a gap at WARNING (operator-visible, distinct from the routine
+            # INFO `day_gap`) so the scheduled ingest never crashes on it. A
+            # genuine asset-matcher bug would instead fail EVERY day, which
+            # surfaces as sustained warnings. The archive path
+            # (``_rows_for_href`` called directly, never through here) is
+            # unchanged — an absent archive/monthly asset href is an
+            # ``archive_year_gap`` / ``archive_month_gap`` (returns no rows);
+            # only a failed item fetch or asset download is a hard
+            # ``AdapterError``.
+            log.warning(
+                "reanalysis.day_asset_absent",
+                product=product.token,
+                day=day_iso,
+            )
+            return []
         return self._rows_for_href(href, product, station_configs, cycle_time)
 
     def _rows_for_href(

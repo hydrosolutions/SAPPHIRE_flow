@@ -36,6 +36,7 @@ import numpy as np
 import pandas as pd
 import polars as pl
 import pytest
+import structlog
 import xarray as xr
 from shapely.geometry import box
 
@@ -192,6 +193,38 @@ def _feature(day: str) -> dict[str, object]:
     }
 
 
+_DAILY_ITEM_ID_RE = re.compile(r"/items/(\d{8})-ch$")
+
+
+def _daily_item_id_date(url: str) -> str | None:
+    """Extract the ISO day (``YYYY-MM-DD``) a per-day STAC item-id URL
+    (``.../items/{YYYYMMDD}-ch``, Plan 128 A1's id-fetch) addresses, or
+    ``None`` if ``url`` is not a daily-item-id fetch (e.g. it is a search or
+    an archive/"last"-family item request)."""
+    match = _DAILY_ITEM_ID_RE.search(url)
+    if match is None:
+        return None
+    token = match.group(1)
+    return f"{token[:4]}-{token[4:6]}-{token[6:]}"
+
+
+def _feature_rprelimd(day: str) -> dict[str, object]:
+    return {
+        "id": f"{day.replace('-', '')}-ch",
+        "properties": {
+            "datetime": f"{day}T00:00:00Z",
+            "updated": f"{day}T05:30:00Z",
+        },
+        "assets": {
+            f"RprelimD_ch.swiss.lv95_{day}": {
+                "href": f"https://dummy/assets/rprelimd_{day}.swiss.lv95.nc",
+                "type": "application/x-netcdf",
+            }
+        },
+        "links": [],
+    }
+
+
 def _make_handler(
     byte_map: dict[tuple[str, str], bytes],
 ) -> Callable[[httpx.Request], httpx.Response]:
@@ -206,12 +239,11 @@ def _make_handler(
                         headers={"content-type": "application/x-netcdf"},
                     )
             return httpx.Response(404, json={"error": "not found"})
-        if "/collections/" in url:
-            found = sorted(set(re.findall(r"\d{4}-\d{2}-\d{2}", url)))
-            days = [d for d in (found or _DAYS) if d in _DAYS]
-            return httpx.Response(
-                200, json={"features": [_feature(d) for d in days], "links": []}
-            )
+        day = _daily_item_id_date(url)
+        if day is not None:
+            if day in _DAYS:
+                return httpx.Response(200, json=_feature(day))
+            return httpx.Response(404, json={"error": "not found"})
         return httpx.Response(200, json={"features": [], "links": []})
 
     return handler
@@ -446,22 +478,23 @@ class TestFetchReanalysisErrorPaths:
             url = str(request.url)
             if "/assets/" in url:
                 return httpx.Response(500, json={"error": "asset upstream failure"})
-            if "/collections/" in url:
-                days = [d for d in _DAYS]
-                return httpx.Response(
-                    200, json={"features": [_feature(d) for d in days], "links": []}
-                )
+            day = _daily_item_id_date(url)
+            if day is not None:
+                if day in _DAYS:
+                    return httpx.Response(200, json=_feature(day))
+                return httpx.Response(404, json={"error": "not found"})
             return httpx.Response(200, json={"features": [], "links": []})
 
         with pytest.raises(AdapterError):
             self._fetch_with_handler(handler)
 
     def test_empty_stac_result_yields_no_rows(self) -> None:
-        # STAC returns HTTP 200 with no features for the requested range (a gap
-        # in the archive). The documented contract is an empty forcing stream —
-        # no rows, no exception, no fabricated data.
+        # Every per-day item id-fetch 404s (Plan 128 A1: id-fetch, not a
+        # `?datetime=` search) — a documented gap for the whole requested
+        # range. The contract is an empty forcing stream — no rows, no
+        # exception, no fabricated data.
         def handler(_request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json={"features": [], "links": []})
+            return httpx.Response(404, json={"error": "not found"})
 
         assert self._fetch_with_handler(handler) == []
 
@@ -515,13 +548,11 @@ class TestNonMidnightRangeDaySelection:
                             headers={"content-type": "application/x-netcdf"},
                         )
                 return httpx.Response(404, json={"error": "not found"})
-            if "/collections/" in url:
-                found = sorted(set(re.findall(r"\d{4}-\d{2}-\d{2}", url)))
-                days = [d for d in found if d in byte_map]
-                return httpx.Response(
-                    200,
-                    json={"features": [_feature_one(d) for d in days], "links": []},
-                )
+            day = _daily_item_id_date(url)
+            if day is not None:
+                if day in byte_map:
+                    return httpx.Response(200, json=_feature_one(day))
+                return httpx.Response(404, json={"error": "not found"})
             return httpx.Response(200, json={"features": [], "links": []})
 
         return handler
@@ -744,83 +775,17 @@ class TestAncillaryVariableDropping:
             )
 
 
-class TestStacPaginationFollowsNext:
-    """The per-day STAC items query must follow ``links[].rel == "next"`` and
-    accumulate features across pages before selecting the latest-``updated`` one.
-    """
-
-    def test_selects_item_from_second_page(self) -> None:
-        day = "2026-04-10"
-        page1_bytes = _netcdf_bytes("TabsD", day, 1.0)
-        page2_bytes = _netcdf_bytes("TabsD", day, 2.0)
-        page2_url = "https://dummy/stac/collections/page2-items"
-
-        def _feat(href_token: str, updated: str) -> dict[str, object]:
-            return {
-                "id": href_token,
-                "properties": {
-                    "datetime": f"{day}T00:00:00Z",
-                    "updated": updated,
-                },
-                "assets": {
-                    f"TabsD_ch.swiss.lv95_{day}": {
-                        "href": f"https://dummy/assets/{href_token}.nc",
-                        "type": "application/x-netcdf",
-                    }
-                },
-                "links": [],
-            }
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            url = str(request.url)
-            if "/assets/" in url:
-                if "page1tok" in url:
-                    return httpx.Response(
-                        200,
-                        content=page1_bytes,
-                        headers={"content-type": "application/x-netcdf"},
-                    )
-                if "page2tok" in url:
-                    return httpx.Response(
-                        200,
-                        content=page2_bytes,
-                        headers={"content-type": "application/x-netcdf"},
-                    )
-                return httpx.Response(404, json={"error": "not found"})
-            if "page2" in url:
-                # Page 2: the newer item, no further next link.
-                return httpx.Response(
-                    200,
-                    json={
-                        "features": [_feat("page2tok", f"{day}T09:00:00Z")],
-                        "links": [],
-                    },
-                )
-            if "/collections/" in url:
-                # Page 1: an older item plus a next link to page 2.
-                return httpx.Response(
-                    200,
-                    json={
-                        "features": [_feat("page1tok", f"{day}T05:00:00Z")],
-                        "links": [{"rel": "next", "href": page2_url}],
-                    },
-                )
-            return httpx.Response(200, json={"features": [], "links": []})
-
-        sid = StationId(uuid.uuid4())
-        adapter = _make_adapter(httpx.MockTransport(handler), {sid: _make_basin(sid)})
-        rows = adapter.fetch_reanalysis(
-            [_make_config(sid)],
-            ensure_utc(datetime(2026, 4, 10, tzinfo=UTC)),
-            ensure_utc(datetime(2026, 4, 11, tzinfo=UTC)),
-            ["temperature"],
-        )
-
-        assert rows
-        # The selected feature's asset is page 2's — proving pagination was
-        # followed (page 2's item is newer than page 1's).
-        expected_version = hashlib.sha256(page2_bytes).hexdigest()[:16]
-        assert all(r.version == expected_version for r in rows)
+# NOTE (Plan 128 A1): a ``TestStacPaginationFollowsNext`` class previously
+# lived here, pinning ``_fetch_day_feature``'s old ``items?datetime=``-search
+# behaviour (accumulate features across ``links[].rel == "next"`` pages, pick
+# the latest-``updated`` one). Plan 128 replaces that search with a direct
+# ``items/{YYYYMMDD}-ch`` id-fetch (the search's ``properties.datetime``
+# filter is the defect — Probe A), which addresses exactly one STAC item by a
+# stable id and has no pagination/most-recent-revision concept to test.
+# Pagination itself is still exercised where it remains real: the boundary
+# scan's ``items?limit=100`` listing (``TestDiscoverProductAvailabilityRange
+# .test_follows_pagination``, ``TestDiscoverRhiresdBoundary.test_follows_
+# pagination``).
 
 
 class TestFetchReanalysisRequestGuards:
@@ -1056,22 +1021,6 @@ class TestFetchProductsWriterSideScopedFetch:
         sid = StationId(uuid.uuid4())
         byte_map = {d: _netcdf_bytes("RprelimD", d, 3.0) for d in _DAYS}
 
-        def _feature_rprelimd(day: str) -> dict[str, object]:
-            return {
-                "id": f"{day.replace('-', '')}-ch",
-                "properties": {
-                    "datetime": f"{day}T00:00:00Z",
-                    "updated": f"{day}T05:30:00Z",
-                },
-                "assets": {
-                    f"RprelimD_ch.swiss.lv95_{day}": {
-                        "href": f"https://dummy/assets/rprelimd_{day}.swiss.lv95.nc",
-                        "type": "application/x-netcdf",
-                    }
-                },
-                "links": [],
-            }
-
         def handler(request: httpx.Request) -> httpx.Response:
             url = str(request.url)
             if "/assets/" in url:
@@ -1083,16 +1032,11 @@ class TestFetchProductsWriterSideScopedFetch:
                             headers={"content-type": "application/x-netcdf"},
                         )
                 return httpx.Response(404, json={"error": "not found"})
-            if "/collections/" in url:
-                found = sorted(set(re.findall(r"\d{4}-\d{2}-\d{2}", url)))
-                days = [d for d in found if d in byte_map]
-                return httpx.Response(
-                    200,
-                    json={
-                        "features": [_feature_rprelimd(d) for d in days],
-                        "links": [],
-                    },
-                )
+            day = _daily_item_id_date(url)
+            if day is not None:
+                if day in byte_map:
+                    return httpx.Response(200, json=_feature_rprelimd(day))
+                return httpx.Response(404, json={"error": "not found"})
             return httpx.Response(200, json={"features": [], "links": []})
 
         adapter = _make_adapter(httpx.MockTransport(handler), {sid: _make_basin(sid)})
@@ -1123,6 +1067,189 @@ class TestFetchProductsWriterSideScopedFetch:
             ["temperature"],
         )
         assert rows == []
+
+
+# ---------------------------------------------------------------------------
+# Plan 128 A2 — id-fetch defect fix regression tests. The confirmed root
+# cause (live STAC probe + code trace, 2026-07-19): ``_fetch_day_feature``
+# filtered ``items?datetime={day}`` on ``properties.datetime``, which DRIFTS
+# ~2 months forward of the per-day item's actual data date in production
+# (Probe A) — the search returns 0 features and the day is silently skipped.
+# The fix addresses the item DIRECTLY by its deterministic id
+# (``items/{YYYYMMDD}-ch``). That, in turn, exposes a second confirmed edge
+# (Probe B): MeteoSwiss publishes the per-day item BEFORE attaching the
+# product's asset, so the newest day(s) routinely have item-present/
+# asset-absent — which must degrade to a gap, never crash the scheduled run.
+# ---------------------------------------------------------------------------
+
+
+class TestRprelimdIdFetchRegression:
+    def test_drifted_properties_datetime_still_resolves_by_id(self) -> None:
+        # The per-day item's `properties.datetime` has drifted ~2 months
+        # forward of its data date (Probe A, live) — a `?datetime=`-filtered
+        # search returns 0 features for the requested day, but a direct
+        # `items/{YYYYMMDD}-ch` fetch finds it regardless of the drift.
+        #
+        # Soundness: must fail RED against the pre-Plan-128
+        # `_fetch_day_feature` (which queries `items?datetime=...` — that
+        # branch below returns 0 features, so the old code reports a day gap
+        # and this assertion's ``rows`` is empty).
+        day = "2026-05-20"
+        item_id = "20260520-ch"
+        drifted_datetime = "2026-07-17T00:00:00Z"  # ~2 months forward of `day`
+        data = _netcdf_bytes("RprelimD", day, 3.0)
+        asset_url = "https://dummy/assets/rprelimd_20260520.swiss.lv95.nc"
+        requested_urls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            requested_urls.append(url)
+            if url == asset_url:
+                return httpx.Response(
+                    200,
+                    content=data,
+                    headers={"content-type": "application/x-netcdf"},
+                )
+            if url.endswith(f"/items/{item_id}"):
+                return httpx.Response(
+                    200,
+                    json={
+                        "id": item_id,
+                        "properties": {"datetime": drifted_datetime},
+                        "assets": {
+                            f"RprelimD_ch.swiss.lv95_{day}": {
+                                "href": asset_url,
+                                "type": "application/x-netcdf",
+                            }
+                        },
+                        "links": [],
+                    },
+                )
+            if f"items?datetime={day}" in url:
+                # The pre-Plan-128 search: filters on `properties.datetime`,
+                # which has drifted away from `day` -> 0 features.
+                return httpx.Response(200, json={"features": [], "links": []})
+            raise AssertionError(f"unexpected request: {url}")
+
+        sid = StationId(uuid.uuid4())
+        adapter = _make_adapter(httpx.MockTransport(handler), {sid: _make_basin(sid)})
+        rows = adapter.fetch_products(
+            [ForcingSource.METEOSWISS_RPRELIMD],
+            [_make_config(sid)],
+            ensure_utc(datetime(2026, 5, 20, tzinfo=UTC)),
+            ensure_utc(datetime(2026, 5, 21, tzinfo=UTC)),
+            ["precipitation"],
+        )
+
+        assert rows
+        assert all(r.source == ForcingSource.METEOSWISS_RPRELIMD.value for r in rows)
+        # ENFORCE id-only: the adapter made requests, and NONE of them was a
+        # `properties.datetime`-filtered search. A "search-then-id" impl would
+        # trip this — the row assertions above alone would not catch it.
+        assert requested_urls
+        assert not any("items?datetime=" in u for u in requested_urls)
+
+    def test_item_present_asset_absent_is_a_warning_gap_not_a_crash(self) -> None:
+        # Probe B (live, 2026-07-19): the per-day item is published (200) a
+        # day before the RprelimD asset attaches. This is the NEWEST day in a
+        # 2-day range — the OTHER (older) day already has its asset — proving
+        # the daily loop degrades the affected day to a gap and CONTINUES,
+        # rather than raising and aborting the whole range.
+        #
+        # Soundness: must fail RED against the current ``_rows_for_product``,
+        # which raises ``AdapterError`` when ``_asset_href`` finds no
+        # matching asset — that would abort the range and this call would
+        # raise instead of returning rows for the present day.
+        present_day, absent_day = _DAYS[0], _DAYS[1]
+        present_item_id = f"{present_day.replace('-', '')}-ch"
+        absent_item_id = f"{absent_day.replace('-', '')}-ch"
+        data = _netcdf_bytes("RprelimD", present_day, 3.0)
+        asset_url = f"https://dummy/assets/rprelimd_{present_day}.swiss.lv95.nc"
+        requested_urls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            requested_urls.append(url)
+            if url == asset_url:
+                return httpx.Response(
+                    200,
+                    content=data,
+                    headers={"content-type": "application/x-netcdf"},
+                )
+            if url.endswith(f"/items/{present_item_id}"):
+                return httpx.Response(200, json=_feature_rprelimd(present_day))
+            if url.endswith(f"/items/{absent_item_id}"):
+                # Item exists (200) but the rprelimd asset is not attached yet.
+                return httpx.Response(
+                    200,
+                    json={
+                        "id": absent_item_id,
+                        "properties": {"datetime": f"{absent_day}T00:00:00Z"},
+                        "assets": {},
+                        "links": [],
+                    },
+                )
+            raise AssertionError(f"unexpected request: {url}")
+
+        sid = StationId(uuid.uuid4())
+        adapter = _make_adapter(httpx.MockTransport(handler), {sid: _make_basin(sid)})
+
+        with structlog.testing.capture_logs() as captured:
+            rows = adapter.fetch_products(
+                [ForcingSource.METEOSWISS_RPRELIMD],
+                [_make_config(sid)],
+                ensure_utc(datetime(2026, 4, 10, tzinfo=UTC)),
+                ensure_utc(datetime(2026, 4, 12, tzinfo=UTC)),
+                ["precipitation"],
+            )
+
+        # The present day's row is still returned — the absent-asset day
+        # degrades to a gap, it does not abort the whole range.
+        assert rows
+        assert {r.valid_time.date().isoformat() for r in rows} == {present_day}
+
+        gap_events = [
+            e for e in captured if e.get("event") == "reanalysis.day_asset_absent"
+        ]
+        assert len(gap_events) == 1
+        assert gap_events[0]["log_level"] == "warning"
+        assert gap_events[0]["day"] == absent_day
+
+        # ENFORCE id-only: no `properties.datetime`-filtered search was issued.
+        assert requested_urls
+        assert not any("items?datetime=" in u for u in requested_urls)
+
+    def test_genuine_404_gap_yields_no_rows_no_error(self) -> None:
+        # The per-day item has aged out of MeteoSwiss's rolling ~2-month
+        # retention (or was never published) -> 404 on items/{YYYYMMDD}-ch.
+        # The documented contract is an empty forcing stream, not an error —
+        # distinct from the item-present/asset-absent third state above.
+        day = "2026-01-01"
+        item_id = f"{day.replace('-', '')}-ch"
+        requested_urls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            requested_urls.append(url)
+            if url.endswith(f"/items/{item_id}"):
+                return httpx.Response(404, json={"error": "not found"})
+            raise AssertionError(f"unexpected request: {url}")
+
+        sid = StationId(uuid.uuid4())
+        adapter = _make_adapter(httpx.MockTransport(handler), {sid: _make_basin(sid)})
+        rows = adapter.fetch_products(
+            [ForcingSource.METEOSWISS_RPRELIMD],
+            [_make_config(sid)],
+            ensure_utc(datetime(2026, 1, 1, tzinfo=UTC)),
+            ensure_utc(datetime(2026, 1, 2, tzinfo=UTC)),
+            ["precipitation"],
+        )
+        assert rows == []
+
+        # ENFORCE id-only: the gap is discovered by a direct id GET (404),
+        # never a `properties.datetime`-filtered search.
+        assert requested_urls
+        assert not any("items?datetime=" in u for u in requested_urls)
 
 
 # ---------------------------------------------------------------------------
