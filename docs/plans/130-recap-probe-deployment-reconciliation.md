@@ -12,11 +12,12 @@ blocks: []
 
 ## Status
 
-**DRAFT.** Do not implement until promoted to READY. Reviewed via the `plan` workflow (3 rounds,
-escalated) + two focused independent Codex passes. Round-2 Codex confirmed **9/12 findings resolved**
-and raised 3 residual majors + 2 minors (non-hermetic test paths, the `--env-file` false premise, a
-weak key guard, a citation, a test-soundness claim) — **all folded into this revision**. The design
-fork it surfaced (docker-exec vs host-git-auth) is **owner-resolved** below.
+**DRAFT — CONVERGED, awaiting owner READY.** Reviewed via the `plan` workflow (3 rounds, escalated) +
+two focused independent Codex passes. Round-2 Codex confirmed **9/12 findings resolved** and raised 3
+residual majors + 2 minors (non-hermetic test paths, the `--env-file` false premise, a weak key guard,
+a citation, a test-soundness claim) — **all folded**; the **final Codex pass returned READY-FOR-OWNER**
+(no blockers/majors). The design fork it surfaced (docker-exec vs host-git-auth) is **owner-resolved**
+below. Owner owns the READY flip and the branch/PR (hold-at-PR).
 
 ## Context — the drift
 
