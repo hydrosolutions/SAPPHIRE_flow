@@ -33,9 +33,12 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import textwrap
 from pathlib import Path
+
+import pytest
 
 _SCRIPTS_DIR = Path(__file__).parent.parent.parent.parent / "scripts" / "launchd"
 _WRAPPER_SCRIPT = _SCRIPTS_DIR / "run-recap-probe.sh"
@@ -48,19 +51,27 @@ def _write_fake_docker(
     stderr: str,
     exit_code: int,
     args_log: Path,
+    stderr_newline: bool = True,
 ) -> Path:
     """Write a fake docker executable that records its args then emits
     fixed stdout/stderr and exits with the given code -- standing in for
-    `docker exec` without touching the real Docker daemon."""
+    `docker exec` without touching the real Docker daemon.
+
+    When ``stderr_newline`` is False the stderr bytes are emitted verbatim via
+    ``printf %s`` (no trailing newline), so a test can exercise an unterminated
+    final line -- the case a plain ``while read`` in the wrapper would drop."""
+    stderr_emit = (
+        ["cat >&2 <<'__STDERR__'", stderr, "__STDERR__"]
+        if stderr_newline
+        else [f"printf %s {shlex.quote(stderr)} >&2"]
+    )
     lines = [
         "#!/bin/bash",
         f'printf \'%s\\n\' "$@" > "{args_log}"',
         "cat >&1 <<'__STDOUT__'",
         stdout,
         "__STDOUT__",
-        "cat >&2 <<'__STDERR__'",
-        stderr,
-        "__STDERR__",
+        *stderr_emit,
         f"exit {exit_code}",
         "",
     ]
@@ -179,6 +190,37 @@ class TestKeyGuard:
         assert result.returncode != 0
         assert not args_log.exists(), "docker was invoked despite an empty key file"
 
+    @pytest.mark.skipif(
+        os.geteuid() == 0,
+        reason="root bypasses file permissions; guard is for non-root",
+    )
+    def test_unreadable_key_file_exits_nonzero_without_invoking_docker(
+        self, tmp_path: Path
+    ) -> None:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        args_log = tmp_path / "docker-args.log"
+        fake = _write_fake_docker(
+            bin_dir, stdout="", stderr="", exit_code=0, args_log=args_log
+        )
+        key_file = tmp_path / "unreadable-key"
+        key_file.write_text("secret")
+        key_file.chmod(0o000)
+        try:
+            result = _run_wrapper(
+                tmp_path,
+                docker_cmd=fake,
+                key_file=key_file,
+                host_jsonl=tmp_path / "out.jsonl",
+                host_summary=tmp_path / "out.summary.log",
+            )
+            assert result.returncode != 0
+            assert not args_log.exists(), (
+                "docker was invoked despite an unreadable key file"
+            )
+        finally:
+            key_file.chmod(0o600)  # let tmp_path teardown remove it
+
 
 class TestJsonlPurityBranches:
     """The three JSONL-purity branches described in Plan 130 §1/§6."""
@@ -258,6 +300,40 @@ class TestJsonlPurityBranches:
             "the impure buffer must be routed to the wrapper's own stderr "
             "(the launchd log)"
         )
+
+    def test_unterminated_nonjson_stderr_line_leaves_jsonl_untouched(
+        self, tmp_path: Path
+    ) -> None:
+        """(b') a non-JSON FINAL line with no trailing newline must still be
+        caught -- a plain `while read` in the wrapper would silently drop it
+        and let it pollute the JSONL."""
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        args_log = tmp_path / "docker-args.log"
+        stray = "WARNING: unterminated non-JSON noise"
+        fake = _write_fake_docker(
+            bin_dir,
+            stdout="",
+            stderr=stray,
+            exit_code=0,
+            args_log=args_log,
+            stderr_newline=False,
+        )
+        host_jsonl = tmp_path / "out.jsonl"
+        host_summary = tmp_path / "out.summary.log"
+        result = _run_wrapper(
+            tmp_path,
+            docker_cmd=fake,
+            key_file=self._key_file(tmp_path),
+            host_jsonl=host_jsonl,
+            host_summary=host_summary,
+        )
+        assert result.returncode != 0
+        assert not host_jsonl.exists() or host_jsonl.read_text() == "", (
+            "an unterminated non-JSON line must still leave the JSONL untouched, "
+            f"got: {host_jsonl.read_text() if host_jsonl.exists() else '<absent>'}"
+        )
+        assert stray in result.stderr
 
     def test_nonzero_exec_exit_leaves_jsonl_untouched(self, tmp_path: Path) -> None:
         """(c) exec exits non-zero -> JSONL untouched, error routed to the

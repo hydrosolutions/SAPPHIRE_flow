@@ -80,18 +80,18 @@ trap 'rm -f "${STDOUT_BUF}" "${STDERR_BUF}"' EXIT
     <"${PROBE_SCRIPT}" >"${STDOUT_BUF}" 2>"${STDERR_BUF}"
 EXIT_CODE=$?
 
-# Container stdout (the terse summary) always appends to the summary log.
-cat "${STDOUT_BUF}" >>"${HOST_SUMMARY}"
-
 # --- JSONL purity gate. ---------------------------------------------------
 # Append the buffer to the host JSONL only if the exec exited 0 AND every
 # non-empty buffered line parses as JSON (a per-line check — a stray
-# warning can reach stderr even on a 0 exit).
+# warning can reach stderr even on a 0 exit). The `|| [[ -n "${line}" ]]`
+# clause makes the loop process a final line that has NO trailing newline
+# (plain `read` returns non-zero and drops it), so an unterminated non-JSON
+# warning cannot slip past the gate.
 PURE=1
 if [[ "${EXIT_CODE}" -ne 0 ]]; then
     PURE=0
 else
-    while IFS= read -r line; do
+    while IFS= read -r line || [[ -n "${line}" ]]; do
         [[ -z "${line}" ]] && continue
         if ! python3 -c "import json,sys; json.loads(sys.argv[1])" "${line}" >/dev/null 2>&1; then
             PURE=0
@@ -100,11 +100,28 @@ else
     done <"${STDERR_BUF}"
 fi
 
-if [[ "${PURE}" -eq 1 ]]; then
-    cat "${STDERR_BUF}" >>"${HOST_JSONL}"
-    exit 0
+# Persist both streams, explicitly checking each append: with `set -e` off a
+# failed `cat >>` would otherwise be swallowed and the branch would still
+# exit 0, silently dropping data. Any failure (impure run, or a failed
+# append) exits non-zero so launchd surfaces it.
+FAILED=0
+
+# Container stdout (the terse summary) always appends to the summary log.
+if ! cat "${STDOUT_BUF}" >>"${HOST_SUMMARY}"; then
+    log "failed to append summary to ${HOST_SUMMARY}"
+    FAILED=1
 fi
 
-log "probe run impure or failed (exit=${EXIT_CODE}) — routing to launchd log, JSONL left untouched"
-cat "${STDERR_BUF}" >&2
+if [[ "${PURE}" -eq 1 ]]; then
+    if ! cat "${STDERR_BUF}" >>"${HOST_JSONL}"; then
+        log "failed to append JSONL to ${HOST_JSONL}"
+        FAILED=1
+    fi
+else
+    log "probe run impure or failed (exit=${EXIT_CODE}) — routing to launchd log, JSONL left untouched"
+    cat "${STDERR_BUF}" >&2
+    FAILED=1
+fi
+
+[[ "${FAILED}" -eq 0 ]] && exit 0
 exit 1
