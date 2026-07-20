@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>ch.hydrosolutions.sapphire-recap-probe</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/uv</string>
+        <string>run</string>
+        <string>python</string>
+        <string>scripts/recap_probe_loop.py</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>10800</integer>
+    <key>WorkingDirectory</key>
+    <string>/Users/sapphire/SAPPHIRE_flow</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>RECAP_API_KEY_FILE</key>
+        <string>/Users/sapphire/.config/sapphire/recap_api_key</string>
+        <key>RECAP_TEST_HRU</key>
+        <string>12300</string>
+        <key>RECAP_PROBE_LOG</key>
+        <string>/Users/sapphire/Library/Logs/sapphire-recap-probe.jsonl</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/sapphire/Library/Logs/sapphire-recap-probe.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/sapphire/Library/Logs/sapphire-recap-probe.stdout.log</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>UserName</key>
+    <string>sapphire</string>
+</dict>
+</plist>
