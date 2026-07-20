@@ -19,6 +19,15 @@ blocks: [115b3]
 
 **READY** (2026-07-15). Three independent Codex plan-review rounds → READY-TO-IMPLEMENT (round 1: two real scale blockers — resumability gap key, per-product availability bounds; round 2: content-hash version policy + stale-range propagation; round 3: clean). Second chunk (115b1 → **115b2** → 115b3 → 115b4). Implementation authorised; hold at PR.
 
+> **⚠️ Build-time gate from the 2026-07-20 STAC re-probe (see [115b1](115b1-adapter-schema-foundation.md)
+> § Access-model correction).** This chunk's 1981→present backfill inherits 115b1/1B's archive asset
+> addressing. An independent re-probe found the full 1961→present archive is **not** enumerable via this
+> collection's rolling monthly-item API (a 1961–1990 items query returned **zero**; historical item IDs
+> 404). Before scaling to the ~100M-row write, **confirm the real Historical-tier enumeration mechanism**
+> (per-year archive files / direct FSDI URLs / a separate archive collection) rather than assuming STAC
+> item enumeration covers the archive. The strategic premise (RhiresD free + daily + since 1961) is
+> confirmed; only the enumeration path needs live confirmation.
+
 ## Why these two phases are one chunk
 
 Binding and backfill are inseparable: **the adapter only processes configs that declare its
