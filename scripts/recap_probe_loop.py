@@ -9,6 +9,11 @@ Single-shot by design: it runs ONE probe cycle and exits, mirroring the watchdog
 the cadence. Results are appended as JSONL (one record per endpoint per run) to
 ``RECAP_PROBE_LOG`` for later analysis with ``pandas.read_json(..., lines=True)``.
 
+Runs either in a host venv where the ``recap-dg-client`` git-pin is synced, or
+inside a container that already has ``recap_client`` baked in (the deployed
+mode — see ``scripts/launchd/run-recap-probe.sh``, which ``docker exec``s this
+script into the running worker container via stdin).
+
 Config (env):
   RECAP_API_KEY            gateway key (or RECAP_API_KEY_FILE, a 0600 file)
   RECAP_API_KEY_FILE       path to a file holding the key (checked before RECAP_API_KEY)
@@ -39,7 +44,8 @@ try:
 except ImportError as exc:  # pragma: no cover - deploy-host dependency
     sys.stderr.write(
         f"recap_client not importable ({exc}). Run in a venv where the "
-        "recap-dg-client git-pin is synced (needs RECAP_DG_CLIENT_TOKEN).\n"
+        "recap-dg-client git-pin is synced (needs RECAP_DG_CLIENT_TOKEN), or "
+        "inside a container/worker image that already has recap_client.\n"
     )
     raise SystemExit(2) from exc
 
