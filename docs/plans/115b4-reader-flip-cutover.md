@@ -30,6 +30,15 @@ Implementation authorised; hold at PR.
 **⚠️ Gated on 115b3.** Do not flip until the validation gate's result is recorded and any flag
 dispositioned.
 
+**⚠️ Cadence re-confirm from the 2026-07-20 STAC re-probe (see [115b1](115b1-adapter-schema-foundation.md)
+§ Access-model correction).** The `RhiresD`→`RprelimD` "definitive supersedes preliminary" priority
+chain (§3/§5) rides on 115b1/1D's `R` boundary. MeteoSwiss's real update model is three-tier —
+Historical (yearly consolidation) / Recent (daily, current year) / Now — not the "monthly definitive +
+live preliminary" picture the design implies. Before the flip, re-confirm the supersession fires on the
+**real** publication event (which tier actually re-writes a given date) so the chain does not prefer a
+stale definitive or hold a preliminary too long. Design is robust (1D discovers `R` from STAC); this is a
+correctness re-confirm, not a redesign.
+
 **Fixer-round note (2026-07-17):** an independent Codex review of the implementation found
 that `0033_retire_camels_ch_weather_binding.py` (§5E, Release B) had been committed
 alongside Release A (5A–5D + phase-6) in the SAME commit — reproducing the exact

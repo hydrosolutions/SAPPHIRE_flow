@@ -23,6 +23,61 @@ real cross-chunk seam — the Flow-6 fail-closed break — fixed by owning the F
 round 2 confirmed the seam closed, no other caller missed, effect-neutral). First of four chunks
 (**115b1** → 115b2 → 115b3 → 115b4). Implementation authorised; hold at PR.
 
+## § Access-model correction — independent STAC re-probe (2026-07-20)
+
+An independent re-probe of the **live** MeteoSwiss STAC API + MeteoSwiss's own open-data docs,
+run to pressure-test 115b §0's founding facts. **Net: the strategic premise HOLDS; two build-time
+facts this chunk depends on need a live re-confirm before implementation.**
+
+**Confirmed (the big lever is sound).** `RhiresD` is free, daily, 1 km, **available since 1961**,
+via the OGD/STAC collection the adapter already targets (`ch.meteoschweiz.ogd-surface-derived-grid`)
+— per MeteoSwiss product docs + open-data docs. 115b §0 and its falsification of Plan 071's
+"requires commercial delivery" premise both stand. No strategic change.
+
+**Authoritative access model — record it, it is not two-tier.** MeteoSwiss serves every gridded
+product in **three** update tiers (open-data download docs, quoted):
+- **Historical** — "from the start of the measurement until December 31st of *last* year", updated
+  **once yearly** (the yearly consolidation).
+- **Recent** — "from January 1st of *this* year until yesterday", updated **daily** (12 UTC).
+- **Now** — real-time (10-min).
+
+This is the correct mental model for `RhiresD`(final) ↔ `RprelimD`(preliminary) and for 1D's `R`
+boundary — richer than the "monthly definitive + live preliminary" picture §0/1D imply.
+
+**Two facts this chunk asserts that the re-probe could NOT reproduce — gate them on a live
+build-time probe (not a redesign; 1B/1D are directionally right):**
+
+1. **1B's archive asset family / filename pattern is unconfirmed.** The re-probe of this collection
+   returned **only a short forward-rolling window of monthly items** (`202506-ch`…`202510-ch`) with
+   assets I could not read; a `datetime=1961..1990` items query returned **ZERO items**, and
+   historical item IDs (`196101-ch`, `202505-ch`) **404**. So the full 1961→present archive is
+   **not** enumerable through this collection's *items* API as I probed it. 1B's per-year
+   `…-archive.<var>_ch01(h|r).…_YYYY0101…_YYYY1231….nc` approach is the *right shape*, but the exact
+   asset family, filename template, and **whether the Historical tier is reachable via this
+   collection at all** (vs. a separate archive collection / direct FSDI download URLs) **must be
+   verified live in 1B/1C before coding** — the synthetic-fixture risk 1C already names applies to
+   the *enumeration path*, not just the file contents.
+2. **1D's "`RhiresD` publishes monthly (~25th of following month)" is unverified and possibly
+   conflates tiers.** The daily-updating *Recent* tier above may mean the current-year boundary
+   behaves differently than a fixed monthly cadence. 1D already discovers `R` **from STAC**, so the
+   design is robust to this — but the "~monthly / 25th" annotation must be treated as **unconfirmed**
+   until the 1D helper is pinned against the live collection, and the helper's empty/pagination
+   handling must not assume a monthly item grid.
+
+**Actions carried downstream** (flagged in those plans):
+- **115b2** — the 1981→present backfill inherits 1B's asset addressing. It must enumerate the
+  **Historical-tier** archive (per-year files), **not** rolling monthly items. Confirm the real
+  enumeration mechanism before scaling to the ~100M-row write.
+- **115b4** — the `RhiresD`→`RprelimD` supersession *cadence* rides on 1D. Re-confirm the boundary
+  behaviour (yearly Historical consolidation vs. daily Recent) so "definitive supersedes preliminary"
+  fires on the real publication event, not an assumed monthly one.
+
+**Confidence:** the tier model, the ZERO-items 1961–1990 result, and the 404s are HTTP-authoritative;
+RhiresD-since-1961 is from MeteoSwiss's own docs. The "empty assets" reads are lower-confidence (a
+fetch-summariser artifact is possible) and are **not** load-bearing here — the conclusion rests on the
+tier model + the datetime query. None of this blocks 115a or the strategic decision; it gates 1B/1D
+coding and 115b2's backfill enumeration.
+
 ## Why this is the safe first slice
 
 Like 115a, this is **behaviour-EFFECT-neutral**: it adds products, a canonical parameter, a writer-side
