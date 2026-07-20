@@ -7,8 +7,9 @@
     <string>ch.hydrosolutions.sapphire-watchdog</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/uv</string>
+        <string>/Users/sapphire/.local/bin/uv</string>
         <string>run</string>
+        <string>--no-sync</string>
         <string>python</string>
         <string>-m</string>
         <string>sapphire_flow.ops.watchdog</string>

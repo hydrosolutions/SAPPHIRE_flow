@@ -1,8 +1,13 @@
 #!/bin/bash
 # watchdog.sh — thin wrapper that invokes the SAPPHIRE watchdog module.
 # Used for manual invocation from the shell; the LaunchAgent invokes
-# uv run python -m sapphire_flow.ops.watchdog directly (no wrapper).
+# uv run --no-sync python -m sapphire_flow.ops.watchdog directly (no wrapper).
+#
+# --no-sync: this host cannot clone the private recap-dg-client git-pin, so a
+# plain `uv run` (implicit sync) fails/hangs. The watchdog module needs only
+# httpx/structlog/sapphire_flow, all already present in the venv, so we run
+# against the existing venv without syncing.
 
 set -e
 cd /Users/sapphire/SAPPHIRE_flow
-exec uv run python -m sapphire_flow.ops.watchdog
+exec uv run --no-sync python -m sapphire_flow.ops.watchdog
