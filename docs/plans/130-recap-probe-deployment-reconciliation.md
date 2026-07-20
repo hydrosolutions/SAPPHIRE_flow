@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-07-20
 plan: 130
 title: Reconcile the recap-probe repo artifacts with the container-exec deployment
@@ -12,8 +12,8 @@ blocks: []
 
 ## Status
 
-**DRAFT — CONVERGED, awaiting owner READY.** Reviewed via the `plan` workflow (3 rounds, escalated) +
-two focused independent Codex passes. Round-2 Codex confirmed **9/12 findings resolved** and raised 3
+**READY** (owner, 2026-07-20). Implementation authorised; hold at PR. Reviewed via the `plan` workflow
+(3 rounds, escalated) + two focused independent Codex passes. Round-2 Codex confirmed **9/12 findings resolved** and raised 3
 residual majors + 2 minors (non-hermetic test paths, the `--env-file` false premise, a weak key guard,
 a citation, a test-soundness claim) — **all folded**; the **final Codex pass returned READY-FOR-OWNER**
 (no blockers/majors). The design fork it surfaced (docker-exec vs host-git-auth) is **owner-resolved**
