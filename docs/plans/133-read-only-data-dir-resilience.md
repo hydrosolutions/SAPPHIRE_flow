@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-07-20
 plan: 133
 title: resolve_data_dir must not crash on a read-only data root (API data-layer outage)
@@ -12,12 +12,10 @@ blocks: []
 
 ## Status
 
-**DRAFT.** `/plan` ran (2 rounds, escalated: 2 blockers + 2 majors + 2 minors) and chose design (A). All
-findings folded: the `chmod`→EROFS test-methodology blocker (now monkeypatch `mkdir`→`EROFS`, with an
-EACCES-stays-loud companion), the doc-invariant contradiction (narrowed to match (A), single home), the
-missed `scripts/onboard.py` callers (+ the worker is also affected), and the silent-skip minor (now
-logged). **Final independent Codex re-verify: READY-FOR-OWNER (no blockers/majors).** One owner fork
-remains: the posture-guard scope (§4). Then owner READY → implement.
+**READY** (owner, 2026-07-20). Implementation authorised; hold at PR. `/plan` ran (2 rounds, escalated:
+2 blockers + 2 majors + 2 minors) and chose design (A); all findings folded; final independent Codex
+re-verify **READY-FOR-OWNER**. **Posture-guard fork (§4) resolved by owner: option (a)** — the
+dependency-level `get_stores`-under-read-only unit regression; no full-stack integration smoke.
 
 ## Context — a live, prod-relevant API outage
 
