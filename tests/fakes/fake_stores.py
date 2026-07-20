@@ -19,6 +19,7 @@ from sapphire_flow.exceptions import (
 from sapphire_flow.store.observation_store import _dedupe_raw_observations
 from sapphire_flow.types.alert import Alert  # noqa: TC001
 from sapphire_flow.types.basin import Basin  # noqa: TC001
+from sapphire_flow.types.calculated_station import ComponentWeight  # noqa: TC001
 from sapphire_flow.types.datetime import UtcDatetime  # noqa: TC001
 from sapphire_flow.types.domain import (  # noqa: TC001
     ClimBaseline,
@@ -1188,6 +1189,78 @@ class FakeObservationVersionStore:
             ),
             key=lambda a: a.timestamp,
         )
+
+
+class FakeFormulaStore:
+    def __init__(self) -> None:
+        self._rows: list[ComponentWeight] = []
+
+    def store_formula(self, rows: Sequence[ComponentWeight]) -> None:
+        self._rows.extend(rows)
+
+    def close_formula(
+        self,
+        calculated_station_id: StationId,
+        parameter: str,
+        effective_to: UtcDatetime,
+    ) -> int:
+        closed = 0
+        for i, r in enumerate(self._rows):
+            if (
+                r.calculated_station_id == calculated_station_id
+                and r.parameter == parameter
+                and r.effective_to is None
+            ):
+                self._rows[i] = replace(r, effective_to=effective_to)
+                closed += 1
+        return closed
+
+    def fetch_current_formula(
+        self, calculated_station_id: StationId, parameter: str
+    ) -> Sequence[ComponentWeight]:
+        return sorted(
+            (
+                r
+                for r in self._rows
+                if r.calculated_station_id == calculated_station_id
+                and r.parameter == parameter
+                and r.effective_to is None
+            ),
+            key=lambda r: r.component_station_id,
+        )
+
+    def fetch_formula_at(
+        self, calculated_station_id: StationId, parameter: str, at: UtcDatetime
+    ) -> Sequence[ComponentWeight]:
+        # Per component, the greatest effective_from <= at whose validity covers `at`.
+        candidates = [
+            r
+            for r in self._rows
+            if r.calculated_station_id == calculated_station_id
+            and r.parameter == parameter
+            and r.effective_from <= at
+            and (r.effective_to is None or r.effective_to > at)
+        ]
+        winners: dict[StationId, ComponentWeight] = {}
+        # Stable tie-breaker matching Pg: effective_from, then created_at, then id.
+        # Last in ascending order wins → the greatest (effective_from, created_at, id).
+        for r in sorted(
+            candidates, key=lambda r: (r.effective_from, r.created_at, r.id)
+        ):
+            winners[r.component_station_id] = r
+        return sorted(winners.values(), key=lambda r: r.component_station_id)
+
+    def fetch_formulas_for_stations(
+        self, station_ids: list[StationId]
+    ) -> dict[tuple[StationId, str], list[ComponentWeight]]:
+        wanted = set(station_ids)
+        grouped: dict[tuple[StationId, str], list[ComponentWeight]] = {}
+        for r in self._rows:
+            if r.calculated_station_id in wanted and r.effective_to is None:
+                grouped.setdefault((r.calculated_station_id, r.parameter), []).append(r)
+        for rows in grouped.values():
+            rows.sort(key=lambda r: r.component_station_id)
+        return grouped
 
 
 class FakeFlowRegimeConfigStore:

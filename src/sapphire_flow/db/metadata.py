@@ -475,6 +475,68 @@ sa.Index(
     observation_versions.c.rating_curve_id,
 )
 
+# Plan 015: calculated station formulas — Q_virtual = Σ(wᵢ · Qᵢ) over gauged
+# components. One row per (calculated station, component, parameter) validity
+# window; the eligibility trigger (added in a separate migration) enforces
+# target=CALCULATED + component GAUGED+operational on insert / relation-changing
+# update (closure-only updates exempt).
+calculated_station_formulas = sa.Table(
+    "calculated_station_formulas",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True),
+    sa.Column(
+        "calculated_station_id",
+        UUID(as_uuid=True),
+        sa.ForeignKey("stations.id"),
+        nullable=False,
+    ),
+    sa.Column(
+        "component_station_id",
+        UUID(as_uuid=True),
+        sa.ForeignKey("stations.id"),
+        nullable=False,
+    ),
+    sa.Column("parameter", sa.Text, nullable=False),
+    sa.Column("weight", sa.Float, nullable=False),  # signed, nonzero, |w| < 1e6
+    sa.Column("effective_from", sa.DateTime(timezone=True), nullable=False),
+    sa.Column(
+        "effective_to", sa.DateTime(timezone=True), nullable=True
+    ),  # NULL = current
+    sa.Column(
+        "created_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+    ),
+    sa.CheckConstraint(
+        "calculated_station_id != component_station_id",
+        name="ck_csf_distinct_stations",
+    ),
+    sa.CheckConstraint(
+        "weight != 0 AND weight > -1e6 AND weight < 1e6", name="ck_csf_weight_bounds"
+    ),
+    sa.CheckConstraint(
+        "effective_to IS NULL OR effective_to > effective_from",
+        name="ck_csf_validity_order",
+    ),
+)
+
+# Component-lookup index (which calculated stations depend on a component).
+sa.Index(
+    "ix_csf_component",
+    calculated_station_formulas.c.component_station_id,
+)
+# At most one CURRENT formula row per (calculated station, component, parameter) —
+# partial UNIQUE, mirrors the rating_curves active-curve precedent (no btree_gist).
+sa.Index(
+    "uq_csf_current",
+    calculated_station_formulas.c.calculated_station_id,
+    calculated_station_formulas.c.component_station_id,
+    calculated_station_formulas.c.parameter,
+    unique=True,
+    postgresql_where=calculated_station_formulas.c.effective_to.is_(None),
+)
+
 # ──────────────────────────────────────────────
 # WEATHER / NWP DOMAIN
 # v0: no is_gap, no gap_status
