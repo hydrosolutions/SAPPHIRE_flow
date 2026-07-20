@@ -23,6 +23,7 @@ from sapphire_flow.exceptions import (
 )
 from sapphire_flow.flows.run_forecast_cycle import (
     ForecastCycleResult,
+    _bind_rating_curve,
     _check_nwp_grid_staleness,
     _fetch_nwp_task,
     _load_weather_forecast_adapter_config,
@@ -43,7 +44,10 @@ from sapphire_flow.types.enums import (
     AlertStatus,
     ArtifactScope,
     EnsembleMode,
+    EnsembleRepresentation,
     ForecastCycleHealth,
+    ForecastStatus,
+    InterpolationMethod,
     ModelArtifactStatus,
     ModelAssignmentStatus,
     ModelCombinationStrategy,
@@ -57,14 +61,18 @@ from sapphire_flow.types.enums import (
     WeatherSourceRole,
     WeatherSourceStatus,
 )
+from sapphire_flow.types.forecast import OperationalForecast
 from sapphire_flow.types.ids import (
     CLIMATOLOGY_FALLBACK_MODEL_ID,
     NWP_REGRESSION_MODEL_ID,
     BasinId,
+    ForecastId,
     ModelId,
+    RatingCurveId,
     StationGroupId,
     StationId,
 )
+from sapphire_flow.types.rating_curve import RatingCurve
 from sapphire_flow.types.station import (
     GroupModelAssignment,
     ModelAssignment,
@@ -77,7 +85,11 @@ from sapphire_flow.types.weather import (
     GriddedForecast,
     WeatherForecastRecord,
 )
-from tests.conftest import make_observations, make_station_config
+from tests.conftest import (
+    make_forecast_ensemble,
+    make_observations,
+    make_station_config,
+)
 from tests.fakes.fake_adapters import FakeGridExtractor, FakeWeatherForecastSource
 from tests.fakes.fake_models import FakeGroupForecastModel, FakeStationForecastModel
 from tests.fakes.fake_stores import (
@@ -91,6 +103,7 @@ from tests.fakes.fake_stores import (
     FakeNwpGridStore,
     FakeObservationStore,
     FakePipelineHealthStore,
+    FakeRatingCurveStore,
     FakeStationGroupStore,
     FakeStationStore,
     FakeWeatherForecastStore,
@@ -5377,3 +5390,292 @@ class TestForecastProvenance:
         assert all(fc.nwp_cycle_source == NwpCycleSource.FALLBACK for fc in stored)
         # Provenance reflects the TRUE resolved (older) cycle, not the request.
         assert all(fc.nwp_cycle_reference_time == resolved_cycle for fc in stored)
+
+
+def _active_curve(station_id: StationId) -> RatingCurve:
+    return RatingCurve(
+        id=RatingCurveId(uuid4()),
+        station_id=station_id,
+        version=1,
+        valid_from=ensure_utc(datetime(2020, 1, 1, tzinfo=UTC)),
+        valid_to=None,
+        points=[
+            {"water_level": 1.0, "discharge": 10.0},
+            {"water_level": 2.0, "discharge": 45.0},
+        ],
+        interpolation=InterpolationMethod.LINEAR,
+        uploaded_by=None,
+        created_at=ensure_utc(datetime(2020, 1, 1, tzinfo=UTC)),
+    )
+
+
+def _bare_forecast(station_id: StationId) -> OperationalForecast:
+    return OperationalForecast(
+        id=ForecastId(uuid4()),
+        station_id=station_id,
+        model_id=_MODEL_ID,
+        model_artifact_id=None,
+        issued_at=_NOW,
+        nwp_cycle_reference_time=None,
+        nwp_cycle_source=NwpCycleSource.RUNOFF_ONLY,
+        representation=EnsembleRepresentation.MEMBERS,
+        status=ForecastStatus.RAW,
+        version=1,
+        warm_up_source=None,
+        warm_up_state_age_hours=None,
+        observation_staleness_hours=None,
+        ensemble=make_forecast_ensemble(station_id=station_id, n_members=3, n_steps=4),
+        created_at=_NOW,
+        updated_at=_NOW,
+    )
+
+
+class TestBindRatingCurveHelper:
+    def test_feature_off_is_noop(self) -> None:
+        sid = StationId(uuid4())
+        fc = _bare_forecast(sid)
+        bound = _bind_rating_curve(fc, None)
+        assert bound is fc
+        assert bound.rating_curve_id is None
+
+    def test_binds_curve_and_logs_bound(self) -> None:
+        import structlog.testing
+
+        sid = StationId(uuid4())
+        curve = _active_curve(sid)
+        fc = _bare_forecast(sid)
+        with structlog.testing.capture_logs() as captured:
+            bound = _bind_rating_curve(fc, {sid: curve})
+        assert bound.rating_curve_id == curve.id
+        assert any(e["event"] == "rating_curve.bound" for e in captured)
+
+    def test_absent_curve_is_noop_and_logs_skipped(self) -> None:
+        import structlog.testing
+
+        sid = StationId(uuid4())
+        fc = _bare_forecast(sid)
+        with structlog.testing.capture_logs() as captured:
+            bound = _bind_rating_curve(fc, {})  # feature on, no curve for sid
+        assert bound.rating_curve_id is None
+        assert any(e["event"] == "rating_curve.bind_skipped" for e in captured)
+
+
+class TestForecastCycleRatingCurveBinding:
+    def test_primary_path_binds_curve(self) -> None:
+        sid = StationId(uuid4())
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        forcing_store = FakeHistoricalForcingStore()
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+        )
+        curve = _active_curve(sid)
+        rating_curve_store = FakeRatingCurveStore()
+        rating_curve_store.store_rating_curve(curve)
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=FakeModelStateStore(),
+            artifact_store=artifact_store,
+            alert_store=FakeAlertStore(),
+            baseline_store=FakeClimBaselineStore(),
+            basin_store=FakeBasinStore(),
+            forcing_store=forcing_store,
+            adapter=FakeWeatherForecastSource(result={}),
+            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+            config=_make_config(),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+            rating_curve_store=rating_curve_store,
+        )
+
+        assert result.forecasts_stored >= 1
+        stored = list(forecast_store._forecasts.values())
+        assert stored
+        assert all(f.rating_curve_id == curve.id for f in stored)
+
+    def test_no_op_when_store_absent(self) -> None:
+        sid = StationId(uuid4())
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        forcing_store = FakeHistoricalForcingStore()
+        _build_station_and_stores(
+            sid,
+            _MODEL_ID,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+        )
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=FakeModelStateStore(),
+            artifact_store=artifact_store,
+            alert_store=FakeAlertStore(),
+            baseline_store=FakeClimBaselineStore(),
+            basin_store=FakeBasinStore(),
+            forcing_store=forcing_store,
+            adapter=FakeWeatherForecastSource(result={}),
+            models={_MODEL_ID: _SmallFakeModel()},  # type: ignore[dict-item]
+            config=_make_config(),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+        )
+
+        assert result.forecasts_stored >= 1
+        stored = list(forecast_store._forecasts.values())
+        assert stored
+        assert all(f.rating_curve_id is None for f in stored)
+
+    def test_combination_path_binds_individual_and_combined(self) -> None:
+        sid = StationId(uuid4())
+        model_id_a = ModelId("fake_model_a")
+        model_id_b = ModelId("fake_model_b")
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        forcing_store = FakeHistoricalForcingStore()
+        _build_station_and_stores(
+            sid,
+            model_id_a,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+        )
+        station_store.store_model_assignment(
+            ModelAssignment(
+                station_id=sid,
+                model_id=model_id_b,
+                time_step=timedelta(hours=1),
+                status=ModelAssignmentStatus.ACTIVE,
+                priority=2,
+                created_at=_NOW,
+            )
+        )
+        artifact_store.store_artifact(
+            model_id=model_id_b,
+            artifact_bytes=b"fake_artifact_b",
+            training_period_start=ensure_utc(datetime(2020, 1, 1, tzinfo=UTC)),
+            training_period_end=ensure_utc(datetime(2025, 12, 31, tzinfo=UTC)),
+            trained_at=_NOW,
+            station_id=sid,
+            status=ModelArtifactStatus.ACTIVE,
+        )
+        curve = _active_curve(sid)
+        rating_curve_store = FakeRatingCurveStore()
+        rating_curve_store.store_rating_curve(curve)
+
+        run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=FakeModelStateStore(),
+            artifact_store=artifact_store,
+            alert_store=FakeAlertStore(),
+            baseline_store=FakeClimBaselineStore(),
+            basin_store=FakeBasinStore(),
+            forcing_store=forcing_store,
+            adapter=FakeWeatherForecastSource(result={}),
+            models={model_id_a: _SmallFakeModel(), model_id_b: _SmallFakeModel()},  # type: ignore[dict-item]
+            config=_make_config(
+                forecast_combination_strategy=ModelCombinationStrategy.POOLED
+            ),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+            rating_curve_store=rating_curve_store,
+        )
+
+        stored = list(forecast_store._forecasts.values())
+        # Individual (sites 2) + combined (site 3) forecasts.
+        assert len(stored) >= 3
+        assert any(f.combination_strategy == "pooled" for f in stored)
+        assert all(f.rating_curve_id == curve.id for f in stored)
+
+    def test_group_path_binds_curve(self) -> None:
+        sid_a = StationId(uuid4())
+        sid_b = StationId(uuid4())
+        group_model_id = ModelId("fake_group_model")
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        forcing_store = FakeHistoricalForcingStore()
+        group_store = FakeStationGroupStore()
+        for sid in (sid_a, sid_b):
+            _build_station_and_stores(
+                sid,
+                _MODEL_ID,
+                station_store,
+                obs_store,
+                nwp_store,
+                artifact_store,
+                forcing_store,
+                seed_model_assignment=False,
+                seed_artifact=False,
+            )
+        _store_group_run(
+            group_store,
+            artifact_store,
+            group_model_id,
+            frozenset({sid_a, sid_b}),
+        )
+        curve_a = _active_curve(sid_a)
+        curve_b = _active_curve(sid_b)
+        rating_curve_store = FakeRatingCurveStore()
+        rating_curve_store.store_rating_curve(curve_a)
+        rating_curve_store.store_rating_curve(curve_b)
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=FakeModelStateStore(),
+            artifact_store=artifact_store,
+            alert_store=FakeAlertStore(),
+            baseline_store=FakeClimBaselineStore(),
+            basin_store=FakeBasinStore(),
+            group_store=group_store,
+            forcing_store=forcing_store,
+            adapter=FakeWeatherForecastSource(result={}),
+            models={group_model_id: _SmallFakeGroupModel()},  # type: ignore[dict-item]
+            config=_make_config(),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+            rating_curve_store=rating_curve_store,
+        )
+
+        assert result.forecasts_stored == 2
+        by_station = {f.station_id: f for f in forecast_store._forecasts.values()}
+        assert by_station[sid_a].rating_curve_id == curve_a.id
+        assert by_station[sid_b].rating_curve_id == curve_b.id

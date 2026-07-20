@@ -1108,6 +1108,20 @@ class FakeRatingCurveStore:
             if c.station_id in wanted and c.valid_to is None
         }
 
+    def fetch_active_curves_batch_at(
+        self, station_ids: list[StationId], at: UtcDatetime
+    ) -> dict[StationId, RatingCurve]:
+        wanted = set(station_ids)
+        out: dict[StationId, RatingCurve] = {}
+        for c in sorted(self._curves.values(), key=lambda c: c.valid_from):
+            if (
+                c.station_id in wanted
+                and c.valid_from <= at
+                and (c.valid_to is None or at < c.valid_to)
+            ):
+                out[c.station_id] = c  # last-wins: latest valid_from
+        return out
+
 
 class FakeFlowRegimeConfigStore:
     def __init__(self) -> None:

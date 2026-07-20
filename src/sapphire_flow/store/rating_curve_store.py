@@ -126,6 +126,35 @@ class PgRatingCurveStore:
         curves = [_row_to_curve(row) for row in rows]
         return {c.station_id: c for c in curves}
 
+    def fetch_active_curves_batch_at(
+        self, station_ids: list[StationId], at: UtcDatetime
+    ) -> dict[StationId, RatingCurve]:
+        if not station_ids:
+            return {}
+        rows = (
+            self._conn.execute(
+                sa.select(rating_curves)
+                .where(
+                    sa.and_(
+                        rating_curves.c.station_id.in_(station_ids),
+                        # Curve active at `at`: valid_from <= at < valid_to
+                        # (valid_to NULL = unbounded). Mirrors fetch_curve_at.
+                        rating_curves.c.valid_from <= at,
+                        sa.or_(
+                            rating_curves.c.valid_to.is_(None),
+                            rating_curves.c.valid_to > at,
+                        ),
+                    )
+                )
+                # Deterministic last-wins per station if curves ever overlap:
+                # the latest valid_from is applied last.
+                .order_by(rating_curves.c.valid_from)
+            )
+            .mappings()
+            .all()
+        )
+        return {(c := _row_to_curve(row)).station_id: c for row in rows}
+
 
 def _row_to_curve(row: sa.engine.row.RowMapping) -> RatingCurve:
     return RatingCurve(

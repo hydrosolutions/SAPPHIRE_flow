@@ -290,3 +290,60 @@ class TestFetchActiveCurvesBatch:
     def test_empty_input_returns_empty_dict(self, db_connection: sa.Connection) -> None:
         store = PgRatingCurveStore(db_connection)
         assert store.fetch_active_curves_batch([]) == {}
+
+
+class TestFetchActiveCurvesBatchAt:
+    def test_returns_curve_active_at_timestamp_not_currently_active(
+        self, db_connection: sa.Connection
+    ) -> None:
+        # Discriminates issued_at-aware lookup from currently-active: at an old
+        # timestamp it must return the OLD curve, not the current one.
+        station_id = _seed_station(db_connection)
+        store = PgRatingCurveStore(db_connection)
+        old = _make_curve(
+            station_id=station_id,
+            version=1,
+            valid_from=_NOW,
+            valid_to=_NOW + timedelta(days=10),
+        )
+        new = _make_curve(
+            station_id=station_id,
+            version=2,
+            valid_from=_NOW + timedelta(days=10),
+            valid_to=None,
+        )
+        store.store_rating_curve(old)
+        store.store_rating_curve(new)
+
+        at_old = store.fetch_active_curves_batch_at(
+            [station_id], _NOW + timedelta(days=5)
+        )
+        assert at_old[station_id].id == old.id
+
+        at_new = store.fetch_active_curves_batch_at(
+            [station_id], _NOW + timedelta(days=20)
+        )
+        assert at_new[station_id].id == new.id
+
+        # currently-active (batch) would return the new curve at the old time —
+        # proving the two methods genuinely differ.
+        currently = store.fetch_active_curves_batch([station_id])
+        assert currently[station_id].id == new.id
+
+    def test_excludes_stations_with_no_curve_active_at_time(
+        self, db_connection: sa.Connection
+    ) -> None:
+        station_id = _seed_station(db_connection)
+        store = PgRatingCurveStore(db_connection)
+        store.store_rating_curve(
+            _make_curve(station_id=station_id, valid_from=_NOW, valid_to=None)
+        )
+        # Before any curve is valid → station absent from the result.
+        result = store.fetch_active_curves_batch_at(
+            [station_id], _NOW - timedelta(days=1)
+        )
+        assert result == {}
+
+    def test_empty_input_returns_empty_dict(self, db_connection: sa.Connection) -> None:
+        store = PgRatingCurveStore(db_connection)
+        assert store.fetch_active_curves_batch_at([], _NOW) == {}

@@ -1,9 +1,9 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-07-19
 plan: 129
 title: Continuous precipitation knit (RhiresD → RprelimD → NWP) + a regression model that consumes it (Swiss staging test)
-scope: Prove the RprelimD live-tail knits a CONTINUOUS precipitation series from the definitive past (RhiresD) through the preliminary recent past (RprelimD) into the NWP forecast, and that a model can consume that continuum. Adds an FI-native regression model (past discharge + season + continuous precip) and a coarse unit-error seam gate; tests end-to-end on the mac-mini Swiss deployment. Temporal seam only — no value-consistency / bias correction yet (deferred).
+scope: Prove the RprelimD live-tail knits a CONTINUOUS precipitation series from the definitive past (RhiresD) through the preliminary recent past (RprelimD) into the NWP forecast, and that a model consumes that continuum end-to-end on the mac-mini Swiss deployment. Adds an FI-native regression model (past discharge + season + continuous precip) that is onboarded/trained/promoted, and a coarse unit-error seam gate run as a T1 diagnostic over raw provenance-bearing rows. Temporal seam only — no value-consistency / bias correction (deferred); RprelimD→RhiresD supersession deferred.
 depends_on: [128]
 ---
 
@@ -11,92 +11,106 @@ depends_on: [128]
 
 ## What this is
 
-RprelimD is the **temporal knit** that makes precipitation *continuous* across the whole timeline a model
-sees:
+RprelimD is the **temporal knit** that makes precipitation *continuous* across the timeline a model sees:
 
 ```
  RhiresD (definitive, deep past)  →  RprelimD (recent past — fills RhiresD's ~45-day lag up to issue-time)  →  NWP (forecast, future)
  └──────────────── reanalysis (past_dynamic precip) ───────────────┘                                          └──── NWP (future precip) ────┘
 ```
 
-The point to prove is **not** "RprelimD gets read" (Plan 128 makes the rows land) but that a model receives
-**one continuous precipitation series from deep past through the forecast horizon, with no temporal gap at
-the two seams** (RhiresD→RprelimD and RprelimD→NWP), and forecasts from it. This is the classic
-rainfall-runoff need: continuous antecedent precipitation feeding the forecast.
+The point to prove is that a model receives **one continuous precipitation series from deep past through the
+forecast horizon, with no temporal gap at the two seams** (RhiresD→RprelimD, RprelimD→NWP), and forecasts
+from it — the classic rainfall-runoff need for continuous antecedent precipitation.
 
-**Load-bearing design point (owner: confirm).** For this to exercise RprelimD at all, the model's
+**Design premise (established — the whole design rests on it).** For this to exercise RprelimD, the model's
 precipitation input must include the **past/recent** portion — the reanalysis series RprelimD gap-fills up to
 issue-time — **not just the future NWP forecast.** A model consuming only forecast rainfall never touches
-RprelimD (that is exactly what `nwp_regression` does today, `models/nwp_regression.py:126-143`). So the
-model's precip is designed as **one continuous covariate spanning past-reanalysis → future-NWP, with the past
-channel being the RprelimD-consuming one.**
+RprelimD (that is exactly `nwp_regression` today, `models/nwp_regression.py:126-143`). So the model's precip
+is **one continuous covariate spanning past-reanalysis → future-NWP, with the past channel being the
+RprelimD-consuming one.**
 
 ## Owner decisions (grill-me, confirmed 2026-07-19)
 
-1. **Seam first, no value-consistency handling.** Build the temporal knit only. **No** cross-product bias
-   correction / reconciliation between preliminary RprelimD, definitive RhiresD, and NWP forecast in v1 —
-   that is a later addition. The FI already hands the model a past array (reanalysis) and a future array
-   (NWP) joined at issue-time; the "seam" is that RprelimD closes the temporal gap so the past array reaches
-   issue-time and meets the NWP future. **No new stitching engine — continuity is achieved by RprelimD
-   coverage and verified/gated, not reconciled.**
-2. **Coarse, high-tolerance seam gate (unit-error catcher, NOT statistical).** With ~3 forecast days there is
-   nothing to do statistics on. The gate is a **units/scale sanity check** at each seam — it must catch a
-   unit error (mm vs m ≈ 1000×; per-hour vs per-day ≈ 24×) but must **never** fail on a legitimate
-   meteorological difference (a forecast rain event that RprelimD does not have). So: check both sides are in
-   a plausible **mm/day scale** (window magnitude, e.g. medians/maxima — not point values), flag only an
-   order-of-magnitude / systematic offset. Threshold set high; exact value is a small remaining decision.
-3. **Model = a regression forecast** taking **past runoff (discharge, autoregressive) + season + rainfall**,
-   where *rainfall* is the **continuous precip series** (past reanalysis RhiresD/RprelimD-filled + future NWP
-   forecast). FI-native. See Design.
-4. **RprelimD→RhiresD supersession is OUT OF SCOPE** (RprelimD is preliminary and gets superseded by
-   definitive RhiresD ~45 days later via the `historical_forcing.version` column) — a **follow-up plan**, not
-   tested here.
+1. **Seam first, no value-consistency handling.** Temporal knit only — no cross-product bias correction
+   between preliminary RprelimD, definitive RhiresD, and NWP forecast in v1. The FI already hands the model a
+   past array (reanalysis) and a future array (NWP) joined at issue-time; the "seam" is that RprelimD closes
+   the temporal gap so the past array reaches issue-time. **No new stitching engine.**
+2. **Coarse, high-tolerance seam gate as a T1-only DIAGNOSTIC (not a production safeguard).** It runs during
+   the staging test over the **raw provenance-bearing rows** and is **not** wired into operational assembly.
+   It is a units/scale sanity check — catch a unit error (mm vs m ≈ 1000×; per-hour vs per-day ≈ 24×), never
+   fail on a legitimate meteorological difference (a forecast rain event RprelimD lacks). Wiring it into every
+   forecast is a **follow-up**, out of scope.
+3. **Model = a regression forecast** on **past runoff (discharge lags) + season + continuous precip** (past
+   reanalysis RhiresD/RprelimD-filled + future NWP), extending the existing FI regression base. See Design.
+4. **RprelimD→RhiresD supersession OUT OF SCOPE** (preliminary superseded by definitive ~45 days later via
+   `historical_forcing.version`) — a follow-up.
+5. **Train + promote in the test.** Run-only is not viable — `_run_single_model` fetches an **active
+   artifact** before predicting and skips otherwise (`services/run_station_forecast.py:152`). So T1 onboards,
+   trains, and promotes the model before the forecast.
 
 ## Design
 
-### The consuming model (FI-compliant regression)
+### The consuming model (FI-compliant regression) — task M1
 
-A new FI model (working name `seasonal_precip_runoff_regression`) predicting discharge, declaring:
+A new FI model (working name `seasonal_precip_runoff_regression`) that **extends the existing
+`_NwpRegressionBase`** (`models/nwp_regression.py`), predicting discharge. Its declared inputs:
 
-- **`past_known` `obs/discharge`** — the target's own antecedent history (autoregressive "past runoff").
-  Available to the model even though the FI adapter strips the *target's* history from `past_dynamic_features`
-  (`adapters/forecast_interface.py:505-511`).
-- **`past_known` `reanalysis/precipitation`** (non-target) → the FI projects it into **`past_dynamic_features`**
-  (`forecast_interface.py:505-511`), which drives `fetch_reanalysis(parameters=["precipitation"], …)` in both
-  training (`services/training_data.py:186-191`) and operational assembly
-  (`services/operational_inputs.py:404-410`) → the **hybrid RhiresD/RprelimD chain**. **This is the
-  RprelimD-consuming channel.**
-- **`future_known` `nwp/precipitation`** — the NWP forecast precip over the horizon (as `nwp_regression`
-  already declares, `models/nwp_regression.py:126-143`).
-- **Season** — a derived temporal feature the model computes from `valid_time` (e.g. day-of-year / a season
-  encoding); no data fetch.
+- **`past_known` `obs/discharge`** — the target's antecedent history (autoregressive "past runoff"), as the
+  base already declares. (The FI adapter strips the *target's* history from `past_dynamic_features`,
+  `adapters/forecast_interface.py:505-511` — so this does not drive a reanalysis fetch; it is the model's own
+  lag feature.)
+- **`future_known` `nwp/precipitation` + `nwp/temperature`** — inherited from the base
+  (`models/nwp_regression.py:126,163,213`). The base is **precip + temp + discharge lags**, not precip-only —
+  the new model keeps both future NWP channels.
+- **NEW — `past_known` `reanalysis/precipitation`** (non-target) → the FI projects it into
+  **`past_dynamic_features`** (`forecast_interface.py:505-511`), which drives
+  `fetch_reanalysis(parameters=["precipitation"], …)` in training (`services/training_data.py:186-191`) and
+  operational assembly (`services/operational_inputs.py:404-410`) → the **hybrid RhiresD/RprelimD chain**.
+  **This is the RprelimD-consuming channel.**
+- **Season** — a derived temporal feature from `valid_time` (encoding TBD — small residual); no data fetch.
 
-At forecast time the model therefore sees precipitation as: past reanalysis precip up to issue-time
-(RhiresD deep + **RprelimD** recent) **concatenated with** future NWP precip — a continuous series. The
-lookback must reach into the RhiresD-lag window so the past-precip fetch is genuinely RprelimD-served
-(lookback length is a small remaining decision; it must overlap the ~45-day RprelimD tail).
+The model therefore sees precipitation as past reanalysis (RhiresD deep + **RprelimD** recent, up to
+issue-time) concatenated with future NWP precip — continuous. Its lookback must overlap the ~45-day RprelimD
+tail so the past-precip fetch is genuinely RprelimD-served (lookback length is a small residual).
 
-### The seam-continuity gate
+**FI anticipated-failure contract (split per the two distinct code paths — CLAUDE.md §FI):**
+- **SHORT / short-shaped past-precip window** (fewer rows than the declared lookback, no explicit NaN):
+  reaches `predict()` via `_raw_forcing_to_dataframe`'s row-count-only pivot
+  (`training_data.py:114-133`, which does not pad missing days) → the model **must length/shape-check and
+  return `ModelFailure`** (mirroring `nwp_regression.py:218-232`), **not raise**.
+- **Explicit NaN in returned rows** → caught **upstream** by the SAP3 `max_nan` gate
+  (`forecast_interface.py:617-626,646-666`), which **raises `ModelOutputError` before the model's `predict()`
+  is entered**. This is the pre-existing adapter-level gate — **NOT** a behaviour M1 implements or M2 asserts
+  `predict()` handles by returning. The plan documents it as the existing path; it does not build it.
 
-A coarse check (per owner decision 2) run over the assembled continuous series at the two boundaries:
+**Registration (do not skip — `onboard-model` only accepts discovered models):** add the model's
+`pyproject.toml` entry point (so `discover_models()` finds it, `flows/onboard_model.py:610`,
+`services/model_registry.py:78`, `pyproject.toml:137`), plus its tier / alert-eligibility classification
+(class attrs / registry, `types/ids.py:28`) and config-reference priority.
 
-- **RhiresD → RprelimD** (inside the past reanalysis series): both are MeteoSwiss daily precip in mm/day —
-  the gate guards against a future unit/scale regression at the product handoff, not value agreement.
-- **RprelimD → NWP** (past reanalysis → future forecast): the last RprelimD day and first NWP day must be in
-  the same mm/day scale (catch an ICON precip unit/accumulation error), tolerating event differences.
+### The seam-continuity gate — task S1 (T1-only diagnostic, on RAW rows)
+
+A coarse units/scale check (owner decision 2) invoked **only by the T1 staging check**, over the **raw
+`RawHistoricalForcing` rows** (which carry `.source`) and the raw NWP rows — **before** any pivot, because
+`_raw_forcing_to_dataframe` keeps only timestamp + values and **drops `source`**
+(`operational_inputs.py:236`, `training_data.py:114`), so the seams are not locatable in the assembled frame.
+
+- **RhiresD → RprelimD** (within the reanalysis rows): both are MeteoSwiss daily precip in mm/day — the gate
+  guards against a unit/scale regression at the product handoff, not value agreement.
+- **RprelimD → NWP** (reanalysis vs NWP rows): the last RprelimD day and first NWP day must be in the same
+  mm/day scale (catch an ICON precip unit/accumulation error), tolerating event differences.
 
 Implementation: a units/scale sanity function over a window around each seam (plausible mm/day bounds + no
-systematic order-of-magnitude offset in window magnitude), returning pass / unit-error-flag. **Not** a
-per-day value-agreement or statistical-consistency test. Where it lives (a small validation util reused by
-the staging check vs a model-internal guard) is a remaining decision.
+systematic order-of-magnitude offset in window magnitude) → pass / unit-error-flag. **Not** a per-day
+value-agreement or statistical test. **Not wired into operational assembly** (owner decision 2 — follow-up).
 
 ### What is NOT changed (already correct — a change here would be a regression)
 
-- **Read path** — per-day RhiresD→RprelimD fallback in `HybridForcingSource.fetch_reanalysis`
-  (`hybrid_reanalysis.py:87-99`) already returns RprelimD for recent days once its rows exist.
+- **Read path** — per-day RhiresD→RprelimD fallback (`hybrid_reanalysis.py:87-99`) already returns RprelimD
+  for recent days once its rows exist.
 - **Operational forecast fetch window** — `assemble_station_operational_inputs` already fetches
-  `[issue−lookback, issue)` up to ~now (`operational_inputs.py:346,403-410`); it only fires when
-  `past_dynamic_features` is non-empty, which the new model provides.
+  `[issue−lookback, issue)` up to ~now (`operational_inputs.py:346,403-410`); it fires once
+  `past_dynamic_features` is non-empty (which M1 provides).
 - **RprelimD write path** — fixed in Plan 128 (this plan depends on it).
 
 ## Prerequisites / gates
@@ -110,55 +124,60 @@ the staging check vs a model-internal guard) is a remaining decision.
 
 ## Tasks
 
-- **M1 — the consuming FI model** (`seasonal_precip_runoff_regression`): declare `past_known obs/discharge`
-  + `past_known reanalysis/precipitation` (→ `past_dynamic_features`) + `future_known nwp/precipitation`;
-  a season feature; a regression fit. FI-compliant (no contract deviation — past inputs declared the FI-native
-  way). Register via `onboard-model`.
-- **M2 — model tests:** the model's projected `past_dynamic_features` contains `precipitation` (routed, not
-  stripped as a target); training + operational assembly each issue a `fetch_reanalysis(parameters=
-  ["precipitation"], …)` for it. *Soundness: fails against a model whose `past_dynamic_features` is empty
-  (i.e. the current NWP-only behaviour).*
-- **S1 — the seam-continuity gate** (coarse, high-tolerance units/scale check per owner decision 2) at the
-  RhiresD→RprelimD and RprelimD→NWP boundaries.
+- **M1 — the consuming FI model** (`seasonal_precip_runoff_regression`): extend `_NwpRegressionBase`; keep
+  future NWP precip+temp + discharge lags; **add `past_known reanalysis/precipitation`** (→
+  `past_dynamic_features`); add a season feature; SHORT-window `predict()` returns `ModelFailure` (NaN path is
+  the pre-existing upstream `max_nan` raise — not built here). **Register**: `pyproject.toml` entry point +
+  tier/alert classification + config priority.
+- **M2 — model tests:** assert **`precipitation ∈ adapter.data_requirements.past_dynamic_features`** AND the
+  assembled `StationTrainingData.past_dynamic` (and operational `past_dynamic`) **contains precipitation**
+  (not merely "a fetch happened" — NWP-only models already fetch precip for future teacher-forcing). Plus:
+  the SHORT-window `predict()` returns `ModelFailure` (the NaN path is out of M1/M2 scope — it is the existing
+  adapter gate). *Soundness: fails against a model whose `past_dynamic_features` is empty (today's NWP-only
+  behaviour) and against a short-window `predict()` that raises instead of returning.*
+- **S1 — the seam gate** (coarse units/scale check, T1-diagnostic) over **raw** reanalysis + NWP rows at the
+  RhiresD→RprelimD and RprelimD→NWP seams. Not wired into operational assembly.
 - **S2 — seam-gate tests:** a mm-vs-m (1000×) and per-hour-vs-per-day (24×) unit error at a seam is FLAGGED;
-  a legitimate forecast rain event that RprelimD lacks is **NOT** flagged. *Soundness: the unit-error cases
-  fail against a no-op gate; the met-difference case fails against a point-value-agreement gate (proves the
-  gate is coarse, not statistical).*
-- **T1 — staging consumption test (mac-mini):** deploy → verify bindings/basins + assign the model → confirm
-  the recent RprelimD tail is present (Plan 128) → run `forecast-cycle` → verify the model consumed a
-  continuous precip series: `forcing.source_selected`/`resolution_completed` logs show
-  `winning_source=meteoswiss-rprelimd` on recent days (`hybrid_reanalysis.py:116-134`), the past-precip array
-  reaches issue-time and meets the NWP future precip (no gap), the seam gate passes, and the forecast
-  completes. Record RprelimD row counts + per-source counts.
-- **D1 — doc sync:** the continuous-precip knit + the new model + the seam gate in the model/forcing docs and
-  the weather-track references.
+  a legitimate forecast rain event RprelimD lacks is **NOT** flagged. *Soundness: the unit-error cases fail
+  against a no-op gate; the met-difference case fails against a point-value-agreement gate.*
+- **T1 — staging consumption test (mac-mini):** deploy → verify bindings/basins → **onboard + train + promote**
+  the model (owner decision 5; run-only not viable) → confirm the recent RprelimD tail is present (Plan 128)
+  → run `forecast-cycle` → **verify via DB, not debug logs**: `historical_forcing` rows with
+  `source='meteoswiss_rprelimd'` (the correct literal, `types/forcing_sources.py:26`) are present in the
+  consumed recent window and the `resolution_completed` `source_counts` (INFO-level) show RprelimD; the
+  past-precip array reaches issue-time and meets the NWP future precip (no gap); the **S1 seam gate passes on
+  the raw rows**; the forecast completes. Record RprelimD counts + per-source counts. *(If a per-day
+  `winning_source` breakdown is wanted, set a targeted DEBUG override for the run — the default is INFO,
+  `logging.py:56`.)*
+- **D1 — doc sync:** the continuous-precip knit + the new model + the T1-diagnostic seam gate in the
+  model/forcing docs + the weather-track references.
 
-## Remaining grill-me (before READY)
+## Grill-me — resolved 2026-07-19
 
-- **Seam threshold value** — the exact high-tolerance number for the units/scale gate (decision 2 fixes the
-  *shape*; the number remains).
-- **Model lookback length** — must overlap the RprelimD tail; pick a concrete value (and season encoding).
-- **Train + skill-score, or run-only?** For a *first* consumption test, is an untrained/trivially-fit
-  regression enough to exercise the continuum, or do we train + skill-score it (`train-models` /
-  `compute-skills`)?
-- **Seam-gate home** — a reusable validation util (like the 115b3 gate) vs a model-internal guard.
+- Seam-gate home → **T1-only diagnostic on raw rows** (owner). Train/run → **train + promote** (owner;
+  forced by the active-artifact requirement). Seam-first / no bias correction; supersession deferred (owner).
+- **Residual (small, implementation-level — not blocking the design):** the seam-gate threshold value; the
+  model's lookback length + season encoding. Fixed at implementation.
 
 ## Tests
 
-- **M2 model projection + reanalysis fetch** (above).
-- **S2 seam-gate coarseness** (above) — unit errors flagged, met differences tolerated.
+- **M2 model projection + past-precip routing** — `precipitation ∈ past_dynamic_features` and assembled
+  `past_dynamic` contains precipitation (training + operational). SHORT-window `predict()` returns
+  `ModelFailure`.
+- **S2 seam-gate coarseness** — unit errors flagged, met differences tolerated.
 - **Continuous-series assembly** — with RprelimD rows present, the operational past-precip fetch reaches
   issue-time (no gap before the NWP future precip). *Soundness: fails if the past array stops at the RhiresD
-  boundary (i.e. RprelimD not consumed).*
-- **T1 staging consumption gate** — RprelimD consumed on the mini, seam gate passes, forecast completes.
-  *Must fail against a model that consumes only future NWP precip (RprelimD untouched).*
+  boundary (RprelimD not consumed).*
+- **T1 staging consumption gate** — RprelimD consumed on the mini (DB `source='meteoswiss_rprelimd'` +
+  INFO `source_counts`), seam gate passes on raw rows, trained model forecasts complete. *Must fail against a
+  model that consumes only future NWP precip (RprelimD untouched).*
 
 ## Exit gates
 
 ```bash
 uv run ruff check src/ tests/ && uv run ruff format --check src/ tests/
 uv run pyright src/            # ratchet vs baseline
-uv run pytest                  # incl. M2 + S2 + continuous-series assembly
+uv run pytest                  # incl. M2 (past-precip routing + short-window ModelFailure) + S2 + assembly
 ```
 Plus the T1 staging consumption gate on the mini.
 
@@ -169,7 +188,7 @@ Plus the T1 staging consumption gate on the mini.
   "phases": [
     {
       "id": "phase-1",
-      "name": "Consuming model + seam gate",
+      "name": "Consuming model + seam-gate diagnostic",
       "tasks": ["M1-consuming-model", "M2-model-tests", "S1-seam-gate", "S2-seam-gate-tests", "D1-doc-sync"],
       "parallel": false,
       "task_depends_on": {
@@ -177,12 +196,12 @@ Plus the T1 staging consumption gate on the mini.
         "S2-seam-gate-tests": ["S1-seam-gate"],
         "D1-doc-sync": ["M1-consuming-model", "S1-seam-gate"]
       },
-      "note": "M (model) and S (seam gate) are independent; both land before the staging test. M1 declares reanalysis/precipitation as a non-target past_known (FI-native) — the RprelimD-consuming channel. No read-path / forecast-fetch changes (already correct).",
+      "note": "M1 extends _NwpRegressionBase (keeps future NWP precip+temp+lags) and ADDS reanalysis/precipitation as a non-target past_known (FI-native) — the RprelimD channel; also registers the entry point + tier/alert classification. S1 is a T1-only diagnostic over RAW provenance-bearing rows (the pivot drops source). FI NaN path is the pre-existing upstream max_nan raise, not built here. No read-path / forecast-fetch changes.",
       "depends_on": []
     },
     {
       "id": "phase-2",
-      "name": "Staging consumption test (mac-mini)",
+      "name": "Staging consumption test (mac-mini) — onboard + train + promote + forecast",
       "tasks": ["T1-staging-consumption"],
       "parallel": false,
       "depends_on": ["phase-1"]
@@ -194,9 +213,15 @@ Plus the T1 staging consumption gate on the mini.
 ## Provenance
 
 Split from Plan 128 on the owner reframe (2026-07-19): RprelimD is the temporal knit giving a continuous
-precip series past→forecast, and testing a model's consumption of that continuum is a richer design than the
-adapter fix. Grill-me owner-decided 2026-07-19 (seam-first / no bias correction; coarse high-tolerance
-unit-error seam gate; a past-runoff + season + continuous-rainfall regression; supersession deferred). DRAFT
-— `plan` workflow (incl. independent Codex) + the remaining grill-me before READY. Depends on Plan 128
-(RprelimD rows must be written first). Relates to the 115b weather-identity track and the FI adherence
-contract (the model declares past reanalysis precip the FI-native way).
+precip series past→forecast. Grill-me owner-decided 2026-07-19 (seam-first/no bias; coarse high-tolerance
+unit-error seam gate as a **T1-only diagnostic on raw rows**; a past-runoff + season + continuous-rainfall
+regression **onboarded/trained/promoted**; supersession deferred). A `plan`-workflow run (2026-07-19)
+escalated with **legitimate, code-grounded findings** (unlike the 128 run's bloat) — all folded: the seam
+gate must read raw provenance rows (the pivot drops `source`); the FI NaN path raises upstream (only the
+SHORT-window path is the model's `ModelFailure` to return); M2 must assert past-precip routing specifically;
+registration needs the entry point + tier/alert classification; T1 must verify via DB not debug logs and use
+the `meteoswiss_rprelimd` literal; run-only is not viable (train+promote required); the base already declares
+temperature. A confirming independent Codex review (2026-07-19) then verified every fold sound + citations
+accurate — clean, no blockers/majors/minors. **READY (owner + confirming review, 2026-07-19).** Build via
+`implement` after Plan 128 lands; hold-at-PR. Depends on Plan 128. Relates to the 115b weather-identity track
+and the FI adherence contract.

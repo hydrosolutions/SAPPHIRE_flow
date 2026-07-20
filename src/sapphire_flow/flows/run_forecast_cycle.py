@@ -75,6 +75,7 @@ if TYPE_CHECKING:
         ModelStateStore,
         NwpGridStore,
         ObservationStore,
+        RatingCurveStore,
         StationGroupStore,
         StationStore,
         WeatherForecastStore,
@@ -83,10 +84,41 @@ if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.domain import ForecastQcRuleSet
     from sapphire_flow.types.ensemble import ForecastEnsemble
+    from sapphire_flow.types.forecast import OperationalForecast
     from sapphire_flow.types.ids import StationId
+    from sapphire_flow.types.rating_curve import RatingCurve
     from sapphire_flow.types.station import StationConfig, StationWeatherSource
 
 log = structlog.get_logger(__name__)
+
+
+def _bind_rating_curve(
+    fc: OperationalForecast,
+    active_curves: dict[StationId, RatingCurve] | None,
+) -> OperationalForecast:
+    """Bind the station's rating curve (active at the forecast's issue time) to a
+    forecast before storage (Plan 035 Task 4). ``active_curves`` is ``None`` when
+    the feature is off (no ``rating_curve_store`` injected, e.g. v0) — a pure
+    no-op with no logging. An empty dict means the feature is on but the station
+    reports discharge directly (no curve)."""
+    if active_curves is None:
+        return fc
+    curve = active_curves.get(fc.station_id)
+    if curve is None:
+        log.debug(
+            "rating_curve.bind_skipped",
+            station_id=str(fc.station_id),
+            forecast_id=str(fc.id),
+        )
+        return fc
+    log.info(
+        "rating_curve.bound",
+        station_id=str(fc.station_id),
+        forecast_id=str(fc.id),
+        rating_curve_id=str(curve.id),
+    )
+    return replace(fc, rating_curve_id=curve.id)
+
 
 # = MeteoSwissNwpAdapter.NWP_SOURCE. Used only by the grid-staleness check
 # below — NOT a selection fallback (that heuristic was retired; forecast-source
@@ -1220,6 +1252,10 @@ def run_forecast_cycle_flow(
     # Plan 082 Task 2D: injectable recap-dg-client RecapClient, for tests.
     # None on the production path constructs a real RecapClient from config.
     recap_client: object | None = None,
+    # Plan 035 Task 4: optional rating-curve store. When None (v0 — callers omit
+    # it, and the production bootstrap does not inject it) forecast curve-binding
+    # is a pure no-op. A v1 caller passes a RatingCurveStore to enable binding.
+    rating_curve_store: object | None = None,
 ) -> ForecastCycleResult:
     flow_t0 = time.perf_counter()
 
@@ -1483,6 +1519,18 @@ def run_forecast_cycle_flow(
         water_level_datums_masl: dict[StationId, float | None] = {
             s.id: s.water_level_datum_masl for s in operational
         }
+
+        # Plan 035 Task 4: one batch lookup of the rating curve active at the
+        # cycle's issue time, indexed by station. None = feature off (no store),
+        # so per-forecast binding at each store site is a pure no-op. Covers both
+        # the per-station and per-group store paths (group members ⊆ operational).
+        active_rating_curves: dict[StationId, RatingCurve] | None = (
+            cast("RatingCurveStore", rating_curve_store).fetch_active_curves_batch_at(
+                [s.id for s in operational], resolved_cycle_time
+            )
+            if rating_curve_store is not None
+            else None
+        )
 
         # Build priority index for alert checker (active-only, Plan 124)
         all_priorities: dict[StationId, dict[ModelId, int]] = {
@@ -1878,6 +1926,7 @@ def run_forecast_cycle_flow(
                         continue
 
                     for fc in fc_result.forecasts:
+                        fc = _bind_rating_curve(fc, active_rating_curves)
                         try:
                             forecast_store.store_forecast(fc)  # type: ignore[union-attr]
                             forecasts_stored += 1
@@ -1950,6 +1999,7 @@ def run_forecast_cycle_flow(
                     # Store all individual model forecasts
                     for mid, result in multi_result.results.items():
                         for fc in result.forecasts:
+                            fc = _bind_rating_curve(fc, active_rating_curves)
                             try:
                                 forecast_store.store_forecast(fc)  # type: ignore[union-attr]
                                 forecasts_stored += 1
@@ -1989,6 +2039,7 @@ def run_forecast_cycle_flow(
                     )
                     if combined_forecasts:
                         for fc in combined_forecasts:
+                            fc = _bind_rating_curve(fc, active_rating_curves)
                             try:
                                 forecast_store.store_forecast(fc)  # type: ignore[union-attr]
                                 forecasts_stored += 1
@@ -2197,6 +2248,7 @@ def run_forecast_cycle_flow(
 
                     for sid, result in group_results.items():
                         for fc in result.forecasts:
+                            fc = _bind_rating_curve(fc, active_rating_curves)
                             try:
                                 forecast_store.store_forecast(fc)  # type: ignore[union-attr]
                                 forecasts_stored += 1
