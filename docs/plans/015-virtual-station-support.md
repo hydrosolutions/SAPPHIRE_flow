@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-03-30
 updated: 2026-07-20
 # RE-DRAFT 2026-07-20 (grill-me owner-resolved): narrowed to CALCULATED (component-
