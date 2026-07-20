@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-07-20
 plan: 131
 title: level→discharge (h→Q) conversion service
@@ -8,7 +8,7 @@ scope: v1 — the pure rating-curve conversion service. The reprocess flow (Flow
 
 # Plan 131 — level→discharge (h→Q) conversion service
 
-**Status**: DRAFT
+**Status**: READY
 **Depends on**: Plan 035 Task 1 (`RatingCurve` + `RatingCurveStore`, #100) — MERGED. Adopts
 the DHM `RT_*.txt` template + provisional conversion policies documented in Plan 035 §1a.
 **Consumed by (future, out of scope here)**: the level→discharge-**at-ingest** producer
