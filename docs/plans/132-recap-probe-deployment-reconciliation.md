@@ -1,14 +1,14 @@
 ---
 status: READY
 created: 2026-07-20
-plan: 130
+plan: 132
 title: Reconcile the recap-probe repo artifacts with the container-exec deployment
 scope: Bring scripts/plist/runbook in line with what is actually running on the mac mini. No probe-logic change.
 depends_on: []
 blocks: []
 ---
 
-# Plan 130 — recap-probe deployment reconciliation
+# Plan 132 — recap-probe deployment reconciliation
 
 ## Status
 
