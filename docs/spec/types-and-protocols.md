@@ -728,7 +728,7 @@ class RawObservation:
     timestamp: UtcDatetime
     parameter: str                 # canonical name
     value: float
-    source: ObservationSource      # measured | rating_curve_derived | manual_import
+    source: ObservationSource      # measured | rating_curve_derived | manual_import | component_derived
     rating_curve_id: RatingCurveId | None = None  # v1 — set when source = RATING_CURVE_DERIVED. Omit from v0 DB schema.
     rating_curve_correction_version: str | None = None  # v1 — correction param version. Omit from v0 DB schema.
 
@@ -739,7 +739,7 @@ class Observation:
     timestamp: UtcDatetime
     parameter: str
     value: float | None            # None when qc_status is MISSING (explicit gap record)
-    source: ObservationSource      # measured | rating_curve_derived | manual_import
+    source: ObservationSource      # measured | rating_curve_derived | manual_import | component_derived
     rating_curve_id: RatingCurveId | None  # v1 — set when source = RATING_CURVE_DERIVED. Omit from v0 DB schema.
     rating_curve_correction_version: str | None  # v1 — correction param version. Omit from v0 DB schema.
     qc_status: QcStatus
@@ -1429,6 +1429,7 @@ class OperationalForecast:
     input_quality_flags: tuple[InputQualityFlag, ...] = ()
     combination_strategy: str | None = None        # NULL for individual; "pooled"|"bma"|"consensus" for combined
     source_model_ids: list[ModelId] | None = None  # NULL for individual; contributing model IDs for combined
+    rating_curve_id: RatingCurveId | None = None   # v1 — curve active at issued_at; NULL for direct-discharge stations (Plan 035 Task 2/4)
 
     @property
     def provenance(self) -> ForecastProvenance:  # read-only view over the flat provenance fields
@@ -2498,6 +2499,9 @@ class RatingCurveStore(Protocol):
         # Curves overlapping the half-open [start, end) window (Flow 8/10 epoch queries). Plan 035 Task 1.
     def fetch_active_curves_batch(self, station_ids: list[StationId]) -> dict[StationId, RatingCurve]: ...
         # Active curve (valid_to IS NULL) per station, one query (Flow 1 batch lookup). Plan 035 Task 1.
+    def fetch_active_curves_batch_at(self, station_ids: list[StationId], at: UtcDatetime) -> dict[StationId, RatingCurve]: ...
+        # Curve active AT `at` (valid_from <= at < valid_to) per station — issued-at-aware
+        # binding at forecast storage (Flow 1). Plan 035 Task 4.
 ```
 
 #### ObservationVersionStore

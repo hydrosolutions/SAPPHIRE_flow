@@ -1797,11 +1797,12 @@ forecasts:
   qc_flags: JSONB NOT NULL DEFAULT '[]'       # output QC flag details
   input_quality: TEXT NOT NULL DEFAULT 'full'  # InputQualityLevel: full | partial | degraded
   input_quality_flags: JSONB NOT NULL DEFAULT '[]'::jsonb  # list[InputQualityFlag]
+  rating_curve_id: UUID NULL FK → rating_curves.id  # v1 — curve active at issued_at; NULL for direct-discharge stations (Plan 035 Task 2/4). Composite FK (station_id, rating_curve_id) → rating_curves(station_id, id) keeps it same-station.
   created_at: TIMESTAMPTZ
   updated_at: TIMESTAMPTZ
 ```
 
-Indexes: `(station_id, issued_at DESC)` for latest-forecast queries. `(issued_at DESC, station_id)` for cycle-first queries (Flow 3 dashboard, bulk alert re-checks). Partial unique: `(station_id, model_id, issued_at, parameter) WHERE status != 'superseded'` to prevent duplicate forecasts per cycle.
+Indexes: `(station_id, issued_at DESC)` for latest-forecast queries. `(issued_at DESC, station_id)` for cycle-first queries (Flow 3 dashboard, bulk alert re-checks). Partial unique: `(station_id, model_id, issued_at, parameter) WHERE status != 'superseded'` to prevent duplicate forecasts per cycle. `(rating_curve_id)` for curve→forecast joins (v1).
 
 ### `forecast_values` table
 
@@ -2195,6 +2196,7 @@ ObservationSource enum (Python members → DB values):
 Partitioned yearly by `timestamp`. Indexes:
 - `(station_id, timestamp)` — base index for all observation fetches.
 - `(station_id, source, timestamp)` — for source-filtered queries: Flow 12 Branch A (rating curve reprocessing by station + source + validity period), Flow 12 Branch B/C, and general source-type lookups.
+- Unique `(id, station_id)` (v1) — FK target so `observation_versions` can bind `(observation_id, station_id) → observations(id, station_id)` and DB-trust its denormalised station (Plan 035 Task 3).
 - Partial: `(station_id, timestamp) WHERE qc_status = 'qc_passed'` — optimized for the hot path in Flow 1 step 1.6. ~75% smaller than a full three-column index (excludes raw/failed/suspect rows).
 
 ### Manual observation correction (v1+)
@@ -2226,12 +2228,31 @@ rating_curves:
   valid_from: TIMESTAMPTZ
   valid_to: TIMESTAMPTZ NULL               # NULL = currently active
   points: JSONB                            # list of {"water_level": float, "discharge": float}
-  interpolation: TEXT DEFAULT 'linear'     # "linear" or "log-linear"
+  interpolation: TEXT DEFAULT 'linear'     # InterpolationMethod: "linear" or "log_linear"
   uploaded_by: UUID NULL
   created_at: TIMESTAMPTZ
 ```
 
-Index: `(station_id, valid_from DESC)` for temporal lookup. Partial unique index: `(station_id) WHERE valid_to IS NULL` — enforces at most one active curve per station.
+Index: `(station_id, valid_from DESC)` for temporal lookup. Partial unique index: `(station_id) WHERE valid_to IS NULL` — enforces at most one active curve per station. Unique `(station_id, version)` (monotonic versioning) and `(id, station_id)` — the latter is the FK target that lets observations/forecasts/observation_versions bind a curve *same-station* via a composite FK (Plan 035 Task 2/3).
+
+### `observation_versions` table (v1)
+
+Archives the pre-reprocessing `(value, producing-curve)` of a rating-curve-derived discharge observation before Flow 12 Branch A overwrites it (Plan 035 Task 3). Lightweight — only value + curve refs change on reprocessing.
+
+```
+observation_versions:
+  id: UUID PK
+  observation_id: UUID NOT NULL            # FK (observation_id, station_id) → observations(id, station_id)
+  station_id: UUID NOT NULL                # denormalised; DB-trusted via the composite FK above
+  timestamp: TIMESTAMPTZ NOT NULL
+  parameter: TEXT NOT NULL
+  value: DOUBLE PRECISION NULL             # NULL if the superseded observation was MISSING
+  rating_curve_id: UUID NOT NULL           # curve that produced the archived value
+  superseded_at: TIMESTAMPTZ NOT NULL DEFAULT now()
+  superseded_by_curve_id: UUID NOT NULL    # curve that replaced it
+```
+
+Unique `(observation_id, rating_curve_id)` — one archive row per producing-curve, making archival idempotent (`ON CONFLICT DO NOTHING`). Composite FKs `(station_id, rating_curve_id)` and `(station_id, superseded_by_curve_id)` → `rating_curves(station_id, id)` keep both curves same-station. Index `(station_id, parameter, timestamp, rating_curve_id)` for epoch-matched lookups.
 
 ---
 

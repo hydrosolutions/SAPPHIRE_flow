@@ -312,7 +312,7 @@ for logging and notification.
 | User | Permissions |
 |------|-------------|
 | `sapphire_api` | SELECT all (incl. parameters, weather_forecasts, dead_letter_queue *(v1)*, station_weather_sources); INSERT/UPDATE on forecast_adjustments *(v1)*, bulletins *(v1)*, alerts, forecasts (status+version), access_tokens *(v1)*, users *(v1)*, refresh_tokens *(v1)*; UPDATE `last_used_at` on access_tokens (API middleware); INSERT only on audit_log *(v1)* (append-only) |
-| `sapphire_worker` | SELECT on stations, parameters, station_weather_sources, station_groups, station_group_members, rating_curves; SELECT/INSERT/UPDATE on observations, forecasts, forecast_values, alerts, skill_scores, weather_forecasts, model_artifacts, dead_letter_queue *(v1)*; SELECT/INSERT on hindcast_forecasts, hindcast_values, pipeline_health, observation_versions *(v1)* |
+| `sapphire_worker` | SELECT on stations, parameters, station_weather_sources, station_groups, station_group_members, rating_curves; SELECT/INSERT/UPDATE on observations, forecasts, forecast_values, alerts, skill_scores, skill_diagrams, weather_forecasts, model_artifacts, dead_letter_queue *(v1)*; SELECT/INSERT on hindcast_forecasts, hindcast_values, pipeline_health, observation_versions *(v1)* |
 | `sapphire_prefect` | Full access to `prefect` database only |
 
 ---

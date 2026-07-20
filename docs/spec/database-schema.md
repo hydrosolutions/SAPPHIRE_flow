@@ -18,7 +18,7 @@ no forecast adjustments, no DLQ, no cold storage. See `v0-scope.md` §A–C for 
 - `skill_scores.model_artifact_id` and `skill_diagrams.model_artifact_id`: nullable (`UUID NULL`) — combined-model skill rows use `NULL` (v0b, Plan 026)
 - `models.artifact_scope`: CHECK constraint includes `'virtual'` for sentinel combination models (`_pooled`, `_bma`, `_consensus`) (v0b, Plan 026)
 - No table partitioning anywhere
-- 9 tables removed entirely (see "Not in v0" below)
+- 8 tables removed entirely (see "Not in v0" below)
 
 ```mermaid
 erDiagram
@@ -455,11 +455,12 @@ erDiagram
 `v0-scope.md` §C lists 23 tables (including alerts and pipeline_health) — the count depends on whether `alerts` + `pipeline_health`
 are included (alerting is optional in v0, controlled by per-source alert flags (see v0-scope.md §A8c)).
 
-### Not in v0 (7 tables added in v1)
+### Not in v0 (8 tables added in v1)
 
 | Table | Why deferred | Reference |
 |-------|-------------|-----------|
 | `rating_curves` | BAFU provides discharge directly | v0-scope §B |
+| `observation_versions` | Rating-curve reprocessing archive; no rating curves in v0 | Plan 035 Task 3 |
 | `forecast_adjustments` | No dashboard, no forecaster adjustments | v0-scope §A9 |
 | `dead_letter_queue` | No partitioning = no DLQ needed (plan 013: if partitioning is advanced, DLQ must be re-evaluated — see v0-scope §A1 DECISION) | v0-scope §A1 |
 | `users` | Auth deferred to v1 | v0-scope §B |
@@ -469,7 +470,7 @@ are included (alerting is optional in v0, controlled by per-source alert flags (
 
 ---
 
-## Full Schema (31 tables)
+## Full Schema (32 tables)
 
 The complete v1 schema. Adds partitioning, auth, rating curves, forecast adjustments,
 DLQ, and gap recovery fields. See `architecture-context.md` for column details, CHECK
@@ -577,7 +578,7 @@ erDiagram
         TIMESTAMPTZ timestamp "partition key (yearly)"
         TEXT parameter
         DOUBLE_PRECISION value "NULL when missing"
-        TEXT source "measured | rating_curve_derived | manual_import"
+        TEXT source "measured | rating_curve_derived | manual_import | component_derived"
         UUID rating_curve_id FK "NULL"
         TEXT rating_curve_correction_version "NULL"
         TEXT qc_status "raw | qc_passed | qc_failed | qc_suspect | missing"
@@ -593,14 +594,28 @@ erDiagram
         TIMESTAMPTZ valid_from
         TIMESTAMPTZ valid_to "NULL = active"
         JSONB points
-        TEXT interpolation "linear | log-linear"
+        TEXT interpolation "linear | log_linear"
         UUID uploaded_by "NULL"
         TIMESTAMPTZ created_at
+    }
+
+    observation_versions {
+        UUID id PK
+        UUID observation_id FK
+        UUID station_id FK
+        TIMESTAMPTZ timestamp
+        TEXT parameter
+        DOUBLE_PRECISION value "NULL if superseded obs was MISSING"
+        UUID rating_curve_id FK "curve that produced the value"
+        TIMESTAMPTZ superseded_at
+        UUID superseded_by_curve_id FK "curve that replaced it"
     }
 
     stations ||--o{ observations : "station_id"
     stations ||--o{ rating_curves : "station_id"
     rating_curves ||--o{ observations : "rating_curve_id"
+    observations ||--o{ observation_versions : "observation_id"
+    rating_curves ||--o{ observation_versions : "rating_curve_id"
 
     %% ──────────────────────────────────────────────
     %% WEATHER / NWP DOMAIN
@@ -732,6 +747,7 @@ erDiagram
         DOUBLE_PRECISION observation_staleness_hours "NULL"
         TEXT qc_status "default raw"
         JSONB qc_flags "default empty"
+        UUID rating_curve_id FK "NULL — curve active at issued_at (v1)"
         TIMESTAMPTZ created_at
         TIMESTAMPTZ updated_at
     }
@@ -953,7 +969,7 @@ erDiagram
     users ||--o{ forecast_adjustments : "forecaster_id"
 ```
 
-### Full table inventory (31 tables)
+### Full table inventory (32 tables)
 
 | # | Table | PK type | Partitioned | Domain |
 |---|-------|---------|-------------|--------|
@@ -988,6 +1004,7 @@ erDiagram
 | 29 | `access_tokens` | UUID | no | Auth |
 | 30 | `refresh_tokens` | UUID | no | Auth |
 | 31 | `audit_log` | BIGSERIAL | no | Auth |
+| 32 | `observation_versions` | UUID | no | Observation |
 
 Column details, CHECK constraints, indexes, and retention policies
 are defined in `architecture-context.md`.
