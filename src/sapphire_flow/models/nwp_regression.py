@@ -136,6 +136,16 @@ class _NwpRegressionBase:
         """
         return {}
 
+    def _train_warmup_steps(self) -> int:
+        """Leading rows of ``target_times`` to SKIP before fitting.
+
+        Default: ``_n_lags`` (the discharge-lag window). A subclass whose extra
+        past-known feature needs a LONGER history than the lag window (e.g. the
+        45-day antecedent-precip window, Plan 129) overrides this so early rows
+        with a partial extra-feature window never enter the design matrix.
+        """
+        return self._n_lags
+
     def _extra_train_features(
         self, dynamic: DynamicInputs, target_times: list[datetime]
     ) -> np.ndarray:
@@ -227,9 +237,10 @@ class _NwpRegressionBase:
         temp = _aligned_future(dynamic, _TEMPERATURE, target_times)
         extra = self._extra_train_features(dynamic, target_times)
 
+        warmup = self._train_warmup_steps()
         design_rows: list[np.ndarray] = []
         targets: list[float] = []
-        for i in range(self._n_lags, len(discharge)):
+        for i in range(warmup, len(discharge)):
             features = [precip[i], temp[i], *extra[i].tolist()]
             if self._n_lags:
                 features.extend(discharge[i - self._n_lags : i].tolist())
@@ -239,7 +250,7 @@ class _NwpRegressionBase:
         if not design_rows:
             raise ValueError(
                 f"insufficient training rows for {self._model_name}: "
-                f"need > {self._n_lags} aligned samples, got {len(discharge)}"
+                f"need > {warmup} aligned samples, got {len(discharge)}"
             )
 
         alpha = _alpha_from_config(config)
@@ -252,6 +263,7 @@ class _NwpRegressionBase:
             n_samples=len(design_rows),
             n_features=int(np.stack(design_rows).shape[1]),
             n_lags=self._n_lags,
+            warmup=warmup,
         )
 
         return NwpRegressionArtifact(
@@ -426,6 +438,47 @@ def _season_features(times: list[datetime]) -> np.ndarray:
     return np.stack([np.sin(angle), np.cos(angle)], axis=1)
 
 
+def _validate_continuous_window(
+    times: list[datetime],
+    *,
+    issue_datetime: datetime,
+    lookback_days: int,
+    step: timedelta,
+) -> None:
+    """Raise ``_ShortForcingWindowError`` unless ``times`` cover a continuous
+    daily window ``[issue - lookback_days, issue)``: a distinct CALENDAR DAY
+    at every expected day, with the latest day within one ``step`` of
+    issue-time.
+
+    A bare row-count check (``len(times) >= lookback_days``) passes for 45
+    STALE rows (all far from issue-time, outside the window entirely) or 45
+    rows crammed into a handful of distinct calendar days (multiple
+    sub-daily readings padding the count while most antecedent days are
+    unrepresented) — either lets ``_antecedent_precip_sums`` silently return
+    a zero/partial current-window feature instead of failing (Plan 129
+    post-implementation review). Bucketing by calendar day (not by exact
+    timestamp) is what catches the second case: distinct sub-daily
+    timestamps on the SAME day would otherwise each count as "one more
+    covered day".
+    """
+    window_start = issue_datetime - timedelta(days=lookback_days)
+    in_window = [t for t in times if window_start <= t < issue_datetime]
+    day_buckets = {t.date() for t in in_window}
+    if len(day_buckets) < lookback_days:
+        raise _ShortForcingWindowError(
+            "insufficient antecedent-precip history: got "
+            f"{len(day_buckets)}, need {lookback_days}"
+        )
+    latest = max(in_window)
+    gap_to_issue = issue_datetime - latest
+    if gap_to_issue > step:
+        raise _ShortForcingWindowError(
+            "stale antecedent-precip window: latest row "
+            f"{latest.isoformat()} is {gap_to_issue} before issue-time "
+            f"{issue_datetime.isoformat()}, expected within {step}"
+        )
+
+
 def _antecedent_precip_sums(
     series_times: list[datetime],
     series_values: np.ndarray,
@@ -464,18 +517,24 @@ class SeasonalPrecipRunoffRegression(_NwpRegressionBase):
     shared with the base's future_known ``nwp/precipitation``: they are
     disjoint columns in disjoint frames (``past_dynamic`` vs
     ``future_dynamic``), so model-level routing is correct. The adapter's
-    generic ``max_nan`` over-tolerance check (``forecast_interface.py``
-    ``_variables_over_nan_tolerance``) resolves a shared variable name to
-    whichever frame is checked first (``past_dynamic``), so it does not
-    independently gate the future NWP precip's NaN count for this model — a
-    pre-existing adapter limitation, not built or asserted here (Plan 129
-    scopes only the SHORT-window antecedent-precip path below).
+    ``max_nan`` over-tolerance check (``forecast_interface.py``
+    ``_variables_over_nan_tolerance``) gates ``past_known`` and
+    ``future_known`` variables independently against their own frame, so a
+    shared bare name across the two temporalities does not suppress either
+    gate — both this model's past antecedent precip AND the base's future NWP
+    precip are independently NaN-gated before ``predict()`` runs.
     """
 
     _n_lags = _LOOKBACK
     _declared_lookback = _LOOKBACK
     _model_name = "seasonal_precip_runoff_regression"
     _precip_lookback_days = _PRECIP_LOOKBACK_DAYS
+
+    def _train_warmup_steps(self) -> int:
+        # The 45-day antecedent-precip window needs more leading history than
+        # the 7-step discharge-lag window; skip rows whose antecedent window
+        # would otherwise be partial (Plan 129 post-implementation review).
+        return max(self._n_lags, self._precip_lookback_days)
 
     def _extra_past_known(self) -> dict[str, dict[str, PastKnownVariable]]:
         return {
@@ -512,11 +571,12 @@ class SeasonalPrecipRunoffRegression(_NwpRegressionBase):
         reanalysis_times, reanalysis_precip = _sorted_series(
             dynamic.past_known[_PRODUCT_REANALYSIS][_PRECIPITATION], _PRECIPITATION
         )
-        if len(reanalysis_times) < self._precip_lookback_days:
-            raise _ShortForcingWindowError(
-                "insufficient antecedent-precip history: got "
-                f"{len(reanalysis_times)}, need {self._precip_lookback_days}"
-            )
+        _validate_continuous_window(
+            reanalysis_times,
+            issue_datetime=issue_datetime,
+            lookback_days=self._precip_lookback_days,
+            step=_STEP,
+        )
         antecedent_value = float(
             _antecedent_precip_sums(
                 reanalysis_times,

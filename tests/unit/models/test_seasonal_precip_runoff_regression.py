@@ -20,18 +20,30 @@ These tests prove:
    issue-time (representing RprelimD's live tail), the operational
    past-precip fetch reaches issue-time — no gap before the NWP future
    precip.
+4. Training excludes leading rows with a PARTIAL 45-day antecedent-precip
+   window (Plan 129 post-implementation review, warmup fix).
+5. predict() rejects a STALE or DUPLICATE-timestamp antecedent-precip window
+   that a bare row-count check would let through (Plan 129
+   post-implementation review, continuity-validation fix).
+6. The FI adapter's max_nan gate independently covers this model's future
+   NWP precip channel despite sharing a bare name with the past reanalysis
+   channel (Plan 129 post-implementation review, temporality-aware gating).
 """
 
 from __future__ import annotations
 
 import random
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 import polars as pl
+import pytest
 from forecast_interface import FailureCause, ModelFailure
+from structlog.testing import capture_logs
 
 from sapphire_flow.adapters import forecast_interface as fi_boundary
+from sapphire_flow.exceptions import ModelOutputError
 from sapphire_flow.models.nwp_regression import (
     NwpRainfallRunoff,
     NwpRegression,
@@ -48,6 +60,7 @@ from sapphire_flow.types.enums import (
     WeatherSourceStatus,
 )
 from sapphire_flow.types.ids import ModelId, StationId
+from sapphire_flow.types.model import StationInputData, StationModelInputs
 from sapphire_flow.types.station import StationWeatherSource
 from sapphire_flow.types.weather import WeatherForecastRecord
 from tests.conftest import (
@@ -63,6 +76,9 @@ from tests.fakes.fake_stores import (
     FakeStationStore,
     FakeWeatherForecastStore,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
 
 _STEP = timedelta(days=1)
 _SID = StationId(uuid4())
@@ -355,14 +371,14 @@ class TestContinuousSeriesAssembly:
 # --------------------------------------------------------------------------- #
 
 
-def _fi_frame(ts: list[datetime], name: str, vals: list[float]) -> pl.DataFrame:
-    return pl.DataFrame({"datetime": ts, name: vals}).with_columns(
+def _fi_frame(ts: Sequence[datetime], name: str, vals: list[float]) -> pl.DataFrame:
+    return pl.DataFrame({"datetime": list(ts), name: vals}).with_columns(
         pl.col("datetime").cast(pl.Datetime("us", "UTC"))
     )
 
 
 def _series(
-    ts: list[datetime], name: str, vals: list[float], unit: fi_boundary.Unit
+    ts: Sequence[datetime], name: str, vals: list[float], unit: fi_boundary.Unit
 ) -> fi_boundary.InputSeries:
     return fi_boundary.InputSeries(unit=unit, data=_fi_frame(ts, name, vals))
 
@@ -438,11 +454,31 @@ def _predict_inputs(
     reanalysis_precip: list[float],
     lag_discharge: list[float],
 ) -> fi_boundary.ModelInputs:
+    rp_n = len(reanalysis_precip)
+    rp_ts = [issue - (rp_n - i) * _STEP for i in range(rp_n)]
+    return _predict_inputs_custom_reanalysis(
+        issue=issue,
+        horizon=horizon,
+        reanalysis_ts=rp_ts,
+        reanalysis_vals=reanalysis_precip,
+        lag_discharge=lag_discharge,
+    )
+
+
+def _predict_inputs_custom_reanalysis(
+    *,
+    issue: datetime,
+    horizon: int,
+    reanalysis_ts: Sequence[datetime],
+    reanalysis_vals: list[float],
+    lag_discharge: list[float],
+) -> fi_boundary.ModelInputs:
+    """Like ``_predict_inputs`` but with EXPLICIT antecedent-precip timestamps
+    — used to construct stale/duplicate-timestamp windows that a plain
+    ``reanalysis_precip: list[float]`` count cannot express."""
     future_ts = [issue + (k + 1) * _STEP for k in range(horizon)]
     lb = len(lag_discharge)
     lag_ts = [issue - (lb - 1 - i) * _STEP for i in range(lb)]
-    rp_n = len(reanalysis_precip)
-    rp_ts = [issue - (rp_n - i) * _STEP for i in range(rp_n)]
 
     dynamic = fi_boundary.DynamicInputs(
         past_known={
@@ -453,7 +489,7 @@ def _predict_inputs(
             },
             "reanalysis": {
                 "precipitation": _series(
-                    rp_ts, "precipitation", reanalysis_precip, fi_boundary.Unit.MM
+                    reanalysis_ts, "precipitation", reanalysis_vals, fi_boundary.Unit.MM
                 )
             },
         },
@@ -516,3 +552,221 @@ class TestShortAntecedentPrecipWindowReturnsModelFailure:
         )
 
         assert isinstance(result, fi_boundary.ModelSuccess)
+
+
+# --------------------------------------------------------------------------- #
+# 5. Training warmup — no sample with a partial 45-day antecedent window
+#    enters the design matrix (Plan 129 post-implementation review)
+# --------------------------------------------------------------------------- #
+
+
+class TestTrainingWarmupExcludesPartialAntecedentWindows:
+    def test_no_partial_precip_window_sample_enters_design_matrix(self) -> None:
+        model = SeasonalPrecipRunoffRegression()
+        n = 120
+        base = datetime(2024, 1, 1, tzinfo=UTC)
+        ts, discharge, precip, temp, reanalysis_precip = _train_series(n, base)
+
+        dynamic = fi_boundary.DynamicInputs(
+            past_known={
+                "obs": {
+                    "discharge": _series(
+                        ts, "discharge", discharge, fi_boundary.Unit.M3_PER_S
+                    )
+                },
+                "reanalysis": {
+                    "precipitation": _series(
+                        ts, "precipitation", reanalysis_precip, fi_boundary.Unit.MM
+                    )
+                },
+            },
+            future_known={
+                "nwp": {
+                    "precipitation": _series(
+                        ts, "precipitation", precip, fi_boundary.Unit.MM
+                    ),
+                    "temperature": _series(
+                        ts, "temperature", temp, fi_boundary.Unit.DEG_C
+                    ),
+                }
+            },
+        )
+        station = fi_boundary.StationInputs(
+            dynamic={_STEP: fi_boundary.SpatialInputs(data={_spatial_rep(): dynamic})},
+            static={},
+        )
+        inputs = fi_boundary.ModelInputs(stations={"station": station})
+
+        with capture_logs() as logs:
+            model.train(inputs, config={}, rng=random.Random(0))
+
+        events = [e for e in logs if e.get("event") == "model.training_completed"]
+        assert len(events) == 1
+        expected_warmup = max(model._n_lags, model._precip_lookback_days)
+        # If a partial-window row (index < 45) had entered the design matrix,
+        # n_samples would be n - model._n_lags (113) instead of n - 45 (75).
+        assert events[0]["warmup"] == expected_warmup
+        assert events[0]["n_samples"] == n - expected_warmup
+
+
+# --------------------------------------------------------------------------- #
+# 6. predict() rejects STALE / DUPLICATE-timestamp antecedent-precip windows
+#    that a bare row-count check would let through (Plan 129
+#    post-implementation review)
+# --------------------------------------------------------------------------- #
+
+
+class TestPredictRejectsDiscontinuousAntecedentWindow:
+    def test_predict_returns_model_failure_for_stale_reanalysis_window(self) -> None:
+        # 45 DISTINCT rows (passes the OLD bare `len(rows) >= 45` count check,
+        # which never windowed by issue-time at all) but ALL from ~150 days
+        # ago — entirely outside the actual [issue-45d, issue) window.
+        model, artifact = _fit_seasonal_model()
+        horizon = 5
+        issue = _ISSUE
+        lookback_days = model._precip_lookback_days
+        stale_start = issue - timedelta(days=150)
+        reanalysis_ts = [
+            stale_start + i * timedelta(days=1) for i in range(lookback_days)
+        ]
+        reanalysis_vals = [2.0] * lookback_days
+
+        inputs = _predict_inputs_custom_reanalysis(
+            issue=issue,
+            horizon=horizon,
+            reanalysis_ts=reanalysis_ts,
+            reanalysis_vals=reanalysis_vals,
+            lag_discharge=[10.0] * 7,
+        )
+
+        result = model.predict(
+            artifact, inputs=inputs, issue_datetime=issue, rng=random.Random(0)
+        )
+
+        assert isinstance(result, ModelFailure)
+        assert result.cause is FailureCause.INPUT_DATA
+        assert "got 0" in result.message
+        assert "need 45" in result.message
+        assert result.model_name == "seasonal_precip_runoff_regression"
+
+    def test_predict_returns_model_failure_for_rows_crammed_into_few_days(
+        self,
+    ) -> None:
+        # 45 DISTINCT timestamps (passes the OLD bare `len(rows) >= 45` count
+        # check) but crammed into just 5 distinct CALENDAR DAYS near
+        # issue-time (9 sub-daily readings per day) instead of covering all
+        # 45 antecedent days — an exact-timestamp dedup would still miss
+        # this; bucketing by calendar day is what catches it.
+        model, artifact = _fit_seasonal_model()
+        horizon = 5
+        issue = _ISSUE
+        lookback_days = model._precip_lookback_days
+        n_days = 5
+        readings_per_day = lookback_days // n_days
+        reanalysis_ts = sorted(
+            issue - timedelta(days=1 + day) + timedelta(hours=hour)
+            for day in range(n_days)
+            for hour in range(readings_per_day)
+        )
+        reanalysis_vals = [2.0] * len(reanalysis_ts)
+
+        inputs = _predict_inputs_custom_reanalysis(
+            issue=issue,
+            horizon=horizon,
+            reanalysis_ts=reanalysis_ts,
+            reanalysis_vals=reanalysis_vals,
+            lag_discharge=[10.0] * 7,
+        )
+
+        result = model.predict(
+            artifact, inputs=inputs, issue_datetime=issue, rng=random.Random(0)
+        )
+
+        assert isinstance(result, ModelFailure)
+        assert result.cause is FailureCause.INPUT_DATA
+        assert f"got {n_days}" in result.message
+        assert "need 45" in result.message
+
+    def test_predict_succeeds_with_continuous_window_ending_at_issue(self) -> None:
+        # Contrast case: proves the two failure tests above discriminate on
+        # continuity, not merely on the total sample count (both use rows
+        # >= lookback_days).
+        model, artifact = _fit_seasonal_model()
+        horizon = 5
+        issue = _ISSUE
+        lookback_days = model._precip_lookback_days
+        window_start = issue - timedelta(days=lookback_days)
+        reanalysis_ts = [
+            window_start + i * timedelta(days=1) for i in range(lookback_days)
+        ]
+        reanalysis_vals = [2.0] * lookback_days
+
+        inputs = _predict_inputs_custom_reanalysis(
+            issue=issue,
+            horizon=horizon,
+            reanalysis_ts=reanalysis_ts,
+            reanalysis_vals=reanalysis_vals,
+            lag_discharge=[10.0] * 7,
+        )
+
+        result = model.predict(
+            artifact, inputs=inputs, issue_datetime=issue, rng=random.Random(0)
+        )
+
+        assert isinstance(result, fi_boundary.ModelSuccess)
+
+
+# --------------------------------------------------------------------------- #
+# 7. The FI adapter's max_nan gate independently covers this model's future
+#    NWP precip channel despite the colliding bare name with the past
+#    reanalysis channel (Plan 129 post-implementation review)
+# --------------------------------------------------------------------------- #
+
+
+def _time_frame(data: Mapping[str, Sequence[object]]) -> pl.DataFrame:
+    return pl.DataFrame(dict(data)).with_columns(
+        pl.col("timestamp").cast(pl.Datetime("us", "UTC"))
+    )
+
+
+class TestAdapterNanGateCoversCollidingFutureNwpPrecip:
+    def test_adapter_predict_raises_for_nan_in_future_precip_with_clean_past(
+        self,
+    ) -> None:
+        adapter = _adapter(SeasonalPrecipRunoffRegression())
+        issue = _ISSUE
+        lag_n = 7
+        lag_ts = [issue - (lag_n - i) * _STEP for i in range(lag_n)]
+        precip_n = 45
+        precip_ts = [issue - (precip_n - i) * _STEP for i in range(precip_n)]
+        horizon = 5
+        future_ts = [issue + (k + 1) * _STEP for k in range(horizon)]
+
+        data = StationInputData(
+            past_targets=_time_frame(
+                {"timestamp": lag_ts, "discharge": [10.0] * lag_n}
+            ),
+            past_dynamic=_time_frame(
+                # Clean past antecedent precip.
+                {"timestamp": precip_ts, "precipitation": [2.0] * precip_n}
+            ),
+            future_dynamic=_time_frame(
+                {
+                    "timestamp": future_ts,
+                    # Dirty future NWP precip — one NaN.
+                    "precipitation": [1.0, float("nan"), 3.0, 4.0, 5.0],
+                    "temperature": [10.0] * horizon,
+                }
+            ),
+            static=None,
+        )
+        inputs = StationModelInputs(
+            station_id=StationId(uuid4()),
+            data=data,
+            issue_time=issue,
+            forecast_horizon_steps=horizon,
+            time_step=_STEP,
+        )
+
+        with pytest.raises(ModelOutputError, match="future_known.precipitation"):
+            adapter.predict(object(), inputs, random.Random(0))

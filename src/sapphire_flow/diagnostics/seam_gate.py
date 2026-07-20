@@ -22,12 +22,14 @@ only timestamp + values and drops ``source`` (``operational_inputs.py``,
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import Enum, auto
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from datetime import datetime
 
     from sapphire_flow.types.forcing_sources import ForcingSource
     from sapphire_flow.types.historical_forcing import RawHistoricalForcing
@@ -48,6 +50,21 @@ _MAGNITUDE_RATIO_FLAG_THRESHOLD = 15.0
 class SeamGateVerdict(Enum):
     PASS = auto()
     UNIT_ERROR_SUSPECTED = auto()
+
+
+class SeamEdge(Enum):
+    """Which side of a seam a window of raw rows sits on.
+
+    ``BEFORE`` selects the LAST ``window_size`` rows (by ``valid_time``) up
+    to the seam; ``AFTER`` selects the FIRST ``window_size`` rows following
+    it. Without this, a seam-window builder that merely filters by
+    source/parameter (no time-local selection) compares arbitrary history
+    lengths instead of "around the seam" — a full raw fetch vs a short one
+    produces different verdicts for the same underlying data.
+    """
+
+    BEFORE = auto()
+    AFTER = auto()
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -85,14 +102,15 @@ def check_seam_continuity(before: SeamWindow, after: SeamWindow) -> SeamGateResu
         (window.label, value)
         for window in (before, after)
         for value in window.values
-        if value < 0.0 or value > _PLAUSIBLE_MM_DAY_MAX
+        if not math.isfinite(value) or value < 0.0 or value > _PLAUSIBLE_MM_DAY_MAX
     ]
     if out_of_range:
         return SeamGateResult(
             verdict=SeamGateVerdict.UNIT_ERROR_SUSPECTED,
             detail=(
                 f"{len(out_of_range)} value(s) outside the plausible "
-                f"[0, {_PLAUSIBLE_MM_DAY_MAX}] mm/day range: {out_of_range[:3]}"
+                f"[0, {_PLAUSIBLE_MM_DAY_MAX}] mm/day range (or non-finite): "
+                f"{out_of_range[:3]}"
             ),
         )
 
@@ -125,24 +143,47 @@ def check_seam_continuity(before: SeamWindow, after: SeamWindow) -> SeamGateResu
     )
 
 
+def _select_seam_local(
+    ordered: Sequence[tuple[datetime, float]], *, edge: SeamEdge, window_size: int
+) -> tuple[float, ...]:
+    """From ``(valid_time, value)`` pairs sorted by ``valid_time``, select the
+    ``window_size`` rows immediately BEFORE or AFTER the seam."""
+    selected = (
+        ordered[-window_size:] if edge is SeamEdge.BEFORE else ordered[:window_size]
+    )
+    return tuple(value for _valid_time, value in selected)
+
+
 def seam_window_from_forcing_rows(
     rows: Sequence[RawHistoricalForcing],
     *,
     source: ForcingSource,
     parameter: str,
     label: str,
+    edge: SeamEdge,
+    window_size: int,
 ) -> SeamWindow:
-    """Build a ``SeamWindow`` from raw reanalysis rows tagged with ``source``.
+    """Build a ``SeamWindow`` from the ``window_size`` raw reanalysis rows
+    immediately before/after a seam, tagged with ``source``.
 
     Reads ``.source`` (dropped by the pivoted ``past_dynamic``/``future_dynamic``
     frames) — this is why the gate must run over raw rows, not assembled ones.
+    Selects by ``valid_time`` proximity to the seam (``edge``), not merely
+    every matching row — an unbounded raw fetch would otherwise pull in
+    history far from the seam and change the verdict.
     """
-    values = tuple(
-        row.value
-        for row in rows
-        if row.source == source.value and row.parameter == parameter
+    matched: list[tuple[datetime, float]] = sorted(
+        (
+            (row.valid_time, row.value)
+            for row in rows
+            if row.source == source.value and row.parameter == parameter
+        ),
+        key=lambda pair: pair[0],
     )
-    return SeamWindow(label=label, values=values)
+    return SeamWindow(
+        label=label,
+        values=_select_seam_local(matched, edge=edge, window_size=window_size),
+    )
 
 
 def seam_window_from_nwp_rows(
@@ -150,12 +191,33 @@ def seam_window_from_nwp_rows(
     *,
     parameter: str,
     label: str,
+    edge: SeamEdge,
+    window_size: int,
 ) -> SeamWindow:
-    """Build a ``SeamWindow`` from raw NWP rows for one parameter.
+    """Build a ``SeamWindow`` from the ``window_size`` raw NWP rows immediately
+    before/after a seam, for one parameter.
 
-    Coarse by design: does not filter by ensemble member — every member's
-    value at the seam is the same order of magnitude, which is all a
-    units/scale sanity check needs.
+    Collapses every ensemble member to a single mean value per ``valid_time``
+    BEFORE seam-local selection: a raw 21-member ensemble fetch has ~21x the
+    magnitude of one deterministic reanalysis row at the same valid times, so
+    summing member values into the window's scale statistic
+    (``_representative_magnitude``) would inflate the NWP side and falsely
+    flag a correctly-scaled seam.
     """
-    values = tuple(row.value for row in rows if row.parameter == parameter)
-    return SeamWindow(label=label, values=values)
+    by_valid_time: dict[datetime, list[float]] = {}
+    for row in rows:
+        if row.parameter != parameter:
+            continue
+        by_valid_time.setdefault(row.valid_time, []).append(row.value)
+
+    collapsed: list[tuple[datetime, float]] = sorted(
+        (
+            (valid_time, sum(values) / len(values))
+            for valid_time, values in by_valid_time.items()
+        ),
+        key=lambda pair: pair[0],
+    )
+    return SeamWindow(
+        label=label,
+        values=_select_seam_local(collapsed, edge=edge, window_size=window_size),
+    )

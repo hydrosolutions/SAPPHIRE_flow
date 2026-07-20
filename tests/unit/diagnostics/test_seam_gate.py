@@ -13,10 +13,12 @@ Scope (owner decision 2, "coarse, high-tolerance"):
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import math
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from sapphire_flow.diagnostics.seam_gate import (
+    SeamEdge,
     SeamGateVerdict,
     SeamWindow,
     check_seam_continuity,
@@ -30,6 +32,7 @@ from sapphire_flow.types.weather import WeatherForecastRecord
 from tests.conftest import make_raw_historical_forcing
 
 _SID = StationId(uuid4())
+_DAY = timedelta(days=1)
 
 
 class TestUnitScaleErrorsAreFlagged:
@@ -67,6 +70,26 @@ class TestUnitScaleErrorsAreFlagged:
 
         assert result.verdict is SeamGateVerdict.UNIT_ERROR_SUSPECTED
 
+    def test_nan_value_is_flagged_not_silently_passed(self) -> None:
+        # NaN comparisons are always False (`nan < 0` and `nan > MAX` are both
+        # False), so a naive range check lets it through; the ratio path can
+        # then also fall through to PASS since `nan >= threshold` is False
+        # too. A NaN reading must be flagged directly, not silently accepted.
+        before = SeamWindow(label="rhiresd", values=(4.0, 6.0, 5.0))
+        after = SeamWindow(label="rprelimd", values=(math.nan, 6.0, 5.0))
+
+        result = check_seam_continuity(before, after)
+
+        assert result.verdict is SeamGateVerdict.UNIT_ERROR_SUSPECTED
+
+    def test_infinite_value_is_flagged_not_silently_passed(self) -> None:
+        before = SeamWindow(label="rhiresd", values=(4.0, 6.0, 5.0))
+        after = SeamWindow(label="rprelimd", values=(math.inf, 6.0, 5.0))
+
+        result = check_seam_continuity(before, after)
+
+        assert result.verdict is SeamGateVerdict.UNIT_ERROR_SUSPECTED
+
 
 class TestLegitimateMetDifferenceIsNotFlagged:
     def test_forecast_rain_event_absent_from_past_window_is_not_flagged(self) -> None:
@@ -87,6 +110,24 @@ class TestLegitimateMetDifferenceIsNotFlagged:
         result = check_seam_continuity(dry_before, dry_after)
 
         assert result.verdict is SeamGateVerdict.PASS
+
+
+def _nwp_row(
+    *, ts: datetime, parameter: str, member_id: int, value: float
+) -> WeatherForecastRecord:
+    return WeatherForecastRecord(
+        id=uuid4(),
+        station_id=_SID,
+        nwp_source="icon_ch2_eps",
+        cycle_time=ts,
+        valid_time=ts,
+        parameter=parameter,
+        spatial_type=SpatialRepresentation.BASIN_AVERAGE,
+        band_id=None,
+        member_id=member_id,
+        value=value,
+        created_at=ts,
+    )
 
 
 class TestSeamWindowBuildersReadRawProvenance:
@@ -123,6 +164,8 @@ class TestSeamWindowBuildersReadRawProvenance:
             source=ForcingSource.METEOSWISS_RHIRESD,
             parameter="precipitation",
             label="rhiresd",
+            edge=SeamEdge.BEFORE,
+            window_size=5,
         )
 
         assert window.values == (4.0,)
@@ -130,34 +173,135 @@ class TestSeamWindowBuildersReadRawProvenance:
     def test_seam_window_from_nwp_rows_filters_by_parameter(self) -> None:
         ts = datetime(2026, 6, 1, tzinfo=UTC)
         rows = [
-            WeatherForecastRecord(
-                id=uuid4(),
-                station_id=_SID,
-                nwp_source="icon_ch2_eps",
-                cycle_time=ts,
-                valid_time=ts,
-                parameter="precipitation",
-                spatial_type=SpatialRepresentation.BASIN_AVERAGE,
-                band_id=None,
-                member_id=0,
-                value=3.0,
-                created_at=ts,
-            ),
-            WeatherForecastRecord(
-                id=uuid4(),
-                station_id=_SID,
-                nwp_source="icon_ch2_eps",
-                cycle_time=ts,
-                valid_time=ts,
-                parameter="temperature",
-                spatial_type=SpatialRepresentation.BASIN_AVERAGE,
-                band_id=None,
-                member_id=0,
-                value=12.0,
-                created_at=ts,
-            ),
+            _nwp_row(ts=ts, parameter="precipitation", member_id=0, value=3.0),
+            _nwp_row(ts=ts, parameter="temperature", member_id=0, value=12.0),
         ]
 
-        window = seam_window_from_nwp_rows(rows, parameter="precipitation", label="nwp")
+        window = seam_window_from_nwp_rows(
+            rows,
+            parameter="precipitation",
+            label="nwp",
+            edge=SeamEdge.AFTER,
+            window_size=5,
+        )
 
         assert window.values == (3.0,)
+
+    def test_seam_window_from_forcing_rows_selects_only_rows_local_to_the_seam(
+        self,
+    ) -> None:
+        # A raw fetch spanning far MORE history than the seam window must not
+        # change the verdict: only the last `window_size` rows before the
+        # seam (by valid_time) are selected, distant history is excluded.
+        base = datetime(2026, 6, 1, tzinfo=UTC)
+        far_history = [
+            make_raw_historical_forcing(
+                station_id=_SID,
+                source=ForcingSource.METEOSWISS_RHIRESD.value,
+                parameter="precipitation",
+                valid_time=base - (100 + i) * _DAY,
+                value=9999.0,  # would blow up any ratio if it leaked in
+            )
+            for i in range(20)
+        ]
+        seam_local = [
+            make_raw_historical_forcing(
+                station_id=_SID,
+                source=ForcingSource.METEOSWISS_RHIRESD.value,
+                parameter="precipitation",
+                valid_time=base - i * _DAY,
+                value=5.0,
+            )
+            for i in range(3)
+        ]
+
+        window = seam_window_from_forcing_rows(
+            far_history + seam_local,
+            source=ForcingSource.METEOSWISS_RHIRESD,
+            parameter="precipitation",
+            label="rhiresd",
+            edge=SeamEdge.BEFORE,
+            window_size=3,
+        )
+
+        assert window.values == (5.0, 5.0, 5.0)
+
+    def test_seam_window_from_nwp_rows_selects_only_rows_local_to_the_seam(
+        self,
+    ) -> None:
+        base = datetime(2026, 6, 1, tzinfo=UTC)
+        far_future = [
+            _nwp_row(
+                ts=base + (100 + i) * _DAY,
+                parameter="precipitation",
+                member_id=0,
+                value=9999.0,
+            )
+            for i in range(20)
+        ]
+        seam_local = [
+            _nwp_row(
+                ts=base + i * _DAY, parameter="precipitation", member_id=0, value=3.0
+            )
+            for i in range(3)
+        ]
+
+        window = seam_window_from_nwp_rows(
+            far_future + seam_local,
+            parameter="precipitation",
+            label="nwp",
+            edge=SeamEdge.AFTER,
+            window_size=3,
+        )
+
+        assert window.values == (3.0, 3.0, 3.0)
+
+    def test_seam_window_from_nwp_rows_collapses_ensemble_members_to_one_value(
+        self,
+    ) -> None:
+        # 21 same-scale members at one valid_time must collapse to ONE value
+        # (the member mean) — summing all 21 into the window magnitude would
+        # inflate the NWP side ~21x versus a single deterministic RprelimD
+        # row and falsely flag a correctly-scaled seam.
+        ts = datetime(2026, 6, 1, tzinfo=UTC)
+        rows = [
+            _nwp_row(ts=ts, parameter="precipitation", member_id=member, value=5.0)
+            for member in range(21)
+        ]
+
+        window = seam_window_from_nwp_rows(
+            rows,
+            parameter="precipitation",
+            label="nwp",
+            edge=SeamEdge.AFTER,
+            window_size=5,
+        )
+
+        assert window.values == (5.0,)
+
+    def test_21_member_nwp_window_passes_against_one_deterministic_row(self) -> None:
+        # The end-to-end soundness case: a correctly-scaled 21-member NWP
+        # window at the RprelimD -> NWP seam must PASS against a single
+        # deterministic RprelimD row of the same order of magnitude.
+        rprelimd = SeamWindow(label="rprelimd", values=(5.0,))
+        ts = datetime(2026, 6, 1, tzinfo=UTC)
+        nwp_rows = [
+            _nwp_row(
+                ts=ts,
+                parameter="precipitation",
+                member_id=member,
+                value=5.0 + member * 0.1,
+            )
+            for member in range(21)
+        ]
+        nwp = seam_window_from_nwp_rows(
+            nwp_rows,
+            parameter="precipitation",
+            label="nwp",
+            edge=SeamEdge.AFTER,
+            window_size=5,
+        )
+
+        result = check_seam_continuity(rprelimd, nwp)
+
+        assert result.verdict is SeamGateVerdict.PASS
