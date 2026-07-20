@@ -16,7 +16,8 @@ blocks: []
 findings folded: the `chmod`→EROFS test-methodology blocker (now monkeypatch `mkdir`→`EROFS`, with an
 EACCES-stays-loud companion), the doc-invariant contradiction (narrowed to match (A), single home), the
 missed `scripts/onboard.py` callers (+ the worker is also affected), and the silent-skip minor (now
-logged). One owner fork remains: the posture-guard scope (§4). Then owner READY → implement.
+logged). **Final independent Codex re-verify: READY-FOR-OWNER (no blockers/majors).** One owner fork
+remains: the posture-guard scope (§4). Then owner READY → implement.
 
 ## Context — a live, prod-relevant API outage
 
@@ -88,9 +89,9 @@ it.
 Two shapes of fix were weighed:
 
 - **(A, chosen) EROFS-tolerant eager loop.** Keep `resolve_data_dir`'s existing eager "ensure all three
-  subdirs" contract (`config/paths.py:22-23`) and its three call sites (`api/deps.py:52`,
-  `flows/_db.py:46`, `flows/onboard.py:78`) **completely untouched**. Only wrap each subdir `mkdir` so
-  that `OSError` with `errno == errno.EROFS` is swallowed and every other error re-raised.
+  subdirs" contract (`config/paths.py:22-23`) and all **five** call sites (the §2 table) **completely
+  untouched**. Only wrap each subdir `mkdir` so that `OSError` with `errno == errno.EROFS` is swallowed
+  and every other error re-raised.
 - **(B, rejected) Per-need lazy creation + caller rewiring.** Move subdir creation out of the shared
   loop into each resolver (`resolve_artifact_dir` ensures `artifacts`, a `raw`/`cache` consumer ensures
   its own) and change what every caller can assume exists.
