@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Sequence  # noqa: TC003
 from dataclasses import replace
 from datetime import date  # noqa: TC003
 from pathlib import Path
@@ -66,6 +67,7 @@ from sapphire_flow.types.ids import (
     HistoricalForcingId,
     ModelId,
     ObservationId,
+    ObservationVersionId,
     RatingCurveId,
     StationGroupId,
     StationId,
@@ -74,7 +76,11 @@ from sapphire_flow.types.model import (  # noqa: TC001
     ModelArtifactRecord,
     ModelRecord,
 )
-from sapphire_flow.types.observation import Observation, RawObservation  # noqa: TC001
+from sapphire_flow.types.observation import (  # noqa: TC001
+    ArchivedObservationValue,
+    Observation,
+    RawObservation,
+)
 from sapphire_flow.types.pipeline import PipelineHealthRecord  # noqa: TC001
 from sapphire_flow.types.rating_curve import RatingCurve  # noqa: TC001
 from sapphire_flow.types.skill import (  # noqa: TC001
@@ -1121,6 +1127,67 @@ class FakeRatingCurveStore:
             ):
                 out[c.station_id] = c  # last-wins: latest valid_from
         return out
+
+
+class FakeObservationVersionStore:
+    def __init__(self) -> None:
+        # keyed by (observation_id, rating_curve_id) for idempotence
+        self._archived: dict[
+            tuple[ObservationId, RatingCurveId], ArchivedObservationValue
+        ] = {}
+
+    def archive_observation_values(
+        self,
+        observations: Sequence[Observation],
+        superseded_by_curve_id: RatingCurveId,
+    ) -> int:
+        inserted = 0
+        for obs in observations:
+            if (
+                obs.source != ObservationSource.RATING_CURVE_DERIVED
+                or obs.rating_curve_id is None
+            ):
+                raise ValueError(
+                    "archive_observation_values accepts only rating-curve-derived "
+                    "observations with a rating_curve_id; got "
+                    f"source={obs.source.value}, rating_curve_id={obs.rating_curve_id}"
+                )
+            key = (obs.id, obs.rating_curve_id)
+            if key in self._archived:  # idempotent
+                continue
+            self._archived[key] = ArchivedObservationValue(
+                id=ObservationVersionId(uuid4()),
+                observation_id=obs.id,
+                station_id=obs.station_id,
+                timestamp=obs.timestamp,
+                parameter=obs.parameter,
+                value=obs.value,
+                rating_curve_id=obs.rating_curve_id,
+                superseded_at=obs.timestamp,  # fake: deterministic stand-in
+                superseded_by_curve_id=superseded_by_curve_id,
+            )
+            inserted += 1
+        return inserted
+
+    def fetch_archived_values(
+        self,
+        station_id: StationId,
+        parameter: str,
+        start: UtcDatetime,
+        end: UtcDatetime,
+        rating_curve_id: RatingCurveId | None = None,
+    ) -> Sequence[ArchivedObservationValue]:
+        return sorted(
+            (
+                a
+                for a in self._archived.values()
+                if a.station_id == station_id
+                and a.parameter == parameter
+                and start <= a.timestamp < end  # half-open
+                and (rating_curve_id is None or a.rating_curve_id == rating_curve_id)
+            ),
+            key=lambda a: a.timestamp,
+        )
 
 
 class FakeFlowRegimeConfigStore:

@@ -24,6 +24,7 @@ ArtifactId = NewType("ArtifactId", UUID)
 AlertId = NewType("AlertId", UUID)
 RatingCurveId = NewType("RatingCurveId", UUID)
 ObservationId = NewType("ObservationId", UUID)
+ObservationVersionId = NewType("ObservationVersionId", UUID)  # v1 — Plan 035 Task 3
 ForecastAdjustmentId = NewType("ForecastAdjustmentId", UUID)
 UserId = NewType("UserId", UUID)
 AccessTokenId = NewType("AccessTokenId", UUID)
@@ -745,6 +746,20 @@ class Observation:
     qc_flags: list[QcFlag]
     qc_rule_version: str | None    # version of the QC ruleset that last evaluated this row
     created_at: UtcDatetime
+
+
+# v1 — Plan 035 Task 3: value superseded by a rating-curve reprocessing
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ArchivedObservationValue:
+    id: ObservationVersionId
+    observation_id: ObservationId
+    station_id: StationId
+    timestamp: UtcDatetime
+    parameter: str
+    value: float | None                    # None if the superseded obs was MISSING
+    rating_curve_id: RatingCurveId         # curve that produced the archived value
+    superseded_at: UtcDatetime
+    superseded_by_curve_id: RatingCurveId  # curve that replaced it
 ```
 
 Module: `types/observation.py`
@@ -2462,6 +2477,17 @@ class RatingCurveStore(Protocol):
         # Curves overlapping the half-open [start, end) window (Flow 8/10 epoch queries). Plan 035 Task 1.
     def fetch_active_curves_batch(self, station_ids: list[StationId]) -> dict[StationId, RatingCurve]: ...
         # Active curve (valid_to IS NULL) per station, one query (Flow 1 batch lookup). Plan 035 Task 1.
+```
+
+#### ObservationVersionStore
+
+```python
+class ObservationVersionStore(Protocol):  # v1 — Plan 035 Task 3
+    def archive_observation_values(self, observations: Sequence[Observation], superseded_by_curve_id: RatingCurveId) -> int: ...
+        # Archive rating-curve-derived observations before Flow 12 Branch A reprocessing.
+        # Idempotent per (observation_id, rating_curve_id); returns rows actually inserted.
+    def fetch_archived_values(self, station_id: StationId, parameter: str, start: UtcDatetime, end: UtcDatetime, rating_curve_id: RatingCurveId | None = None) -> Sequence[ArchivedObservationValue]: ...
+        # Archived values in half-open [start, end), optionally filtered by producing curve.
 ```
 
 #### FlowRegimeConfigStore

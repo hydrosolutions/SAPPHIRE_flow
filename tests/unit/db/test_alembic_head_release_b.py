@@ -35,9 +35,10 @@ _ALEMBIC_VERSIONS_DIR = Path(__file__).resolve().parents[3] / "alembic" / "versi
 # Release B's confirmed Alembic head was 0033 (Plan 115b5 — the camels-ch
 # weather-binding retirement). Plan 035 Task 1 chained migration 0034
 # (rating_curves table) onto 0033, and Task 2 chained 0035 (observation +
-# forecast rating-curve binding) onto 0034 — deliberate, reviewed migration
-# additions per the guidance below — advancing the pinned head to 0035.
-_RELEASE_B_HEAD = "0035"
+# forecast rating-curve binding) onto 0034, and Task 3 chained 0036
+# (observation_versions archive table) onto 0035 — deliberate, reviewed migration
+# additions per the guidance below — advancing the pinned head to 0036.
+_RELEASE_B_HEAD = "0036"
 
 
 def _down_revisions() -> dict[str, str | None]:
