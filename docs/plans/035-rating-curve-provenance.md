@@ -97,7 +97,10 @@ later migration — see below).
 rating_curves:
   id: UUID PK
   station_id: UUID FK -> stations
-  version: INT                    -- monotonically increasing per station
+  version: INT                    -- OUR monotonically increasing counter per station
+                                  --   (ingestion order); NOT the DHM "Rating Type No"
+  source_rating_type: INT NULL    -- DHM "Rating Type No" (provenance; NULL for non-DHM
+                                  --   sources e.g. Swiss). See "Source format" below.
   valid_from: TIMESTAMPTZ
   valid_to: TIMESTAMPTZ NULL      -- NULL = currently active
   points: JSONB                   -- [{"water_level": float, "discharge": float}, ...]
@@ -110,6 +113,15 @@ Indexes:
   UNIQUE (station_id) WHERE valid_to IS NULL   -- at most one active curve per station
   UNIQUE (station_id, version)                 -- NEW: monotonic version enforcement
 ```
+
+> **`version` vs `source_rating_type` (decided 2026-07-20).** `version` is SAP3's own
+> per-station counter (assigned at ingestion order); the DHM `Rating Type No` is stored
+> **separately** as `source_rating_type`. This is deliberate: DHM has **not** confirmed
+> that `Rating Type No` is unique/immutable per station (dhm-data-formats-questions.md
+> §4.8), so binding it to the `UNIQUE (station_id, version)` key would break if a number
+> is ever reissued or backdated. **Not yet migrated** — the `source_rating_type` column
+> (nullable, additive) lands with the DHM RT ingestion task, which owns its first writer.
+> Tasks 1/2/4 (merged) do not use it.
 
 **New enum**: `InterpolationMethod` with values `linear`, `log_linear`. Add to
 conventions.md enum master list. The `interpolation` column stores the enum `.value`
@@ -127,6 +139,64 @@ to security.md authorization matrix when the upload endpoint is designed).
 **DB permissions**: `sapphire_worker` already has `SELECT` on `rating_curves`
 (conventions.md line 309). No grant change needed for the worker. `sapphire_api`
 already has `SELECT all` — no explicit per-table addition needed for `rating_curves`.
+
+#### 1a. Source format — DHM `RT_*.txt` (canonical import template)
+
+The reference rating-table format is the DHM `RT_*.txt` export. A verbatim sample
+(received from DHM, uncommented) lives at
+`docs/requirements/RT_Dummy Station A.txt` and is the canonical template SAP3
+ingestion targets. It looks like:
+
+```
+Station No: A
+Data Type: Rating Table
+Left Column= Stage in m
+Right Column= Discharge im m3/s
+Rating Type No =  8
+From Date = 21-Jul-2011
+To Date = 15-Jul-2012
+From Stage = 1.0
+1,59.6
+1.1,70.2
+...
+14,5233
+```
+
+**Field mapping → `RatingCurve`.** The current `RatingCurve` type holds an RT table
+with only the one additive column above (`source_rating_type`); no other schema change:
+
+| RT_*.txt field | → `RatingCurve` | Notes |
+|---|---|---|
+| `Station No` | `station_id` | resolved via station-code lookup at ingestion |
+| `From Date` / `To Date` | `valid_from` / `valid_to` | parse `DD-Mon-YYYY`; see boundary/active decisions |
+| `Rating Type No` | `source_rating_type` | provenance only; **not** `version` (see §4.8) |
+| stage,discharge rows | `points=[{"water_level","discharge"}, ...]` | keys match Task 1 |
+| `From Stage` | *(implicit)* = min tabulated `water_level` | redundant with first point — no field |
+| top row stage | *(implicit)* = max tabulated `water_level` | out-of-range policy, not stored |
+| *(absent)* | `interpolation = LINEAR` | not in the file — provisional default |
+
+**Provisional decisions (adopt now; confirm with DHM — see
+dhm-data-formats-questions.md §4).** These let us treat `RT_*.txt` as the template
+without waiting on every open answer:
+
+- **Interpolation**: piecewise **linear** between the 0.1 m rows (§4.5).
+- **Out-of-range**: below `From Stage` or above the top row is a *conversion-time*
+  policy (clamp/flag), **not** stored on the curve (§4.4).
+- **Versioning**: `source_rating_type` is provenance; SAP3 assigns its own `version`
+  (§4.8) — see the decision note under the schema above.
+- **Active rating**: DHM `RT` files always carry a `To Date`. The **currently-active**
+  rating is the one whose window covers "now" with an open/far-future `To Date`;
+  ingestion sets `valid_to = NULL` for it so Task 4's `valid_to IS NULL` /
+  `fetch_active_curves_batch_at` binding works (§4.1). Historical `RT` files (closed
+  past `To Date`) load with their real `valid_to`.
+- **Boundary/overlap**: half-open `[valid_from, valid_to)` per repo convention; overlap
+  resolution (highest `Rating Type No`? latest upload?) is unresolved (§4.3/§4.9).
+
+**Parser is out of scope here.** Reading `RT_*.txt` → `RatingCurve` (date parsing,
+station-code resolution, active-rating detection, the above policies) belongs to the
+**DHM adapter / Flow 5 onboarding** track, and is blocked on the §4 answers. The
+`source_rating_type` migration lands with that task (its first writer). Plan 035 owns
+the storage/provenance model this ingestion targets.
 
 #### 2. `observations` — add rating curve columns
 
@@ -476,6 +546,7 @@ under tighter access control.
 | DHM correction parameter semantics | Awaiting DHM data discussions | `rating_curve_correction_version` column on observations |
 | Shift-adjusted curves (USGS-style) | Requires DHM buy-in on operational workflow | `rating_curves.points` JSONB is flexible enough |
 | Rating curve upload endpoint | Separate API design (requires role constraints, validation) | `uploaded_by` FK + `InterpolationMethod` enum ready |
+| DHM `RT_*.txt` parser/ingestion + `source_rating_type` column | Belongs to the DHM adapter / Flow 5 onboarding track; blocked on dhm-data-formats-questions.md §4 | Format + field mapping + provisional decisions documented (§1a); `RatingCurve` storage fits with one additive nullable column |
 | `uploaded_by FK -> users(id)` constraint | `users` table does not yet exist in the migration chain | Column added as `UUID NULL` without FK in Task 1; FK migration tracked as separate v1 task after `users` table is created |
 | `fetch_active_curves_batch()` method | ~~Deferred~~ **Moved to Task 1** (trivial `WHERE station_id = ANY($1)` variant of `fetch_active_curve()`; required by Task 4) | Both `fetch_active_curves_batch()` and `fetch_curves_in_range()` added in Task 1 |
 
