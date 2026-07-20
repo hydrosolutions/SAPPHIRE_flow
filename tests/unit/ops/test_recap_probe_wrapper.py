@@ -1,4 +1,4 @@
-"""Ops tests for Plan 130 — recap-probe deployment reconciliation.
+"""Ops tests for Plan 132 — recap-probe deployment reconciliation.
 
 Tests assert the JSONL-purity branching in
 ``scripts/launchd/run-recap-probe.sh``:
@@ -223,7 +223,7 @@ class TestKeyGuard:
 
 
 class TestJsonlPurityBranches:
-    """The three JSONL-purity branches described in Plan 130 §1/§6."""
+    """The three JSONL-purity branches described in Plan 132 §1/§6."""
 
     def _key_file(self, tmp_path: Path) -> Path:
         key_file = tmp_path / "key"

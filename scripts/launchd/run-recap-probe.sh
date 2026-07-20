@@ -17,7 +17,7 @@
 # missing key) or a stray warning line must never write non-JSON into the
 # JSONL — it would break the pandas analysis.
 #
-# Spec: docs/plans/130-recap-probe-deployment-reconciliation.md §1.
+# Spec: docs/plans/132-recap-probe-deployment-reconciliation.md §1.
 
 # Deliberately NOT `-e`: this script must read the `docker exec` exit code
 # and branch on it (append to the JSONL only on a clean, pure run;

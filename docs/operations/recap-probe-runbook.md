@@ -1,12 +1,12 @@
 # recap Data Gateway availability probe — mac-mini runbook
 
 **Status:** READY (runbook) — reconciled with the container-exec deployment actually running on the
-mac mini (Plan 130, 2026-07-20). Supersedes the original host-venv narrative shipped with PR #103,
+mac mini (Plan 132, 2026-07-20). Supersedes the original host-venv narrative shipped with PR #103,
 which does not work on this host (no `recap_client` in the host `uv` venv, no host-level git
 credential for the private `recap-dg-client` clone, and `uv` lives at `/Users/sapphire/.local/bin/uv`
 not `/usr/local/bin/uv`).
 **Owner:** Bea (marti@hydrosolutions.ch)
-**Related:** [Plan 130](../plans/130-recap-probe-deployment-reconciliation.md) (this reconciliation);
+**Related:** [Plan 132](../plans/132-recap-probe-deployment-reconciliation.md) (this reconciliation);
 [Plan 121](../plans/121-recap-flow6-and-integration-followons.md) §Live probe (the findings this
 longitudinal run extends); [[project_recap_era5_probe_and_115_stac]];
 [Plan 111b](../plans/111b-bafu-collector-macmini-deployment.md) (the collector-on-mac-mini precedent).
@@ -44,7 +44,7 @@ the cadence. The API key is read from env/file only and is **never** written to 
 
 The probe runs **inside the same worker container the operational pipeline uses**
 (`sapphire_flow-prefect-worker-1`), which already has `recap_client` baked in at image build time —
-rather than in a host `uv` venv. This was a deliberate choice (see Plan 130 §Design decision), not the
+rather than in a host `uv` venv. This was a deliberate choice (see Plan 132 §Design decision), not the
 default: a host-venv path (host-level `insteadOf` git auth + `RECAP_DG_CLIENT_TOKEN`, matching what CI
 and the Docker build already do) was considered and rejected, to keep the token file-scoped and off the
 host account's global git config, and because the container-exec path is already live and validated
@@ -83,7 +83,7 @@ No `~/recap-probe/` copies — the wrapper and probe script run straight from th
 
 ```bash
 cd /Users/sapphire/SAPPHIRE_flow
-git pull                                    # main, with the Plan 130 reconciliation merged
+git pull                                    # main, with the Plan 132 reconciliation merged
 
 cp scripts/launchd/ch.hydrosolutions.sapphire-recap-probe.plist \
    ~/Library/LaunchAgents/
@@ -223,4 +223,4 @@ forecast state.
 - Coverage conclusions from HRU `12300` (a test HRU) do not necessarily generalise — re-point at a real
   subscribed basin when one is available (Plan 121 follow-on action 2).
 - Not bringing HRU 12300 (or any gauge) live through the real ingestion path (Wave-1 milestone, gated
-  elsewhere — see Plan 130 §Non-goals).
+  elsewhere — see Plan 132 §Non-goals).
