@@ -9,6 +9,7 @@ from sapphire_flow.types.enums import ModelArtifactStatus
 # Fakes must match: start <= x < end (not start <= x <= end).
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from datetime import date
     from pathlib import Path
     from uuid import UUID
@@ -70,7 +71,11 @@ if TYPE_CHECKING:
         StationId,
     )
     from sapphire_flow.types.model import ModelArtifactRecord, ModelRecord
-    from sapphire_flow.types.observation import Observation, RawObservation
+    from sapphire_flow.types.observation import (
+        ArchivedObservationValue,
+        Observation,
+        RawObservation,
+    )
     from sapphire_flow.types.pipeline import PipelineHealthRecord
     from sapphire_flow.types.rating_curve import RatingCurve
     from sapphire_flow.types.skill import FlowRegimeConfig, SkillDiagram, SkillScore
@@ -628,6 +633,31 @@ class RatingCurveStore(Protocol):
     ) -> dict[StationId, RatingCurve]:
         """Curve active for each station at ``at`` (valid_from <= at < valid_to,
         valid_to NULL = unbounded). Stations without a matching curve are absent."""
+        raise NotImplementedError
+
+
+@runtime_checkable
+class ObservationVersionStore(Protocol):
+    def archive_observation_values(
+        self,
+        observations: Sequence[Observation],
+        superseded_by_curve_id: RatingCurveId,
+    ) -> int:
+        """Archive rating-curve-derived observations' current values before Flow 12
+        Branch A reprocessing. Idempotent per (observation, producing curve).
+        Returns the number of rows actually inserted."""
+        raise NotImplementedError
+
+    def fetch_archived_values(
+        self,
+        station_id: StationId,
+        parameter: str,
+        start: UtcDatetime,
+        end: UtcDatetime,
+        rating_curve_id: RatingCurveId | None = None,
+    ) -> Sequence[ArchivedObservationValue]:
+        """Archived values in [start, end), optionally filtered by the producing
+        curve. Ordered by timestamp."""
         raise NotImplementedError
 
 

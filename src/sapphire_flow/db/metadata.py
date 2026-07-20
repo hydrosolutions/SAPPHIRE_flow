@@ -338,6 +338,9 @@ observations = sa.Table(
         ["rating_curves.station_id", "rating_curves.id"],
         name="fk_observations_rating_curve_station",
     ),
+    # Plan 035 Task 3: composite target so observation_versions can FK
+    # (observation_id, station_id) and trust the denormalised station.
+    sa.UniqueConstraint("id", "station_id", name="uq_observations_id_station"),
 )
 
 # Indexes on observations
@@ -418,6 +421,58 @@ sa.Index(
     rating_curves.c.station_id,
     unique=True,
     postgresql_where=rating_curves.c.valid_to.is_(None),
+)
+
+# Plan 035 Task 3: archive of discharge values superseded by a rating-curve
+# reprocessing (Flow 12 Branch A). Lightweight — only value + curve refs change.
+observation_versions = sa.Table(
+    "observation_versions",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True),
+    sa.Column("observation_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("station_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("timestamp", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("parameter", sa.Text, nullable=False),
+    sa.Column("value", sa.Float, nullable=True),  # NULL if superseded obs was MISSING
+    sa.Column("rating_curve_id", UUID(as_uuid=True), nullable=False),
+    sa.Column(
+        "superseded_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+    ),
+    sa.Column("superseded_by_curve_id", UUID(as_uuid=True), nullable=False),
+    # One archive row per (observation, producing-curve) — idempotent re-runs.
+    sa.UniqueConstraint(
+        "observation_id", "rating_curve_id", name="uq_observation_versions_obs_curve"
+    ),
+    # Station denormalisation is DB-trusted: the archived row's station must match
+    # the referenced observation's station.
+    sa.ForeignKeyConstraint(
+        ["observation_id", "station_id"],
+        ["observations.id", "observations.station_id"],
+        name="fk_observation_versions_observation_station",
+    ),
+    # Both the producing and the superseding curve must belong to this station.
+    sa.ForeignKeyConstraint(
+        ["station_id", "rating_curve_id"],
+        ["rating_curves.station_id", "rating_curves.id"],
+        name="fk_observation_versions_rating_curve_station",
+    ),
+    sa.ForeignKeyConstraint(
+        ["station_id", "superseded_by_curve_id"],
+        ["rating_curves.station_id", "rating_curves.id"],
+        name="fk_observation_versions_superseding_curve_station",
+    ),
+)
+
+# Index on observation_versions — epoch-matched lookups (Plan 035 §4).
+sa.Index(
+    "ix_observation_versions_station_param_ts_curve",
+    observation_versions.c.station_id,
+    observation_versions.c.parameter,
+    observation_versions.c.timestamp,
+    observation_versions.c.rating_curve_id,
 )
 
 # ──────────────────────────────────────────────

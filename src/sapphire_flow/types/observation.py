@@ -9,7 +9,12 @@ if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.domain import QcFlag
     from sapphire_flow.types.enums import ObservationSource
-    from sapphire_flow.types.ids import ObservationId, RatingCurveId, StationId
+    from sapphire_flow.types.ids import (
+        ObservationId,
+        ObservationVersionId,
+        RatingCurveId,
+        StationId,
+    )
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -45,3 +50,22 @@ class Observation:
             raise ValueError(
                 "Observation.value must not be None when qc_status is not MISSING"
             )
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ArchivedObservationValue:
+    """A discharge value superseded by a rating-curve reprocessing (Plan 035 Task 3).
+
+    Archived before Flow 12 Branch A overwrites a rating-curve-derived observation,
+    so the pre-reprocessing operational record survives.
+    """
+
+    id: ObservationVersionId
+    observation_id: ObservationId
+    station_id: StationId
+    timestamp: UtcDatetime
+    parameter: str
+    value: float | None  # None if the superseded observation was MISSING
+    rating_curve_id: RatingCurveId  # curve that produced the archived value
+    superseded_at: UtcDatetime
+    superseded_by_curve_id: RatingCurveId  # curve that replaced it

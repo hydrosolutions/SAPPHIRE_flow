@@ -36,6 +36,7 @@ from sapphire_flow.protocols.stores import (
     ModelStore,
     NwpGridStore,
     ObservationStore,
+    ObservationVersionStore,
     ParameterStore,
     PipelineHealthStore,
     QualityChecker,
@@ -78,6 +79,7 @@ from tests.fakes.fake_stores import (
     FakeModelStore,
     FakeNwpGridStore,
     FakeObservationStore,
+    FakeObservationVersionStore,
     FakeParameterStore,
     FakePipelineHealthStore,
     FakeRatingCurveStore,
@@ -127,6 +129,9 @@ class TestFakeStoreConformance:
 
     def test_rating_curve_store(self) -> None:
         assert isinstance(FakeRatingCurveStore(), RatingCurveStore)
+
+    def test_observation_version_store(self) -> None:
+        assert isinstance(FakeObservationVersionStore(), ObservationVersionStore)
 
     def test_flow_regime_config_store(self) -> None:
         assert isinstance(FakeFlowRegimeConfigStore(), FlowRegimeConfigStore)
