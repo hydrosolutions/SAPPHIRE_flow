@@ -427,6 +427,7 @@ All status/enum columns store TEXT matching the Python enum `.value` (lowercase)
 | `model_assignments.status` / `ModelAssignmentStatus` | `active`, `inactive` | `inactive` | v0+v1 |
 | `OnboardingOutcome` (in-memory only) | `promoted`, `gate_rejected`, `skipped_compat`, `skipped_no_data`, `skipped_insufficient_eval`, `failed_smoke_test`, `failed_training`, `failed_hindcast`, `failed_skill`, `failed_assignment` | all terminal | v0+v1 |
 | Forecast QC rule IDs (string, not enum) | `negative_value`, `range_check`, `flat_ensemble`, `ensemble_spread`, `climatology_outlier`, `temporal_consistency`, `quantile_crossing` | — | v0+v1 |
+| Observation QC rule IDs (string, not enum) | `upstream_propagated` *(calculated-station derivation — inherits worst component QC status, Plan 015 §D6)* | — | **v1** |
 
 ---
 
