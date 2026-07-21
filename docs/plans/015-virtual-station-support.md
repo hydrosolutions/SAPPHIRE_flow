@@ -737,6 +737,79 @@ Onboarding checklist for calculated stations:
 - ✅ At least one model artifact active
 - ⬜ Alert thresholds defined (optional)
 
+### Onboarding entry-point design (TOML post-pass) — RESOLVED 2026-07-21
+
+The abstract 5.C1–5.C3 steps above did not fix *how* a calculated station + its formula
+enter onboarding, or *where* the pass runs in the concrete `_run_onboarding` orchestrator.
+Owner-resolved (grill-me, 2026-07-21):
+
+**Input format — TOML `[[onboarding.calculated]]` blocks** (matches the "station+model
+config in DB, TOML as bootstrap import only" convention; API/CLI deferred with Plan 042
+auth). Each block carries the calc-station metadata **and** its component formula:
+
+```toml
+[[onboarding.calculated]]
+code = "RES-INFLOW-1"
+name = "Reservoir Inflow"
+network = "dhm"
+parameter = "discharge"          # the formula-derived + reportable parameter
+lon = 85.3
+lat = 27.7
+# timezone, basin (by code), effective_from all optional
+components = [
+  { code = "GAUGE-A", weight = 1.0 },
+  { code = "GAUGE-B", weight = 1.0 },
+  { code = "SPILL-C", weight = -1.0 },   # signed weights allowed (§D2)
+]
+```
+
+Parsed via **Pydantic at the boundary** (nested `components` list) → frozen-dataclass
+`CalculatedStationSpec` on `OnboardingConfig`.
+
+**Components must pre-exist and be OPERATIONAL (load-bearing).** In `_run_onboarding`,
+gauged stations are marked `OPERATIONAL` only at the **final** step (Step 8, after model
+training). So a calculated station's components **cannot** be onboarded in the same batch —
+they would still be `ONBOARDING` at 5.C2 validation time. Therefore: **components must
+already exist and be gauged+operational in the DB from a prior onboarding run** (matches
+the plan's "All components must already be OPERATIONAL"; the realistic Central-Asia case —
+tributary gauges exist, the reservoir-inflow virtual station is added later). Same-batch
+component+calculated onboarding is explicitly **out of scope** for this slice (it would
+require restructuring the Step-8 go-live ordering into a two-phase promotion).
+
+**Where the pass runs — a new step after Step 2 (station storage), before Step 5b
+(baselines).** For each `CalculatedStationSpec`:
+1. Build + store the calc `StationConfig` (`gauging_status = 'calculated'`,
+   `station_status = 'onboarding'`, `measured_parameters ⊇ {parameter}`).
+2. **5.C2 validate + resolve components** against the **current DB** state: each component
+   `code` exists, is `gauging_status = 'gauged'` **and** `station_status = 'operational'`;
+   each weight nonzero+finite (enforced by `ComponentWeight.__post_init__`). Reject the
+   whole calc station (error, skip) on any violation. Cycles impossible by construction
+   (calculated→calculated forbidden by the gauging invariant) — code comment, no runtime
+   check.
+3. **5.C1 configure formula**: `effective_from` defaults to the **earliest component
+   observation timestamp** across components (admin may override in TOML); write the
+   `ComponentWeight` rows via `FormulaStore.store_formula`.
+4. **5.C3 bootstrap derived history**: over `[effective_from, end_utc]`, per timestamp any
+   component reported, apply `fetch_formula_at(t)` + the Flow-2 `derive_point` (reusing
+   `services/component_derivation.py` — source precedence, weighted sum, QC propagation,
+   MISSING placeholder), store `source = 'component_derived'`. **Skips Stage-1/2 QC** — the
+   rows are written with their propagated `qc_status` (never RAW), so Step 5's RAW-only QC
+   fetch ignores them.
+
+**Reuse the existing tail — do NOT duplicate 5.8–5.12.** After the pass, add the calc
+station's id to `resolved_station_ids` / `station_target` / `station_by_id`. The existing
+Step 5b (baselines), 5c (flow regimes), 6 (model assignment), 7 (training), 8 (operational
+promotion via the climatology-floor gate) then process it exactly like a gauged station —
+its `QC_PASSED` derived obs feed baselines/regimes/training, and it goes operational once
+the climatology fallback artifact trains on that history. A calc station without a
+basin/forcing simply gets no MeteoSwiss binding (not held out — the held-out set only
+covers MeteoSwiss-*eligible* stations) and is not blocked from operational promotion.
+
+**Deferred (documented, not built here):** same-batch component+calc onboarding;
+operational NWP weather-source binding for calculated stations (they reach operational via
+the climatology floor for v1-now; wiring a forecast-forcing binding for a derived-only
+station is a separate concern); Flow-12 re-derivation on component reprocessing (§Flow 12).
+
 ## Implementation surface (code touchpoints)
 
 The design above touches these concrete code sites — each is a task for the build (the
