@@ -862,6 +862,26 @@ class MeteoSwissOpenDataReanalysisAdapter:
         )
         try:
             resp = self._http_client.get(url)
+        except Exception as exc:
+            raise AdapterError(
+                f"STAC 'last'-family item fetch failed for {item_id}: {exc}"
+            ) from exc
+        # A genuine HTTP 404 on the monthly "last"-family item is a MISSING
+        # month, not an error: MeteoSwiss may not have published the current
+        # partial month's monthly item yet. Treat it as a gap (return None) so
+        # the caller's ``archive_month_gap`` → recent-daily-tail fallback runs
+        # (Plan 130 Part A). Mirrors the per-day 404-as-gap in
+        # ``_fetch_day_feature`` (Plan 128). Transport errors and any non-404
+        # HTTP status stay LOUD as ``AdapterError``.
+        if resp.status_code == 404:
+            log.info(
+                "reanalysis.last_family_month_gap",
+                product=product.token,
+                year=year,
+                month=month,
+            )
+            return None
+        try:
             resp.raise_for_status()
         except Exception as exc:
             raise AdapterError(

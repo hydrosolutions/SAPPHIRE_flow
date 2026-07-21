@@ -157,6 +157,27 @@ uv run pytest                  # incl. Part B flow+model robustness + Part A rec
 ```
 Plus the staging tail-fill + clean-retrain gate on the mini.
 
+## Known limitations
+
+**Backfill-path supersession of provisional temperature.** `run_backfill` (used for both the one-shot
+backfill and station onboarding, `services/onboarding.py`) skips logical days already present, so it
+does **not** re-fetch to supersede a provisional recent-daily temperature value with the later
+definitive monthly-"last"/yearly value (`reanalysis_backfill.py:~315-335` filters fetched rows before
+the store write, so `historical_forcing_store`'s latest-wins read never sees the definitive row on this
+path). The scheduled `ingest-weather-history` path, by contrast, is correct: it stores fetched rows
+directly (`ingest_weather_history.py:~513,525`), and its 60-day window covers essentially the whole
+~2-month recent-daily tier, so it supersedes provisional→definitive in normal operation. The
+stale-provisional edge is therefore narrow — a day whose definitive monthly-"last" only publishes after
+it has aged out of the 60-day ingest window — and low-impact, since a provisional temperature is
+approximately equal to its definitive value. **Follow-up (if it matters):** make `run_backfill`
+re-fetch the recent-daily window instead of skipping, or add explicit write-side supersession
+(currently deferred, consistent with Plan 129 §4).
+
+**TminD/TmaxD/SrelD tail coverage.** These three products share TabsD's `recent_daily_tail` code path
+via the shared `_Product` registry, but they are not independently fixture-tested at the tail level;
+coverage relies on the shared implementation plus the per-product NetCDF variable-name tests elsewhere.
+This is a residual risk, accepted.
+
 ## Provenance
 
 Surfaced 2026-07-20 while retraining on the mac-mini after the 128+Release-B deploy: `nwp_regression`

@@ -1229,6 +1229,91 @@ class TestTemperatureRecentDailyTail:
         # id-fetch was ever issued for it (the routing-preservation blocker).
         assert not any(u.endswith("/items/20260630-ch") for u in requested_urls)
 
+    def _handler_july_month_404(
+        self,
+    ) -> tuple[Callable[[httpx.Request], httpx.Response], list[str]]:
+        """Same as ``_handler`` but the July monthly-"last" item itself
+        returns HTTP 404 (MeteoSwiss has not published the current partial
+        month's monthly item yet) instead of a 200 with empty assets. The
+        daily per-day items for July ARE present."""
+        requested_urls: list[str] = []
+        june_bytes = _netcdf_bytes("TabsD", "2026-06-30", 11.0)
+        tail_bytes = {d: _netcdf_bytes("TabsD", d, 15.0) for d in self._JULY_TAIL_DAYS}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            requested_urls.append(url)
+            if url == self._JUNE_ASSET_URL:
+                return httpx.Response(
+                    200,
+                    content=june_bytes,
+                    headers={"content-type": "application/x-netcdf"},
+                )
+            for day, payload in tail_bytes.items():
+                if f"tabsd_{day}" in url:
+                    return httpx.Response(
+                        200,
+                        content=payload,
+                        headers={"content-type": "application/x-netcdf"},
+                    )
+            if url.endswith("/items/archive-ch"):
+                return httpx.Response(200, json=_archive_item({}))
+            if url.endswith(f"/items/{self._YEAR}{self._MONTH_JUNE:02d}-ch"):
+                return httpx.Response(
+                    200,
+                    json=_last_family_item(
+                        self._YEAR,
+                        self._MONTH_JUNE,
+                        _last_family_asset(
+                            "tabsd",
+                            "ch01r",
+                            self._YEAR,
+                            self._MONTH_JUNE,
+                            self._JUNE_ASSET_URL,
+                        ),
+                    ),
+                )
+            if url.endswith(f"/items/{self._YEAR}{self._MONTH_JULY:02d}-ch"):
+                # The current partial month's monthly item is NOT published
+                # yet -> a genuine 404 (not a 200 with empty assets).
+                return httpx.Response(404, json={"error": "not found"})
+            day = _daily_item_id_date(url)
+            if day is not None:
+                if day in tail_bytes:
+                    return httpx.Response(200, json=_feature_tabsd(day))
+                return httpx.Response(404, json={"error": "not found"})
+            raise AssertionError(f"unexpected request: {url}")
+
+        return handler, requested_urls
+
+    def test_daily_tail_runs_when_monthly_item_is_404_not_empty(self) -> None:
+        # BLOCKER regression (Plan 130 adversarial review): a genuine 404 on
+        # the monthly ``{YYYYMM}-ch`` item (current partial month not yet
+        # published) must be treated as a MISSING month, letting the
+        # ``archive_month_gap`` → daily-tail fallback run — NOT aborting the
+        # whole product/range with an AdapterError before the fallback.
+        #
+        # Soundness: fails RED against the pre-fix ``_last_family_asset_href``
+        # (which ``raise_for_status()``-es the 404 into an AdapterError), so
+        # ``fetch_products`` raises instead of returning the daily-tail rows.
+        sid = StationId(uuid.uuid4())
+        handler, _requested = self._handler_july_month_404()
+        adapter = _make_adapter(httpx.MockTransport(handler), {sid: _make_basin(sid)})
+
+        rows = adapter.fetch_products(
+            [ForcingSource.METEOSWISS_TABSD],
+            [_make_config(sid)],
+            ensure_utc(datetime(2026, 6, 30, tzinfo=UTC)),
+            ensure_utc(datetime(2026, 7, 3, tzinfo=UTC)),
+            ["temperature"],
+        )
+
+        got_days = {r.valid_time.date().isoformat() for r in rows}
+        assert "2026-06-30" in got_days  # monthly-"last" coverage, unchanged
+        assert set(self._JULY_TAIL_DAYS) <= got_days  # daily-tail fill past 404
+        assert all(r.source == ForcingSource.METEOSWISS_TABSD.value for r in rows)
+        assert all(r.parameter == "temperature" for r in rows)
+
 
 # ---------------------------------------------------------------------------
 # Plan 128 A2 — id-fetch defect fix regression tests. The confirmed root

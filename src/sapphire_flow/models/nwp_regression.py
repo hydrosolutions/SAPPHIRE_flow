@@ -20,15 +20,17 @@ value — absent from the frame, a null, or (in ``train``) a non-finite
 crash. ``_aligned_future`` (used by ``train``) returns a validity mask
 alongside the aligned values — ``train`` drops rows with a missing value
 rather than ``float(None)``-crashing or handing ``Ridge`` a NaN. ``predict``
-keeps its original grid construction (each future-known series anchored on
-its own delivered timestamps, positionally combined) and adds only a
-missing-value guard: a NaN in the precipitation or temperature array (e.g. a
-null future value) returns ``ModelFailure`` (cause ``INPUT_DATA``) rather
-than emitting a NaN-poisoned ``ModelSuccess``. A broader predict-side
-cross-variable timestamp-alignment refactor is explicitly OUT of scope for
-Plan 130 (see the plan's "Not changed / out of scope" section) — this guard
-does not change how the future grid is anchored or how many rows are
-consumed.
+validates the delivered future forcing against the model's declared
+``_HORIZON`` FIRST: precip/temp of unequal length or non-identical
+timestamps, or fewer than ``_HORIZON`` steps delivered, returns
+``ModelFailure`` (cause ``INPUT_DATA``) instead of an ``IndexError`` on
+``temp[step]`` or a silently short ``ModelSuccess``. Over-delivery (more
+aligned steps than ``_HORIZON``) is forecast in full, preserving the
+delivered-timestamp anchoring. It then applies a missing-value guard — a NaN
+in the precipitation or temperature array (e.g. a null future value)
+likewise returns ``ModelFailure`` rather than emitting a NaN-poisoned
+``ModelSuccess``. Only aligned windows of at least ``_HORIZON`` steps reach
+the prediction loop.
 """
 
 from __future__ import annotations
@@ -244,9 +246,45 @@ class _NwpRegressionBase:
         future_times, precip = _sorted_series(
             dynamic.future_known[_PRODUCT_NWP][_PRECIPITATION], _PRECIPITATION
         )
-        _temp_times, temp = _sorted_series(
+        temp_times, temp = _sorted_series(
             dynamic.future_known[_PRODUCT_NWP][_TEMPERATURE], _TEMPERATURE
         )
+
+        # Shape / horizon guard (Plan 130 Part B follow-up) — runs BEFORE the
+        # NaN guard and the prediction loop. The reference is the model's own
+        # declared ``_HORIZON``, independent of any one delivered frame. Two
+        # ANTICIPATED missing-input conditions must return ModelFailure
+        # (INPUT_DATA), never crash or silently short-forecast:
+        #   * precip/temp of unequal length or non-identical timestamps —
+        #     otherwise the loop IndexErrors on ``temp[step]`` when temp is the
+        #     shorter series;
+        #   * fewer than the declared ``_HORIZON`` steps delivered — otherwise
+        #     the model emits a truncated ModelSuccess shorter than its own
+        #     contracted horizon.
+        # Over-delivery (more than ``_HORIZON`` aligned steps) is tolerated and
+        # forecast in full, preserving the pre-existing behaviour where the
+        # future window is anchored on the delivered timestamps.
+        aligned = future_times == temp_times
+        if not aligned or len(future_times) < _HORIZON or len(temp_times) < _HORIZON:
+            log.warning(
+                "nwp_regression.future_shape_mismatch",
+                model=self._model_name,
+                horizon=_HORIZON,
+                n_precipitation=len(future_times),
+                n_temperature=len(temp_times),
+                aligned=aligned,
+            )
+            return ModelFailure(
+                model_name=self._model_name,
+                issue_datetime=issue_datetime,
+                cause=FailureCause.INPUT_DATA,
+                message=(
+                    "future forcing shape mismatch: expected at least "
+                    f"{_HORIZON} aligned precipitation/temperature steps, got "
+                    f"precipitation={len(future_times)}, "
+                    f"temperature={len(temp_times)}, aligned={aligned}"
+                ),
+            )
         horizon = len(future_times)
 
         # A genuinely missing required future input is an ANTICIPATED
