@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-07-20
 plan: 130
 title: Temperature (+min/max/sunshine) reanalysis live-tail — fetch the recent-daily tier so reanalysis reaches present, and harden nwp_regression missing-value handling
@@ -46,6 +46,13 @@ the right state, and a missing value should never crash a whole train/onboard ru
   `tabsd_ch01r`, `tmind_ch01r`, `tmaxd_ch01r` (e.g. item `20260715-ch`), with `tabsd`/`tmind`/`tmaxd`
   present **to 2026-07-18**. Recent-daily TabsD uses the **same** `tabsd_ch01r` asset name/grid as the
   yearly archive.
+- **Tier structure confirmed (probe, resolves grill-me #1):** the `archive-ch` item's yearly TabsD
+  assets run **1961→2025 only** — there is **no 2026 yearly archive**. So 2026 is served by the
+  **monthly-"last"** tier (complete months, ending at the last complete month = 2026-05-31 on staging)
+  **plus** the **recent-daily** per-day items (the partial current month, 06-01→07-18). Therefore the
+  recent-daily tier is the **provisional partial-current-month tail**, superseded by the
+  monthly-"last"/yearly definitive once the month completes — the same provisional→definitive pattern as
+  RhiresD↔RprelimD, but within the `tabsd` product name (not a separate `Tprelim` product).
 - **The adapter miss:** `_PRODUCT_REGISTRY` marks TabsD/TminD/TmaxD/SrelD `archive_backed=True`
   (`:174-206`); `fetch_products` routes archive-backed → archive path only, non-archive (RprelimD) →
   daily per-day path (`:330-331`). So the recent-daily tier of the temp/sunshine products is never
@@ -104,18 +111,23 @@ Two layers:
 - **Predict-side cross-variable alignment refactors** beyond the missing-value guard are OUT of scope
   (a `/plan` pass proposed a broader predict alignment rework unrelated to the tail-gap crash — declined).
 
-## Grill-me (owner decisions before READY)
+## Grill-me — resolved 2026-07-21
 
-1. **Recent-daily TabsD: provisional or definitive?** (needs a live confirm — compare recent-daily vs
-   archive for an overlapping past date). Decides: separate provisional source/version + supersession,
-   vs. extend `meteoswiss_tabsd`.
-2. **Part A scope: temperature only, or all four archive-backed products (TabsD/TminD/TmaxD/SrelD)?**
-   They share the per-day items; fill all (consistent) or just TabsD (the one that crashed training)?
-   (Precip needs nothing — RprelimD is already its recent tier.)
-3. **Sequencing: Part B first (fast, unblocks training now), then Part A (data completeness)? Or ship
-   both together?** Part B alone stops the crash immediately; Part A is the proper fill.
-4. **Training missing-value strategy: drop affected samples, or impute?** (Recommend drop — simplest,
-   no synthetic values.)
+1. **Recent-daily TabsD provisional-vs-definitive? — RESOLVED (probe): PROVISIONAL** (partial-current-month
+   tail; yearly archive stops 2025, monthly-"last" ends at complete months, recent-daily fills the rest).
+   **Design:** fetch the recent-daily tier into the **same `meteoswiss_tabsd` source** (same product name),
+   layered after the monthly-"last" high-water mark; the definitive monthly-"last"/yearly value supersedes
+   it when the month completes via the rolling 60-day re-fetch + `historical_forcing.version` latest-wins
+   read (`historical_forcing_store.py:55`). *Confirm the store write semantics (versioned-append vs upsert
+   on (source, valid_time, parameter)) in the build; explicit write-side supersession stays out-of-scope,
+   consistent with 129 §4 — read-time latest-wins suffices.*
+2. **Part A scope — RESOLVED: all four archive-backed products** (TabsD/TminD/TmaxD/SrelD). They share the
+   per-day items and the same tier structure; fill all for consistency. (Precip needs nothing — RprelimD
+   is already its recent tier.)
+3. **Sequencing — RESOLVED: ship BOTH Part A and Part B.** Part B (robustness) is the load-bearing unblock
+   for **Plan 129's T1** (the consuming model inherits this `train()` path); Part A completes the reanalysis
+   data so training uses real recent temperature.
+4. **Training missing-value strategy — RESOLVED: DROP** affected samples (no synthetic imputation).
 
 ## Tests
 
@@ -155,5 +167,7 @@ plus flow/model robustness, NOT an ICON cross-fill. A `plan`-workflow run (2026-
 its planner over-expanded the design (a predict-alignment refactor + a 4th, unrelated failure mode —
 declined); its genuine findings folded here: harden BOTH training flows (not just `train_models`),
 prefer a flow-level try/except, add onboarding to the caller list, and the routing-must-not-drop-history
-blocker. DRAFT — owner grill-me (esp. the provisional-vs-definitive live confirm) before READY.
+blocker. Grill-me resolved 2026-07-21 (a live STAC probe settled the provisional question — recent-daily is
+the provisional partial-current-month tail; yearly archive stops 2025). **READY (owner, 2026-07-21) —
+sequenced BEFORE Plan 129's T1, which is blocked on this fix.** Build via `implement`; hold-at-PR.
 Temperature analog of Plan 128; relates to Plan 129 and the #103 three-tier re-probe.
