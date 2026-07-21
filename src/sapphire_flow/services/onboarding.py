@@ -36,16 +36,18 @@ from sapphire_flow.types.ids import CLIMATOLOGY_FALLBACK_MODEL_ID
 from sapphire_flow.types.onboarding import OnboardingResult
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
     from pathlib import Path
 
     from sapphire_flow.config.deployment import DeploymentConfig
+    from sapphire_flow.config.onboarding import CalculatedStationSpec
     from sapphire_flow.protocols.adapters import WeatherReanalysisSource
     from sapphire_flow.protocols.forecast_model import ForecastModel
     from sapphire_flow.protocols.stores import (
         BasinStore,
         ClimBaselineStore,
         FlowRegimeConfigStore,
+        FormulaStore,
         HindcastStore,
         HistoricalForcingStore,
         ModelArtifactStore,
@@ -219,6 +221,8 @@ def _run_onboarding(
     parameter_store: ParameterStore | None = None,
     reanalysis_adapter_factory: Callable[[], MeteoSwissBackfillAdapter] | None = None,
     require_meteoswiss_backfill: bool = False,
+    formula_store: FormulaStore | None = None,
+    calculated_specs: Sequence[CalculatedStationSpec] = (),
 ) -> OnboardingResult:
     errors: list[str] = []
     stations_created = 0
@@ -314,6 +318,64 @@ def _run_onboarding(
 
     # Resolved StationId set for downstream steps
     resolved_station_ids = set(station_map.values())
+
+    # Step 2.5: Calculated (component-derived) stations (Plan 015 §5.C). Runs after
+    # component stations are stored; components must ALREADY be gauged+operational in
+    # the DB (a prior onboarding run) — see the plan's entry-point design. On success,
+    # the calc station joins the same maps so the Step 5b–8 tail (baselines,
+    # flow regimes, model assignment/training, operational promotion) processes it like
+    # any other station.
+    if calculated_specs:
+        if formula_store is None:
+            errors.append(
+                "calculated stations configured but no formula_store provided"
+            )
+        else:
+            from sapphire_flow.services.calculated_station_onboarding import (
+                onboard_calculated_station,
+            )
+
+            for spec in calculated_specs:
+                try:
+                    basin_id = (
+                        basin_code_to_id.get(spec.basin_code)
+                        if spec.basin_code is not None
+                        else None
+                    )
+                    outcome = onboard_calculated_station(
+                        spec,
+                        basin_id,
+                        station_store,
+                        obs_store,
+                        formula_store,
+                        clock,
+                        _WIDE_START,
+                        end_utc,
+                    )
+                    calc = outcome.station
+                    station_map[calc.code] = calc.id
+                    station_by_id[calc.id] = calc
+                    station_target[calc.id] = spec.parameter
+                    resolved_station_ids.add(calc.id)
+                    if outcome.created:
+                        stations_created += 1
+                    observations_imported += outcome.observations_derived
+                    log.info(
+                        "onboarding.calculated_station_onboarded",
+                        code=spec.code,
+                        created=outcome.created,
+                        derived=outcome.observations_derived,
+                        missing=outcome.observations_missing,
+                    )
+                except (ConfigurationError, ValueError) as exc:
+                    errors.append(
+                        f"Failed to onboard calculated station {spec.code}: {exc}"
+                    )
+                    log.error(
+                        "onboarding.calculated_station_error",
+                        code=spec.code,
+                        error=str(exc),
+                    )
 
     # Step 3: Store observations
     for station_id, raw_obs in obs_by_station.items():
@@ -935,6 +997,8 @@ def onboard_from_camelsch(
     water_level_units: dict[str, str] | None = None,
     reanalysis_adapter_factory: Callable[[], MeteoSwissBackfillAdapter] | None = None,
     require_meteoswiss_backfill: bool = False,
+    formula_store: FormulaStore | None = None,
+    calculated_specs: Sequence[CalculatedStationSpec] = (),
 ) -> OnboardingResult:
     from sapphire_flow.adapters.camelsch_adapter import (
         load_forcing,
@@ -1005,6 +1069,8 @@ def onboard_from_camelsch(
         parameter_store=parameter_store,
         reanalysis_adapter_factory=reanalysis_adapter_factory,
         require_meteoswiss_backfill=require_meteoswiss_backfill,
+        formula_store=formula_store,
+        calculated_specs=calculated_specs,
     )
 
     log.info(
