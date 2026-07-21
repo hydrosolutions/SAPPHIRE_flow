@@ -297,7 +297,8 @@ The table below fixes the run-name template for every `@flow` and `@task` site u
 | `onboard_model.py` | `_validate_compatibility_task` | @task | callable → `validate-compat-{model_id}-{unit.station_id or unit.group_id}` [1] |
 | `onboard_model.py` | `_smoke_test_model_task` | @task | `smoke-test-model` |
 | `onboard_model.py` | `_assemble_onboarding_data_task` | @task | callable → `assemble-onboarding-data-{unit.station_id or unit.group_id}` [1] |
-| `onboard_model.py` | `_train_and_store_artifact_task` | @task | callable → `train-onboarding-model-{unit.station_id or unit.group_id}` [1] |
+| `onboard_model.py` | `_train_onboarding_model_task` | @task | callable → `train-onboarding-model-{unit.station_id or unit.group_id}` [1] |
+| `onboard_model.py` | `_store_onboarding_artifact_task` | @task | callable → `store-onboarding-artifact-{unit.station_id or unit.group_id}` [1] |
 | `onboard_model.py` | `_evaluate_skill_gate_task` | @task | `evaluate-skill-gate-{model_id}-{artifact_id}` |
 | `onboard_model.py` | `_promote_artifact_task` | @task | callable → `promote-artifact-{unit.station_id or unit.group_id}-{artifact_id}` [1] |
 | `onboard_model.py` | `_create_assignment_task` | @task | callable → `create-assignment-{model_id}-{unit.station_id or unit.group_id}` [1] |

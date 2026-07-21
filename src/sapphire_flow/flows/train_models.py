@@ -7,6 +7,7 @@ from datetime import timedelta
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
+import structlog
 from prefect import flow, runtime, task
 from prefect.cache_policies import NO_CACHE
 from prefect.utilities.annotations import unmapped
@@ -37,6 +38,8 @@ if TYPE_CHECKING:
 
     from sapphire_flow.protocols.stores import HistoricalForcingStore
     from sapphire_flow.types.datetime import UtcDatetime
+
+log = structlog.get_logger(__name__)
 
 
 def _unit_shard(unit: TrainingUnit) -> str:
@@ -374,13 +377,39 @@ def train_models_flow(
             )
             continue
 
-        # T.3: train and store artifact
-        artifact_bytes = _train_model_task(
-            unit=unit,
-            model=model_instance,
-            data=data,
-            rng=rng,
-        )
+        # T.3: train the model artifact. Wrapped so a raise from THIS call (the
+        # reanalysis-tail missing-value crash class, or the existing
+        # insufficient-data ValueError) is recorded as a failed unit and the
+        # run CONTINUES for the remaining units, instead of aborting the whole
+        # flow (Plan 130 Part B). Deliberately scoped to the training call
+        # only — a SHA-256 mismatch further down signals artifact-store
+        # corruption, a system-level integrity failure that must still abort
+        # the run loudly, not be swallowed per-unit.
+        try:
+            artifact_bytes = _train_model_task(
+                unit=unit,
+                model=model_instance,
+                data=data,
+                rng=rng,
+            )
+        except Exception as exc:  # flow-level guard, see docstring above
+            log.error(
+                "train_models.unit_training_failed",
+                unit=_unit_shard(unit),
+                model_id=str(unit.model_id),
+                error=str(exc),
+            )
+            results.append(
+                TrainingResult(
+                    training_unit=unit,
+                    artifact_id=None,
+                    hindcast_steps=[],
+                    skill_computed=False,
+                    error=str(exc),
+                )
+            )
+            continue
+
         artifact_id = _store_artifact_task(
             unit=unit,
             artifact_bytes=artifact_bytes,

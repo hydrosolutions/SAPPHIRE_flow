@@ -37,6 +37,24 @@ gap on the daily path only, never raising, so the scheduled
 absent archive-year href as an ``archive_year_gap`` and an absent last-family
 month href as an ``archive_month_gap`` — both return no rows, not an error;
 only a failed archive item fetch or asset download is a hard ``AdapterError``.
+
+**Temperature/sunshine recent-daily tail (Plan 130, 2026-07-21)**: a live STAC
+probe found MeteoSwiss ALSO serves TabsD/TminD/TmaxD/SrelD (``recent_daily_
+tail=True`` in ``_PRODUCT_REGISTRY``) in the same recent-daily per-day items
+RprelimD uses, under the same asset names as the yearly archive — the
+monthly-"last" family lags the current (partial) month by several weeks, so
+without this tail the reanalysis temperature series silently stopped at the
+last complete month. ``_fetch_archive_backed_range`` now layers a per-day
+id-fetch (``_fetch_recent_daily_tail``, reusing ``_fetch_day_feature``/
+``_rows_for_product``) ON TOP OF the existing archive/monthly-last coverage,
+scoped strictly to the months that coverage did not reach — never a
+replacement for it, so older current-year months keep fetching via
+monthly-last exactly as before and no natural key is ever double-fetched.
+This tail is provisional (superseded by the definitive monthly-last/yearly
+value once the month completes, read-time latest-wins via
+``historical_forcing.version`` — the same provisional pattern as
+RhiresD -> RprelimD, but within one product name); RhiresD keeps its
+separate RprelimD live-tail product (Plan 128) unchanged.
 """
 
 from __future__ import annotations
@@ -146,7 +164,20 @@ class _Product:
     archive (RhiresD + the ch01r temperature/sunshine grids) — these MUST be
     addressed through the archive/last family for any historical fetch, because
     the archive years are not published as per-day STAC items. Only ``RprelimD``
-    (the preliminary live tail) is daily-only (Plan 115b1 §1B)."""
+    (the preliminary live tail) is daily-only (Plan 115b1 §1B).
+
+    ``recent_daily_tail`` (Plan 130 Part A) is ``True`` for the ch01r
+    temperature/sunshine grids (TabsD/TminD/TmaxD/SrelD): MeteoSwiss ALSO
+    serves them in the recent-daily per-day items, under the SAME asset
+    names/grid as the yearly archive — a provisional partial-current-month
+    tail, superseded by the definitive monthly-"last"/yearly value once the
+    month completes (the same provisional->definitive pattern as
+    RhiresD->RprelimD, but within one product name). ``_fetch_archive_backed_
+    range`` layers a per-day fallback fetch ON TOP OF the existing archive/
+    monthly-last coverage for these products, for any month that coverage
+    does not reach — never a replacement for it. ``False`` for RhiresD (its
+    live tail is the SEPARATE RprelimD product, Plan 128) and for RprelimD
+    itself (already daily-only, ``archive_backed=False``)."""
 
     token: str
     raw_var: str
@@ -154,6 +185,7 @@ class _Product:
     source: ForcingSource
     grid: str
     archive_backed: bool
+    recent_daily_tail: bool = False
 
 
 _PRODUCT_REGISTRY: tuple[_Product, ...] = (
@@ -180,6 +212,7 @@ _PRODUCT_REGISTRY: tuple[_Product, ...] = (
         source=ForcingSource.METEOSWISS_TABSD,
         grid="ch01r",
         archive_backed=True,
+        recent_daily_tail=True,
     ),
     _Product(
         token="tmind",
@@ -188,6 +221,7 @@ _PRODUCT_REGISTRY: tuple[_Product, ...] = (
         source=ForcingSource.METEOSWISS_TMIND,
         grid="ch01r",
         archive_backed=True,
+        recent_daily_tail=True,
     ),
     _Product(
         token="tmaxd",
@@ -196,6 +230,7 @@ _PRODUCT_REGISTRY: tuple[_Product, ...] = (
         source=ForcingSource.METEOSWISS_TMAXD,
         grid="ch01r",
         archive_backed=True,
+        recent_daily_tail=True,
     ),
     _Product(
         token="sreld",
@@ -204,6 +239,7 @@ _PRODUCT_REGISTRY: tuple[_Product, ...] = (
         source=ForcingSource.METEOSWISS_SRELD,
         grid="ch01r",
         archive_backed=True,
+        recent_daily_tail=True,
     ),
 )
 
@@ -611,6 +647,7 @@ class MeteoSwissOpenDataReanalysisAdapter:
                 rows.extend(self._rows_for_href(href, product, matching, cycle_time))
                 covered_years.add(year)
 
+        gap_months: set[tuple[int, int]] = set()
         for year, month in months:
             if year in covered_years:
                 continue
@@ -622,10 +659,50 @@ class MeteoSwissOpenDataReanalysisAdapter:
                     year=year,
                     month=month,
                 )
+                gap_months.add((year, month))
                 continue
             rows.extend(self._rows_for_href(href, product, matching, cycle_time))
 
+        # Plan 130 Part A: for the ch01r temperature/sunshine grids, the
+        # recent-daily per-day items are an ADDITIONAL tail source layered on
+        # top of the archive/monthly-last coverage above — used ONLY for the
+        # months that coverage did not reach (never a replacement for it, so
+        # older current-year months keep fetching via monthly-last exactly as
+        # before, and no natural key is ever double-fetched).
+        if product.recent_daily_tail and gap_months:
+            tail_days = [d for d in days if (d.year, d.month) in gap_months]
+            rows.extend(
+                self._fetch_recent_daily_tail(product, matching, tail_days, cycle_time)
+            )
+
         return [r for r in rows if start <= r.valid_time < end]
+
+    def _fetch_recent_daily_tail(
+        self,
+        product: _Product,
+        matching: list[StationWeatherSource],
+        days: list[date],
+        cycle_time: UtcDatetime,
+    ) -> list[RawHistoricalForcing]:
+        """Fetch ``product`` for ``days`` via the per-day STAC item id-fetch
+        (the same ``items/{YYYYMMDD}-ch`` path Plan 128 built for RprelimD) —
+        the recent-daily tail fallback for months the archive/monthly-last
+        family does not (yet) cover (Plan 130 Part A). Reuses ``_fetch_day_
+        feature``/``_rows_for_product`` unchanged, so a genuine 404 (not yet
+        published, or aged out of the rolling retention window) degrades to
+        the routine INFO ``day_gap``, and an item-present/asset-absent race
+        degrades to the WARNING ``day_asset_absent`` gap — neither raises."""
+        rows: list[RawHistoricalForcing] = []
+        for day in days:
+            day_iso = day.isoformat()
+            feature = self._fetch_day_feature(day_iso)
+            if feature is not None:
+                rows.extend(
+                    self._rows_for_product(
+                        feature, product, day_iso, matching, cycle_time
+                    )
+                )
+        return rows
 
     def _fetch_day_feature(self, day_iso: str) -> dict[str, object] | None:
         """Fetch the per-day STAC item by its deterministic id
@@ -785,6 +862,26 @@ class MeteoSwissOpenDataReanalysisAdapter:
         )
         try:
             resp = self._http_client.get(url)
+        except Exception as exc:
+            raise AdapterError(
+                f"STAC 'last'-family item fetch failed for {item_id}: {exc}"
+            ) from exc
+        # A genuine HTTP 404 on the monthly "last"-family item is a MISSING
+        # month, not an error: MeteoSwiss may not have published the current
+        # partial month's monthly item yet. Treat it as a gap (return None) so
+        # the caller's ``archive_month_gap`` → recent-daily-tail fallback runs
+        # (Plan 130 Part A). Mirrors the per-day 404-as-gap in
+        # ``_fetch_day_feature`` (Plan 128). Transport errors and any non-404
+        # HTTP status stay LOUD as ``AdapterError``.
+        if resp.status_code == 404:
+            log.info(
+                "reanalysis.last_family_month_gap",
+                product=product.token,
+                year=year,
+                month=month,
+            )
+            return None
+        try:
             resp.raise_for_status()
         except Exception as exc:
             raise AdapterError(

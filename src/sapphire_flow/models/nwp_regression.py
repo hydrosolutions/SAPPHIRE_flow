@@ -13,6 +13,24 @@ future-known precipitation/temperature forcing over a daily step:
 
 Both are ``ArtifactScope.STATION``, deterministic single-trajectory models — the
 21-member ensemble is assembled downstream in M3, not inside the model.
+
+**Missing future forcing (Plan 130 Part B)**: a missing future precip/temp
+value — absent from the frame, a null, or (in ``train``) a non-finite
+(NaN/inf) reading — is an ANTICIPATED condition per the FI contract, not a
+crash. ``_aligned_future`` (used by ``train``) returns a validity mask
+alongside the aligned values — ``train`` drops rows with a missing value
+rather than ``float(None)``-crashing or handing ``Ridge`` a NaN. ``predict``
+validates the delivered future forcing against the model's declared
+``_HORIZON`` FIRST: precip/temp of unequal length or non-identical
+timestamps, or fewer than ``_HORIZON`` steps delivered, returns
+``ModelFailure`` (cause ``INPUT_DATA``) instead of an ``IndexError`` on
+``temp[step]`` or a silently short ``ModelSuccess``. Over-delivery (more
+aligned steps than ``_HORIZON``) is forecast in full, preserving the
+delivered-timestamp anchoring. It then applies a missing-value guard — a NaN
+in the precipitation or temperature array (e.g. a null future value)
+likewise returns ``ModelFailure`` rather than emitting a NaN-poisoned
+``ModelSuccess``. Only aligned windows of at least ``_HORIZON`` steps reach
+the prediction loop.
 """
 
 from __future__ import annotations
@@ -160,22 +178,40 @@ class _NwpRegressionBase:
         target_times, discharge = _sorted_series(
             dynamic.past_known[_PRODUCT_OBS][_TARGET], _TARGET
         )
-        precip = _aligned_future(dynamic, _PRECIPITATION, target_times)
-        temp = _aligned_future(dynamic, _TEMPERATURE, target_times)
+        precip, precip_valid = _aligned_future(dynamic, _PRECIPITATION, target_times)
+        temp, temp_valid = _aligned_future(dynamic, _TEMPERATURE, target_times)
+        valid = precip_valid & temp_valid
 
+        # A missing future forcing value (the reanalysis tail gap, Plan 130) is
+        # an ANTICIPATED condition per the FI contract, not a crash: drop the
+        # affected training sample rather than raising on float(None).
         design_rows: list[np.ndarray] = []
         targets: list[float] = []
+        dropped = 0
         for i in range(self._n_lags, len(discharge)):
+            if not valid[i]:
+                dropped += 1
+                continue
             features = [precip[i], temp[i]]
             if self._n_lags:
                 features.extend(discharge[i - self._n_lags : i].tolist())
             design_rows.append(np.asarray(features, dtype=np.float64))
             targets.append(float(discharge[i]))
 
+        if dropped:
+            log.warning(
+                "model.training_rows_dropped_missing_future",
+                model=self._model_name,
+                dropped=dropped,
+                kept=len(design_rows),
+            )
+
         if not design_rows:
             raise ValueError(
                 f"insufficient training rows for {self._model_name}: "
-                f"need > {self._n_lags} aligned samples, got {len(discharge)}"
+                f"need > {self._n_lags} aligned samples, got {len(design_rows)} "
+                f"after dropping {dropped} row(s) with missing future forcing "
+                f"(of {len(discharge)} total)"
             )
 
         alpha = _alpha_from_config(config)
@@ -210,10 +246,72 @@ class _NwpRegressionBase:
         future_times, precip = _sorted_series(
             dynamic.future_known[_PRODUCT_NWP][_PRECIPITATION], _PRECIPITATION
         )
-        _temp_times, temp = _sorted_series(
+        temp_times, temp = _sorted_series(
             dynamic.future_known[_PRODUCT_NWP][_TEMPERATURE], _TEMPERATURE
         )
+
+        # Shape / horizon guard (Plan 130 Part B follow-up) — runs BEFORE the
+        # NaN guard and the prediction loop. The reference is the model's own
+        # declared ``_HORIZON``, independent of any one delivered frame. Two
+        # ANTICIPATED missing-input conditions must return ModelFailure
+        # (INPUT_DATA), never crash or silently short-forecast:
+        #   * precip/temp of unequal length or non-identical timestamps —
+        #     otherwise the loop IndexErrors on ``temp[step]`` when temp is the
+        #     shorter series;
+        #   * fewer than the declared ``_HORIZON`` steps delivered — otherwise
+        #     the model emits a truncated ModelSuccess shorter than its own
+        #     contracted horizon.
+        # Over-delivery (more than ``_HORIZON`` aligned steps) is tolerated and
+        # forecast in full, preserving the pre-existing behaviour where the
+        # future window is anchored on the delivered timestamps.
+        aligned = future_times == temp_times
+        if not aligned or len(future_times) < _HORIZON or len(temp_times) < _HORIZON:
+            log.warning(
+                "nwp_regression.future_shape_mismatch",
+                model=self._model_name,
+                horizon=_HORIZON,
+                n_precipitation=len(future_times),
+                n_temperature=len(temp_times),
+                aligned=aligned,
+            )
+            return ModelFailure(
+                model_name=self._model_name,
+                issue_datetime=issue_datetime,
+                cause=FailureCause.INPUT_DATA,
+                message=(
+                    "future forcing shape mismatch: expected at least "
+                    f"{_HORIZON} aligned precipitation/temperature steps, got "
+                    f"precipitation={len(future_times)}, "
+                    f"temperature={len(temp_times)}, aligned={aligned}"
+                ),
+            )
         horizon = len(future_times)
+
+        # A genuinely missing required future input is an ANTICIPATED
+        # condition per the FI contract — return ModelFailure, never let NaN
+        # silently flow into a "successful" forecast (Plan 130 Part B). This
+        # is a value-presence guard only: cross-variable timestamp alignment
+        # is out of scope for Plan 130 (see module docstring).
+        missing_precip = int(np.isnan(precip).sum())
+        missing_temp = int(np.isnan(temp).sum())
+        if missing_precip or missing_temp:
+            log.warning(
+                "nwp_regression.missing_future_forcing",
+                model=self._model_name,
+                missing_precipitation=missing_precip,
+                missing_temperature=missing_temp,
+                horizon=horizon,
+            )
+            return ModelFailure(
+                model_name=self._model_name,
+                issue_datetime=issue_datetime,
+                cause=FailureCause.INPUT_DATA,
+                message=(
+                    "missing required future forcing: "
+                    f"precipitation={missing_precip}, temperature={missing_temp} "
+                    f"missing of {horizon} steps"
+                ),
+            )
 
         lags = self._initial_lags(dynamic)
         if len(lags) != artifact.n_lags:
@@ -303,10 +401,35 @@ class _NwpRegressionBase:
 
 def _aligned_future(
     dynamic: DynamicInputs, name: str, target_times: list[datetime]
-) -> np.ndarray:
+) -> tuple[np.ndarray, np.ndarray]:
+    """Align a future-known variable's series to ``target_times``.
+
+    A target time absent from the frame entirely, present with a null value
+    (the reanalysis tail-gap case, Plan 130), or present with a non-finite
+    value (IEEE NaN/inf — the FI ``max_nan`` gate treats these the same as a
+    null), is an ANTICIPATED condition — this returns NaN for that slot and
+    ``False`` in the paired boolean mask, instead of crashing on
+    ``float(None)`` or letting a NaN reach ``Ridge.fit``. Callers drop
+    invalid rows rather than train/predict on them.
+    """
     frame = dynamic.future_known[_PRODUCT_NWP][name].data.sort("datetime")
     lookup = dict(zip(frame["datetime"].to_list(), frame[name].to_list(), strict=True))
-    return np.asarray([float(lookup[ts]) for ts in target_times], dtype=np.float64)
+    values = np.empty(len(target_times), dtype=np.float64)
+    valid = np.empty(len(target_times), dtype=np.bool_)
+    for i, ts in enumerate(target_times):
+        raw = lookup.get(ts)
+        if raw is None:
+            values[i] = np.nan
+            valid[i] = False
+        else:
+            value = float(raw)
+            if np.isfinite(value):
+                values[i] = value
+                valid[i] = True
+            else:
+                values[i] = np.nan
+                valid[i] = False
+    return values, valid
 
 
 def _alpha_from_config(config: object) -> float:

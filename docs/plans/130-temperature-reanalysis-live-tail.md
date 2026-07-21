@@ -157,6 +157,27 @@ uv run pytest                  # incl. Part B flow+model robustness + Part A rec
 ```
 Plus the staging tail-fill + clean-retrain gate on the mini.
 
+## Known limitations
+
+**Backfill-path supersession of provisional temperature.** `run_backfill` (used for both the one-shot
+backfill and station onboarding, `services/onboarding.py`) skips logical days already present, so it
+does **not** re-fetch to supersede a provisional recent-daily temperature value with the later
+definitive monthly-"last"/yearly value (`reanalysis_backfill.py:~315-335` filters fetched rows before
+the store write, so `historical_forcing_store`'s latest-wins read never sees the definitive row on this
+path). The scheduled `ingest-weather-history` path, by contrast, is correct: it stores fetched rows
+directly (`ingest_weather_history.py:~513,525`), and its 60-day window covers essentially the whole
+~2-month recent-daily tier, so it supersedes provisional→definitive in normal operation. The
+stale-provisional edge is therefore narrow — a day whose definitive monthly-"last" only publishes after
+it has aged out of the 60-day ingest window — and low-impact, since a provisional temperature is
+approximately equal to its definitive value. **Follow-up (if it matters):** make `run_backfill`
+re-fetch the recent-daily window instead of skipping, or add explicit write-side supersession
+(currently deferred, consistent with Plan 129 §4).
+
+**TminD/TmaxD/SrelD tail coverage.** These three products share TabsD's `recent_daily_tail` code path
+via the shared `_Product` registry, but they are not independently fixture-tested at the tail level;
+coverage relies on the shared implementation plus the per-product NetCDF variable-name tests elsewhere.
+This is a residual risk, accepted.
+
 ## Provenance
 
 Surfaced 2026-07-20 while retraining on the mac-mini after the 128+Release-B deploy: `nwp_regression`
@@ -171,3 +192,16 @@ blocker. Grill-me resolved 2026-07-21 (a live STAC probe settled the provisional
 the provisional partial-current-month tail; yearly archive stops 2025). **READY (owner, 2026-07-21) —
 sequenced BEFORE Plan 129's T1, which is blocked on this fix.** Build via `implement`; hold-at-PR.
 Temperature analog of Plan 128; relates to Plan 129 and the #103 three-tier re-probe.
+
+**Post-implementation fixer round (2026-07-21):** the first committed pass (`3f5fd70`) re-introduced
+exactly the predict-side cross-variable alignment refactor this plan declared out of scope (`_HORIZON`-capped
+grid + dict-based timestamp alignment for BOTH future-known variables, replacing the original
+per-series-positional grid construction) — flagged by independent Codex review. Reverted `predict()` to
+its original per-series `_sorted_series`-based positional grid, keeping only the missing-value
+(`np.isnan`) guard actually in scope; the two tests that only made sense under the reworked mechanism
+(mismatched-length / same-tail-truncation cross-alignment) were removed. `train()`/`_aligned_future()`
+(the load-bearing Part B fix) are unchanged. Also fixed a pyright-ratchet regression from the same
+commit (`onboard_model.py` 23→24, the new `_store_onboarding_artifact_task` split adding a 7th
+`prefect.runtime` stub-gap renderer): suppressed locally with `# pyright: ignore[reportAttributeAccessIssue]`
+(precedent: `run_forecast_cycle.py:1208`) instead of growing the baseline; baseline restored to main's
+542/23.

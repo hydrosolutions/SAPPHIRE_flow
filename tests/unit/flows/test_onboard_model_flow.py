@@ -108,6 +108,8 @@ def _run_flow(
     compat: MagicMock | None = None,
     skill_gate: MagicMock | None = None,
     smoke_side_effect: Exception | None = None,
+    train_side_effect: Exception | None = None,
+    store_side_effect: Exception | None = None,
 ) -> tuple[object, MagicMock, MagicMock]:
     fake_model = FakeStationForecastModel()
     fake_discovered = {ModelId(model_id): fake_model}
@@ -116,6 +118,16 @@ def _run_flow(
 
     compat_report = compat if compat is not None else _compat_ok()
     gate = skill_gate if skill_gate is not None else _passing_skill_gate(artifact_id)
+    train_kwargs: dict = (
+        {"side_effect": train_side_effect}
+        if train_side_effect is not None
+        else {"return_value": b"fake_artifact"}
+    )
+    store_kwargs: dict = (
+        {"side_effect": store_side_effect}
+        if store_side_effect is not None
+        else {"return_value": artifact_id}
+    )
 
     with (
         patch(
@@ -140,8 +152,12 @@ def _run_flow(
             return_value=MagicMock(),
         ),
         patch(
-            "sapphire_flow.flows.onboard_model._train_and_store_artifact_task",
-            return_value=(artifact_id, b"fake_artifact"),
+            "sapphire_flow.flows.onboard_model._train_onboarding_model_task",
+            **train_kwargs,
+        ),
+        patch(
+            "sapphire_flow.flows.onboard_model._store_onboarding_artifact_task",
+            **store_kwargs,
         ),
         patch(
             "sapphire_flow.flows.onboard_model.run_hindcast_flow",
@@ -271,6 +287,61 @@ class TestSmokeTest:
         mock_assign.assert_not_called()
 
 
+class TestTraining:
+    def test_failed_training_returns_failed_outcome(self) -> None:
+        # Plan 130 Part B: a raise during training (the reanalysis-tail
+        # missing-value crash class, or the existing insufficient-data
+        # ValueError) must be recorded as FAILED_TRAINING and onboarding must
+        # continue — never propagate out of onboard_model_flow.
+        #
+        # Soundness: fails RED against the current flow (no try/except around
+        # `_train_onboarding_model_task`) — the raise propagates out of
+        # `onboard_model_flow.fn` and this call itself raises instead of
+        # returning a result.
+        sid = StationId(_uuid())
+        artifact_id = ArtifactId(_uuid())
+        stores = _make_stores(station_id=sid)
+
+        result, mock_promote, mock_assign = _run_flow(
+            sid,
+            artifact_id,
+            stores,
+            train_side_effect=ValueError("simulated training failure (Plan 130)"),
+        )
+
+        assert result.failed_count() == 1
+        assert result.units[0].outcome == OnboardingOutcome.FAILED_TRAINING
+        assert result.units[0].artifact_id is None
+        assert result.units[0].error == "simulated training failure (Plan 130)"
+        mock_promote.assert_not_called()
+        mock_assign.assert_not_called()
+
+    def test_store_artifact_failure_propagates_out_of_flow(self) -> None:
+        # A store outage or SHA-256 integrity mismatch is a system-level
+        # failure, NOT a per-unit anticipated training condition — it must
+        # still abort the whole run loudly, never be downgraded to
+        # FAILED_TRAINING. This is deliberately NOT covered by the training
+        # try/except (that guard wraps ONLY `_train_onboarding_model_task`).
+        #
+        # Soundness: fails RED if the training try/except is widened to also
+        # catch `_store_onboarding_artifact_task` — the raise would then be
+        # swallowed and `result.units[0].outcome` would read FAILED_TRAINING
+        # instead of the exception propagating.
+        sid = StationId(_uuid())
+        artifact_id = ArtifactId(_uuid())
+        stores = _make_stores(station_id=sid)
+
+        with pytest.raises(ValueError, match="SHA-256 mismatch"):
+            _run_flow(
+                sid,
+                artifact_id,
+                stores,
+                store_side_effect=ValueError(
+                    "SHA-256 mismatch for artifact simulated-store-failure"
+                ),
+            )
+
+
 class TestSkillGate:
     def test_skill_gate_rejection_leaves_artifact_unpromoted(self) -> None:
         sid = StationId(_uuid())
@@ -338,8 +409,12 @@ class TestStructuredLogging:
                 return_value=MagicMock(),
             ),
             patch(
-                "sapphire_flow.flows.onboard_model._train_and_store_artifact_task",
-                return_value=(artifact_id, b"fake_artifact"),
+                "sapphire_flow.flows.onboard_model._train_onboarding_model_task",
+                return_value=b"fake_artifact",
+            ),
+            patch(
+                "sapphire_flow.flows.onboard_model._store_onboarding_artifact_task",
+                return_value=artifact_id,
             ),
             patch(
                 "sapphire_flow.flows.onboard_model.run_hindcast_flow",

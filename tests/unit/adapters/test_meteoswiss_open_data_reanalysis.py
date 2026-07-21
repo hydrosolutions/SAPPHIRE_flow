@@ -1070,6 +1070,252 @@ class TestFetchProductsWriterSideScopedFetch:
 
 
 # ---------------------------------------------------------------------------
+# Plan 130 Part A — recent-daily tail for the ch01r temperature/sunshine
+# products. A live STAC probe (2026-07-20) confirmed MeteoSwiss serves
+# TabsD/TminD/TmaxD/SrelD in the SAME per-day items RprelimD (Plan 128) uses,
+# under the same asset names, while the "last" monthly family lags behind the
+# current (partial) month. The recent-daily fetch is an ADDITIONAL tail
+# source layered on top of the archive/monthly-last coverage — used only for
+# months that coverage does not reach, never a replacement for it.
+# ---------------------------------------------------------------------------
+
+
+def _last_family_item(
+    year: int, month: int, assets: dict[str, dict[str, object]]
+) -> dict[str, object]:
+    return {
+        "id": f"{year:04d}{month:02d}-ch",
+        "properties": {},
+        "assets": assets,
+        "links": [],
+    }
+
+
+def _last_family_asset(
+    token: str, grid: str, year: int, month: int, href: str
+) -> dict[str, dict[str, object]]:
+    key = (
+        f"ogd-surface-derived-grid-last.{token}_{grid}.swiss.lv95_"
+        f"{year:04d}{month:02d}01000000_{year:04d}{month:02d}28000000.nc"
+    )
+    return {key: {"href": href, "type": "application/x-netcdf"}}
+
+
+def _feature_tabsd(day: str) -> dict[str, object]:
+    return {
+        "id": f"{day.replace('-', '')}-ch",
+        "properties": {"datetime": f"{day}T00:00:00Z"},
+        "assets": {
+            f"TabsD_ch.swiss.lv95_{day}": {
+                "href": f"https://dummy/assets/tabsd_{day}.swiss.lv95.nc",
+                "type": "application/x-netcdf",
+            }
+        },
+        "links": [],
+    }
+
+
+class TestTemperatureRecentDailyTail:
+    """Plan 130 Part A: the recent-daily tier fills the gap between the
+    monthly-"last" high-water mark and the present for TabsD/TminD/TmaxD/
+    SrelD, without disturbing already-covered months.
+
+    Soundness: fails RED against the pre-fix routing, which sends
+    ``archive_backed=True`` products through ONLY the yearly archive/"last"
+    family — July's rows (published only via the daily per-day items) are
+    silently absent, never fetched.
+    """
+
+    _YEAR = 2026
+    _MONTH_JUNE = 6
+    _MONTH_JULY = 7
+    _JUNE_ASSET_URL = "https://dummy/assets/tabsd_202606.swiss.lv95.nc"
+    _JULY_TAIL_DAYS: tuple[str, ...] = ("2026-07-01", "2026-07-02")
+
+    def _handler(
+        self,
+    ) -> tuple[Callable[[httpx.Request], httpx.Response], list[str]]:
+        requested_urls: list[str] = []
+        june_bytes = _netcdf_bytes("TabsD", "2026-06-30", 11.0)
+        tail_bytes = {d: _netcdf_bytes("TabsD", d, 15.0) for d in self._JULY_TAIL_DAYS}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            requested_urls.append(url)
+            if url == self._JUNE_ASSET_URL:
+                return httpx.Response(
+                    200,
+                    content=june_bytes,
+                    headers={"content-type": "application/x-netcdf"},
+                )
+            for day, payload in tail_bytes.items():
+                if f"tabsd_{day}" in url:
+                    return httpx.Response(
+                        200,
+                        content=payload,
+                        headers={"content-type": "application/x-netcdf"},
+                    )
+            if url.endswith("/items/archive-ch"):
+                # No 2026 yearly archive yet (probe: yearly TabsD runs
+                # 1961->2025 only) — empty assets, never covers 2026.
+                return httpx.Response(200, json=_archive_item({}))
+            if url.endswith(f"/items/{self._YEAR}{self._MONTH_JUNE:02d}-ch"):
+                return httpx.Response(
+                    200,
+                    json=_last_family_item(
+                        self._YEAR,
+                        self._MONTH_JUNE,
+                        _last_family_asset(
+                            "tabsd",
+                            "ch01r",
+                            self._YEAR,
+                            self._MONTH_JUNE,
+                            self._JUNE_ASSET_URL,
+                        ),
+                    ),
+                )
+            if url.endswith(f"/items/{self._YEAR}{self._MONTH_JULY:02d}-ch"):
+                # July's monthly-"last" item has no TabsD asset yet (the
+                # publication lag the probe found) -> archive_month_gap.
+                return httpx.Response(
+                    200, json=_last_family_item(self._YEAR, self._MONTH_JULY, {})
+                )
+            day = _daily_item_id_date(url)
+            if day is not None:
+                if day in tail_bytes:
+                    return httpx.Response(200, json=_feature_tabsd(day))
+                return httpx.Response(404, json={"error": "not found"})
+            raise AssertionError(f"unexpected request: {url}")
+
+        return handler, requested_urls
+
+    def test_daily_tail_fills_rows_past_the_monthly_last_edge(self) -> None:
+        sid = StationId(uuid.uuid4())
+        handler, _requested = self._handler()
+        adapter = _make_adapter(httpx.MockTransport(handler), {sid: _make_basin(sid)})
+
+        rows = adapter.fetch_products(
+            [ForcingSource.METEOSWISS_TABSD],
+            [_make_config(sid)],
+            ensure_utc(datetime(2026, 6, 30, tzinfo=UTC)),
+            ensure_utc(datetime(2026, 7, 3, tzinfo=UTC)),
+            ["temperature"],
+        )
+
+        got_days = {r.valid_time.date().isoformat() for r in rows}
+        assert "2026-06-30" in got_days  # monthly-"last" coverage, unchanged
+        assert set(self._JULY_TAIL_DAYS) <= got_days  # NEW: daily-tail fill
+        assert all(r.source == ForcingSource.METEOSWISS_TABSD.value for r in rows)
+        assert all(r.parameter == "temperature" for r in rows)
+
+    def test_covered_month_is_not_also_daily_fetched_no_duplicate_rows(self) -> None:
+        sid = StationId(uuid.uuid4())
+        handler, requested_urls = self._handler()
+        adapter = _make_adapter(httpx.MockTransport(handler), {sid: _make_basin(sid)})
+
+        rows = adapter.fetch_products(
+            [ForcingSource.METEOSWISS_TABSD],
+            [_make_config(sid)],
+            ensure_utc(datetime(2026, 6, 30, tzinfo=UTC)),
+            ensure_utc(datetime(2026, 7, 3, tzinfo=UTC)),
+            ["temperature"],
+        )
+
+        # No duplicate (source, parameter, valid_time) natural keys.
+        keys = [(r.source, r.parameter, r.valid_time) for r in rows]
+        assert len(keys) == len(set(keys))
+
+        # June 30 came ONLY from the monthly-"last" asset — no per-day item
+        # id-fetch was ever issued for it (the routing-preservation blocker).
+        assert not any(u.endswith("/items/20260630-ch") for u in requested_urls)
+
+    def _handler_july_month_404(
+        self,
+    ) -> tuple[Callable[[httpx.Request], httpx.Response], list[str]]:
+        """Same as ``_handler`` but the July monthly-"last" item itself
+        returns HTTP 404 (MeteoSwiss has not published the current partial
+        month's monthly item yet) instead of a 200 with empty assets. The
+        daily per-day items for July ARE present."""
+        requested_urls: list[str] = []
+        june_bytes = _netcdf_bytes("TabsD", "2026-06-30", 11.0)
+        tail_bytes = {d: _netcdf_bytes("TabsD", d, 15.0) for d in self._JULY_TAIL_DAYS}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            url = str(request.url)
+            requested_urls.append(url)
+            if url == self._JUNE_ASSET_URL:
+                return httpx.Response(
+                    200,
+                    content=june_bytes,
+                    headers={"content-type": "application/x-netcdf"},
+                )
+            for day, payload in tail_bytes.items():
+                if f"tabsd_{day}" in url:
+                    return httpx.Response(
+                        200,
+                        content=payload,
+                        headers={"content-type": "application/x-netcdf"},
+                    )
+            if url.endswith("/items/archive-ch"):
+                return httpx.Response(200, json=_archive_item({}))
+            if url.endswith(f"/items/{self._YEAR}{self._MONTH_JUNE:02d}-ch"):
+                return httpx.Response(
+                    200,
+                    json=_last_family_item(
+                        self._YEAR,
+                        self._MONTH_JUNE,
+                        _last_family_asset(
+                            "tabsd",
+                            "ch01r",
+                            self._YEAR,
+                            self._MONTH_JUNE,
+                            self._JUNE_ASSET_URL,
+                        ),
+                    ),
+                )
+            if url.endswith(f"/items/{self._YEAR}{self._MONTH_JULY:02d}-ch"):
+                # The current partial month's monthly item is NOT published
+                # yet -> a genuine 404 (not a 200 with empty assets).
+                return httpx.Response(404, json={"error": "not found"})
+            day = _daily_item_id_date(url)
+            if day is not None:
+                if day in tail_bytes:
+                    return httpx.Response(200, json=_feature_tabsd(day))
+                return httpx.Response(404, json={"error": "not found"})
+            raise AssertionError(f"unexpected request: {url}")
+
+        return handler, requested_urls
+
+    def test_daily_tail_runs_when_monthly_item_is_404_not_empty(self) -> None:
+        # BLOCKER regression (Plan 130 adversarial review): a genuine 404 on
+        # the monthly ``{YYYYMM}-ch`` item (current partial month not yet
+        # published) must be treated as a MISSING month, letting the
+        # ``archive_month_gap`` → daily-tail fallback run — NOT aborting the
+        # whole product/range with an AdapterError before the fallback.
+        #
+        # Soundness: fails RED against the pre-fix ``_last_family_asset_href``
+        # (which ``raise_for_status()``-es the 404 into an AdapterError), so
+        # ``fetch_products`` raises instead of returning the daily-tail rows.
+        sid = StationId(uuid.uuid4())
+        handler, _requested = self._handler_july_month_404()
+        adapter = _make_adapter(httpx.MockTransport(handler), {sid: _make_basin(sid)})
+
+        rows = adapter.fetch_products(
+            [ForcingSource.METEOSWISS_TABSD],
+            [_make_config(sid)],
+            ensure_utc(datetime(2026, 6, 30, tzinfo=UTC)),
+            ensure_utc(datetime(2026, 7, 3, tzinfo=UTC)),
+            ["temperature"],
+        )
+
+        got_days = {r.valid_time.date().isoformat() for r in rows}
+        assert "2026-06-30" in got_days  # monthly-"last" coverage, unchanged
+        assert set(self._JULY_TAIL_DAYS) <= got_days  # daily-tail fill past 404
+        assert all(r.source == ForcingSource.METEOSWISS_TABSD.value for r in rows)
+        assert all(r.parameter == "temperature" for r in rows)
+
+
+# ---------------------------------------------------------------------------
 # Plan 128 A2 — id-fetch defect fix regression tests. The confirmed root
 # cause (live STAC probe + code trace, 2026-07-19): ``_fetch_day_feature``
 # filtered ``items?datetime={day}`` on ``properties.datetime``, which DRIFTS

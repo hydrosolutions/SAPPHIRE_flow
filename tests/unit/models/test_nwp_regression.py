@@ -797,3 +797,248 @@ class TestInsufficientLagsReturnsModelFailure:
         assert "need 7" in result.message
         assert result.model_name == "nwp_regression"
         assert result.issue_datetime == _ISSUE
+
+
+# --------------------------------------------------------------------------- #
+# 10. Plan 130 Part B — a missing future forcing value must never crash a run
+# --------------------------------------------------------------------------- #
+
+
+class TestMissingFutureValueDoesNotCrashTraining:
+    """The reanalysis temperature/precip tail gap (Plan 130) delivers a future
+    forcing frame with a NULL value for the newest sample(s) instead of a
+    KeyError-style absence. ``_aligned_future``/``train`` must drop the
+    affected row(s), not ``float(None)``-crash the whole training call.
+
+    Soundness: fails RED against the pre-fix ``_aligned_future`` (a plain
+    ``dict(zip(...))`` lookup fed straight into ``float(...)``) with a real
+    ``TypeError: float() argument must be a string or a real number, not
+    'NoneType'`` — not a collection/import error.
+    """
+
+    @pytest.mark.parametrize("variant", _VARIANTS)
+    def test_train_drops_row_with_missing_future_temperature_instead_of_raising(
+        self, variant: type
+    ) -> None:
+        model = variant()
+        ts, discharge, precip, temp = _train_series()
+        temp_with_gap = list(temp)
+        temp_with_gap[-1] = None  # the tail-gap sample: no reanalysis temp yet
+        inputs = _fi_train_inputs(model, ts, discharge, precip, temp_with_gap)
+
+        artifact = model.train(inputs, config={}, rng=random.Random(0))
+
+        assert isinstance(artifact, NwpRegressionArtifact)
+
+    @pytest.mark.parametrize("variant", _VARIANTS)
+    def test_train_drops_row_with_future_time_absent_from_frame(
+        self, variant: type
+    ) -> None:
+        # The target time is entirely ABSENT from the future-known frame (not
+        # merely null) — the earlier tail-gap edge, where the reanalysis
+        # simply has no row yet for that day. The temperature series is one
+        # sample short of `ts`/`discharge`, so the LAST target time has no
+        # aligned row at all (a dict-lookup miss, not a null value).
+        model = variant()
+        ts, discharge, precip, temp = _train_series()
+        short_ts = ts[:-1]
+        short_temp = temp[:-1]
+        short_precip = precip[:-1]
+
+        step, rep, spec = _dynamic_spec(model)
+        future_known = _future_known_from_spec(spec, short_ts, short_precip, short_temp)
+        past_known = {
+            "obs": {
+                "discharge": _series(
+                    ts, "discharge", discharge, fi_boundary.Unit.M3_PER_S
+                )
+            }
+        }
+        inputs = _model_inputs(
+            model, step=step, rep=rep, past_known=past_known, future_known=future_known
+        )
+
+        artifact = model.train(inputs, config={}, rng=random.Random(0))
+
+        assert isinstance(artifact, NwpRegressionArtifact)
+
+    @pytest.mark.parametrize("variant", _VARIANTS)
+    def test_train_drops_row_with_nan_future_temperature_instead_of_raising(
+        self, variant: type
+    ) -> None:
+        # A PRESENT IEEE NaN (not a null/None) must be treated identically to
+        # a missing value: the FI ``max_nan`` gate treats both as missing,
+        # and ``Ridge.fit`` raises ``ValueError`` if a literal NaN reaches
+        # the design matrix. The None-tail-gap test above does not cover
+        # this — a null and a NaN take different code paths in polars.
+        #
+        # Soundness: fails RED against the pre-fix ``_aligned_future``
+        # (``raw is None`` is False for a NaN float, so it is marked
+        # ``valid=True`` and reaches ``Ridge.fit``, which raises
+        # ``ValueError: Input contains NaN``) instead of returning an
+        # artifact.
+        model = variant()
+        ts, discharge, precip, temp = _train_series()
+        temp_with_nan = list(temp)
+        temp_with_nan[-1] = float("nan")
+        inputs = _fi_train_inputs(model, ts, discharge, precip, temp_with_nan)
+
+        artifact = model.train(inputs, config={}, rng=random.Random(0))
+
+        assert isinstance(artifact, NwpRegressionArtifact)
+
+
+class TestMissingFutureValueReturnsModelFailureOnPredict:
+    """A genuinely missing required future input at predict time is an
+    ANTICIPATED condition (FI "return, don't raise" contract) — the model
+    must return ``ModelFailure``, never silently emit a NaN-poisoned
+    ``ModelSuccess``.
+
+    Soundness: fails RED against the pre-fix ``predict`` (no NaN guard before
+    the matmul) — the pre-fix code returns ``ModelSuccess`` with NaN values
+    instead of ``ModelFailure``, so ``isinstance(result, ModelFailure)`` fails.
+    """
+
+    @pytest.mark.parametrize("variant", _VARIANTS)
+    def test_predict_returns_model_failure_when_future_precip_missing(
+        self, variant: type
+    ) -> None:
+        model = variant()
+        artifact = _fit(model)
+        horizon = _declared_horizon(model)
+        lags = [10.0] * _LOOKBACK if variant is NwpRegression else None
+        precip: list[float | None] = [7.0 + k for k in range(horizon)]
+        precip[-1] = None
+
+        inputs = _fi_predict_inputs(
+            model,
+            issue=_ISSUE,
+            horizon=horizon,
+            precip=precip,  # type: ignore[arg-type]
+            temp=[10.0] * horizon,
+            lag_discharge=lags,
+        )
+
+        result = model.predict(
+            artifact, inputs=inputs, issue_datetime=_ISSUE, rng=random.Random(0)
+        )
+
+        assert isinstance(result, ModelFailure)
+        assert result.cause is FailureCause.INPUT_DATA
+        assert result.issue_datetime == _ISSUE
+
+
+def _fi_predict_inputs_split(
+    model: object,
+    *,
+    issue: datetime,
+    precip_ts: list[datetime],
+    precip: list[float],
+    temp_ts: list[datetime],
+    temp: list[float],
+    lag_discharge: list[float] | None,
+) -> fi_boundary.ModelInputs:
+    """Build predict inputs with INDEPENDENT precip/temp timestamp grids so a
+    length/alignment mismatch can be exercised (``_future_known_from_spec``
+    shares one ``ts`` across both variables and cannot express it)."""
+    step, rep, spec = _dynamic_spec(model)
+    future_known: dict[str, dict[str, fi_boundary.InputSeries]] = {}
+    for product, variables in spec.future_known.items():
+        inner: dict[str, fi_boundary.InputSeries] = {}
+        for name, var in variables.items():
+            if name == "precipitation":
+                inner[name] = _series(precip_ts, name, precip, var.unit)
+            else:
+                inner[name] = _series(temp_ts, name, temp, var.unit)
+        future_known[product] = inner
+    past_known: dict[str, dict[str, fi_boundary.InputSeries]] = {}
+    if lag_discharge is not None:
+        lb = len(lag_discharge)
+        past_ts = [issue - (lb - 1 - i) * step for i in range(lb)]
+        past_known = {
+            "obs": {
+                "discharge": _series(
+                    past_ts, "discharge", lag_discharge, fi_boundary.Unit.M3_PER_S
+                )
+            }
+        }
+    return _model_inputs(
+        model, step=step, rep=rep, past_known=past_known, future_known=future_known
+    )
+
+
+class TestFutureShapeMismatchReturnsModelFailureOnPredict:
+    """A future forcing window that does not match the model's declared
+    horizon (precip/temp of unequal length, or truncated below the horizon)
+    is an ANTICIPATED missing-input condition — the model must return
+    ``ModelFailure`` (INPUT_DATA), never ``IndexError`` on ``temp[step]`` and
+    never a silently short ``ModelSuccess`` over a truncated window.
+    """
+
+    @pytest.mark.parametrize("variant", _VARIANTS)
+    def test_temperature_shorter_than_precip_returns_model_failure(
+        self, variant: type
+    ) -> None:
+        # Precip delivers the full horizon; temperature is ONE step short.
+        # Soundness: RED against the pre-fix ``predict`` — ``horizon`` is taken
+        # from precip's own frame (== declared), ``missing_temp`` is 0 (no NaN
+        # in the 4 delivered temp values), and the loop raises
+        # ``IndexError: index N is out of bounds`` at ``temp[step]``.
+        model = variant()
+        artifact = _fit(model)
+        horizon = _declared_horizon(model)
+        lags = [10.0] * _LOOKBACK if variant is NwpRegression else None
+
+        precip_ts = [_ISSUE + (k + 1) * _STEP for k in range(horizon)]
+        temp_ts = [_ISSUE + (k + 1) * _STEP for k in range(horizon - 1)]
+        inputs = _fi_predict_inputs_split(
+            model,
+            issue=_ISSUE,
+            precip_ts=precip_ts,
+            precip=[7.0 + k for k in range(horizon)],
+            temp_ts=temp_ts,
+            temp=[10.0] * (horizon - 1),
+            lag_discharge=lags,
+        )
+
+        result = model.predict(
+            artifact, inputs=inputs, issue_datetime=_ISSUE, rng=random.Random(0)
+        )
+
+        assert isinstance(result, ModelFailure)
+        assert result.cause is FailureCause.INPUT_DATA
+        assert result.issue_datetime == _ISSUE
+
+    @pytest.mark.parametrize("variant", _VARIANTS)
+    def test_both_series_truncated_below_horizon_returns_model_failure(
+        self, variant: type
+    ) -> None:
+        # BOTH precip AND temp are truncated to one step below the declared
+        # horizon (aligned to each other). Soundness: RED against the pre-fix
+        # ``predict`` — ``horizon`` is derived from the (short) delivered frame
+        # and the loop runs to completion, returning a short ``ModelSuccess``
+        # with ``horizon - 1`` steps instead of a ``ModelFailure``.
+        model = variant()
+        artifact = _fit(model)
+        horizon = _declared_horizon(model)
+        lags = [10.0] * _LOOKBACK if variant is NwpRegression else None
+
+        short = horizon - 1
+        shared_ts = [_ISSUE + (k + 1) * _STEP for k in range(short)]
+        inputs = _fi_predict_inputs_split(
+            model,
+            issue=_ISSUE,
+            precip_ts=shared_ts,
+            precip=[7.0 + k for k in range(short)],
+            temp_ts=shared_ts,
+            temp=[10.0] * short,
+            lag_discharge=lags,
+        )
+
+        result = model.predict(
+            artifact, inputs=inputs, issue_datetime=_ISSUE, rng=random.Random(0)
+        )
+
+        assert isinstance(result, ModelFailure)
+        assert result.cause is FailureCause.INPUT_DATA
+        assert result.issue_datetime == _ISSUE
