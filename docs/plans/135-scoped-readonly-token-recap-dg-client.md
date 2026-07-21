@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-07-21
 plan: 135
 title: Scoped read-only credential for recap-dg-client — replace the broad personal token with a repo-scoped read-only credential (fine-grained PAT or GitHub App install token — grill-me), use it in Actions + Dependabot + build hosts, revoke the broad token
@@ -254,9 +254,10 @@ Docker build, so this is purely a **credential-lifecycle** trade, not an integra
 | Setup cost | Mint a token (steps 1–2) | One-time App create + install + add a mint step to each workflow + build hosts |
 | Auth rewiring | None | None (same `insteadOf` / buildx mount) |
 
-The owner leaned **fine-grained PAT** (simplest static secret) accepting the expiry/renewal cost. The
-**GitHub App** trades a one-time setup for **no recurring renewal** and no simultaneous CI+production
-lapse risk. Both are legitimate; **the owner picks** — this plan does not.
+**RESOLVED (owner, 2026-07-21): fine-grained PAT.** Simplest static secret; the expiry/renewal cost is
+accepted as bounded by the private-index-wheel endgame (which removes the token entirely). The **GitHub
+App** stays documented above as the zero-renewal alternative if the renewal chore proves annoying, but
+this plan executes the PAT path (steps 1–9 as written; the App-only note in step 7 does not apply).
 
 ## Provenance
 
@@ -265,7 +266,9 @@ Dependabot PRs #114–#116 failing on the two fresh-clone recap jobs (`build-ima
 Dependabot runs). A live 2026-07-21 audit found the current token is a broad `gho_` CLI/OAuth token
 (write to all repos), so it must be replaced everywhere, not just withheld from Dependabot. Owner
 opted for a scoped read-only credential rather than exposing the broad token to PR-triggered Dependabot
-workflows — **PAT vs GitHub App is an open grill-me** (§ Alternatives). Interim hardening ahead of the
-private-index-wheel endgame. DRAFT — owner runs the 🔑 steps + picks the credential; I run the secret
-+ host-file updates + verification once it exists. Relates to Plan 064 (supply-chain hardening),
+workflows. `/plan`-reviewed (2026-07-21): root-cause corrected to the two-fresh-clone-jobs picture,
+live token audit + GitHub App alternative folded, over-engineered renewal automation trimmed.
+**Credential grill-me RESOLVED (owner, 2026-07-21): fine-grained PAT.** Interim hardening ahead of the
+private-index-wheel endgame. **READY** — owner runs the 🔑 steps (mint the fine-grained PAT); I run the
+secret + host-file updates + verification once it exists. Relates to Plan 064 (supply-chain hardening),
 Plan 079/080 (FI/recap distribution), Plan 121 (secret-wiring inventory), and `security.md:395`.
