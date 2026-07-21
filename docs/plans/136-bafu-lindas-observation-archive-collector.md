@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-07-21
 plan: 136
 title: BAFU LINDAS observation archive collector (all gauges, quarantined, sub-daily)
@@ -13,7 +13,8 @@ supersedes: [58]
 
 ## Status
 
-**DRAFT — design settled, awaiting owner READY.** Owner decision locked (2026-07-21, below). Went through
+**READY** (owner flip 2026-07-21; parquet quarantine confirmed over any DB backend — the `observations`
+table would force real onboarding via its NOT-NULL `station_id` FK). Went through
 **three** `/plan` adversarial rounds (2026-07-21), grounded in a **live LINDAS probe** (§ Live LINDAS probe
 evidence) that settled the two empirical unknowns (cadence = hourly; endpoint load negligible) and caught a
 dead-gauge watchdog trap.
