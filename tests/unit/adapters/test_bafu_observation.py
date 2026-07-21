@@ -317,3 +317,29 @@ class TestMalformedBindingRaisesAdapterError:
         adapter = _make_adapter(handler)
         with pytest.raises(AdapterError, match="malformed binding"):
             adapter.fetch_all_observations()
+
+
+class TestWrongShapedResponseRaisesAdapterError:
+    """A response body that IS valid JSON but has the wrong top-level SHAPE
+    (not the ``{"results": {"bindings": [...]}}`` SPARQL-results envelope)
+    raises ``TypeError`` when indexed with a string key on a list — this
+    must be normalized to ``AdapterError`` exactly like the ``ValueError``/
+    ``KeyError`` cases, never propagate as a raw ``TypeError`` (which would
+    bypass the collector flow's CRITICAL-heartbeat except-AdapterError
+    handler)."""
+
+    def test_top_level_list_payload_raises_adapter_error(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=[1, 2, 3])
+
+        adapter = _make_adapter(handler)
+        with pytest.raises(AdapterError, match="not a well-formed SPARQL"):
+            adapter.fetch_all_observations()
+
+    def test_results_key_holding_a_list_raises_adapter_error(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"results": []})
+
+        adapter = _make_adapter(handler)
+        with pytest.raises(AdapterError, match="not a well-formed SPARQL"):
+            adapter.fetch_all_observations()

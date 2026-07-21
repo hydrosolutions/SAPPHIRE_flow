@@ -315,6 +315,51 @@ class TestHeartbeat:
         # No parquet was written for a non-run (an outage, not a real snapshot).
         assert list(tmp_path.rglob("*.parquet")) == []
 
+    def test_malformed_json_shape_writes_critical_before_reraising(
+        self, tmp_path: Path
+    ) -> None:
+        # Drives a REAL BafuObservationAdapter over an httpx.MockTransport
+        # response that IS valid JSON but has the WRONG top-level shape (a
+        # bare list) — `payload["results"]["bindings"]` then raises
+        # TypeError, not ValueError/KeyError. This locks the T8 contract:
+        # the adapter must normalize even a TypeError-shaped malformed
+        # response to AdapterError, and the flow must write CRITICAL before
+        # re-raising it (never let a bare TypeError skip the heartbeat).
+        import httpx
+
+        from sapphire_flow.adapters.bafu_observation import BafuObservationAdapter
+
+        module = _import_flow_module()
+        config = _make_config(bafu_observation_archive_path=tmp_path)
+        health_store = FakePipelineHealthStore()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=[1, 2, 3])
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        adapter = BafuObservationAdapter(
+            endpoint="https://lindas.admin.ch/query",
+            http_client=client,
+            sleeper=lambda _seconds: None,
+            max_retries=1,
+        )
+
+        with pytest.raises(AdapterError, match="not a well-formed SPARQL"):
+            module.collect_bafu_observations_flow(  # type: ignore[attr-defined]
+                config=config,
+                adapter=adapter,
+                clock=_ClockSpy(datetime(2026, 7, 21, 15, 5, tzinfo=UTC)),
+                pipeline_health_store=health_store,
+            )
+
+        check_type = module.PipelineCheckType.BAFU_OBSERVATION_FRESHNESS  # type: ignore[attr-defined]
+        records = health_store.fetch_recent(check_type)
+        assert len(records) == 1
+        assert records[0].status is PipelineHealthStatus.CRITICAL
+        assert records[0].detail["error_type"] is not None
+        # No parquet was written for a non-run (an outage, not a real snapshot).
+        assert list(tmp_path.rglob("*.parquet")) == []
+
     def test_truncated_fetch_writes_critical(self, tmp_path: Path) -> None:
         module = _import_flow_module()
         config = _make_config(bafu_observation_archive_path=tmp_path)

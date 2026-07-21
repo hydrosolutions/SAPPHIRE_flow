@@ -120,7 +120,13 @@ class BafuObservationAdapter:
         try:
             payload = response.json()
             bindings = payload["results"]["bindings"]
-        except (ValueError, KeyError) as exc:
+        except (ValueError, KeyError, TypeError) as exc:
+            # TypeError covers a wrong-SHAPED (but valid-JSON) payload — e.g.
+            # a top-level list, or `results` itself a list — where indexing
+            # with a string key raises TypeError rather than KeyError. Must
+            # be caught here so it surfaces as AdapterError, never a bare
+            # TypeError that would skip the collector flow's CRITICAL
+            # heartbeat (T8).
             raise AdapterError(
                 f"BAFU LINDAS whole-graph response is not a well-formed SPARQL "
                 f"results JSON: {exc}"
