@@ -743,15 +743,41 @@ def onboard_model_flow(
                 )
                 continue
 
-            # M.3 + store: Train and store artifact in TRAINING status
-            artifact_id, artifact_bytes = _train_and_store_artifact_task(
-                unit=unit,
-                model=model_instance,
-                data=data,
-                artifact_store=artifact_store,
-                clock=clock,
-                rng=rng,
-            )
+            # M.3 + store: Train and store artifact in TRAINING status. Wrapped
+            # so a raise from training (the reanalysis-tail missing-value
+            # crash class, or the existing insufficient-data ValueError) is
+            # recorded as FAILED_TRAINING and onboarding continues for the
+            # remaining units, instead of aborting the whole run (Plan 130
+            # Part B; the older service path model_onboarding.py already maps
+            # this failure mode to FAILED_TRAINING).
+            try:
+                artifact_id, artifact_bytes = _train_and_store_artifact_task(
+                    unit=unit,
+                    model=model_instance,
+                    data=data,
+                    artifact_store=artifact_store,
+                    clock=clock,
+                    rng=rng,
+                )
+            except Exception as exc:  # flow-level guard, see docstring above
+                log.error(
+                    "model.training_failed",
+                    station_id=sid_str,
+                    group_id=gid_str,
+                    error=str(exc),
+                )
+                unit_results.append(
+                    OnboardingUnitResult(
+                        unit=unit,
+                        outcome=OnboardingOutcome.FAILED_TRAINING,
+                        compatibility=compat,
+                        artifact_id=None,
+                        hindcast_steps=(),
+                        skill_gate=None,
+                        error=str(exc),
+                    )
+                )
+                continue
 
             # Verify SHA-256 hash before deserializing artifact
             sha256_stored = artifact_store.fetch_artifact(artifact_id)

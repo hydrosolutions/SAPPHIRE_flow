@@ -797,3 +797,107 @@ class TestInsufficientLagsReturnsModelFailure:
         assert "need 7" in result.message
         assert result.model_name == "nwp_regression"
         assert result.issue_datetime == _ISSUE
+
+
+# --------------------------------------------------------------------------- #
+# 10. Plan 130 Part B — a missing future forcing value must never crash a run
+# --------------------------------------------------------------------------- #
+
+
+class TestMissingFutureValueDoesNotCrashTraining:
+    """The reanalysis temperature/precip tail gap (Plan 130) delivers a future
+    forcing frame with a NULL value for the newest sample(s) instead of a
+    KeyError-style absence. ``_aligned_future``/``train`` must drop the
+    affected row(s), not ``float(None)``-crash the whole training call.
+
+    Soundness: fails RED against the pre-fix ``_aligned_future`` (a plain
+    ``dict(zip(...))`` lookup fed straight into ``float(...)``) with a real
+    ``TypeError: float() argument must be a string or a real number, not
+    'NoneType'`` — not a collection/import error.
+    """
+
+    @pytest.mark.parametrize("variant", _VARIANTS)
+    def test_train_drops_row_with_missing_future_temperature_instead_of_raising(
+        self, variant: type
+    ) -> None:
+        model = variant()
+        ts, discharge, precip, temp = _train_series()
+        temp_with_gap = list(temp)
+        temp_with_gap[-1] = None  # the tail-gap sample: no reanalysis temp yet
+        inputs = _fi_train_inputs(model, ts, discharge, precip, temp_with_gap)
+
+        artifact = model.train(inputs, config={}, rng=random.Random(0))
+
+        assert isinstance(artifact, NwpRegressionArtifact)
+
+    @pytest.mark.parametrize("variant", _VARIANTS)
+    def test_train_drops_row_with_future_time_absent_from_frame(
+        self, variant: type
+    ) -> None:
+        # The target time is entirely ABSENT from the future-known frame (not
+        # merely null) — the earlier tail-gap edge, where the reanalysis
+        # simply has no row yet for that day. The temperature series is one
+        # sample short of `ts`/`discharge`, so the LAST target time has no
+        # aligned row at all (a dict-lookup miss, not a null value).
+        model = variant()
+        ts, discharge, precip, temp = _train_series()
+        short_ts = ts[:-1]
+        short_temp = temp[:-1]
+        short_precip = precip[:-1]
+
+        step, rep, spec = _dynamic_spec(model)
+        future_known = _future_known_from_spec(spec, short_ts, short_precip, short_temp)
+        past_known = {
+            "obs": {
+                "discharge": _series(
+                    ts, "discharge", discharge, fi_boundary.Unit.M3_PER_S
+                )
+            }
+        }
+        inputs = _model_inputs(
+            model, step=step, rep=rep, past_known=past_known, future_known=future_known
+        )
+
+        artifact = model.train(inputs, config={}, rng=random.Random(0))
+
+        assert isinstance(artifact, NwpRegressionArtifact)
+
+
+class TestMissingFutureValueReturnsModelFailureOnPredict:
+    """A genuinely missing required future input at predict time is an
+    ANTICIPATED condition (FI "return, don't raise" contract) — the model
+    must return ``ModelFailure``, never silently emit a NaN-poisoned
+    ``ModelSuccess``.
+
+    Soundness: fails RED against the pre-fix ``predict`` (no NaN guard before
+    the matmul) — the pre-fix code returns ``ModelSuccess`` with NaN values
+    instead of ``ModelFailure``, so ``isinstance(result, ModelFailure)`` fails.
+    """
+
+    @pytest.mark.parametrize("variant", _VARIANTS)
+    def test_predict_returns_model_failure_when_future_precip_missing(
+        self, variant: type
+    ) -> None:
+        model = variant()
+        artifact = _fit(model)
+        horizon = _declared_horizon(model)
+        lags = [10.0] * _LOOKBACK if variant is NwpRegression else None
+        precip: list[float | None] = [7.0 + k for k in range(horizon)]
+        precip[-1] = None
+
+        inputs = _fi_predict_inputs(
+            model,
+            issue=_ISSUE,
+            horizon=horizon,
+            precip=precip,  # type: ignore[arg-type]
+            temp=[10.0] * horizon,
+            lag_discharge=lags,
+        )
+
+        result = model.predict(
+            artifact, inputs=inputs, issue_datetime=_ISSUE, rng=random.Random(0)
+        )
+
+        assert isinstance(result, ModelFailure)
+        assert result.cause is FailureCause.INPUT_DATA
+        assert result.issue_datetime == _ISSUE

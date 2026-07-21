@@ -108,6 +108,7 @@ def _run_flow(
     compat: MagicMock | None = None,
     skill_gate: MagicMock | None = None,
     smoke_side_effect: Exception | None = None,
+    train_side_effect: Exception | None = None,
 ) -> tuple[object, MagicMock, MagicMock]:
     fake_model = FakeStationForecastModel()
     fake_discovered = {ModelId(model_id): fake_model}
@@ -116,6 +117,11 @@ def _run_flow(
 
     compat_report = compat if compat is not None else _compat_ok()
     gate = skill_gate if skill_gate is not None else _passing_skill_gate(artifact_id)
+    train_kwargs: dict = (
+        {"side_effect": train_side_effect}
+        if train_side_effect is not None
+        else {"return_value": (artifact_id, b"fake_artifact")}
+    )
 
     with (
         patch(
@@ -141,7 +147,7 @@ def _run_flow(
         ),
         patch(
             "sapphire_flow.flows.onboard_model._train_and_store_artifact_task",
-            return_value=(artifact_id, b"fake_artifact"),
+            **train_kwargs,
         ),
         patch(
             "sapphire_flow.flows.onboard_model.run_hindcast_flow",
@@ -267,6 +273,36 @@ class TestSmokeTest:
         assert result.units[0].outcome == OnboardingOutcome.FAILED_SMOKE_TEST
         assert result.units[0].artifact_id is None
         assert result.units[0].error == "under operational floor"
+        mock_promote.assert_not_called()
+        mock_assign.assert_not_called()
+
+
+class TestTraining:
+    def test_failed_training_returns_failed_outcome(self) -> None:
+        # Plan 130 Part B: a raise during training (the reanalysis-tail
+        # missing-value crash class, or the existing insufficient-data
+        # ValueError) must be recorded as FAILED_TRAINING and onboarding must
+        # continue — never propagate out of onboard_model_flow.
+        #
+        # Soundness: fails RED against the current flow (no try/except around
+        # `_train_and_store_artifact_task`) — the raise propagates out of
+        # `onboard_model_flow.fn` and this call itself raises instead of
+        # returning a result.
+        sid = StationId(_uuid())
+        artifact_id = ArtifactId(_uuid())
+        stores = _make_stores(station_id=sid)
+
+        result, mock_promote, mock_assign = _run_flow(
+            sid,
+            artifact_id,
+            stores,
+            train_side_effect=ValueError("simulated training failure (Plan 130)"),
+        )
+
+        assert result.failed_count() == 1
+        assert result.units[0].outcome == OnboardingOutcome.FAILED_TRAINING
+        assert result.units[0].artifact_id is None
+        assert result.units[0].error == "simulated training failure (Plan 130)"
         mock_promote.assert_not_called()
         mock_assign.assert_not_called()
 

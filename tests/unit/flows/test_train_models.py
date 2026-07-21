@@ -367,6 +367,120 @@ class TestTrainModelsFlowModelNotFound:
         assert result.skill_computed is False
 
 
+class _RaisingTrainModel(FakeStationForecastModel):
+    """A station model whose ``train`` raises — stands in for the
+    reanalysis-tail missing-value crash class and the existing
+    insufficient-data ``ValueError`` (Plan 130 Part B)."""
+
+    def train(self, data: object, params: object, rng: random.Random) -> bytes:
+        raise ValueError("simulated training failure (Plan 130 Part B)")
+
+
+class TestTrainModelsFlowContinuesPastUnitFailure:
+    """A raised exception during ONE unit's training (Plan 130 Part B: the
+    missing-future-value crash class, or the pre-existing insufficient-data
+    ``ValueError``) must not abort the whole ``train_models_flow`` run —
+    every OTHER unit still trains, and the failing unit surfaces as a
+    ``TrainingResult.error``.
+
+    Soundness: fails RED against the current flow (no try/except around T.3
+    onward) — the raise propagates straight out of ``train_models_flow``, so
+    this call itself raises instead of returning results for BOTH stations.
+    """
+
+    def test_one_unit_raising_does_not_abort_the_others(self) -> None:
+        rng = random.Random(_RNG_SEED + 5)
+        good_station_id = StationId(UUID(int=rng.getrandbits(128), version=4))
+        bad_station_id = StationId(UUID(int=rng.getrandbits(128), version=4))
+        good_model_id = ModelId("fake_station_model_good")
+        bad_model_id = ModelId("fake_station_model_bad")
+
+        model_store = FakeModelStore()
+        station_store = FakeStationStore()
+        group_store = FakeStationGroupStore()
+        obs_store = FakeObservationStore()
+        basin_store = FakeBasinStore()
+        artifact_store = FakeModelArtifactStore()
+        hindcast_store = FakeHindcastStore()
+        skill_store = FakeSkillStore()
+        flow_regime_store = FakeFlowRegimeConfigStore()
+
+        obs_rng = random.Random(_RNG_SEED)
+        forcing_records = []
+        for sid, model_id in (
+            (good_station_id, good_model_id),
+            (bad_station_id, bad_model_id),
+        ):
+            station = make_station_config(station_id=sid)
+            station_store.store_station(station)
+            station_store.store_model_assignment(
+                ModelAssignment(
+                    station_id=sid,
+                    model_id=model_id,
+                    time_step=timedelta(days=1),
+                    status=ModelAssignmentStatus.ACTIVE,
+                    priority=1,
+                    created_at=_EPOCH,
+                )
+            )
+            station_store.store_weather_source(
+                StationWeatherSource(
+                    station_id=sid,
+                    nwp_source="smn",
+                    extraction_type=SpatialRepresentation.POINT,
+                    status=WeatherSourceStatus.ACTIVE,
+                    role=WeatherSourceRole.REANALYSIS,
+                )
+            )
+            obs = make_observations(
+                n=_N_OBS_DAYS,
+                station_id=sid,
+                parameter="discharge",
+                start=_TRAINING_START,
+                interval=timedelta(days=1),
+                rng=obs_rng,
+            )
+            obs_store.store_observations(obs)
+            forcing_records.extend(
+                _make_forcing_records(sid, _TRAINING_START, _N_OBS_DAYS)
+            )
+
+        forcing_source = FakeWeatherReanalysisSource(records=forcing_records)
+        good_model = FakeStationForecastModel()
+        bad_model = _RaisingTrainModel()
+
+        results = train_models_flow(
+            period_start=str(_TRAINING_START.isoformat()),
+            period_end=str(_TRAINING_END.isoformat()),
+            model_store=model_store,
+            station_store=station_store,
+            group_store=group_store,
+            obs_store=obs_store,
+            basin_store=basin_store,
+            artifact_store=artifact_store,
+            hindcast_store=hindcast_store,
+            skill_store=skill_store,
+            flow_regime_store=flow_regime_store,
+            forcing_source=forcing_source,
+            models={good_model_id: good_model, bad_model_id: bad_model},
+            clock=lambda: _EPOCH,
+            rng=random.Random(0),
+        )
+
+        assert len(results) == 2
+        by_station = {r.training_unit.station_id: r for r in results}
+
+        bad_result = by_station[bad_station_id]
+        assert bad_result.error is not None
+        assert "simulated training failure" in bad_result.error
+        assert bad_result.artifact_id is None
+        assert bad_result.skill_computed is False
+
+        good_result = by_station[good_station_id]
+        assert good_result.error is None
+        assert good_result.artifact_id is not None
+
+
 class TestTrainModelsFlowGroupModel:
     def test_group_model_training_stores_artifact(self) -> None:
         rng = random.Random(_RNG_SEED + 2)
