@@ -16,7 +16,9 @@ blocks: []
 (owner, 2026-07-21): **D6** fetch-shape closed = HRU-keyed batch-capable fetch-once; **Scope-3** binding
 closed = (b) synthesize from `GatewayPolygonResolver`; **Scope-4(ii)** hardened = strict
 `past < issue_time` split, no partial-bucket leak; **D7** added = cadence-snap `issue_time` (fail loud).
-Awaiting a confirming independent review → owner READY.
+**Independent Codex re-verify: 4/5 confirmed resolved**; the residual major (binding-preflight test
+wording contradicting decision (b)) + minor (duplicated client signature) **now fixed**. **CONVERGED —
+awaiting owner READY.**
 
 ## Context — the ERA5→forecast seam, and the resolution question
 
@@ -356,11 +358,10 @@ unchanged pure-ERA5 path so no forecast data can leak into training.
    call site). `ifs_gap_fill` has **no call site anywhere in this plan** — adding a Protocol method, fakes,
    and conformance tests for it would be speculative generality, so it is **deferred** to whichever future
    plan actually needs the lower-level primitive (e.g. if `operational`'s point-in-time semantics fail the
-   D5 live probe and a manual fill construction becomes necessary). Mirror the recap-dg-client signature —
-   `operational(*, hru_code, start_date, era5_variable_name, ifs_variable_name, subdaily_resolution=6, ...,
-   include_provenance=True)` (`../recap-dg-client/recap_client/ecmwf.py:91`) — following the existing
-   `ifs_forecast`/`era5_land_reanalysis` pattern. Extend the fakes and their conformance tests in the same
-   task.
+   D5 live probe and a manual fill construction becomes necessary). Mirror the recap-dg-client
+   `operational` keyword signature verbatim from its source (`../recap-dg-client/recap_client/ecmwf.py:91`)
+   — do not re-transcribe it here — following the existing `ifs_forecast`/`era5_land_reanalysis` pattern.
+   Extend the fakes and their conformance tests in the same task.
 2. **Gateway bridge fetch (`adapters/recap_gateway.py`).** A path that calls `client.ecmwf.operational`
    (ERA5 + IFS gap-fill, `include_provenance=True`) at the finest supported `subdaily_resolution` (6 h),
    returning observed body + fill tail with per-row `source`/`source_run` provenance. Used on the
@@ -531,12 +532,13 @@ this bridge's code path.)*
   DataFrame — a hole *inside* `[start, end)`, rows on both sides, **without raising** — makes the bridge
   raise `RecapDataUnavailableError` (the coverage check, Scope item 2), not silently pass a discontinuous
   series to the model.
-- **Reanalysis-binding preflight (reviewer major, Scope item 3):** a Recap deployment where a bridge-served
-  station has **no** active basin-average `era5_land` `role=REANALYSIS` binding **fails loud** at the Flow-1
-  preflight (not a silent-empty `past_dynamic`). Proves `fetch_reanalysis`'s `_prefilter` returning `[]`
-  (`recap_gateway.py:949-950`) cannot silently degrade the cycle. (Complementary positive case: with the
-  binding present — or synthesized from the polygon resolver, per the (a)/(b) fork — the bridge produces a
-  non-empty `past_dynamic`.)
+- **Reanalysis-resolution preflight (reviewer major, Scope item 3 — matches the (b) decision):** a Recap
+  deployment where a bridge-served station **cannot be resolved to a serviceable gateway HRU** (via
+  `GatewayPolygonResolver`) **fails loud** at the Flow-1 preflight (not a silent-empty `past_dynamic`). The
+  condition is *unresolvable HRU*, **not** "missing `role=REANALYSIS` binding" — under (b) the binding is
+  synthesized from the resolver and never pre-seeded, so a missing DB row is expected, not an error. Proves
+  the bridge cannot silently degrade the cycle. (Positive case: a station that resolves to an HRU produces
+  a non-empty `past_dynamic`.)
 - **Resolution-general (known-answer, the blocker fix):** a **daily** model and a **6-hourly** model each
   get `past_dynamic` aggregated to their step from the same 6-hourly bridge source — assert daily precip
   = SUM of its four 6-h buckets and daily temp = MEAN, and that the 6-hourly model gets the buckets
