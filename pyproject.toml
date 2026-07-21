@@ -1,6 +1,6 @@
 [project]
 name = "sapphire-flow"
-version = "0.1.630"
+version = "0.1.631"
 description = "Add your description here"
 readme = "README.md"
 license = "MIT"
@@ -111,7 +111,7 @@ markers = [
 addopts = "-m 'not deployment and not live and not live_lindas and not live_stac and not slow'"
 
 [tool.bumpversion]
-current_version = "0.1.630"
+current_version = "0.1.631"
 commit = false
 tag = false
 allow_dirty = true
@@ -140,3 +140,4 @@ climatology_fallback = "sapphire_flow.models.climatology_fallback:ClimatologyFal
 persistence_fallback = "sapphire_flow.models.persistence_fallback:PersistenceFallbackModel"
 nwp_regression = "sapphire_flow.models.nwp_regression:NwpRegression"
 nwp_rainfall_runoff = "sapphire_flow.models.nwp_regression:NwpRainfallRunoff"
+seasonal_precip_runoff_regression = "sapphire_flow.models.nwp_regression:SeasonalPrecipRunoffRegression"
