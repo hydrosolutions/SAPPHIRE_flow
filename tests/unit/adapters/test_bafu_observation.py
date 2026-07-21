@@ -65,10 +65,28 @@ def _sparql_response(bindings: list[dict]) -> dict[str, object]:
     }
 
 
-def _make_adapter(handler):  # type: ignore[no-untyped-def]
+def _make_adapter(
+    handler,  # type: ignore[no-untyped-def]
+    *,
+    sleeper: object = None,
+    max_retries: int = 2,
+):
     module = _import_adapter()
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    return module.BafuObservationAdapter(endpoint=_ENDPOINT, http_client=client)  # type: ignore[attr-defined]
+    kwargs: dict[str, object] = {"max_retries": max_retries}
+    if sleeper is not None:
+        kwargs["sleeper"] = sleeper
+    return module.BafuObservationAdapter(  # type: ignore[attr-defined]
+        endpoint=_ENDPOINT, http_client=client, **kwargs
+    )
+
+
+class _SleepSpy:
+    def __init__(self) -> None:
+        self.calls: list[float] = []
+
+    def __call__(self, seconds: float) -> None:
+        self.calls.append(seconds)
 
 
 class TestFetchAllObservations:
@@ -193,3 +211,87 @@ class TestFetchAllObservations:
         query = module.BafuObservationAdapter._build_query()  # type: ignore[attr-defined]
         assert "SELECT ?subject ?predicate ?object" in query
         assert "BIND" not in query
+
+
+class TestHttpFailuresRaiseAdapterError:
+    """Locks the T8/blocker fix: every network/HTTP failure through the REAL
+    adapter (not a hand-fed AdapterError) must surface as AdapterError, never
+    a raw httpx exception — this is what the collector flow's CRITICAL
+    heartbeat handler depends on."""
+
+    def test_500_response_after_retry_cap_raises_adapter_error(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(500, text="server error")
+
+        spy = _SleepSpy()
+        adapter = _make_adapter(handler, sleeper=spy, max_retries=2)
+        with pytest.raises(AdapterError, match="failed with status 500"):
+            adapter.fetch_all_observations()
+        assert len(spy.calls) == 2
+
+    def test_connect_error_after_retry_cap_raises_adapter_error(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("no route to host", request=request)
+
+        spy = _SleepSpy()
+        adapter = _make_adapter(handler, sleeper=spy, max_retries=2)
+        with pytest.raises(AdapterError, match="failed after"):
+            adapter.fetch_all_observations()
+        # Retried up to the cap without a real sleep.
+        assert len(spy.calls) == 2
+
+    def test_5xx_then_success_retries_and_succeeds_without_real_sleep(
+        self,
+    ) -> None:
+        bindings = _river_triples("2135")
+        calls = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            if calls["n"] < 3:
+                return httpx.Response(503, text="try again")
+            return httpx.Response(200, json=_sparql_response(bindings))
+
+        spy = _SleepSpy()
+        adapter = _make_adapter(handler, sleeper=spy, max_retries=3)
+        rows = adapter.fetch_all_observations()
+
+        assert calls["n"] == 3
+        assert len(spy.calls) == 2  # slept before each retry, not after success
+        assert {row.gauge_code for row in rows} == {"2135"}
+
+
+class TestMalformedBindingRaisesAdapterError:
+    """Locks the blocker fix: a malformed binding (missing key, non-numeric
+    value) must surface as AdapterError, never a raw KeyError/ValueError."""
+
+    def test_missing_value_key_raises_adapter_error(self) -> None:
+        subject = f"{_RIVER_BASE}/2135"
+        bindings = [
+            {
+                "subject": {"type": "uri", "value": subject},
+                "predicate": {"type": "uri", "value": f"{_DIM}/measurementTime"},
+                "object": {"type": "literal"},  # missing "value" key
+            }
+        ]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=_sparql_response(bindings))
+
+        adapter = _make_adapter(handler)
+        with pytest.raises(AdapterError, match="malformed binding"):
+            adapter.fetch_all_observations()
+
+    def test_non_numeric_parameter_value_raises_adapter_error(self) -> None:
+        subject = f"{_RIVER_BASE}/2135"
+        bindings = [
+            _binding(subject, f"{_DIM}/measurementTime", "2026-07-21T15:00:00Z"),
+            _binding(subject, f"{_DIM}/discharge", "not-a-number"),
+        ]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=_sparql_response(bindings))
+
+        adapter = _make_adapter(handler)
+        with pytest.raises(AdapterError, match="malformed binding"):
+            adapter.fetch_all_observations()

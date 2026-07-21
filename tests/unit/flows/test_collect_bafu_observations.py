@@ -275,14 +275,34 @@ class TestHeartbeat:
     def test_http_error_fetch_writes_critical_before_reraising(
         self, tmp_path: Path
     ) -> None:
+        # Drives a REAL BafuObservationAdapter (not a hand-fed AdapterError)
+        # over an httpx.MockTransport 500 response, through the real flow, so
+        # this locks the actual production path: the adapter must normalize
+        # the HTTP failure to AdapterError, and the flow must write CRITICAL
+        # before re-raising it.
+        import httpx
+
+        from sapphire_flow.adapters.bafu_observation import BafuObservationAdapter
+
         module = _import_flow_module()
         config = _make_config(bafu_observation_archive_path=tmp_path)
         health_store = FakePipelineHealthStore()
 
-        with pytest.raises(AdapterError, match="boom"):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(500, text="server error")
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        adapter = BafuObservationAdapter(
+            endpoint="https://lindas.admin.ch/query",
+            http_client=client,
+            sleeper=lambda _seconds: None,
+            max_retries=1,
+        )
+
+        with pytest.raises(AdapterError, match="failed with status 500"):
             module.collect_bafu_observations_flow(  # type: ignore[attr-defined]
                 config=config,
-                adapter=_FakeAdapter(AdapterError("boom")),
+                adapter=adapter,
                 clock=_ClockSpy(datetime(2026, 7, 21, 15, 5, tzinfo=UTC)),
                 pipeline_health_store=health_store,
             )
@@ -292,6 +312,8 @@ class TestHeartbeat:
         assert len(records) == 1
         assert records[0].status is PipelineHealthStatus.CRITICAL
         assert records[0].detail["error_type"] is not None
+        # No parquet was written for a non-run (an outage, not a real snapshot).
+        assert list(tmp_path.rglob("*.parquet")) == []
 
     def test_truncated_fetch_writes_critical(self, tmp_path: Path) -> None:
         module = _import_flow_module()

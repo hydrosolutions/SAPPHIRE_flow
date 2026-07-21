@@ -1,10 +1,9 @@
 {
-  "total": 542,
+  "total": 459,
   "by_file": {
     "src/sapphire_flow/api/routes/models.py": 1,
     "src/sapphire_flow/api/routes/stations.py": 19,
     "src/sapphire_flow/api/routes/tables.py": 1,
-    "src/sapphire_flow/config/deployment.py": 12,
     "src/sapphire_flow/config/forecast_qc_rules.py": 7,
     "src/sapphire_flow/config/qc_rules.py": 7,
     "src/sapphire_flow/flows/backup.py": 2,
@@ -18,9 +17,8 @@
     "src/sapphire_flow/models/nwp_regression.py": 3,
     "src/sapphire_flow/services/hindcast.py": 28,
     "src/sapphire_flow/services/model_onboarding.py": 29,
-    "src/sapphire_flow/services/onboarding.py": 121,
-    "src/sapphire_flow/services/operational_inputs.py": 79,
-    "src/sapphire_flow/services/run_station_forecast.py": 18,
+    "src/sapphire_flow/services/onboarding.py": 92,
+    "src/sapphire_flow/services/operational_inputs.py": 51,
     "src/sapphire_flow/services/skill/combined_skill.py": 1,
     "src/sapphire_flow/services/skill/diagrams.py": 9,
     "src/sapphire_flow/services/skill/metrics.py": 3,

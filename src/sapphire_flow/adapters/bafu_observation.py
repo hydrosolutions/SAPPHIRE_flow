@@ -22,11 +22,13 @@ path.
 
 from __future__ import annotations
 
+import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+import httpx
 import structlog
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from sapphire_flow import __version__
 from sapphire_flow.exceptions import AdapterError
@@ -37,7 +39,7 @@ from sapphire_flow.types.bafu_observation import (
 from sapphire_flow.types.datetime import ensure_utc
 
 if TYPE_CHECKING:
-    import httpx
+    from collections.abc import Callable
 
     from sapphire_flow.types.bafu_observation import LindasKind
 
@@ -85,11 +87,22 @@ class _SparqlTriple(BaseModel):
 
 
 class BafuObservationAdapter:
-    def __init__(self, endpoint: str, http_client: httpx.Client) -> None:
+    def __init__(
+        self,
+        endpoint: str,
+        http_client: httpx.Client,
+        *,
+        sleeper: Callable[[float], None] = time.sleep,
+        retry_delay_seconds: float = 1.0,
+        max_retries: int = 2,
+    ) -> None:
         if not endpoint.startswith("https://"):
             raise ValueError(f"SPARQL endpoint must use HTTPS, got: {endpoint!r}")
         self._endpoint = endpoint
         self._http_client = http_client
+        self._sleeper = sleeper
+        self._retry_delay_seconds = retry_delay_seconds
+        self._max_retries = max_retries
 
     def fetch_all_observations(self) -> list[BafuObservationRow]:
         rows, _raw_payload = self.fetch_all_observations_with_raw()
@@ -103,15 +116,7 @@ class BafuObservationAdapter:
         archive the raw JSON companion alongside the parsed parquet without a
         second network round-trip."""
         query = self._build_query()
-        response = self._http_client.post(
-            self._endpoint,
-            data={"query": query},
-            headers={
-                "Accept": "application/sparql-results+json",
-                "User-Agent": USER_AGENT,
-            },
-        )
-        response.raise_for_status()
+        response = self._post_with_retries(query)
         try:
             payload = response.json()
             bindings = payload["results"]["bindings"]
@@ -128,7 +133,21 @@ class BafuObservationAdapter:
                 "the network this cycle (schema-drift/coverage signal)"
             )
 
-        return self._parse_bindings(bindings), payload
+        try:
+            return self._parse_bindings(bindings), payload
+        except (KeyError, TypeError, ValueError, ValidationError) as exc:
+            # A malformed binding (missing subject/predicate/object.value, a
+            # non-numeric literal, an un-parseable measurementTime, etc.)
+            # must never propagate as a raw exception — it would skip the
+            # collector flow's CRITICAL heartbeat (T8), the exact
+            # silent-failure mode the flow's except-AdapterError handler is
+            # meant to catch. _parse_subject/_parse_bindings already raise
+            # AdapterError for RECOGNIZED schema-drift cases (unmapped
+            # predicate, missing measurementTime); this is the backstop for
+            # everything else.
+            raise AdapterError(
+                f"BAFU LINDAS whole-graph response has a malformed binding: {exc}"
+            ) from exc
 
     @staticmethod
     def _build_query() -> str:
@@ -202,6 +221,59 @@ class BafuObservationAdapter:
                 for param, value in values.items()
             )
         return rows
+
+    def _post_with_retries(self, query: str) -> httpx.Response:
+        """POST the whole-graph query with a bounded retry cap (T3: a polite
+        client with a request cap/retry), mirroring
+        ``BafuForecastAdapter._get_with_retries``. Any network/HTTP failure
+        (including a non-2xx status) is normalized to ``AdapterError`` so the
+        collector flow's CRITICAL heartbeat is never silently skipped."""
+        last_exc: Exception | None = None
+        for attempt in range(self._max_retries + 1):
+            try:
+                response = self._http_client.post(
+                    self._endpoint,
+                    data={"query": query},
+                    headers={
+                        "Accept": "application/sparql-results+json",
+                        "User-Agent": USER_AGENT,
+                    },
+                )
+            except httpx.HTTPError as exc:
+                last_exc = exc
+                log.warning(
+                    "bafu_observation.request_failed",
+                    endpoint=self._endpoint,
+                    attempt=attempt,
+                    error=str(exc),
+                )
+                if attempt < self._max_retries:
+                    self._sleeper(self._retry_delay_seconds)
+                continue
+
+            if response.status_code >= 500 and attempt < self._max_retries:
+                log.warning(
+                    "bafu_observation.request_retrying",
+                    endpoint=self._endpoint,
+                    status_code=response.status_code,
+                    attempt=attempt,
+                )
+                self._sleeper(self._retry_delay_seconds)
+                continue
+
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                raise AdapterError(
+                    f"BAFU LINDAS whole-graph request to {self._endpoint} "
+                    f"failed with status {response.status_code}: {exc}"
+                ) from exc
+            return response
+
+        raise AdapterError(
+            f"BAFU LINDAS whole-graph request to {self._endpoint} failed "
+            f"after {self._max_retries + 1} attempt(s): {last_exc}"
+        ) from last_exc
 
     @staticmethod
     def _parse_subject(subject: str) -> tuple[str, LindasKind]:
