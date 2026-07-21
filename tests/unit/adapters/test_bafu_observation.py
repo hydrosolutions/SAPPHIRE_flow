@@ -91,7 +91,17 @@ class _SleepSpy:
 
 class TestFetchAllObservations:
     def test_multiple_subjects_are_grouped_not_merged(self) -> None:
-        bindings = _river_triples("2135") + _river_triples("2200")
+        # Interleaved (NOT concatenated per-subject blocks): SPARQL result
+        # order is not guaranteed, so a parser that tracks a single "current
+        # subject" as it walks the flat triple list (rather than grouping by
+        # ?subject across the whole result set) would silently merge or
+        # truncate these two gauges' triples. Zipping the two triple lists
+        # forces subject A, subject B, subject A, subject B, ... ordering.
+        bindings = [
+            triple
+            for pair in zip(_river_triples("2135"), _river_triples("2200"), strict=True)
+            for triple in pair
+        ]
 
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json=_sparql_response(bindings))
@@ -105,6 +115,18 @@ class TestFetchAllObservations:
         )
         # 3 params per river subject x 2 subjects = 6 rows
         assert len(rows) == 6
+        river_2135 = [r for r in rows if r.gauge_code == "2135"]
+        river_2200 = [r for r in rows if r.gauge_code == "2200"]
+        assert {r.parameter for r in river_2135} == {
+            "discharge",
+            "water_level",
+            "water_temperature",
+        }
+        assert {r.parameter for r in river_2200} == {
+            "discharge",
+            "water_level",
+            "water_temperature",
+        }
 
     def test_lake_subject_yields_water_level_only(self) -> None:
         bindings = _lake_triples("3001")
