@@ -927,113 +927,12 @@ class TestMissingFutureValueReturnsModelFailureOnPredict:
         assert result.cause is FailureCause.INPUT_DATA
         assert result.issue_datetime == _ISSUE
 
-    @pytest.mark.parametrize("variant", _VARIANTS)
-    def test_predict_returns_model_failure_when_future_temp_row_absent(
-        self, variant: type
-    ) -> None:
-        # The reanalysis tail gap can ALSO mean the future frame is simply
-        # SHORTER than the declared horizon (a row entirely absent, not
-        # merely null) — the earlier tail-gap edge. Indexing `temp[step]`
-        # for the last horizon step must not IndexError; the missing grid
-        # slot must be caught by timestamp-grid alignment and returned as
-        # ModelFailure.
-        #
-        # Soundness: fails RED against the pre-fix `predict` (`horizon =
-        # len(future_times)` taken from precip, then plain `temp[step]`
-        # indexing) with a real `IndexError: index N is out of bounds`, not
-        # a collection/import error.
-        model = variant()
-        artifact = _fit(model)
-        horizon = _declared_horizon(model)
-        lags = [10.0] * _LOOKBACK if variant is NwpRegression else None
-
-        step, rep, spec = _dynamic_spec(model)
-        future_ts_full = [_ISSUE + (k + 1) * step for k in range(horizon)]
-        future_ts_short = future_ts_full[:-1]  # temp's last future row is absent
-        precip_vals = [7.0 + k for k in range(horizon)]
-        temp_vals_short = [10.0] * (horizon - 1)
-
-        future_known: dict[str, dict[str, fi_boundary.InputSeries]] = {}
-        for product, variables in spec.future_known.items():
-            inner: dict[str, fi_boundary.InputSeries] = {}
-            for name, var in variables.items():
-                if name == "precipitation":
-                    inner[name] = _series(future_ts_full, name, precip_vals, var.unit)
-                else:
-                    inner[name] = _series(
-                        future_ts_short, name, temp_vals_short, var.unit
-                    )
-            future_known[product] = inner
-
-        past_known: dict[str, dict[str, fi_boundary.InputSeries]] = {}
-        if lags is not None:
-            lb = len(lags)
-            past_ts = [_ISSUE - (lb - 1 - i) * step for i in range(lb)]
-            past_known = {
-                "obs": {
-                    "discharge": _series(
-                        past_ts, "discharge", lags, fi_boundary.Unit.M3_PER_S
-                    )
-                }
-            }
-        inputs = _model_inputs(
-            model, step=step, rep=rep, past_known=past_known, future_known=future_known
-        )
-
-        result = model.predict(
-            artifact, inputs=inputs, issue_datetime=_ISSUE, rng=random.Random(0)
-        )
-
-        assert isinstance(result, ModelFailure)
-        assert result.cause is FailureCause.INPUT_DATA
-        assert result.issue_datetime == _ISSUE
-
-    @pytest.mark.parametrize("variant", _VARIANTS)
-    def test_predict_returns_model_failure_when_both_variables_missing_same_tail_row(
-        self, variant: type
-    ) -> None:
-        # Both precip AND temp are missing the SAME tail row (both delivered
-        # frames are one row shorter than the declared horizon). The pre-fix
-        # code computed `horizon = len(future_times)` from whichever series
-        # was inspected, found ZERO NaNs (both arrays are internally
-        # consistent-length), and silently returned a ModelSuccess ONE STEP
-        # SHORT of the declared horizon instead of failing loudly.
-        #
-        # Soundness: fails RED against the pre-fix `predict` — it returns
-        # `ModelSuccess` with `frame.height == horizon - 1` instead of
-        # `ModelFailure`, so `isinstance(result, ModelFailure)` is False.
-        model = variant()
-        artifact = _fit(model)
-        horizon = _declared_horizon(model)
-        lags = [10.0] * _LOOKBACK if variant is NwpRegression else None
-
-        step, rep, spec = _dynamic_spec(model)
-        future_ts_short = [_ISSUE + (k + 1) * step for k in range(horizon - 1)]
-        precip_vals = [7.0 + k for k in range(horizon - 1)]
-        temp_vals = [10.0] * (horizon - 1)
-        future_known = _future_known_from_spec(
-            spec, future_ts_short, precip_vals, temp_vals
-        )
-
-        past_known: dict[str, dict[str, fi_boundary.InputSeries]] = {}
-        if lags is not None:
-            lb = len(lags)
-            past_ts = [_ISSUE - (lb - 1 - i) * step for i in range(lb)]
-            past_known = {
-                "obs": {
-                    "discharge": _series(
-                        past_ts, "discharge", lags, fi_boundary.Unit.M3_PER_S
-                    )
-                }
-            }
-        inputs = _model_inputs(
-            model, step=step, rep=rep, past_known=past_known, future_known=future_known
-        )
-
-        result = model.predict(
-            artifact, inputs=inputs, issue_datetime=_ISSUE, rng=random.Random(0)
-        )
-
-        assert isinstance(result, ModelFailure)
-        assert result.cause is FailureCause.INPUT_DATA
-        assert result.issue_datetime == _ISSUE
+    # NOTE: a cross-variable timestamp-alignment test (mismatched-length
+    # precip/temp future series triggering IndexError, or both truncated at
+    # the same tail row triggering a short ModelSuccess) is deliberately NOT
+    # covered here. Plan 130 explicitly scopes predict-side cross-variable
+    # alignment refactors OUT — see the plan's "Not changed / out of scope"
+    # section and the module docstring. predict() keeps its pre-existing
+    # per-series positional grid construction; this class only proves the
+    # missing-*value* guard (a null/NaN reading within an otherwise
+    # length-matched series).

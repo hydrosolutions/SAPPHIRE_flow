@@ -1,5 +1,5 @@
 {
-  "total": 543,
+  "total": 542,
   "by_file": {
     "src/sapphire_flow/api/routes/models.py": 1,
     "src/sapphire_flow/api/routes/stations.py": 19,
@@ -11,7 +11,7 @@
     "src/sapphire_flow/flows/compute_skills.py": 14,
     "src/sapphire_flow/flows/ingest_observations.py": 14,
     "src/sapphire_flow/flows/onboard.py": 18,
-    "src/sapphire_flow/flows/onboard_model.py": 24,
+    "src/sapphire_flow/flows/onboard_model.py": 23,
     "src/sapphire_flow/flows/run_hindcast.py": 26,
     "src/sapphire_flow/flows/train_models.py": 36,
     "src/sapphire_flow/models/linear_regression_daily.py": 11,

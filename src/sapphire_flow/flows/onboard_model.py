@@ -178,7 +178,11 @@ def _render_train_onboarding_model_name() -> str:
 def _render_store_onboarding_artifact_name() -> str:
     from prefect import runtime
 
-    params = runtime.task_run.parameters or {}
+    # Same prefect.runtime stub gap as this module's other renderers (and
+    # run_forecast_cycle.py:1208) — suppressed locally rather than growing
+    # the pyright ratchet baseline for a diagnostic kind already accepted
+    # elsewhere in this file.
+    params = runtime.task_run.parameters or {}  # pyright: ignore[reportAttributeAccessIssue]
     unit = params.get("unit")
     shard = _unit_shard(unit) if unit is not None else "unknown"
     return f"store-onboarding-artifact-{shard}"

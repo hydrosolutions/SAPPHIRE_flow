@@ -15,20 +15,20 @@ Both are ``ArtifactScope.STATION``, deterministic single-trajectory models — t
 21-member ensemble is assembled downstream in M3, not inside the model.
 
 **Missing future forcing (Plan 130 Part B)**: a missing future precip/temp
-value — absent from the frame, a null, or a non-finite (NaN/inf) reading —
-is an ANTICIPATED condition per the FI contract, not a crash.
-``_aligned_future`` (used by both ``train`` and ``predict``) returns a
-validity mask alongside the aligned values — ``train`` drops rows with a
-missing value rather than ``float(None)``-crashing or handing ``Ridge`` a
-NaN; ``predict`` anchors the future grid on precipitation's OWN delivered
-timestamps (capped at the declared ``_HORIZON``, never assumed to be an
-``issue_datetime``-offset grid — the onboarding smoke-test harness delivers
-future-known forcing on a different timestamp convention), aligns
-temperature onto that SAME grid by timestamp lookup rather than positional
-indexing (so a length/timestamp mismatch between the two series is caught,
-not IndexError'd or silently mispaired), and returns ``ModelFailure`` (cause
-``INPUT_DATA``) for a short grid or any missing slot rather than emitting a
-NaN-poisoned or short ``ModelSuccess``.
+value — absent from the frame, a null, or (in ``train``) a non-finite
+(NaN/inf) reading — is an ANTICIPATED condition per the FI contract, not a
+crash. ``_aligned_future`` (used by ``train``) returns a validity mask
+alongside the aligned values — ``train`` drops rows with a missing value
+rather than ``float(None)``-crashing or handing ``Ridge`` a NaN. ``predict``
+keeps its original grid construction (each future-known series anchored on
+its own delivered timestamps, positionally combined) and adds only a
+missing-value guard: a NaN in the precipitation or temperature array (e.g. a
+null future value) returns ``ModelFailure`` (cause ``INPUT_DATA``) rather
+than emitting a NaN-poisoned ``ModelSuccess``. A broader predict-side
+cross-variable timestamp-alignment refactor is explicitly OUT of scope for
+Plan 130 (see the plan's "Not changed / out of scope" section) — this guard
+does not change how the future grid is anchored or how many rows are
+consumed.
 """
 
 from __future__ import annotations
@@ -241,53 +241,21 @@ class _NwpRegressionBase:
         del rng  # deterministic single trajectory; output is a pure function of input
         station_key, dynamic = _dynamic_inputs(inputs)
 
-        # The precipitation series' OWN delivered timestamps anchor the future
-        # grid (NOT an issue_datetime + step construction — the onboarding
-        # smoke-test harness deliberately delivers future-known forcing on a
-        # timestamp convention that does not offset from issue_datetime, so a
-        # grid built from issue_datetime would reject every synthetic run).
-        # Declared horizon caps how many of those rows are actually consumed.
-        horizon = _HORIZON
-        all_future_times, _all_precip = _sorted_series(
+        future_times, precip = _sorted_series(
             dynamic.future_known[_PRODUCT_NWP][_PRECIPITATION], _PRECIPITATION
         )
-        grid_times = all_future_times[:horizon]
+        _temp_times, temp = _sorted_series(
+            dynamic.future_known[_PRODUCT_NWP][_TEMPERATURE], _TEMPERATURE
+        )
+        horizon = len(future_times)
 
-        # Fewer future rows than the declared horizon (the reanalysis tail
-        # gap truncating BOTH precip and temp at the same trailing day) is an
-        # ANTICIPATED condition — fail loudly rather than silently emitting a
-        # shorter-than-declared ModelSuccess (Plan 130 Part B).
-        if len(grid_times) < horizon:
-            log.warning(
-                "nwp_regression.insufficient_future_forcing_rows",
-                model=self._model_name,
-                got=len(grid_times),
-                need=horizon,
-            )
-            return ModelFailure(
-                model_name=self._model_name,
-                issue_datetime=issue_datetime,
-                cause=FailureCause.INPUT_DATA,
-                message=(
-                    f"insufficient future forcing rows: got {len(grid_times)}, "
-                    f"need {horizon}"
-                ),
-            )
-
-        # Align BOTH variables onto the SAME timestamp grid via a dict lookup
-        # (not positional indexing) — this is what makes a length/timestamp
-        # mismatch between the two future-known series (e.g. temp missing a
-        # row that precip has) a caught validity-mask miss instead of an
-        # IndexError or a silently mispaired day.
-        precip, precip_valid = _aligned_future(dynamic, _PRECIPITATION, grid_times)
-        temp, temp_valid = _aligned_future(dynamic, _TEMPERATURE, grid_times)
-
-        # A genuinely missing (absent, null, NaN, or non-finite) required
-        # future input is an ANTICIPATED condition per the FI contract —
-        # return ModelFailure, never let NaN silently flow into a
-        # "successful" forecast (Plan 130 Part B).
-        missing_precip = int((~precip_valid).sum())
-        missing_temp = int((~temp_valid).sum())
+        # A genuinely missing required future input is an ANTICIPATED
+        # condition per the FI contract — return ModelFailure, never let NaN
+        # silently flow into a "successful" forecast (Plan 130 Part B). This
+        # is a value-presence guard only: cross-variable timestamp alignment
+        # is out of scope for Plan 130 (see module docstring).
+        missing_precip = int(np.isnan(precip).sum())
+        missing_temp = int(np.isnan(temp).sum())
         if missing_precip or missing_temp:
             log.warning(
                 "nwp_regression.missing_future_forcing",
@@ -336,7 +304,7 @@ class _NwpRegressionBase:
         frame = pl.DataFrame(
             {
                 "issue_datetime": [issue_datetime] * horizon,
-                "datetime": grid_times,
+                "datetime": future_times,
                 "value": predictions,
             }
         ).with_columns(

@@ -171,3 +171,16 @@ blocker. Grill-me resolved 2026-07-21 (a live STAC probe settled the provisional
 the provisional partial-current-month tail; yearly archive stops 2025). **READY (owner, 2026-07-21) —
 sequenced BEFORE Plan 129's T1, which is blocked on this fix.** Build via `implement`; hold-at-PR.
 Temperature analog of Plan 128; relates to Plan 129 and the #103 three-tier re-probe.
+
+**Post-implementation fixer round (2026-07-21):** the first committed pass (`3f5fd70`) re-introduced
+exactly the predict-side cross-variable alignment refactor this plan declared out of scope (`_HORIZON`-capped
+grid + dict-based timestamp alignment for BOTH future-known variables, replacing the original
+per-series-positional grid construction) — flagged by independent Codex review. Reverted `predict()` to
+its original per-series `_sorted_series`-based positional grid, keeping only the missing-value
+(`np.isnan`) guard actually in scope; the two tests that only made sense under the reworked mechanism
+(mismatched-length / same-tail-truncation cross-alignment) were removed. `train()`/`_aligned_future()`
+(the load-bearing Part B fix) are unchanged. Also fixed a pyright-ratchet regression from the same
+commit (`onboard_model.py` 23→24, the new `_store_onboarding_artifact_task` split adding a 7th
+`prefect.runtime` stub-gap renderer): suppressed locally with `# pyright: ignore[reportAttributeAccessIssue]`
+(precedent: `run_forecast_cycle.py:1208`) instead of growing the baseline; baseline restored to main's
+542/23.
