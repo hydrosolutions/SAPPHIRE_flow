@@ -13,19 +13,43 @@ supersedes: [58]
 
 ## Status
 
-**DRAFT.** Owner decision locked (2026-07-21, below). Went through a `/plan` adversarial round
-(2026-07-21) that escalated with 1 blocker + 9 majors; this revision folds all of them, grounded in
-a **live LINDAS probe** (§ Live LINDAS probe evidence) that settled the two empirical unknowns
-(cadence, endpoint load) and caught a watchdog trap. For a confirming `/plan` round before READY.
+**DRAFT.** Owner decision locked (2026-07-21, below). Went through two `/plan` adversarial rounds
+(2026-07-21), grounded in a **live LINDAS probe** (§ Live LINDAS probe evidence) that settled the two
+empirical unknowns (cadence = hourly; endpoint load negligible) and caught a dead-gauge watchdog trap.
+
+The first automated round **over-engineered** the dedup (a canonical-content hash + `ORDER BY` pin +
+cross-partition sidecar-pointer subsystem) and added a raw-retention knob and an unenforceable
+`Literal`-runtime test; the second round's reviewer correctly flagged these as disproportionate but the
+loop **stalled** (couldn't self-simplify). This revision applies **human judgment to simplify back to the
+proportionate design** and fixes the genuine gaps the reviewer found:
+- **T3 dedup — stripped to the *actual* forecast-collector mechanism:** trivial **path-existence** on the
+  `fetched_at`-named snapshot (mirror `_already_archived`), restatements preserved by construction. No
+  content hash, no `ORDER BY`, no sidecar pointer.
+- **T4 — dropped the raw-retention knob:** raw JSON kept permanently gzipped, exactly like the forecast
+  collector (a prune step is a trivial later follow-up if ever needed).
+- **T1 — removed the invalid "Literal raises at runtime" test claim** (dataclasses don't enforce `Literal`;
+  the parser boundary is the real contract).
+- **T8 — nailed the CRITICAL control flow:** explicit catch-record-**then-reraise** so a total HTTP/parse
+  failure is not left invisible (the forecast pattern appends only after success). Status values are the
+  real `OK`/`WARNING`/`CRITICAL`.
+- **T9 — fixed the formatter citation:** freshness alerts use `_format_bafu_stale_alert`/`_degraded_alert`,
+  not the HTTP-probe `_format_health_alert`; watchdog change stays an additive copy (table-driven
+  generalization is a separate follow-up).
+- Fixed minors: config-reference file added to T5 docs, "2 stations" reworded as an observed runtime fact,
+  live-schema-test scope caveat, T2 keeps a generous safety `LIMIT`.
+
+For a confirming `/plan` round before READY (this revision expects to converge, the churn was the loop
+gold-plating its own additions).
 
 ## Context — collect now, because LINDAS has no history
 
 LINDAS (`lindas.admin.ch/foen/hydro`) serves BAFU river-gauge **observations** in **real time only** —
 it carries **no historical time series** (Plan 111 Phase 0, confirmed 2026-07-08; memory
-`project_bafu_lindas_realtime_only`). Today we ingest only the **2 onboarded operational stations**
-(Porte_du_Scex, Rheinfelden-Messstation) via `flows/ingest_observations.py` → `hydro_scraper`
-(`stations_polled=2`, verified live 2026-07-21). The full BAFU network publishes on the
-same graph but we don't collect it.
+`project_bafu_lindas_realtime_only`). The **live mac-mini deployment reported `stations_polled=2`
+on 2026-07-21** (Porte_du_Scex, Rheinfelden-Messstation) via `flows/ingest_observations.py` →
+`hydro_scraper` — an observed runtime fact, not a repo-inferred count (`config.toml`'s onboarding list is a
+different, larger population; § Live-inventory note). The full BAFU network publishes on the same graph but
+we don't collect it.
 
 Because there is no back-catalogue, **the archive can only be built forward** — so starting a full-network
 collector **now** maximizes the eventual sub-daily series length. This is the same rationale, and the
@@ -148,13 +172,24 @@ The adapter path this plan draws its dimension mapping from only ever produces `
 `station_id: StationId` field is **mandatory** (`src/sapphire_flow/types/observation.py:21-29`) — there is
 no way to construct one for a gauge that, by design, has no `StationId` (Non-goals). The **sibling forecast
 collector already solved this** with a plain-string key: `BafuForecastRow.station_key: str`
-(`src/sapphire_flow/types/bafu_forecast.py:46,64`), no DB identity.
+(`src/sapphire_flow/types/bafu_forecast.py:46`), no DB identity.
 
 **Locked:** this collector defines a new gauge-code-keyed row type — working name **`BafuObservationRow`**
-with `gauge_code: str`, `lindas_kind: Literal["river", "lake"]`, `parameter: str`, `value: float`,
-`measurement_time: UtcDatetime` — mirroring `BafuForecastRow`. `RawObservation` / `StationId` are **never**
-constructed on this path. This closes the "or a collector-local query" ambiguity that previously left
-`Scope §1` open to drifting back toward the incompatible type.
+with `gauge_code: str`, `lindas_kind: Literal["river", "lake"]`,
+`parameter: BafuObservationParameter`, `value: float`, `measurement_time: UtcDatetime` — mirroring
+`BafuForecastRow`. `RawObservation` / `StationId` are **never** constructed on this path. This closes the
+"or a collector-local query" ambiguity that previously left `Scope §1` open to drifting back toward the
+incompatible type.
+
+**Parameter is a `Literal`, not a raw `str` (MAJOR resolution).** The LINDAS parameter set is fixed and
+small, and the adapter already maps the three camelCase LINDAS predicates to three snake_case domain names
+via `_PARAM_MAP` (`hydro_scraper.py:46-50`: `waterLevel→water_level`, `waterTemperature→water_temperature`,
+`discharge→discharge`). Per CLAUDE.md "Literal over raw strings — always, when the set of valid values is
+fixed and known", the row type declares
+`BafuObservationParameter = Literal["discharge", "water_level", "water_temperature"]` (T1), and the parser
+(T2) emits only those three values — a predicate outside the map is dropped, never stringified through. Any
+parameter the parser cannot classify to a `BafuObservationParameter` is a **schema-drift signal** the T2
+parser must reject loudly rather than pass through as an unknown string.
 
 ### DC-3 — per-subject river/lake discrimination from the URI segment
 
@@ -179,10 +214,15 @@ section. Exit gates (§ Exit gates) apply to every code task.
 #### T1 — `BafuObservationRow` row type (DC-2)
 
 - **Scope:** new frozen dataclass module mirroring `types/bafu_forecast.py` (evaluation-only,
-  quarantined, never DB / never `ModelId`). Fields per DC-2. No `StationId` import.
+  quarantined, never DB / never `ModelId`). Fields per DC-2, including the module-level
+  `BafuObservationParameter = Literal["discharge", "water_level", "water_temperature"]` alias used for the
+  `parameter` field. No `StationId` import.
 - **Files:** `src/sapphire_flow/types/bafu_observation.py` (new);
-  `tests/unit/types/test_bafu_observation.py` (new — construction, kw-only, frozen, `lindas_kind`
-  Literal round-trips).
+  `tests/unit/types/test_bafu_observation.py` (new — construction, kw-only, frozen, `lindas_kind` +
+  `parameter` round-trips). The `Literal` aliases are for **static** analysis only (pyright, `src/`) —
+  dataclasses do not enforce `Literal` at runtime and `BafuForecastRow` adds no runtime check either, so
+  **no** pytest asserts an "invalid Literal raises": the real contract is that the **T2 parser only ever
+  emits the three known parameters** (parse-don't-validate boundary), which the parser tests cover.
 - **Verification:** `uv run pytest tests/unit/types/test_bafu_observation.py`.
 
 #### T2 — fetch-all SPARQL query + subject-grouping parser (DC-1, DC-3)
@@ -191,11 +231,16 @@ section. Exit gates (§ Exit gates) apply to every code task.
   per-station path, which the operational flow depends on). Query `SELECT ?subject ?predicate ?object`
   over `<https://lindas.admin.ch/foen/hydro>` filtered to the dimension predicates the adapter already
   maps (`discharge`, `waterLevel`, `waterTemperature`, `measurementTime` — `hydro_scraper.py:36-50`),
-  with **no** per-station `BIND` and **no** onboarded-station list. Parser groups bindings by `?subject`,
-  derives `(gauge_code, lindas_kind)` from the URI segment (DC-3), and yields `list[BafuObservationRow]`
-  — one row per (subject, parameter). `/plan` confirms the exact query against the live graph (which
-  gauges + parameters are exposed) but MUST keep the SELECT-?subject + subject-grouping shape locked
-  here.
+  with **no** per-station `BIND` and **no** onboarded-station list. Query carries a generous safety
+  **`LIMIT`** (e.g. 10000 — well above the ~730 rows the live probe returned) as a bounded-request courtesy
+  guard; no `ORDER BY` is needed (the simplified path-existence dedup, § T3, does not hash row content).
+  Parser groups bindings by `?subject`, derives
+  `(gauge_code, lindas_kind)` from the URI segment (DC-3), maps each dimension predicate to a
+  `BafuObservationParameter` via the adapter's `_PARAM_MAP` (`hydro_scraper.py:46-50`) — dropping/rejecting
+  any predicate outside the fixed three (schema-drift signal, DC-2), never stringifying it through — and
+  yields `list[BafuObservationRow]` — one row per (subject, parameter). `/plan` confirms the exact query
+  against the live graph (which gauges + parameters are exposed) but MUST keep the SELECT-?subject +
+  subject-grouping shape locked here.
 - **Files:** `src/sapphire_flow/adapters/bafu_observation.py` (new — query + parser + polite httpx client,
   mirroring `adapters/bafu_forecast.py`); `tests/unit/adapters/test_bafu_observation.py` (new) plus a
   recorded multi-gauge fixture.
@@ -215,26 +260,36 @@ section. Exit gates (§ Exit gates) apply to every code task.
   `collect_bafu_forecasts.py:485-494`); **restatement-safe dedup** (BLOCKER — see below); **atomic**
   temp+rename writes (`collect_bafu_forecasts.py:231-239`); **polite client** (identifying `User-Agent`,
   request cap/retry). A single whole-graph request per run — no per-station fan-out.
-- **Restatement-safe dedup (BLOCKER resolution).** BAFU can **restate** a value at an unchanged
-  `measurement_time` (a correction) — the repo already handles this class for operational observations by
-  updating on value change (`stores/observation_store.py:97`). Dedup on
-  `(gauge_code, lindas_kind, parameter, measurement_time)` **alone would silently drop the correction** —
-  data loss. **Locked design:** the archive is **append-only immutable snapshots** (T4), so the identity
-  key detects a *re-fetch of unchanged data* (skip), while a *changed value at the same identity* is a
-  **new snapshot, never a delete-and-replace**. Concretely: each cycle carries an injected `fetched_at`
-  (dependency-injected clock, per CLAUDE.md — never `datetime.now()` in the flow body), and dedup is at the
-  **snapshot level** — skip the write **iff** this cycle's parsed content is byte-identical to the
-  immediately-previous archived cycle (content hash). A restatement changes content ⇒ a new snapshot file ⇒
-  preserved. The "current value per identity" is reconstructed at **import** time as the row with the
-  greatest `fetched_at` — the quarantine never has to decide correctness at collection time.
+- **Restatement-safe dedup (BLOCKER resolution) — the *actual* forecast-collector mechanism.** BAFU can
+  **restate** a value at an unchanged `measurement_time` (a correction). Dedup on
+  `(gauge_code, lindas_kind, parameter, measurement_time)` — a per-observation key — **would silently drop
+  the correction** (data loss). The forecast collector avoids this class not with a content hash but with
+  **trivial path-existence dedup**: `_already_archived` just checks whether a deterministically-named file
+  already exists (`collect_bafu_forecasts.py:272-283,395,415`), because each unit of work has a **natural
+  stable identity** supplied by the source. **Locked (simplest correct design):**
+  - The archive is **append-only per-cycle snapshots** (T4), one file per poll, named by the injected
+    `fetched_at` (dependency-injected clock, per CLAUDE.md — never `datetime.now()` in the flow body). The
+    snapshot's atomic temp+rename existence **is** the completion marker.
+  - **Dedup = path-existence on that `fetched_at`-named snapshot** (mirror `_already_archived`): a retry
+    that re-runs the *same* cycle (same injected `fetched_at`) finds the file present and **skips**; a new
+    cycle gets a new name and writes. `concurrency_limit=1` (T6 deployment spec) already precludes two
+    overlapping runs, so the only realistic duplicate is an in-slot retry, which the path check catches.
+  - **Restatements are preserved by construction, with no extra machinery:** a corrected value simply
+    appears in a *later* cycle's snapshot (a distinct `fetched_at`), which is never deduped against an
+    earlier one. There is **no content hash, no `ORDER BY` pin, and no cross-partition sidecar pointer** —
+    the round-2 reviewer correctly flagged those as machinery guarding a saving of at most ~one file per
+    day-boundary, in a case whose own storage math says snapshot-content is almost never identical between
+    hourly cycles anyway. The "current value per identity" is reconstructed at **import** time as the row
+    with the greatest `fetched_at` — the quarantine never decides correctness at collection time.
 - **Files:** `src/sapphire_flow/flows/collect_bafu_observations.py` (new);
   `tests/unit/flows/test_collect_bafu_observations.py` (new).
 - **Verification:** quarantine no-op test (blank `archive_base_path` ⇒ zero writes, no DB touch); dedup
-  test (second run over a **byte-identical** snapshot archives zero new files); **restatement test** (a
-  second run where one gauge's `value` changed at the same `measurement_time` archives a **new** snapshot
-  and does **not** overwrite/drop the first — the corrected and original values both survive, ordered by
-  `fetched_at`); multi-gauge archive test (one run archives many distinct gauges). `fetched_at` is
-  injected, so the test is deterministic. `uv run pytest tests/unit/flows/test_collect_bafu_observations.py`.
+  test (a re-run with the **same injected `fetched_at`** finds the snapshot present and writes zero new
+  files); **restatement test** (a later cycle — distinct `fetched_at` — where one gauge's `value` changed
+  at the same `measurement_time` archives a **new** snapshot and does **not** overwrite/drop the earlier
+  one; both values survive, ordered by `fetched_at`); multi-gauge archive test (one run archives many
+  distinct gauges). `fetched_at` is injected, so tests are deterministic.
+  `uv run pytest tests/unit/flows/test_collect_bafu_observations.py`.
 
 #### T4 — quarantined parquet archive store
 
@@ -249,16 +304,24 @@ section. Exit gates (§ Exit gates) apply to every code task.
     atomic temp+rename existence IS the marker** (same rationale as `collect_bafu_forecasts.py:272-283`);
     a half-written cycle never appears. Row schema = `BafuObservationRow` fields (DC-2) **plus a
     `fetched_at: UtcDatetime` provenance column** (the snapshot's cycle time), so import can reconstruct
-    latest-value-per-identity by `max(fetched_at)`. Storage: ~348 KB/cycle × hourly ≈ ~8 MB/day ≈ ~3 GB/yr
-    — acceptable for permanent staging retention; consecutive-identical snapshots are deduped away (T3).
+    latest-value-per-identity by `max(fetched_at)`.
+  - **Storage estimate — two artifacts per cycle, both permanent.** Roughly: a **parsed parquet snapshot**
+    (~730 rows of `BafuObservationRow` + `fetched_at`, compressed columnar — order ~50–100 KB/cycle, to be
+    measured on the first live run) and a **gzipped raw SPARQL-results JSON companion** (the ~348 KB
+    uncompressed response, materially smaller gzipped). At hourly cadence (~8,760 cycles/yr) that is on the
+    order of **~1–2 GB/yr** permanent — acceptable for staging. This matches the forecast collector's
+    posture (raw kept forever); if storage ever becomes a concern, a retention/prune step is a trivial
+    later follow-up, not something to design speculatively now.
   - **Raw-payload archival (MAJOR resolution).** The forecast collector archives the **raw** upstream
     payload alongside the parsed rows as forward-only safety
-    (`collect_bafu_forecasts.py` raw-snapshot path). Mirror it: persist the raw SPARQL-results JSON of each
-    archived cycle (same atomic write, alongside the parsed parquet, under the same `fetched_at` key) so a
-    future parser change can re-derive rows without re-collection. Skipped only when the cycle itself is
-    deduped (byte-identical) — the raw is redundant then.
+    (`collect_bafu_forecasts.py` raw-snapshot path). Mirror it exactly: persist the raw SPARQL-results JSON
+    of each archived cycle (same atomic write, alongside the parsed parquet, under the same `fetched_at`
+    key), **gzip-compressed**, retained permanently like the parquet, so a future parser change can
+    re-derive rows without re-collection. No retention knob is introduced (keeping the design minimal and
+    matching the forecast collector); raw is skipped only when the whole cycle is a path-existence dedup
+    (an in-slot retry).
 - **Files:** helper functions inside `flows/collect_bafu_observations.py` (T3); covered by T3 tests.
-- **Verification:** included in T3 (snapshot layout + `fetched_at` column + raw-JSON companion + atomic
+- **Verification:** included in T3 (snapshot layout + `fetched_at` column + gzip raw-JSON companion + atomic
   marker asserted there).
 
 ### Phase C — config, deploy wiring, watchdog (each depends on the phase it touches)
@@ -272,8 +335,12 @@ section. Exit gates (§ Exit gates) apply to every code task.
   (`config/deployment.py:428`). Add the config-reference doc entry.
 - **Files:** `src/sapphire_flow/config/deployment.py`; `tests/unit/config/test_deployment.py` (two new
   tests mirroring `:267-283` — defaults-to-None, parsed-from-adapters-section, plus a blank-string→None
-  test); config-reference docs (`docs/standards/cicd.md` config table or the deployment-config reference,
-  wherever `bafu_forecast_archive_path` is already documented).
+  test); config-reference docs — **all three** authoritative surfaces where `bafu_forecast_archive_path` /
+  `[adapters.*]` already appear: (a) the `docs/standards/cicd.md` config table; (b) the `## DeploymentConfig`
+  section of `docs/spec/types-and-protocols.md:3063-3190` (add the field beside `bafu_forecast_archive_path`);
+  and (c) the `[adapters.bafu_observation]` section of `docs/spec/config-reference.toml:463` (the actual
+  adapter-config reference file) — so the spec, the reference TOML, and the dataclass do not drift, per
+  CLAUDE.md "every code change updates affected docs".
 - **Verification:** `uv run pytest tests/unit/config/test_deployment.py`.
 
 #### T6 — deploy wiring (register_deployments + docker-compose + overlay) (MAJOR resolution)
@@ -289,9 +356,15 @@ section. Exit gates (§ Exit gates) apply to every code task.
      T6↔T8 circularity.
   2. **docker-compose `init` service env (the finding's core point):** add
      `SCHEDULE_COLLECT_BAFU_OBSERVATIONS: ${SCHEDULE_COLLECT_BAFU_OBSERVATIONS:-5 * * * *}` to the
-     `init` service `environment:` block (`docker-compose.yml:269-275`) — without this the new env var
-     never reaches `register_deployments` (which runs inside `init`, `docker-compose.yml:266`) and the
-     schedule silently falls to the code default.
+     `init` service `environment:` block (`docker-compose.yml:269-275`, which today lists only the four
+     schedules `INGEST_OBSERVATIONS`/`FORECAST_CYCLE`/`BACKUP_DATABASE`/`INGEST_WEATHER_HISTORY`) — without
+     this the new env var never reaches `register_deployments` (which runs inside `init`,
+     `docker-compose.yml:266`) and the schedule silently falls to the code default.
+     **Note (accuracy):** `SCHEDULE_COLLECT_BAFU_FORECASTS` is itself **absent** from that block today
+     (verified — it appears nowhere in `docker-compose.yml`), so the forecast collector currently relies on
+     its code default too. This env line is therefore **net-new wiring**, not a mirror of existing compose
+     config; adding the forecast equivalent alongside it is a reasonable in-scope fix but not required by
+     this plan.
   3. `bafu_observation_archive` named volume (`docker-compose.yml:311`, mirroring
      `bafu_forecast_archive`) mounted `:/data/bafu_observations:rw` on the worker service that runs the
      collector (mirroring `docker-compose.yml:122`).
@@ -334,48 +407,89 @@ operational fact, but nothing downstream waits on it. T8 is the heartbeat + its 
      `2025-05-28` (dead >1 yr, still in the graph), so a per-gauge-min or all-gauges-fresh rule would be
      permanently CRITICAL. Normal = ~233 gauges / ~730 rows and a newest `measurement_time` within the
      last hour.
-  3. **Empty / error whole-graph response (MAJOR resolution).** A whole-graph query returning **zero
-     rows** (or an HTTP/parse error) is an **outage or schema drift**, not a quiet no-op: the heartbeat
-     records a **failed** run (`is_stale`/failure status) rather than a healthy one, so the watchdog (T9)
-     escalates. The existing weekly live schema-drift test (`test_lindas_live_schema.py`) guards the
-     *structure* independently; T8 guards the *runtime emptiness* at collection time.
-- **Files:** `src/sapphire_flow/types/enums.py` (new enum member) **and its authoritative doc**
-  (`docs/spec/types-and-protocols.md` `PipelineCheckType` listing — the enum must not drift from the spec,
-  per CLAUDE.md "every code change updates affected docs");
+  3. **Status semantics — exact `PipelineHealthStatus` values (MAJOR resolution).** `PipelineHealthStatus`
+     has **exactly** `OK` / `WARNING` / `CRITICAL` (`src/sapphire_flow/types/enums.py:145-148`; DB check
+     constraint `status IN ('ok','warning','critical')`, `src/sapphire_flow/db/metadata.py:1355-1360`) —
+     **there is no `failed` value**; the earlier "failed run" wording was wrong. Locked mapping for the
+     `BafuObservationRecord.status`:
+     - **`OK`** — a normal run: ~233 gauges / ~730 rows and a newest `measurement_time` within the last
+       ~hour. `detail` carries `row_count`, `gauge_count`, `newest_measurement_time`.
+     - **`CRITICAL`** — an **empty whole-graph response** (zero rows), an **HTTP error**, or a **parse /
+       schema-drift error** (a predicate outside the fixed `BafuObservationParameter` set, DC-2). These are
+       outages, not quiet no-ops; `detail` carries `error_type`, `row_count=0`,
+       `newest_measurement_time=None`. The watchdog (T9) escalates on this.
+     - **`WARNING`** — a successful, non-empty run whose newest `measurement_time` has nonetheless drifted
+       stale network-wide (fresh-fraction below threshold but rows still returned) — a soft degradation
+       short of an outage. (Reserved; the collector may emit only `OK`/`CRITICAL` in the first cut if the
+       fresh-fraction signal is deferred — noted so a later addition needs no schema change.)
+
+     The existing weekly live schema-drift test (`test_lindas_live_schema.py`) guards the *structure*
+     independently; T8 guards the *runtime emptiness/error* at collection time.
+  4. **Control flow for the CRITICAL paths (MAJOR resolution).** The forecast collector appends its
+     heartbeat **only after** a successful collection (`collect_bafu_forecasts.py:547`), so a **total**
+     HTTP or parse failure there writes **no** heartbeat at all — which would leave this collector's
+     outage invisible to Flow 4. This plan therefore **explicitly wraps** the fetch+parse in `try/except`:
+     on an HTTP error, an empty (zero-row) response, or a parse/schema-drift error, the flow writes the
+     **CRITICAL** heartbeat **first**, then re-raises so the Prefect run is marked failed. The heartbeat
+     write itself stays best-effort/never-fatal (a health-store outage never masks the original error).
+- **Files:** `src/sapphire_flow/types/enums.py` (new enum member) **and its authoritative docs** —
+  **both** `docs/spec/types-and-protocols.md` `PipelineCheckType` listing **and** the
+  `pipeline_health.check_type / PipelineCheckType` enum-value row in `docs/conventions.md:412` (which
+  enumerates every `PipelineCheckType` value and must gain `bafu_observation_freshness`) — the enum must
+  not drift from either doc, per CLAUDE.md "every code change updates affected docs";
   `src/sapphire_flow/flows/collect_bafu_observations.py` (heartbeat call, T3); T3 tests extended.
-- **Verification:** a successful run writes a `BAFU_OBSERVATION_FRESHNESS` record whose freshness reflects
-  the **newest** gauge (a fixture with one stale + many fresh gauges is **healthy**); an **empty**
-  whole-graph response writes a **failed** record; a health-store outage does not fail the run.
+- **Verification:** a successful run writes a `BAFU_OBSERVATION_FRESHNESS` record with status **`OK`** whose
+  freshness reflects the **newest** gauge (a fixture with one stale + many fresh gauges is **`OK`**); an
+  **empty** whole-graph response writes a status **`CRITICAL`** record with `row_count=0` /
+  `newest_measurement_time=None` **and re-raises**; an **HTTP-error** fetch writes a **`CRITICAL`** record
+  (`error_type` set) **before re-raising** (proving the catch-record-reraise path, not a skipped
+  heartbeat); a health-store outage does not fail the run.
   `uv run pytest tests/unit/flows/test_collect_bafu_observations.py`.
 
-#### T9 — generalize the host watchdog, then add observation freshness (MAJOR resolution)
+#### T9 — add observation freshness to the host watchdog (smallest safe diff — MAJOR resolution)
 
 The host watchdog is **hardcoded to `bafu_forecast_freshness`** — the probe URL constant
 (`ops/watchdog.py:54-56`), URL derivation (`:59-65`), stale threshold `BAFU_STALE_THRESHOLD` (`:68-71`),
-state field `consecutive_bafu_failures` (`:81-84`), and the whole ~57-line BAFU block in `run_once`
-(`:427-484`) all name only the forecast collector, and a new heartbeat does **not** automatically produce
-alerts. Copy-pasting that block for a near-identical second check would ~double the duplication; with a
-**second** instance now concrete, the cheap-and-right move is to **generalize once, then add a row**.
+state field `consecutive_bafu_failures` (`:81-84`), and the ~57-line BAFU block in `run_once` (`:427-484`)
+all name only the forecast collector, and a new heartbeat does **not** automatically produce alerts.
 
-- **Scope:**
-  1. **Refactor (behaviour-preserving):** extract the forecast BAFU block into a **table-driven
-     freshness-check loop** over a small spec list — each entry a
-     `(check_name, health_detail_url, stale_threshold, state_field)` — iterated in `run_once`, each
-     iteration reusing the existing generic `should_alert_health` hysteresis policy (`:264-276`) and the
-     shared alert formatter. The forecast check becomes the **first row** of this table; its existing
-     tests (thresholds/hysteresis/messages) must stay green unchanged — that green is the proof the
-     refactor preserved behaviour (lock it Plan-105-style: the refactor lands with the *old* forecast
-     tests untouched and passing).
-  2. **Add the observation row:** a second table entry for `bafu_observation_freshness` with
-     `state_field=consecutive_bafu_obs_failures` (add to `WatchdogState`, backward-compatible load
-     defaulting the absent key to 0, exactly as `:99` does for the forecast field), its health-detail URL,
-     and a `BAFU_OBS_STALE_THRESHOLD` sized to the **hourly** feed — stale after **~3 h** (three missed
-     hourly cycles), *not* the ~1 h a 10-min feed would use (the probe corrected the cadence). Add the
-     `--bafu-obs-health-detail-url` CLI arg + `WatchdogConfig` field (mirror `:344-346,519-526`).
-- **Files:** `src/sapphire_flow/ops/watchdog.py`; `tests/unit/ops/test_watchdog.py` (existing forecast
-  tests unchanged as the refactor lock; new coverage for the observation row: first-failure alert,
-  every-6th, recovery, stale-vs-degraded, backward-compatible state load).
+**Scope decision (reviewer MAJOR).** An earlier draft folded a **table-driven generalization** of the
+already-shipped forecast block into this plan. That is a bigger, riskier diff against **live host-monitoring
+code** than this quarantined archive-only collector needs, and it is a pure internal-quality (DRY) concern,
+not something the collector's correctness or safety depends on. **De-scoped:** T9 here adds the observation
+check as a **second, independently-parameterized copy** of the existing pattern — the shipped forecast
+block's *structure is left untouched* (zero risk to the green forecast check). The table-driven
+generalization is filed as a **separate follow-up cleanup** (§ Follow-up), justified on DRY grounds and
+reviewed on its own — not gated behind landing this collector.
+
+- **Scope (this plan):**
+  1. **Second freshness check, additive only:** add an observation-freshness block in `run_once` alongside
+     (not replacing) the forecast block, **reusing the existing generic `should_alert_health` hysteresis
+     policy** (`ops/watchdog.py:264-276`, as the forecast block already does). **Formatter (citation fix):**
+     the freshness alerts use the **BAFU-freshness** formatters `_format_bafu_stale_alert` (`:309`) /
+     `_format_bafu_degraded_alert` (`:322`) — **not** `_format_health_alert` (`:279`), which formats an
+     HTTP-liveness `HealthProbeResult` (`http_status`) and is the wrong shape for a freshness alert. Add
+     observation-specific variants (or parameterize the two BAFU formatters by check-name/threshold). New
+     state field `consecutive_bafu_obs_failures` on `WatchdogState` (backward-compatible load defaulting the
+     absent key to 0, exactly as `:99` does for the forecast field). New `BAFU_OBS_STALE_THRESHOLD` sized to
+     the **hourly** feed — stale after **~3 h** (three missed hourly cycles), *not* the ~1 h a 10-min feed
+     would use (the probe corrected the cadence). Add the `--bafu-obs-health-detail-url` CLI arg +
+     `WatchdogConfig` field (mirror `:344-346,519-526`).
+  2. **No refactor of the forecast block.** The existing forecast tests
+     (thresholds/hysteresis/messages) stay green **unchanged** — not as a refactor lock, but because the
+     forecast code is not touched at all.
+- **Files:** `src/sapphire_flow/ops/watchdog.py` (additive block + new state field + new CLI arg);
+  `tests/unit/ops/test_watchdog.py` (forecast tests unchanged; new coverage for the observation check:
+  first-failure alert, every-6th, recovery, stale-vs-degraded, backward-compatible state load).
 - **Verification:** `uv run pytest tests/unit/ops/test_watchdog.py` (old + new both green).
+
+> **Follow-up (out of scope — separate plan/task):** generalize the now-two near-identical BAFU freshness
+> blocks into one table-driven loop over `(check_name, health_detail_url, stale_threshold, state_field)`
+> specs. Justified purely on DRY grounds, reviewed on its own diff, and **not** a dependency of this
+> collector. (Alternative considered and rejected for now: deferring watchdog wiring entirely until a real
+> archive consumer exists — rejected because a silently-dark collector is exactly the failure mode Plan 100
+> warns about; a cheap additive freshness alert is worth having from day one even though nothing downstream
+> yet consumes the archive.)
 
 ### Dependency graph
 
@@ -428,30 +542,40 @@ under both `/river/observation/` and `/lake/observation/`** (the 2004-class coll
   collector).
 - **Plan 058** is superseded (§ Supersedes Plan 058). Its one **shipped** artefact — the weekly
   live-LINDAS schema-drift watch (`tests/integration/live/test_lindas_live_schema.py` +
-  `.github/workflows/live-lindas-weekly.yml`) — is kept as-is and now also guards *this* collector's
-  parser (same endpoint, same dimension names). Its deferred reference-fixture *promotion* idea (058 T3)
-  remains deferred and out of scope here.
+  `.github/workflows/live-lindas-weekly.yml`) — is kept as-is. **Scope caveat (MAJOR resolution):** that
+  shipped test imports `HydroScraperAdapter` and exercises the **per-station** `fetch_observations` path
+  (`test_lindas_live_schema.py:37,166`), so it guards the shared **endpoint + dimension-predicate** drift
+  that this collector *also* depends on — but it does **not** exercise the new whole-graph
+  `SELECT ?subject` adapter/parser. A live whole-graph smoke test for `BafuObservationAdapter` is a small,
+  **optional** add (noted here, not required for this plan); the per-cycle CRITICAL heartbeat (T8) is the
+  primary runtime guard against whole-graph drift. Plan 058's deferred reference-fixture *promotion* idea
+  (058 T3) remains deferred and out of scope here.
 
 ## Tests (summary — detailed per task above)
 
 - Parser (T2): a faked whole-graph response with ≥3 distinct subjects of both kinds — **including the same
   numeric code under both `/river/` and `/lake/`** — yields **grouped** per-subject rows (not one merged
   row), correct params per kind, `gauge_code`/`lindas_kind` from the URI, and the collision kept distinct.
-- Dedup (T3): a second run over a **byte-identical** snapshot archives zero new files.
-- **Restatement (T3, BLOCKER):** a re-run where one gauge's `value` changed at the same `measurement_time`
-  archives a **new** snapshot and preserves the original — both survive, ordered by injected `fetched_at`.
+- Dedup (T3): a re-run with the **same injected `fetched_at`** finds the snapshot already present
+  (path-existence, mirror `_already_archived`) and writes zero new files.
+- **Restatement (T3, BLOCKER):** a later cycle (distinct `fetched_at`) where one gauge's `value` changed at
+  the same `measurement_time` archives a **new** snapshot and preserves the original — both survive, ordered
+  by `fetched_at`.
 - Quarantine (T3): blank `archive_base_path` ⇒ no-op (no writes, no DB touch); a set path writes only
   under it; the only DB write is the heartbeat (no observation values / no `station_id`).
-- Raw archival (T4): each archived cycle persists the raw SPARQL-results JSON alongside the parsed parquet.
+- Raw archival (T4): each archived cycle persists the gzip raw SPARQL-results JSON alongside the parsed
+  parquet (both retained permanently; no retention knob).
 - Config (T5): `bafu_observation_archive_path` defaults to None, parses from
   `[adapters.bafu_observation]`, blank→None.
 - Deploy (T6): `_build_specs()` includes `collect-bafu-observations` (count 11→12) with cron default
   `5 * * * *`; env override works; `docker compose config` parses.
-- Heartbeat (T8): a successful run writes a `BAFU_OBSERVATION_FRESHNESS` record whose freshness reflects
-  the **newest** gauge (one-stale-many-fresh fixture is healthy); an **empty** whole-graph response writes
-  a **failed** record; a health-store outage does not fail the run.
-- Watchdog (T9): the **existing forecast tests stay green unchanged** (refactor-behaviour lock); new
-  observation-row tests cover stale (~3 h)/degraded/recovery alerts + backward-compatible state load.
+- Heartbeat (T8): a successful run writes a status-**`OK`** `BAFU_OBSERVATION_FRESHNESS` record whose
+  freshness reflects the **newest** gauge (one-stale-many-fresh fixture is `OK`); an **empty** whole-graph
+  response and an **HTTP-error** fetch each write a status-**`CRITICAL`** record and **re-raise** (proving
+  catch-record-reraise, not a skipped heartbeat); a health-store outage does not fail the run.
+- Watchdog (T9): the **existing forecast tests stay green unchanged** (the forecast block is not touched —
+  the observation check is purely additive); new observation-check tests cover stale (~3 h)/degraded/recovery
+  alerts + backward-compatible state load.
 - No operational-path change: `ingest-observations` / the 2 operational stations are untouched.
 
 ## Exit gates
@@ -469,22 +593,8 @@ uv run pytest
   kinds); a second run dedups; the `BAFU_OBSERVATION_FRESHNESS` heartbeat lands and the extended watchdog
   probes it; the operational feeds (forecast collector + `ingest-observations`) are unaffected.
 
-## References
-
-- Plan 111 / 111b (the BAFU **forecast** collector — the pattern this mirrors; the benchmark this feeds).
-- Plan 058 (superseded — the operational-DB approach this replaces).
-- `adapters/hydro_scraper.py` (per-station `_build_sparql_query` `:173-192`, `subject_uri` `:177`,
-  single-subject `_parse_bindings` `:194-234`, dimensions `:36-50`, graph `:24`).
-- `types/bafu_forecast.py` (`BafuForecastRow.station_key: str` `:46,64` — the plain-string-key pattern
-  DC-2 mirrors).
-- `types/observation.py` (`RawObservation.station_id: StationId` mandatory `:21-29` — why DC-2 avoids it).
-- `flows/collect_bafu_forecasts.py` (quarantine `:485-494` / atomic write `:231-239` / dedup marker
-  `:272-283` / heartbeat `:158-208`).
-- `config/deployment.py` (`bafu_forecast_archive_path` field `:162`, blank→None loader `:403-418`).
-- `cli/register_deployments.py` (`cron_bafu_forecast` `:46`, forecast spec `:108-114`).
-- `docker-compose.yml` (init env `:269-275`, worker volume mount `:122`, volume def `:311`).
-- `ops/watchdog.py` (forecast-only BAFU block `:427-484`, thresholds `:68-71`, state field `:81-84`).
-- `types/enums.py` (`PipelineCheckType`, `BAFU_FORECAST_FRESHNESS` `:151-163`).
-- `docs/plans/archive/029-lindas-adapter-fix.md` (river/lake URI split, counts `:18-23`).
-- `tests/integration/live/test_lindas_live_schema.py` (2004 lake-vs-river disagreement `:21-25,68-75`).
-- memory `project_bafu_lindas_realtime_only` (no history → forward-only), `project_plan111_bafu_collector`.
+> **Note (removed References appendix):** an earlier revision closed with a standing `## References`
+> file:line bibliography that merely re-listed the citations already carried inline under DC-1/DC-2/DC-3 and
+> each task's Scope/Files bullets. It added no decision content and its line numbers would rot the moment the
+> cited files are touched (the reviewer already caught two stale entries there). Per the MINOR finding it is
+> dropped; the in-body citations at each design commitment are the grounding a reviewer needs.
