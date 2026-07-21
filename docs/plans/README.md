@@ -123,7 +123,12 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
   *production* run (not its build).
 - **035** — Rating-curve provenance for skill integrity — `READY` — v1 DHM hQ.
 - **017** — Manual vs automatic station support — `DRAFT` — v1, DHM mixed networks.
-- **015** — Virtual / calculated station support — `DRAFT` — v1 (enum slice shipped).
+- **015** — Calculated station support (component-derived) — **MERGED (#109 storage+trigger,
+  #112 Flow 2 step-2.5 derivation, #113 TOML onboarding), 2026-07-21.** Move to archive/ once
+  confirmed. Ungauged half split to 016.
+- **016** — Ungauged station support — `DRAFT (stub)` — split out of 015; **hard-blocked** on
+  two unbuilt plans (baseline-model design + basin-outline upload/security.md file-upload gate).
+  Do not build until both land.
 
 ## Active — dev experience / dashboard (C)
 

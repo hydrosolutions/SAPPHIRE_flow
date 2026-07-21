@@ -36,11 +36,12 @@ owner grill-me it is narrowed to the buildable, self-contained half:
   **"Ungauged stations" column of the Flow Impact table**. Each such section below now
   carries an inline `⚠ REFERENCE-ONLY (ungauged plan)` marker.
 
-  > **NOTE:** the ungauged material should ultimately move into a stub
-  > `016-ungauged-station-support.md`, but this revision is constrained to editing *this*
-  > file only, so it is marked `⚠ REFERENCE-ONLY` in place; creating the stub is a
-  > mechanical follow-up for the owner. Implementers MUST NOT build any `⚠ REFERENCE-ONLY`
-  > section from this plan.
+  > **NOTE (2026-07-21):** the ungauged material now has its home —
+  > **`docs/plans/016-ungauged-station-support.md`** (DRAFT stub, created from these
+  > `⚠ REFERENCE-ONLY` sections). Plan 016 is the authoritative ungauged plan and is
+  > hard-blocked on the baseline-model plan + the basin-outline upload/`security.md`
+  > file-upload gate. The `⚠ REFERENCE-ONLY` sections below are retained here as
+  > historical context; **build ungauged support from Plan 016, not from this plan.**
 
 **Owner-resolved forks (this re-draft implements):**
 1. **Formula audit** — `FORMULA_CONFIGURED` / `FORMULA_CLOSED` need `audit_log` /
