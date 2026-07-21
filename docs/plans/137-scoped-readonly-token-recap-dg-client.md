@@ -1,13 +1,13 @@
 ---
 status: READY
 created: 2026-07-21
-plan: 135
+plan: 137
 title: Scoped read-only credential for recap-dg-client — replace the broad personal token with a repo-scoped read-only credential (fine-grained PAT or GitHub App install token — grill-me), use it in Actions + Dependabot + build hosts, revoke the broad token
 scope: The private `recap-dg-client` git dependency is cloned in CI and the Docker builder, authenticated by RECAP_DG_CLIENT_TOKEN — currently a BROAD personal token (a `gho_` GitHub-CLI OAuth token with write access to all repos, live-verified 2026-07-21). Dependabot-triggered runs get no Actions secrets, so the two jobs that do a FRESH clone (`build-image-and-scan` + `wheel-only-guard`) fail on Dependabot PRs #114–#116; the cache-reliant jobs pass today but are a latent failure. Rather than copy the broad token into the empty Dependabot store (exposing an all-repos write token to PR-submitted code), replace it everywhere with a repo-scoped, read-only credential — either a fine-grained PAT or a GitHub App installation token (owner decides, see § Alternatives grill-me) — scoped to ONLY `hydrosolutions/recap-dg-client`, and revoke the broad one. Mostly an owner/repo-admin runbook; no application code change.
 depends_on: []
 ---
 
-# Plan 135 — scoped read-only token for recap-dg-client
+# Plan 137 — scoped read-only token for recap-dg-client
 
 ## Why
 
