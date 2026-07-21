@@ -24,6 +24,12 @@ an unrecoverable gap. It emits a `PipelineHealthRecord`
 watchdog probes `/health/detail?check_type=bafu_forecast_freshness`
 and alerts if the heartbeat is missing/stale or the last run reported
 warning/critical.
+
+Plan 136 adds a second, independently-parameterized freshness check for the
+BAFU LINDAS observation archive collector (`flows/collect_bafu_observations.py`,
+check_type=bafu_observation_freshness) — additive only; the forecast block
+above is untouched. See § Follow-up in Plan 136 for a deferred table-driven
+generalization of the two near-identical blocks.
 """
 
 from __future__ import annotations
@@ -54,6 +60,12 @@ DEFAULT_SLACK_PATH = Path("./secrets/slack_webhook_url")
 DEFAULT_BAFU_HEALTH_DETAIL_URL = (
     DEFAULT_HEALTH_URL + "/detail?check_type=bafu_forecast_freshness&limit=1"
 )
+# Plan 136: the BAFU LINDAS observation archive collector's freshness detail
+# URL — a second, independently-parameterized copy of the pattern above (see
+# run_once's additive observation-freshness block).
+DEFAULT_BAFU_OBS_HEALTH_DETAIL_URL = (
+    DEFAULT_HEALTH_URL + "/detail?check_type=bafu_observation_freshness&limit=1"
+)
 
 
 def _bafu_url_from_health(health_url: str) -> str:
@@ -65,10 +77,20 @@ def _bafu_url_from_health(health_url: str) -> str:
     return f"{base}/health/detail?check_type=bafu_forecast_freshness&limit=1"
 
 
+def _bafu_obs_url_from_health(health_url: str) -> str:
+    """Same derivation as `_bafu_url_from_health`, for the BAFU LINDAS
+    observation archive collector's freshness check (Plan 136)."""
+    base = health_url.rsplit("/health", 1)[0]
+    return f"{base}/health/detail?check_type=bafu_observation_freshness&limit=1"
+
+
 BACKUP_STALE_THRESHOLD = timedelta(hours=26)
 # The BAFU collector runs hourly (Plan 111) — no heartbeat in 3h means it has
 # stopped, not merely running slow.
 BAFU_STALE_THRESHOLD = timedelta(hours=3)
+# The BAFU LINDAS observation collector also runs hourly (Plan 136, live
+# probe 2026-07-21) — stale after ~3h (three missed hourly cycles).
+BAFU_OBS_STALE_THRESHOLD = timedelta(hours=3)
 HEALTH_CHECK_TIMEOUT_S = 5.0
 SLACK_POST_TIMEOUT_S = 5.0
 ALERT_REPEAT_EVERY = 6  # every 6th consecutive failure (~30 min at 5 min tick)
@@ -81,6 +103,7 @@ class WatchdogState:
     consecutive_health_failures: int = 0
     last_backup_alert_iso: str | None = None
     consecutive_bafu_failures: int = 0
+    consecutive_bafu_obs_failures: int = 0
 
     @classmethod
     def load(cls, path: Path) -> WatchdogState:
@@ -97,6 +120,11 @@ class WatchdogState:
             # Backward compatible with state files written before the Flow 4
             # staleness hook: absent key defaults to 0.
             consecutive_bafu_failures=int(raw.get("consecutive_bafu_failures", 0)),
+            # Backward compatible with state files written before Plan 136's
+            # observation-freshness check: absent key defaults to 0.
+            consecutive_bafu_obs_failures=int(
+                raw.get("consecutive_bafu_obs_failures", 0)
+            ),
         )
 
     def dump(self, path: Path) -> None:
@@ -104,6 +132,7 @@ class WatchdogState:
             "consecutive_health_failures": self.consecutive_health_failures,
             "last_backup_alert_iso": self.last_backup_alert_iso,
             "consecutive_bafu_failures": self.consecutive_bafu_failures,
+            "consecutive_bafu_obs_failures": self.consecutive_bafu_obs_failures,
         }
         path.write_text(json.dumps(payload, indent=2))
 
@@ -335,6 +364,35 @@ def _format_bafu_recovery_alert(*, hostname: str, now: datetime) -> str:
     )
 
 
+def _format_bafu_obs_stale_alert(
+    *, hostname: str, now: datetime, result: BafuFreshnessResult
+) -> str:
+    last_str = (
+        result.checked_at.isoformat() if result.checked_at else "no heartbeat found"
+    )
+    hours = int(BAFU_OBS_STALE_THRESHOLD.total_seconds() // 3600)
+    return (
+        f"[SAPPHIRE staging] BAFU observation collector STALE — host: {hostname}, "
+        f"time: {now.isoformat()}, last_heartbeat: {last_str}, threshold: {hours}h"
+    )
+
+
+def _format_bafu_obs_degraded_alert(
+    *, hostname: str, now: datetime, result: BafuFreshnessResult
+) -> str:
+    return (
+        f"[SAPPHIRE staging] BAFU observation collector DEGRADED — host: {hostname}, "
+        f"time: {now.isoformat()}, status: {result.status}"
+    )
+
+
+def _format_bafu_obs_recovery_alert(*, hostname: str, now: datetime) -> str:
+    return (
+        f"[SAPPHIRE staging] BAFU observation collector RECOVERED — "
+        f"host: {hostname}, time: {now.isoformat()}"
+    )
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class WatchdogConfig:
     health_url: str = DEFAULT_HEALTH_URL
@@ -343,6 +401,9 @@ class WatchdogConfig:
     slack_path: Path = DEFAULT_SLACK_PATH
     # None → derive from health_url at use (so --health-url retargets it too).
     bafu_health_detail_url: str | None = None
+    # Plan 136: same semantics as bafu_health_detail_url, for the BAFU LINDAS
+    # observation archive collector's freshness check.
+    bafu_obs_health_detail_url: str | None = None
 
 
 def run_once(
@@ -353,6 +414,7 @@ def run_once(
     slack_poster: SlackPoster,
     hostname: str | None = None,
     bafu_probe: Callable[[str], BafuFreshnessResult] = probe_bafu_freshness,
+    bafu_obs_probe: Callable[[str], BafuFreshnessResult] = probe_bafu_freshness,
 ) -> WatchdogState:
     """Single watchdog tick. Returns the updated state (also persisted)."""
     now = clock()
@@ -483,6 +545,70 @@ def run_once(
     else:
         state = replace(state, consecutive_bafu_failures=0)
 
+    # --- BAFU LINDAS observation collector freshness (Plan 136, additive) ---
+    # A second, independently-parameterized copy of the block above — the
+    # shipped forecast block's structure is left untouched (zero risk to the
+    # green forecast check). See § Follow-up in Plan 136 for the deferred
+    # table-driven generalization.
+    bafu_obs_url = config.bafu_obs_health_detail_url or _bafu_obs_url_from_health(
+        config.health_url
+    )
+    bafu_obs_result = bafu_obs_probe(bafu_obs_url)
+    bafu_obs_stale = (
+        not bafu_obs_result.found
+        or bafu_obs_result.checked_at is None
+        or (now - bafu_obs_result.checked_at) > BAFU_OBS_STALE_THRESHOLD
+    )
+    bafu_obs_degraded = bafu_obs_result.status in {"warning", "critical"}
+    bafu_obs_fail = bafu_obs_stale or bafu_obs_degraded
+    log.info(
+        "watchdog.bafu_obs_freshness_check_completed",
+        url=bafu_obs_url,
+        found=bafu_obs_result.found,
+        checked_at=bafu_obs_result.checked_at.isoformat()
+        if bafu_obs_result.checked_at
+        else None,
+        status=bafu_obs_result.status,
+        error=bafu_obs_result.error,
+        stale=bafu_obs_stale,
+        degraded=bafu_obs_degraded,
+        prev_failures=state.consecutive_bafu_obs_failures,
+    )
+
+    bafu_obs_alert_now = should_alert_health(
+        state.consecutive_bafu_obs_failures,
+        current_ok=not bafu_obs_fail,
+        current_fail=bafu_obs_fail,
+    )
+
+    if bafu_obs_alert_now:
+        if not bafu_obs_fail:
+            message = _format_bafu_obs_recovery_alert(hostname=host, now=now)
+            log.info("watchdog.bafu_obs_recovery_alert", message=message)
+        elif bafu_obs_stale:
+            message = _format_bafu_obs_stale_alert(
+                hostname=host, now=now, result=bafu_obs_result
+            )
+            log.warning("watchdog.bafu_obs_stale_alert", message=message)
+        else:
+            message = _format_bafu_obs_degraded_alert(
+                hostname=host, now=now, result=bafu_obs_result
+            )
+            log.warning("watchdog.bafu_obs_degraded_alert", message=message)
+        if webhook:
+            posted = slack_poster(webhook, message)
+            log.info("watchdog.slack_post_attempted", posted=posted)
+        else:
+            log.info("watchdog.slack_skipped_log_only")
+
+    if bafu_obs_fail:
+        state = replace(
+            state,
+            consecutive_bafu_obs_failures=state.consecutive_bafu_obs_failures + 1,
+        )
+    else:
+        state = replace(state, consecutive_bafu_obs_failures=0)
+
     state.dump(config.state_path)
     return state
 
@@ -524,6 +650,14 @@ def main(argv: list[str] | None = None) -> int:
             "(default: derived from --health-url)"
         ),
     )
+    parser.add_argument(
+        "--bafu-obs-health-detail-url",
+        default=None,
+        help=(
+            "BAFU LINDAS observation collector freshness endpoint "
+            "(default: derived from --health-url)"
+        ),
+    )
     args = parser.parse_args(argv)
 
     configure_cli_logging("INFO")
@@ -534,6 +668,7 @@ def main(argv: list[str] | None = None) -> int:
         state_path=Path(args.state_path),
         slack_path=Path(args.slack_path),
         bafu_health_detail_url=args.bafu_health_detail_url,
+        bafu_obs_health_detail_url=args.bafu_obs_health_detail_url,
     )
 
     try:
@@ -543,6 +678,7 @@ def main(argv: list[str] | None = None) -> int:
             probe=probe_health,
             slack_poster=default_slack_poster,
             bafu_probe=probe_bafu_freshness,
+            bafu_obs_probe=probe_bafu_freshness,
         )
     except Exception as exc:  # unrecoverable: let launchd see the non-zero
         log.error("watchdog.unrecoverable_error", error=str(exc))

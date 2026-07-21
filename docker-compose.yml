@@ -120,6 +120,7 @@ services:
       - backups:/data/backups:rw
       - nwp_grids:/data/nwp_grids:rw
       - bafu_forecast_archive:/data/bafu_forecasts:rw
+      - bafu_observation_archive:/data/bafu_observations:rw
       - ./config.toml:/app/config.toml:ro
       - type: tmpfs
         target: /tmp/sapphire_nwp
@@ -273,6 +274,7 @@ services:
       SCHEDULE_FORECAST_CYCLE: ${SCHEDULE_FORECAST_CYCLE:-0 */6 * * *}
       SCHEDULE_BACKUP_DATABASE: ${SCHEDULE_BACKUP_DATABASE:-0 2 * * *}
       SCHEDULE_INGEST_WEATHER_HISTORY: ${SCHEDULE_INGEST_WEATHER_HISTORY:-0 6 * * *}
+      SCHEDULE_COLLECT_BAFU_OBSERVATIONS: ${SCHEDULE_COLLECT_BAFU_OBSERVATIONS:-5 * * * *}
     depends_on:
       postgres:
         condition: service_healthy
@@ -309,6 +311,7 @@ volumes:
   backups:
   nwp_grids: {}
   bafu_forecast_archive: {}  # Plan 111 route-C collector — quarantined forecast archive
+  bafu_observation_archive: {}  # Plan 136 collector — quarantined observation archive
 
 secrets:
   db_password:

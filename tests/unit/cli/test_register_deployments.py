@@ -24,6 +24,7 @@ DEPLOYMENT_NAMES = {
     "onboard-model",
     "ingest-weather-history",
     "collect-bafu-forecasts",
+    "collect-bafu-observations",
 }
 
 # ---------------------------------------------------------------------------
@@ -93,9 +94,10 @@ class TestBuildSpecs:
         assert by_name["ingest-weather-history"].cron == "30 5 * * *"
 
     def test_returns_all_specs(self) -> None:
-        # Plan 071 adds weather-history ingest; Plan 111 adds the BAFU collector.
+        # Plan 071 adds weather-history ingest; Plan 111 adds the BAFU
+        # forecast collector; Plan 136 adds the BAFU observation collector.
         specs = _build_specs()
-        assert len(specs) == 11
+        assert len(specs) == 12
         assert {s.deployment_name for s in specs} == DEPLOYMENT_NAMES
 
     def test_bafu_collector_hourly_and_serialized(self) -> None:
@@ -109,6 +111,20 @@ class TestBuildSpecs:
         monkeypatch.setenv("SCHEDULE_COLLECT_BAFU_FORECASTS", "*/30 * * * *")
         by_name = {s.deployment_name: s for s in _build_specs()}
         assert by_name["collect-bafu-forecasts"].cron == "*/30 * * * *"
+
+    def test_bafu_observation_collector_hourly_at_5_and_serialized(self) -> None:
+        by_name = {s.deployment_name: s for s in _build_specs()}
+        bafu_obs = by_name["collect-bafu-observations"]
+        assert bafu_obs.cron == "5 * * * *"  # hourly-at-:05 default
+        assert bafu_obs.concurrency_limit == 1  # never overlap runs
+        assert bafu_obs.work_pool_name == WORK_POOL  # default pool, not ingest
+
+    def test_bafu_observation_cron_env_override(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SCHEDULE_COLLECT_BAFU_OBSERVATIONS", "*/15 * * * *")
+        by_name = {s.deployment_name: s for s in _build_specs()}
+        assert by_name["collect-bafu-observations"].cron == "*/15 * * * *"
 
     def test_ingest_weather_history_daily_deployment(self) -> None:
         """Plan-071 rolling-ingest flow is registered as a daily deployment."""

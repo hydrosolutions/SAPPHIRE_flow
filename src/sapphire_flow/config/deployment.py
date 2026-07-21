@@ -161,6 +161,12 @@ class DeploymentConfig(BaseModel):
     # [adapters.bafu_forecast].archive_base_path (see load_config below).
     bafu_forecast_archive_path: Path | None = None
 
+    # Plan 136: the BAFU LINDAS observation archive collector's QUARANTINED
+    # archive root. Same gating semantics as bafu_forecast_archive_path above
+    # — unset means the collector flow no-ops. Set from
+    # [adapters.bafu_observation].archive_base_path (see load_config below).
+    bafu_observation_archive_path: Path | None = None
+
     input_quality: InputQualityConfig = InputQualityConfig()
 
     @field_validator("nwp_cycle_min_age_minutes")
@@ -416,6 +422,21 @@ def load_config(path: Path | str | None = None) -> DeploymentConfig:
         bafu_forecast_archive_path.strip()
     ):
         bafu_forecast_archive_path = None
+    # Plan 136: extract the quarantined BAFU-observation-collector archive path
+    # before popping the adapters section, mirroring bafu_forecast_archive_path
+    # above (same shape, same blank->None normalization).
+    _bafu_observation = (
+        _adapters.get("bafu_observation", {}) if isinstance(_adapters, dict) else {}
+    )
+    bafu_observation_archive_path = (
+        _bafu_observation.get("archive_base_path")
+        if isinstance(_bafu_observation, dict)
+        else None
+    )
+    if isinstance(bafu_observation_archive_path, str) and not (
+        bafu_observation_archive_path.strip()
+    ):
+        bafu_observation_archive_path = None
     # Remove adapter sections (not part of DeploymentConfig)
     data.pop("adapters", None)
     data.pop("monitoring", None)
@@ -426,4 +447,5 @@ def load_config(path: Path | str | None = None) -> DeploymentConfig:
     data["paths_data_dir"] = paths_section.get("data_dir")
     data["nwp_grid_archive_base_path"] = nwp_grid_archive_base_path
     data["bafu_forecast_archive_path"] = bafu_forecast_archive_path
+    data["bafu_observation_archive_path"] = bafu_observation_archive_path
     return DeploymentConfig.model_validate(data)

@@ -516,6 +516,22 @@ max_cache_age_hours = 24
 [adapters.river_stations.monitoring]
 expected_interval_hours = 0.17        # BAFU: every 10 min
 
+# Plan 111 route-C BAFU forecast collector (`collect-bafu-forecasts`,
+# quarantined, evaluation-only — see docs/plans/archive/111*.md). Setting
+# archive_base_path ENABLES the hourly collector flow (unset = no-op, never
+# falls back to an operational path). Maps to
+# DeploymentConfig.bafu_forecast_archive_path (config/deployment.py).
+[adapters.bafu_forecast]
+# archive_base_path = "/data/bafu_forecasts"
+
+# Plan 136 BAFU LINDAS observation archive collector (`collect-bafu-observations`,
+# quarantined, evaluation-only, keyed on gauge_code + lindas_kind — NOT an
+# onboarded station). Setting archive_base_path ENABLES the hourly collector
+# flow (unset = no-op, never falls back to an operational path). Maps to
+# DeploymentConfig.bafu_observation_archive_path (config/deployment.py).
+[adapters.bafu_observation]
+# archive_base_path = "/data/bafu_observations"
+
 
 # =============================================================================
 # Monitoring — pipeline-level (not per-adapter)

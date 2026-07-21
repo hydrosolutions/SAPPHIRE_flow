@@ -207,6 +207,15 @@ class PipelineCheckType(Enum):
         # which is trivially true once the rolling window has ever been
         # populated by a PRIOR run and is blind to a stuck duplicate
         # re-fetch). OK when at least one targeted source advances.
+    BAFU_OBSERVATION_FRESHNESS = "bafu_observation_freshness"
+        # Plan 136 — collect-bafu-observations heartbeat. NETWORK-level
+        # freshness (newest measurement_time across all archived gauges),
+        # never a per-gauge minimum (a dead gauge can sit in the LINDAS graph
+        # for >1 year). OK = a non-empty successful whole-graph fetch;
+        # CRITICAL = an empty response, an HTTP/parse/schema-drift error, or
+        # a truncated fetch (len(bindings) >= LIMIT). WARNING (a future
+        # fresh-fraction-below-threshold degradation signal) is reserved but
+        # not emitted in this first cut.
 
 class NotificationChannel(Enum):
     EMAIL = "email"
@@ -3155,6 +3164,19 @@ class DeploymentConfig(BaseModel):
     alert_model_strategy: ModelCombinationStrategy = ModelCombinationStrategy.PRIMARY
     min_operational_ensemble_size: int = 20
     min_operational_quantile_levels: int = 7
+
+    # --- Quarantined evaluation-only collector archive paths ---
+    # Gated: unset means the corresponding collector flow no-ops; it never
+    # falls back to any operational path. These paths ARE part of
+    # DeploymentConfig (parsed from their own [adapters.*] TOML section by
+    # load_config, then stripped from the adapters dict before validation —
+    # see config/deployment.py).
+    bafu_forecast_archive_path: Path | None = None
+        # Plan 111 route-C BAFU forecast collector. Set from
+        # [adapters.bafu_forecast].archive_base_path.
+    bafu_observation_archive_path: Path | None = None
+        # Plan 136 BAFU LINDAS observation archive collector. Set from
+        # [adapters.bafu_observation].archive_base_path.
 ```
 
 ### InputQualityConfig
