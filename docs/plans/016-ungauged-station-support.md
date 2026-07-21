@@ -8,6 +8,11 @@ updated: 2026-07-21
 # The design content below was carried over from the `⚠ REFERENCE-ONLY (ungauged plan)`
 # sections of docs/plans/015-virtual-station-support.md; consult those for the original
 # framing. Not ready to build — see §Blockers. Do NOT implement until the blockers clear.
+# A 2026-07-21 `/plan` run (Codex-backed) ESCALATED — a blocked stub can't be forced to
+# READY — but surfaced two durable design gaps now recorded in §"Open design problems"
+# (P1 Branch-A transfer-learning has no skill gate; P2 the Step-8 climatology floor is
+# unsatisfiable for zero-obs stations) + a few fact corrections (FI adapter, Plan 117).
+# The workflow's speculative full-design expansion was deliberately discarded; this stays a stub.
 category: B  # v1 Nepal feature
 scope: design — UNGAUGED station support (no observations; models on NWP forcing + basin characteristics)
 depends_on: [015]  # CALCULATED support (done). Plus two UNBUILT plans — see §Blockers.
@@ -63,6 +68,37 @@ Ungauged support cannot ship until **both** land:
 
 Until both exist, this plan stays DRAFT and no subagent builds from it.
 
+## Open design problems to resolve before build (surfaced by the 2026-07-21 `/plan` review)
+
+These are **not** external-dependency blockers — they are internal design gaps a future
+implementer must close. Recorded here so they aren't rediscovered late. (The `/plan` run
+escalated trying to force this blocked stub to READY; these two findings are the durable
+value from it.)
+
+- **P1 — Branch A transfer-learning has no quality gate (safety).** D3 lists transfer
+  learning (Flow 5.11 Branch A: apply an existing `GroupForecastModel` to the new station)
+  as the *first* deployment path. But the empirical skill gate (LOBO CV / signed-off
+  accepted risk) lives only in the single-/group-model promotion pipeline
+  (`services/model_onboarding.py` `evaluate_skill_gate` + `flows/onboard_model.py`). Branch
+  A never routes through it: its recipe is `add_station_to_group()`
+  (`store/station_group_store.py`, a bare `INSERT ... ON CONFLICT DO NOTHING`) + re-using an
+  already-active `GroupModelAssignment` — **zero** skill re-evaluation for the new basin.
+  `discover_group_runs()` then picks the station up on the next forecast cycle and can issue
+  live flood alerts from a model with no evidence it generalizes to that catchment. **This
+  plan must define a Branch-A gate:** either a LOBO-style transfer-skill check *before*
+  `add_station_to_group`, or a per-station signed-off accepted-risk record — and Flow 5.11's
+  checklist must carry a quality-gate line item for Branch A (today it has none).
+
+- **P2 — the Step 8 go-live floor is not satisfiable for a zero-observation station.**
+  Onboarding Step 8 promotes a non-weather station only when a **per-station**
+  `CLIMATOLOGY_FALLBACK_MODEL_ID` artifact is active
+  (`services/onboarding.py:924-946`). An ungauged station cannot train that climatology
+  floor (no observations), and group-scoped artifacts are **not** checked there. So the
+  standard floor gate is unsatisfiable for ungauged stations. **This plan must replace the
+  hardcoded per-station climatology gate with the D5a ungauged floor gate** (accept the
+  group-scoped active artifact + active group assignment path, or the baseline-model floor).
+  This couples directly to blocker B1.
+
 ## Design (carried over from Plan 015 `⚠ REFERENCE-ONLY` sections)
 
 ### D1. Classification
@@ -89,16 +125,26 @@ Models must not assume `height > 0`. Per the ForecastInterface contract the orch
 does **no** input-sufficiency check — it delivers what's available (zero-row past_targets),
 the model validates its own inputs and either forecasts or returns a structured
 `ModelFailure`; on failure the orchestrator falls back to the baseline model (D5a). The
-4-slot input-contract wording in `architecture-context.md` ("Always present for stateful
-models") must become: "Always non-None. May be zero-row for ungauged stations
+"return `ModelFailure`, don't raise" vs native-model behaviour is **already reconciled** by
+the shipped boundary: `ForecastInterfaceAdapter._output_from_result()`
+(`src/sapphire_flow/adapters/forecast_interface.py:369-373`) converts a returned
+`ModelFailure` into a raised `ModelOutputError`, which SAP3's except-and-fallback backstop
+catches — so no new FI-contract work is needed *for this question*. The 4-slot
+input-contract wording in `architecture-context.md` ("Always present for stateful models")
+must become: "Always non-None. May be zero-row for ungauged stations
 (`GaugingStatus.UNGAUGED`)." See [[project_forecast_interface_contract]] /
-[[feedback_forecastinterface_adherence_mandatory]] — any contract gap → an FI-repo issue,
-never a SAP3 workaround.
+[[feedback_forecastinterface_adherence_mandatory]] — any *genuine* contract gap → an
+FI-repo issue, never a SAP3 workaround.
 
 ### D7. Basin delineation + file-upload security
 See §Blockers item 2. HydroSHEDS vs HydroATLAS/MERIT DEM reconciliation deferred
 (architecture-context.md currently references HydroATLAS+MERIT for Flow 0/5 basin
-attributes; HydroSHEDS outlines are a related-but-distinct product).
+attributes; HydroSHEDS outlines are a related-but-distinct product). **Note:** the Plan 117
+static-artifact import supplies basin **geometry + static attributes** — usable as the
+extraction footprint for an ungauged basin — but it is **not** a source of historical
+*forcing rows*. An ungauged station still needs a reanalysis extraction/backfill (over the
+imported geometry) to obtain training/hindcast forcing; do not treat Plan 117 as a forcing
+backfill source.
 
 ### D8 / WMO-WIGOS identity
 `GaugingStatus` has no direct WMO-49 Vol III / WMO-168 enum precedent. WIGOS ID policy for
@@ -133,12 +179,15 @@ organizational owner, not a data source.
 - 5.10 Assign model (required)
 - 5.11 Model readiness — Branch A: transfer learning with an existing group artifact; or
   Branch B/C: train a new station/group model with regionalized parameters
-- 5.12 Go-live — standard precondition `≥1 active model artifact` **plus** the D5a
-  baseline-model floor
+- 5.12 Go-live — **not** the hardcoded per-station climatology floor (unsatisfiable here,
+  §P2); use the D5a ungauged floor gate — an active group-scoped artifact + active group
+  assignment, or the baseline-model floor. Branch A additionally needs its own quality
+  gate (§P1) before this point.
 
 Checklist: ✅ metadata · ✅ catchment attributes · ✅ weather source mapped ·
-⬜ historical observations (N/A) · ⬜ baselines/flow regimes (N/A) · ✅ ≥1 active model
-artifact · ⬜ alert thresholds (optional).
+⬜ historical observations (N/A) · ⬜ baselines/flow regimes (N/A) · ✅ ungauged floor gate
+(§P2, D5a) · ⬜ Branch-A transfer-skill gate (§P1, if Branch A) · ⬜ alert thresholds
+(optional).
 
 ## Standards updates required (when built)
 
