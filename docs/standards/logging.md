@@ -343,6 +343,8 @@ docker logs sapphire-worker | jq 'select(.station_id == "X" and .event | startsw
 
 This shows every QC decision for the station: `observation.qc_passed`, `observation.qc_failed`, `observation.qc_suspect` with their attached context (observed value, threshold, check name). Cross-reference with Prefect UI to see the containing flow run's overall state.
 
+**Calculated-station derivation (Plan 015 step 2.5)** emits `ingest.derivation_complete` (counts of `derived` / `missing`) and, per skipped timestamp, `observation.derivation_skipped` (with `calculated_station_id`, `parameter`, `timestamp`, and a `reason` naming the missing / failed / ineligible component). A skipped derivation is surfaced *only* via this event plus the stored `qc_status = 'missing'` placeholder — there is no component-freshness monitor in v0 (Flow 4 deferred).
+
 ## Per-step timing instrumentation (D6)
 
 Mandatory from v0 for every Flow 1 step (see `v0-scope.md` D6).

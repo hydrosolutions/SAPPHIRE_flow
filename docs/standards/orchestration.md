@@ -285,6 +285,7 @@ The table below fixes the run-name template for every `@flow` and `@task` site u
 | `ingest_observations.py` | `_fetch_observations_task` | @task | `fetch-observations-{since:%Y-%m-%dT%H}` — if `since` is a dict, use a callable that picks the earliest value, falling back to `runtime.task_run.scheduled_start_time` |
 | `ingest_observations.py` | `_store_raw_task` | @task | `store-raw-observations` |
 | `ingest_observations.py` | `_run_qc_task` | @task | `run-qc-{station_id}-{parameter}` |
+| `ingest_observations.py` | `_derive_calculated_task` | @task | `derive-calculated-stations` — Plan 015 step 2.5. Sequential post-QC step (NOT a `task.map` fan-out): the QC loop finishing is the barrier. Reads calculated stations' components' just-QC'd observations and writes `component_derived` / `missing` rows. No-op when there are no calculated stations. |
 | `train_models.py` | `train_models_flow` | @flow | callable → `train-{period_start or scheduled_start:%Y%m%d}-{period_end:%Y%m%d}` (both may be `None`; callable handles) |
 | `train_models.py` | `_determine_scope_task` | @task | `determine-scope` |
 | `train_models.py` | `_assemble_data_task` | @task | callable → `assemble-data-{unit.station_id or unit.group_id}` [1] |

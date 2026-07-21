@@ -24,12 +24,15 @@ from sapphire_flow.types.enums import GaugingStatus, QcStatus, StationKind
 
 if TYPE_CHECKING:
     from sapphire_flow.adapters.hydro_scraper import HydroScraperAdapter
+    from sapphire_flow.store.calculated_station_formula_store import PgFormulaStore
     from sapphire_flow.store.clim_baseline_store import PgClimBaselineStore
     from sapphire_flow.store.observation_store import PgObservationStore
+    from sapphire_flow.store.station_store import PgStationStore
+    from sapphire_flow.types.calculated_station import ComponentWeight
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.domain import QcRuleSet
     from sapphire_flow.types.ids import StationId
-    from sapphire_flow.types.observation import RawObservation
+    from sapphire_flow.types.observation import Observation, RawObservation
     from sapphire_flow.types.station import StationConfig
 
 log = structlog.get_logger(__name__)
@@ -46,6 +49,9 @@ class IngestResult:
     qc_suspect: int
     stations_failed: int
     errors: tuple[str, ...]
+    # Plan 015 step 2.5 — calculated-station derivation (0 when no calculated stations).
+    observations_derived: int = 0
+    observations_missing: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +230,157 @@ def _run_qc_task(
     return counts
 
 
+def _component_eligible(cfg: StationConfig | None) -> bool:
+    # Read-time defensive check (Plan 015 §Tiered Derivation): the formula trigger is a
+    # write-time guarantee only. A component that is no longer gauged+operational is
+    # treated exactly like a missing observation.
+    return (
+        cfg is not None
+        and cfg.gauging_status == GaugingStatus.GAUGED
+        and cfg.station_status.value == "operational"
+    )
+
+
+def _skip_reason(
+    weights: list[ComponentWeight],
+    best_by_component: dict[StationId, dict[UtcDatetime, Observation]],
+    eligible: dict[StationId, bool],
+    timestamp: UtcDatetime,
+) -> str:
+    for weight in weights:
+        cid = weight.component_station_id
+        if not eligible[cid]:
+            return f"component {cid} not gauged+operational"
+        obs = best_by_component[cid].get(timestamp)
+        if obs is None:
+            return f"component {cid} missing observation"
+        if obs.qc_status not in (QcStatus.QC_PASSED, QcStatus.QC_SUSPECT):
+            return f"component {cid} qc_status={obs.qc_status.value}"
+    return "unknown"
+
+
+@task(
+    name="derive-calculated-stations",
+    task_run_name="derive-calculated-stations",
+    cache_policy=NO_CACHE,
+)
+def _derive_calculated_task(
+    obs_store: PgObservationStore,
+    formula_store: PgFormulaStore,
+    station_store: PgStationStore,
+    calculated: list[StationConfig],
+    raw_obs: list[RawObservation],
+    now: UtcDatetime,
+) -> dict[str, int]:
+    from uuid import uuid4
+
+    from sapphire_flow.services.component_derivation import (
+        DERIVATION_RULE_VERSION,
+        derive_point,
+        select_by_precedence,
+    )
+    from sapphire_flow.types.enums import ObservationSource
+    from sapphire_flow.types.ids import ObservationId
+    from sapphire_flow.types.observation import Observation
+
+    counts = {"derived": 0, "missing": 0}
+    formulas = formula_store.fetch_formulas_for_stations([s.id for s in calculated])
+    if not formulas:
+        return counts
+
+    # Re-read current component status at derivation time (§Tiered Derivation): Flow 2
+    # runs in AUTOCOMMIT, so the step-2.0 snapshot may be stale if a component was
+    # suspended/decommissioned between selection and derivation.
+    station_by_id: dict[StationId, StationConfig] = {
+        s.id: s for s in station_store.fetch_all_stations()
+    }
+
+    to_store: list[Observation] = []
+    for (calc_id, parameter), weights in formulas.items():
+        component_ids = [w.component_station_id for w in weights]
+        component_id_set = set(component_ids)
+        eligible = {
+            cid: _component_eligible(station_by_id.get(cid)) for cid in component_ids
+        }
+        # Derivation window = the timestamps some component reported this run for the
+        # formula's parameter. Empty ⇒ nothing to derive (never a placeholder for a
+        # timestamp no component reported).
+        candidate_ts = sorted(
+            {
+                o.timestamp
+                for o in raw_obs
+                if o.station_id in component_id_set and o.parameter == parameter
+            }
+        )
+        if not candidate_ts:
+            continue
+
+        window_start = candidate_ts[0]
+        window_end = ensure_utc(candidate_ts[-1] + timedelta(seconds=1))
+        best_by_component: dict[StationId, dict[UtcDatetime, Observation]] = {}
+        for cid in component_ids:
+            if not eligible[cid]:
+                best_by_component[cid] = {}
+                continue
+            grouped: dict[UtcDatetime, list[Observation]] = {}
+            for row in obs_store.fetch_observations(
+                station_id=cid,
+                parameter=parameter,
+                start=window_start,
+                end=window_end,
+            ):
+                grouped.setdefault(row.timestamp, []).append(row)
+            best_by_component[cid] = {
+                ts: best
+                for ts, group in grouped.items()
+                if (best := select_by_precedence(group)) is not None
+            }
+
+        for ts in candidate_ts:
+            resolved = [
+                (w, best_by_component[w.component_station_id].get(ts)) for w in weights
+            ]
+            point = derive_point(resolved)
+            to_store.append(
+                Observation(
+                    id=ObservationId(uuid4()),
+                    station_id=calc_id,
+                    timestamp=ts,
+                    parameter=parameter,
+                    value=point.value,
+                    source=ObservationSource.COMPONENT_DERIVED,
+                    rating_curve_id=None,
+                    rating_curve_correction_version=None,
+                    qc_status=point.qc_status,
+                    qc_flags=point.qc_flags,
+                    qc_rule_version=(
+                        DERIVATION_RULE_VERSION if point.value is not None else None
+                    ),
+                    created_at=now,
+                )
+            )
+            if point.value is None:
+                counts["missing"] += 1
+                log.info(
+                    "observation.derivation_skipped",
+                    calculated_station_id=str(calc_id),
+                    parameter=parameter,
+                    timestamp=ts.isoformat(),
+                    reason=_skip_reason(weights, best_by_component, eligible, ts),
+                )
+            else:
+                counts["derived"] += 1
+
+    if to_store:
+        obs_store.store_observations(to_store)
+    log.info(
+        "ingest.derivation_complete",
+        derived=counts["derived"],
+        missing=counts["missing"],
+    )
+    return counts
+
+
 # ---------------------------------------------------------------------------
 # Flow
 # ---------------------------------------------------------------------------
@@ -250,6 +407,7 @@ def ingest_observations_flow(
     qc_rules: object = None,
     deployment_config: object = None,
     clock: object = None,
+    formula_store: object = None,
     context_window_hours: float = 2.0,
     default_lookback_hours: float = 1.0,
 ) -> IngestResult:
@@ -267,6 +425,7 @@ def ingest_observations_flow(
         obs_store = stores["obs_store"]  # type: ignore[assignment]
         baseline_store = stores["baseline_store"]  # type: ignore[assignment]
         alert_store = stores["alert_store"]  # type: ignore[assignment]
+        formula_store = stores["formula_store"]  # type: ignore[assignment]
 
     if adapter is None:
         import httpx
@@ -401,6 +560,29 @@ def ingest_observations_flow(
         suspect=totals["suspect"],
     )
 
+    # --- Step 2.5: Calculated-station derivation (Plan 015) ---
+    # Sequential post-QC step (NOT a task.map fan-out): the QC loop finishing is the
+    # barrier. Calculated stations were excluded from `eligible` by the GAUGED guard, so
+    # this reads their components' just-QC'd observations. No-op when there are none.
+    derived = {"derived": 0, "missing": 0}
+    calculated = [
+        s
+        for s in all_stations
+        if s.gauging_status == GaugingStatus.CALCULATED
+        and s.station_status.value == "operational"
+    ]
+    if calculated and formula_store is not None:
+        derived = _derive_calculated_task(
+            obs_store,  # type: ignore[arg-type]
+            formula_store,  # type: ignore[arg-type]
+            station_store,  # type: ignore[arg-type]
+            calculated,
+            raw_obs,
+            now,
+        )
+    elif calculated and formula_store is None:
+        log.warning("ingest.derivation_skipped_no_store", calculated=len(calculated))
+
     # --- Steps 2.8–2.10: Observation alerts (v0: disabled by default) ---
     if deployment_config is not None and deployment_config.enable_observation_alerts:
         from sapphire_flow.services.observation_alert_checker import (
@@ -430,6 +612,8 @@ def ingest_observations_flow(
         qc_suspect=totals["suspect"],
         stations_failed=len(errors),
         errors=tuple(errors),
+        observations_derived=derived["derived"],
+        observations_missing=derived["missing"],
     )
 
     log.info(
@@ -442,6 +626,8 @@ def ingest_observations_flow(
         qc_failed=result.qc_failed,
         qc_suspect=result.qc_suspect,
         stations_failed=result.stations_failed,
+        observations_derived=result.observations_derived,
+        observations_missing=result.observations_missing,
     )
 
     return result
