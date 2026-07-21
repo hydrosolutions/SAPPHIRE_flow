@@ -101,6 +101,7 @@ def onboard_stations_flow(
     hindcast_store: object = None,
     skill_store: object = None,
     parameter_store: object = None,
+    formula_store: object = None,
     forcing_source: object = None,
     deployment_config: object = None,
     qc_rules: object = None,
@@ -108,6 +109,7 @@ def onboard_stations_flow(
     hindcast_days: int | None = None,
     reanalysis_adapter_factory: object = None,
     require_meteoswiss_backfill: bool = False,
+    calculated_specs: object = None,
 ) -> object:
     if clock is None:
         clock = lambda: ensure_utc(datetime.now(UTC))  # noqa: E731
@@ -135,6 +137,7 @@ def onboard_stations_flow(
         hindcast_store = stores["hindcast_store"]
         skill_store = stores["skill_store"]
         parameter_store = stores["parameter_store"]
+        formula_store = stores.get("formula_store")
 
         # Plan 115b2 §2B/§2C: the MeteoSwiss reanalysis binding + per-station
         # backfill-or-hold, wired ONLY on this production DB-backed path (not
@@ -215,6 +218,8 @@ def onboard_stations_flow(
                 basin_ids = list(onboarding_cfg.basin_ids)
                 water_level_datums_masl = onboarding_cfg.water_level_datums_masl
                 water_level_units = onboarding_cfg.water_level_units
+                if calculated_specs is None:
+                    calculated_specs = onboarding_cfg.calculated
                 log.info("basin_ids_from_config", count=len(basin_ids))
     else:
         config_path = os.environ.get("SAPPHIRE_CONFIG")
@@ -225,6 +230,8 @@ def onboard_stations_flow(
             if onboarding_cfg is not None:
                 water_level_datums_masl = onboarding_cfg.water_level_datums_masl
                 water_level_units = onboarding_cfg.water_level_units
+                if calculated_specs is None:
+                    calculated_specs = onboarding_cfg.calculated
 
     if qc_rules is None:
         qc_rules = _load_qc_rules()
@@ -263,6 +270,8 @@ def onboard_stations_flow(
         water_level_units=water_level_units,
         reanalysis_adapter_factory=reanalysis_adapter_factory,  # type: ignore[arg-type]
         require_meteoswiss_backfill=require_meteoswiss_backfill,
+        formula_store=formula_store,  # type: ignore[arg-type]
+        calculated_specs=calculated_specs or (),  # type: ignore[arg-type]
     )
 
     log.info(
