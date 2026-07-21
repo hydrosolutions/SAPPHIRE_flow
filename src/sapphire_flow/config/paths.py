@@ -1,11 +1,28 @@
 from __future__ import annotations
 
+import errno
 import os
 from pathlib import Path
 
 import platformdirs
+import structlog
+
+log = structlog.get_logger(__name__)
 
 _SUBDIRS = ("raw", "artifacts", "cache")
+
+
+def _ensure_subdir(path: Path) -> None:
+    try:
+        path.mkdir(parents=True, exist_ok=True, mode=0o750)
+    except OSError as exc:
+        if exc.errno != errno.EROFS:
+            raise
+        log.debug(
+            "data_dir.subdir_skipped_read_only",
+            path=str(path),
+            reason="read-only root filesystem (EROFS); caller must not rely on this",
+        )
 
 
 def resolve_data_dir(config_data_dir: str | None = None) -> Path:
@@ -20,7 +37,7 @@ def resolve_data_dir(config_data_dir: str | None = None) -> Path:
     root = root.expanduser().resolve()
 
     for subdir in _SUBDIRS:
-        (root / subdir).mkdir(parents=True, exist_ok=True, mode=0o750)
+        _ensure_subdir(root / subdir)
     return root
 
 
