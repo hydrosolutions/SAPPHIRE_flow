@@ -360,6 +360,97 @@ class TestHeartbeat:
         # No parquet was written for a non-run (an outage, not a real snapshot).
         assert list(tmp_path.rglob("*.parquet")) == []
 
+    def test_bindings_null_writes_critical_before_reraising(
+        self, tmp_path: Path
+    ) -> None:
+        # A well-formed envelope whose `bindings` is null: extraction
+        # succeeds (bindings=None), then len(None) would raise a bare
+        # TypeError OUTSIDE the try. The adapter's isinstance guard must
+        # surface it as AdapterError, and the flow must write CRITICAL before
+        # re-raising it (the T8 contract for a wrong-shaped bindings value).
+        import httpx
+
+        from sapphire_flow.adapters.bafu_observation import BafuObservationAdapter
+
+        module = _import_flow_module()
+        config = _make_config(bafu_observation_archive_path=tmp_path)
+        health_store = FakePipelineHealthStore()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"results": {"bindings": None}})
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        adapter = BafuObservationAdapter(
+            endpoint="https://lindas.admin.ch/query",
+            http_client=client,
+            sleeper=lambda _seconds: None,
+            max_retries=1,
+        )
+
+        with pytest.raises(AdapterError, match="is not a list"):
+            module.collect_bafu_observations_flow(  # type: ignore[attr-defined]
+                config=config,
+                adapter=adapter,
+                clock=_ClockSpy(datetime(2026, 7, 21, 15, 5, tzinfo=UTC)),
+                pipeline_health_store=health_store,
+            )
+
+        check_type = module.PipelineCheckType.BAFU_OBSERVATION_FRESHNESS  # type: ignore[attr-defined]
+        records = health_store.fetch_recent(check_type)
+        assert len(records) == 1
+        assert records[0].status is PipelineHealthStatus.CRITICAL
+        assert records[0].detail["error_type"] is not None
+        assert list(tmp_path.rglob("*.parquet")) == []
+
+    def test_all_gauges_stale_writes_critical_but_archives_and_does_not_raise(
+        self, tmp_path: Path
+    ) -> None:
+        # A served-but-FROZEN feed: every gauge's newest measurement_time is
+        # older than the staleness threshold. The collection SUCCEEDED — the
+        # snapshot must still be archived and the run must NOT re-raise — but
+        # the heartbeat must be CRITICAL (reason "stale_measurement_time") so
+        # the watchdog alarms on a frozen graph that would otherwise report OK
+        # forever.
+        module = _import_flow_module()
+        config = _make_config(bafu_observation_archive_path=tmp_path)
+        health_store = FakePipelineHealthStore()
+        run_at = datetime(2026, 7, 21, 15, 5, tzinfo=UTC)
+        # 6h behind run_at — well past the ~3h threshold, for every gauge.
+        stale_ts = datetime(2026, 7, 21, 9, 0, tzinfo=UTC)
+        rows = [
+            _row("2135", measurement_time=stale_ts),
+            _row("2200", measurement_time=stale_ts),
+            _row(
+                "3001",
+                lindas_kind="lake",
+                parameter="water_level",
+                measurement_time=stale_ts,
+            ),
+        ]
+
+        result = module.collect_bafu_observations_flow(  # type: ignore[attr-defined]
+            config=config,
+            adapter=_FakeAdapter(rows),
+            clock=_ClockSpy(run_at),
+            pipeline_health_store=health_store,
+        )
+
+        # Did NOT raise, and the snapshot WAS archived.
+        assert result.dedup_skipped is False
+        assert result.row_count == 3
+        assert len(list(tmp_path.rglob("*.parquet"))) == 1
+
+        check_type = module.PipelineCheckType.BAFU_OBSERVATION_FRESHNESS  # type: ignore[attr-defined]
+        records = health_store.fetch_recent(check_type)
+        assert len(records) == 1
+        assert records[0].status is PipelineHealthStatus.CRITICAL
+        assert records[0].detail["error_type"] == "stale_measurement_time"
+        assert records[0].detail["row_count"] == 3
+        assert (
+            records[0].detail["newest_measurement_time"]
+            == ensure_utc(stale_ts).isoformat()
+        )
+
     def test_truncated_fetch_writes_critical(self, tmp_path: Path) -> None:
         module = _import_flow_module()
         config = _make_config(bafu_observation_archive_path=tmp_path)

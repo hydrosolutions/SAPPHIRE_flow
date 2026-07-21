@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 import structlog
@@ -131,6 +131,19 @@ class BafuObservationAdapter:
                 f"BAFU LINDAS whole-graph response is not a well-formed SPARQL "
                 f"results JSON: {exc}"
             ) from exc
+
+        # The envelope can be well-formed (extraction succeeds) while
+        # `bindings` itself is a non-list — e.g. {"results": {"bindings": null}}
+        # (bindings=None) or {"results": {"bindings": 123}}. Then len(bindings)
+        # below raises a bare TypeError OUTSIDE any try, which would escape the
+        # flow's except-AdapterError handler and skip the CRITICAL heartbeat
+        # (T8). Validate the shape here so it always surfaces as AdapterError.
+        if not isinstance(bindings, list):
+            raise AdapterError(
+                f"BAFU LINDAS whole-graph response 'results.bindings' is not a "
+                f"list (got {type(bindings).__name__}) — malformed SPARQL results"
+            )
+        bindings = cast("list[dict[str, Any]]", bindings)
 
         if len(bindings) >= _QUERY_LIMIT:
             raise AdapterError(

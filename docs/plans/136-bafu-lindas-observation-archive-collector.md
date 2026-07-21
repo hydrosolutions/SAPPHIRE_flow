@@ -467,13 +467,25 @@ operational fact, but nothing downstream waits on it. T8 is the heartbeat + its 
      `BafuObservationRecord.status`:
      - **`OK`** — a normal run: ~233 gauges / ~730 rows and a newest `measurement_time` within the last
        ~hour. `detail` carries `row_count`, `gauge_count`, `newest_measurement_time`.
-     - **`CRITICAL`** — an **empty whole-graph response** (zero rows), an **HTTP error**, a **parse /
-       schema-drift error** (a predicate outside the fixed `BafuObservationParameter` set, DC-2), or a
-       **truncated fetch** (`len(bindings) >= LIMIT`, T2 — the archive would be silently missing part of the
-       network every cycle from that point on). These are outages, not quiet no-ops; `detail` carries
-       `error_type`, `row_count`, `newest_measurement_time`. The watchdog (T9) escalates on this.
-     - **`WARNING`** — reserved for a future fresh-fraction-below-threshold degradation signal; **not
-       implemented in this pass** — the first cut emits only `OK`/`CRITICAL`. (Noted so a later addition
+     - **`CRITICAL` (re-raising outages)** — an **empty whole-graph response** (zero rows), an **HTTP
+       error**, a **parse / schema-drift error** (a predicate outside the fixed `BafuObservationParameter`
+       set, DC-2), a **malformed `results.bindings`** (a wrong-shaped envelope, or `bindings` present but
+       not a list — e.g. `null`/scalar), or a **truncated fetch** (`len(bindings) >= LIMIT`, T2 — the
+       archive would be silently missing part of the network every cycle from that point on). These are
+       outages, not quiet no-ops: the flow writes the CRITICAL heartbeat **first, then re-raises** (no
+       snapshot is archived). `detail` carries `error_type`, `row_count`, `newest_measurement_time`. The
+       watchdog (T9) escalates on this.
+     - **`CRITICAL` (stale-but-served — non-raising) — IMPLEMENTED in this pass.** A collection that
+       SUCCEEDS but whose **network-newest** `measurement_time` is older than a module-level staleness
+       threshold (`_STALE_MEASUREMENT_THRESHOLD` ≈ **3 h**, aligned with the watchdog's
+       `BAFU_OBS_STALE_THRESHOLD`; three missed hourly cycles) writes a **`CRITICAL`** heartbeat with
+       `error_type="stale_measurement_time"` (and the newest time + age in `detail`). Crucially this path
+       **still archives the (stale) snapshot and does NOT re-raise** — the collection succeeded, the feed
+       is merely frozen. Without this signal a served-but-frozen LINDAS graph would report `OK` forever and
+       stay invisible to the watchdog (which reads only status + `checked_at`, never the measurement time).
+       Freshness is NETWORK-level: a single dead gauge (with the network newest still fresh) stays `OK`.
+     - **`WARNING`** — reserved for a future fresh-*fraction*-below-threshold (partial-degradation) signal;
+       **not implemented in this pass** — this cut emits only `OK`/`CRITICAL`. (Noted so a later addition
        needs no enum/schema change.)
 
      The existing weekly live schema-drift test (`test_lindas_live_schema.py`) guards the *structure*

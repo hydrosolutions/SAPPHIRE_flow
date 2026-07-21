@@ -41,7 +41,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
@@ -62,6 +62,15 @@ if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
 
 log = structlog.get_logger(__name__)
+
+# A non-empty fetch whose NETWORK-newest measurement_time is older than this
+# writes a CRITICAL heartbeat (reason "stale_measurement_time") — a
+# served-but-frozen LINDAS graph would otherwise report OK forever and stay
+# invisible to the watchdog (which reads only status + checked_at). The
+# collection still SUCCEEDS (the snapshot is archived, the run does not
+# re-raise). Kept aligned with ops/watchdog.py's BAFU_OBS_STALE_THRESHOLD
+# (hourly collector → ~3 missed cycles); a plain constant, NOT config.
+_STALE_MEASUREMENT_THRESHOLD = timedelta(hours=3)
 
 _ROW_SCHEMA = {
     "gauge_code": pl.Utf8,
@@ -390,14 +399,32 @@ def collect_bafu_observations_flow(
             newest_measurement_time=newest_measurement_time.isoformat(),
         )
 
+        # Freshness gate: a served-but-frozen graph (every gauge stale) has a
+        # NETWORK-newest measurement_time far behind run_at. That collection
+        # still SUCCEEDED — the snapshot is archived above and we do NOT
+        # re-raise — but the heartbeat must be CRITICAL so the watchdog alarms
+        # (it reads only status + checked_at, never the measurement time). A
+        # single dead gauge stays OK because network-newest is fresh.
+        measurement_age = run_at - newest_measurement_time
+        is_stale = measurement_age > _STALE_MEASUREMENT_THRESHOLD
+        if is_stale:
+            log.warning(
+                "bafu_observation.stale_feed",
+                newest_measurement_time=newest_measurement_time.isoformat(),
+                age_seconds=measurement_age.total_seconds(),
+                threshold_seconds=_STALE_MEASUREMENT_THRESHOLD.total_seconds(),
+            )
+
         _append_health_record(
             pipeline_health_store,
             checked_at=run_at,
-            status=PipelineHealthStatus.OK,
+            status=(
+                PipelineHealthStatus.CRITICAL if is_stale else PipelineHealthStatus.OK
+            ),
             row_count=len(rows),
             gauge_count=gauge_count,
             newest_measurement_time=newest_measurement_time,
-            error_type=None,
+            error_type="stale_measurement_time" if is_stale else None,
         )
 
         return BafuObservationCollectionResult(

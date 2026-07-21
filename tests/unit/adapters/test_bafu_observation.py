@@ -343,3 +343,22 @@ class TestWrongShapedResponseRaisesAdapterError:
         adapter = _make_adapter(handler)
         with pytest.raises(AdapterError, match="not a well-formed SPARQL"):
             adapter.fetch_all_observations()
+
+    def test_bindings_null_raises_adapter_error(self) -> None:
+        # Envelope is well-formed — extraction SUCCEEDS with bindings=None —
+        # but len(None) would raise a bare TypeError OUTSIDE the try. The
+        # isinstance guard must surface it as AdapterError instead.
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"results": {"bindings": None}})
+
+        adapter = _make_adapter(handler)
+        with pytest.raises(AdapterError, match="is not a list"):
+            adapter.fetch_all_observations()
+
+    def test_bindings_non_list_scalar_raises_adapter_error(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"results": {"bindings": 123}})
+
+        adapter = _make_adapter(handler)
+        with pytest.raises(AdapterError, match="is not a list"):
+            adapter.fetch_all_observations()
