@@ -1,7 +1,7 @@
-"""NWP-forced daily regression models (epic-088 M2).
+"""NWP-forced daily regression models (epic-088 M2, extended by Plan 129).
 
-Two ``forecastinterface`` ``ForecastModel`` implementations that consume
-future-known precipitation/temperature forcing over a daily step:
+Three ``forecastinterface`` ``ForecastModel`` implementations sharing a base,
+consuming future-known precipitation/temperature forcing over a daily step:
 
 * ``NwpRegression`` — daily discharge on future precip/temp windows PLUS past
   discharge lags (declared as ``past_known`` history and used as features).
@@ -10,9 +10,17 @@ future-known precipitation/temperature forcing over a daily step:
   as ``past_known`` so the fit target is delivered at train time, but stays
   weather-only in BEHAVIOR: the regression uses only precip/temp features and
   predict is invariant to past discharge.
+* ``SeasonalPrecipRunoffRegression`` (Plan 129) — extends the base with a NEW
+  ``past_known reanalysis/precipitation`` channel (antecedent precip, the
+  RprelimD-consuming channel that closes the temporal gap up to issue-time —
+  see ``docs/architecture-context.md`` "RprelimD fetch mechanics") plus a
+  derived day-of-year season feature. Keeps future NWP precip/temp + discharge
+  lags from the base, so its precipitation input is one continuous covariate
+  spanning past-reanalysis (RhiresD deep / RprelimD recent) through
+  future-NWP.
 
-Both are ``ArtifactScope.STATION``, deterministic single-trajectory models — the
-21-member ensemble is assembled downstream in M3, not inside the model.
+Both/all are ``ArtifactScope.STATION``, deterministic single-trajectory models
+— the 21-member ensemble is assembled downstream in M3, not inside the model.
 
 **Missing future forcing (Plan 130 Part B)**: a missing future precip/temp
 value — absent from the frame, a null, or (in ``train``) a non-finite
@@ -36,6 +44,7 @@ the prediction loop.
 from __future__ import annotations
 
 import io
+import math
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import TYPE_CHECKING, cast
@@ -81,10 +90,29 @@ _HORIZON = 5  # M3: match ICON-CH2-EPS 5-day / 120h coverage (was 7)
 _LOOKBACK = 7
 _PRODUCT_NWP = "nwp"
 _PRODUCT_OBS = "obs"
+_PRODUCT_REANALYSIS = "reanalysis"
 _TARGET = "discharge"
 _PRECIPITATION = "precipitation"
 _TEMPERATURE = "temperature"
 _SPATIAL_REP = SpatialRepresentation.BASIN_AVERAGE
+# Plan 129: the antecedent-precip lookback overlaps RprelimD's ~2-month
+# retention (its documented live-tail is the recent ~45 days up to issue-time)
+# so the past-precip fetch is genuinely RprelimD-served near issue-time.
+_PRECIP_LOOKBACK_DAYS = 45
+_DAYS_PER_YEAR = 365.25
+
+
+class _ShortForcingWindowError(ValueError):
+    """A model-declared EXTRA past-known window is shorter than required.
+
+    Raised by an ``_extra_predict_features`` override for an ANTICIPATED
+    short-window condition (fewer raw rows than the declared lookback, no
+    explicit NaN — see ``training_data.py`` ``_raw_forcing_to_dataframe``,
+    which pivots by row count and does not pad missing days). ``predict()``
+    catches this specific exception and returns ``ModelFailure`` — never lets
+    it propagate (CLAUDE.md §ForecastInterface Adherence: "anticipated
+    failure must be returned, not raised").
+    """
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -118,6 +146,50 @@ class _NwpRegressionBase:
     _declared_lookback: int = 1
     _model_name: str = "nwp-regression-base"
 
+    def _extra_past_known(self) -> dict[str, dict[str, PastKnownVariable]]:
+        """Additional past_known products/variables beyond the target's own history.
+
+        Default: none. A subclass adding a new past-known forcing channel (e.g.
+        the RprelimD-consuming antecedent precip, Plan 129) overrides this.
+        """
+        return {}
+
+    def _train_warmup_steps(self) -> int:
+        """Leading rows of ``target_times`` to SKIP before fitting.
+
+        Default: ``_n_lags`` (the discharge-lag window). A subclass whose extra
+        past-known feature needs a LONGER history than the lag window (e.g. the
+        45-day antecedent-precip window, Plan 129) overrides this so early rows
+        with a partial extra-feature window never enter the design matrix.
+        """
+        return self._n_lags
+
+    def _extra_train_features(
+        self, dynamic: DynamicInputs, target_times: list[datetime]
+    ) -> np.ndarray:
+        """Extra ``(n_rows, k)`` feature columns aligned to ``target_times``.
+
+        Default: no extra columns (``k = 0``). A subclass declaring
+        ``_extra_past_known`` overrides this to compute the matching features.
+        """
+        del dynamic
+        return np.empty((len(target_times), 0), dtype=np.float64)
+
+    def _extra_predict_features(
+        self,
+        dynamic: DynamicInputs,
+        future_times: list[datetime],
+        issue_datetime: datetime,
+    ) -> np.ndarray:
+        """Extra ``(horizon, k)`` feature columns for ``predict()``.
+
+        Default: no extra columns (``k = 0``). Raise
+        ``_ShortForcingWindowError`` for an ANTICIPATED short-window
+        condition; ``predict()`` catches it and returns ``ModelFailure``.
+        """
+        del dynamic, issue_datetime
+        return np.empty((len(future_times), 0), dtype=np.float64)
+
     @property
     def input_requirement(self) -> InputRequirement:
         past_known: dict[str, dict[str, PastKnownVariable]] = {
@@ -127,7 +199,8 @@ class _NwpRegressionBase:
                     max_nan=0,
                     unit=Unit.M3_PER_S,
                 )
-            }
+            },
+            **self._extra_past_known(),
         }
         return InputRequirement(
             targets={
@@ -181,18 +254,20 @@ class _NwpRegressionBase:
         precip, precip_valid = _aligned_future(dynamic, _PRECIPITATION, target_times)
         temp, temp_valid = _aligned_future(dynamic, _TEMPERATURE, target_times)
         valid = precip_valid & temp_valid
+        extra = self._extra_train_features(dynamic, target_times)
 
         # A missing future forcing value (the reanalysis tail gap, Plan 130) is
         # an ANTICIPATED condition per the FI contract, not a crash: drop the
         # affected training sample rather than raising on float(None).
+        warmup = self._train_warmup_steps()
         design_rows: list[np.ndarray] = []
         targets: list[float] = []
         dropped = 0
-        for i in range(self._n_lags, len(discharge)):
+        for i in range(warmup, len(discharge)):
             if not valid[i]:
                 dropped += 1
                 continue
-            features = [precip[i], temp[i]]
+            features = [precip[i], temp[i], *extra[i].tolist()]
             if self._n_lags:
                 features.extend(discharge[i - self._n_lags : i].tolist())
             design_rows.append(np.asarray(features, dtype=np.float64))
@@ -209,7 +284,7 @@ class _NwpRegressionBase:
         if not design_rows:
             raise ValueError(
                 f"insufficient training rows for {self._model_name}: "
-                f"need > {self._n_lags} aligned samples, got {len(design_rows)} "
+                f"need > {warmup} aligned samples, got {len(design_rows)} "
                 f"after dropping {dropped} row(s) with missing future forcing "
                 f"(of {len(discharge)} total)"
             )
@@ -224,6 +299,7 @@ class _NwpRegressionBase:
             n_samples=len(design_rows),
             n_features=int(np.stack(design_rows).shape[1]),
             n_lags=self._n_lags,
+            warmup=warmup,
         )
 
         return NwpRegressionArtifact(
@@ -313,6 +389,25 @@ class _NwpRegressionBase:
                 ),
             )
 
+        # Plan 129: subclass-declared extra predict features (e.g. the
+        # antecedent-precip continuous window). An ANTICIPATED short/stale
+        # window raises _ShortForcingWindowError — return ModelFailure, never
+        # let it propagate (CLAUDE.md §ForecastInterface Adherence).
+        try:
+            extra = self._extra_predict_features(dynamic, future_times, issue_datetime)
+        except _ShortForcingWindowError as exc:
+            log.warning(
+                "nwp_regression.short_forcing_window",
+                model=self._model_name,
+                error=str(exc),
+            )
+            return ModelFailure(
+                model_name=self._model_name,
+                issue_datetime=issue_datetime,
+                cause=FailureCause.INPUT_DATA,
+                message=str(exc),
+            )
+
         lags = self._initial_lags(dynamic)
         if len(lags) != artifact.n_lags:
             log.warning(
@@ -333,7 +428,9 @@ class _NwpRegressionBase:
 
         predictions: list[float] = []
         for step in range(horizon):
-            features = np.concatenate(([precip[step], temp[step]], lags))
+            features = np.concatenate(
+                ([precip[step], temp[step], *extra[step].tolist()], lags)
+            )
             value = float(features @ coefficients + intercept)
             predictions.append(value)
             if self._n_lags:
@@ -459,3 +556,163 @@ class NwpRainfallRunoff(_NwpRegressionBase):
     _n_lags = 0
     _declared_lookback = 1
     _model_name = "nwp_rainfall_runoff"
+
+
+def _season_features(times: list[datetime]) -> np.ndarray:
+    """Day-of-year season encoding: ``(sin, cos)`` of the annual angle, shape (n, 2)."""
+    day_of_year = np.asarray([t.timetuple().tm_yday for t in times], dtype=np.float64)
+    angle = 2.0 * math.pi * day_of_year / _DAYS_PER_YEAR
+    return np.stack([np.sin(angle), np.cos(angle)], axis=1)
+
+
+def _validate_continuous_window(
+    times: list[datetime],
+    *,
+    issue_datetime: datetime,
+    lookback_days: int,
+    step: timedelta,
+) -> None:
+    """Raise ``_ShortForcingWindowError`` unless the antecedent-precip series
+    covers a continuous run of ``lookback_days`` distinct CALENDAR DAYS ending
+    at the last COMPLETE reanalysis day at-or-before ``issue_datetime``.
+
+    **Daily-cycle anchoring (Plan 129 BUG 1 fix).** Daily reanalysis rows are
+    midnight-bucketed calendar days, but the deployment cron issues every 6h
+    (``0 */6 * * *`` -> 00/06/12/18Z). Anchoring the window on the exact
+    wall-clock issue instant made a non-midnight cycle demand the latest row
+    within one daily ``step`` of e.g. 06:00 — an impossible 30/36/42h gap
+    against a previous-midnight bucket — so 3 of every 4 normal cycles wrongly
+    returned ``ModelFailure``. Anchoring instead on the last complete
+    reanalysis DAY (``(issue - step).date()``, always the previous calendar
+    day for any cycle on a given day) tolerates that natural daily staleness:
+    every cycle on a calendar day requires the same ``lookback_days``
+    antecedent days. For a midnight issue this expected day-set is identical to
+    the old ``[issue - lookback_days, issue)`` window, so the check is
+    unchanged there.
+
+    Bucketing by calendar day (not exact timestamp) is what makes a bare
+    row-count check insufficient: 45 rows crammed into a handful of distinct
+    days, or 45 rows entirely outside the window, would otherwise pass while
+    ``_antecedent_precip_sums`` silently returns a zero/partial feature. A
+    stale feed (latest available day older than the anchor) is caught by the
+    same check — the recent expected days are simply absent.
+    """
+    anchor_day = (issue_datetime - step).date()
+    expected_days = {anchor_day - timedelta(days=k) for k in range(lookback_days)}
+    covered = expected_days & {t.date() for t in times}
+    if len(covered) < lookback_days:
+        raise _ShortForcingWindowError(
+            "insufficient antecedent-precip history: got "
+            f"{len(covered)}, need {lookback_days}"
+        )
+
+
+def _antecedent_precip_sums(
+    series_times: list[datetime],
+    series_values: np.ndarray,
+    anchor_times: list[datetime],
+    lookback_days: int,
+) -> np.ndarray:
+    """Sum of ``series_values`` in ``[anchor - lookback_days, anchor)`` per anchor."""
+    lookback = timedelta(days=lookback_days)
+    times = np.asarray(series_times)
+    values = np.asarray(series_values, dtype=np.float64)
+    sums = np.empty(len(anchor_times), dtype=np.float64)
+    for i, anchor in enumerate(anchor_times):
+        window_start = anchor - lookback
+        mask = (times >= window_start) & (times < anchor)
+        sums[i] = float(values[mask].sum())
+    return sums
+
+
+class SeasonalPrecipRunoffRegression(_NwpRegressionBase):
+    """Daily discharge ~ past discharge lags + season + continuous precip.
+
+    Plan 129's consuming model: extends the base with a NEW ``past_known
+    reanalysis/precipitation`` channel (antecedent precip, routed through
+    ``ModelDataRequirements.past_dynamic_features`` and so through the hybrid
+    RhiresD (definitive) / RprelimD (recent, live-tail) reanalysis chain — the
+    RprelimD-consuming channel) plus a derived day-of-year season feature.
+    Keeps the base's future NWP precip/temp same-day channel and discharge
+    lags (1..7), so precipitation is one continuous covariate spanning
+    past-reanalysis through future-NWP.
+
+    The declared lookback (``_PRECIP_LOOKBACK_DAYS``) overlaps RprelimD's live
+    tail so the antecedent-precip fetch is genuinely RprelimD-served near
+    issue-time.
+
+    NOTE — the past-known variable name ``precipitation`` is intentionally
+    shared with the base's future_known ``nwp/precipitation``: they are
+    disjoint columns in disjoint frames (``past_dynamic`` vs
+    ``future_dynamic``), so model-level routing is correct. The adapter's
+    ``max_nan`` over-tolerance check (``forecast_interface.py``
+    ``_variables_over_nan_tolerance``) gates ``past_known`` and
+    ``future_known`` variables independently against their own frame, so a
+    shared bare name across the two temporalities does not suppress either
+    gate — both this model's past antecedent precip AND the base's future NWP
+    precip are independently NaN-gated before ``predict()`` runs.
+    """
+
+    _n_lags = _LOOKBACK
+    _declared_lookback = _LOOKBACK
+    _model_name = "seasonal_precip_runoff_regression"
+    _precip_lookback_days = _PRECIP_LOOKBACK_DAYS
+
+    def _train_warmup_steps(self) -> int:
+        # The 45-day antecedent-precip window needs more leading history than
+        # the 7-step discharge-lag window; skip rows whose antecedent window
+        # would otherwise be partial (Plan 129 post-implementation review).
+        return max(self._n_lags, self._precip_lookback_days)
+
+    def _extra_past_known(self) -> dict[str, dict[str, PastKnownVariable]]:
+        return {
+            _PRODUCT_REANALYSIS: {
+                _PRECIPITATION: PastKnownVariable(
+                    lookback=self._precip_lookback_days,
+                    max_nan=0,
+                    unit=Unit.MM,
+                )
+            }
+        }
+
+    def _extra_train_features(
+        self, dynamic: DynamicInputs, target_times: list[datetime]
+    ) -> np.ndarray:
+        reanalysis_times, reanalysis_precip = _sorted_series(
+            dynamic.past_known[_PRODUCT_REANALYSIS][_PRECIPITATION], _PRECIPITATION
+        )
+        antecedent = _antecedent_precip_sums(
+            reanalysis_times,
+            reanalysis_precip,
+            target_times,
+            self._precip_lookback_days,
+        )
+        season = _season_features(target_times)
+        return np.column_stack([antecedent, season])
+
+    def _extra_predict_features(
+        self,
+        dynamic: DynamicInputs,
+        future_times: list[datetime],
+        issue_datetime: datetime,
+    ) -> np.ndarray:
+        reanalysis_times, reanalysis_precip = _sorted_series(
+            dynamic.past_known[_PRODUCT_REANALYSIS][_PRECIPITATION], _PRECIPITATION
+        )
+        _validate_continuous_window(
+            reanalysis_times,
+            issue_datetime=issue_datetime,
+            lookback_days=self._precip_lookback_days,
+            step=_STEP,
+        )
+        antecedent_value = float(
+            _antecedent_precip_sums(
+                reanalysis_times,
+                reanalysis_precip,
+                [issue_datetime],
+                self._precip_lookback_days,
+            )[0]
+        )
+        season = _season_features(future_times)
+        antecedent_col = np.full((len(future_times), 1), antecedent_value)
+        return np.hstack([antecedent_col, season])

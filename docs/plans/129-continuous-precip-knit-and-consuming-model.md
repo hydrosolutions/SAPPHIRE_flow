@@ -225,3 +225,52 @@ temperature. A confirming independent Codex review (2026-07-19) then verified ev
 accurate — clean, no blockers/majors/minors. **READY (owner + confirming review, 2026-07-19).** Build via
 `implement` after Plan 128 lands; hold-at-PR. Depends on Plan 128. Relates to the 115b weather-identity track
 and the FI adherence contract.
+
+**Post-implementation review fixes (2026-07-19 → 2026-07-20):** independent Codex passes over the committed
+diff found several residual gaps across two review rounds, all fixed and locking-test-proven.
+
+*Round 1 (earlier commit):* (a) **NaN-gate temporality blocker** — the model's `past_known
+reanalysis/precipitation` bare name collides with the base's `future_known nwp/precipitation`, and the FI
+adapter's `max_nan` gate resolved a bare name to the first matching frame, so clean past precip could mask a
+NaN in future NWP precip; `_variables_over_nan_tolerance` (`adapters/forecast_interface.py`) is now
+temporality-aware, gating `past_known` and `future_known` independently against their own frame (a general
+adapter fix, not model-specific). (b) **Training warmup** — added the `_train_warmup_steps()` hook (default
+`_n_lags`); `SeasonalPrecipRunoffRegression` skips the leading `max(_n_lags, 45)` rows so rows 7–44 never fit
+on a partial antecedent-precip window and bias the artifact. (c) **Continuous-window predict validation** —
+`predict()` now validates the antecedent window is genuinely continuous (`_validate_continuous_window`,
+bucketed by CALENDAR DAY, not raw row count or exact timestamp); a bare row-count check let 45 STALE rows, or
+45 rows crammed into a handful of distinct days, pass while `_antecedent_precip_sums` silently returned a
+zero/partial feature — both the SHORT-window and the stale/crammed cases return `ModelFailure` (never raise).
+(d) **Seam-gate edge-localization** — the seam builders select an explicit `edge`/`window_size`
+(`SeamEdge.BEFORE`/`AFTER`) of rows local to the seam by `valid_time`, not every source/parameter match
+regardless of how far the raw fetch reaches; `seam_window_from_nwp_rows` collapses ensemble members to a
+per-`valid_time` mean first. (e) **Non-finite handling** — `check_seam_continuity` flags any non-finite
+(NaN/inf) value directly (`math.isfinite`) rather than letting it slip a naive range/ratio comparison.
+
+*Round 2 (2026-07-20):* (1) The "no gap before NWP future precip" continuity
+test asserted only that `past_dynamic` reached issue-time, never that the first `future_dynamic` precip
+bucket actually abuts it — for the test's midnight issue-time fixture, `_filter_and_cap_daily_records`
+(`services/operational_inputs.py`) dropped the whole issue-day NWP bucket via a strict `valid_time >
+issue_time`, silently opening a one-day seam gap. Fixed to `>=`: a non-midnight cycle still backdates (and
+correctly drops) the issue-day bucket, but a midnight-exact issue-time's issue-day bucket is genuinely all
+future and is now kept. The test now asserts `future_dynamic["timestamp"].min() - latest_past_precip_ts ==
+time_step` directly, proving the seam rather than a same-step proxy. (2) `seam_gate.py`'s window builders
+(`seam_window_from_forcing_rows`/`seam_window_from_nwp_rows`) filtered raw rows only by source/parameter,
+not by `station_id` (or, for NWP, `nwp_source`/`cycle_time`) — a T1 query spanning both staging stations, or
+an NWP fetch spanning multiple cycles, could silently mix another station's or run's rows into the seam
+window. Both builders now take explicit `station_id`/`nwp_source`/`cycle_time` and filter to them before
+windowing.
+
+**Finish-plan fixes (rebased onto merged Plan 130, 2026-07-21):** the branch was squashed and rebased onto
+Plan 130 (which hardened `_NwpRegressionBase.train()`/`predict()` for missing/misaligned future forcing); the
+subclass additions and Plan 130's base-method hardening are complementary and both retained. Two known bugs
+were then fixed, both locking-test-proven. **BUG 1 — non-midnight forecast cycles.** `_validate_continuous_window`
+required the latest antecedent-precip row within one daily step of the exact issue instant, but the deployment
+cron issues every 6h (`0 */6 * * *` → 00/06/12/18Z) while daily reanalysis rows are previous-midnight buckets —
+a 30/36/42h gap that returned `ModelFailure` on 3 of every 4 normal cycles. The check is now anchored on the
+last COMPLETE reanalysis DAY (`(issue - step).date()`), tolerating the natural daily staleness; a midnight
+issue's expected day-set is unchanged, and all four cycles forecast. **BUG 2 — seam-gate AFTER window.**
+`_select_seam_local` took `ordered[:window_size]` over the whole source series; with deferred RprelimD
+supersession, raw RprelimD rows overlapping the RhiresD period could be pulled into the AFTER window, silently
+checking the wrong handoff. The window builders now take an explicit `seam_time`; BEFORE filters
+`valid_time < seam_time`, AFTER filters `valid_time >= seam_time`, then the nearest `window_size` is selected.

@@ -57,11 +57,12 @@ calendar = "gregorian"
 # so onboarding does not default them to a fallback. Any model not listed here
 # gets DEFAULT_PRIORITY (50), a neutral tier between skill models and fallbacks.
 [model_priorities]
-nwp_regression = 10          # skill: weather + lags
-nwp_rainfall_runoff = 20     # skill: weather-only
-linear_regression_daily = 30 # conceptual/regression
-persistence_fallback = 90    # fallback
-climatology_fallback = 100   # last-resort fallback
+nwp_regression = 10                     # skill: weather + lags
+seasonal_precip_runoff_regression = 12  # skill: lags + season + continuous precip (Plan 129)
+nwp_rainfall_runoff = 20                # skill: weather-only
+linear_regression_daily = 30            # conceptual/regression
+persistence_fallback = 90               # fallback
+climatology_fallback = 100              # last-resort fallback
 
 
 [paths]

@@ -114,11 +114,12 @@ warmup_snapshot_age_degraded_hours = 42.0      # warm-up snapshot age → DEGRAD
 # (>= 90). A [model_priorities] table swallows all subsequent scalar keys, so it
 # must sit with the other table sections, after every top-level scalar field.
 [model_priorities]
-nwp_regression = 10                   # skill: weather + lags
-nwp_rainfall_runoff = 20              # skill: weather-only
-linear_regression_daily = 30          # conceptual/regression
-persistence_fallback = 90             # fallback
-climatology_fallback = 100            # last-resort fallback
+nwp_regression = 10                     # skill: weather + lags
+seasonal_precip_runoff_regression = 12  # skill: lags + season + continuous precip (Plan 129)
+nwp_rainfall_runoff = 20                # skill: weather-only
+linear_regression_daily = 30            # conceptual/regression
+persistence_fallback = 90               # fallback
+climatology_fallback = 100              # last-resort fallback
 
 [paths]
 data_dir = "/tmp/sapphire-test-data"
