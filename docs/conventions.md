@@ -490,3 +490,4 @@ Apply this checklist whenever adding or modifying a database table:
 ## Invariants
 
 - **Foreign stations cannot have model assignments.** `model_assignments` must only reference stations with `ownership='own'`. Foreign stations are display-only and never run through local models. Enforced at application layer; DB trigger deferred to v1.
+- **`resolve_data_dir` performs idempotent, best-effort eager `mkdir` of its data subdirs and must tolerate a read-only root** (swallow `EROFS`, re-raise every other error) — it never assumes `/data` is writable. Code that writes must target an explicitly writable mounted volume or `tmpfs`, never rely on the data root being writable. See `docs/standards/security.md:292` (`read_only: true` container posture) and Plan 133.
