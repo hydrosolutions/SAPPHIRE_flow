@@ -589,6 +589,36 @@ class ForecastInterfaceAdapter:
 
         return tolerances
 
+    def _past_known_nan_tolerances(self) -> dict[str, int]:
+        tolerances: dict[str, int] = {}
+
+        for name, variable in self._iter_past_known_variables(
+            self._model.input_requirement
+        ):
+            self._record_conflict_checked(
+                values=tolerances,
+                name=name,
+                value=variable.max_nan,
+                label="max_nan",
+            )
+
+        return tolerances
+
+    def _future_known_nan_tolerances(self) -> dict[str, int]:
+        tolerances: dict[str, int] = {}
+
+        for name, variable in self._iter_future_known_variables(
+            self._model.input_requirement
+        ):
+            self._record_conflict_checked(
+                values=tolerances,
+                name=name,
+                value=variable.max_nan,
+                label="max_nan",
+            )
+
+        return tolerances
+
     def _variables_over_nan_tolerance(
         self,
         *,
@@ -596,21 +626,40 @@ class ForecastInterfaceAdapter:
         past_dynamic: pl.DataFrame,
         future_dynamic: pl.DataFrame,
     ) -> dict[str, int]:
+        # Gated independently per temporality (past_known vs future_known) and
+        # checked against ONLY that temporality's frame(s). A model may declare
+        # a past_known and a future_known variable with the SAME bare name
+        # (e.g. SeasonalPrecipRunoffRegression's past_known
+        # reanalysis/precipitation vs the base's future_known nwp/precipitation,
+        # Plan 129) — resolving both to a single name-keyed tolerance dict and
+        # picking "whichever frame has the column first" would silently drop
+        # the NaN gate for whichever temporality is checked second. Reporting
+        # keys are prefixed with the temporality so a name collision across
+        # past/future stays distinguishable in the raised/logged detail.
         over_tolerance: dict[str, int] = {}
 
-        for name, tolerance in self.max_nan_tolerances().items():
+        for name, tolerance in self._past_known_nan_tolerances().items():
             frame = self._frame_with_column(
                 name=name,
                 frames=(
                     ("past_dynamic", past_dynamic),
-                    ("future_dynamic", future_dynamic),
                     ("past_targets", past_targets),
                 ),
-                temporality="dynamic",
+                temporality="past_known",
             )
             missing_count = self._missing_value_count(frame=frame, name=name)
             if missing_count > tolerance:
-                over_tolerance[name] = missing_count
+                over_tolerance[f"past_known.{name}"] = missing_count
+
+        for name, tolerance in self._future_known_nan_tolerances().items():
+            frame = self._frame_with_column(
+                name=name,
+                frames=(("future_dynamic", future_dynamic),),
+                temporality="future_known",
+            )
+            missing_count = self._missing_value_count(frame=frame, name=name)
+            if missing_count > tolerance:
+                over_tolerance[f"future_known.{name}"] = missing_count
 
         return over_tolerance
 
@@ -787,6 +836,20 @@ class ForecastInterfaceAdapter:
         for _, spec in self._iter_dynamic_specs(req):
             for variables in spec.past_known.values():
                 yield from variables.items()
+            for variables in spec.future_known.values():
+                yield from variables.items()
+
+    def _iter_past_known_variables(
+        self, req: InputRequirement
+    ) -> Iterator[tuple[str, PastKnownVariable]]:
+        for _, spec in self._iter_dynamic_specs(req):
+            for variables in spec.past_known.values():
+                yield from variables.items()
+
+    def _iter_future_known_variables(
+        self, req: InputRequirement
+    ) -> Iterator[tuple[str, FutureKnownVariable]]:
+        for _, spec in self._iter_dynamic_specs(req):
             for variables in spec.future_known.values():
                 yield from variables.items()
 
