@@ -25,6 +25,7 @@ AlertId = NewType("AlertId", UUID)
 RatingCurveId = NewType("RatingCurveId", UUID)
 ObservationId = NewType("ObservationId", UUID)
 ObservationVersionId = NewType("ObservationVersionId", UUID)  # v1 — Plan 035 Task 3
+FormulaId = NewType("FormulaId", UUID)  # v1 — Plan 015 calculated-station formula row
 ForecastAdjustmentId = NewType("ForecastAdjustmentId", UUID)
 UserId = NewType("UserId", UUID)
 AccessTokenId = NewType("AccessTokenId", UUID)
@@ -968,6 +969,36 @@ class RatingConverter:            # built once per curve (validates + sorts), th
 ```
 
 Module: `services/rating_conversion.py`
+
+### ComponentWeight
+
+```python
+# v1 — Plan 015: one (component station, weight) row of a calculated station's formula.
+# Q_virtual = Σ(wᵢ · Qᵢ) over the component rows for a (calculated_station, parameter)
+# and validity window. Weights are signed physical scaling factors (negative allowed for
+# difference formulas) and need not sum to 1.
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ComponentWeight:
+    id: FormulaId
+    calculated_station_id: StationId
+    component_station_id: StationId
+    parameter: str
+    weight: float                  # nonzero, finite, |w| < 1e6 (validated in __post_init__)
+    effective_from: UtcDatetime
+    effective_to: UtcDatetime | None   # None = current; non-None = superseded
+    created_at: UtcDatetime
+        # __post_init__: rejects zero/non-finite weight and self-reference
+        # (calculated_station_id == component_station_id).
+```
+
+A DB-level eligibility trigger (`trg_csf_component_eligibility`) backstops the invariant:
+on insert / relation-changing update the target must be `gauging_status='calculated'` and
+each component `gauging_status='gauged'` AND `station_status='operational'`. A closure-only
+update (sets `effective_to`, leaves relation columns unchanged) is exempt so a component can
+be decommissioned. A partial-unique index (`uq_csf_current`) allows at most one current row
+per `(calculated_station_id, component_station_id, parameter)`.
+
+Module: `types/calculated_station.py`
 
 ### FlowRegimeConfig
 
@@ -2513,6 +2544,25 @@ class ObservationVersionStore(Protocol):  # v1 — Plan 035 Task 3
         # Idempotent per (observation_id, rating_curve_id); returns rows actually inserted.
     def fetch_archived_values(self, station_id: StationId, parameter: str, start: UtcDatetime, end: UtcDatetime, rating_curve_id: RatingCurveId | None = None) -> Sequence[ArchivedObservationValue]: ...
         # Archived values in half-open [start, end), optionally filtered by producing curve.
+```
+
+#### FormulaStore
+
+```python
+class FormulaStore(Protocol):  # v1 — Plan 015: calculated-station weighted-sum formulas
+    def store_formula(self, rows: Sequence[ComponentWeight]) -> None: ...
+        # Insert the component-weight rows of one formula version. All rows share the same
+        # calculated_station_id + parameter + effective_from.
+    def close_formula(self, calculated_station_id: StationId, parameter: str, effective_to: UtcDatetime) -> int: ...
+        # Close the current (effective_to IS NULL) rows for a station+parameter; returns rows closed.
+    def fetch_current_formula(self, calculated_station_id: StationId, parameter: str) -> Sequence[ComponentWeight]: ...
+        # The current (effective_to IS NULL) rows for a station+parameter.
+    def fetch_formula_at(self, calculated_station_id: StationId, parameter: str, at: UtcDatetime) -> Sequence[ComponentWeight]: ...
+        # Formula valid at `at`: per component the row with the greatest effective_from <= at
+        # whose validity covers `at` (deterministic latest-wins).
+    def fetch_formulas_for_stations(self, station_ids: list[StationId]) -> dict[tuple[StationId, str], list[ComponentWeight]]: ...
+        # Current formulas for the given calculated stations, grouped by (station_id, parameter).
+        # One query for the Flow 2 step-2.5 pre-fetch.
 ```
 
 #### FlowRegimeConfigStore

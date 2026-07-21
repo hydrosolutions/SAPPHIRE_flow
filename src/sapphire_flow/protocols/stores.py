@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 
     from sapphire_flow.types.alert import Alert
     from sapphire_flow.types.basin import Basin
+    from sapphire_flow.types.calculated_station import ComponentWeight
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.domain import (
         ClimBaseline,
@@ -658,6 +659,50 @@ class ObservationVersionStore(Protocol):
     ) -> Sequence[ArchivedObservationValue]:
         """Archived values in [start, end), optionally filtered by the producing
         curve. Ordered by timestamp."""
+        raise NotImplementedError
+
+
+@runtime_checkable
+class FormulaStore(Protocol):
+    """Calculated-station weighted-sum formulas (Plan 015).
+
+    Parameter-scoped: a formula is the set of ``ComponentWeight`` rows for one
+    ``(calculated_station_id, parameter)`` and validity window.
+    """
+
+    def store_formula(self, rows: Sequence[ComponentWeight]) -> None:
+        """Insert the component-weight rows of one formula version. All rows
+        share the same calculated_station_id + parameter + effective_from."""
+        raise NotImplementedError
+
+    def close_formula(
+        self,
+        calculated_station_id: StationId,
+        parameter: str,
+        effective_to: UtcDatetime,
+    ) -> int:
+        """Close the current (effective_to IS NULL) formula rows for a
+        station+parameter by setting effective_to. Returns rows closed."""
+        raise NotImplementedError
+
+    def fetch_current_formula(
+        self, calculated_station_id: StationId, parameter: str
+    ) -> Sequence[ComponentWeight]:
+        """The current (effective_to IS NULL) rows for a station+parameter."""
+        raise NotImplementedError
+
+    def fetch_formula_at(
+        self, calculated_station_id: StationId, parameter: str, at: UtcDatetime
+    ) -> Sequence[ComponentWeight]:
+        """The formula valid at ``at``: per component, the row with the greatest
+        effective_from <= at whose validity covers ``at`` (latest-wins)."""
+        raise NotImplementedError
+
+    def fetch_formulas_for_stations(
+        self, station_ids: list[StationId]
+    ) -> dict[tuple[StationId, str], list[ComponentWeight]]:
+        """Current formulas for the given calculated stations, grouped by
+        (station_id, parameter). One query for the Flow 2 step-2.5 pre-fetch."""
         raise NotImplementedError
 
 
