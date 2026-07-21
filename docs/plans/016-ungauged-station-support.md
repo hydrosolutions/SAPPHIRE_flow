@@ -3,34 +3,43 @@ status: DRAFT
 created: 2026-07-21
 updated: 2026-07-21
 # STUB split out of Plan 015 (which shipped CALCULATED support, #109/#112/#113). This plan
-# owns UNGAUGED station support — the half of the original "Virtual Station Support" that is
-# HARD-BLOCKED on two unbuilt plans (baseline-model design + basin-outline upload/security).
-# The design content below was carried over from the `⚠ REFERENCE-ONLY (ungauged plan)`
-# sections of docs/plans/015-virtual-station-support.md; consult those for the original
-# framing. Not ready to build — see §Blockers. Do NOT implement until the blockers clear.
-# A 2026-07-21 `/plan` run (Codex-backed) ESCALATED — a blocked stub can't be forced to
-# READY — but surfaced two durable design gaps now recorded in §"Open design problems"
-# (P1 Branch-A transfer-learning has no skill gate; P2 the Step-8 climatology floor is
-# unsatisfiable for zero-obs stations) + a few fact corrections (FI adapter, Plan 117).
-# The workflow's speculative full-design expansion was deliberately discarded; this stays a stub.
+# owns UNGAUGED station support — the half of the original "Virtual Station Support".
+# 2026-07-21 REFRAME (owner discussion + hydrologeez model eval): the two things earlier
+# framed as co-equal hard blockers are NOT co-equal. The go-live dependency is one
+# FI-compliant OPERATIONAL model for the basin (the modelling team's deliverable) + basin
+# geometry (Plans 117/120, already in motion). The separate "floor/baseline" model is
+# DEFERRABLE and, moreover, DOWNSTREAM of the model-paradigm choice (a conceptual model is
+# its own floor). Crucially, a meaningful slice of SAP3 scaffolding is BUILDABLE NOW against
+# the shipped FI interface — see §"SAP3 scaffolding (unblocked)". So this is no longer a
+# fully-blocked stub: part is buildable, the rest waits on the model + geometry.
+# A 2026-07-21 `/plan` run (Codex-backed) ESCALATED but surfaced two durable design gaps
+# (§"Open design problems": P1 Branch-A has no skill gate; P2 the Step-8 climatology floor
+# is unsatisfiable for zero-obs stations). Design content originated in the
+# `⚠ REFERENCE-ONLY (ungauged plan)` sections of docs/plans/015-virtual-station-support.md.
 category: B  # v1 Nepal feature
 scope: design — UNGAUGED station support (no observations; models on NWP forcing + basin characteristics)
-depends_on: [015]  # CALCULATED support (done). Plus two UNBUILT plans — see §Blockers.
+depends_on: [015]  # CALCULATED support (done). Live go-live also needs: an FI model (modelling team) + basin geometry (117/120).
 ---
 
 # 016 — Ungauged Station Support
 
-## Status: STUB / DRAFT — hard-blocked, do not build
+## Status: DRAFT — partly buildable now; live forecasting waits on the model + geometry
 
 This plan was **split out of Plan 015** when that plan was narrowed to CALCULATED
 (component-derived) stations and shipped (#109 storage + trigger, #112 Flow 2 step-2.5
-derivation, #113 TOML onboarding). Ungauged support was carved off because it is
-**hard-blocked on two unbuilt plans** (§Blockers) — unlike calculated stations, it is not
-self-contained and cannot be built or meaningfully tested yet.
+derivation, #113 TOML onboarding).
 
-The detailed design carried over from the `⚠ REFERENCE-ONLY (ungauged plan)` sections of
-`docs/plans/015-virtual-station-support.md` — read those alongside this stub. This
-document consolidates them into the ungauged plan's home and states what must land first.
+**2026-07-21 reframe.** The plan originally treated a "baseline/floor model" and
+"basin-outline upload" as two co-equal hard blockers. That was wrong on both counts (see
+§Dependencies): the **floor is deferrable and downstream of the model-paradigm choice**,
+and basin geometry arrives via the **117/120 import** path (not user upload). What a *live*
+ungauged station actually needs is one **FI-compliant operational forecast model** for the
+basin (the modelling team's deliverable) plus **basin geometry** (117/120). Meanwhile a
+real slice of **SAP3 scaffolding is buildable now** against the shipped FI interface
+(§"SAP3 scaffolding (unblocked)"), getting the system *model-ready* so the model plugs in.
+
+The detailed design originated in the `⚠ REFERENCE-ONLY (ungauged plan)` sections of
+`docs/plans/015-virtual-station-support.md` — consult those for the original framing.
 
 ## Problem
 
@@ -46,27 +55,81 @@ the `stations.gauging_status` column already shipped in v0 (`1a88f92`). This pla
 **flow + model + onboarding + basin-delineation** work to make an `UNGAUGED` station
 forecastable — none of which is built.
 
-## Blockers (why this is deferred, not buildable now)
+## Dependencies & sequencing (reframed 2026-07-21)
 
-Ungauged support cannot ship until **both** land:
+### Two different "models" — don't conflate them
+- **The operational forecast model** — the mountain model (conceptual and/or ML) that
+  produces the ungauged forecast from NWP forcing + basin characteristics. **The modelling
+  team's deliverable.** It's mountain hydrology (snow + glacier + elevation bands for
+  Nepal) — a genuine R&D effort, not a library pick (see §Model paradigm).
+- **The floor / baseline** — a *simpler, always-available* fallback (catches cycles where
+  the operational model errors) that doubles as a skill-comparison reference. This is what
+  the old "baseline-model" blocker (D5a) was really about.
 
-1. **Baseline-model design (D5a).** An ungauged station has no observations, so it needs a
-   **baseline model** — a simple, always-available forecast (climate norm, linear
-   regression) that is both the skill-comparison reference and the initial operational
-   model until a trained model exists. The baseline-model plan (model types, assignment
-   policy, Flow 1 execution pattern) is **unbuilt**. **Hard dependency:** it must complete
-   before ungauged support ships. (A baseline/fallback model may be a desirable
-   cross-cutting default for *all* station types — that is the baseline-model plan's
-   concern, not this one.)
+### What a LIVE ungauged station actually needs
+1. **One FI-compliant operational model for the basin** — modelling team. Until *some*
+   model exists, an ungauged station literally cannot forecast, so it cannot go live. This
+   is the real hard dependency for *live forecasting* (not for the SAP3 scaffolding below).
+2. **Basin geometry** for NWP extraction — arrives via the **Plan 117 / 120 import** path
+   (adjacent extractor → gateway → importer), already in motion. The earlier "basin-outline
+   **user upload** + `security.md` file-upload gate" is a *separate, optional* path — needed
+   only if operators must hand-supply custom outlines — and is **deferred** (likely not
+   needed for Nepal v1, where basins come through the import path). It is **not** a blocker.
 
-2. **Basin-outline upload + `security.md` file-upload gate (D7).** Ungauged stations need
-   basin outlines for NWP extraction, via **HydroSHEDS** (our own pre-computed product) or
-   **user upload** (GeoJSON/Shapefile). User upload requires a `security.md` **File Upload**
-   section (MIME validation, size limits, geometry-complexity limits, authorization) —
-   **unbuilt**. **Hard gate:** the security.md §File Upload section + the authorization-matrix
-   entry must be merged **before** basin-outline upload implementation begins.
+### The floor is deferrable — and downstream of the model-paradigm choice
+Deferring the floor is *correct*, not a compromise: you cannot design a good floor until you
+know what it is a floor *for*.
+- If the modelling team picks a **conceptual** mountain model, it is essentially **its own
+  floor** — a water-balance model always produces a hydrograph from valid forcing; it does
+  not "fail" on out-of-distribution inputs the way an ML model can. A separate floor may
+  then be **unnecessary**.
+- If they pick an **LSTM/ML** operational model, a simpler conceptual floor beneath it is
+  worth having — but that's a decision made *after* the paradigm is chosen.
 
-Until both exist, this plan stays DRAFT and no subagent builds from it.
+Honest cost of deferral: an ungauged station whose operational model errors has no fallback
+that cycle — a documented, Flow-4-monitored gap, and one that is largely moot if the
+operational model is conceptual.
+
+### Model paradigm — the modelling team's call (context, not a decision this plan makes)
+Mountainous ungauged basins (e.g. the Nepal targets, and the HRU 12300 test HRU) need
+**snow + glacier + elevation bands**. The `hydrologeez` package (differentiable PyTorch
+GR6J + single-zone HBV, MIT, v0.1.0) was evaluated and is **out for production**: lumped
+single-zone, **no snow, no glacier, no elevation bands** — inadequate for a Himalayan
+regime — though its *differentiable-regionalization* idea (learn attributes → parameters
+end-to-end; cf. δHBV) is worth keeping. The real fork is **conceptual mountain HBV
+(snow+glacier+bands, regionalized)** vs a **regional LSTM** (SOTA for PUB but data-hungry,
+less interpretable; better as a later Branch-A upgrade). Per the FI split this is
+hydrosolutions'/Sandro's layer; the owner is discussing it with the modelling team. An
+interpretable conceptual model as a comparison/floor is wanted but **not the current
+priority** — hence the decoupling above.
+
+## SAP3 scaffolding (unblocked — buildable now)
+
+These depend only on the **shipped FI interface**, not on any specific model or on basin
+geometry, so they can be built now as a self-contained slice that makes the system
+*model-ready*. (Hold-at-PR, standard red-first + review — this is code, so schedule it when
+the ungauged track is prioritized; the plan records it, it is not "do it now".)
+
+1. **Step 8 go-live gate refactor (closes P2).** Replace the hardcoded per-station
+   `CLIMATOLOGY_FALLBACK_MODEL_ID` requirement (`services/onboarding.py:924-946`) with a
+   general "≥1 active artifact, **station- or group-scoped**" gate. Lets whatever model the
+   team delivers satisfy go-live; also benefits group-scoped models generally.
+2. **Zero-row `past_targets` plumbing — verify + harden.** Confirm a zero-row (correct
+   schema) `past_targets` flows through Flow 1 input-prep, training, and hindcast without
+   code assuming non-empty (the `/plan` review flagged this as *unverified*). Pure de-risk;
+   needs no model. If a site assumes `height > 0`, fix it here.
+3. **`gauging_status` branching.** `services/onboarding.py:_run_onboarding()` runs
+   QC/baselines/flow-regimes unconditionally — branch so `UNGAUGED` skips steps 5.4–5.9;
+   `services/scope.py:determine_training_scope()` filters by `station_status` only — also
+   consider `gauging_status`.
+4. **Donor leave-one-basin-out skill-gate framework (closes P1).** Build the mechanism for
+   the Branch-A transfer-skill check (regionalize on N−1 gauged donors, score the held-out
+   donor *as if ungauged*). The framework is buildable now; it needs a donor dataset
+   (CAMELS-CH/GB dev, DHM Nepal) to actually *run*.
+
+What is **NOT** in this slice (waits on the model + geometry): the full UNGAUGED onboarding
+branch's basin-geometry + weather-source wiring (needs 117/120), and any *live-forecasting*
+ungauged station (needs the operational model).
 
 ## Open design problems to resolve before build (surfaced by the 2026-07-21 `/plan` review)
 
@@ -95,9 +158,10 @@ value from it.)
   (`services/onboarding.py:924-946`). An ungauged station cannot train that climatology
   floor (no observations), and group-scoped artifacts are **not** checked there. So the
   standard floor gate is unsatisfiable for ungauged stations. **This plan must replace the
-  hardcoded per-station climatology gate with the D5a ungauged floor gate** (accept the
-  group-scoped active artifact + active group assignment path, or the baseline-model floor).
-  This couples directly to blocker B1.
+  hardcoded per-station climatology gate with a general station-or-group active-artifact
+  gate.** This is the buildable-now item #1 in §"SAP3 scaffolding (unblocked)" — it does
+  **not** wait on the floor model (the operational model's own artifact, station- or
+  group-scoped, satisfies it).
 
 ## Design (carried over from Plan 015 `⚠ REFERENCE-ONLY` sections)
 
@@ -137,7 +201,8 @@ must become: "Always non-None. May be zero-row for ungauged stations
 FI-repo issue, never a SAP3 workaround.
 
 ### D7. Basin delineation + file-upload security
-See §Blockers item 2. HydroSHEDS vs HydroATLAS/MERIT DEM reconciliation deferred
+See §Dependencies (basin geometry via 117/120 import; user upload optional/deferred).
+HydroSHEDS vs HydroATLAS/MERIT DEM reconciliation deferred
 (architecture-context.md currently references HydroATLAS+MERIT for Flow 0/5 basin
 attributes; HydroSHEDS outlines are a related-but-distinct product). **Note:** the Plan 117
 static-artifact import supplies basin **geometry + static attributes** — usable as the
@@ -191,22 +256,33 @@ Checklist: ✅ metadata · ✅ catchment attributes · ✅ weather source mapped
 
 ## Standards updates required (when built)
 
-- **`security.md`** — File Upload section (MIME / size / geometry-complexity) +
-  authorization-matrix entry for basin-outline upload. **Hard gate** (see §Blockers).
 - **`wmo.md`** — virtual/ungauged-station identity: no WMO-49/WMO-168 enum precedent;
   `wigos_id = NULL` policy; WIGOS-exchange exclusion.
 - **`architecture-context.md`** — the 4-slot input-contract wording (D5); HydroSHEDS vs
   HydroATLAS/MERIT reconciliation (D7).
+- **`security.md`** — File Upload section (MIME / size / geometry-complexity) +
+  authorization-matrix entry — **only if** the optional basin-outline *user-upload* path is
+  pursued (deferred; the 117/120 import path needs no upload). Not required for the import
+  path or for the SAP3 scaffolding slice.
 
 ## Non-goals
 
 - **Calculated (component-derived) stations** — DONE in Plan 015 (#109/#112/#113).
-- The **baseline-model design** itself — a separate plan this one depends on (D5a).
-- The **basin-outline upload feature + its security gate** — a separate plan/standard this
-  one depends on (D7). This plan consumes them; it does not design them.
+- **The operational mountain forecast model** — the modelling team's / hydrosolutions'
+  layer (snow+glacier+bands, regionalized). This plan delivers the SAP3 inputs + gates; it
+  does not author the model.
+- **The floor/baseline model** — deferrable and downstream of the model-paradigm choice
+  (§Dependencies); not designed here.
+- **Basin-outline user upload + its security gate** — optional/deferred; basin geometry
+  comes via the 117/120 import path.
 
 ## Related plans
 
 - **015** — Calculated Station Support (the sibling half, complete).
-- **Baseline-model plan** — TBD/unbuilt (hard blocker, D5a).
-- **Basin-outline upload + security.md File Upload gate** — TBD/unbuilt (hard blocker, D7).
+- **117 / 120** — basin/static artifact architecture + importer (the basin-geometry path;
+  117 READY, 120 DRAFT, in motion). Supplies the extraction geometry — **not** forcing rows.
+- **Operational mountain model** — modelling team / hydrosolutions; paradigm under
+  discussion (conceptual HBV-glacier-bands vs regional LSTM). Hard dependency for *live*
+  ungauged forecasting, not for the SAP3 scaffolding slice.
+- **Floor/baseline model** — deferrable; decide *after* the operational-model paradigm.
+- **Basin-outline user-upload + security.md File Upload gate** — optional/deferred.

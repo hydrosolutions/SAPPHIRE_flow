@@ -126,9 +126,12 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
 - **015** — Calculated station support (component-derived) — **MERGED (#109 storage+trigger,
   #112 Flow 2 step-2.5 derivation, #113 TOML onboarding), 2026-07-21.** Move to archive/ once
   confirmed. Ungauged half split to 016.
-- **016** — Ungauged station support — `DRAFT (stub)` — split out of 015; **hard-blocked** on
-  two unbuilt plans (baseline-model design + basin-outline upload/security.md file-upload gate).
-  Do not build until both land.
+- **016** — Ungauged station support — `DRAFT` — split out of 015. **Reframed 2026-07-21:**
+  not fully blocked — a **SAP3 scaffolding slice is buildable now** (Step-8 gate refactor,
+  zero-row past_targets plumbing, gauging_status branching, donor-CV skill framework). *Live*
+  ungauged forecasting still needs an FI operational model (modelling team; mountain
+  snow+glacier+bands — paradigm under discussion) + basin geometry (117/120). The floor is
+  deferrable + downstream of the model choice; basin user-upload+security is optional.
 
 ## Active — dev experience / dashboard (C)
 
