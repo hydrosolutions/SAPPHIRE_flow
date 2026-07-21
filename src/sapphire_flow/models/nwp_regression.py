@@ -15,11 +15,20 @@ Both are ``ArtifactScope.STATION``, deterministic single-trajectory models — t
 21-member ensemble is assembled downstream in M3, not inside the model.
 
 **Missing future forcing (Plan 130 Part B)**: a missing future precip/temp
-value is an ANTICIPATED condition per the FI contract, not a crash.
-``_aligned_future`` (used by ``train``) returns a validity mask alongside the
-aligned values — ``train`` drops rows with a missing value rather than
-``float(None)``-crashing; ``predict`` returns ``ModelFailure`` (cause
-``INPUT_DATA``) rather than emitting a NaN-poisoned ``ModelSuccess``.
+value — absent from the frame, a null, or a non-finite (NaN/inf) reading —
+is an ANTICIPATED condition per the FI contract, not a crash.
+``_aligned_future`` (used by both ``train`` and ``predict``) returns a
+validity mask alongside the aligned values — ``train`` drops rows with a
+missing value rather than ``float(None)``-crashing or handing ``Ridge`` a
+NaN; ``predict`` anchors the future grid on precipitation's OWN delivered
+timestamps (capped at the declared ``_HORIZON``, never assumed to be an
+``issue_datetime``-offset grid — the onboarding smoke-test harness delivers
+future-known forcing on a different timestamp convention), aligns
+temperature onto that SAME grid by timestamp lookup rather than positional
+indexing (so a length/timestamp mismatch between the two series is caught,
+not IndexError'd or silently mispaired), and returns ``ModelFailure`` (cause
+``INPUT_DATA``) for a short grid or any missing slot rather than emitting a
+NaN-poisoned or short ``ModelSuccess``.
 """
 
 from __future__ import annotations
@@ -232,19 +241,53 @@ class _NwpRegressionBase:
         del rng  # deterministic single trajectory; output is a pure function of input
         station_key, dynamic = _dynamic_inputs(inputs)
 
-        future_times, precip = _sorted_series(
+        # The precipitation series' OWN delivered timestamps anchor the future
+        # grid (NOT an issue_datetime + step construction — the onboarding
+        # smoke-test harness deliberately delivers future-known forcing on a
+        # timestamp convention that does not offset from issue_datetime, so a
+        # grid built from issue_datetime would reject every synthetic run).
+        # Declared horizon caps how many of those rows are actually consumed.
+        horizon = _HORIZON
+        all_future_times, _all_precip = _sorted_series(
             dynamic.future_known[_PRODUCT_NWP][_PRECIPITATION], _PRECIPITATION
         )
-        _temp_times, temp = _sorted_series(
-            dynamic.future_known[_PRODUCT_NWP][_TEMPERATURE], _TEMPERATURE
-        )
-        horizon = len(future_times)
+        grid_times = all_future_times[:horizon]
 
-        # A genuinely missing required future input is an ANTICIPATED
-        # condition per the FI contract — return ModelFailure, never let NaN
-        # silently flow into a "successful" forecast (Plan 130 Part B).
-        missing_precip = int(np.isnan(precip).sum())
-        missing_temp = int(np.isnan(temp).sum())
+        # Fewer future rows than the declared horizon (the reanalysis tail
+        # gap truncating BOTH precip and temp at the same trailing day) is an
+        # ANTICIPATED condition — fail loudly rather than silently emitting a
+        # shorter-than-declared ModelSuccess (Plan 130 Part B).
+        if len(grid_times) < horizon:
+            log.warning(
+                "nwp_regression.insufficient_future_forcing_rows",
+                model=self._model_name,
+                got=len(grid_times),
+                need=horizon,
+            )
+            return ModelFailure(
+                model_name=self._model_name,
+                issue_datetime=issue_datetime,
+                cause=FailureCause.INPUT_DATA,
+                message=(
+                    f"insufficient future forcing rows: got {len(grid_times)}, "
+                    f"need {horizon}"
+                ),
+            )
+
+        # Align BOTH variables onto the SAME timestamp grid via a dict lookup
+        # (not positional indexing) — this is what makes a length/timestamp
+        # mismatch between the two future-known series (e.g. temp missing a
+        # row that precip has) a caught validity-mask miss instead of an
+        # IndexError or a silently mispaired day.
+        precip, precip_valid = _aligned_future(dynamic, _PRECIPITATION, grid_times)
+        temp, temp_valid = _aligned_future(dynamic, _TEMPERATURE, grid_times)
+
+        # A genuinely missing (absent, null, NaN, or non-finite) required
+        # future input is an ANTICIPATED condition per the FI contract —
+        # return ModelFailure, never let NaN silently flow into a
+        # "successful" forecast (Plan 130 Part B).
+        missing_precip = int((~precip_valid).sum())
+        missing_temp = int((~temp_valid).sum())
         if missing_precip or missing_temp:
             log.warning(
                 "nwp_regression.missing_future_forcing",
@@ -293,7 +336,7 @@ class _NwpRegressionBase:
         frame = pl.DataFrame(
             {
                 "issue_datetime": [issue_datetime] * horizon,
-                "datetime": future_times,
+                "datetime": grid_times,
                 "value": predictions,
             }
         ).with_columns(
@@ -355,10 +398,12 @@ def _aligned_future(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Align a future-known variable's series to ``target_times``.
 
-    A target time absent from the frame entirely, or present with a null
-    value (the reanalysis tail-gap case, Plan 130), is an ANTICIPATED
-    condition — this returns NaN for that slot and ``False`` in the paired
-    boolean mask, instead of crashing on ``float(None)``. Callers drop
+    A target time absent from the frame entirely, present with a null value
+    (the reanalysis tail-gap case, Plan 130), or present with a non-finite
+    value (IEEE NaN/inf — the FI ``max_nan`` gate treats these the same as a
+    null), is an ANTICIPATED condition — this returns NaN for that slot and
+    ``False`` in the paired boolean mask, instead of crashing on
+    ``float(None)`` or letting a NaN reach ``Ridge.fit``. Callers drop
     invalid rows rather than train/predict on them.
     """
     frame = dynamic.future_known[_PRODUCT_NWP][name].data.sort("datetime")
@@ -371,8 +416,13 @@ def _aligned_future(
             values[i] = np.nan
             valid[i] = False
         else:
-            values[i] = float(raw)
-            valid[i] = True
+            value = float(raw)
+            if np.isfinite(value):
+                values[i] = value
+                valid[i] = True
+            else:
+                values[i] = np.nan
+                valid[i] = False
     return values, valid
 
 

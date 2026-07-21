@@ -284,10 +284,16 @@ CASES: list[Any] = [
         test_id="assemble-onboarding-data-task",
     ),
     _c(
-        "sapphire_flow.flows.onboard_model:_train_and_store_artifact_task",
+        "sapphire_flow.flows.onboard_model:_train_onboarding_model_task",
         "task",
         {"unit": _station_unit()},
-        test_id="train-and-store-artifact-task",
+        test_id="train-onboarding-model-task",
+    ),
+    _c(
+        "sapphire_flow.flows.onboard_model:_store_onboarding_artifact_task",
+        "task",
+        {"unit": _station_unit()},
+        test_id="store-onboarding-artifact-task",
     ),
     _c(
         "sapphire_flow.flows.onboard_model:_evaluate_skill_gate_task",

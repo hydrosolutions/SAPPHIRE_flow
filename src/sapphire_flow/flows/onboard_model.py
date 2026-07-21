@@ -175,6 +175,15 @@ def _render_train_onboarding_model_name() -> str:
     return f"train-onboarding-model-{shard}"
 
 
+def _render_store_onboarding_artifact_name() -> str:
+    from prefect import runtime
+
+    params = runtime.task_run.parameters or {}
+    unit = params.get("unit")
+    shard = _unit_shard(unit) if unit is not None else "unknown"
+    return f"store-onboarding-artifact-{shard}"
+
+
 def _render_promote_artifact_name() -> str:
     from prefect import runtime
 
@@ -338,29 +347,40 @@ def _assemble_onboarding_data_task(
     task_run_name=_render_train_onboarding_model_name,
     cache_policy=NO_CACHE,
 )
-def _train_and_store_artifact_task(
+def _train_onboarding_model_task(
     unit: TrainingUnit,
     model: object,
     data: object,
-    artifact_store: object,
-    clock: object,
     rng: random.Random,
-) -> tuple[ArtifactId, bytes]:
+) -> bytes:
     if unit.station_id is not None:
-        artifact_bytes = train_station_model(
+        return train_station_model(
             model=model,  # type: ignore[arg-type]
             data=data,  # type: ignore[arg-type]
             params={},
             rng=rng,
         )
     else:
-        artifact_bytes = train_group_model(
+        return train_group_model(
             model=model,  # type: ignore[arg-type]
             data=data,  # type: ignore[arg-type]
             params={},
             rng=rng,
         )
 
+
+@task(
+    name="store-onboarding-artifact",
+    log_prints=False,
+    task_run_name=_render_store_onboarding_artifact_name,
+    cache_policy=NO_CACHE,
+)
+def _store_onboarding_artifact_task(
+    unit: TrainingUnit,
+    artifact_bytes: bytes,
+    artifact_store: object,
+    clock: object,
+) -> ArtifactId:
     artifact_id, sha256_hash = artifact_store.store_artifact(  # type: ignore[union-attr]
         model_id=unit.model_id,
         artifact_bytes=artifact_bytes,
@@ -372,7 +392,11 @@ def _train_and_store_artifact_task(
         status=ModelArtifactStatus.TRAINING,
     )
 
-    # SHA-256 integrity verification
+    # SHA-256 integrity verification — a system-level integrity failure,
+    # deliberately NOT wrapped by the training try/except in the flow body:
+    # a store outage or hash mismatch must abort the run loudly, never be
+    # downgraded to a per-unit FAILED_TRAINING outcome (Plan 130 Part B scope
+    # is the training call only; see train_models.py's parallel split).
     computed_hash = hashlib.sha256(artifact_bytes).hexdigest()
     if computed_hash != sha256_hash:
         raise ValueError(
@@ -380,7 +404,7 @@ def _train_and_store_artifact_task(
             f"computed={computed_hash[:8]}... stored={sha256_hash[:8]}..."
         )
 
-    return artifact_id, artifact_bytes
+    return artifact_id
 
 
 @task(
@@ -743,20 +767,22 @@ def onboard_model_flow(
                 )
                 continue
 
-            # M.3 + store: Train and store artifact in TRAINING status. Wrapped
-            # so a raise from training (the reanalysis-tail missing-value
-            # crash class, or the existing insufficient-data ValueError) is
-            # recorded as FAILED_TRAINING and onboarding continues for the
-            # remaining units, instead of aborting the whole run (Plan 130
-            # Part B; the older service path model_onboarding.py already maps
-            # this failure mode to FAILED_TRAINING).
+            # M.3: Train the model artifact. Wrapped so a raise from THIS call
+            # (the reanalysis-tail missing-value crash class, or the existing
+            # insufficient-data ValueError) is recorded as FAILED_TRAINING and
+            # onboarding continues for the remaining units, instead of
+            # aborting the whole run (Plan 130 Part B; the older service path
+            # model_onboarding.py already maps this failure mode to
+            # FAILED_TRAINING). Deliberately scoped to the training call
+            # only — storage + SHA-256 verification further down signal
+            # artifact-store corruption, a system-level integrity failure
+            # that must still abort the run loudly, not be swallowed
+            # per-unit (mirrors train_models.py's T.3/store split).
             try:
-                artifact_id, artifact_bytes = _train_and_store_artifact_task(
+                artifact_bytes = _train_onboarding_model_task(
                     unit=unit,
                     model=model_instance,
                     data=data,
-                    artifact_store=artifact_store,
-                    clock=clock,
                     rng=rng,
                 )
             except Exception as exc:  # flow-level guard, see docstring above
@@ -778,6 +804,15 @@ def onboard_model_flow(
                     )
                 )
                 continue
+
+            # M.3 store: store the artifact in TRAINING status. Not wrapped —
+            # a store failure aborts the run (see docstring above).
+            artifact_id = _store_onboarding_artifact_task(
+                unit=unit,
+                artifact_bytes=artifact_bytes,
+                artifact_store=artifact_store,
+                clock=clock,
+            )
 
             # Verify SHA-256 hash before deserializing artifact
             sha256_stored = artifact_store.fetch_artifact(artifact_id)
