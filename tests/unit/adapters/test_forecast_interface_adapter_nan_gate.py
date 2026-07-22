@@ -37,8 +37,9 @@ class RecordingFIForecastModel:
         artifact_scope: fi_boundary.FIArtifactScope = (
             fi_boundary.FIArtifactScope.STATION
         ),
+        requirement: fi_boundary.InputRequirement | None = None,
     ) -> None:
-        self._input_requirement = _requirement()
+        self._input_requirement = requirement or _requirement()
         self.artifact_scope = artifact_scope
         self.result = result
         self.predict_inputs: fi_boundary.ModelInputs | None = None
@@ -129,6 +130,47 @@ def _requirement() -> fi_boundary.InputRequirement:
     )
 
 
+def _colliding_requirement() -> fi_boundary.InputRequirement:
+    """A past_known and a future_known variable declared with the SAME bare
+    name ("precipitation") — the Plan 129 SeasonalPrecipRunoffRegression
+    shape (past_known reanalysis/precipitation vs future_known
+    nwp/precipitation), reproduced generically to lock the adapter's max_nan
+    gate as temporality-aware regardless of the concrete model.
+    """
+    return fi_boundary.InputRequirement(
+        targets={"discharge": _target(fi_boundary.Unit.M3_PER_S)},
+        dynamic={
+            _STEP: fi_boundary.SpatialInputSpec(
+                data={
+                    fi_boundary.FISpatialRepresentation.POINT: (
+                        fi_boundary.DynamicInputSpec(
+                            past_known={
+                                "obs": {
+                                    "discharge": _past(
+                                        fi_boundary.Unit.M3_PER_S, max_nan=2
+                                    ),
+                                },
+                                "reanalysis": {
+                                    "precipitation": _past(
+                                        fi_boundary.Unit.MM, max_nan=0
+                                    ),
+                                },
+                            },
+                            future_known={
+                                "nwp": {
+                                    "precipitation": _future(
+                                        fi_boundary.Unit.MM, max_nan=0
+                                    ),
+                                }
+                            },
+                        )
+                    )
+                }
+            )
+        },
+    )
+
+
 def _timestamps(*hours: int) -> list[UtcDatetime]:
     base = datetime(2025, 1, 1, tzinfo=UTC)
     return [ensure_utc(base + timedelta(hours=hour)) for hour in hours]
@@ -170,6 +212,31 @@ def _station_model_inputs(data: StationInputData) -> StationModelInputs:
         issue_time=_ISSUE,
         forecast_horizon_steps=3,
         time_step=_STEP,
+    )
+
+
+def _colliding_station_input_data(
+    *,
+    past_precipitation: list[object] | None = None,
+    future_precipitation: list[object] | None = None,
+) -> StationInputData:
+    return StationInputData(
+        past_targets=_time_frame(
+            {"timestamp": _timestamps(0, 1, 2), "discharge": [10.0, 11.0, 12.0]}
+        ),
+        past_dynamic=_time_frame(
+            {
+                "timestamp": _timestamps(0, 1, 2),
+                "precipitation": past_precipitation or [1.0, 2.0, 3.0],
+            }
+        ),
+        future_dynamic=_time_frame(
+            {
+                "timestamp": _timestamps(3, 4, 5),
+                "precipitation": future_precipitation or [1.0, 2.0, 3.0],
+            }
+        ),
+        static=None,
     )
 
 
@@ -392,3 +459,69 @@ def test_group_predict_batch_all_stations_over_tolerance_raises() -> None:
         )
 
     assert model.predict_inputs is None
+
+
+class TestNanGateIsTemporalityAwareAcrossCollidingNames:
+    """Locks the Plan 129 post-implementation-review blocker: a model
+    declaring a past_known AND a future_known variable with the SAME bare
+    name (e.g. SeasonalPrecipRunoffRegression's past_known
+    reanalysis/precipitation vs the base's future_known nwp/precipitation)
+    must have BOTH independently NaN-gated — clean past data must never mask
+    a NaN in the future channel of the same name, or vice versa.
+    """
+
+    def test_clean_past_does_not_mask_nan_in_colliding_future_variable(self) -> None:
+        data = _colliding_station_input_data(
+            past_precipitation=[1.0, 2.0, 3.0],  # clean past
+            future_precipitation=[1.0, float("nan"), 3.0],  # dirty future
+        )
+        model = RecordingFIForecastModel(
+            _success_result({"station": {"discharge": _success_variable()}}),
+            requirement=_colliding_requirement(),
+        )
+        adapter = fi_boundary.ForecastInterfaceAdapter(
+            model, station_code_resolver=lambda station_id: _CODES[station_id]
+        )
+
+        with pytest.raises(ModelOutputError, match="future_known.precipitation"):
+            adapter.predict(object(), _station_model_inputs(data), random.Random(123))
+
+        assert model.predict_inputs is None
+
+    def test_clean_future_does_not_mask_nan_in_colliding_past_variable(self) -> None:
+        data = _colliding_station_input_data(
+            past_precipitation=[1.0, float("nan"), 3.0],  # dirty past
+            future_precipitation=[1.0, 2.0, 3.0],  # clean future
+        )
+        model = RecordingFIForecastModel(
+            _success_result({"station": {"discharge": _success_variable()}}),
+            requirement=_colliding_requirement(),
+        )
+        adapter = fi_boundary.ForecastInterfaceAdapter(
+            model, station_code_resolver=lambda station_id: _CODES[station_id]
+        )
+
+        with pytest.raises(ModelOutputError, match="past_known.precipitation"):
+            adapter.predict(object(), _station_model_inputs(data), random.Random(123))
+
+        assert model.predict_inputs is None
+
+    def test_colliding_names_both_clean_succeeds(self) -> None:
+        data = _colliding_station_input_data(
+            past_precipitation=[1.0, 2.0, 3.0],
+            future_precipitation=[1.0, 2.0, 3.0],
+        )
+        model = RecordingFIForecastModel(
+            _success_result({"station": {"discharge": _success_variable()}}),
+            requirement=_colliding_requirement(),
+        )
+        adapter = fi_boundary.ForecastInterfaceAdapter(
+            model, station_code_resolver=lambda station_id: _CODES[station_id]
+        )
+
+        ensembles, _new_state = adapter.predict(
+            object(), _station_model_inputs(data), random.Random(123)
+        )
+
+        assert set(ensembles) == {"discharge"}
+        assert model.predict_inputs is not None

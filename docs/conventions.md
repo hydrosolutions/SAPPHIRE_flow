@@ -450,7 +450,7 @@ priorities to existing assignments (upsert).
 
 | Priority | Model type | Semantics |
 |----------|-----------|-----------|
-| 10–30 | Skill models (NWP regression, NWP rainfall-runoff, linear regression) | Weather-driven / conceptual; alert-selection primary |
+| 10–30 | Skill models (NWP regression, seasonal precip/runoff regression — Plan 129, NWP rainfall-runoff, linear regression) | Weather-driven / conceptual; alert-selection primary |
 | 50 | `DEFAULT_PRIORITY` (unlisted models) | Neutral tier — outranks fallbacks, below tuned skill models |
 | 90 | `PersistenceFallbackModel` | Guaranteed last-resort; excluded from combination |
 | 100 | `ClimatologyFallbackModel` | Absolute last-resort; excluded from combination |

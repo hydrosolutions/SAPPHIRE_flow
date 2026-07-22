@@ -140,3 +140,4 @@ climatology_fallback = "sapphire_flow.models.climatology_fallback:ClimatologyFal
 persistence_fallback = "sapphire_flow.models.persistence_fallback:PersistenceFallbackModel"
 nwp_regression = "sapphire_flow.models.nwp_regression:NwpRegression"
 nwp_rainfall_runoff = "sapphire_flow.models.nwp_regression:NwpRainfallRunoff"
+seasonal_precip_runoff_regression = "sapphire_flow.models.nwp_regression:SeasonalPrecipRunoffRegression"

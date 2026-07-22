@@ -667,8 +667,10 @@ class TestHourlyToDailyNwpAggregation:
 
 class TestFutureFilterAndCap:
     """Fix 2: a non-midnight cycle backdates the UTC-midnight issue-day bucket to
-    ``<= issue_time``; ``_filter_and_cap_daily_records`` drops those and caps to
-    ``forecast_horizon_steps``, applied identically across every member."""
+    ``< issue_time``; ``_filter_and_cap_daily_records`` drops those and caps to
+    ``forecast_horizon_steps``, applied identically across every member. Plan 129:
+    a midnight-exact ``issue_time`` instead labels the (fully future) issue-day
+    bucket AT ``issue_time`` itself and it is KEPT (``>=``, not ``>``)."""
 
     def _daily_points(self) -> list[_AggregatedNwpPoint]:
         sid = StationId(uuid4())
@@ -690,6 +692,28 @@ class TestFutureFilterAndCap:
         # No bucket at or before issue_time survives.
         assert all(p.valid_time > issue_time for p in kept)
         # The SAME bucket set is retained for every ensemble member.
+        assert {p.member_id for p in kept} == set(range(_AGG_MEMBERS))
+
+    def test_keeps_the_issue_day_bucket_when_issue_time_is_exact_midnight(
+        self,
+    ) -> None:
+        # A daily cycle issued at UTC 00:00 has ZERO elapsed hours in that
+        # calendar day yet, so the issue-day bucket is entirely future —
+        # unlike the mixed/backdated bucket for a non-midnight cycle (tested
+        # above). Dropping it via a strict `>` comparison would open a
+        # spurious one-day gap between it and the past array's last day
+        # (Plan 129's "no gap before NWP future precip" seam-continuity
+        # claim).
+        issue_time = ensure_utc(datetime(2026, 1, 10, tzinfo=UTC))
+        kept = _filter_and_cap_daily_records(
+            self._daily_points(), issue_time=issue_time, forecast_horizon_steps=2
+        )
+
+        kept_times = sorted({p.valid_time for p in kept})
+        assert kept_times == [
+            ensure_utc(datetime(2026, 1, 10, tzinfo=UTC)),
+            ensure_utc(datetime(2026, 1, 11, tzinfo=UTC)),
+        ]
         assert {p.member_id for p in kept} == set(range(_AGG_MEMBERS))
 
     def test_cap_keeps_earliest_n_future_buckets_all_members(self) -> None:
