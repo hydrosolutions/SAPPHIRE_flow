@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-07-16
 plan: 120
 title: Basin/static package importer + §5a persistence + versioned basin state
@@ -11,7 +11,7 @@ depends_on:
 
 # Plan 120 — Basin/static package importer + §5a persistence + versioned basin state
 
-**Status**: DRAFT
+**Status**: READY
 **Phase**: v1
 **Depends on**: Plan 082 (owns the §5a mapping-table BASE schema this plan populates
 and extends additively — see Ownership); 115a (weather-source role model); and, at
