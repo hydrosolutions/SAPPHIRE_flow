@@ -46,6 +46,16 @@ residual design is now well-specified against those conventions, and further aut
 **READY** (owner flip 2026-07-22). The remaining open items are genuinely data-dependent (T1's per-station
 case) or operational, not unresolved design.
 
+**Implementation status (2026-07-22): T2 committed (`a2ac0ca`), then post-implementation review found +
+fixed a real bug in it** — the aggregation-window anchor mismatch described in T2's "Aggregation-window
+anchor fix" note (`docs/architecture-context.md`), covered by an extended `TestNonMidnightForecastCyclesProduceForecast`
+locking test. **T1 is PARTIAL, not done** — see the new "T1 — interim diagnosis" subsection below the T1 task
+for the live-DB evidence gathered so far (case (b) for both stations at the T18/T00 cycles; leading candidate
+is `weather_history_ingest`'s recurring `no_horizon_advance` staleness, not a T2 code defect) and the concrete
+gap that remains (the specific per-cycle failure-event log line, blocked on capturing a live cycle's container
+logs before the next restart). **Only T2 is implemented by this commit** — T1's remainder, T2b, T3, T4, T5 are
+still open and this revision must not be read as a complete Plan 138 implementation.
+
 ## Context — the model is ~90% built already
 
 The user wants a regression consuming **past + future precipitation**, **past + future temperature**, and
@@ -235,6 +245,57 @@ T1. The dependency graph below reflects this split exactly: `model-core` has `de
   in this plan.
 - **Verification:** the root cause (case a or b) is stated **with evidence (specific log line / failure cause /
   DB row) for BOTH stations** before T3 designs the fix.
+
+#### T1 — interim diagnosis (2026-07-22, live mac-mini DB query; NOT the full verification bar above)
+
+**Status: PARTIAL — case classified (b) for both stations with DB/monitoring evidence; the specific
+per-cycle failure-event log line is NOT yet captured (see gap below). This does not satisfy T1's
+verification bar; T3/T2b remain blocked on closing the gap.** Read-only queries against the live mac-mini
+(`sapphire@192.168.1.136`, 2026-07-22 ~11:30 UTC):
+
+- **Both stations have exactly one ACTIVE artifact** for `seasonal_precip_runoff_regression`
+  (2009 trained/promoted 2026-07-21 16:14/16:18 UTC; 2091 trained/promoted 2026-07-21 16:18/16:21 UTC) — rules
+  out `no_active_artifact` for any cycle after promotion.
+- **`forecasts` has ZERO rows ever for `model_id='seasonal_precip_runoff_regression'`, both stations** —
+  confirms the plan's "stores 0 forecasts" premise directly (not inferred from a green flow).
+- **Case (a) ruled out for the 2026-07-21T18:00 and 2026-07-22T00:00 cycles specifically**: at both cycles the
+  stored primary was `linear_regression_daily` (priority 30) for BOTH stations, never `seasonal_precip_runoff_regression`
+  (priority 12) or `nwp_rainfall_runoff` (priority 20). Since the priority-sorted dispatch tries lower-priority-number
+  models first and stops at the first success, seasonal (12) — tried before linear (30) — must have FAILED at
+  those two cycles (a success would have outranked and been stored instead of linear). This is positive
+  evidence for **case (b)**, not (a), at those two cycles.
+- **Leading root-cause candidate — reanalysis feed staleness (operational, T2b "operational/transient", NOT a
+  code defect):** `pipeline_health.weather_history_ingest` shows recurring **CRITICAL / `no_horizon_advance`**
+  (2026-07-18, 07-19, 07-20, and again 2026-07-22 06:00 — `rows_stored` non-zero each time, i.e. a stuck
+  duplicate re-fetch, not an empty run). Direct `historical_forcing` query confirms: `meteoswiss_rprelimd`
+  (and `meteoswiss_tabsd`/`tmind`/`tmaxd`/`sreld`) are stuck at `max(valid_time) = 2026-07-20` for BOTH
+  stations while "now" is 2026-07-22 — a 2-day-and-growing gap. `_validate_continuous_window`'s anchor for an
+  issue on 2026-07-22 requires coverage through 2026-07-21 — one day short of what RprelimD has delivered.
+  This is consistent with (though not yet proven to be the sole cause of) the observed T00/T06 failures.
+- **A distinct, broader anomaly at the 2026-07-22T06:00 cycle**: the whole cycle stored **zero forecasts for
+  ANY model, ANY station** (not just seasonal), and Prefect's `task_run` table shows no per-station/per-model
+  task rows at all (only `fetch-nwp-*`/`fetch-obs-ts`) — i.e. that cycle's per-station dispatch loop appears
+  to have run as plain Python inside the flow (consistent with the still-open "v0b: `task.map` parallelisation"
+  remainder) and is invisible to Prefect's own metadata. This is **out of Plan 138's scope** (it is not
+  specific to `seasonal_precip_runoff_regression`) but is flagged here since it confounds reading that cycle's
+  evidence for seasonal specifically.
+
+**Gap — the specific failure EVENT (short-window guard vs. NaN gate vs. QC) is not confirmed for either
+station.** Container `sapphire_flow-prefect-worker-1` was recreated at 2026-07-22T07:14:27 UTC (`RestartCount=0`,
+fresh container, not merely restarted) — AFTER every forecast cycle queried above (T18, T00, T06) — so the
+`docker logs` stdout that would carry the `_ShortForcingWindowError` message / `nwp_regression.*` structlog
+event for those cycles is gone (Docker's json-file driver ties logs to the container ID; a recreated container
+starts a new, empty log). Prefect's own DB-backed `log` table has only 57 rows total across 11 days and does
+not capture module-level structlog events (confirmed directly) — it cannot substitute. **Next step (not done
+here, requires being present at/after a live cycle boundary before any restart):** capture
+`docker logs sapphire_flow-prefect-worker-1` immediately after the next scheduled cycle (`0 */6 * * *`)
+completes, `grep` for `seasonal_precip_runoff_regression`, and record the exact event name + `cause` here.
+
+**Scope note (this commit):** the commit implementing this plan revision (`a2ac0ca`, message "Plan 138 T2 —
+past-temperature channel + artifact feature-count guard") is **T2 only**, exactly as its message says — it
+does not implement T1's remainder, T2b, T3, T4, or T5, and must not be read as a complete Plan 138
+implementation. T2's own scope (the model code change) does not depend on T1's outcome (`model-core` has
+`depends_on: []` in the dependency graph below); T1 remains open and gates T2b/T3 as designed.
 
 ### T2 — add past-temperature to `SeasonalPrecipRunoffRegression` (DC-1) — CORE, parallel with T1
 

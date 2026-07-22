@@ -49,7 +49,7 @@ from __future__ import annotations
 import io
 import math
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 from typing import TYPE_CHECKING, cast
 
 import numpy as np
@@ -82,7 +82,6 @@ from sklearn.linear_model import Ridge
 
 if TYPE_CHECKING:
     import random
-    from datetime import datetime
 
     from forecast_interface import DynamicInputs, InputSeries, ModelInputs
 
@@ -596,6 +595,29 @@ def _season_features(times: list[datetime]) -> np.ndarray:
     return np.stack([np.sin(angle), np.cos(angle)], axis=1)
 
 
+def _reanalysis_window_end(issue_datetime: datetime, step: timedelta) -> datetime:
+    """Midnight boundary immediately after the last COMPLETE reanalysis day.
+
+    The last complete reanalysis day is ``(issue_datetime - step).date()`` —
+    the same anchor ``_validate_continuous_window`` validates against (Plan
+    129 BUG 1). This returns that day's exclusive upper bound (midnight of
+    the following calendar day) as a tz-aware ``datetime``, so
+    ``_antecedent_precip_sums``/``_antecedent_temp_means`` aggregate exactly
+    the calendar-day window that was validated.
+
+    Plan 138 fix: before this helper, ``_extra_predict_features`` anchored the
+    aggregation window on the raw ``issue_datetime`` (including its hour),
+    while validation anchored on the calendar day. For a non-midnight cycle
+    (06/12/18Z) those two windows disagreed by the wall-clock hour, so the
+    aggregation silently dropped the oldest validated day — biasing the
+    antecedent-precip SUM and antecedent-temp MEAN on 3 of 4 scheduled
+    cycles. For a midnight issue ``anchor_day + step == issue_datetime``
+    exactly, so this is a no-op there (unchanged behaviour).
+    """
+    anchor_day = (issue_datetime - step).date()
+    return datetime.combine(anchor_day + step, time.min, tzinfo=issue_datetime.tzinfo)
+
+
 def _validate_continuous_window(
     times: list[datetime],
     *,
@@ -786,6 +808,14 @@ class SeasonalPrecipRunoffRegression(_NwpRegressionBase):
         future_times: list[datetime],
         issue_datetime: datetime,
     ) -> np.ndarray:
+        # Plan 138 fix: aggregate the SAME calendar-day window that was just
+        # validated. Both antecedent windows are daily reanalysis products
+        # sharing ``_STEP`` (one day), so one shared ``window_end`` anchors
+        # both — a non-midnight issue (06/12/18Z) no longer aggregates a
+        # different (hour-shifted) window than the one
+        # ``_validate_continuous_window`` checked. See ``_reanalysis_window_end``.
+        window_end = _reanalysis_window_end(issue_datetime, _STEP)
+
         reanalysis_times, reanalysis_precip = _sorted_series(
             dynamic.past_known[_PRODUCT_REANALYSIS][_PRECIPITATION], _PRECIPITATION
         )
@@ -800,7 +830,7 @@ class SeasonalPrecipRunoffRegression(_NwpRegressionBase):
             _antecedent_precip_sums(
                 reanalysis_times,
                 reanalysis_precip,
-                [issue_datetime],
+                [window_end],
                 self._precip_lookback_days,
             )[0]
         )
@@ -819,7 +849,7 @@ class SeasonalPrecipRunoffRegression(_NwpRegressionBase):
             _antecedent_temp_means(
                 temp_times,
                 reanalysis_temp,
-                [issue_datetime],
+                [window_end],
                 self._temp_lookback_days,
             )[0]
         )

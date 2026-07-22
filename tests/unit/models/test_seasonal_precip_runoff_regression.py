@@ -206,6 +206,12 @@ class TestAssembledTrainingDataRoutesPastPrecip:
         assert result is not None
         assert "precipitation" in result.past_dynamic.columns
         assert not result.past_dynamic["precipitation"].is_empty()
+        # Plan 138: the NEW past_known reanalysis/temperature channel must
+        # route through assembly too, not just precipitation — a broken
+        # training-assembly path that drops temperature (e.g. an
+        # over-narrow column filter) would otherwise pass this test silently.
+        assert "temperature" in result.past_dynamic.columns
+        assert not result.past_dynamic["temperature"].is_empty()
 
 
 # --------------------------------------------------------------------------- #
@@ -307,6 +313,17 @@ class TestContinuousSeriesAssembly:
         assert isinstance(latest_past_precip_ts, datetime)
         gap = _ISSUE - ensure_utc(latest_past_precip_ts)
         assert gap <= _STEP
+
+        # Plan 138: the NEW past temperature channel must reach the SAME
+        # live-tail boundary as past precipitation, not merely be present —
+        # a broken operational assembly path that fails to extend the
+        # temperature fetch to issue-time would otherwise pass silently.
+        assert "temperature" in inputs.data.past_dynamic.columns
+        past_temp = inputs.data.past_dynamic.drop_nulls("temperature")
+        assert not past_temp.is_empty()
+        latest_past_temp_ts = past_temp["timestamp"].max()
+        assert isinstance(latest_past_temp_ts, datetime)
+        assert ensure_utc(latest_past_temp_ts) == ensure_utc(latest_past_precip_ts)
 
         # The Plan 129 claim itself is "no gap before the NWP future precip"
         # (past_dynamic reaching issue-time is only a proxy) — assert the
@@ -915,6 +932,29 @@ class TestTrainingWarmupExcludesPartialAntecedentWindows:
         assert events[0]["warmup"] == expected_warmup
         assert events[0]["n_samples"] == n - expected_warmup
 
+    def test_train_warmup_steps_reflects_temp_window_when_it_dominates(self) -> None:
+        """Unit-level lock on ``_train_warmup_steps`` itself.
+
+        In every scenario the row-count test above exercises,
+        ``_temp_lookback_days`` (14) is smaller than ``_precip_lookback_days``
+        (45), so ``max(n_lags, precip_window, temp_window)`` and
+        ``max(n_lags, precip_window)`` produce the IDENTICAL value — that row
+        -count test cannot distinguish the correct warmup formula from a
+        regression that silently drops the temp term from the ``max(...)``.
+        Override ``_temp_lookback_days`` on the instance to DOMINATE the
+        precip window, independent of ``_train_series``'s fixed windows, so
+        only a formula that genuinely includes it reports the right value.
+        """
+        model = SeasonalPrecipRunoffRegression()
+        model._temp_lookback_days = model._precip_lookback_days + 100
+
+        warmup = model._train_warmup_steps()
+
+        assert warmup == model._temp_lookback_days
+        assert warmup == max(
+            model._n_lags, model._precip_lookback_days, model._temp_lookback_days
+        )
+
 
 # --------------------------------------------------------------------------- #
 # 6. predict() rejects STALE / DUPLICATE-timestamp antecedent-precip windows
@@ -1048,21 +1088,34 @@ class TestNonMidnightForecastCyclesProduceForecast:
         model, artifact = _fit_seasonal_model()
         horizon = 5
         issue = ensure_utc(datetime(2026, 3, 1, issue_hour, tzinfo=UTC))
-        lookback_days = model._precip_lookback_days
+        precip_lookback_days = model._precip_lookback_days
+        temp_lookback_days = model._temp_lookback_days
         issue_midnight = datetime(2026, 3, 1, tzinfo=UTC)
-        # Midnight buckets for the 45 antecedent calendar days D-45 .. D-1
-        # (ascending, as InputSeries requires).
-        reanalysis_ts = [
-            issue_midnight - timedelta(days=k) for k in range(lookback_days, 0, -1)
+        # Midnight buckets for the antecedent calendar days D-45..D-1 (precip)
+        # / D-14..D-1 (temp), ascending, as InputSeries requires. VARIED (not
+        # uniform) per-day values: a Plan 138 aggregation-window regression
+        # that silently drops the oldest validated day would leave a uniform
+        # SUM/MEAN unchanged (dropping one 2.0 out of forty-five 2.0s does not
+        # move the sum's shape-matching assertion below), so the fixture must
+        # vary day-to-day for the value assertions to actually catch it.
+        precip_ts = [
+            issue_midnight - timedelta(days=k)
+            for k in range(precip_lookback_days, 0, -1)
         ]
-        reanalysis_vals = [2.0] * lookback_days
+        precip_vals = [round(1.0 + 0.3 * i, 4) for i in range(precip_lookback_days)]
+        temp_ts = [
+            issue_midnight - timedelta(days=k) for k in range(temp_lookback_days, 0, -1)
+        ]
+        temp_vals = [round(-5.0 + 0.7 * i, 4) for i in range(temp_lookback_days)]
 
         inputs = _predict_inputs_custom_reanalysis(
             issue=issue,
             horizon=horizon,
-            reanalysis_ts=reanalysis_ts,
-            reanalysis_vals=reanalysis_vals,
+            reanalysis_ts=precip_ts,
+            reanalysis_vals=precip_vals,
             lag_discharge=[10.0] * 7,
+            reanalysis_temp_ts=temp_ts,
+            reanalysis_temp_vals=temp_vals,
         )
 
         result = model.predict(
@@ -1072,6 +1125,32 @@ class TestNonMidnightForecastCyclesProduceForecast:
         assert isinstance(result, fi_boundary.ModelSuccess), (
             f"issue at {issue_hour:02d}Z returned {type(result).__name__}: "
             f"{getattr(result, 'message', '')}"
+        )
+
+        # Plan 138 regression lock: predict() must aggregate the SAME
+        # calendar-day window [D-45, D) / [D-14, D) that
+        # ``_validate_continuous_window`` just validated, for EVERY 6-hourly
+        # issue on the same calendar day D — not a window shifted by the
+        # wall-clock issue hour. Before the fix, a non-midnight issue anchored
+        # the SUM/MEAN on ``[issue - lookback, issue)`` (including the hour),
+        # which drops the oldest validated day (D-45 for precip, D-14 for
+        # temp) — biasing both antecedent features on 3 of these 4 cycles.
+        _station_key, dynamic = _dynamic_inputs(inputs)
+        future_times = [issue + (k + 1) * _STEP for k in range(horizon)]
+        extra = model._extra_predict_features(dynamic, future_times, issue)
+        expected_precip_sum = _manual_antecedent_sum(
+            precip_ts, precip_vals, issue_midnight, precip_lookback_days
+        )
+        expected_temp_mean = _manual_antecedent_mean(
+            temp_ts, temp_vals, issue_midnight, temp_lookback_days
+        )
+        assert extra[0, 0] == pytest.approx(expected_precip_sum), (
+            f"issue at {issue_hour:02d}Z: antecedent-precip sum does not "
+            "match the midnight-anchored 45-day window"
+        )
+        assert extra[0, 1] == pytest.approx(expected_temp_mean), (
+            f"issue at {issue_hour:02d}Z: antecedent-temp mean does not "
+            "match the midnight-anchored 14-day window"
         )
 
 
