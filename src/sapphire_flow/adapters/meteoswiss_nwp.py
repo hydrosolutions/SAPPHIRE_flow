@@ -67,13 +67,24 @@ _MAX_FILE_COUNT: int = 500
 _GRIB_MAGIC: bytes = b"GRIB"
 
 # Pagination cap for _fetch_grib_files's 120 h-window walk.
-# Plan 067 T1.f measured 552 pages for the current 4-cycle overlap at
-# MeteoSwiss's 24 h retention; cap is sized at ~1.5x for safety margin.
+# Plan 067 T1.f measured 552 pages for the 4-cycle overlap at MeteoSwiss's
+# 24 h retention and set the cap at 800 (552 * ~1.5). Plan 140 T1
+# re-benchmarked the live catalog on 2026-07-22: 861 pages / 86,072 items —
+# still exactly 4 cycles / 24 h retention, but items-per-cycle grew +56 %
+# (more variables/members/timesteps per cycle, not more cycles). 861 > 800
+# by ~7 % was the entire 2026-07-21/22 production outage (`nwp.fetch_failed
+# error='STAC pagination exceeded 800 pages'`). Plan 140 T2 raises the cap to
+# 1500 (861 * ~1.7) for headroom against continued per-cycle growth.
 # Server-side narrowing (CQL filter=forecast:reference_datetime=...) is NOT
 # supported by MeteoSwiss (T1.e), so we always walk the full window.
 # Raising this cap requires re-benchmarking pages observed at implementation
-# time.
-_MAX_PAGINATION_PAGES: int = 800
+# time. See _PAGINATION_WARNING_THRESHOLD below for the early-warning log.
+_MAX_PAGINATION_PAGES: int = 1500
+
+# Plan 140 T2: emit a WARNING once a fetch's page count reaches ~80% of the
+# cap, so the next breach shows up as a trend (in logs/alerts) well before
+# it becomes a silent outage, rather than only failing loudly at the cap.
+_PAGINATION_WARNING_THRESHOLD: int = int(_MAX_PAGINATION_PAGES * 0.8)
 
 # Probe pagination cap: the availability probe walks up to this many pages
 # to defeat MeteoSwiss's ref_dt-ascending item ordering (Phase 1 H-B).
@@ -671,6 +682,7 @@ class MeteoSwissNwpAdapter:
             shutil.rmtree(scratch_dir, ignore_errors=True)
         scratch_dir.mkdir(parents=True, exist_ok=True)
 
+        walk_t0 = time.perf_counter()
         target_ref_dt = cycle_time.strftime("%Y-%m-%dT%H:%M:%SZ")
         allow_tokens: list[str] = [row[0] for row in self.PARAM_GROUPS]
 
@@ -691,6 +703,14 @@ class MeteoSwissNwpAdapter:
         grib_files: list[Path] = []
         accumulated_bytes = 0
         page_count = 0
+        # Count of items whose forecast:reference_datetime matched the
+        # target cycle (before the variable allowlist filter) — the
+        # observability signal for how big this cycle's slice of the
+        # 120 h window is (Plan 140 T2).
+        matched_ref_dt_count = 0
+        # Set once the near-cap WARNING has fired, so it logs exactly once
+        # per fetch rather than on every page past the threshold.
+        near_cap_warned = False
         # Graceful stop flag for the `max_files` scope-limiter. Python lacks
         # labeled breaks, so we set this inside the asset loop and check it
         # after each page to unwind to the `return grib_files` path without
@@ -706,6 +726,14 @@ class MeteoSwissNwpAdapter:
                 raise AdapterError(
                     f"STAC pagination exceeded {_MAX_PAGINATION_PAGES} pages"
                 )
+            if not near_cap_warned and page_count >= _PAGINATION_WARNING_THRESHOLD:
+                log.warning(
+                    "nwp.pagination_near_cap",
+                    page_count=page_count,
+                    max_pagination_pages=_MAX_PAGINATION_PAGES,
+                    cycle_time=str(cycle_time),
+                )
+                near_cap_warned = True
             try:
                 resp = self._http_client.get(url)
                 resp.raise_for_status()
@@ -735,6 +763,7 @@ class MeteoSwissNwpAdapter:
                 )
                 if feature_ref_dt != target_ref_dt:
                     continue
+                matched_ref_dt_count += 1
                 if not any(f"-{t}-" in item_id for t in allow_tokens):
                     log.debug(
                         "nwp.variable_skipped",
@@ -815,6 +844,23 @@ class MeteoSwissNwpAdapter:
                 f"No matching GRIB2 files for cycle_time={cycle_time.isoformat()} "
                 f"(allowlist tokens: {allow_tokens})"
             )
+        # Plan 140 T2 observability: log the actual page count + matched
+        # target-cycle item count on every successful fetch, so the next
+        # treadmill breach is visible as a trend in logs, not just a silent
+        # outage once the cap is hit. This is a narrower, STAC-walk-scoped
+        # event distinct from the canonical `nwp.fetch_completed` emitted by
+        # the caller (fetch_forecasts) after parse/archive/extraction also
+        # succeed — reusing that name here would let ops greps see a false
+        # success signal if `_parse_grib_files` fails immediately after.
+        walk_duration_ms = int((time.perf_counter() - walk_t0) * 1000)
+        log.info(
+            "nwp.stac_walk_completed",
+            duration_ms=walk_duration_ms,
+            page_count=page_count,
+            matched_ref_dt_count=matched_ref_dt_count,
+            files_fetched=len(grib_files),
+            cycle_time=str(cycle_time),
+        )
         return grib_files
 
     def _download_asset(self, href: str, asset_key: str, scratch_dir: Path) -> Path:

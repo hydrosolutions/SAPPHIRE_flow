@@ -10,14 +10,17 @@ consuming future-known precipitation/temperature forcing over a daily step:
   as ``past_known`` so the fit target is delivered at train time, but stays
   weather-only in BEHAVIOR: the regression uses only precip/temp features and
   predict is invariant to past discharge.
-* ``SeasonalPrecipRunoffRegression`` (Plan 129) — extends the base with a NEW
-  ``past_known reanalysis/precipitation`` channel (antecedent precip, the
-  RprelimD-consuming channel that closes the temporal gap up to issue-time —
-  see ``docs/architecture-context.md`` "RprelimD fetch mechanics") plus a
-  derived day-of-year season feature. Keeps future NWP precip/temp + discharge
-  lags from the base, so its precipitation input is one continuous covariate
-  spanning past-reanalysis (RhiresD deep / RprelimD recent) through
-  future-NWP.
+* ``SeasonalPrecipRunoffRegression`` (Plan 129, extended by Plan 138) —
+  extends the base with a NEW ``past_known reanalysis/precipitation`` channel
+  (antecedent precip, the RprelimD-consuming channel that closes the temporal
+  gap up to issue-time — see ``docs/architecture-context.md`` "RprelimD fetch
+  mechanics"), a NEW ``past_known reanalysis/temperature`` channel (antecedent
+  temperature, Plan 138), plus a derived day-of-year season feature. Keeps
+  future NWP precip/temp + discharge lags from the base, so its precipitation
+  input is one continuous covariate spanning past-reanalysis (RhiresD deep /
+  RprelimD recent) through future-NWP. The antecedent-precip window is a SUM
+  (a flux); the antecedent-temperature window is a MEAN (a state, Plan 138
+  DC-1).
 
 Both/all are ``ArtifactScope.STATION``, deterministic single-trajectory models
 — the 21-member ensemble is assembled downstream in M3, not inside the model.
@@ -46,7 +49,7 @@ from __future__ import annotations
 import io
 import math
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 from typing import TYPE_CHECKING, cast
 
 import numpy as np
@@ -79,7 +82,6 @@ from sklearn.linear_model import Ridge
 
 if TYPE_CHECKING:
     import random
-    from datetime import datetime
 
     from forecast_interface import DynamicInputs, InputSeries, ModelInputs
 
@@ -99,6 +101,9 @@ _SPATIAL_REP = SpatialRepresentation.BASIN_AVERAGE
 # retention (its documented live-tail is the recent ~45 days up to issue-time)
 # so the past-precip fetch is genuinely RprelimD-served near issue-time.
 _PRECIP_LOOKBACK_DAYS = 45
+# Plan 138: antecedent temperature is a melt/accumulation-relevant STATE
+# (mean, not sum) over a shorter horizon than the precip window.
+_TEMP_LOOKBACK_DAYS = 14
 _DAYS_PER_YEAR = 365.25
 
 
@@ -117,7 +122,8 @@ class _ShortForcingWindowError(ValueError):
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class NwpRegressionArtifact:
-    coefficients: np.ndarray  # [precip, temp, (lag_oldest .. lag_newest)]
+    # [precip, temp, *subclass extra, (lag_oldest .. lag_newest)]
+    coefficients: np.ndarray
     intercept: np.ndarray  # (1,)
     n_lags: int
 
@@ -426,6 +432,30 @@ class _NwpRegressionBase:
         coefficients = np.asarray(artifact.coefficients, dtype=np.float64)
         intercept = float(artifact.intercept[0])
 
+        # Plan 138 DC-3: an artifact trained against an OLDER feature schema
+        # (e.g. before an extra past-known channel was added) has a shorter
+        # coefficient vector than the code now produces per step
+        # (``[precip, temp, *extra, *lags]``). Guard the shape BEFORE the
+        # matmul so a stale artifact returns a clean ModelFailure instead of a
+        # raw NumPy shape error or a silent mis-weighted prediction.
+        expected_feature_count = 2 + extra.shape[1] + self._n_lags
+        if coefficients.shape[0] != expected_feature_count:
+            log.warning(
+                "nwp_regression.artifact_feature_count_mismatch",
+                model=self._model_name,
+                got=int(coefficients.shape[0]),
+                expected=expected_feature_count,
+            )
+            return ModelFailure(
+                model_name=self._model_name,
+                issue_datetime=issue_datetime,
+                cause=FailureCause.INPUT_DATA,
+                message=(
+                    "artifact feature-count mismatch: got "
+                    f"{coefficients.shape[0]} expected {expected_feature_count}"
+                ),
+            )
+
         predictions: list[float] = []
         for step in range(horizon):
             features = np.concatenate(
@@ -565,16 +595,45 @@ def _season_features(times: list[datetime]) -> np.ndarray:
     return np.stack([np.sin(angle), np.cos(angle)], axis=1)
 
 
+def _reanalysis_window_end(issue_datetime: datetime, step: timedelta) -> datetime:
+    """Midnight boundary immediately after the last COMPLETE reanalysis day.
+
+    The last complete reanalysis day is ``(issue_datetime - step).date()`` —
+    the same anchor ``_validate_continuous_window`` validates against (Plan
+    129 BUG 1). This returns that day's exclusive upper bound (midnight of
+    the following calendar day) as a tz-aware ``datetime``, so
+    ``_antecedent_precip_sums``/``_antecedent_temp_means`` aggregate exactly
+    the calendar-day window that was validated.
+
+    Plan 138 fix: before this helper, ``_extra_predict_features`` anchored the
+    aggregation window on the raw ``issue_datetime`` (including its hour),
+    while validation anchored on the calendar day. For a non-midnight cycle
+    (06/12/18Z) those two windows disagreed by the wall-clock hour, so the
+    aggregation silently dropped the oldest validated day — biasing the
+    antecedent-precip SUM and antecedent-temp MEAN on 3 of 4 scheduled
+    cycles. For a midnight issue ``anchor_day + step == issue_datetime``
+    exactly, so this is a no-op there (unchanged behaviour).
+    """
+    anchor_day = (issue_datetime - step).date()
+    return datetime.combine(anchor_day + step, time.min, tzinfo=issue_datetime.tzinfo)
+
+
 def _validate_continuous_window(
     times: list[datetime],
     *,
     issue_datetime: datetime,
     lookback_days: int,
     step: timedelta,
+    feature_label: str,
 ) -> None:
-    """Raise ``_ShortForcingWindowError`` unless the antecedent-precip series
+    """Raise ``_ShortForcingWindowError`` unless the ``feature_label`` series
     covers a continuous run of ``lookback_days`` distinct CALENDAR DAYS ending
     at the last COMPLETE reanalysis day at-or-before ``issue_datetime``.
+
+    ``feature_label`` (Plan 138) identifies which antecedent window is being
+    validated (e.g. ``"antecedent-precip"``, ``"antecedent-temp"``) so the
+    ``_ShortForcingWindowError`` message names the actual offending channel
+    instead of always saying "antecedent-precip".
 
     **Daily-cycle anchoring (Plan 129 BUG 1 fix).** Daily reanalysis rows are
     midnight-bucketed calendar days, but the deployment cron issues every 6h
@@ -602,7 +661,7 @@ def _validate_continuous_window(
     covered = expected_days & {t.date() for t in times}
     if len(covered) < lookback_days:
         raise _ShortForcingWindowError(
-            "insufficient antecedent-precip history: got "
+            f"insufficient {feature_label} history: got "
             f"{len(covered)}, need {lookback_days}"
         )
 
@@ -625,44 +684,83 @@ def _antecedent_precip_sums(
     return sums
 
 
+def _antecedent_temp_means(
+    series_times: list[datetime],
+    series_values: np.ndarray,
+    anchor_times: list[datetime],
+    lookback_days: int,
+) -> np.ndarray:
+    """Mean of ``series_values`` in ``[anchor - lookback_days, anchor)`` per anchor.
+
+    Plan 138 DC-1: temperature is a STATE, not a flux, so the antecedent
+    aggregation is a MEAN (mirroring ``_antecedent_precip_sums``' SUM for the
+    flux case). An empty window (should not occur once
+    ``_validate_continuous_window`` has passed) yields ``0.0`` rather than a
+    NaN-producing empty-slice mean.
+    """
+    lookback = timedelta(days=lookback_days)
+    times = np.asarray(series_times)
+    values = np.asarray(series_values, dtype=np.float64)
+    means = np.empty(len(anchor_times), dtype=np.float64)
+    for i, anchor in enumerate(anchor_times):
+        window_start = anchor - lookback
+        mask = (times >= window_start) & (times < anchor)
+        means[i] = float(values[mask].mean()) if mask.any() else 0.0
+    return means
+
+
 class SeasonalPrecipRunoffRegression(_NwpRegressionBase):
-    """Daily discharge ~ past discharge lags + season + continuous precip.
+    """Daily discharge ~ past discharge lags + season + continuous precip+temp.
 
-    Plan 129's consuming model: extends the base with a NEW ``past_known
-    reanalysis/precipitation`` channel (antecedent precip, routed through
-    ``ModelDataRequirements.past_dynamic_features`` and so through the hybrid
-    RhiresD (definitive) / RprelimD (recent, live-tail) reanalysis chain — the
-    RprelimD-consuming channel) plus a derived day-of-year season feature.
-    Keeps the base's future NWP precip/temp same-day channel and discharge
-    lags (1..7), so precipitation is one continuous covariate spanning
-    past-reanalysis through future-NWP.
+    Plan 129's consuming model, extended by Plan 138: extends the base with a
+    NEW ``past_known reanalysis/precipitation`` channel (antecedent precip,
+    routed through ``ModelDataRequirements.past_dynamic_features`` and so
+    through the hybrid RhiresD (definitive) / RprelimD (recent, live-tail)
+    reanalysis chain — the RprelimD-consuming channel) and a NEW ``past_known
+    reanalysis/temperature`` channel (antecedent temperature, Plan 138), plus
+    a derived day-of-year season feature. Keeps the base's future NWP
+    precip/temp same-day channel and discharge lags (1..7), so precipitation
+    is one continuous covariate spanning past-reanalysis through future-NWP.
 
-    The declared lookback (``_PRECIP_LOOKBACK_DAYS``) overlaps RprelimD's live
-    tail so the antecedent-precip fetch is genuinely RprelimD-served near
-    issue-time.
+    The feature vector (identical order in ``train``/``predict``, Plan 138
+    DC-1) is::
 
-    NOTE — the past-known variable name ``precipitation`` is intentionally
-    shared with the base's future_known ``nwp/precipitation``: they are
-    disjoint columns in disjoint frames (``past_dynamic`` vs
-    ``future_dynamic``), so model-level routing is correct. The adapter's
-    ``max_nan`` over-tolerance check (``forecast_interface.py``
-    ``_variables_over_nan_tolerance``) gates ``past_known`` and
-    ``future_known`` variables independently against their own frame, so a
-    shared bare name across the two temporalities does not suppress either
-    gate — both this model's past antecedent precip AND the base's future NWP
-    precip are independently NaN-gated before ``predict()`` runs.
+        [precip, temp, antecedent_precip, antecedent_temp,
+         season_sin, season_cos, *discharge_lags]
+
+    ``antecedent_precip`` is a SUM (a flux) over ``_precip_lookback_days``;
+    ``antecedent_temp`` is a MEAN (a state) over ``_temp_lookback_days`` — a
+    shorter, melt/accumulation-relevant horizon.
+
+    The declared precip lookback (``_PRECIP_LOOKBACK_DAYS``) overlaps
+    RprelimD's live tail so the antecedent-precip fetch is genuinely
+    RprelimD-served near issue-time.
+
+    NOTE — the past-known variable names ``precipitation``/``temperature`` are
+    intentionally shared with the base's future_known ``nwp/precipitation``
+    and ``nwp/temperature``: they are disjoint columns in disjoint frames
+    (``past_dynamic`` vs ``future_dynamic``), so model-level routing is
+    correct. The adapter's ``max_nan`` over-tolerance check
+    (``forecast_interface.py`` ``_variables_over_nan_tolerance``) gates
+    ``past_known`` and ``future_known`` variables independently against their
+    own frame, so a shared bare name across the two temporalities does not
+    suppress either gate — both this model's past antecedent
+    precip/temperature AND the base's future NWP precip/temperature are
+    independently NaN-gated before ``predict()`` runs.
     """
 
     _n_lags = _LOOKBACK
     _declared_lookback = _LOOKBACK
     _model_name = "seasonal_precip_runoff_regression"
     _precip_lookback_days = _PRECIP_LOOKBACK_DAYS
+    _temp_lookback_days = _TEMP_LOOKBACK_DAYS
 
     def _train_warmup_steps(self) -> int:
         # The 45-day antecedent-precip window needs more leading history than
-        # the 7-step discharge-lag window; skip rows whose antecedent window
-        # would otherwise be partial (Plan 129 post-implementation review).
-        return max(self._n_lags, self._precip_lookback_days)
+        # the 7-step discharge-lag window (or the 14-day antecedent-temp
+        # window); skip rows whose antecedent window would otherwise be
+        # partial (Plan 129 post-implementation review; extended Plan 138).
+        return max(self._n_lags, self._precip_lookback_days, self._temp_lookback_days)
 
     def _extra_past_known(self) -> dict[str, dict[str, PastKnownVariable]]:
         return {
@@ -671,7 +769,12 @@ class SeasonalPrecipRunoffRegression(_NwpRegressionBase):
                     lookback=self._precip_lookback_days,
                     max_nan=0,
                     unit=Unit.MM,
-                )
+                ),
+                _TEMPERATURE: PastKnownVariable(
+                    lookback=self._temp_lookback_days,
+                    max_nan=0,
+                    unit=Unit.DEG_C,
+                ),
             }
         }
 
@@ -681,14 +784,23 @@ class SeasonalPrecipRunoffRegression(_NwpRegressionBase):
         reanalysis_times, reanalysis_precip = _sorted_series(
             dynamic.past_known[_PRODUCT_REANALYSIS][_PRECIPITATION], _PRECIPITATION
         )
-        antecedent = _antecedent_precip_sums(
+        antecedent_precip = _antecedent_precip_sums(
             reanalysis_times,
             reanalysis_precip,
             target_times,
             self._precip_lookback_days,
         )
+        temp_times, reanalysis_temp = _sorted_series(
+            dynamic.past_known[_PRODUCT_REANALYSIS][_TEMPERATURE], _TEMPERATURE
+        )
+        antecedent_temp = _antecedent_temp_means(
+            temp_times,
+            reanalysis_temp,
+            target_times,
+            self._temp_lookback_days,
+        )
         season = _season_features(target_times)
-        return np.column_stack([antecedent, season])
+        return np.column_stack([antecedent_precip, antecedent_temp, season])
 
     def _extra_predict_features(
         self,
@@ -696,6 +808,14 @@ class SeasonalPrecipRunoffRegression(_NwpRegressionBase):
         future_times: list[datetime],
         issue_datetime: datetime,
     ) -> np.ndarray:
+        # Plan 138 fix: aggregate the SAME calendar-day window that was just
+        # validated. Both antecedent windows are daily reanalysis products
+        # sharing ``_STEP`` (one day), so one shared ``window_end`` anchors
+        # both — a non-midnight issue (06/12/18Z) no longer aggregates a
+        # different (hour-shifted) window than the one
+        # ``_validate_continuous_window`` checked. See ``_reanalysis_window_end``.
+        window_end = _reanalysis_window_end(issue_datetime, _STEP)
+
         reanalysis_times, reanalysis_precip = _sorted_series(
             dynamic.past_known[_PRODUCT_REANALYSIS][_PRECIPITATION], _PRECIPITATION
         )
@@ -704,15 +824,37 @@ class SeasonalPrecipRunoffRegression(_NwpRegressionBase):
             issue_datetime=issue_datetime,
             lookback_days=self._precip_lookback_days,
             step=_STEP,
+            feature_label="antecedent-precip",
         )
-        antecedent_value = float(
+        antecedent_precip_value = float(
             _antecedent_precip_sums(
                 reanalysis_times,
                 reanalysis_precip,
-                [issue_datetime],
+                [window_end],
                 self._precip_lookback_days,
             )[0]
         )
+
+        temp_times, reanalysis_temp = _sorted_series(
+            dynamic.past_known[_PRODUCT_REANALYSIS][_TEMPERATURE], _TEMPERATURE
+        )
+        _validate_continuous_window(
+            temp_times,
+            issue_datetime=issue_datetime,
+            lookback_days=self._temp_lookback_days,
+            step=_STEP,
+            feature_label="antecedent-temp",
+        )
+        antecedent_temp_value = float(
+            _antecedent_temp_means(
+                temp_times,
+                reanalysis_temp,
+                [window_end],
+                self._temp_lookback_days,
+            )[0]
+        )
+
         season = _season_features(future_times)
-        antecedent_col = np.full((len(future_times), 1), antecedent_value)
-        return np.hstack([antecedent_col, season])
+        antecedent_precip_col = np.full((len(future_times), 1), antecedent_precip_value)
+        antecedent_temp_col = np.full((len(future_times), 1), antecedent_temp_value)
+        return np.hstack([antecedent_precip_col, antecedent_temp_col, season])
