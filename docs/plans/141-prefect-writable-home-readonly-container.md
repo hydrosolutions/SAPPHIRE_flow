@@ -57,37 +57,31 @@ hindcast) continue to run correctly.
 - **Not** enabling/disabling result *persistence semantics* beyond giving it a writable target (if we later
   want durable cross-run results, that's a separate decision — this plan only removes the EROFS wall).
 
-## Design decision (for `/plan` to confirm) — where PREFECT_HOME points
+## Design decision — LOCKED to Option A (tmpfs `/tmp/prefect`), owner 2026-07-22
 
-Two writable options; pick one:
+**`PREFECT_HOME=/tmp/prefect`** on all four Prefect-running services, reusing the existing `/tmp` tmpfs. Zero
+new mounts, minimal diff, guaranteed writable. **Ephemeral** — cleared on container restart, which is correct
+for SAPPHIRE: flows run to completion in one process, and the durable state lives in `prefect-server`'s
+postgres + our own `/data` artifact/forecast stores, **not** in Prefect's local result storage. `/plan`
+should still sanity-check that no flow depends on a Prefect result surviving a restart (none is known), but
+the target path is decided; T1 below no longer carries the Option-B volume/chown/doc branches.
 
-- **Option A — tmpfs `PREFECT_HOME=/tmp/prefect`** (reuse the existing `/tmp` tmpfs). Zero new mounts, minimal
-  diff, guaranteed writable. **Ephemeral** — cleared on container restart. Correct *iff* SAPPHIRE never needs
-  a Prefect-persisted result to survive a restart (true today: flows run to completion in one process; the
-  durable state is in the server's postgres + our own `/data` artifact/forecast stores, not Prefect result
-  storage). **Recommended default** for its simplicity, unless `/plan` finds a cross-restart result
-  dependency.
-- **Option B — persistent named volume `PREFECT_HOME=/data/prefect`.** Add a `prefect_home` named volume
-  mounted `:/data/prefect:rw` on all four Prefect services + `PREFECT_HOME=/data/prefect`. Survives restarts;
-  robust against any future result-persistence need. Costs a new volume + 4 mounts + the cicd volume-table
-  doc update.
-
-`/plan` decides A vs B (default A). Either way, the env var is added to **all four** Prefect-running services
-so none is left writing to the read-only root.
+*(Option B — a persistent `prefect_home` named volume at `/data/prefect` — was considered and rejected as
+over-built for a transient scratch dir: it would add a volume + 4 mounts + an entrypoint chown + a cicd
+doc row for no benefit SAPPHIRE currently needs.)*
 
 ## Tasks
 
 ### T1 — set PREFECT_HOME to a writable path on all Prefect services
 
-- **Scope:** add `PREFECT_HOME=<A: /tmp/prefect | B: /data/prefect>` to the `environment:` of
-  `prefect-worker`, `prefect-worker-ingest`, `api`, and `init` in `docker-compose.yml` (and the mac-mini
-  overlay if it overrides env). For Option B only: add the `prefect_home` named volume + a `:/data/prefect:rw`
-  mount on each of the four services, and update the `docs/standards/cicd.md` named-volume table. Confirm the
-  chosen dir is created/writable at container start (tmpfs is auto-created; a named volume needs the
-  entrypoint `chown app:app` treatment like the other `/data/*` volumes — `docker/entrypoint.sh:30` — so
-  Option B also touches the chown line, mirroring Plan 136/111's volume fixes).
-- **Files:** `docker-compose.yml`; (Option B) `docker/entrypoint.sh` + `docs/standards/cicd.md`; a
-  compose-config assertion in `tests/` if one exists for env/volume wiring.
+- **Scope:** add `PREFECT_HOME=/tmp/prefect` to the `environment:` of `prefect-worker`,
+  `prefect-worker-ingest`, `api`, and `init` in `docker-compose.yml` (and the mac-mini overlay if it overrides
+  env). `/tmp` is already a writable tmpfs on each service (`docker-compose.yml:113-115` etc.), so the
+  `/tmp/prefect` subdir is auto-created writable — **no new volume, no entrypoint chown, no cicd doc change**
+  (that is the whole point of choosing tmpfs). Sanity-check that all four services do mount a `/tmp` tmpfs
+  (they do per Plan 133).
+- **Files:** `docker-compose.yml` (+ overlay if applicable); a compose-config assertion in `tests/` if one
+  exists for env wiring.
 - **Verification:** `docker compose -f … -f docker-compose.macmini.yml config` parses; `PREFECT_HOME` resolves
   on the worker (`printenv PREFECT_HOME`).
 
