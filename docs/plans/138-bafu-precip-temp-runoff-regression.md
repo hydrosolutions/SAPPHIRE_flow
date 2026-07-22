@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-07-22
 plan: 138
 title: BAFU precip+temp+past-runoff regression — add past-temperature, unshadow, retrain
@@ -43,8 +43,8 @@ residual design is now well-specified against those conventions, and further aut
   input-assembly) + the reproduction caveat (PRIMARY-mode cycles don't surface non-primary successes).
 - **T5** follows the repo standard upgrade sequence (`cicd.md:132`: token, stop workers, `run --rm --build
   init`, `up -d`) in overlay form, not a bare `up -d --build`.
-**READY is the owner's call** — the remaining open items are genuinely data-dependent (T1's per-station case)
-or operational, not unresolved design.
+**READY** (owner flip 2026-07-22). The remaining open items are genuinely data-dependent (T1's per-station
+case) or operational, not unresolved design.
 
 ## Context — the model is ~90% built already
 
