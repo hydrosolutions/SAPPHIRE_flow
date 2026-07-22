@@ -211,11 +211,14 @@ class PipelineCheckType(Enum):
         # Plan 136 — collect-bafu-observations heartbeat. NETWORK-level
         # freshness (newest measurement_time across all archived gauges),
         # never a per-gauge minimum (a dead gauge can sit in the LINDAS graph
-        # for >1 year). OK = a non-empty successful whole-graph fetch;
-        # CRITICAL = an empty response, an HTTP/parse/schema-drift error, or
-        # a truncated fetch (len(bindings) >= LIMIT). WARNING (a future
-        # fresh-fraction-below-threshold degradation signal) is reserved but
-        # not emitted in this first cut.
+        # for >1 year). OK = a non-empty successful whole-graph fetch whose
+        # network-newest measurement_time is within the freshness threshold
+        # (~3h). CRITICAL = an empty response, an HTTP/parse/schema-drift
+        # error, a truncated fetch (len(bindings) >= LIMIT), OR a non-empty
+        # fetch whose network-newest measurement_time is stale (a frozen
+        # feed; this path still archives and does not re-raise). WARNING (a
+        # future fresh-fraction-below-threshold degradation signal) is
+        # reserved but not emitted in this first cut.
 
 class NotificationChannel(Enum):
     EMAIL = "email"
