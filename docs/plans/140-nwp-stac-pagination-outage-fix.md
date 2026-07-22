@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-07-22
 plan: 140
 title: Restore ICON-CH2-EPS NWP fetch — the STAC pagination cap is exceeded (production outage)
@@ -13,10 +13,11 @@ supersedes: []
 
 ## Status
 
-**DRAFT — production outage.** Diagnosed live on the mac-mini (2026-07-22, as the T1 step of Plan 138's
-deploy) and grounded in live MeteoSwiss STAC probes. For a `/plan` round before READY. **Priority: this
-blocks all NWP-dependent forecasting, including Plan 138** — deploying Plan 138 cannot produce `seasonal`
-forecasts until this is fixed.
+**READY (owner 2026-07-22) — production outage.** Diagnosed live on the mac-mini (as the T1 step of Plan
+138's deploy) and grounded in live MeteoSwiss STAC probes; **T1 benchmark is DONE** (861 pages, sizing the
+cap at 1500). The fix is small and low-risk — a cap constant + observability + tests — so it goes straight to
+`/implement`. **Priority: this blocks all NWP-dependent forecasting, including Plan 138** — deploying Plan 138
+cannot produce `seasonal` forecasts until this is fixed.
 
 ## Context — a live NWP outage, not a model problem
 
@@ -56,8 +57,9 @@ live STAC probes (2026-07-22):
 
 So there is **no server-side way to narrow the query**; the fetch must paginate the whole window. Plan 067
 T1.f measured **552 pages for a 4-cycle overlap at MeteoSwiss's 24 h retention** and set the cap at 800
-(`:69-76`). The cap is now exceeded — **something grew** (most likely MeteoSwiss extended retention, so the
-120 h window overlaps more cycles; possibly more variables/members). Determining what grew is Task T1.
+(`:69-76`). **T1 (below) re-benchmarked the live catalog: 861 pages now — still 4 cycles / 24 h retention, but
++56 % items-per-cycle** (MeteoSwiss added variables/members/timesteps per cycle). The 861 > 800 by ~7 % is the
+whole outage.
 
 ## Objective
 
@@ -75,46 +77,57 @@ early, not as a silent outage.
 
 ## Tasks
 
-### T1 — benchmark the current catalog + identify what grew (sizes the fix)
+### T1 — benchmark the current catalog + identify what grew — ✅ DONE (2026-07-22)
 
-- **Scope:** with a bounded, courteous probe against the live MeteoSwiss STAC (`data.geo.admin.ch/api/stac/v1`,
-  collection `ch.meteoschweiz.ogd-forecasting-icon-ch2`), for a recent cycle's `datetime=<cycle>/<cycle+120h>`
-  query, measure: (a) the **actual page count** to the target cycle's last item (walk to exhaustion or a hard
-  probe cap), (b) how many **distinct `forecast:reference_datetime`** cycles the window returns (was 4 at 24 h
-  retention — is it now more?), and (c) the **per-cycle item count** (variables × members × timesteps). Compare
-  to Plan 067 T1.f's 552 pages / 4 cycles to pinpoint what increased (retention vs variables vs members). Do
-  this as an ad-hoc probe (heredoc), not committed code.
-- **Files:** none (investigation); findings recorded in this plan.
-- **Verification:** the current page count + the growth cause are stated with numbers, so T2 sizes the cap on
-  evidence, not a guess.
+- **Scope:** a bounded, courteous walk of the live MeteoSwiss STAC for a recent cycle's
+  `datetime=<cycle>/<cycle+120h>` query, following `next` links to exhaustion (2000-page safety cap).
+- **Result:** **861 pages / 86,072 items** (reached exhaustion — the true count is 861, just past the 800 cap;
+  that ~7 % overshoot is the entire outage). **Still exactly 4 distinct cycles** in the window (`07-21 12:00`,
+  `07-21 18:00`, `07-22 00:00`, `07-22 06:00`) — retention is **unchanged** from Plan 067's 4-cycle/24 h
+  baseline. What grew is **items-per-cycle**: ~13,800 → ~21,518, **+56 %** (MeteoSwiss added
+  variables/members/timesteps per cycle, not more cycles). The target (newest) cycle's items are **last**
+  (ref_dt ascending), confirming early-stop (T3) cannot help.
+- **Files:** none (ad-hoc probe); recorded here.
+- **Verification:** ✅ page count = 861, growth cause = items/cycle (+56 %). T2's cap is sized on this.
 
-### T2 — raise the pagination cap on the benchmark + add observability
+### T2 — raise the pagination cap on the benchmark + add observability — ✅ DONE (2026-07-22)
 
-- **Scope:** raise `_MAX_PAGINATION_PAGES` (`meteoswiss_nwp.py:76`) to **T1's measured page count × ~1.5
-  margin** (mirroring Plan 067's sizing rationale; update the comment `:69-76` with the new benchmark + date).
-  **Add observability** so the next breach is not silent: log the **actual page count + matched target-cycle
-  item count** at the end of each successful fetch, and emit a **WARNING when the page count exceeds ~80 % of
-  the cap** (an early-warning that the treadmill is approaching the limit again). Keep the abort-on-cap
-  behaviour (it must fail loudly, not silently truncate a cycle's NWP).
+- **Scope:** raise `_MAX_PAGINATION_PAGES` (`meteoswiss_nwp.py:76`) from **800 → 1500** (T1's 861 × ~1.7 —
+  generous headroom since items/cycle is *growing*; the cap is only a safety ceiling, normal fetches exhaust at
+  ~861 well before it, so a higher ceiling does not slow the happy path). Update the comment `:69-76` with the
+  new benchmark (861 pages, 4 cycles, +56 % items/cycle, 2026-07-22). **Add observability** so the next breach
+  is not silent: log the **actual page count + matched target-cycle item count** at the end of each successful
+  fetch, and emit a **WARNING when the page count exceeds ~80 % of the cap** (i.e. ≥1200) — an early warning
+  that the treadmill is approaching the limit again. Keep the abort-on-cap behaviour (it must fail loudly, not
+  silently truncate a cycle's NWP).
 - **Files:** `src/sapphire_flow/adapters/meteoswiss_nwp.py`; `tests/unit/adapters/test_meteoswiss_nwp.py`
   (a faked multi-page STAC response that (a) completes under the new cap, (b) still raises `AdapterError` past
   the cap, (c) emits the ≥80 %-of-cap WARNING). Red-first.
 - **Verification:** `uv run pytest tests/unit/adapters/test_meteoswiss_nwp.py`; the cap-exceeded path still
   raises; the near-cap WARNING fires at the threshold.
+- **Result:** cap raised 800 → 1500, comment updated with the 861-page/4-cycle/+56%-items-per-cycle
+  benchmark; added `_PAGINATION_WARNING_THRESHOLD = 1200` (80% of cap), a `matched_ref_dt_count` counter, an
+  `nwp.pagination_near_cap` WARNING fired once per fetch at/above the threshold, and an `nwp.stac_walk_completed`
+  INFO log (`duration_ms`, page_count, matched_ref_dt_count, files_fetched) on every successful STAC walk. This
+  event is deliberately named apart from the canonical `nwp.fetch_completed` (emitted by `fetch_forecasts`
+  only after parse/archive/extraction also succeed, `meteoswiss_nwp.py:649-657`) — reusing that name here
+  would give ops greps a false success signal if `_parse_grib_files` failed immediately after, and
+  `docs/standards/logging.md` requires `duration_ms` on every `*.completed` event, which this now carries.
+  4 new tests in `TestPaginationCap` (red-first; each shown to fail against the pre-fix 800-page code, then
+  pass against the fix) plus the 2 pre-existing tests updated for the new cap value/message. Full suite green;
+  ruff + pyright ratchet clean. **T4 (mac-mini deploy) is a separate live/operational step, not part of this
+  code change.**
 
-### T3 — evaluate a bounded fetch (early-stop) — investigate, implement only if provably safe
+### T3 — early-stop — ❌ DEFERRED (T1 evidence: cannot help)
 
-- **Scope:** the target cycle is the **newest** and items are **ref_dt ascending**, so it is **last** — a
-  naive "stop when the target cycle is seen" does not help. Evaluate whether a **safe** early-stop exists:
-  e.g. stop once the matched target-cycle item count reaches the **expected** count (2 allowlisted vars × the
-  member count × the timestep count) — but ONLY if that expected count is reliably derivable (member/timestep
-  counts are stable and known) so early-stop can never truncate a cycle. If it is not provably safe (variable
-  member/timestep counts), **defer** it to the § Follow-up redesign and rely on T2's raised cap. Record the
-  decision + evidence in this plan; do not ship a fragile early-stop that risks a silently-short NWP cycle.
-- **Files:** `meteoswiss_nwp.py` + tests **only if** T3 concludes early-stop is provably safe; otherwise a
-  documented no-op.
-- **Verification:** either a red-first early-stop test proving it collects the full target cycle and stops, or
-  a recorded "deferred — not provably safe" decision.
+- **Decision (from T1):** the target cycle is the **newest** and items are **ref_dt ASCENDING**, so the target
+  cycle's items are **last** in the walk (the 3 older, useless cycles come first, ~645 of the 861 pages). An
+  early-stop "once the target cycle is complete" therefore stops only at the very end — it saves **nothing**.
+  And `sortby` is ignored (probed), so we cannot reverse the order to bring the target first. **No safe
+  early-stop exists** given MeteoSwiss's fixed ascending order; deferred to the § Follow-up redesign (which
+  would need a different access path or upstream filtering). T2's raised cap is the fix.
+- **Files:** none (no code — documented no-op).
+- **Verification:** ✅ decision recorded with T1 evidence.
 
 ### T4 — deploy + verify fresh NWP restored
 
@@ -133,10 +146,10 @@ early, not as a silent outage.
 ```json
 {
   "phases": [
-    { "id": "benchmark", "tasks": ["T1"], "parallel": false, "depends_on": [] },
-    { "id": "fix", "tasks": ["T2", "T3"], "parallel": false, "depends_on": ["benchmark"],
-      "note": "T2 (cap + observability) is the guaranteed fix; T3 (early-stop) only lands if provably safe, else defers." },
-    { "id": "deploy", "tasks": ["T4"], "parallel": false, "depends_on": ["fix"] }
+    { "id": "benchmark", "tasks": ["T1"], "parallel": false, "depends_on": [], "note": "DONE (861 pages)." },
+    { "id": "fix", "tasks": ["T2"], "parallel": false, "depends_on": ["benchmark"],
+      "note": "T2 (cap 800->1500 + observability + tests) is the entire code fix. T3 (early-stop) is DEFERRED — T1 proved it cannot help." },
+    { "id": "deploy", "tasks": ["T4"], "parallel": false, "depends_on": ["fix"], "note": "On the mac-mini, after merge — restores NWP." }
   ]
 }
 ```
