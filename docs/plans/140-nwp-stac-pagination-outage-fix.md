@@ -90,7 +90,7 @@ early, not as a silent outage.
 - **Files:** none (ad-hoc probe); recorded here.
 - **Verification:** ✅ page count = 861, growth cause = items/cycle (+56 %). T2's cap is sized on this.
 
-### T2 — raise the pagination cap on the benchmark + add observability
+### T2 — raise the pagination cap on the benchmark + add observability — ✅ DONE (2026-07-22)
 
 - **Scope:** raise `_MAX_PAGINATION_PAGES` (`meteoswiss_nwp.py:76`) from **800 → 1500** (T1's 861 × ~1.7 —
   generous headroom since items/cycle is *growing*; the cap is only a safety ceiling, normal fetches exhaust at
@@ -105,6 +105,13 @@ early, not as a silent outage.
   the cap, (c) emits the ≥80 %-of-cap WARNING). Red-first.
 - **Verification:** `uv run pytest tests/unit/adapters/test_meteoswiss_nwp.py`; the cap-exceeded path still
   raises; the near-cap WARNING fires at the threshold.
+- **Result:** cap raised 800 → 1500, comment updated with the 861-page/4-cycle/+56%-items-per-cycle
+  benchmark; added `_PAGINATION_WARNING_THRESHOLD = 1200` (80% of cap), a `matched_ref_dt_count` counter, an
+  `nwp.pagination_near_cap` WARNING fired once per fetch at/above the threshold, and an `nwp.fetch_completed`
+  INFO log (page_count, matched_ref_dt_count, files_fetched) on every successful return. 6 new tests in
+  `TestPaginationCap` (red-first; each shown to fail against the pre-fix 800-page code, then pass against the
+  fix) plus the 2 pre-existing tests updated for the new cap value/message. Full suite green; ruff + pyright
+  ratchet clean. **T4 (mac-mini deploy) is a separate live/operational step, not part of this code change.**
 
 ### T3 — early-stop — ❌ DEFERRED (T1 evidence: cannot help)
 

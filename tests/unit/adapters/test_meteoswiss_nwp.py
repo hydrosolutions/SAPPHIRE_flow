@@ -1158,26 +1158,55 @@ class TestFetchGribFilesReferenceDatetimeFilter:
             adapter._fetch_grib_files(cycle)
 
 
-class TestPaginationCap:
-    """Plan 067 T4a: pagination cap raised to 800 to cover the full-window walk.
+def _make_n_page_handler(
+    total_pages: int, final_item: dict[str, object] | None
+) -> object:
+    """Serve exactly `total_pages` pages via rel=next, item only on the last.
 
-    T1.f measured 552 pages for the current 4-cycle overlap at MeteoSwiss's
-    24 h retention; 800 = 552 * ~1.5 safety margin. The cap is required because
-    CQL is not supported server-side (T1.e), so the adapter always walks the
-    full 120 h datetime-range window.
+    Unlike `_paged_handler` (which slices a feature list by offset), this
+    tracks call count in closure state so tests can cheaply simulate a
+    walk hundreds/thousands of pages deep without materializing that many
+    STAC items. The GRIB asset itself is served on every request whose URL
+    contains ``.grib2``.
+    """
+    calls = {"n": 0}
+    next_url = (
+        f"{_STAC_BASE}/collections/{_STAC_COLLECTION}/items"
+        "?datetime=2026-04-19T12:00:00Z/2026-04-24T12:00:00Z&limit=100&page=next"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if ".grib2" in str(request.url):
+            return httpx.Response(200, content=b"GRIB" + b"\x00" * 50)
+        calls["n"] += 1
+        is_last = calls["n"] >= total_pages
+        features = [final_item] if (is_last and final_item is not None) else []
+        nxt = None if is_last else next_url
+        return httpx.Response(200, json=_make_page(features, next_url=nxt))
+
+    return handler
+
+
+class TestPaginationCap:
+    """Plan 140 T2: pagination cap raised 800 -> 1500 (re-benchmarked 2026-07-22).
+
+    T1 re-benchmarked the live catalog at 861 pages (still 4 cycles / 24 h
+    retention; items/cycle grew +56 %). 1500 = 861 * ~1.7 safety margin. The
+    cap is required because CQL is not supported server-side (Plan 067
+    T1.e), so the adapter always walks the full 120 h datetime-range window.
     """
 
-    def test_max_pagination_pages_constant_is_eight_hundred(self) -> None:
-        # Locks the value against accidental change and documents the T1.f
-        # measurement. Raising this requires re-benchmarking.
+    def test_max_pagination_pages_constant_is_fifteen_hundred(self) -> None:
+        # Locks the value against accidental change and documents the T1
+        # re-benchmark. Raising this requires re-benchmarking again.
         from sapphire_flow.adapters.meteoswiss_nwp import _MAX_PAGINATION_PAGES
 
-        assert _MAX_PAGINATION_PAGES == 800
+        assert _MAX_PAGINATION_PAGES == 1500
 
     def test_pagination_cap_raises_after_max_pages(self, tmp_path: Path) -> None:
         # Simulate an infinite pagination chain: every response carries a
         # rel=next link that points back into /items. The adapter should abort
-        # once page_count exceeds _MAX_PAGINATION_PAGES (800).
+        # once page_count exceeds _MAX_PAGINATION_PAGES (1500).
         from sapphire_flow.exceptions import AdapterError
 
         cycle = ensure_utc(datetime(2026, 4, 19, 12, 0, tzinfo=UTC))
@@ -1192,8 +1221,74 @@ class TestPaginationCap:
             return httpx.Response(200, json=_make_page([], next_url=next_url))
 
         adapter = _make_adapter(httpx.MockTransport(handler), tmp_path)
-        with pytest.raises(AdapterError, match="exceeded 800 pages"):
+        with pytest.raises(AdapterError, match="exceeded 1500 pages"):
             adapter._fetch_grib_files(cycle)
+
+    def test_completes_above_old_cap_below_new_cap(self, tmp_path: Path) -> None:
+        # 850 pages exceeds the OLD cap (800) but is comfortably under the
+        # NEW cap (1500) — this is the outage this plan fixes: a fetch that
+        # would previously abort now completes.
+        cycle = ensure_utc(datetime(2026, 4, 19, 12, 0, tzinfo=UTC))
+        item = _make_item("tot_prec", ref_dt="2026-04-19T12:00:00Z")
+        handler = _make_n_page_handler(850, item)
+
+        adapter = _make_adapter(httpx.MockTransport(handler), tmp_path)  # type: ignore[arg-type]
+        files = adapter._fetch_grib_files(cycle)
+        assert len(files) == 1
+
+    def test_near_cap_warning_fires_at_eighty_percent_threshold(
+        self, tmp_path: Path
+    ) -> None:
+        # 1200 pages = 80% of the 1500 cap. The fetch must still complete
+        # (this is an early warning, not an abort) but must emit exactly one
+        # WARNING naming the page count.
+        cycle = ensure_utc(datetime(2026, 4, 19, 12, 0, tzinfo=UTC))
+        item = _make_item("tot_prec", ref_dt="2026-04-19T12:00:00Z")
+        handler = _make_n_page_handler(1200, item)
+
+        adapter = _make_adapter(httpx.MockTransport(handler), tmp_path)  # type: ignore[arg-type]
+        with structlog.testing.capture_logs() as captured:
+            files = adapter._fetch_grib_files(cycle)
+
+        assert len(files) == 1
+        warnings = [e for e in captured if e.get("event") == "nwp.pagination_near_cap"]
+        assert len(warnings) == 1
+        assert warnings[0]["page_count"] == 1200
+
+    def test_no_near_cap_warning_below_threshold(self, tmp_path: Path) -> None:
+        # 850 pages is below the 1200-page (80%) warning threshold — no
+        # WARNING should fire, only the routine completion INFO log.
+        cycle = ensure_utc(datetime(2026, 4, 19, 12, 0, tzinfo=UTC))
+        item = _make_item("tot_prec", ref_dt="2026-04-19T12:00:00Z")
+        handler = _make_n_page_handler(850, item)
+
+        adapter = _make_adapter(httpx.MockTransport(handler), tmp_path)  # type: ignore[arg-type]
+        with structlog.testing.capture_logs() as captured:
+            adapter._fetch_grib_files(cycle)
+
+        warnings = [e for e in captured if e.get("event") == "nwp.pagination_near_cap"]
+        assert warnings == []
+
+    def test_fetch_completed_log_includes_page_and_item_counts(
+        self, tmp_path: Path
+    ) -> None:
+        # Observability: a successful fetch logs the actual page count and
+        # matched target-cycle item count so the next breach shows up as a
+        # trend, not a silent outage.
+        cycle = ensure_utc(datetime(2026, 4, 19, 12, 0, tzinfo=UTC))
+        item = _make_item("tot_prec", ref_dt="2026-04-19T12:00:00Z")
+        handler = _make_n_page_handler(5, item)
+
+        adapter = _make_adapter(httpx.MockTransport(handler), tmp_path)  # type: ignore[arg-type]
+        with structlog.testing.capture_logs() as captured:
+            files = adapter._fetch_grib_files(cycle)
+
+        assert len(files) == 1
+        completed = [e for e in captured if e.get("event") == "nwp.fetch_completed"]
+        assert len(completed) == 1
+        assert completed[0]["page_count"] == 5
+        assert completed[0]["matched_ref_dt_count"] == 1
+        assert completed[0]["files_fetched"] == 1
 
 
 def _per_file_ds(
