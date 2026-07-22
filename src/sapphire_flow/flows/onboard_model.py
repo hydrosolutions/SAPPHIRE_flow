@@ -412,6 +412,28 @@ def _store_onboarding_artifact_task(
 
 
 @task(
+    name="record-artifact-lineage",
+    log_prints=False,
+    cache_policy=NO_CACHE,
+)
+def _record_onboarding_lineage_task(
+    lineage_writer: object,
+    artifact_id: object,
+    trained_station_ids: object,
+) -> None:
+    """Plan 120 Task 2D: onboarding stores the artifact in TRAINING status
+    and does NOT promote it here (promotion happens later, after the skill
+    gate) — so the lineage row is written right after the store returns,
+    regardless of whether the artifact is later promoted or rejected. See
+    `store/model_artifact_lineage.py` docstring for the NON-ATOMIC /
+    LOG-LOUD rationale; `lineage_writer is None` only in non-production
+    wiring with no DB to write to."""
+    if lineage_writer is None:
+        return
+    lineage_writer.record(artifact_id, trained_station_ids)  # type: ignore[attr-defined]
+
+
+@task(
     name="evaluate-skill-gate",
     log_prints=False,
     task_run_name="evaluate-skill-gate-{model_id}-{artifact_id}",
@@ -510,6 +532,7 @@ def onboard_model_flow(
     parameter_store: object = None,
     forcing_store: object = None,
     forcing_source: object = None,
+    lineage_writer: object = None,
     deployment_config: object = None,
     clock: object = None,
     rng: object = None,
@@ -545,6 +568,8 @@ def onboard_model_flow(
         flow_regime_store = stores["flow_regime_store"]
         parameter_store = stores["parameter_store"]
         forcing_store = stores["forcing_store"]
+        if lineage_writer is None:
+            lineage_writer = stores["lineage_writer"]
 
     if deployment_config is None:
         config_path = os.environ.get("SAPPHIRE_CONFIG")
@@ -816,6 +841,21 @@ def onboard_model_flow(
                 artifact_bytes=artifact_bytes,
                 artifact_store=artifact_store,
                 clock=clock,
+            )
+
+            # Plan 120 Task 2D: lineage AFTER store ONLY; promotion is
+            # untouched (happens later, post-skill-gate). Trained subset —
+            # {unit.station_id} for a station-scoped unit, data.station_ids
+            # (the post-skip subset) for a group-scoped one.
+            trained_station_ids = (
+                (unit.station_id,)
+                if unit.station_id is not None
+                else tuple(data.station_ids)  # type: ignore[union-attr]
+            )
+            _record_onboarding_lineage_task(
+                lineage_writer=lineage_writer,
+                artifact_id=artifact_id,
+                trained_station_ids=trained_station_ids,
             )
 
             # Verify SHA-256 hash before deserializing artifact

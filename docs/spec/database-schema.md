@@ -599,6 +599,8 @@ erDiagram
     stations ||--o{ station_weather_sources : "station_id"
     stations ||--o{ station_group_members : "station_id"
     station_groups ||--o{ station_group_members : "group_id"
+    basins ||--o{ basin_versions : "basin_id"
+    basin_static_packages ||--o{ basin_versions : "package_id"
 
     %% ──────────────────────────────────────────────
     %% OBSERVATION DOMAIN
@@ -756,6 +758,8 @@ erDiagram
     stations ||--o{ model_assignments : "station_id"
     station_groups ||--o{ group_model_assignments : "group_id"
     stations ||--o{ model_states : "station_id"
+    model_artifacts ||--o{ model_artifact_basin_versions : "model_artifact_id"
+    basin_versions ||--o{ model_artifact_basin_versions : "basin_version_id"
 
     %% ──────────────────────────────────────────────
     %% FORECAST DOMAIN

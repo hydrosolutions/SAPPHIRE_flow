@@ -256,11 +256,44 @@ row-shaping logic in one shared function that both call so they cannot drift.
 
 ---
 
+## Implementation status (fixer pass, 2026-07-22 — keep current, do not let this drift)
+
+**NOT production-ready. No package loader/importer exists yet.** Landed so far, across two
+passes:
+
+- **Task 0A — DONE** (`cbe3a1c`): provenance/versioning schema (`basin_static_packages`,
+  `basin_versions`, `model_artifact_basin_versions`, additive `package_id` columns) +
+  `PgBasinStore.store_basin` as the single atomic basin+`version=1` creation CTE. The
+  `band_geometries` `json.dumps` JSONB bug was fixed as part of this same rewrite (see the
+  corrected Task 2B bullet below — it does NOT need to fix this again).
+- **Task 2B — PARTIAL** (fixer pass): the §5a store-layer provenance write path
+  (`GatewayPolygonBindingRow.package_id`/`imported_at`, `store_binding` write/upsert) and the
+  `basin_average` DELETE-then-INSERT correction-replace path are DONE. The package-driven
+  population itself (something that actually calls `store_binding` from an accepted
+  package's dissolved geometries) is NOT built — it depends on Task 1A/1B/2A below.
+- **Task 2D — DONE** (fixer pass): `record_artifact_basin_lineage` helper
+  (`store/model_artifact_lineage.py`), wired into both `train_models_flow` and
+  `onboard_model_flow` right after artifact storage, with the NULL-skip/dangling-raise split
+  and the D-UP upstream static-features gate in `services/training_data.py`.
+- **Phase 1 (Task 1A/1B — package loader, checksums, feature-catalog/per-basin acceptance),
+  Task 2A (dissolve into `basins` + version snapshot), Task 2C (incremental upsert +
+  versioned corrections + idempotency + affected-artifact set), and Phase 3 (Task 3A
+  importer entrypoint, Task 3B docs) are NOT implemented.** Until Task 1A/1B/2A/2C/3A land,
+  there is no way to actually import a basin/static package — 082's store-backed resolver
+  keeps returning `None` for every station (Production-gate note, below), and the lineage
+  table has no package-sourced basins to reference yet (legacy/onboarding-created basins
+  still resolve correctly, per Task 2D's `version=1` fallback).
+
+Do not treat this plan as "landed" for Nepal production purposes on the strength of Task
+0A/2B/2D alone — Phase 1/2A/2C/3A are the blocking remainder.
+
+---
+
 ## Scope
 
 ### Phase 0 — Provenance + versioning schema
 
-#### Task 0A — Provenance/versioning tables + additive columns (BLOCKER-gate)
+#### Task 0A — Provenance/versioning tables + additive columns (BLOCKER-gate) — DONE (`cbe3a1c`)
 
 **Scope in:**
 1. `basin_static_packages` table: `package_id` (PK), `network`, `contract_version`,
@@ -340,11 +373,18 @@ legacy basin, not just a freshly-imported one). **Non-package insert regression*
 a basin via `PgBasinStore.store_basin` (the onboarding path) AFTER the migration and assert
 it gains exactly one `version=1`, `superseded_at IS NULL`, `package_id IS NULL` current
 `basin_versions` row, and that Task 2D's lineage write for a station on it succeeds (does
-not hit the fail-loud no-current-version branch). **Atomic-pair regression** — force the
-second (version) leg of `store_basin`'s data-modifying CTE to fail and assert that **no
-committed `basins` row is ever left without a current `basin_versions` row** (the single CTE
-statement rolls back as a unit even under AUTOCOMMIT — a two-statement implementation would
-leave the orphaned `basins` row committed and fail this test).
+not hit the fail-loud no-current-version branch). **Atomic-pair regression — TWO tests
+(fixer pass, 2026-07-22):** (1) a structural proxy — exactly one `conn.execute()` call
+writes both rows (`TestAtomicPairRegression::test_exactly_one_execute_call_writes_both_rows`,
+`tests/integration/db/test_migration_0039_basin_static_provenance.py:280-343`); AND (2) the
+failure-injection variant this bullet originally called for — a temporary `CHECK` constraint
+on `basin_versions` rejects one poisoned `area_km2` value, forcing the version leg of the
+SAME CTE statement to fail, and the test asserts **no committed `basins` row is ever left
+without a current `basin_versions` row**
+(`TestAtomicPairRegression::test_version_leg_failure_leaves_no_orphaned_basins_row`,
+`:344-408`) — Postgres statement-level atomicity rolls back the whole CTE even under
+AUTOCOMMIT; a two-statement implementation fails BOTH tests (verified: reverting
+`store_basin` to two separate `INSERT`s makes both go RED).
 
 ```bash
 uv run pytest tests/unit/db/test_basin_static_provenance_schema.py::TestProvenanceSchema \
@@ -543,7 +583,7 @@ implemented importer, inserting the package first, completes without it.
 uv run pytest tests/integration/store/test_basin_importer_persistence.py::TestDissolveIntoBasins
 ```
 
-#### Task 2B — §5a mapping population + band persistence + store JSONB fix
+#### Task 2B — §5a mapping population + band persistence + store JSONB fix — PARTIAL (store-layer write/replace path done, fixer pass; package-driven population still open)
 
 **Scope in:** Populate the §5a mapping table (`station_id, basin_id, gateway_hru_name,
 name, spatial_type, band_id, package_id, imported_at`) from the accepted package.
@@ -587,14 +627,22 @@ name, spatial_type, band_id, package_id, imported_at`) from the accepted package
   therefore **DELETEs the existing `basin_average` row for `station_id` (a
   `DELETE … WHERE station_id=:sid AND spatial_type='basin_average'`) before inserting the
   new one**, so exactly one basin-average row survives even when the HRU/name changed.
-- **Store JSONB fix — `band_geometries` ONLY (major; scope corrected).** `PgBasinStore.store_basin`
-  wraps **only** `band_geometries` in `json.dumps(...)` before the JSONB column
-  (`basin_store.py:53-55`), which stores a JSON **string** scalar, not a JSON array, and
-  `fetch` returns it raw (`:71`). Fix: pass the Python list **directly** to the JSONB column
-  (SQLAlchemy serializes it) so a non-null `band_geometries` round-trips as a JSON array.
-  **`attributes` is NOT affected** — it is already passed straight to its JSONB column
-  (`attributes=basin.attributes`, `basin_store.py:51`), with no `json.dumps`, so it is not a
-  bug and this fix does not touch it.
+- **Store JSONB fix — `band_geometries` ONLY — ALREADY LANDED IN TASK 0A (was
+  major; RESOLVED, doc corrected post-Task-0A-review).** The original
+  concern was that `PgBasinStore.store_basin` wrapped `band_geometries` in
+  `json.dumps(...)` before the JSONB column, storing a JSON **string**
+  scalar instead of a JSON array. Task 0A's rewrite of `store_basin` (the
+  single atomic basin+`version=1` CTE path, `basin_store.py:47-114`) already
+  passes `basin.band_geometries` straight through as a Python list (both in
+  the `basins` insert, `:78`, and the paired `basin_versions` row, `:93`) —
+  no `json.dumps` call remains anywhere in the file. Verified empirically: a
+  non-null `band_geometries` round-trips through `store_basin`→`fetch_basin`
+  as a **list**, today, on top of Task 0A alone. **`attributes` was never
+  affected** — it was already passed straight to its JSONB column
+  (`attributes=basin.attributes`), with no `json.dumps`. Task 2B therefore
+  does **NOT** need to touch either field; this bullet is retained only so
+  Task 2B's own JSONB-shaped work (`gateway_mapping`, the §5a provenance
+  columns) has the prior finding's context on record.
 
 **Scope out:** No Gateway-side HRU registration/upload (manual, 082 runbook Task 4A); no
 forcing fetch (082 adapters); resolver behavior unchanged (082-owned).
@@ -604,17 +652,30 @@ forcing fetch (082 adapters); resolver behavior unchanged (082-owned).
 (`spatial_type='basin_average'`, `band_id IS NULL`) — and **NO `elevation_band` §5a rows**
 (band §5a writing is deferred, above); a package without `bands.gpkg` → the same one
 basin-level row, `band_geometries` NULL/empty; **the basin-level §5a row carries the
-import's `package_id`/`imported_at` (provenance columns written, not NULL);** a non-null
-`band_geometries` round-trips through `store_basin`→`fetch_basin` as a **list** (not a
-JSON string) — this fails against the current `json.dumps` path; 082's store-backed
-resolver reads the seeded **basin-average** row back and returns the expected
+import's `package_id`/`imported_at` (provenance columns written, not NULL) — this IS a
+genuine Task 2B red-first case, unlike the `band_geometries` round-trip below;** a
+non-null `band_geometries` round-trips through `store_basin`→`fetch_basin` as a **list**
+(not a JSON string) — **already GREEN as of Task 0A** (see the corrected bullet above); a
+Task 2B implementer should assert this as a regression-guard, not author it as a red-first
+case, since the `json.dumps` bug it originally targeted is already fixed; 082's
+store-backed resolver reads the seeded **basin-average** row back and returns the expected
 `GatewayPolygonRef`. **Correction/HRU-rename replace:** re-populating a station's
 basin-average binding with a **different** `gateway_hru_name`/`name` (new package) leaves
 **exactly one** basin_average row for that station — not two, and not an `IntegrityError`
-against `uq_recap_gateway_polygon_bindings_one_basin_average_per_station`.
+against `uq_recap_gateway_polygon_bindings_one_basin_average_per_station`. **IMPLEMENTED
+(fixer pass, 2026-07-22):** the §5a provenance write path (optional
+`package_id`/`imported_at` on `GatewayPolygonBindingRow` + `store_binding` write/upsert)
+and the basin_average DELETE-then-INSERT replace path both landed —
+`src/sapphire_flow/store/recap_gateway_polygon_store.py`,
+`tests/integration/store/test_recap_gateway_polygon_store.py`
+(`TestProvenanceWritePath`, `TestBasinAverageUniquenessConstraint`). The
+package-driven population itself (Task 1A/1B loader → this store) is still open.
 
 ```bash
-uv run pytest tests/integration/store/test_basin_importer_persistence.py::TestFiveAMappingPopulation tests/integration/store/test_basin_store_jsonb.py::TestBandGeometriesRoundTrip
+# Store-layer provenance/replace path (fixer pass, DONE):
+uv run pytest tests/integration/store/test_recap_gateway_polygon_store.py::TestProvenanceWritePath tests/integration/store/test_recap_gateway_polygon_store.py::TestBasinAverageUniquenessConstraint
+# Package-driven population (Task 1A/1B/2A dissolve -> this store, still open):
+uv run pytest tests/integration/store/test_basin_importer_persistence.py::TestFiveAMappingPopulation
 ```
 
 #### Task 2C — Incremental upsert + versioned corrections + idempotency — BLOCKER
@@ -688,7 +749,7 @@ both fail.)
 uv run pytest tests/integration/store/test_basin_importer_idempotency.py::TestReimportAndCorrections tests/integration/store/test_basin_importer_idempotency.py::TestCorrectionAffectedArtifacts
 ```
 
-#### Task 2D — Train-time lineage write wiring — 120 OWNS this (SETTLED)
+#### Task 2D — Train-time lineage write wiring — 120 OWNS this (SETTLED) — DONE (fixer pass, 2026-07-22)
 
 **Scope in:** An unpopulated lineage table is worthless for a billed service, so 120 wires
 the training/onboarding paths to write the `model_artifact_basin_versions` rows for every
@@ -698,8 +759,9 @@ Protocol** — this is the review-settled design (the earlier "add a `trained_st
 kwarg to `store_artifact`" draft is DROPPED; rationale below).
 
 **Prerequisite subtask — close the upstream static-features gate (D-UP, major finding —
-backs grill-me (a)).** The NULL-vs-dangling split below relies on "static requirements fail
-loud UPSTREAM", but that is only true today for `basin_id IS None`.
+backs grill-me (a)) — DONE (fixer pass, 2026-07-22).** The NULL-vs-dangling split below
+relies on "static requirements fail loud UPSTREAM", but that was only true, pre-fix, for
+`basin_id IS None`.
 `assemble_station_training_data` (`services/training_data.py:213,228`) checks missing static
 features **only** inside `if basin is not None and basin.attributes:` (`:215-216`) — so when
 static features are REQUIRED but the basin **row is absent** (dangling `basin_id`) or its
@@ -1010,8 +1072,9 @@ question.
   `:131` (`uq_stations_network_code` — station identity is `(network, code)`);
   `src/sapphire_flow/store/basin_store.py:43-59`/`:71` (`store_basin` today inserts only a
   `basins` row — Task 0A makes it the single atomic basin+`version=1` CTE creation path;
-  `:51` `attributes` already passed directly to JSONB (no bug), `:53-55` `band_geometries`
-  `json.dumps` JSONB bug fixed in Task 2B); `src/sapphire_flow/store/station_store.py:79`
+  `attributes` already passed directly to JSONB (no bug), `band_geometries` `json.dumps`
+  JSONB bug ALREADY FIXED in Task 0A's rewrite — not deferred to Task 2B, see the
+  corrected Task 2B bullet above); `src/sapphire_flow/store/station_store.py:79`
   (`fetch_station_by_code(code, network)` — network-scoped station match);
   `src/sapphire_flow/services/onboarding.py:256` (`store_basin` non-package insert path);
   `src/sapphire_flow/store/recap_gateway_polygon_store.py:38-58` (§5a writer, six

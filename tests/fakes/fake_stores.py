@@ -804,6 +804,17 @@ class FakeModelArtifactStore:
             self._records[artifact_id] = replace(rec, status=new_status)
 
 
+class FakeArtifactLineageWriter:
+    """Plan 120 Task 2D — records `(artifact_id, trained_station_ids)` calls
+    for flow-level assertions, in place of `PgArtifactLineageWriter`."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[ArtifactId, tuple[StationId, ...]]] = []
+
+    def record(self, artifact_id: ArtifactId, trained_station_ids: object) -> None:
+        self.calls.append((artifact_id, tuple(trained_station_ids)))  # type: ignore[arg-type]
+
+
 class FakeModelStore:
     def __init__(self) -> None:
         self._models: dict[ModelId, ModelRecord] = {}

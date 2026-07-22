@@ -189,6 +189,26 @@ def _store_artifact_task(
     )
 
 
+@task(
+    name="record-artifact-lineage",
+    cache_policy=NO_CACHE,
+)
+def _record_lineage_task(
+    lineage_writer: object,
+    artifact_id: object,
+    trained_station_ids: object,
+) -> None:
+    """Plan 120 Task 2D: write `model_artifact_basin_versions` rows right
+    after the artifact is stored (and, on the training path, promoted).
+    NON-ATOMIC and LOG-LOUD on failure — see `store/model_artifact_lineage.py`
+    docstring for the full rationale. `lineage_writer is None` only in
+    non-production wiring that has no DB to write to; that path is
+    intentionally a no-op, not a swallowed failure."""
+    if lineage_writer is None:
+        return
+    lineage_writer.record(artifact_id, trained_station_ids)  # type: ignore[attr-defined]
+
+
 @flow(
     name="train-models",
     log_prints=False,
@@ -212,6 +232,7 @@ def train_models_flow(
     flow_regime_store: object = None,
     forcing_store: object = None,
     forcing_source: object = None,
+    lineage_writer: object = None,
     models: dict | None = None,
     clock: object = None,
     rng: object = None,
@@ -240,6 +261,8 @@ def train_models_flow(
         skill_store = stores["skill_store"]
         flow_regime_store = stores["flow_regime_store"]
         forcing_store = stores["forcing_store"]
+        if lineage_writer is None:
+            lineage_writer = stores["lineage_writer"]
 
     if deployment_config is None:
         config_path = os.environ.get("SAPPHIRE_CONFIG")
@@ -415,6 +438,21 @@ def train_models_flow(
             artifact_bytes=artifact_bytes,
             artifact_store=artifact_store,
             clock=clock,
+        )
+
+        # Plan 120 Task 2D: lineage AFTER store + promote. Trained subset —
+        # {unit.station_id} for a station-scoped unit, data.station_ids (the
+        # post-skip subset) for a group-scoped one, NOT unit.station_ids
+        # (the full pre-skip membership).
+        trained_station_ids: tuple[StationId, ...] = (
+            (unit.station_id,)
+            if unit.station_id is not None
+            else tuple(data.station_ids)  # type: ignore[union-attr]
+        )
+        _record_lineage_task(
+            lineage_writer=lineage_writer,
+            artifact_id=artifact_id,
+            trained_station_ids=trained_station_ids,
         )
 
         # Verify SHA-256 hash before deserializing artifact

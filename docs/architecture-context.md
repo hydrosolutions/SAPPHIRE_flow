@@ -2787,8 +2787,11 @@ model_artifact_basin_versions:
 ```
 
 Written by the standalone `record_artifact_basin_lineage(...)` helper
-(Plan 120 Task 2D) called right after `store_artifact()` returns — NOT a
-widening of the `ModelArtifactStore.store_artifact` Protocol.
+(Plan 120 Task 2D — **implemented**, `store/model_artifact_lineage.py`)
+called right after `store_artifact()` returns — NOT a widening of the
+`ModelArtifactStore.store_artifact` Protocol. Wired into both
+`train_models_flow` (after store + promote) and `onboard_model_flow` (after
+store only, before the skill gate) via an injected `lineage_writer`.
 
 ### `flow_regime_configs` table
 

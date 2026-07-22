@@ -302,12 +302,21 @@ spatial_type
 band_id
 ```
 
-The current `Basin` domain type and `basins` table do not define first-class fields
-for this Gateway polygon-reference mapping. The implementation plan for this
-artifact contract MUST add an equivalent persistence target before Nepal production
-enablement. Acceptable targets include an additive table keyed by
-`station_id + gateway_hru_name + name`, or a typed metadata field if the schema plan
-chooses that route.
+**RESOLVED — persistence target (Plan 082 Task 2D schema + Plan 120 Task
+0A/2B store layer).** The persistence target is an additive table keyed by
+`station_id + gateway_hru_name + name` — `recap_gateway_polygon_bindings`
+(`db/metadata.py:310-345`; base six columns owned by Plan 082, `package_id`/
+`imported_at` provenance columns owned by Plan 120 Task 0A). The reader/writer
+is `RecapGatewayPolygonStore` (`store/recap_gateway_polygon_store.py`);
+`GatewayPolygonBindingRow`/`store_binding` carry and write the provenance
+columns, with a DELETE-then-INSERT replace path for `basin_average` rows so a
+correction (HRU/name rename) never violates
+`uq_recap_gateway_polygon_bindings_one_basin_average_per_station`. **Still
+open:** the package loader/dissolve/importer that actually DRIVES
+`store_binding` from an accepted basin/static package (Plan 120 Phase 1 —
+Task 1A/1B — and Task 2A/2C) is not yet built; until it lands, the store
+layer above has no production caller and 082's resolver keeps returning
+`None` for every station (see Plan 120 "Production-gate note").
 
 ## 6. `static_attributes.parquet`
 

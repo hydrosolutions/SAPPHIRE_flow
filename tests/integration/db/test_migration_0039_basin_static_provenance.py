@@ -242,7 +242,7 @@ class TestNonPackageInsertRegression:
             name="Onboarded Basin",
             geometry=_GEOM,
             area_km2=7.5,
-            attributes=None,
+            attributes={"elevation_mean": 1234.5},
             regional_basin=None,
             band_geometries=None,
             created_at=datetime.now(UTC),
@@ -267,6 +267,14 @@ class TestNonPackageInsertRegression:
         assert rows[0]["version"] == 1
         assert rows[0]["superseded_at"] is None
         assert rows[0]["package_id"] is None
+        # Task 2D/2A rely on this CTE path's geometry/attributes/area_km2
+        # carrying the CORRECT (not swapped/mis-ordered) values — a future
+        # edit that mis-orders `version_select`'s positional literals
+        # (basin_store.py's `version_select`) would only be caught here.
+        assert rows[0]["attributes"] == {"elevation_mean": 1234.5}
+        assert rows[0]["area_km2"] == 7.5
+        stored_geometry = to_shape(rows[0]["geometry"])
+        assert stored_geometry.equals(_GEOM)
 
 
 class TestAtomicPairRegression:
@@ -333,6 +341,70 @@ class TestAtomicPairRegression:
         assert basins_row is not None
         assert len(versions_rows) == 1
         assert versions_rows[0]["superseded_at"] is None
+
+    def test_version_leg_failure_leaves_no_orphaned_basins_row(
+        self, migration_engine: tuple[sa.Engine, str]
+    ) -> None:
+        """Failure-injection variant (plan Task 0A Verification, "Atomic-pair
+        regression"): force the second (version) leg of `store_basin`'s
+        data-modifying CTE to fail and assert NO committed `basins` row is
+        ever left without a current `basin_versions` row. A CHECK constraint
+        on `basin_versions` rejects one specific `area_km2` value, so the
+        version-leg INSERT (within the same CTE statement as the `basins`
+        INSERT) fails -- Postgres statement-level atomicity must then roll
+        back the WHOLE statement, including the `basins` half, even though
+        the connection runs AUTOCOMMIT (no enclosing transaction)."""
+        from alembic import command
+
+        engine, url = migration_engine
+        cfg = _alembic_cfg(url)
+        command.upgrade(cfg, "head")
+
+        poison_area_km2 = 999999.0
+        with engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    "ALTER TABLE basin_versions ADD CONSTRAINT "
+                    "ck_atomic_pair_test_reject_poison_area "
+                    f"CHECK (area_km2 <> {poison_area_km2})"
+                )
+            )
+
+        basin = Basin(
+            id=BasinId(uuid.uuid4()),
+            code="ATOMIC-FAIL-01",
+            name="Atomic Failure Basin",
+            geometry=_GEOM,
+            area_km2=poison_area_km2,
+            attributes=None,
+            regional_basin=None,
+            band_geometries=None,
+            created_at=datetime.now(UTC),
+            network="ch-bafu",
+        )
+
+        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+            store = PgBasinStore(conn)
+            with pytest.raises(IntegrityError):
+                store.store_basin(basin)
+
+        with engine.connect() as conn:
+            basins_row = conn.execute(
+                sa.select(basins.c.id).where(basins.c.id == basin.id)
+            ).one_or_none()
+            versions_rows = (
+                conn.execute(
+                    sa.select(basin_versions).where(
+                        basin_versions.c.basin_id == basin.id
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        # The whole statement rolled back — no orphaned `basins` row AND no
+        # stray `basin_versions` row.
+        assert basins_row is None
+        assert versions_rows == []
 
 
 class TestFkOrderEnforced:
@@ -475,3 +547,106 @@ class TestFiveAProvenanceColumnsAdditive:
         assert row["package_id"] is None
         assert row["imported_at"] is None
         assert row["gateway_hru_name"] == "nepal_dhm_v1"
+
+
+class TestOneCurrentPerBasinIndexEnforced:
+    """`uq_basin_versions_one_current_per_basin` (Task 0A) must REJECT a
+    second `superseded_at IS NULL` row for the same basin at the DB level —
+    not just exist in the SQLAlchemy metadata
+    (`tests/unit/db/test_basin_static_provenance_schema.py` only checks the
+    latter). Uses the shared, already-migrated-to-head `db_connection`
+    fixture — cheaper than a dedicated throwaway container, since this test
+    only needs post-migration behavior, not the migration itself."""
+
+    def test_second_current_version_for_same_basin_rejected(
+        self, db_connection: sa.Connection
+    ) -> None:
+        basin = Basin(
+            id=BasinId(uuid.uuid4()),
+            code=f"ONE-CURRENT-{uuid.uuid4().hex[:8]}",
+            name="One-current test basin",
+            geometry=_GEOM,
+            area_km2=10.0,
+            attributes=None,
+            regional_basin=None,
+            band_geometries=None,
+            created_at=datetime(2026, 1, 1, tzinfo=UTC),
+            network="dhm",
+        )
+        PgBasinStore(db_connection).store_basin(basin)
+
+        # A second row, superseded_at IS NULL, for the SAME basin_id -- the
+        # first current row was already written by store_basin above.
+        with pytest.raises(IntegrityError):
+            db_connection.execute(
+                sa.insert(basin_versions).values(
+                    id=uuid.uuid4(),
+                    basin_id=basin.id,
+                    package_id=None,
+                    version=2,
+                    geometry=from_shape(_GEOM, srid=4326),
+                    attributes=None,
+                    area_km2=10.0,
+                    band_geometries=None,
+                    gateway_mapping=None,
+                    superseded_at=None,
+                )
+            )
+
+    def test_second_row_allowed_once_first_is_superseded(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """Negative control: the index is scoped to `superseded_at IS NULL`
+        -- stamping the prior row's `superseded_at` first must let a second
+        current row through."""
+        basin = Basin(
+            id=BasinId(uuid.uuid4()),
+            code=f"ONE-CURRENT-OK-{uuid.uuid4().hex[:8]}",
+            name="One-current negative-control basin",
+            geometry=_GEOM,
+            area_km2=10.0,
+            attributes=None,
+            regional_basin=None,
+            band_geometries=None,
+            created_at=datetime(2026, 1, 1, tzinfo=UTC),
+            network="dhm",
+        )
+        PgBasinStore(db_connection).store_basin(basin)
+
+        db_connection.execute(
+            sa.update(basin_versions)
+            .where(
+                sa.and_(
+                    basin_versions.c.basin_id == basin.id,
+                    basin_versions.c.superseded_at.is_(None),
+                )
+            )
+            .values(superseded_at=datetime(2026, 6, 1, tzinfo=UTC))
+        )
+
+        db_connection.execute(
+            sa.insert(basin_versions).values(
+                id=uuid.uuid4(),
+                basin_id=basin.id,
+                package_id=None,
+                version=2,
+                geometry=from_shape(_GEOM, srid=4326),
+                attributes=None,
+                area_km2=10.0,
+                band_geometries=None,
+                gateway_mapping=None,
+                superseded_at=None,
+            )
+        )
+
+        current_count = db_connection.execute(
+            sa.select(sa.func.count())
+            .select_from(basin_versions)
+            .where(
+                sa.and_(
+                    basin_versions.c.basin_id == basin.id,
+                    basin_versions.c.superseded_at.is_(None),
+                )
+            )
+        ).scalar_one()
+        assert current_count == 1

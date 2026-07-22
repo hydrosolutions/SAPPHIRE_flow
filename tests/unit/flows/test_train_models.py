@@ -28,6 +28,7 @@ from tests.conftest import make_observations, make_station_config
 from tests.fakes.fake_adapters import FakeWeatherReanalysisSource
 from tests.fakes.fake_models import FakeGroupForecastModel, FakeStationForecastModel
 from tests.fakes.fake_stores import (
+    FakeArtifactLineageWriter,
     FakeBasinStore,
     FakeFlowRegimeConfigStore,
     FakeHindcastStore,
@@ -292,6 +293,168 @@ class TestTrainModelsFlowHappyPath:
         assert result.skill_computed is True
         assert len(hindcast_store._hindcasts) > 0
         assert len(skill_store._scores) > 0
+
+
+class TestTrainModelsFlowLineageWiring:
+    """Plan 120 Task 2D (c): the training/retraining flow (not just
+    onboarding) must ALSO write lineage rows -- via `store_and_promote_artifact`,
+    the helper is called right after store+promote."""
+
+    def test_station_scoped_artifact_records_lineage(self) -> None:
+        rng = random.Random(_RNG_SEED)
+        station_id = StationId(UUID(int=rng.getrandbits(128), version=4))
+        model_id = ModelId("fake_station_model")
+        model = FakeStationForecastModel()
+
+        (
+            model_store,
+            station_store,
+            group_store,
+            obs_store,
+            basin_store,
+            artifact_store,
+            hindcast_store,
+            skill_store,
+            flow_regime_store,
+            forcing_source,
+        ) = _setup_station_stores(station_id, model_id)
+
+        lineage_writer = FakeArtifactLineageWriter()
+        results = train_models_flow(
+            **_flow_kwargs(
+                model_id,
+                model,
+                model_store,
+                station_store,
+                group_store,
+                obs_store,
+                basin_store,
+                artifact_store,
+                hindcast_store,
+                skill_store,
+                flow_regime_store,
+                forcing_source,
+            ),
+            lineage_writer=lineage_writer,
+        )
+
+        assert len(results) == 1
+        assert results[0].artifact_id is not None
+        assert len(lineage_writer.calls) == 1
+        recorded_artifact_id, recorded_station_ids = lineage_writer.calls[0]
+        assert recorded_artifact_id == results[0].artifact_id
+        assert recorded_station_ids == (station_id,)
+
+    def test_group_scoped_artifact_records_only_trained_subset(self) -> None:
+        """(b): a group with one member SKIPPED (no usable data) must record
+        lineage for only the trained subset -- not the full membership."""
+        rng = random.Random(_RNG_SEED + 3)
+
+        def _next_uuid() -> UUID:
+            return UUID(int=rng.getrandbits(128), version=4)
+
+        station_id_1 = StationId(_next_uuid())
+        station_id_2 = StationId(_next_uuid())
+        skipped_station_id = StationId(_next_uuid())
+        group_id = StationGroupId(_next_uuid())
+        model_id = ModelId("fake_group_model")
+        model = FakeGroupForecastModel()
+
+        model_store = FakeModelStore()
+        station_store = FakeStationStore()
+        group_store = FakeStationGroupStore()
+        obs_store = FakeObservationStore()
+        basin_store = FakeBasinStore()
+        artifact_store = FakeModelArtifactStore(group_store=group_store)
+        hindcast_store = FakeHindcastStore()
+        skill_store = FakeSkillStore()
+        flow_regime_store = FakeFlowRegimeConfigStore()
+
+        group = StationGroup(
+            id=group_id,
+            name="lineage-skip-group",
+            station_ids=frozenset({station_id_1, station_id_2, skipped_station_id}),
+            created_at=_EPOCH,
+        )
+        group_store.store_group(group)
+
+        from sapphire_flow.services.model_registry import register_models
+        from sapphire_flow.types.station import GroupModelAssignment
+
+        register_models({model_id: model}, model_store, lambda: _EPOCH)
+        group_assignment = GroupModelAssignment(
+            group_id=group_id,
+            model_id=model_id,
+            time_step=timedelta(days=1),
+            status=ModelAssignmentStatus.ACTIVE,
+            priority=1,
+            created_at=_EPOCH,
+        )
+        group_store.store_group_model_assignment(group_assignment)
+        group_store.seed_group_model_assignment(group_id, model_id, group_assignment)
+
+        all_records = []
+        for i, sid in enumerate((station_id_1, station_id_2)):
+            st = make_station_config(station_id=sid)
+            station_store.store_station(st)
+            station_store.store_weather_source(
+                StationWeatherSource(
+                    station_id=sid,
+                    nwp_source="smn",
+                    extraction_type=SpatialRepresentation.POINT,
+                    status=WeatherSourceStatus.ACTIVE,
+                    role=WeatherSourceRole.REANALYSIS,
+                )
+            )
+            # Distinct rng per station (NOT the shared _RNG_SEED) --
+            # `make_observations` seeds `Observation.id` from `rng`, so
+            # reusing one seed across stations makes both stations generate
+            # IDENTICAL observation ids and the second `store_observations`
+            # call silently clobbers the first station's rows in
+            # `FakeObservationStore` (keyed by id only).
+            obs = make_observations(
+                n=_N_OBS_DAYS,
+                station_id=sid,
+                parameter="discharge",
+                start=_TRAINING_START,
+                interval=timedelta(days=1),
+                rng=random.Random(_RNG_SEED + i),
+            )
+            obs_store.store_observations(obs)
+            all_records.extend(_make_forcing_records(sid, _TRAINING_START, _N_OBS_DAYS))
+        # skipped_station_id deliberately has NO station record / obs / forcing
+        # -- it stays a member of the group but assemble_group_training_data
+        # excludes it from the trained subset (no usable data).
+
+        forcing_source = FakeWeatherReanalysisSource(records=all_records)
+        lineage_writer = FakeArtifactLineageWriter()
+
+        results = train_models_flow(
+            period_start=str(_TRAINING_START.isoformat()),
+            period_end=str(_TRAINING_END.isoformat()),
+            model_store=model_store,
+            station_store=station_store,
+            group_store=group_store,
+            obs_store=obs_store,
+            basin_store=basin_store,
+            artifact_store=artifact_store,
+            hindcast_store=hindcast_store,
+            skill_store=skill_store,
+            flow_regime_store=flow_regime_store,
+            forcing_source=forcing_source,
+            models={model_id: model},
+            clock=lambda: _EPOCH,
+            rng=random.Random(0),
+            lineage_writer=lineage_writer,
+        )
+
+        assert len(results) == 1
+        assert results[0].artifact_id is not None
+        assert len(lineage_writer.calls) == 1
+        recorded_artifact_id, recorded_station_ids = lineage_writer.calls[0]
+        assert recorded_artifact_id == results[0].artifact_id
+        assert set(recorded_station_ids) == {station_id_1, station_id_2}
+        assert skipped_station_id not in recorded_station_ids
 
 
 class TestTrainModelsFlowModelNotFound:
@@ -832,6 +995,7 @@ class TestBootstrapPath:
             "skill_store": MagicMock(),
             "flow_regime_store": MagicMock(),
             "forcing_store": MagicMock(),
+            "lineage_writer": MagicMock(),
         }
         captured: dict[str, object] = {}
 

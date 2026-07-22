@@ -30,6 +30,7 @@ def make_pg_stores(conn: sa.Connection) -> dict[str, object]:
     from sapphire_flow.store.forecast_store import PgForecastStore
     from sapphire_flow.store.hindcast_store import PgHindcastStore
     from sapphire_flow.store.historical_forcing_store import PgHistoricalForcingStore
+    from sapphire_flow.store.model_artifact_lineage import PgArtifactLineageWriter
     from sapphire_flow.store.model_artifact_store import PgModelArtifactStore
     from sapphire_flow.store.model_state_store import PgModelStateStore
     from sapphire_flow.store.model_store import PgModelStore
@@ -56,6 +57,7 @@ def make_pg_stores(conn: sa.Connection) -> dict[str, object]:
         "flow_regime_store": PgFlowRegimeConfigStore(conn),
         "model_store": PgModelStore(conn),
         "artifact_store": PgModelArtifactStore(conn, artifact_dir),
+        "lineage_writer": PgArtifactLineageWriter(conn),
         "group_store": PgStationGroupStore(conn),
         "hindcast_store": PgHindcastStore(conn),
         "skill_store": PgSkillStore(conn),
