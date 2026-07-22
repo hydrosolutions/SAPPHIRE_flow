@@ -682,6 +682,7 @@ class MeteoSwissNwpAdapter:
             shutil.rmtree(scratch_dir, ignore_errors=True)
         scratch_dir.mkdir(parents=True, exist_ok=True)
 
+        walk_t0 = time.perf_counter()
         target_ref_dt = cycle_time.strftime("%Y-%m-%dT%H:%M:%SZ")
         allow_tokens: list[str] = [row[0] for row in self.PARAM_GROUPS]
 
@@ -846,9 +847,15 @@ class MeteoSwissNwpAdapter:
         # Plan 140 T2 observability: log the actual page count + matched
         # target-cycle item count on every successful fetch, so the next
         # treadmill breach is visible as a trend in logs, not just a silent
-        # outage once the cap is hit.
+        # outage once the cap is hit. This is a narrower, STAC-walk-scoped
+        # event distinct from the canonical `nwp.fetch_completed` emitted by
+        # the caller (fetch_forecasts) after parse/archive/extraction also
+        # succeed — reusing that name here would let ops greps see a false
+        # success signal if `_parse_grib_files` fails immediately after.
+        walk_duration_ms = int((time.perf_counter() - walk_t0) * 1000)
         log.info(
-            "nwp.fetch_completed",
+            "nwp.stac_walk_completed",
+            duration_ms=walk_duration_ms,
             page_count=page_count,
             matched_ref_dt_count=matched_ref_dt_count,
             files_fetched=len(grib_files),

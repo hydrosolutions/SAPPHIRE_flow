@@ -107,11 +107,16 @@ early, not as a silent outage.
   raises; the near-cap WARNING fires at the threshold.
 - **Result:** cap raised 800 → 1500, comment updated with the 861-page/4-cycle/+56%-items-per-cycle
   benchmark; added `_PAGINATION_WARNING_THRESHOLD = 1200` (80% of cap), a `matched_ref_dt_count` counter, an
-  `nwp.pagination_near_cap` WARNING fired once per fetch at/above the threshold, and an `nwp.fetch_completed`
-  INFO log (page_count, matched_ref_dt_count, files_fetched) on every successful return. 6 new tests in
-  `TestPaginationCap` (red-first; each shown to fail against the pre-fix 800-page code, then pass against the
-  fix) plus the 2 pre-existing tests updated for the new cap value/message. Full suite green; ruff + pyright
-  ratchet clean. **T4 (mac-mini deploy) is a separate live/operational step, not part of this code change.**
+  `nwp.pagination_near_cap` WARNING fired once per fetch at/above the threshold, and an `nwp.stac_walk_completed`
+  INFO log (`duration_ms`, page_count, matched_ref_dt_count, files_fetched) on every successful STAC walk. This
+  event is deliberately named apart from the canonical `nwp.fetch_completed` (emitted by `fetch_forecasts`
+  only after parse/archive/extraction also succeed, `meteoswiss_nwp.py:649-657`) — reusing that name here
+  would give ops greps a false success signal if `_parse_grib_files` failed immediately after, and
+  `docs/standards/logging.md` requires `duration_ms` on every `*.completed` event, which this now carries.
+  6 new tests in `TestPaginationCap` (red-first; each shown to fail against the pre-fix 800-page code, then
+  pass against the fix) plus the 2 pre-existing tests updated for the new cap value/message. Full suite green;
+  ruff + pyright ratchet clean. **T4 (mac-mini deploy) is a separate live/operational step, not part of this
+  code change.**
 
 ### T3 — early-stop — ❌ DEFERRED (T1 evidence: cannot help)
 

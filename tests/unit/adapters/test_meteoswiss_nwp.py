@@ -1269,12 +1269,17 @@ class TestPaginationCap:
         warnings = [e for e in captured if e.get("event") == "nwp.pagination_near_cap"]
         assert warnings == []
 
-    def test_fetch_completed_log_includes_page_and_item_counts(
+    def test_stac_walk_completed_log_includes_page_and_item_counts(
         self, tmp_path: Path
     ) -> None:
         # Observability: a successful fetch logs the actual page count and
         # matched target-cycle item count so the next breach shows up as a
-        # trend, not a silent outage.
+        # trend, not a silent outage. This is a narrower event name
+        # (nwp.stac_walk_completed), distinct from the canonical
+        # nwp.fetch_completed emitted by fetch_forecasts() only after
+        # parse/archive/extraction also succeed (docs/standards/logging.md:
+        # duration_ms is mandatory on all *.completed events, and the two
+        # events must never collide under the same name).
         cycle = ensure_utc(datetime(2026, 4, 19, 12, 0, tzinfo=UTC))
         item = _make_item("tot_prec", ref_dt="2026-04-19T12:00:00Z")
         handler = _make_n_page_handler(5, item)
@@ -1284,11 +1289,15 @@ class TestPaginationCap:
             files = adapter._fetch_grib_files(cycle)
 
         assert len(files) == 1
-        completed = [e for e in captured if e.get("event") == "nwp.fetch_completed"]
+        completed = [e for e in captured if e.get("event") == "nwp.stac_walk_completed"]
         assert len(completed) == 1
         assert completed[0]["page_count"] == 5
         assert completed[0]["matched_ref_dt_count"] == 1
         assert completed[0]["files_fetched"] == 1
+        assert isinstance(completed[0]["duration_ms"], int)
+        # Must not collide with the canonical nwp.fetch_completed event name
+        # (emitted separately by fetch_forecasts after parse/archive succeed).
+        assert [e for e in captured if e.get("event") == "nwp.fetch_completed"] == []
 
 
 def _per_file_ds(
