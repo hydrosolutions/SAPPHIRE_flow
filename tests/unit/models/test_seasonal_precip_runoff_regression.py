@@ -32,6 +32,7 @@ These tests prove:
 
 from __future__ import annotations
 
+import math
 import random
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
@@ -48,6 +49,7 @@ from sapphire_flow.models.nwp_regression import (
     NwpRainfallRunoff,
     NwpRegression,
     SeasonalPrecipRunoffRegression,
+    _dynamic_inputs,
 )
 from sapphire_flow.services.operational_inputs import (
     assemble_station_operational_inputs,
@@ -103,6 +105,13 @@ class TestPastPrecipRequirementRouting:
     def test_past_dynamic_features_includes_precipitation(self) -> None:
         adapter = _adapter(SeasonalPrecipRunoffRegression())
         assert "precipitation" in adapter.data_requirements.past_dynamic_features
+
+    def test_past_dynamic_features_includes_temperature(self) -> None:
+        # Plan 138: the new past-known reanalysis/temperature channel must
+        # route through ModelDataRequirements.past_dynamic_features exactly
+        # like the existing past-precip channel.
+        adapter = _adapter(SeasonalPrecipRunoffRegression())
+        assert "temperature" in adapter.data_requirements.past_dynamic_features
 
     def test_nwp_only_variants_do_not_declare_past_precip(self) -> None:
         # Soundness contrast: today's NWP-only models fetch precip only for
@@ -403,12 +412,15 @@ def _series(
 
 def _train_series(
     n: int, base: datetime
-) -> tuple[list[datetime], list[float], list[float], list[float], list[float]]:
+) -> tuple[
+    list[datetime], list[float], list[float], list[float], list[float], list[float]
+]:
     rng = random.Random(20260301)
     ts = [base + i * _STEP for i in range(n)]
     precip = [round(rng.uniform(0.0, 20.0), 4) for _ in range(n)]
     temp = [round(rng.uniform(-5.0, 25.0), 4) for _ in range(n)]
     reanalysis_precip = [round(rng.uniform(0.0, 15.0), 4) for _ in range(n)]
+    reanalysis_temp = [round(rng.uniform(-5.0, 20.0), 4) for _ in range(n)]
     discharge = [10.0] * n
     for i in range(1, n):
         discharge[i] = (
@@ -417,17 +429,20 @@ def _train_series(
             + 5.0 * precip[i]
             + 0.5 * temp[i]
             + 0.1 * reanalysis_precip[i]
+            + 0.2 * reanalysis_temp[i]
         )
-    return ts, discharge, precip, temp, reanalysis_precip
+    return ts, discharge, precip, temp, reanalysis_precip, reanalysis_temp
 
 
-def _fit_seasonal_model() -> tuple[SeasonalPrecipRunoffRegression, object]:
-    model = SeasonalPrecipRunoffRegression()
-    n = 120  # > _PRECIP_LOOKBACK_DAYS (45) + lookback lags, for real windows
-    base = datetime(2024, 1, 1, tzinfo=UTC)
-    ts, discharge, precip, temp, reanalysis_precip = _train_series(n, base)
-
-    dynamic = fi_boundary.DynamicInputs(
+def _seasonal_dynamic_inputs(
+    ts: list[datetime],
+    discharge: list[float],
+    precip: list[float],
+    temp: list[float],
+    reanalysis_precip: list[float],
+    reanalysis_temp: list[float],
+) -> fi_boundary.DynamicInputs:
+    return fi_boundary.DynamicInputs(
         past_known={
             "obs": {
                 "discharge": _series(
@@ -437,7 +452,10 @@ def _fit_seasonal_model() -> tuple[SeasonalPrecipRunoffRegression, object]:
             "reanalysis": {
                 "precipitation": _series(
                     ts, "precipitation", reanalysis_precip, fi_boundary.Unit.MM
-                )
+                ),
+                "temperature": _series(
+                    ts, "temperature", reanalysis_temp, fi_boundary.Unit.DEG_C
+                ),
             },
         },
         future_known={
@@ -448,6 +466,19 @@ def _fit_seasonal_model() -> tuple[SeasonalPrecipRunoffRegression, object]:
                 "temperature": _series(ts, "temperature", temp, fi_boundary.Unit.DEG_C),
             }
         },
+    )
+
+
+def _fit_seasonal_model() -> tuple[SeasonalPrecipRunoffRegression, object]:
+    model = SeasonalPrecipRunoffRegression()
+    n = 120  # > _PRECIP_LOOKBACK_DAYS (45) + lookback lags, for real windows
+    base = datetime(2024, 1, 1, tzinfo=UTC)
+    ts, discharge, precip, temp, reanalysis_precip, reanalysis_temp = _train_series(
+        n, base
+    )
+
+    dynamic = _seasonal_dynamic_inputs(
+        ts, discharge, precip, temp, reanalysis_precip, reanalysis_temp
     )
     station = fi_boundary.StationInputs(
         dynamic={_STEP: fi_boundary.SpatialInputs(data={_spatial_rep(): dynamic})},
@@ -463,6 +494,20 @@ def _spatial_rep() -> fi_boundary.FISpatialRepresentation:
     _step, spatial = next(iter(req.dynamic.items()))
     rep, _spec = next(iter(spatial.data.items()))
     return rep
+
+
+_DEFAULT_TEMP_LOOKBACK_DAYS = 14
+
+
+def _default_temp_window(
+    issue: datetime, lookback_days: int = _DEFAULT_TEMP_LOOKBACK_DAYS
+) -> tuple[list[datetime], list[float]]:
+    """A full, continuous antecedent-temperature window ending the day before
+    ``issue`` — the "everything is fine" default so tests that vary the
+    PRECIP window in isolation don't also trip the independent temp-window
+    guard."""
+    ts = [issue - (lookback_days - i) * _STEP for i in range(lookback_days)]
+    return ts, [10.0] * lookback_days
 
 
 def _predict_inputs(
@@ -490,13 +535,23 @@ def _predict_inputs_custom_reanalysis(
     reanalysis_ts: Sequence[datetime],
     reanalysis_vals: list[float],
     lag_discharge: list[float],
+    reanalysis_temp_ts: Sequence[datetime] | None = None,
+    reanalysis_temp_vals: list[float] | None = None,
 ) -> fi_boundary.ModelInputs:
     """Like ``_predict_inputs`` but with EXPLICIT antecedent-precip timestamps
     — used to construct stale/duplicate-timestamp windows that a plain
-    ``reanalysis_precip: list[float]`` count cannot express."""
+    ``reanalysis_precip: list[float]`` count cannot express.
+
+    ``reanalysis_temp_ts``/``reanalysis_temp_vals`` (Plan 138) default to a
+    full, valid antecedent-temperature window so tests exercising the PRECIP
+    window in isolation are unaffected by the independent temp-window guard;
+    pass both explicitly to exercise the temp window itself.
+    """
     future_ts = [issue + (k + 1) * _STEP for k in range(horizon)]
     lb = len(lag_discharge)
     lag_ts = [issue - (lb - 1 - i) * _STEP for i in range(lb)]
+    if reanalysis_temp_ts is None or reanalysis_temp_vals is None:
+        reanalysis_temp_ts, reanalysis_temp_vals = _default_temp_window(issue)
 
     dynamic = fi_boundary.DynamicInputs(
         past_known={
@@ -508,7 +563,13 @@ def _predict_inputs_custom_reanalysis(
             "reanalysis": {
                 "precipitation": _series(
                     reanalysis_ts, "precipitation", reanalysis_vals, fi_boundary.Unit.MM
-                )
+                ),
+                "temperature": _series(
+                    reanalysis_temp_ts,
+                    "temperature",
+                    reanalysis_temp_vals,
+                    fi_boundary.Unit.DEG_C,
+                ),
             },
         },
         future_known={
@@ -573,6 +634,249 @@ class TestShortAntecedentPrecipWindowReturnsModelFailure:
 
 
 # --------------------------------------------------------------------------- #
+# 4b. Plan 138 — past-TEMPERATURE channel: SHORT/STALE antecedent-temp window
+#     -> ModelFailure (mirrors the precip case, DC-1/DC-2).
+# --------------------------------------------------------------------------- #
+
+
+class TestShortAntecedentTempWindowReturnsModelFailure:
+    def test_predict_returns_model_failure_for_short_reanalysis_temp_window(
+        self,
+    ) -> None:
+        model, artifact = _fit_seasonal_model()
+        horizon = 5
+
+        inputs = _predict_inputs_custom_reanalysis(
+            issue=_ISSUE,
+            horizon=horizon,
+            reanalysis_ts=[
+                _ISSUE - (45 - i) * _STEP for i in range(45)
+            ],  # full, valid precip window
+            reanalysis_vals=[2.0] * 45,
+            lag_discharge=[10.0] * 7,
+            reanalysis_temp_ts=[
+                _ISSUE - (3 - i) * _STEP for i in range(3)
+            ],  # only 3 rows, need 14
+            reanalysis_temp_vals=[3.0, 4.0, 5.0],
+        )
+
+        result = model.predict(
+            artifact, inputs=inputs, issue_datetime=_ISSUE, rng=random.Random(0)
+        )
+
+        assert isinstance(result, ModelFailure)
+        assert result.cause is FailureCause.INPUT_DATA
+        assert "antecedent-temp" in result.message
+        assert "got 3" in result.message
+        assert "need 14" in result.message
+        assert result.model_name == "seasonal_precip_runoff_regression"
+
+    def test_predict_returns_model_failure_for_stale_reanalysis_temp_window(
+        self,
+    ) -> None:
+        # 14 DISTINCT rows (would pass a bare row-count check) but entirely
+        # outside the actual [issue-14d, issue) window.
+        model, artifact = _fit_seasonal_model()
+        horizon = 5
+        stale_start = _ISSUE - timedelta(days=100)
+        stale_temp_ts = [stale_start + i * _STEP for i in range(14)]
+
+        inputs = _predict_inputs_custom_reanalysis(
+            issue=_ISSUE,
+            horizon=horizon,
+            reanalysis_ts=[_ISSUE - (45 - i) * _STEP for i in range(45)],
+            reanalysis_vals=[2.0] * 45,
+            lag_discharge=[10.0] * 7,
+            reanalysis_temp_ts=stale_temp_ts,
+            reanalysis_temp_vals=[2.0] * 14,
+        )
+
+        result = model.predict(
+            artifact, inputs=inputs, issue_datetime=_ISSUE, rng=random.Random(0)
+        )
+
+        assert isinstance(result, ModelFailure)
+        assert result.cause is FailureCause.INPUT_DATA
+        assert "antecedent-temp" in result.message
+        assert "got 0" in result.message
+        assert "need 14" in result.message
+
+    def test_predict_succeeds_with_full_reanalysis_temp_window(self) -> None:
+        model, artifact = _fit_seasonal_model()
+        horizon = 5
+
+        # Uses the default full temp window baked into
+        # ``_predict_inputs`` / ``_predict_inputs_custom_reanalysis``.
+        inputs = _predict_inputs(
+            issue=_ISSUE,
+            horizon=horizon,
+            reanalysis_precip=[2.0] * 45,
+            lag_discharge=[10.0] * 7,
+        )
+
+        result = model.predict(
+            artifact, inputs=inputs, issue_datetime=_ISSUE, rng=random.Random(0)
+        )
+
+        assert isinstance(result, fi_boundary.ModelSuccess)
+
+
+# --------------------------------------------------------------------------- #
+# 4c. Plan 138 DC-3 — a coefficient/feature-count mismatch (a stale artifact,
+#     trained BEFORE the antecedent-temp column existed) returns ModelFailure
+#     instead of a raw NumPy shape crash or a silent mis-weighted prediction.
+# --------------------------------------------------------------------------- #
+
+
+class TestArtifactFeatureCountGuard:
+    def test_predict_returns_model_failure_for_stale_artifact_missing_temp_column(
+        self,
+    ) -> None:
+        model, artifact = _fit_seasonal_model()
+        # Simulate a Plan-129-era artifact: one column short (no
+        # antecedent-temp), same n_lags.
+        stale_coefficients = artifact.coefficients[:-1]
+        stale_artifact = type(artifact)(
+            coefficients=stale_coefficients,
+            intercept=artifact.intercept,
+            n_lags=artifact.n_lags,
+        )
+        horizon = 5
+
+        inputs = _predict_inputs(
+            issue=_ISSUE,
+            horizon=horizon,
+            reanalysis_precip=[2.0] * 45,
+            lag_discharge=[10.0] * 7,
+        )
+
+        result = model.predict(
+            stale_artifact, inputs=inputs, issue_datetime=_ISSUE, rng=random.Random(0)
+        )
+
+        assert isinstance(result, ModelFailure)
+        assert result.cause is FailureCause.INPUT_DATA
+        assert "feature-count mismatch" in result.message
+        assert f"got {len(stale_coefficients)}" in result.message
+        assert f"expected {len(artifact.coefficients)}" in result.message
+
+    def test_predict_succeeds_with_matching_artifact_feature_count(self) -> None:
+        # Soundness contrast: the freshly-trained artifact (matching feature
+        # count) must still succeed — proves the guard discriminates on
+        # count, not merely rejecting everything.
+        model, artifact = _fit_seasonal_model()
+        horizon = 5
+
+        inputs = _predict_inputs(
+            issue=_ISSUE,
+            horizon=horizon,
+            reanalysis_precip=[2.0] * 45,
+            lag_discharge=[10.0] * 7,
+        )
+
+        result = model.predict(
+            artifact, inputs=inputs, issue_datetime=_ISSUE, rng=random.Random(0)
+        )
+
+        assert isinstance(result, fi_boundary.ModelSuccess)
+
+
+# --------------------------------------------------------------------------- #
+# 4d. Plan 138 DC-1 — feature-vector order: [precip, temp, antecedent_precip,
+#     antecedent_temp, season_sin, season_cos, *lags]. Antecedent precip is a
+#     SUM (flux); antecedent temp is a MEAN (state) — verified against an
+#     independent oracle, not by re-deriving from the model's own helpers.
+# --------------------------------------------------------------------------- #
+
+
+def _manual_antecedent_sum(
+    times: list[datetime], values: list[float], anchor: datetime, lookback_days: int
+) -> float:
+    window_start = anchor - timedelta(days=lookback_days)
+    return sum(
+        v for t, v in zip(times, values, strict=True) if window_start <= t < anchor
+    )
+
+
+def _manual_antecedent_mean(
+    times: list[datetime], values: list[float], anchor: datetime, lookback_days: int
+) -> float:
+    window_start = anchor - timedelta(days=lookback_days)
+    selected = [
+        v for t, v in zip(times, values, strict=True) if window_start <= t < anchor
+    ]
+    return sum(selected) / len(selected)
+
+
+class TestFeatureVectorOrderIncludesAntecedentTemp:
+    def test_extra_train_features_column_order_and_values(self) -> None:
+        model = SeasonalPrecipRunoffRegression()
+        n = 120
+        base = datetime(2024, 1, 1, tzinfo=UTC)
+        ts, discharge, precip, temp, reanalysis_precip, reanalysis_temp = _train_series(
+            n, base
+        )
+        dynamic = _seasonal_dynamic_inputs(
+            ts, discharge, precip, temp, reanalysis_precip, reanalysis_temp
+        )
+
+        extra = model._extra_train_features(dynamic, ts)
+
+        # 4 extra columns: antecedent_precip, antecedent_temp, season_sin, season_cos.
+        assert extra.shape == (n, 4)
+
+        anchor_idx = n - 1
+        anchor = ts[anchor_idx]
+        expected_precip_sum = _manual_antecedent_sum(
+            ts, reanalysis_precip, anchor, model._precip_lookback_days
+        )
+        expected_temp_mean = _manual_antecedent_mean(
+            ts, reanalysis_temp, anchor, model._temp_lookback_days
+        )
+        day_of_year = anchor.timetuple().tm_yday
+        angle = 2.0 * math.pi * day_of_year / 365.25
+        expected_season_sin = math.sin(angle)
+        expected_season_cos = math.cos(angle)
+
+        assert extra[anchor_idx, 0] == pytest.approx(expected_precip_sum)
+        assert extra[anchor_idx, 1] == pytest.approx(expected_temp_mean)
+        assert extra[anchor_idx, 2] == pytest.approx(expected_season_sin)
+        assert extra[anchor_idx, 3] == pytest.approx(expected_season_cos)
+
+    def test_extra_predict_features_column_order_and_values(self) -> None:
+        model = SeasonalPrecipRunoffRegression()
+        horizon = 5
+        precip_ts = [_ISSUE - (45 - i) * _STEP for i in range(45)]
+        precip_vals = [round(2.0 + i * 0.1, 4) for i in range(45)]
+        temp_ts, temp_vals = _default_temp_window(_ISSUE)
+
+        inputs = _predict_inputs_custom_reanalysis(
+            issue=_ISSUE,
+            horizon=horizon,
+            reanalysis_ts=precip_ts,
+            reanalysis_vals=precip_vals,
+            lag_discharge=[10.0] * 7,
+            reanalysis_temp_ts=temp_ts,
+            reanalysis_temp_vals=temp_vals,
+        )
+        _station_key, dynamic = _dynamic_inputs(inputs)
+        future_times = [_ISSUE + (k + 1) * _STEP for k in range(horizon)]
+
+        extra = model._extra_predict_features(dynamic, future_times, _ISSUE)
+
+        assert extra.shape == (horizon, 4)
+        expected_precip_sum = _manual_antecedent_sum(
+            precip_ts, precip_vals, _ISSUE, model._precip_lookback_days
+        )
+        expected_temp_mean = _manual_antecedent_mean(
+            temp_ts, temp_vals, _ISSUE, model._temp_lookback_days
+        )
+        # Constant across the horizon (single antecedent value at issue-time).
+        assert extra[:, 0] == pytest.approx([expected_precip_sum] * horizon)
+        assert extra[:, 1] == pytest.approx([expected_temp_mean] * horizon)
+
+
+# --------------------------------------------------------------------------- #
 # 5. Training warmup — no sample with a partial 45-day antecedent window
 #    enters the design matrix (Plan 129 post-implementation review)
 # --------------------------------------------------------------------------- #
@@ -583,31 +887,11 @@ class TestTrainingWarmupExcludesPartialAntecedentWindows:
         model = SeasonalPrecipRunoffRegression()
         n = 120
         base = datetime(2024, 1, 1, tzinfo=UTC)
-        ts, discharge, precip, temp, reanalysis_precip = _train_series(n, base)
-
-        dynamic = fi_boundary.DynamicInputs(
-            past_known={
-                "obs": {
-                    "discharge": _series(
-                        ts, "discharge", discharge, fi_boundary.Unit.M3_PER_S
-                    )
-                },
-                "reanalysis": {
-                    "precipitation": _series(
-                        ts, "precipitation", reanalysis_precip, fi_boundary.Unit.MM
-                    )
-                },
-            },
-            future_known={
-                "nwp": {
-                    "precipitation": _series(
-                        ts, "precipitation", precip, fi_boundary.Unit.MM
-                    ),
-                    "temperature": _series(
-                        ts, "temperature", temp, fi_boundary.Unit.DEG_C
-                    ),
-                }
-            },
+        ts, discharge, precip, temp, reanalysis_precip, reanalysis_temp = _train_series(
+            n, base
+        )
+        dynamic = _seasonal_dynamic_inputs(
+            ts, discharge, precip, temp, reanalysis_precip, reanalysis_temp
         )
         station = fi_boundary.StationInputs(
             dynamic={_STEP: fi_boundary.SpatialInputs(data={_spatial_rep(): dynamic})},
@@ -620,7 +904,12 @@ class TestTrainingWarmupExcludesPartialAntecedentWindows:
 
         events = [e for e in logs if e.get("event") == "model.training_completed"]
         assert len(events) == 1
-        expected_warmup = max(model._n_lags, model._precip_lookback_days)
+        # Plan 138: warmup is the max across ALL antecedent windows, not just
+        # precip — the precip window (45) still dominates the temp window
+        # (14) here, but the formula itself must reflect both.
+        expected_warmup = max(
+            model._n_lags, model._precip_lookback_days, model._temp_lookback_days
+        )
         # If a partial-window row (index < 45) had entered the design matrix,
         # n_samples would be n - model._n_lags (113) instead of n - 45 (75).
         assert events[0]["warmup"] == expected_warmup
@@ -817,8 +1106,16 @@ class TestAdapterNanGateCoversCollidingFutureNwpPrecip:
                 {"timestamp": lag_ts, "discharge": [10.0] * lag_n}
             ),
             past_dynamic=_time_frame(
-                # Clean past antecedent precip.
-                {"timestamp": precip_ts, "precipitation": [2.0] * precip_n}
+                # Clean past antecedent precip AND antecedent temperature
+                # (Plan 138 — the new past-known reanalysis/temperature
+                # channel must also be present, or the adapter's
+                # ``_frame_with_column`` lookup itself fails before the NaN
+                # gate this test targets ever runs).
+                {
+                    "timestamp": precip_ts,
+                    "precipitation": [2.0] * precip_n,
+                    "temperature": [10.0] * precip_n,
+                }
             ),
             future_dynamic=_time_frame(
                 {
