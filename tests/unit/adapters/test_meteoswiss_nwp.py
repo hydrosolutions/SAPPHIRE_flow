@@ -1159,15 +1159,17 @@ class TestFetchGribFilesReferenceDatetimeFilter:
 
 
 def _make_n_page_handler(
-    total_pages: int, final_item: dict[str, object] | None
+    total_pages: int, final_items: list[dict[str, object]] | None
 ) -> object:
-    """Serve exactly `total_pages` pages via rel=next, item only on the last.
+    """Serve exactly `total_pages` pages via rel=next, items only on the last.
 
     Unlike `_paged_handler` (which slices a feature list by offset), this
     tracks call count in closure state so tests can cheaply simulate a
     walk hundreds/thousands of pages deep without materializing that many
-    STAC items. The GRIB asset itself is served on every request whose URL
-    contains ``.grib2``.
+    STAC items. All of `final_items` land on the final page (so a test can
+    place several same-cycle items — allowlisted or not — to exercise the
+    ref_dt-count-before-allowlist ordering). The GRIB asset itself is served
+    on every request whose URL contains ``.grib2``.
     """
     calls = {"n": 0}
     next_url = (
@@ -1180,7 +1182,7 @@ def _make_n_page_handler(
             return httpx.Response(200, content=b"GRIB" + b"\x00" * 50)
         calls["n"] += 1
         is_last = calls["n"] >= total_pages
-        features = [final_item] if (is_last and final_item is not None) else []
+        features = list(final_items) if (is_last and final_items) else []
         nxt = None if is_last else next_url
         return httpx.Response(200, json=_make_page(features, next_url=nxt))
 
@@ -1230,7 +1232,7 @@ class TestPaginationCap:
         # would previously abort now completes.
         cycle = ensure_utc(datetime(2026, 4, 19, 12, 0, tzinfo=UTC))
         item = _make_item("tot_prec", ref_dt="2026-04-19T12:00:00Z")
-        handler = _make_n_page_handler(850, item)
+        handler = _make_n_page_handler(850, [item])
 
         adapter = _make_adapter(httpx.MockTransport(handler), tmp_path)  # type: ignore[arg-type]
         files = adapter._fetch_grib_files(cycle)
@@ -1244,7 +1246,7 @@ class TestPaginationCap:
         # WARNING naming the page count.
         cycle = ensure_utc(datetime(2026, 4, 19, 12, 0, tzinfo=UTC))
         item = _make_item("tot_prec", ref_dt="2026-04-19T12:00:00Z")
-        handler = _make_n_page_handler(1200, item)
+        handler = _make_n_page_handler(1200, [item])
 
         adapter = _make_adapter(httpx.MockTransport(handler), tmp_path)  # type: ignore[arg-type]
         with structlog.testing.capture_logs() as captured:
@@ -1254,13 +1256,16 @@ class TestPaginationCap:
         warnings = [e for e in captured if e.get("event") == "nwp.pagination_near_cap"]
         assert len(warnings) == 1
         assert warnings[0]["page_count"] == 1200
+        # Must be a WARNING, not an INFO — the whole point of the near-cap
+        # signal is to page ops before the treadmill hits the abort cap.
+        assert warnings[0]["log_level"] == "warning"
 
     def test_no_near_cap_warning_below_threshold(self, tmp_path: Path) -> None:
         # 850 pages is below the 1200-page (80%) warning threshold — no
         # WARNING should fire, only the routine completion INFO log.
         cycle = ensure_utc(datetime(2026, 4, 19, 12, 0, tzinfo=UTC))
         item = _make_item("tot_prec", ref_dt="2026-04-19T12:00:00Z")
-        handler = _make_n_page_handler(850, item)
+        handler = _make_n_page_handler(850, [item])
 
         adapter = _make_adapter(httpx.MockTransport(handler), tmp_path)  # type: ignore[arg-type]
         with structlog.testing.capture_logs() as captured:
@@ -1281,8 +1286,14 @@ class TestPaginationCap:
         # duration_ms is mandatory on all *.completed events, and the two
         # events must never collide under the same name).
         cycle = ensure_utc(datetime(2026, 4, 19, 12, 0, tzinfo=UTC))
-        item = _make_item("tot_prec", ref_dt="2026-04-19T12:00:00Z")
-        handler = _make_n_page_handler(5, item)
+        # Two same-cycle items on the final page — one allowlisted (tot_prec),
+        # one NOT (alb_rad). matched_ref_dt_count must be 2 (both ref_dt-match)
+        # while files_fetched is 1 (only the allowlisted item downloads). This
+        # proves the counter is incremented BEFORE the variable-allowlist skip;
+        # if it sat after the skip, matched_ref_dt_count would collapse to 1.
+        allowlisted = _make_item("tot_prec", ref_dt="2026-04-19T12:00:00Z")
+        not_allowlisted = _make_item("alb_rad", ref_dt="2026-04-19T12:00:00Z")
+        handler = _make_n_page_handler(5, [allowlisted, not_allowlisted])
 
         adapter = _make_adapter(httpx.MockTransport(handler), tmp_path)  # type: ignore[arg-type]
         with structlog.testing.capture_logs() as captured:
@@ -1292,7 +1303,7 @@ class TestPaginationCap:
         completed = [e for e in captured if e.get("event") == "nwp.stac_walk_completed"]
         assert len(completed) == 1
         assert completed[0]["page_count"] == 5
-        assert completed[0]["matched_ref_dt_count"] == 1
+        assert completed[0]["matched_ref_dt_count"] == 2
         assert completed[0]["files_fetched"] == 1
         assert isinstance(completed[0]["duration_ms"], int)
         # Must not collide with the canonical nwp.fetch_completed event name
