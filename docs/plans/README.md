@@ -35,7 +35,10 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
 ## Active — operational hardening (A) — the gate to any v1 prod deploy
 
 - **103** — Prefect worker observability & home — `DRAFT` — persist flow-run logs to
-  the Prefect store + writable `PREFECT_HOME`. **Supersedes 062.**
+  the Prefect store + writable `PREFECT_HOME`. **Supersedes 062 and 141** (the single owning plan for the
+  Prefect `PREFECT_HOME`/log-persistence work). Next: grill-me on D2 (log-persistence mechanism) → /plan → /implement.
+- **141** — Prefect writable home under read-only container — `SUPERSEDED by 103` — a redundant re-draft of
+  103's D1 (`PREFECT_HOME=/tmp/prefect`); folded into 103 (owner 2026-07-22).
 - **097** — Short-lookback observability — `READY` (WF1 plan-review + independent
   Codex review both converged clean, 2026-07-13) — warn when the delivered lookback
   is shorter than requested. **Next = WF2 (hold-at-PR).**
@@ -53,8 +56,8 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
 - **064** — Supply-chain hardening — `READY` (largely shipped; residuals remain).
 - **069** — Pyright backlog cleanup: ratchet + drain — `READY` (P1 shipped; drain
   remaining).
-- **062** — Prefect state persistence (`PREFECT_HOME` ↔ volume) — `DRAFT` — **likely
-  subsumed by 103**; reconcile.
+- **062** — Prefect state persistence (`PREFECT_HOME` ↔ volume) — `SUPERSEDED by 103` (reconciled
+  2026-07-22; also carried a stale SQLite-server premise — prefect-server is Postgres-backed).
 
 ## Active — v1 Nepal feature (B)
 

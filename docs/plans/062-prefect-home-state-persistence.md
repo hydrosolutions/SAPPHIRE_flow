@@ -1,6 +1,13 @@
 # Plan 062 — Prefect state persistence (`PREFECT_HOME` ↔ `prefect_data` volume)
 
-**Status**: DRAFT
+**Status**: SUPERSEDED by Plan 103 (owner decision 2026-07-22)
+> Plan 103 ("Supersedes 062") is the single owning plan for the Prefect `PREFECT_HOME`/state work — it
+> carries the writable-`PREFECT_HOME` fix (103 D1) plus flow-run-log persistence (103 D2). This 062 draft
+> also contains a stale premise (it treats prefect-server state as SQLite-on-`/root/.prefect`, but current
+> `docker-compose.yml:54` runs prefect-server on **Postgres** — `PREFECT_API_DATABASE_CONNECTION_URL`); any
+> still-valid server-side `read_only` concern should be re-derived inside Plan 103, not from here. Kept for
+> provenance; not to be implemented as-is.
+> (Original status: DRAFT, 2026-04-20.)
 **Date**: 2026-04-20
 **Depends on**: none. Unblocks: follow-up `read_only: true` hardening on
 `prefect-server` (deferred from Plan 053 T5). Related: Plan 046 (already

@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: SUPERSEDED
 created: 2026-07-22
 plan: 141
 title: Give Prefect a writable home under the read-only container (eliminate the EROFS result-write warning)
@@ -7,14 +7,24 @@ scope: Stop the recurring `Failed to write result: [Errno 30] Read-only file sys
 depends_on: []
 blocks: []
 supersedes: []
+superseded_by: 103
 ---
 
 # Plan 141 — Prefect writable home under the read-only container
 
 ## Status
 
-**DRAFT.** Surfaced 2026-07-22 during the Plan 138 `onboard-model` retrain on the mac-mini. For a `/plan`
-round before READY.
+**SUPERSEDED by Plan 103 (owner decision 2026-07-22).** This plan was drafted without noticing that
+**Plan 103** (`docs/plans/103-prefect-worker-observability-and-home.md`, DRAFT, high-priority, "Supersedes
+062") **already owns this fix**: its **D1** is the identical `PREFECT_HOME=/tmp/prefect` change, and Plan 103
+*also* fixes the higher-value companion defect — **flow-run logs are not persisted to Prefect** (`prefect
+flow-run logs <id>` returns empty, which is what made the 2026-07-03 incident and the 2026-07-22 NWP-outage
+diagnosis rely on raw container stdout). Pursuing three overlapping drafts (062/103/141) made no sense. **Do
+the work in Plan 103** (grill-me on its D2 log-persistence mechanism → `/plan` → `/implement`); the EROFS
+warning fix rides along as 103's D1. Kept for provenance only; not to be implemented.
+
+*(Original DRAFT text below is retained for reference — the design in it is correct but is a subset of Plan
+103's D1.)*
 
 ## Context — a benign-but-recurring warning that hides real result-write failures
 
