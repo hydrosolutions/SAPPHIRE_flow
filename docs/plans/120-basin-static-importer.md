@@ -258,23 +258,32 @@ row-shaping logic in one shared function that both call so they cannot drift.
 
 ## Implementation status (fixer pass, 2026-07-22 — keep current, do not let this drift)
 
-**NOT production-ready. No package loader/importer exists yet.** Landed so far, across two
-passes:
+**NOT production-ready. No package loader/importer exists yet.** Landed so far, across
+three passes:
 
 - **Task 0A — DONE** (`cbe3a1c`): provenance/versioning schema (`basin_static_packages`,
   `basin_versions`, `model_artifact_basin_versions`, additive `package_id` columns) +
   `PgBasinStore.store_basin` as the single atomic basin+`version=1` creation CTE. The
   `band_geometries` `json.dumps` JSONB bug was fixed as part of this same rewrite (see the
   corrected Task 2B bullet below — it does NOT need to fix this again).
-- **Task 2B — PARTIAL** (fixer pass): the §5a store-layer provenance write path
-  (`GatewayPolygonBindingRow.package_id`/`imported_at`, `store_binding` write/upsert) and the
-  `basin_average` DELETE-then-INSERT correction-replace path are DONE. The package-driven
-  population itself (something that actually calls `store_binding` from an accepted
-  package's dissolved geometries) is NOT built — it depends on Task 1A/1B/2A below.
-- **Task 2D — DONE** (fixer pass): `record_artifact_basin_lineage` helper
-  (`store/model_artifact_lineage.py`), wired into both `train_models_flow` and
-  `onboard_model_flow` right after artifact storage, with the NULL-skip/dangling-raise split
-  and the D-UP upstream static-features gate in `services/training_data.py`.
+- **Task 2B — PARTIAL** (fixer pass, hardened in the second fixer pass): the §5a
+  store-layer provenance write path (`GatewayPolygonBindingRow.package_id`/`imported_at`,
+  `store_binding` write/upsert) is DONE, and the `basin_average` correction-replace path is
+  a single atomic `INSERT ... ON CONFLICT (station_id) WHERE spatial_type='basin_average'
+  DO UPDATE` (not a two-statement DELETE-then-INSERT — that shipped in round 1 and was
+  SUPERSEDED in round 2 for a silent-drop-on-partial-failure bug; see the SUPERSEDED note
+  below). The package-driven population itself (something that actually calls
+  `store_binding` from an accepted package's dissolved geometries) is NOT built — it
+  depends on Task 1A/1B/2A below.
+- **Task 2D — DONE, including the service-level onboarding path (third fixer pass)**:
+  `record_artifact_basin_lineage` helper (`store/model_artifact_lineage.py`), wired into
+  `train_models_flow`, `onboard_model_flow`, AND `services/model_onboarding.onboard_model`
+  (the latter called from `services/onboarding.py`'s station-onboarding path, e.g.
+  `onboard_from_camelsch` / `flows/onboard.py::onboard_stations_flow`) right after artifact
+  storage, with the NULL-skip/dangling-raise split and the D-UP upstream static-features
+  gate in `services/training_data.py`. The first two fixer passes wired only the two
+  Prefect-flow call sites and missed the service-level one — a station onboarded via
+  `onboard_stations_flow` got no lineage row.
 - **Phase 1 (Task 1A/1B — package loader, checksums, feature-catalog/per-basin acceptance),
   Task 2A (dissolve into `basins` + version snapshot), Task 2C (incremental upsert +
   versioned corrections + idempotency + affected-artifact set), and Phase 3 (Task 3A

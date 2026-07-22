@@ -110,6 +110,7 @@ def onboard_stations_flow(
     reanalysis_adapter_factory: object = None,
     require_meteoswiss_backfill: bool = False,
     calculated_specs: object = None,
+    lineage_writer: object = None,
 ) -> object:
     if clock is None:
         clock = lambda: ensure_utc(datetime.now(UTC))  # noqa: E731
@@ -138,6 +139,8 @@ def onboard_stations_flow(
         skill_store = stores["skill_store"]
         parameter_store = stores["parameter_store"]
         formula_store = stores.get("formula_store")
+        if lineage_writer is None:
+            lineage_writer = stores.get("lineage_writer")
 
         # Plan 115b2 §2B/§2C: the MeteoSwiss reanalysis binding + per-station
         # backfill-or-hold, wired ONLY on this production DB-backed path (not
@@ -272,6 +275,7 @@ def onboard_stations_flow(
         require_meteoswiss_backfill=require_meteoswiss_backfill,
         formula_store=formula_store,  # type: ignore[arg-type]
         calculated_specs=calculated_specs or (),  # type: ignore[arg-type]
+        lineage_writer=lineage_writer,
     )
 
     log.info(

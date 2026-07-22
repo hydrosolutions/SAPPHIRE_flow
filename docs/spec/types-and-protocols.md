@@ -2468,9 +2468,14 @@ row per basin the artifact actually trained on (the TRAINED subset —
   the AUTOCOMMIT connection flows run on in production.
 
 `PgArtifactLineageWriter(conn)` is the thin flow-facing adapter (`.record(...)`)
-that `train_models_flow`/`onboard_model_flow` inject as `lineage_writer`;
-tests inject `tests.fakes.fake_stores.FakeArtifactLineageWriter` with the
-same shape.
+that `train_models_flow`/`onboard_model_flow` inject as `lineage_writer`.
+`services.model_onboarding.onboard_model` accepts the same optional
+`lineage_writer` and calls it right after `store_artifact` — `services.
+onboarding._run_onboarding`/`onboard_from_camelsch` thread it through from
+`flows/onboard.py::onboard_stations_flow`'s `stores["lineage_writer"]`, so the
+station-onboarding path records lineage too, not just the two Prefect-flow
+call sites. Tests inject `tests.fakes.fake_stores.FakeArtifactLineageWriter`
+with the same shape.
 
 #### ModelStore
 

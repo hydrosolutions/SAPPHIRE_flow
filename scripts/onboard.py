@@ -275,6 +275,15 @@ def main(argv: list[str] | None = None) -> int:
             group_store = PgStationGroupStore(conn)
             hindcast_store = PgHindcastStore(conn)
             skill_store = PgSkillStore(conn)
+            # Plan 120 Task 2D fixer round (third pass): this CLI is a
+            # production entrypoint for onboard_from_camelsch, same as
+            # flows/onboard.py::onboard_stations_flow — must ALSO write
+            # model_artifact_basin_versions lineage rows.
+            from sapphire_flow.store.model_artifact_lineage import (
+                PgArtifactLineageWriter,
+            )
+
+            lineage_writer = PgArtifactLineageWriter(conn)
 
             config_path = os.environ.get("SAPPHIRE_CONFIG")
             deployment_config = (
@@ -344,6 +353,7 @@ def main(argv: list[str] | None = None) -> int:
                 hindcast_days=args.hindcast_days,
                 reanalysis_adapter_factory=reanalysis_adapter_factory,
                 require_meteoswiss_backfill=True,
+                lineage_writer=lineage_writer,
             )
     except Exception as exc:
         log.error("onboarding_failed", error=str(exc))

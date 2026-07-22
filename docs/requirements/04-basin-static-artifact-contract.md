@@ -309,8 +309,13 @@ band_id
 `imported_at` provenance columns owned by Plan 120 Task 0A). The reader/writer
 is `RecapGatewayPolygonStore` (`store/recap_gateway_polygon_store.py`);
 `GatewayPolygonBindingRow`/`store_binding` carry and write the provenance
-columns, with a DELETE-then-INSERT replace path for `basin_average` rows so a
-correction (HRU/name rename) never violates
+columns. `basin_average` rows replace via a single atomic
+`INSERT ... ON CONFLICT (station_id) WHERE spatial_type = 'basin_average' DO
+UPDATE` targeting the partial unique index directly (Postgres commits the
+whole replace or none of it — a two-statement DELETE-then-INSERT was tried
+first and rejected: a failure on the INSERT half left the DELETE already
+committed, silently dropping the station's binding), so a correction
+(HRU/name rename) never violates
 `uq_recap_gateway_polygon_bindings_one_basin_average_per_station`. **Still
 open:** the package loader/dissolve/importer that actually DRIVES
 `store_binding` from an accepted basin/static package (Plan 120 Phase 1 —

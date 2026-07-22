@@ -223,6 +223,7 @@ def _run_onboarding(
     require_meteoswiss_backfill: bool = False,
     formula_store: FormulaStore | None = None,
     calculated_specs: Sequence[CalculatedStationSpec] = (),
+    lineage_writer: object = None,
 ) -> OnboardingResult:
     errors: list[str] = []
     stations_created = 0
@@ -881,6 +882,7 @@ def _run_onboarding(
                     run_hindcast_fn=_make_hindcast_fn(),
                     compute_skill_fn=_make_skill_fn(),
                     parameter_store=parameter_store,
+                    lineage_writer=lineage_writer,
                 )
                 models_trained += result_mo.promoted_count()
             except Exception as exc:
@@ -999,6 +1001,7 @@ def onboard_from_camelsch(
     require_meteoswiss_backfill: bool = False,
     formula_store: FormulaStore | None = None,
     calculated_specs: Sequence[CalculatedStationSpec] = (),
+    lineage_writer: object = None,
 ) -> OnboardingResult:
     from sapphire_flow.adapters.camelsch_adapter import (
         load_forcing,
@@ -1071,6 +1074,7 @@ def onboard_from_camelsch(
         require_meteoswiss_backfill=require_meteoswiss_backfill,
         formula_store=formula_store,
         calculated_specs=calculated_specs,
+        lineage_writer=lineage_writer,
     )
 
     log.info(
