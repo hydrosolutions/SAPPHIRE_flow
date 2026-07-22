@@ -51,37 +51,60 @@ Two defects in the worker's Prefect runtime, both observed live:
 - **No `PREFECT_HOME` warning; the in-container Prefect CLI works with no manual
   env override.**
 
-## Design decisions (proposed; confirm in grill-me)
+## Design decisions (SETTLED via grill-me 2026-07-22)
 
-- **D1 — writable `PREFECT_HOME` (fixes #2, simple).** Set
-  `PREFECT_HOME=/tmp/prefect` in the environment of every Prefect-running service
-  (`prefect-worker`, `prefect-worker-ingest`, `api` if it uses the Prefect client).
-  `/tmp` is already a writable tmpfs, so no new mount. PREFECT_HOME holds only
-  CLI/profile scratch (the durable server state is Postgres), so tmpfs (ephemeral)
-  is correct. Confirm the exact set of services.
-- **D2 — ship app logs to the Prefect run-log store (fixes #1). GRILL-ME on the
-  mechanism:**
-  - (a) **`PREFECT_LOGGING_EXTRA_LOGGERS="sapphire_flow"`** — ask Prefect to attach
-    its `APILogHandler` to the `sapphire_flow` logger hierarchy. Least code, but
-    depends on our structlog stdlib logger names being under `sapphire_flow.*`
-    (verify — `add_logger_name` is in the processor chain) and on handler
-    propagation to children.
-  - (b) **Attach Prefect's `APILogHandler` in `logging.py`** when a run context is
-    active, so all app records flow to the API store alongside stdout. More
-    explicit/robust; a few lines in our own logging setup.
-  - (c) **`get_run_logger()` in flows** — most faithful to Prefect but invasive
-    (rewrites logging call sites); rejected unless (a)/(b) prove insufficient.
-  - Recommend (a) first, fall back to (b). Decide.
-- **D3 — logging level for shipped run logs.** `PREFECT_LOGGING_LEVEL=WARNING`
-  currently suppresses the INFO events (`nwp.*`, `model_*`, `ingest.qc_complete`)
-  that are exactly what we need in a run log. Decide the level for **API/run-log
-  shipping** (want INFO) vs **console** (can stay quieter) — Prefect separates these
-  (`PREFECT_LOGGING_LEVEL` vs handler-level config). Confirm we can get INFO into
-  the run-log store without flooding container stdout.
-- **D4 — verify no duplication / no perf hit.** Ensure app logs don't get
-  double-emitted (once to stdout, once to Prefect is intended; twice to stdout is
-  not), and that API-log shipping (batched by Prefect) doesn't add meaningful
-  latency to the 5-min ingest cadence.
+> This is now the single owning plan for the Prefect `PREFECT_HOME`/log-persistence work
+> — **Plans 062 and 141 are `SUPERSEDED by 103`** (141 was a redundant re-draft of D1;
+> 062 the older subsumed draft). All four decisions below are settled; only D4 remains
+> as verification tasks for `/implement`.
+
+- **D1 — writable `PREFECT_HOME` (SETTLED).** Set `PREFECT_HOME=/tmp/prefect` on the
+  **three Prefect-client services: `prefect-worker`, `prefect-worker-ingest`, and
+  `init`** (init uses the Prefect client to register deployments). **NOT `api`** — it is
+  an HTTP-only Prefect touchpoint (no Prefect client import; verified). `/tmp` is already
+  a writable tmpfs on each (`docker-compose.yml`), so **no new mount, no volume, no
+  chown**. PREFECT_HOME holds only CLI/profile scratch (durable server state is Postgres),
+  so tmpfs (ephemeral) is correct.
+
+- **D2 — ship app logs to the Prefect run-log store → OPTION (b) (SETTLED).** Attach
+  Prefect's **`APILogHandler`** to the **root** logger, with **our existing
+  `ProcessorFormatter`**, inside **`configure_prefect_logging`** (`logging.py:82` — the
+  config the flow-running services use; NOT `configure_api_logging`, since `api` runs no
+  flows). Rationale, grounded in the code:
+  - **Option (a) `PREFECT_LOGGING_EXTRA_LOGGERS="sapphire_flow"` was rejected** — two real
+    defects: (1) **11 call sites use `structlog.get_logger()` with no name** (vs 45 with
+    `__name__`), so their stdlib logger is not under `sapphire_flow.*` and (a) would
+    silently miss them; (2) our records go through structlog's `ProcessorFormatter`
+    (`wrap_for_formatter`, `logging.py:34`) attached only to the root handler — Prefect's
+    `APILogHandler` uses its **own** formatter, so under (a) it would ship the
+    structlog-**wrapped record's `repr()`** (broken/ugly), not the rendered event.
+  - **Option (b)** puts the `APILogHandler` on the root with our `ProcessorFormatter`, so
+    it (i) catches **all** app loggers (named + the 11 unnamed) via root propagation and
+    (ii) ships the **correctly-rendered** event. Option (c) `get_run_logger()` in flows
+    stays rejected (invasive).
+  - **Missing-run-context handling (implementation-critical):** `APILogHandler` has no run
+    to attach to outside a flow/task (worker startup, between runs), where it warns/errors
+    by default. The implementation MUST make out-of-run records a **silent no-op on the API
+    handler** (still emitted to stdout via the StreamHandler) — set Prefect's
+    "log-to-API-when-missing-flow" behaviour to **ignore** (confirm the exact setting name,
+    e.g. `PREFECT_LOGGING_TO_API_WHEN_MISSING_FLOW=ignore`), or gate the handler so it only
+    emits inside a run. Locked with a test.
+
+- **D3 — run-log level = INFO; console UNCHANGED (SETTLED).** The `APILogHandler` ships at
+  **INFO** (captures `nwp.*` / `model_*` / `ingest.qc_complete`; DEBUG would flood run logs
+  with per-file `nwp.file_downloaded`). The console/stdout `StreamHandler` is **left at its
+  current effective level** — no console retuning in this plan, preserving the raw
+  `docker compose logs` fallback that both the 2026-07-03 incident and the 2026-07-22
+  NWP-outage diagnosis relied on. *(Premise correction: `PREFECT_LOGGING_LEVEL=WARNING`
+  does NOT gate our app logs on stdout — observed live 2026-07-22, stdout carried INFO and
+  even DEBUG `nwp.*` events; it gates Prefect's own loggers. So the level concern is only
+  about what the new APILogHandler ships, which D2(b) controls directly.)*
+
+- **D4 — verification (tasks for `/implement`).** Ensure app logs are **not**
+  double-emitted to stdout (once to stdout + once to Prefect is intended; twice to stdout
+  is not); that Prefect's batched API-log shipping adds no meaningful latency to the 5-min
+  ingest cadence; and that `PREFECT_LOGGING_LEVEL=WARNING` does not cap API-log ingestion
+  of our INFO records (if it does, scope the fix — e.g. a per-handler level — here).
 
 ## Non-goals
 
@@ -101,7 +124,10 @@ Two defects in the worker's Prefect runtime, both observed live:
 
 ## Process
 
-DRAFT until a grill-me settles D2 (extra-loggers vs explicit handler) and D3 (level
-split). Then plan-review → implement. Code change (`docker-compose.yml` ×3 services,
-`src/sapphire_flow/logging.py`, `docs/standards/logging.md`) → **hold-at-PR** with a
-version bump.
+**Grill-me DONE (2026-07-22)** — D2 settled to option (b), D3 settled to INFO-run-logs /
+console-unchanged (see Design decisions above); D1 was already settled. Plans 062 + 141
+folded in as `SUPERSEDED by 103`. **Next: `/plan` → `/implement` → deploy.** Code change
+(`docker-compose.yml` — `PREFECT_HOME` env on the 3 client services; `src/sapphire_flow/logging.py`
+— the D2(b) `APILogHandler` attach + missing-context handling; `docs/standards/logging.md`)
+→ **hold-at-PR** with a version bump. Deploy (mac-mini, overlay stack) is the final step,
+verifying `prefect flow-run logs <id>` is non-empty and no EROFS warning.
