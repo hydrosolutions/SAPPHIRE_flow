@@ -627,6 +627,15 @@ name, spatial_type, band_id, package_id, imported_at`) from the accepted package
   therefore **DELETEs the existing `basin_average` row for `station_id` (a
   `DELETE … WHERE station_id=:sid AND spatial_type='basin_average'`) before inserting the
   new one**, so exactly one basin-average row survives even when the HRU/name changed.
+  **SUPERSEDED (fixer round, 2026-07-22, major finding):** two-statement DELETE-then-INSERT
+  on an AUTOCOMMIT connection (`setup_production_stores`) is NOT atomic — a failure on the
+  INSERT half (e.g. an invalid `package_id` FK) left the DELETE already committed, silently
+  dropping the station's §5a binding. `store_binding` now does the replace in a **single**
+  `INSERT ... ON CONFLICT (station_id) WHERE spatial_type='basin_average' DO UPDATE`
+  statement, targeting the same partial unique index directly, so Postgres commits the
+  whole replace or none of it. See `src/sapphire_flow/store/recap_gateway_polygon_store.py:39`
+  and the failure-injection regression
+  `TestBasinAverageUniquenessConstraint::test_store_binding_replace_leaves_old_row_intact_on_insert_failure`.
 - **Store JSONB fix — `band_geometries` ONLY — ALREADY LANDED IN TASK 0A (was
   major; RESOLVED, doc corrected post-Task-0A-review).** The original
   concern was that `PgBasinStore.store_basin` wrapped `band_geometries` in
@@ -665,11 +674,14 @@ basin-average binding with a **different** `gateway_hru_name`/`name` (new packag
 against `uq_recap_gateway_polygon_bindings_one_basin_average_per_station`. **IMPLEMENTED
 (fixer pass, 2026-07-22):** the §5a provenance write path (optional
 `package_id`/`imported_at` on `GatewayPolygonBindingRow` + `store_binding` write/upsert)
-and the basin_average DELETE-then-INSERT replace path both landed —
+and the basin_average replace path both landed —
 `src/sapphire_flow/store/recap_gateway_polygon_store.py`,
 `tests/integration/store/test_recap_gateway_polygon_store.py`
-(`TestProvenanceWritePath`, `TestBasinAverageUniquenessConstraint`). The
-package-driven population itself (Task 1A/1B loader → this store) is still open.
+(`TestProvenanceWritePath`, `TestBasinAverageUniquenessConstraint`). **Note (second fixer
+round, 2026-07-22):** the replace path shipped as two-statement DELETE-then-INSERT and was
+then hardened to a single atomic `INSERT ... ON CONFLICT DO UPDATE` statement — see the
+SUPERSEDED note above. The package-driven population itself (Task 1A/1B loader → this
+store) is still open.
 
 ```bash
 # Store-layer provenance/replace path (fixer pass, DONE):
@@ -704,7 +716,9 @@ Decision A/B:
   prior current `basin_versions.superseded_at`, (b) append the new `version+1`
   `basin_versions` row, (c) refresh the `basins` projection + `basins.package_id` →
   canonical step 4 refresh the current §5a rows. Two correction-specific notes: step 4's §5a
-  refresh is the **DELETE-then-INSERT basin_average replace** (Task 2B) — never a bare
+  refresh is the **atomic basin_average replace** (Task 2B; a single
+  `INSERT ... ON CONFLICT DO UPDATE` statement as of the second fixer round — see the
+  SUPERSEDED note in Task 2B above) — never a bare
   INSERT, so an HRU/name rename does not leave a stale row or violate
   `uq_recap_gateway_polygon_bindings_one_basin_average_per_station` (band §5a rows are out of
   v1 scope, so there is no band replace); and after step 4 set a **material-change flag** in

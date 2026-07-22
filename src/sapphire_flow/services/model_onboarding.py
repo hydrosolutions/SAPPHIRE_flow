@@ -15,6 +15,7 @@ from sapphire_flow.exceptions import (
     ModelSmokeTestError,
     StoreError,
 )
+from sapphire_flow.types.basin import non_null_static_keys
 from sapphire_flow.types.enums import (
     ArtifactScope,
     EnsembleMode,
@@ -1070,10 +1071,9 @@ def onboard_model(
             station = station_store.fetch_station(sid)
             if station is not None and station.basin_id is not None:
                 basin = basin_store.fetch_basin(station.basin_id)
-                if basin is not None and basin.attributes:
-                    avail_static[sid] = frozenset(basin.attributes.keys())
-                else:
-                    avail_static[sid] = frozenset()
+                avail_static[sid] = non_null_static_keys(
+                    basin.attributes if basin is not None else None
+                )
             else:
                 avail_static[sid] = frozenset()
 

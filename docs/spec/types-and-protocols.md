@@ -2402,9 +2402,11 @@ class ModelArtifactStore(Protocol):
         station_id: StationId | None = None,   # for station-scoped models
         group_id: StationGroupId | None = None, # for group-scoped models
         status: ModelArtifactStatus = ModelArtifactStatus.TRAINING,  # explicit default; callers may pass TRAINING
-    ) -> ArtifactId: ...
+    ) -> tuple[ArtifactId, str]: ...
         # Exactly one of station_id or group_id must be provided.
-        # Computes and stores sha256_hash from artifact_bytes.
+        # Returns (id, sha256_hash) -- the hash is computed from artifact_bytes
+        # and stored alongside the artifact_path; callers use it to verify
+        # round-trip integrity without re-fetching the bytes.
     def fetch_artifact(self, artifact_id: ArtifactId) -> tuple[ArtifactId, bytes] | None: ...
     def fetch_active_artifact(
         self,
@@ -2441,6 +2443,34 @@ class ModelArtifactStore(Protocol):
     ) -> None: ...
         # Handles ACTIVE → SUPERSEDED on the old artifact when promoting a new one.
 ```
+
+##### Basin lineage write (Plan 120 Task 2D)
+
+`record_artifact_basin_lineage(conn, artifact_id, trained_station_ids)`
+(`sapphire_flow.store.model_artifact_lineage`) is a **standalone helper, not
+a `ModelArtifactStore` method** — it deliberately does not widen that
+Protocol. Flows call it right after `store_artifact`/`store_and_promote_artifact`
+returns, on the same connection, writing one `model_artifact_basin_versions`
+row per basin the artifact actually trained on (the TRAINED subset —
+`trained_station_ids`, not every station requested):
+
+- `stations.basin_id IS NULL` → **skip** that station's lineage row
+  (INFO-logged, no raise). The D-UP prerequisite gate in
+  `services/training_data.py` means a model that *requires* static features
+  can never reach this helper with a null basin, so this branch only fires
+  when static features were never required.
+- A basin with no current (`superseded_at IS NULL`) `basin_versions` row
+  (dangling `basin_id`, or a Task 0A invariant violation) → **raise**
+  (`ValueError`). Silently swallowing this would defeat the Decision-B
+  stale-basin retrain SLA.
+- **Non-atomic and log-loud on failure, deliberately**: matches the
+  pre-existing store+promote relationship, which is already non-atomic under
+  the AUTOCOMMIT connection flows run on in production.
+
+`PgArtifactLineageWriter(conn)` is the thin flow-facing adapter (`.record(...)`)
+that `train_models_flow`/`onboard_model_flow` inject as `lineage_writer`;
+tests inject `tests.fakes.fake_stores.FakeArtifactLineageWriter` with the
+same shape.
 
 #### ModelStore
 

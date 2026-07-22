@@ -409,6 +409,38 @@ class TestAssembleStationTrainingDataStaticFeatureGate:
         assert result is not None
         assert result.static is not None
 
+    def test_null_valued_required_static_attribute_returns_none(self) -> None:
+        """Codex review (Plan 120 fixer round, major): a required static
+        feature whose KEY is present but whose VALUE is `None` must be
+        treated as missing -- the gate previously only checked key
+        presence, so `{"elevation_mean": None}` passed and let a
+        required-static model train on a null static value undetected."""
+        station_id = _sid()
+        basin_id = BasinId(uuid4())
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        forcing_records: list = []
+        _seed_station(station_id, station_store, obs_store, forcing_records)
+        station_store.store_station(
+            make_station_config(station_id=station_id, basin_id=basin_id)
+        )
+        basin_store = FakeBasinStore()
+        basin_store.store_basin(_basin(basin_id, attributes={"elevation_mean": None}))
+
+        result = assemble_station_training_data(
+            station_id=station_id,
+            model=_required_static_model(),
+            period_start=_START,
+            period_end=_END,
+            time_step=_STEP,
+            forcing_source=FakeWeatherReanalysisSource(forcing_records),
+            obs_store=obs_store,
+            basin_store=basin_store,
+            station_store=station_store,
+        )
+
+        assert result is None
+
 
 class TestAssembleGroupTrainingDataStaticFeatureGate:
     def test_group_excludes_member_with_dangling_basin(self) -> None:
@@ -479,6 +511,78 @@ class TestAssembleGroupTrainingDataStaticFeatureGate:
         assert len(result.station_ids) == 1
         assert sid_ok in result.station_ids
         assert sid_dangling not in result.station_ids
+
+    def test_group_excludes_member_with_null_valued_static_attribute(self) -> None:
+        """Same as above but the excluded member has a basin row whose
+        required static key is present with value `None`, not absent."""
+        sid_ok = _sid()
+        sid_null = _sid()
+        basin_id_ok = BasinId(uuid4())
+        basin_id_null = BasinId(uuid4())
+        gid = _gid()
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        forcing_records: list = []
+
+        _seed_station(sid_ok, station_store, obs_store, forcing_records)
+        station_store.store_station(
+            make_station_config(station_id=sid_ok, basin_id=basin_id_ok)
+        )
+        basin_store = FakeBasinStore()
+        basin_store.store_basin(
+            _basin(basin_id_ok, attributes={"elevation_mean": 500.0})
+        )
+
+        _seed_station(sid_null, station_store, obs_store, forcing_records)
+        station_store.store_station(
+            make_station_config(station_id=sid_null, basin_id=basin_id_null)
+        )
+        basin_store.store_basin(
+            _basin(basin_id_null, attributes={"elevation_mean": None})
+        )
+
+        group = StationGroup(
+            id=gid,
+            name="static-gate-group-null",
+            station_ids=frozenset({sid_ok, sid_null}),
+            created_at=_START,
+        )
+
+        from sapphire_flow.types.enums import ArtifactScope, SpatialRepresentation
+        from sapphire_flow.types.model import ModelDataRequirements
+
+        class _StaticRequiredGroupModel(FakeGroupForecastModel):
+            artifact_scope = ArtifactScope.GROUP
+            data_requirements = ModelDataRequirements(
+                target_parameters=frozenset({"discharge"}),
+                past_dynamic_features=frozenset(),
+                future_dynamic_features=frozenset(),
+                static_features=frozenset({"elevation_mean"}),
+                supported_time_steps=frozenset(
+                    {timedelta(hours=1), timedelta(hours=24)}
+                ),
+                lookback_steps=720,
+                forecast_horizon_steps=5,
+                spatial_input_type=SpatialRepresentation.POINT,
+            )
+
+        result = assemble_group_training_data(
+            group=group,
+            model=_StaticRequiredGroupModel(),
+            period_start=_START,
+            period_end=_END,
+            time_step=_STEP,
+            forcing_source=FakeWeatherReanalysisSource(forcing_records),
+            obs_store=obs_store,
+            basin_store=basin_store,
+            station_store=station_store,
+        )
+
+        assert result is not None
+        assert len(result.station_ids) == 1
+        assert sid_ok in result.station_ids
+        assert sid_null not in result.station_ids
 
 
 class TestAssembleStationTrainingDataNoDynamicFeatures:

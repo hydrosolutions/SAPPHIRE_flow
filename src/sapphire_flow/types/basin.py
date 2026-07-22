@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -25,3 +26,24 @@ class Basin:
     # basins — see basin_versions.package_id for the same sentinel on the
     # versioned history row.
     package_id: PackageId | None = None
+
+
+def is_missing_static_value(value: Any) -> bool:
+    """A required static-feature value counts as missing when it is absent,
+    `None`, or a float NaN (Codex review, Plan 120 fixer round: a
+    `{"elevation_mean": None}` attribute previously passed the D-UP gate
+    because it only checked key presence)."""
+    if value is None:
+        return True
+    return isinstance(value, float) and math.isnan(value)
+
+
+def non_null_static_keys(attributes: dict[str, Any] | None) -> frozenset[str]:
+    """Static-attribute keys whose value is present and not missing per
+    `is_missing_static_value` -- the "available" set for compatibility
+    checks and the D-UP training gate."""
+    if not attributes:
+        return frozenset()
+    return frozenset(
+        key for key, value in attributes.items() if not is_missing_static_value(value)
+    )

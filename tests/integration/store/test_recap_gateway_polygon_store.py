@@ -67,10 +67,10 @@ class TestBasinAverageUniquenessConstraint:
         self, db_connection: sa.Connection
     ) -> None:
         """DB-level defense-in-depth: the partial unique index itself still
-        guards a caller that bypasses `store_binding` (e.g. a raw INSERT) --
-        `store_binding`'s Task 2B delete-then-insert replace path (below)
-        means the index is no longer reachable through the store's own
-        write path, but it must still reject a direct violation."""
+        guards a caller that bypasses `store_binding` (e.g. a raw INSERT).
+        `store_binding`'s replace path (below) upserts THROUGH this same
+        index via `ON CONFLICT`, but a raw second INSERT that doesn't go
+        through the upsert must still be rejected."""
         from sapphire_flow.db.metadata import recap_gateway_polygon_bindings
 
         basin_id = _seed_basin(db_connection)
@@ -143,6 +143,89 @@ class TestBasinAverageUniquenessConstraint:
         assert len(basin_average_rows) == 1
         assert basin_average_rows[0].gateway_hru_name == "hru_dhm_west_v002"
         assert basin_average_rows[0].name == "g_5501_new"
+
+    def test_store_binding_replace_leaves_old_row_intact_on_insert_failure(
+        self, db_engine: sa.Engine
+    ) -> None:
+        """Codex review (Plan 120 fixer round, major): the replace path is
+        DELETE-then-INSERT on an AUTOCOMMIT production connection -- a
+        failure on the INSERT half (e.g. an invalid `package_id` FK) used to
+        leave the DELETE already committed, silently dropping the station's
+        §5a binding. The fix makes the replace a SINGLE `INSERT ... ON
+        CONFLICT DO UPDATE` statement, so a mid-statement failure leaves the
+        ORIGINAL row completely untouched -- not deleted, not partially
+        updated.
+
+        This test deliberately uses a raw AUTOCOMMIT connection (matching
+        `setup_production_stores`), NOT the `db_connection` fixture's
+        transaction-per-test isolation: wrapping the failing call in a
+        SAVEPOINT (as the rest of this file does for failure injection)
+        would roll back the DELETE too, masking exactly the AUTOCOMMIT-only
+        bug this test exists to catch."""
+        from sapphire_flow.db.metadata import (
+            basin_versions,
+            basins,
+            recap_gateway_polygon_bindings,
+        )
+        from sapphire_flow.db.metadata import stations as stations_table
+
+        with db_engine.connect().execution_options(
+            isolation_level="AUTOCOMMIT"
+        ) as conn:
+            basin_id = _seed_basin(conn)
+            station_id = _seed_station(conn, basin_id)
+            store = RecapGatewayPolygonStore(conn)
+            try:
+                store.store_binding(
+                    GatewayPolygonBindingRow(
+                        station_id=station_id,
+                        basin_id=basin_id,
+                        gateway_hru_name="hru_dhm_west_v001",
+                        name="g_5501",
+                        spatial_type=SpatialRepresentation.BASIN_AVERAGE,
+                        band_id=None,
+                    )
+                )
+
+                bogus_package_id = f"pkg-does-not-exist-{uuid.uuid4().hex[:8]}"
+                with pytest.raises(IntegrityError):
+                    store.store_binding(
+                        GatewayPolygonBindingRow(
+                            station_id=station_id,
+                            basin_id=basin_id,
+                            gateway_hru_name="hru_dhm_west_v002",
+                            name="g_5501_new",
+                            spatial_type=SpatialRepresentation.BASIN_AVERAGE,
+                            band_id=None,
+                            package_id=PackageId(bogus_package_id),
+                        )
+                    )
+
+                rows = store.fetch_bindings_for_station(station_id)
+                basin_average_rows = [
+                    r
+                    for r in rows
+                    if r.spatial_type == SpatialRepresentation.BASIN_AVERAGE
+                ]
+                assert len(basin_average_rows) == 1
+                assert basin_average_rows[0].gateway_hru_name == "hru_dhm_west_v001"
+                assert basin_average_rows[0].name == "g_5501"
+                assert basin_average_rows[0].package_id is None
+            finally:
+                conn.execute(
+                    sa.delete(recap_gateway_polygon_bindings).where(
+                        recap_gateway_polygon_bindings.c.station_id == station_id
+                    )
+                )
+                conn.execute(
+                    sa.delete(stations_table).where(stations_table.c.id == station_id)
+                )
+                conn.execute(
+                    sa.delete(basin_versions).where(
+                        basin_versions.c.basin_id == basin_id
+                    )
+                )
+                conn.execute(sa.delete(basins).where(basins.c.id == basin_id))
 
     def test_basin_average_plus_elevation_band_rows_both_allowed(
         self, db_connection: sa.Connection

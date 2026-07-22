@@ -40,6 +40,7 @@ from sapphire_flow.services.training_data import (
     assemble_group_training_data,
     assemble_station_training_data,
 )
+from sapphire_flow.types.basin import non_null_static_keys
 from sapphire_flow.types.enums import ModelArtifactStatus, OnboardingOutcome
 from sapphire_flow.types.ids import ModelId, StationGroupId, StationId
 from sapphire_flow.types.model_onboarding import (
@@ -250,10 +251,9 @@ def _validate_compatibility_task(
         has_basin = station is not None and station.basin_id is not None
         if has_basin and basin_store is not None:
             basin = basin_store.fetch_basin(station.basin_id)  # type: ignore[union-attr]
-            if basin is not None and basin.attributes:
-                avail_static_by_station[sid] = frozenset(basin.attributes.keys())
-            else:
-                avail_static_by_station[sid] = frozenset()
+            avail_static_by_station[sid] = non_null_static_keys(
+                basin.attributes if basin is not None else None
+            )
         else:
             avail_static_by_station[sid] = frozenset()
 

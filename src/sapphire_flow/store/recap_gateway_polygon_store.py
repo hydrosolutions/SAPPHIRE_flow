@@ -37,32 +37,27 @@ class RecapGatewayPolygonStore:
         return [_row_to_binding(row) for row in rows]
 
     def store_binding(self, binding: GatewayPolygonBindingRow) -> None:
-        # Plan 120 Task 2B: a `basin_average` binding is DELETE-then-INSERT
-        # per station, never a bare upsert. `store_binding`'s PK-keyed
-        # on_conflict_do_update only overwrites a matching
-        # (station_id, gateway_hru_name, name) row — a correction package
-        # that renames the HRU/name for the same station's basin-average
-        # binding would be a NEW key, landing as a second row alongside the
-        # stale one and violating
-        # `uq_recap_gateway_polygon_bindings_one_basin_average_per_station`.
-        # Deleting the station's existing basin_average row first guarantees
-        # exactly one survives, even across a rename. `elevation_band` rows
-        # are unaffected (multiple bands per station are expected; deferred
-        # to the future band-§5a writer per Task 2B scope-out) and keep the
-        # PK-keyed upsert.
+        # Plan 120 Task 2B (Codex review fixer round, major): a `basin_average`
+        # binding must replace the station's existing row -- including across
+        # a gateway_hru_name/name rename -- in ONE atomic statement, not a
+        # DELETE followed by a separate INSERT `execute()` call. The prior
+        # two-statement replace ran on an AUTOCOMMIT connection
+        # (`setup_production_stores`): a failure on the INSERT half (e.g. an
+        # invalid `package_id` FK) left the DELETE already committed, so the
+        # station silently lost its §5a binding and 082's resolver started
+        # returning None. The unique index
+        # `uq_recap_gateway_polygon_bindings_one_basin_average_per_station`
+        # is a partial UNIQUE index on `station_id` alone (not the PK), so a
+        # single `INSERT ... ON CONFLICT (station_id) WHERE spatial_type =
+        # 'basin_average' DO UPDATE` targets that index directly: Postgres
+        # either commits the whole replace or none of it. `elevation_band`
+        # rows are unaffected (multiple bands per station are expected;
+        # deferred to the future band-§5a writer per Task 2B scope-out) and
+        # keep the PK-keyed upsert below.
         if binding.spatial_type == SpatialRepresentation.BASIN_AVERAGE:
-            self._conn.execute(
-                sa.delete(recap_gateway_polygon_bindings).where(
-                    sa.and_(
-                        recap_gateway_polygon_bindings.c.station_id
-                        == binding.station_id,
-                        recap_gateway_polygon_bindings.c.spatial_type
-                        == SpatialRepresentation.BASIN_AVERAGE.value,
-                    )
-                )
-            )
-            self._conn.execute(
-                sa.insert(recap_gateway_polygon_bindings).values(
+            stmt = (
+                pg_insert(recap_gateway_polygon_bindings)
+                .values(
                     station_id=binding.station_id,
                     basin_id=binding.basin_id,
                     gateway_hru_name=binding.gateway_hru_name,
@@ -72,7 +67,28 @@ class RecapGatewayPolygonStore:
                     package_id=binding.package_id,
                     imported_at=binding.imported_at,
                 )
+                .on_conflict_do_update(
+                    # Partial UNIQUE INDEX (not a named table CONSTRAINT) --
+                    # Postgres' `ON CONFLICT ON CONSTRAINT <name>` only
+                    # resolves actual constraints, so the conflict target
+                    # must be inferred via index_elements + a WHERE clause
+                    # matching the index's own partial predicate exactly.
+                    index_elements=[recap_gateway_polygon_bindings.c.station_id],
+                    index_where=(
+                        recap_gateway_polygon_bindings.c.spatial_type
+                        == SpatialRepresentation.BASIN_AVERAGE.value
+                    ),
+                    set_={
+                        "basin_id": binding.basin_id,
+                        "gateway_hru_name": binding.gateway_hru_name,
+                        "name": binding.name,
+                        "band_id": binding.band_id,
+                        "package_id": binding.package_id,
+                        "imported_at": binding.imported_at,
+                    },
+                )
             )
+            self._conn.execute(stmt)
             return
 
         stmt = (

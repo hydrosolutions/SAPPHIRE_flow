@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, cast
 import polars as pl
 import structlog
 
+from sapphire_flow.types.basin import non_null_static_keys
 from sapphire_flow.types.enums import AggregationMethod, QcStatus
 
 if TYPE_CHECKING:
@@ -228,8 +229,9 @@ def assemble_station_training_data(
                 return None
         else:
             if model.data_requirements.static_features:
-                missing_attrs = model.data_requirements.static_features - set(
-                    basin.attributes.keys()
+                missing_attrs = (
+                    model.data_requirements.static_features
+                    - non_null_static_keys(basin.attributes)
                 )
                 if missing_attrs:
                     log.warning(
