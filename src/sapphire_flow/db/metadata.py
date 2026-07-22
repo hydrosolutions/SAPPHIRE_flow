@@ -39,6 +39,31 @@ parameters = sa.Table(
 # STATION DOMAIN
 # ──────────────────────────────────────────────
 
+# Plan 120 Task 0A: provenance for an accepted basin/static package
+# (docs/requirements/04-basin-static-artifact-contract.md). `package_id` is
+# the PRODUCER-declared identifier (manifest.json "package_id"), not a
+# SAP3-generated UUID — see tests/fixtures/basin_static/nepal-dhm-basins/
+# manifest.json:3. Package files themselves are discarded after import;
+# `checksums` retains the computed payload-set hashes (`04:429-430`).
+basin_static_packages = sa.Table(
+    "basin_static_packages",
+    metadata,
+    sa.Column("package_id", sa.Text, primary_key=True),
+    sa.Column("network", sa.Text, nullable=False),
+    sa.Column("contract_version", sa.Text, nullable=False),
+    sa.Column("checksums", JSONB, nullable=False),
+    sa.Column("extractor_name", sa.Text, nullable=True),
+    sa.Column("extractor_version", sa.Text, nullable=True),
+    sa.Column("source_datasets", JSONB, nullable=True),
+    sa.Column("climatology_window", JSONB, nullable=True),
+    sa.Column(
+        "imported_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+    ),
+)
+
 basins = sa.Table(
     "basins",
     metadata,
@@ -61,7 +86,94 @@ basins = sa.Table(
         server_default=sa.func.now(),
     ),
     sa.Column("network", sa.Text, nullable=False),
+    # Plan 120 Task 0A: the basin/static package that produced the CURRENT
+    # projection row (additive, nullable — NULL for legacy/non-package
+    # basins).
+    sa.Column(
+        "package_id",
+        sa.Text,
+        sa.ForeignKey("basin_static_packages.package_id"),
+        nullable=True,
+    ),
     sa.UniqueConstraint("network", "code", name="uq_basins_network_code"),
+)
+
+# Plan 120 Task 0A: append-only version history for `basins`, keyed to the
+# STABLE `basins.id` (inbound FKs from `stations.basin_id` and the §5a table
+# stay valid across corrections — see "Versioned basin state" in
+# docs/plans/120-basin-static-importer.md). `basins` keeps projecting the
+# CURRENT version (readers unchanged); this table is the audit trail +
+# lineage-join target. `package_id` NULLable — legacy/non-package rows carry
+# NULL (Task 0A "Legacy backfill" / "Ongoing non-package basin inserts").
+# `gateway_mapping` is a snapshot of this version's §5a rows, sourced from
+# the in-memory Task 1B package structure (never a DB read-back — see
+# "gateway_mapping source of truth").
+basin_versions = sa.Table(
+    "basin_versions",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True),
+    sa.Column(
+        "basin_id", UUID(as_uuid=True), sa.ForeignKey("basins.id"), nullable=False
+    ),
+    sa.Column(
+        "package_id",
+        sa.Text,
+        sa.ForeignKey("basin_static_packages.package_id"),
+        nullable=True,
+    ),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("geometry", Geometry("MULTIPOLYGON", srid=4326), nullable=False),
+    sa.Column("attributes", JSONB, nullable=True),
+    sa.Column("area_km2", sa.Float, nullable=True),
+    sa.Column("band_geometries", JSONB, nullable=True),
+    sa.Column("gateway_mapping", JSONB, nullable=True),
+    # NULL = current version. Exactly one current row per basin is enforced
+    # by the partial unique index below, not by this column alone.
+    sa.Column("superseded_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column(
+        "created_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        # clock_timestamp() precedent (historical_forcing:642) — a row-level
+        # wall clock so a correction transaction's stamp-then-append pair
+        # gets distinct, insertion-ordered created_at values.
+        server_default=sa.func.clock_timestamp(),
+    ),
+    sa.UniqueConstraint("basin_id", "version", name="uq_basin_versions_basin_version"),
+)
+
+# Exactly one current (superseded_at IS NULL) version per basin — a DB-
+# enforced invariant the correction transaction must respect by stamping the
+# prior current row's superseded_at BEFORE inserting the new current row
+# (major review finding — see plan "Versioned basin state").
+sa.Index(
+    "uq_basin_versions_one_current_per_basin",
+    basin_versions.c.basin_id,
+    unique=True,
+    postgresql_where=basin_versions.c.superseded_at.is_(None),
+)
+
+# Plan 120 Task 0A: lineage join table — which basin VERSION(S) a model
+# artifact actually trained on. A join table (not a singular FK on
+# `model_artifacts`) because a GROUP-scoped artifact spans many stations →
+# many basins → many basin_versions (see plan "Versioned basin state").
+# `model_artifacts` itself gains no new column.
+model_artifact_basin_versions = sa.Table(
+    "model_artifact_basin_versions",
+    metadata,
+    sa.Column(
+        "model_artifact_id",
+        UUID(as_uuid=True),
+        sa.ForeignKey("model_artifacts.id"),
+        nullable=False,
+    ),
+    sa.Column(
+        "basin_version_id",
+        UUID(as_uuid=True),
+        sa.ForeignKey("basin_versions.id"),
+        nullable=False,
+    ),
+    sa.PrimaryKeyConstraint("model_artifact_id", "basin_version_id"),
 )
 
 stations = sa.Table(
@@ -219,6 +331,16 @@ recap_gateway_polygon_bindings = sa.Table(
         nullable=False,
         server_default=sa.func.now(),
     ),
+    # Plan 120 Task 0A: additive provenance columns (owner: 120). Schema +
+    # the base six columns + the resolver stay owned by 082. Nullable so
+    # 082's own fixture callers that omit them still compile/insert.
+    sa.Column(
+        "package_id",
+        sa.Text,
+        sa.ForeignKey("basin_static_packages.package_id"),
+        nullable=True,
+    ),
+    sa.Column("imported_at", sa.DateTime(timezone=True), nullable=True),
     sa.PrimaryKeyConstraint("station_id", "gateway_hru_name", "name"),
 )
 

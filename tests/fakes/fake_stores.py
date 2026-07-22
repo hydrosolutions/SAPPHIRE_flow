@@ -69,6 +69,7 @@ from sapphire_flow.types.ids import (
     ModelId,
     ObservationId,
     ObservationVersionId,
+    PackageId,
     RatingCurveId,
     StationGroupId,
     StationId,
@@ -1314,7 +1315,16 @@ class FakeBasinStore:
     def fetch_all_basins(self) -> list[Basin]:
         return list(self._basins.values())
 
-    def store_basin(self, basin: Basin) -> BasinId:
+    def store_basin(
+        self,
+        basin: Basin,
+        *,
+        package_id: PackageId | None = None,
+        gateway_mapping: list[dict[str, object]] | None = None,
+    ) -> BasinId:
+        del gateway_mapping  # not modeled in-memory (no §5a fake table here)
+        if package_id is not None:
+            basin = replace(basin, package_id=package_id)
         self._basins[basin.id] = basin
         return basin.id
 

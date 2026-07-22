@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 from sapphire_flow.types.enums import ModelArtifactStatus
 
@@ -67,6 +67,7 @@ if TYPE_CHECKING:
         HindcastForecastId,
         ModelId,
         ObservationId,
+        PackageId,
         RatingCurveId,
         StationGroupId,
         StationId,
@@ -737,7 +738,17 @@ class BasinStore(Protocol):
     def fetch_all_basins(self) -> list[Basin]:
         raise NotImplementedError
 
-    def store_basin(self, basin: Basin) -> BasinId:
+    def store_basin(
+        self,
+        basin: Basin,
+        *,
+        package_id: PackageId | None = None,
+        gateway_mapping: list[dict[str, Any]] | None = None,
+    ) -> BasinId:
+        """Atomically writes the ``basins`` projection row and its paired
+        ``version=1`` ``basin_versions`` row (Plan 120 Task 0A). Called by
+        both station onboarding (``package_id=None``) and the basin/static
+        package importer (``package_id`` set)."""
         raise NotImplementedError
 
 

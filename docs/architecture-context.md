@@ -2703,12 +2703,92 @@ basins:
                                            #   Source: uploaded shapefiles or auto-generated from DEM
                                            #   using standard band widths (200, 500, 1000, or 2000 m).
                                            #   Stored during station onboarding (Flow 5 step 5.3).
+  package_id: TEXT NULL FK -> basin_static_packages.package_id
+                                           # the basin/static package that produced the CURRENT
+                                           #   projection row. NULL for legacy (pre-Plan-120) and
+                                           #   non-package (onboarding) basins. Plan 120.
   created_at: TIMESTAMPTZ
 ```
 
 Unique constraint: `(network, code)` — basin codes are unique within a network, not globally.
 
 Spatial index: `GIST (geometry)` for spatial queries in station onboarding (Flow 5 step 5.3).
+
+`basins` holds the CURRENT projection only (readers unchanged). Full version
+history — including the prior geometry/attributes/§5a mapping of a
+corrected basin — lives in `basin_versions`, below (Plan 120, "projection
+with history").
+
+### `basin_static_packages` table (Plan 120)
+
+Provenance for an accepted basin/static package
+(`docs/requirements/04-basin-static-artifact-contract.md`). `package_id` is
+the PRODUCER-declared identifier (`manifest.json` `"package_id"`), not a
+SAP3-generated UUID. Package files are discarded after import; `checksums`
+retains the computed payload-set SHA-256 hashes (`04:429-430`).
+
+```
+basin_static_packages:
+  package_id: TEXT PK               # producer-declared, e.g. "nepal-dhm-basins"
+  network: TEXT NOT NULL
+  contract_version: TEXT NOT NULL
+  checksums: JSONB NOT NULL         # filename -> "sha256:..." for the payload file set
+  extractor_name: TEXT NULL
+  extractor_version: TEXT NULL
+  source_datasets: JSONB NULL
+  climatology_window: JSONB NULL
+  imported_at: TIMESTAMPTZ
+```
+
+### `basin_versions` table (Plan 120)
+
+Append-only version history keyed to the STABLE `basins.id` — `stations.
+basin_id` and the §5a mapping table's `basin_id` FK to `basins.id`, so a
+correction never repoints those inbound FKs. Exactly one row per basin has
+`superseded_at IS NULL` (the current version), enforced by a partial unique
+index. `gateway_mapping` is a per-version snapshot of the §5a rows, sourced
+from the in-memory validated package structure (never a DB read-back).
+
+```
+basin_versions:
+  id: UUID PK
+  basin_id: UUID FK -> basins.id NOT NULL
+  package_id: TEXT NULL FK -> basin_static_packages.package_id
+                                           # NULL = legacy/non-package sentinel
+  version: INT NOT NULL                    # UNIQUE (basin_id, version)
+  geometry: GEOMETRY(MULTIPOLYGON, 4326) NOT NULL
+  attributes: JSONB NULL
+  area_km2: DOUBLE PRECISION NULL
+  band_geometries: JSONB NULL
+  gateway_mapping: JSONB NULL              # §5a snapshot for this version
+  superseded_at: TIMESTAMPTZ NULL          # NULL = current version
+  created_at: TIMESTAMPTZ                  # clock_timestamp() default
+```
+
+Partial unique index `uq_basin_versions_one_current_per_basin` on
+`(basin_id) WHERE superseded_at IS NULL`. `PgBasinStore.store_basin` writes
+the `basins` row and its paired `version=1` `basin_versions` row atomically
+in ONE data-modifying CTE (both the station-onboarding and package-import
+paths go through this single function), so every basin has exactly one
+current version by construction — including a one-time legacy backfill for
+pre-Plan-120 basins.
+
+### `model_artifact_basin_versions` table (Plan 120)
+
+Lineage join table: which basin VERSION(S) a model artifact actually
+trained on. A join table (not a singular FK on `model_artifacts`) because a
+GROUP-scoped artifact spans many stations → many basins → many
+`basin_versions`.
+
+```
+model_artifact_basin_versions:
+  model_artifact_id: UUID FK -> model_artifacts.id   # PK (composite)
+  basin_version_id: UUID FK -> basin_versions.id      # PK (composite)
+```
+
+Written by the standalone `record_artifact_basin_lineage(...)` helper
+(Plan 120 Task 2D) called right after `store_artifact()` returns — NOT a
+widening of the `ModelArtifactStore.store_artifact` Protocol.
 
 ### `flow_regime_configs` table
 

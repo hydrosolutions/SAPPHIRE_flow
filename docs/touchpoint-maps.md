@@ -335,7 +335,8 @@ Before planning or implementation, inspect the relevant touchpoints below and in
 - connection factories: `get_connection_rw`, `make_pg_stores`, `setup_production_stores`
 - version-gated mutation: `PgForecastStore.transition_status`
 - upsert / idempotent writers (`store_observations` / `store_raw_observations`, `store_weather_forecasts`, `store_forcing`, `PgAlertStore.upsert_alert`, `store_baselines`, station/group upserts, `register_model`)
-- plain-insert / append-only writers (`store_forecast`, `store_hindcast`, `store_state`, `store_config`, `append_health_record`, `store_basin`)
+- plain-insert / append-only writers (`store_forecast`, `store_hindcast`, `store_state`, `store_config`, `append_health_record`)
+- atomic two-table CTE writer: `PgBasinStore.store_basin` (v1 — Plan 120 Task 0A) writes the `basins` projection row AND its paired `version=1` `basin_versions` row in ONE data-modifying CTE, so the pair is atomic even on an AUTOCOMMIT connection — NOT a plain single-table insert; touch this when changing basin write/version semantics
 - filesystem-plus-DB writers with separate failure domains: `PgModelArtifactStore.store_artifact`, `ZarrNwpGridStore.archive`
 - JSONB (de)serialization helpers (`_serialize_flags` / `_deserialize_flags` and the per-store id-array builders)
 - PostGIS geometry (de)serialization for `basins.geometry` (`from_shape` / `to_shape`)

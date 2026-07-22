@@ -37,6 +37,11 @@ StationGroupId = NewType("StationGroupId", UUID)
 ForeignForecastId = NewType("ForeignForecastId", UUID)
 HistoricalForcingId = NewType("HistoricalForcingId", UUID)
 
+# PackageId wraps str, not UUID — the producer-declared basin/static package
+# identifier (manifest.json "package_id"), v1 — Plan 120 Task 0A
+PackageId = NewType("PackageId", str)
+BasinVersionId = NewType("BasinVersionId", UUID)  # v1 — Plan 120 Task 0A
+
 # pipeline_health and audit_log use BIGSERIAL PK — append-only, never
 # referenced by ID from other tables. No NewType wrapper.
 ```
@@ -872,6 +877,8 @@ class Basin:
     band_geometries: list[dict] | None   # elevation band definitions (computed in Flow 5 step 5.3)
     created_at: UtcDatetime
     network: str
+    package_id: PackageId | None = None  # basin/static package provenance; NULL for
+                                          #   legacy/non-package basins (v1 — Plan 120 Task 0A)
 ```
 
 Module: `types/basin.py`
@@ -2689,8 +2696,21 @@ class BasinStore(Protocol):
     def fetch_basin(self, basin_id: BasinId) -> Basin | None: ...
     def fetch_basin_by_code(self, code: str, network: str) -> Basin | None: ...
     def fetch_all_basins(self) -> list[Basin]: ...
-    def store_basin(self, basin: Basin) -> BasinId: ...
+    def store_basin(
+        self,
+        basin: Basin,
+        *,
+        package_id: PackageId | None = None,
+        gateway_mapping: list[dict[str, Any]] | None = None,
+    ) -> BasinId: ...
 ```
+
+`store_basin` is the SINGLE basin-creation path (v1 — Plan 120 Task 0A): it
+atomically writes the `basins` projection row AND its paired `version=1,
+superseded_at IS NULL` `basin_versions` row in ONE data-modifying CTE, so
+the pair is atomic even on an AUTOCOMMIT connection. Called with
+`package_id=None` by station onboarding (the legacy/non-package sentinel)
+and with `package_id` set by the basin/static package importer.
 
 #### ParameterStore
 
