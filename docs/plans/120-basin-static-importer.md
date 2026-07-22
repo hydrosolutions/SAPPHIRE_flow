@@ -740,6 +740,12 @@ question.
 - **082 / `04`** should carry an "incremental/regional, versioned" package-completeness
   clarification (Decision A) — flagged for those docs' owners, not edited here.
 
+**Follow-up plans to file (out of 120 build scope):**
+- **Legacy basin provenance backfill** (grill-me (c), 2026-07-22) — attribute real extraction
+  provenance to pre-120 Swiss/CAMELS-CH basins currently stamped `package_id=NULL, version=1`. Not
+  deployment-critical; needed for audit uniformity + if Swiss ever becomes a billed tenant. Draft as
+  a small stub after 120 lands.
+
 ## Dependency Graph
 
 ```json
@@ -838,16 +844,33 @@ genuinely complex multi-subsystem plan, not planner over-scoping). Categorised:
   guarantee without teaching `PgModelArtifactStore` to resolve `stations`/`basin_versions`.
 - (minor) `store_artifact` returns `tuple[ArtifactId, str]`, not `ArtifactId` — fix the spec in 3B.
 
-**Owner decisions (grill-me) — needed before READY:**
-- (a) A trained station with `basin_id IS NULL` / dangling / no current version → **fail-loud vs
-  skip-with-warning**? (`stations.basin_id` is nullable; training can proceed without a basin for a
-  no-static-feature model.)
-- (b) "Keep serving on a superseded/stale basin version until the operator promotes a retrained
-  artifact" (no auto-quarantine) — acceptable **SLA for a billed professional service**, or does a
-  tenant need a stricter default? (Marked SETTLED but it's a business call.)
-- (c) NULL-provenance legacy sentinel for pre-120 Swiss/CAMELS-CH basins — acceptable long-term, or
-  file a follow-up to attribute real extraction provenance?
+**Owner decisions (grill-me) — RESOLVED 2026-07-22 (owner):**
+- (a) **Trained station with an unresolvable basin at lineage-write time → SPLIT by kind.**
+  **`basin_id IS NULL` → skip the lineage row + log at INFO** (no WARNING — this is a legitimate,
+  common state: a model declaring no static features can train on a basin-less station, and it is
+  already safe by construction because `assemble_station_training_data` fails-loud UPSTREAM
+  (`training_data.py:216-234`) whenever a model *requires* static features but the basin/attributes
+  are absent; so a NULL basin reaching Task 2D provably means static features were not required and
+  there is simply no basin version to reference). **A DANGLING `basin_id`, OR a basin that exists but
+  has NO current `basin_versions` row → FAIL-LOUD.** These are integrity violations that blocker #1's
+  fix (every `store_basin` write creates a `version=1, package_id=NULL` current row) + the `basin_id`
+  FK are meant to make unrepresentable; if one still appears, raise rather than silently emit an
+  artifact with no basin lineage (which would defeat the decision-b stale-basin SLA). Parse-don't-
+  validate / invalid-states-unrepresentable posture (CLAUDE.md). Regression: (i) a no-static-feature
+  model on a NULL-basin station trains + skips lineage (no raise); (ii) a dangling/no-current-version
+  basin raises with a clear message.
+- (b) **RATIFIED — keep serving, no auto-quarantine** (already recorded settled at the "Correction
+  UX" bullet under §Open questions → Settled). Continuity wins for a billed operational service;
+  the pending-retrain state is surfaced (material-change flag + "forecast from a superseded basin
+  version" indicator); a head hydrologist MAY manually quarantine a genuinely material correction.
+- (c) **NULL-provenance sentinel used SHORT-TERM for pre-120 legacy basins, AND a backfill follow-up
+  is FILED** (owner chose the follow-up, not accept-forever). 120 still stamps legacy Swiss/CAMELS-CH
+  basins `package_id=NULL, version=1` now (it must, to not block), but a new follow-up plan/stub tracks
+  attributing real extraction provenance to them (audit uniformity + Swiss-as-billed-tenant readiness).
+  Added to §Change log / follow-ups below; NOT in 120's build scope.
 
-**Note:** 120's real value (importing the actual basin set) is gated on the extractor's full package
-(~2026-07-22); it is buildable/fixture-testable now but not runnable until then. No urgency to force
-READY this instant.
+**All three owner decisions are now resolved.** The remaining escalation items — **2 blockers + 8
+majors, all with reviewer-supplied fixes** (above) — are folded by the 2026-07-22 `plan`-workflow
+re-run (they were design/code fixes the planner can apply, not owner calls). The extractor's full
+package has **landed and its output was tested (HRU 12300, 2026-07-22)**, so 120's real-package run is
+no longer gated — the plan is cleared to drive to READY.
