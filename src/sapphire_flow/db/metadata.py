@@ -176,6 +176,15 @@ model_artifact_basin_versions = sa.Table(
     sa.PrimaryKeyConstraint("model_artifact_id", "basin_version_id"),
 )
 
+# The correction path looks up lineage rows by `basin_version_id`, which the
+# composite PK `(model_artifact_id, basin_version_id)` cannot serve (its leading
+# column is `model_artifact_id`). A dedicated single-column index makes that
+# query index-servable.
+sa.Index(
+    "ix_model_artifact_basin_versions_basin_version_id",
+    model_artifact_basin_versions.c.basin_version_id,
+)
+
 stations = sa.Table(
     "stations",
     metadata,

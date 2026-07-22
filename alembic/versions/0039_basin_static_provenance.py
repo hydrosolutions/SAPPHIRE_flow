@@ -162,6 +162,13 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("model_artifact_id", "basin_version_id"),
     )
+    # The correction path queries lineage by `basin_version_id`, which the
+    # composite PK (model_artifact_id, basin_version_id) cannot serve.
+    op.create_index(
+        "ix_model_artifact_basin_versions_basin_version_id",
+        "model_artifact_basin_versions",
+        ["basin_version_id"],
+    )
 
     op.add_column(
         "recap_gateway_polygon_bindings",
@@ -183,6 +190,10 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_column("recap_gateway_polygon_bindings", "imported_at")
     op.drop_column("recap_gateway_polygon_bindings", "package_id")
+    op.drop_index(
+        "ix_model_artifact_basin_versions_basin_version_id",
+        table_name="model_artifact_basin_versions",
+    )
     op.drop_table("model_artifact_basin_versions")
     op.drop_index(
         "uq_basin_versions_one_current_per_basin", table_name="basin_versions"

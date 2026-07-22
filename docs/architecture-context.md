@@ -2791,7 +2791,12 @@ Written by the standalone `record_artifact_basin_lineage(...)` helper
 called right after `store_artifact()` returns — NOT a widening of the
 `ModelArtifactStore.store_artifact` Protocol. Wired into both
 `train_models_flow` (after store + promote) and `onboard_model_flow` (after
-store only, before the skill gate) via an injected `lineage_writer`.
+store only, before the skill gate) via an injected `lineage_writer`. The
+service-level station-onboarding path is wired too, not just the two Prefect
+flows: `services/onboarding.py` (`_run_onboarding`/`onboard_from_camelsch`)
+threads the same `lineage_writer` into `services.model_onboarding.onboard_model`,
+and the `scripts/onboard.py` CLI entrypoint drives that path — matching the
+fuller account in `docs/spec/types-and-protocols.md`.
 
 ### `flow_regime_configs` table
 

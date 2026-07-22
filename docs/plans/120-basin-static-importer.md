@@ -396,8 +396,11 @@ AUTOCOMMIT; a two-statement implementation fails BOTH tests (verified: reverting
 `store_basin` to two separate `INSERT`s makes both go RED).
 
 ```bash
-uv run pytest tests/unit/db/test_basin_static_provenance_schema.py::TestProvenanceSchema \
-  tests/integration/db/test_migration_00xx_basin_static_provenance.py::TestProvenanceMigration
+uv run pytest \
+  tests/unit/db/test_basin_static_provenance_schema.py::TestBasinStaticPackagesTable \
+  tests/unit/db/test_basin_static_provenance_schema.py::TestBasinVersionsTable \
+  tests/integration/db/test_migration_0039_basin_static_provenance.py::TestLegacyBackfillRegression \
+  tests/integration/db/test_migration_0039_basin_static_provenance.py::TestNonPackageInsertRegression
 ```
 
 ### Phase 1 — Package read + validation (§9 acceptance rules)

@@ -64,6 +64,22 @@ class PgBasinStore:
         committed ``basins`` row with no current ``basin_versions`` row if
         the second failed.
         """
+        # Parse, don't validate: reconcile the kwarg override with the field on
+        # the domain object. A caller passing BOTH a `package_id` kwarg AND a
+        # `basin.package_id`, with the two disagreeing, is a bug — not a
+        # precedence decision to make silently.
+        if (
+            package_id is not None
+            and basin.package_id is not None
+            and package_id != basin.package_id
+        ):
+            raise ValueError(
+                "conflicting package_id: kwarg "
+                f"{package_id!r} != basin.package_id {basin.package_id!r}"
+            )
+        effective_package_id = (
+            package_id if package_id is not None else basin.package_id
+        )
         wkb_geometry = from_shape(basin.geometry, srid=4326)
         basins_cte = (
             sa.insert(basins)
@@ -77,7 +93,7 @@ class PgBasinStore:
                 regional_basin=basin.regional_basin,
                 band_geometries=basin.band_geometries,
                 network=basin.network,
-                package_id=package_id,
+                package_id=effective_package_id,
             )
             .returning(basins.c.id)
             .cte("inserted_basin")
@@ -85,7 +101,7 @@ class PgBasinStore:
         version_select = sa.select(
             sa.literal(uuid.uuid4(), type_=sa.Uuid),
             basins_cte.c.id,
-            sa.literal(package_id, type_=sa.Text),
+            sa.literal(effective_package_id, type_=sa.Text),
             sa.literal(1),
             sa.literal(wkb_geometry, type_=Geometry("MULTIPOLYGON", srid=4326)),
             sa.literal(basin.attributes, type_=JSONB),

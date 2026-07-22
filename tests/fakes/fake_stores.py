@@ -1334,8 +1334,22 @@ class FakeBasinStore:
         gateway_mapping: list[dict[str, object]] | None = None,
     ) -> BasinId:
         del gateway_mapping  # not modeled in-memory (no §5a fake table here)
-        if package_id is not None:
-            basin = replace(basin, package_id=package_id)
+        # Mirror PgBasinStore.store_basin's effective-value + mismatch logic so
+        # the fake and the real store agree (parse, don't validate).
+        if (
+            package_id is not None
+            and basin.package_id is not None
+            and package_id != basin.package_id
+        ):
+            raise ValueError(
+                "conflicting package_id: kwarg "
+                f"{package_id!r} != basin.package_id {basin.package_id!r}"
+            )
+        effective_package_id = (
+            package_id if package_id is not None else basin.package_id
+        )
+        if effective_package_id != basin.package_id:
+            basin = replace(basin, package_id=effective_package_id)
         self._basins[basin.id] = basin
         return basin.id
 
