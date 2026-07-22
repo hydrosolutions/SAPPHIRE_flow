@@ -1,8 +1,18 @@
 # Plan 058 — BAFU LINDAS archive via operational collection on Mac Mini v0
 
-**Status**: DRAFT
+**Status**: SUPERSEDED by 136
 **Date**: 2026-04-18
 **Revision**: 2 — corrections after review round found multiple wrong claims.
+
+> **Superseded 2026-07-21** by `docs/plans/136-bafu-lindas-observation-archive-collector.md`,
+> which rejects this plan's "onboard the full roster as real stations, let Flow 2
+> accumulate the `observations` table" approach in favor of a standalone quarantined
+> collector keyed on `(gauge_code, lindas_kind)`, decoupled from station onboarding.
+> This plan's one **shipped** artefact (the weekly live-LINDAS schema-drift watch,
+> T5 — `tests/integration/live/test_lindas_live_schema.py` +
+> `.github/workflows/live-lindas-weekly.yml`) is kept as-is and inherited by Plan 136
+> (see its § Relationship to Plans 111 and 058). The reference-fixture *promotion*
+> idea (T3) remains deferred.
 
 **Rev 2 fixes (2026-04-18)**:
 (a) **Flow 2 current cadence is 30 min, not 10 min.** `register_deployments.py` defaults `SCHEDULE_INGEST_OBSERVATIONS` to `"*/30 * * * *"`. T2 now owns the decision and implementation of changing it to `"*/10 * * * *"` (cicd.md log-volume math assumes 48 runs/day — 10-min cadence triples that to 144/day; cross-reference in T2).

@@ -44,6 +44,12 @@ def _build_specs() -> list[DeploymentSpec]:
     # rhythm; a run is ~70s and dedups on issued_at, so hourly never overlaps
     # and re-fetches are cheap no-ops. Retune via the env var without a redeploy.
     cron_bafu_forecast = os.environ.get("SCHEDULE_COLLECT_BAFU_FORECASTS", "0 * * * *")
+    # Plan 136 BAFU LINDAS observation archive collector. The live probe
+    # (2026-07-21) established LINDAS effectively refreshes hourly on the top
+    # of the hour — hourly-at-:05 catches each fresh value with minimal lag.
+    cron_bafu_observation = os.environ.get(
+        "SCHEDULE_COLLECT_BAFU_OBSERVATIONS", "5 * * * *"
+    )
 
     return [
         DeploymentSpec(
@@ -110,6 +116,13 @@ def _build_specs() -> list[DeploymentSpec]:
             flow_attr="collect_bafu_forecasts_flow",
             deployment_name="collect-bafu-forecasts",
             cron=cron_bafu_forecast,
+            concurrency_limit=1,
+        ),
+        DeploymentSpec(
+            flow_module="sapphire_flow.flows.collect_bafu_observations",
+            flow_attr="collect_bafu_observations_flow",
+            deployment_name="collect-bafu-observations",
+            cron=cron_bafu_observation,
             concurrency_limit=1,
         ),
     ]

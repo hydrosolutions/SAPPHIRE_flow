@@ -42,7 +42,8 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
 - **048** — restic encrypted backup + monthly restore rehearsal — `DRAFT (stub)` —
   **HARD prod prerequisite.** Depends on 046.
 - **046** — Mac Mini staging deployment + edge-case suite — `IN_PROGRESS`.
-- **058** — BAFU LINDAS archive via operational collection — `DRAFT` — depends on 046.
+- **058** — BAFU LINDAS archive via operational collection — `SUPERSEDED by 136`.
+- **136** — BAFU LINDAS observation archive collector (quarantined, all gauges) — `READY`.
 - **091** — Mac-mini NWP-on data-collection runbook — `DRAFT` — depends on 046.
 - **094** — Cap onboarding/hindcast window to actual data range — `DRAFT`.
 - **083** — Human-readable `station_code` in structured logs — `DRAFT`.

@@ -7,6 +7,15 @@ enable_observation_alerts = true
 [adapters.bafu_forecast]
 archive_base_path = "/data/bafu_forecasts"
 
+# Plan 136 BAFU LINDAS observation archive collector. Setting this path
+# ENABLES the hourly-at-:05 collect-bafu-observations flow (gated: unset =
+# no-op). Quarantined, host-persistent named volume (docker-compose.yml
+# `bafu_observation_archive`); evaluation-only, forward-only, keyed on
+# (gauge_code, lindas_kind) — not an onboarded station. Discard with
+# `docker volume rm`.
+[adapters.bafu_observation]
+archive_base_path = "/data/bafu_observations"
+
 [adapters.weather_forecast]
 enabled = true
 # Plan 105 D2 — disk-guard thresholds (absolute free GB).

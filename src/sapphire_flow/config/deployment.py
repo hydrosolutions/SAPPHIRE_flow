@@ -161,6 +161,12 @@ class DeploymentConfig(BaseModel):
     # [adapters.bafu_forecast].archive_base_path (see load_config below).
     bafu_forecast_archive_path: Path | None = None
 
+    # Plan 136: the BAFU LINDAS observation archive collector's QUARANTINED
+    # archive root. Same gating semantics as bafu_forecast_archive_path above
+    # — unset means the collector flow no-ops. Set from
+    # [adapters.bafu_observation].archive_base_path (see load_config below).
+    bafu_observation_archive_path: Path | None = None
+
     input_quality: InputQualityConfig = InputQualityConfig()
 
     @field_validator("nwp_cycle_min_age_minutes")
@@ -369,6 +375,25 @@ def _resolve_env_vars(text: str) -> str:  # pyright: ignore[reportUnusedFunction
     return _ENV_VAR_PATTERN.sub(_replace, text)
 
 
+def _adapter_section(adapters: dict[str, Any], name: str) -> dict[str, Any]:
+    """Pull one ``[adapters.<name>]`` TOML table as a plainly-typed dict,
+    tolerating a missing/non-table entry — never Unknown-typed for pyright."""
+    section = adapters.get(name)
+    if isinstance(section, dict):
+        return cast("dict[str, Any]", section)
+    return {}
+
+
+def _normalize_blank_path(value: object) -> Any:
+    """Treat a blank/whitespace archive-path string (e.g. an unfilled config
+    template or an env-var that resolved to "") as UNSET, so a collector's
+    quarantine gate ("no-op unless explicitly configured") cannot be bypassed
+    by ``Path("")`` silently resolving to the current working directory."""
+    if isinstance(value, str) and not value.strip():
+        return None
+    return value
+
+
 def load_config(path: Path | str | None = None) -> DeploymentConfig:
     from pathlib import Path as _Path
 
@@ -387,35 +412,23 @@ def load_config(path: Path | str | None = None) -> DeploymentConfig:
     # (same behaviour as the prior tomllib.loads return type).
     data = cast("dict[str, Any]", load_merged_toml(path, _resolve_overlay_paths()))
     # Extract NWP grid archive path before popping adapters section
-    _adapters = data.get("adapters", {})
-    _weather_forecast = (
-        _adapters.get("weather_forecast", {}) if isinstance(_adapters, dict) else {}
-    )
-    nwp_grid_archive_base_path = (
-        _weather_forecast.get("archive_base_path")
-        if isinstance(_weather_forecast, dict)
-        else None
-    )
+    _adapters = _adapter_section(data, "adapters")
+    _weather_forecast = _adapter_section(_adapters, "weather_forecast")
+    nwp_grid_archive_base_path = _weather_forecast.get("archive_base_path")
     # Plan 111: extract the quarantined BAFU-forecast-collector archive path
     # before popping the adapters section, mirroring nwp_grid_archive_base_path
-    # (same shape, same pre-existing pyright-ratchet tolerance — see
-    # tools/pyright_baseline.py).
-    _bafu_forecast = (
-        _adapters.get("bafu_forecast", {}) if isinstance(_adapters, dict) else {}
-    )
-    bafu_forecast_archive_path = (
+    # (same shape, same blank->None normalization).
+    _bafu_forecast = _adapter_section(_adapters, "bafu_forecast")
+    bafu_forecast_archive_path = _normalize_blank_path(
         _bafu_forecast.get("archive_base_path")
-        if isinstance(_bafu_forecast, dict)
-        else None
     )
-    # Treat a blank/whitespace value (e.g. an unfilled config template or an
-    # env-var that resolved to "") as UNSET, so the collector's quarantine gate
-    # ("no-op unless explicitly configured") cannot be bypassed by Path("")
-    # silently resolving to the current working directory.
-    if isinstance(bafu_forecast_archive_path, str) and not (
-        bafu_forecast_archive_path.strip()
-    ):
-        bafu_forecast_archive_path = None
+    # Plan 136: extract the quarantined BAFU-observation-collector archive path
+    # before popping the adapters section, mirroring bafu_forecast_archive_path
+    # above (same shape, same blank->None normalization).
+    _bafu_observation = _adapter_section(_adapters, "bafu_observation")
+    bafu_observation_archive_path = _normalize_blank_path(
+        _bafu_observation.get("archive_base_path")
+    )
     # Remove adapter sections (not part of DeploymentConfig)
     data.pop("adapters", None)
     data.pop("monitoring", None)
@@ -426,4 +439,5 @@ def load_config(path: Path | str | None = None) -> DeploymentConfig:
     data["paths_data_dir"] = paths_section.get("data_dir")
     data["nwp_grid_archive_base_path"] = nwp_grid_archive_base_path
     data["bafu_forecast_archive_path"] = bafu_forecast_archive_path
+    data["bafu_observation_archive_path"] = bafu_observation_archive_path
     return DeploymentConfig.model_validate(data)

@@ -162,6 +162,7 @@ class PipelineCheckType(Enum):
     CLIMATOLOGY_THRESHOLD_REVIEW = "climatology_threshold_review"
     BAFU_FORECAST_FRESHNESS = "bafu_forecast_freshness"
     WEATHER_HISTORY_INGEST = "weather_history_ingest"
+    BAFU_OBSERVATION_FRESHNESS = "bafu_observation_freshness"
 
 
 class NotificationChannel(Enum):

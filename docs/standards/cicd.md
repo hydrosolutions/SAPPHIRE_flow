@@ -36,6 +36,8 @@ One Dockerfile for `prefect-worker-ops`, `prefect-worker-hindcast`, `prefect-wor
 | `model_artifacts` | `/data/artifacts` | prefect-worker (rw) [v0], prefect-worker-ops (ro), prefect-worker-hindcast (ro), prefect-worker-training (rw), api (ro) | Trained model files | v0+v1 |
 | `cold_storage` | `/data/cold` | prefect-worker-ops (rw), prefect-worker-hindcast (ro), api (ro) | Parquet archive | **v1** (§A2) |
 | `nwp_grids` | `/data/nwp_grids` | prefect-worker (rw, v0) | NWP Zarr archive hot tier | v0+ |
+| `bafu_forecast_archive` | `/data/bafu_forecasts` | prefect-worker (rw, v0) | Quarantined, evaluation-only archive for the `collect-bafu-forecasts` deployment (Plan 111 route-C) — permanent, forward-only, gated off by default | v0 |
+| `bafu_observation_archive` | `/data/bafu_observations` | prefect-worker (rw, v0) | Quarantined, evaluation-only archive for the `collect-bafu-observations` deployment (Plan 136), keyed on `(gauge_code, lindas_kind)` — permanent, forward-only, gated off by default | v0 |
 | `backups` | `/data/backups` | prefect-worker (rw) | pg_dump backup files (§A10) | v0+v1 |
 | `prefect_data` | `/data/prefect` | prefect-server | Prefect server state | v0+v1 |
 | `caddy_data` | Caddy internal | caddy | TLS certificates, OCSP staples | v0+v1 |

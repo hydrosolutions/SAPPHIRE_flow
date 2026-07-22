@@ -282,6 +282,37 @@ class TestLoadConfig:
         config = load_config(cfg_file)
         assert config.bafu_forecast_archive_path == Path("/data/bafu_forecast")
 
+    def test_bafu_observation_archive_path_defaults_to_none(
+        self, tmp_path: Path
+    ) -> None:
+        cfg_file = tmp_path / "deployment.toml"
+        cfg_file.write_text(_MINIMAL_TOML)
+        config = load_config(cfg_file)
+        assert config.bafu_observation_archive_path is None
+
+    def test_bafu_observation_archive_path_parsed_from_adapters_section(
+        self, tmp_path: Path
+    ) -> None:
+        toml = (
+            _MINIMAL_TOML + "\n[adapters.bafu_observation]\n"
+            'archive_base_path = "/data/bafu_observations"\n'
+        )
+        cfg_file = tmp_path / "deployment.toml"
+        cfg_file.write_text(toml)
+        config = load_config(cfg_file)
+        assert config.bafu_observation_archive_path == Path("/data/bafu_observations")
+
+    def test_bafu_observation_archive_path_blank_string_normalizes_to_none(
+        self, tmp_path: Path
+    ) -> None:
+        toml = (
+            _MINIMAL_TOML + '\n[adapters.bafu_observation]\narchive_base_path = "  "\n'
+        )
+        cfg_file = tmp_path / "deployment.toml"
+        cfg_file.write_text(toml)
+        config = load_config(cfg_file)
+        assert config.bafu_observation_archive_path is None
+
     def test_uses_sapphire_config_env_var(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
