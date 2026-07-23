@@ -4,7 +4,7 @@ created: 2026-07-23
 plan: 144
 title: Multi-track probabilistic forecasting — per-station tracks driven by assigned models, over the IFS ensemble
 scope: Run one probabilistic forecast per assigned model at that model's own (resolution, horizon), by partitioning a station's assignments into forcing-requirement tracks (e.g. a daily ≤15 d track and a 3-hourly ≤3 d sub-daily track), assembling per-member forcing at each track's resolution, and reusing the EXISTING ensemble fan-out. Thin orchestration that COMPOSES existing infrastructure (ensemble_fanout, ForecastEnsemble, forecast_qc) + Plans 134/126/139 + a new snow-forcing plan. Forecast cycle.
-depends_on: [126, 134, 139, 145]
+depends_on: [126, 134, 139, 145, 146]
 blocks: []
 supersedes: []
 ---
