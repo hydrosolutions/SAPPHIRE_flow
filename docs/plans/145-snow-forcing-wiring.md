@@ -18,9 +18,14 @@ READY. Grounded in [[reference_recap_gateway_12300_products]] (JSNOW is a **sing
 ensemble members; hourly; swe subscribed for 12300, hs/rof newly subscribed with forecast still materializing).
 
 ## Problem — snow forcing never reaches a model
-Three verified gaps break JSNOW forcing end-to-end:
-1. **Future snow is dark.** `RecapGatewayForecastAdapter.fetch_snow_forecast` (`recap_gateway.py:830`) has
-   **zero production callers** — nothing writes deterministic snow rows into the `WeatherForecastStore`, so the
+**This is a SAP3 plumbing gap, not a gateway/data gap.** The gateway *does* deliver snow forecasts — a live probe
+returned `snow.forecast(swe)` = 241 hourly rows for 12300 (2026-07-23). The data and the client methods both
+exist; SAP3 simply never fetches them. Three verified gaps:
+1. **SAP3 never fetches future snow.** The production forecast fetch `fetch_forecasts` (`run_forecast_cycle.py:886`)
+   iterates **`_ifs_variables()` only** (swe/hs/rof have a `snow_name` but no `ifs_name`, so they are excluded);
+   the dedicated `RecapGatewayForecastAdapter.fetch_snow_forecast` (`recap_gateway.py:830`, uses
+   `_snow_variables()` at `:859`) has **zero production callers**. So nothing writes deterministic snow rows into
+   the `WeatherForecastStore`, and the
    Plan 082 Task 2H-snow broadcast (`operational_inputs._broadcast_deterministic_features_to_members`, the
    "broadcast deterministic snow across every real ensemble member" step) is a **permanent no-op**. The
    `future_known nwp/swe` (and hs/rof) channel is never fed at inference.
