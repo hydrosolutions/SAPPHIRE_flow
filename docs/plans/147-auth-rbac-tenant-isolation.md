@@ -110,6 +110,16 @@ later slice that performs an audited mutation depends on **B**, so no slice ever
 mutation. **C (access-token auth) depends on A + B; D (least-privilege DB roles) depends on C;
 E (tenant write-isolation) depends on A + B.**
 
+**Scope rule for THIS `/implement` run: build Slice A ONLY (the tenant-model foundation) and STOP.** Do NOT
+build Slice B/C/D/E in this run — each is a separate later slice with its own PR (branch
+`feat/plan-147-slice-a` builds Slice A). Slice A is a root (no dependency), so nothing else needs to exist
+first. It is a pure data-model + migration slice (**no auth, no HTTP changes**): the `tenants` table +
+`TenantId`, `stations.tenant_id`/`station_groups.tenant_id NOT NULL`, tenant fields on
+`StationConfig`/`StationGroup` + row conversion + protocols + fakes + fixtures + config parse, per-tenant
+`UNIQUE (tenant_id, name)`, the station↔group composite-FK invariant, and the add-nullable → backfill (default
+`sapphire` tenant) → detect-inconsistency → composite-FK/unique → NOT NULL migration WITH upgrade AND downgrade
+tests on populated data. Live-Postgres integration tests per the Slice-A verification block below.
+
 ### Slice A — Tenant model foundation (data model, no auth)
 
 The whole plan's tenancy invariants live here, created first so scope filtering (C), and write-isolation
