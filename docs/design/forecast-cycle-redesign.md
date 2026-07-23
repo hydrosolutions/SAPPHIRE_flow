@@ -1,10 +1,10 @@
 # Forecast-cycle redesign — forcing tracks, per-assignment run context, probabilistic multi-track
 
-**Status:** DRAFT design doc — created 2026-07-23, **revised after TWO independent Codex reviews** (round 1:
-architecture direction; round 2: contract refinements — both folded). **Supersedes the incremental patching of
-Plans 126 + 144** (folded here). Decisions locked in `docs/design/v1-forecasting-decisions.md`. **Next:** a third
-confirming Codex review, then slice the build sequence into implementation plans. Control-only forecasting is
-live and must stay green at every phase.
+**Status:** DRAFT design doc — created 2026-07-23, **hardened through THREE independent Codex reviews** (round 1:
+architecture direction; round 2: contract structure; round 3: contract precision — all folded; round 3 returned
+**no blockers**). **Supersedes the incremental patching of Plans 126 + 144** (folded here). Decisions locked in
+`docs/design/v1-forecasting-decisions.md`. **Ready to slice the build sequence into implementation plans.**
+Control-only forecasting is live and must stay green at every phase.
 
 ## Why this doc exists
 Six `/plan` runs on the ensemble-forecasting cluster (142 ×2, 144, 145, 126) stalled — the final 126 pass proved
@@ -58,19 +58,23 @@ coarse.
 - **`ForcingTrackKey` = (nwp source, ensemble mode, time_step, per-feature horizons, spatial representation).**
   Project every active assignment to a track; **deduplicate identical tracks across assignments/stations**;
   resolve + fetch **once per track**. This is the fetch/resolution unit.
-- **A track resolves to per-`(track, station)` outcomes, NOT a coarse `map[track → cycle]` (round-2 fix).** A
-  track can resolve for station A but be unavailable for station B — Recap accepts partial spatial resolution and
-  **returns only successfully-accumulated stations** (`recap_gateway.py:716,778`), and readback is station-keyed
-  (`weather_forecast_store.py:49`). So resolution yields `TrackFetchResult(resolved_cycle, station_outcomes)` (or
-  availability indexed by `(track, station)`). There is **no global track→cycle map as a second source of
-  truth** — contexts are built directly from these outcomes.
-- **`ModelRunContext` (assignment-keyed) = inputs + input metadata + resolved NWP provenance + `prior_state`,
-  loaded by `(station_id, assignment.model_id)`.** This is the assemble/run unit and the consumer that makes a
-  per-track cycle non-dormant. **Its construction returns a per-assignment success/failure result** — a track
-  that is unavailable for a station turns that station's assignment into an **assignment-local failure** that
-  advances the fallback chain; it must **never** abort the whole station's context construction (today the
-  assembler returns `None` when NWP is absent and skips the *entire station*,
-  `operational_inputs.py:442` → `run_forecast_cycle.py:1875` — that path is what this changes).
+- **A track resolves to ONE cycle; per-station availability varies (round-3 fix).** The track's walk-back picks
+  a **single** `resolved_cycle` for the whole track — matching Recap, which resolves one cycle globally by
+  probing one HRU (`recap_gateway.py:673`). At that cycle, availability is **per-station**: Recap accepts partial
+  spatial resolution and returns only successfully-accumulated stations (`recap_gateway.py:716,778`), and
+  readback is station-keyed (`weather_forecast_store.py:49`). So resolution yields
+  `TrackFetchResult(resolved_cycle, Mapping[station_id, StationTrackOutcome])`, where a `StationTrackOutcome` is
+  *available(records + provenance)* or *unavailable*. There is **no global `map[track→cycle]` second source of
+  truth** — contexts are built directly from these outcomes. (Independent per-station walk-back is explicitly
+  NOT supported: one cycle per track, availability varies.)
+- **`ModelRunContext` (assignment-keyed) = inputs + input metadata + resolved NWP provenance + `prior_state`.**
+  The **assignment key is `(station_id, model_id)`** for station assignments and `(group_id, model_id)` for
+  groups (round-3: `ModelAssignment` has no id, `types/station.py:55`; assert key uniqueness). This is the
+  assemble/run unit and the consumer that makes a per-track cycle non-dormant. **Its construction returns a
+  per-assignment success/failure result** — a station that is *unavailable* for its assignment's track turns that
+  assignment into an **assignment-local failure** that advances the fallback chain; it must **never** abort the
+  whole station's context construction (today the assembler returns `None` when NWP is absent and skips the
+  *entire station*, `operational_inputs.py:442` → `run_forecast_cycle.py:1875` — that path is what this changes).
 
 Components:
 1. **Track projection with per-feature horizons — three concrete horizon types (round-2 fix).** Derive each
@@ -109,12 +113,16 @@ Components:
    production (`alert_checker.py:181-188`). Three explicit, separate checks:
    - **Input completeness** — one validator type whose invariant is exactly `member_ids == frozenset(range(51))`
      (+ each feature's horizon), applied at **fetch acceptance** and reused as a pre-run defensive assert.
-   - **Post-prediction survival policy (DECISION):** if a **whole assignment's** surviving member count falls
-     `< min_operational_ensemble_size` after QC, the **assignment fails and the fallback chain advances**
-     (consistent with the chain semantics) — checked **before persistence and before combination**, per
-     assignment (not per target). It is not silently stored degraded. (Alternative degraded-store status is a
-     documented follow-on, not v1.)
-   - **Alert eligibility** — unchanged (`min_operational_ensemble_size` keeps gating alert evaluation).
+   - **v1 is all-51-or-fail, NOT member survival (round-3 fix).** The existing fan-out is already all-or-nothing:
+     it aborts on any member's prediction exception and only reconstructs once **every** member call succeeds
+     (`ensemble_fanout.py:126`), and QC fails a whole parameter without removing members
+     (`run_station_forecast.py:224`). So v1 requires **all 51 member predictions**; a member failure fails the
+     **assignment** and the fallback chain advances (per assignment, before persistence/combination). There is
+     **no post-prediction member-dropping** and no production `min_operational_ensemble_size` gate in v1 — a
+     member-survival mechanism (member-local outcome capture, which failures are survivable, cross-parameter
+     member-set reconciliation, a production min-count gate) is a **named follow-on**, not this redesign.
+   - **Alert eligibility** — unchanged (`min_operational_ensemble_size` keeps gating **alert** evaluation only,
+     `alert_checker.py:181-188`).
 
 ### Fallback-chain semantics (round-1: control-only is NOT a degenerate single requirement)
 A station carries a **list of assignments run as a priority fallback chain** (`run_forecast_cycle.py:1781,1887`);
@@ -140,7 +148,11 @@ discovery** — group-control assembly reads the shared cycle for every member t
 (`run_forecast_cycle.py:2193,2198,2240`; `run_group_forecast.py:128`), so a requirement used **only** by a group
 assignment must still project a track and resolve, or group-control breaks during migration. Scope: **include
 SINGLE group assignments in track discovery/resolution** (or preserve a dedicated legacy control track for the
-group path); **exclude only group ensemble fan-out** until its follow-on.
+group path); **exclude only group ensemble fan-out** until its follow-on. **Group-CONTROL cycle contract
+(round-3):** a group assignment requires **one common acceptable cycle for the whole group** and **fails
+atomically** if any member station is unavailable at it — matching today's shared-cycle group assembly
+(`run_group_forecast.py:110,359`; `run_forecast_cycle.py:2193,2240`). Per-station group cycles are a follow-on
+(with group ensembles), not this redesign.
 
 ## Locked decisions (see `docs/design/v1-forecasting-decisions.md`)
 D1 exact-51 + walk-back · D3 `pf` 00Z-only (ensemble once/day now, 4×/day later) · D4 walk-back-only · units
