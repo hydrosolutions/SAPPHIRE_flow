@@ -1,6 +1,6 @@
 [project]
 name = "sapphire-flow"
-version = "0.1.653"
+version = "0.1.654"
 description = "Add your description here"
 readme = "README.md"
 license = "MIT"
@@ -82,7 +82,7 @@ default = true
 
 [tool.uv.sources]
 forecastinterface = { git = "https://github.com/hydrosolutions/ForecastInterface.git", rev = "v0.1.17" }
-recap-dg-client = { git = "https://github.com/hydrosolutions/recap-dg-client.git", rev = "60e5d736dec663d013ce2c05a6f067b82254cd7f" }
+recap-dg-client = { git = "https://github.com/hydrosolutions/recap-dg-client.git", rev = "9340e4025e05a72729d93d1d6881abcd5f298ff1" }
 
 [tool.ruff]
 target-version = "py311"
@@ -111,7 +111,7 @@ markers = [
 addopts = "-m 'not deployment and not live and not live_lindas and not live_stac and not slow'"
 
 [tool.bumpversion]
-current_version = "0.1.653"
+current_version = "0.1.654"
 commit = false
 tag = false
 allow_dirty = true
