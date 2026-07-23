@@ -95,6 +95,11 @@ services:
       DATABASE_URL_TEMPLATE: postgresql+psycopg://${DB_USER:-sapphire}@postgres:5432/sapphire
       PREFECT_API_URL: http://prefect-server:4200/api
       PREFECT_LOGGING_LEVEL: WARNING
+      # Plan 103: /home/app/.prefect is on the read-only root FS. /tmp is
+      # already a writable tmpfs (below), so no new mount/volume/chown needed.
+      # CLI profile + local result-persistence scratch only — durable
+      # orchestration state lives in Postgres (prefect-server), not here.
+      PREFECT_HOME: /tmp/prefect
     depends_on:
       prefect-server:
         condition: service_healthy
@@ -147,6 +152,8 @@ services:
       DATABASE_URL_TEMPLATE: postgresql+psycopg://${DB_USER:-sapphire}@postgres:5432/sapphire
       PREFECT_API_URL: http://prefect-server:4200/api
       PREFECT_LOGGING_LEVEL: WARNING
+      # Plan 103: see prefect-worker above for rationale.
+      PREFECT_HOME: /tmp/prefect
     depends_on:
       prefect-server:
         condition: service_healthy
@@ -270,6 +277,9 @@ services:
     environment:
       DATABASE_URL_TEMPLATE: postgresql+psycopg://${DB_USER:-sapphire}@postgres:5432/sapphire
       PREFECT_API_URL: http://prefect-server:4200/api
+      # Plan 103: see prefect-worker above for rationale. `init` uses the
+      # Prefect client (register_deployments) so it needs the same fix.
+      PREFECT_HOME: /tmp/prefect
       SCHEDULE_INGEST_OBSERVATIONS: ${SCHEDULE_INGEST_OBSERVATIONS:-*/5 * * * *}
       SCHEDULE_FORECAST_CYCLE: ${SCHEDULE_FORECAST_CYCLE:-0 */6 * * *}
       SCHEDULE_BACKUP_DATABASE: ${SCHEDULE_BACKUP_DATABASE:-0 2 * * *}
