@@ -326,18 +326,23 @@ PR stays reviewable:
 2. **Phase 1 — Tasks 1A + 1B** (package loader + checksums + feature-catalog + whole-package and
    per-basin acceptance validation) — **DONE, merged in PR #126.**
 3. **Phase 2 — Tasks 2A + 2C + the 2B package-driven population** (dissolve accepted package into
-   `basins` + `version=1` snapshot + `basin_static_packages` provenance; the package-driven §5a
-   `basin_average` population via 082's `store_binding`; incremental upsert + versioned corrections +
-   idempotency + the correction→affected-artifact set) — **DONE, branch
-   `feat/plan-120-phase2-persistence`** (`store/basin_importer.py::import_basin_package` +
-   `PgBasinStore.update_basin_from_package`; hold-at-PR, not yet merged).
-4. **Phase 3 — Tasks 3A + 3B** (importer entrypoint/CLI + acceptance report; docs/runbook) — final slice,
-   **NOT started.**
+   `basins` + `version=1` snapshot + `basin_static_packages` provenance; package-driven §5a `basin_average`
+   population; incremental upsert + versioned corrections + idempotency + affected-artifact set) — **DONE,
+   merged in PR #128** (`store/basin_importer.py::import_basin_package` + `PgBasinStore.update_basin_from_package`,
+   canonical package fingerprint, migration 0040).
+4. **Phase 3 — Tasks 3A + 3B** (importer entrypoint/CLI + acceptance report; docs/runbook) — **THIS SLICE**
+   (branch `feat/plan-120-phase3-cli`). **The capstone: completes Plan 120.**
 
-Task 2A/2C go through `store_basin` (0A) and 082's `store_binding` (0A/2B) — the atomic single-object write
-paths — never their own basin/version/§5a SQL. Live-Postgres integration tests (per the plan's Verification
-blocks): `tests/integration/store/test_basin_importer_persistence.py`,
-`tests/integration/store/test_basin_importer_idempotency.py`.
+**Scope rule for THIS `/implement` run: build Task 3A + Task 3B only.** 3A is the top-level import
+entrypoint/function that ORCHESTRATES the already-merged pieces — `basin_package_loader` (Phase 1, #126) →
+`import_basin_package`/`update_basin_from_package` (Phase 2, #128) — into one call per package running the
+canonical write pipeline in one transaction, returning the structured acceptance report (accepted / onboarding-
+held+reasons / rejected / warnings / material-change / lineage-write-failures / correction affected-artifact
+set). 3B is docs (contract §5a/§6.2a/§11, `database-schema.md`, `architecture-context.md` basins section, the
+`record_artifact_basin_lineage` helper + `store_artifact` return-type fix, a new importer runbook, README status).
+Everything else (0A/1A/1B/2A/2B/2C/2D) is ALREADY on `main` (#124/#126/#128) — CONSUME, do not re-implement. Do
+NOT synthesize missing attributes / edit geometry to pass / silently fall back (`04:670-672`). End-to-end
+integration test against the checked-in fixture (`tests/fixtures/basin_static/nepal-dhm-basins/`).
 
 ---
 
