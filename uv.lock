@@ -3272,7 +3272,7 @@ wheels = [
 [[package]]
 name = "recap-dg-client"
 version = "0.1.0"
-source = { git = "https://github.com/hydrosolutions/recap-dg-client.git?rev=60e5d736dec663d013ce2c05a6f067b82254cd7f#60e5d736dec663d013ce2c05a6f067b82254cd7f" }
+source = { git = "https://github.com/hydrosolutions/recap-dg-client.git?rev=9340e4025e05a72729d93d1d6881abcd5f298ff1#9340e4025e05a72729d93d1d6881abcd5f298ff1" }
 dependencies = [
     { name = "pandas" },
     { name = "pyarrow" },
@@ -3662,7 +3662,7 @@ wheels = [
 
 [[package]]
 name = "sapphire-flow"
-version = "0.1.653"
+version = "0.1.657"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
@@ -3748,7 +3748,7 @@ requires-dist = [
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.3" },
     { name = "pydantic", specifier = ">=2.12.5" },
     { name = "pygments", specifier = ">=2.20.0" },
-    { name = "recap-dg-client", git = "https://github.com/hydrosolutions/recap-dg-client.git?rev=60e5d736dec663d013ce2c05a6f067b82254cd7f" },
+    { name = "recap-dg-client", git = "https://github.com/hydrosolutions/recap-dg-client.git?rev=9340e4025e05a72729d93d1d6881abcd5f298ff1" },
     { name = "requests", specifier = ">=2.33.1" },
     { name = "rioxarray", specifier = ">=0.19.0" },
     { name = "scikit-learn", specifier = ">=1.8.0" },
