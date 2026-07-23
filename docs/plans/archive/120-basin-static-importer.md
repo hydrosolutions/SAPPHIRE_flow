@@ -1,6 +1,8 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-07-16
+completed: 2026-07-23
+merged_prs: [124, 126, 128, 129]
 plan: 120
 title: Basin/static package importer + §5a persistence + versioned basin state
 scope: Import an accepted basin/static package (incremental/regional, versioned), persist basin geometry/attributes, the §5a Gateway polygon-reference mapping, package provenance, and a versioned basin-state history so model artifacts reference the basin version they trained on; Nepal v1.
@@ -11,7 +13,7 @@ depends_on:
 
 # Plan 120 — Basin/static package importer + §5a persistence + versioned basin state
 
-**Status**: READY
+**Status**: COMPLETE — all 4 slices merged (#124 foundation / #126 loader / #128 write-side / #129 entrypoint+docs), 2026-07-23. Build-complete; production-enablement is an operator import of a real accepted package.
 **Phase**: v1
 **Depends on**: Plan 082 (owns the §5a mapping-table BASE schema this plan populates
 and extends additively — see Ownership); 115a (weather-source role model); and, at

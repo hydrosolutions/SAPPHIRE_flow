@@ -133,16 +133,13 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
   confirmed static-Parquet shape. Unblocks the
   **basin/static architecture cleanup only** — 047 separately needs its
   **re-scope per Plan 106** before it advances.
-- **120** — Basin/static importer + §5a persistence + versioned basin state —
-  `READY` (**implemented, all 4 slices — Phase 0/1/2/3 merged/landed**) — the importer the `04`
-  contract §5a calls for. Phase 0 (provenance/versioning schema), Phase 1 (package loader +
-  validation), and Phase 2 (dissolve/persist/correct into `basins`/`basin_versions`/§5a) are
-  merged to `main` (#124/#126/#128). Phase 3 (the `import_basin_package_from_directory`
-  orchestration entrypoint + `python -m sapphire_flow.cli.import_basin_package` CLI + the
-  operator-facing acceptance report + the importer runbook) is THIS slice. The extractor package
-  landed and was tested (HRU 12300). No longer gated on the extractor — the remaining gate is
-  operational only: run the importer against an accepted package before 082's resolver starts
-  returning non-`None` in production (see Plan 120 "Production-gate note").
+- **120** — Basin/static importer + §5a persistence + versioned basin state — **COMPLETE, ARCHIVED
+  (all 4 slices merged: #124 foundation / #126 loader / #128 write-side / #129 entrypoint+docs,
+  2026-07-23).** Build-complete: a basin/static package imports end-to-end via
+  `import_basin_package_from_directory` / `python -m sapphire_flow.cli.import_basin_package`, and Plan 143
+  calls the `import_loaded_basin_package` core programmatically. Remaining gate is OPERATIONAL only (run
+  the importer against a real accepted package before 082's resolver returns non-`None` in production —
+  the "Production-gate note"). See [archive/120-basin-static-importer.md](archive/120-basin-static-importer.md).
 - **035** — Rating-curve provenance for skill integrity — `READY` — v1 DHM hQ.
 - **017** — Manual vs automatic station support — `DRAFT` — v1, DHM mixed networks.
 - **015** — Calculated station support (component-derived) — **MERGED (#109 storage+trigger,
