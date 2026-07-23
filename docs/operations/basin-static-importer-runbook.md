@@ -90,7 +90,7 @@ package into exactly one of:
 
 | Field | Meaning |
 |---|---|
-| `outcome` | `"imported"` (accepted basins written, or the package had zero accepted basins), `"already_imported"` (identical `package_id` + fingerprint re-run — a no-op), or `"rejected"` (a whole-package or write-boundary problem — nothing persisted). |
+| `outcome` | `"imported"` (at least one accepted basin was written this run), `"already_imported"` (no basin needed a write this run — every accepted basin's current version already carries this `package_id`, including the case where the accepted set is empty because every basin is still held), or `"rejected"` (a whole-package or write-boundary problem — nothing persisted). |
 | `accepted` | Basins that passed every per-basin check and were (or, on a no-op, would be) persisted. Still carries visible `warnings` (e.g. a non-required static feature that happened to be null) even though the basin was accepted. |
 | `onboarding_held` | Basins held in `onboarding` — never dropped or silently skipped — with `hold_reasons` (e.g. an unmatched station, a required static feature missing for an assigned model, geometry outside required coverage). Resolve the underlying data problem and re-run; a held basin is picked up automatically once its hold reason clears. |
 | `imported_basins` | The Task 2A/2C persistence outcome per accepted basin — `"inserted"` (brand-new `(network, basin_code)`) or `"corrected"` (a new `package_id` over an existing one — see below). Each carries `material_change` and, for a correction, `affected_artifact_ids`. |
@@ -138,6 +138,30 @@ violation, with a clear reason in the report).
 ## Idempotency
 
 Re-running the identical package (same `package_id`, same computed
-checksums) is always safe — the importer detects it via the stored
-fingerprint and reports `outcome="already_imported"` without writing
-anything.
+checksums) is always safe. Idempotency is **basin-aware, not
+package-aware** (fixer round, blocker, 2026-07-23): a basin is skipped only
+when its OWN current version already carries this exact `package_id` — the
+importer never short-circuits the whole run just because the package's
+provenance row already exists. This is what makes the `onboarding_held`
+promise above ("a held basin is picked up automatically once its hold
+reason clears") actually true across reruns:
+
+- **All basins already current** → `outcome="already_imported"`,
+  `imported_basins` empty — a true no-op.
+- **Some basins were held on an earlier run and are now accepted** (their
+  hold reason cleared — e.g. the station onboarded since) → `outcome=
+  "imported"`, and `imported_basins` contains ONLY the newly-written
+  basins; every already-current basin is silently skipped, never
+  re-processed or re-corrected.
+- **Every basin is still held** (nothing accepted yet) → `outcome=
+  "already_imported"`, `imported_basins` empty, and — importantly — NO
+  `basin_static_packages` provenance row is written for this `package_id`
+  until a run actually imports at least one of its basins. A fully-held
+  package therefore never "locks" its `package_id` before anything from it
+  has actually been persisted.
+
+A `package_id` reused with ANY differing fingerprint field (network,
+contract version, extractor version, source datasets, climatology window,
+manifest file set, or payload checksums) is rejected as an immutability
+violation, not silently absorbed as a re-import — see "Correction /
+new-`package_id` procedure" above.

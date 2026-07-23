@@ -324,8 +324,10 @@ Landed in earlier slices, across four passes:
   provenance, via `store_basin`), the Task 2B package-driven §5a `basin_average` population
   (via 082's `RecapGatewayPolygonStore.store_binding`, shaped by the ONE shared
   `_basin_average_binding` row-shaping function so 2A's `gateway_mapping` snapshot and 2B's
-  §5a row cannot drift), and Task 2C (package-level idempotency/immutability-rejection via
-  `_package_import_decision`; the correction branch via the new
+  §5a row cannot drift), and Task 2C (basin-aware idempotency + package-level
+  immutability-rejection via `_basin_needs_import`/`_resolve_package_provenance` — see the
+  Task 3A fixer-round note below for the 2026-07-23 basin-vs-package-level correction; the
+  correction branch via the new
   `PgBasinStore.update_basin_from_package` — stamp prior current `superseded_at`, append
   `version+1`, refresh the `basins` projection; the correction→affected-artifact-set query
   scoped to exactly the just-superseded `basin_version_id`). Decision A (absent-basin =
@@ -1101,6 +1103,40 @@ recorded operator decision (`04:670-672`).
 
 **Scope out:** No scheduling/Prefect flow (manual/onboarding-time invocation for v1); no
 Gateway upload automation; no model-training changes.
+
+**IMPLEMENTED then hardened (fixer round, independent Codex review, 2026-07-23 — blocker):**
+`import_basin_package`'s idempotency check was PACKAGE-level — an identical
+`(package_id, fingerprint)` short-circuited the whole run via `already_imported=True` before
+ever looking at which basins were actually written. Because the `basin_static_packages`
+provenance row was inserted unconditionally on the FIRST run over a `package_id` (even one
+with ZERO accepted basins — everything `onboarding_hold`), a rerun over the identical
+package hit that provenance row on every subsequent call and reported `already_imported`
+forever, so a basin that was held on the first run could **never** be picked up once its
+hold cleared — directly contradicting the runbook's "a held basin is picked up automatically
+once its hold reason clears" (§ "Idempotency"). Fixed by splitting the check in two:
+- `_resolve_package_provenance` (renamed from `_package_import_decision`) is now PURELY the
+  immutability check — same `package_id` + identical stored fingerprint returns `True`
+  ("a provenance row already exists, don't reinsert it"); a differing fingerprint still
+  raises `BasinPackageRejectedError`; an unseen `package_id` returns `False`.
+- `_basin_needs_import` is the new BASIN-level write gate: an accepted basin is skipped only
+  when its own current `basins.package_id` already equals this run's `package_id` — a
+  brand-new basin, a correction over a different prior `package_id`, and (the case this round
+  adds) a basin that was `onboarding_hold` last time this exact `package_id` ran and is
+  `accepted` now, all get (re)imported regardless of whether the package's own provenance
+  row already exists.
+- The `basin_static_packages` provenance row itself is now written only on the run that
+  actually imports at least one basin under this `package_id` — a fully-held run writes NO
+  provenance row, so it can never "lock" a `package_id` before anything from it has been
+  persisted. `BasinPackageImportResult.already_imported` is redefined accordingly:
+  `len(imported_basins) == 0` this run (covers both a true no-op replay and a fully-held run),
+  not "the package row already existed."
+
+Regression coverage (locking tests, proven RED against the pre-fix package-level gate):
+`tests/integration/services/test_basin_importer.py::TestReimportPicksUpFormerlyHeldBasins`
+— all-held first run → resolve the hold → an identical rerun imports the basin; a mixed
+accepted/held first run → rerun imports ONLY the formerly held basin (the already-imported
+one is skipped, not re-corrected); a third, fully-identical run is a true no-op (provenance
+row written exactly once).
 
 **Verification:** an end-to-end fixture package produces a report with the exact
 accepted/held/rejected partition and populated provenance; a package that would require

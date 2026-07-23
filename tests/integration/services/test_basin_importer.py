@@ -23,6 +23,7 @@ exercised end-to-end below.
 from __future__ import annotations
 
 import dataclasses
+import os
 import uuid
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -158,15 +159,27 @@ class TestImporterAcceptanceReport:
             clock=_clock,
         )
 
-        assert report.outcome == "imported"
+        # Fixer round (blocker, 2026-07-23): a run whose accepted set is
+        # EMPTY writes zero basins, so it reports "already_imported" (never
+        # "imported" — that mislabel is exactly what let a fully-held
+        # package permanently "lock" its package_id under the old
+        # package-level gate) and writes NO `basin_static_packages`
+        # provenance row (see `TestReimportPicksUpFormerlyHeldBasins` below).
+        assert report.outcome == "already_imported"
         assert report.accepted == ()
         assert len(report.onboarding_held) == 1
         held = report.onboarding_held[0]
         assert held.basin_code == "123"
         assert any("unmatched" in reason for reason in held.hold_reasons)
-        # A package-level import with zero accepted basins still writes no
-        # basin/version rows — but the run itself is NOT a rejection.
+        # A run with zero accepted basins still writes no basin/version rows
+        # — but the run itself is NOT a rejection.
         assert report.imported_basins == ()
+        provenance_count = db_connection.execute(
+            sa.select(sa.func.count())
+            .select_from(basin_static_packages)
+            .where(basin_static_packages.c.package_id == "nepal-dhm-basins")
+        ).scalar_one()
+        assert provenance_count == 0
 
     def test_gauge_id_divergence_rejects_at_acceptance_before_any_write(
         self, db_connection: sa.Connection
@@ -310,8 +323,13 @@ class TestImporterAcceptanceReport:
 
         assert second.outcome == "already_imported"
         assert second.imported_basins == ()
-        # Idempotency is package-level (Task 2C) — the accept/hold PARTITION
-        # is still reported (Task 1B ran again), even though nothing wrote.
+        # Idempotency is BASIN-aware (fixer round, blocker, 2026-07-23) — this
+        # basin's current version already carries this package_id, so it is
+        # skipped. The accept/hold PARTITION is still reported (Task 1B ran
+        # again) even though nothing wrote — see
+        # `TestReimportPicksUpFormerlyHeldBasins` for the case where a rerun
+        # DOES import a (formerly held) basin under an otherwise-unchanged,
+        # already-provenanced package.
         assert len(second.accepted) == 1
 
     def test_whole_package_load_rejection_short_circuits_before_any_write(
@@ -406,10 +424,10 @@ class TestAssignedModelFeaturesProductionWiring:
         assert len(report.onboarding_held) == 1
         held = report.onboarding_held[0]
         assert any("ele_mt_sav" in reason for reason in held.hold_reasons)
-        # A package-level import with zero accepted basins still writes no
-        # basin/version rows for THIS basin — the provenance row itself is
-        # written regardless (matching
-        # test_unmatched_station_is_held_in_onboarding_not_rejected above).
+        # A run with zero accepted basins writes no basin/version rows for
+        # THIS basin — and (fixer round, blocker, 2026-07-23) no
+        # `basin_static_packages` provenance row either, matching
+        # test_unmatched_station_is_held_in_onboarding_not_rejected above.
         assert report.imported_basins == ()
         assert PgBasinStore(db_connection).fetch_basin_by_code("123", "dhm") is None
 
@@ -460,9 +478,190 @@ class TestAssignedModelFeaturesProductionWiring:
         assert len(report.onboarding_held) == 1
         held = report.onboarding_held[0]
         assert any("ele_mt_sav" in reason for reason in held.hold_reasons)
-        # A package-level import with zero accepted basins still writes no
-        # basin/version rows for THIS basin — the provenance row itself is
-        # written regardless (matching
-        # test_unmatched_station_is_held_in_onboarding_not_rejected above).
+        # A run with zero accepted basins writes no basin/version rows for
+        # THIS basin — and (fixer round, blocker, 2026-07-23) no
+        # `basin_static_packages` provenance row either, matching
+        # test_unmatched_station_is_held_in_onboarding_not_rejected above.
         assert report.imported_basins == ()
         assert PgBasinStore(db_connection).fetch_basin_by_code("123", "dhm") is None
+
+
+class TestReimportPicksUpFormerlyHeldBasins:
+    """Fixer round (blocker, 2026-07-23): idempotency must be BASIN-aware,
+    not package-aware. Under the old package-level gate, a first run that
+    wrote `basin_static_packages` provenance for ANY reason (even zero
+    accepted basins) permanently short-circuited every later run over the
+    identical (unchanged) package, so a formerly onboarding-held basin could
+    never be picked up once its hold cleared — contrary to the runbook.
+    Locking tests for the reviewer's three required scenarios."""
+
+    def test_all_held_first_run_then_resolved_rerun_imports_the_basin(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """(1) All-held first run -> resolve the hold -> an identical rerun
+        imports the basin. Against the buggy package-level gate, the first
+        run's ``proceed`` branch still writes a `basin_static_packages` row
+        unconditionally (before looping over the empty `accepted` set), so
+        the second run's identical fingerprint hits `no_op` immediately and
+        NEVER imports basin "123" even though its station now resolves."""
+        loaded = load_basin_package(FIXTURE_DIR)
+
+        first = import_loaded_basin_package(
+            db_connection, loaded, resolve_station=_resolver(None), clock=_clock
+        )
+        assert first.outcome == "already_imported"
+        assert first.imported_basins == ()
+        assert first.onboarding_held[0].basin_code == "123"
+        provenance_after_first = db_connection.execute(
+            sa.select(sa.func.count())
+            .select_from(basin_static_packages)
+            .where(basin_static_packages.c.package_id == "nepal-dhm-basins")
+        ).scalar_one()
+        assert provenance_after_first == 0
+
+        station_id = _seed_station(db_connection)
+        second = import_loaded_basin_package(
+            db_connection, loaded, resolve_station=_resolver(station_id), clock=_clock
+        )
+
+        assert second.outcome == "imported"
+        assert len(second.imported_basins) == 1
+        assert second.imported_basins[0].basin_code == "123"
+        assert second.imported_basins[0].outcome == "inserted"
+        assert PgBasinStore(db_connection).fetch_basin_by_code("123", "dhm") is not None
+
+    def _two_basin_loaded_package(self):  # noqa: ANN202 - test helper
+        """The real fixture's one basin ("123") plus an in-memory-only
+        duplicate ("456") under a different station — Task 2A/2C operate
+        purely on the loaded domain objects, never re-reading files (same
+        pattern as `TestImporterAcceptanceReport`'s write-boundary-rollback
+        test above). `compute_package_fingerprint` does not read
+        `loaded.basins`/`static_attributes` (only manifest fields + computed
+        checksums), so adding a second basin leaves the fingerprint — and
+        therefore idempotency across the three runs below — unchanged."""
+        loaded = load_basin_package(FIXTURE_DIR)
+        basin_a = loaded.basins[0]
+        basin_b = dataclasses.replace(
+            basin_a, station_code="456", basin_code="456", gauge_id="nepal_456"
+        )
+        return dataclasses.replace(
+            loaded,
+            basins=(basin_a, basin_b),
+            static_attributes={
+                **loaded.static_attributes,
+                "nepal_456": dict(loaded.static_attributes["nepal_123"]),
+            },
+        )
+
+    def test_mixed_first_run_then_rerun_imports_only_the_formerly_held_basin(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """(2) Mixed accepted/held first run -> rerun imports ONLY the
+        formerly held basin, leaving the already-imported one untouched
+        (never re-corrected). (3) A third, fully-identical run is a TRUE
+        no-op — proving the provenance row is written exactly ONCE (a
+        second unconditional insert would crash on the provenance primary
+        key)."""
+        station_a = _seed_station(db_connection, code="123", network="dhm")
+        loaded = self._two_basin_loaded_package()
+
+        def resolve_only_a(code: str, network: str) -> StationId | None:
+            return station_a if (code, network) == ("123", "dhm") else None
+
+        first = import_loaded_basin_package(
+            db_connection, loaded, resolve_station=resolve_only_a, clock=_clock
+        )
+        assert first.outcome == "imported"
+        assert {b.basin_code for b in first.imported_basins} == {"123"}
+        assert {d.basin_code for d in first.onboarding_held} == {"456"}
+
+        station_b = _seed_station(db_connection, code="456", network="dhm")
+
+        def resolve_both(code: str, network: str) -> StationId | None:
+            return {"123": station_a, "456": station_b}.get(code)
+
+        second = import_loaded_basin_package(
+            db_connection, loaded, resolve_station=resolve_both, clock=_clock
+        )
+
+        assert second.outcome == "imported"
+        assert {b.basin_code for b in second.imported_basins} == {"456"}
+        assert second.imported_basins[0].outcome == "inserted"
+
+        third = import_loaded_basin_package(
+            db_connection, loaded, resolve_station=resolve_both, clock=_clock
+        )
+        assert third.outcome == "already_imported"
+        assert third.imported_basins == ()
+
+        pkg_row_count = db_connection.execute(
+            sa.select(sa.func.count())
+            .select_from(basin_static_packages)
+            .where(basin_static_packages.c.package_id == "nepal-dhm-basins")
+        ).scalar_one()
+        assert pkg_row_count == 1
+
+
+class TestCliEntrypointRealTransaction:
+    """Fixer round (minor, 2026-07-23): ``import_basin_package_from_directory``'s
+    happy path was previously exercised only via its Task 1A load-rejection
+    short-circuit (`test_whole_package_load_rejection_short_circuits_before_
+    any_write` above, which never opens a connection) — the CLI's own unit
+    tests mock the function out entirely. This proves the REAL ``engine.
+    begin()`` transaction it opens and hands to ``import_loaded_basin_
+    package`` actually wires up and commits, on a DEDICATED, throwaway
+    Postgres container (same pattern as ``test_e2e_pipeline.py``'s
+    ``e2e_engine``) — never against the SHARED, session-scoped ``db_engine``
+    every other test in this file uses, since a real commit there would leak
+    ``(network="dhm", basin_code="123")`` state across the rest of the
+    session (see the module docstring)."""
+
+    def test_end_to_end_from_directory_commits_through_a_real_engine_begin(
+        self,
+    ) -> None:
+        from alembic.config import Config
+        from testcontainers.postgres import PostgresContainer
+
+        from alembic import command
+
+        with PostgresContainer(
+            image="postgis/postgis:16-3.4",
+            username="test",
+            password="test",
+            dbname="sapphire_cli_entrypoint_test",
+        ) as pg:
+            url = pg.get_connection_url().replace("+psycopg2", "+psycopg")
+            os.environ["DATABASE_URL"] = url
+            engine = sa.create_engine(url)
+            try:
+                alembic_cfg = Config("alembic.ini")
+                alembic_cfg.set_main_option("sqlalchemy.url", url)
+                command.upgrade(alembic_cfg, "head")
+
+                with engine.begin() as conn:
+                    station_id = _seed_station(conn)
+
+                report = import_basin_package_from_directory(
+                    FIXTURE_DIR,
+                    engine,
+                    resolve_station=_resolver(station_id),
+                    clock=_clock,
+                )
+
+                assert report.outcome == "imported"
+                assert report.package_id == "nepal-dhm-basins"
+                assert len(report.imported_basins) == 1
+                assert report.imported_basins[0].basin_code == "123"
+
+                # A FRESH connection proves the write actually COMMITTED
+                # through the real `engine.begin()` — not merely visible
+                # within the transaction that wrote it.
+                with engine.connect() as verify_conn:
+                    stored = PgBasinStore(verify_conn).fetch_basin_by_code("123", "dhm")
+                    assert stored is not None
+                    provenance_count = verify_conn.execute(
+                        sa.select(sa.func.count()).select_from(basin_static_packages)
+                    ).scalar_one()
+                    assert provenance_count == 1
+            finally:
+                engine.dispose()

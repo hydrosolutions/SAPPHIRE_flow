@@ -318,10 +318,19 @@ class ImportedBasin:
 @dataclass(frozen=True, kw_only=True, slots=True)
 class BasinPackageImportResult:
     """Task 2A/2C persistence outcome for ONE package import attempt.
-    ``already_imported=True`` means the identical package (same
-    ``package_id``, same computed checksums) was already imported — a no-op,
-    ``imported_basins`` is empty. A ``package_id`` reused with DIFFERENT
-    computed checksums never reaches this type — it raises
+    ``already_imported=True`` means NO basin needed a write this run —
+    ``imported_basins`` is empty. Idempotency is BASIN-aware (fixer round,
+    blocker, 2026-07-23), not package-aware: a basin is skipped only when its
+    own current version already carries this exact ``package_id``. This
+    covers both a true full no-op replay (every accepted basin already
+    imported by this package) AND a run whose accepted set is empty (every
+    basin still ``onboarding_hold``) — in either case nothing was written. A
+    run whose accepted set MIXES already-imported and formerly-held-now-
+    accepted basins sets ``already_imported=False`` and ``imported_basins``
+    contains ONLY the newly-written ones; the already-current basins are
+    silently skipped without being re-processed. A ``package_id`` reused with
+    DIFFERENT computed checksums (or any other fingerprinted manifest field)
+    never reaches this type — it raises
     :class:`~sapphire_flow.exceptions.BasinPackageRejectedError` instead
     (packages are immutable once accepted, contract §10)."""
 

@@ -45,7 +45,7 @@ from __future__ import annotations
 
 import math
 import uuid
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
 import structlog
@@ -133,16 +133,32 @@ def import_basin_package(
     bound to a DIFFERENT basin is a conflict — raises
     :class:`BasinPackageRejectedError` rather than silently remapping it.
 
-    Idempotent at the PACKAGE level, keyed on the CANONICAL FINGERPRINT
-    (``compute_package_fingerprint`` — validated manifest metadata + computed
-    payload checksums): re-importing the identical package (same
-    ``package_id``, identical fingerprint) is a no-op — returns
-    ``already_imported=True`` and touches no row. A ``package_id`` reused with
-    ANY differing fingerprint field — including a manifest-only mutation (e.g.
-    a changed ``climatology_window``/``source_datasets``) with unchanged
-    payload checksums — raises :class:`BasinPackageRejectedError`: packages are
-    immutable once accepted (contract §11, ``04:676``); a content change
-    requires a new ``package_id`` (fixer round finding 3, 2026-07-23).
+    Idempotent at the BASIN level (fixer round, blocker, 2026-07-23), keyed on
+    the CANONICAL FINGERPRINT (``compute_package_fingerprint`` — validated
+    manifest metadata + computed payload checksums) for the immutability
+    check, but NOT gated at the package level for the write decision: a basin
+    is skipped only when its OWN current ``basins.package_id`` already equals
+    this ``package_id`` (see :func:`_basin_needs_import`). This matters
+    because a package's basins are decided INDEPENDENTLY (Task 1B) — some may
+    be ``accepted`` while others are ``onboarding_hold`` on a given run, and a
+    held basin's hold can clear on a LATER run over the identical (unchanged)
+    package. A package-level gate (short-circuiting the whole call once
+    ``basin_static_packages`` carries a matching fingerprint) would silently
+    skip a formerly-held basin FOREVER, even after it becomes accepted,
+    because the package's fingerprint never changes. ``already_imported=True``
+    means NO basin needed a write this run (empty ``imported_basins``) — every
+    accepted basin's current version already carries this package_id. A
+    ``package_id`` reused with ANY differing fingerprint field — including a
+    manifest-only mutation (e.g. a changed ``climatology_window``/
+    ``source_datasets``) with unchanged payload checksums — raises
+    :class:`BasinPackageRejectedError`: packages are immutable once accepted
+    (contract §11, ``04:676``); a content change requires a new ``package_id``
+    (fixer round finding 3, 2026-07-23). The ``basin_static_packages``
+    provenance row itself is written on the FIRST run that actually imports
+    at least one basin under this ``package_id`` — a run whose accepted set is
+    empty (everything held) writes NO provenance row, so the package_id is
+    never "locked" by a run that persisted nothing (fixer round, blocker,
+    2026-07-23).
     """
     _require_real_transaction(conn)
     package_id = PackageId(loaded.manifest.package_id)
@@ -168,10 +184,13 @@ def import_basin_package(
     # not a 1:1 cover of the package.)
     _verify_decisions_cover_package(acceptance_report, loaded)
 
-    decision = _package_import_decision(conn, package_id, fingerprint)
-    if decision == "no_op":
-        log.info("basin_importer.package_already_imported", package_id=package_id)
-        return BasinPackageImportResult(package_id=package_id, already_imported=True)
+    # Immutability check ONLY — no longer a package-level write gate (fixer
+    # round, blocker, 2026-07-23). `provenance_exists=True` means a MATCHING
+    # (package_id, fingerprint) row was already written by an earlier run;
+    # it does NOT mean every accepted basin was already imported by it (some
+    # may have been onboarding-held on that earlier run — see
+    # `_basin_needs_import`).
+    provenance_exists = _resolve_package_provenance(conn, package_id, fingerprint)
 
     basin_store = PgBasinStore(conn)
     gateway_store = RecapGatewayPolygonStore(conn)
@@ -207,25 +226,51 @@ def import_basin_package(
             station_id=_require_station_id(basin_decision),
         )
 
-    # Canonical step 2: package provenance FIRST. `basins.package_id`,
-    # `basin_versions.package_id`, and the §5a `package_id` are all
-    # IMMEDIATE (non-DEFERRABLE) FKs, so any of them written before this row
-    # exists raises a live ForeignKeyViolation.
-    conn.execute(
-        basin_static_packages.insert().values(
-            package_id=package_id,
-            network=loaded.manifest.network,
-            contract_version=loaded.manifest.contract_version,
-            checksums=loaded.computed_checksums,
-            extractor_name=loaded.manifest.extractor_name,
-            extractor_version=loaded.manifest.extractor_version,
-            source_datasets=_serialize_source_datasets(loaded.manifest.source_datasets),
-            climatology_window=_serialize_climatology_window(
-                loaded.manifest.climatology_window
-            ),
-            fingerprint=fingerprint,
-        )
+    # Fixer round (blocker, 2026-07-23): BASIN-aware idempotency. An accepted
+    # decision is skipped only when the basin it names already has a CURRENT
+    # version written by THIS exact `package_id` — everything else (a
+    # brand-new basin, a correction over a DIFFERENT prior package_id, or a
+    # basin that was `onboarding_hold` on an earlier run over this same
+    # package and is `accepted` now) gets (re)imported, even when this
+    # package's own provenance row already exists from that earlier partial
+    # run. See `_basin_needs_import` / module docstring "Idempotent at the
+    # BASIN level".
+    decided_basins = (
+        (d, _basin_for_decision(basin_by_key, d)) for d in acceptance_report.accepted
     )
+    to_import = tuple(
+        (basin_decision, basin)
+        for basin_decision, basin in decided_basins
+        if _basin_needs_import(basin_store, basin, package_id)
+    )
+
+    # Canonical step 2: package provenance FIRST, but ONLY on the run that
+    # actually writes at least one basin under this `package_id` —
+    # `basins.package_id`, `basin_versions.package_id`, and the §5a
+    # `package_id` are all IMMEDIATE (non-DEFERRABLE) FKs, so any of them
+    # written before this row exists raises a live ForeignKeyViolation. A run
+    # whose accepted set is empty (or whose every accepted basin is already
+    # imported by this exact package) writes NO provenance row, so a
+    # zero-write run never "locks" the package_id (fixer round, blocker,
+    # 2026-07-23 — see module docstring).
+    if not provenance_exists and to_import:
+        conn.execute(
+            basin_static_packages.insert().values(
+                package_id=package_id,
+                network=loaded.manifest.network,
+                contract_version=loaded.manifest.contract_version,
+                checksums=loaded.computed_checksums,
+                extractor_name=loaded.manifest.extractor_name,
+                extractor_version=loaded.manifest.extractor_version,
+                source_datasets=_serialize_source_datasets(
+                    loaded.manifest.source_datasets
+                ),
+                climatology_window=_serialize_climatology_window(
+                    loaded.manifest.climatology_window
+                ),
+                fingerprint=fingerprint,
+            )
+        )
 
     imported_at = clock()
 
@@ -235,7 +280,7 @@ def import_basin_package(
             basin_store=basin_store,
             gateway_store=gateway_store,
             station_store=station_store,
-            basin=_basin_for_decision(basin_by_key, basin_decision),
+            basin=basin,
             station_id=_require_station_id(basin_decision),
             static_attributes=loaded.static_attributes,
             bands=loaded.bands,
@@ -243,35 +288,58 @@ def import_basin_package(
             imported_at=imported_at,
             clock=clock,
         )
-        for basin_decision in acceptance_report.accepted
+        for basin_decision, basin in to_import
     )
     return BasinPackageImportResult(
         package_id=package_id,
-        already_imported=False,
+        already_imported=len(imported_basins) == 0,
         imported_basins=imported_basins,
     )
 
 
-def _package_import_decision(
+def _basin_needs_import(
+    basin_store: PgBasinStore, basin: BasinRecord, package_id: PackageId
+) -> bool:
+    """Fixer round (blocker, 2026-07-23): the BASIN-level half of idempotency.
+    A basin is already imported by THIS exact package run only when it
+    already exists AND its CURRENT projection's `package_id` (``basins.
+    package_id`` — see `Basin.package_id`) equals this run's `package_id`.
+    Everything else needs a write: a brand-new `(network, basin_code)`
+    (`existing is None`), a correction over a basin whose current version
+    came from a DIFFERENT package_id, or — the case this fixer round adds —
+    a basin that was `onboarding_hold` (and therefore never written) the
+    last time this exact `package_id` ran, now `accepted`."""
+    existing = basin_store.fetch_basin_by_code(basin.basin_code, basin.network)
+    return existing is None or existing.package_id != package_id
+
+
+def _resolve_package_provenance(
     conn: sa.Connection, package_id: PackageId, fingerprint: str
-) -> Literal["no_op", "proceed"]:
-    """Task 2C's idempotency/correction branch, package-level half — now keyed
-    on the CANONICAL FINGERPRINT (fixer round finding 3, 2026-07-23), not the
-    payload checksums alone: same ``package_id`` + identical stored fingerprint
-    is a no-op; same ``package_id`` + ANY differing fingerprint field
+) -> bool:
+    """Task 2C's idempotency/correction branch, now PURELY an immutability
+    check (fixer round, blocker, 2026-07-23) — the package-level WRITE gate
+    this function used to also perform (short-circuiting the whole import
+    once a matching row existed) moved to `_basin_needs_import` / the
+    `to_import` filter in `import_basin_package`, so a formerly onboarding-
+    held basin can still be picked up on a later run over the identical
+    package. This function is keyed on the CANONICAL FINGERPRINT (fixer round
+    finding 3, 2026-07-23), not the payload checksums alone: same
+    ``package_id`` + identical stored fingerprint returns ``True`` (a
+    provenance row for this exact package already exists — the caller must
+    NOT re-insert it); same ``package_id`` + ANY differing fingerprint field
     (network/contract_version/extractor version/source_datasets/
     climatology_window/manifest file set OR payload checksums) is an
-    immutability violation (raises). An unseen ``package_id`` proceeds
-    (per-basin new-vs-correction is then decided per basin in
-    :func:`_import_one_basin`).
+    immutability violation (raises). An unseen ``package_id`` returns
+    ``False`` (no row yet — the caller inserts one the first time it actually
+    writes a basin under this package_id).
 
     Distinguishes ROW ABSENCE from a stored NULL fingerprint (fixer round
     finding 2, 2026-07-23): a pre-0040 ``basin_static_packages`` row carries a
     NULL ``fingerprint``. ``scalar_one_or_none`` would collapse "row present
     with NULL fingerprint" and "package not found" into the same ``None``, so a
-    re-import over a legacy row would fall through to ``proceed`` and crash on
+    re-import over a legacy row would fall through to "no row" and crash on
     the provenance PRIMARY-KEY insert (``IntegrityError``). We instead fetch the
-    ROW: absent → ``proceed``; present with a NULL fingerprint → REJECT
+    ROW: absent → ``False``; present with a NULL fingerprint → REJECT
     explicitly (immutability cannot be verified against a fingerprint-less legacy
     row) BEFORE any write."""
     row = conn.execute(
@@ -280,7 +348,7 @@ def _package_import_decision(
         )
     ).one_or_none()
     if row is None:
-        return "proceed"  # no row for this package_id → a brand-new package
+        return False  # no row for this package_id → a brand-new package
     existing_fingerprint = row[0]
     if existing_fingerprint is None:
         raise BasinPackageRejectedError(
@@ -291,7 +359,7 @@ def _package_import_decision(
             "A content change requires a NEW package_id (contract §11, 04:676)"
         )
     if existing_fingerprint == fingerprint:
-        return "no_op"
+        return True
     raise BasinPackageRejectedError(
         f"package {package_id!r} was already imported with a different package "
         f"fingerprint (stored {existing_fingerprint!r}, supplied {fingerprint!r}) "
