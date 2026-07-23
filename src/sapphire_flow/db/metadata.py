@@ -62,6 +62,13 @@ basin_static_packages = sa.Table(
         nullable=False,
         server_default=sa.func.now(),
     ),
+    # Plan 120 Phase 2 fixer round (2026-07-23): a deterministic canonical
+    # fingerprint of the validated manifest metadata + computed payload
+    # checksums (`types/basin_package.py::compute_package_fingerprint`).
+    # Re-imports compare against this stored value so a manifest-only mutation
+    # under the same `package_id` is caught as an immutability violation, not a
+    # silent no-op. Additive; nullable so it is additive over 0039's table.
+    sa.Column("fingerprint", sa.Text, nullable=True),
 )
 
 basins = sa.Table(

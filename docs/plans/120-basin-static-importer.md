@@ -256,25 +256,29 @@ row-shaping logic in one shared function that both call so they cannot drift.
 
 ---
 
-## Implementation status (fixer pass, 2026-07-22 — keep current, do not let this drift)
+## Implementation status (Phase 2 slice, 2026-07-23 — keep current, do not let this drift)
 
-**NOT production-ready. No package loader/importer exists yet.** Landed so far, across
-three passes:
+**NOT YET production-ready — Phase 3 (Task 3A entrypoint + Task 3B docs) still open.**
+Landed so far, across four passes:
 
 - **Task 0A — DONE** (`cbe3a1c`): provenance/versioning schema (`basin_static_packages`,
   `basin_versions`, `model_artifact_basin_versions`, additive `package_id` columns) +
   `PgBasinStore.store_basin` as the single atomic basin+`version=1` creation CTE. The
   `band_geometries` `json.dumps` JSONB bug was fixed as part of this same rewrite (see the
   corrected Task 2B bullet below — it does NOT need to fix this again).
-- **Task 2B — PARTIAL** (fixer pass, hardened in the second fixer pass): the §5a
+- **Task 2B — DONE for the basin-average path** (fixer pass, hardened in the second fixer
+  pass; package-driven population landed in the Phase-2 slice): the §5a
   store-layer provenance write path (`GatewayPolygonBindingRow.package_id`/`imported_at`,
   `store_binding` write/upsert) is DONE, and the `basin_average` correction-replace path is
   a single atomic `INSERT ... ON CONFLICT (station_id) WHERE spatial_type='basin_average'
   DO UPDATE` (not a two-statement DELETE-then-INSERT — that shipped in round 1 and was
   SUPERSEDED in round 2 for a silent-drop-on-partial-failure bug; see the SUPERSEDED note
-  below). The package-driven population itself (something that actually calls
-  `store_binding` from an accepted package's dissolved geometries) is NOT built — it
-  depends on Task 1A/1B/2A below.
+  below). The package-driven population itself (`import_basin_package` calling `store_binding`
+  from an accepted package's dissolved geometries, via the shared `_basin_average_binding`
+  row-shaper) is IMPLEMENTED in the Phase-2 slice. The **ONLY** remaining Task 2B item is the
+  band-level `elevation_band` §5a row writer, intentionally deferred out of v1 scope (D-BAND —
+  Recap v1 is basin-average-only; band **geometries** are still persisted to
+  `basins.band_geometries`).
 - **Task 2D — DONE, including the service-level onboarding path (third fixer pass)**:
   `record_artifact_basin_lineage` helper (`store/model_artifact_lineage.py`), wired into
   `train_models_flow`, `onboard_model_flow`, AND `services/model_onboarding.onboard_model`
@@ -284,17 +288,32 @@ three passes:
   gate in `services/training_data.py`. The first two fixer passes wired only the two
   Prefect-flow call sites and missed the service-level one — a station onboarded via
   `onboard_stations_flow` got no lineage row.
-- **Phase 1 (Task 1A/1B — package loader, checksums, feature-catalog/per-basin acceptance),
-  Task 2A (dissolve into `basins` + version snapshot), Task 2C (incremental upsert +
-  versioned corrections + idempotency + affected-artifact set), and Phase 3 (Task 3A
-  importer entrypoint, Task 3B docs) are NOT implemented.** Until Task 1A/1B/2A/2C/3A land,
-  there is no way to actually import a basin/static package — 082's store-backed resolver
-  keeps returning `None` for every station (Production-gate note, below), and the lineage
-  table has no package-sourced basins to reference yet (legacy/onboarding-created basins
-  still resolve correctly, per Task 2D's `version=1` fallback).
+- **Phase 1 — DONE** (`Task 1A/1B`, merged PR #126): package loader, checksums,
+  feature-catalog/per-basin acceptance (`services/basin_package_loader.py`).
+- **Phase 2 — DONE (this slice, branch `feat/plan-120-phase2-persistence`)**:
+  `store/basin_importer.py::import_basin_package` — Task 2A (dissolve a NEW
+  `(network, basin_code)` into `basins` + a `version=1` snapshot + `basin_static_packages`
+  provenance, via `store_basin`), the Task 2B package-driven §5a `basin_average` population
+  (via 082's `RecapGatewayPolygonStore.store_binding`, shaped by the ONE shared
+  `_basin_average_binding` row-shaping function so 2A's `gateway_mapping` snapshot and 2B's
+  §5a row cannot drift), and Task 2C (package-level idempotency/immutability-rejection via
+  `_package_import_decision`; the correction branch via the new
+  `PgBasinStore.update_basin_from_package` — stamp prior current `superseded_at`, append
+  `version+1`, refresh the `basins` projection; the correction→affected-artifact-set query
+  scoped to exactly the just-superseded `basin_version_id`). Decision A (absent-basin =
+  untouched) holds by construction — the importer only ever touches basins referenced in
+  `acceptance_report.accepted`.
+- **Phase 3 (Task 3A importer entrypoint/CLI + acceptance report, Task 3B docs/runbook) is
+  NOT implemented.** `import_basin_package` is the write-side function Task 3A will wrap
+  with file-loading + a CLI + the full accepted/held/rejected report; until Task 3A lands
+  there is no operator-facing way to run an import, so 082's store-backed resolver still
+  returns `None` for every station in a live deployment (Production-gate note, below) even
+  though the persistence path itself is now exercised (Live-Postgres integration tests:
+  `tests/integration/store/test_basin_importer_persistence.py`,
+  `tests/integration/store/test_basin_importer_idempotency.py`).
 
 Do not treat this plan as "landed" for Nepal production purposes on the strength of Task
-0A/2B/2D alone — Phase 1/2A/2C/3A are the blocking remainder.
+0A/1A/1B/2A/2B/2C/2D alone — Phase 3 (Task 3A/3B) is the blocking remainder.
 
 ---
 
@@ -305,15 +324,20 @@ PR stays reviewable:
 
 1. **Foundation** (Task 0A + 2D + the 2B store-layer write/replace path) — **DONE, merged in PR #124.**
 2. **Phase 1 — Tasks 1A + 1B** (package loader + checksums + feature-catalog + whole-package and
-   per-basin acceptance validation) — **THIS SLICE** (branch `feat/plan-120-phase1-loader`).
-3. **Phase 2 — Tasks 2A + 2C** (dissolve accepted package into `basins` + version snapshot; incremental
-   upsert + versioned corrections + idempotency + the 2B package-driven §5a population) — next slice.
-4. **Phase 3 — Tasks 3A + 3B** (importer entrypoint/CLI + acceptance report; docs/runbook) — final slice.
+   per-basin acceptance validation) — **DONE, merged in PR #126.**
+3. **Phase 2 — Tasks 2A + 2C + the 2B package-driven population** (dissolve accepted package into
+   `basins` + `version=1` snapshot + `basin_static_packages` provenance; the package-driven §5a
+   `basin_average` population via 082's `store_binding`; incremental upsert + versioned corrections +
+   idempotency + the correction→affected-artifact set) — **DONE, branch
+   `feat/plan-120-phase2-persistence`** (`store/basin_importer.py::import_basin_package` +
+   `PgBasinStore.update_basin_from_package`; hold-at-PR, not yet merged).
+4. **Phase 3 — Tasks 3A + 3B** (importer entrypoint/CLI + acceptance report; docs/runbook) — final slice,
+   **NOT started.**
 
-**Scope rule for an `/implement` run: build ONLY the current slice's phase and STOP.** For THIS run,
-implement **Task 1A and Task 1B only** — do NOT build Task 2A/2C or Phase 3 in the same run; they are
-separate later slices with their own PRs. Tasks 0A/2B(store-layer)/2D are already on `main` (#124) —
-consume them, do not re-implement them.
+Task 2A/2C go through `store_basin` (0A) and 082's `store_binding` (0A/2B) — the atomic single-object write
+paths — never their own basin/version/§5a SQL. Live-Postgres integration tests (per the plan's Verification
+blocks): `tests/integration/store/test_basin_importer_persistence.py`,
+`tests/integration/store/test_basin_importer_idempotency.py`.
 
 ---
 
@@ -614,7 +638,56 @@ implemented importer, inserting the package first, completes without it.
 uv run pytest tests/integration/store/test_basin_importer_persistence.py::TestDissolveIntoBasins
 ```
 
-#### Task 2B — §5a mapping population + band persistence + store JSONB fix — PARTIAL (store-layer write/replace path done, fixer pass; package-driven population still open)
+**IMPLEMENTED then hardened (fixer round, Codex review, 2026-07-23 — 6 findings resolved):**
+1. **Transaction contract enforced (blocker).** `import_basin_package` previously delegated
+   "one DB transaction per package" to an unspecified future caller with no runtime check.
+   Verified empirically against a live Postgres: even an EXPLICIT `conn.begin()` on an
+   AUTOCOMMIT-isolation connection (production's `flows/_db.py::setup_production_stores`)
+   does NOT make later statements roll back together on failure. `import_basin_package` now
+   calls `_require_real_transaction(conn)` FIRST and raises `RuntimeError` — before writing
+   anything — unless `conn` is demonstrably non-AUTOCOMMIT and already inside an open
+   transaction. Task 3A's future orchestration MUST acquire a connection via
+   `engine.connect()` + `conn.begin()` (or `engine.begin()`), never the shared production
+   AUTOCOMMIT connection.
+2. **Station binding added (major).** A newly imported/corrected basin is now bound to the
+   matched station's `stations.basin_id` (`PgStationStore.assign_basin` +
+   `_assign_station_basin`) — without this, `assemble_station_training_data`/
+   `record_artifact_basin_lineage` (both of which follow `stations.basin_id`, never the
+   package) could never reach the imported static attributes. A station already bound to a
+   DIFFERENT basin is rejected (`BasinPackageRejectedError`), never silently remapped.
+3. **Missing static attributes now fail loud (major).** `static_attributes.get(basin.gauge_id,
+   {})` silently produced `{}` for a mismatched/stale acceptance report; replaced with
+   `_require_static_attributes`, which raises `BasinPackageRejectedError` when the accepted
+   basin's `gauge_id` is absent.
+4. **`update_basin_from_package` collapsed to one atomic statement (major, mirrors Task 0A).**
+   The stamp/append/refresh triple now runs as ONE chained-CTE statement — see
+   `tests/integration/store/test_basin_store.py::TestUpdateBasinFromPackageAtomicity` (proven
+   against a raw AUTOCOMMIT connection: the pre-fix three-`execute()`-call form left the basin
+   with ZERO current `basin_versions` rows when the append half failed after the stamp had
+   already self-committed).
+5. **Station identity validated before any write (major, second fixer round, independent
+   Codex pass).** `_basin_for_decision` only verified the `(network, basin_code)` KEY exists
+   in the loaded package — it never verified the *decision's* station identity still matches
+   that key. A stale/mismatched acceptance report paired with a package that reused the same
+   basin key but changed the station identity could silently write the §5a row and
+   `stations.basin_id` against the wrong station. `import_basin_package` now runs
+   `_validate_decision_identity` over every accepted decision BEFORE any write: (a)
+   `decision.station_code` must equal the loaded basin record's own `station_code`, and (b)
+   the resolved station's own `code`/`network` must equal the basin's — either mismatch
+   raises `BasinPackageRejectedError` and rejects the whole package.
+6. **Corrections now refresh `basins.name` (major, second fixer round).**
+   `update_basin_from_package`'s final projection UPDATE carried every corrected column
+   (geometry/attributes/area/regional grouping/bands/provenance/Gateway mapping) except
+   `name` — a corrected package's `display_name` never reached the operational `basins.name`
+   projection. `update_basin_from_package` now takes a required `name` kwarg and includes
+   `name=name` in that UPDATE; `_correct_existing_basin` passes `basin.display_name`.
+
+Regression coverage: `tests/integration/store/test_basin_importer_persistence.py`
+(`TestStationBasinBinding`, `TestMissingStaticAttributes`, `TestTransactionGuard`,
+`TestPackageAtomicity`, `TestStationIdentityValidation`, `TestCorrectionRefreshesBasinName`)
+and `tests/integration/store/test_basin_store.py` (`TestUpdateBasinFromPackageAtomicity`).
+
+#### Task 2B — §5a mapping population + band persistence + store JSONB fix — DONE for basin-average (store-layer write/replace path + package-driven population landed); ONLY the band-level `elevation_band` §5a writer is deferred (D-BAND, out of v1 scope)
 
 **Scope in:** Populate the §5a mapping table (`station_id, basin_id, gateway_hru_name,
 name, spatial_type, band_id, package_id, imported_at`) from the accepted package.
@@ -711,8 +784,10 @@ and the basin_average replace path both landed —
 (`TestProvenanceWritePath`, `TestBasinAverageUniquenessConstraint`). **Note (second fixer
 round, 2026-07-22):** the replace path shipped as two-statement DELETE-then-INSERT and was
 then hardened to a single atomic `INSERT ... ON CONFLICT DO UPDATE` statement — see the
-SUPERSEDED note above. The package-driven population itself (Task 1A/1B loader → this
-store) is still open.
+SUPERSEDED note above. The package-driven population itself (Task 1A/1B loader →
+`import_basin_package` → this store) IS IMPLEMENTED in the Phase-2 slice
+(`tests/integration/store/test_basin_importer_persistence.py::TestFiveAMappingPopulation`);
+only the band-level `elevation_band` §5a writer remains deferred (D-BAND, out of v1 scope).
 
 ```bash
 # Store-layer provenance/replace path (fixer pass, DONE):
@@ -793,6 +868,13 @@ both fail.)
 ```bash
 uv run pytest tests/integration/store/test_basin_importer_idempotency.py::TestReimportAndCorrections tests/integration/store/test_basin_importer_idempotency.py::TestCorrectionAffectedArtifacts
 ```
+
+**Fixer round (2026-07-23) hardening — see Task 2A's fixer-round note above for the full
+list.** The correction branch's `PgBasinStore.update_basin_from_package` (stamp/append/
+refresh) now runs as ONE atomic chained-CTE statement instead of three separate
+`execute()` calls, and `import_basin_package` refuses to run without a genuine open
+transaction — both close the AUTOCOMMIT partial-write hazard the Codex review raised
+against this task's "one DB transaction per package" scope line.
 
 #### Task 2D — Train-time lineage write wiring — 120 OWNS this (SETTLED) — DONE (fixer pass, 2026-07-22)
 

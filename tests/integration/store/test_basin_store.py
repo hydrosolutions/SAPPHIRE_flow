@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 import sqlalchemy as sa
@@ -16,6 +17,7 @@ from sapphire_flow.db.metadata import (
 )
 from sapphire_flow.store.basin_store import PgBasinStore
 from sapphire_flow.types.basin import Basin
+from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.ids import BasinId, PackageId
 
 _GEOM = MultiPolygon(
@@ -193,3 +195,89 @@ class TestStoreBasinPackageId:
 
         with pytest.raises(ValueError, match="conflicting package_id"):
             store.store_basin(basin, package_id=kwarg_pkg)
+
+
+class TestUpdateBasinFromPackageAtomicity:
+    """Fixer round (major finding — Codex review of Plan 120 Phase 2): the
+    correction branch's stamp/append/refresh triple must be ONE atomic
+    statement, not three separate `execute()` calls — mirroring
+    `store_basin`'s (Task 0A) single-CTE precedent. The old three-statement
+    form, run on a raw AUTOCOMMIT connection (`setup_production_stores`),
+    could leave the STAMP (superseded_at set on the prior current row)
+    permanently committed with no replacement row if the append (an
+    IMMEDIATE FK to `basin_static_packages`) then failed — a basin left with
+    ZERO current `basin_versions` rows.
+
+    This test deliberately uses a raw AUTOCOMMIT connection, NOT the
+    `db_connection` fixture's transaction-per-test isolation: wrapping the
+    failing call in a SAVEPOINT would roll back the stamp too, masking
+    exactly the AUTOCOMMIT-only bug this test exists to catch — same
+    reasoning as
+    `test_recap_gateway_polygon_store.py::test_store_binding_replace_leaves_old_row_intact_on_insert_failure`.
+    """
+
+    def test_correction_failure_on_autocommit_leaves_original_current_version_intact(
+        self, db_engine: sa.Engine
+    ) -> None:
+        with db_engine.connect().execution_options(
+            isolation_level="AUTOCOMMIT"
+        ) as conn:
+            code = f"ATOMIC-{uuid.uuid4().hex[:8]}"
+            pkg = _seed_package(conn, f"pkg-atomic-{uuid.uuid4().hex[:8]}")
+            store = PgBasinStore(conn)
+            basin = _make_basin(code=code, package_id=pkg)
+            store.store_basin(basin)
+
+            original_version_id = conn.execute(
+                sa.select(basin_versions.c.id).where(
+                    sa.and_(
+                        basin_versions.c.basin_id == basin.id,
+                        basin_versions.c.superseded_at.is_(None),
+                    )
+                )
+            ).scalar_one()
+
+            bogus_package_id = PackageId(f"pkg-does-not-exist-{uuid.uuid4().hex[:8]}")
+            with pytest.raises(IntegrityError):
+                store.update_basin_from_package(
+                    basin_id=basin.id,
+                    package_id=bogus_package_id,  # IMMEDIATE FK -> append fails
+                    name="Corrected Name",
+                    geometry=_GEOM,
+                    attributes={"corrected": True},
+                    area_km2=999.0,
+                    regional_basin=None,
+                    band_geometries=None,
+                    gateway_mapping=None,
+                    superseded_at=ensure_utc(datetime(2026, 6, 1, tzinfo=UTC)),
+                )
+
+            current_rows = (
+                conn.execute(
+                    sa.select(sa.func.count())
+                    .select_from(basin_versions)
+                    .where(
+                        sa.and_(
+                            basin_versions.c.basin_id == basin.id,
+                            basin_versions.c.superseded_at.is_(None),
+                        )
+                    )
+                )
+            ).scalar_one()
+            # Never zero (the orphan hazard) and never two (a stray extra row).
+            assert current_rows == 1
+
+            current_id = conn.execute(
+                sa.select(basin_versions.c.id).where(
+                    sa.and_(
+                        basin_versions.c.basin_id == basin.id,
+                        basin_versions.c.superseded_at.is_(None),
+                    )
+                )
+            ).scalar_one()
+            assert current_id == original_version_id  # the stamp did NOT apply
+
+            projected_area = conn.execute(
+                sa.select(basins.c.area_km2).where(basins.c.id == basin.id)
+            ).scalar_one()
+            assert projected_area == pytest.approx(123.4)  # basins projection untouched

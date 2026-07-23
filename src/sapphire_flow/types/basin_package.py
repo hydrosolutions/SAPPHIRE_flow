@@ -8,7 +8,9 @@ Pydantic boundary models that produce them live in
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import hashlib
+import json
+from dataclasses import dataclass, field, fields
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
@@ -16,11 +18,12 @@ if TYPE_CHECKING:
 
     from shapely.geometry.base import BaseGeometry
 
-    from sapphire_flow.types.ids import StationId
+    from sapphire_flow.types.ids import ArtifactId, BasinId, PackageId, StationId
 
 CoverageStatus = Literal["inside", "partial", "outside", "unknown"]
 ValidationStatus = Literal["passed", "warning", "failed"]
 BasinAcceptanceOutcome = Literal["accepted", "onboarding_hold"]
+BasinImportOutcome = Literal["inserted", "corrected"]
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -165,6 +168,99 @@ class LoadedBasinPackage:
     computed_checksums: dict[str, str]
 
 
+# Every validated ``PackageManifest`` field folded into the canonical
+# fingerprint. Kept in lock-step with the dataclass by the fail-loud guard in
+# ``compute_package_fingerprint``: if a new manifest field is ever added without
+# being covered here, fingerprinting raises loudly rather than silently dropping
+# it (which would let a manifest-metadata change slip past the immutability
+# check). Every field is covered — there is no legitimate "omit" set.
+_FINGERPRINTED_MANIFEST_FIELDS: frozenset[str] = frozenset(
+    {
+        "contract_version",
+        "package_id",
+        "created_at",
+        "network",
+        "crs",
+        "extractor_name",
+        "extractor_version",
+        "source_datasets",
+        "gateway_hru_names",
+        "climatology_window",
+        "files",
+        "checksums",
+    }
+)
+
+
+def compute_package_fingerprint(loaded: LoadedBasinPackage) -> str:
+    """A deterministic canonical fingerprint of a loaded basin/static package
+    (Plan 120 Phase 2 fixer round, 2026-07-23).
+
+    Covers EVERY validated manifest field that identifies the package's
+    content-defining provenance — ``contract_version``, ``package_id``,
+    ``created_at``, ``network``, ``crs``, the extractor name/version,
+    ``source_datasets``, ``gateway_hru_names``, ``climatology_window``, the
+    declared manifest file set (``files``), and the declared ``checksums`` map —
+    PLUS the computed payload checksums. Two packages with the same
+    ``package_id`` but ANY difference across these fields produce DIFFERENT
+    fingerprints, so:
+
+    - the importer can BIND an (immutable) acceptance report to the exact
+      package it was produced from (the report carries this fingerprint; the
+      importer recomputes it from the loaded package and rejects a mismatch —
+      finding 1), and
+    - idempotency/immutability compares the STORED fingerprint, so a manifest-
+      only mutation under the same ``package_id`` (e.g. a changed
+      ``climatology_window``/``source_datasets``/``created_at``/``crs``) with
+      identical payload checksums is caught as an immutability violation rather
+      than silently reported ``already_imported`` (finding 3; contract §11
+      ``04:676``).
+
+    Fails LOUD if ``PackageManifest`` grows a field not folded in here, so a new
+    manifest field can never be silently dropped from the fingerprint.
+
+    Deterministic: every collection is sorted (dicts by item, sets to a sorted
+    list) and the payload is JSON-encoded with sorted keys, so the digest
+    depends only on content, never on ordering. The SAME package always yields
+    the SAME fingerprint (an identical re-import stays an idempotent no-op).
+    """
+    manifest = loaded.manifest
+    covered = frozenset(f.name for f in fields(manifest))
+    if covered != _FINGERPRINTED_MANIFEST_FIELDS:
+        raise RuntimeError(
+            "compute_package_fingerprint is out of sync with PackageManifest: "
+            f"manifest fields {sorted(covered)} != fingerprinted fields "
+            f"{sorted(_FINGERPRINTED_MANIFEST_FIELDS)} — every validated manifest "
+            "field MUST be folded into the canonical fingerprint (add the new "
+            "field here explicitly; never silently drop it, or a manifest-metadata "
+            "change would slip past the immutability check)"
+        )
+    window = manifest.climatology_window
+    payload = {
+        "contract_version": manifest.contract_version,
+        "package_id": manifest.package_id,
+        "created_at": manifest.created_at,
+        "network": manifest.network,
+        "crs": manifest.crs,
+        "extractor_name": manifest.extractor_name,
+        "extractor_version": manifest.extractor_version,
+        "source_datasets": sorted(
+            [d.name, d.version, d.purpose] for d in manifest.source_datasets
+        ),
+        "gateway_hru_names": sorted(manifest.gateway_hru_names),
+        "climatology_window": (
+            None
+            if window is None
+            else [window.start.isoformat(), window.end.isoformat()]
+        ),
+        "manifest_files": sorted(manifest.files.items()),
+        "declared_checksums": sorted(manifest.checksums.items()),
+        "computed_checksums": sorted(loaded.computed_checksums.items()),
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class BasinAcceptanceDecision:
     """Task 1B per-basin outcome. Never "rejected" — a per-basin problem holds
@@ -184,6 +280,12 @@ class BasinAcceptanceDecision:
 @dataclass(frozen=True, kw_only=True, slots=True)
 class BasinPackageAcceptanceReport:
     decisions: tuple[BasinAcceptanceDecision, ...]
+    # Canonical fingerprint of the loaded package these decisions were produced
+    # against (``compute_package_fingerprint``). The importer recomputes the
+    # fingerprint from the package it is handed and rejects a mismatch, so an
+    # acceptance report can never be silently applied against a DIFFERENT
+    # package than the one it was evaluated on (Plan 120 finding 1).
+    fingerprint: str
 
     @property
     def accepted(self) -> tuple[BasinAcceptanceDecision, ...]:
@@ -192,3 +294,36 @@ class BasinPackageAcceptanceReport:
     @property
     def onboarding_held(self) -> tuple[BasinAcceptanceDecision, ...]:
         return tuple(d for d in self.decisions if d.outcome == "onboarding_hold")
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ImportedBasin:
+    """Task 2A/2C persistence outcome for ONE accepted basin. ``"inserted"``
+    is a brand-new ``(network, basin_code)``; ``"corrected"`` is a new
+    ``package_id`` over an already-imported ``(network, basin_code)``
+    (Decision B) — its ``material_change`` is always ``True`` and
+    ``affected_artifact_ids`` names the artifacts trained on the version this
+    correction just superseded (never all historically-superseded versions).
+    """
+
+    basin_id: BasinId
+    network: str
+    basin_code: str
+    outcome: BasinImportOutcome
+    material_change: bool
+    affected_artifact_ids: tuple[ArtifactId, ...] = ()
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class BasinPackageImportResult:
+    """Task 2A/2C persistence outcome for ONE package import attempt.
+    ``already_imported=True`` means the identical package (same
+    ``package_id``, same computed checksums) was already imported — a no-op,
+    ``imported_basins`` is empty. A ``package_id`` reused with DIFFERENT
+    computed checksums never reaches this type — it raises
+    :class:`~sapphire_flow.exceptions.BasinPackageRejectedError` instead
+    (packages are immutable once accepted, contract §10)."""
+
+    package_id: PackageId
+    already_imported: bool
+    imported_basins: tuple[ImportedBasin, ...] = ()

@@ -2536,6 +2536,11 @@ class StationStore(Protocol):
     def fetch_reanalysis_bindings(self, station_id: StationId) -> list[StationWeatherSource]: ...
         # 0..n REANALYSIS bindings. No status filter — an INACTIVE binding is still selected
         # (deliberate; deactivation semantics are a separate, later decision).
+    def assign_basin(self, station_id: StationId, basin_id: BasinId) -> None: ...
+        # Plan 120 fixer round: single-column UPDATE binding a station's operational
+        # identity (stations.basin_id) to an imported/corrected basin. Conflict/no-op
+        # decisions live in the caller (store/basin_importer.py::_assign_station_basin),
+        # not here.
 ```
 
 #### StationGroupStore

@@ -67,6 +67,7 @@ from sapphire_flow.types.basin_package import (
     SourceDataset,
     ValidationReport,
     ValidationReportBasinEntry,
+    compute_package_fingerprint,
 )
 
 if TYPE_CHECKING:
@@ -1252,7 +1253,9 @@ def evaluate_basin_acceptance(
         )
         for basin in loaded.basins
     )
-    return BasinPackageAcceptanceReport(decisions=decisions)
+    return BasinPackageAcceptanceReport(
+        decisions=decisions, fingerprint=compute_package_fingerprint(loaded)
+    )
 
 
 def _validate_gauge_id_join(loaded: LoadedBasinPackage) -> None:
