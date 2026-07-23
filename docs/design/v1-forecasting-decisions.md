@@ -30,7 +30,7 @@ survive QC"), not a fetch-time input-completeness definition — using it for bo
 
 **Recommendation: (A)** exact-51 input, walk back to the latest complete cycle; keep
 `min_operational_ensemble_size` as output-eligibility only. Revisit (B) only if D2/D3 show complete cycles are
-too rare.
+too rare. **✅ CONFIRMED (owner, 2026-07-23): (A).**
 
 ## D2 — How to verify completeness cheaply *(owner: gateway dev)*
 **Question:** how do we prove all 51 members exist for a candidate cycle without O(51) fetches?
@@ -48,7 +48,10 @@ fallback (B).
 
 **Why it matters:** the live probe only confirmed **`pf` at 00Z** (06/12/18Z returned "no dataset" for the probed
 date); 00/12Z reach ~15 d, 06/18Z may be shorter. This governs the **4×/day sub-daily cadence** (144 D2) and how
-often walk-back fires (126). **Recommendation: confirm with the gateway** (folded into the consolidated ask).
+often walk-back fires (126). **✅ ANSWERED (owner, 2026-07-23): `pf` is 00Z-only today; all cycles in the
+future.** Consequence baked into 126/144: the sub-daily **ensemble** track refreshes **once/day (00Z)** for now
+(walk-back always lands on 00Z; 06/12/18Z have no complete ensemble → either a stale-00Z reuse or control-only
+degrade, per D1/D4), becoming 4×/day when the gateway adds `pf` to all cycles.
 
 ## D4 — Missing/incomplete cycle: retry vs walk-back-only *(owner: you)*
 **Question:** if the freshest cycle is incomplete/absent, do we **retry** (wait for it) or **walk back** to the
@@ -57,7 +60,8 @@ latest complete cycle?
 **Why it matters:** 126 recommended a bounded in-adapter retry, but that needs a retry duration/interval, an
 injected clock, cancellation handling, and deployment config — and literal waits make flow timing + tests
 nondeterministic. **Recommendation: walk-back-only** — deterministic, no clock/config/cancellation surface,
-directly testable. Add retry later only if walk-back proves operationally insufficient.
+directly testable. Add retry later only if walk-back proves operationally insufficient. **✅ CONFIRMED (owner,
+2026-07-23): walk-back-only.**
 
 ## D5 — Narrow 126's scope *(owner: you)*
 **Question:** 126 ballooned into a 6-phase build bundling unrelated fixes. Scope it to *just* requirement-aware
@@ -73,16 +77,29 @@ features + horizon/time-step + assembly mode) threaded through the adapter — r
 the completeness (D1) + horizon requirements, with **candidate-local accumulation** (fetch/validate each
 candidate into a fresh accumulator, commit only on full pass — no partial contamination). Evict the rest to
 their own plans (mixed-column assembly, group-hoist, and the `prior_state` per-assignment fix each become small
-separate plans if still needed).
+separate plans if still needed). **✅ CONFIRMED (owner, 2026-07-23): narrow it.**
 
 ---
+
+## Resolution re-check (2026-07-23, live-probed for 12300)
+Owner asked whether the bridge is really 6-hourly and why. **Confirmed 6h, but from ONE source only:**
+- `ecmwf.operational(subdaily_resolution=3)` → **HTTP 500** (unsupported); the param accepts only 6/12/24.
+- Native steps live: **ERA5-Land observed = 1h**; **raw IFS forecast = 3h for the first ~6 days**, then 6h to
+  15 d; **IFS gap-fill = 6h**. The operational series is mixed (1h obs + 3h forecast + 6h fill in one call).
+- So the 6h floor bites **only across the gap-fill seam**. Two consequences:
+  1. **Our sub-daily 3-day forecast is already 3-hourly** — it lives in the raw forecast's 3h window; the 144
+     client-side per-member stitch builds it from raw 3h `pf` **now**, no gateway change needed.
+  2. The gateway ask (#1 below) is specifically for a **3-hourly gap-fill** (→ 3-hourly ensemble-operational),
+     since the gap-fill is the sole 6h limiter — not a generic "make operational 3h."
 
 ## Consolidated gateway ask (send once the above are internally agreed)
 One message to the gateway developer, bundling all gateway-owned items (D2 + D3 + the earlier
 ensemble-operational request):
-1. **Ensemble "operational" export at 3-hourly** — the per-member stitched series (ERA5-Land → per-member
-   gap-fill → per-member forecast), member-indexed, at **3-hourly** (not the control bridge's 6h), same UTC /
-   metres-Kelvin conventions. (Un-blocks 144's client-side stitch → server-side swap.)
+1. **A 3-hourly gap-fill → a 3-hourly ensemble "operational" export.** The raw IFS forecast is already 3-hourly
+   (first ~6 d) and ERA5 is hourly; the only 6h limiter is the **IFS gap-fill** product. Ask for the gap-fill
+   (and hence a per-member ensemble-operational: ERA5 → per-member gap-fill → per-member forecast, member-indexed)
+   at **3-hourly**, same UTC / metres-Kelvin conventions. (Efficiency swap for 144's client-side stitch, which
+   already delivers 3h.)
 2. **A completeness manifest/metadata endpoint** (D2) — for a given cycle, which members (0..50) and horizons
    are available, cheaply, so we can pick the latest complete cycle without O(51) probes.
 3. **Confirm `pf` cycle availability** (D3) — which of 00/06/12/18Z produce perturbed members, and the horizon
