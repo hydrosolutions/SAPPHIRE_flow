@@ -20,7 +20,13 @@ if TYPE_CHECKING:
         WeatherSourceRole,
         WeatherSourceStatus,
     )
-    from sapphire_flow.types.ids import BasinId, ModelId, StationGroupId, StationId
+    from sapphire_flow.types.ids import (
+        BasinId,
+        ModelId,
+        PackageId,
+        StationGroupId,
+        StationId,
+    )
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -100,3 +106,7 @@ class GatewayPolygonBindingRow:
     name: str
     spatial_type: SpatialRepresentation
     band_id: int | None
+    # Plan 120 Task 2B: additive provenance columns (owner: 120), optional so
+    # 082's own fixture callers that omit them still compile.
+    package_id: PackageId | None = None
+    imported_at: UtcDatetime | None = None

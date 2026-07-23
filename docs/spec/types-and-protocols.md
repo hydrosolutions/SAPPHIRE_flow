@@ -37,6 +37,11 @@ StationGroupId = NewType("StationGroupId", UUID)
 ForeignForecastId = NewType("ForeignForecastId", UUID)
 HistoricalForcingId = NewType("HistoricalForcingId", UUID)
 
+# PackageId wraps str, not UUID — the producer-declared basin/static package
+# identifier (manifest.json "package_id"), v1 — Plan 120 Task 0A
+PackageId = NewType("PackageId", str)
+BasinVersionId = NewType("BasinVersionId", UUID)  # v1 — Plan 120 Task 0A
+
 # pipeline_health and audit_log use BIGSERIAL PK — append-only, never
 # referenced by ID from other tables. No NewType wrapper.
 ```
@@ -872,6 +877,8 @@ class Basin:
     band_geometries: list[dict] | None   # elevation band definitions (computed in Flow 5 step 5.3)
     created_at: UtcDatetime
     network: str
+    package_id: PackageId | None = None  # basin/static package provenance; NULL for
+                                          #   legacy/non-package basins (v1 — Plan 120 Task 0A)
 ```
 
 Module: `types/basin.py`
@@ -2395,9 +2402,11 @@ class ModelArtifactStore(Protocol):
         station_id: StationId | None = None,   # for station-scoped models
         group_id: StationGroupId | None = None, # for group-scoped models
         status: ModelArtifactStatus = ModelArtifactStatus.TRAINING,  # explicit default; callers may pass TRAINING
-    ) -> ArtifactId: ...
+    ) -> tuple[ArtifactId, str]: ...
         # Exactly one of station_id or group_id must be provided.
-        # Computes and stores sha256_hash from artifact_bytes.
+        # Returns (id, sha256_hash) -- the hash is computed from artifact_bytes
+        # and stored alongside the artifact_path; callers use it to verify
+        # round-trip integrity without re-fetching the bytes.
     def fetch_artifact(self, artifact_id: ArtifactId) -> tuple[ArtifactId, bytes] | None: ...
     def fetch_active_artifact(
         self,
@@ -2434,6 +2443,39 @@ class ModelArtifactStore(Protocol):
     ) -> None: ...
         # Handles ACTIVE → SUPERSEDED on the old artifact when promoting a new one.
 ```
+
+##### Basin lineage write (Plan 120 Task 2D)
+
+`record_artifact_basin_lineage(conn, artifact_id, trained_station_ids)`
+(`sapphire_flow.store.model_artifact_lineage`) is a **standalone helper, not
+a `ModelArtifactStore` method** — it deliberately does not widen that
+Protocol. Flows call it right after `store_artifact`/`store_and_promote_artifact`
+returns, on the same connection, writing one `model_artifact_basin_versions`
+row per basin the artifact actually trained on (the TRAINED subset —
+`trained_station_ids`, not every station requested):
+
+- `stations.basin_id IS NULL` → **skip** that station's lineage row
+  (INFO-logged, no raise). The D-UP prerequisite gate in
+  `services/training_data.py` means a model that *requires* static features
+  can never reach this helper with a null basin, so this branch only fires
+  when static features were never required.
+- A basin with no current (`superseded_at IS NULL`) `basin_versions` row
+  (dangling `basin_id`, or a Task 0A invariant violation) → **raise**
+  (`ValueError`). Silently swallowing this would defeat the Decision-B
+  stale-basin retrain SLA.
+- **Non-atomic and log-loud on failure, deliberately**: matches the
+  pre-existing store+promote relationship, which is already non-atomic under
+  the AUTOCOMMIT connection flows run on in production.
+
+`PgArtifactLineageWriter(conn)` is the thin flow-facing adapter (`.record(...)`)
+that `train_models_flow`/`onboard_model_flow` inject as `lineage_writer`.
+`services.model_onboarding.onboard_model` accepts the same optional
+`lineage_writer` and calls it right after `store_artifact` — `services.
+onboarding._run_onboarding`/`onboard_from_camelsch` thread it through from
+`flows/onboard.py::onboard_stations_flow`'s `stores["lineage_writer"]`, so the
+station-onboarding path records lineage too, not just the two Prefect-flow
+call sites. Tests inject `tests.fakes.fake_stores.FakeArtifactLineageWriter`
+with the same shape.
 
 #### ModelStore
 
@@ -2689,8 +2731,21 @@ class BasinStore(Protocol):
     def fetch_basin(self, basin_id: BasinId) -> Basin | None: ...
     def fetch_basin_by_code(self, code: str, network: str) -> Basin | None: ...
     def fetch_all_basins(self) -> list[Basin]: ...
-    def store_basin(self, basin: Basin) -> BasinId: ...
+    def store_basin(
+        self,
+        basin: Basin,
+        *,
+        package_id: PackageId | None = None,
+        gateway_mapping: list[dict[str, Any]] | None = None,
+    ) -> BasinId: ...
 ```
+
+`store_basin` is the SINGLE basin-creation path (v1 — Plan 120 Task 0A): it
+atomically writes the `basins` projection row AND its paired `version=1,
+superseded_at IS NULL` `basin_versions` row in ONE data-modifying CTE, so
+the pair is atomic even on an AUTOCOMMIT connection. Called with
+`package_id=None` by station onboarding (the legacy/non-package sentinel)
+and with `package_id` set by the basin/static package importer.
 
 #### ParameterStore
 

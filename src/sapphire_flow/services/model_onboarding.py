@@ -15,6 +15,7 @@ from sapphire_flow.exceptions import (
     ModelSmokeTestError,
     StoreError,
 )
+from sapphire_flow.types.basin import non_null_static_keys
 from sapphire_flow.types.enums import (
     ArtifactScope,
     EnsembleMode,
@@ -1020,6 +1021,7 @@ def onboard_model(
     compute_skill_fn: Callable[..., None] | None = None,
     skip_smoke_test: bool = False,
     parameter_store: ParameterStore | None = None,
+    lineage_writer: object = None,
 ) -> ModelOnboardingResult:
     from sapphire_flow.protocols.forecast_model import (
         GroupForecastModel,
@@ -1070,10 +1072,9 @@ def onboard_model(
             station = station_store.fetch_station(sid)
             if station is not None and station.basin_id is not None:
                 basin = basin_store.fetch_basin(station.basin_id)
-                if basin is not None and basin.attributes:
-                    avail_static[sid] = frozenset(basin.attributes.keys())
-                else:
-                    avail_static[sid] = frozenset()
+                avail_static[sid] = non_null_static_keys(
+                    basin.attributes if basin is not None else None
+                )
             else:
                 avail_static[sid] = frozenset()
 
@@ -1297,6 +1298,22 @@ def onboard_model(
                 )
             )
             continue
+
+        # Plan 120 Task 2D: lineage AFTER store ONLY — this service stores in
+        # TRAINING status and promotes later (mirrors
+        # flows/onboard_model.py::_record_onboarding_lineage_task), so the
+        # lineage row is written here regardless of whether the artifact is
+        # later promoted or rejected. Trained subset = {unit.station_id} for a
+        # station-scoped unit, training_data.station_ids (post-skip subset)
+        # for a group-scoped one, NOT unit.station_ids (full pre-skip
+        # membership) — matches flows/train_models.py.
+        if lineage_writer is not None:
+            trained_station_ids: tuple[StationId, ...] = (
+                (unit.station_id,)
+                if unit.station_id is not None
+                else tuple(training_data.station_ids)  # type: ignore[union-attr]
+            )
+            lineage_writer.record(artifact_id, trained_station_ids)  # type: ignore[attr-defined]
 
         # Step 5: Hindcast
         hindcast_steps: list = []

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, cast
 import polars as pl
 import structlog
 
+from sapphire_flow.types.basin import non_null_static_keys
 from sapphire_flow.types.enums import AggregationMethod, QcStatus
 
 if TYPE_CHECKING:
@@ -212,10 +213,25 @@ def assemble_station_training_data(
     static_attributes: pl.DataFrame | None = None
     if station.basin_id is not None:
         basin = basin_store.fetch_basin(station.basin_id)
-        if basin is not None and basin.attributes:
+        if basin is None or not basin.attributes:
+            # Plan 120 Task 2D (D-UP prerequisite): a dangling basin_id or a
+            # basin row with no/empty attributes must fail loud UPSTREAM when
+            # static features are required — falling through to
+            # static_attributes=None here would let a required-static model
+            # silently train without them, and would let a required-static
+            # artifact reach the lineage helper with no basin to reference.
             if model.data_requirements.static_features:
-                missing_attrs = model.data_requirements.static_features - set(
-                    basin.attributes.keys()
+                log.warning(
+                    "training_data.missing_static_attributes",
+                    station_id=str(station_id),
+                    missing=sorted(model.data_requirements.static_features),
+                )
+                return None
+        else:
+            if model.data_requirements.static_features:
+                missing_attrs = (
+                    model.data_requirements.static_features
+                    - non_null_static_keys(basin.attributes)
                 )
                 if missing_attrs:
                     log.warning(

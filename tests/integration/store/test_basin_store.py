@@ -1,20 +1,22 @@
 from __future__ import annotations
 
 import uuid
-from typing import TYPE_CHECKING
 
 import pytest
+import sqlalchemy as sa
 from geoalchemy2.shape import from_shape
 from shapely.geometry import MultiPolygon, Point, Polygon
 from sqlalchemy.exc import IntegrityError
 
-if TYPE_CHECKING:
-    import sqlalchemy as sa
-
-from sapphire_flow.db.metadata import stations
+from sapphire_flow.db.metadata import (
+    basin_static_packages,
+    basin_versions,
+    basins,
+    stations,
+)
 from sapphire_flow.store.basin_store import PgBasinStore
 from sapphire_flow.types.basin import Basin
-from sapphire_flow.types.ids import BasinId
+from sapphire_flow.types.ids import BasinId, PackageId
 
 _GEOM = MultiPolygon(
     [Polygon([(7.0, 46.0), (8.0, 46.0), (8.0, 47.0), (7.0, 47.0), (7.0, 46.0)])]
@@ -27,6 +29,7 @@ def _make_basin(
     network: str = "ch-bafu",
     name: str = "Test Basin",
     regional_basin: str | None = None,
+    package_id: PackageId | None = None,
 ) -> Basin:
     return Basin(
         id=BasinId(uuid.uuid4()),
@@ -41,7 +44,20 @@ def _make_basin(
             2024, 1, 1, tzinfo=__import__("datetime").timezone.utc
         ),
         network=network,
+        package_id=package_id,
     )
+
+
+def _seed_package(conn: sa.Connection, package_id: str) -> PackageId:
+    conn.execute(
+        basin_static_packages.insert().values(
+            package_id=package_id,
+            network="ch-bafu",
+            contract_version="1.0",
+            checksums={},
+        )
+    )
+    return PackageId(package_id)
 
 
 class TestPgBasinStore:
@@ -139,3 +155,41 @@ class TestPgBasinStore:
 
         with pytest.raises(IntegrityError):
             db_connection.execute(stations.insert().values(**_station_row("S-UQ-02")))
+
+
+class TestStoreBasinPackageId:
+    def test_field_package_id_persists_without_kwarg(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """A Basin carrying its own `package_id` must persist that id to BOTH
+        `basins.package_id` AND the paired `basin_versions.package_id`, even
+        when `store_basin` is called with NO `package_id` kwarg (the regression
+        — the field was previously dropped, writing NULL to both)."""
+        pkg = _seed_package(db_connection, "pkg-field-01")
+        store = PgBasinStore(db_connection)
+        basin = _make_basin(code="PKG-FIELD-01", package_id=pkg)
+
+        store.store_basin(basin)  # no package_id kwarg
+
+        basins_pkg = db_connection.execute(
+            sa.select(basins.c.package_id).where(basins.c.id == basin.id)
+        ).scalar_one()
+        assert basins_pkg == pkg
+
+        version_pkg = db_connection.execute(
+            sa.select(basin_versions.c.package_id).where(
+                basin_versions.c.basin_id == basin.id
+            )
+        ).scalar_one()
+        assert version_pkg == pkg
+
+    def test_conflicting_kwarg_and_field_raises(
+        self, db_connection: sa.Connection
+    ) -> None:
+        _seed_package(db_connection, "pkg-a")
+        kwarg_pkg = _seed_package(db_connection, "pkg-b")
+        store = PgBasinStore(db_connection)
+        basin = _make_basin(code="PKG-CONFLICT-01", package_id=PackageId("pkg-a"))
+
+        with pytest.raises(ValueError, match="conflicting package_id"):
+            store.store_basin(basin, package_id=kwarg_pkg)

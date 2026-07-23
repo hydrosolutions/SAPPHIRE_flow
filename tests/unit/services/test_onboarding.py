@@ -37,6 +37,7 @@ from tests.conftest import (
 )
 from tests.fakes.fake_adapters import FakeWeatherReanalysisSource
 from tests.fakes.fake_stores import (
+    FakeArtifactLineageWriter,
     FakeBasinStore,
     FakeClimBaselineStore,
     FakeFlowRegimeConfigStore,
@@ -200,6 +201,7 @@ def _run(
     deployment_config: object = None,
     reanalysis_adapter: object = None,
     require_meteoswiss_backfill: bool | None = None,
+    lineage_writer: object = None,
 ):
     # Translate a pre-built adapter into the factory the service now takes.
     # ``require`` defaults to "adapter was supplied" (production supplies one),
@@ -235,6 +237,7 @@ def _run(
         deployment_config=deployment_config,  # type: ignore[arg-type]
         reanalysis_adapter_factory=factory,  # type: ignore[arg-type]
         require_meteoswiss_backfill=require,
+        lineage_writer=lineage_writer,
     )
 
 
@@ -694,6 +697,78 @@ class TestOnboardingSteps6Through8:
         fetched = s.station.fetch_station(sid)
         assert fetched is not None
         assert fetched.station_status == StationStatus.OPERATIONAL
+
+    def test_station_onboarding_records_lineage(self) -> None:
+        """Plan 120 Task 2D fixer round: station onboarding
+        (`_run_onboarding` -> `services.model_onboarding.onboard_model`) must
+        ALSO write `model_artifact_basin_versions` lineage rows -- the
+        service-level onboarding path is a separate call site from
+        `flows/train_models.py` and `flows/onboard_model.py`, which the
+        original Task 2D wiring missed."""
+        from sapphire_flow.types.enums import SpatialRepresentation, WeatherSourceStatus
+        from sapphire_flow.types.station import StationWeatherSource
+        from tests.fakes.fake_models import FakeStationForecastModel
+
+        sid = StationId(uuid4())
+        station = make_station_config(station_id=sid, code="TR003")
+        basin = _make_basin("TR003")
+        s = _Stores()
+        s.wire_model_stores()
+        assert s.model is not None
+        _seed_active_climatology_floor(s.artifact, sid)
+
+        weather_source = StationWeatherSource(
+            station_id=sid,
+            nwp_source="camels_ch",
+            extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+            status=WeatherSourceStatus.ACTIVE,
+            role=WeatherSourceRole.REANALYSIS,
+        )
+        s.station.store_weather_source(weather_source)
+
+        reanalysis_records = [
+            make_raw_historical_forcing(
+                station_id=sid,
+                parameter=param,
+                valid_time=datetime.fromtimestamp(
+                    _START.timestamp() + i * 86400, tz=UTC
+                ),
+                value=float(i % 10),
+            )
+            for i in range(400)
+            for param in ("precipitation", "temperature")
+        ]
+        forcing_source = FakeWeatherReanalysisSource(records=reanalysis_records)
+
+        discovered = {_FAKE_MODEL_ID: FakeStationForecastModel()}
+        lineage_writer = FakeArtifactLineageWriter()
+
+        with patch(
+            "sapphire_flow.services.model_registry.discover_models",
+            return_value=discovered,
+        ):
+            result = _run(
+                s,
+                stations=[station],
+                basins=[basin],
+                obs_by_station={sid: _make_raw_obs(sid, 400)},
+                forcing_by_station={sid: _make_forcing(sid, 10)},
+                forcing_source=forcing_source,
+                deployment_config=make_deployment_config(),
+                lineage_writer=lineage_writer,
+            )
+
+        assert result.models_trained >= 1
+        assert len(lineage_writer.calls) >= 1
+        recorded_artifact_id, recorded_station_ids = lineage_writer.calls[0]
+        assert recorded_station_ids == (sid,)
+
+        active = s.artifact.fetch_artifacts_by_status(  # type: ignore[union-attr]
+            model_id=_FAKE_MODEL_ID,
+            status=ModelArtifactStatus.ACTIVE,
+            station_id=sid,
+        )
+        assert active[0] == recorded_artifact_id
 
     def test_trained_model_keeps_config_priority(self) -> None:
         """Plan 089 review (P1): Step 7 (training/promotion) must NOT overwrite

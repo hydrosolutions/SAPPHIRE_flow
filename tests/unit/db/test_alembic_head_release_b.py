@@ -39,8 +39,10 @@ _ALEMBIC_VERSIONS_DIR = Path(__file__).resolve().parents[3] / "alembic" / "versi
 # (observation_versions archive table) onto 0035 — deliberate, reviewed migration
 # additions per the guidance below — advancing the pinned head to 0036. Plan 015
 # then chained 0037 (calculated_station_formulas table) + 0038 (its eligibility
-# trigger) onto 0036 — advancing the pinned head to 0038.
-_RELEASE_B_HEAD = "0038"
+# trigger) onto 0036 — advancing the pinned head to 0038. Plan 120 Task 0A then
+# chained 0039 (basin/static package provenance + versioned basin state) onto
+# 0038 — advancing the pinned head to 0039.
+_RELEASE_B_HEAD = "0039"
 
 
 def _down_revisions() -> dict[str, str | None]:

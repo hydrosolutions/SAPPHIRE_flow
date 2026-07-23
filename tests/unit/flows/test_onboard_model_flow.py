@@ -22,6 +22,7 @@ from sapphire_flow.types.ids import (
 from tests.conftest import make_deployment_config, make_station_config
 from tests.fakes.fake_models import FakeStationForecastModel
 from tests.fakes.fake_stores import (
+    FakeArtifactLineageWriter,
     FakeModelArtifactStore,
     FakeModelStore,
     FakeParameterStore,
@@ -68,6 +69,7 @@ def _make_stores(station_id: StationId | None = None) -> dict:
         "parameter_store": FakeParameterStore(),
         "forcing_source": None,
         "deployment_config": make_deployment_config(max_retention_days=3650),
+        "lineage_writer": FakeArtifactLineageWriter(),
     }
 
 
@@ -207,6 +209,23 @@ class TestHappyPath:
         assert result.units[0].outcome == OnboardingOutcome.PROMOTED
         mock_promote.assert_called_once()
         mock_assign.assert_called_once()
+
+    def test_lineage_recorded_after_store_before_skill_gate(self) -> None:
+        """Plan 120 Task 2D: onboarding lineage is written right after the
+        artifact is stored, regardless of promotion (unlike the training
+        path, this fires even though `_promote_artifact_task` is a separate,
+        later, skill-gated step)."""
+        sid = StationId(_uuid())
+        artifact_id = ArtifactId(_uuid())
+        stores = _make_stores(station_id=sid)
+
+        _run_flow(sid, artifact_id, stores)
+
+        lineage_writer = stores["lineage_writer"]
+        assert len(lineage_writer.calls) == 1
+        recorded_artifact_id, recorded_station_ids = lineage_writer.calls[0]
+        assert recorded_artifact_id == artifact_id
+        assert recorded_station_ids == (sid,)
 
     def test_omitted_assignment_priority_uses_canonical_fallback_priority(self) -> None:
         sid = StationId(_uuid())
@@ -467,6 +486,7 @@ class TestBootstrapPath:
             "flow_regime_store": MagicMock(),
             "parameter_store": MagicMock(),
             "forcing_store": MagicMock(),
+            "lineage_writer": MagicMock(),
         }
         captured: dict[str, object] = {}
 

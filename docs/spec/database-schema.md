@@ -495,17 +495,49 @@ erDiagram
     %% STATION DOMAIN
     %% ──────────────────────────────────────────────
 
+    basin_static_packages {
+        TEXT package_id PK "producer-declared, not a UUID"
+        TEXT network "NOT NULL"
+        TEXT contract_version "NOT NULL"
+        JSONB checksums "NOT NULL — payload-set sha256s"
+        TEXT extractor_name "NULL"
+        TEXT extractor_version "NULL"
+        JSONB source_datasets "NULL"
+        JSONB climatology_window "NULL"
+        TIMESTAMPTZ imported_at
+    }
+
     basins {
         UUID id PK
         TEXT code "UK (network, code)"
         TEXT network "NOT NULL"
         TEXT name
-        GEOMETRY geometry "MULTIPOLYGON 4326"
+        GEOMETRY geometry "MULTIPOLYGON 4326 — CURRENT version"
         DOUBLE_PRECISION area_km2 "NULL"
         JSONB attributes "NULL — catchment attrs"
         TEXT regional_basin "NULL — display grouping"
         JSONB band_geometries "NULL — elevation bands"
+        TEXT package_id FK "NULL — legacy/non-package sentinel (Plan 120)"
         TIMESTAMPTZ created_at
+    }
+
+    basin_versions {
+        UUID id PK
+        UUID basin_id FK "stable logical identity, never repointed"
+        TEXT package_id FK "NULL — legacy/non-package sentinel"
+        INTEGER version "UK (basin_id, version)"
+        GEOMETRY geometry "MULTIPOLYGON 4326"
+        JSONB attributes "NULL"
+        DOUBLE_PRECISION area_km2 "NULL"
+        JSONB band_geometries "NULL"
+        JSONB gateway_mapping "NULL — §5a snapshot for this version"
+        TIMESTAMPTZ superseded_at "NULL = current; partial-UK one-current-per-basin"
+        TIMESTAMPTZ created_at "clock_timestamp() default"
+    }
+
+    model_artifact_basin_versions {
+        UUID model_artifact_id PK, FK
+        UUID basin_version_id PK, FK
     }
 
     stations {
@@ -567,6 +599,8 @@ erDiagram
     stations ||--o{ station_weather_sources : "station_id"
     stations ||--o{ station_group_members : "station_id"
     station_groups ||--o{ station_group_members : "group_id"
+    basins ||--o{ basin_versions : "basin_id"
+    basin_static_packages ||--o{ basin_versions : "package_id"
 
     %% ──────────────────────────────────────────────
     %% OBSERVATION DOMAIN
@@ -724,6 +758,8 @@ erDiagram
     stations ||--o{ model_assignments : "station_id"
     station_groups ||--o{ group_model_assignments : "group_id"
     stations ||--o{ model_states : "station_id"
+    model_artifacts ||--o{ model_artifact_basin_versions : "model_artifact_id"
+    basin_versions ||--o{ model_artifact_basin_versions : "basin_version_id"
 
     %% ──────────────────────────────────────────────
     %% FORECAST DOMAIN
@@ -969,12 +1005,19 @@ erDiagram
     users ||--o{ forecast_adjustments : "forecaster_id"
 ```
 
-### Full table inventory (32 tables)
+### Full table inventory (35 tables)
+
+Plan 120 (basin/static package importer, Nepal v1) additively adds
+`basin_static_packages`, `basin_versions`, and `model_artifact_basin_versions`
+(+ a nullable `basins.package_id` FK) — see "Versioned basin state" in
+`docs/plans/120-basin-static-importer.md`.
 
 | # | Table | PK type | Partitioned | Domain |
 |---|-------|---------|-------------|--------|
 | 1 | `parameters` | TEXT | no | Reference |
 | 2 | `basins` | UUID | no | Station |
+| 2a | `basin_static_packages` | TEXT | no | Station |
+| 2b | `basin_versions` | UUID | no | Station |
 | 3 | `stations` | UUID | no | Station |
 | 4 | `station_thresholds` | composite | no | Station |
 | 5 | `station_weather_sources` | composite | no | Station |
@@ -1005,6 +1048,7 @@ erDiagram
 | 30 | `refresh_tokens` | UUID | no | Auth |
 | 31 | `audit_log` | BIGSERIAL | no | Auth |
 | 32 | `observation_versions` | UUID | no | Observation |
+| 33 | `model_artifact_basin_versions` | composite | no | Model |
 
 Column details, CHECK constraints, indexes, and retention policies
 are defined in `architecture-context.md`.

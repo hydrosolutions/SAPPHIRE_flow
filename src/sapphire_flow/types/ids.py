@@ -58,3 +58,8 @@ FALLBACK_ASSIGNMENT_PRIORITIES: dict[ModelId, int] = {
 StationGroupId = NewType("StationGroupId", UUID)
 ForeignForecastId = NewType("ForeignForecastId", UUID)
 HistoricalForcingId = NewType("HistoricalForcingId", UUID)
+# Plan 120: basin/static package importer provenance + versioning.
+# Producer-declared identifier (manifest.json "package_id"), NOT a UUID —
+# see tests/fixtures/basin_static/nepal-dhm-basins/manifest.json:3.
+PackageId = NewType("PackageId", str)
+BasinVersionId = NewType("BasinVersionId", UUID)

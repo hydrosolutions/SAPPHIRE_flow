@@ -69,6 +69,7 @@ from sapphire_flow.types.ids import (
     ModelId,
     ObservationId,
     ObservationVersionId,
+    PackageId,
     RatingCurveId,
     StationGroupId,
     StationId,
@@ -803,6 +804,17 @@ class FakeModelArtifactStore:
             self._records[artifact_id] = replace(rec, status=new_status)
 
 
+class FakeArtifactLineageWriter:
+    """Plan 120 Task 2D — records `(artifact_id, trained_station_ids)` calls
+    for flow-level assertions, in place of `PgArtifactLineageWriter`."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[ArtifactId, tuple[StationId, ...]]] = []
+
+    def record(self, artifact_id: ArtifactId, trained_station_ids: object) -> None:
+        self.calls.append((artifact_id, tuple(trained_station_ids)))  # type: ignore[arg-type]
+
+
 class FakeModelStore:
     def __init__(self) -> None:
         self._models: dict[ModelId, ModelRecord] = {}
@@ -1314,7 +1326,30 @@ class FakeBasinStore:
     def fetch_all_basins(self) -> list[Basin]:
         return list(self._basins.values())
 
-    def store_basin(self, basin: Basin) -> BasinId:
+    def store_basin(
+        self,
+        basin: Basin,
+        *,
+        package_id: PackageId | None = None,
+        gateway_mapping: list[dict[str, object]] | None = None,
+    ) -> BasinId:
+        del gateway_mapping  # not modeled in-memory (no §5a fake table here)
+        # Mirror PgBasinStore.store_basin's effective-value + mismatch logic so
+        # the fake and the real store agree (parse, don't validate).
+        if (
+            package_id is not None
+            and basin.package_id is not None
+            and package_id != basin.package_id
+        ):
+            raise ValueError(
+                "conflicting package_id: kwarg "
+                f"{package_id!r} != basin.package_id {basin.package_id!r}"
+            )
+        effective_package_id = (
+            package_id if package_id is not None else basin.package_id
+        )
+        if effective_package_id != basin.package_id:
+            basin = replace(basin, package_id=effective_package_id)
         self._basins[basin.id] = basin
         return basin.id
 
