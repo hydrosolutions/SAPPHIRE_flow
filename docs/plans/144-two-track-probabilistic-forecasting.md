@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: SUPERSEDED
 created: 2026-07-23
 plan: 144
 title: Multi-track probabilistic forecasting — per-station tracks driven by assigned models, over the IFS ensemble
@@ -12,6 +12,11 @@ supersedes: []
 # Plan 144 — Multi-track probabilistic forecasting over the IFS ensemble
 
 ## Status
+**SUPERSEDED (2026-07-23) by `docs/design/forecast-cycle-redesign.md`.** The multi-track orchestration here can't
+be bolted onto the v0 forecast cycle (single-cycle-per-batch, superset-max-horizon, station-level mode); it is
+folded into the forecast-cycle redesign as components 1/4/5. The design content below is retained for provenance
+(the D1–D6 decisions carry over into the redesign). Original status line:
+
 **DRAFT — re-grounded 2026-07-23 after a `/plan` reckoning + owner fork decisions.** The first draft was written
 too high and proposed building machinery that already exists; this version COMPOSES the existing stack. Owner
 resolved the design forks (below). Needs a confirming `/plan` before READY. Live gateway facts (HRU 12300:

@@ -92,12 +92,9 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
 - **143** — DHM/v1 basin + gauge onboarding — `DRAFT` — GeoPackage → **N gauges** → forecast-ready
   (geometry via Plan 120 + station/rating + gateway binding + subscriptions). Owner-aligned 2026-07-23; needs
   `/plan`. Blocks 144.
-- **144** — Multi-track probabilistic forecasting over the IFS ensemble — `DRAFT` (re-grounded 2026-07-23 after a
-  `/plan` reckoning). Per-station tracks **data-driven by assigned models** (a station's daily ≤15 d + sub-daily
-  3-hourly ≤3 d @00/06/12/18Z); per-member forcing via an `EnsembleForcingProvider` **seam** (client-stitch now /
-  3-hourly gateway ensemble-operational later). **COMPOSES existing infra** — reuses `ensemble_fanout`
-  (stateless-only) + `ForecastEnsemble` + `forecast_qc`; depends on **134** (control 6h bridge), **126** (ensemble
-  membership + horizon walk-back), **139** (daily model), + a new **snow-forcing** plan. Needs a confirming `/plan`.
+- **144** — Multi-track probabilistic forecasting — `SUPERSEDED by docs/design/forecast-cycle-redesign.md`
+  (2026-07-23). The multi-track/ensemble orchestration is folded into the forecast-cycle redesign (its D1–D6
+  decisions carry over). Six /plan stalls proved it needs a forecast-cycle re-architecture, not incremental patches.
 - **145** — Future-snow forecast forcing wiring — `DRAFT` — carved from 139 W7, then **SPLIT** (2026-07-23). The
   FUTURE channel: `fetch_snow_forecast` (zero callers → broadcast no-op) scoped + wired into the cycle → store →
   broadcast WITH snow-scoped degradation, + the aggregation fix (`swe`/`snow_depth` MEAN, `snowmelt` **SUM**). No
@@ -124,11 +121,9 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
   flow-level membership design (skip `pf` entirely for control-only + real `NONE` skip +
   staleness/provenance). Genuinely multi-part; **ESCALATED 2×**. **No longer the blocker** (127
   unblocks the deployment); this is the efficiency/completeness follow-up, revisit after 127.
-- **126** — Requirement-aware ensemble cycle resolution — `DRAFT` (re-grounded + **narrowed** 2026-07-23). A
-  typed fetch-requirements object (features/horizon/mode, replacing `FetchMode`) + walk-back to the latest
-  **complete** cycle (D1 exact-51; D3 `pf` 00Z-only → once/day; D4 walk-back-only) + candidate-local accumulation
-  (no walk-back contamination). Evicts mixed-column assembly / group-hoist / snow / state-fix. Decisions locked in
-  `docs/design/v1-forecasting-decisions.md`. Depends on 123; consumed by 144. Needs a confirming `/plan`.
+- **126** — Requirement-aware ensemble cycle resolution — `SUPERSEDED by docs/design/forecast-cycle-redesign.md`
+  (2026-07-23). Cycle-resolution can't bolt onto the single-cycle-per-batch v0 flow; folded into the redesign
+  (components 2/3: per-requirement resolved-cycle map + candidate-local accumulation).
 - **047** — Nepal v1 data sources umbrella (IFS, DHM, ERA5-Land) — `DRAFT (stub)` —
   depends on 081/082.
 - **117** — Basin/static artifact architecture alignment — `READY` — documents the

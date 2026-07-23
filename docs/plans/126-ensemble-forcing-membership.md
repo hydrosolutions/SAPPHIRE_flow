@@ -1,15 +1,21 @@
 ---
 id: 126
 title: Requirement-aware ensemble cycle resolution — typed fetch-requirements + walk-back to the latest complete cycle
-status: DRAFT
+status: SUPERSEDED
 depends_on: [123]
 owner: unassigned
 created: 2026-07-18
+status_note: SUPERSEDED by docs/design/forecast-cycle-redesign.md
 ---
 
 # Plan 126 — Requirement-aware ensemble cycle resolution
 
 ## Status
+**SUPERSEDED (2026-07-23) by `docs/design/forecast-cycle-redesign.md`.** A sixth `/plan` stall proved 126's
+cycle-resolution cannot be bolted onto the v0 forecast cycle (single-cycle-per-batch readback); it is folded into
+the forecast-cycle redesign as components 2/3 (per-requirement resolved-cycle map + candidate-local accumulation).
+The re-grounded content below is retained for provenance. Original status line:
+
 **DRAFT — re-grounded + NARROWED 2026-07-23** after a `/plan` reckoning (the earlier stub ballooned into a
 contradictory 6-phase build). Scope now locked to *just* requirement-aware ensemble cycle resolution, with the
 cross-cutting decisions resolved in **`docs/design/v1-forecasting-decisions.md`** (D1 exact-51 + walk-back; D3
