@@ -42,6 +42,10 @@ HistoricalForcingId = NewType("HistoricalForcingId", UUID)
 PackageId = NewType("PackageId", str)
 BasinVersionId = NewType("BasinVersionId", UUID)  # v1 — Plan 120 Task 0A
 
+# TenantId — Plan 147 Slice A (v1.0 tenant-model foundation, live in v0
+# already). Canonical on stations.tenant_id (R4 LOCKED).
+TenantId = NewType("TenantId", UUID)
+
 # pipeline_health and audit_log use BIGSERIAL PK — append-only, never
 # referenced by ID from other tables. No NewType wrapper.
 ```
@@ -804,6 +808,7 @@ class StationConfig:
     ownership: StationOwnership        # own = locally managed, foreign = display-only
     wigos_id: str | None               # WMO station ID, format: 0-{country}-{network}-{local}
     gauging_status: GaugingStatus = GaugingStatus.GAUGED
+    tenant_id: TenantId = DEFAULT_TENANT_ID  # Plan 147 Slice A — canonical tenant ownership (R4 LOCKED)
 ```
 
 ### ModelAssignment
@@ -836,15 +841,43 @@ Priority convention: linear regression (0) > ML (1) > conceptual (2). All model 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class StationGroup:
     id: StationGroupId
-    name: str                      # e.g. "swiss_alpine", "nepal_koshi_basin"
+    name: str                      # e.g. "swiss_alpine", "nepal_koshi_basin" — UNIQUE PER TENANT, not globally (Plan 147 Slice A)
     station_ids: frozenset[StationId]
     description: str | None = None
     created_at: UtcDatetime
+    tenant_id: TenantId = DEFAULT_TENANT_ID  # Plan 147 Slice A — a group belongs to exactly one tenant
 ```
 
 Station groups define the training scope for group-scoped ML models. A station can belong to multiple groups. Groups are managed during station onboarding (Flow 5 step 5.10).
 
 Module: `types/station.py`
+
+### Tenant
+
+```python
+@dataclass(frozen=True, kw_only=True, slots=True)
+class Tenant:
+    id: TenantId
+    code: str    # human/config handle, e.g. "sapphire", "dhm" — UNIQUE
+    name: str
+    created_at: UtcDatetime
+```
+
+Plan 147 Slice A: the v1.0 tenant-model foundation, landed as a root data-model
+slice (no auth yet). `stations.tenant_id`/`station_groups.tenant_id` are
+canonical and `NOT NULL`; `station_group_members.tenant_id` participates in
+two composite FKs — `(station_id, tenant_id) -> stations(id, tenant_id)` and
+`(group_id, tenant_id) -> station_groups(id, tenant_id)` — so a membership row
+whose station and group disagree on tenant is structurally unrepresentable.
+A tenant CODE string (from `config.toml`'s `[deployment]` block or a
+`--tenant` CLI arg) is parsed into a `TenantId` once, at the config/CLI
+boundary (`services/tenant_boundary.py::resolve_tenant_code`), by resolving
+it against the `tenants` table — an unknown code is a hard error. Migration
+0041 seeds a default `sapphire` tenant at the fixed id
+`types/tenant.py::DEFAULT_TENANT_ID`; existing single-tenant Swiss data
+backfills onto it (migrations 0042-0044).
+
+Module: `types/tenant.py`
 
 ### StationWeatherSource
 
@@ -2506,6 +2539,17 @@ class ModelStateStore(Protocol):
         # Returns (issue_time, state_bytes) of the most recent state, or None.
 ```
 
+#### TenantStore
+
+```python
+class TenantStore(Protocol):
+    # Plan 147 Slice A: the tenant-model foundation root.
+    def fetch_tenant(self, tenant_id: TenantId) -> Tenant | None: ...
+    def fetch_tenant_by_code(self, code: str) -> Tenant | None: ...
+    def fetch_all_tenants(self) -> list[Tenant]: ...
+    def store_tenant(self, tenant: Tenant) -> TenantId: ...
+```
+
 #### StationStore
 
 ```python
@@ -2550,7 +2594,8 @@ class StationGroupStore(Protocol):
     def store_group(self, group: StationGroup) -> None: ...
         # Upsert keyed on group_id. Replaces membership.
     def fetch_group(self, group_id: StationGroupId) -> StationGroup | None: ...
-    def fetch_group_by_name(self, name: str) -> StationGroup | None: ...
+    def fetch_group_by_name(self, tenant_id: TenantId, name: str) -> StationGroup | None: ...
+        # Plan 147 Slice A: name is unique PER TENANT, not globally.
     def fetch_groups_for_station(self, station_id: StationId) -> list[StationGroup]: ...
         # All groups this station belongs to.
     def fetch_groups_for_model(self, model_id: ModelId) -> list[StationGroup]: ...

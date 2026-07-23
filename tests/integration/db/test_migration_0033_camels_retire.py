@@ -26,7 +26,11 @@ import pytest
 import sqlalchemy as sa
 from testcontainers.postgres import PostgresContainer
 
-from sapphire_flow.db.metadata import historical_forcing, station_weather_sources
+from sapphire_flow.db.metadata import (
+    historical_forcing,
+    station_weather_sources,
+    stations,
+)
 from sapphire_flow.store.station_store import PgStationStore
 from sapphire_flow.types.datetime import ensure_utc
 from tests.conftest import make_station_config
@@ -76,8 +80,44 @@ def _alembic_cfg(url: str) -> object:
 
 
 def _seed_station(conn: sa.Connection, *, code: str, seed: int) -> StationId:
+    """Raw insert — NOT ``PgStationStore.store_station`` — because every
+    caller pins the DB at revision 0032, before migration 0042 (Plan 147
+    Slice A) added ``stations.tenant_id``; the head-schema-aware store would
+    reference a column that does not exist yet at that pin."""
     station = make_station_config(code=code, rng=random.Random(seed))
-    PgStationStore(conn).store_station(station)
+    conn.execute(
+        sa.insert(stations).values(
+            id=station.id,
+            code=station.code,
+            name=station.name,
+            location=sa.func.ST_SetSRID(
+                sa.func.ST_MakePoint(station.location.lon, station.location.lat),
+                4326,
+            ),
+            altitude_masl=station.location.altitude_masl,
+            water_level_datum_masl=station.water_level_datum_masl,
+            water_level_unit=station.water_level_unit,
+            station_kind=station.station_kind.value,
+            basin_id=station.basin_id,
+            timezone=station.timezone,
+            regulation_type=(
+                station.regulation_type.value
+                if station.regulation_type is not None
+                else None
+            ),
+            forecast_targets=(
+                list(station.forecast_targets) if station.forecast_targets else None
+            ),
+            measured_parameters=list(station.measured_parameters),
+            station_status=station.station_status.value,
+            created_at=station.created_at,
+            updated_at=station.updated_at,
+            network=station.network,
+            ownership=station.ownership.value,
+            wigos_id=station.wigos_id,
+            gauging_status=station.gauging_status.value,
+        )
+    )
     return station.id
 
 

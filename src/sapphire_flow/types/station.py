@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from sapphire_flow.types.enums import GaugingStatus
+from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 
 if TYPE_CHECKING:
     from datetime import timedelta
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
         PackageId,
         StationGroupId,
         StationId,
+        TenantId,
     )
 
 
@@ -50,6 +52,10 @@ class StationConfig:
     gauging_status: GaugingStatus = GaugingStatus.GAUGED
     water_level_datum_masl: float | None = None
     water_level_unit: str | None = None
+    # Plan 147 Slice A: canonical tenant ownership (R4 LOCKED). Defaults to the
+    # seeded Swiss `sapphire` tenant so v0's single-tenant call sites need no
+    # change; multi-tenant callers pass an explicit TenantId.
+    tenant_id: TenantId = DEFAULT_TENANT_ID
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -79,6 +85,9 @@ class StationGroup:
     station_ids: frozenset[StationId]
     description: str | None = None
     created_at: UtcDatetime
+    # Plan 147 Slice A: a group belongs to exactly one tenant (additive,
+    # per-tenant-unique name). See StationConfig.tenant_id for the default.
+    tenant_id: TenantId = DEFAULT_TENANT_ID
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

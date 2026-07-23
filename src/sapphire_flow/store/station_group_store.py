@@ -13,7 +13,7 @@ from sapphire_flow.db.metadata import (
 )
 from sapphire_flow.store._helpers import utc_from_row
 from sapphire_flow.types.enums import ModelAssignmentStatus
-from sapphire_flow.types.ids import ModelId, StationGroupId, StationId
+from sapphire_flow.types.ids import ModelId, StationGroupId, StationId, TenantId
 from sapphire_flow.types.station import GroupModelAssignment, StationGroup
 
 if TYPE_CHECKING:
@@ -44,6 +44,7 @@ class PgStationGroupStore:
                     name=group.name,
                     description=group.description,
                     created_at=group.created_at,
+                    tenant_id=group.tenant_id,
                 )
                 .on_conflict_do_update(
                     index_elements=["id"],
@@ -54,11 +55,19 @@ class PgStationGroupStore:
                 )
             )
             if group.station_ids:
+                # The composite FK (station_id, tenant_id) -> stations(id,
+                # tenant_id) rejects a member row whose station's tenant
+                # disagrees with this group's tenant (Plan 147 Slice A) — the
+                # invariant is structural, not re-checked in Python here.
                 txn.execute(
                     pg_insert(station_group_members)
                     .values(
                         [
-                            {"group_id": group.id, "station_id": sid}
+                            {
+                                "group_id": group.id,
+                                "station_id": sid,
+                                "tenant_id": group.tenant_id,
+                            }
                             for sid in group.station_ids
                         ]
                     )
@@ -77,10 +86,17 @@ class PgStationGroupStore:
             return None
         return _build_group(self._conn, row)
 
-    def fetch_group_by_name(self, name: str) -> StationGroup | None:
+    def fetch_group_by_name(
+        self, tenant_id: TenantId, name: str
+    ) -> StationGroup | None:
         row = (
             self._conn.execute(
-                sa.select(station_groups).where(station_groups.c.name == name)
+                sa.select(station_groups).where(
+                    sa.and_(
+                        station_groups.c.tenant_id == tenant_id,
+                        station_groups.c.name == name,
+                    )
+                )
             )
             .mappings()
             .one_or_none()
@@ -128,9 +144,16 @@ class PgStationGroupStore:
     def add_station_to_group(
         self, group_id: StationGroupId, station_id: StationId
     ) -> None:
+        # tenant_id comes from the GROUP (never the caller/station) — the
+        # composite FK (station_id, tenant_id) -> stations(id, tenant_id)
+        # then structurally rejects the insert if the station belongs to a
+        # different tenant (Plan 147 Slice A, R4).
+        group_tenant_id = self._conn.execute(
+            sa.select(station_groups.c.tenant_id).where(station_groups.c.id == group_id)
+        ).scalar_one()
         self._conn.execute(
             pg_insert(station_group_members)
-            .values(group_id=group_id, station_id=station_id)
+            .values(group_id=group_id, station_id=station_id, tenant_id=group_tenant_id)
             .on_conflict_do_nothing()
         )
 
@@ -215,4 +238,5 @@ def _build_group(conn: sa.Connection, row: sa.engine.row.RowMapping) -> StationG
         description=row["description"],
         created_at=utc_from_row(row["created_at"]),
         station_ids=_fetch_member_ids(conn, group_id),
+        tenant_id=TenantId(row["tenant_id"]),
     )

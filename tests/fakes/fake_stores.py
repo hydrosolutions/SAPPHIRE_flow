@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Sequence  # noqa: TC003
 from dataclasses import replace
-from datetime import date  # noqa: TC003
+from datetime import UTC, date, datetime  # noqa: TC003
 from pathlib import Path
 from typing import Literal
 from uuid import UUID, uuid4
@@ -20,7 +20,7 @@ from sapphire_flow.store.observation_store import _dedupe_raw_observations
 from sapphire_flow.types.alert import Alert  # noqa: TC001
 from sapphire_flow.types.basin import Basin  # noqa: TC001
 from sapphire_flow.types.calculated_station import ComponentWeight  # noqa: TC001
-from sapphire_flow.types.datetime import UtcDatetime  # noqa: TC001
+from sapphire_flow.types.datetime import UtcDatetime, ensure_utc  # noqa: TC001
 from sapphire_flow.types.domain import (  # noqa: TC001
     ClimBaseline,
     ParameterDefinition,
@@ -73,6 +73,7 @@ from sapphire_flow.types.ids import (
     RatingCurveId,
     StationGroupId,
     StationId,
+    TenantId,
 )
 from sapphire_flow.types.model import (  # noqa: TC001
     ModelArtifactRecord,
@@ -96,6 +97,11 @@ from sapphire_flow.types.station import (  # noqa: TC001
     StationConfig,
     StationGroup,
     StationWeatherSource,
+)
+from sapphire_flow.types.tenant import (  # noqa: TC001
+    DEFAULT_TENANT_CODE,
+    DEFAULT_TENANT_ID,
+    Tenant,
 )
 from sapphire_flow.types.weather import (  # noqa: TC001
     GriddedForecast,
@@ -850,6 +856,34 @@ class FakeModelStateStore:
         return self._states.get((station_id, model_id))
 
 
+class FakeTenantStore:
+    def __init__(self) -> None:
+        # Seed the default tenant so fakes match production out of the box
+        # (migration 0041 seeds the same row) — most tests never need a
+        # second tenant.
+        self._tenants: dict[TenantId, Tenant] = {
+            DEFAULT_TENANT_ID: Tenant(
+                id=DEFAULT_TENANT_ID,
+                code=DEFAULT_TENANT_CODE,
+                name="SAPPHIRE (Swiss v0)",
+                created_at=ensure_utc(datetime(2025, 1, 1, tzinfo=UTC)),
+            )
+        }
+
+    def fetch_tenant(self, tenant_id: TenantId) -> Tenant | None:
+        return self._tenants.get(tenant_id)
+
+    def fetch_tenant_by_code(self, code: str) -> Tenant | None:
+        return next((t for t in self._tenants.values() if t.code == code), None)
+
+    def fetch_all_tenants(self) -> list[Tenant]:
+        return list(self._tenants.values())
+
+    def store_tenant(self, tenant: Tenant) -> TenantId:
+        self._tenants[tenant.id] = tenant
+        return tenant.id
+
+
 class FakeStationStore:
     def __init__(self) -> None:
         self._stations: dict[StationId, StationConfig] = {}
@@ -1017,8 +1051,17 @@ class FakeStationGroupStore:
     def fetch_group(self, group_id: StationGroupId) -> StationGroup | None:
         return self._groups.get(group_id)
 
-    def fetch_group_by_name(self, name: str) -> StationGroup | None:
-        return next((g for g in self._groups.values() if g.name == name), None)
+    def fetch_group_by_name(
+        self, tenant_id: TenantId, name: str
+    ) -> StationGroup | None:
+        return next(
+            (
+                g
+                for g in self._groups.values()
+                if g.tenant_id == tenant_id and g.name == name
+            ),
+            None,
+        )
 
     def fetch_groups_for_station(self, station_id: StationId) -> list[StationGroup]:
         return [g for g in self._groups.values() if station_id in g.station_ids]

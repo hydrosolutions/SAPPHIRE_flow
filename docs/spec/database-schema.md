@@ -5,7 +5,7 @@ Derived from table definitions in `architecture-context.md` and scoping rules in
 
 ---
 
-## v0 Schema (24 tables)
+## v0 Schema (25 tables)
 
 Swiss public data, up to ~170 stations (LINDAS-available BAFU gauges), single VM. Architecture supports ~1000 stations across deployments. No partitioning, no auth, no rating curves,
 no forecast adjustments, no DLQ, no cold storage. See `v0-scope.md` §A–C for rationale and plan 013 for scale re-evaluation.
@@ -19,6 +19,7 @@ no forecast adjustments, no DLQ, no cold storage. See `v0-scope.md` §A–C for 
 - `models.artifact_scope`: CHECK constraint includes `'virtual'` for sentinel combination models (`_pooled`, `_bma`, `_consensus`) (v0b, Plan 026)
 - No table partitioning anywhere
 - 8 tables removed entirely (see "Not in v0" below)
+- `tenants` + `stations.tenant_id`/`station_groups.tenant_id`/`station_group_members.tenant_id` land early (Plan 147 Slice A) as a pure data-model foundation — auth/RBAC enforcement itself is still deferred (`access_tokens`/`audit_log` remain "Not in v0" below)
 
 ```mermaid
 erDiagram
@@ -38,6 +39,17 @@ erDiagram
     %% ──────────────────────────────────────────────
     %% STATION DOMAIN
     %% ──────────────────────────────────────────────
+
+    %% Plan 147 Slice A: tenant-model foundation. Seeded with a default
+    %% `sapphire` tenant (migration 0041) so existing single-tenant Swiss
+    %% data backfills onto it — this is the ROOT of the v1.0 auth/RBAC
+    %% foundation, landed early as a pure data-model slice (no auth yet).
+    tenants {
+        UUID id PK
+        TEXT code UK "human/config handle, e.g. sapphire, dhm"
+        TEXT name
+        TIMESTAMPTZ created_at
+    }
 
     basins {
         UUID id PK
@@ -73,6 +85,7 @@ erDiagram
         TEXT gauging_status "default gauged"
         TIMESTAMPTZ created_at
         TIMESTAMPTZ updated_at
+        UUID tenant_id FK "NOT NULL, canonical (R4) — UK (id, tenant_id)"
     }
 
     station_thresholds {
@@ -95,15 +108,17 @@ erDiagram
 
     station_groups {
         UUID id PK
-        TEXT name UK
+        TEXT name "UK (tenant_id, name) — NOT globally unique"
         TEXT description "NULL"
         TIMESTAMPTZ created_at
+        UUID tenant_id FK "NOT NULL — UK (id, tenant_id)"
     }
 
     station_group_members {
         UUID group_id PK, FK
         UUID station_id PK, FK
         TIMESTAMPTZ created_at
+        UUID tenant_id "NOT NULL — 2 composite FKs force it to equal both the station's and group's tenant_id"
     }
 
     stations ||--o| basins : "basin_id"
@@ -111,6 +126,8 @@ erDiagram
     stations ||--o{ station_weather_sources : "station_id"
     stations ||--o{ station_group_members : "station_id"
     station_groups ||--o{ station_group_members : "group_id"
+    tenants ||--o{ stations : "tenant_id"
+    tenants ||--o{ station_groups : "tenant_id"
 
     %% ──────────────────────────────────────────────
     %% OBSERVATION DOMAIN
@@ -422,37 +439,38 @@ erDiagram
     stations ||--o{ alerts : "station_id"
 ```
 
-### v0 table inventory (22 tables)
+### v0 table inventory (23 tables)
 
 | # | Table | PK | Domain |
 |---|-------|----|--------|
 | 1 | `parameters` | TEXT | Reference |
-| 2 | `basins` | UUID | Station |
-| 3 | `stations` | UUID | Station |
-| 4 | `station_thresholds` | composite | Station |
-| 5 | `station_weather_sources` | composite | Station |
-| 6 | `station_groups` | UUID | Station |
-| 7 | `station_group_members` | composite | Station |
-| 8 | `observations` | UUID | Observation |
-| 9 | `weather_forecasts` | UUID | Weather |
-| 10 | `historical_forcing` | UUID | Weather |
-| 11 | `models` | TEXT | Model |
-| 12 | `model_artifacts` | UUID | Model |
-| 13 | `model_assignments` | composite | Model |
-| 14 | `group_model_assignments` | composite | Model |
-| 15 | `model_states` | UUID | Model |
-| 16 | `forecasts` | UUID | Forecast |
-| 17 | `forecast_values` | UUID | Forecast |
-| 18 | `hindcast_forecasts` | UUID | Forecast |
-| 19 | `hindcast_values` | UUID | Forecast |
-| 20 | `skill_scores` | UUID | Skill |
-| 21 | `skill_diagrams` | UUID | Skill |
-| 22 | `flow_regime_configs` | UUID | Skill |
+| 2 | `tenants` | UUID | Reference |
+| 3 | `basins` | UUID | Station |
+| 4 | `stations` | UUID | Station |
+| 5 | `station_thresholds` | composite | Station |
+| 6 | `station_weather_sources` | composite | Station |
+| 7 | `station_groups` | UUID | Station |
+| 8 | `station_group_members` | composite | Station |
+| 9 | `observations` | UUID | Observation |
+| 10 | `weather_forecasts` | UUID | Weather |
+| 11 | `historical_forcing` | UUID | Weather |
+| 12 | `models` | TEXT | Model |
+| 13 | `model_artifacts` | UUID | Model |
+| 14 | `model_assignments` | composite | Model |
+| 15 | `group_model_assignments` | composite | Model |
+| 16 | `model_states` | UUID | Model |
+| 17 | `forecasts` | UUID | Forecast |
+| 18 | `forecast_values` | UUID | Forecast |
+| 19 | `hindcast_forecasts` | UUID | Forecast |
+| 20 | `hindcast_values` | UUID | Forecast |
+| 21 | `skill_scores` | UUID | Skill |
+| 22 | `skill_diagrams` | UUID | Skill |
+| 23 | `flow_regime_configs` | UUID | Skill |
 | — | `alerts` | UUID | Ops |
 | — | `pipeline_health` | BIGSERIAL | Ops |
 
-**Note**: `alerts` and `pipeline_health` bring the total to 24 if counted.
-`v0-scope.md` §C lists 23 tables (including alerts and pipeline_health) — the count depends on whether `alerts` + `pipeline_health`
+**Note**: `alerts` and `pipeline_health` bring the total to 25 if counted.
+`v0-scope.md` §C predates Plan 147's `tenants` table — the count depends on whether `alerts` + `pipeline_health`
 are included (alerting is optional in v0, controlled by per-source alert flags (see v0-scope.md §A8c)).
 
 ### Not in v0 (8 tables added in v1)
@@ -470,7 +488,7 @@ are included (alerting is optional in v0, controlled by per-source alert flags (
 
 ---
 
-## Full Schema (32 tables)
+## Full Schema (33 tables)
 
 The complete v1 schema. Adds partitioning, auth, rating curves, forecast adjustments,
 DLQ, and gap recovery fields. See `architecture-context.md` for column details, CHECK
@@ -488,6 +506,15 @@ erDiagram
         TEXT unit
         TEXT parameter_domain "river | weather | water_quality | groundwater | soil"
         TEXT aggregation_method "sum | mean"
+        TIMESTAMPTZ created_at
+    }
+
+    %% Plan 147 Slice A: tenant-model foundation (landed in v0 already — see
+    %% the v0 Schema diagram above).
+    tenants {
+        UUID id PK
+        TEXT code UK "human/config handle, e.g. sapphire, dhm"
+        TEXT name
         TIMESTAMPTZ created_at
     }
 
@@ -561,6 +588,7 @@ erDiagram
         TEXT gauging_status "default gauged"
         TIMESTAMPTZ created_at
         TIMESTAMPTZ updated_at
+        UUID tenant_id FK "NOT NULL, canonical (R4) — UK (id, tenant_id)"
     }
 
     station_thresholds {
@@ -583,15 +611,17 @@ erDiagram
 
     station_groups {
         UUID id PK
-        TEXT name UK
+        TEXT name "UK (tenant_id, name) — NOT globally unique"
         TEXT description "NULL"
         TIMESTAMPTZ created_at
+        UUID tenant_id FK "NOT NULL — UK (id, tenant_id)"
     }
 
     station_group_members {
         UUID group_id PK, FK
         UUID station_id PK, FK
         TIMESTAMPTZ created_at
+        UUID tenant_id "NOT NULL — 2 composite FKs force it to equal both the station's and group's tenant_id"
     }
 
     stations ||--o| basins : "basin_id"
@@ -599,6 +629,8 @@ erDiagram
     stations ||--o{ station_weather_sources : "station_id"
     stations ||--o{ station_group_members : "station_id"
     station_groups ||--o{ station_group_members : "group_id"
+    tenants ||--o{ stations : "tenant_id"
+    tenants ||--o{ station_groups : "tenant_id"
     basins ||--o{ basin_versions : "basin_id"
     basin_static_packages ||--o{ basin_versions : "package_id"
 
@@ -1005,16 +1037,19 @@ erDiagram
     users ||--o{ forecast_adjustments : "forecaster_id"
 ```
 
-### Full table inventory (35 tables)
+### Full table inventory (36 tables)
 
 Plan 120 (basin/static package importer, Nepal v1) additively adds
 `basin_static_packages`, `basin_versions`, and `model_artifact_basin_versions`
 (+ a nullable `basins.package_id` FK) — see "Versioned basin state" in
-`docs/plans/120-basin-static-importer.md`.
+`docs/plans/120-basin-static-importer.md`. Plan 147 Slice A additively adds
+`tenants` (+ `tenant_id` on `stations`/`station_groups`/`station_group_members`)
+— already live in v0, see the v0 table inventory above.
 
 | # | Table | PK type | Partitioned | Domain |
 |---|-------|---------|-------------|--------|
 | 1 | `parameters` | TEXT | no | Reference |
+| 1a | `tenants` | UUID | no | Reference |
 | 2 | `basins` | UUID | no | Station |
 | 2a | `basin_static_packages` | TEXT | no | Station |
 | 2b | `basin_versions` | UUID | no | Station |

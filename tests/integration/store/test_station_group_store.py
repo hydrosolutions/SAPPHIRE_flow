@@ -12,6 +12,7 @@ from sapphire_flow.store.station_group_store import PgStationGroupStore
 from sapphire_flow.types.enums import ModelAssignmentStatus
 from sapphire_flow.types.ids import ModelId, StationGroupId, StationId
 from sapphire_flow.types.station import GroupModelAssignment, StationGroup
+from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 from tests.conftest import make_station_config
 
 
@@ -136,13 +137,13 @@ class TestFetchGroupByName:
         )
         store.store_group(group)
 
-        fetched = store.fetch_group_by_name("named-group")
+        fetched = store.fetch_group_by_name(DEFAULT_TENANT_ID, "named-group")
         assert fetched is not None
         assert fetched.id == group.id
 
     def test_missing_name_returns_none(self, db_connection: sa.Connection) -> None:
         store = PgStationGroupStore(db_connection)
-        assert store.fetch_group_by_name("no-such-group") is None
+        assert store.fetch_group_by_name(DEFAULT_TENANT_ID, "no-such-group") is None
 
 
 class TestFetchGroupsForStation:
@@ -278,7 +279,7 @@ class TestFetchNonexistent:
         self, db_connection: sa.Connection
     ) -> None:
         store = PgStationGroupStore(db_connection)
-        result = store.fetch_group_by_name("ghost-group")
+        result = store.fetch_group_by_name(DEFAULT_TENANT_ID, "ghost-group")
         assert result is None
 
 
