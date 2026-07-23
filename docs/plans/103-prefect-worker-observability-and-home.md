@@ -15,8 +15,8 @@ the local stack 2026-07-06, and it recurs as a `WARNING Failed to write result:
 - `docker-compose.yml` — `prefect-worker` (`:80`, `read_only: true` `:112`, **no
   `PREFECT_HOME`**), `prefect-worker-ingest` (`:139`, `read_only: true` `:164`),
   and `init` (`:261`, uses the Prefect client to register deployments).
-- `api` service (`read_only: true` `:250`) shares the **same base image** but is
-  **intentionally excluded** — it is an HTTP-only Prefect touchpoint
+- `api` service (`:180`, `read_only: true` `:211`) shares the **same base image**
+  but is **intentionally excluded** — it is an HTTP-only Prefect touchpoint
   (`src/sapphire_flow/api/routes/health.py:23` reads `PREFECT_API_URL` and checks
   Prefect over HTTP; **no Prefect client import**), so it never writes to
   `PREFECT_HOME`.
@@ -51,10 +51,21 @@ Set `PREFECT_HOME=/tmp/prefect` on the **three Prefect-client services:
 `prefect-worker` (`docker-compose.yml:80`), `prefect-worker-ingest` (`:139`),
 and `init` (`:261`)**. **NOT `api`** — HTTP-only, no Prefect client import
 (verified at `src/sapphire_flow/api/routes/health.py:23`). `/tmp` is already a
-writable tmpfs on each (`read_only: true` + `tmpfs: [/tmp]`), so **no new mount,
-no volume, no chown**. `PREFECT_HOME` holds only CLI/profile scratch (durable
-server state is Postgres, `docker-compose.yml:54`), so tmpfs (ephemeral) is
-correct.
+writable tmpfs on each (`read_only: true` + `tmpfs: [/tmp]` at `:113`/`:165`/`:293`),
+so **no new mount, no volume, no chown**.
+
+**Why ephemeral (tmpfs) is correct — and strictly better than today.** The
+**authoritative** orchestration state (flow/deployment/run records) is
+**PostgreSQL-backed** (`prefect-server`, `docker-compose.yml:54`); the files
+Prefect writes under `PREFECT_HOME` (CLI profile, and Prefect's local
+*result-persistence* storage) are **intentionally non-authoritative** here. Note
+this is not a regression: today those same result-persistence writes target the
+**read-only** `/home/app/.prefect` and **fail with `[Errno 30]`**, so nothing
+currently relies on them surviving anyway; `/tmp/prefect` makes them *succeed*
+(just ephemeral across container recreation). Our one large forecast task already
+disables result persistence explicitly
+(`src/sapphire_flow/flows/run_forecast_cycle.py:840`). The verification below adds
+a gate that no flow depends on cross-restart local result retrieval.
 
 ## Non-goals
 
@@ -84,10 +95,21 @@ correct.
 2. After `docker compose up -d --build` (healthy):
    `docker compose logs prefect-worker | grep -c "Failed to create the Prefect home"`
    → `0`.
-3. `docker compose exec prefect-worker prefect flow-run logs <any-id>` runs
-   **without** a manual `-e PREFECT_HOME` override.
-4. No `[Errno 30] Read-only file system: '/home/app/.prefect'` in worker logs
+3. In **each** of the three target services, assert `PREFECT_HOME` is set and
+   writable: `docker compose exec <svc> sh -c 'printenv PREFECT_HOME && test -w
+   "$PREFECT_HOME"'` for `svc` in `prefect-worker`, `prefect-worker-ingest`, `init`.
+4. In-container CLI works with **no** manual `-e PREFECT_HOME` override — resolve a
+   real run id first: `id=$(docker compose exec -T prefect-worker prefect flow-run
+   ls --limit 1 -o json | ...)` (or take one from `prefect flow-run ls`), then
+   `docker compose exec prefect-worker prefect flow-run logs "$id"` returns without
+   a home error.
+5. No `[Errno 30] Read-only file system: '/home/app/.prefect'` in worker logs
    under a triggered run.
+6. **Cross-restart result gate (D1 durability check):** trigger a `forecast-cycle`
+   run to completion, `docker compose restart prefect-worker`, and confirm no
+   subsequent run **fails** trying to read a now-gone local result (i.e. nothing
+   depends on `PREFECT_HOME` result-persistence surviving restart). If any flow does,
+   configure result persistence off for it (cf. Plan 046) before deploy.
 
 ## Process
 
@@ -97,6 +119,20 @@ requires changing all 12 deployment entrypoints (file-path → module-path) — 
 load-bearing change that a `/plan`-verified colon-vs-dot Prefect landmine made
 too risky to bundle with this trivial env fix. Plans 062 + 141 folded in as
 `SUPERSEDED by 103`.
+
+**Independent Codex review of the narrowed D1 plan (2026-07-23): no blocker —
+"scope correct and complete".** Folded its findings: (major) narrowed the
+durability wording — authoritative state is Postgres, local Prefect
+result-persistence files are non-authoritative and tmpfs is strictly better than
+today's EROFS-failing writes — plus a cross-restart result gate; (minor) the
+verify steps now resolve a real run id and assert `test -w "$PREFECT_HOME"` in all
+three services; (nit) fixed the stale `api` line citation (`:180`/`:211`, not
+`:250` which is Caddy). Codex independently confirmed: all three targets have
+`read_only: true` + a writable `/tmp` tmpfs; `api` never imports the Prefect
+client; `prefect-server` is the only other Prefect-CLI container and is not
+read-only; no pre-existing `PREFECT_HOME` in compose/Dockerfile/entrypoint; and the
+mac-mini overlay does not redeclare these services so no duplicate overlay edit is
+needed.
 
 **Next: READY → `/implement` → deploy** (mac-mini, overlay stack
 `-f docker-compose.yml -f docker-compose.macmini.yml`), verifying no home warning
