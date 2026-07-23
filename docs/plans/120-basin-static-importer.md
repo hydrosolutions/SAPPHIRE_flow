@@ -363,8 +363,8 @@ PR stays reviewable:
 entrypoint/function that ORCHESTRATES the already-merged pieces — `basin_package_loader` (Phase 1, #126) →
 `import_basin_package`/`update_basin_from_package` (Phase 2, #128) — into one call per package running the
 canonical write pipeline in one transaction, returning the structured acceptance report (accepted / onboarding-
-held+reasons / rejected / warnings / material-change / lineage-write-failures / correction affected-artifact
-set). 3B is docs (contract §5a/§6.2a/§11, `database-schema.md`, `architecture-context.md` basins section, the
+held+reasons / rejected / warnings / material-change / correction affected-artifact set — no separate
+lineage-write-failures field; see the Task 3A "Scope in" note below for why). 3B is docs (contract §5a/§6.2a/§11, `database-schema.md`, `architecture-context.md` basins section, the
 `record_artifact_basin_lineage` helper + `store_artifact` return-type fix, a new importer runbook, README status).
 Everything else (0A/1A/1B/2A/2B/2C/2D) is ALREADY on `main` (#124/#126/#128) — CONSUME, do not re-implement. Do
 NOT synthesize missing attributes / edit geometry to pass / silently fall back (`04:670-672`). End-to-end
@@ -1089,9 +1089,13 @@ validate (Task 1A → 1B) → branch idempotency/correction (Task 2C) → write 
 version (Task 2A `store_basin` for a new basin, or Task 2C's correction sub-steps) → call the
 §5a replace writer LAST (Task 2B). It returns a structured **acceptance report** (accepted
 basins, `onboarding`-held basins with reasons, package-level rejections, warnings,
-material-change flags, any lineage-write failures, and — for corrections — the emitted
-affected-artifact set from Task 2C) so the §9 "warnings MUST remain visible in onboarding
-reports" requirement (`04:653-655`) is met. The importer MUST NOT synthesize missing
+material-change flags, and — for corrections — the emitted affected-artifact set from Task
+2C) so the §9 "warnings MUST remain visible in onboarding reports" requirement
+(`04:653-655`) is met. **No separate `lineage_write_failures` field** (YAGNI decision, fixer
+round 2026-07-23): Task 2D's lineage write (`record_artifact_basin_lineage`) happens at
+model-TRAINING time (`train_models_flow`/`onboard_model_flow`), never during a package
+IMPORT run, so this report has nothing of that kind to carry — see
+`types/basin_package.py::BasinPackageImportReport` docstring. The importer MUST NOT synthesize missing
 attributes, edit geometry to pass validation, or fall back to another basin without a
 recorded operator decision (`04:670-672`).
 

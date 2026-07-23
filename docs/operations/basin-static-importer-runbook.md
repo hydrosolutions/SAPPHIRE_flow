@@ -61,7 +61,15 @@ ingest). The CLI:
    package before any write).
 2. Joins `basins.gpkg` to `static_attributes.parquet` on `gauge_id` and
    evaluates each basin's per-basin accept / onboarding-hold decision
-   (contract §9 second list).
+   (contract §9 second list). A null catalog-`required_by_models` static
+   feature holds the basin only when its station has a real, ACTIVE model
+   assignment (direct or via a station group) requiring that feature — the
+   CLI resolves this against the live `stations`/`model_assignments`/
+   `station_groups`/`group_model_assignments` tables
+   (`services.basin_importer.build_assigned_model_features_resolver`); it
+   never treats every basin as unassigned. An ACTIVE assignment naming a
+   model that fails to discover (entry-point scan) aborts the run loudly
+   (`ConfigurationError`) rather than silently under-counting requirements.
 3. Runs the canonical write pipeline in ONE database transaction: package
    provenance (`basin_static_packages`) first, then each accepted basin's
    projection + `basin_versions` snapshot, then the §5a `basin_average`

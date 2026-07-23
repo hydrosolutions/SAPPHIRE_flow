@@ -8,6 +8,14 @@ scheduling/Prefect flow wraps this). Resolves stations against the live
 `stations` table (`(code, network)`, network-scoped per contract §9 — Task
 1B) and prints the resulting acceptance report. Exits non-zero when the
 package (or an accepted decision at the write boundary) was rejected.
+
+Also builds and passes a PRODUCTION `assigned_model_features` resolver
+(`services.basin_importer.build_assigned_model_features_resolver`) — the
+union of every ACTIVE station/group-assigned model's declared static
+requirements for a basin's station. Without it, `evaluate_basin_acceptance`
+defaults to treating no basin as verifiably assigned, downgrading a null
+required-static-feature to a warning instead of an onboarding hold (fixer
+round, major finding).
 """
 
 from __future__ import annotations
@@ -21,7 +29,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 if TYPE_CHECKING:
-    from sapphire_flow.types.basin_package import BasinPackageImportReport
+    from sapphire_flow.types.basin_package import BasinPackageImportReport, BasinRecord
     from sapphire_flow.types.ids import StationId
 
 log = structlog.get_logger(__name__)
@@ -59,22 +67,41 @@ def main() -> None:
 def _run_import(package_dir: Path) -> BasinPackageImportReport:
     from sapphire_flow.db.engine import create_engine_from_env
     from sapphire_flow.services.basin_importer import (
+        build_assigned_model_features_resolver,
         import_basin_package_from_directory,
     )
+    from sapphire_flow.services.model_registry import discover_models
+    from sapphire_flow.store.station_group_store import PgStationGroupStore
     from sapphire_flow.store.station_store import PgStationStore
     from sapphire_flow.types.datetime import ensure_utc
 
     engine = create_engine_from_env()
+    # Discovered ONCE (entry-point scan, no DB) and reused for every basin —
+    # see build_assigned_model_features_resolver for why the default (None)
+    # seam is never acceptable in production (Task 3A fixer round, major
+    # finding).
+    models = discover_models()
 
     def resolve_station(code: str, network: str) -> StationId | None:
         with engine.connect() as conn:
             station = PgStationStore(conn).fetch_station_by_code(code, network)
         return station.id if station is not None else None
 
+    def assigned_model_features(basin: BasinRecord) -> frozenset[str]:
+        with engine.connect() as conn:
+            resolver = build_assigned_model_features_resolver(
+                PgStationStore(conn),
+                PgStationGroupStore(conn),
+                resolve_station,
+                models,
+            )
+            return resolver(basin)
+
     return import_basin_package_from_directory(
         package_dir,
         engine,
         resolve_station=resolve_station,
+        assigned_model_features=assigned_model_features,
         clock=lambda: ensure_utc(datetime.now(UTC)),
     )
 

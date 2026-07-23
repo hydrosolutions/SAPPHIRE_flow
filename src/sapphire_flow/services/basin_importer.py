@@ -25,6 +25,13 @@ Two entrypoints:
   ``engine`` (``engine.begin()``) for the whole run, delegating to
   :func:`import_loaded_basin_package`.
 
+Both entrypoints take an OPTIONAL ``assigned_model_features`` seam (default
+``None`` — see ``basin_package_loader.evaluate_basin_acceptance``). A caller
+that skips it silently treats every basin as unassigned to any model, so a
+null required-static-feature never rises above a warning. The CLI (``cli/
+import_basin_package.py``) MUST NOT rely on the default — it builds a real
+resolver via :func:`build_assigned_model_features_resolver`.
+
 Neither entrypoint raises for an ANTICIPATED whole-package rejection (a Task
 1A schema/whole-package rule, a Task 1B gauge_id-join failure, or a Task
 2A/2C write-boundary invariant) — each returns ``outcome="rejected"`` with
@@ -41,27 +48,30 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from sapphire_flow.exceptions import BasinPackageRejectedError
+from sapphire_flow.exceptions import BasinPackageRejectedError, ConfigurationError
 from sapphire_flow.services.basin_package_loader import (
     evaluate_basin_acceptance,
     load_basin_package,
 )
 from sapphire_flow.store.basin_importer import import_basin_package
 from sapphire_flow.types.basin_package import BasinPackageImportReport
+from sapphire_flow.types.enums import ModelAssignmentStatus
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
     from pathlib import Path
 
     import sqlalchemy as sa
 
+    from sapphire_flow.protocols.forecast_model import ForecastModel
+    from sapphire_flow.protocols.stores import StationGroupStore, StationStore
     from sapphire_flow.types.basin_package import (
         BasinAcceptanceDecision,
         BasinRecord,
         LoadedBasinPackage,
     )
     from sapphire_flow.types.datetime import UtcDatetime
-    from sapphire_flow.types.ids import StationId
+    from sapphire_flow.types.ids import ModelId, StationId
 
 log = structlog.get_logger(__name__)
 
@@ -159,6 +169,72 @@ def import_basin_package_from_directory(
             assigned_model_features=assigned_model_features,
             clock=clock,
         )
+
+
+def build_assigned_model_features_resolver(
+    station_store: StationStore,
+    group_store: StationGroupStore,
+    resolve_station: Callable[[str, str], StationId | None],
+    models: Mapping[ModelId, ForecastModel],
+) -> Callable[[BasinRecord], frozenset[str]]:
+    """The PRODUCTION ``assigned_model_features`` seam (fixer round, major
+    finding — the CLI must not silently default this to ``None``, which
+    ``evaluate_basin_acceptance`` treats as "no basin is verifiably
+    assigned", downgrading every null required-static-feature to a
+    warning instead of an onboarding hold).
+
+    For a basin, resolves its station via ``resolve_station`` (same
+    ``(code, network)`` pair Task 1B uses) and unions the declared
+    ``data_requirements.static_features`` of every model with an ACTIVE
+    assignment — direct (``station_store.fetch_model_assignments``) or via
+    an active group membership (``group_store.fetch_groups_for_station`` +
+    ``fetch_group_model_assignments``) — covering that station.
+
+    ``models`` is the discovered model set (``services.model_registry.
+    discover_models``) keyed by ``ModelId``. An ACTIVE assignment naming a
+    ``model_id`` absent from ``models`` is a configuration bug (an assigned
+    model that failed to install/register), not a basin-package problem —
+    it raises :class:`~sapphire_flow.exceptions.ConfigurationError` rather
+    than silently resolving an incomplete (or empty) feature set, which
+    would let a real requirement slip through as a warning instead of a
+    hold.
+    """
+
+    def resolver(basin: BasinRecord) -> frozenset[str]:
+        station_id = resolve_station(basin.station_code, basin.network)
+        if station_id is None:
+            # Unmatched station is already its own onboarding hold (§9) —
+            # no assignment can exist for a station that isn't in SAP3 yet.
+            return frozenset()
+
+        model_ids: set[ModelId] = {
+            a.model_id
+            for a in station_store.fetch_model_assignments(station_id)
+            if a.status == ModelAssignmentStatus.ACTIVE
+        }
+        for group in group_store.fetch_groups_for_station(station_id):
+            model_ids.update(
+                a.model_id
+                for a in group_store.fetch_group_model_assignments(group.id)
+                if a.status == ModelAssignmentStatus.ACTIVE
+            )
+
+        features: set[str] = set()
+        for model_id in model_ids:
+            model = models.get(model_id)
+            if model is None:
+                raise ConfigurationError(
+                    f"station {station_id} (network={basin.network!r}, "
+                    f"station_code={basin.station_code!r}) has an ACTIVE "
+                    f"model assignment for {model_id!r}, but that model was "
+                    "not discovered (services.model_registry.discover_models) "
+                    "— cannot resolve its static-feature requirements; "
+                    "refusing to silently treat this basin as unassigned"
+                )
+            features.update(model.data_requirements.static_features)
+        return frozenset(features)
+
+    return resolver
 
 
 def _rejected_report(
