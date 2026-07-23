@@ -96,8 +96,10 @@ _SELF_REFERENTIAL_FILES: frozenset[str] = frozenset(
 )
 _SHA256_VALUE = re.compile(r"^sha256:[0-9a-f]{64}$")
 # §3a: internal layer/table name AND per-feature `name` must start with a
-# letter or underscore. §4a additionally requires lowercase.
+# letter or underscore. §4a additionally requires the per-feature `name` to be
+# lowercase; the internal layer/table name has only the leading-char rule.
 _NAME_PATTERN = re.compile(r"^[a-z_][a-z0-9_]*$")
+_LAYER_NAME_PATTERN = re.compile(r"^[A-Za-z_]")
 # §8 minimum per-basin validation checks are enforced structurally by
 # `_ValidationChecksModel` (presence + type at the Pydantic boundary).
 
@@ -286,18 +288,19 @@ class _BandRowModel(BaseModel):
     @field_validator("band_id", mode="before")
     @classmethod
     def _band_id_integral(cls, value: Any) -> int:
+        # §5: band_id is an integer. Consistent with StrictInt, a non-integer
+        # RUNTIME type is rejected outright — a float `1.0` does NOT coerce to
+        # `1` (that would silently accept a float-typed GeoPackage column). Only
+        # genuine integral types (Python int, numpy integer) are accepted; bool
+        # is a numbers.Integral subtype and must be rejected explicitly.
         if isinstance(value, bool):
             raise ValueError("band_id must be an integer, not a bool")
         if isinstance(value, numbers.Integral):
             return int(value)
-        if isinstance(value, numbers.Real):
-            as_float = float(value)
-            if math.isnan(as_float) or not as_float.is_integer():
-                raise ValueError(
-                    f"band_id must be a whole integer, not fractional ({value!r})"
-                )
-            return int(as_float)
-        raise ValueError(f"band_id must be an integer, got {value!r}")
+        raise ValueError(
+            f"band_id must be an integer-typed value, got {type(value).__name__} "
+            f"({value!r})"
+        )
 
     @field_validator("min_elevation_m", "max_elevation_m", "area_km2")
     @classmethod
@@ -316,9 +319,11 @@ class _StaticRowModel(BaseModel):
 
 
 class _ValidationSummaryModel(BaseModel):
-    passed: int
-    failed: int
-    warnings: int
+    # StrictInt rejects strings AND bools ("1"/True are NOT valid counts);
+    # ge=0 rejects a negative count. §8 summary counts are cardinalities.
+    passed: StrictInt = Field(ge=0)
+    failed: StrictInt = Field(ge=0)
+    warnings: StrictInt = Field(ge=0)
 
 
 class _ValidationChecksModel(BaseModel):
@@ -427,6 +432,9 @@ def load_basin_package(package_dir: Path) -> LoadedBasinPackage:
             _parse_row(_BasinRowModel, row.to_dict(), label="basins.gpkg")
         )
         for _, row in basins_gdf.iterrows()
+    )
+    _validate_single_gateway_hru(
+        {b.gateway_hru_name for b in basins}, label="basins.gpkg"
     )
     _validate_network_consistency(basins, manifest.network, label="basins.gpkg")
     _validate_lat_lon_equality(basins)
@@ -542,13 +550,14 @@ def _domain_validation_report(model: _ValidationReportModel) -> ValidationReport
 # ── Declared-path security boundary (§9) ──
 
 
-def _validate_declared_paths(package_dir: Path, manifest_model: _ManifestModel) -> None:
-    """Reject any declared payload path (``manifest.files`` values or
-    ``manifest.checksums`` keys) that is absolute, contains a ``..`` traversal,
-    is self-referential (``manifest.json``/``checksums.sha256``), or escapes the
-    package directory. This runs BEFORE any file is opened by declared path."""
+def _reject_unsafe_paths(package_dir: Path, declared: set[str]) -> None:
+    """Reject any declared payload path that is absolute, contains a ``..``
+    traversal, is self-referential (``manifest.json``/``checksums.sha256``), or
+    escapes the package directory. Runs BEFORE any file is opened/hashed by a
+    declared path — the single path-safety gate for EVERY declared-path source
+    (``manifest.files`` values, ``manifest.checksums`` keys, and the
+    ``checksums.sha256`` sidecar key set)."""
     base = package_dir.resolve()
-    declared = set(manifest_model.files.values()) | set(manifest_model.checksums.keys())
     for rel in declared:
         if rel in _SELF_REFERENTIAL_FILES:
             raise BasinPackageRejectedError(
@@ -565,6 +574,17 @@ def _validate_declared_paths(package_dir: Path, manifest_model: _ManifestModel) 
             raise BasinPackageRejectedError(
                 f"declared payload path {rel!r} escapes the package directory"
             )
+
+
+def _validate_declared_paths(package_dir: Path, manifest_model: _ManifestModel) -> None:
+    """Path-safety gate for the manifest-declared paths (``manifest.files``
+    values and ``manifest.checksums`` keys). The ``checksums.sha256`` sidecar
+    key set is gated separately in :func:`_compute_and_verify_checksums`, since
+    it is only known once the sidecar is parsed."""
+    _reject_unsafe_paths(
+        package_dir,
+        set(manifest_model.files.values()) | set(manifest_model.checksums.keys()),
+    )
 
 
 # ── Checksums ──
@@ -619,6 +639,12 @@ def _compute_and_verify_checksums(
         payload -= _SELF_REFERENTIAL_FILES
         payload_files = sorted(payload)
 
+    # Path-safety gate for EVERY payload path we are about to open/hash — this
+    # closes the sidecar bypass: a `checksums.sha256` sidecar key never passed
+    # through `_validate_declared_paths`, so an absolute / `..` / escaping path
+    # sourced only from the sidecar must be rejected HERE before it is hashed.
+    _reject_unsafe_paths(package_dir, set(payload_files))
+
     computed: dict[str, str] = {}
     for filename in payload_files:
         path = package_dir / filename
@@ -665,13 +691,44 @@ def _parse_sha256_sidecar(path: Path) -> dict[str, str]:
 
 
 def _read_geometry_file(path: Path, *, label: str) -> gpd.GeoDataFrame:
+    layer = _selected_layer_name(path, label=label)
+    # §3a rule 1: the internal layer/table name MUST start with a letter or
+    # underscore (`polygons` OK, `00003` not).
+    if not _LAYER_NAME_PATTERN.match(layer):
+        raise BasinPackageRejectedError(
+            f"{label} internal layer/table name {layer!r} must start with a letter "
+            "or underscore (§3a)"
+        )
     try:
-        gdf = gpd.read_file(path)
+        gdf = gpd.read_file(path, layer=layer)
     except pyogrio.errors.DataSourceError as exc:
         raise BasinPackageRejectedError(f"{label} could not be read: {exc}") from exc
     if gdf.crs is None or gdf.crs.to_epsg() != 4326:
         raise BasinPackageRejectedError(f"{label} is not EPSG:4326 (got {gdf.crs!r})")
     return gdf
+
+
+def _selected_layer_name(path: Path, *, label: str) -> str:
+    """The layer ``gpd.read_file`` reads (the first one). Listed via pyogrio so
+    the name is available for §3a validation before the layer is read."""
+    try:
+        layers = pyogrio.list_layers(path)
+    except pyogrio.errors.DataSourceError as exc:
+        raise BasinPackageRejectedError(f"{label} could not be read: {exc}") from exc
+    if len(layers) == 0:
+        raise BasinPackageRejectedError(f"{label} contains no layers")
+    return str(layers[0][0])
+
+
+def _validate_single_gateway_hru(hru_names: set[str], *, label: str) -> None:
+    """§3a rule 2: one Gateway HRU IS one GeoPackage (single-kind), so every
+    feature row in a given ``.gpkg`` MUST carry the same ``gateway_hru_name``."""
+    if len(hru_names) > 1:
+        raise BasinPackageRejectedError(
+            f"{label} carries multiple gateway_hru_name values (a Gateway HRU is a "
+            "single GeoPackage — every feature in one .gpkg must share one "
+            f"gateway_hru_name): {sorted(hru_names)}"
+        )
 
 
 def _validate_basin_columns(gdf: gpd.GeoDataFrame) -> None:
@@ -783,6 +840,10 @@ def _validate_and_build_bands(
         _parse_row(_BandRowModel, row.to_dict(), label="bands.gpkg")
         for _, row in gdf.iterrows()
     ]
+
+    _validate_single_gateway_hru(
+        {b.gateway_hru_name for b in band_models}, label="bands.gpkg"
+    )
 
     bad_network = [b.station_code for b in band_models if b.network != manifest.network]
     if bad_network:

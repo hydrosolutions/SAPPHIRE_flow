@@ -728,6 +728,25 @@ class TestValidationReportContract:
         with pytest.raises(BasinPackageRejectedError, match="summary is inconsistent"):
             load_basin_package(pkg_dir)
 
+    @pytest.mark.parametrize("bad_value", ["1", -1], ids=["string", "negative"])
+    def test_summary_count_wrong_type_or_negative_rejects(
+        self, tmp_path: Path, bad_value: object
+    ) -> None:
+        """§8 summary counts are non-negative cardinalities: a string-typed
+        (`"1"`) or negative (`-1`) count is rejected at the boundary, never
+        silently coerced/accepted."""
+        pkg_dir = _copy_fixture(tmp_path)
+
+        def mutate(report: dict, bad_value: object = bad_value) -> dict:
+            report["summary"]["passed"] = bad_value
+            return report
+
+        _mutate_json(pkg_dir, "validation_report.json", mutate)
+        _recompute_checksums(pkg_dir)
+
+        with pytest.raises(BasinPackageRejectedError, match="schema validation"):
+            load_basin_package(pkg_dir)
+
 
 class TestManifestConstraints:
     """Finding #9: strict manifest fields + the declared-path security boundary."""
@@ -829,6 +848,25 @@ class TestChecksumSidecar:
         with pytest.raises(BasinPackageRejectedError, match="different file"):
             load_basin_package(pkg_dir)
 
+    @pytest.mark.parametrize(
+        "bad_path", ["../secret", "/etc/passwd"], ids=["dotdot", "absolute"]
+    )
+    def test_sidecar_only_unsafe_path_rejects(
+        self, tmp_path: Path, bad_path: str
+    ) -> None:
+        """A `checksums.sha256` sidecar key bypasses `_validate_declared_paths`
+        (which only sees `manifest.files`/`manifest.checksums`). An unsafe
+        sidecar-declared path (absolute or `..`-escaping) MUST be path-safety
+        rejected BEFORE any payload file is opened/hashed."""
+        pkg_dir = _copy_fixture(tmp_path)
+        manifest = _read_manifest(pkg_dir)
+        del manifest["checksums"]  # sidecar becomes the sole checksum source
+        _write_manifest(pkg_dir, manifest)
+        _write_sidecar(pkg_dir, {bad_path: "sha256:" + "0" * 64})
+
+        with pytest.raises(BasinPackageRejectedError, match="declared payload path"):
+            load_basin_package(pkg_dir)
+
 
 class TestBandsValidation:
     """Finding #8: a present bands.gpkg is strict-parsed and fully validated."""
@@ -850,6 +888,16 @@ class TestBandsValidation:
         with pytest.raises(BasinPackageRejectedError, match="bands.gpkg"):
             load_basin_package(pkg_dir)
 
+    def test_integral_float_band_id_rejects(self, tmp_path: Path) -> None:
+        """A float-typed band_id (`1.0`) is REJECTED, not coerced to `1` — the
+        column must be integer-typed (§5), consistent with StrictInt. Proves the
+        band_id strictness is real: an integral-float no longer sneaks through."""
+        pkg_dir = _copy_fixture(tmp_path)
+        _write_bands_gpkg(pkg_dir, [_valid_band_row(band_id=1.0)])
+
+        with pytest.raises(BasinPackageRejectedError, match="bands.gpkg"):
+            load_basin_package(pkg_dir)
+
     def test_nan_band_area_rejects(self, tmp_path: Path) -> None:
         pkg_dir = _copy_fixture(tmp_path)
         _write_bands_gpkg(pkg_dir, [_valid_band_row(area_km2=float("nan"))])
@@ -864,6 +912,59 @@ class TestBandsValidation:
         )
 
         with pytest.raises(BasinPackageRejectedError, match="max_elevation_m"):
+            load_basin_package(pkg_dir)
+
+
+class TestGeoPackageLayerAndHru:
+    """Finding: §3a — the internal layer/table name MUST start with a letter or
+    underscore, and every feature in ONE GeoPackage must carry the SAME
+    `gateway_hru_name` (a Gateway HRU IS a single GeoPackage — single-kind)."""
+
+    def test_basins_layer_name_leading_digit_rejects(self, tmp_path: Path) -> None:
+        pkg_dir = _copy_fixture(tmp_path)
+        gdf = gpd.read_file(pkg_dir / "basins.gpkg")
+        (pkg_dir / "basins.gpkg").unlink()
+        # A layer/table name that starts with a digit violates §3a rule 1.
+        gdf.to_file(pkg_dir / "basins.gpkg", driver="GPKG", layer="0bad")
+        _recompute_checksums(pkg_dir)
+
+        with pytest.raises(BasinPackageRejectedError, match="layer/table name"):
+            load_basin_package(pkg_dir)
+
+    def test_basins_multiple_gateway_hru_names_reject(self, tmp_path: Path) -> None:
+        pkg_dir = _copy_fixture(tmp_path)
+
+        def mutate(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+            second = gdf.iloc[[0]].copy()
+            second["station_code"] = "456"
+            second["basin_code"] = "456"
+            second["name"] = "g_456"
+            second["gauge_id"] = "nepal_456"
+            # DIFFERENT gateway_hru_name in the SAME GeoPackage.
+            second["gateway_hru_name"] = "nepal_dhm_v2"
+            return _concat_gdf(gdf, second)
+
+        _mutate_basins_gpkg(pkg_dir, mutate)
+        _recompute_checksums(pkg_dir)
+
+        with pytest.raises(BasinPackageRejectedError, match="single GeoPackage"):
+            load_basin_package(pkg_dir)
+
+    def test_bands_multiple_gateway_hru_names_reject(self, tmp_path: Path) -> None:
+        pkg_dir = _copy_fixture(tmp_path)
+        _write_bands_gpkg(
+            pkg_dir,
+            [
+                _valid_band_row(
+                    band_id=1, name="g_123_band_1", gateway_hru_name="nepal_dhm_v1"
+                ),
+                _valid_band_row(
+                    band_id=2, name="g_123_band_2", gateway_hru_name="nepal_dhm_v2"
+                ),
+            ],
+        )
+
+        with pytest.raises(BasinPackageRejectedError, match="single GeoPackage"):
             load_basin_package(pkg_dir)
 
 
