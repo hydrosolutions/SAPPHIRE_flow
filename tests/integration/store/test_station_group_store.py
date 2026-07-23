@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import uuid
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -649,3 +650,199 @@ class TestStoreGroupTenantImmutable:
         assert fetched.name == "idempotent-group-renamed"
         assert fetched.description == "second"
         assert fetched.tenant_id == DEFAULT_TENANT_ID
+
+
+class TestStoreGroupConditionalUpsertDirect:
+    """Drive the conditional-upsert statement's RETURNING contract directly.
+
+    A conflict against a row whose stored tenant_id disagrees with the
+    proposed tenant_id must make `WHERE station_groups.tenant_id =
+    EXCLUDED.tenant_id` exclude the DO UPDATE, so RETURNING yields zero rows
+    — which is exactly what ``store_group`` treats as "raise
+    ConfigurationError". This isolates that SQL-level contract from the
+    Python control flow around it (already covered end-to-end by
+    ``test_restore_with_different_tenant_raises`` above).
+    """
+
+    def test_conflict_with_mismatched_tenant_returns_no_row(
+        self, db_connection: sa.Connection
+    ) -> None:
+        other_tenant = TenantId(uuid.uuid4())
+        _seed_tenant(db_connection, other_tenant, "direct")
+
+        gid = StationGroupId(uuid.uuid4())
+        db_connection.execute(
+            sa.insert(station_groups).values(
+                id=gid,
+                name="direct-original",
+                description=None,
+                created_at=_NOW,
+                tenant_id=DEFAULT_TENANT_ID,
+            )
+        )
+
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        result = db_connection.execute(
+            pg_insert(station_groups)
+            .values(
+                id=gid,
+                name="direct-hijacked",
+                description="attempted cross-tenant write",
+                created_at=_NOW,
+                tenant_id=other_tenant,
+            )
+            .on_conflict_do_update(
+                index_elements=["id"],
+                set_={"name": "direct-hijacked", "description": "hijacked"},
+                where=station_groups.c.tenant_id == other_tenant,
+            )
+            .returning(station_groups.c.id)
+        )
+        assert result.first() is None, (
+            "conditional upsert must return no row on a tenant mismatch"
+        )
+
+        # And the stored row is untouched by the excluded update.
+        row = db_connection.execute(
+            sa.select(station_groups.c.name, station_groups.c.tenant_id).where(
+                station_groups.c.id == gid
+            )
+        ).one()
+        assert row.name == "direct-original"
+        assert TenantId(row.tenant_id) == DEFAULT_TENANT_ID
+
+    def test_soundness_unguarded_do_update_would_silently_hijack(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """Prove the WHERE guard is load-bearing.
+
+        Same setup as above, but without ``where=`` on the DO UPDATE clause
+        — reproducing the bug this fix closes. The update must succeed and
+        RETURNING must yield a row, demonstrating that dropping the guard
+        (or reverting to the pre-fix statement shape) reopens the hijack.
+        """
+        other_tenant = TenantId(uuid.uuid4())
+        _seed_tenant(db_connection, other_tenant, "unguarded")
+
+        gid = StationGroupId(uuid.uuid4())
+        db_connection.execute(
+            sa.insert(station_groups).values(
+                id=gid,
+                name="unguarded-original",
+                description=None,
+                created_at=_NOW,
+                tenant_id=DEFAULT_TENANT_ID,
+            )
+        )
+
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        result = db_connection.execute(
+            pg_insert(station_groups)
+            .values(
+                id=gid,
+                name="unguarded-hijacked",
+                description="attempted cross-tenant write",
+                created_at=_NOW,
+                tenant_id=other_tenant,
+            )
+            .on_conflict_do_update(
+                index_elements=["id"],
+                set_={"name": "unguarded-hijacked", "description": "hijacked"},
+                # deliberately no `where=` — this is the pre-fix shape.
+            )
+            .returning(station_groups.c.id)
+        )
+        assert result.first() is not None, (
+            "without the WHERE guard the cross-tenant update silently succeeds "
+            "(proves the guard, not incidental DB behavior, blocks the hijack)"
+        )
+        row = db_connection.execute(
+            sa.select(station_groups.c.name).where(station_groups.c.id == gid)
+        ).one()
+        assert row.name == "unguarded-hijacked"
+
+
+class TestStoreGroupConcurrentTenantRace:
+    """Real two-connection concurrency test for the TOCTOU this fix closes.
+
+    Two threads, each on its OWN connection/transaction (the default
+    ``store_group`` transaction factory is ``engine.begin`` — a fresh
+    connection per call), attempt to ``store_group`` the SAME new group id
+    under DIFFERENT tenants at (as close to) the same instant, synchronized
+    via a barrier. Postgres serializes the two conflicting INSERTs on the
+    row's primary key: whichever commits first wins; the second blocks until
+    the first commits, then re-evaluates the conditional DO UPDATE against
+    the now-committed row and (since the tenant differs) gets no row back —
+    which ``store_group`` turns into ``ConfigurationError``.
+
+    This is only reachable because the guard is now part of the single
+    atomic upsert statement: the old SELECT-then-Python-check let both
+    threads observe "no row yet" and both proceed to insert/update.
+    """
+
+    def test_concurrent_store_different_tenants_exactly_one_wins(
+        self, db_engine: sa.Engine
+    ) -> None:
+        other_tenant = TenantId(uuid.uuid4())
+        with db_engine.connect() as seed_conn:
+            _seed_tenant(seed_conn, other_tenant, "race")
+            seed_conn.commit()
+
+        gid = StationGroupId(uuid.uuid4())
+        barrier = threading.Barrier(2)
+        outcomes: dict[str, object] = {}
+
+        def _attempt(tenant_id: TenantId, name: str, key: str) -> None:
+            with db_engine.connect() as conn:
+                store = PgStationGroupStore(conn)
+                barrier.wait(timeout=10)
+                try:
+                    store.store_group(
+                        StationGroup(
+                            id=gid,
+                            name=name,
+                            station_ids=frozenset(),
+                            description=None,
+                            created_at=_NOW,
+                            tenant_id=tenant_id,
+                        )
+                    )
+                    outcomes[key] = "ok"
+                except ConfigurationError as exc:
+                    outcomes[key] = exc
+
+        t_a = threading.Thread(target=_attempt, args=(DEFAULT_TENANT_ID, "race-a", "a"))
+        t_b = threading.Thread(target=_attempt, args=(other_tenant, "race-b", "b"))
+        t_a.start()
+        t_b.start()
+        t_a.join(timeout=15)
+        t_b.join(timeout=15)
+
+        assert not t_a.is_alive() and not t_b.is_alive(), "race threads hung"
+        assert set(outcomes) == {"a", "b"}
+
+        oks = [k for k, v in outcomes.items() if v == "ok"]
+        errs = [
+            (k, v) for k, v in outcomes.items() if isinstance(v, ConfigurationError)
+        ]
+        assert len(oks) == 1, f"expected exactly one winner, got {outcomes}"
+        assert len(errs) == 1, (
+            f"expected exactly one ConfigurationError, got {outcomes}"
+        )
+        assert "immutable" in str(errs[0][1])
+
+        winner_key = oks[0]
+        winner_tenant = DEFAULT_TENANT_ID if winner_key == "a" else other_tenant
+        winner_name = "race-a" if winner_key == "a" else "race-b"
+
+        with db_engine.connect() as check_conn:
+            row = check_conn.execute(
+                sa.select(station_groups.c.tenant_id, station_groups.c.name).where(
+                    station_groups.c.id == gid
+                )
+            ).one()
+        # The loser's write never landed — persisted row matches the winner only.
+        assert TenantId(row.tenant_id) == winner_tenant
+        assert row.name == winner_name

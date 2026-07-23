@@ -38,28 +38,20 @@ class PgStationGroupStore:
 
     def store_group(self, group: StationGroup) -> None:
         with self._begin() as txn:
-            # A group's tenant is IMMUTABLE (Plan 147 Slice A, R4). On re-store,
-            # the ON CONFLICT DO UPDATE below intentionally does NOT touch
-            # tenant_id — but that alone would let a caller silently persist a
-            # StationGroup whose tenant_id disagrees with the stored row (or,
-            # on an id collision, mutate another tenant's group metadata under
-            # its own tenant). Guard explicitly: refuse a re-store that carries
-            # a different tenant, rather than silently keeping the old value.
-            existing_tenant = txn.execute(
-                sa.select(station_groups.c.tenant_id).where(
-                    station_groups.c.id == group.id
-                )
-            ).scalar_one_or_none()
-            if (
-                existing_tenant is not None
-                and TenantId(existing_tenant) != group.tenant_id
-            ):
-                raise ConfigurationError(
-                    f"station group {group.id} already belongs to tenant "
-                    f"{existing_tenant}; refusing to re-store it under tenant "
-                    f"{group.tenant_id} (a group's tenant is immutable)"
-                )
-            txn.execute(
+            # A group's tenant is IMMUTABLE (Plan 147 Slice A, R4). A separate
+            # SELECT-then-Python-check (the earlier approach) is a TOCTOU race:
+            # two concurrent store_group calls for the same new id, different
+            # tenants, can both observe "no row" and both proceed. Instead the
+            # guard is baked into ONE atomic statement: the DO UPDATE only
+            # fires `WHERE station_groups.tenant_id = EXCLUDED.tenant_id`. A
+            # plain INSERT (no conflict) always returns its row. A conflict
+            # against the SAME tenant runs the update and returns the row
+            # (idempotent re-store). A conflict against a DIFFERENT tenant
+            # makes the WHERE exclude the update — no row is returned — and
+            # Postgres's row lock on the conflicting id serializes concurrent
+            # attempts, so the loser deterministically sees the winner's row
+            # already committed rather than racing past it.
+            result = txn.execute(
                 pg_insert(station_groups)
                 .values(
                     id=group.id,
@@ -74,8 +66,16 @@ class PgStationGroupStore:
                         "name": group.name,
                         "description": group.description,
                     },
+                    where=station_groups.c.tenant_id == group.tenant_id,
                 )
+                .returning(station_groups.c.id)
             )
+            if result.first() is None:
+                raise ConfigurationError(
+                    f"station group {group.id} already belongs to a different "
+                    f"tenant; refusing to re-store it under tenant "
+                    f"{group.tenant_id} (a group's tenant is immutable)"
+                )
             if group.station_ids:
                 # The composite FK (station_id, tenant_id) -> stations(id,
                 # tenant_id) rejects a member row whose station's tenant
