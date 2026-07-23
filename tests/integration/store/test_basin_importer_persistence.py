@@ -309,6 +309,127 @@ class TestFiveAMappingPopulation:
         assert rows[0]["gateway_hru_name"] == "nepal_dhm_v2"
 
 
+class TestStationIdentityValidation:
+    """Fixer round (major finding, 2026-07-23): ``_basin_for_decision`` only
+    verifies the ``(network, basin_code)`` KEY exists in the loaded package
+    — it does not verify the decision's station identity still matches that
+    key. A stale/mismatched acceptance report paired with a package
+    containing the same basin key but a changed station identity must
+    reject the whole package rather than silently write the §5a row and
+    ``stations.basin_id`` against the wrong station."""
+
+    def test_stale_decision_station_code_mismatch_rejected_no_writes(
+        self, db_connection: sa.Connection
+    ) -> None:
+        station_id = _seed_station(db_connection, code="123", network="dhm")
+        loaded, report = _load_and_accept(station_id)
+
+        # Same (network, basin_code) KEY ("dhm", "123") but the basin's own
+        # station_code has changed underneath the stale `report` — exactly
+        # the divergence this guard exists to catch.
+        mutated_basins = tuple(
+            dataclasses.replace(b, station_code="999") if b.basin_code == "123" else b
+            for b in loaded.basins
+        )
+        mutated = dataclasses.replace(loaded, basins=mutated_basins)
+
+        with pytest.raises(BasinPackageRejectedError, match="station_code"):
+            import_basin_package(db_connection, mutated, report, clock=_clock)
+
+        package_count = db_connection.execute(
+            sa.select(sa.func.count())
+            .select_from(basin_static_packages)
+            .where(basin_static_packages.c.package_id == "nepal-dhm-basins")
+        ).scalar_one()
+        assert package_count == 0
+        binding_count = db_connection.execute(
+            sa.select(sa.func.count())
+            .select_from(recap_gateway_polygon_bindings)
+            .where(recap_gateway_polygon_bindings.c.station_id == station_id)
+        ).scalar_one()
+        assert binding_count == 0
+        unchanged = PgStationStore(db_connection).fetch_station(station_id)
+        assert unchanged is not None
+        assert unchanged.basin_id is None
+
+    def test_decision_station_id_identity_mismatch_rejected_no_writes(
+        self, db_connection: sa.Connection
+    ) -> None:
+        correct_station_id = _seed_station(db_connection, code="123", network="dhm")
+        wrong_station_id = _seed_station(
+            db_connection, code="999", network="other-network"
+        )
+        loaded, report = _load_and_accept(correct_station_id)
+
+        # decision.station_code still says "123" (matches the basin) but the
+        # resolved station_id now points to an entirely different station
+        # whose own code/network have diverged from the decision.
+        mutated_decisions = tuple(
+            dataclasses.replace(d, station_id=wrong_station_id)
+            for d in report.decisions
+        )
+        mutated_report = dataclasses.replace(report, decisions=mutated_decisions)
+
+        with pytest.raises(BasinPackageRejectedError, match="identity"):
+            import_basin_package(db_connection, loaded, mutated_report, clock=_clock)
+
+        package_count = db_connection.execute(
+            sa.select(sa.func.count())
+            .select_from(basin_static_packages)
+            .where(basin_static_packages.c.package_id == "nepal-dhm-basins")
+        ).scalar_one()
+        assert package_count == 0
+        unchanged = PgStationStore(db_connection).fetch_station(wrong_station_id)
+        assert unchanged is not None
+        assert unchanged.basin_id is None
+
+
+class TestCorrectionRefreshesBasinName:
+    """Fixer round (major finding, 2026-07-23): a corrected package's
+    ``display_name`` must refresh ``basins.name`` — the operational
+    projection — not just the correction path's other columns."""
+
+    def test_correction_with_new_display_name_updates_basin_name(
+        self, db_connection: sa.Connection
+    ) -> None:
+        station_id = _seed_station(db_connection)
+        loaded, report = _load_and_accept(station_id)
+        import_basin_package(db_connection, loaded, report, clock=_clock)
+
+        renamed_basins = tuple(
+            dataclasses.replace(b, display_name="Renamed Basin Display Name")
+            if b.basin_code == "123"
+            else b
+            for b in loaded.basins
+        )
+        corrected_manifest = dataclasses.replace(
+            loaded.manifest, package_id="nepal-dhm-basins-v2"
+        )
+        corrected = dataclasses.replace(
+            loaded,
+            manifest=corrected_manifest,
+            basins=renamed_basins,
+            computed_checksums={"basins.gpkg": "sha256:" + "c" * 64},
+        )
+        corrected_report = evaluate_basin_acceptance(
+            corrected,
+            resolve_station=lambda code, network: (
+                station_id if (code, network) == ("123", "dhm") else None
+            ),
+        )
+
+        result = import_basin_package(
+            db_connection, corrected, corrected_report, clock=_clock
+        )
+
+        assert result.imported_basins[0].outcome == "corrected"
+        basin = PgBasinStore(db_connection).fetch_basin(
+            result.imported_basins[0].basin_id
+        )
+        assert basin is not None
+        assert basin.name == "Renamed Basin Display Name"
+
+
 def _seed_model(conn: sa.Connection) -> ModelId:
     mid = ModelId(f"basin_binding_test_model_{uuid.uuid4().hex[:8]}")
     conn.execute(

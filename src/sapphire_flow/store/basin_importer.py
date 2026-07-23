@@ -111,6 +111,15 @@ def import_basin_package(
     anything, if ``conn`` is AUTOCOMMIT-isolation or has no active
     transaction.
 
+    Before any write, validates every accepted decision's station identity
+    against the loaded package (fixer round, major finding, 2026-07-23):
+    ``decision.station_code`` must match the loaded basin's own
+    ``station_code``, and the resolved station's own ``code``/``network``
+    must match the basin's — a mismatch (e.g. a stale acceptance report
+    paired with a package whose basin key now names a different station)
+    raises :class:`BasinPackageRejectedError` and rejects the whole
+    package (see ``_validate_decision_identity``).
+
     Also binds the accepted station to the imported/corrected basin
     (``stations.basin_id`` — fixer round, major finding): without this,
     ``assemble_station_training_data``/``record_artifact_basin_lineage``
@@ -132,6 +141,23 @@ def import_basin_package(
         log.info("basin_importer.package_already_imported", package_id=package_id)
         return BasinPackageImportResult(package_id=package_id, already_imported=True)
 
+    basin_store = PgBasinStore(conn)
+    gateway_store = RecapGatewayPolygonStore(conn)
+    station_store = PgStationStore(conn)
+    basin_by_key = {(b.network, b.basin_code): b for b in loaded.basins}
+
+    # Fixer round (major finding, 2026-07-23): validate EVERY accepted
+    # decision's station identity against the loaded package BEFORE any
+    # write — a stale/mismatched acceptance report paired with a package
+    # whose basin key now names a different station must reject the whole
+    # package, not silently bind the wrong station.
+    for basin_decision in acceptance_report.accepted:
+        _validate_decision_identity(
+            station_store,
+            basin=_basin_for_decision(basin_by_key, basin_decision),
+            decision=basin_decision,
+        )
+
     # Canonical step 2: package provenance FIRST. `basins.package_id`,
     # `basin_versions.package_id`, and the §5a `package_id` are all
     # IMMEDIATE (non-DEFERRABLE) FKs, so any of them written before this row
@@ -151,10 +177,6 @@ def import_basin_package(
         )
     )
 
-    basin_store = PgBasinStore(conn)
-    gateway_store = RecapGatewayPolygonStore(conn)
-    station_store = PgStationStore(conn)
-    basin_by_key = {(b.network, b.basin_code): b for b in loaded.basins}
     imported_at = clock()
 
     imported_basins = tuple(
@@ -263,6 +285,59 @@ def _basin_for_decision(
             "supplied loaded package"
         )
     return basin_by_key[key]
+
+
+def _validate_decision_identity(
+    station_store: PgStationStore,
+    *,
+    basin: BasinRecord,
+    decision: BasinAcceptanceDecision,
+) -> None:
+    """Fixer round (major finding, 2026-07-23): before any write, verify a
+    stale/mismatched acceptance decision cannot bind the §5a mapping or
+    ``stations.basin_id`` to the wrong station. ``_basin_for_decision`` only
+    verifies the ``(network, basin_code)`` KEY exists in the loaded package
+    — it does not verify the decision's station identity still matches that
+    key. Two independent checks, either of which rejects the WHOLE package
+    (never a partial/silent write):
+
+    1. ``decision.station_code`` must equal the loaded basin record's
+       ``station_code`` — catches a stale acceptance report replayed
+       against a package whose basin at that same key now names a
+       different station.
+    2. The resolved station's OWN ``code``/``network`` must equal the
+       basin's — catches ``decision.station_id`` resolving (e.g. via a
+       station whose code/network changed since the decision was made) to a
+       station whose identity no longer matches what the decision recorded.
+    """
+    if decision.station_code != basin.station_code:
+        raise BasinPackageRejectedError(
+            f"acceptance decision for basin (network={decision.network!r}, "
+            f"basin_code={decision.basin_code!r}) carries station_code "
+            f"{decision.station_code!r}, but the loaded package's basin "
+            f"record for that key has station_code {basin.station_code!r} "
+            "— the acceptance report does not match the supplied loaded "
+            "package (a stale report replayed against a changed package?); "
+            "refusing to bind the wrong station"
+        )
+    station_id = _require_station_id(decision)
+    station = station_store.fetch_station(station_id)
+    if station is None:
+        raise ValueError(
+            f"station {station_id} not found while validating it against "
+            f"basin (network={basin.network!r}, basin_code={basin.basin_code!r}) "
+            "— Task 1B invariant violated (an ACCEPTED decision must carry "
+            "a real, resolved station_id)"
+        )
+    if station.code != basin.station_code or station.network != basin.network:
+        raise BasinPackageRejectedError(
+            f"resolved station {station_id} has (code={station.code!r}, "
+            f"network={station.network!r}), but basin (network="
+            f"{basin.network!r}, basin_code={basin.basin_code!r}) expects "
+            f"station_code={basin.station_code!r} in network "
+            f"{basin.network!r} — refusing to bind a station whose identity "
+            "no longer matches the basin"
+        )
 
 
 def _require_static_attributes(
@@ -437,7 +512,12 @@ def _correct_existing_basin(
     """Task 2C, Decision B: a NEW package_id over an EXISTING
     ``(network, basin_code)`` — a correction. Always material_change=True;
     always emits the affected-artifact set for the version this correction
-    just superseded."""
+    just superseded. Passes ``name=basin.display_name`` (fixer round, major
+    finding, 2026-07-23) so a corrected package's display name refreshes
+    ``basins.name`` — the operational projection — exactly like the
+    new-basin insert path does; without it a correction could update
+    geometry/attributes/area/regional grouping/bands/provenance/Gateway
+    mapping while silently keeping the old name."""
     binding = _basin_average_binding(
         basin,
         basin_id=existing_basin_id,
@@ -448,6 +528,7 @@ def _correct_existing_basin(
     correction = basin_store.update_basin_from_package(
         basin_id=existing_basin_id,
         package_id=package_id,
+        name=basin.display_name,
         geometry=geometry,
         attributes=attributes,
         area_km2=basin.area_km2,

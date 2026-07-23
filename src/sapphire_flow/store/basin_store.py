@@ -137,6 +137,7 @@ class PgBasinStore:
         *,
         basin_id: BasinId,
         package_id: PackageId,
+        name: str,
         geometry: Any,
         attributes: dict[str, Any] | None,
         area_km2: float | None,
@@ -154,6 +155,14 @@ class PgBasinStore:
         ``uq_basin_versions_one_current_per_basin`` partial unique index).
         This is the SEPARATE upsert path Task 2C adds because
         ``store_basin`` is insert-only (the new-basin creation path).
+
+        **Fixer round (major finding, 2026-07-23):** ``name`` is a REQUIRED
+        kwarg, not optional — a corrected package's ``display_name`` must
+        refresh ``basins.name`` (the operational projection) exactly like it
+        does on the new-basin insert path (``_insert_new_basin`` /
+        ``Basin(name=...)``); a correction that touched every other column
+        but silently retained the previous display name was the bug this
+        closes.
 
         **Fixer round (major finding, mirrors Task 0A's ``store_basin``):**
         the stamp/append/refresh triple runs as ONE data-modifying,
@@ -242,6 +251,7 @@ class PgBasinStore:
             sa.update(basins)
             .where(basins.c.id == sa.select(insert_cte.c.basin_id).scalar_subquery())
             .values(
+                name=name,
                 geometry=wkb_geometry,
                 attributes=attributes,
                 area_km2=area_km2,

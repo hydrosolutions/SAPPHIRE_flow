@@ -242,6 +242,7 @@ class TestUpdateBasinFromPackageAtomicity:
                 store.update_basin_from_package(
                     basin_id=basin.id,
                     package_id=bogus_package_id,  # IMMEDIATE FK -> append fails
+                    name="Corrected Name",
                     geometry=_GEOM,
                     attributes={"corrected": True},
                     area_km2=999.0,

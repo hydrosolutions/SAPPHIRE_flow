@@ -634,7 +634,7 @@ implemented importer, inserting the package first, completes without it.
 uv run pytest tests/integration/store/test_basin_importer_persistence.py::TestDissolveIntoBasins
 ```
 
-**IMPLEMENTED then hardened (fixer round, Codex review, 2026-07-23 — 4 findings resolved):**
+**IMPLEMENTED then hardened (fixer round, Codex review, 2026-07-23 — 6 findings resolved):**
 1. **Transaction contract enforced (blocker).** `import_basin_package` previously delegated
    "one DB transaction per package" to an unspecified future caller with no runtime check.
    Verified empirically against a live Postgres: even an EXPLICIT `conn.begin()` on an
@@ -661,11 +661,27 @@ uv run pytest tests/integration/store/test_basin_importer_persistence.py::TestDi
    against a raw AUTOCOMMIT connection: the pre-fix three-`execute()`-call form left the basin
    with ZERO current `basin_versions` rows when the append half failed after the stamp had
    already self-committed).
+5. **Station identity validated before any write (major, second fixer round, independent
+   Codex pass).** `_basin_for_decision` only verified the `(network, basin_code)` KEY exists
+   in the loaded package — it never verified the *decision's* station identity still matches
+   that key. A stale/mismatched acceptance report paired with a package that reused the same
+   basin key but changed the station identity could silently write the §5a row and
+   `stations.basin_id` against the wrong station. `import_basin_package` now runs
+   `_validate_decision_identity` over every accepted decision BEFORE any write: (a)
+   `decision.station_code` must equal the loaded basin record's own `station_code`, and (b)
+   the resolved station's own `code`/`network` must equal the basin's — either mismatch
+   raises `BasinPackageRejectedError` and rejects the whole package.
+6. **Corrections now refresh `basins.name` (major, second fixer round).**
+   `update_basin_from_package`'s final projection UPDATE carried every corrected column
+   (geometry/attributes/area/regional grouping/bands/provenance/Gateway mapping) except
+   `name` — a corrected package's `display_name` never reached the operational `basins.name`
+   projection. `update_basin_from_package` now takes a required `name` kwarg and includes
+   `name=name` in that UPDATE; `_correct_existing_basin` passes `basin.display_name`.
 
 Regression coverage: `tests/integration/store/test_basin_importer_persistence.py`
 (`TestStationBasinBinding`, `TestMissingStaticAttributes`, `TestTransactionGuard`,
-`TestPackageAtomicity`) and `tests/integration/store/test_basin_store.py`
-(`TestUpdateBasinFromPackageAtomicity`).
+`TestPackageAtomicity`, `TestStationIdentityValidation`, `TestCorrectionRefreshesBasinName`)
+and `tests/integration/store/test_basin_store.py` (`TestUpdateBasinFromPackageAtomicity`).
 
 #### Task 2B — §5a mapping population + band persistence + store JSONB fix — PARTIAL (store-layer write/replace path done, fixer pass; package-driven population still open)
 
