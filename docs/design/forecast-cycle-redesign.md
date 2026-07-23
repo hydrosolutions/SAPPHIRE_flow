@@ -1,105 +1,148 @@
-# Forecast-cycle redesign — per-requirement, multi-track, probabilistic
+# Forecast-cycle redesign — forcing tracks, per-assignment run context, probabilistic multi-track
 
-**Status:** DRAFT design doc — created 2026-07-23. **Supersedes the incremental patching of Plans 126 + 144**
-(they are folded into this redesign). Decisions locked in `docs/design/v1-forecasting-decisions.md`.
-**Next:** review this architecture, then build in the phased sequence below (control-only path preserved
-throughout).
+**Status:** DRAFT design doc — created 2026-07-23, **revised after independent Codex review round 1**.
+**Supersedes the incremental patching of Plans 126 + 144** (folded here). Decisions locked in
+`docs/design/v1-forecasting-decisions.md`. **Next:** a second fresh Codex review, then slice the build sequence
+into implementation plans. Control-only forecasting is live and must stay green at every phase.
 
 ## Why this doc exists
-Six consecutive `/plan` runs on the ensemble-forecasting cluster (142 ×2, 144, 145, 126) stalled — and the
-final 126 pass proved *why*: the failures are not plan-doc quality, they are **three load-bearing assumptions in
-the v0 forecast cycle that a probabilistic, multi-track pipeline cannot satisfy.** They are architectural, so
-they need an architecture change, not another doc edit. This doc specifies that change.
+Six `/plan` runs on the ensemble-forecasting cluster (142 ×2, 144, 145, 126) stalled — the final 126 pass proved
+the failures are **load-bearing assumptions in the v0 forecast cycle**, not plan-doc quality. This doc specifies
+the architecture change. **Round-1 Codex review (2026-07-23) confirmed the diagnosis but corrected the design**;
+its findings are folded below (chiefly: fetch by *deduplicated forcing track*, not per-assignment; build the
+per-assignment run context *first*; the ensemble fan-out already exists; control-only is a fallback *chain*, not
+a degenerate single requirement).
 
-## The three structural blockers (verified in code)
-1. **One cycle per batch.** The flow reduces the whole fetch to a single cycle —
-   `resolved_cycle = next(iter(result_object.values())).cycle_time` (`run_forecast_cycle.py:1155-1157`) — and
-   every station's Phase-B readback + provenance use that one `nwp_cycle_reference_time`
-   (`:1727-1745`, `_NwpFetchOutcome.cycle_time` `:175-191`). A CONTROL model that should ride the freshest cycle
-   and an ENSEMBLE model that must ride the latest *complete* 00Z cycle **cannot both be served** — only the
-   first-seen cycle is read back; the other's records are stored under a different cycle and go invisible.
-2. **Superset requirements collapse per-feature horizon.** `build_superset_requirements`
-   (`operational_inputs.py:266-323`) unions all features and takes the **max** horizon, and the FI boundary
-   already `max`-collapses per-variable `future_steps` (`forecast_interface.py:471-476`). "precip for 2 steps +
-   temp for 10 steps" becomes "both for 10" — an invalid feature × max-horizon cross-product that can reject a
-   cycle the actual FI contract accepts.
-3. **One assembly, one mode, per station.** `assemble_station_operational_inputs` runs **once per station** with
-   a single `time_step` and a superset (`operational_inputs.py:342-353`, `run_forecast_cycle.py:1787-1866`). A
-   station carrying a daily SINGLE model *and* a 3-hourly ENSEMBLE model cannot be expressed as one partition.
+## The three structural blockers (verified in code, with the round-1 qualifications)
+1. **One cycle per batch — the flow cannot represent heterogeneous per-track cycles.** Phase A stores every
+   station result, then picks the **first** result's cycle as the batch cycle
+   (`run_forecast_cycle.py:1126,1141,1155`); Phase B turns that into **one** `nwp_cycle_reference_time` +
+   readback cycle for every station/group (`:1722,1733,1740`). *Qualification:* Recap resolves one cycle globally
+   before fetching (`recap_gateway.py:673,689,724`), so it does not currently emit heterogeneous cycles — the
+   blocker is the **inability to support** a CONTROL-fresh + ENSEMBLE-older-00Z split, not an observed Recap bug.
+2. **Per-feature horizon is lost — TWO independent collapses.** (a) *Cross-assignment superset collapse*:
+   `build_superset_requirements` unions features and takes the **max** horizon
+   (`operational_inputs.py:303,310,320`). (b) *Within-FI-requirement collapse*: the FI adapter irreversibly
+   `max`-collapses per-variable `future_steps` at construction (`forecast_interface.py:471,476,479`), and
+   assembly caps to one scalar horizon (`operational_inputs.py:463,466,505,514`). "precip 2 steps + temp 10
+   steps" stays rectangular unless the FI boundary slices per variable. Per-assignment work fixes only (a).
+3. **One assembly / one mode per station — an *unsupported configuration*, not silent corruption.** The
+   first-priority assignment sets the `time_step`; heterogeneous steps only **warn** and still use the first
+   (`run_forecast_cycle.py:1787,1800,1838,1843`). Mixed SINGLE/ENSEMBLE is **explicitly rejected** by
+   `build_superset_requirements` (`operational_inputs.py:286,293,295`) — so today it's a hard-fail config, which
+   this redesign makes a supported one.
 
-## What already exists (reuse — the redesign wires these together, it does not build them)
-- **`services/ensemble_fanout.py`** — per-member deterministic fan-out, **stateless-models-only**. The "ensemble
-  wrapper."
-- **`types/ensemble.py` `ForecastEnsemble`** + **`services/forecast_qc.py`** (spread/QC).
-- **Plan 134** — control operational-forcing bridge + the **6h** gap-fill floor (control/daily path).
-- **Plans 145 / 146** — future / past **snow** forcing wiring (separate forcing-ingest track; unchanged by this).
-- **`ModelDataRequirements`** (`types/model.py:262-271`), `assess_future_coverage` (`nwp_coverage.py:65-141`),
-  `_resolve_effective_cycle` / `resolve_latest_cycle` (`recap_gateway.py:349-384,673-702`).
+## What already exists — reuse (some of it is more built than the first draft assumed)
+- **The ensemble fan-out is already WIRED, not just present.** `run_station_forecast.py:165-190` rejects prior
+  state, slices per-member forcing, calls `predict` per member, and reconstructs the ensemble via
+  `ensemble_fanout.py:126-141` + `ForecastEnsemble.from_members`; QC already runs on the reconstruction
+  (`run_station_forecast.py:224,230`). **So this redesign ROUTES assignment-specific inputs into the existing
+  runner — it does not build fan-out.**
+- **The store already supports multiple cycles** — `cycle_time` is in readback filtering
+  (`weather_forecast_store.py:49,60`) and the natural unique key (`db/metadata.py:733,737`). **No weather-store
+  schema migration** for a per-track cycle map. Rejected candidate rows do **not** reach Postgres (rows persist
+  only after the adapter returns, `run_forecast_cycle.py:1126,1141`) — contamination risk is only in Recap's
+  **in-memory** accumulator (partial `pf`, `recap_gateway.py:727,747,769`).
+- **Forecast provenance is already per-forecast** (`types/forecast.py:48,54`; nullable cycle ref
+  `db/metadata.py:987,1003`) — different models at one issue time need no forecast-schema migration.
+- **Plans 134** (control 6h bridge), **145/146** (snow forcing), **143** (onboarding), `nwp_coverage`,
+  `_resolve_effective_cycle`/`resolve_latest_cycle`.
 
 ## Target architecture
 
-The organizing idea: **the unit of resolution + assembly is a *requirement*, not a station.** A requirement is
-one model assignment's forcing need; a station carries one or more requirements; the flow resolves, fetches,
-assembles, and reads back **per requirement**, keyed by a per-requirement resolved cycle.
+**Two units, cleanly separated (round-1's central correction): fetch by *deduplicated forcing track*; assemble +
+run by *assignment*.** Per-assignment fetch is too granular (repeated 51-member downloads); per-station is too
+coarse.
 
-1. **Per-requirement projection (fixes blocker 2).** Each active assignment → one immutable `FetchRequirement`
-   carrying `{features, per-feature horizon (not a single max), selected time_step, ensemble_mode}`. Derived at
-   the FI boundary so per-variable `future_steps` are preserved, not `max`-collapsed. `build_superset_requirements`
-   may stay for *within-requirement* assembly, but it does **not** supply cross-requirement fetch acceptance.
-2. **Requirement-aware cycle resolution + a per-requirement resolved-cycle map (fixes blocker 1).** For each
-   requirement, resolve the latest cycle satisfying its **completeness** (D1: exact-51 for ENSEMBLE features; `fc`
-   for CONTROL) **and per-feature horizon**, walking back within `max_cycle_age_hours` (D4 walk-back-only). Because
-   `pf` is 00Z-only today (D3), ENSEMBLE requirements resolve to the latest 00Z (once/day) while CONTROL
-   requirements keep the freshest cycle — **so the flow must carry a `map[requirement → resolved_cycle]`**, not a
-   single batch cycle. Phase-B readback + provenance key off the requirement's own resolved cycle.
-3. **Candidate-local accumulation (fixes the walk-back-contamination blocker).** Fetch + validate each candidate
-   cycle into a **fresh** accumulator; commit only on full completeness + horizon pass; discard on failure so no
-   partial/rejected rows or provenance leak.
-4. **Multi-track assembly (fixes blocker 3).** Assemble **once per requirement** (its features, its time_step, its
-   horizon, under its resolved cycle) — not once per station. A station's N requirements produce N assembled
-   frames; each model consumes its own.
-5. **Ensemble fan-out (reuse).** For an ENSEMBLE requirement, run the model through `ensemble_fanout` (one
-   deterministic call per member, `ensemble_mode=SINGLE`, stateless) and aggregate via `ForecastEnsemble` +
-   `forecast_qc`. CONTROL requirements run once (member 0). `min_operational_ensemble_size` gates **output**
-   eligibility only.
-6. **Forcing providers behind a seam.** Control/daily forcing = Plan 134's 6h bridge; ensemble sub-daily forcing
-   = the client-side per-member 3h stitch now / a 3h gateway ensemble-operational later (the decisions-note ask);
-   snow = 145/146. Units are canonical from the recap adapter; the FI adapter labels.
+- **`ForcingTrackKey` = (nwp source, ensemble mode, time_step, per-feature horizons, spatial representation).**
+  Project every active assignment to a track; **deduplicate identical tracks across assignments/stations**;
+  resolve + fetch **once per track**. This is the fetch/resolution unit.
+- **`ModelRunContext` (assignment-keyed) = inputs + input metadata + resolved NWP provenance + `prior_state`,
+  loaded by `(station_id, assignment.model_id)`.** This is the assemble/run unit; it is the missing consumer
+  that makes a per-track cycle non-dormant.
+
+Components:
+1. **Track projection with per-feature horizons.** Derive each assignment's `(features→future_steps, time_step,
+   mode, spatial)` at the FI boundary **before** the max-collapse, into a `ForcingTrackKey`. Do **not** reuse
+   `ModelDataRequirements` (one scalar horizon) as the fetch requirement. Distinguish three horizons explicitly:
+   **fetch-acceptance** (per-feature), **internal rectangular frame** (max horizon, with an explicit FI-boundary
+   per-variable slice so a short-horizon feature isn't rejected for lacking long-horizon steps), and **output**
+   horizon (separate from forcing).
+2. **A requirement-aware source contract + per-track cycle resolution.** Add
+   `fetch_requirement(track, stations, nominal_cycle) -> CandidateFetchResult` (immutable) alongside the existing
+   `fetch_forecasts` (kept as a compatibility adapter until control has migrated). Per track, walk back to the
+   latest cycle satisfying its completeness (D1: exact-51 for ENSEMBLE features; `fc` for CONTROL) + per-feature
+   horizon, bounded by `max_cycle_age_hours` (D4). Because `pf` is 00Z-only (D3), ENSEMBLE tracks resolve to the
+   latest 00Z (once/day). Different tracks may resolve to different cycles → the flow carries a
+   **`map[track → resolved_cycle]`**; readback + provenance key off each track's cycle. **Candidate-local,
+   immutable accumulation**: validate each candidate into a fresh result, commit only on full pass (fixes the
+   Recap in-memory partial-`pf` contamination).
+3. **Assignment-keyed `ModelRunContext` (build this FIRST — see phases).** Replace the single shared
+   assembly/metadata/state passed to every assignment (`run_station_forecast.py:334,336,348`) with a per-assignment
+   context; `prior_state` loaded by `(station_id, model_id)` (fixes the today-latent shared-`prior_state` bug for
+   heterogeneous stateful assignments; ensemble fan-out stays stateless per `ensemble_fanout.py:47,56`).
+4. **Per-assignment assembly from shared stored rows.** Each assignment assembles its own frame (its features,
+   its time_step, its horizon) from the rows fetched by its track — no cross-assignment superset.
+5. **Route into the existing fan-out runner.** ENSEMBLE assignments already fan out per member; CONTROL runs
+   member 0. This redesign feeds them assignment-specific inputs; it does not rebuild the runner.
+6. **exact-51 as typed checks (nothing enforces it today).** Coverage checks identical member sets but not
+   `{0..50}` (`nwp_coverage.py:92,106`); `min_operational_ensemble_size` gates **alerts**, not production
+   (`alert_checker.py:181-188`). Add: **input completeness** (exactly members 0–50 + horizons at fetch
+   acceptance), a **post-prediction survival** publication/storage policy, and keep alert eligibility as-is.
+
+### Fallback-chain semantics (round-1: control-only is NOT a degenerate single requirement)
+A station carries a **list of assignments run as a priority fallback chain** (`run_forecast_cycle.py:1781,1887`);
+runoff-only mode strips future features and lets per-model coverage/fallback decide (`:1826,1832`). So an
+ordinary CONTROL station is **many** assignments, not one requirement. The redesign must **preserve the chain**:
+an assignment whose track/cycle is unavailable **advances to the next assignment**, it does **not** mark the
+station dark. Equivalent assignments deduplicate onto one track, so this adds no extra fetches.
+
+### Group models — EXPLICITLY OUT OF SCOPE for this redesign (round-1 forced the call)
+Group prediction uses the same station assembler, one cycle/time_step, and calls `predict_batch` **once** with
+**no ensemble-forcing fan-out** (`run_group_forecast.py:110,131,136,440,442`; one global readback cycle
+`run_forecast_cycle.py:2193,2198,2240`). Operational **group ensembles are excluded here** — this redesign
+targets station-assigned models; group-level requirements + group fan-out are a **named follow-on** (do not leave
+implicit).
 
 ## Locked decisions (see `docs/design/v1-forecasting-decisions.md`)
-D1 exact-51 + walk-back to latest complete cycle · D3 `pf` 00Z-only (ensemble once/day now, 4×/day later) ·
-D4 walk-back-only · units canonical from the recap adapter · reuse `ensemble_fanout` (stateless).
+D1 exact-51 + walk-back · D3 `pf` 00Z-only (ensemble once/day now, 4×/day later) · D4 walk-back-only · units
+canonical from the recap adapter · reuse the already-wired `ensemble_fanout`/`ForecastEnsemble`/`forecast_qc`.
 
 ## What this supersedes / relates to
-- **Supersedes** the incremental designs in **Plan 126** (cycle resolution — now redesign component 2/3) and
-  **Plan 144** (multi-track orchestration — now components 1/4/5). Mark both `SUPERSEDED by this redesign`.
-- **Keeps separate:** Plan 134 (control bridge), Plans 145/146 (snow forcing ingest), Plan 143 (onboarding),
-  `ensemble_fanout`/`ForecastEnsemble`/`forecast_qc` (reused).
+- **Supersedes** Plan 126 (→ components 2 + candidate-local accumulation) and Plan 144 (→ components 1/4/5).
+  Both marked `SUPERSEDED`.
+- **Separate:** 134 (control bridge), 145/146 (snow forcing), 143 (onboarding). Reuses the existing fan-out stack.
 
-## Build sequence (each phase keeps the control-only path green)
-1. **Per-requirement projection + per-feature horizon** — introduce `FetchRequirement`; derive at the FI boundary;
-   control-only path becomes the single-requirement case.
-2. **Per-requirement resolved-cycle map** — replace the single `resolved_cycle` with a `map`; thread through
-   readback + provenance; control-only = a one-entry map (no behaviour change).
-3. **Requirement-aware cycle resolution + candidate-local accumulation** — extend `_resolve_effective_cycle` to
-   completeness+horizon per requirement; fresh-accumulator fetch.
-4. **Multi-track assembly** — assemble per requirement; a station with one requirement is unchanged.
-5. **Ensemble fan-out wiring** — route ENSEMBLE requirements through `ensemble_fanout` + `ForecastEnsemble` +
-   `forecast_qc`.
-6. **Forcing providers** — the `EnsembleForcingProvider` seam (client-stitch 3h now); snow via 145/146.
+## Build sequence (re-ordered per round-1; control-only green at every step)
+1. **Assignment-keyed `ModelRunContext`** — per-assignment inputs + metadata + provenance + `prior_state` by
+   `(station, model_id)`. Initially each context is filled from today's shared values (behaviour-preserving), so
+   control-only is unchanged; this is the consumer everything else needs.
+2. **Migrate the station runner** to consume per-assignment `ModelRunContext` (fallback chain intact). Still one
+   cycle — no behaviour change, just per-assignment plumbing.
+3. **`ForcingTrackKey` projection + per-track requirement-aware cycle resolution** — deduplicated tracks, the
+   requirement-aware source contract, candidate-local immutable results, the `map[track→resolved_cycle]`, and
+   per-track readback/provenance. Control-only = a single CONTROL track (one cycle) → unchanged.
+4. **Per-assignment assembly + exact-51 typed validation** — drop the station superset; per-feature horizon +
+   FI-boundary slicing; input-completeness/survival checks.
+5. **Remove the legacy station-superset path** once all consumers are on `ModelRunContext`.
+6. **Follow-ons (separate plans):** group-ensemble requirements + group fan-out; hindcast/operational parity
+   (`hindcast.py:328,331,354` uses a separate assembler + `prior_state=None`, so it won't reproduce
+   ensemble-forcing fan-out automatically — parity is needed before ensemble skill comparisons are trusted);
+   combined-forecast provenance when models consumed different cycles (`run_forecast_cycle.py:2031,2035`).
 
-**Backward-compat is structural:** a control-only station is exactly the degenerate case — one requirement, one
-cycle, one assembly, one member — so each phase can land without breaking the live control-only forecasting.
+## Non-goals / out of scope
+- Group operational ensembles (follow-on). Training-data path (already model-specific, `training_data.py:142,178`
+  — no shared operational cycle resolution needed). Hindcast parity (follow-on). Any new gateway endpoint.
 
 ## Risks
-- The forecast cycle is load-bearing and live; this touches fetch, resolution, readback, provenance, assembly.
-  Mitigation: the phased sequence above, control-only-green at every step, red-first tests per phase, and the
-  existing full-suite + Codex gate.
-- Completeness verification today relies on `pf` all-or-nothing per cycle (cheap `fc`+first-`pf` probe + bounded
-  full-member validation); the durable fix is the gateway completeness manifest (decisions-note D2).
+- Load-bearing, live flow (fetch/resolve/store/readback/provenance/assembly/run). Mitigation: the re-ordered
+  sequence lands `ModelRunContext` behaviour-preservingly first; control-only green at every phase; red-first
+  tests + full-suite + Codex gate per phase.
+- Completeness verification interim relies on `pf` all-or-nothing per cycle (cheap `fc`+first-`pf` probe +
+  bounded full-member validation); durable fix = the gateway completeness manifest (decisions-note D2).
 
 ## Open items
-- **Gateway asks** (decisions note): 3h gap-fill / ensemble-operational, a completeness manifest, `pf` at all
-  cycles. None block the build (client-side + walk-back cover the interim).
-- **Review** this doc (design review / `/plan` over the redesign as a whole, not the superseded fragments), then
-  slice the build sequence into implementation plans.
+- **Gateway asks** (decisions note, non-blocking): 3h gap-fill / ensemble-operational, completeness manifest,
+  `pf` at all cycles.
+- **Group scope** — confirm the exclusion holds for v1 (no operational group ensemble before go-live).
+- **Second independent Codex review** of this revised doc, then slice the build sequence into plans.

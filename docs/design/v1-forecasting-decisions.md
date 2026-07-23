@@ -1,6 +1,8 @@
 # v1 forecasting — cross-cutting decisions (decide these before hardening the cluster)
 
-**Status:** OPEN — awaiting owner + gateway-dev decisions. Created 2026-07-23.
+**Status:** D1/D3/D4/D5 **CONFIRMED** (owner, 2026-07-23); **D2 open** (gateway-dev — completeness manifest).
+Created 2026-07-23. The owner-owned forks are decided; the redesign (`docs/design/forecast-cycle-redesign.md`)
+builds on them.
 **Why this doc exists:** five consecutive `/plan` runs on the v1-forecasting cluster (142 ×2, 144, 145, 126)
 stalled — not because the plans are wrong, but because they are a **tightly-coupled cluster gated on a handful
 of cross-cutting decisions that aren't locked yet**, two of which need the gateway developer. Grinding `/plan`
