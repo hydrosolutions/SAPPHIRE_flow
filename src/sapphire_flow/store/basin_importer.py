@@ -263,14 +263,33 @@ def _package_import_decision(
     climatology_window/manifest file set OR payload checksums) is an
     immutability violation (raises). An unseen ``package_id`` proceeds
     (per-basin new-vs-correction is then decided per basin in
-    :func:`_import_one_basin`)."""
-    existing_fingerprint = conn.execute(
+    :func:`_import_one_basin`).
+
+    Distinguishes ROW ABSENCE from a stored NULL fingerprint (fixer round
+    finding 2, 2026-07-23): a pre-0040 ``basin_static_packages`` row carries a
+    NULL ``fingerprint``. ``scalar_one_or_none`` would collapse "row present
+    with NULL fingerprint" and "package not found" into the same ``None``, so a
+    re-import over a legacy row would fall through to ``proceed`` and crash on
+    the provenance PRIMARY-KEY insert (``IntegrityError``). We instead fetch the
+    ROW: absent → ``proceed``; present with a NULL fingerprint → REJECT
+    explicitly (immutability cannot be verified against a fingerprint-less legacy
+    row) BEFORE any write."""
+    row = conn.execute(
         sa.select(basin_static_packages.c.fingerprint).where(
             basin_static_packages.c.package_id == package_id
         )
-    ).scalar_one_or_none()
+    ).one_or_none()
+    if row is None:
+        return "proceed"  # no row for this package_id → a brand-new package
+    existing_fingerprint = row[0]
     if existing_fingerprint is None:
-        return "proceed"
+        raise BasinPackageRejectedError(
+            f"package {package_id!r} already has a basin_static_packages row with "
+            "a NULL fingerprint (a legacy/pre-0040 provenance row) — immutability "
+            "cannot be verified against a fingerprint-less row; refusing to "
+            "re-import over it (which would crash on the provenance primary key). "
+            "A content change requires a NEW package_id (contract §11, 04:676)"
+        )
     if existing_fingerprint == fingerprint:
         return "no_op"
     raise BasinPackageRejectedError(

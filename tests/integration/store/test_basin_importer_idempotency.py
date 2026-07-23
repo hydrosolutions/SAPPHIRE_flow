@@ -38,12 +38,14 @@ from sapphire_flow.store.basin_store import PgBasinStore
 from sapphire_flow.store.model_artifact_store import PgModelArtifactStore
 from sapphire_flow.store.station_store import PgStationStore
 from sapphire_flow.types.basin import Basin
-from sapphire_flow.types.basin_package import ClimatologyWindow
+from sapphire_flow.types.basin_package import ClimatologyWindow, SourceDataset
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.ids import ArtifactId, BasinId, ModelId, StationId
 from tests.conftest import make_station_config
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from sapphire_flow.types.basin_package import (
         BasinPackageAcceptanceReport,
         LoadedBasinPackage,
@@ -118,6 +120,92 @@ def _current_version_id(conn: sa.Connection, basin_id: BasinId) -> uuid.UUID:
             )
         )
     ).scalar_one()
+
+
+def _replace_manifest(
+    loaded: LoadedBasinPackage, **changes: object
+) -> LoadedBasinPackage:
+    return dataclasses.replace(
+        loaded, manifest=dataclasses.replace(loaded.manifest, **changes)
+    )
+
+
+# Finding 1: the canonical fingerprint must cover EVERY validated manifest field
+# (except `package_id`, which cannot change while staying the SAME package_id —
+# a different package_id is a new package, not an immutability violation). Each
+# mutation is additive/non-conflicting so the basin stays ACCEPTED — the reject
+# is unambiguously the fingerprint immutability check, not a load/acceptance
+# side effect. Neuter any field's inclusion in `compute_package_fingerprint` and
+# ONLY that field's case flips to a real AssertionError (fingerprint unchanged).
+_MANIFEST_FIELD_MUTATIONS: list[
+    tuple[str, Callable[[LoadedBasinPackage], LoadedBasinPackage]]
+] = [
+    (
+        "contract_version",
+        lambda pkg: _replace_manifest(
+            pkg, contract_version=pkg.manifest.contract_version + "-mutated"
+        ),
+    ),
+    (
+        "created_at",
+        lambda pkg: _replace_manifest(pkg, created_at="2099-01-01T00:00:00+00:00"),
+    ),
+    (
+        "network",
+        lambda pkg: _replace_manifest(pkg, network=pkg.manifest.network + "-mutated"),
+    ),
+    ("crs", lambda pkg: _replace_manifest(pkg, crs="EPSG:3857")),
+    (
+        "extractor_name",
+        lambda pkg: _replace_manifest(
+            pkg, extractor_name=pkg.manifest.extractor_name + "-mutated"
+        ),
+    ),
+    (
+        "extractor_version",
+        lambda pkg: _replace_manifest(
+            pkg, extractor_version=pkg.manifest.extractor_version + "-mutated"
+        ),
+    ),
+    (
+        "source_datasets",
+        lambda pkg: _replace_manifest(
+            pkg,
+            source_datasets=(
+                *pkg.manifest.source_datasets,
+                SourceDataset(name="extra_ds", version="1", purpose="misc"),
+            ),
+        ),
+    ),
+    (
+        "gateway_hru_names",
+        lambda pkg: _replace_manifest(
+            pkg, gateway_hru_names=pkg.manifest.gateway_hru_names | {"g_extra_hru"}
+        ),
+    ),
+    (
+        "climatology_window",
+        lambda pkg: _replace_manifest(
+            pkg,
+            climatology_window=ClimatologyWindow(
+                start=date(1988, 1, 1), end=date(2001, 12, 31)
+            ),
+        ),
+    ),
+    (
+        "files",
+        lambda pkg: _replace_manifest(
+            pkg, files={**pkg.manifest.files, "extra.txt": "extra.txt"}
+        ),
+    ),
+    (
+        "checksums",
+        lambda pkg: _replace_manifest(
+            pkg,
+            checksums={**pkg.manifest.checksums, "extra.txt": "sha256:" + "0" * 64},
+        ),
+    ),
+]
 
 
 class TestReimportAndCorrections:
@@ -378,6 +466,86 @@ class TestCorrectionStationIdentityGuard:
             .where(basin_static_packages.c.package_id == "nepal-dhm-basins-v2")
         ).scalar_one()
         assert pkg_count == 0
+
+
+class TestManifestFieldFingerprintCoverage:
+    """Finding 1: the canonical fingerprint must cover EVERY validated manifest
+    field, so a re-import under the SAME `package_id` with IDENTICAL payload
+    checksums but a changed manifest-metadata field is an immutability violation
+    (contract §11, 04:676), never a silent `already_imported` no-op."""
+
+    @pytest.mark.parametrize(
+        ("field_name", "mutate"),
+        _MANIFEST_FIELD_MUTATIONS,
+        ids=[name for name, _ in _MANIFEST_FIELD_MUTATIONS],
+    )
+    def test_manifest_field_mutation_under_same_package_id_rejects(
+        self,
+        db_connection: sa.Connection,
+        field_name: str,
+        mutate: Callable[[LoadedBasinPackage], LoadedBasinPackage],
+    ) -> None:
+        station_id = _seed_station(db_connection)
+        loaded, report = _load_and_accept(station_id)
+        import_basin_package(db_connection, loaded, report, clock=_clock)
+
+        mutated = mutate(loaded)
+        # SAME package_id and SAME computed payload checksums — the ONLY change
+        # is this one manifest-metadata field.
+        assert mutated.manifest.package_id == loaded.manifest.package_id
+        assert mutated.computed_checksums == loaded.computed_checksums
+
+        mutated_report = evaluate_basin_acceptance(
+            mutated,
+            resolve_station=lambda code, network: (
+                station_id if (code, network) == ("123", "dhm") else None
+            ),
+        )
+        # The basin must stay accepted (the mutation is additive/non-conflicting),
+        # so the reject is unambiguously the fingerprint immutability check.
+        assert mutated_report.decisions[0].outcome == "accepted"
+        # The fingerprint MUST cover this field — else this case cannot be
+        # distinguished from an identical re-import (red-before proof: neutering
+        # this field's inclusion flips THIS assertion to a real failure).
+        assert mutated_report.fingerprint != report.fingerprint, (
+            f"fingerprint does not cover manifest field {field_name!r}"
+        )
+
+        with pytest.raises(BasinPackageRejectedError, match="fingerprint"):
+            import_basin_package(db_connection, mutated, mutated_report, clock=_clock)
+
+
+class TestLegacyNullFingerprintRow:
+    """Finding 2: a pre-0040 `basin_static_packages` row carries a NULL
+    `fingerprint`. Row-absent and row-present-with-NULL-fingerprint must NOT be
+    conflated — a re-import over a legacy row must REJECT explicitly (immutability
+    cannot be verified) instead of falling through to a provenance PRIMARY-KEY
+    IntegrityError."""
+
+    def test_reimport_over_legacy_null_fingerprint_row_rejects(
+        self, db_connection: sa.Connection
+    ) -> None:
+        station_id = _seed_station(db_connection)
+        loaded, report = _load_and_accept(station_id)
+
+        # Seed a legacy/pre-0040 provenance row for this package_id: all the
+        # 0039 NOT-NULL columns present, but a NULL fingerprint (added by 0040).
+        db_connection.execute(
+            sa.insert(basin_static_packages).values(
+                package_id=loaded.manifest.package_id,
+                network=loaded.manifest.network,
+                contract_version=loaded.manifest.contract_version,
+                checksums=loaded.computed_checksums,
+                fingerprint=None,
+            )
+        )
+
+        # Without the fix, the NULL fingerprint reads as "package not found",
+        # the importer proceeds to INSERT a duplicate provenance row, and the
+        # call dies with an IntegrityError (NOT a domain reject) — so this
+        # `pytest.raises(BasinPackageRejectedError)` is the red-before proof.
+        with pytest.raises(BasinPackageRejectedError, match="legacy"):
+            import_basin_package(db_connection, loaded, report, clock=_clock)
 
 
 def _seed_model(conn: sa.Connection) -> ModelId:
