@@ -367,7 +367,7 @@ The entrypoint pattern above handles secrets access: `chown` makes `/run/secrets
 
 Compensating controls already in place: `cap_drop: [ALL]`, no host port binding in the base compose file, `backend`-only network after Plan 049 C1.
 
-Do **not** add a `user:` override in `docker-compose.yml` — this is forbidden by the rule above. Re-evaluate after Plan 062 establishes the full write-path footprint (currently unknown because `PREFECT_HOME` is not set), or if a `-nonroot` upstream tag or community non-root image appears.
+Do **not** add a `user:` override in `docker-compose.yml` — this is forbidden by the rule above. The write-path footprint is now known and settled by **Plan 103**: `PREFECT_HOME=/tmp/prefect` on the three Prefect-client services (`prefect-worker`, `prefect-worker-ingest`, `init` — **not** `api`, which is HTTP-only and imports no Prefect client), landing on the writable `/tmp` tmpfs each already has. This is CLI-profile / local result-persistence scratch only — durable orchestration state stays in Postgres (`prefect-server`). Re-evaluate this `user:`-override prohibition only if a `-nonroot` upstream tag or community non-root image appears.
 
 ## Supply chain
 
