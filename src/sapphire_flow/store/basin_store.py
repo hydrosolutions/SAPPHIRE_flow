@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
 from geoalchemy2 import Geometry
@@ -12,8 +12,11 @@ from sqlalchemy.dialects.postgresql import JSONB
 
 from sapphire_flow.db.metadata import basin_versions, basins
 from sapphire_flow.store._helpers import utc_from_row
-from sapphire_flow.types.basin import Basin
-from sapphire_flow.types.ids import BasinId, PackageId
+from sapphire_flow.types.basin import Basin, BasinCorrectionResult
+from sapphire_flow.types.ids import BasinId, BasinVersionId, PackageId
+
+if TYPE_CHECKING:
+    from sapphire_flow.types.datetime import UtcDatetime
 
 
 class PgBasinStore:
@@ -128,6 +131,97 @@ class PgBasinStore:
         # Exactly one execute() call — the whole pair is ONE statement.
         self._conn.execute(stmt)
         return basin.id
+
+    def update_basin_from_package(
+        self,
+        *,
+        basin_id: BasinId,
+        package_id: PackageId,
+        geometry: Any,
+        attributes: dict[str, Any] | None,
+        area_km2: float | None,
+        regional_basin: str | None,
+        band_geometries: list[dict] | None,  # type: ignore[type-arg]
+        gateway_mapping: list[dict[str, Any]] | None,
+        superseded_at: UtcDatetime,
+    ) -> BasinCorrectionResult:
+        """Correction branch of the canonical write pipeline (Plan 120 Task
+        2C, Decision B): stamp the prior current ``basin_versions`` row's
+        ``superseded_at``, append a new ``version+1`` current row, and
+        refresh the ``basins`` projection — in THIS exact order (a stamp
+        before an append), so the DB never represents two current
+        (``superseded_at IS NULL``) rows for one basin (the
+        ``uq_basin_versions_one_current_per_basin`` partial unique index).
+        This is the SEPARATE upsert path Task 2C adds because
+        ``store_basin`` is insert-only (the new-basin creation path).
+        """
+        current = (
+            self._conn.execute(
+                sa.select(basin_versions.c.id, basin_versions.c.version).where(
+                    sa.and_(
+                        basin_versions.c.basin_id == basin_id,
+                        basin_versions.c.superseded_at.is_(None),
+                    )
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if current is None:
+            raise ValueError(
+                f"basin {basin_id} has no current basin_versions row — the "
+                "Task 0A invariant (exactly one current version per basin) "
+                "is violated; cannot apply a correction"
+            )
+        superseded_id = BasinVersionId(current["id"])
+
+        # (a) stamp the prior current row's superseded_at FIRST — must
+        # commit-order before (b), or the partial unique index would briefly
+        # (or, worse, permanently on a race) see two current rows.
+        self._conn.execute(
+            sa.update(basin_versions)
+            .where(basin_versions.c.id == superseded_id)
+            .values(superseded_at=superseded_at)
+        )
+
+        wkb_geometry = from_shape(geometry, srid=4326)
+        new_version_id = BasinVersionId(uuid.uuid4())
+        # (b) append the new current row.
+        self._conn.execute(
+            sa.insert(basin_versions).values(
+                id=new_version_id,
+                basin_id=basin_id,
+                package_id=package_id,
+                version=current["version"] + 1,
+                geometry=wkb_geometry,
+                attributes=attributes,
+                area_km2=area_km2,
+                band_geometries=band_geometries,
+                gateway_mapping=gateway_mapping,
+                superseded_at=None,
+            )
+        )
+
+        # (c) refresh the basins projection (current-version readers, e.g.
+        # PgBasinStore.fetch_basin, are unchanged — they always read `basins`).
+        self._conn.execute(
+            sa.update(basins)
+            .where(basins.c.id == basin_id)
+            .values(
+                geometry=wkb_geometry,
+                attributes=attributes,
+                area_km2=area_km2,
+                regional_basin=regional_basin,
+                band_geometries=band_geometries,
+                package_id=package_id,
+            )
+        )
+
+        return BasinCorrectionResult(
+            basin_id=basin_id,
+            superseded_version_id=superseded_id,
+            new_version_id=new_version_id,
+        )
 
 
 def _row_to_domain(row: sa.engine.row.RowMapping) -> Basin:

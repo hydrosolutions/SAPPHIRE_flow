@@ -16,11 +16,12 @@ if TYPE_CHECKING:
 
     from shapely.geometry.base import BaseGeometry
 
-    from sapphire_flow.types.ids import StationId
+    from sapphire_flow.types.ids import ArtifactId, BasinId, PackageId, StationId
 
 CoverageStatus = Literal["inside", "partial", "outside", "unknown"]
 ValidationStatus = Literal["passed", "warning", "failed"]
 BasinAcceptanceOutcome = Literal["accepted", "onboarding_hold"]
+BasinImportOutcome = Literal["inserted", "corrected"]
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -192,3 +193,36 @@ class BasinPackageAcceptanceReport:
     @property
     def onboarding_held(self) -> tuple[BasinAcceptanceDecision, ...]:
         return tuple(d for d in self.decisions if d.outcome == "onboarding_hold")
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ImportedBasin:
+    """Task 2A/2C persistence outcome for ONE accepted basin. ``"inserted"``
+    is a brand-new ``(network, basin_code)``; ``"corrected"`` is a new
+    ``package_id`` over an already-imported ``(network, basin_code)``
+    (Decision B) — its ``material_change`` is always ``True`` and
+    ``affected_artifact_ids`` names the artifacts trained on the version this
+    correction just superseded (never all historically-superseded versions).
+    """
+
+    basin_id: BasinId
+    network: str
+    basin_code: str
+    outcome: BasinImportOutcome
+    material_change: bool
+    affected_artifact_ids: tuple[ArtifactId, ...] = ()
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class BasinPackageImportResult:
+    """Task 2A/2C persistence outcome for ONE package import attempt.
+    ``already_imported=True`` means the identical package (same
+    ``package_id``, same computed checksums) was already imported — a no-op,
+    ``imported_basins`` is empty. A ``package_id`` reused with DIFFERENT
+    computed checksums never reaches this type — it raises
+    :class:`~sapphire_flow.exceptions.BasinPackageRejectedError` instead
+    (packages are immutable once accepted, contract §10)."""
+
+    package_id: PackageId
+    already_imported: bool
+    imported_basins: tuple[ImportedBasin, ...] = ()

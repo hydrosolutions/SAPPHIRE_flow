@@ -256,10 +256,10 @@ row-shaping logic in one shared function that both call so they cannot drift.
 
 ---
 
-## Implementation status (fixer pass, 2026-07-22 — keep current, do not let this drift)
+## Implementation status (Phase 2 slice, 2026-07-23 — keep current, do not let this drift)
 
-**NOT production-ready. No package loader/importer exists yet.** Landed so far, across
-three passes:
+**NOT YET production-ready — Phase 3 (Task 3A entrypoint + Task 3B docs) still open.**
+Landed so far, across four passes:
 
 - **Task 0A — DONE** (`cbe3a1c`): provenance/versioning schema (`basin_static_packages`,
   `basin_versions`, `model_artifact_basin_versions`, additive `package_id` columns) +
@@ -284,17 +284,32 @@ three passes:
   gate in `services/training_data.py`. The first two fixer passes wired only the two
   Prefect-flow call sites and missed the service-level one — a station onboarded via
   `onboard_stations_flow` got no lineage row.
-- **Phase 1 (Task 1A/1B — package loader, checksums, feature-catalog/per-basin acceptance),
-  Task 2A (dissolve into `basins` + version snapshot), Task 2C (incremental upsert +
-  versioned corrections + idempotency + affected-artifact set), and Phase 3 (Task 3A
-  importer entrypoint, Task 3B docs) are NOT implemented.** Until Task 1A/1B/2A/2C/3A land,
-  there is no way to actually import a basin/static package — 082's store-backed resolver
-  keeps returning `None` for every station (Production-gate note, below), and the lineage
-  table has no package-sourced basins to reference yet (legacy/onboarding-created basins
-  still resolve correctly, per Task 2D's `version=1` fallback).
+- **Phase 1 — DONE** (`Task 1A/1B`, merged PR #126): package loader, checksums,
+  feature-catalog/per-basin acceptance (`services/basin_package_loader.py`).
+- **Phase 2 — DONE (this slice, branch `feat/plan-120-phase2-persistence`)**:
+  `store/basin_importer.py::import_basin_package` — Task 2A (dissolve a NEW
+  `(network, basin_code)` into `basins` + a `version=1` snapshot + `basin_static_packages`
+  provenance, via `store_basin`), the Task 2B package-driven §5a `basin_average` population
+  (via 082's `RecapGatewayPolygonStore.store_binding`, shaped by the ONE shared
+  `_basin_average_binding` row-shaping function so 2A's `gateway_mapping` snapshot and 2B's
+  §5a row cannot drift), and Task 2C (package-level idempotency/immutability-rejection via
+  `_package_import_decision`; the correction branch via the new
+  `PgBasinStore.update_basin_from_package` — stamp prior current `superseded_at`, append
+  `version+1`, refresh the `basins` projection; the correction→affected-artifact-set query
+  scoped to exactly the just-superseded `basin_version_id`). Decision A (absent-basin =
+  untouched) holds by construction — the importer only ever touches basins referenced in
+  `acceptance_report.accepted`.
+- **Phase 3 (Task 3A importer entrypoint/CLI + acceptance report, Task 3B docs/runbook) is
+  NOT implemented.** `import_basin_package` is the write-side function Task 3A will wrap
+  with file-loading + a CLI + the full accepted/held/rejected report; until Task 3A lands
+  there is no operator-facing way to run an import, so 082's store-backed resolver still
+  returns `None` for every station in a live deployment (Production-gate note, below) even
+  though the persistence path itself is now exercised (Live-Postgres integration tests:
+  `tests/integration/store/test_basin_importer_persistence.py`,
+  `tests/integration/store/test_basin_importer_idempotency.py`).
 
 Do not treat this plan as "landed" for Nepal production purposes on the strength of Task
-0A/2B/2D alone — Phase 1/2A/2C/3A are the blocking remainder.
+0A/1A/1B/2A/2B/2C/2D alone — Phase 3 (Task 3A/3B) is the blocking remainder.
 
 ---
 
@@ -309,16 +324,16 @@ PR stays reviewable:
 3. **Phase 2 — Tasks 2A + 2C + the 2B package-driven population** (dissolve accepted package into
    `basins` + `version=1` snapshot + `basin_static_packages` provenance; the package-driven §5a
    `basin_average` population via 082's `store_binding`; incremental upsert + versioned corrections +
-   idempotency + the correction→affected-artifact set) — **THIS SLICE** (branch `feat/plan-120-phase2-persistence`).
-4. **Phase 3 — Tasks 3A + 3B** (importer entrypoint/CLI + acceptance report; docs/runbook) — final slice.
+   idempotency + the correction→affected-artifact set) — **DONE, branch
+   `feat/plan-120-phase2-persistence`** (`store/basin_importer.py::import_basin_package` +
+   `PgBasinStore.update_basin_from_package`; hold-at-PR, not yet merged).
+4. **Phase 3 — Tasks 3A + 3B** (importer entrypoint/CLI + acceptance report; docs/runbook) — final slice,
+   **NOT started.**
 
-**Scope rule for an `/implement` run: build ONLY the current slice's phase and STOP.** For THIS run,
-implement the **write side — Task 2A, the Task 2B PACKAGE-DRIVEN §5a population, and Task 2C** — wiring the
-merged Phase-1 loader output into DB persistence. Do NOT build Task 3A/3B (CLI entrypoint + docs) in this
-run; they are the final slice with their own PR. Already on `main` — CONSUME, do not re-implement: Task
-0A/2D + the 2B store-LAYER write/replace path (#124); Tasks 1A/1B the package loader/validation (#126). Task
-2A/2C go through `store_basin` (0A) and 082's `store_binding` (0A/2B) — the atomic single-object write paths —
-never their own basin/version/§5a SQL. Live-Postgres integration tests (per the plan's Verification blocks).
+Task 2A/2C go through `store_basin` (0A) and 082's `store_binding` (0A/2B) — the atomic single-object write
+paths — never their own basin/version/§5a SQL. Live-Postgres integration tests (per the plan's Verification
+blocks): `tests/integration/store/test_basin_importer_persistence.py`,
+`tests/integration/store/test_basin_importer_idempotency.py`.
 
 ---
 

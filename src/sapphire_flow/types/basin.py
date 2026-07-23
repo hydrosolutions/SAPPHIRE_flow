@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
-    from sapphire_flow.types.ids import BasinId, PackageId
+    from sapphire_flow.types.ids import BasinId, BasinVersionId, PackageId
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -26,6 +26,19 @@ class Basin:
     # basins — see basin_versions.package_id for the same sentinel on the
     # versioned history row.
     package_id: PackageId | None = None
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class BasinCorrectionResult:
+    """Return value of ``PgBasinStore.update_basin_from_package`` (Plan 120
+    Task 2C correction branch). ``superseded_version_id`` is the PRIOR
+    current ``basin_versions`` row this correction just stamped
+    ``superseded_at`` on — Task 2C's affected-artifact-set query is scoped
+    to exactly this id (never every historically-superseded version)."""
+
+    basin_id: BasinId
+    superseded_version_id: BasinVersionId
+    new_version_id: BasinVersionId
 
 
 def is_missing_static_value(value: Any) -> bool:
