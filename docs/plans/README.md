@@ -124,12 +124,11 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
   flow-level membership design (skip `pf` entirely for control-only + real `NONE` skip +
   staleness/provenance). Genuinely multi-part; **ESCALATED 2×**. **No longer the blocker** (127
   unblocks the deployment); this is the efficiency/completeness follow-up, revisit after 127.
-- **126** — Ensemble forcing membership — `DRAFT (stub)` — deferred from 123: requirement-aware
-  complete-ensemble cycle resolution (`fc`-before-`pf` window) + mixed-run bare+suffixed columns.
-  **Not deployment-critical** (no ensemble models in the live Nepal deployment yet). Depends on 123.
-- **126** — Ensemble forcing membership — `DRAFT (stub)` — deferred from 123: requirement-aware
-  complete-ensemble cycle resolution (`fc`-before-`pf` window) + mixed-run bare+suffixed columns.
-  **Not deployment-critical** (no ensemble models in the live Nepal deployment yet). Depends on 123.
+- **126** — Requirement-aware ensemble cycle resolution — `DRAFT` (re-grounded + **narrowed** 2026-07-23). A
+  typed fetch-requirements object (features/horizon/mode, replacing `FetchMode`) + walk-back to the latest
+  **complete** cycle (D1 exact-51; D3 `pf` 00Z-only → once/day; D4 walk-back-only) + candidate-local accumulation
+  (no walk-back contamination). Evicts mixed-column assembly / group-hoist / snow / state-fix. Decisions locked in
+  `docs/design/v1-forecasting-decisions.md`. Depends on 123; consumed by 144. Needs a confirming `/plan`.
 - **047** — Nepal v1 data sources umbrella (IFS, DHM, ERA5-Land) — `DRAFT (stub)` —
   depends on 081/082.
 - **117** — Basin/static artifact architecture alignment — `READY` — documents the
