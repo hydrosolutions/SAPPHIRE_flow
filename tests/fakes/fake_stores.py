@@ -990,6 +990,11 @@ class FakeStationStore:
         if station is not None:
             self._stations[station_id] = replace(station, station_status=new_status)
 
+    def assign_basin(self, station_id: StationId, basin_id: BasinId) -> None:
+        station = self._stations.get(station_id)
+        if station is not None:
+            self._stations[station_id] = replace(station, basin_id=basin_id)
+
 
 class FakeStationGroupStore:
     def __init__(self) -> None:

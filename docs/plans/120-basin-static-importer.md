@@ -634,6 +634,39 @@ implemented importer, inserting the package first, completes without it.
 uv run pytest tests/integration/store/test_basin_importer_persistence.py::TestDissolveIntoBasins
 ```
 
+**IMPLEMENTED then hardened (fixer round, Codex review, 2026-07-23 — 4 findings resolved):**
+1. **Transaction contract enforced (blocker).** `import_basin_package` previously delegated
+   "one DB transaction per package" to an unspecified future caller with no runtime check.
+   Verified empirically against a live Postgres: even an EXPLICIT `conn.begin()` on an
+   AUTOCOMMIT-isolation connection (production's `flows/_db.py::setup_production_stores`)
+   does NOT make later statements roll back together on failure. `import_basin_package` now
+   calls `_require_real_transaction(conn)` FIRST and raises `RuntimeError` — before writing
+   anything — unless `conn` is demonstrably non-AUTOCOMMIT and already inside an open
+   transaction. Task 3A's future orchestration MUST acquire a connection via
+   `engine.connect()` + `conn.begin()` (or `engine.begin()`), never the shared production
+   AUTOCOMMIT connection.
+2. **Station binding added (major).** A newly imported/corrected basin is now bound to the
+   matched station's `stations.basin_id` (`PgStationStore.assign_basin` +
+   `_assign_station_basin`) — without this, `assemble_station_training_data`/
+   `record_artifact_basin_lineage` (both of which follow `stations.basin_id`, never the
+   package) could never reach the imported static attributes. A station already bound to a
+   DIFFERENT basin is rejected (`BasinPackageRejectedError`), never silently remapped.
+3. **Missing static attributes now fail loud (major).** `static_attributes.get(basin.gauge_id,
+   {})` silently produced `{}` for a mismatched/stale acceptance report; replaced with
+   `_require_static_attributes`, which raises `BasinPackageRejectedError` when the accepted
+   basin's `gauge_id` is absent.
+4. **`update_basin_from_package` collapsed to one atomic statement (major, mirrors Task 0A).**
+   The stamp/append/refresh triple now runs as ONE chained-CTE statement — see
+   `tests/integration/store/test_basin_store.py::TestUpdateBasinFromPackageAtomicity` (proven
+   against a raw AUTOCOMMIT connection: the pre-fix three-`execute()`-call form left the basin
+   with ZERO current `basin_versions` rows when the append half failed after the stamp had
+   already self-committed).
+
+Regression coverage: `tests/integration/store/test_basin_importer_persistence.py`
+(`TestStationBasinBinding`, `TestMissingStaticAttributes`, `TestTransactionGuard`,
+`TestPackageAtomicity`) and `tests/integration/store/test_basin_store.py`
+(`TestUpdateBasinFromPackageAtomicity`).
+
 #### Task 2B — §5a mapping population + band persistence + store JSONB fix — PARTIAL (store-layer write/replace path done, fixer pass; package-driven population still open)
 
 **Scope in:** Populate the §5a mapping table (`station_id, basin_id, gateway_hru_name,
@@ -813,6 +846,13 @@ both fail.)
 ```bash
 uv run pytest tests/integration/store/test_basin_importer_idempotency.py::TestReimportAndCorrections tests/integration/store/test_basin_importer_idempotency.py::TestCorrectionAffectedArtifacts
 ```
+
+**Fixer round (2026-07-23) hardening — see Task 2A's fixer-round note above for the full
+list.** The correction branch's `PgBasinStore.update_basin_from_package` (stamp/append/
+refresh) now runs as ONE atomic chained-CTE statement instead of three separate
+`execute()` calls, and `import_basin_package` refuses to run without a genuine open
+transaction — both close the AUTOCOMMIT partial-write hazard the Codex review raised
+against this task's "one DB transaction per package" scope line.
 
 #### Task 2D — Train-time lineage write wiring — 120 OWNS this (SETTLED) — DONE (fixer pass, 2026-07-22)
 

@@ -154,6 +154,19 @@ class PgBasinStore:
         ``uq_basin_versions_one_current_per_basin`` partial unique index).
         This is the SEPARATE upsert path Task 2C adds because
         ``store_basin`` is insert-only (the new-basin creation path).
+
+        **Fixer round (major finding, mirrors Task 0A's ``store_basin``):**
+        the stamp/append/refresh triple runs as ONE data-modifying,
+        chained-CTE statement — not three separate ``execute()`` calls — so
+        it is atomic even on an AUTOCOMMIT connection (the earlier
+        three-statement form could leave a basin with ZERO current
+        ``basin_versions`` rows if the second statement failed after the
+        first had already self-committed). The initial read (fetching the
+        current row's id/version) stays a separate, plain ``SELECT`` — reads
+        do not threaten atomicity. Each write CTE is wired into the next via
+        a genuine data dependency (``select_from``/subquery), not just
+        WITH-clause adjacency, so Postgres is guaranteed to execute all
+        three rather than skip an unreferenced CTE.
         """
         current = (
             self._conn.execute(
@@ -174,39 +187,60 @@ class PgBasinStore:
                 "is violated; cannot apply a correction"
             )
         superseded_id = BasinVersionId(current["id"])
+        new_version_id = BasinVersionId(uuid.uuid4())
+        wkb_geometry = from_shape(geometry, srid=4326)
 
         # (a) stamp the prior current row's superseded_at FIRST — must
         # commit-order before (b), or the partial unique index would briefly
-        # (or, worse, permanently on a race) see two current rows.
-        self._conn.execute(
+        # see two current rows.
+        supersede_cte = (
             sa.update(basin_versions)
             .where(basin_versions.c.id == superseded_id)
             .values(superseded_at=superseded_at)
+            .returning(basin_versions.c.id)
+            .cte("superseded")
         )
-
-        wkb_geometry = from_shape(geometry, srid=4326)
-        new_version_id = BasinVersionId(uuid.uuid4())
-        # (b) append the new current row.
-        self._conn.execute(
-            sa.insert(basin_versions).values(
-                id=new_version_id,
-                basin_id=basin_id,
-                package_id=package_id,
-                version=current["version"] + 1,
-                geometry=wkb_geometry,
-                attributes=attributes,
-                area_km2=area_km2,
-                band_geometries=band_geometries,
-                gateway_mapping=gateway_mapping,
-                superseded_at=None,
+        # (b) append the new current row — selects FROM `supersede_cte` (a
+        # genuine data dependency, not just WITH-clause adjacency) so
+        # Postgres is guaranteed to run (a) as part of this one statement.
+        insert_select = sa.select(
+            sa.literal(new_version_id, type_=sa.Uuid),
+            sa.literal(basin_id, type_=sa.Uuid),
+            sa.literal(package_id, type_=sa.Text),
+            sa.literal(current["version"] + 1),
+            sa.literal(wkb_geometry, type_=Geometry("MULTIPOLYGON", srid=4326)),
+            sa.literal(attributes, type_=JSONB),
+            sa.literal(area_km2),
+            sa.literal(band_geometries, type_=JSONB),
+            sa.literal(gateway_mapping, type_=JSONB),
+            sa.null(),
+        ).select_from(supersede_cte)
+        insert_cte = (
+            sa.insert(basin_versions)
+            .from_select(
+                [
+                    "id",
+                    "basin_id",
+                    "package_id",
+                    "version",
+                    "geometry",
+                    "attributes",
+                    "area_km2",
+                    "band_geometries",
+                    "gateway_mapping",
+                    "superseded_at",
+                ],
+                insert_select,
             )
+            .returning(basin_versions.c.basin_id)
+            .cte("inserted_version")
         )
-
-        # (c) refresh the basins projection (current-version readers, e.g.
-        # PgBasinStore.fetch_basin, are unchanged — they always read `basins`).
-        self._conn.execute(
+        # (c) refresh the basins projection — targets the row via a
+        # subquery on `insert_cte`, so Postgres is guaranteed to run (b)
+        # (and therefore (a)) as part of this one statement.
+        final_stmt = (
             sa.update(basins)
-            .where(basins.c.id == basin_id)
+            .where(basins.c.id == sa.select(insert_cte.c.basin_id).scalar_subquery())
             .values(
                 geometry=wkb_geometry,
                 attributes=attributes,
@@ -216,6 +250,8 @@ class PgBasinStore:
                 package_id=package_id,
             )
         )
+        # Exactly one execute() call — the whole triple is ONE statement.
+        self._conn.execute(final_stmt)
 
         return BasinCorrectionResult(
             basin_id=basin_id,

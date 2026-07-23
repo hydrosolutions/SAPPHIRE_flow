@@ -325,6 +325,17 @@ class PgStationStore:
             .values(station_status=new_status.value)
         )
 
+    def assign_basin(self, station_id: StationId, basin_id: BasinId) -> None:
+        """Plan 120 fixer round (basin_importer.py): bind a station to its
+        operational basin. A single-column `UPDATE` — conflict/no-op
+        decisions (station already bound elsewhere, already bound here)
+        live in the caller (`store/basin_importer.py`), not here."""
+        self._conn.execute(
+            sa.update(stations)
+            .where(stations.c.id == station_id)
+            .values(basin_id=basin_id)
+        )
+
 
 def _row_to_station(row: sa.engine.row.RowMapping) -> StationConfig:
     basin_raw = row["basin_id"]

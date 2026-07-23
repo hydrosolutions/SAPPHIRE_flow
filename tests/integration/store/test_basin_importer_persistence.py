@@ -24,18 +24,23 @@ from sapphire_flow.db.metadata import (
     basin_static_packages,
     basin_versions,
     basins,
+    model_artifact_basin_versions,
+    models,
     recap_gateway_polygon_bindings,
 )
+from sapphire_flow.exceptions import BasinPackageRejectedError
 from sapphire_flow.services.basin_package_loader import (
     evaluate_basin_acceptance,
     load_basin_package,
 )
 from sapphire_flow.store.basin_importer import import_basin_package
 from sapphire_flow.store.basin_store import PgBasinStore
+from sapphire_flow.store.model_artifact_lineage import record_artifact_basin_lineage
+from sapphire_flow.store.model_artifact_store import PgModelArtifactStore
 from sapphire_flow.store.station_store import PgStationStore
 from sapphire_flow.types.basin import Basin
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
-from sapphire_flow.types.ids import BasinId, PackageId, StationId
+from sapphire_flow.types.ids import BasinId, ModelId, PackageId, StationId
 from tests.conftest import make_station_config
 
 if TYPE_CHECKING:
@@ -302,3 +307,277 @@ class TestFiveAMappingPopulation:
         )
         assert len(rows) == 1
         assert rows[0]["gateway_hru_name"] == "nepal_dhm_v2"
+
+
+def _seed_model(conn: sa.Connection) -> ModelId:
+    mid = ModelId(f"basin_binding_test_model_{uuid.uuid4().hex[:8]}")
+    conn.execute(
+        sa.insert(models).values(
+            id=mid,
+            display_name="Basin Binding Test Model",
+            artifact_scope="station",
+            description="Fixer-round station-basin-binding end-to-end test",
+        )
+    )
+    return mid
+
+
+class TestStationBasinBinding:
+    """Fixer round (major finding): a newly imported basin must be assigned
+    to the matched station's `stations.basin_id` — without this,
+    `assemble_station_training_data`/`record_artifact_basin_lineage` (which
+    both follow `stations.basin_id`, never the package) can never reach the
+    static attributes/basin version this package just wrote."""
+
+    def test_new_basin_binds_the_matched_station(
+        self, db_connection: sa.Connection
+    ) -> None:
+        station_id = _seed_station(db_connection)
+        assert PgStationStore(db_connection).fetch_station(station_id).basin_id is None
+        loaded, report = _load_and_accept(station_id)
+
+        result = import_basin_package(db_connection, loaded, report, clock=_clock)
+
+        station = PgStationStore(db_connection).fetch_station(station_id)
+        assert station is not None
+        assert station.basin_id == result.imported_basins[0].basin_id
+
+    def test_conflicting_basin_binding_rejected_not_silently_remapped(
+        self, db_connection: sa.Connection
+    ) -> None:
+        other_basin = Basin(
+            id=BasinId(uuid.uuid4()),
+            code="OTHER-BASIN",
+            name="Some other basin",
+            geometry=MultiPolygon(
+                [Polygon([(2.0, 2.0), (2.0, 3.0), (3.0, 3.0), (3.0, 2.0)])]
+            ),
+            area_km2=3.0,
+            attributes=None,
+            regional_basin=None,
+            band_geometries=None,
+            created_at=_CLOCK_VALUE,
+            network="dhm",
+            package_id=None,
+        )
+        PgBasinStore(db_connection).store_basin(other_basin)
+        station = make_station_config(
+            station_id=StationId(uuid.uuid4()),
+            code="123",
+            network="dhm",
+            basin_id=other_basin.id,
+        )
+        PgStationStore(db_connection).store_station(station)
+        loaded, report = _load_and_accept(station.id)
+
+        with pytest.raises(BasinPackageRejectedError, match="already bound"):
+            import_basin_package(db_connection, loaded, report, clock=_clock)
+
+        # No half-applied provenance row either — the conflict must be
+        # detected inside the same package transaction the caller controls.
+        unchanged = PgStationStore(db_connection).fetch_station(station.id)
+        assert unchanged is not None
+        assert unchanged.basin_id == other_basin.id
+
+    def test_static_training_data_and_lineage_reachable_after_import(
+        self, db_connection: sa.Connection, tmp_path: Path
+    ) -> None:
+        """End-to-end proof (no manual join-table inserts): a station that
+        starts with `basin_id=None`, once imported, has its basin reachable
+        via `PgBasinStore.fetch_basin(station.basin_id)` — exactly the path
+        `assemble_station_training_data` uses (`services/training_data.py`)
+        — and `record_artifact_basin_lineage` (the REAL helper, not a manual
+        `model_artifact_basin_versions` insert) writes the lineage row."""
+        station_id = _seed_station(db_connection)
+        loaded, report = _load_and_accept(station_id)
+        result = import_basin_package(db_connection, loaded, report, clock=_clock)
+        imported_basin_id = result.imported_basins[0].basin_id
+
+        station = PgStationStore(db_connection).fetch_station(station_id)
+        assert station is not None
+        assert station.basin_id == imported_basin_id
+
+        basin = PgBasinStore(db_connection).fetch_basin(station.basin_id)
+        assert basin is not None
+        assert basin.attributes
+        assert set(basin.attributes) == set(loaded.static_attributes["nepal_123"])
+
+        model_id = _seed_model(db_connection)
+        artifact_id, _ = PgModelArtifactStore(db_connection, tmp_path).store_artifact(
+            model_id,
+            b"payload",
+            _CLOCK_VALUE,
+            _CLOCK_VALUE,
+            _CLOCK_VALUE,
+            station_id=station_id,
+        )
+
+        record_artifact_basin_lineage(db_connection, artifact_id, {station_id})
+
+        lineage_rows = (
+            db_connection.execute(
+                sa.select(model_artifact_basin_versions).where(
+                    model_artifact_basin_versions.c.model_artifact_id == artifact_id
+                )
+            )
+            .mappings()
+            .all()
+        )
+        assert len(lineage_rows) == 1
+        current_version_id = db_connection.execute(
+            sa.select(basin_versions.c.id).where(
+                sa.and_(
+                    basin_versions.c.basin_id == imported_basin_id,
+                    basin_versions.c.superseded_at.is_(None),
+                )
+            )
+        ).scalar_one()
+        assert lineage_rows[0]["basin_version_id"] == current_version_id
+
+
+class TestMissingStaticAttributes:
+    """Fixer round (major finding): a missing `static_attributes` row for an
+    accepted basin must never silently become `{}` — reject loudly instead."""
+
+    def test_accepted_basin_missing_from_static_attributes_rejects(
+        self, db_connection: sa.Connection
+    ) -> None:
+        station_id = _seed_station(db_connection)
+        # Build a valid, ACCEPTED report against the real, complete
+        # package first (so Task 1B's own gauge_id-join validation, which
+        # `import_basin_package` does NOT re-run, is satisfied) — then
+        # simulate a stale/mismatched `loaded` (attributes row gone) being
+        # replayed against that same report, exactly the divergence
+        # scenario this guard exists to catch.
+        loaded, report = _load_and_accept(station_id)
+        assert len(report.accepted) == 1  # per-basin acceptance is unaffected
+        diverged_loaded = dataclasses.replace(loaded, static_attributes={})
+
+        savepoint = db_connection.begin_nested()
+        with pytest.raises(BasinPackageRejectedError, match="static_attributes"):
+            import_basin_package(db_connection, diverged_loaded, report, clock=_clock)
+        savepoint.rollback()
+
+        # A caller that wraps the call (as the transaction guard requires)
+        # and rolls back on error sees NOTHING committed — not even the
+        # provenance row `import_basin_package` writes before reaching the
+        # per-basin attribute check.
+        count = db_connection.execute(
+            sa.select(sa.func.count())
+            .select_from(basin_static_packages)
+            .where(basin_static_packages.c.package_id == "nepal-dhm-basins")
+        ).scalar_one()
+        assert count == 0
+
+
+class TestTransactionGuard:
+    """Blocker fixer round: `import_basin_package` must refuse to run at all
+    — before writing anything — unless `conn` is genuinely inside a
+    non-AUTOCOMMIT transaction. Production connections
+    (`flows/_db.py::setup_production_stores`) run under
+    `isolation_level="AUTOCOMMIT"`, where individual statements commit
+    independently even after an explicit `conn.begin()` (verified against a
+    live Postgres): this guard is what makes the package-level "one
+    transaction" contract enforceable rather than just documented."""
+
+    def test_autocommit_connection_refused_before_any_write(
+        self, db_engine: sa.Engine
+    ) -> None:
+        station_id = StationId(uuid.uuid4())
+        loaded, report = _load_and_accept(station_id)
+        conn = db_engine.connect().execution_options(isolation_level="AUTOCOMMIT")
+        try:
+            with pytest.raises(RuntimeError, match="AUTOCOMMIT"):
+                import_basin_package(conn, loaded, report, clock=_clock)
+            count = conn.execute(
+                sa.select(sa.func.count()).select_from(basin_static_packages)
+            ).scalar_one()
+            assert count == 0
+        finally:
+            conn.close()
+
+    def test_connection_with_no_open_transaction_refused(
+        self, db_engine: sa.Engine
+    ) -> None:
+        station_id = StationId(uuid.uuid4())
+        loaded, report = _load_and_accept(station_id)
+        conn = db_engine.connect()
+        try:
+            assert not conn.in_transaction()
+            with pytest.raises(RuntimeError, match="transaction"):
+                import_basin_package(conn, loaded, report, clock=_clock)
+        finally:
+            conn.rollback()
+            conn.close()
+
+
+class TestPackageAtomicity:
+    """Blocker fixer round: once a caller satisfies the transaction guard
+    (a real, open, non-AUTOCOMMIT transaction), a mid-pipeline failure that
+    happens AFTER `store_basin`/`store_binding` already executed their own
+    (individually atomic) statements must still roll back completely when
+    the caller rolls back — proving the package-level "one transaction, all-
+    or-nothing" contract actually holds end to end, not just per statement."""
+
+    def test_mid_pipeline_failure_after_basin_and_binding_writes_rolls_back_all(
+        self, db_connection: sa.Connection
+    ) -> None:
+        # A pre-existing basin the station is ALREADY (wrongly, for this
+        # package) bound to — forces `_assign_station_basin` to raise AFTER
+        # `store_basin` and `store_binding` have both already executed their
+        # own writes for the new "123" basin this package would create.
+        conflicting_basin = Basin(
+            id=BasinId(uuid.uuid4()),
+            code="PRE-EXISTING",
+            name="Pre-existing conflicting basin",
+            geometry=MultiPolygon(
+                [Polygon([(4.0, 4.0), (4.0, 5.0), (5.0, 5.0), (5.0, 4.0)])]
+            ),
+            area_km2=9.0,
+            attributes=None,
+            regional_basin=None,
+            band_geometries=None,
+            created_at=_CLOCK_VALUE,
+            network="dhm",
+            package_id=None,
+        )
+        PgBasinStore(db_connection).store_basin(conflicting_basin)
+        station = make_station_config(
+            station_id=StationId(uuid.uuid4()),
+            code="123",
+            network="dhm",
+            basin_id=conflicting_basin.id,
+        )
+        PgStationStore(db_connection).store_station(station)
+        loaded, report = _load_and_accept(station.id)
+
+        savepoint = db_connection.begin_nested()
+        with pytest.raises(BasinPackageRejectedError, match="already bound"):
+            import_basin_package(db_connection, loaded, report, clock=_clock)
+        savepoint.rollback()
+
+        # Prove atomicity: the basin/version/package/§5a rows that
+        # `_insert_new_basin` already wrote before the conflict was detected
+        # must NOT have survived the caller's rollback.
+        basin_count = db_connection.execute(
+            sa.select(sa.func.count())
+            .select_from(basins)
+            .where(sa.and_(basins.c.code == "123", basins.c.network == "dhm"))
+        ).scalar_one()
+        assert basin_count == 0
+        package_count = db_connection.execute(
+            sa.select(sa.func.count())
+            .select_from(basin_static_packages)
+            .where(basin_static_packages.c.package_id == "nepal-dhm-basins")
+        ).scalar_one()
+        assert package_count == 0
+        binding_count = db_connection.execute(
+            sa.select(sa.func.count())
+            .select_from(recap_gateway_polygon_bindings)
+            .where(recap_gateway_polygon_bindings.c.station_id == station.id)
+        ).scalar_one()
+        assert binding_count == 0
+        # And the station's ORIGINAL binding is exactly as it was.
+        unchanged = PgStationStore(db_connection).fetch_station(station.id)
+        assert unchanged is not None
+        assert unchanged.basin_id == conflicting_basin.id

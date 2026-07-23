@@ -548,6 +548,9 @@ class StationStore(Protocol):
         self, station_id: StationId, new_status: StationStatus
     ) -> None: ...
 
+    def assign_basin(self, station_id: StationId, basin_id: BasinId) -> None:
+        raise NotImplementedError
+
 
 @runtime_checkable
 class StationGroupStore(Protocol):

@@ -15,6 +15,30 @@ implements but does not re-derive.
 Task 3A (the CLI entrypoint + the full accepted/held/rejected acceptance
 report) is a later slice; :func:`import_basin_package` is the write-side
 function that slice will wrap.
+
+**Transaction contract (fixer round, 2026-07-23, blocker).** This module runs
+several statements per package (provenance insert, per-basin
+insert/correction, station-basin binding, the §5a replace) with no internal
+transaction of its own — atomicity depends entirely on the caller's
+connection. Production flow connections run under `isolation_level=
+"AUTOCOMMIT"` (`flows/_db.py::setup_production_stores`), where each
+individual statement commits the instant it runs — including, empirically,
+statements issued after an explicit `conn.begin()` on that connection: a
+`ROLLBACK` after a failure does **not** undo work already executed under
+AUTOCOMMIT (verified against a live Postgres: a `begin()`/execute/execute
+(fails)/`rollback()` sequence on an AUTOCOMMIT-isolation connection leaves
+the first statement's row committed). `import_basin_package` therefore
+REFUSES to run at all unless `conn` is demonstrably inside a real,
+non-AUTOCOMMIT transaction (`_require_real_transaction` below) — a
+mid-pipeline failure on a connection that passes this guard genuinely rolls
+back the whole package, because ordinary Postgres transactions (opened via
+`engine.connect()` + `conn.begin()`, or `engine.begin()`) are atomic across
+multiple statements by construction; only the AUTOCOMMIT special case breaks
+that guarantee. The guard is the enforcement point Task 3A's future
+orchestration MUST satisfy — acquire a connection via `engine.connect()`
+(NOT the shared AUTOCOMMIT production connection) and wrap the whole
+`import_basin_package` call in `conn.begin()`, or use `engine.begin()`
+directly.
 """
 
 from __future__ import annotations
@@ -33,6 +57,7 @@ from sapphire_flow.db.metadata import (
 from sapphire_flow.exceptions import BasinPackageRejectedError
 from sapphire_flow.store.basin_store import PgBasinStore
 from sapphire_flow.store.recap_gateway_polygon_store import RecapGatewayPolygonStore
+from sapphire_flow.store.station_store import PgStationStore
 from sapphire_flow.types.basin import Basin
 from sapphire_flow.types.basin_package import BasinPackageImportResult, ImportedBasin
 from sapphire_flow.types.enums import SpatialRepresentation
@@ -80,7 +105,18 @@ def import_basin_package(
     completely untouched (Decision A — packages are incremental/regional,
     absence carries no signal). Runs within whatever transaction the caller
     already has open on ``conn`` (Task 2A: "one DB transaction per package");
-    this function does not open or commit a transaction itself.
+    this function does not open or commit a transaction itself, but it DOES
+    require one already be open (see module docstring "Transaction
+    contract") — it raises :class:`RuntimeError` immediately, before writing
+    anything, if ``conn`` is AUTOCOMMIT-isolation or has no active
+    transaction.
+
+    Also binds the accepted station to the imported/corrected basin
+    (``stations.basin_id`` — fixer round, major finding): without this,
+    ``assemble_station_training_data``/``record_artifact_basin_lineage``
+    can never reach the basin this package just wrote. A station already
+    bound to a DIFFERENT basin is a conflict — raises
+    :class:`BasinPackageRejectedError` rather than silently remapping it.
 
     Idempotent at the PACKAGE level: re-importing the identical package
     (same ``package_id``, same computed checksums) is a no-op — returns
@@ -89,6 +125,7 @@ def import_basin_package(
     raises :class:`BasinPackageRejectedError` — packages are immutable once
     accepted (contract §10, ``04:676``); do not overwrite.
     """
+    _require_real_transaction(conn)
     package_id = PackageId(loaded.manifest.package_id)
     decision = _package_import_decision(conn, package_id, loaded)
     if decision == "no_op":
@@ -116,6 +153,7 @@ def import_basin_package(
 
     basin_store = PgBasinStore(conn)
     gateway_store = RecapGatewayPolygonStore(conn)
+    station_store = PgStationStore(conn)
     basin_by_key = {(b.network, b.basin_code): b for b in loaded.basins}
     imported_at = clock()
 
@@ -124,7 +162,8 @@ def import_basin_package(
             conn,
             basin_store=basin_store,
             gateway_store=gateway_store,
-            basin=basin_by_key[(basin_decision.network, basin_decision.basin_code)],
+            station_store=station_store,
+            basin=_basin_for_decision(basin_by_key, basin_decision),
             station_id=_require_station_id(basin_decision),
             static_attributes=loaded.static_attributes,
             bands=loaded.bands,
@@ -165,6 +204,37 @@ def _package_import_decision(
     )
 
 
+def _require_real_transaction(conn: sa.Connection) -> None:
+    """Blocker fixer round: refuse to run the multi-statement package
+    pipeline unless ``conn`` is genuinely inside a non-AUTOCOMMIT
+    transaction. Verified empirically against a live Postgres connection:
+    on an ``isolation_level="AUTOCOMMIT"`` connection (production's
+    ``flows/_db.py::setup_production_stores``), even an EXPLICIT
+    ``conn.begin()`` does not make subsequent statements roll back together
+    — a statement executed before a later failure stays committed after
+    ``rollback()``. A connection that passes both checks below (no
+    AUTOCOMMIT execution option, and an active transaction already open) DOES
+    roll back correctly, because ordinary Postgres transactions are atomic
+    by construction — see module docstring "Transaction contract"."""
+    if conn.get_execution_options().get("isolation_level") == "AUTOCOMMIT":
+        raise RuntimeError(
+            "import_basin_package refuses to run on an AUTOCOMMIT-isolation "
+            "connection — each statement in the package pipeline would "
+            "commit independently, so a mid-pipeline failure could leave "
+            "provenance/basin/version/§5a writes partially applied. Acquire "
+            "a connection via engine.connect() (not the shared production "
+            "AUTOCOMMIT connection) and wrap the call in conn.begin(), or "
+            "use engine.begin() directly."
+        )
+    if not conn.in_transaction():
+        raise RuntimeError(
+            "import_basin_package requires an already-open transaction on "
+            "conn (call conn.begin() — or use engine.begin() — before "
+            "invoking) so a mid-pipeline failure rolls back the whole "
+            "package instead of leaving partial writes."
+        )
+
+
 def _require_station_id(decision: BasinAcceptanceDecision) -> StationId:
     if decision.station_id is None:
         raise ValueError(
@@ -176,11 +246,50 @@ def _require_station_id(decision: BasinAcceptanceDecision) -> StationId:
     return decision.station_id
 
 
+def _basin_for_decision(
+    basin_by_key: dict[tuple[str, str], BasinRecord],
+    decision: BasinAcceptanceDecision,
+) -> BasinRecord:
+    """Fail loud, with a clear message, rather than a raw ``KeyError``, if
+    the acceptance report references a ``(network, basin_code)`` absent
+    from the loaded package — a mismatched/stale report paired with a
+    different in-memory package (major finding: never silently proceed)."""
+    key = (decision.network, decision.basin_code)
+    if key not in basin_by_key:
+        raise ValueError(
+            f"acceptance report references basin (network={decision.network!r}, "
+            f"basin_code={decision.basin_code!r}) that is absent from the "
+            "loaded package — the acceptance report does not match the "
+            "supplied loaded package"
+        )
+    return basin_by_key[key]
+
+
+def _require_static_attributes(
+    static_attributes: dict[str, dict[str, float | None]], basin: BasinRecord
+) -> dict[str, float | None]:
+    """Major finding fix: a missing ``static_attributes`` row for an
+    ACCEPTED basin must never silently become ``{}`` — that would let a
+    mismatched/stale acceptance report (or a malformed in-memory package)
+    produce a successful import with empty attributes, which the contract
+    explicitly prohibits (04:670-672, never synthesize missing attributes)."""
+    if basin.gauge_id not in static_attributes:
+        raise BasinPackageRejectedError(
+            f"accepted basin (network={basin.network!r}, "
+            f"basin_code={basin.basin_code!r}, gauge_id={basin.gauge_id!r}) "
+            "has no static_attributes row — refusing to synthesize empty "
+            "attributes (contract 04:670-672); the acceptance report and "
+            "the loaded package have diverged"
+        )
+    return static_attributes[basin.gauge_id]
+
+
 def _import_one_basin(
     conn: sa.Connection,
     *,
     basin_store: PgBasinStore,
     gateway_store: RecapGatewayPolygonStore,
+    station_store: PgStationStore,
     basin: BasinRecord,
     station_id: StationId,
     static_attributes: dict[str, dict[str, float | None]],
@@ -189,13 +298,13 @@ def _import_one_basin(
     imported_at: UtcDatetime,
     clock: Callable[[], UtcDatetime],
 ) -> ImportedBasin:
-    attributes = dict(static_attributes.get(basin.gauge_id, {}))
+    attributes = dict(_require_static_attributes(static_attributes, basin))
     band_geometries = _band_geometries_for_basin(bands, basin)
     geometry = _ensure_multipolygon(_require_geometry(basin))
 
     existing = basin_store.fetch_basin_by_code(basin.basin_code, basin.network)
     if existing is None:
-        return _insert_new_basin(
+        result = _insert_new_basin(
             basin_store,
             gateway_store,
             basin=basin,
@@ -207,20 +316,55 @@ def _import_one_basin(
             imported_at=imported_at,
             clock=clock,
         )
-    return _correct_existing_basin(
-        conn,
-        basin_store,
-        gateway_store,
-        basin=basin,
-        existing_basin_id=existing.id,
-        station_id=station_id,
-        attributes=attributes,
-        band_geometries=band_geometries,
-        geometry=geometry,
-        package_id=package_id,
-        imported_at=imported_at,
-        clock=clock,
+    else:
+        result = _correct_existing_basin(
+            conn,
+            basin_store,
+            gateway_store,
+            basin=basin,
+            existing_basin_id=existing.id,
+            station_id=station_id,
+            attributes=attributes,
+            band_geometries=band_geometries,
+            geometry=geometry,
+            package_id=package_id,
+            imported_at=imported_at,
+            clock=clock,
+        )
+    _assign_station_basin(
+        station_store, station_id=station_id, basin_id=result.basin_id
     )
+    return result
+
+
+def _assign_station_basin(
+    station_store: PgStationStore, *, station_id: StationId, basin_id: BasinId
+) -> None:
+    """Major finding fix: bind the accepted station's operational identity
+    (``stations.basin_id``) to the basin this package just wrote — without
+    this, ``assemble_station_training_data`` (which follows
+    ``stations.basin_id``, never the package) can never load the imported
+    static attributes, and ``record_artifact_basin_lineage`` skips lineage
+    because the station still has a NULL basin_id. A station already bound
+    to a DIFFERENT basin is a conflict — reject rather than silently remap
+    (contract 04:670-672, "never fall back... without a recorded operator
+    decision")."""
+    station = station_store.fetch_station(station_id)
+    if station is None:
+        raise ValueError(
+            f"station {station_id} not found while binding it to basin "
+            f"{basin_id} — Task 1B invariant violated (an ACCEPTED decision "
+            "must carry a real, resolved station_id)"
+        )
+    if station.basin_id is not None and station.basin_id != basin_id:
+        raise BasinPackageRejectedError(
+            f"station {station_id} is already bound to basin "
+            f"{station.basin_id!r}; refusing to silently reassign it to "
+            f"{basin_id!r} — a conflicting basin binding requires an "
+            "explicit operator decision (contract 04:670-672)"
+        )
+    if station.basin_id is None:
+        station_store.assign_basin(station_id, basin_id)
 
 
 def _insert_new_basin(
