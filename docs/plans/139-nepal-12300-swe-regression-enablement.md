@@ -126,7 +126,12 @@ Register via `pyproject.toml` entry-point + `types/ids.py` (`MODEL_TIERS` + `ALE
 `model_registry.py:37,52`). Constraint (Agent 1): a model MUST declare ≥1 `future_known` var (horizon derives
 from it) — satisfied. Status: **NEW**.
 
-### W7 — Future-SWE wiring + snow aggregation fix — NEW (concrete SAP3 gaps)
+### W7 — Future-SWE wiring + snow aggregation fix — CARVED OUT to **Plans 145 + 146** (2026-07-23)
+> W7 is now owned by two standalone plans (extracted from this epic; both generic + buildable now):
+> **Plan 145** = the FUTURE snow-forecast channel + aggregation fix; **Plan 146** = the PAST/antecedent snow
+> reanalysis channel (provenance + owning ingest flow + read routing). 139 depends on both for its SWE
+> feature (past + future SWE). The original W7 text below is retained for provenance; implement via 145 + 146.
+
 Two verified gaps that block SWE reaching a model:
 - **Future-SWE is dark end-to-end.** `RecapGatewayForecastAdapter.fetch_snow_forecast`
   (`recap_gateway.py:830`) has **zero callers**; nothing writes deterministic snow rows into the

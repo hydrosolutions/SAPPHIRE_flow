@@ -92,11 +92,20 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
 - **143** — DHM/v1 basin + gauge onboarding — `DRAFT` — GeoPackage → **N gauges** → forecast-ready
   (geometry via Plan 120 + station/rating + gateway binding + subscriptions). Owner-aligned 2026-07-23; needs
   `/plan`. Blocks 144.
-- **144** — Two-track probabilistic forecasting (daily ≤15 d + sub-daily ≤3 d) over the IFS 51-member ensemble —
-  `DRAFT` — per-member forcing (ERA5 shared past + per-member gap-fill + per-member forecast), `task.map`
-  fan-out, deterministic model per member (`ensemble_mode=SINGLE`), ensemble aggregation. Carries a
-  forcing-assembly **seam** (client-stitch now / gateway-ensemble-operational later) so the ~1–1.5-month gateway
-  endpoint does NOT block it. Owner-aligned 2026-07-23; needs `/plan`.
+- **144** — Multi-track probabilistic forecasting over the IFS ensemble — `DRAFT` (re-grounded 2026-07-23 after a
+  `/plan` reckoning). Per-station tracks **data-driven by assigned models** (a station's daily ≤15 d + sub-daily
+  3-hourly ≤3 d @00/06/12/18Z); per-member forcing via an `EnsembleForcingProvider` **seam** (client-stitch now /
+  3-hourly gateway ensemble-operational later). **COMPOSES existing infra** — reuses `ensemble_fanout`
+  (stateless-only) + `ForecastEnsemble` + `forecast_qc`; depends on **134** (control 6h bridge), **126** (ensemble
+  membership + horizon walk-back), **139** (daily model), + a new **snow-forcing** plan. Needs a confirming `/plan`.
+- **145** — Future-snow forecast forcing wiring — `DRAFT` — carved from 139 W7, then **SPLIT** (2026-07-23). The
+  FUTURE channel: `fetch_snow_forecast` (zero callers → broadcast no-op) scoped + wired into the cycle → store →
+  broadcast WITH snow-scoped degradation, + the aggregation fix (`swe`/`snow_depth` MEAN, `snowmelt` **SUM**). No
+  blocker; unblocks 144. Needs a confirming `/plan`.
+- **146** — Antecedent (past) snow reanalysis channel — `DRAFT` — the SPLIT-off load-bearing half: a supported
+  `ForcingSource` for `recap_snow_reanalysis` + a **dedicated recap-reanalysis ingest flow/schedule** (the
+  blocker — no production caller today) + read-side hybrid snow tier so stored snow reaches `past_dynamic` in
+  training/hindcast/live. Depends on 082 + 145. Blocks 139/144 snow-lookback. Needs `/plan`.
 - **124** — Station active-assignment consistency — `DRAFT` — **scope-locked, ready to implement
   directly (owner 2026-07-18).** NARROW: INACTIVE station assignments stop forecasting + leave the
   alert-priority index (match the group path); the fallback-priority-drift health check stays
