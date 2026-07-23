@@ -8,6 +8,8 @@ Pydantic boundary models that produce them live in
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -166,6 +168,52 @@ class LoadedBasinPackage:
     computed_checksums: dict[str, str]
 
 
+def compute_package_fingerprint(loaded: LoadedBasinPackage) -> str:
+    """A deterministic canonical fingerprint of a loaded basin/static package
+    (Plan 120 Phase 2 fixer round, 2026-07-23).
+
+    Covers the *validated manifest metadata* that identifies the package's
+    content-defining provenance — ``network``, ``contract_version``, the
+    extractor name/version, ``source_datasets``, ``climatology_window``, and the
+    declared manifest file set — PLUS the computed payload checksums. Two
+    packages with the same ``package_id`` but ANY difference across these fields
+    produce DIFFERENT fingerprints, so:
+
+    - the importer can BIND an (immutable) acceptance report to the exact
+      package it was produced from (the report carries this fingerprint; the
+      importer recomputes it from the loaded package and rejects a mismatch —
+      finding 1), and
+    - idempotency/immutability compares the STORED fingerprint, so a manifest-
+      only mutation under the same ``package_id`` (e.g. a changed
+      ``climatology_window`` or ``source_datasets``) with identical payload
+      checksums is caught as an immutability violation rather than silently
+      reported ``already_imported`` (finding 3; contract §11 ``04:676``).
+
+    Deterministic: every collection is sorted and the payload is JSON-encoded
+    with sorted keys, so the digest depends only on content, never on ordering.
+    """
+    manifest = loaded.manifest
+    window = manifest.climatology_window
+    payload = {
+        "network": manifest.network,
+        "contract_version": manifest.contract_version,
+        "extractor_name": manifest.extractor_name,
+        "extractor_version": manifest.extractor_version,
+        "source_datasets": sorted(
+            [d.name, d.version, d.purpose] for d in manifest.source_datasets
+        ),
+        "climatology_window": (
+            None
+            if window is None
+            else [window.start.isoformat(), window.end.isoformat()]
+        ),
+        "manifest_files": sorted(manifest.files.items()),
+        "checksums": sorted(loaded.computed_checksums.items()),
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class BasinAcceptanceDecision:
     """Task 1B per-basin outcome. Never "rejected" — a per-basin problem holds
@@ -185,6 +233,12 @@ class BasinAcceptanceDecision:
 @dataclass(frozen=True, kw_only=True, slots=True)
 class BasinPackageAcceptanceReport:
     decisions: tuple[BasinAcceptanceDecision, ...]
+    # Canonical fingerprint of the loaded package these decisions were produced
+    # against (``compute_package_fingerprint``). The importer recomputes the
+    # fingerprint from the package it is handed and rejects a mismatch, so an
+    # acceptance report can never be silently applied against a DIFFERENT
+    # package than the one it was evaluated on (Plan 120 finding 1).
+    fingerprint: str
 
     @property
     def accepted(self) -> tuple[BasinAcceptanceDecision, ...]:

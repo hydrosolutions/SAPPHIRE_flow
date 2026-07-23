@@ -43,6 +43,7 @@ directly.
 
 from __future__ import annotations
 
+import math
 import uuid
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -53,15 +54,20 @@ from shapely.geometry import MultiPolygon, Polygon, mapping
 from sapphire_flow.db.metadata import (
     basin_static_packages,
     model_artifact_basin_versions,
+    stations,
 )
 from sapphire_flow.exceptions import BasinPackageRejectedError
 from sapphire_flow.store.basin_store import PgBasinStore
 from sapphire_flow.store.recap_gateway_polygon_store import RecapGatewayPolygonStore
 from sapphire_flow.store.station_store import PgStationStore
 from sapphire_flow.types.basin import Basin
-from sapphire_flow.types.basin_package import BasinPackageImportResult, ImportedBasin
+from sapphire_flow.types.basin_package import (
+    BasinPackageImportResult,
+    ImportedBasin,
+    compute_package_fingerprint,
+)
 from sapphire_flow.types.enums import SpatialRepresentation
-from sapphire_flow.types.ids import ArtifactId, BasinId, PackageId
+from sapphire_flow.types.ids import ArtifactId, BasinId, PackageId, StationId
 from sapphire_flow.types.station import GatewayPolygonBindingRow
 
 if TYPE_CHECKING:
@@ -79,7 +85,7 @@ if TYPE_CHECKING:
         SourceDataset,
     )
     from sapphire_flow.types.datetime import UtcDatetime
-    from sapphire_flow.types.ids import BasinVersionId, StationId
+    from sapphire_flow.types.ids import BasinVersionId
 
 log = structlog.get_logger(__name__)
 
@@ -127,16 +133,42 @@ def import_basin_package(
     bound to a DIFFERENT basin is a conflict — raises
     :class:`BasinPackageRejectedError` rather than silently remapping it.
 
-    Idempotent at the PACKAGE level: re-importing the identical package
-    (same ``package_id``, same computed checksums) is a no-op — returns
-    ``already_imported=True`` and touches no row. A ``package_id`` reused
-    with DIFFERENT computed checksums (content mutated without a new id)
-    raises :class:`BasinPackageRejectedError` — packages are immutable once
-    accepted (contract §10, ``04:676``); do not overwrite.
+    Idempotent at the PACKAGE level, keyed on the CANONICAL FINGERPRINT
+    (``compute_package_fingerprint`` — validated manifest metadata + computed
+    payload checksums): re-importing the identical package (same
+    ``package_id``, identical fingerprint) is a no-op — returns
+    ``already_imported=True`` and touches no row. A ``package_id`` reused with
+    ANY differing fingerprint field — including a manifest-only mutation (e.g.
+    a changed ``climatology_window``/``source_datasets``) with unchanged
+    payload checksums — raises :class:`BasinPackageRejectedError`: packages are
+    immutable once accepted (contract §11, ``04:676``); a content change
+    requires a new ``package_id`` (fixer round finding 3, 2026-07-23).
     """
     _require_real_transaction(conn)
     package_id = PackageId(loaded.manifest.package_id)
-    decision = _package_import_decision(conn, package_id, loaded)
+
+    # Finding 1(a): BIND the acceptance report to the EXACT loaded package.
+    # The report carries the canonical fingerprint of the package it was
+    # produced against; recompute it here and reject a mismatch BEFORE any
+    # idempotency check or write — a report can never be silently applied to
+    # a different package than the one it was evaluated on.
+    fingerprint = compute_package_fingerprint(loaded)
+    if acceptance_report.fingerprint != fingerprint:
+        raise BasinPackageRejectedError(
+            f"acceptance report fingerprint {acceptance_report.fingerprint!r} does "
+            f"not match the loaded package fingerprint {fingerprint!r} — the report "
+            "was produced from a DIFFERENT package than the one supplied; refusing "
+            "to persist decisions that do not correspond to this package"
+        )
+
+    # Finding 1(b): the decision set must EXACTLY cover the package's basins —
+    # no duplicate, missing, or extra decision. (`_basin_for_decision` only
+    # catches an ACCEPTED decision naming an absent basin; this rejects a
+    # report that omits a package basin, double-decides one, or is otherwise
+    # not a 1:1 cover of the package.)
+    _verify_decisions_cover_package(acceptance_report, loaded)
+
+    decision = _package_import_decision(conn, package_id, fingerprint)
     if decision == "no_op":
         log.info("basin_importer.package_already_imported", package_id=package_id)
         return BasinPackageImportResult(package_id=package_id, already_imported=True)
@@ -145,17 +177,34 @@ def import_basin_package(
     gateway_store = RecapGatewayPolygonStore(conn)
     station_store = PgStationStore(conn)
     basin_by_key = {(b.network, b.basin_code): b for b in loaded.basins}
+    coverage_by_key = _coverage_by_key(loaded)
 
-    # Fixer round (major finding, 2026-07-23): validate EVERY accepted
-    # decision's station identity against the loaded package BEFORE any
-    # write — a stale/mismatched acceptance report paired with a package
-    # whose basin key now names a different station must reject the whole
-    # package, not silently bind the wrong station.
+    # Fixer round (findings 1(c) + 2, 2026-07-23): re-enforce the
+    # persistence-critical invariants for EVERY accepted decision BEFORE any
+    # write — the `basin_static_packages` provenance row must not be inserted
+    # if any accepted basin fails a write invariant. The write path never
+    # trusts the "accepted" label alone:
+    #   - `_reenforce_write_invariants` independently re-derives geometry,
+    #     area, and coverage from the package (finding 1(c)), and rejects an
+    #     "accepted" decision that still carries hold reasons;
+    #   - `_validate_decision_identity` re-checks station identity;
+    #   - `_reject_correction_station_migration` rejects a correction whose
+    #     resolved station differs from the basin's EXISTING station binding
+    #     (finding 2 — a silent station migration would leave BOTH stations
+    #     bound with two §5a rows).
     for basin_decision in acceptance_report.accepted:
-        _validate_decision_identity(
-            station_store,
-            basin=_basin_for_decision(basin_by_key, basin_decision),
+        basin = _basin_for_decision(basin_by_key, basin_decision)
+        _reenforce_write_invariants(
+            basin,
             decision=basin_decision,
+            coverage=coverage_by_key.get((basin.network, basin.basin_code)),
+        )
+        _validate_decision_identity(station_store, basin=basin, decision=basin_decision)
+        _reject_correction_station_migration(
+            conn,
+            basin_store,
+            basin=basin,
+            station_id=_require_station_id(basin_decision),
         )
 
     # Canonical step 2: package provenance FIRST. `basins.package_id`,
@@ -174,6 +223,7 @@ def import_basin_package(
             climatology_window=_serialize_climatology_window(
                 loaded.manifest.climatology_window
             ),
+            fingerprint=fingerprint,
         )
     )
 
@@ -203,27 +253,172 @@ def import_basin_package(
 
 
 def _package_import_decision(
-    conn: sa.Connection, package_id: PackageId, loaded: LoadedBasinPackage
+    conn: sa.Connection, package_id: PackageId, fingerprint: str
 ) -> Literal["no_op", "proceed"]:
-    """Task 2C's idempotency/correction branch, package-level half: same
-    ``package_id`` + identical computed checksums is a no-op; same
-    ``package_id`` + DIFFERENT checksums is an immutability violation
-    (raises). An unseen ``package_id`` proceeds (per-basin new-vs-correction
-    is then decided per basin in :func:`_import_one_basin`)."""
-    existing_checksums = conn.execute(
-        sa.select(basin_static_packages.c.checksums).where(
+    """Task 2C's idempotency/correction branch, package-level half — now keyed
+    on the CANONICAL FINGERPRINT (fixer round finding 3, 2026-07-23), not the
+    payload checksums alone: same ``package_id`` + identical stored fingerprint
+    is a no-op; same ``package_id`` + ANY differing fingerprint field
+    (network/contract_version/extractor version/source_datasets/
+    climatology_window/manifest file set OR payload checksums) is an
+    immutability violation (raises). An unseen ``package_id`` proceeds
+    (per-basin new-vs-correction is then decided per basin in
+    :func:`_import_one_basin`)."""
+    existing_fingerprint = conn.execute(
+        sa.select(basin_static_packages.c.fingerprint).where(
             basin_static_packages.c.package_id == package_id
         )
     ).scalar_one_or_none()
-    if existing_checksums is None:
+    if existing_fingerprint is None:
         return "proceed"
-    if dict(existing_checksums) == dict(loaded.computed_checksums):
+    if existing_fingerprint == fingerprint:
         return "no_op"
     raise BasinPackageRejectedError(
-        f"package {package_id!r} was already imported with different "
-        "computed checksums — packages are immutable once accepted; a "
-        "content change requires a NEW package_id (contract §10, 04:676)"
+        f"package {package_id!r} was already imported with a different package "
+        f"fingerprint (stored {existing_fingerprint!r}, supplied {fingerprint!r}) "
+        "— packages are immutable once accepted; a content change (including a "
+        "manifest-only metadata change) requires a NEW package_id "
+        "(contract §11, 04:676)"
     )
+
+
+def _verify_decisions_cover_package(
+    acceptance_report: BasinPackageAcceptanceReport, loaded: LoadedBasinPackage
+) -> None:
+    """Finding 1(b): the decision set must be a 1:1 cover of the package's
+    basins keyed on ``(network, basin_code)`` — reject a report that
+    double-decides a basin, omits one, or decides a basin the package does not
+    contain. Without this, a mismatched report could persist a subset (or a
+    superset) of the package's basins and silently diverge from the package the
+    fingerprint just bound it to."""
+    decision_keys = [(d.network, d.basin_code) for d in acceptance_report.decisions]
+    seen: set[tuple[str, str]] = set()
+    duplicate_keys: set[tuple[str, str]] = set()
+    for key in decision_keys:
+        if key in seen:
+            duplicate_keys.add(key)
+        seen.add(key)
+    duplicates = sorted(duplicate_keys)
+    if duplicates:
+        raise BasinPackageRejectedError(
+            f"acceptance report has duplicate decision(s) for basin(s) {duplicates} "
+            "— the decision set must be a 1:1 cover of the package's basins"
+        )
+    decision_set = set(decision_keys)
+    package_set = {(b.network, b.basin_code) for b in loaded.basins}
+    missing = sorted(package_set - decision_set)
+    extra = sorted(decision_set - package_set)
+    if missing or extra:
+        raise BasinPackageRejectedError(
+            "acceptance report does not exactly cover the package's basins — "
+            f"missing decision(s) for {missing}, extra decision(s) for {extra}; "
+            "the report does not correspond to the supplied package"
+        )
+
+
+def _coverage_by_key(
+    loaded: LoadedBasinPackage,
+) -> dict[tuple[str, str], Any]:
+    """Per-basin ``coverage_status`` (from the REQUIRED ``validation_report``)
+    keyed on ``(network, basin_code)`` — the same source Task 1B's acceptance
+    reads, re-read here so the write boundary can INDEPENDENTLY re-check
+    coverage rather than trust the accepted label (finding 1(c))."""
+    return {
+        (entry.network, entry.basin_code): entry.checks.get("coverage_status")
+        for entry in loaded.validation_report.basins
+    }
+
+
+def _reenforce_write_invariants(
+    basin: BasinRecord,
+    *,
+    decision: BasinAcceptanceDecision,
+    coverage: Any,
+) -> None:
+    """Finding 1(c): INDEPENDENTLY re-enforce the persistence-critical
+    invariants for an ``accepted`` basin at the write boundary — do NOT trust
+    the acceptance label. The geometry, area, and coverage checks re-derive
+    from the loaded package itself (so even a report that clears its own
+    ``hold_reasons`` cannot smuggle a bad basin past this gate). The
+    required-static-feature invariant (§9) is model-assignment-dependent and
+    has no package-intrinsic source at the write layer (this Phase-2 slice has
+    no DB per-station model-assignment source — see
+    ``basin_package_loader.evaluate_basin_acceptance``); it is enforced by
+    rejecting an ``accepted`` decision that still carries ANY recorded
+    ``hold_reasons`` (an accepted basin has none — a flipped hold→accepted
+    decision retains them). Any failure rejects the WHOLE package before the
+    provenance row is written."""
+    geometry = basin.geometry
+    if (
+        geometry is None
+        or geometry.is_empty
+        or not geometry.is_valid
+        or geometry.has_z
+        or geometry.geom_type not in ("Polygon", "MultiPolygon")
+    ):
+        raise BasinPackageRejectedError(
+            f"accepted basin (network={basin.network!r}, "
+            f"basin_code={basin.basin_code!r}) geometry is missing, empty, invalid, "
+            "or not a 2-D Polygon/MultiPolygon in EPSG:4326 — the write boundary "
+            "re-derived this from the package and refuses to persist it regardless "
+            "of the acceptance label (contract §9)"
+        )
+    if math.isnan(basin.area_km2) or basin.area_km2 <= 0:
+        raise BasinPackageRejectedError(
+            f"accepted basin (network={basin.network!r}, "
+            f"basin_code={basin.basin_code!r}) has non-positive area_km2 "
+            f"({basin.area_km2}) — refusing to persist regardless of the "
+            "acceptance label (contract §9)"
+        )
+    if coverage == "outside":
+        raise BasinPackageRejectedError(
+            f"accepted basin (network={basin.network!r}, "
+            f"basin_code={basin.basin_code!r}) lies OUTSIDE required coverage "
+            "(validation_report coverage_status) — refusing to persist regardless "
+            "of the acceptance label (contract §9)"
+        )
+    if decision.hold_reasons:
+        raise BasinPackageRejectedError(
+            f"accepted decision for basin (network={basin.network!r}, "
+            f"basin_code={basin.basin_code!r}) still carries hold reason(s) "
+            f"{list(decision.hold_reasons)!r} — an 'accepted' outcome must not "
+            "carry any recorded hold (required-static-feature §9 hold, or a "
+            "flipped hold→accepted decision); refusing to persist"
+        )
+
+
+def _reject_correction_station_migration(
+    conn: sa.Connection,
+    basin_store: PgBasinStore,
+    *,
+    basin: BasinRecord,
+    station_id: StationId,
+) -> None:
+    """Finding 2 (major, 2026-07-23): a correction (a new ``package_id`` over an
+    EXISTING ``(network, basin_code)``) whose resolved station differs from the
+    basin's EXISTING station binding must be REJECTED — the station association
+    is part of stable basin identity. Left unchecked, the correction would bind
+    the NEW station (``stations.basin_id`` + a new §5a row) while the OLD
+    station stayed bound to the same basin, leaving BOTH stations mapped to it
+    (two §5a rows). No silent migration: an operator-approved basin→station
+    migration is out of Phase-2 scope."""
+    existing = basin_store.fetch_basin_by_code(basin.basin_code, basin.network)
+    if existing is None:
+        return  # a NEW basin — no prior station binding to conflict with
+    bound_station_ids = (
+        conn.execute(sa.select(stations.c.id).where(stations.c.basin_id == existing.id))
+        .scalars()
+        .all()
+    )
+    if bound_station_ids and station_id not in bound_station_ids:
+        raise BasinPackageRejectedError(
+            f"correction for basin (network={basin.network!r}, "
+            f"basin_code={basin.basin_code!r}) resolves to station {station_id}, "
+            f"but that basin is already bound to station(s) "
+            f"{[str(s) for s in bound_station_ids]} — a correction may not change "
+            "the basin's station identity; refusing to silently migrate it (an "
+            "operator-approved migration is out of Phase-2 scope)"
+        )
 
 
 def _require_real_transaction(conn: sa.Connection) -> None:

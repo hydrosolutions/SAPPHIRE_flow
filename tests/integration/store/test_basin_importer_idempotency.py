@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -21,10 +21,12 @@ import sqlalchemy as sa
 from shapely.geometry import MultiPolygon, Polygon
 
 from sapphire_flow.db.metadata import (
+    basin_static_packages,
     basin_versions,
     basins,
     model_artifact_basin_versions,
     models,
+    recap_gateway_polygon_bindings,
 )
 from sapphire_flow.exceptions import BasinPackageRejectedError
 from sapphire_flow.services.basin_package_loader import (
@@ -36,6 +38,7 @@ from sapphire_flow.store.basin_store import PgBasinStore
 from sapphire_flow.store.model_artifact_store import PgModelArtifactStore
 from sapphire_flow.store.station_store import PgStationStore
 from sapphire_flow.types.basin import Basin
+from sapphire_flow.types.basin_package import ClimatologyWindow
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.ids import ArtifactId, BasinId, ModelId, StationId
 from tests.conftest import make_station_config
@@ -139,6 +142,43 @@ class TestReimportAndCorrections:
             .where(sa.and_(basins.c.code == "123", basins.c.network == "dhm"))
         ).scalar_one()
         assert rows == 1
+
+    def test_same_package_id_manifest_only_mutation_rejects(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """Finding 3: idempotency compares the CANONICAL FINGERPRINT, not the
+        payload checksums alone. A re-import under the SAME `package_id` with
+        IDENTICAL payload checksums but a changed manifest metadata field
+        (here: `climatology_window`) is an immutability violation, not a silent
+        `already_imported` no-op (contract §11, 04:676)."""
+        station_id = _seed_station(db_connection)
+        loaded, report = _load_and_accept(station_id)
+        import_basin_package(db_connection, loaded, report, clock=_clock)
+
+        # SAME package_id, SAME computed_checksums — only the manifest's
+        # climatology_window changes.
+        mutated = dataclasses.replace(
+            loaded,
+            manifest=dataclasses.replace(
+                loaded.manifest,
+                climatology_window=ClimatologyWindow(
+                    start=date(1990, 1, 1), end=date(2019, 12, 31)
+                ),
+            ),
+        )
+        mutated_report = evaluate_basin_acceptance(
+            mutated,
+            resolve_station=lambda code, network: (
+                station_id if (code, network) == ("123", "dhm") else None
+            ),
+        )
+        # The fingerprint must actually cover the mutated manifest field —
+        # else this test could not distinguish it from an identical re-import.
+        assert mutated_report.fingerprint != report.fingerprint
+        assert mutated.computed_checksums == loaded.computed_checksums
+
+        with pytest.raises(BasinPackageRejectedError, match="fingerprint"):
+            import_basin_package(db_connection, mutated, mutated_report, clock=_clock)
 
     def test_reimport_same_package_id_different_checksum_rejects(
         self, db_connection: sa.Connection
@@ -261,6 +301,83 @@ class TestReimportAndCorrections:
             .where(basin_versions.c.basin_id == unrelated_id)
         ).scalar_one()
         assert version_count == 1
+
+
+class TestCorrectionStationIdentityGuard:
+    """Finding 2 (major): a correction (new `package_id` over an existing
+    `(network, basin_code)`) whose resolved station differs from the basin's
+    EXISTING station binding must be REJECTED — the station association is part
+    of stable basin identity. A silent migration would leave BOTH stations
+    bound (two §5a rows)."""
+
+    def test_correction_naming_different_station_rejected_leaves_all_unchanged(
+        self, db_connection: sa.Connection
+    ) -> None:
+        station_a = _seed_station(db_connection, code="123", network="dhm")
+        loaded, report = _load_and_accept(station_a)
+        import_basin_package(db_connection, loaded, report, clock=_clock)
+        basin_id = db_connection.execute(
+            sa.select(basins.c.id).where(basins.c.code == "123")
+        ).scalar_one()
+
+        # A DIFFERENT station (same network, code "999") the correction wants
+        # to migrate the SAME basin (basin_code 123) onto.
+        station_b = _seed_station(db_connection, code="999", network="dhm")
+        corrected_basins = tuple(
+            dataclasses.replace(b, station_code="999", name="g_999")
+            if b.basin_code == "123"
+            else b
+            for b in loaded.basins
+        )
+        corrected = dataclasses.replace(
+            loaded,
+            manifest=dataclasses.replace(
+                loaded.manifest, package_id="nepal-dhm-basins-v2"
+            ),
+            basins=corrected_basins,
+            computed_checksums={"basins.gpkg": "sha256:" + "a" * 64},
+        )
+        corrected_report = evaluate_basin_acceptance(
+            corrected,
+            resolve_station=lambda code, network: (
+                station_b if (code, network) == ("999", "dhm") else None
+            ),
+        )
+        assert corrected_report.decisions[0].outcome == "accepted"
+
+        with pytest.raises(BasinPackageRejectedError, match="station"):
+            import_basin_package(
+                db_connection, corrected, corrected_report, clock=_clock
+            )
+
+        # Everything is UNCHANGED: station A still bound, B still unbound,
+        # a single version, station A's the only §5a binding, and no v2
+        # provenance row.
+        stations_store = PgStationStore(db_connection)
+        assert stations_store.fetch_station(station_a).basin_id == basin_id
+        assert stations_store.fetch_station(station_b).basin_id is None
+        version_count = db_connection.execute(
+            sa.select(sa.func.count())
+            .select_from(basin_versions)
+            .where(basin_versions.c.basin_id == basin_id)
+        ).scalar_one()
+        assert version_count == 1
+        binding_stations = (
+            db_connection.execute(
+                sa.select(recap_gateway_polygon_bindings.c.station_id).where(
+                    recap_gateway_polygon_bindings.c.basin_id == basin_id
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert set(binding_stations) == {station_a}
+        pkg_count = db_connection.execute(
+            sa.select(sa.func.count())
+            .select_from(basin_static_packages)
+            .where(basin_static_packages.c.package_id == "nepal-dhm-basins-v2")
+        ).scalar_one()
+        assert pkg_count == 0
 
 
 def _seed_model(conn: sa.Connection) -> ModelId:

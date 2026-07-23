@@ -309,6 +309,189 @@ class TestFiveAMappingPopulation:
         assert rows[0]["gateway_hru_name"] == "nepal_dhm_v2"
 
 
+def _resolver(station_id: StationId):  # noqa: ANN202 - test helper
+    return lambda code, network: (
+        station_id if (code, network) == ("123", "dhm") else None
+    )
+
+
+class TestReportPackageBinding:
+    """Finding 1(a): the acceptance report must be BOUND to the exact loaded
+    package via the canonical fingerprint. A report whose fingerprint does not
+    equal the loaded package's fingerprint is rejected BEFORE any idempotency
+    check or write — a report can never be silently applied to a different
+    package than the one it was evaluated on."""
+
+    def test_report_fingerprint_mismatch_rejected_before_any_write(
+        self, db_connection: sa.Connection
+    ) -> None:
+        station_id = _seed_station(db_connection)
+        loaded, report = _load_and_accept(station_id)
+        tampered = dataclasses.replace(report, fingerprint="sha256:" + "0" * 64)
+
+        with pytest.raises(BasinPackageRejectedError, match="fingerprint"):
+            import_basin_package(db_connection, loaded, tampered, clock=_clock)
+
+        package_count = db_connection.execute(
+            sa.select(sa.func.count()).select_from(basin_static_packages)
+        ).scalar_one()
+        assert package_count == 0
+
+
+class TestDecisionCoverage:
+    """Finding 1(b): the decision set must be a 1:1 cover of the package's
+    basins. A report that omits (or double-decides, or over-decides) a package
+    basin is rejected before any write."""
+
+    def test_report_missing_a_package_basin_rejected(
+        self, db_connection: sa.Connection
+    ) -> None:
+        station_id = _seed_station(db_connection)
+        loaded, report = _load_and_accept(station_id)
+        # Drop the only decision — the report no longer covers the package.
+        empty_report = dataclasses.replace(report, decisions=())
+
+        with pytest.raises(BasinPackageRejectedError, match="cover"):
+            import_basin_package(db_connection, loaded, empty_report, clock=_clock)
+
+        package_count = db_connection.execute(
+            sa.select(sa.func.count()).select_from(basin_static_packages)
+        ).scalar_one()
+        assert package_count == 0
+
+
+class TestWriteInvariantReenforcement:
+    """Finding 1(c): the write boundary INDEPENDENTLY re-enforces the
+    persistence-critical invariants for every accepted basin — it never trusts
+    the acceptance label. For EACH invariant, a genuinely held basin is flipped
+    hold->accepted and the importer MUST still reject BEFORE the
+    `basin_static_packages` provenance row is written."""
+
+    def _held_report_flipped_to_accepted(
+        self,
+        loaded: LoadedBasinPackage,
+        station_id: StationId,
+        *,
+        keep_hold_reasons: bool,
+        assigned_model_features=None,  # noqa: ANN001 - test seam
+    ) -> BasinPackageAcceptanceReport:
+        report = evaluate_basin_acceptance(
+            loaded,
+            resolve_station=_resolver(station_id),
+            assigned_model_features=assigned_model_features,
+        )
+        assert report.decisions[0].outcome == "onboarding_hold"
+        flipped = tuple(
+            dataclasses.replace(
+                d,
+                outcome="accepted",
+                hold_reasons=d.hold_reasons if keep_hold_reasons else (),
+            )
+            for d in report.decisions
+        )
+        return dataclasses.replace(report, decisions=flipped)
+
+    def _assert_no_provenance(self, conn: sa.Connection) -> None:
+        count = conn.execute(
+            sa.select(sa.func.count()).select_from(basin_static_packages)
+        ).scalar_one()
+        assert count == 0
+
+    def test_invalid_geometry_flipped_to_accepted_rejected(
+        self, db_connection: sa.Connection
+    ) -> None:
+        station_id = _seed_station(db_connection)
+        loaded = load_basin_package(FIXTURE_DIR)
+        # A self-intersecting (bow-tie) polygon — a valid Polygon TYPE but
+        # topologically invalid; PostGIS would store it happily without the
+        # write-boundary re-derivation, so this proves fail-before cleanly.
+        bowtie = Polygon([(0.0, 0.0), (1.0, 1.0), (1.0, 0.0), (0.0, 1.0), (0.0, 0.0)])
+        assert not bowtie.is_valid
+        bad_basins = tuple(
+            dataclasses.replace(b, geometry=bowtie) if b.basin_code == "123" else b
+            for b in loaded.basins
+        )
+        bad_loaded = dataclasses.replace(loaded, basins=bad_basins)
+        report = self._held_report_flipped_to_accepted(
+            bad_loaded, station_id, keep_hold_reasons=False
+        )
+
+        with pytest.raises(BasinPackageRejectedError, match="geometry"):
+            import_basin_package(db_connection, bad_loaded, report, clock=_clock)
+        self._assert_no_provenance(db_connection)
+
+    def test_non_positive_area_flipped_to_accepted_rejected(
+        self, db_connection: sa.Connection
+    ) -> None:
+        station_id = _seed_station(db_connection)
+        loaded = load_basin_package(FIXTURE_DIR)
+        bad_basins = tuple(
+            dataclasses.replace(b, area_km2=-5.0) if b.basin_code == "123" else b
+            for b in loaded.basins
+        )
+        bad_loaded = dataclasses.replace(loaded, basins=bad_basins)
+        report = self._held_report_flipped_to_accepted(
+            bad_loaded, station_id, keep_hold_reasons=False
+        )
+
+        with pytest.raises(BasinPackageRejectedError, match="area"):
+            import_basin_package(db_connection, bad_loaded, report, clock=_clock)
+        self._assert_no_provenance(db_connection)
+
+    def test_outside_coverage_flipped_to_accepted_rejected(
+        self, db_connection: sa.Connection
+    ) -> None:
+        station_id = _seed_station(db_connection)
+        loaded = load_basin_package(FIXTURE_DIR)
+        entry = loaded.validation_report.basins[0]
+        outside_entry = dataclasses.replace(
+            entry, checks={**entry.checks, "coverage_status": "outside"}
+        )
+        bad_report_source = dataclasses.replace(
+            loaded,
+            validation_report=dataclasses.replace(
+                loaded.validation_report, basins=(outside_entry,)
+            ),
+        )
+        report = self._held_report_flipped_to_accepted(
+            bad_report_source, station_id, keep_hold_reasons=False
+        )
+
+        with pytest.raises(BasinPackageRejectedError, match="coverage"):
+            import_basin_package(db_connection, bad_report_source, report, clock=_clock)
+        self._assert_no_provenance(db_connection)
+
+    def test_required_static_feature_hold_flipped_to_accepted_rejected(
+        self, db_connection: sa.Connection
+    ) -> None:
+        station_id = _seed_station(db_connection)
+        loaded = load_basin_package(FIXTURE_DIR)
+        attr = loaded.feature_catalog[0].name
+        # Make `attr` catalog-required AND null it for the basin, then declare
+        # it required by the basin's assigned model — a genuine §9 hold.
+        catalog = tuple(
+            dataclasses.replace(e, required_by_models=("dummy_model",))
+            if e.name == attr
+            else e
+            for e in loaded.feature_catalog
+        )
+        nulled = dict(loaded.static_attributes)
+        nulled["nepal_123"] = {**nulled["nepal_123"], attr: None}
+        bad_loaded = dataclasses.replace(
+            loaded, feature_catalog=catalog, static_attributes=nulled
+        )
+        report = self._held_report_flipped_to_accepted(
+            bad_loaded,
+            station_id,
+            keep_hold_reasons=True,
+            assigned_model_features=lambda basin: frozenset({attr}),
+        )
+
+        with pytest.raises(BasinPackageRejectedError, match="hold reason"):
+            import_basin_package(db_connection, bad_loaded, report, clock=_clock)
+        self._assert_no_provenance(db_connection)
+
+
 class TestStationIdentityValidation:
     """Fixer round (major finding, 2026-07-23): ``_basin_for_decision`` only
     verifies the ``(network, basin_code)`` KEY exists in the loaded package

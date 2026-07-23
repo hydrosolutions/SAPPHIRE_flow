@@ -266,15 +266,19 @@ Landed so far, across four passes:
   `PgBasinStore.store_basin` as the single atomic basin+`version=1` creation CTE. The
   `band_geometries` `json.dumps` JSONB bug was fixed as part of this same rewrite (see the
   corrected Task 2B bullet below — it does NOT need to fix this again).
-- **Task 2B — PARTIAL** (fixer pass, hardened in the second fixer pass): the §5a
+- **Task 2B — DONE for the basin-average path** (fixer pass, hardened in the second fixer
+  pass; package-driven population landed in the Phase-2 slice): the §5a
   store-layer provenance write path (`GatewayPolygonBindingRow.package_id`/`imported_at`,
   `store_binding` write/upsert) is DONE, and the `basin_average` correction-replace path is
   a single atomic `INSERT ... ON CONFLICT (station_id) WHERE spatial_type='basin_average'
   DO UPDATE` (not a two-statement DELETE-then-INSERT — that shipped in round 1 and was
   SUPERSEDED in round 2 for a silent-drop-on-partial-failure bug; see the SUPERSEDED note
-  below). The package-driven population itself (something that actually calls
-  `store_binding` from an accepted package's dissolved geometries) is NOT built — it
-  depends on Task 1A/1B/2A below.
+  below). The package-driven population itself (`import_basin_package` calling `store_binding`
+  from an accepted package's dissolved geometries, via the shared `_basin_average_binding`
+  row-shaper) is IMPLEMENTED in the Phase-2 slice. The **ONLY** remaining Task 2B item is the
+  band-level `elevation_band` §5a row writer, intentionally deferred out of v1 scope (D-BAND —
+  Recap v1 is basin-average-only; band **geometries** are still persisted to
+  `basins.band_geometries`).
 - **Task 2D — DONE, including the service-level onboarding path (third fixer pass)**:
   `record_artifact_basin_lineage` helper (`store/model_artifact_lineage.py`), wired into
   `train_models_flow`, `onboard_model_flow`, AND `services/model_onboarding.onboard_model`
@@ -683,7 +687,7 @@ Regression coverage: `tests/integration/store/test_basin_importer_persistence.py
 `TestPackageAtomicity`, `TestStationIdentityValidation`, `TestCorrectionRefreshesBasinName`)
 and `tests/integration/store/test_basin_store.py` (`TestUpdateBasinFromPackageAtomicity`).
 
-#### Task 2B — §5a mapping population + band persistence + store JSONB fix — PARTIAL (store-layer write/replace path done, fixer pass; package-driven population still open)
+#### Task 2B — §5a mapping population + band persistence + store JSONB fix — DONE for basin-average (store-layer write/replace path + package-driven population landed); ONLY the band-level `elevation_band` §5a writer is deferred (D-BAND, out of v1 scope)
 
 **Scope in:** Populate the §5a mapping table (`station_id, basin_id, gateway_hru_name,
 name, spatial_type, band_id, package_id, imported_at`) from the accepted package.
@@ -780,8 +784,10 @@ and the basin_average replace path both landed —
 (`TestProvenanceWritePath`, `TestBasinAverageUniquenessConstraint`). **Note (second fixer
 round, 2026-07-22):** the replace path shipped as two-statement DELETE-then-INSERT and was
 then hardened to a single atomic `INSERT ... ON CONFLICT DO UPDATE` statement — see the
-SUPERSEDED note above. The package-driven population itself (Task 1A/1B loader → this
-store) is still open.
+SUPERSEDED note above. The package-driven population itself (Task 1A/1B loader →
+`import_basin_package` → this store) IS IMPLEMENTED in the Phase-2 slice
+(`tests/integration/store/test_basin_importer_persistence.py::TestFiveAMappingPopulation`);
+only the band-level `elevation_band` §5a writer remains deferred (D-BAND, out of v1 scope).
 
 ```bash
 # Store-layer provenance/replace path (fixer pass, DONE):
