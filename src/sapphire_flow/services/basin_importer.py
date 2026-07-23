@@ -15,11 +15,15 @@ Two entrypoints:
   already-loaded package and an already-open, non-AUTOCOMMIT
   ``sa.Connection`` (matching ``store.basin_importer.import_basin_package``'s
   own transaction contract). Runs the whole write pipeline inside a
-  SAVEPOINT (``conn.begin_nested()``): a Task 2A/2C write-boundary
-  :class:`~sapphire_flow.exceptions.BasinPackageRejectedError` is caught,
-  the savepoint is rolled back (so the caller's outer transaction is never
-  left in Postgres's "aborted" state), and the rejection is folded into the
-  returned report instead of propagating.
+  SAVEPOINT context (``with conn.begin_nested():``) that auto-commits on
+  success and auto-ROLLS-BACK on ANY exception — anticipated or not: a Task
+  2A/2C write-boundary
+  :class:`~sapphire_flow.exceptions.BasinPackageRejectedError` is caught
+  OUTSIDE the context (after the savepoint has cleanly rolled back) and
+  folded into the returned report instead of propagating, while an
+  UNEXPECTED failure propagates with the savepoint already released — so the
+  caller's outer transaction is never left in Postgres's "aborted" state nor
+  with a dangling, unreleased savepoint.
 - :func:`import_basin_package_from_directory` — the CLI-facing wrapper. Reads
   a package directory (``load_basin_package``) and opens ONE transaction on
   ``engine`` (``engine.begin()``) for the whole run, delegating to
@@ -102,11 +106,19 @@ def import_loaded_basin_package(
         )
         return _rejected_report(loaded.manifest.package_id, exc)
 
-    savepoint = conn.begin_nested()
+    # Wrap the write in a SAVEPOINT context so it auto-COMMITs on success and
+    # auto-ROLLS-BACK on ANY exception — anticipated or not. An UNEXPECTED
+    # (non-``BasinPackageRejectedError``) failure then propagates with the
+    # savepoint already released, so the caller's OUTER transaction (Plan 143's
+    # onboarding flow calls this core programmatically inside its own
+    # transaction) stays usable rather than being left with a dangling,
+    # unreleased savepoint. An anticipated whole-package rejection is caught
+    # OUTSIDE the ``with`` block — after the savepoint has cleanly rolled back —
+    # and folded into the returned report instead of propagating.
     try:
-        result = import_basin_package(conn, loaded, acceptance_report, clock=clock)
+        with conn.begin_nested():
+            result = import_basin_package(conn, loaded, acceptance_report, clock=clock)
     except BasinPackageRejectedError as exc:
-        savepoint.rollback()
         log.warning(
             "basin_importer.package_rejected_at_write",
             package_id=loaded.manifest.package_id,
@@ -118,7 +130,6 @@ def import_loaded_basin_package(
             accepted=acceptance_report.accepted,
             onboarding_held=acceptance_report.onboarding_held,
         )
-    savepoint.commit()
 
     outcome = "already_imported" if result.already_imported else "imported"
     log.info(

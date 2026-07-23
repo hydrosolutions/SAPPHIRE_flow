@@ -26,15 +26,26 @@ checksums.sha256            # OPTIONAL — sidecar hash file (must agree with ma
 
 ## `basin_static_packages` provenance
 
-Every successful (or already-imported) run writes/matches exactly one
-`basin_static_packages` row keyed on the manifest's `package_id` — the
-producer-declared identifier, `network`, `contract_version`, the extractor
-name/version, `source_datasets`, `climatology_window`, and the importer's
-own computed payload checksums (retained even though the package's files
-themselves are discarded after import, contract §11). This is the row every
-`basins`/`basin_versions`/§5a row for this import FK-references — "which
-package produced this basin's current state" is answered by joining back to
-this table (see "Reading the acceptance report" below).
+A `basin_static_packages` row keyed on the manifest's `package_id` records
+the producer-declared identifier, `network`, `contract_version`, the
+extractor name/version, `source_datasets`, `climatology_window`, and the
+importer's own computed payload checksums (retained even though the package's
+files themselves are discarded after import, contract §11). This is the row
+every `basins`/`basin_versions`/§5a row for this import FK-references —
+"which package produced this basin's current state" is answered by joining
+back to this table (see "Reading the acceptance report" below).
+
+The provenance row exists **only once at least one basin has actually been
+imported** under this `package_id` — every run that writes a basin
+writes/matches exactly one such row (it is inserted on the first import and
+matched on every later import over the same package). The explicit
+exception is a **fully-held (zero-accepted) run**: a run whose accepted set
+is empty — every basin still onboarding-held — reports `already_imported`,
+writes NO basin/version/§5a rows, and writes NO `basin_static_packages`
+provenance row either, so the `package_id` is never "locked" by a run that
+persisted nothing. It is picked up (and the provenance row written) on the
+first later run that actually imports a basin once its hold clears (see
+"Idempotency" below, lines documenting the fully-held case).
 
 The extraction tool that produces this package is **adjacent** — SAP3 does
 not call it (contract §12, `docs/plans/117-basin-static-artifact-

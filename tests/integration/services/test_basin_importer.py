@@ -22,13 +22,14 @@ exercised end-to-end below.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
-import os
 import uuid
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
 import sqlalchemy as sa
 
 from sapphire_flow.db.metadata import basin_static_packages
@@ -305,6 +306,55 @@ class TestImporterAcceptanceReport:
         # still succeed.
         still_alive = db_connection.execute(sa.select(sa.literal(1))).scalar_one()
         assert still_alive == 1
+
+    def test_unexpected_writer_error_propagates_and_leaves_conn_usable(
+        self, db_connection: sa.Connection, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An UNEXPECTED (non-``BasinPackageRejectedError``) failure from the
+        writer must (a) PROPAGATE — it is a bug, not a business rejection to
+        fold into the report — and (b) leave the caller's connection USABLE:
+        the SAVEPOINT ``import_loaded_basin_package`` opens must have been
+        cleanly rolled back and released, never left dangling/aborted (Plan
+        143's onboarding flow calls this core inside its OWN transaction, so a
+        lingering savepoint would poison the caller).
+
+        The injected writer FIRST issues a statement Postgres rejects (the
+        realistic shape of a mid-pipeline bug — the real writer runs several
+        DB statements before it could hit an unexpected error), aborting the
+        savepoint at the DB level, THEN raises a plain ``RuntimeError``. Under
+        the buggy ``savepoint = conn.begin_nested()`` code the savepoint is
+        left neither committed nor rolled back, so the caller's transaction
+        stays ABORTED and the reuse ``SELECT 1`` below fails
+        (``InFailedSqlTransaction``) → RED. Under the ``with
+        conn.begin_nested():`` fix the savepoint auto-rolls back on the way
+        out, recovering the outer transaction → the reuse succeeds → GREEN."""
+        station_id = _seed_station(db_connection)
+        loaded = load_basin_package(FIXTURE_DIR)
+
+        def _boom(conn_arg: sa.Connection, *_args: object, **_kwargs: object) -> object:
+            # Dirty the transaction the way a partway-through writer would,
+            # then surface an unexpected (non-rejection) error.
+            with contextlib.suppress(sa.exc.ProgrammingError):
+                conn_arg.execute(sa.text("SELECT * FROM a_table_that_does_not_exist"))
+            raise RuntimeError("unexpected writer failure")
+
+        monkeypatch.setattr(
+            "sapphire_flow.services.basin_importer.import_basin_package", _boom
+        )
+
+        with pytest.raises(RuntimeError, match="unexpected writer failure"):
+            import_loaded_basin_package(
+                db_connection,
+                loaded,
+                resolve_station=_resolver(station_id),
+                clock=_clock,
+            )
+
+        # The savepoint auto-rolled back on the way out — a subsequent trivial
+        # statement on the SAME connection still succeeds, proving no aborted
+        # or unreleased savepoint was left behind.
+        still_usable = db_connection.execute(sa.text("SELECT 1")).scalar_one()
+        assert still_usable == 1
 
     def test_reimporting_identical_package_is_idempotent(
         self, db_connection: sa.Connection
@@ -617,7 +667,7 @@ class TestCliEntrypointRealTransaction:
     session (see the module docstring)."""
 
     def test_end_to_end_from_directory_commits_through_a_real_engine_begin(
-        self,
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from alembic.config import Config
         from testcontainers.postgres import PostgresContainer
@@ -631,7 +681,11 @@ class TestCliEntrypointRealTransaction:
             dbname="sapphire_cli_entrypoint_test",
         ) as pg:
             url = pg.get_connection_url().replace("+psycopg2", "+psycopg")
-            os.environ["DATABASE_URL"] = url
+            # `monkeypatch.setenv` restores the session-scoped `DATABASE_URL`
+            # (set by the `db_engine` fixture to the SHARED container) at test
+            # teardown — a bare `os.environ[...] =` here leaked this throwaway
+            # container's URL into every later test in the session.
+            monkeypatch.setenv("DATABASE_URL", url)
             engine = sa.create_engine(url)
             try:
                 alembic_cfg = Config("alembic.ini")
