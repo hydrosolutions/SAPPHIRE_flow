@@ -17,6 +17,7 @@ Structural YAML-parse checks only — no docker dependency, no live stack.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import yaml
 
@@ -29,17 +30,29 @@ def _repo_root() -> Path:
 
 
 def _base_compose() -> dict[str, object]:
-    return yaml.safe_load((_repo_root() / "docker-compose.yml").read_text())
+    loaded = yaml.safe_load((_repo_root() / "docker-compose.yml").read_text())
+    assert isinstance(loaded, dict)
+    return cast("dict[str, object]", loaded)
+
+
+def _service(compose: dict[str, object], service: str) -> dict[str, object]:
+    services = compose["services"]
+    assert isinstance(services, dict)
+    svc = cast("dict[str, object]", services)[service]
+    assert isinstance(svc, dict)
+    return cast("dict[str, object]", svc)
 
 
 def _service_env(compose: dict[str, object], service: str) -> dict[str, object]:
-    services = compose["services"]
-    assert isinstance(services, dict)
-    svc = services[service]
-    assert isinstance(svc, dict)
-    env = svc.get("environment") or {}
+    env: object = _service(compose, service).get("environment") or {}
     assert isinstance(env, dict)
-    return env
+    return cast("dict[str, object]", env)
+
+
+def _service_tmpfs(compose: dict[str, object], service: str) -> list[object]:
+    tmpfs: object = _service(compose, service).get("tmpfs") or []
+    assert isinstance(tmpfs, list)
+    return cast("list[object]", tmpfs)
 
 
 class TestPrefectHomeSetOnClientServices:
@@ -73,16 +86,10 @@ class TestPrefectHomeUnderWritableTmpfs:
     does not block the write (structural check: /tmp listed in `tmpfs:`)."""
 
     def test_prefect_worker_tmp_is_tmpfs(self) -> None:
-        compose = _base_compose()
-        svc = compose["services"]["prefect-worker"]
-        assert "/tmp" in svc.get("tmpfs", [])
+        assert "/tmp" in _service_tmpfs(_base_compose(), "prefect-worker")
 
     def test_prefect_worker_ingest_tmp_is_tmpfs(self) -> None:
-        compose = _base_compose()
-        svc = compose["services"]["prefect-worker-ingest"]
-        assert "/tmp" in svc.get("tmpfs", [])
+        assert "/tmp" in _service_tmpfs(_base_compose(), "prefect-worker-ingest")
 
     def test_init_tmp_is_tmpfs(self) -> None:
-        compose = _base_compose()
-        svc = compose["services"]["init"]
-        assert "/tmp" in svc.get("tmpfs", [])
+        assert "/tmp" in _service_tmpfs(_base_compose(), "init")
