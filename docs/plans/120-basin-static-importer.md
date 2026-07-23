@@ -298,6 +298,25 @@ Do not treat this plan as "landed" for Nepal production purposes on the strength
 
 ---
 
+## Incremental build sequence (slicing)
+
+This plan is large and lands in **slices**, each its own `/implement` run → hold-at-PR, so every
+PR stays reviewable:
+
+1. **Foundation** (Task 0A + 2D + the 2B store-layer write/replace path) — **DONE, merged in PR #124.**
+2. **Phase 1 — Tasks 1A + 1B** (package loader + checksums + feature-catalog + whole-package and
+   per-basin acceptance validation) — **THIS SLICE** (branch `feat/plan-120-phase1-loader`).
+3. **Phase 2 — Tasks 2A + 2C** (dissolve accepted package into `basins` + version snapshot; incremental
+   upsert + versioned corrections + idempotency + the 2B package-driven §5a population) — next slice.
+4. **Phase 3 — Tasks 3A + 3B** (importer entrypoint/CLI + acceptance report; docs/runbook) — final slice.
+
+**Scope rule for an `/implement` run: build ONLY the current slice's phase and STOP.** For THIS run,
+implement **Task 1A and Task 1B only** — do NOT build Task 2A/2C or Phase 3 in the same run; they are
+separate later slices with their own PRs. Tasks 0A/2B(store-layer)/2D are already on `main` (#124) —
+consume them, do not re-implement them.
+
+---
+
 ## Scope
 
 ### Phase 0 — Provenance + versioning schema
