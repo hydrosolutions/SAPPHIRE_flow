@@ -140,11 +140,15 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
   **basin/static architecture cleanup only** — 047 separately needs its
   **re-scope per Plan 106** before it advances.
 - **120** — Basin/static importer + §5a persistence + versioned basin state —
-  `READY` (implemented — foundation slice) — the importer the `04` contract §5a calls for. The
-  **foundation slice is built + tested**: Phase 0 schema/versioning (provenance layer,
-  basin-state versioning) + artifact lineage/gate. The import pipeline tasks (1A/1B/2A/2C/3A —
-  package import/validation, §5a-row population) are still to build. The extractor package landed
-  and was tested (HRU 12300). Blocks 082's *production* run (not its build).
+  `READY` (**implemented, all 4 slices — Phase 0/1/2/3 merged/landed**) — the importer the `04`
+  contract §5a calls for. Phase 0 (provenance/versioning schema), Phase 1 (package loader +
+  validation), and Phase 2 (dissolve/persist/correct into `basins`/`basin_versions`/§5a) are
+  merged to `main` (#124/#126/#128). Phase 3 (the `import_basin_package_from_directory`
+  orchestration entrypoint + `python -m sapphire_flow.cli.import_basin_package` CLI + the
+  operator-facing acceptance report + the importer runbook) is THIS slice. The extractor package
+  landed and was tested (HRU 12300). No longer gated on the extractor — the remaining gate is
+  operational only: run the importer against an accepted package before 082's resolver starts
+  returning non-`None` in production (see Plan 120 "Production-gate note").
 - **035** — Rating-curve provenance for skill integrity — `READY` — v1 DHM hQ.
 - **017** — Manual vs automatic station support — `DRAFT` — v1, DHM mixed networks.
 - **015** — Calculated station support (component-derived) — **MERGED (#109 storage+trigger,

@@ -256,10 +256,38 @@ row-shaping logic in one shared function that both call so they cannot drift.
 
 ---
 
-## Implementation status (Phase 2 slice, 2026-07-23 — keep current, do not let this drift)
+## Implementation status (Phase 3 slice, 2026-07-23 — keep current, do not let this drift)
 
-**NOT YET production-ready — Phase 3 (Task 3A entrypoint + Task 3B docs) still open.**
-Landed so far, across four passes:
+**All 4 slices (Phase 0/1/2/3) now implemented — the build side of Plan 120 is COMPLETE.**
+The only remaining gate before Nepal production enablement is operational, not a build gap:
+run the importer (`python -m sapphire_flow.cli.import_basin_package`) against an accepted
+package (see the Production-gate note, below, and
+`docs/operations/basin-static-importer-runbook.md`).
+
+- **Phase 3 (Task 3A + 3B) — DONE (this slice, branch `feat/plan-120-phase3-cli`)**:
+  `services/basin_importer.py::import_loaded_basin_package` / `import_basin_package_from_directory`
+  orchestrate Task 1A/1B (load + evaluate) and Task 2A/2C (`store/basin_importer.py::
+  import_basin_package`) into one call per package, returning the operator-facing
+  `types/basin_package.py::BasinPackageImportReport` (accepted / onboarding_held /
+  imported_basins / rejection_reason). `import_loaded_basin_package` runs the write pipeline
+  inside a SAVEPOINT (`conn.begin_nested()`) so a caught `BasinPackageRejectedError` never
+  poisons the caller's outer transaction — an anticipated whole-package or write-boundary
+  rejection is folded into the report (`outcome="rejected"`) instead of propagating; an
+  unanticipated failure (a bug, a transaction-contract violation) still raises. The CLI
+  entrypoint (`src/sapphire_flow/cli/import_basin_package.py`,
+  `python -m sapphire_flow.cli.import_basin_package --package-dir <dir>`) resolves stations
+  via the live `stations` table (network-scoped `fetch_station_by_code`), opens one
+  `engine.begin()` transaction for the whole run, logs the report, and exits non-zero on
+  `outcome="rejected"`. Docs synced: contract §5a/§6.2a/§11 (open-gap language replaced with
+  RESOLVED notes pointing at the importer), a new runbook
+  (`docs/operations/basin-static-importer-runbook.md`), `docs/plans/README.md` status.
+  `database-schema.md`/`architecture-context.md`/`types-and-protocols.md` were already
+  synced by the Phase 0/2D fixer-round doc work and needed no further edit here (verified,
+  not re-copied). Tests: `tests/integration/services/test_basin_importer.py` (red-first,
+  proven RED against a `NotImplementedError` stub before the real implementation),
+  `tests/unit/docs/test_basin_importer_docs.py`.
+
+Landed in earlier slices, across four passes:
 
 - **Task 0A — DONE** (`cbe3a1c`): provenance/versioning schema (`basin_static_packages`,
   `basin_versions`, `model_artifact_basin_versions`, additive `package_id` columns) +
@@ -296,24 +324,24 @@ Landed so far, across four passes:
   provenance, via `store_basin`), the Task 2B package-driven §5a `basin_average` population
   (via 082's `RecapGatewayPolygonStore.store_binding`, shaped by the ONE shared
   `_basin_average_binding` row-shaping function so 2A's `gateway_mapping` snapshot and 2B's
-  §5a row cannot drift), and Task 2C (package-level idempotency/immutability-rejection via
-  `_package_import_decision`; the correction branch via the new
+  §5a row cannot drift), and Task 2C (basin-aware idempotency + package-level
+  immutability-rejection via `_basin_needs_import`/`_resolve_package_provenance` — see the
+  Task 3A fixer-round note below for the 2026-07-23 basin-vs-package-level correction; the
+  correction branch via the new
   `PgBasinStore.update_basin_from_package` — stamp prior current `superseded_at`, append
   `version+1`, refresh the `basins` projection; the correction→affected-artifact-set query
   scoped to exactly the just-superseded `basin_version_id`). Decision A (absent-basin =
   untouched) holds by construction — the importer only ever touches basins referenced in
   `acceptance_report.accepted`.
-- **Phase 3 (Task 3A importer entrypoint/CLI + acceptance report, Task 3B docs/runbook) is
-  NOT implemented.** `import_basin_package` is the write-side function Task 3A will wrap
-  with file-loading + a CLI + the full accepted/held/rejected report; until Task 3A lands
-  there is no operator-facing way to run an import, so 082's store-backed resolver still
-  returns `None` for every station in a live deployment (Production-gate note, below) even
-  though the persistence path itself is now exercised (Live-Postgres integration tests:
-  `tests/integration/store/test_basin_importer_persistence.py`,
-  `tests/integration/store/test_basin_importer_idempotency.py`).
+- **Phase 3 (Task 3A importer entrypoint/CLI + acceptance report, Task 3B docs/runbook) —
+  DONE, see above.** The persistence path is exercised by both the Phase-2 Live-Postgres
+  integration tests (`tests/integration/store/test_basin_importer_persistence.py`,
+  `tests/integration/store/test_basin_importer_idempotency.py`) AND the Phase-3 orchestration
+  tests (`tests/integration/services/test_basin_importer.py`).
 
-Do not treat this plan as "landed" for Nepal production purposes on the strength of Task
-0A/1A/1B/2A/2B/2C/2D alone — Phase 3 (Task 3A/3B) is the blocking remainder.
+Every task (0A/1A/1B/2A/2B/2C/2D/3A/3B) is now implemented and tested. The plan is build-complete;
+Nepal production enablement still needs an accepted package actually run through the importer
+(Production-gate note, below — an operational step, not a code gap).
 
 ---
 
@@ -326,18 +354,23 @@ PR stays reviewable:
 2. **Phase 1 — Tasks 1A + 1B** (package loader + checksums + feature-catalog + whole-package and
    per-basin acceptance validation) — **DONE, merged in PR #126.**
 3. **Phase 2 — Tasks 2A + 2C + the 2B package-driven population** (dissolve accepted package into
-   `basins` + `version=1` snapshot + `basin_static_packages` provenance; the package-driven §5a
-   `basin_average` population via 082's `store_binding`; incremental upsert + versioned corrections +
-   idempotency + the correction→affected-artifact set) — **DONE, branch
-   `feat/plan-120-phase2-persistence`** (`store/basin_importer.py::import_basin_package` +
-   `PgBasinStore.update_basin_from_package`; hold-at-PR, not yet merged).
-4. **Phase 3 — Tasks 3A + 3B** (importer entrypoint/CLI + acceptance report; docs/runbook) — final slice,
-   **NOT started.**
+   `basins` + `version=1` snapshot + `basin_static_packages` provenance; package-driven §5a `basin_average`
+   population; incremental upsert + versioned corrections + idempotency + affected-artifact set) — **DONE,
+   merged in PR #128** (`store/basin_importer.py::import_basin_package` + `PgBasinStore.update_basin_from_package`,
+   canonical package fingerprint, migration 0040).
+4. **Phase 3 — Tasks 3A + 3B** (importer entrypoint/CLI + acceptance report; docs/runbook) — **DONE, THIS
+   SLICE** (branch `feat/plan-120-phase3-cli`, hold-at-PR). **The capstone: completes Plan 120.**
 
-Task 2A/2C go through `store_basin` (0A) and 082's `store_binding` (0A/2B) — the atomic single-object write
-paths — never their own basin/version/§5a SQL. Live-Postgres integration tests (per the plan's Verification
-blocks): `tests/integration/store/test_basin_importer_persistence.py`,
-`tests/integration/store/test_basin_importer_idempotency.py`.
+**Scope rule for THIS `/implement` run: build Task 3A + Task 3B only.** 3A is the top-level import
+entrypoint/function that ORCHESTRATES the already-merged pieces — `basin_package_loader` (Phase 1, #126) →
+`import_basin_package`/`update_basin_from_package` (Phase 2, #128) — into one call per package running the
+canonical write pipeline in one transaction, returning the structured acceptance report (accepted / onboarding-
+held+reasons / rejected / warnings / material-change / correction affected-artifact set — no separate
+lineage-write-failures field; see the Task 3A "Scope in" note below for why). 3B is docs (contract §5a/§6.2a/§11, `database-schema.md`, `architecture-context.md` basins section, the
+`record_artifact_basin_lineage` helper + `store_artifact` return-type fix, a new importer runbook, README status).
+Everything else (0A/1A/1B/2A/2B/2C/2D) is ALREADY on `main` (#124/#126/#128) — CONSUME, do not re-implement. Do
+NOT synthesize missing attributes / edit geometry to pass / silently fall back (`04:670-672`). End-to-end
+integration test against the checked-in fixture (`tests/fixtures/basin_static/nepal-dhm-basins/`).
 
 ---
 
@@ -1058,14 +1091,52 @@ validate (Task 1A → 1B) → branch idempotency/correction (Task 2C) → write 
 version (Task 2A `store_basin` for a new basin, or Task 2C's correction sub-steps) → call the
 §5a replace writer LAST (Task 2B). It returns a structured **acceptance report** (accepted
 basins, `onboarding`-held basins with reasons, package-level rejections, warnings,
-material-change flags, any lineage-write failures, and — for corrections — the emitted
-affected-artifact set from Task 2C) so the §9 "warnings MUST remain visible in onboarding
-reports" requirement (`04:653-655`) is met. The importer MUST NOT synthesize missing
+material-change flags, and — for corrections — the emitted affected-artifact set from Task
+2C) so the §9 "warnings MUST remain visible in onboarding reports" requirement
+(`04:653-655`) is met. **No separate `lineage_write_failures` field** (YAGNI decision, fixer
+round 2026-07-23): Task 2D's lineage write (`record_artifact_basin_lineage`) happens at
+model-TRAINING time (`train_models_flow`/`onboard_model_flow`), never during a package
+IMPORT run, so this report has nothing of that kind to carry — see
+`types/basin_package.py::BasinPackageImportReport` docstring. The importer MUST NOT synthesize missing
 attributes, edit geometry to pass validation, or fall back to another basin without a
 recorded operator decision (`04:670-672`).
 
 **Scope out:** No scheduling/Prefect flow (manual/onboarding-time invocation for v1); no
 Gateway upload automation; no model-training changes.
+
+**IMPLEMENTED then hardened (fixer round, independent Codex review, 2026-07-23 — blocker):**
+`import_basin_package`'s idempotency check was PACKAGE-level — an identical
+`(package_id, fingerprint)` short-circuited the whole run via `already_imported=True` before
+ever looking at which basins were actually written. Because the `basin_static_packages`
+provenance row was inserted unconditionally on the FIRST run over a `package_id` (even one
+with ZERO accepted basins — everything `onboarding_hold`), a rerun over the identical
+package hit that provenance row on every subsequent call and reported `already_imported`
+forever, so a basin that was held on the first run could **never** be picked up once its
+hold cleared — directly contradicting the runbook's "a held basin is picked up automatically
+once its hold reason clears" (§ "Idempotency"). Fixed by splitting the check in two:
+- `_resolve_package_provenance` (renamed from `_package_import_decision`) is now PURELY the
+  immutability check — same `package_id` + identical stored fingerprint returns `True`
+  ("a provenance row already exists, don't reinsert it"); a differing fingerprint still
+  raises `BasinPackageRejectedError`; an unseen `package_id` returns `False`.
+- `_basin_needs_import` is the new BASIN-level write gate: an accepted basin is skipped only
+  when its own current `basins.package_id` already equals this run's `package_id` — a
+  brand-new basin, a correction over a different prior `package_id`, and (the case this round
+  adds) a basin that was `onboarding_hold` last time this exact `package_id` ran and is
+  `accepted` now, all get (re)imported regardless of whether the package's own provenance
+  row already exists.
+- The `basin_static_packages` provenance row itself is now written only on the run that
+  actually imports at least one basin under this `package_id` — a fully-held run writes NO
+  provenance row, so it can never "lock" a `package_id` before anything from it has been
+  persisted. `BasinPackageImportResult.already_imported` is redefined accordingly:
+  `len(imported_basins) == 0` this run (covers both a true no-op replay and a fully-held run),
+  not "the package row already existed."
+
+Regression coverage (locking tests, proven RED against the pre-fix package-level gate):
+`tests/integration/services/test_basin_importer.py::TestReimportPicksUpFormerlyHeldBasins`
+— all-held first run → resolve the hold → an identical rerun imports the basin; a mixed
+accepted/held first run → rerun imports ONLY the formerly held basin (the already-imported
+one is skipped, not re-corrected); a third, fully-identical run is a true no-op (provenance
+row written exactly once).
 
 **Verification:** an end-to-end fixture package produces a report with the exact
 accepted/held/rejected partition and populated provenance; a package that would require

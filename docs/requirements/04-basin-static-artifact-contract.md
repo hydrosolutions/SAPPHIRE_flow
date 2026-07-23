@@ -316,12 +316,18 @@ whole replace or none of it — a two-statement DELETE-then-INSERT was tried
 first and rejected: a failure on the INSERT half left the DELETE already
 committed, silently dropping the station's binding), so a correction
 (HRU/name rename) never violates
-`uq_recap_gateway_polygon_bindings_one_basin_average_per_station`. **Still
-open:** the package loader/dissolve/importer that actually DRIVES
-`store_binding` from an accepted basin/static package (Plan 120 Phase 1 —
-Task 1A/1B — and Task 2A/2C) is not yet built; until it lands, the store
-layer above has no production caller and 082's resolver keeps returning
-`None` for every station (see Plan 120 "Production-gate note").
+`uq_recap_gateway_polygon_bindings_one_basin_average_per_station`.
+
+**RESOLVED — the driver (Plan 120 Task 3A, `services/basin_importer.py` +
+`python -m sapphire_flow.cli.import_basin_package`).** The package
+loader/dissolve/importer that DRIVES `store_binding` from an accepted
+basin/static package now exists end to end: Task 1A/1B load + validate +
+accept/hold, Task 2A/2C dissolve + version + correct, Task 3A orchestrates
+the whole run in one transaction and returns the operator-facing acceptance
+report (`docs/operations/basin-static-importer-runbook.md`). The remaining
+gate is operational, not a build gap: 082's resolver returns `None` for a
+station until an accepted package covering it has actually been run through
+the importer (see Plan 120 "Production-gate note").
 
 ## 6. `static_attributes.parquet`
 
@@ -453,13 +459,17 @@ Two consequences worth stating:
   filter `basins.attributes` down to their declared `static_features` at read time
   (see the `static` slot in `docs/spec/types-and-protocols.md`), so an attribute no
   model needs yet is stored, cost-free, against a future model that does.
-- **Per-attribute provenance (which `package_id`, which climatology window) has no
-  first-class field yet.** `basins.attributes` is a flat value dict — it holds the
-  values but not their origin. This is a **distinct** gap from the Gateway
-  polygon-reference persistence gap in §5a (that one maps forcing columns back to
-  stations/bands; this one records which package produced each stored attribute). §11
-  already states the provenance questions SAP3 SHOULD be able to answer; giving them a
-  first-class home is left to the implementing plan.
+- **Per-attribute provenance has a first-class home at BASIN-VERSION granularity, not
+  per-attribute (RESOLVED — Plan 120 Task 0A/2A, "basin_versions" table).** `basins.attributes`
+  stays a flat value dict — it holds the values but not their per-attribute origin — but
+  every basin has an append-only `basin_versions` history keyed to `basin_static_packages`
+  (`package_id`, `imported_at`, the full attribute/geometry/§5a snapshot for that version), so
+  "which package produced this basin's CURRENT attribute set" is answered by construction, and
+  a superseded version's snapshot is retained (never deleted). Plan 120 deliberately scoped OUT
+  finer-than-basin-version (sub-basin / per-attribute) provenance — a basin's attributes are all
+  produced by ONE package import, so basin-version granularity already satisfies §11's provenance
+  questions without a separate per-attribute table (`docs/plans/120-basin-static-importer.md`
+  "Versioned basin state" + "Not in scope").
 
 ### 6.3 Geometry-derived vs forcing-derived attributes — the package is self-contained
 
@@ -707,6 +717,22 @@ SHOULD treat it as a material data change:
 3. Recompute static attributes.
 4. Retrain affected model artifacts.
 5. Recompute hindcast skill before promoting the corrected station/model path.
+
+**RESOLVED — persistence target for the questions above (Plan 120).** `basin_static_packages`
+(package provenance: checksums, extractor, source datasets, climatology window) +
+`basin_versions` (append-only, `superseded_at`-marked current-version history, FK'd to
+`basin_static_packages`) + the §5a `recap_gateway_polygon_bindings` `package_id`/`imported_at`
+columns answer the first three questions by construction. The fourth — which model artifacts
+were trained on which basin geometry/attributes — is answered by the
+`model_artifact_basin_versions` lineage join table (populated at train time,
+`record_artifact_basin_lineage`, for both station- and group-scoped artifacts). A correction
+(new `package_id` over an existing `(network, basin_code)`) runs steps 1-5 above as an
+**operator-triggered** cascade — the importer itself only performs the persistence half (stamp
+the superseded version, write the new one, refresh the §5a mapping) and **emits the exact
+affected-artifact set** (`model_artifact_basin_versions` joined against the just-superseded
+`basin_version_id`) so step 4 (retrain) has a deterministic, auditable target list rather than a
+guess. See `docs/plans/120-basin-static-importer.md` "Versioned basin state" and
+`docs/operations/basin-static-importer-runbook.md`.
 
 ## 12. Maintenance and deliverable boundary
 
