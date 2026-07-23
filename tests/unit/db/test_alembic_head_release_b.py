@@ -41,8 +41,10 @@ _ALEMBIC_VERSIONS_DIR = Path(__file__).resolve().parents[3] / "alembic" / "versi
 # then chained 0037 (calculated_station_formulas table) + 0038 (its eligibility
 # trigger) onto 0036 — advancing the pinned head to 0038. Plan 120 Task 0A then
 # chained 0039 (basin/static package provenance + versioned basin state) onto
-# 0038 — advancing the pinned head to 0039.
-_RELEASE_B_HEAD = "0039"
+# 0038 — advancing the pinned head to 0039. Plan 120 Phase-2 Task 2C then chained
+# 0040 (basin_static_packages.fingerprint column) onto 0039 — advancing the
+# pinned head to 0040.
+_RELEASE_B_HEAD = "0040"
 
 
 def _down_revisions() -> dict[str, str | None]:
