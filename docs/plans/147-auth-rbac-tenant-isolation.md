@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-07-23
 plan: 147
 title: Auth / RBAC / audit + tenant write-isolation foundation (v1.0 headless)
@@ -10,7 +10,7 @@ depends_on:
 
 # Plan 147 — Auth / RBAC / audit + tenant write-isolation foundation (v1.0 headless)
 
-**Status**: DRAFT
+**Status**: READY — owner-flipped 2026-07-23 (converged after /plan escalation + 2 Codex rounds; R4-read + R6-RLS accepted as v1.x deferrals). Build slice-by-slice, hold-at-PR.
 **Phase**: v1
 **Owner**: Bea (marti@hydrosolutions.ch)
 **Created**: 2026-07-23
