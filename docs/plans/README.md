@@ -89,6 +89,14 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
   `DRAFT (stub)` — carved out of 082: the Flow-6 `_ReanalysisAdapter` Protocol fork
   (115b1 mismatch), coverage training-gate wiring, snow-forecast Flow-1 wiring, and
   the `RECAP_DG_CLIENT_TOKEN` CI-secret follow-up. Needs the `plan` workflow before READY.
+- **143** — DHM/v1 basin + gauge onboarding — `DRAFT` — GeoPackage → **N gauges** → forecast-ready
+  (geometry via Plan 120 + station/rating + gateway binding + subscriptions). Owner-aligned 2026-07-23; needs
+  `/plan`. Blocks 144.
+- **144** — Two-track probabilistic forecasting (daily ≤15 d + sub-daily ≤3 d) over the IFS 51-member ensemble —
+  `DRAFT` — per-member forcing (ERA5 shared past + per-member gap-fill + per-member forecast), `task.map`
+  fan-out, deterministic model per member (`ensemble_mode=SINGLE`), ensemble aggregation. Carries a
+  forcing-assembly **seam** (client-stitch now / gateway-ensemble-operational later) so the ~1–1.5-month gateway
+  endpoint does NOT block it. Owner-aligned 2026-07-23; needs `/plan`.
 - **124** — Station active-assignment consistency — `DRAFT` — **scope-locked, ready to implement
   directly (owner 2026-07-18).** NARROW: INACTIVE station assignments stop forecasting + leave the
   alert-priority index (match the group path); the fallback-priority-drift health check stays
