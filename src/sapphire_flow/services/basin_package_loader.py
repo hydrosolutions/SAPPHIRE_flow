@@ -559,12 +559,17 @@ def _reject_unsafe_paths(package_dir: Path, declared: set[str]) -> None:
     ``checksums.sha256`` sidecar key set)."""
     base = package_dir.resolve()
     for rel in declared:
-        if rel in _SELF_REFERENTIAL_FILES:
+        candidate = Path(rel)
+        # Normalize alias forms (e.g. ``./manifest.json``) before the
+        # self-referential comparison so a leading-``./`` alias cannot bypass
+        # the check; this does NOT collapse ``..`` segments (pathlib leaves
+        # those in place), so it cannot weaken the traversal/escape checks
+        # below.
+        if candidate.as_posix() in _SELF_REFERENTIAL_FILES:
             raise BasinPackageRejectedError(
                 f"declared payload path {rel!r} is self-referential "
                 "(manifest.json/checksums.sha256 must not be listed as payload)"
             )
-        candidate = Path(rel)
         if candidate.is_absolute() or ".." in candidate.parts:
             raise BasinPackageRejectedError(
                 f"declared payload path {rel!r} is absolute or contains '..' traversal"

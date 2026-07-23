@@ -867,6 +867,29 @@ class TestChecksumSidecar:
         with pytest.raises(BasinPackageRejectedError, match="declared payload path"):
             load_basin_package(pkg_dir)
 
+    @pytest.mark.parametrize(
+        "alias_path",
+        ["./manifest.json", "./checksums.sha256"],
+        ids=["manifest_alias", "checksums_alias"],
+    )
+    def test_sidecar_self_referential_alias_rejects(
+        self, tmp_path: Path, alias_path: str
+    ) -> None:
+        """A `checksums.sha256` sidecar key that spells a self-referential
+        filename with a `./` alias prefix (e.g. `./manifest.json`) MUST be
+        rejected the same as the bare form. The self-reference guard compares
+        the declared path against `manifest.json`/`checksums.sha256` -- an
+        unnormalized alias must not slip through and get treated as an
+        ordinary payload file."""
+        pkg_dir = _copy_fixture(tmp_path)
+        manifest = _read_manifest(pkg_dir)
+        del manifest["checksums"]  # sidecar becomes the sole checksum source
+        _write_manifest(pkg_dir, manifest)
+        _write_sidecar(pkg_dir, {alias_path: "sha256:" + "0" * 64})
+
+        with pytest.raises(BasinPackageRejectedError, match="self-referential"):
+            load_basin_package(pkg_dir)
+
 
 class TestBandsValidation:
     """Finding #8: a present bands.gpkg is strict-parsed and fully validated."""
