@@ -4,7 +4,7 @@ created: 2026-07-23
 plan: 144
 title: Multi-track probabilistic forecasting — per-station tracks driven by assigned models, over the IFS ensemble
 scope: Run one probabilistic forecast per assigned model at that model's own (resolution, horizon), by partitioning a station's assignments into forcing-requirement tracks (e.g. a daily ≤15 d track and a 3-hourly ≤3 d sub-daily track), assembling per-member forcing at each track's resolution, and reusing the EXISTING ensemble fan-out. Thin orchestration that COMPOSES existing infrastructure (ensemble_fanout, ForecastEnsemble, forecast_qc) + Plans 134/126/139 + a new snow-forcing plan. Forecast cycle.
-depends_on: [126, 134, 139]
+depends_on: [126, 134, 139, 145]
 blocks: []
 supersedes: []
 ---
@@ -78,7 +78,7 @@ forcing must be assembled **per ensemble member** (the models are deterministic-
 ## Non-goals (owned elsewhere)
 - The ensemble fan-out / `ForecastEnsemble` / spread-QC (exist). The control forcing bridge + 6h resolution rules
   (**Plan 134**). Ensemble membership / cycle walk-back mechanics (**Plan 126**). **Snow-forcing wiring**
-  (`fetch_snow_forecast` has no production caller — the Plan 139 gap; owner: a **separate snow-forcing plan** —
+  (`fetch_snow_forecast` has no production caller — the Plan 139 gap; owner: **Plan 145 (snow-forcing wiring)** —
   144 depends on it for any JSNOW-fed model). The sub-daily model itself (aquacast). Rating/obs (DHM track).
 
 ## Phases (sketch — harden in `/plan`)
@@ -93,14 +93,14 @@ forcing must be assembled **per ensemble member** (the models are deterministic-
 
 ## Dependencies
 - **126** (ensemble membership / cycle walk-back) · **134** (control forcing bridge + resolution floor) ·
-  **139** (daily model + records the snow gap) · a **new snow-forcing-wiring plan** (separate) · **aquacast**
-  (sub-daily model). Reuses existing `ensemble_fanout` / `ForecastEnsemble` / `forecast_qc`.
+  **139** (daily model) · **145** (snow-forcing wiring) · **aquacast** (sub-daily model). Reuses existing
+  `ensemble_fanout` / `ForecastEnsemble` / `forecast_qc`.
 
 ## Open items / to confirm
 - **06/12/18Z `pf` availability** (only 00Z live-confirmed) — governs the 4×/day sub-daily refresh; drives D4
   walk-back frequency. Confirm with the gateway team.
 - **Live-verify the 3h per-member gap-fill seam** (Plan 134 caution) — the crux of the 3-hourly promise.
 - **aquacast model statelessness** (D5) + **sub-daily model readiness** (D6).
-- **Snow-forcing plan** must be drafted (separate) — hard dependency for JSNOW-fed models.
+- **Plan 145** (snow-forcing wiring) — drafted 2026-07-23; hard dependency for JSNOW-fed models; needs `/plan`.
 - **Check in a sanitized 12300 probe artifact** so the resolution/horizon/units facts are repo-verifiable.
 - **Gateway ensemble-operational must be 3-hourly** (not the control bridge's 6h) — update the upstream ask.

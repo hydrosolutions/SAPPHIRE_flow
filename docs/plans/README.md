@@ -98,6 +98,10 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
   3-hourly gateway ensemble-operational later). **COMPOSES existing infra** — reuses `ensemble_fanout`
   (stateless-only) + `ForecastEnsemble` + `forecast_qc`; depends on **134** (control 6h bridge), **126** (ensemble
   membership + horizon walk-back), **139** (daily model), + a new **snow-forcing** plan. Needs a confirming `/plan`.
+- **145** — Snow (JSNOW) forcing wiring — `DRAFT` — carved out of Plan 139 W7. Wire `fetch_snow_forecast`
+  (zero callers today → deterministic-snow broadcast is a no-op) + snow reanalysis into store/assembly, and fix
+  the aggregation fallback (`swe`/`snow_depth` MEAN/LAST, `snowmelt`/`rof` **SUM**). Deterministic single stream
+  broadcast across ensemble members. Buildable now; unblocks 139 + 144. Needs `/plan`.
 - **124** — Station active-assignment consistency — `DRAFT` — **scope-locked, ready to implement
   directly (owner 2026-07-18).** NARROW: INACTIVE station assignments stop forecasting + leave the
   alert-priority index (match the group path); the fallback-priority-drift health check stays
