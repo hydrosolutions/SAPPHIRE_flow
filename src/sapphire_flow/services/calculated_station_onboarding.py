@@ -24,6 +24,7 @@ from sapphire_flow.types.enums import (
 )
 from sapphire_flow.types.observation import Observation
 from sapphire_flow.types.station import StationConfig
+from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -36,7 +37,7 @@ if TYPE_CHECKING:
     )
     from sapphire_flow.types.calculated_station import ComponentWeight
     from sapphire_flow.types.datetime import UtcDatetime
-    from sapphire_flow.types.ids import BasinId, StationId
+    from sapphire_flow.types.ids import BasinId, StationId, TenantId
 
 log = structlog.get_logger(__name__)
 
@@ -87,6 +88,8 @@ def build_calculated_station_config(
     basin_id: BasinId | None,
     station_id: StationId,
     clock: Callable[[], UtcDatetime],
+    *,
+    tenant_id: TenantId,
 ) -> StationConfig:
     now = clock()
     return StationConfig(
@@ -107,6 +110,7 @@ def build_calculated_station_config(
         ownership=StationOwnership.OWN,
         wigos_id=None,
         gauging_status=GaugingStatus.CALCULATED,
+        tenant_id=tenant_id,
     )
 
 
@@ -140,6 +144,8 @@ def onboard_calculated_station(
     clock: Callable[[], UtcDatetime],
     window_start: UtcDatetime,
     window_end: UtcDatetime,
+    *,
+    tenant_id: TenantId = DEFAULT_TENANT_ID,
 ) -> CalculatedOnboardingOutcome:
     """Onboard one calculated station (Plan 015 §5.C1–5.C3).
 
@@ -212,7 +218,7 @@ def onboard_calculated_station(
             code=spec.code,
         )
         station = existing or build_calculated_station_config(
-            spec, basin_id, station_id, clock
+            spec, basin_id, station_id, clock, tenant_id=tenant_id
         )
         return CalculatedOnboardingOutcome(
             station=station,
@@ -223,7 +229,9 @@ def onboard_calculated_station(
         )
 
     # All validation passed — persist.
-    config = build_calculated_station_config(spec, basin_id, station_id, clock)
+    config = build_calculated_station_config(
+        spec, basin_id, station_id, clock, tenant_id=tenant_id
+    )
     if existing is not None:
         station_store.update_station(config)
     else:

@@ -11,6 +11,7 @@ from prefect.cache_policies import NO_CACHE
 
 from sapphire_flow.services.onboarding import onboard_from_camelsch
 from sapphire_flow.types.datetime import ensure_utc
+from sapphire_flow.types.tenant import DEFAULT_TENANT_CODE
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -111,6 +112,8 @@ def onboard_stations_flow(
     require_meteoswiss_backfill: bool = False,
     calculated_specs: object = None,
     lineage_writer: object = None,
+    tenant_store: object = None,
+    tenant_code: str | None = None,
 ) -> object:
     if clock is None:
         clock = lambda: ensure_utc(datetime.now(UTC))  # noqa: E731
@@ -139,6 +142,8 @@ def onboard_stations_flow(
         skill_store = stores["skill_store"]
         parameter_store = stores["parameter_store"]
         formula_store = stores.get("formula_store")
+        if tenant_store is None:
+            tenant_store = stores.get("tenant_store")
         if lineage_writer is None:
             lineage_writer = stores.get("lineage_writer")
 
@@ -223,6 +228,8 @@ def onboard_stations_flow(
                 water_level_units = onboarding_cfg.water_level_units
                 if calculated_specs is None:
                     calculated_specs = onboarding_cfg.calculated
+                if tenant_code is None:
+                    tenant_code = onboarding_cfg.tenant_code
                 log.info("basin_ids_from_config", count=len(basin_ids))
     else:
         config_path = os.environ.get("SAPPHIRE_CONFIG")
@@ -235,6 +242,8 @@ def onboard_stations_flow(
                 water_level_units = onboarding_cfg.water_level_units
                 if calculated_specs is None:
                     calculated_specs = onboarding_cfg.calculated
+                if tenant_code is None:
+                    tenant_code = onboarding_cfg.tenant_code
 
     if qc_rules is None:
         qc_rules = _load_qc_rules()
@@ -276,6 +285,8 @@ def onboard_stations_flow(
         formula_store=formula_store,  # type: ignore[arg-type]
         calculated_specs=calculated_specs or (),  # type: ignore[arg-type]
         lineage_writer=lineage_writer,
+        tenant_store=tenant_store,  # type: ignore[arg-type]
+        tenant_code=tenant_code or DEFAULT_TENANT_CODE,
     )
 
     log.info(

@@ -44,6 +44,9 @@ def upgrade() -> None:
             "tenant_id",
             PG_UUID(as_uuid=True),
             nullable=True,
+            # Backfill-only default (dropped at the end of upgrade()) — the
+            # persistent column carries no default, so an INSERT omitting
+            # tenant_id fails loud rather than silently defaulting to Swiss.
             server_default=sa.text(f"'{_DEFAULT_TENANT_ID}'"),
         ),
     )
@@ -64,6 +67,8 @@ def upgrade() -> None:
         "uq_station_groups_tenant_id_name", "station_groups", ["tenant_id", "name"]
     )
     op.alter_column("station_groups", "tenant_id", nullable=False)
+    # Drop the backfill default — future writers must name tenant_id explicitly.
+    op.alter_column("station_groups", "tenant_id", server_default=None)
     op.create_unique_constraint(
         "uq_station_groups_id_tenant_id", "station_groups", ["id", "tenant_id"]
     )

@@ -36,9 +36,14 @@ def upgrade() -> None:
             "tenant_id",
             PG_UUID(as_uuid=True),
             nullable=True,
-            # A server-side DEFAULT so a legacy caller that INSERTs without
-            # naming this column (mostly test seeding helpers) still lands
-            # on the sapphire tenant, matching db/metadata.py.
+            # A server-side DEFAULT ONLY for the duration of this migration, so
+            # add-column lands every PRE-EXISTING row on the sapphire tenant.
+            # It is DROPPED at the end of upgrade() (below) — the persistent
+            # column carries NO default, so a future INSERT that omits
+            # tenant_id FAILS LOUD (NotNullViolation) rather than silently
+            # defaulting to Swiss (Plan 147 Slice A: tenant is an explicit
+            # decision at every real boundary; the default is a one-time
+            # backfill only).
             server_default=sa.text(f"'{_DEFAULT_TENANT_ID}'"),
         ),
     )
@@ -51,6 +56,9 @@ def upgrade() -> None:
         ).bindparams(tid=_DEFAULT_TENANT_ID)
     )
     op.alter_column("stations", "tenant_id", nullable=False)
+    # Drop the backfill default now that every existing row is populated —
+    # tenant_id must be supplied explicitly by every future writer.
+    op.alter_column("stations", "tenant_id", server_default=None)
     op.create_unique_constraint(
         "uq_stations_id_tenant_id", "stations", ["id", "tenant_id"]
     )

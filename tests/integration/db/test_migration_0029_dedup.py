@@ -127,7 +127,9 @@ class TestMigration0029Dedup:
         newer = datetime(2026, 6, 1, tzinfo=UTC)
 
         with engine.begin() as conn:
-            station_id = _seed_station(conn)
+            # Seed at rev 0028 — the stations table has no tenant_id column yet
+            # (added by 0042), so omit it (Plan 147 Slice A).
+            station_id = _seed_station(conn, tenant_id=None)
             model_id = _seed_model(conn)
             # Two active artifacts (distinct models) so the two duplicate headers
             # can carry a distinguishable mutable field.

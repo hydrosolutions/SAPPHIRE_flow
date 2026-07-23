@@ -7,10 +7,11 @@ from datetime import UTC, datetime, timedelta
 import pytest
 import sqlalchemy as sa
 
-from sapphire_flow.db.metadata import station_group_members, station_groups
+from sapphire_flow.db.metadata import station_group_members, station_groups, tenants
+from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.store.station_group_store import PgStationGroupStore
 from sapphire_flow.types.enums import ModelAssignmentStatus
-from sapphire_flow.types.ids import ModelId, StationGroupId, StationId
+from sapphire_flow.types.ids import ModelId, StationGroupId, StationId, TenantId
 from sapphire_flow.types.station import GroupModelAssignment, StationGroup
 from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 from tests.conftest import make_station_config
@@ -548,6 +549,7 @@ class TestStoreGroupIsolationHolds:
                     name=group.name,
                     description=group.description,
                     created_at=group.created_at,
+                    tenant_id=DEFAULT_TENANT_ID,
                 )
             )
             sp.rollback()
@@ -558,3 +560,92 @@ class TestStoreGroupIsolationHolds:
                 sa.select(station_groups.c.id).where(station_groups.c.id == group.id)
             ).first()
         assert row is None, "rolled-back savepoint write leaked to a fresh connection"
+
+
+def _seed_tenant(conn: sa.Connection, tenant_id: TenantId, code: str) -> None:
+    conn.execute(
+        sa.insert(tenants).values(id=tenant_id, code=code, name=f"Tenant {code}")
+    )
+
+
+class TestStoreGroupTenantImmutable:
+    """MAJOR 2 (Plan 147 Slice A): a persisted group's tenant is IMMUTABLE. A
+    re-store under a DIFFERENT tenant is rejected (never silently keeping the
+    stored tenant, never mutating another tenant's group metadata); a re-store
+    under the SAME tenant stays idempotent.
+
+    Soundness: fails against the pre-fix ``store_group`` (whose ON CONFLICT DO
+    UPDATE ignored tenant_id — the mismatched re-store would silently succeed,
+    leaving the persisted tenant disagreeing with the supplied StationGroup).
+    """
+
+    def test_restore_with_different_tenant_raises(
+        self, db_connection: sa.Connection
+    ) -> None:
+        other_tenant = TenantId(uuid.uuid4())
+        _seed_tenant(db_connection, other_tenant, "dhm")
+        store = PgStationGroupStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+        gid = StationGroupId(uuid.uuid4())
+        store.store_group(
+            StationGroup(
+                id=gid,
+                name="immutable-group",
+                station_ids=frozenset(),
+                created_at=_NOW,
+                tenant_id=DEFAULT_TENANT_ID,
+            )
+        )
+
+        with pytest.raises(ConfigurationError, match="immutable"):
+            store.store_group(
+                StationGroup(
+                    id=gid,
+                    name="immutable-group",
+                    station_ids=frozenset(),
+                    created_at=_NOW,
+                    tenant_id=other_tenant,
+                )
+            )
+
+        # The persisted tenant is unchanged — the mismatched re-store was refused.
+        stored_tenant = db_connection.execute(
+            sa.select(station_groups.c.tenant_id).where(station_groups.c.id == gid)
+        ).scalar_one()
+        assert TenantId(stored_tenant) == DEFAULT_TENANT_ID
+
+    def test_restore_with_same_tenant_is_idempotent(
+        self, db_connection: sa.Connection
+    ) -> None:
+        store = PgStationGroupStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+        gid = StationGroupId(uuid.uuid4())
+        store.store_group(
+            StationGroup(
+                id=gid,
+                name="idempotent-group",
+                station_ids=frozenset(),
+                description="first",
+                created_at=_NOW,
+                tenant_id=DEFAULT_TENANT_ID,
+            )
+        )
+        # Same id + same tenant, updated metadata: succeeds and updates in place.
+        store.store_group(
+            StationGroup(
+                id=gid,
+                name="idempotent-group-renamed",
+                station_ids=frozenset(),
+                description="second",
+                created_at=_NOW,
+                tenant_id=DEFAULT_TENANT_ID,
+            )
+        )
+
+        fetched = store.fetch_group(gid)
+        assert fetched is not None
+        assert fetched.name == "idempotent-group-renamed"
+        assert fetched.description == "second"
+        assert fetched.tenant_id == DEFAULT_TENANT_ID

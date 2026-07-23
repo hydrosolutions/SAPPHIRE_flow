@@ -17,6 +17,7 @@ from sapphire_flow.types.enums import (
     StationStatus,
 )
 from sapphire_flow.types.ids import BasinId, StationId
+from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
     from sapphire_flow.types.basin import Basin
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.historical_forcing import RawHistoricalForcing
+    from sapphire_flow.types.ids import TenantId
     from sapphire_flow.types.observation import RawObservation
     from sapphire_flow.types.station import StationConfig
 
@@ -150,6 +152,8 @@ def attributes_to_station(
     clock: Callable[[], UtcDatetime],
     water_level_datums_masl: dict[str, float] | None = None,
     water_level_units: dict[str, str] | None = None,
+    *,
+    tenant_id: TenantId = DEFAULT_TENANT_ID,
 ) -> StationConfig:
     from sapphire_flow.types.domain import GeoCoord
     from sapphire_flow.types.station import StationConfig
@@ -203,6 +207,7 @@ def attributes_to_station(
         wigos_id=None,
         water_level_datum_masl=water_level_datum_masl,
         water_level_unit=water_level_unit,
+        tenant_id=tenant_id,
     )
 
 
@@ -256,6 +261,8 @@ def load_stations(
     basin_ids: list[str] | None = None,
     water_level_datums_masl: dict[str, float] | None = None,
     water_level_units: dict[str, str] | None = None,
+    *,
+    tenant_id: TenantId = DEFAULT_TENANT_ID,
 ) -> tuple[list[StationConfig], list[Basin]]:
     import camelsch
 
@@ -287,6 +294,7 @@ def load_stations(
             clock,
             water_level_datums_masl=water_level_datums_masl,
             water_level_units=water_level_units,
+            tenant_id=tenant_id,
         )
         stations.append(station)
 

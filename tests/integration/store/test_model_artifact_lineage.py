@@ -43,6 +43,7 @@ from sapphire_flow.types.ids import (
     StationGroupId,
     StationId,
 )
+from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 
 _T0 = ensure_utc(datetime(2025, 1, 1, tzinfo=UTC))
 _T1 = ensure_utc(datetime(2025, 6, 1, tzinfo=UTC))
@@ -84,6 +85,7 @@ def _seed_station(conn: sa.Connection, basin_id: BasinId | None) -> StationId:
             timezone="Asia/Kathmandu",
             measured_parameters=["discharge"],
             ownership="own",
+            tenant_id=DEFAULT_TENANT_ID,
         )
     )
     return sid
@@ -104,10 +106,16 @@ def _seed_model(conn: sa.Connection, scope: str = "station") -> ModelId:
 
 def _seed_group(conn: sa.Connection, station_ids: list[StationId]) -> StationGroupId:
     gid = StationGroupId(uuid.uuid4())
-    conn.execute(sa.insert(station_groups).values(id=gid, name=f"grp-{gid.hex[:6]}"))
+    conn.execute(
+        sa.insert(station_groups).values(
+            id=gid, name=f"grp-{gid.hex[:6]}", tenant_id=DEFAULT_TENANT_ID
+        )
+    )
     for sid in station_ids:
         conn.execute(
-            sa.insert(station_group_members).values(group_id=gid, station_id=sid)
+            sa.insert(station_group_members).values(
+                group_id=gid, station_id=sid, tenant_id=DEFAULT_TENANT_ID
+            )
         )
     return gid
 

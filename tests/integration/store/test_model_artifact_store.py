@@ -22,6 +22,7 @@ from sapphire_flow.store.model_artifact_store import PgModelArtifactStore
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import ModelArtifactStatus
 from sapphire_flow.types.ids import ArtifactId, ModelId, StationGroupId, StationId
+from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 
 _T0 = ensure_utc(datetime(2025, 1, 1, tzinfo=UTC))
 _T1 = ensure_utc(datetime(2025, 6, 1, tzinfo=UTC))
@@ -41,6 +42,7 @@ def _seed_station(conn: sa.Connection) -> StationId:
             timezone="Europe/Zurich",
             measured_parameters=["discharge"],
             ownership="own",
+            tenant_id=DEFAULT_TENANT_ID,
         )
     )
     return sid
@@ -66,12 +68,14 @@ def _seed_group(conn: sa.Connection, station_id: StationId) -> StationGroupId:
             id=gid,
             name=f"grp-{gid.hex[:6]}",
             description=None,
+            tenant_id=DEFAULT_TENANT_ID,
         )
     )
     conn.execute(
         sa.insert(station_group_members).values(
             group_id=gid,
             station_id=station_id,
+            tenant_id=DEFAULT_TENANT_ID,
         )
     )
     return gid

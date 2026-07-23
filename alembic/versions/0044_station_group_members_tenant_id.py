@@ -29,9 +29,6 @@ from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 
 from alembic import op
 
-# Keep in sync with sapphire_flow.types.tenant.DEFAULT_TENANT_ID.
-_DEFAULT_TENANT_ID_SQL = "'00000000-0000-0000-0000-000000000001'"
-
 revision: str = "0044"
 down_revision: str | None = "0043"
 branch_labels: str | Sequence[str] | None = None
@@ -82,15 +79,15 @@ def upgrade() -> None:
             """
         )
     )
+    # The UPDATE above populated every membership row from its group's tenant,
+    # so NOT NULL needs no server-side default. The persistent column carries
+    # NO default: a future INSERT that omits tenant_id fails loud (the row's
+    # single tenant_id is an explicit decision, structurally cross-checked by
+    # the two composite FKs below), never silently coerced to Swiss.
     op.alter_column(
         "station_group_members",
         "tenant_id",
         nullable=False,
-        # A server-side DEFAULT so a legacy caller that INSERTs without
-        # naming this column (mostly test seeding helpers) still lands a
-        # self-consistent sapphire-tenant row; the composite FKs below still
-        # reject it if the referenced station/group disagree.
-        server_default=sa.text(_DEFAULT_TENANT_ID_SQL),
     )
     op.create_foreign_key(
         "fk_station_group_members_station_tenant",

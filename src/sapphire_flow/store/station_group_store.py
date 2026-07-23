@@ -11,6 +11,7 @@ from sapphire_flow.db.metadata import (
     station_group_members,
     station_groups,
 )
+from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.store._helpers import utc_from_row
 from sapphire_flow.types.enums import ModelAssignmentStatus
 from sapphire_flow.types.ids import ModelId, StationGroupId, StationId, TenantId
@@ -37,6 +38,27 @@ class PgStationGroupStore:
 
     def store_group(self, group: StationGroup) -> None:
         with self._begin() as txn:
+            # A group's tenant is IMMUTABLE (Plan 147 Slice A, R4). On re-store,
+            # the ON CONFLICT DO UPDATE below intentionally does NOT touch
+            # tenant_id — but that alone would let a caller silently persist a
+            # StationGroup whose tenant_id disagrees with the stored row (or,
+            # on an id collision, mutate another tenant's group metadata under
+            # its own tenant). Guard explicitly: refuse a re-store that carries
+            # a different tenant, rather than silently keeping the old value.
+            existing_tenant = txn.execute(
+                sa.select(station_groups.c.tenant_id).where(
+                    station_groups.c.id == group.id
+                )
+            ).scalar_one_or_none()
+            if (
+                existing_tenant is not None
+                and TenantId(existing_tenant) != group.tenant_id
+            ):
+                raise ConfigurationError(
+                    f"station group {group.id} already belongs to tenant "
+                    f"{existing_tenant}; refusing to re-store it under tenant "
+                    f"{group.tenant_id} (a group's tenant is immutable)"
+                )
             txn.execute(
                 pg_insert(station_groups)
                 .values(

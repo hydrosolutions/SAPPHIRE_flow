@@ -1375,3 +1375,34 @@ class TestMeteoswissBindingAndBackfillOrHold:
 
         sources = s.station.fetch_weather_sources(sid)
         assert all(ws.nwp_source != "icon_ch2_eps" for ws in sources)
+
+
+class TestOnboardFromCamelschTenantResolution:
+    """Plan 147 Slice A: onboard_from_camelsch resolves the config tenant CODE
+    to a TenantId at the boundary — BEFORE any data is loaded. An unknown code
+    is a hard ConfigurationError, never a silent Swiss default.
+
+    Soundness: fails against a pre-fix onboard_from_camelsch that had no
+    tenant_store/tenant_code parameters (TypeError) or that ignored the code
+    (the bad code would be swallowed and stations would silently land on
+    the default tenant instead of raising).
+    """
+
+    def test_unknown_tenant_code_raises_before_loading_data(self) -> None:
+        from sapphire_flow.services.onboarding import onboard_from_camelsch
+        from tests.fakes.fake_stores import FakeTenantStore
+
+        with pytest.raises(ConfigurationError, match="unknown tenant code"):
+            onboard_from_camelsch(
+                data_dir="/nonexistent/path/must/not/be/read",
+                basin_store=FakeBasinStore(),
+                station_store=FakeStationStore(),
+                obs_store=FakeObservationStore(),
+                forcing_store=FakeHistoricalForcingStore(),
+                baseline_store=FakeClimBaselineStore(),
+                flow_regime_store=FakeFlowRegimeConfigStore(),
+                qc_rules=_TEST_RULES,
+                clock=lambda: _EPOCH,
+                tenant_store=FakeTenantStore(),
+                tenant_code="no-such-tenant",
+            )

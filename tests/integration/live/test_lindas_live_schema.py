@@ -44,6 +44,7 @@ from sapphire_flow.types.enums import (
 )
 from sapphire_flow.types.ids import StationId
 from sapphire_flow.types.station import StationConfig
+from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 
 pytestmark = pytest.mark.live
 
@@ -149,6 +150,7 @@ def _make_reference_stations() -> list[StationConfig]:
             network="bafu",
             ownership=StationOwnership.FOREIGN,
             wigos_id=None,
+            tenant_id=DEFAULT_TENANT_ID,
         )
         for code, name, lon, lat, kind, params in roster
     ]

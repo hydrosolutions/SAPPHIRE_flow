@@ -20,6 +20,7 @@ from sapphire_flow.types.enums import (
 )
 from sapphire_flow.types.ids import StationId
 from sapphire_flow.types.station import StationConfig
+from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 
 _ENDPOINT = "https://ld.admin.ch/query"
 _FIXTURES_DIR = Path(__file__).parent.parent.parent / "fixtures"
@@ -57,6 +58,7 @@ def _make_station(
         network="bafu",
         ownership=StationOwnership.OWN,
         wigos_id=None,
+        tenant_id=DEFAULT_TENANT_ID,
     )
 
 

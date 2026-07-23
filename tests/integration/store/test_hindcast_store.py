@@ -22,6 +22,7 @@ from sapphire_flow.types.domain import QcFlag
 from sapphire_flow.types.enums import EnsembleRepresentation, ForcingType, QcStatus
 from sapphire_flow.types.forecast import HindcastForecast
 from sapphire_flow.types.ids import ArtifactId, HindcastForecastId, ModelId, StationId
+from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 from tests.conftest import make_forecast_ensemble
 
 
@@ -74,21 +75,28 @@ def _utc(year: int, month: int, day: int, hour: int = 0) -> datetime:
     return ensure_utc(datetime(year, month, day, hour, tzinfo=UTC))
 
 
-def _seed_station(conn: sa.Connection) -> StationId:
+def _seed_station(
+    conn: sa.Connection, *, tenant_id: object | None = DEFAULT_TENANT_ID
+) -> StationId:
+    # ``tenant_id`` is included only when not None so this helper is reusable by
+    # migration tests that seed at a PRE-tenant revision (no tenant_id column
+    # yet) — they pass ``tenant_id=None``. On the current (head) schema the
+    # column is NOT NULL with no default, so it must be named explicitly.
     sid = StationId(uuid4())
-    conn.execute(
-        sa.insert(stations).values(
-            id=sid,
-            code=f"HC-{sid.hex[:6]}",
-            name="Hindcast Test Station",
-            location="SRID=4326;POINT(8.5 47.4)",
-            station_kind="river",
-            network="bafu",
-            timezone="Europe/Zurich",
-            measured_parameters=["discharge"],
-            ownership="own",
-        )
-    )
+    values: dict[str, object] = {
+        "id": sid,
+        "code": f"HC-{sid.hex[:6]}",
+        "name": "Hindcast Test Station",
+        "location": "SRID=4326;POINT(8.5 47.4)",
+        "station_kind": "river",
+        "network": "bafu",
+        "timezone": "Europe/Zurich",
+        "measured_parameters": ["discharge"],
+        "ownership": "own",
+    }
+    if tenant_id is not None:
+        values["tenant_id"] = tenant_id
+    conn.execute(sa.insert(stations).values(**values))
     return sid
 
 

@@ -35,6 +35,7 @@ from sapphire_flow.db.metadata import (
 from sapphire_flow.store.basin_store import PgBasinStore
 from sapphire_flow.types.basin import Basin
 from sapphire_flow.types.ids import BasinId
+from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -521,6 +522,7 @@ class TestFiveAProvenanceColumnsAdditive:
                     measured_parameters=["discharge"],
                     station_status="operational",
                     network="dhm",
+                    tenant_id=DEFAULT_TENANT_ID,
                 )
             )
             conn.execute(

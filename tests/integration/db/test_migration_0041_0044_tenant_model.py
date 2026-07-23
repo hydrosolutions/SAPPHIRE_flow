@@ -72,44 +72,124 @@ def _alembic_cfg(url: str) -> object:
 
 
 def _insert_pre_tenant_station(
-    conn: sa.Connection, *, code: str, station_id: uuid.UUID | None = None
+    conn: sa.Connection,
+    *,
+    code: str,
+    station_id: uuid.UUID | None = None,
+    tenant_id: uuid.UUID | None = None,
 ) -> uuid.UUID:
-    """Seed a station using ONLY columns that exist before migration 0042 —
-    safe to call both pre- and post-0042 (SQLAlchemy Core only emits the
-    columns named in .values())."""
+    """Seed a station using columns that exist before migration 0042 (plus an
+    optional ``tenant_id`` for callers running at/after 0042 — the column now
+    carries NO server default, so it must be named explicitly once it exists).
+    SQLAlchemy Core only emits the columns named in ``.values()``, so passing
+    no ``tenant_id`` stays safe on the pre-0042 schema."""
     sid = station_id or uuid.uuid4()
-    conn.execute(
-        sa.insert(stations).values(
-            id=sid,
-            code=code,
-            name=f"Station {code}",
-            location=_LOCATION,
-            station_kind="river",
-            network="bafu",
-            timezone="Europe/Zurich",
-            measured_parameters=["discharge"],
-            ownership="own",
-        )
-    )
+    values: dict[str, object] = {
+        "id": sid,
+        "code": code,
+        "name": f"Station {code}",
+        "location": _LOCATION,
+        "station_kind": "river",
+        "network": "bafu",
+        "timezone": "Europe/Zurich",
+        "measured_parameters": ["discharge"],
+        "ownership": "own",
+    }
+    if tenant_id is not None:
+        values["tenant_id"] = tenant_id
+    conn.execute(sa.insert(stations).values(**values))
     return sid
 
 
 def _insert_pre_tenant_group(
-    conn: sa.Connection, *, name: str, group_id: uuid.UUID | None = None
+    conn: sa.Connection,
+    *,
+    name: str,
+    group_id: uuid.UUID | None = None,
+    tenant_id: uuid.UUID | None = None,
 ) -> uuid.UUID:
     gid = group_id or uuid.uuid4()
-    conn.execute(sa.insert(station_groups).values(id=gid, name=name, description=None))
+    values: dict[str, object] = {"id": gid, "name": name, "description": None}
+    if tenant_id is not None:
+        values["tenant_id"] = tenant_id
+    conn.execute(sa.insert(station_groups).values(**values))
     return gid
 
 
 def _insert_pre_tenant_member(
-    conn: sa.Connection, *, group_id: uuid.UUID, station_id: uuid.UUID
+    conn: sa.Connection,
+    *,
+    group_id: uuid.UUID,
+    station_id: uuid.UUID,
+    tenant_id: uuid.UUID | None = None,
 ) -> None:
-    conn.execute(
-        sa.insert(station_group_members).values(
-            group_id=group_id, station_id=station_id
-        )
-    )
+    values: dict[str, object] = {"group_id": group_id, "station_id": station_id}
+    if tenant_id is not None:
+        values["tenant_id"] = tenant_id
+    conn.execute(sa.insert(station_group_members).values(**values))
+
+
+class TestTenantColumnHasNoServerDefault:
+    """MAJOR 1(a): after the one-time backfill, every `tenant_id` column drops
+    its server default — a raw INSERT that OMITS tenant_id must FAIL LOUD
+    (NotNullViolation), never silently land on the Swiss `sapphire` tenant.
+
+    Soundness: this test FAILS against the pre-fix migrations (which left a
+    persistent ``server_default='...0001'`` on each column — the insert would
+    silently succeed on the default tenant instead of raising).
+    """
+
+    def test_station_insert_omitting_tenant_id_raises_not_null(
+        self, migration_engine: tuple[sa.Engine, str]
+    ) -> None:
+        from alembic import command
+
+        engine, url = migration_engine
+        cfg = _alembic_cfg(url)
+        command.upgrade(cfg, "head")
+
+        with engine.connect() as conn, pytest.raises(IntegrityError) as exc_info:
+            # NOTE: deliberately omit tenant_id — no server default exists, so
+            # PostgreSQL must reject this with a NOT NULL violation.
+            _insert_pre_tenant_station(conn, code="NO-TENANT-001")
+            conn.commit()
+        assert "tenant_id" in str(exc_info.value)
+
+    def test_group_insert_omitting_tenant_id_raises_not_null(
+        self, migration_engine: tuple[sa.Engine, str]
+    ) -> None:
+        from alembic import command
+
+        engine, url = migration_engine
+        cfg = _alembic_cfg(url)
+        command.upgrade(cfg, "head")
+
+        with engine.connect() as conn, pytest.raises(IntegrityError) as exc_info:
+            _insert_pre_tenant_group(conn, name="no-tenant-group")
+            conn.commit()
+        assert "tenant_id" in str(exc_info.value)
+
+    def test_member_insert_omitting_tenant_id_raises_not_null(
+        self, migration_engine: tuple[sa.Engine, str]
+    ) -> None:
+        from alembic import command
+
+        engine, url = migration_engine
+        cfg = _alembic_cfg(url)
+        command.upgrade(cfg, "head")
+
+        with engine.begin() as conn:
+            sid = _insert_pre_tenant_station(
+                conn, code="MEMBER-NT-001", tenant_id=DEFAULT_TENANT_ID
+            )
+            gid = _insert_pre_tenant_group(
+                conn, name="member-nt-group", tenant_id=DEFAULT_TENANT_ID
+            )
+
+        with engine.connect() as conn, pytest.raises(IntegrityError) as exc_info:
+            _insert_pre_tenant_member(conn, group_id=gid, station_id=sid)
+            conn.commit()
+        assert "tenant_id" in str(exc_info.value)
 
 
 class TestMigrationUpgradeBackfillsDefaultTenant:
@@ -290,17 +370,13 @@ class TestCompositeFkRejectsCrossTenantMembership:
                     id=other_tenant_id, code="dhm", name="DHM (Nepal)"
                 )
             )
-            station_id = _insert_pre_tenant_station(conn, code="XT-002")
-            conn.execute(
-                sa.update(stations)
-                .where(stations.c.id == station_id)
-                .values(tenant_id=other_tenant_id)
+            # At head every tenant_id column is NOT NULL with no default — seed
+            # the station on tenant B and the group on tenant A explicitly.
+            station_id = _insert_pre_tenant_station(
+                conn, code="XT-002", tenant_id=other_tenant_id
             )
-            group_id = _insert_pre_tenant_group(conn, name="raw-sql-group")
-            conn.execute(
-                sa.update(station_groups)
-                .where(station_groups.c.id == group_id)
-                .values(tenant_id=DEFAULT_TENANT_ID)
+            group_id = _insert_pre_tenant_group(
+                conn, name="raw-sql-group", tenant_id=DEFAULT_TENANT_ID
             )
 
         with engine.connect() as conn, pytest.raises(IntegrityError):
@@ -339,13 +415,16 @@ class TestMigration0044MismatchGuard:
             # A member row created BEFORE 0044 exists, straddling two
             # tenants: the station is tenant B, the group is the default
             # tenant A. 0044's backfill must refuse to paper over this.
-            station_id = _insert_pre_tenant_station(conn, code="MISMATCH-001")
-            conn.execute(
-                sa.update(stations)
-                .where(stations.c.id == station_id)
-                .values(tenant_id=other_tenant_id)
+            # At rev 0043: stations/station_groups carry tenant_id (no default),
+            # station_group_members does NOT yet (added by 0044). The station is
+            # tenant B, the group tenant A; the pre-0044 member row (no tenant
+            # column) straddles them.
+            station_id = _insert_pre_tenant_station(
+                conn, code="MISMATCH-001", tenant_id=other_tenant_id
             )
-            group_id = _insert_pre_tenant_group(conn, name="mismatch-group")
+            group_id = _insert_pre_tenant_group(
+                conn, name="mismatch-group", tenant_id=DEFAULT_TENANT_ID
+            )
             _insert_pre_tenant_member(conn, group_id=group_id, station_id=station_id)
 
         with pytest.raises(RuntimeError, match="tenant_id disagrees"):
@@ -377,9 +456,16 @@ class TestMigrationDowngradeReversesCleanly:
         command.upgrade(cfg, "head")
 
         with engine.begin() as conn:
-            sid = _insert_pre_tenant_station(conn, code="DOWNGRADE-001")
-            gid = _insert_pre_tenant_group(conn, name="downgrade-group")
-            _insert_pre_tenant_member(conn, group_id=gid, station_id=sid)
+            # At head all three tenant_id columns are NOT NULL with no default.
+            sid = _insert_pre_tenant_station(
+                conn, code="DOWNGRADE-001", tenant_id=DEFAULT_TENANT_ID
+            )
+            gid = _insert_pre_tenant_group(
+                conn, name="downgrade-group", tenant_id=DEFAULT_TENANT_ID
+            )
+            _insert_pre_tenant_member(
+                conn, group_id=gid, station_id=sid, tenant_id=DEFAULT_TENANT_ID
+            )
 
         command.downgrade(cfg, "0040")
 

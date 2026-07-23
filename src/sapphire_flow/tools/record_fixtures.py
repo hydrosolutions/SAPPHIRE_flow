@@ -23,6 +23,7 @@ from sapphire_flow.types.enums import (
 )
 from sapphire_flow.types.ids import StationId
 from sapphire_flow.types.station import StationConfig
+from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 from sapphire_flow.types.weather import GriddedForecast
 
 if TYPE_CHECKING:
@@ -78,6 +79,9 @@ def parse_stations_toml(path: Path) -> list[StationConfig]:
                 ownership=StationOwnership(str(entry.get("ownership", "foreign"))),
                 wigos_id=(str(entry["wigos_id"]) if "wigos_id" in entry else None),
                 gauging_status=GaugingStatus(gauging_str),
+                # Reference-fixture recorder: single-tenant Swiss reference data,
+                # stamped explicitly (Plan 147 Slice A — no silent tenant).
+                tenant_id=DEFAULT_TENANT_ID,
             )
         )
     return configs

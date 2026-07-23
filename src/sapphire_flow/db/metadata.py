@@ -5,11 +5,12 @@ from sqlalchemy.dialects.postgresql import ARRAY, BIGINT, BYTEA, INTERVAL, JSONB
 
 metadata = sa.MetaData()
 
-# Plan 147 Slice A: the seeded `sapphire` tenant's fixed id (migration 0041).
-# A server-side DEFAULT on every `tenant_id` column means legacy raw INSERTs
-# that predate tenant-awareness (mostly test seeding helpers) still work —
-# kept in sync manually with sapphire_flow.types.tenant.DEFAULT_TENANT_ID.
-_DEFAULT_TENANT_ID_SQL = sa.text("'00000000-0000-0000-0000-000000000001'")
+# Plan 147 Slice A: every `tenant_id` column is NOT NULL with NO server
+# default — tenant ownership is an explicit decision at every writer boundary
+# (migrations 0042-0044 backfill the seeded `sapphire` tenant onto pre-existing
+# rows, then DROP the backfill default). A raw INSERT that omits tenant_id
+# therefore fails loud (NotNullViolation) instead of silently defaulting to
+# Swiss.
 
 # ──────────────────────────────────────────────
 # REFERENCE DATA
@@ -287,7 +288,6 @@ stations = sa.Table(
         UUID(as_uuid=True),
         sa.ForeignKey("tenants.id"),
         nullable=False,
-        server_default=_DEFAULT_TENANT_ID_SQL,
     ),
     sa.UniqueConstraint("network", "code", name="uq_stations_network_code"),
     # (id, tenant_id) is redundant with the PK alone but is the FK target the
@@ -431,7 +431,6 @@ station_groups = sa.Table(
         UUID(as_uuid=True),
         sa.ForeignKey("tenants.id"),
         nullable=False,
-        server_default=_DEFAULT_TENANT_ID_SQL,
     ),
     sa.UniqueConstraint("tenant_id", "name", name="uq_station_groups_tenant_id_name"),
     sa.UniqueConstraint("id", "tenant_id", name="uq_station_groups_id_tenant_id"),
@@ -463,7 +462,6 @@ station_group_members = sa.Table(
         "tenant_id",
         UUID(as_uuid=True),
         nullable=False,
-        server_default=_DEFAULT_TENANT_ID_SQL,
     ),
     sa.PrimaryKeyConstraint("group_id", "station_id"),
     sa.ForeignKeyConstraint(

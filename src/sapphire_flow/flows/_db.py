@@ -43,6 +43,7 @@ def make_pg_stores(conn: sa.Connection) -> dict[str, object]:
     from sapphire_flow.store.skill_store import PgSkillStore
     from sapphire_flow.store.station_group_store import PgStationGroupStore
     from sapphire_flow.store.station_store import PgStationStore
+    from sapphire_flow.store.tenant_store import PgTenantStore
     from sapphire_flow.store.weather_forecast_store import PgWeatherForecastStore
 
     artifact_dir = resolve_artifact_dir()
@@ -68,6 +69,7 @@ def make_pg_stores(conn: sa.Connection) -> dict[str, object]:
         "pipeline_health_store": PgPipelineHealthStore(conn),
         "gateway_polygon_store": RecapGatewayPolygonStore(conn),
         "formula_store": PgFormulaStore(conn),
+        "tenant_store": PgTenantStore(conn),
     }
 
 
