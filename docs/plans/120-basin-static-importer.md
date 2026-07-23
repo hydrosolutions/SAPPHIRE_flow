@@ -256,10 +256,38 @@ row-shaping logic in one shared function that both call so they cannot drift.
 
 ---
 
-## Implementation status (Phase 2 slice, 2026-07-23 — keep current, do not let this drift)
+## Implementation status (Phase 3 slice, 2026-07-23 — keep current, do not let this drift)
 
-**NOT YET production-ready — Phase 3 (Task 3A entrypoint + Task 3B docs) still open.**
-Landed so far, across four passes:
+**All 4 slices (Phase 0/1/2/3) now implemented — the build side of Plan 120 is COMPLETE.**
+The only remaining gate before Nepal production enablement is operational, not a build gap:
+run the importer (`python -m sapphire_flow.cli.import_basin_package`) against an accepted
+package (see the Production-gate note, below, and
+`docs/operations/basin-static-importer-runbook.md`).
+
+- **Phase 3 (Task 3A + 3B) — DONE (this slice, branch `feat/plan-120-phase3-cli`)**:
+  `services/basin_importer.py::import_loaded_basin_package` / `import_basin_package_from_directory`
+  orchestrate Task 1A/1B (load + evaluate) and Task 2A/2C (`store/basin_importer.py::
+  import_basin_package`) into one call per package, returning the operator-facing
+  `types/basin_package.py::BasinPackageImportReport` (accepted / onboarding_held /
+  imported_basins / rejection_reason). `import_loaded_basin_package` runs the write pipeline
+  inside a SAVEPOINT (`conn.begin_nested()`) so a caught `BasinPackageRejectedError` never
+  poisons the caller's outer transaction — an anticipated whole-package or write-boundary
+  rejection is folded into the report (`outcome="rejected"`) instead of propagating; an
+  unanticipated failure (a bug, a transaction-contract violation) still raises. The CLI
+  entrypoint (`src/sapphire_flow/cli/import_basin_package.py`,
+  `python -m sapphire_flow.cli.import_basin_package --package-dir <dir>`) resolves stations
+  via the live `stations` table (network-scoped `fetch_station_by_code`), opens one
+  `engine.begin()` transaction for the whole run, logs the report, and exits non-zero on
+  `outcome="rejected"`. Docs synced: contract §5a/§6.2a/§11 (open-gap language replaced with
+  RESOLVED notes pointing at the importer), a new runbook
+  (`docs/operations/basin-static-importer-runbook.md`), `docs/plans/README.md` status.
+  `database-schema.md`/`architecture-context.md`/`types-and-protocols.md` were already
+  synced by the Phase 0/2D fixer-round doc work and needed no further edit here (verified,
+  not re-copied). Tests: `tests/integration/services/test_basin_importer.py` (red-first,
+  proven RED against a `NotImplementedError` stub before the real implementation),
+  `tests/unit/docs/test_basin_importer_docs.py`.
+
+Landed in earlier slices, across four passes:
 
 - **Task 0A — DONE** (`cbe3a1c`): provenance/versioning schema (`basin_static_packages`,
   `basin_versions`, `model_artifact_basin_versions`, additive `package_id` columns) +
@@ -303,17 +331,15 @@ Landed so far, across four passes:
   scoped to exactly the just-superseded `basin_version_id`). Decision A (absent-basin =
   untouched) holds by construction — the importer only ever touches basins referenced in
   `acceptance_report.accepted`.
-- **Phase 3 (Task 3A importer entrypoint/CLI + acceptance report, Task 3B docs/runbook) is
-  NOT implemented.** `import_basin_package` is the write-side function Task 3A will wrap
-  with file-loading + a CLI + the full accepted/held/rejected report; until Task 3A lands
-  there is no operator-facing way to run an import, so 082's store-backed resolver still
-  returns `None` for every station in a live deployment (Production-gate note, below) even
-  though the persistence path itself is now exercised (Live-Postgres integration tests:
-  `tests/integration/store/test_basin_importer_persistence.py`,
-  `tests/integration/store/test_basin_importer_idempotency.py`).
+- **Phase 3 (Task 3A importer entrypoint/CLI + acceptance report, Task 3B docs/runbook) —
+  DONE, see above.** The persistence path is exercised by both the Phase-2 Live-Postgres
+  integration tests (`tests/integration/store/test_basin_importer_persistence.py`,
+  `tests/integration/store/test_basin_importer_idempotency.py`) AND the Phase-3 orchestration
+  tests (`tests/integration/services/test_basin_importer.py`).
 
-Do not treat this plan as "landed" for Nepal production purposes on the strength of Task
-0A/1A/1B/2A/2B/2C/2D alone — Phase 3 (Task 3A/3B) is the blocking remainder.
+Every task (0A/1A/1B/2A/2B/2C/2D/3A/3B) is now implemented and tested. The plan is build-complete;
+Nepal production enablement still needs an accepted package actually run through the importer
+(Production-gate note, below — an operational step, not a code gap).
 
 ---
 
@@ -330,8 +356,8 @@ PR stays reviewable:
    population; incremental upsert + versioned corrections + idempotency + affected-artifact set) — **DONE,
    merged in PR #128** (`store/basin_importer.py::import_basin_package` + `PgBasinStore.update_basin_from_package`,
    canonical package fingerprint, migration 0040).
-4. **Phase 3 — Tasks 3A + 3B** (importer entrypoint/CLI + acceptance report; docs/runbook) — **THIS SLICE**
-   (branch `feat/plan-120-phase3-cli`). **The capstone: completes Plan 120.**
+4. **Phase 3 — Tasks 3A + 3B** (importer entrypoint/CLI + acceptance report; docs/runbook) — **DONE, THIS
+   SLICE** (branch `feat/plan-120-phase3-cli`, hold-at-PR). **The capstone: completes Plan 120.**
 
 **Scope rule for THIS `/implement` run: build Task 3A + Task 3B only.** 3A is the top-level import
 entrypoint/function that ORCHESTRATES the already-merged pieces — `basin_package_loader` (Phase 1, #126) →

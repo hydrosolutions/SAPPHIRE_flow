@@ -24,6 +24,7 @@ CoverageStatus = Literal["inside", "partial", "outside", "unknown"]
 ValidationStatus = Literal["passed", "warning", "failed"]
 BasinAcceptanceOutcome = Literal["accepted", "onboarding_hold"]
 BasinImportOutcome = Literal["inserted", "corrected"]
+BasinImportRunOutcome = Literal["imported", "already_imported", "rejected"]
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -327,3 +328,42 @@ class BasinPackageImportResult:
     package_id: PackageId
     already_imported: bool
     imported_basins: tuple[ImportedBasin, ...] = ()
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class BasinPackageImportReport:
+    """Task 3A — the operator-facing report for ONE
+    ``import_basin_package_from_directory``/``import_loaded_basin_package``
+    run: Task 1B's per-basin partition (``accepted`` / ``onboarding_held``,
+    each carrying its own ``warnings``/``hold_reasons`` — this is what
+    satisfies contract §9's "warnings MUST remain visible in onboarding
+    reports", `04:653-655`), and Task 2A/2C's persistence outcome
+    (``imported_basins``, each carrying ``material_change`` and, for a
+    correction, ``affected_artifact_ids`` — the exact artifacts the
+    correction just superseded).
+
+    ``outcome="rejected"`` covers BOTH an anticipated Task 1A whole-package
+    reject (raised by ``load_basin_package`` — package_id may be unknown,
+    hence ``package_id: str | None``) and a Task 2A/2C write-boundary
+    invariant rejection (raised by ``import_basin_package`` — the package
+    transaction rolled back, nothing persisted); ``rejection_reason`` carries
+    the underlying :class:`~sapphire_flow.exceptions.BasinPackageRejectedError`
+    message. The orchestration layer converts that exception into this report
+    field rather than letting it propagate, so a CLI/onboarding caller gets a
+    structured result instead of a bare traceback (contract 04:670-672 — the
+    importer must never silently complete on a problem it cannot resolve).
+
+    No ``lineage_write_failures`` field: Task 2D's lineage write
+    (``record_artifact_basin_lineage``) happens at model-TRAINING time
+    (``train_models_flow`` / ``onboard_model_flow``), never during a package
+    IMPORT run, so this report has nothing of that kind to carry — adding an
+    always-empty field for it would be dead weight (the plan's own D-2D/YAGNI
+    stance: don't build for zero consumers).
+    """
+
+    package_id: str | None
+    outcome: BasinImportRunOutcome
+    accepted: tuple[BasinAcceptanceDecision, ...] = ()
+    onboarding_held: tuple[BasinAcceptanceDecision, ...] = ()
+    imported_basins: tuple[ImportedBasin, ...] = ()
+    rejection_reason: str | None = None
