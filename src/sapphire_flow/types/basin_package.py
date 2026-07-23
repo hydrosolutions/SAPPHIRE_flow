@@ -72,7 +72,12 @@ class FeatureCatalogEntry:
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class BasinRecord:
-    """One accepted (schema-conformant) row of ``basins.gpkg`` (contract §4)."""
+    """One accepted (schema-conformant) row of ``basins.gpkg`` (contract §4).
+
+    Note: coverage is NOT sourced here. Per-basin coverage is read from the
+    REQUIRED ``validation_report.json`` ``checks.coverage_status`` (contract §8),
+    joined to the basin in Task 1B — never from an optional GeoPackage column.
+    """
 
     network: str
     station_code: str
@@ -94,7 +99,6 @@ class BasinRecord:
     longitude: float
     regional_basin: str | None = None
     outlet_snap_distance_m: float | None = None
-    coverage_status: CoverageStatus | None = None
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

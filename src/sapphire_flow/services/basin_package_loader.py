@@ -13,6 +13,15 @@
   basin outright — a per-basin problem holds that basin in ``onboarding``
   (contract §10 language), it never drops it or aborts the package.
 
+**Parse, don't validate (CLAUDE.md HARD rule).** EVERY external row — a
+``basins.gpkg`` feature, a ``static_attributes.parquet`` row, a ``bands.gpkg``
+feature, a ``validation_report.json`` per-basin entry — is parsed through a
+strict Pydantic boundary model (``_BasinRowModel`` / ``_StaticRowModel`` /
+``_BandRowModel`` / ``_ValidationBasinEntryModel``) BEFORE any frozen domain
+type is constructed. A malformed cell type rejects the package
+(:class:`BasinPackageRejectedError`) rather than raising a raw ``ValueError`` /
+``TypeError`` deeper in the code.
+
 No DB writes happen here (Task 2A/2C, a later slice).
 """
 
@@ -23,15 +32,27 @@ from __future__ import annotations
 
 import hashlib
 import math
+import numbers
 import re
-from datetime import date  # noqa: TC003 -- pydantic needs this at runtime
+from datetime import date, datetime, timedelta  # noqa: TC003 -- pydantic runtime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 import geopandas as gpd
 import polars as pl
 import pyogrio.errors
 import structlog
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
+    ValidationError,
+    field_validator,
+)
 
 from sapphire_flow.exceptions import BasinPackageRejectedError
 from sapphire_flow.types.basin_package import (
@@ -50,13 +71,15 @@ from sapphire_flow.types.basin_package import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from pathlib import Path
+
+    from shapely.geometry.base import BaseGeometry
 
     from sapphire_flow.types.ids import StationId
 
 log = structlog.get_logger(__name__)
 
 _SUPPORTED_CONTRACT_VERSION = "basin-static-artifact/v1"
+_REQUIRED_CRS = "EPSG:4326"
 _MANDATORY_FILES: tuple[str, ...] = (
     "manifest.json",
     "basins.gpkg",
@@ -65,10 +88,18 @@ _MANDATORY_FILES: tuple[str, ...] = (
     "validation_report.json",
 )
 _OPTIONAL_PAYLOAD_FILES: tuple[str, ...] = ("bands.gpkg", "README.md")
+# Files that carry hashes / describe the package — never hashed as payload, and
+# never legal as a declared payload path (a payload path pointing at them is
+# self-referential; §9 / security boundary).
+_SELF_REFERENTIAL_FILES: frozenset[str] = frozenset(
+    {"manifest.json", "checksums.sha256"}
+)
+_SHA256_VALUE = re.compile(r"^sha256:[0-9a-f]{64}$")
 # §3a: internal layer/table name AND per-feature `name` must start with a
 # letter or underscore. §4a additionally requires lowercase.
 _NAME_PATTERN = re.compile(r"^[a-z_][a-z0-9_]*$")
-_FORCING_DERIVED_SOURCE_DATASET = "ERA5-Land"
+# §8 minimum per-basin validation checks are enforced structurally by
+# `_ValidationChecksModel` (presence + type at the Pydantic boundary).
 
 _BASIN_REQUIRED_COLUMNS: tuple[str, ...] = (
     "network",
@@ -97,6 +128,30 @@ _BAND_REQUIRED_COLUMNS: tuple[str, ...] = (
     "max_elevation_m",
     "area_km2",
 )
+
+
+# ──────────────────────────────────────────────
+# Small validation helpers reused across boundary models
+# ──────────────────────────────────────────────
+
+
+def _nan_to_none(value: Any) -> Any:
+    """A GeoPackage null cell surfaces as NaN through pyogrio/pandas — map it to
+    ``None`` for OPTIONAL fields (required-field NaN is rejected explicitly)."""
+    if isinstance(value, numbers.Real) and math.isnan(float(value)):
+        return None
+    return value
+
+
+def _reject_nan(value: float) -> float:
+    if math.isnan(value):
+        raise ValueError("value must not be NaN")
+    return value
+
+
+def _normalize_station_code(code: str) -> str:
+    """§4a normalization: lowercase, runs of non-alphanumerics → one underscore."""
+    return re.sub(r"[^a-z0-9]+", "_", code.lower())
 
 
 # ──────────────────────────────────────────────
@@ -133,6 +188,38 @@ class _ManifestModel(BaseModel):
     files: dict[str, str]
     checksums: dict[str, str] = Field(default_factory=dict)
 
+    @field_validator("created_at")
+    @classmethod
+    def _created_at_utc_iso(cls, value: str) -> str:
+        candidate = value[:-1] + "+00:00" if value.endswith("Z") else value
+        try:
+            parsed = datetime.fromisoformat(candidate)
+        except ValueError as exc:
+            raise ValueError(
+                f"created_at {value!r} is not an ISO-8601 timestamp"
+            ) from exc
+        if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+            raise ValueError(f"created_at {value!r} must be UTC (offset +00:00 or Z)")
+        return value
+
+    @field_validator("crs")
+    @classmethod
+    def _crs_is_4326(cls, value: str) -> str:
+        if value != _REQUIRED_CRS:
+            raise ValueError(f"crs must be {_REQUIRED_CRS!r}, got {value!r}")
+        return value
+
+    @field_validator("checksums")
+    @classmethod
+    def _checksum_value_syntax(cls, value: dict[str, str]) -> dict[str, str]:
+        for filename, digest in value.items():
+            if not _SHA256_VALUE.match(digest):
+                raise ValueError(
+                    f"checksum for {filename!r} is not a 'sha256:<64-hex>' value: "
+                    f"{digest!r}"
+                )
+        return value
+
 
 class _FeatureCatalogEntryModel(BaseModel):
     name: str = Field(min_length=1)
@@ -149,10 +236,106 @@ class _FeatureCatalogModel(BaseModel):
     features: list[_FeatureCatalogEntryModel] = Field(min_length=1)
 
 
+class _BasinRowModel(BaseModel):
+    """Strict boundary model for one ``basins.gpkg`` feature row (§4). Scalar
+    columns are parsed with strict types (a wrong-typed cell rejects the
+    package); ``geometry`` is carried opaquely and validated in domain code."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="ignore")
+
+    network: StrictStr
+    station_code: StrictStr
+    basin_code: StrictStr
+    gateway_hru_name: StrictStr
+    name: StrictStr
+    display_name: StrictStr
+    area_km2: StrictFloat
+    outlet_lon: StrictFloat
+    outlet_lat: StrictFloat
+    delineation_method: StrictStr
+    gauge_id: StrictStr
+    latitude: StrictFloat
+    longitude: StrictFloat
+    geometry: Any = None
+    regional_basin: StrictStr | None = None
+    outlet_snap_distance_m: StrictFloat | None = None
+
+    @field_validator("regional_basin", "outlet_snap_distance_m", mode="before")
+    @classmethod
+    def _optional_nan_to_none(cls, value: Any) -> Any:
+        return _nan_to_none(value)
+
+
+class _BandRowModel(BaseModel):
+    """Strict boundary model for one ``bands.gpkg`` feature row (§5)."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="ignore")
+
+    network: StrictStr
+    basin_code: StrictStr
+    station_code: StrictStr
+    band_id: StrictInt
+    gateway_hru_name: StrictStr
+    name: StrictStr
+    display_name: StrictStr
+    min_elevation_m: StrictFloat
+    max_elevation_m: StrictFloat
+    area_km2: StrictFloat
+    geometry: Any = None
+
+    @field_validator("band_id", mode="before")
+    @classmethod
+    def _band_id_integral(cls, value: Any) -> int:
+        if isinstance(value, bool):
+            raise ValueError("band_id must be an integer, not a bool")
+        if isinstance(value, numbers.Integral):
+            return int(value)
+        if isinstance(value, numbers.Real):
+            as_float = float(value)
+            if math.isnan(as_float) or not as_float.is_integer():
+                raise ValueError(
+                    f"band_id must be a whole integer, not fractional ({value!r})"
+                )
+            return int(as_float)
+        raise ValueError(f"band_id must be an integer, got {value!r}")
+
+    @field_validator("min_elevation_m", "max_elevation_m", "area_km2")
+    @classmethod
+    def _no_nan(cls, value: float) -> float:
+        return _reject_nan(value)
+
+
+class _StaticRowModel(BaseModel):
+    """Strict boundary model for one ``static_attributes.parquet`` row (§6):
+    a string ``gauge_id`` plus ``Float64``-or-null attribute values."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    gauge_id: StrictStr
+    attributes: dict[str, StrictFloat | None]
+
+
 class _ValidationSummaryModel(BaseModel):
     passed: int
     failed: int
     warnings: int
+
+
+class _ValidationChecksModel(BaseModel):
+    """§8 minimum checks — presence and type enforced at the boundary."""
+
+    model_config = ConfigDict(extra="allow")
+
+    geometry_present: StrictBool
+    geometry_valid: StrictBool
+    crs_epsg_4326: StrictBool
+    geometry_2d: StrictBool
+    area_positive: StrictBool
+    ids_unique: StrictBool
+    static_row_present: StrictBool
+    required_static_features_present: StrictBool
+    outlet_snap_distance_m: StrictFloat | StrictInt | None
+    coverage_status: Literal["inside", "partial", "outside", "unknown"]
 
 
 class _ValidationBasinEntryModel(BaseModel):
@@ -162,7 +345,7 @@ class _ValidationBasinEntryModel(BaseModel):
     gateway_hru_name: str
     name: str
     status: Literal["passed", "warning", "failed"]
-    checks: dict[str, Any]
+    checks: _ValidationChecksModel
     warnings: list[str]
     errors: list[str]
 
@@ -187,6 +370,17 @@ def _parse_model(model_cls: type[_ModelT], path: Path) -> _ModelT:
     except ValidationError as exc:
         raise BasinPackageRejectedError(
             f"{path.name} failed schema validation: {exc}"
+        ) from exc
+
+
+def _parse_row(
+    model_cls: type[_ModelT], data: dict[str, Any], *, label: str
+) -> _ModelT:
+    try:
+        return model_cls.model_validate(data)
+    except ValidationError as exc:
+        raise BasinPackageRejectedError(
+            f"{label} row failed schema validation: {exc}"
         ) from exc
 
 
@@ -215,6 +409,8 @@ def load_basin_package(package_dir: Path) -> LoadedBasinPackage:
             f"expected {_SUPPORTED_CONTRACT_VERSION!r}"
         )
 
+    _validate_declared_paths(package_dir, manifest_model)
+
     missing_files = [
         name for name in _MANDATORY_FILES if not (package_dir / name).is_file()
     ]
@@ -226,19 +422,27 @@ def load_basin_package(package_dir: Path) -> LoadedBasinPackage:
 
     basins_gdf = _read_geometry_file(package_dir / "basins.gpkg", label="basins.gpkg")
     _validate_basin_columns(basins_gdf)
-    _validate_network_consistency(basins_gdf, manifest.network, label="basins.gpkg")
-    _validate_lat_lon_equality(basins_gdf)
-    _validate_name_uniqueness_and_format(basins_gdf, label="basins.gpkg")
-    _validate_basin_code_uniqueness(basins_gdf)
-    basins = tuple(_row_to_basin_record(row) for _, row in basins_gdf.iterrows())
+    basins = tuple(
+        _domain_basin_record(
+            _parse_row(_BasinRowModel, row.to_dict(), label="basins.gpkg")
+        )
+        for _, row in basins_gdf.iterrows()
+    )
+    _validate_network_consistency(basins, manifest.network, label="basins.gpkg")
+    _validate_lat_lon_equality(basins)
+    _validate_basin_names(basins)
+    _validate_basin_gauge_id_uniqueness(basins)
+    _validate_basin_code_uniqueness(basins)
 
     bands: tuple[BandRecord, ...] | None = None
     bands_path = package_dir / "bands.gpkg"
     if bands_path.is_file():
         bands_gdf = _read_geometry_file(bands_path, label="bands.gpkg")
         bands = _validate_and_build_bands(bands_gdf, manifest, basins)
+        _validate_cross_file_name_collisions(basins, bands)
 
     static_df = _read_static_attributes(package_dir / "static_attributes.parquet")
+    static_attributes = _static_attributes_by_gauge_id(static_df)
     static_columns = frozenset(static_df.columns) - {"gauge_id"}
 
     catalog_model = _parse_model(
@@ -249,6 +453,7 @@ def load_basin_package(package_dir: Path) -> LoadedBasinPackage:
     validation_report_model = _parse_model(
         _ValidationReportModel, package_dir / "validation_report.json"
     )
+    _validate_validation_report(validation_report_model, basins)
     validation_report = _domain_validation_report(validation_report_model)
 
     return LoadedBasinPackage(
@@ -256,7 +461,7 @@ def load_basin_package(package_dir: Path) -> LoadedBasinPackage:
         basins=basins,
         bands=bands,
         feature_catalog=feature_catalog,
-        static_attributes=_static_attributes_by_gauge_id(static_df),
+        static_attributes=static_attributes,
         validation_report=validation_report,
         computed_checksums=computed_checksums,
     )
@@ -290,6 +495,28 @@ def _domain_climatology_window(
     return ClimatologyWindow(start=model.start, end=model.end)
 
 
+def _domain_basin_record(model: _BasinRowModel) -> BasinRecord:
+    geometry: BaseGeometry | None = model.geometry
+    return BasinRecord(
+        network=model.network,
+        station_code=model.station_code,
+        basin_code=model.basin_code,
+        gateway_hru_name=model.gateway_hru_name,
+        name=model.name,
+        display_name=model.display_name,
+        area_km2=model.area_km2,
+        outlet_lon=model.outlet_lon,
+        outlet_lat=model.outlet_lat,
+        delineation_method=model.delineation_method,
+        geometry=geometry,
+        gauge_id=model.gauge_id,
+        latitude=model.latitude,
+        longitude=model.longitude,
+        regional_basin=model.regional_basin,
+        outlet_snap_distance_m=model.outlet_snap_distance_m,
+    )
+
+
 def _domain_validation_report(model: _ValidationReportModel) -> ValidationReport:
     return ValidationReport(
         passed=model.summary.passed,
@@ -303,7 +530,7 @@ def _domain_validation_report(model: _ValidationReportModel) -> ValidationReport
                 gateway_hru_name=b.gateway_hru_name,
                 name=b.name,
                 status=b.status,
-                checks=dict(b.checks),
+                checks=b.checks.model_dump(),
                 warnings=tuple(b.warnings),
                 errors=tuple(b.errors),
             )
@@ -312,30 +539,88 @@ def _domain_validation_report(model: _ValidationReportModel) -> ValidationReport
     )
 
 
+# ── Declared-path security boundary (§9) ──
+
+
+def _validate_declared_paths(package_dir: Path, manifest_model: _ManifestModel) -> None:
+    """Reject any declared payload path (``manifest.files`` values or
+    ``manifest.checksums`` keys) that is absolute, contains a ``..`` traversal,
+    is self-referential (``manifest.json``/``checksums.sha256``), or escapes the
+    package directory. This runs BEFORE any file is opened by declared path."""
+    base = package_dir.resolve()
+    declared = set(manifest_model.files.values()) | set(manifest_model.checksums.keys())
+    for rel in declared:
+        if rel in _SELF_REFERENTIAL_FILES:
+            raise BasinPackageRejectedError(
+                f"declared payload path {rel!r} is self-referential "
+                "(manifest.json/checksums.sha256 must not be listed as payload)"
+            )
+        candidate = Path(rel)
+        if candidate.is_absolute() or ".." in candidate.parts:
+            raise BasinPackageRejectedError(
+                f"declared payload path {rel!r} is absolute or contains '..' traversal"
+            )
+        resolved = (base / candidate).resolve()
+        if resolved != base and base not in resolved.parents:
+            raise BasinPackageRejectedError(
+                f"declared payload path {rel!r} escapes the package directory"
+            )
+
+
 # ── Checksums ──
 
 
-def _payload_files(package_dir: Path, manifest_model: _ManifestModel) -> list[str]:
-    """The canonical payload file set SAP3 hashes — the producer-declared
-    set (``manifest.checksums`` keys) when present; otherwise every
-    ``manifest.files`` value plus any present optional payload file. Always
-    excludes the self-referential ``manifest.json``/``checksums.sha256``."""
-    if manifest_model.checksums:
-        return list(manifest_model.checksums.keys())
-    payload = set(manifest_model.files.values())
-    payload.update(
-        name
-        for name in _OPTIONAL_PAYLOAD_FILES
-        if name != "checksums.sha256" and (package_dir / name).is_file()
+def _declared_checksums(
+    package_dir: Path, manifest_model: _ManifestModel
+) -> dict[str, str] | None:
+    """The canonical declared checksum set: ``manifest.checksums`` and/or a
+    ``checksums.sha256`` sidecar (the SAME set). Returns ``None`` when the
+    producer declared no hashes anywhere. When both are present they MUST agree
+    exactly — same key set AND same value per key (a missing OR extra sidecar
+    entry rejects)."""
+    manifest_checksums = manifest_model.checksums or None
+    sidecar_path = package_dir / "checksums.sha256"
+    sidecar_checksums = (
+        _parse_sha256_sidecar(sidecar_path) if sidecar_path.is_file() else None
     )
-    return sorted(payload)
+
+    if manifest_checksums is not None and sidecar_checksums is not None:
+        if set(manifest_checksums) != set(sidecar_checksums):
+            raise BasinPackageRejectedError(
+                "manifest.checksums and checksums.sha256 declare different file "
+                f"sets: manifest={sorted(manifest_checksums)}, "
+                f"sidecar={sorted(sidecar_checksums)}"
+            )
+        for filename, declared in manifest_checksums.items():
+            if sidecar_checksums[filename] != declared:
+                raise BasinPackageRejectedError(
+                    f"manifest.checksums and checksums.sha256 disagree for "
+                    f"{filename!r}: {declared!r} vs {sidecar_checksums[filename]!r}"
+                )
+        return dict(manifest_checksums)
+
+    return manifest_checksums or sidecar_checksums
 
 
 def _compute_and_verify_checksums(
     package_dir: Path, manifest_model: _ManifestModel
 ) -> dict[str, str]:
+    declared = _declared_checksums(package_dir, manifest_model)
+
+    if declared is not None:
+        payload_files = sorted(declared.keys())
+    else:
+        # No declarations anywhere: compute over manifest.files ∪ present
+        # optional payload files, excluding the self-referential/hash files.
+        payload = set(manifest_model.files.values())
+        payload.update(
+            name for name in _OPTIONAL_PAYLOAD_FILES if (package_dir / name).is_file()
+        )
+        payload -= _SELF_REFERENTIAL_FILES
+        payload_files = sorted(payload)
+
     computed: dict[str, str] = {}
-    for filename in _payload_files(package_dir, manifest_model):
+    for filename in payload_files:
         path = package_dir / filename
         if not path.is_file():
             raise BasinPackageRejectedError(
@@ -344,23 +629,12 @@ def _compute_and_verify_checksums(
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
         computed[filename] = f"sha256:{digest}"
 
-    for filename, declared in manifest_model.checksums.items():
-        actual = computed.get(filename)
-        if actual != declared:
-            raise BasinPackageRejectedError(
-                f"checksum mismatch for {filename!r}: declared {declared!r}, "
-                f"computed {actual!r}"
-            )
-
-    sidecar_path = package_dir / "checksums.sha256"
-    if sidecar_path.is_file() and manifest_model.checksums:
-        sidecar_hashes = _parse_sha256_sidecar(sidecar_path)
-        for filename, declared in manifest_model.checksums.items():
-            sidecar_value = sidecar_hashes.get(filename)
-            if sidecar_value is not None and sidecar_value != declared:
+    if declared is not None:
+        for filename, declared_value in declared.items():
+            if computed[filename] != declared_value:
                 raise BasinPackageRejectedError(
-                    f"manifest.checksums and checksums.sha256 disagree for "
-                    f"{filename!r}: {declared!r} vs {sidecar_value!r}"
+                    f"checksum mismatch for {filename!r}: declared "
+                    f"{declared_value!r}, computed {computed[filename]!r}"
                 )
     return computed
 
@@ -373,9 +647,17 @@ def _parse_sha256_sidecar(path: Path) -> dict[str, str]:
             continue
         parts = stripped.split(None, 1)
         if len(parts) != 2:
-            continue
+            raise BasinPackageRejectedError(
+                f"checksums.sha256 line is not '<hex>  <file>': {line!r}"
+            )
         digest, filename = parts
-        hashes[filename.lstrip("*")] = f"sha256:{digest}"
+        value = digest if digest.startswith("sha256:") else f"sha256:{digest}"
+        if not _SHA256_VALUE.match(value):
+            raise BasinPackageRejectedError(
+                f"checksums.sha256 entry for {filename!r} is not a sha256 hex value: "
+                f"{digest!r}"
+            )
+        hashes[filename.lstrip("*")] = value
     return hashes
 
 
@@ -403,100 +685,82 @@ def _validate_basin_columns(gdf: gpd.GeoDataFrame) -> None:
 
 
 def _validate_network_consistency(
-    gdf: gpd.GeoDataFrame, network: str, *, label: str
+    basins: tuple[BasinRecord, ...], network: str, *, label: str
 ) -> None:
-    bad = gdf[gdf["network"] != network]
-    if not bad.empty:
+    bad = [b.station_code for b in basins if b.network != network]
+    if bad:
         raise BasinPackageRejectedError(
             f"{label} network column disagrees with manifest.network={network!r} "
-            f"for station_code(s): {bad['station_code'].tolist()}"
+            f"for station_code(s): {bad}"
         )
 
 
-def _validate_lat_lon_equality(gdf: gpd.GeoDataFrame) -> None:
-    mismatched = gdf[
-        (gdf["latitude"] != gdf["outlet_lat"]) | (gdf["longitude"] != gdf["outlet_lon"])
+def _validate_lat_lon_equality(basins: tuple[BasinRecord, ...]) -> None:
+    mismatched = [
+        b.station_code
+        for b in basins
+        if b.latitude != b.outlet_lat or b.longitude != b.outlet_lon
     ]
-    if not mismatched.empty:
+    if mismatched:
         raise BasinPackageRejectedError(
             "basins.gpkg latitude/longitude disagree with outlet_lat/outlet_lon "
-            f"for station_code(s): {mismatched['station_code'].tolist()}"
+            f"for station_code(s): {mismatched}"
         )
 
 
-def _validate_name_uniqueness_and_format(gdf: gpd.GeoDataFrame, *, label: str) -> None:
-    for _, row in gdf.iterrows():
-        name = row["name"]
-        if not isinstance(name, str) or not _NAME_PATTERN.match(name):
+def _validate_basin_names(basins: tuple[BasinRecord, ...]) -> None:
+    """§4a: every basin feature ``name`` MUST equal ``g_<normalized station
+    code>`` (exact Gateway form), and names MUST be unique across the file.
+    Normalization is not injective, so two codes can collide → §4a collision =
+    a package failure naming both codes."""
+    seen: dict[str, str] = {}
+    for basin in basins:
+        expected = f"g_{_normalize_station_code(basin.station_code)}"
+        if not _NAME_PATTERN.match(basin.name):
             raise BasinPackageRejectedError(
-                f"{label} feature name {name!r} (station_code={row['station_code']!r}) "
-                "must be lowercase and must not start with a digit"
+                f"basins.gpkg feature name {basin.name!r} "
+                f"(station_code={basin.station_code!r}) must be lowercase and must "
+                "not start with a digit"
             )
-    duplicated_names = gdf["name"][gdf["name"].duplicated(keep=False)].unique().tolist()
-    if duplicated_names:
-        colliding_codes = gdf.loc[
-            gdf["name"].isin(duplicated_names), "station_code"
-        ].tolist()
+        if basin.name != expected:
+            raise BasinPackageRejectedError(
+                f"basins.gpkg feature name {basin.name!r} does not match the required "
+                f"Gateway form {expected!r} for station_code {basin.station_code!r}"
+            )
+        if basin.name in seen and seen[basin.name] != basin.station_code:
+            raise BasinPackageRejectedError(
+                f"basins.gpkg feature name collision {basin.name!r} among "
+                f"station_code(s): {[seen[basin.name], basin.station_code]}"
+            )
+        seen[basin.name] = basin.station_code
+
+
+def _validate_basin_gauge_id_uniqueness(basins: tuple[BasinRecord, ...]) -> None:
+    seen: set[str] = set()
+    dupes: list[str] = []
+    for basin in basins:
+        if basin.gauge_id in seen:
+            dupes.append(basin.gauge_id)
+        seen.add(basin.gauge_id)
+    if dupes:
         raise BasinPackageRejectedError(
-            f"{label} feature name collision {duplicated_names} among "
-            f"station_code(s): {colliding_codes}"
+            f"basins.gpkg has duplicate gauge_id value(s): {sorted(set(dupes))}"
         )
 
 
-def _validate_basin_code_uniqueness(gdf: gpd.GeoDataFrame) -> None:
-    dupes = gdf[gdf.duplicated(subset=["network", "basin_code"], keep=False)]
-    if not dupes.empty:
+def _validate_basin_code_uniqueness(basins: tuple[BasinRecord, ...]) -> None:
+    seen: set[tuple[str, str]] = set()
+    dupes: list[tuple[str, str]] = []
+    for basin in basins:
+        key = (basin.network, basin.basin_code)
+        if key in seen:
+            dupes.append(key)
+        seen.add(key)
+    if dupes:
         raise BasinPackageRejectedError(
-            "basins.gpkg has duplicate (network, basin_code) pairs: "
-            f"{dupes[['network', 'basin_code']].drop_duplicates().values.tolist()}"
+            f"basins.gpkg has duplicate (network, basin_code) pairs: "
+            f"{sorted(set(dupes))}"
         )
-
-
-def _optional_float(value: Any) -> float | None:
-    if value is None:
-        return None
-    if isinstance(value, float) and math.isnan(value):
-        return None
-    return float(value)
-
-
-def _optional_str(value: Any) -> str | None:
-    if value is None:
-        return None
-    if isinstance(value, float) and math.isnan(value):
-        return None
-    return str(value)
-
-
-def _row_to_basin_record(row: Any) -> BasinRecord:
-    coverage_status = (
-        _optional_str(row["coverage_status"]) if "coverage_status" in row else None
-    )
-    return BasinRecord(
-        network=row["network"],
-        station_code=str(row["station_code"]),
-        basin_code=str(row["basin_code"]),
-        gateway_hru_name=row["gateway_hru_name"],
-        name=row["name"],
-        display_name=row["display_name"],
-        area_km2=float(row["area_km2"]),
-        outlet_lon=float(row["outlet_lon"]),
-        outlet_lat=float(row["outlet_lat"]),
-        delineation_method=str(row["delineation_method"]),
-        geometry=row["geometry"],
-        gauge_id=str(row["gauge_id"]),
-        latitude=float(row["latitude"]),
-        longitude=float(row["longitude"]),
-        regional_basin=(
-            _optional_str(row["regional_basin"]) if "regional_basin" in row else None
-        ),
-        outlet_snap_distance_m=(
-            _optional_float(row["outlet_snap_distance_m"])
-            if "outlet_snap_distance_m" in row
-            else None
-        ),
-        coverage_status=coverage_status,  # type: ignore[arg-type]
-    )
 
 
 # ── bands.gpkg (validated fully when present; §5a rows deferred — D-BAND) ──
@@ -515,81 +779,142 @@ def _validate_and_build_bands(
             f"bands.gpkg missing required column(s): {missing}"
         )
 
-    _validate_network_consistency(gdf, manifest.network, label="bands.gpkg")
-    _validate_name_uniqueness_and_format(gdf, label="bands.gpkg")
+    band_models = [
+        _parse_row(_BandRowModel, row.to_dict(), label="bands.gpkg")
+        for _, row in gdf.iterrows()
+    ]
+
+    bad_network = [b.station_code for b in band_models if b.network != manifest.network]
+    if bad_network:
+        raise BasinPackageRejectedError(
+            f"bands.gpkg network disagrees with manifest.network="
+            f"{manifest.network!r} for station_code(s): {bad_network}"
+        )
 
     basin_by_code = {b.basin_code: b for b in basins}
-    for _, row in gdf.iterrows():
-        basin_code = str(row["basin_code"])
-        parent = basin_by_code.get(basin_code)
+    for band in band_models:
+        parent = basin_by_code.get(band.basin_code)
         if parent is None:
             raise BasinPackageRejectedError(
-                f"bands.gpkg basin_code {basin_code!r} does not reference a "
+                f"bands.gpkg basin_code {band.basin_code!r} does not reference a "
                 "basins.gpkg basin"
             )
-        if str(row["station_code"]) != parent.station_code:
+        if band.station_code != parent.station_code:
             raise BasinPackageRejectedError(
-                f"bands.gpkg station_code {row['station_code']!r} does not match "
-                f"parent basin {basin_code!r} station_code {parent.station_code!r}"
+                f"bands.gpkg station_code {band.station_code!r} does not match "
+                f"parent basin {band.basin_code!r} station_code "
+                f"{parent.station_code!r}"
             )
-        if row["gateway_hru_name"] not in manifest.gateway_hru_names:
-            raise BasinPackageRejectedError(
-                f"bands.gpkg gateway_hru_name {row['gateway_hru_name']!r} not "
-                "declared in manifest.gateway_hru_names"
-            )
-        if not row["display_name"]:
-            raise BasinPackageRejectedError(
-                f"bands.gpkg display_name missing for band {row['name']!r}"
-            )
-        min_elev, max_elev = row["min_elevation_m"], row["max_elevation_m"]
-        if min_elev is None or max_elev is None or not (max_elev > min_elev):
-            raise BasinPackageRejectedError(
-                "bands.gpkg max_elevation_m must exceed min_elevation_m "
-                f"(got min={min_elev!r}, max={max_elev!r}) for band {row['name']!r}"
-            )
-        area = row["area_km2"]
-        if area is None or not (area > 0):
-            raise BasinPackageRejectedError(
-                f"bands.gpkg area_km2 must be positive (got {area!r}) for "
-                f"band {row['name']!r}"
-            )
-        geom = row["geometry"]
-        if (
-            geom is None
-            or geom.is_empty
-            or not geom.is_valid
-            or geom.has_z
-            or geom.geom_type not in ("Polygon", "MultiPolygon")
-        ):
-            raise BasinPackageRejectedError(
-                f"bands.gpkg geometry invalid for band {row['name']!r}"
-            )
-
-    band_id_dupes = gdf[
-        gdf.duplicated(subset=["network", "basin_code", "band_id"], keep=False)
-    ]
-    if not band_id_dupes.empty:
-        raise BasinPackageRejectedError(
-            "bands.gpkg band_id not unique within network+basin_code: "
-            f"{band_id_dupes[['network', 'basin_code', 'band_id']].values.tolist()}"
+        expected_name = (
+            f"g_{_normalize_station_code(band.station_code)}_band_{band.band_id}"
         )
+        if not _NAME_PATTERN.match(band.name):
+            raise BasinPackageRejectedError(
+                f"bands.gpkg feature name {band.name!r} must be lowercase and must "
+                "not start with a digit"
+            )
+        if band.name != expected_name:
+            raise BasinPackageRejectedError(
+                f"bands.gpkg feature name {band.name!r} does not match the required "
+                f"Gateway band form {expected_name!r}"
+            )
+        if band.gateway_hru_name not in manifest.gateway_hru_names:
+            raise BasinPackageRejectedError(
+                f"bands.gpkg gateway_hru_name {band.gateway_hru_name!r} not declared "
+                "in manifest.gateway_hru_names"
+            )
+        if not band.display_name:
+            raise BasinPackageRejectedError(
+                f"bands.gpkg display_name missing for band {band.name!r}"
+            )
+        if band.max_elevation_m <= band.min_elevation_m:
+            raise BasinPackageRejectedError(
+                "bands.gpkg max_elevation_m must exceed min_elevation_m (got "
+                f"min={band.min_elevation_m!r}, max={band.max_elevation_m!r}) for "
+                f"band {band.name!r}"
+            )
+        if band.area_km2 <= 0:
+            raise BasinPackageRejectedError(
+                f"bands.gpkg area_km2 must be positive (got {band.area_km2!r}) for "
+                f"band {band.name!r}"
+            )
+        _validate_geometry_2d(band.geometry, label=f"bands.gpkg band {band.name!r}")
+
+    _validate_band_name_uniqueness(band_models)
+    _validate_band_id_uniqueness(band_models)
 
     return tuple(
         BandRecord(
-            network=row["network"],
-            basin_code=str(row["basin_code"]),
-            station_code=str(row["station_code"]),
-            band_id=int(row["band_id"]),
-            gateway_hru_name=row["gateway_hru_name"],
-            name=row["name"],
-            display_name=row["display_name"],
-            min_elevation_m=float(row["min_elevation_m"]),
-            max_elevation_m=float(row["max_elevation_m"]),
-            area_km2=float(row["area_km2"]),
-            geometry=row["geometry"],
+            network=band.network,
+            basin_code=band.basin_code,
+            station_code=band.station_code,
+            band_id=band.band_id,
+            gateway_hru_name=band.gateway_hru_name,
+            name=band.name,
+            display_name=band.display_name,
+            min_elevation_m=band.min_elevation_m,
+            max_elevation_m=band.max_elevation_m,
+            area_km2=band.area_km2,
+            geometry=band.geometry,
         )
-        for _, row in gdf.iterrows()
+        for band in band_models
     )
+
+
+def _validate_geometry_2d(geometry: Any, *, label: str) -> None:
+    if (
+        geometry is None
+        or geometry.is_empty
+        or not geometry.is_valid
+        or geometry.has_z
+        or geometry.geom_type not in ("Polygon", "MultiPolygon")
+    ):
+        raise BasinPackageRejectedError(
+            f"{label} geometry invalid — must be a 2-D valid Polygon/MultiPolygon"
+        )
+
+
+def _validate_band_name_uniqueness(bands: list[_BandRowModel]) -> None:
+    seen: set[str] = set()
+    dupes: list[str] = []
+    for band in bands:
+        if band.name in seen:
+            dupes.append(band.name)
+        seen.add(band.name)
+    if dupes:
+        raise BasinPackageRejectedError(
+            f"bands.gpkg feature name collision {sorted(set(dupes))}"
+        )
+
+
+def _validate_band_id_uniqueness(bands: list[_BandRowModel]) -> None:
+    seen: set[tuple[str, str, int]] = set()
+    dupes: list[tuple[str, str, int]] = []
+    for band in bands:
+        key = (band.network, band.basin_code, band.band_id)
+        if key in seen:
+            dupes.append(key)
+        seen.add(key)
+    if dupes:
+        raise BasinPackageRejectedError(
+            "bands.gpkg band_id not unique within network+basin_code: "
+            f"{sorted(set(dupes))}"
+        )
+
+
+def _validate_cross_file_name_collisions(
+    basins: tuple[BasinRecord, ...], bands: tuple[BandRecord, ...]
+) -> None:
+    """§4a / §3a: basin and band feature ``name`` spaces MUST be disjoint across
+    the whole package (a whole-package reject, not deferrable)."""
+    basin_names = {b.name for b in basins}
+    band_names = {b.name for b in bands}
+    collisions = basin_names & band_names
+    if collisions:
+        raise BasinPackageRejectedError(
+            "basins.gpkg and bands.gpkg share feature name(s) (must be disjoint "
+            f"across the package): {sorted(collisions)}"
+        )
 
 
 # ── feature_catalog.json ──
@@ -600,8 +925,19 @@ def _validate_feature_catalog(
     manifest: PackageManifest,
     static_columns: frozenset[str],
 ) -> tuple[FeatureCatalogEntry, ...]:
-    catalog_names = {e.name for e in catalog_model.features}
+    seen_names: set[str] = set()
+    duplicate_names: list[str] = []
+    for entry in catalog_model.features:
+        if entry.name in seen_names:
+            duplicate_names.append(entry.name)
+        seen_names.add(entry.name)
+    if duplicate_names:
+        raise BasinPackageRejectedError(
+            f"feature_catalog.json has duplicate feature name(s): "
+            f"{sorted(set(duplicate_names))}"
+        )
 
+    catalog_names = seen_names
     missing_from_catalog = static_columns - catalog_names
     if missing_from_catalog:
         raise BasinPackageRejectedError(
@@ -615,6 +951,11 @@ def _validate_feature_catalog(
             f"column: {sorted(missing_from_parquet)}"
         )
 
+    # Forcing-vs-geometry derivation is decided by the dataset's PURPOSE in
+    # manifest.source_datasets (§6.3/§7), not by a hard-coded dataset name.
+    forcing_datasets = {
+        d.name for d in manifest.source_datasets if _is_forcing_purpose(d.purpose)
+    }
     source_names = {d.name for d in manifest.source_datasets}
     entries: list[FeatureCatalogEntry] = []
     for entry in catalog_model.features:
@@ -624,12 +965,23 @@ def _validate_feature_catalog(
                 f"{entry.source_dataset!r} not in manifest.source_datasets"
             )
         window = _domain_climatology_window(entry.climatology_window)
-        is_forcing_derived = entry.source_dataset == _FORCING_DERIVED_SOURCE_DATASET
+        is_forcing_derived = entry.source_dataset in forcing_datasets
         if is_forcing_derived and window is None:
             raise BasinPackageRejectedError(
                 f"feature_catalog.json entry {entry.name!r} is forcing-derived "
-                f"(source_dataset={_FORCING_DERIVED_SOURCE_DATASET!r}) but has no "
+                f"(source_dataset={entry.source_dataset!r}) but has no "
                 "climatology_window"
+            )
+        if not is_forcing_derived and window is not None:
+            raise BasinPackageRejectedError(
+                f"feature_catalog.json entry {entry.name!r} is geometry-derived "
+                f"(source_dataset={entry.source_dataset!r}) but declares a "
+                "climatology_window (must be null)"
+            )
+        if window is not None and manifest.climatology_window is None:
+            raise BasinPackageRejectedError(
+                f"feature_catalog.json entry {entry.name!r} declares a "
+                "climatology_window but manifest.climatology_window is absent"
             )
         if (
             window is not None
@@ -653,6 +1005,10 @@ def _validate_feature_catalog(
             )
         )
     return tuple(entries)
+
+
+def _is_forcing_purpose(purpose: str) -> bool:
+    return "forcing" in purpose.lower()
 
 
 # ── static_attributes.parquet ──
@@ -685,16 +1041,6 @@ def _read_static_attributes(path: Path) -> pl.DataFrame:
             f"static_attributes.parquet attribute column(s) not Float64: "
             f"{non_float_columns}"
         )
-
-    gauge_ids = df["gauge_id"].to_list()
-    if any(g is None or g == "" for g in gauge_ids):
-        raise BasinPackageRejectedError(
-            "static_attributes.parquet has a missing gauge_id value"
-        )
-    if len(gauge_ids) != len(set(gauge_ids)):
-        raise BasinPackageRejectedError(
-            "static_attributes.parquet has duplicate gauge_id values"
-        )
     return df
 
 
@@ -702,10 +1048,89 @@ def _static_attributes_by_gauge_id(
     df: pl.DataFrame,
 ) -> dict[str, dict[str, float | None]]:
     attribute_columns = [c for c in df.columns if c != "gauge_id"]
-    return {
-        row["gauge_id"]: {col: row[col] for col in attribute_columns}
-        for row in df.iter_rows(named=True)
-    }
+    parsed: dict[str, dict[str, float | None]] = {}
+    for raw in df.iter_rows(named=True):
+        gauge_id = raw["gauge_id"]
+        if gauge_id is None or gauge_id == "":
+            raise BasinPackageRejectedError(
+                "static_attributes.parquet has a missing gauge_id value"
+            )
+        row = _parse_row(
+            _StaticRowModel,
+            {
+                "gauge_id": gauge_id,
+                "attributes": {col: raw[col] for col in attribute_columns},
+            },
+            label="static_attributes.parquet",
+        )
+        if row.gauge_id in parsed:
+            raise BasinPackageRejectedError(
+                "static_attributes.parquet has duplicate gauge_id values"
+            )
+        parsed[row.gauge_id] = dict(row.attributes)
+    return parsed
+
+
+# ── validation_report.json ──
+
+
+def _validate_validation_report(
+    model: _ValidationReportModel, basins: tuple[BasinRecord, ...]
+) -> None:
+    """§8: one entry per basin, identity agreement with basins.gpkg, the
+    required check keys (enforced by ``_ValidationChecksModel``), and summary
+    consistency. Any violation rejects the package."""
+    basin_by_key = {(b.network, b.basin_code): b for b in basins}
+
+    if len(model.basins) != len(basins):
+        raise BasinPackageRejectedError(
+            "validation_report.json must have one entry per basins.gpkg feature "
+            f"(got {len(model.basins)} entries for {len(basins)} basins)"
+        )
+
+    seen_keys: set[tuple[str, str]] = set()
+    for entry in model.basins:
+        key = (entry.network, entry.basin_code)
+        if key in seen_keys:
+            raise BasinPackageRejectedError(
+                f"validation_report.json has duplicate entry for {key}"
+            )
+        seen_keys.add(key)
+        basin = basin_by_key.get(key)
+        if basin is None:
+            raise BasinPackageRejectedError(
+                f"validation_report.json entry {key} matches no basins.gpkg basin"
+            )
+        mismatches = {
+            field: (report_value, basin_value)
+            for field, report_value, basin_value in (
+                ("station_code", entry.station_code, basin.station_code),
+                ("gateway_hru_name", entry.gateway_hru_name, basin.gateway_hru_name),
+                ("name", entry.name, basin.name),
+            )
+            if report_value != basin_value
+        }
+        if mismatches:
+            raise BasinPackageRejectedError(
+                f"validation_report.json entry {key} disagrees with basins.gpkg: "
+                f"{mismatches}"
+            )
+
+    status_counts = {"passed": 0, "warning": 0, "failed": 0}
+    for entry in model.basins:
+        status_counts[entry.status] += 1
+    summary = model.summary
+    if (
+        summary.passed != status_counts["passed"]
+        or summary.failed != status_counts["failed"]
+        or summary.warnings != status_counts["warning"]
+    ):
+        raise BasinPackageRejectedError(
+            "validation_report.json summary is inconsistent with per-basin "
+            f"statuses: summary={{'passed': {summary.passed}, 'failed': "
+            f"{summary.failed}, 'warnings': {summary.warnings}}}, counted="
+            f"{status_counts}"
+        )
 
 
 # ──────────────────────────────────────────────
@@ -717,6 +1142,7 @@ def evaluate_basin_acceptance(
     loaded: LoadedBasinPackage,
     *,
     resolve_station: Callable[[str, str], StationId | None],
+    assigned_model_features: Callable[[BasinRecord], frozenset[str]] | None = None,
 ) -> BasinPackageAcceptanceReport:
     """Join ``basins.gpkg`` to ``static_attributes.parquet`` on ``gauge_id``
     (failing loudly, no partial import) and evaluate each basin's per-basin
@@ -726,15 +1152,38 @@ def evaluate_basin_acceptance(
     SAP3 station identity is network-scoped
     (``PgStationStore.fetch_station_by_code``, ``db/metadata.py`` §
     ``uq_stations_network_code``). Never call it with the code alone.
+
+    ``assigned_model_features`` is the SEAM for the later Task 2A/2C slice:
+    given a basin, it returns the static features that basin's ASSIGNED models
+    genuinely require. When a required-static feature is null/missing, the basin
+    is held in ``onboarding`` ONLY if that feature is in this assigned set (§9);
+    otherwise the null is surfaced as a VISIBLE per-basin WARNING, not an
+    onboarding hold (§9/§10: "SHOULD allow import with per-basin warnings when
+    the basin is not yet assigned to a model requiring the missing feature").
+    This slice has no DB-backed per-station model-assignment source, so the
+    default (``None``) treats NO basin as verifiably assigned — every
+    catalog-required-but-null feature becomes a warning, never a hold.
     """
     _validate_gauge_id_join(loaded)
 
-    required_feature_names = frozenset(
+    # Features some model declares a need for (catalog-level, not basin-scoped).
+    catalog_required = frozenset(
         entry.name for entry in loaded.feature_catalog if entry.required_by_models
     )
+    coverage_by_key = {
+        (entry.network, entry.basin_code): entry.checks.get("coverage_status")
+        for entry in loaded.validation_report.basins
+    }
 
     decisions = tuple(
-        _evaluate_one_basin(basin, loaded, required_feature_names, resolve_station)
+        _evaluate_one_basin(
+            basin,
+            loaded,
+            catalog_required=catalog_required,
+            coverage_by_key=coverage_by_key,
+            resolve_station=resolve_station,
+            assigned_model_features=assigned_model_features,
+        )
         for basin in loaded.basins
     )
     return BasinPackageAcceptanceReport(decisions=decisions)
@@ -756,8 +1205,11 @@ def _validate_gauge_id_join(loaded: LoadedBasinPackage) -> None:
 def _evaluate_one_basin(
     basin: BasinRecord,
     loaded: LoadedBasinPackage,
-    required_feature_names: frozenset[str],
+    *,
+    catalog_required: frozenset[str],
+    coverage_by_key: dict[tuple[str, str], Any],
     resolve_station: Callable[[str, str], StationId | None],
+    assigned_model_features: Callable[[BasinRecord], frozenset[str]] | None,
 ) -> BasinAcceptanceDecision:
     hold_reasons: list[str] = []
     warnings: list[str] = []
@@ -774,7 +1226,7 @@ def _evaluate_one_basin(
             "basin geometry missing, empty, invalid, or not 2-D Polygon/MultiPolygon"
         )
 
-    if basin.area_km2 <= 0:
+    if math.isnan(basin.area_km2) or basin.area_km2 <= 0:
         hold_reasons.append(f"area_km2 non-positive ({basin.area_km2})")
 
     station_id = resolve_station(basin.station_code, basin.network)
@@ -784,17 +1236,14 @@ def _evaluate_one_basin(
             "unmatched to a SAP3 station"
         )
 
-    static_values = loaded.static_attributes.get(basin.gauge_id, {})
-    missing_required = [
-        name
-        for name in sorted(required_feature_names)
-        if _is_missing(static_values.get(name))
-    ]
-    if missing_required:
-        hold_reasons.append(
-            "required static feature(s) missing/null for an assigned model: "
-            f"{missing_required}"
-        )
+    _evaluate_required_static(
+        basin,
+        loaded,
+        catalog_required=catalog_required,
+        assigned_model_features=assigned_model_features,
+        hold_reasons=hold_reasons,
+        warnings=warnings,
+    )
 
     if basin.gateway_hru_name not in loaded.manifest.gateway_hru_names:
         hold_reasons.append(
@@ -802,10 +1251,11 @@ def _evaluate_one_basin(
             "manifest.gateway_hru_names"
         )
 
-    if basin.coverage_status == "outside":
+    coverage = coverage_by_key.get((basin.network, basin.basin_code))
+    if coverage == "outside":
         hold_reasons.append("basin lies outside required coverage")
-    elif basin.coverage_status in ("partial", "unknown"):
-        warnings.append(f"basin coverage_status is {basin.coverage_status!r}")
+    elif coverage in ("partial", "unknown"):
+        warnings.append(f"basin coverage_status is {coverage!r}")
 
     outcome: Literal["accepted", "onboarding_hold"] = (
         "onboarding_hold" if hold_reasons else "accepted"
@@ -828,6 +1278,44 @@ def _evaluate_one_basin(
             hold_reasons=decision.hold_reasons,
         )
     return decision
+
+
+def _evaluate_required_static(
+    basin: BasinRecord,
+    loaded: LoadedBasinPackage,
+    *,
+    catalog_required: frozenset[str],
+    assigned_model_features: Callable[[BasinRecord], frozenset[str]] | None,
+    hold_reasons: list[str],
+    warnings: list[str],
+) -> None:
+    """Per §9/§10: a null required-static feature is an onboarding HOLD only when
+    the basin is VERIFIABLY assigned to a model needing it; otherwise a visible
+    WARNING (accept-with-warning). See ``assigned_model_features``."""
+    static_values = loaded.static_attributes.get(basin.gauge_id, {})
+    assigned = (
+        assigned_model_features(basin)
+        if assigned_model_features is not None
+        else frozenset()
+    )
+    held: list[str] = []
+    warned: list[str] = []
+    for name in sorted(catalog_required):
+        if not _is_missing(static_values.get(name)):
+            continue
+        if name in assigned:
+            held.append(name)
+        else:
+            warned.append(name)
+    if held:
+        hold_reasons.append(
+            f"required static feature(s) missing/null for an assigned model: {held}"
+        )
+    if warned:
+        warnings.append(
+            "static feature(s) declared required_by_models are null/missing but the "
+            f"basin is not verifiably assigned to a model needing them: {warned}"
+        )
 
 
 def _is_missing(value: float | None) -> bool:
