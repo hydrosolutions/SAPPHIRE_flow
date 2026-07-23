@@ -247,6 +247,7 @@ All exceptions inherit from `SapphireError`. Authoritative class definitions in
 | `ExtractionError` | Preprocessing/extraction failure (GridExtractor) | Log, skip station or fail cycle depending on scope |
 | `StoreError` | Store data retrieval failure (archive not found, corrupt data) | Log, raise to caller |
 | `PartitionMissingError` | DB partition doesn't exist | Write to dead letter queue, alert ops. **v0: not needed (no partitioning, see v0-scope.md § A1)** |
+| `BasinPackageRejectedError` | Basin/static package (Plan 120) fails a whole-package acceptance rule (contract §9 first list) — unsupported `contract_version`, missing mandatory file, checksum mismatch, schema-nonconformance, or a cross-file `gauge_id` mismatch | Reject entire package before any write; caller (importer) surfaces the reason. Distinct from a per-basin `onboarding` hold, which does not raise |
 
 > **`InsufficientDataError` — Flow 13 exception**: In model onboarding (and other multi-phase initialization flows), there is no fallback model. Exception mapping is phase-based, not type-based: `InsufficientDataError` before training maps to `SKIPPED_NO_DATA`; once training begins, any `SapphireError` subclass maps to the `FAILED_*` variant for the current phase (e.g., `FAILED_TRAINING`, `FAILED_HINDCAST`, `FAILED_SKILL`, `FAILED_ASSIGNMENT`). True unexpected exceptions (`TypeError`, `AttributeError`) propagate to Prefect as task-level failures per the standard rule — **except the training call itself** (see the Plan 130 carve-out below).
 

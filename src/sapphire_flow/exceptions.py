@@ -99,3 +99,13 @@ class ExtractionError(SapphireError):
 
 class StoreError(SapphireError):
     """Store data retrieval failure (archive not found, corrupt data)."""
+
+
+class BasinPackageRejectedError(SapphireError):
+    """A basin/static package (``docs/requirements/04-basin-static-artifact-
+    contract.md``) fails a WHOLE-PACKAGE acceptance rule (contract §9 first
+    list) — an unsupported ``contract_version``, a missing mandatory file, a
+    checksum mismatch, schema-nonconformance, or a cross-file ``gauge_id``
+    mismatch (Plan 120 Task 1A/1B). The entire package is rejected before any
+    write; this is distinct from a per-basin ``onboarding`` hold, which does
+    not raise (see ``BasinAcceptanceDecision``)."""
