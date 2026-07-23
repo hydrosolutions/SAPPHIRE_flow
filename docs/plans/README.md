@@ -34,9 +34,13 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
 
 ## Active — operational hardening (A) — the gate to any v1 prod deploy
 
-- **103** — Prefect worker observability & home — `DRAFT` — persist flow-run logs to
-  the Prefect store + writable `PREFECT_HOME`. **Supersedes 062 and 141** (the single owning plan for the
-  Prefect `PREFECT_HOME`/log-persistence work). Next: grill-me on D2 (log-persistence mechanism) → /plan → /implement.
+- **103** — Writable `PREFECT_HOME` under the read-only container — `DRAFT` — set
+  `PREFECT_HOME=/tmp/prefect` on the 3 client services (worker, worker-ingest, init). **Supersedes 062 and
+  141.** Trivial/env-only; ready for READY → /implement. The flow-run-**log-persistence** half was **split to
+  Plan 142** (2026-07-23) — it needed a load-bearing deployment-entrypoint change.
+- **142** — Persist Prefect flow-run logs — `DRAFT` — carved out of 103; module-path deployment entrypoints
+  (dot, ⚠️ no colon) + guarded `flows/__init__.py` hook + `APILogHandler` on a `sapphire_flow`-scoped logger.
+  Load-bearing; depends on 103; needs its own /plan → /implement.
 - **141** — Prefect writable home under read-only container — `SUPERSEDED by 103` — a redundant re-draft of
   103's D1 (`PREFECT_HOME=/tmp/prefect`); folded into 103 (owner 2026-07-22).
 - **097** — Short-lookback observability — `READY` (WF1 plan-review + independent
