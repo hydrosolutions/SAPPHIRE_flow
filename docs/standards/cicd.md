@@ -683,3 +683,45 @@ Independent of Docker and Prefect. A cron job on the host VM:
 ```
 
 `alert.sh` sends a notification (email or SMS) directly using system tools (`sendmail`, `curl` to SMS API). This is the last-resort alerting mechanism — it works even when Docker, Prefect, and the application are all down (as long as the VM is up). See architecture-context.md § Backup and disaster recovery for the health endpoint specification.
+
+> The launchd-based mac-mini watchdog (`sapphire_flow.ops.watchdog`, § Host-level watchdog operational
+> details elsewhere in this doc / `docs/operations/`) is the REALIZED implementation — the cron
+> sketch above is the general-VM-deployment design intent. Both share the same `/health` +
+> `/health/detail` contract described below.
+
+## Access-token pepper + probe-token rotation (Plan 147 Slice C, REALIZED)
+
+Two host/Docker secrets `/health/detail`-auth introduces:
+
+| Secret | Where | Purpose |
+|---|---|---|
+| `access_token_pepper` | Docker secret, `./secrets/access_token_pepper`, mounted ONLY into the `api` service | HMAC-SHA-256 pepper for `access_tokens.token_hash` (R1). The API/token-CLI fail closed (refuse to boot/run) without it. |
+| `health_probe_token` | HOST secret file, `./secrets/health_probe_token` (chmod 600) — NOT a Docker/Compose mount | An `admin`-scoped access-token raw key. Read directly by the launchd watchdog host process (`ops/watchdog.py:read_probe_token`, same convention as `./secrets/slack_webhook_url`) and sent as `Authorization: Bearer <token>` on both BAFU freshness probes against the now-authenticated `/health/detail`. |
+
+### First deploy
+
+1. `openssl rand -base64 32 > ./secrets/access_token_pepper` (or the `~/.config/sapphire-flow/secrets/` dev path — § Secrets management § Development in `security.md`).
+2. `docker compose up -d --build` (the API will refuse to start without the pepper).
+3. `docker compose exec api python -m sapphire_flow.cli.access_tokens create-admin --name "watchdog-probe"` — prints the raw key ONCE.
+4. `printf '%s' '<raw-key>' > ./secrets/health_probe_token && chmod 600 ./secrets/health_probe_token` on the watchdog host (the mac-mini itself for the current deployment — same filesystem as `./secrets/slack_webhook_url`).
+5. Restart/re-trigger the watchdog launchd agent (or wait for its next 5-min tick) — `read_probe_token` picks up the file with no code change; `--probe-token-path` defaults to `./secrets/health_probe_token`.
+
+### Pepper rotation (all-token-reissue — v1.0 has no dual-pepper support)
+
+Because the v1.0 key set is small (a handful of Nepal/Swiss consumer + admin keys):
+
+1. Generate a new pepper: `openssl rand -base64 32 > ./secrets/access_token_pepper.new`.
+2. `docker compose exec api python -m sapphire_flow.cli.access_tokens list` — record every active token's name/role/tenant/scope for re-creation.
+3. Swap the pepper file (`mv ./secrets/access_token_pepper.new ./secrets/access_token_pepper`) and `docker compose up -d --build api` to pick it up.
+4. For every token recorded in step 2: `revoke` the old id, then `create`/`create-admin` a replacement with the same name/role/tenant/station scope. Distribute the new raw keys to consumers out of band.
+5. Re-run step 4's watchdog admin token through the "First deploy" steps 3-5 above (the watchdog's probe token is itself an access token and must be reissued too).
+
+The `pepper_version` column on `access_tokens` is the forward hook for a v1.x zero-downtime
+dual-pepper rotation (validate against `{current, previous}` keyed by the row's `pepper_version`, then
+lazily re-hash) — not implemented in v1.0.
+
+### Probe-token rotation (independent of the pepper)
+
+If only the watchdog's own admin token needs rotating (compromise suspected, routine hygiene):
+`revoke` the old token id, `create-admin` a new one, overwrite `./secrets/health_probe_token`
+(chmod 600), no pepper change needed.

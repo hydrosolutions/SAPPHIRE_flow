@@ -4,14 +4,17 @@ import os
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
 
 from sapphire_flow.api import app
 from sapphire_flow.api.deps import get_connection, get_connection_rw, get_stores
+from sapphire_flow.api.security import Principal, require_admin, require_principal
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.enums import AlertStatus
+from sapphire_flow.types.enums import AccessTokenRole, AlertStatus
+from sapphire_flow.types.ids import AccessTokenId
 from tests.fakes.fake_stores import (
     FakeAlertStore,
     FakeForecastStore,
@@ -24,7 +27,6 @@ from tests.fakes.fake_stores import (
 
 if TYPE_CHECKING:
     from collections.abc import Generator
-    from uuid import UUID
 
     from sapphire_flow.types.ids import AlertId
 
@@ -32,6 +34,19 @@ if TYPE_CHECKING:
 class _DummyConnection:
     def execute(self, *a: object, **kw: object) -> None:
         pass
+
+
+# Plan 147 Slice C: these business-logic tests exercise routes, not auth
+# itself — they override `require_principal`/`require_admin` directly with a
+# fixed unscoped ADMIN principal so existing assertions (unfiltered station
+# lists, etc.) keep holding. Auth/scope behavior itself is locked separately
+# in tests/unit/api/test_security.py (raw TestClient(app), no override).
+ADMIN_PRINCIPAL = Principal(
+    token_id=AccessTokenId(UUID("00000000-0000-0000-0000-0000000000ad")),
+    role=AccessTokenRole.ADMIN,
+    tenant_id=None,
+    station_ids=frozenset(),
+)
 
 
 class AckAwareFakeAlertStore(FakeAlertStore):
@@ -65,6 +80,8 @@ def client(fake_stores: dict[str, Any]) -> Generator[TestClient, None, None]:
     app.dependency_overrides[get_stores] = lambda: fake_stores
     app.dependency_overrides[get_connection] = lambda: _DummyConnection()
     app.dependency_overrides[get_connection_rw] = lambda: _DummyConnection()
+    app.dependency_overrides[require_principal] = lambda: ADMIN_PRINCIPAL
+    app.dependency_overrides[require_admin] = lambda: ADMIN_PRINCIPAL
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()

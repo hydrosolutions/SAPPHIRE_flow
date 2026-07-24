@@ -49,8 +49,10 @@ _ALEMBIC_VERSIONS_DIR = Path(__file__).resolve().parents[3] / "alembic" / "versi
 # tenant-match FKs) onto 0040 — advancing the pinned head to 0044. Plan 147
 # Slice B then chained 0045 (audit_log table) -> 0046 (audit_log
 # role-independent append-only guard trigger) onto 0044 — advancing the
-# pinned head to 0046.
-_RELEASE_B_HEAD = "0046"
+# pinned head to 0046. Plan 147 Slice C then chained 0047
+# (access_tokens + access_token_stations tables) onto 0046 — advancing the
+# pinned head to 0047.
+_RELEASE_B_HEAD = "0047"
 
 
 def _down_revisions() -> dict[str, str | None]:

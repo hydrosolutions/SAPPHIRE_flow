@@ -6,6 +6,55 @@
 
 v0 defers auth — single-user, no access control. Everything below applies from v1.
 
+### v1.0 headless subset (implemented, Plan 147 Slice C)
+
+Plan 147 (v1.0-headless, per `docs/plans/106-v1-critical-path-roadmap.md` D6) implements a
+**deliberately narrowed** subset of the full v1 authentication/authorization design below, ahead of
+the human-session/dashboard stack. Everything in this subsection is REALIZED code; the rest of
+§Authentication (v1) — OAuth2 sessions, TOTP MFA, JWT/refresh tokens, dashboard user management, the
+5-role human matrix — remains the **v1.x target** and is not yet built.
+
+- **Two roles only**: `consumer` (read, station-scoped via `access_token_stations`) and `admin`
+  (read, unscoped + CLI token/tenant management). No session roles, no `operator`/`forecaster` role,
+  no third HTTP role.
+- **Access tokens are strictly GET-only** — no bearer key of any role may POST/PATCH/DELETE. The
+  sole state-changing v0/v1.0 route, `POST /alerts/{id}/acknowledge`, is removed from the v1.0 surface
+  (returns `501`); it returns with the Flow 3 dashboard + session tokens in v1.x.
+- **Key hash: HMAC-SHA-256 + a server-side pepper** (see the § API key lifecycle correction below —
+  this supersedes the bcrypt line in the general design).
+- **Health exemption**: `GET /api/v1/health` is the ONLY unauthenticated route (shallow liveness —
+  the Caddy/Compose healthcheck and startup ordering depend on it staying reachable pre-auth).
+  `GET /api/v1/health/detail` is `admin`-only. There is no separate "health-reader" capability — an
+  admin-scoped token is required, matching the existing trust model (prod shell access already implies
+  this privilege level, § Bootstrap below). The host-level watchdog (`ops/watchdog.py`) presents an
+  admin-scoped bearer token read from a **HOST secret file**, `./secrets/health_probe_token` (chmod
+  600, NOT a Docker/Compose mount — the watchdog is a launchd host process, same convention as
+  `./secrets/slack_webhook_url`). Missing/unreadable/empty falls back to the pre-existing unauthenticated
+  probe-failure path (`found=False`), never a crash.
+- **Every other endpoint requires a valid, non-expired, non-disabled key** — the JSON `/api/v1/...`
+  API, the legacy `.json` exports, and every HTML router (`/tables/`, `/stations/`, `/forecasts/`,
+  `/models/`, the dashboard). The legacy HTML/browser routers and the `.json` exports that share a
+  router module with them are **admin-gated in full** (R3) rather than individually scope-filtered —
+  the modern `/api/v1/stations|forecasts|alerts` JSON API is the one surface a `consumer` token
+  reaches, with per-endpoint station-scope filtering.
+- **Scope contract narrowed to the station axis only for v1.0.** § API key lifecycle below documents
+  a 3-axis scope (station + parameter + geographic boundary) as the full v1 design; v1.0 implements
+  **only** the station axis (`access_token_stations`, a normalized join, not JSONB). Parameter and
+  geographic scoping are **deferred to v1.x**. Empty scope = a consumer sees nothing (fail-closed);
+  out-of-scope station ids return 404 (not 403 — do not reveal existence); a null (stationless)
+  `station_id` (e.g. some `alerts` rows) is never in a consumer's scope either.
+- **CORS**: `SAPPHIRE_CORS_ORIGINS="*"` is rejected at API startup once auth is enforced (a wildcard
+  origin would let any site's JS ride a browser-held bearer token). Unset = no CORS middleware
+  (same-origin only); set an explicit comma-separated origin list for a browser-based consumer.
+- **`create-admin` / `create` / `list` / `revoke` CLI** — see § Initial deployment bootstrap and
+  § API key lifecycle management below. In-place `rotate`/scope-edit are deferred to v1.x; v1.0
+  rotation = `revoke` + `create` (re-materializing the token's scope rows).
+- **Deferred to v1.x** (not built by Plan 147): OAuth2 human sessions, TOTP MFA, JWT/refresh tokens,
+  dashboard user management, the `forecaster`/`model-admin` session roles, `POST
+  /forecasts/{id}/adjust`, `PATCH /forecasts/{id}/status`, `POST /alerts/{id}/acknowledge`, concurrent-
+  session limits, account lockout, per-request `api_key_request` audit logging, parameter/geographic
+  scope axes, in-place token rotation, and the least-privilege DB role split (Plan 147 Slice D).
+
 ### Session-based authentication (human users)
 
 - OAuth2 password flow via FastAPI
@@ -21,10 +70,17 @@ v0 defers auth — single-user, no access control. Everything below applies from
 ### API key authentication (external consumers)
 
 - Long-lived bearer tokens, scoped to read-only endpoints.
-- Stored hashed (bcrypt) in `access_tokens` table. Plain-text token shown once at creation, never stored.
-- Scoped per consumer: station list, parameter list, geographic boundary. Org admin configures scope.
+- Stored hashed — **HMAC-SHA-256 over the raw key with a server-side pepper** (`access_token_pepper`,
+  a dedicated Docker secret; corrects an earlier bcrypt draft — bcrypt buys no margin over a fast
+  keyed hash for a high-entropy random secret but adds real per-request CPU on the hot auth path at
+  project scale). Matches the `refresh_tokens` SHA-256 precedent above. A `pepper_version` column is
+  the forward hook for v1.x zero-downtime dual-pepper rotation; v1.0 rotation is documented in
+  `cicd.md` (all-token-reissue). Plain-text token shown once at creation, never stored.
+- Scoped per consumer: station list, parameter list, geographic boundary (the full v1 design — v1.0
+  implements the station axis only, see § v1.0 headless subset above).
 - API keys cannot trigger flows, modify forecasts, or access audit logs.
-- Rotation: org admin can regenerate; old key invalidated immediately.
+- Rotation: org admin can regenerate; old key invalidated immediately. v1.0: `revoke` + `create`
+  (CLI) re-materializing scope; in-place rotation is v1.x.
 
 ### Endpoint classification
 
@@ -63,6 +119,22 @@ The command:
 On first login, the org admin must change the temporary password.
 
 This command requires shell access to the production VM — equivalent to reading `/run/secrets/` directly. It is not a backdoor; it is a structured bootstrap that demands the same privilege level as direct database access.
+
+**v1.0 headless implementation (Plan 147 Slice C):** there is no `users` table yet (§ v1.0 headless
+subset above) — the ACTUAL bootstrap command mints an **unscoped admin ACCESS TOKEN**, not a
+user+password+TOTP record:
+
+```
+docker compose exec api python -m sapphire_flow.cli.access_tokens create-admin \
+    --name "<operator/purpose label>"
+```
+
+Prints the raw bearer key once (never persisted/logged) and writes exactly one `API_KEY_CREATED`
+`audit_log` row (`actor_type='system'`) in the same transaction as the token insert. Same trust
+model as above: requires shell access to the production VM (`docker compose exec`), which already
+implies reading `/run/secrets/` directly (including `access_token_pepper`). Ongoing token management
+(`create` for scoped consumer tokens, `list`, `revoke`) uses the same module — see § API key
+lifecycle management below.
 
 ### User onboarding (post-bootstrap)
 
@@ -110,6 +182,16 @@ The org admin (a hydromet staff member) manages all user accounts through the da
 ## Authorization matrix
 
 > **v1-only**: The entire authorization matrix applies from v1. v0 has no authentication or authorization.
+>
+> **v1.0 headless REALIZED status (Plan 147 Slice C):** only the **API consumer** column (renamed
+> `consumer` in code, plus an unscoped `admin` role not shown as a separate column below) is
+> implemented. Every `Org admin`/`IT admin`/`Model admin`/`Forecaster` column, and every row that is
+> exclusively a human-session route (`POST /forecasts/{id}/adjust`, `PATCH /forecasts/{id}/status`,
+> the flow-trigger/model-artifact-status routes, all `/users`/`/access-tokens` HTTP management routes),
+> is the **v1.x target** — v1.0 access-token CLI (`create`/`list`/`revoke`/`create-admin`) replaces the
+> `/access-tokens` HTTP surface for now. `POST /alerts/{id}/acknowledge` is unreachable in v1.0 (501)
+> regardless of role. `GET /api/v1/health/detail` is `admin`-only in v1.0 (not IT-admin-only as drawn
+> below — there is no IT-admin role yet).
 
 Role-to-endpoint mapping. Enforced via FastAPI dependency injection (`Depends(require_role(...))`), not frontend visibility.
 
@@ -149,6 +231,7 @@ All secrets use Docker secrets (`secrets:` block in `docker-compose.yml`). Mount
 
 Required secrets:
 - `db_password` — PostgreSQL password for application users
+- `access_token_pepper` — server-side pepper for `access_tokens.token_hash` (Plan 147 Slice C, REALIZED). Mounted only into the `api` service (auth verification + the token-management CLI, run via `docker compose exec api`). The API refuses to boot without it (fail-closed, no unpeppered fallback).
 - `secret_key` — JWT signing key (read from `/run/secrets/secret_key`, referenced as `SECRET_KEY` in application config) *(v1)*
 - `totp_encryption_key` — Fernet key for encrypting TOTP seeds at rest (see § TOTP secret encryption) *(v1)*
 - `sapphire_dg_api_key` — recap Data Gateway API key (**Nepal v1 only**). Declared NOT in the base `docker-compose.yml` but in the Nepal overlay `docker-compose.recap.yml` (Plan 082 Task 2A): it adds the top-level `secrets.sapphire_dg_api_key.file: ./secrets/sapphire_dg_api_key` and the secret ref on both `prefect-worker` and `prefect-worker-ingest` (Compose merges service `secrets` additively). Nepal deploys start with `docker compose -f docker-compose.yml -f docker-compose.recap.yml up`. **Swiss deployments omit the overlay** (plain `docker compose up`) and therefore need **no `./secrets/sapphire_dg_api_key` file at all** — the Recap adapters are never constructed on Swiss (Task 2C/2D `type` selector), and the base compose declares no such secret to resolve. Read at runtime via `config.recap_gateway.load_recap_api_key()`, which falls back to the `RECAP_API_KEY` env var for local dev (same pattern as `db_password`/`DB_PASSWORD` in `docker/entrypoint.sh`).
@@ -161,6 +244,9 @@ Secrets are stored outside the repository at `~/.config/sapphire-flow/secrets/`.
 ```bash
 mkdir -p ~/.config/sapphire-flow/secrets
 openssl rand -base64 24 > ~/.config/sapphire-flow/secrets/db_password
+# Plan 147 Slice C: access_token_pepper — the API fails closed at startup
+# without it (§ v1.0 headless subset above).
+openssl rand -base64 32 > ~/.config/sapphire-flow/secrets/access_token_pepper
 ln -s ~/.config/sapphire-flow/secrets secrets
 ```
 
@@ -171,7 +257,8 @@ Alternatively, `.env` files can supply secrets as environment variables for loca
 ### Rotation
 
 - `secret_key`: rotated annually and after any suspected compromise. Rotation procedure: generate new key, deploy, old JWTs expire naturally (30 min).
-- API keys: rotated per consumer's request or when compromise is suspected. Org admin regenerates via dashboard.
+- API keys: rotated per consumer's request or when compromise is suspected. Org admin regenerates via dashboard (v1.x); v1.0 = `revoke` + `create` CLI, re-materializing scope.
+- `access_token_pepper` (Plan 147 Slice C, REALIZED): v1.0 rotation is **all-token-reissue** — the key set is tiny (a handful of Nepal/Swiss consumer + admin keys). Deploy the new pepper, then `revoke` + `create` every existing key (re-materializing each key's station scope). The `pepper_version` column is the forward hook for v1.x zero-downtime dual-pepper rotation (validate against `{current, previous}`, then lazily re-hash) — not implemented in v0/v1.0. Runbook: `cicd.md` § Access-token pepper + probe-token rotation.
 - `db_password`: rotated annually. Requires coordinated restart of all application containers.
 - `totp_encryption_key`: rotated rarely (requires re-encrypting all `users.totp_secret` values). Rotation procedure: generate new key, run migration script to decrypt-with-old / encrypt-with-new, deploy new key, verify TOTP login works.
 - External API keys (`sapphire_dg_api_key`): rotated per provider schedule.
@@ -263,14 +350,22 @@ Exceeded requests receive HTTP 429 with `Retry-After` header. Unauthenticated re
 
 ## CORS policy
 
-`allow_origins` is an explicit list — never `*` in production. Configured in `config.toml` under `[api.cors]`:
+`allow_origins` is an explicit list — never `*`. Configured via the `SAPPHIRE_CORS_ORIGINS` env var
+(comma-separated origins; `config.toml`'s `[api.cors]` block is the forward-looking config-file carrier,
+not yet wired).
 
-> **v0 exception** (v0-scope.md §J): v0 has no auth, no dashboard, and no sensitive consumers. `docker-compose.yml` defaults to `SAPPHIRE_CORS_ORIGINS=*` for development convenience. Operators deploying on a network with untrusted clients must override this via `.env`. Restrict to an explicit origin list before enabling auth (v1).
+> **Plan 147 Slice C (REALIZED, supersedes the v0 exception below):** now that auth is enforced,
+> `SAPPHIRE_CORS_ORIGINS="*"` is **rejected at API startup** — a wildcard origin would let any site's
+> JS ride a browser-held bearer token. `docker-compose.yml` defaults to an EMPTY value (no CORS
+> middleware — same-origin only), not `*`. Set an explicit comma-separated origin list for a
+> browser-based consumer.
+>
+> **Historical v0 exception** (v0-scope.md §J, no longer in effect): v0 had no auth, no dashboard, and
+> no sensitive consumers, so a wildcard default was acceptable. That precondition ended with Plan 147.
 
-Production (v1+) `allow_origins` must include:
-- Dashboard origin (same host)
+Production `allow_origins` should include:
+- Dashboard origin (same host) — once the v1.x dashboard exists
 - Registered origins of known API consumers (Bipad portal, DHM dashboard)
-- API consumer endpoints using bearer token auth may use `allow_origins = ["*"]` only if explicitly configured per deployment
 
 ### CSRF protection
 

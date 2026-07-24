@@ -2335,10 +2335,39 @@ Index: `(username)` unique. `(role)` for role-based queries.
 
 ### `access_tokens` table
 
-API keys for external consumers. See security.md § API key authentication for lifecycle rules.
+API keys for external consumers. **REALIZED as of Plan 147 Slice C (v1.0 headless)** — with a shape
+that supersedes the design-intent sketch below it in most respects (see security.md § v1.0 headless
+subset for the authoritative v1.0 contract):
 
 ```
-access_tokens:
+access_tokens:                           # ACTUAL v1.0 shape (migration 0047)
+  id: UUID PK
+  token_hash: TEXT UNIQUE                # HMAC-SHA-256(access_token_pepper, raw_secret) — NOT bcrypt (R1)
+  key_prefix: TEXT                       # fast pre-verification lookup key, indexed
+  name: TEXT
+  role: TEXT                             # 'consumer' | 'admin' — no JSONB scope, no created_by/users FK (headless)
+  tenant_id: UUID FK → tenants.id NULL   # NULL = unscoped global-admin token
+  pepper_version: SMALLINT DEFAULT 1     # v1.x dual-pepper rotation forward hook
+  expires_at: TIMESTAMPTZ                # mandatory
+  disabled_at: TIMESTAMPTZ NULL          # NULL = active (NOT `revoked_at`)
+  created_at: TIMESTAMPTZ
+  last_used_at: TIMESTAMPTZ NULL
+
+access_token_stations:                   # the R2-LOCKED normalized scope join — NOT a JSONB `scope` column
+  token_id: UUID PK,FK → access_tokens.id
+  station_id: UUID PK,FK → stations.id
+  created_at: TIMESTAMPTZ
+```
+
+Indexes: `(key_prefix)`, `(expires_at)`. No `(token_hash)` lookup index — verification looks up by
+`key_prefix` first, then constant-time-compares the presented secret's hash against that one row.
+
+**Design-intent sketch below is v1.x/aspirational and NOT what is built** — kept for historical
+context on the still-deferred axes (parameter/geographic scope via `AccessTokenScope`, `created_by`/
+`users` FK, dashboard-driven `revoked_at`):
+
+```
+access_tokens (v1.x design intent, NOT the v1.0 shape above):
   id: UUID PK
   consumer_name: TEXT                    # human-readable label, e.g. "Bipad Portal"
   token_hash: TEXT                       # bcrypt hash of the bearer token
@@ -2349,9 +2378,9 @@ access_tokens:
   revoked_at: TIMESTAMPTZ NULL           # NULL = active; non-NULL = revoked
 ```
 
-Index: `(token_hash)` for lookup on each request. Partial index: `(revoked_at) WHERE revoked_at IS NULL` for active-key queries.
-
-Usage tracking: `last_used_at` is updated by the API middleware on each authenticated request (lightweight single-column UPDATE). Historical usage counts (e.g. requests per 30 days) are derived from `audit_log` entries with `event_type = 'api_key_request'` — no separate counter or aggregation table.
+Usage tracking (`last_used_at` updated per-request; `audit_log`-derived usage counts) is v1.x —
+**not implemented in v1.0** (Slice C omits the per-request `last_used_at` UPDATE to avoid a write on
+the hot read-auth path; `api_key_request` audit logging is explicitly deferred, see security.md).
 
 ### `refresh_tokens` table
 

@@ -310,7 +310,7 @@ below and §B.)
 - `pipeline_health` — as designed. Plan 100 exposes a minimal read endpoint and dashboard page for recent records.
 
 ### Auth substrate (unused pending v1 enforcement)
-- `audit_log` — as designed (Plan 147 Slice B); append-only, enforced by a role-independent DB trigger rejecting UPDATE/DELETE/TRUNCATE for every role, including the table owner (defense-in-depth ahead of Slice D's scoped DB roles). No call site writes to it yet in v0 — created early as substrate; Slice C (token create/revoke) and Slice E (onboarding/promotion/assignment + rejections) wire the first writers.
+- `audit_log` — as designed (Plan 147 Slice B); append-only, enforced by a role-independent DB trigger rejecting UPDATE/DELETE/TRUNCATE for every role, including the table owner (defense-in-depth ahead of Slice D's scoped DB roles). No call site writes to it in **v0** — v0 itself stays auth-free by definition. Slice C (REALIZED, v1.0 headless — CLI token create/revoke + create-admin) now wires the first writers, layered on top of v0, not inside it; Slice E (onboarding/promotion/assignment + rejections) is still pending.
 
 ### Not created in v0
 `dead_letter_queue`, `forecast_adjustments`, `users`, `access_tokens`, `refresh_tokens`, `rating_curves`, `notification_routing`, `notification_recipients`

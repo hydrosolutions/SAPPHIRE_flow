@@ -96,13 +96,28 @@ def _seed_forecast(
 
 
 def _client(db_connection: sa.Connection) -> TestClient:
+    from uuid import UUID
+
     from sapphire_flow.api import app
     from sapphire_flow.api.deps import get_connection
+    from sapphire_flow.api.security import Principal, require_admin
+    from sapphire_flow.types.enums import AccessTokenRole
+    from sapphire_flow.types.ids import AccessTokenId
 
     def _override_conn() -> Generator[sa.Connection, None, None]:
         yield db_connection
 
+    admin_principal = Principal(
+        token_id=AccessTokenId(UUID("00000000-0000-0000-0000-0000000000ad")),
+        role=AccessTokenRole.ADMIN,
+        tenant_id=None,
+        station_ids=frozenset(),
+    )
+
     app.dependency_overrides[get_connection] = _override_conn
+    # forecasts_router (legacy `.json` export + HTML page) is admin-gated
+    # (Plan 147 Slice C, R3) — these tests exercise the data shape, not auth.
+    app.dependency_overrides[require_admin] = lambda: admin_principal
     return TestClient(app, raise_server_exceptions=True)
 
 
@@ -185,5 +200,7 @@ class TestForecastDetailPage:
 def app_overrides_clear() -> None:
     from sapphire_flow.api import app
     from sapphire_flow.api.deps import get_connection
+    from sapphire_flow.api.security import require_admin
 
     app.dependency_overrides.pop(get_connection, None)
+    app.dependency_overrides.pop(require_admin, None)

@@ -15,6 +15,7 @@ from sapphire_flow.api.schemas import (
     HealthResponse,
     PipelineHealthRecordResponse,
 )
+from sapphire_flow.api.security import require_admin
 from sapphire_flow.types.enums import PipelineCheckType
 
 router = APIRouter(prefix="/api/v1", tags=["health"])
@@ -66,7 +67,11 @@ def _parse_check_type(value: str | None) -> PipelineCheckType | None:
         ) from exc
 
 
-@router.get("/health/detail", response_model=HealthDetailResponse)
+@router.get(
+    "/health/detail",
+    response_model=HealthDetailResponse,
+    dependencies=[Depends(require_admin)],
+)
 def health_detail(
     check_type: str | None = Query(None),
     limit: int = Query(100, ge=1, le=500),

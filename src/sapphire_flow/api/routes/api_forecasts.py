@@ -9,6 +9,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from sapphire_flow.api.deps import get_stores
 from sapphire_flow.api.model_visibility import model_tier_for_model_id
 from sapphire_flow.api.schemas import EnsembleResponse, ForecastDetail
+from sapphire_flow.api.security import (
+    Principal,
+    ensure_station_in_scope,
+    require_principal,
+)
 from sapphire_flow.types.enums import EnsembleRepresentation
 from sapphire_flow.types.ids import ForecastId
 
@@ -79,8 +84,13 @@ def _to_forecast_detail(f: OperationalForecast) -> ForecastDetail:
 def get_forecast(
     forecast_id: str,
     stores: dict[str, Any] = Depends(get_stores),
+    principal: Principal = Depends(require_principal),
 ) -> ForecastDetail:
     forecast = stores["forecast_store"].fetch_forecast(ForecastId(UUID(forecast_id)))
     if forecast is None:
         raise HTTPException(status_code=404, detail="Forecast not found")
+    # Plan 147 Slice C R2: scope-check AFTER fetch (need station_id off the
+    # row) but BEFORE returning — an out-of-scope forecast is a 404, not a
+    # 200 (`042:100-103`).
+    ensure_station_in_scope(principal, forecast.station_id)
     return _to_forecast_detail(forecast)

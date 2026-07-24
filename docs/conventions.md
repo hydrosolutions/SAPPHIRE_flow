@@ -53,14 +53,14 @@ PATCH  /api/v1/forecasts/{id}/status            # transition status (v1 — requ
 
 # Alerts
 GET    /api/v1/alerts                           # list alerts (filterable by status, source)
-POST   /api/v1/alerts/{id}/acknowledge          # acknowledge an alert
+POST   /api/v1/alerts/{id}/acknowledge          # v1.0 (Plan 147 Slice C): REMOVED from the surface, returns 501 — needs a v1.x session token + Flow 3
 
 # Operations
 POST   /api/v1/flows/{flow}/trigger             # manually trigger a flow run
-GET    /api/v1/health                           # health check (aggregate status)
-GET    /api/v1/health/detail                    # detailed component status (v1: requires auth)
+GET    /api/v1/health                           # health check (aggregate status) — the ONLY unauthenticated route as of v1.0
+GET    /api/v1/health/detail                    # detailed component status (v1.0: admin-scoped access token REQUIRED, REALIZED)
 
-# Auth (v1)
+# Auth (v1.x design intent — NOT built; v1.0 uses the access-token CLI instead, see below)
 POST   /api/v1/users
 GET    /api/v1/users
 PATCH  /api/v1/users/{id}
@@ -69,6 +69,12 @@ GET    /api/v1/access-tokens
 DELETE /api/v1/access-tokens/{id}
 POST   /api/v1/access-tokens/{id}/regenerate
 ```
+
+**v1.0 headless auth (REALIZED, Plan 147 Slice C):** every route above except `GET /api/v1/health`
+requires a valid, non-expired, non-disabled `Authorization: Bearer <key>` access token (`consumer`,
+station-scoped, or `admin`, unscoped). There is no `/access-tokens` HTTP management surface yet —
+token lifecycle is CLI-only: `docker compose exec api python -m sapphire_flow.cli.access_tokens
+{create,list,revoke,create-admin}`. See `security.md` § v1.0 headless subset.
 
 - Version always in path: `/api/v1/`
 - Pagination: `limit` + `after` (cursor-based)

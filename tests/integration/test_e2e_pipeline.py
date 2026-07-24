@@ -713,6 +713,9 @@ class TestE2ePipeline:
 
         from sapphire_flow.api import app
         from sapphire_flow.api.deps import get_connection, get_connection_rw, get_stores
+        from sapphire_flow.api.security import Principal, require_principal
+        from sapphire_flow.types.enums import AccessTokenRole
+        from sapphire_flow.types.ids import AccessTokenId
 
         # Wire real stores from our e2e engine.
         # Override get_connection/get_connection_rw; get_stores chains on get_connection
@@ -727,6 +730,15 @@ class TestE2ePipeline:
 
         app.dependency_overrides[get_connection] = _override_connection
         app.dependency_overrides[get_connection_rw] = _override_connection_rw
+        # Step 6 exercises the API's data shape end-to-end, not auth — use an
+        # unscoped admin principal so all 7 stations remain visible
+        # (Plan 147 Slice C).
+        app.dependency_overrides[require_principal] = lambda: Principal(
+            token_id=AccessTokenId(uuid4()),
+            role=AccessTokenRole.ADMIN,
+            tenant_id=None,
+            station_ids=frozenset(),
+        )
 
         try:
             with TestClient(app, raise_server_exceptions=True) as client:
@@ -790,6 +802,7 @@ class TestE2ePipeline:
             app.dependency_overrides.pop(get_connection, None)
             app.dependency_overrides.pop(get_connection_rw, None)
             app.dependency_overrides.pop(get_stores, None)
+            app.dependency_overrides.pop(require_principal, None)
 
         log.info(
             "e2e.step6_api_complete",

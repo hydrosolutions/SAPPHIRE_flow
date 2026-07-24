@@ -3,19 +3,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from sapphire_flow.api.deps import get_connection_rw, get_stores
-from sapphire_flow.api.schemas import (
-    AcknowledgeRequest,
-    AcknowledgeResponse,
-    AlertResponse,
-    PaginatedResponse,
-)
-from sapphire_flow.store.alert_store import PgAlertStore
+from sapphire_flow.api.deps import get_stores
+from sapphire_flow.api.schemas import AlertResponse, PaginatedResponse
+from sapphire_flow.api.security import Principal, require_principal
 from sapphire_flow.types.enums import AlertSource, AlertStatus
-from sapphire_flow.types.ids import AlertId, StationId
+from sapphire_flow.types.ids import StationId
 
 if TYPE_CHECKING:
     from sapphire_flow.types.alert import Alert
@@ -55,6 +49,7 @@ def list_alerts(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     stores: dict[str, Any] = Depends(get_stores),
+    principal: Principal = Depends(require_principal),
 ) -> PaginatedResponse[AlertResponse]:
     parsed_source: AlertSource | None = None
     if source is not None:
@@ -86,6 +81,12 @@ def list_alerts(
             raise HTTPException(
                 status_code=400, detail=f"Invalid station_id '{station_id}'"
             ) from None
+        # A consumer asking for an out-of-scope station's alerts explicitly
+        # sees nothing (fail-closed), not an error.
+        if not principal.station_in_scope(parsed_station_id):
+            return PaginatedResponse[AlertResponse](
+                items=[], total=0, limit=limit, offset=offset
+            )
 
     items, total = stores["alert_store"].fetch_alerts(
         station_id=parsed_station_id,
@@ -96,6 +97,13 @@ def list_alerts(
         offset=offset,
     )
 
+    if not principal.is_admin:
+        # F7 LOCKED: a consumer sees ONLY alerts whose station_id is in its
+        # scope; stationless (null-station) alerts are excluded (fail-closed
+        # — `station_in_scope(None)` is False for a consumer).
+        items = [a for a in items if principal.station_in_scope(a.station_id)]
+        total = len(items)
+
     return PaginatedResponse[AlertResponse](
         items=[_to_alert_response(a) for a in items],
         total=total,
@@ -105,45 +113,18 @@ def list_alerts(
 
 
 @router.post("/alerts/{alert_id}/acknowledge")
-def acknowledge_alert(
-    alert_id: str,
-    body: AcknowledgeRequest,
-    stores: dict[str, Any] = Depends(get_stores),
-    conn_rw: sa.Connection = Depends(get_connection_rw),
-) -> AcknowledgeResponse:
-    try:
-        parsed_alert_id = AlertId(UUID(alert_id))
-    except ValueError:
-        raise HTTPException(
-            status_code=400, detail=f"Invalid alert_id '{alert_id}'"
-        ) from None
-
-    try:
-        parsed_acknowledged_by = UUID(body.acknowledged_by)
-    except ValueError:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid acknowledged_by '{body.acknowledged_by}'",
-        ) from None
-
-    alert = stores["alert_store"].fetch_alert(parsed_alert_id)
-    if alert is None:
-        raise HTTPException(status_code=404, detail="Alert not found")
-
-    if alert.status == AlertStatus.RESOLVED:
-        raise HTTPException(
-            status_code=409, detail="Cannot acknowledge a resolved alert"
-        )
-
-    rw_store = PgAlertStore(conn_rw)
-    rw_store.acknowledge_alert(parsed_alert_id, parsed_acknowledged_by)
-
-    updated = rw_store.fetch_alert(parsed_alert_id)
-    if updated is None:
-        raise HTTPException(status_code=404, detail="Alert not found after update")
-
-    return AcknowledgeResponse(
-        id=str(updated.id),
-        status=updated.status.value,
-        acknowledged_at=updated.acknowledged_at,  # type: ignore[arg-type]
+def acknowledge_alert(alert_id: str) -> None:
+    """G4 LOCKED: the sole HTTP mutation is removed from the v1.0 surface.
+    Access tokens are strictly GET-only (`security.md:31`); acknowledgement
+    is a state change that needs a human/dashboard session token, which
+    defers to v1.x with Flow 3. Kept mounted (returning 501) rather than
+    unmounted so a caller gets an explicit "not implemented yet" instead of
+    an ambiguous 404."""
+    raise HTTPException(
+        status_code=501,
+        detail=(
+            "Alert acknowledgement is deferred to v1.x (session auth + "
+            "Flow 3 dashboard) — not available on the v1.0 access-token "
+            "surface."
+        ),
     )
