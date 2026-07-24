@@ -108,6 +108,12 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
   `docs/design/forecast-cycle-redesign.md`: split warm-up state loading to per-`(station_id, model_id)` + the
   assignment-keyed run unit. `/plan`-reviewed (0 blockers, majors folded). Fixes a latent shared-state bug;
   foundation for later phases. Self-contained.
+- **149** — Reconcile the forecast-cycle redesign with the repo architecture + standards — `DRAFT`. Docs-only.
+  An alignment review (NEEDS_RECONCILIATION; conceptually aligned) found the redesign under-formalized vs the
+  locked layering rule, type-driven standard, the Protocol/type spec, the FI failure contract, and Flow 1's phase
+  structure. (A) formalize contracts in the redesign doc; (B) deliberately update `architecture-context.md`
+  (Flow 1 + combination rule) + `types-and-protocols.md` (widened `WeatherForecastSource` + result types).
+  Precedes slicing the redesign into build plans. Needs `/plan`.
 - **124** — Station active-assignment consistency — `DRAFT` — **scope-locked, ready to implement
   directly (owner 2026-07-18).** NARROW: INACTIVE station assignments stop forecasting + leave the
   alert-priority index (match the group path); the fallback-priority-drift health check stays
