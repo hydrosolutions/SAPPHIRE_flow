@@ -110,15 +110,21 @@ later slice that performs an audited mutation depends on **B**, so no slice ever
 mutation. **C (access-token auth) depends on A + B; D (least-privilege DB roles) depends on C;
 E (tenant write-isolation) depends on A + B.**
 
-**Scope rule for THIS `/implement` run: build Slice A ONLY (the tenant-model foundation) and STOP.** Do NOT
-build Slice B/C/D/E in this run — each is a separate later slice with its own PR (branch
-`feat/plan-147-slice-a` builds Slice A). Slice A is a root (no dependency), so nothing else needs to exist
-first. It is a pure data-model + migration slice (**no auth, no HTTP changes**): the `tenants` table +
-`TenantId`, `stations.tenant_id`/`station_groups.tenant_id NOT NULL`, tenant fields on
-`StationConfig`/`StationGroup` + row conversion + protocols + fakes + fixtures + config parse, per-tenant
-`UNIQUE (tenant_id, name)`, the station↔group composite-FK invariant, and the add-nullable → backfill (default
-`sapphire` tenant) → detect-inconsistency → composite-FK/unique → NOT NULL migration WITH upgrade AND downgrade
-tests on populated data. Live-Postgres integration tests per the Slice-A verification block below.
+**Scope rule for THIS `/implement` run: build Slice B ONLY (the audit-log foundation) and STOP.** Do NOT
+build Slice C/D/E in this run — each is a separate later slice with its own PR (branch `feat/plan-147-slice-b`
+builds Slice B). **Slice A (tenant model) is already on `main` (#130) — CONSUME, do not re-implement.** Slice B
+is a root (no tenant/auth dependency): the `audit_log` table + migration conforming EXACTLY to the
+authoritative contract (`event_type`/`created_at`/`ip_address`/nullable-system-actor — NO `tenant_id`/`action`/
+`at`); the wired `AuditActorType` + promoted-to-runtime `AuditEventType` enums (incl. the additive
+`STATION_ONBOARDED`/`MODEL_ASSIGNED`, synced to both spec docs); the `AuditEntry` domain type; the append-only
+INSERT-only writer store; the **role-independent DB append-only guard** (a `BEFORE UPDATE OR DELETE` trigger
+that RAISEs even for the table owner — owned HERE, not by the roles slice); and the success/rejection
+atomicity mechanism (mutation + success-audit in ONE txn via the existing `transaction_factory` seam — NO
+repo-wide connection refactor; rejection event in a separate committed txn). The stamping CALL-SITES live in
+Slices C (token create/revoke, create-admin) and E (onboard/promote/assign + rejections) — Slice B builds the
+table/enums/writer/guard only, NOT the call-sites. Live-Postgres integration tests per the Slice-B verification
+block below (incl. the append-only-fails-for-owner test + the audit-insert-failure-rolls-back-the-mutation
+test on a real non-AUTOCOMMIT transaction).
 
 ### Slice A — Tenant model foundation (data model, no auth)
 
