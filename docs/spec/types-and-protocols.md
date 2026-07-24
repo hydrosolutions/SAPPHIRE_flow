@@ -1186,7 +1186,7 @@ implemented yet. Design intent only; do not import them.
 @dataclass(frozen=True, kw_only=True, slots=True)
 class AuditEntry:
     event_type: AuditEventType
-    actor_id: UserId | None              # None for system events
+    actor_id: UserId | AccessTokenId | None  # UserId (user) | AccessTokenId (api_key) | None (system)
     actor_type: AuditActorType
     target_type: str | None
     target_id: str | None

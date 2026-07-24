@@ -3662,7 +3662,7 @@ wheels = [
 
 [[package]]
 name = "sapphire-flow"
-version = "0.1.668"
+version = "0.1.669"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },

@@ -12,7 +12,7 @@ from sapphire_flow.store.station_group_store import PgStationGroupStore
 from sapphire_flow.types.auth import AuditEntry
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import AuditActorType, AuditEventType
-from sapphire_flow.types.ids import StationGroupId
+from sapphire_flow.types.ids import AccessTokenId, StationGroupId, UserId
 from sapphire_flow.types.station import StationGroup
 from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 from tests.integration.store.test_station_group_store import savepoint_factory
@@ -149,6 +149,67 @@ class TestAuditLogStoreAppendEntry:
             )
 
 
+class TestAuditLogActorIdTyping:
+    """F-typing: `AuditEntry.actor_id` is `UserId | AccessTokenId | None` —
+    a user actor and an API-key actor must both be constructible and
+    persist correctly (each is a distinct NewType wrapping UUID, stored in
+    the same untyped `actor_id` UUID column)."""
+
+    def test_user_actor_persists_actor_id(self, db_connection: sa.Connection) -> None:
+        target_id = str(uuid.uuid4())
+        user_id = UserId(uuid.uuid4())
+        entry = AuditEntry(
+            event_type=AuditEventType.USER_CREATED,
+            actor_id=user_id,
+            actor_type=AuditActorType.USER,
+            target_type="user",
+            target_id=target_id,
+            detail=None,
+            ip_address=None,
+            created_at=_NOW,
+        )
+
+        PgAuditLogStore(db_connection).append_entry(entry)
+
+        row = (
+            db_connection.execute(
+                sa.select(audit_log).where(audit_log.c.target_id == target_id)
+            )
+            .mappings()
+            .one()
+        )
+        assert row["actor_type"] == "user"
+        assert row["actor_id"] == user_id
+
+    def test_api_key_actor_persists_actor_id(
+        self, db_connection: sa.Connection
+    ) -> None:
+        target_id = str(uuid.uuid4())
+        token_id = AccessTokenId(uuid.uuid4())
+        entry = AuditEntry(
+            event_type=AuditEventType.API_KEY_CREATED,
+            actor_id=token_id,
+            actor_type=AuditActorType.API_KEY,
+            target_type="access_token",
+            target_id=target_id,
+            detail=None,
+            ip_address=None,
+            created_at=_NOW,
+        )
+
+        PgAuditLogStore(db_connection).append_entry(entry)
+
+        row = (
+            db_connection.execute(
+                sa.select(audit_log).where(audit_log.c.target_id == target_id)
+            )
+            .mappings()
+            .one()
+        )
+        assert row["actor_type"] == "api_key"
+        assert row["actor_id"] == token_id
+
+
 class TestAuditLogAppendOnlyGuard:
     """Slice B owns append-only: a role-independent DB trigger rejects
     UPDATE/DELETE even for the table owner (this test's DB user, which
@@ -171,6 +232,19 @@ class TestAuditLogAppendOnlyGuard:
             db_connection.execute(
                 sa.delete(audit_log).where(audit_log.c.target_id == target_id)
             )
+
+    def test_truncate_is_rejected_for_table_owner(
+        self, db_connection: sa.Connection
+    ) -> None:
+        # Row-level UPDATE/DELETE triggers never fire for TRUNCATE — this is
+        # a SEPARATE statement-level trigger. Exercised here by the table
+        # owner (the migration/test DB role), matching the current
+        # pre-Slice-D deployment where the application still runs as that
+        # role.
+        target_id = str(uuid.uuid4())
+        PgAuditLogStore(db_connection).append_entry(_make_entry(target_id=target_id))
+        with pytest.raises(sa.exc.DBAPIError, match="append-only"):
+            db_connection.execute(sa.text("TRUNCATE audit_log"))
 
 
 class TestAuditAtomicity:
@@ -213,56 +287,74 @@ class TestAuditAtomicity:
         assert fetched is None
 
     def test_rejection_persists_in_separate_transaction_after_mutation_rollback(
-        self, db_connection: sa.Connection
+        self, db_engine: sa.Engine
     ) -> None:
+        # Uses ENGINE-backed connections (not the per-test `db_connection`
+        # fixture, whose outer transaction is rolled back at test teardown)
+        # so this proves real cross-transaction durability, not just
+        # visibility inside one still-open outer transaction. Because
+        # `audit_log` is genuinely append-only (migration 0046 rejects
+        # UPDATE/DELETE/TRUNCATE for every role), the committed audit row
+        # below cannot be cleaned up afterwards and intentionally outlives
+        # this test — that persistence IS the property under test.
         bad_group_id = uuid.uuid4()
+        target_id = str(bad_group_id)
 
         # 1. The domain mutation is refused (simulated cross-tenant write —
-        #    an unknown tenant_id violates the FK) — rolled back, no state
-        #    change.
-        with pytest.raises(sa.exc.IntegrityError), db_connection.begin_nested():
-            db_connection.execute(
-                sa.insert(station_groups).values(
-                    id=bad_group_id,
-                    name="rejected-group",
-                    tenant_id=uuid.uuid4(),
-                    created_at=_NOW,
+        #    an unknown tenant_id violates the FK) on its OWN connection and
+        #    transaction, then explicitly rolled back — never committed.
+        with db_engine.connect() as mutation_conn:
+            mutation_txn = mutation_conn.begin()
+            with pytest.raises(sa.exc.IntegrityError):
+                mutation_conn.execute(
+                    sa.insert(station_groups).values(
+                        id=bad_group_id,
+                        name="rejected-group",
+                        tenant_id=uuid.uuid4(),
+                        created_at=_NOW,
+                    )
                 )
+            mutation_txn.rollback()
+
+        # Confirm on a FRESH connection: the mutation never landed.
+        with db_engine.connect() as check_conn:
+            assert (
+                check_conn.execute(
+                    sa.select(station_groups).where(station_groups.c.id == bad_group_id)
+                )
+                .mappings()
+                .one_or_none()
+                is None
             )
 
-        assert (
-            db_connection.execute(
-                sa.select(station_groups).where(station_groups.c.id == bad_group_id)
-            )
-            .mappings()
-            .one_or_none()
-            is None
-        )
-
-        # 2. The rejection event is durably recorded in a SEPARATE,
-        #    independently-committed transaction — the attempted event_type
-        #    + detail.outcome="rejected".
-        with db_connection.begin_nested():
-            PgAuditLogStore(db_connection).append_entry(
+        # 2. The rejection event is recorded on a SEPARATE connection, in
+        #    its own transaction, and explicitly COMMITTED — independent of
+        #    the rolled-back mutation transaction above.
+        with db_engine.connect() as audit_conn:
+            audit_txn = audit_conn.begin()
+            PgAuditLogStore(audit_conn).append_entry(
                 AuditEntry(
                     event_type=AuditEventType.STATION_ONBOARDED,
                     actor_id=None,
                     actor_type=AuditActorType.SYSTEM,
                     target_type="station_group",
-                    target_id=str(bad_group_id),
+                    target_id=target_id,
                     detail={"outcome": "rejected", "reason": "tenant_isolation"},
                     ip_address=None,
                     created_at=_NOW,
                 )
             )
+            audit_txn.commit()
 
-        row = (
-            db_connection.execute(
-                sa.select(audit_log).where(audit_log.c.target_id == str(bad_group_id))
+        # 3. Verify durability from a THIRD, independent connection.
+        with db_engine.connect() as verify_conn:
+            row = (
+                verify_conn.execute(
+                    sa.select(audit_log).where(audit_log.c.target_id == target_id)
+                )
+                .mappings()
+                .one()
             )
-            .mappings()
-            .one()
-        )
         assert row["detail"] == {
             "outcome": "rejected",
             "reason": "tenant_isolation",

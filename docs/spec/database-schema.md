@@ -439,7 +439,7 @@ erDiagram
     stations ||--o{ alerts : "station_id"
 ```
 
-### v0 table inventory (23 tables)
+### v0 table inventory (24 tables)
 
 | # | Table | PK | Domain |
 |---|-------|----|--------|
@@ -466,14 +466,19 @@ erDiagram
 | 21 | `skill_scores` | UUID | Skill |
 | 22 | `skill_diagrams` | UUID | Skill |
 | 23 | `flow_regime_configs` | UUID | Skill |
+| 24 | `audit_log` | BIGSERIAL | Auth |
 | — | `alerts` | UUID | Ops |
 | — | `pipeline_health` | BIGSERIAL | Ops |
 
-**Note**: `alerts` and `pipeline_health` bring the total to 25 if counted.
-`v0-scope.md` §C predates Plan 147's `tenants` table — the count depends on whether `alerts` + `pipeline_health`
-are included (alerting is optional in v0, controlled by per-source alert flags (see v0-scope.md §A8c)).
+**Note**: `audit_log` (Plan 147 Slice B) is created early as an unused
+append-only substrate — no call site writes to it yet (Slice C wires token
+create/revoke, Slice E wires onboarding/promotion). `alerts` and
+`pipeline_health` bring the total to 26 if counted. `v0-scope.md` §C
+predates Plan 147's `tenants`/`audit_log` tables — the count depends on
+whether `alerts` + `pipeline_health` are included (alerting is optional in
+v0, controlled by per-source alert flags (see v0-scope.md §A8c)).
 
-### Not in v0 (8 tables added in v1)
+### Not in v0 (7 tables added in v1)
 
 | Table | Why deferred | Reference |
 |-------|-------------|-----------|
@@ -484,7 +489,6 @@ are included (alerting is optional in v0, controlled by per-source alert flags (
 | `users` | Auth deferred to v1 | v0-scope §B |
 | `access_tokens` | Auth deferred to v1 | v0-scope §B |
 | `refresh_tokens` | Auth deferred to v1 | v0-scope §B |
-| `audit_log` | Auth deferred to v1 | v0-scope §B |
 
 ---
 
@@ -1044,7 +1048,11 @@ Plan 120 (basin/static package importer, Nepal v1) additively adds
 (+ a nullable `basins.package_id` FK) — see "Versioned basin state" in
 `docs/plans/120-basin-static-importer.md`. Plan 147 Slice A additively adds
 `tenants` (+ `tenant_id` on `stations`/`station_groups`/`station_group_members`)
-— already live in v0, see the v0 table inventory above.
+— already live in v0, see the v0 table inventory above. Plan 147 Slice B
+additively adds `audit_log` — also already live in v0 (as an unused
+append-only substrate; see the v0 table inventory note above), listed under
+the AUTH DOMAIN entities below alongside the still-deferred `users` /
+`access_tokens` / `refresh_tokens`.
 
 | # | Table | PK type | Partitioned | Domain |
 |---|-------|---------|-------------|--------|
