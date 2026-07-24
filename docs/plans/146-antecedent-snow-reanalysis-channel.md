@@ -14,7 +14,9 @@ supersedes: []
 ## Status
 **DRAFT — split from Plan 145 (owner 2026-07-23).** This is the load-bearing half of the original snow-forcing
 plan: the antecedent channel needs a new provenance source, a read-side snow tier, and — the blocker — an
-**owning ingest flow/schedule** (today the snow-reanalysis adapter has zero production callers). Depends on
+**owning ingest flow/schedule** (today the snow-reanalysis adapter has zero production callers). **D2 DECIDED
+(owner 2026-07-24): a SCHEDULED daily watermark-bounded ingest deployment** (not backfill-first — the operational
+antecedent reads from the persisted store, and backfill-first was fiddly in the prior project). Depends on
 Plan 145 for the canonical snow aggregation fix (the training/read path uses it). Needs a confirming `/plan`
 before READY. Grounded in [[reference_recap_gateway_12300_products]].
 
@@ -48,11 +50,18 @@ A model needing snow **lookback** (antecedent SWE/depth/melt in its `past_dynami
   unconditionally does MeteoSwiss RhiresD boundary discovery (`:83-102,457-521`). `RecapGatewayReanalysisAdapter`
   exposes only `fetch_reanalysis(station_configs, start, end, parameters)` — it satisfies neither method — so it
   cannot drop into that flow. 146 adds a **standalone recap-reanalysis ingest flow**.
-- **D2 — resolve the blocker: define the owning flow + trigger + schedule + watermark.** The ingest is only real
-  if it has a production entry point. Decide (a `/plan` fork): a **scheduled** recap-reanalysis ingest deployment
-  (bounded-window/watermark policy, like the MeteoSwiss history flow) vs a **backfill command** (manual, explicit
-  window) — and if backfill-only, drop the "operational ingest" claim and label it accordingly. Acceptance test
-  invokes the **actual entry point** (flow/CLI), not the task in isolation, and proves persistence.
+- **D2 — a SCHEDULED recap-reanalysis ingest deployment (DECIDED, owner 2026-07-24).** The ingest is a real
+  Prefect **deployment on a daily cron** (`SCHEDULE_INGEST_SNOW_REANALYSIS`, mirroring
+  `SCHEDULE_INGEST_WEATHER_HISTORY = "0 6 * * *"`, `register_deployments.py:40`), **watermark-bounded** (fetch only
+  the newly-landed reanalysis beyond the last-ingested timestamp, respecting the ~7-day JSNOW reanalysis lag).
+  **NOT a one-shot backfill** — the operational antecedent is **read from the persisted store**
+  (`operational_inputs.py:410-421` reads `past_dynamic` from the historical forcing store), so a backfill-only
+  ingest would freeze the antecedent at its run date and every later cycle would read staler lookback. The
+  **initial history backfill is the *same flow* run with an explicit wide window** (a `start`/`end` param), not a
+  separate mechanism — mirroring `ingest_weather_history`. Rationale (owner): backfill-first was fiddly in the
+  prior SAPPHIRE project; go straight to the scheduled pathway. Acceptance test invokes the **actual entry point**
+  (the deployed flow), not the task in isolation, proves persistence, and asserts the watermark advances so a
+  second run is incremental (no re-fetch of already-ingested days).
 - **D3 — supported provenance for `recap_snow_reanalysis`.** Add one `ForcingSource` member for the persisted
   literal (`recap_gateway.py:273`) + its `SOURCE_ATTRIBUTIONS` entry (`forcing_sources.py:18-47`); round-trips
   through the provenance layer. (The sibling `recap_era5_land_reanalysis` literal is out of scope — no live
@@ -83,12 +92,16 @@ A model needing snow **lookback** (antecedent SWE/depth/melt in its `past_dynami
   **Verify:** `uv run pytest tests/unit/types/test_forcing_provenance.py tests/unit/types/test_forcing_schema.py`.
 
 ### Phase 2 — Owning ingest flow + persistence (D1/D2/D5) — the blocker
-- **2a — dedicated recap-reanalysis ingest flow/CLI** (D2 fork decided): constructs `RecapGatewayReanalysisAdapter`
+- **2a — dedicated recap-reanalysis ingest flow** (D2 = scheduled): constructs `RecapGatewayReanalysisAdapter`
   (recap client + the Plan 082 polygon resolver), selects the snow canonical scope (swe/snow_depth/snowmelt),
-  fetches over snow-bound stations for a bounded window, persists `RawHistoricalForcing` → `HistoricalForcingStore`
-  under the Phase-1 provenance; snow-scoped degradation (D5). Acceptance test invokes the **real entry point**.
-- **2b — register the deployment/schedule** (or the backfill command), per the D2 decision.
-  **Verify:** `uv run pytest tests/unit/flows/test_ingest_recap_reanalysis.py` + the registration test.
+  computes the **watermark window** (last-ingested timestamp → now − ~7-day lag; a wide `start`/`end` override for
+  the initial backfill), fetches over snow-bound stations, persists `RawHistoricalForcing` → `HistoricalForcingStore`
+  under the Phase-1 provenance, and **advances the watermark**; snow-scoped degradation (D5). Acceptance test
+  invokes the **real flow entry point** and asserts a second run is incremental (watermark held).
+- **2b — register the scheduled deployment.** Add `SCHEDULE_INGEST_SNOW_REANALYSIS` (default a daily cron, e.g.
+  `"0 5 * * *"`) to `register_deployments.py` + `docker-compose.yml`, mirroring `SCHEDULE_INGEST_WEATHER_HISTORY`;
+  the initial history backfill is the same flow run with an explicit wide window (not a separate command).
+  **Verify:** `uv run pytest tests/unit/flows/test_ingest_recap_reanalysis.py tests/unit/cli/test_register_deployments.py` + the registration test.
 
 ### Phase 3 — Read-side routing to all consumers (D4) — depends Phases 1,2
 - Add the snow read tier; prove the **same stored snow series** reaches `past_dynamic` via **training**,
@@ -104,7 +117,9 @@ A model needing snow **lookback** (antecedent SWE/depth/melt in its `past_dynami
   9340e40 (#127). Blocks **139** (antecedent SWE for the 12300 model) and **144** (any snow-lookback model).
 
 ## Open items / to confirm
-- **D2 fork:** scheduled ingest vs backfill command (+ watermark/window policy). The core decision this plan
-  must settle.
+- *(Resolved — owner 2026-07-24: **D2 = scheduled ingest deployment** with a watermark; the initial backfill is
+  the same flow run with a wide window. See D2.)*
+- **Watermark storage** — where the last-ingested-per-`(station, variable)` timestamp lives (reuse the
+  MeteoSwiss history flow's boundary-discovery mechanism, or a dedicated marker). `/plan` to pin.
 - **Snow unit magnitudes** — shared follow-on with 145; gates onboarding a snow-fed FI model.
 - **ERA5-land recap read-routing** — noted parallel gap, out of scope here.

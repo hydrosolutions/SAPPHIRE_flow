@@ -103,10 +103,16 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
   `ForcingSource` for `recap_snow_reanalysis` + a **dedicated recap-reanalysis ingest flow/schedule** (the
   blocker — no production caller today) + read-side hybrid snow tier so stored snow reaches `past_dynamic` in
   training/hindcast/live. Depends on 082 + 145. Blocks 139/144 snow-lookback. Needs `/plan`.
-- **147** — Forecast-cycle redesign **Phase 1**: `ModelRunContext` + per-assignment `prior_state` — `DRAFT`. The
-  first, behaviour-preserving slice of `docs/design/forecast-cycle-redesign.md` (3 Codex reviews, ready to slice):
-  split warm-up state loading to per-`(station_id, model_id)` + introduce the assignment-keyed run unit. Fixes a
-  latent shared-state bug; foundation for later phases. Self-contained; needs `/plan`.
+- **148** — Forecast-cycle redesign **Phase 1**: `ModelRunContext` + per-assignment `prior_state` — `DRAFT`
+  (renumbered from 147 — collision with the other session's auth-rbac plan). First behaviour-preserving slice of
+  `docs/design/forecast-cycle-redesign.md`: split warm-up state loading to per-`(station_id, model_id)` + the
+  assignment-keyed run unit. `/plan`-reviewed (0 blockers, majors folded). Fixes a latent shared-state bug;
+  foundation for later phases. Self-contained.
+- **149** — Reconcile the forecast-cycle redesign with the repo architecture + standards — `SUPERSEDED / ABSORBED`
+  (2026-07-24). The alignment findings + 3 real contract gaps were folded DIRECTLY into `forecast-cycle-redesign.md`
+  (§ Formal contracts/layering), `architecture-context.md` (Flow 1 + combination rule), and
+  `types-and-protocols.md` (widened Protocol + types) — a /plan loop over-expanded the meta-plan, so the
+  reconciliation was done by direct fold + an alignment re-review instead. Do not implement from 149.
 - **124** — Station active-assignment consistency — `DRAFT` — **scope-locked, ready to implement
   directly (owner 2026-07-18).** NARROW: INACTIVE station assignments stop forecasting + leave the
   alert-priority index (match the group path); the fallback-priority-drift health check stays
