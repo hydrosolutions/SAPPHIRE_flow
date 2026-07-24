@@ -3,8 +3,11 @@
 **Status:** DRAFT design doc — created 2026-07-23, **hardened through THREE independent Codex reviews** (round 1:
 architecture direction; round 2: contract structure; round 3: contract precision — all folded; round 3 returned
 **no blockers**). **Supersedes the incremental patching of Plans 126 + 144** (folded here). Decisions locked in
-`docs/design/v1-forecasting-decisions.md`. **Ready to slice the build sequence into implementation plans.**
-Control-only forecasting is live and must stay green at every phase.
+`docs/design/v1-forecasting-decisions.md`. **+ an architecture/standards-alignment review (2026-07-24) folded in**
+— see § "Formal contracts, layering & standards conformance"; the deliberate Flow 1 + combination-rule updates
+are in `docs/architecture-context.md` and the widened Protocol + new types in `docs/spec/types-and-protocols.md`.
+**Ready to slice the build sequence into implementation plans.** Control-only forecasting is live and must stay
+green at every phase.
 
 ## Why this doc exists
 Six `/plan` runs on the ensemble-forecasting cluster (142 ×2, 144, 145, 126) stalled — the final 126 pass proved
@@ -153,6 +156,77 @@ group path); **exclude only group ensemble fan-out** until its follow-on. **Grou
 atomically** if any member station is unavailable at it — matching today's shared-cycle group assembly
 (`run_group_forecast.py:110,359`; `run_forecast_cycle.py:2193,2240`). Per-station group cycles are a follow-on
 (with group ensembles), not this redesign.
+
+## Formal contracts, layering & standards conformance
+*(Added 2026-07-24 after an architecture/standards-alignment review — the design was conceptually aligned but
+under-formalized. This section makes it conform to the repo's locked rules. The authoritative type/Protocol
+definitions live in `docs/spec/types-and-protocols.md`; the Flow 1 phase change + combination rule are recorded
+in `docs/architecture-context.md`. Definitions here are design-level — signatures/tests belong in the build plans.)*
+
+- **Layer map (respects `architecture-context.md` § Layering rule: adapters = I/O only; services = business
+  logic, no adapter/store calls; flows orchestrate, no business logic).**
+  - `types/` — the domain value/result types below.
+  - `protocols/adapters.py` — the widened source **Protocol** (`fetch_requirement`).
+  - `adapters/` — external candidate **fetch** (I/O) implementing the Protocol.
+  - `services/` — **pure** projection (assignment→track), completeness predicate, candidate **selection /
+    walk-back policy**, and per-assignment assembly. Walk-back policy lives here, **not** inside the adapter's
+    `fetch_requirement`.
+  - `flows/` — the fetch/validate/walk-back **loop** + `task.map` fan-out + gather barriers.
+- **Formal types (all `@dataclass(frozen=True, kw_only=True, slots=True)` unless noted; every timestamp is
+  `UtcDatetime`, `ensure_utc()` only at external/config/API boundaries — locked-decision "UTC everywhere").**
+  - `FutureSteps` — a semantic wrapper for a **positive** step count (a validated frozen wrapper with a
+    `__post_init__` rejecting ≤0, or `NewType('FutureSteps', int)` if zero-cost tagging is preferred — build
+    plan picks). `FeatureFetchHorizons = Mapping[FeatureName, FutureSteps]`, `InputFrameHorizon`, `OutputHorizon`
+    are **distinct** types, not interchangeable ints.
+  - `ForcingTrackKey` — `(NwpSource, EnsembleMode, time_step: timedelta, FeatureFetchHorizons,
+    SpatialRepresentation)`; reuses the existing `EnsembleMode`/spatial enums + `StationId`/`ModelId`/`GroupId`
+    NewTypes.
+  - `StationTrackOutcome` — an **explicit discriminated variant**, not a nullable payload:
+    `StationTrackAvailable(cycle: UtcDatetime, records, provenance)` | `StationTrackUnavailable(reason)`.
+  - `CandidateFetchResult` — **candidate-local ownership**, not deep immutability (its payload is a
+    `GriddedForecast | dict[StationId, WeatherForecastResult]` whose `xarray`/`dict` are mutable). The contract is:
+    each candidate is fetched into a **fresh** result and **never reused/mutated across candidates**; the
+    completeness predicate validates it **before** anything is persisted (see below).
+  - `TrackFetchResult(resolved_cycle: UtcDatetime, station_outcomes: Mapping[StationId, StationTrackOutcome])`.
+  - `ModelRunContext` — **service-local** (defined in `services/`, its *shape* documented in the spec) — carries
+    shared inputs + the shared non-state scalars + this assignment's warm-up state (per Plan 148; it does **not**
+    embed `OperationalInputMetadata`).
+- **Candidate-fetch failure taxonomy (real gap — the Protocol needs typed outcomes, not just success).** A
+  candidate fetch resolves to one of: **complete** (accept); **absent/incomplete** (walk-back eligible);
+  **transient/network** (retry then walk-back); **auth/config/extraction** (flow-fatal — a misconfiguration, not a
+  data gap); **store** (flow-fatal); **station-unavailable-within-a-valid-candidate** (per-station outcome →
+  the station's assignment fails locally, chain advances). Maps the existing adapter exceptions
+  (`NoCycleAvailableError`, `RecapDataUnavailableError`, `RecapAuthError`, `RecapConfigurationError`, disk-limit,
+  `AdapterError`) onto these classes; the build plan defines the exact type.
+- **Completeness is validated on the RAW fetch BEFORE the archive/extract/persist pipeline** — track-level
+  completeness (D1 exact-51 member count + per-feature horizon) is checkable directly on the candidate's raw
+  result, so walk-back rejects a candidate **without** running GridExtractor/archiving/persisting it. This is the
+  "commit only on full pass" invariant (today rejected rows already never reach Postgres — do not regress it).
+- **Track-level acceptance rule.** A candidate cycle is *accepted* for a track when it satisfies completeness for
+  the track's **required** stations at their per-feature horizon; per-station availability then varies within the
+  accepted cycle (an unavailable station → its assignment fails → fallback). **Group** assignments are
+  atomic — a group track requires **all** member stations available at one common cycle (per the round-3 group
+  contract), else the group assignment fails atomically.
+- **FI failure semantics (three typed causes, all assignment-local — per the FI adherence mandate).** A typed
+  `AssignmentFailureCause` distinguishes: (i) **missing track/context** → orchestrator-local *expected* failure,
+  the model is **not called**; (ii) model-declared insufficient/degraded inputs → a **returned FI `ModelFailure`**
+  the adapter maps to the assignment fallback signal (preserving `ModelFailure.cause` structurally, not a
+  flattened string); (iii) an **unexpected exception** → the SAP3 backstop. All three record a distinct cause in
+  `failed_models` and **advance the fallback chain** (none aborts the station). Exact-51 is **orchestration**
+  acceptance policy; per-variable shape/length shortfalls remain the **model's** FI responsibility.
+- **Observation fetch stays parallel with track fetch.** Do not serialize observations behind track fetching —
+  observation fetch runs concurrently with track projection + Phase-A candidate fetch, with an explicit **gather
+  barrier** before Phase B (preserves today's Flow 1 concurrency + the forecast-cycle performance target).
+- **Protocol migration dispatch.** The flow/bootstrap distinguishes candidate-aware adapters from legacy-only ones
+  by an explicit mechanism (a factory return type or capability check — build plan picks), and a conformance test
+  proves `fetch_requirement` fetches **exactly the requested cycle** with no hidden adapter-side walk-back
+  (MeteoSwiss currently resolves the cycle inside `fetch_forecasts`).
+- **Prefect topology + logging + resource gate (standards).** `task.map` fetch over tracks and forecast over
+  assignments; per-member model calls stay **inside** the assignment task; explicit gather barriers before
+  persistence/combination/Phase C. Canonical `{entity}.{action}` events — `nwp.candidate_rejected`,
+  `nwp.track_resolved`, `forecast.assignment_failed`, `forecast.fallback_advanced` — with
+  cycle/source/track/station|group/model/cause/duration fields, WARNING for fallback, member-level ≤ DEBUG. The
+  build plans add concurrency/batching/memory/log-volume acceptance gates for the high-fan-out phases.
 
 ## Locked decisions (see `docs/design/v1-forecasting-decisions.md`)
 D1 exact-51 + walk-back · D3 `pf` 00Z-only (ensemble once/day now, 4×/day later) · D4 walk-back-only · units

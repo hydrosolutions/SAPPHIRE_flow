@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: SUPERSEDED
 created: 2026-07-24
 plan: 149
 title: Reconcile the forecast-cycle redesign with the repo architecture + standards
@@ -12,6 +12,18 @@ supersedes: []
 # Plan 149 — Reconcile the forecast-cycle redesign with the repo architecture + standards
 
 ## Status
+**ABSORBED / RETIRED 2026-07-24 — the reconciliation was folded DIRECTLY into the docs, not run as a plan.** A
+`/plan` pass over this meta-plan over-expanded it into deep candidate-fetch/walk-back implementation spec (and
+even contradicted the redesign's own "commit on full pass"), confirming a `/plan` planner↔reviewer loop is the
+wrong tool for reconciling a *design doc* with standards. Per "independent review beats the automated loop", the
+alignment findings + the three genuine contract gaps (candidate-fetch failure taxonomy; typed FI failure-causes;
+validate-completeness-before-persist) were folded straight into **`docs/design/forecast-cycle-redesign.md`**
+(new § "Formal contracts, layering & standards conformance"), **`docs/architecture-context.md`** (Flow 1
+phase-change + same-cycle combination rule), and **`docs/spec/types-and-protocols.md`** (widened
+`WeatherForecastSource` + new types), then confirmed by an independent alignment re-review. This plan doc is
+kept only as a record; **do not implement from it** — the reconciled redesign + spec are authoritative. The
+original reconciliation intent is preserved below for provenance.
+
 **DRAFT — docs-only reconciliation.** Driven by an independent architecture/standards-alignment Codex review
 (2026-07-24) of `docs/design/forecast-cycle-redesign.md`: **VERDICT NEEDS_RECONCILIATION**, with the design
 **conceptually aligned** (assignment=run-unit, artifact scope, ensemble-first, fallback semantics, per-forecast

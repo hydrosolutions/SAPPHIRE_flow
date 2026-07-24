@@ -2857,6 +2857,25 @@ Two return paths:
 
 Callers discriminate between the two return types using `isinstance(result, GriddedForecast)` — the canonical pattern used in `run_forecast_cycle.py`.
 
+> **Forecast-cycle redesign — widened source contract + new types (planned, 2026-07-24).** `docs/design/forecast-cycle-redesign.md` widens this Protocol with a **requirement-aware** capability while keeping `fetch_forecasts` as the compatibility contract during migration:
+> ```python
+> class WeatherForecastSource(Protocol):
+>     def fetch_forecasts(...) -> GriddedForecast | dict[StationId, WeatherForecastResult]: ...   # existing / legacy
+>     def fetch_requirement(
+>         self, track: ForcingTrackKey, stations: list[StationWeatherSource], nominal_cycle: UtcDatetime,
+>     ) -> CandidateFetchResult: ...   # fetch EXACTLY the requested cycle; no adapter-side walk-back
+> ```
+> Adding `fetch_requirement` as a **required** method is a breaking Protocol change — every implementation + fake becomes non-conforming until migrated — so the flow/bootstrap dispatches candidate-aware vs legacy-only adapters explicitly (a factory return type or capability check), with a conformance test proving `fetch_requirement` fetches only the requested cycle. Walk-back **policy** is a pure `services/` concern, never inside the adapter.
+>
+> New domain types (all `@dataclass(frozen=True, kw_only=True, slots=True)`; every timestamp `UtcDatetime`):
+> - `FutureSteps` (positive-int semantic wrapper / NewType); `FeatureFetchHorizons = Mapping[FeatureName, FutureSteps]`, `InputFrameHorizon`, `OutputHorizon` — three **distinct** horizon types.
+> - `ForcingTrackKey(nwp_source, ensemble_mode, time_step, feature_horizons, spatial_representation)`.
+> - `StationTrackOutcome` = discriminated `StationTrackAvailable(cycle, records, provenance) | StationTrackUnavailable(reason)` (not a nullable payload).
+> - `CandidateFetchResult` (candidate-local ownership — validated by the completeness predicate **before** any persist; never reused across candidates); `TrackFetchResult(resolved_cycle, station_outcomes: Mapping[StationId, StationTrackOutcome])`.
+> - `AssignmentFailureCause` — a discriminated cause distinguishing *missing-context* (model not called), a *returned FI `ModelFailure`* (cause preserved structurally), and an *unexpected exception*; all assignment-local (advance the fallback chain).
+> - A **candidate-fetch outcome taxonomy** (complete / absent-incomplete / transient / auth-config / store / station-unavailable) mapping the existing adapter exceptions to walk-back-eligible vs flow-fatal vs assignment-local policy.
+> - `ModelRunContext` — **service-local** (defined in `services/`; shape documented here) per Plan 148.
+
 **Raw NWP grid** (pre-extraction, not per-station):
 
 ```python
