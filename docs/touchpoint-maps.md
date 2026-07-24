@@ -249,6 +249,14 @@ Before planning or implementation, inspect the relevant touchpoints below and in
   so a swe-only station never triggers an hs/rof call. A required-snow station
   with NO matching forecast binding in the batch (config gap) also sets
   `snow_unavailable=True` rather than staying silently `HEALTHY`.
+  `_reconcile_snow_coverage` (review fold-in, major) then compares the
+  RESULT against `required_snow` per bound station — a required station the
+  resolver silently skipped (while resolving others), or a required parameter
+  that came back with zero rows on an otherwise-successful fetch (no
+  exception, empty `unavailable`), both fold into `snow_unavailable=True` too.
+  Neither `_require_some_resolved` (all-unmappable-only) nor
+  `bool(snow_result.unavailable)` (raised-and-contained errors only) can see
+  either gap on its own.
 
 **Downstream consumers to inspect when behavior changes:**
 

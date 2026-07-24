@@ -809,6 +809,50 @@ def _compute_required_snow(
     return required
 
 
+def _covered_snow_parameters(forecast: object) -> frozenset[str]:
+    """Canonical parameters actually present (>=1 row) in a fetched snow forecast.
+
+    Reads the ``parameter`` column off the result's ``values`` frame -- present
+    on every member of ``WeatherForecastResult`` (Point/BasinAverage/
+    ElevationBand). Returns an empty set for anything unexpected rather than
+    raising, so a malformed/no-op stub used in tests never crashes reconciliation."""
+    values = getattr(forecast, "values", None)
+    if values is None or "parameter" not in getattr(values, "columns", []):
+        return frozenset()
+    return frozenset(values.get_column("parameter").unique().to_list())
+
+
+def _reconcile_snow_coverage(
+    required_snow: Mapping[StationId, frozenset[str]],
+    bound_station_ids: frozenset[StationId],
+    forecasts: Mapping[StationId, object],
+) -> dict[StationId, frozenset[str]]:
+    """Per-station gap between what was REQUIRED and what actually arrived.
+
+    Plan 145 review fold-in (major): neither an all-unmappable-only resolver
+    check nor an ``unavailable``-only Gateway-error map catches every silent
+    shortfall. Two ordinary (non-exceptional) outcomes must ALSO be treated as
+    missing coverage: (1) a required station the resolver skipped while
+    resolving others -- it is simply absent from ``forecasts``; (2) a
+    successful-but-empty (or partial) response -- the station IS present but
+    one or more required parameters never accumulated a row. Only stations
+    with a bound forecast source are checked (an unbound station is already
+    surfaced by the caller's own binding-gap check)."""
+    missing: dict[StationId, frozenset[str]] = {}
+    for station_id in bound_station_ids:
+        required = required_snow.get(station_id, frozenset())
+        if not required:
+            continue
+        forecast = forecasts.get(station_id)
+        covered = (
+            _covered_snow_parameters(forecast) if forecast is not None else frozenset()
+        )
+        gap = required - covered
+        if gap:
+            missing[station_id] = gap
+    return missing
+
+
 def _check_fallback_priority_drift(
     model_assignments: dict[StationId, list],
     group_store: object | None,
@@ -1281,10 +1325,30 @@ def _fetch_nwp_task(
                     weather_forecast_store.store_weather_forecasts(  # type: ignore[union-attr]
                         snow_records
                     )
+                # Reconcile actual coverage against what was REQUIRED (review
+                # fold-in, major): a resolver-skipped station or a
+                # successful-but-empty/partial response never raises and never
+                # populates `snow_result.unavailable`, so it must be caught
+                # here rather than trusted as an implicit success.
+                missing_coverage = _reconcile_snow_coverage(
+                    required_snow, bound_station_ids, snow_result.forecasts
+                )
+                if missing_coverage:
+                    log.warning(
+                        "nwp.snow_required_coverage_missing",
+                        gaps={
+                            str(sid): sorted(vars_)
+                            for sid, vars_ in missing_coverage.items()
+                        },
+                    )
                 # OR (never overwrite) — an unbound-required-station gap
                 # detected above must survive even when the BOUND stations'
                 # fetch fully succeeds.
-                snow_unavailable = snow_unavailable or bool(snow_result.unavailable)
+                snow_unavailable = (
+                    snow_unavailable
+                    or bool(snow_result.unavailable)
+                    or bool(missing_coverage)
+                )
                 log.info(
                     "nwp.snow_fetch_completed",
                     records_stored=len(snow_records),
