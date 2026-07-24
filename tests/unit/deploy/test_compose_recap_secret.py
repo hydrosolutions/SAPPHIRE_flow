@@ -54,12 +54,14 @@ class TestBaseComposeHasNoRecapSecret:
     def test_prefect_worker_has_no_recap_secret(self) -> None:
         names = _service_secret_names(_base_compose(), "prefect-worker")
         assert "sapphire_dg_api_key" not in names
-        assert "db_password" in names
+        # Plan 147 Slice D: the worker connects as the scoped `sapphire_worker`
+        # role via its OWN credential, not the owner's `db_password`.
+        assert "sapphire_worker_db_password" in names
 
     def test_prefect_worker_ingest_has_no_recap_secret(self) -> None:
         names = _service_secret_names(_base_compose(), "prefect-worker-ingest")
         assert "sapphire_dg_api_key" not in names
-        assert "db_password" in names
+        assert "sapphire_worker_db_password" in names
 
 
 class TestRecapOverlayDeclaresSecret:
