@@ -5,7 +5,7 @@ Derived from table definitions in `architecture-context.md` and scoping rules in
 
 ---
 
-## v0 Schema (25 tables)
+## v0 Schema (27 tables)
 
 Swiss public data, up to ~170 stations (LINDAS-available BAFU gauges), single VM. Architecture supports ~1000 stations across deployments. No partitioning, no auth, no rating curves,
 no forecast adjustments, no DLQ, no cold storage. See `v0-scope.md` §A–C for rationale and plan 013 for scale re-evaluation.
@@ -439,7 +439,7 @@ erDiagram
     stations ||--o{ alerts : "station_id"
 ```
 
-### v0 table inventory (24 tables)
+### v0 table inventory (27 tables)
 
 | # | Table | PK | Domain |
 |---|-------|----|--------|
@@ -461,22 +461,25 @@ erDiagram
 | 16 | `model_states` | UUID | Model |
 | 17 | `forecasts` | UUID | Forecast |
 | 18 | `forecast_values` | UUID | Forecast |
-| 19 | `hindcast_forecasts` | UUID | Forecast |
-| 20 | `hindcast_values` | UUID | Forecast |
-| 21 | `skill_scores` | UUID | Skill |
-| 22 | `skill_diagrams` | UUID | Skill |
-| 23 | `flow_regime_configs` | UUID | Skill |
-| 24 | `audit_log` | BIGSERIAL | Auth |
-| — | `alerts` | UUID | Ops |
-| — | `pipeline_health` | BIGSERIAL | Ops |
+| 19 | `forecast_qc_overrides` | composite | Forecast |
+| 20 | `hindcast_forecasts` | UUID | Forecast |
+| 21 | `hindcast_values` | UUID | Forecast |
+| 22 | `skill_scores` | UUID | Skill |
+| 23 | `skill_diagrams` | UUID | Skill |
+| 24 | `flow_regime_configs` | UUID | Skill |
+| 25 | `audit_log` | BIGSERIAL | Auth |
+| 26 | `alerts` | UUID | Ops |
+| 27 | `pipeline_health` | BIGSERIAL | Ops |
 
-**Note**: `audit_log` (Plan 147 Slice B) is created early as an unused
+**Note**: this is the ONE canonical v0 table count (27), matching
+`v0-scope.md` §C — `alerts` and `pipeline_health` are always counted
+(alerting is optional in v0, controlled by per-source alert flags, see
+v0-scope.md §A8c, but the table itself always exists). `forecast_qc_overrides`
+(migration 0012, per-station QC threshold overrides) is listed here but not
+drawn in the ER diagram above (a pre-existing gap, not specific to this
+slice). `audit_log` (Plan 147 Slice B) is created early as an unused
 append-only substrate — no call site writes to it yet (Slice C wires token
-create/revoke, Slice E wires onboarding/promotion). `alerts` and
-`pipeline_health` bring the total to 26 if counted. `v0-scope.md` §C
-predates Plan 147's `tenants`/`audit_log` tables — the count depends on
-whether `alerts` + `pipeline_health` are included (alerting is optional in
-v0, controlled by per-source alert flags (see v0-scope.md §A8c)).
+create/revoke, Slice E wires onboarding/promotion).
 
 ### Not in v0 (7 tables added in v1)
 

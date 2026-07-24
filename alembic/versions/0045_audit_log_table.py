@@ -12,8 +12,13 @@ Conforms EXACTLY to the authoritative contract
 columns; tenant context + rejection outcome/reason live in `detail`. No FK
 on `actor_id`: an append-only row must survive token revocation/deletion
 (no cascade). Append-only itself is enforced by a SEPARATE role-independent
-DB trigger, migration 0046 — this migration only creates the table +
-indexes + the `actor_type` CHECK.
+DB trigger, migration 0046 — this migration creates the table + indexes +
+the `actor_type` CHECK + the `actor_id`/`actor_type` pairing CHECK (the
+universally-valid half of the invariant the domain type
+`AuditEntry.__post_init__` also enforces: `actor_type='system'` requires
+`actor_id IS NULL`; `'user'`/`'api_key'` require `actor_id IS NOT NULL` —
+this is a backstop for any writer that bypasses the domain type, e.g. a raw
+SQL insert).
 """
 
 from collections.abc import Sequence
@@ -64,9 +69,18 @@ def upgrade() -> None:
     )
     op.create_index("ix_audit_log_target", "audit_log", ["target_type", "target_id"])
     op.create_index("ix_audit_log_actor_id", "audit_log", ["actor_id"])
+    op.create_check_constraint(
+        "ck_audit_log_actor_id_matches_actor_type",
+        "audit_log",
+        "(actor_type = 'system' AND actor_id IS NULL) "
+        "OR (actor_type IN ('user', 'api_key') AND actor_id IS NOT NULL)",
+    )
 
 
 def downgrade() -> None:
+    op.drop_constraint(
+        "ck_audit_log_actor_id_matches_actor_type", "audit_log", type_="check"
+    )
     op.drop_index("ix_audit_log_actor_id", table_name="audit_log")
     op.drop_index("ix_audit_log_target", table_name="audit_log")
     op.drop_index("ix_audit_log_event_type_created_at", table_name="audit_log")

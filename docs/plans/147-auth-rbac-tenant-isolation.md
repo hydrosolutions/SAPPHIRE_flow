@@ -241,6 +241,15 @@ nor the roles slice.
   - Add the `AuditEntry` domain type (`types/auth.py`, per `types-and-protocols.md:1140-1149`). Its
     `actor_id` is `UserId | None` (the authoritative spec type) — **`None`** for `system`/config-operator
     events, so the config-operator mapping (F3) needs **no** widening of the actor contract.
+    **SUPERSEDED (fixer round, post-implementation review, 2026-07-24):** the implemented contract widens
+    `actor_id` to `UserId | AccessTokenId | None` — `AccessTokenId` when `actor_type=API_KEY`, matching
+    `types-and-protocols.md`'s own `AuditEntry` shape (`actor_id: UserId | AccessTokenId | None`) and the
+    `audit_log.actor_id` column doc two paragraphs above ("the acting `access_tokens.id` when
+    `actor_type='api_key'`"). `actor_id` remains **`None` only for `system`/config-operator events**,
+    unchanged. The domain type also gained a `__post_init__` invariant (`SYSTEM` ⇒ `actor_id=None`;
+    `USER`/`API_KEY` ⇒ `actor_id` present) plus `.system()`/`.user()`/`.api_key()` typed constructors, and
+    migration 0045 gained a matching DB-level `ck_audit_log_actor_id_matches_actor_type` CHECK constraint
+    as a backstop for writers that bypass the domain type.
 - **Append-only enforcement is SELF-OWNED by this slice (F4) — it does NOT depend on the roles slice.** Two
   layers, both owned here so B never waits on Slice D:
   1. **App-layer:** the writer store exposes **only** an INSERT method — no update/delete code path anywhere.

@@ -1202,6 +1202,13 @@ Module: `types/auth.py`
 (`store/audit_log_store.py`) are live. Call sites (token create/revoke — Slice C; onboard/promote/
 assign + rejections — Slice E) are still pending in later slices.
 
+`AuditEntry.__post_init__` enforces the `actor_type`/`actor_id` pairing at construction (`SYSTEM` ⇒
+`actor_id=None`; `USER`/`API_KEY` ⇒ `actor_id` present) — `NewType` alone cannot distinguish `UserId`
+from `AccessTokenId` at runtime, so this validates presence/absence only. Migration 0045 also carries
+a matching `ck_audit_log_actor_id_matches_actor_type` DB CHECK constraint as a backstop for writers
+that bypass the domain type. Prefer the `AuditEntry.system(...)` / `.user(...)` / `.api_key(...)`
+typed constructors over calling `AuditEntry(...)` directly.
+
 ---
 
 ## Ensemble and model types

@@ -148,6 +148,34 @@ class TestAuditLogStoreAppendEntry:
                 )
             )
 
+    def test_actor_id_actor_type_check_constraint_rejects_system_with_actor_id(
+        self, db_connection: sa.Connection
+    ) -> None:
+        # DB-level backstop for a raw writer that bypasses AuditEntry's own
+        # __post_init__ validation entirely.
+        with pytest.raises(sa.exc.IntegrityError):
+            db_connection.execute(
+                sa.insert(audit_log).values(
+                    event_type="model_promoted",
+                    actor_type="system",
+                    actor_id=uuid.uuid4(),
+                    created_at=_NOW,
+                )
+            )
+
+    def test_actor_id_actor_type_check_constraint_rejects_api_key_with_null_actor_id(
+        self, db_connection: sa.Connection
+    ) -> None:
+        with pytest.raises(sa.exc.IntegrityError):
+            db_connection.execute(
+                sa.insert(audit_log).values(
+                    event_type="api_key_created",
+                    actor_type="api_key",
+                    actor_id=None,
+                    created_at=_NOW,
+                )
+            )
+
 
 class TestAuditLogActorIdTyping:
     """F-typing: `AuditEntry.actor_id` is `UserId | AccessTokenId | None` —
