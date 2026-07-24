@@ -17,6 +17,7 @@ from sapphire_flow.services.operational_inputs import (
     _pivot_nwp_records,
     assemble_station_operational_inputs,
     build_superset_requirements,
+    load_warm_up_state,
 )
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.enums import (
@@ -252,7 +253,11 @@ class TestAssembleStationOperationalInputs:
         assert metadata.warm_up_source == WarmUpSource.FRESH
         assert metadata.warm_up_state_age_hours is not None
         assert metadata.warm_up_state_age_hours < 24.0
-        assert metadata.prior_state == b"state_bytes"
+        # Plan 148 D2: the state BYTES are no longer carried on
+        # ``OperationalInputMetadata`` — only source/age provenance (still
+        # needed by the GROUP path) survive the assembler. ``prior_state``
+        # travels only via each assignment's own ``ModelRunContext``.
+        assert not hasattr(metadata, "prior_state")
         assert metadata.nwp_age_hours > 0
 
     def test_missing_nwp_returns_inputs_with_empty_future_dynamic_not_none(
@@ -385,7 +390,7 @@ class TestAssembleStationOperationalInputs:
         _, metadata = result
         assert metadata.warm_up_source == WarmUpSource.COLD_START
         assert metadata.warm_up_state_age_hours is None
-        assert metadata.prior_state is None
+        assert not hasattr(metadata, "prior_state")
 
     def test_empty_past_dynamic_features_skips_reanalysis(self) -> None:
         from sapphire_flow.types.enums import ArtifactScope
@@ -456,6 +461,95 @@ class TestAssembleStationOperationalInputs:
         assert result is not None
         inputs, _ = result
         assert inputs.data.past_dynamic.is_empty()
+
+
+class TestLoadWarmUpState:
+    """Plan 148 T1 — extraction-parity tests for ``load_warm_up_state``.
+
+    Proves the extracted helper reproduces the old inline assembly logic
+    (cold-start / fresh / snapshot classification) and that the ``clock``
+    callable is consulted ONLY when a state is present (D2/D4: an empty
+    store never calls ``clock()``).
+    """
+
+    def test_no_state_returns_cold_start_without_calling_clock(self) -> None:
+        sid = StationId(uuid4())
+        state_store = FakeModelStateStore()
+        clock_calls: list[None] = []
+
+        def spy_clock() -> UtcDatetime:
+            clock_calls.append(None)
+            return _NOW
+
+        warm_up = load_warm_up_state(state_store, sid, _MODEL_ID, spy_clock)
+
+        assert warm_up.warm_up_source == WarmUpSource.COLD_START
+        assert warm_up.warm_up_state_age_hours is None
+        assert warm_up.prior_state is None
+        assert clock_calls == []
+
+    def test_fresh_state_under_24h_classified_fresh(self) -> None:
+        sid = StationId(uuid4())
+        state_store = FakeModelStateStore()
+        state_time = ensure_utc(_NOW - timedelta(hours=1))
+        state_store.store_state(sid, _MODEL_ID, state_time, b"state_bytes")
+
+        warm_up = load_warm_up_state(state_store, sid, _MODEL_ID, _clock)
+
+        assert warm_up.warm_up_source == WarmUpSource.FRESH
+        assert warm_up.warm_up_state_age_hours is not None
+        assert warm_up.warm_up_state_age_hours < 24.0
+        assert warm_up.prior_state == b"state_bytes"
+
+    def test_stale_state_at_or_over_24h_classified_snapshot(self) -> None:
+        sid = StationId(uuid4())
+        state_store = FakeModelStateStore()
+        state_time = ensure_utc(_NOW - timedelta(hours=30))
+        state_store.store_state(sid, _MODEL_ID, state_time, b"old_state")
+
+        warm_up = load_warm_up_state(state_store, sid, _MODEL_ID, _clock)
+
+        assert warm_up.warm_up_source == WarmUpSource.SNAPSHOT
+        assert warm_up.warm_up_state_age_hours is not None
+        assert warm_up.warm_up_state_age_hours >= 24.0
+        assert warm_up.prior_state == b"old_state"
+
+    def test_assemble_station_operational_inputs_delegates_to_load_warm_up_state(
+        self,
+    ) -> None:
+        """The assembler's representative-model warm-up on ``metadata`` matches
+        exactly what ``load_warm_up_state`` would independently compute for
+        the same store/clock — proving the extraction is behaviour-preserving."""
+        sid = StationId(uuid4())
+        model = _make_model()
+        station_store, basin_store, obs_store, nwp_store, state_store, reanalysis = (
+            _make_stores_and_sources(sid, state_age_hours=5.0)
+        )
+
+        expected = load_warm_up_state(state_store, sid, _MODEL_ID, _clock)
+
+        result = assemble_station_operational_inputs(
+            station_id=sid,
+            model=model,
+            model_id=_MODEL_ID,
+            issue_time=_ISSUE,
+            cycle_time=_CYCLE,
+            nwp_source=_NWP_SOURCE,
+            forcing_source=reanalysis,
+            weather_forecast_store=nwp_store,
+            obs_store=obs_store,
+            station_store=station_store,
+            basin_store=basin_store,
+            model_state_store=state_store,
+            clock=_clock,
+            forecast_horizon_steps=120,
+            time_step=timedelta(hours=1),
+        )
+
+        assert result is not None
+        _, metadata = result
+        assert metadata.warm_up_source == expected.warm_up_source
+        assert metadata.warm_up_state_age_hours == expected.warm_up_state_age_hours
 
 
 class _SourceSpyingForcingStore:

@@ -232,6 +232,19 @@ Before planning or implementation, inspect the relevant touchpoints below and in
   Phase C alerting → result assembly)
 - STATION dispatch: `run_all_station_forecasts` (executor) with
   `run_station_forecast` (PRIMARY selector) over `_run_single_model`
+- per-assignment warm-up state (Plan 148, READ side): `_run_single_model`
+  loads THIS assignment's own state — `load_warm_up_state(model_state_store,
+  station_id, assignment.model_id, clock)` — uniformly, after the
+  model/coverage/artifact eligibility gates and before the reject-guards,
+  building an assignment-keyed `ModelRunContext` (service-local,
+  `services/operational_inputs.py`; shape in `types-and-protocols.md`).
+  `assemble_station_operational_inputs` still loads warm-up for its single
+  *representative* `model_id` only (unchanged behaviour, refactored through
+  the same `load_warm_up_state` helper) — `OperationalInputMetadata` no
+  longer carries `prior_state` (removed), only `warm_up_source`/age
+  provenance (still read by the GROUP path). The WRITE side (state
+  persistence) is still primary-only — see the store/state failure bullet
+  below and `forecast-cycle-redesign.md` build sequence item 1.
 - GROUP dispatch: `discover_group_runs` / `run_group_forecast`, dedup via
   `group_produced_pairs`
 - combination (STATION / Phase B only — GROUP dispatch never combines):
@@ -301,6 +314,26 @@ Before planning or implementation, inspect the relevant touchpoints below and in
   `_raise_store_error_if_connection_fatal`), aborting the whole cycle; GROUP
   `store_state` non-`StoreError`s log only. Do not assume one store call's
   failure semantics match another's — diff the specific branch before changing it.
+  **State WRITE stays primary-only** (PRIMARY mode persists only the selected
+  result's `new_state`; combination mode persists only `mid ==
+  primary_model_id`'s) — Plan 148 fixed the READ side only; a non-primary
+  stateful assignment's state is never written back (deferred).
+- Per-assignment warm-up-state READ failures and the stateful-ensemble
+  reject-guards are **assignment-local, never a station-abort** (Plan 148).
+  A `load_warm_up_state` store-read exception inside `_run_single_model`
+  (event `run_station_forecast.warm_up_load_failed`) and both
+  `reject_prior_state_for_fanout` (input-side) /
+  `reject_stateful_ensemble_states` (output-side) raises (event
+  `run_station_forecast.unsupported_stateful_ensemble`, catching
+  `ModelOutputError` ONLY, never widened to span `predict`) are caught inside
+  `_run_single_model` and recorded in `failed_models` — the same channel as
+  `model_not_found`/`no_active_artifact`/`predict_failed`. A lower-priority
+  assignment tripping either failure mode does **not** discard an
+  already-succeeded higher-priority primary (this is a deliberate correction
+  of the pre-148 behaviour, not a regression — see Plan 148 "State-load
+  failure semantics"). The **assembler's** representative-model read is
+  unchanged: it still aborts the whole station via
+  `forecast_cycle.input_assembly_failed` if it raises.
 - Phase A NWP fetch has two opposite-consequence failure modes:
   `NoCycleAvailableError` (`nwp_unavailable`) degrades to runoff-only for the
   cycle, whereas any other Phase A failure (`_fetch_nwp_task` → `None`) aborts

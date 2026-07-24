@@ -3016,6 +3016,49 @@ Callers discriminate between the two return types using `isinstance(result, Grid
 > ```
 > `ModelRunContext` stays **service-local** (defined in `services/`; shape per Plan 148). Enum/NewType names above
 > reuse existing symbols where they exist (`EnsembleMode`, `NwpCycleSource`, `StationId`/`ModelId`/`GroupId`).
+>
+> **`ModelRunContext` / `WarmUpState` (Plan 148, Phase 1 — shipped, READ side).** Both are **service-local**
+> (defined in `services/operational_inputs.py`, next to `OperationalInputMetadata`) — this spec documents their
+> *shape*, not their import path, per the locked convention above.
+> ```python
+> @dataclass(frozen=True, kw_only=True, slots=True)
+> class WarmUpState:                       # returned by load_warm_up_state(store, station_id, model_id, clock)
+>     prior_state: bytes | None
+>     warm_up_source: WarmUpSource         # existing enum: FRESH | SNAPSHOT | COLD_START
+>     warm_up_state_age_hours: float | None
+>
+> @dataclass(frozen=True, kw_only=True, slots=True)
+> class ModelRunContext:                   # the per-assignment run unit, keyed by (station_id, model_id)
+>     station_id: StationId
+>     model_id: ModelId
+>     inputs: StationModelInputs           # shared in Phase 1 (referenced, not copied) — per-assignment inputs
+>                                           # are a later phase (component 3 above)
+>     observation_staleness_hours: float | None   # shared non-state scalar, copied from OperationalInputMetadata
+>     nwp_age_hours: float | None                 # shared non-state scalar, copied from OperationalInputMetadata
+>     prior_state: bytes | None            # per-assignment (Plan 148's fix: no longer shared across assignments)
+>     warm_up_source: WarmUpSource         # per-assignment
+>     warm_up_state_age_hours: float | None       # per-assignment
+> ```
+> **Ownership**: per-assignment run unit + warm-up bundle. `ModelRunContext` deliberately does **not** embed
+> `OperationalInputMetadata` — that would expose the *representative* assignment's `warm_up_source`/age under the
+> same field names as the context's own per-assignment ones, reintroducing the shared-provenance bug this plan
+> fixes. `OperationalInputMetadata.warm_up_source`/`warm_up_state_age_hours` **stay** on that type as shared
+> *provenance* because the GROUP path (`assemble_group_operational_inputs`, one call per station with its own
+> single group `model_id` — never shared across assignments) still reads them; `OperationalInputMetadata` no
+> longer carries `prior_state` at all (removed Plan 148 T2) — the state *bytes* travel only via each assignment's
+> own `ModelRunContext`.
+>
+> **FI boundary vs SAP3-native boundary.** The ForecastInterface's `predict(prior_state=...)` contract
+> (`:1733-1761`) is **state-free at the protocol level** — it passes `bytes | None` with no provenance fields; FI
+> models never see `warm_up_source`/`warm_up_state_age_hours`. SAP3's own `StationForecastModel.predict` protocol
+> (`protocols/forecast_model.py:32`) mirrors that same `prior_state: bytes | None` at the SAP3↔model boundary — the
+> provenance fields (`warm_up_source`, `warm_up_state_age_hours`) are a **SAP3-native addition**, carried on
+> `ModelRunContext` (station-cycle path) / `OperationalInputMetadata` (GROUP path) for forecast provenance and
+> input-quality assessment, never passed into `predict` itself and never part of the FI contract.
+>
+> **Write side (not yet built).** Phase 1 is READ-side only: the flow still persists only the primary/combination
+> model's `new_state` per station-cycle. Per-assignment state *persistence* is a later phase's responsibility (see
+> `forecast-cycle-redesign.md` build sequence item 1 / Non-goals).
 
 **Raw NWP grid** (pre-extraction, not per-station):
 

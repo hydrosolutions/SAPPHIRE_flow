@@ -5,8 +5,10 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import polars as pl
+from structlog.testing import capture_logs
 
 from sapphire_flow.config.deployment import DeploymentConfig
+from sapphire_flow.exceptions import ModelOutputError
 from sapphire_flow.services.forecast_qc import ForecastOutputQualityChecker
 from sapphire_flow.services.run_station_forecast import (
     MultiModelForecastResult,
@@ -19,10 +21,13 @@ from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.domain import ForecastQcRuleParams, ForecastQcRuleSet, QcFlag
 from sapphire_flow.types.ensemble import ForecastEnsemble
 from sapphire_flow.types.enums import (
+    ArtifactScope,
+    EnsembleMode,
     ModelArtifactStatus,
     ModelAssignmentStatus,
     NwpCycleSource,
     QcStatus,
+    SpatialRepresentation,
     WarmUpSource,
 )
 from sapphire_flow.types.ids import (
@@ -31,10 +36,14 @@ from sapphire_flow.types.ids import (
     ModelId,
     StationId,
 )
-from sapphire_flow.types.model import StationInputData, StationModelInputs
+from sapphire_flow.types.model import (
+    ModelDataRequirements,
+    StationInputData,
+    StationModelInputs,
+)
 from sapphire_flow.types.station import ModelAssignment
 from tests.fakes.fake_models import FakeStationForecastModel
-from tests.fakes.fake_stores import FakeModelArtifactStore
+from tests.fakes.fake_stores import FakeModelArtifactStore, FakeModelStateStore
 
 _NOW = ensure_utc(datetime(2025, 6, 1, 6, 0, tzinfo=UTC))
 _STEP = timedelta(hours=24)
@@ -55,13 +64,11 @@ def _make_metadata(
     warm_up_source: WarmUpSource = WarmUpSource.FRESH,
     observation_staleness_hours: float | None = 1.0,
     nwp_age_hours: float = 0.5,
-    prior_state: bytes | None = None,
 ) -> OperationalInputMetadata:
     return OperationalInputMetadata(
         warm_up_source=warm_up_source,
         warm_up_state_age_hours=None,
         observation_staleness_hours=observation_staleness_hours,
-        prior_state=prior_state,
         nwp_age_hours=nwp_age_hours,
     )
 
@@ -208,6 +215,7 @@ class TestHappyPath:
             clock=_fixed_clock(),  # type: ignore[arg-type]
             id_gen=_sequential_id_gen(),  # type: ignore[arg-type]
             rng=_RNG,
+            model_state_store=FakeModelStateStore(),
         )
 
         assert result is not None
@@ -222,9 +230,15 @@ class TestHappyPath:
         artifact_id = _seed_artifact(store, _MODEL_ID_A)
         model = FakeStationForecastModel()
         meta = _make_metadata(
-            warm_up_source=WarmUpSource.FRESH,
             observation_staleness_hours=2.0,
             nwp_age_hours=1.0,
+        )
+        # The forecast's warm_up_source is now read PER-ASSIGNMENT from the
+        # store (Plan 148 D3) — not carried on ``input_metadata`` — so seed a
+        # FRESH state (< 24h) for this assignment's own model_id.
+        state_store = FakeModelStateStore()
+        state_store.store_state(
+            _STATION_ID, _MODEL_ID_A, _NOW - timedelta(hours=1), b"warm_state"
         )
 
         result = run_station_forecast(
@@ -244,6 +258,7 @@ class TestHappyPath:
             clock=_fixed_clock(),  # type: ignore[arg-type]
             id_gen=_sequential_id_gen(),  # type: ignore[arg-type]
             rng=_RNG,
+            model_state_store=state_store,
         )
 
         assert result is not None
@@ -278,6 +293,7 @@ class TestHappyPath:
             clock=_fixed_clock(),  # type: ignore[arg-type]
             id_gen=_sequential_id_gen(),  # type: ignore[arg-type]
             rng=_RNG,
+            model_state_store=FakeModelStateStore(),
             water_level_datum_masl=260.0,
         )
 
@@ -307,6 +323,7 @@ class TestHappyPath:
             clock=_fixed_clock(),  # type: ignore[arg-type]
             id_gen=_sequential_id_gen(),  # type: ignore[arg-type]
             rng=_RNG,
+            model_state_store=FakeModelStateStore(),
             water_level_datum_masl=None,
         )
 
@@ -356,6 +373,7 @@ class TestMultiModelFallback:
             clock=_fixed_clock(),  # type: ignore[arg-type]
             id_gen=_sequential_id_gen(),  # type: ignore[arg-type]
             rng=_RNG,
+            model_state_store=FakeModelStateStore(),
         )
 
         assert result is not None
@@ -389,6 +407,7 @@ class TestMultiModelFallback:
             clock=_fixed_clock(),  # type: ignore[arg-type]
             id_gen=_sequential_id_gen(),  # type: ignore[arg-type]
             rng=_RNG,
+            model_state_store=FakeModelStateStore(),
         )
 
         assert result is not None
@@ -475,6 +494,7 @@ class TestQcFailureFallback:
             clock=_fixed_clock(),  # type: ignore[arg-type]
             id_gen=_sequential_id_gen(),  # type: ignore[arg-type]
             rng=_RNG,
+            model_state_store=FakeModelStateStore(),
         )
 
         assert result is not None
@@ -525,6 +545,7 @@ class TestAllModelsFail:
             clock=_fixed_clock(),  # type: ignore[arg-type]
             id_gen=_sequential_id_gen(),  # type: ignore[arg-type]
             rng=_RNG,
+            model_state_store=FakeModelStateStore(),
         )
 
         assert result is None
@@ -549,6 +570,7 @@ class TestAllModelsFail:
             clock=_fixed_clock(),  # type: ignore[arg-type]
             id_gen=_sequential_id_gen(),  # type: ignore[arg-type]
             rng=_RNG,
+            model_state_store=FakeModelStateStore(),
         )
 
         assert result is None
@@ -574,6 +596,7 @@ class TestAllModelsFail:
             clock=_fixed_clock(),  # type: ignore[arg-type]
             id_gen=_sequential_id_gen(),  # type: ignore[arg-type]
             rng=_RNG,
+            model_state_store=FakeModelStateStore(),
         )
 
         assert result is None
@@ -607,6 +630,7 @@ def _run_all(
         clock=_fixed_clock(),  # type: ignore[arg-type]
         id_gen=_sequential_id_gen(),  # type: ignore[arg-type]
         rng=random.Random(42),
+        model_state_store=FakeModelStateStore(),
     )
 
 
@@ -888,6 +912,7 @@ class TestNwpCoverageGuard:
             clock=_fixed_clock(),  # type: ignore[arg-type]
             id_gen=_sequential_id_gen(),  # type: ignore[arg-type]
             rng=random.Random(42),
+            model_state_store=FakeModelStateStore(),
         )
 
     def test_short_coverage_skips_nwp_model_and_native_fallback_wins(self) -> None:
@@ -1042,6 +1067,7 @@ class TestEnsembleMemberSetCoverage:
             clock=_fixed_clock(),  # type: ignore[arg-type]
             id_gen=_sequential_id_gen(),  # type: ignore[arg-type]
             rng=random.Random(42),
+            model_state_store=FakeModelStateStore(),
         )
 
         assert self._NWP_ID not in result.results
@@ -1097,3 +1123,553 @@ class TestSkillModelOutranksFallback:
         )
 
         assert result.primary_model_id == skill_model_id
+
+
+class _StatefulSpyModel(FakeStationForecastModel):
+    """Records every ``prior_state`` its ``predict`` receives — used to prove
+    each assignment reads its OWN warm-up state (Plan 148), not one shared
+    representative value.
+    """
+
+    def __init__(self) -> None:
+        self.seen_prior_states: list[bytes | None] = []
+
+    def predict(
+        self,
+        artifact: object,
+        inputs: StationModelInputs,
+        rng: random.Random,
+        prior_state: bytes | None = None,
+    ) -> tuple[dict[str, ForecastEnsemble], bytes | None]:
+        self.seen_prior_states.append(prior_state)
+        return super().predict(artifact, inputs, rng, prior_state=prior_state)
+
+
+def _ensemble_member_inputs(k_members: int = 3) -> StationModelInputs:
+    times = [_NOW + (i + 1) * _STEP for i in range(2)]
+    data: dict[str, list] = {"timestamp": times}
+    for k in range(k_members):
+        data[f"precipitation_{k}"] = [1.0, 1.0]
+    future_dynamic = pl.DataFrame(data).with_columns(
+        pl.col("timestamp").cast(pl.Datetime("us", "UTC"))
+    )
+    obs_rows = [
+        {"timestamp": _NOW - timedelta(hours=i), "value": 10.0} for i in range(10)
+    ]
+    obs_df = pl.DataFrame(obs_rows).with_columns(
+        pl.col("timestamp").cast(pl.Datetime("us", "UTC"))
+    )
+    empty = pl.DataFrame({"timestamp": []}).with_columns(
+        pl.col("timestamp").cast(pl.Datetime("us", "UTC"))
+    )
+    return StationModelInputs(
+        station_id=_STATION_ID,
+        data=StationInputData(
+            past_targets=obs_df,
+            past_dynamic=empty,
+            future_dynamic=future_dynamic,
+            static=None,
+        ),
+        issue_time=_NOW,
+        forecast_horizon_steps=2,
+        time_step=_STEP,
+    )
+
+
+class _EnsembleModeNoFutureFeaturesModel:
+    """ensemble_mode=ENSEMBLE, no ``future_dynamic_features`` (coverage gate
+    skipped) — used to prove the INPUT-side reject-guard fires assignment-local
+    on this assignment's OWN persisted state, before ``predict`` is ever
+    reached."""
+
+    artifact_scope = ArtifactScope.STATION
+    data_requirements = ModelDataRequirements(
+        target_parameters=frozenset({"discharge"}),
+        past_dynamic_features=frozenset(),
+        future_dynamic_features=frozenset(),
+        static_features=frozenset(),
+        supported_time_steps=frozenset({_STEP}),
+        lookback_steps=1,
+        forecast_horizon_steps=5,
+        spatial_input_type=SpatialRepresentation.POINT,
+        ensemble_mode=EnsembleMode.ENSEMBLE,
+    )
+
+    def train(self, *args: object, **kwargs: object) -> bytes:
+        return b"artifact"
+
+    def predict(self, *args: object, **kwargs: object) -> None:
+        raise AssertionError(
+            "predict must not be reached — input-side reject-guard must fire first"
+        )
+
+    def serialize_artifact(self, artifact: object) -> bytes:
+        return b"artifact"
+
+    def deserialize_artifact(self, raw: bytes) -> object:
+        return raw
+
+
+class _StatefulOutputEnsembleModel:
+    """ensemble_mode=ENSEMBLE, stateless INPUT (no persisted ``prior_state``),
+    but each per-member ``predict`` returns a NON-None ``new_state`` —
+    unsupported on the OUTPUT side (``reject_stateful_ensemble_states``)."""
+
+    artifact_scope = ArtifactScope.STATION
+    data_requirements = ModelDataRequirements(
+        target_parameters=frozenset({"discharge"}),
+        past_dynamic_features=frozenset(),
+        future_dynamic_features=frozenset({"precipitation"}),
+        static_features=frozenset(),
+        supported_time_steps=frozenset({_STEP}),
+        lookback_steps=1,
+        forecast_horizon_steps=2,
+        spatial_input_type=SpatialRepresentation.BASIN_AVERAGE,
+        ensemble_mode=EnsembleMode.ENSEMBLE,
+    )
+
+    def train(self, *args: object, **kwargs: object) -> bytes:
+        return b"artifact"
+
+    def predict(
+        self,
+        artifact: object,
+        inputs: StationModelInputs,
+        rng: random.Random,
+        prior_state: bytes | None = None,
+    ) -> tuple[dict[str, ForecastEnsemble], bytes | None]:
+        fd = inputs.data.future_dynamic
+        values = fd.select(
+            pl.col("timestamp").alias("valid_time"),
+            pl.lit(1).cast(pl.Int32).alias("member_id"),
+            pl.col("precipitation").cast(pl.Float64).alias("value"),
+        )
+        ensemble = ForecastEnsemble.from_members(
+            station_id=inputs.station_id,
+            issued_at=inputs.issue_time,
+            parameter="discharge",
+            units="m³/s",
+            time_step=inputs.time_step,
+            values=values,
+        )
+        return {"discharge": ensemble}, b"per-member-state"
+
+    def serialize_artifact(self, artifact: object) -> bytes:
+        return b"artifact"
+
+    def deserialize_artifact(self, raw: bytes) -> object:
+        return raw
+
+
+class _RaisingModelStateStore:
+    """A ``ModelStateStore`` fake whose ``fetch_latest_state`` raises for one
+    specific ``model_id`` — used to prove a store-read failure is
+    assignment-local (Plan 148 State-load failure semantics)."""
+
+    def __init__(self, raise_for: ModelId) -> None:
+        self._raise_for = raise_for
+        self._inner = FakeModelStateStore()
+
+    def store_state(
+        self,
+        station_id: StationId,
+        model_id: ModelId,
+        issue_time: object,
+        state_bytes: bytes,
+    ) -> None:
+        self._inner.store_state(station_id, model_id, issue_time, state_bytes)  # type: ignore[arg-type]
+
+    def fetch_latest_state(
+        self, station_id: StationId, model_id: ModelId
+    ) -> tuple[object, bytes] | None:
+        if model_id == self._raise_for:
+            raise RuntimeError("store connection lost")
+        return self._inner.fetch_latest_state(station_id, model_id)
+
+
+class _FiMappedFailureModel:
+    """A non-ensemble model whose ``predict`` raises ``ModelOutputError`` —
+    simulating the FI adapter's ``ModelFailure`` -> ``ModelOutputError``
+    mapping (``adapters/forecast_interface.py:370-373``). Proves the
+    reject-guard ``try`` (catching ``ModelOutputError`` ONLY at the guard call
+    sites) never mislabels this as ``unsupported_stateful_ensemble``."""
+
+    artifact_scope = ArtifactScope.STATION
+    data_requirements = FakeStationForecastModel.data_requirements
+
+    def train(self, *args: object, **kwargs: object) -> bytes:
+        return b"artifact"
+
+    def predict(self, *args: object, **kwargs: object) -> None:
+        raise ModelOutputError("FI ModelFailure mapped to ModelOutputError")
+
+    def serialize_artifact(self, artifact: object) -> bytes:
+        return b"artifact"
+
+    def deserialize_artifact(self, raw: bytes) -> object:
+        return raw
+
+
+class TestPerAssignmentWarmUpState:
+    """Plan 148 T2 — red-first bug-demonstrating tests: each model assignment
+    reads warm-up state per ``(station_id, model_id)``, and a state-load or
+    reject-guard failure is assignment-local (never a station-abort).
+    """
+
+    def test_two_stateful_assignments_each_run_with_own_state(self) -> None:
+        # THE latent bug this plan fixes: pre-fix, both assignments received
+        # the SAME shared ``input_metadata.prior_state`` (the representative
+        # model's). Post-fix, each reads its OWN state.
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, _MODEL_ID_A)
+        _seed_artifact(store, _MODEL_ID_B)
+
+        model_a = _StatefulSpyModel()
+        model_b = _StatefulSpyModel()
+
+        state_store = FakeModelStateStore()
+        state_store.store_state(
+            _STATION_ID, _MODEL_ID_A, _NOW - timedelta(hours=1), b"state-a"
+        )
+        state_store.store_state(
+            _STATION_ID, _MODEL_ID_B, _NOW - timedelta(hours=1), b"state-b"
+        )
+
+        result = run_all_station_forecasts(
+            station_id=_STATION_ID,
+            inputs=_make_inputs(),
+            input_metadata=_make_metadata(),
+            assignments=[
+                _make_assignment(_MODEL_ID_A, priority=1),
+                _make_assignment(_MODEL_ID_B, priority=2),
+            ],
+            models={_MODEL_ID_A: model_a, _MODEL_ID_B: model_b},  # type: ignore[dict-item]
+            artifact_store=store,
+            qc_checker=ForecastOutputQualityChecker(),
+            qc_rules=_empty_qc_rules(),
+            qc_overrides=[],
+            baselines=[],
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            config=_make_config(),
+            clock=_fixed_clock(),  # type: ignore[arg-type]
+            id_gen=_sequential_id_gen(),  # type: ignore[arg-type]
+            rng=random.Random(42),
+            model_state_store=state_store,
+        )
+
+        assert _MODEL_ID_A in result.results
+        assert _MODEL_ID_B in result.results
+        assert model_a.seen_prior_states == [b"state-a"]
+        assert model_b.seen_prior_states == [b"state-b"]
+
+    def test_ensemble_input_side_reject_guard_is_assignment_local(self) -> None:
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, _MODEL_ID_A)
+        _seed_artifact(store, _MODEL_ID_B)
+
+        state_store = FakeModelStateStore()
+        state_store.store_state(
+            _STATION_ID, _MODEL_ID_B, _NOW - timedelta(hours=1), b"secondary-state"
+        )
+
+        with capture_logs() as logs:
+            result = run_station_forecast(
+                station_id=_STATION_ID,
+                inputs=_make_inputs(),
+                input_metadata=_make_metadata(),
+                assignments=[
+                    _make_assignment(_MODEL_ID_A, priority=1),
+                    _make_assignment(_MODEL_ID_B, priority=2),
+                ],
+                models={
+                    _MODEL_ID_A: FakeStationForecastModel(),  # type: ignore[dict-item]
+                    _MODEL_ID_B: _EnsembleModeNoFutureFeaturesModel(),  # type: ignore[dict-item]
+                },
+                artifact_store=store,
+                qc_checker=ForecastOutputQualityChecker(),
+                qc_rules=_empty_qc_rules(),
+                qc_overrides=[],
+                baselines=[],
+                nwp_cycle_reference_time=_NOW,
+                nwp_cycle_source=NwpCycleSource.PRIMARY,
+                config=_make_config(),
+                clock=_fixed_clock(),  # type: ignore[arg-type]
+                id_gen=_sequential_id_gen(),  # type: ignore[arg-type]
+                rng=random.Random(42),
+                model_state_store=state_store,
+            )
+
+        # The primary is STILL returned — the guard did not abort the station.
+        assert result is not None
+        assert result.model_id == _MODEL_ID_A
+        assert any(
+            e.get("event") == "run_station_forecast.unsupported_stateful_ensemble"
+            for e in logs
+        )
+
+    def test_ensemble_output_side_reject_guard_is_assignment_local(self) -> None:
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, _MODEL_ID_A)
+        _seed_artifact(store, _MODEL_ID_B)
+
+        with capture_logs() as logs:
+            result = run_all_station_forecasts(
+                station_id=_STATION_ID,
+                inputs=_ensemble_member_inputs(),
+                input_metadata=_make_metadata(),
+                assignments=[
+                    _make_assignment(_MODEL_ID_A, priority=1),
+                    _make_assignment(_MODEL_ID_B, priority=2),
+                ],
+                models={
+                    _MODEL_ID_A: FakeStationForecastModel(),  # type: ignore[dict-item]
+                    _MODEL_ID_B: _StatefulOutputEnsembleModel(),  # type: ignore[dict-item]
+                },
+                artifact_store=store,
+                qc_checker=ForecastOutputQualityChecker(),
+                qc_rules=_empty_qc_rules(),
+                qc_overrides=[],
+                baselines=[],
+                nwp_cycle_reference_time=_NOW,
+                nwp_cycle_source=NwpCycleSource.PRIMARY,
+                config=_make_config(),
+                clock=_fixed_clock(),  # type: ignore[arg-type]
+                id_gen=_sequential_id_gen(),  # type: ignore[arg-type]
+                rng=random.Random(42),
+                model_state_store=FakeModelStateStore(),
+            )
+
+        assert result.primary_model_id == _MODEL_ID_A
+        assert _MODEL_ID_A in result.results
+        assert _MODEL_ID_B in result.failed_models
+        assert any(
+            e.get("event") == "run_station_forecast.unsupported_stateful_ensemble"
+            for e in logs
+        )
+
+    def test_assignment_local_read_failure_keeps_primary(self) -> None:
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, _MODEL_ID_A)
+        _seed_artifact(store, _MODEL_ID_B)
+
+        state_store = _RaisingModelStateStore(raise_for=_MODEL_ID_B)
+
+        with capture_logs() as logs:
+            result = run_all_station_forecasts(
+                station_id=_STATION_ID,
+                inputs=_make_inputs(),
+                input_metadata=_make_metadata(),
+                assignments=[
+                    _make_assignment(_MODEL_ID_A, priority=1),
+                    _make_assignment(_MODEL_ID_B, priority=2),
+                ],
+                models={
+                    _MODEL_ID_A: FakeStationForecastModel(),  # type: ignore[dict-item]
+                    _MODEL_ID_B: FakeStationForecastModel(),  # type: ignore[dict-item]
+                },
+                artifact_store=store,
+                qc_checker=ForecastOutputQualityChecker(),
+                qc_rules=_empty_qc_rules(),
+                qc_overrides=[],
+                baselines=[],
+                nwp_cycle_reference_time=_NOW,
+                nwp_cycle_source=NwpCycleSource.PRIMARY,
+                config=_make_config(),
+                clock=_fixed_clock(),  # type: ignore[arg-type]
+                id_gen=_sequential_id_gen(),  # type: ignore[arg-type]
+                rng=random.Random(42),
+                model_state_store=state_store,  # type: ignore[arg-type]
+            )
+
+        assert result.primary_model_id == _MODEL_ID_A
+        assert _MODEL_ID_A in result.results
+        assert _MODEL_ID_B in result.failed_models
+        assert "store connection lost" in result.failed_models[_MODEL_ID_B]
+        assert any(
+            e.get("event") == "run_station_forecast.warm_up_load_failed" for e in logs
+        )
+
+    def test_predict_raising_model_output_error_is_predict_failed(self) -> None:
+        # FI-failure-vs-reject-guard separation: the SAME exception class
+        # (``ModelOutputError``) raised from INSIDE ``predict`` must still be
+        # caught by the existing ``predict`` boundary as ``predict_failed`` —
+        # never mislabeled as a reject-guard event.
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, _MODEL_ID_A)
+
+        with capture_logs() as logs:
+            result = run_all_station_forecasts(
+                station_id=_STATION_ID,
+                inputs=_make_inputs(),
+                input_metadata=_make_metadata(),
+                assignments=[_make_assignment(_MODEL_ID_A, priority=1)],
+                models={_MODEL_ID_A: _FiMappedFailureModel()},  # type: ignore[dict-item]
+                artifact_store=store,
+                qc_checker=ForecastOutputQualityChecker(),
+                qc_rules=_empty_qc_rules(),
+                qc_overrides=[],
+                baselines=[],
+                nwp_cycle_reference_time=_NOW,
+                nwp_cycle_source=NwpCycleSource.PRIMARY,
+                config=_make_config(),
+                clock=_fixed_clock(),  # type: ignore[arg-type]
+                id_gen=_sequential_id_gen(),  # type: ignore[arg-type]
+                rng=random.Random(42),
+                model_state_store=FakeModelStateStore(),
+            )
+
+        assert _MODEL_ID_A in result.failed_models
+        assert "predict failed" in result.failed_models[_MODEL_ID_A]
+        events = {e.get("event") for e in logs}
+        assert "run_station_forecast.predict_failed" in events
+        assert "run_station_forecast.unsupported_stateful_ensemble" not in events
+        assert "run_station_forecast.warm_up_load_failed" not in events
+
+
+class TestGoldenWarmUpProvenance:
+    """Plan 148 T3 (b)/(e)/(f) — golden/regression tests at the
+    ``run_all_station_forecasts`` level pinning per-assignment warm-up
+    provenance.
+    """
+
+    def test_empty_store_every_assignment_reports_cold_start(self) -> None:
+        # T3(b): multi-model STATELESS station, EMPTY model_state_store
+        # (current-production shape) -> every assignment reports COLD_START,
+        # both before and after this plan.
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, _MODEL_ID_A)
+        _seed_artifact(store, _MODEL_ID_B)
+
+        result = run_all_station_forecasts(
+            station_id=_STATION_ID,
+            inputs=_make_inputs(),
+            input_metadata=_make_metadata(),
+            assignments=[
+                _make_assignment(_MODEL_ID_A, priority=1),
+                _make_assignment(_MODEL_ID_B, priority=2),
+            ],
+            models={
+                _MODEL_ID_A: FakeStationForecastModel(),
+                _MODEL_ID_B: FakeStationForecastModel(),
+            },
+            artifact_store=store,
+            qc_checker=ForecastOutputQualityChecker(),
+            qc_rules=_empty_qc_rules(),
+            qc_overrides=[],
+            baselines=[],
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            config=_make_config(),
+            clock=_fixed_clock(),  # type: ignore[arg-type]
+            id_gen=_sequential_id_gen(),  # type: ignore[arg-type]
+            rng=random.Random(42),
+            model_state_store=FakeModelStateStore(),
+        )
+
+        for mid in (_MODEL_ID_A, _MODEL_ID_B):
+            fc = result.results[mid].forecasts[0]
+            assert fc.warm_up_source == WarmUpSource.COLD_START
+            assert fc.warm_up_state_age_hours is None
+
+    def test_representative_only_state_secondary_reports_own_cold_start(
+        self,
+    ) -> None:
+        # T3(e), red-first fixture: only the REPRESENTATIVE/primary (model A)
+        # has stored state; the lower-priority secondary (model B) has NONE.
+        # Post-fix the secondary reports its OWN COLD_START — not the
+        # primary's FRESH (today's bug: it would silently inherit A's).
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, _MODEL_ID_A)
+        _seed_artifact(store, _MODEL_ID_B)
+
+        state_store = FakeModelStateStore()
+        state_store.store_state(
+            _STATION_ID, _MODEL_ID_A, _NOW - timedelta(hours=1), b"primary-state"
+        )
+        # No state stored for _MODEL_ID_B.
+
+        result = run_all_station_forecasts(
+            station_id=_STATION_ID,
+            inputs=_make_inputs(),
+            input_metadata=_make_metadata(),
+            assignments=[
+                _make_assignment(_MODEL_ID_A, priority=1),
+                _make_assignment(_MODEL_ID_B, priority=2),
+            ],
+            models={
+                _MODEL_ID_A: FakeStationForecastModel(),
+                _MODEL_ID_B: FakeStationForecastModel(),
+            },
+            artifact_store=store,
+            qc_checker=ForecastOutputQualityChecker(),
+            qc_rules=_empty_qc_rules(),
+            qc_overrides=[],
+            baselines=[],
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            config=_make_config(),
+            clock=_fixed_clock(),  # type: ignore[arg-type]
+            id_gen=_sequential_id_gen(),  # type: ignore[arg-type]
+            rng=random.Random(42),
+            model_state_store=state_store,
+        )
+
+        fc_a = result.results[_MODEL_ID_A].forecasts[0]
+        fc_b = result.results[_MODEL_ID_B].forecasts[0]
+        assert fc_a.warm_up_source == WarmUpSource.FRESH
+        assert fc_b.warm_up_source == WarmUpSource.COLD_START
+        assert fc_b.warm_up_state_age_hours is None
+
+    def test_secondary_own_snapshot_diverges_from_primary(self) -> None:
+        # T3(f): BOTH assignments have their OWN stored snapshot, at
+        # DIFFERENT ages -> each reports its own provenance, not the
+        # primary's for both.
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, _MODEL_ID_A)
+        _seed_artifact(store, _MODEL_ID_B)
+
+        state_store = FakeModelStateStore()
+        state_store.store_state(
+            _STATION_ID, _MODEL_ID_A, _NOW - timedelta(hours=30), b"primary-snapshot"
+        )
+        state_store.store_state(
+            _STATION_ID, _MODEL_ID_B, _NOW - timedelta(hours=2), b"secondary-fresh"
+        )
+
+        result = run_all_station_forecasts(
+            station_id=_STATION_ID,
+            inputs=_make_inputs(),
+            input_metadata=_make_metadata(),
+            assignments=[
+                _make_assignment(_MODEL_ID_A, priority=1),
+                _make_assignment(_MODEL_ID_B, priority=2),
+            ],
+            models={
+                _MODEL_ID_A: FakeStationForecastModel(),
+                _MODEL_ID_B: FakeStationForecastModel(),
+            },
+            artifact_store=store,
+            qc_checker=ForecastOutputQualityChecker(),
+            qc_rules=_empty_qc_rules(),
+            qc_overrides=[],
+            baselines=[],
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            config=_make_config(),
+            clock=_fixed_clock(),  # type: ignore[arg-type]
+            id_gen=_sequential_id_gen(),  # type: ignore[arg-type]
+            rng=random.Random(42),
+            model_state_store=state_store,
+        )
+
+        fc_a = result.results[_MODEL_ID_A].forecasts[0]
+        fc_b = result.results[_MODEL_ID_B].forecasts[0]
+        # Primary's own snapshot is old -> SNAPSHOT.
+        assert fc_a.warm_up_source == WarmUpSource.SNAPSHOT
+        assert fc_a.warm_up_state_age_hours is not None
+        assert fc_a.warm_up_state_age_hours >= 24.0
+        # Secondary's own snapshot is recent -> FRESH — diverges from primary.
+        assert fc_b.warm_up_source == WarmUpSource.FRESH
+        assert fc_b.warm_up_state_age_hours is not None
+        assert fc_b.warm_up_state_age_hours < 24.0

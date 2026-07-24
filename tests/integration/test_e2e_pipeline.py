@@ -44,6 +44,7 @@ from sapphire_flow.types.enums import (
 )
 from sapphire_flow.types.ids import ModelId
 from tests.fakes.fake_adapters import FakeWeatherReanalysisSource
+from tests.fakes.fake_stores import FakeModelStateStore
 
 _FIXTURE_DIR = Path("tests/fixtures/reference")
 
@@ -623,7 +624,6 @@ class TestE2ePipeline:
                     warm_up_source=WarmUpSource.COLD_START,
                     warm_up_state_age_hours=None,
                     observation_staleness_hours=0.0,
-                    prior_state=None,
                     nwp_age_hours=0.0,
                 )
 
@@ -667,6 +667,10 @@ class TestE2ePipeline:
                     clock=_clock,
                     id_gen=uuid4,
                     rng=rng,
+                    # Empty in-memory fake: every fetch_latest_state -> None ->
+                    # COLD_START, byte-identical to the manual metadata above
+                    # (Plan 148 T2 item 8).
+                    model_state_store=FakeModelStateStore(),
                 )
 
                 if result_fc is not None:

@@ -45,8 +45,66 @@ class OperationalInputMetadata:
     warm_up_source: WarmUpSource
     warm_up_state_age_hours: float | None
     observation_staleness_hours: float | None
-    prior_state: bytes | None
     nwp_age_hours: float
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class WarmUpState:
+    """The three warm-up fields, as loaded from the ``ModelStateStore`` for a
+    single ``(station_id, model_id)``. Returned by :func:`load_warm_up_state`.
+    """
+
+    prior_state: bytes | None
+    warm_up_source: WarmUpSource
+    warm_up_state_age_hours: float | None
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ModelRunContext:
+    """Assignment-keyed run unit (Plan 148 D1). Carries the shared inputs +
+    shared non-state scalars (``observation_staleness_hours``,
+    ``nwp_age_hours``) plus THIS assignment's own per-assignment warm-up
+    state — never an ``OperationalInputMetadata`` object (which would expose
+    the representative-scoped warm-up under the same field names).
+    """
+
+    station_id: StationId
+    model_id: ModelId
+    inputs: StationModelInputs
+    observation_staleness_hours: float | None
+    nwp_age_hours: float | None
+    prior_state: bytes | None
+    warm_up_source: WarmUpSource
+    warm_up_state_age_hours: float | None
+
+
+def load_warm_up_state(
+    model_state_store: ModelStateStore,
+    station_id: StationId,
+    model_id: ModelId,
+    clock: Callable[[], UtcDatetime],
+) -> WarmUpState:
+    """Read this ``(station_id, model_id)``'s latest state and classify it.
+
+    ``clock`` is consulted ONLY when a state is present (to classify its age)
+    — an empty store returns ``COLD_START`` without calling ``clock()`` at
+    all (Plan 148 D2/D4).
+    """
+    state_result = model_state_store.fetch_latest_state(station_id, model_id)
+    if state_result is None:
+        return WarmUpState(
+            prior_state=None,
+            warm_up_source=WarmUpSource.COLD_START,
+            warm_up_state_age_hours=None,
+        )
+    state_time, state_bytes = state_result
+    age_hours = (clock() - state_time).total_seconds() / 3600.0
+    warm_up_source = WarmUpSource.FRESH if age_hours < 24.0 else WarmUpSource.SNAPSHOT
+    return WarmUpState(
+        prior_state=state_bytes,
+        warm_up_source=warm_up_source,
+        warm_up_state_age_hours=age_hours,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -498,20 +556,16 @@ def assemble_station_operational_inputs(
             static_df = pl.DataFrame([basin.attributes])
 
     # --- warm-up state ---
-    state_result = model_state_store.fetch_latest_state(station_id, model_id)
-    prior_state: bytes | None = None
-    warm_up_state_age_hours: float | None = None
-
-    if state_result is not None:
-        state_time, state_bytes = state_result
-        age_hours = (now - state_time).total_seconds() / 3600.0
-        warm_up_state_age_hours = age_hours
-        prior_state = state_bytes
-        warm_up_source = (
-            WarmUpSource.FRESH if age_hours < 24.0 else WarmUpSource.SNAPSHOT
-        )
-    else:
-        warm_up_source = WarmUpSource.COLD_START
+    # ``clock=lambda: now`` reuses the SAME instant already computed above
+    # (for observation staleness / nwp age) so this extraction is exactly
+    # behaviour-preserving: no second real ``clock()`` call is introduced.
+    # The state BYTES (``warm_up.prior_state``) are not carried out of the
+    # assembler — the station-cycle path reads its own per-assignment state
+    # via ``ModelRunContext`` (Plan 148 D2). Only source/age survive on
+    # ``OperationalInputMetadata`` as shared provenance for the GROUP path.
+    warm_up = load_warm_up_state(model_state_store, station_id, model_id, lambda: now)
+    warm_up_state_age_hours = warm_up.warm_up_state_age_hours
+    warm_up_source = warm_up.warm_up_source
 
     inputs = StationModelInputs(
         station_id=station_id,
@@ -529,7 +583,6 @@ def assemble_station_operational_inputs(
         warm_up_source=warm_up_source,
         warm_up_state_age_hours=warm_up_state_age_hours,
         observation_staleness_hours=observation_staleness_hours,
-        prior_state=prior_state,
         nwp_age_hours=nwp_age_hours,
     )
 

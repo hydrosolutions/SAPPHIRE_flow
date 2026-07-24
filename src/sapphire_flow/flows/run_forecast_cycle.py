@@ -2115,6 +2115,7 @@ def run_forecast_cycle_flow(
                         clock=clock,
                         id_gen=uuid4,
                         rng=rng,
+                        model_state_store=model_state_store,  # type: ignore[arg-type]
                         water_level_datum_masl=water_level_datums_masl.get(sid),
                     )
 
@@ -2186,6 +2187,7 @@ def run_forecast_cycle_flow(
                         clock=clock,
                         id_gen=uuid4,
                         rng=rng,
+                        model_state_store=model_state_store,  # type: ignore[arg-type]
                         water_level_datum_masl=water_level_datums_masl.get(sid),
                     )
 

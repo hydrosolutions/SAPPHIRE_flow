@@ -106,7 +106,6 @@ def _make_metadata(nwp_age_hours: float) -> OperationalInputMetadata:
         warm_up_source=WarmUpSource.FRESH,
         warm_up_state_age_hours=1.0,
         observation_staleness_hours=0.5,
-        prior_state=b"state",
         nwp_age_hours=nwp_age_hours,
     )
 
@@ -495,6 +494,59 @@ def test_all_stations_none_returns_none(monkeypatch: MonkeyPatch) -> None:
 
     assert result is None
     assert set(calls) == {(sid_a, "icon-a"), (sid_b, "icon-b")}
+
+
+class TestRealAssemblerWarmUpProvenance:
+    """Plan 148 T3(d) — GROUP regression against the REAL, unpatched
+    ``assemble_station_operational_inputs`` path. The rest of this suite
+    monkeypatches the assembler out (``_patch_station_assembler``), so it has
+    ZERO coverage of the warm-up-loading code this plan refactors — even
+    though the GROUP call site (``assemble_group_operational_inputs`` ->
+    ``assemble_station_operational_inputs``, byte-for-byte unchanged, D2) is
+    exactly what this test exercises. Proves the ``load_warm_up_state``
+    extraction leaves GROUP warm-up provenance unaffected: two stations with
+    DIFFERENT per-station stored state (one FRESH, one absent) each get their
+    own correct provenance from the single per-station assembler call.
+    """
+
+    def test_group_warm_up_provenance_matches_per_station_store_state(
+        self,
+    ) -> None:
+        sid_a = StationId(uuid4())
+        sid_b = StationId(uuid4())
+        group = _make_group(sid_a, sid_b)
+
+        state_store = FakeModelStateStore()
+        state_store.store_state(
+            sid_a, _MODEL_ID, ensure_utc(_ISSUE - timedelta(hours=1)), b"group-state-a"
+        )
+        # sid_b has NO stored state -> COLD_START.
+
+        result = service.assemble_group_operational_inputs(
+            group=group,
+            model=FakeGroupForecastModel(),
+            model_id=_MODEL_ID,
+            issue_time=_ISSUE,
+            cycle_time=_CYCLE,
+            nwp_source_by_station={sid_a: "icon_ch2_eps", sid_b: "icon_ch2_eps"},
+            forcing_source=FakeWeatherReanalysisSource(),
+            weather_forecast_store=FakeWeatherForecastStore(),
+            obs_store=FakeObservationStore(),
+            station_store=FakeStationStore(),
+            basin_store=FakeBasinStore(),
+            model_state_store=state_store,
+            clock=_clock,
+            forecast_horizon_steps=2,
+            time_step=_STEP,
+        )
+
+        assert result is not None
+        _, metadata_by_station = result
+        assert metadata_by_station[sid_a].warm_up_source == WarmUpSource.FRESH
+        assert metadata_by_station[sid_a].warm_up_state_age_hours is not None
+        assert metadata_by_station[sid_a].warm_up_state_age_hours < 24.0
+        assert metadata_by_station[sid_b].warm_up_source == WarmUpSource.COLD_START
+        assert metadata_by_station[sid_b].warm_up_state_age_hours is None
 
 
 def test_discover_group_runs_only_group_scoped_models() -> None:
