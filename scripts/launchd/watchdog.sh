@@ -8,14 +8,14 @@
 # httpx/structlog/sapphire_flow, all already present in the venv, so we run
 # against the existing venv without syncing.
 #
-# Plan 147 Slice C: no --probe-token-path flag is passed here (or in the
-# plist) DELIBERATELY. `read_probe_token`'s default
-# (`./secrets/health_probe_token`, ops/watchdog.py:DEFAULT_PROBE_TOKEN_PATH)
-# is relative, and `cd` below (mirrored by the plist's WorkingDirectory)
-# already resolves it to the correct host secret file — no code/plist
-# change needed. See docs/standards/cicd.md § Access-token pepper +
+# Plan 147 Slice C: --probe-token-path is passed EXPLICITLY (mirroring the
+# plist) — defensive, so this wrapper never silently depends on the argparse
+# default happening to match the cwd. `cd` below (mirrored by the plist's
+# WorkingDirectory) resolves the relative ./secrets/health_probe_token to the
+# correct host secret file. See docs/standards/cicd.md § Access-token pepper +
 # probe-token rotation.
 
 set -e
 cd /Users/sapphire/SAPPHIRE_flow
-exec uv run --no-sync python -m sapphire_flow.ops.watchdog
+exec uv run --no-sync python -m sapphire_flow.ops.watchdog \
+    --probe-token-path ./secrets/health_probe_token

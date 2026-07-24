@@ -704,7 +704,7 @@ Two host/Docker secrets `/health/detail`-auth introduces:
 2. `docker compose up -d --build` (the API will refuse to start without the pepper).
 3. `docker compose exec api python -m sapphire_flow.cli.access_tokens create-admin --name "watchdog-probe"` — prints the raw key ONCE.
 4. `printf '%s' '<raw-key>' > ./secrets/health_probe_token && chmod 600 ./secrets/health_probe_token` on the watchdog host (the mac-mini itself for the current deployment — same filesystem as `./secrets/slack_webhook_url`).
-5. Restart/re-trigger the watchdog launchd agent (or wait for its next 5-min tick) — `read_probe_token` picks up the file with no code change; `--probe-token-path` defaults to `./secrets/health_probe_token`.
+5. Restart/re-trigger the watchdog launchd agent (or wait for its next 5-min tick) — `read_probe_token` picks up the file with no code change. The launchd plist (and `watchdog.sh`) pass `--probe-token-path ./secrets/health_probe_token` explicitly, resolved against the agent's `WorkingDirectory`.
 
 ### Pepper rotation (all-token-reissue — v1.0 has no dual-pepper support)
 

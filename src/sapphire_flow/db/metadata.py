@@ -1623,8 +1623,15 @@ audit_log = sa.Table(
 # bcrypt — matches the `refresh_tokens` keyed-hash precedent and avoids
 # per-request bcrypt CPU on the hot auth path). `tenant_id` NULL denotes an
 # unscoped global-admin token. `token_hash` is UNIQUE (a collision would let
-# two distinct raw keys resolve to the same row); `key_prefix` is indexed for
-# fast pre-verification lookup.
+# two distinct raw keys resolve to the same row); `key_prefix` is UNIQUE too
+# (the fast pre-verification lookup key must never collide —
+# `fetch_by_key_prefix` uses `one_or_none()`; the CLI retries generation on
+# the near-impossible collision). G4 LOCKED role/tenant pairing is enforced
+# by `ck_access_tokens_role_tenant` (role=admin -> tenant_id IS NULL;
+# role=consumer -> tenant_id IS NOT NULL), mirroring
+# `AccessToken.__post_init__` + alembic 0047 so a tenantless consumer /
+# tenant-bound admin is structurally unrepresentable even for rows written
+# outside the dataclass.
 access_tokens = sa.Table(
     "access_tokens",
     metadata,
@@ -1653,7 +1660,12 @@ access_tokens = sa.Table(
         server_default=sa.func.now(),
     ),
     sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),
-    sa.Index("ix_access_tokens_key_prefix", "key_prefix"),
+    sa.CheckConstraint(
+        "(role = 'admin' AND tenant_id IS NULL) OR "
+        "(role = 'consumer' AND tenant_id IS NOT NULL)",
+        name="ck_access_tokens_role_tenant",
+    ),
+    sa.Index("ix_access_tokens_key_prefix", "key_prefix", unique=True),
     sa.Index("ix_access_tokens_expires_at", "expires_at"),
 )
 
