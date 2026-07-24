@@ -41,7 +41,11 @@ from sapphire_flow.services.training_data import (
     assemble_station_training_data,
 )
 from sapphire_flow.types.basin import non_null_static_keys
-from sapphire_flow.types.enums import ModelArtifactStatus, OnboardingOutcome
+from sapphire_flow.types.enums import (
+    AuditEventType,
+    ModelArtifactStatus,
+    OnboardingOutcome,
+)
 from sapphire_flow.types.ids import ModelId, StationGroupId, StationId
 from sapphire_flow.types.model_onboarding import (
     CompatibilityReport,
@@ -53,7 +57,14 @@ from sapphire_flow.types.model_onboarding import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from sapphire_flow.protocols.stores import HistoricalForcingStore
+    from sapphire_flow.protocols.stores import (
+        AuditLogStore,
+        HistoricalForcingStore,
+        ModelArtifactStore,
+        StationGroupStore,
+        StationStore,
+    )
+    from sapphire_flow.store.audited_writer import AuditedWriter
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.ids import ArtifactId
     from sapphire_flow.types.model import (
@@ -62,6 +73,7 @@ if TYPE_CHECKING:
         StationTrainingData,
     )
     from sapphire_flow.types.training import TrainingUnit
+    from sapphire_flow.types.write_principal import WritePrincipal
 
 log = structlog.get_logger(__name__)
 
@@ -463,14 +475,79 @@ def _promote_artifact_task(
     unit: TrainingUnit,
     artifact_id: ArtifactId,
     artifact_store: object,
+    station_store: object = None,
+    group_store: object = None,
+    clock: object = None,
+    principal: object = None,
+    audit_log_store: object = None,
+    audited_writer: object = None,
 ) -> None:
-    promote_artifact(
-        artifact_store=artifact_store,  # type: ignore[arg-type]
-        model_id=unit.model_id,
-        new_id=artifact_id,
-        station_id=unit.station_id,
-        group_id=unit.group_id,
-    )
+    from typing import cast
+
+    typed_principal = cast("WritePrincipal | None", principal)
+    typed_audit = cast("AuditLogStore | None", audit_log_store)
+    now = cast("Callable[[], UtcDatetime]", clock)() if clock is not None else None
+
+    target_tenant_id = None
+    if typed_principal is not None and typed_principal.tenant_id is not None:
+        from sapphire_flow.services.write_principal import target_tenant_id_for_unit
+
+        target_tenant_id = target_tenant_id_for_unit(
+            unit,
+            cast("StationStore", station_store),
+            cast("StationGroupStore", group_store),
+        )
+
+    def _run(store: object, audit: object, *, audit_rejection: bool) -> None:
+        promote_artifact(
+            artifact_store=cast("ModelArtifactStore", store),
+            model_id=unit.model_id,
+            new_id=artifact_id,
+            station_id=unit.station_id,
+            group_id=unit.group_id,
+            principal=typed_principal,
+            target_tenant_id=target_tenant_id,
+            audit_log_store=cast("AuditLogStore | None", audit),
+            now=now,
+            audit_rejection=audit_rejection,
+        )
+
+    # Plan 147 Slice E: the SUPERSEDED/ACTIVE transitions + the MODEL_PROMOTED
+    # audit row run in ONE real transaction so a failed audit insert rolls the
+    # promotion back. `audited_writer is None` only in test/replay wiring —
+    # keep the direct AUTOCOMMIT path there.
+    writer = cast("AuditedWriter | None", audited_writer)
+    if writer is None or typed_audit is None:
+        _run(artifact_store, typed_audit, audit_rejection=True)
+        return
+    # The onboard flow (unlike the scheduled train_models flow) does NOT
+    # pre-filter foreign-tenant units, so a cross-tenant promotion can be
+    # rejected here. Pre-authorize on the AUTOCOMMIT audit connection BEFORE
+    # the atomic txn opens, so the rejection event commits durably on its own
+    # connection and is not rolled back with the (never-opened) write txn —
+    # keeping the rejection path a separate, independently-committed event.
+    if target_tenant_id is not None and now is not None:
+        from sapphire_flow.services.write_principal import enforce_tenant_isolation
+
+        enforce_tenant_isolation(
+            principal=typed_principal,
+            target_tenant_id=target_tenant_id,
+            audit_log_store=typed_audit,
+            event_type=AuditEventType.MODEL_REJECTED,
+            target_type="model_artifact",
+            target_id=str(artifact_id),
+            detail={
+                "model_id": str(unit.model_id),
+                "station_id": str(unit.station_id) if unit.station_id else None,
+                "group_id": str(unit.group_id) if unit.group_id else None,
+            },
+            now=now,
+        )
+    # Inside the atomic txn the internal check is RAISE-ONLY (no rejection row
+    # written into a rollback-able txn — residual BLOCKER 3); the durable
+    # pre-authorize above is the audited rejection point.
+    with writer.transaction() as stores:
+        _run(stores["artifact_store"], stores["audit_log_store"], audit_rejection=False)
 
 
 @task(
@@ -486,24 +563,93 @@ def _create_assignment_task(
     station_store: object,
     group_store: object,
     clock: object,
+    principal: object = None,
+    audit_log_store: object = None,
+    audited_writer: object = None,
 ) -> None:
-    if unit.station_id is not None:
-        create_station_assignment(
-            station_id=unit.station_id,
-            model_id=model_id,
-            time_step=unit.time_step,
-            priority=assignment_priority,
-            station_store=station_store,  # type: ignore[arg-type]
-            clock=clock,  # type: ignore[arg-type]
-        )
-    else:
-        create_group_assignment(
-            group_id=unit.group_id,  # type: ignore[arg-type]
-            model_id=model_id,
-            time_step=unit.time_step,
-            priority=assignment_priority,
-            group_store=group_store,  # type: ignore[arg-type]
-            clock=clock,  # type: ignore[arg-type]
+    from typing import cast
+
+    typed_principal = cast("WritePrincipal | None", principal)
+    typed_audit = cast("AuditLogStore | None", audit_log_store)
+    typed_clock = cast("Callable[[], UtcDatetime]", clock)
+
+    def _run(
+        st_store: object, gp_store: object, audit: object, *, audit_rejection: bool
+    ) -> None:
+        if unit.station_id is not None:
+            create_station_assignment(
+                station_id=unit.station_id,
+                model_id=model_id,
+                time_step=unit.time_step,
+                priority=assignment_priority,
+                station_store=cast("StationStore", st_store),
+                clock=typed_clock,
+                principal=typed_principal,
+                audit_log_store=cast("AuditLogStore | None", audit),
+                audit_rejection=audit_rejection,
+            )
+        else:
+            create_group_assignment(
+                group_id=cast("StationGroupId", unit.group_id),
+                model_id=model_id,
+                time_step=unit.time_step,
+                priority=assignment_priority,
+                group_store=cast("StationGroupStore", gp_store),
+                clock=typed_clock,
+                principal=typed_principal,
+                audit_log_store=cast("AuditLogStore | None", audit),
+                audit_rejection=audit_rejection,
+            )
+
+    # Plan 147 Slice E: the assignment write + its MODEL_ASSIGNED audit row run
+    # in ONE real transaction. `audited_writer is None` only in test/replay
+    # wiring — keep the direct AUTOCOMMIT path there.
+    writer = cast("AuditedWriter | None", audited_writer)
+    if writer is None or typed_audit is None:
+        _run(station_store, group_store, typed_audit, audit_rejection=True)
+        return
+    # Pre-authorize on the AUTOCOMMIT audit connection BEFORE the atomic txn
+    # (the onboard flow has no foreign-tenant pre-filter), so a cross-tenant
+    # rejection commits durably on its own connection rather than rolling back
+    # with the write txn — mirrors create_*_assignment's own guard.
+    if typed_principal is not None and typed_principal.tenant_id is not None:
+        from sapphire_flow.services.write_principal import enforce_tenant_isolation
+
+        if unit.station_id is not None:
+            station = cast("StationStore", station_store).fetch_station(unit.station_id)
+            if station is not None:
+                enforce_tenant_isolation(
+                    principal=typed_principal,
+                    target_tenant_id=station.tenant_id,
+                    audit_log_store=typed_audit,
+                    event_type=AuditEventType.MODEL_ASSIGNED,
+                    target_type="station",
+                    target_id=str(unit.station_id),
+                    detail={"model_id": str(model_id)},
+                    now=typed_clock(),
+                )
+        elif unit.group_id is not None:
+            group = cast("StationGroupStore", group_store).fetch_group(unit.group_id)
+            if group is not None:
+                enforce_tenant_isolation(
+                    principal=typed_principal,
+                    target_tenant_id=group.tenant_id,
+                    audit_log_store=typed_audit,
+                    event_type=AuditEventType.MODEL_ASSIGNED,
+                    target_type="station_group",
+                    target_id=str(unit.group_id),
+                    detail={"model_id": str(model_id)},
+                    now=typed_clock(),
+                )
+    # Inside the atomic txn the internal check is RAISE-ONLY (no rejection row
+    # written into a rollback-able txn — residual BLOCKER 3); the durable
+    # pre-authorize above is the audited rejection point.
+    with writer.transaction() as stores:
+        _run(
+            stores["station_store"],
+            stores["group_store"],
+            stores["audit_log_store"],
+            audit_rejection=False,
         )
 
 
@@ -536,6 +682,10 @@ def onboard_model_flow(
     deployment_config: object = None,
     clock: object = None,
     rng: object = None,
+    tenant_code: str | None = None,
+    operator: str | None = None,
+    tenant_store: object = None,
+    audit_log_store: object = None,
 ) -> ModelOnboardingResult:
     from datetime import UTC, datetime
     from typing import cast
@@ -546,6 +696,7 @@ def onboard_model_flow(
     from sapphire_flow.adapters.forecast_interface import adapt_if_fi
     from sapphire_flow.exceptions import ModelSmokeTestError
     from sapphire_flow.services.model_registry import discover_models
+    from sapphire_flow.services.write_principal import resolve_flow_run_principal
     from sapphire_flow.types.datetime import ensure_utc
 
     structlog.contextvars.bind_contextvars(model_id=model_id)
@@ -570,6 +721,30 @@ def onboard_model_flow(
         forcing_store = stores["forcing_store"]
         if lineage_writer is None:
             lineage_writer = stores["lineage_writer"]
+        if tenant_store is None:
+            tenant_store = stores.get("tenant_store")
+        if audit_log_store is None:
+            audit_log_store = stores.get("audit_log_store")
+
+    # Plan 147 Slice E: the real-transaction seam for the discrete audited
+    # writes (promote + assignment) — built only on the production DB-backed
+    # path; None for caller-injected stores, which keep the direct AUTOCOMMIT
+    # path unchanged.
+    audited_writer: object = None
+    if _conn is not None:
+        from sapphire_flow.store.audited_writer import make_audited_writer
+
+        audited_writer = make_audited_writer(_conn)
+
+    # Plan 147 Slice E (G3/G6): the run's WritePrincipal — built from
+    # SAPPHIRE_CONFIG's [deployment] block + an optional --tenant/--operator
+    # override. None (no enforcement) only in test/replay wiring with no
+    # tenant_store/SAPPHIRE_CONFIG — every production invocation enforces.
+    principal = resolve_flow_run_principal(
+        tenant_store=tenant_store,  # type: ignore[arg-type]
+        tenant_code=tenant_code,
+        operator=operator,
+    )
 
     if deployment_config is None:
         config_path = os.environ.get("SAPPHIRE_CONFIG")
@@ -700,6 +875,41 @@ def onboard_model_flow(
                 station_id=sid_str,
                 group_id=gid_str,
             )
+
+            # Plan 147 Slice E (BLOCKER 2): authorize this unit's tenant on the
+            # DURABLE connection BEFORE any store write (compat/train/store
+            # below), so a foreign-tenant unit never leaves durable artifact /
+            # lineage rows and is never merely skipped at promotion. Foreign →
+            # durable rejection audit + raise fail-loud. The promote/assign
+            # tasks keep their own pre-authorize as defense-in-depth.
+            if principal is not None and principal.tenant_id is not None:
+                from typing import cast
+
+                from sapphire_flow.services.write_principal import (
+                    enforce_tenant_isolation,
+                    target_tenant_id_for_unit,
+                )
+
+                _unit_tenant = target_tenant_id_for_unit(
+                    unit,
+                    cast("StationStore", station_store),
+                    cast("StationGroupStore", group_store),
+                )
+                if _unit_tenant is not None:
+                    enforce_tenant_isolation(
+                        principal=principal,
+                        target_tenant_id=_unit_tenant,
+                        audit_log_store=cast("AuditLogStore | None", audit_log_store),
+                        event_type=AuditEventType.MODEL_REJECTED,
+                        target_type="training_unit",
+                        target_id=sid_str or gid_str or model_id,
+                        detail={
+                            "model_id": model_id,
+                            "station_id": sid_str,
+                            "group_id": gid_str,
+                        },
+                        now=cast("Callable[[], UtcDatetime]", clock)(),
+                    )
 
             # M.2: Compatibility check
             compat = _validate_compatibility_task(
@@ -1000,6 +1210,12 @@ def onboard_model_flow(
                 unit=unit,
                 artifact_id=artifact_id,
                 artifact_store=artifact_store,
+                station_store=station_store,
+                group_store=group_store,
+                clock=clock,
+                principal=principal,
+                audit_log_store=audit_log_store,
+                audited_writer=audited_writer,
             )
             log.info(
                 "model.promotion_completed",
@@ -1016,6 +1232,9 @@ def onboard_model_flow(
                 station_store=station_store,
                 group_store=group_store,
                 clock=clock,
+                principal=principal,
+                audit_log_store=audit_log_store,
+                audited_writer=audited_writer,
             )
 
             log.info(

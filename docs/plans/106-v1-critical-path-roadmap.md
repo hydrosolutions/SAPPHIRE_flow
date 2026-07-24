@@ -135,8 +135,8 @@ config later; `BLOCKED` = core design needs an external answer first (see §3).
 | Virtual / calculated station support (**CALCULATED-only for v1.0**; UNGAUGED + baseline-model plan → v1.x, F1) | **015** | DRAFT (enum slice shipped `1a88f92`; v1 flow logic undesigned) | NOW | — | 2 |
 | Nepal DB-scale **decision-gate** (partition/DLQ/retention — lightweight, F2) | *to-draft* | gap | NOW | compute row/disk projection (stations × cadence × horizon × ensemble × retention) → decide partition-or-not; full plan only if > ~500M rows (`v0-scope.md:46-60,563`) | 3 |
 | Manual vs automatic station support | **017** | DRAFT | NOW | 015 (behavioral dep — 015 D6 QC-exemption + Flow 4 component-freshness contract, `017:49-58`; enum already shipped `1a88f92`; 015 must merge first) | 2 |
-| **Auth / RBAC / audit** foundation | *to-draft (D5-3)* | gap (042 deferral insufficient) | NOW* | HSOL role/ownership values | 3 |
-| **Multi-tenant WRITE-isolation** (station-group-scoped promotion/onboarding) | *to-draft (D5-3, same plan)* | gap | NOW* | auth foundation | 3 |
+| **Auth / RBAC / audit** foundation | **147** (Slices A-D) | READY, Slices A-D implemented (2026-07-24) | NOW | HSOL role/ownership values | 3 |
+| **Multi-tenant WRITE-isolation** (station-group-scoped promotion/onboarding) | **147** (Slice E) | READY, implemented (2026-07-24) | NOW | auth foundation (Slices A/B) | 3 |
 | API key auth + client SDK | **042** | DEFERRED | NOW | folds under auth foundation | 3 |
 | Flow 0 Nepal deployment onboarding | *to-draft* | gap | BLOCKED | Nepal AoI + shapefiles + static datasets | 3 |
 | Mac-mini staging validation (Stream D) | **046** | IN_PROGRESS | NOW | — | 3 |

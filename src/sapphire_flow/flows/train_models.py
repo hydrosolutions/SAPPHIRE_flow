@@ -31,13 +31,21 @@ from sapphire_flow.services.training_data import (
     assemble_station_training_data,
 )
 from sapphire_flow.types.ids import ModelId, StationGroupId, StationId
-from sapphire_flow.types.training import TrainingResult, TrainingUnit
+from sapphire_flow.types.training import TrainingResult, TrainingScope, TrainingUnit
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from sapphire_flow.protocols.stores import HistoricalForcingStore
+    from sapphire_flow.protocols.stores import (
+        AuditLogStore,
+        HistoricalForcingStore,
+        ModelArtifactStore,
+        StationGroupStore,
+        StationStore,
+    )
+    from sapphire_flow.store.audited_writer import AuditedWriter
     from sapphire_flow.types.datetime import UtcDatetime
+    from sapphire_flow.types.write_principal import WritePrincipal
 
 log = structlog.get_logger(__name__)
 
@@ -176,17 +184,59 @@ def _store_artifact_task(
     artifact_bytes: bytes,
     artifact_store: object,
     clock: Callable[[], UtcDatetime],
+    station_store: object = None,
+    group_store: object = None,
+    principal: object = None,
+    audit_log_store: object = None,
+    audited_writer: object = None,
 ) -> object:
-    return store_and_promote_artifact(
-        artifact_store=artifact_store,
-        model_id=unit.model_id,
-        artifact_bytes=artifact_bytes,
-        period_start=unit.training_period_start,
-        period_end=unit.training_period_end,
-        clock=clock,
-        station_id=unit.station_id,
-        group_id=unit.group_id,
-    )
+    from typing import cast
+
+    typed_principal = cast("WritePrincipal | None", principal)
+    typed_audit = cast("AuditLogStore | None", audit_log_store)
+    target_tenant_id = None
+    if typed_principal is not None and typed_principal.tenant_id is not None:
+        from sapphire_flow.services.write_principal import target_tenant_id_for_unit
+
+        target_tenant_id = target_tenant_id_for_unit(
+            unit,
+            cast("StationStore", station_store),
+            cast("StationGroupStore", group_store),
+        )
+
+    def _run(store: object, audit: object, *, audit_rejection: bool) -> object:
+        return store_and_promote_artifact(
+            artifact_store=cast("ModelArtifactStore", store),
+            model_id=unit.model_id,
+            artifact_bytes=artifact_bytes,
+            period_start=unit.training_period_start,
+            period_end=unit.training_period_end,
+            clock=clock,
+            station_id=unit.station_id,
+            group_id=unit.group_id,
+            principal=typed_principal,
+            target_tenant_id=target_tenant_id,
+            audit_log_store=cast("AuditLogStore | None", audit),
+            audit_rejection=audit_rejection,
+        )
+
+    # Plan 147 Slice E: the store-artifact + promote mutations and their
+    # MODEL_PROMOTED audit row run in ONE real transaction so a failed audit
+    # insert rolls the domain write back. `audited_writer is None` only in
+    # test/replay wiring (caller-injected fake stores) — keep the direct
+    # AUTOCOMMIT path there. train_models_flow pre-filters foreign-tenant units
+    # BEFORE this task (see `authorized_units`), so store_and_promote's own
+    # tenant check inside the txn never rejects — no separate pre-authorize is
+    # needed here (unlike the onboard flow, which has no pre-filter).
+    writer = cast("AuditedWriter | None", audited_writer)
+    if writer is None or typed_audit is None:
+        return _run(artifact_store, typed_audit, audit_rejection=True)
+    # Inside the atomic txn: the internal tenant check is RAISE-ONLY (no
+    # rejection row written into a rollback-able txn — residual BLOCKER 3).
+    with writer.transaction() as stores:
+        return _run(
+            stores["artifact_store"], stores["audit_log_store"], audit_rejection=False
+        )
 
 
 @task(
@@ -237,12 +287,20 @@ def train_models_flow(
     clock: object = None,
     rng: object = None,
     deployment_config: object = None,
+    tenant_store: object = None,
+    audit_log_store: object = None,
 ) -> list[TrainingResult]:
     from datetime import UTC, datetime
     from typing import cast
     from uuid import UUID
 
+    from sapphire_flow.services.write_principal import (
+        resolve_flow_run_principal,
+        target_tenant_id_for_unit,
+    )
+    from sapphire_flow.types.auth import AuditEntry
     from sapphire_flow.types.datetime import ensure_utc
+    from sapphire_flow.types.enums import AuditEventType
 
     # --- Production setup ---
     _conn: object = None  # noqa: F841 — GC anchor for bootstrapped DB connection
@@ -263,6 +321,31 @@ def train_models_flow(
         forcing_store = stores["forcing_store"]
         if lineage_writer is None:
             lineage_writer = stores["lineage_writer"]
+        if tenant_store is None:
+            tenant_store = stores.get("tenant_store")
+        if audit_log_store is None:
+            audit_log_store = stores.get("audit_log_store")
+
+    # Plan 147 Slice E: the real-transaction seam for the discrete audited
+    # write (_store_artifact_task) — built only on the production DB-backed
+    # path (a bootstrapped `_conn` exists); None for caller-injected stores,
+    # which keep the direct AUTOCOMMIT path.
+    audited_writer: object = None
+    if _conn is not None:
+        from sapphire_flow.store.audited_writer import make_audited_writer
+
+        audited_writer = make_audited_writer(_conn)
+
+    # Plan 147 Slice E (G3/G6): the SCHEDULED flow's SINGLE config-selected
+    # run principal, resolved BEFORE _determine_scope_task selects any unit
+    # (never from unit.station_id/unit.group_id). None (no enforcement) only
+    # in test/replay wiring with no tenant_store/SAPPHIRE_CONFIG — the
+    # scheduled deployment always has both.
+    run_principal = resolve_flow_run_principal(
+        tenant_store=tenant_store,  # type: ignore[arg-type]
+        tenant_code=None,
+        operator=None,
+    )
 
     if deployment_config is None:
         config_path = os.environ.get("SAPPHIRE_CONFIG")
@@ -363,6 +446,63 @@ def train_models_flow(
 
     results: list[TrainingResult] = []
 
+    # Plan 147 Slice E (G3/G6): filter to the run principal's tenant AFTER
+    # scope selection but BEFORE any unit is trained/promoted — a
+    # foreign-tenant unit is skipped-with-audit, never trained. The
+    # principal (resolved above, before scope selection) never derives from
+    # a unit's station_id/group_id.
+    if run_principal is not None and run_principal.tenant_id is not None:
+        typed_station_store = cast("StationStore", station_store)
+        typed_group_store = cast("StationGroupStore", group_store)
+        typed_clock = cast("Callable[[], UtcDatetime]", clock)
+        typed_audit_log_store = cast("AuditLogStore | None", audit_log_store)
+
+        authorized_units = []
+        for unit in scope.units:
+            unit_tenant_id = target_tenant_id_for_unit(
+                unit, typed_station_store, typed_group_store
+            )
+            if unit_tenant_id is not None and unit_tenant_id != run_principal.tenant_id:
+                log.warning(
+                    "train_models.unit_skipped_foreign_tenant",
+                    unit=_unit_shard(unit),
+                    model_id=str(unit.model_id),
+                    principal_tenant_id=str(run_principal.tenant_id),
+                    unit_tenant_id=str(unit_tenant_id),
+                )
+                if typed_audit_log_store is not None:
+                    typed_audit_log_store.append_entry(
+                        AuditEntry.system(
+                            event_type=AuditEventType.MODEL_REJECTED,
+                            target_type="training_unit",
+                            target_id=_unit_shard(unit),
+                            detail={
+                                "model_id": str(unit.model_id),
+                                "outcome": "skipped_foreign_tenant",
+                                "operator": run_principal.id,
+                                "principal_tenant_id": str(run_principal.tenant_id),
+                                "unit_tenant_id": str(unit_tenant_id),
+                            },
+                            ip_address=None,
+                            created_at=typed_clock(),
+                        )
+                    )
+                results.append(
+                    TrainingResult(
+                        training_unit=unit,
+                        artifact_id=None,
+                        hindcast_steps=[],
+                        skill_computed=False,
+                        error=(
+                            "tenant isolation: unit belongs to a different "
+                            "tenant than the run principal"
+                        ),
+                    )
+                )
+                continue
+            authorized_units.append(unit)
+        scope = TrainingScope(units=tuple(authorized_units))
+
     for unit in scope.units:
         model_instance = models.get(unit.model_id)
         if model_instance is None:
@@ -438,6 +578,11 @@ def train_models_flow(
             artifact_bytes=artifact_bytes,
             artifact_store=artifact_store,
             clock=clock,
+            station_store=station_store,
+            group_store=group_store,
+            principal=run_principal,
+            audit_log_store=audit_log_store,
+            audited_writer=audited_writer,
         )
 
         # Plan 120 Task 2D: lineage AFTER store + promote. Trained subset —

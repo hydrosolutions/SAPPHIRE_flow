@@ -1066,3 +1066,137 @@ class TestBootstrapPath:
         from sapphire_flow.adapters.hybrid_reanalysis import HybridForcingSource
 
         assert isinstance(reanalysis_calls[0]["source"], HybridForcingSource)
+
+
+class TestTrainModelsFlowTenantIsolation:
+    """Plan 147 Slice E (G3/G6): the scheduled flow builds ONE config-selected
+    run principal BEFORE unit selection and trains only that tenant's units —
+    a foreign-tenant unit in scope is skipped-with-audit, never trained.
+
+    Soundness: fails against a pre-Slice-E train_models_flow that trains
+    every tenant's units indiscriminately (both units would succeed with
+    error=None, and no MODEL_REJECTED audit row would be written)."""
+
+    def test_foreign_tenant_unit_skipped_same_tenant_unit_trains(
+        self,
+        tmp_path,
+        monkeypatch: pytest.MonkeyPatch,  # noqa: ANN001
+    ) -> None:
+        from sapphire_flow.types.ids import TenantId
+        from sapphire_flow.types.tenant import DEFAULT_TENANT_ID, Tenant
+        from tests.fakes.fake_stores import FakeAuditLogStore, FakeTenantStore
+
+        rng = random.Random(_RNG_SEED)
+        station_a = StationId(UUID(int=rng.getrandbits(128), version=4))
+        model_id = ModelId("fake_station_model")
+        model = FakeStationForecastModel()
+
+        (
+            model_store,
+            station_store,
+            group_store,
+            obs_store,
+            basin_store,
+            artifact_store,
+            hindcast_store,
+            skill_store,
+            flow_regime_store,
+            forcing_source,
+        ) = _setup_station_stores(station_a, model_id)
+
+        # A second station in a DIFFERENT tenant, same active model assignment.
+        tenant_b = TenantId(UUID(int=random.Random(777).getrandbits(128), version=4))
+        station_b = StationId(UUID(int=random.Random(778).getrandbits(128), version=4))
+        station_store.store_station(
+            make_station_config(station_id=station_b, tenant_id=tenant_b)
+        )
+        station_store.store_model_assignment(
+            ModelAssignment(
+                station_id=station_b,
+                model_id=model_id,
+                time_step=timedelta(days=1),
+                status=ModelAssignmentStatus.ACTIVE,
+                priority=1,
+                created_at=_EPOCH,
+            )
+        )
+        station_store.store_weather_source(
+            StationWeatherSource(
+                station_id=station_b,
+                nwp_source="smn",
+                extraction_type=SpatialRepresentation.POINT,
+                status=WeatherSourceStatus.ACTIVE,
+                role=WeatherSourceRole.REANALYSIS,
+            )
+        )
+        obs_store.store_observations(
+            make_observations(
+                n=_N_OBS_DAYS,
+                station_id=station_b,
+                parameter="discharge",
+                start=_TRAINING_START,
+                interval=timedelta(days=1),
+                rng=random.Random(779),
+            )
+        )
+        forcing_source.extend_records(
+            _make_forcing_records(station_b, _TRAINING_START, _N_OBS_DAYS)
+        )
+
+        tenant_store = FakeTenantStore()
+        tenant_store.store_tenant(
+            Tenant(id=tenant_b, code="tenant-b", name="Tenant B", created_at=_EPOCH)
+        )
+        audit_log_store = FakeAuditLogStore()
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            'max_retention_days = 3650\n[deployment]\nwritable_tenants = ["sapphire"]\n'
+        )
+        monkeypatch.setenv("SAPPHIRE_CONFIG", str(config_path))
+
+        results = train_models_flow(
+            **_flow_kwargs(
+                model_id,
+                model,
+                model_store,
+                station_store,
+                group_store,
+                obs_store,
+                basin_store,
+                artifact_store,
+                hindcast_store,
+                skill_store,
+                flow_regime_store,
+                forcing_source,
+            ),
+            tenant_store=tenant_store,
+            audit_log_store=audit_log_store,
+        )
+
+        assert len(results) == 2
+        by_station = {r.training_unit.station_id: r for r in results}
+
+        sapphire_result = by_station[station_a]
+        assert sapphire_result.error is None
+        assert sapphire_result.artifact_id is not None
+
+        foreign_result = by_station[station_b]
+        assert foreign_result.artifact_id is None
+        assert foreign_result.error is not None
+        assert "tenant isolation" in foreign_result.error
+
+        # No artifact was ever stored for the foreign-tenant station.
+        assert (
+            artifact_store.fetch_active_artifact(model_id, station_id=station_b) is None
+        )
+
+        rejected = [
+            e
+            for e in audit_log_store._entries  # type: ignore[attr-defined]
+            if e.event_type.value == "model_rejected"
+        ]
+        assert len(rejected) == 1
+        assert rejected[0].detail["outcome"] == "skipped_foreign_tenant"
+        assert rejected[0].detail["unit_tenant_id"] == str(tenant_b)
+        assert rejected[0].detail["principal_tenant_id"] == str(DEFAULT_TENANT_ID)

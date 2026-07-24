@@ -1222,8 +1222,38 @@ Module: `types/auth.py`
 
 **Status**: **implemented** (Plan 147 Slice B, 2026-07-24). The `audit_log` table (migration 0045)
 + its role-independent append-only guard (migration 0046) + the `PgAuditLogStore` writer
-(`store/audit_log_store.py`) are live. Call sites (token create/revoke — Slice C; onboard/promote/
-assign + rejections — Slice E) are still pending in later slices.
+(`store/audit_log_store.py`) are live. Call sites: token create/revoke (Slice C); onboard/promote/
+assign successes AND their tenant-mismatch rejections (Slice E, 2026-07-24 —
+`services/onboarding.py::onboard_from_camelsch`, `services/training.py::promote_artifact`/
+`store_and_promote_artifact`, `services/model_onboarding.py::create_station_assignment`/
+`create_group_assignment`, the scheduled `flows/train_models.py::train_models_flow`'s foreign-tenant
+unit skip).
+
+### `WritePrincipal` / `PrincipalId` (Plan 147 Slice E, R5/G6 LOCKED)
+
+```python
+PrincipalId = NewType("PrincipalId", str)  # config-declared operator handle; NOT a UserId/AccessTokenId
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class WritePrincipal:
+    id: PrincipalId | None
+    tenant_id: TenantId | None  # None = unscoped/global-admin
+```
+
+Modules: `types/ids.py` (`PrincipalId`), `types/write_principal.py` (`WritePrincipal`). **Status**:
+**implemented** (Plan 147 Slice E, 2026-07-24). A THIRD principal kind — distinct from the two HTTP
+read roles (`AccessTokenRole.CONSUMER`/`ADMIN`) and never materialized from an `access_tokens` row
+(read-only, G4) or from the target row being written. Built ONLY from config + a validated run
+identity: `services/write_principal.py::resolve_run_principal` resolves the `[deployment]` config
+block (`config/deployment_identity.py::DeploymentIdentityConfig` — `writable_tenants`/`global_admin`
++ optional `operator`) plus an interactive `--tenant`/`--operator` override or the scheduled flow's
+single config-selected tenant (resolved BEFORE unit selection — never from
+`unit.station_id`/`unit.group_id`). `services/write_principal.py::enforce_tenant_isolation` is the
+single enforcement chokepoint every write path calls: a mismatched target raises
+`exceptions.TenantIsolationError` BEFORE any domain-state write and persists a `system`-actor
+`audit_log` rejection row; an unscoped principal bypasses. `model_artifacts.promoted_by` (legacy
+nullable UUID) stays `NULL` under this principal — a config-string `PrincipalId` does not fit a UUID
+column; promotion provenance is instead the `MODEL_PROMOTED` `audit_log` row.
 
 `AuditEntry.__post_init__` enforces the `actor_type`/`actor_id` pairing at construction (`SYSTEM` ⇒
 `actor_id=None`; `USER`/`API_KEY` ⇒ `actor_id` present) — `NewType` alone cannot distinguish `UserId`

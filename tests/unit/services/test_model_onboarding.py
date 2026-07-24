@@ -29,6 +29,7 @@ from sapphire_flow.types.ids import (
     StationId,
 )
 from sapphire_flow.types.model import ModelDataRequirements
+from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 from tests.conftest import (
     make_deployment_config,
     make_station_config,
@@ -577,6 +578,121 @@ class TestCreateAssignment:
                 group_store=group_store,
                 clock=_CLOCK,
             )
+
+
+class TestCreateAssignmentTenantIsolation:
+    """Plan 147 Slice E (R5/G6): a cross-tenant assignment write is rejected
+    + audited, never persisted; a same-tenant write proceeds normally."""
+
+    def test_cross_tenant_station_assignment_rejected(self) -> None:
+        from sapphire_flow.exceptions import TenantIsolationError
+        from sapphire_flow.types.ids import TenantId
+        from sapphire_flow.types.write_principal import WritePrincipal
+        from tests.fakes.fake_stores import FakeAuditLogStore
+
+        tenant_b = TenantId(uuid4())
+        station_store = FakeStationStore()
+        station = make_station_config(tenant_id=tenant_b)
+        station_store.store_station(station)
+        audit = FakeAuditLogStore()
+        principal = WritePrincipal(id=None, tenant_id=DEFAULT_TENANT_ID)
+
+        with pytest.raises(TenantIsolationError):
+            create_station_assignment(
+                station_id=station.id,
+                model_id=ModelId("my_model"),
+                time_step=timedelta(days=1),
+                priority=0,
+                station_store=station_store,
+                clock=_CLOCK,
+                principal=principal,
+                audit_log_store=audit,
+            )
+
+        assert station_store.fetch_model_assignments(station.id) == []
+        assert len(audit._entries) == 1  # type: ignore[attr-defined]
+        assert audit._entries[0].event_type.value == "model_assigned"  # type: ignore[attr-defined]
+        assert audit._entries[0].detail["outcome"] == "rejected_tenant_mismatch"  # type: ignore[attr-defined]
+
+    def test_same_tenant_station_assignment_succeeds(self) -> None:
+        from sapphire_flow.types.write_principal import WritePrincipal
+        from tests.fakes.fake_stores import FakeAuditLogStore
+
+        station_store = FakeStationStore()
+        station = make_station_config(tenant_id=DEFAULT_TENANT_ID)
+        station_store.store_station(station)
+        audit = FakeAuditLogStore()
+        principal = WritePrincipal(id=None, tenant_id=DEFAULT_TENANT_ID)
+
+        assignment = create_station_assignment(
+            station_id=station.id,
+            model_id=ModelId("my_model"),
+            time_step=timedelta(days=1),
+            priority=0,
+            station_store=station_store,
+            clock=_CLOCK,
+            principal=principal,
+            audit_log_store=audit,
+        )
+
+        assert assignment.status == ModelAssignmentStatus.ACTIVE
+        assert any(
+            e.detail.get("outcome") == "assigned"  # type: ignore[attr-defined]
+            for e in audit._entries  # type: ignore[attr-defined]
+        )
+
+    def test_global_admin_crosses_tenants(self) -> None:
+        from sapphire_flow.types.ids import TenantId
+        from sapphire_flow.types.write_principal import WritePrincipal
+
+        tenant_b = TenantId(uuid4())
+        station_store = FakeStationStore()
+        station = make_station_config(tenant_id=tenant_b)
+        station_store.store_station(station)
+        principal = WritePrincipal(id=None, tenant_id=None)
+
+        assignment = create_station_assignment(
+            station_id=station.id,
+            model_id=ModelId("my_model"),
+            time_step=timedelta(days=1),
+            priority=0,
+            station_store=station_store,
+            clock=_CLOCK,
+            principal=principal,
+        )
+
+        assert assignment.status == ModelAssignmentStatus.ACTIVE
+
+    def test_cross_tenant_group_assignment_rejected(self) -> None:
+        from sapphire_flow.exceptions import TenantIsolationError
+        from sapphire_flow.types.ids import TenantId
+        from sapphire_flow.types.station import StationGroup
+        from sapphire_flow.types.write_principal import WritePrincipal
+
+        tenant_b = TenantId(uuid4())
+        group_store = FakeStationGroupStore()
+        group = StationGroup(
+            id=StationGroupId(uuid4()),
+            name="group-b",
+            station_ids=frozenset(),
+            created_at=_NOW,
+            tenant_id=tenant_b,
+        )
+        group_store.store_group(group)
+        principal = WritePrincipal(id=None, tenant_id=DEFAULT_TENANT_ID)
+
+        with pytest.raises(TenantIsolationError):
+            create_group_assignment(
+                group_id=group.id,
+                model_id=ModelId("my_group_model"),
+                time_step=timedelta(days=1),
+                priority=0,
+                group_store=group_store,
+                clock=_CLOCK,
+                principal=principal,
+            )
+
+        assert group_store.fetch_group_model_assignments(group.id) == ()
 
 
 class TestHindcastDays:

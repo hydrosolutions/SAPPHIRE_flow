@@ -109,3 +109,11 @@ class BasinPackageRejectedError(SapphireError):
     mismatch (Plan 120 Task 1A/1B). The entire package is rejected before any
     write; this is distinct from a per-basin ``onboarding`` hold, which does
     not raise (see ``BasinAcceptanceDecision``)."""
+
+
+class TenantIsolationError(SapphireError):
+    """Plan 147 Slice E: a write's tenant-scoped ``WritePrincipal`` does not
+    authorize the target row's ``tenant_id`` (R5/G6 LOCKED). Fail-loud, raised
+    BEFORE the write happens (no domain-state change); the rejection is
+    additionally recorded as a persisted ``audit_log`` event by the caller
+    (see ``services/write_principal.py::enforce_tenant_isolation``)."""

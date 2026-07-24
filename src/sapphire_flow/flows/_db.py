@@ -23,6 +23,7 @@ def run_migrations(engine: sa.Engine) -> None:
 def make_pg_stores(conn: sa.Connection) -> dict[str, object]:
     from sapphire_flow.config.paths import resolve_artifact_dir
     from sapphire_flow.store.alert_store import PgAlertStore
+    from sapphire_flow.store.audit_log_store import PgAuditLogStore
     from sapphire_flow.store.basin_store import PgBasinStore
     from sapphire_flow.store.calculated_station_formula_store import PgFormulaStore
     from sapphire_flow.store.clim_baseline_store import PgClimBaselineStore
@@ -70,6 +71,7 @@ def make_pg_stores(conn: sa.Connection) -> dict[str, object]:
         "gateway_polygon_store": RecapGatewayPolygonStore(conn),
         "formula_store": PgFormulaStore(conn),
         "tenant_store": PgTenantStore(conn),
+        "audit_log_store": PgAuditLogStore(conn),
     }
 
 

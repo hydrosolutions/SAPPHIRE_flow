@@ -67,3 +67,9 @@ HistoricalForcingId = NewType("HistoricalForcingId", UUID)
 # see tests/fixtures/basin_static/nepal-dhm-basins/manifest.json:3.
 PackageId = NewType("PackageId", str)
 BasinVersionId = NewType("BasinVersionId", UUID)
+# Plan 147 Slice E: a config-declared operator handle (the `[deployment]`
+# block's `operator` field, or a `--operator` CLI override) carried by a
+# `WritePrincipal`. A plain string label — NOT a UUID, NOT a UserId, and NOT
+# an AccessTokenId (a WritePrincipal is never materialized from an
+# access-token; see `types/write_principal.py`).
+PrincipalId = NewType("PrincipalId", str)
