@@ -21,6 +21,7 @@ from sapphire_flow.adapters.recap_gateway import (
     RecapDataUnavailableError,
     RecapGatewayForecastAdapter,
     RecapGatewayReanalysisAdapter,
+    RecapSnowUnavailableError,
     SnowApiLike,
     _iter_long_rows,
     _map_recap_error,
@@ -1317,13 +1318,14 @@ class TestSnowForecastFetch:
             cycle,
         )
 
-        assert _SID in result
-        forecast = result[_SID]
+        assert _SID in result.forecasts
+        forecast = result.forecasts[_SID]
         assert isinstance(forecast, BasinAverageForecast)
         member_ids = forecast.values["member_id"].unique().to_list()
         assert member_ids == [None]
         parameters = set(forecast.values["parameter"].unique().to_list())
         assert parameters == {"snow_depth", "snowmelt", "swe"}
+        assert result.unavailable == {}
 
     def test_no_stations_returns_empty(self) -> None:
         snow = _RecordingForecastSnow(_wide_df([_POLY_A], value=5.0))
@@ -1334,8 +1336,268 @@ class TestSnowForecastFetch:
 
         result = adapter.fetch_snow_forecast([], _CYCLE)
 
-        assert result == {}
+        assert result.forecasts == {}
+        assert result.unavailable == {}
         assert snow.calls == []
+
+
+class _OnlyAllowedVariableSnow:
+    """Raises loudly if any Gateway call requests a variable outside ``allowed``.
+
+    Distinct from ``_PartiallyUnavailableSnow`` (which CONTAINS a failure per
+    variable): this fake proves the caller never even ATTEMPTS an out-of-scope
+    variable, so its unavailability (real or simulated) cannot leak into the
+    outcome of a station that never needed it.
+    """
+
+    def __init__(self, df: pd.DataFrame, *, allowed: frozenset[str]) -> None:
+        self.calls: list[dict[str, object]] = []
+        self._df = df
+        self._allowed = allowed
+
+    def reanalysis(self, **kwargs: object) -> object:
+        raise AssertionError("snow-forecast test must not call reanalysis")
+
+    def forecast(self, **kwargs: object) -> object:
+        self.calls.append(dict(kwargs))
+        if kwargs["variable"] not in self._allowed:
+            raise AssertionError(
+                f"unexpected snow.forecast call for variable={kwargs['variable']!r}; "
+                f"only {sorted(self._allowed)} should ever be requested"
+            )
+        return self._df
+
+
+class TestSnowForecastRequiredVariableScoping:
+    """Plan 145 review fold-in (major finding): ``required_snow`` must reach
+    the Gateway call and scope it to the requested variable(s) ONLY -- a
+    swe-only station must never trigger an hs/rof call, so their (real or
+    simulated) unavailability cannot affect its outcome."""
+
+    def test_swe_only_station_makes_exactly_one_call_for_swe(self) -> None:
+        cycle = ensure_utc(datetime(2026, 1, 1, 0, tzinfo=UTC))
+        snow = _OnlyAllowedVariableSnow(
+            _wide_df([_POLY_A], value=5.0), allowed=frozenset({"swe"})
+        )
+        adapter = RecapGatewayForecastAdapter(
+            client=_Client(_GoodEcmwf(), snow),  # type: ignore[arg-type]
+            resolver=_GoodResolver(),  # type: ignore[arg-type]
+        )
+
+        result = adapter.fetch_snow_forecast(
+            [_ws(_SID, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST)],
+            cycle,
+            required_snow={_SID: frozenset({"swe"})},
+        )
+
+        assert len(snow.calls) == 1
+        assert snow.calls[0]["variable"] == "swe"
+        assert result.unavailable == {}
+        parameters = set(result.forecasts[_SID].values["parameter"].unique().to_list())
+        assert parameters == {"swe"}
+
+    def test_required_snow_none_preserves_unscoped_all_variable_fetch(self) -> None:
+        # Backward compatibility: omitting `required_snow` (None, the default)
+        # must preserve the pre-scoping behaviour of fetching every snow
+        # variable for every in-scope HRU.
+        cycle = ensure_utc(datetime(2026, 1, 1, 0, tzinfo=UTC))
+        snow = _RecordingForecastSnow(_wide_df([_POLY_A], value=5.0))
+        adapter = RecapGatewayForecastAdapter(
+            client=_Client(_GoodEcmwf(), snow),  # type: ignore[arg-type]
+            resolver=_GoodResolver(),  # type: ignore[arg-type]
+        )
+
+        adapter.fetch_snow_forecast(
+            [_ws(_SID, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST)],
+            cycle,
+        )
+
+        assert len(snow.calls) == 3  # hs, rof, swe -- unscoped
+
+    def test_empty_required_snow_for_station_fetches_no_variables(self) -> None:
+        # A station present in `station_configs` but ABSENT from `required_snow`
+        # (or mapped to an empty set) contributes nothing to the HRU's union --
+        # zero Gateway calls, not "unscoped".
+        cycle = ensure_utc(datetime(2026, 1, 1, 0, tzinfo=UTC))
+        snow = _OnlyAllowedVariableSnow(
+            _wide_df([_POLY_A], value=5.0), allowed=frozenset()
+        )
+        adapter = RecapGatewayForecastAdapter(
+            client=_Client(_GoodEcmwf(), snow),  # type: ignore[arg-type]
+            resolver=_GoodResolver(),  # type: ignore[arg-type]
+        )
+
+        result = adapter.fetch_snow_forecast(
+            [_ws(_SID, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST)],
+            cycle,
+            required_snow={},
+        )
+
+        assert snow.calls == []
+        assert result.forecasts == {}
+        assert result.unavailable == {}
+
+
+class _CodedError(Exception):
+    """Structurally mimics a recap-dg-client error carrying a ``.code`` attribute."""
+
+    def __init__(self, message: str, *, code: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+class _PartiallyUnavailableSnow:
+    """Raises for the given variable names; returns data for every other one."""
+
+    def __init__(
+        self,
+        df: pd.DataFrame,
+        *,
+        unavailable_variables: set[str],
+        code: str = "source_data_missing",
+    ) -> None:
+        self.calls: list[dict[str, object]] = []
+        self._df = df
+        self._unavailable = unavailable_variables
+        self._code = code
+
+    def reanalysis(self, **kwargs: object) -> object:
+        raise AssertionError("snow-forecast test must not call reanalysis")
+
+    def forecast(self, **kwargs: object) -> object:
+        self.calls.append(dict(kwargs))
+        if kwargs["variable"] in self._unavailable:
+            raise _CodedError(f"{kwargs['variable']} unavailable", code=self._code)
+        return self._df
+
+
+class _TwoHruSnow:
+    """Discriminates by ``hru_code``: one HRU loses a variable, the other is healthy."""
+
+    def __init__(self, *, unavailable_hru: str, unavailable_variable: str) -> None:
+        self.calls: list[dict[str, object]] = []
+        self._unavailable_hru = unavailable_hru
+        self._unavailable_variable = unavailable_variable
+
+    def reanalysis(self, **kwargs: object) -> object:
+        raise AssertionError("snow-forecast test must not call reanalysis")
+
+    def forecast(self, **kwargs: object) -> object:
+        self.calls.append(dict(kwargs))
+        hru = kwargs["hru_code"]
+        variable = kwargs["variable"]
+        if hru == self._unavailable_hru and variable == self._unavailable_variable:
+            raise _CodedError(
+                f"{variable} unavailable in {hru}", code="source_data_missing"
+            )
+        poly = _POLY_A if hru == "hru_a" else _POLY_B
+        return _wide_df([poly], value=9.0)
+
+
+class TestSnowForecastFetchDegradation:
+    """Plan 145 D3.2a/b/c: distinct snow error, per-(hru,variable) containment."""
+
+    def test_swe_present_snow_depth_and_snowmelt_unavailable(self) -> None:
+        cycle = ensure_utc(datetime(2026, 1, 1, 0, tzinfo=UTC))
+        snow = _PartiallyUnavailableSnow(
+            _wide_df([_POLY_A], value=9.0),
+            unavailable_variables={"hs", "rof"},
+        )
+        adapter = RecapGatewayForecastAdapter(
+            client=_Client(_GoodEcmwf(), snow),  # type: ignore[arg-type]
+            resolver=_GoodResolver(),  # type: ignore[arg-type]
+        )
+
+        result = adapter.fetch_snow_forecast(
+            [_ws(_SID, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST)],
+            cycle,
+        )
+
+        assert _SID in result.forecasts
+        parameters = set(result.forecasts[_SID].values["parameter"].unique().to_list())
+        assert parameters == {"swe"}
+        assert result.unavailable == {
+            GatewayHruName("hru_dhm_west_v001"): frozenset({"snow_depth", "snowmelt"})
+        }
+
+    def test_all_snow_variables_unavailable_yields_no_forecast_entry(self) -> None:
+        cycle = ensure_utc(datetime(2026, 1, 1, 0, tzinfo=UTC))
+        snow = _PartiallyUnavailableSnow(
+            _wide_df([_POLY_A], value=9.0),
+            unavailable_variables={"hs", "rof", "swe"},
+        )
+        adapter = RecapGatewayForecastAdapter(
+            client=_Client(_GoodEcmwf(), snow),  # type: ignore[arg-type]
+            resolver=_GoodResolver(),  # type: ignore[arg-type]
+        )
+
+        result = adapter.fetch_snow_forecast(
+            [_ws(_SID, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST)],
+            cycle,
+        )
+
+        assert result.forecasts == {}
+        assert result.unavailable == {
+            GatewayHruName("hru_dhm_west_v001"): frozenset(
+                {"snow_depth", "snowmelt", "swe"}
+            )
+        }
+
+    def test_two_hru_leakage_guard(self) -> None:
+        # HRU A loses "hs" (source_data_missing); HRU B is fully healthy. Only A's
+        # station loses snow_depth; B's station stores+would-assemble it normally —
+        # proves availability is per-hru, never a global cross-HRU set (Plan 145
+        # 2c major finding).
+        cycle = ensure_utc(datetime(2026, 1, 1, 0, tzinfo=UTC))
+        snow = _TwoHruSnow(unavailable_hru="hru_a", unavailable_variable="hs")
+        resolver = _MapResolver(
+            {
+                _SID_A: _ref(_SID_A, _POLY_A, hru="hru_a"),
+                _SID_B: _ref(_SID_B, _POLY_B, hru="hru_b"),
+            }
+        )
+        adapter = RecapGatewayForecastAdapter(
+            client=_Client(_GoodEcmwf(), snow),  # type: ignore[arg-type]
+            resolver=resolver,  # type: ignore[arg-type]
+        )
+
+        result = adapter.fetch_snow_forecast(
+            [
+                _ws(_SID_A, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST),
+                _ws(_SID_B, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST),
+            ],
+            cycle,
+        )
+
+        assert result.unavailable == {
+            GatewayHruName("hru_a"): frozenset({"snow_depth"})
+        }
+        a_params = set(result.forecasts[_SID_A].values["parameter"].unique().to_list())
+        b_params = set(result.forecasts[_SID_B].values["parameter"].unique().to_list())
+        assert a_params == {"snowmelt", "swe"}
+        assert b_params == {"snow_depth", "snowmelt", "swe"}
+
+    def test_non_snow_specific_error_propagates_uncontained(self) -> None:
+        # A code NOT in the snow-unavailable set (config/unexpected bug) must NOT be
+        # silently contained as an "unavailable" gap — it propagates loud, matching
+        # the "IFS/reanalysis error mapping unchanged" regression (D3.2c).
+        cycle = ensure_utc(datetime(2026, 1, 1, 0, tzinfo=UTC))
+        snow = _PartiallyUnavailableSnow(
+            _wide_df([_POLY_A], value=9.0),
+            unavailable_variables={"hs"},
+            code="unexpected_client_bug",
+        )
+        adapter = RecapGatewayForecastAdapter(
+            client=_Client(_GoodEcmwf(), snow),  # type: ignore[arg-type]
+            resolver=_GoodResolver(),  # type: ignore[arg-type]
+        )
+
+        with pytest.raises(AdapterError) as exc_info:
+            adapter.fetch_snow_forecast(
+                [_ws(_SID, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST)],
+                cycle,
+            )
+        assert not isinstance(exc_info.value, RecapSnowUnavailableError)
 
 
 class _MixedSourceSnow:

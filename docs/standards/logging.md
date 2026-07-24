@@ -269,6 +269,20 @@ Rules:
 |---|---|---|
 | `forecast.input_quality_assessed` | INFO if `input_quality == "partial"`, WARNING if `input_quality == "degraded"` | Level-conditional. Emitted when input quality is not FULL. Not emitted when quality is FULL. Kwargs: `input_quality` (str), `flags` (list of dicts: `{"category": str, "level": str, "detail": str}`). Bind `model_id` and `station_id` via `bind_contextvars` before this event so both appear automatically. |
 
+### Snow-forecast (JSNOW) events (Plan 145, Nepal v1 / Recap Gateway only)
+
+| Event | Level | Notes |
+|---|---|---|
+| `recap.snow_variable_unavailable` | WARNING | One `(hru, variable)` gap contained inside `fetch_snow_forecast` (Gateway `source_data_missing`/`subscription_not_found`). Kwargs: `hru_name`, `variable` (canonical name), `code`. Rows for OTHER variables in the same HRU are preserved — this is not a fetch abort. |
+| `nwp.snow_fetch_completed` | INFO | Snow-forecast fetch succeeded (with or without partial `unavailable` gaps). Kwargs: `records_stored`, `stations`, `unavailable_hru_count`. |
+| `nwp.snow_fetch_failed` | ERROR | An uncontained exception escaped `fetch_snow_forecast` (not one of the two contained codes above). Degrades this cycle's snow channel only (`snow_unavailable=True`) — never a cycle-wide abort. |
+| `nwp.snow_unknown_forecast_type` | WARNING | `fetch_snow_forecast` returned a `WeatherForecastResult` variant `_fetch_nwp_task` does not know how to convert to storable records (defensive; unreached on the current Recap adapter, which only ever returns `BasinAverageForecast`). |
+| `nwp.snow_required_station_missing_binding` | WARNING | A station appears in the pre-submission `required_snow` map (>=1 active assignment needs a future snow variable) but has NO matching forecast binding in this cycle's `station_configs` (config gap — e.g. no active FORECAST-role weather source). Sets `snow_unavailable=True` so the gap surfaces as `DEGRADED` rather than silently `HEALTHY`. Kwargs: `station_ids` (list of str). |
+| `nwp.snow_required_coverage_missing` | WARNING | Post-fetch reconciliation (review fold-in, major): `_reconcile_snow_coverage` compares what was REQUIRED (`required_snow`) against what the snow fetch actually returned (`snow_result.forecasts`), per bound station. Catches two silent gaps neither `unavailable` nor the resolver's all-unmappable check ever sees: (1) a required station the resolver skipped while resolving OTHERS (`_require_some_resolved` only fails when ALL are unmappable); (2) a successful, no-exception response that accumulated zero rows for a required parameter (or one parameter succeeded while a sibling one did not). Sets `snow_unavailable=True`. Kwargs: `gaps` (dict of `str(station_id)` -> sorted list of missing canonical variable names). |
+| `operational_inputs.no_nwp` | WARNING | Unchanged event name, changed semantics (Plan 145 D3.2d): logged whenever the future-NWP read is empty while the station's requirements declare `future_dynamic_features` — but assembly no longer returns `None` on this condition. It continues with an empty `future_dynamic` frame; the per-model `assess_future_coverage` gate (not this log line) is what suppresses the affected model. |
+
+A snow outage is surfaced as cycle `health=DEGRADED` (never `nwp_unavailable`, which stays reserved for a cycle-wide IFS/NWP outage) — see `_forecast_cycle_health`'s `snow_unavailable` parameter.
+
 ```python
 # CORRECT
 log.info("forecast.run_completed", lead_time_hours=120, ensemble_size=21, duration_ms=3400)

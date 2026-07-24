@@ -18,10 +18,15 @@ from sapphire_flow.types.enums import (
     WeatherSourceStatus,
 )
 from sapphire_flow.types.historical_forcing import RawHistoricalForcing
-from sapphire_flow.types.weather import BasinAverageForecast, ElevationBandForecast
+from sapphire_flow.types.weather import (
+    BasinAverageForecast,
+    ElevationBandForecast,
+    GatewayHruName,
+    SnowForecastFetchResult,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
 
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.ids import StationId
@@ -33,7 +38,6 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
-GatewayHruName = NewType("GatewayHruName", str)
 GatewayPolygonName = NewType("GatewayPolygonName", str)
 
 
@@ -101,6 +105,15 @@ RECAP_VARIABLES: dict[str, RecapVariable] = {
         convert=None,
     ),
 }
+
+# The canonical (SAP3-side) parameter names of every snow variable RECAP_VARIABLES
+# knows how to fetch. Plan 145 D3.1: the forecast cycle intersects a model's
+# `future_dynamic_features` against this set to decide whether that model needs
+# the snow-forecast channel at all (the pre-submission opt-in gate — no per-HRU
+# "JSNOW subscribed" config flag exists).
+SNOW_CANONICAL_PARAMETERS: frozenset[str] = frozenset(
+    v.canonical for v in RECAP_VARIABLES.values() if v.snow_name is not None
+)
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -266,6 +279,43 @@ class RecapAuthError(AdapterError):
     def __init__(self, message: str, *, status_code: int | None) -> None:
         super().__init__(message)
         self.status_code = status_code
+
+
+class RecapSnowUnavailableError(AdapterError):
+    """Snow-forecast source data unavailable for ONE (HRU, variable) (Plan 145 D3.2a).
+
+    Raised only at the ``fetch_snow_forecast`` boundary (never by ``_map_recap_error``,
+    which stays IFS/reanalysis-only) and CONTAINED per ``(hru, canonical variable)``
+    inside ``fetch_snow_forecast`` — it must never escape to abort the whole fetch
+    the way an uncaught ``RecapDataUnavailableError`` would. Covers both a Gateway
+    ``source_data_missing`` response and a not-yet-subscribed ``subscription_not_found``
+    variable (the "hs/rof still materializing" case, see the plan's Open items).
+    """
+
+    def __init__(self, message: str, *, code: str | None) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+_SNOW_UNAVAILABLE_CODES = frozenset({"source_data_missing", "subscription_not_found"})
+
+
+def _guarded_snow_fetch(fn: Callable[..., object], /, **kwargs: object) -> object:
+    """Snow-scoped guard (Plan 145 D3.2a): distinct from ``_guarded_fetch``.
+
+    ``source_data_missing``/``subscription_not_found`` map to
+    ``RecapSnowUnavailableError`` — contained per ``(hru, variable)`` by the caller,
+    never propagated as a cycle-fatal abort. Every other error (config/auth/other)
+    maps via the existing ``_map_recap_error`` and propagates exactly as it does for
+    IFS/reanalysis (regression: those semantics are UNCHANGED by this guard).
+    """
+    try:
+        return fn(**kwargs)
+    except Exception as exc:  # structural map; no recap-dg-client symbol referenced
+        code = getattr(exc, "code", None)
+        if code in _SNOW_UNAVAILABLE_CODES:
+            raise RecapSnowUnavailableError(str(exc), code=code) from exc
+        raise _map_recap_error(exc) from exc
 
 
 _PROVENANCE_COLUMNS: tuple[str, str] = ("source", "source_run")
@@ -601,6 +651,24 @@ def _snow_variables() -> list[RecapVariable]:
     return [v for v in RECAP_VARIABLES.values() if v.snow_name is not None]
 
 
+def _required_snow_variables_for_hru(
+    refs_by_polygon: dict[GatewayPolygonName, GatewayPolygonRef],
+    required_snow: Mapping[StationId, frozenset[str]] | None,
+) -> frozenset[str]:
+    """Union of canonical snow variables required by stations resolved into
+    this HRU (Plan 145 review fold-in). ``None`` (no map supplied) means
+    "unscoped" — every snow variable is required, preserving the pre-scoping
+    behaviour for callers that have not computed a required-variable map."""
+    if required_snow is None:
+        return frozenset(v.canonical for v in _snow_variables())
+    return frozenset().union(
+        *(
+            required_snow.get(ref.station_id, frozenset())
+            for ref in refs_by_polygon.values()
+        )
+    )
+
+
 def _pf_member_id(member: int) -> int:
     # Guard: a pf member must be 1..50 and can never collide with fc's member_id=0.
     if member == _FC_MEMBER_ID or not (_PF_MEMBER_MIN <= member <= _PF_MEMBER_MAX):
@@ -831,15 +899,35 @@ class RecapGatewayForecastAdapter:
         self,
         station_configs: list[StationWeatherSource],
         cycle_time: UtcDatetime,
-    ) -> dict[StationId, WeatherForecastResult]:
-        """Deterministic snow-forecast fetch (Plan 082 Task 2H-snow).
+        required_snow: Mapping[StationId, frozenset[str]] | None = None,
+    ) -> SnowForecastFetchResult:
+        """Deterministic snow-forecast fetch (Plan 082 Task 2H-snow; Plan 145 D3/D6).
 
         NOT part of the ``WeatherForecastSource`` Protocol — called separately
-        by the model-input service, which performs the daily-snow ->
-        sub-daily 51-member IFS broadcast (no resample/broadcast happens
-        here). Snow rows carry ``member_id=None`` (deterministic, single
-        run) — see ``RecapGatewayReanalysisAdapter`` for the same convention
-        on the reanalysis side.
+        by ``_fetch_nwp_task`` (capability-gated on ``SnowForecastSource``), under
+        the SAME resolved ``cycle_time`` the IFS fetch used (Plan 145 D4 — this
+        method must NOT call ``_resolve_effective_cycle`` itself). Station-level
+        scoping (which stations even reach this call) is the CALLER's
+        responsibility (Plan 145 D3.1) — every station passed here is fetched.
+        Snow rows carry ``member_id=None`` (deterministic, single run) — see
+        ``RecapGatewayReanalysisAdapter`` for the same convention on the
+        reanalysis side.
+
+        ``required_snow`` (Plan 145 review fold-in — variable-level scoping) is
+        the per-station required-canonical-variable map. Per HRU, only the UNION
+        of the variables required by the stations resolved INTO that HRU is
+        fetched — a station requiring only ``swe`` never triggers an ``hs``/
+        ``rof`` Gateway call, so their unavailability cannot affect its outcome.
+        ``None`` (the default) preserves the pre-scoping behaviour of fetching
+        every snow variable for every in-scope HRU — kept for callers (tests,
+        other adapters-under-test) that have not computed a required-variable
+        map.
+
+        A ``(hru, variable)`` whose fetch raises ``RecapSnowUnavailableError``
+        (Gateway ``source_data_missing``/``subscription_not_found``, Plan 145
+        D3.2a-b) is CONTAINED — rows already accumulated for other variables in
+        the SAME hru are preserved, and the gap is recorded in the returned
+        result's ``unavailable`` map, keyed per HRU (never a global/cross-HRU set).
         """
         in_scope = _prefilter(
             station_configs,
@@ -847,34 +935,51 @@ class RecapGatewayForecastAdapter:
             role=WeatherSourceRole.FORECAST,
         )
         if not in_scope:
-            return {}
+            return SnowForecastFetchResult(forecasts={}, unavailable={})
         resolved, skipped = _resolve_all(self._resolver, in_scope)
         _require_some_resolved(in_scope, resolved, skipped)
 
         by_hru = _group_by_hru(resolved)
         station_ref = {ref.station_id: ref for ref in resolved}
         acc: dict[StationId, list[dict[str, object]]] = {}
+        unavailable: dict[GatewayHruName, frozenset[str]] = {}
 
         for hru_name, refs_by_polygon in by_hru.items():
+            hru_gaps: set[str] = set()
+            hru_variables = _required_snow_variables_for_hru(
+                refs_by_polygon, required_snow
+            )
             for variable in _snow_variables():
                 snow_name = variable.snow_name
-                if snow_name is None:
+                if snow_name is None or variable.canonical not in hru_variables:
                     continue
-                self._accumulate_snow(
-                    acc,
-                    refs_by_polygon,
-                    variable=variable,
-                    snow_name=snow_name,
-                    hru_name=hru_name,
-                    cycle_time=cycle_time,
-                )
+                try:
+                    self._accumulate_snow(
+                        acc,
+                        refs_by_polygon,
+                        variable=variable,
+                        snow_name=snow_name,
+                        hru_name=hru_name,
+                        cycle_time=cycle_time,
+                    )
+                except RecapSnowUnavailableError as exc:
+                    log.warning(
+                        "recap.snow_variable_unavailable",
+                        hru_name=hru_name,
+                        variable=variable.canonical,
+                        code=exc.code,
+                    )
+                    hru_gaps.add(variable.canonical)
+            if hru_gaps:
+                unavailable[hru_name] = frozenset(hru_gaps)
 
-        return {
+        forecasts = {
             station_id: _build_forecast_result(
                 station_ref[station_id], rows, cycle_time, self.NWP_SOURCE
             )
             for station_id, rows in acc.items()
         }
+        return SnowForecastFetchResult(forecasts=forecasts, unavailable=unavailable)
 
     def _accumulate_snow(
         self,
@@ -897,7 +1002,7 @@ class RecapGatewayForecastAdapter:
         }
         df = cast(
             "pd.DataFrame",
-            _guarded_fetch(self._client.snow.forecast, **call_kwargs),
+            _guarded_snow_fetch(self._client.snow.forecast, **call_kwargs),
         )
         rows, _ = _iter_long_rows(df, refs_by_polygon, variable.convert)
         for ref, valid_time, value, _row_run in rows:

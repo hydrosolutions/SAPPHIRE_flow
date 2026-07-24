@@ -59,7 +59,17 @@ def _member_indices(columns: list[str], feature: str) -> frozenset[int]:
 
 
 def _nonnull_count(future_dynamic: pl.DataFrame, col: str) -> int:
-    return int(future_dynamic.select(pl.col(col).is_not_null().sum()).item())
+    """Count values that are non-null and, for float columns, non-NaN.
+
+    Polars distinguishes NaN from null: ``is_not_null()`` is TRUE for NaN, so
+    an all-NaN float column would otherwise be counted as fully clean. A NaN
+    forcing value is never usable, so float columns are additionally gated on
+    ``is_not_nan()``.
+    """
+    predicate = pl.col(col).is_not_null()
+    if future_dynamic.schema[col].is_float():
+        predicate = predicate & pl.col(col).is_not_nan()
+    return int(future_dynamic.select(predicate.sum()).item())
 
 
 def assess_future_coverage(

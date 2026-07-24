@@ -1964,18 +1964,26 @@ an incidental 401 still maps to `RecapConfigurationError`, the more specific cat
 
 `SnowApiLike` widens with `forecast(*, hru_code, variable, run_date, run_hour: int = 0,
 **kwargs) -> object`, matching the client's `snow.forecast` (0/6/12/18Z).
-`RecapGatewayForecastAdapter.fetch_snow_forecast(station_configs, cycle_time) ->
-dict[StationId, WeatherForecastResult]` is a SEPARATE method, **not** part of
-`WeatherForecastSource` — snow forecasts are deterministic (`member_id=None`), fetched
-independently from the 51-member IFS `fetch_forecasts`. No resample/broadcast happens in
-the adapter; `services/operational_inputs.py
+`RecapGatewayForecastAdapter.fetch_snow_forecast(station_configs, cycle_time,
+required_snow: Mapping[StationId, frozenset[str]] | None = None) ->
+SnowForecastFetchResult` (`types/weather.py`) is a SEPARATE method, **not** part of
+`WeatherForecastSource` — exposed to callers via the narrow `SnowForecastSource`
+capability Protocol (`protocols/adapters.py`, `isinstance`-gated, requires
+`required_snow`). Snow forecasts are deterministic (`member_id=None`), fetched
+independently from the 51-member IFS `fetch_forecasts`. `required_snow` (Plan 145
+wiring, review fold-in) scopes each HRU's Gateway calls to the UNION of canonical
+variables its resolved stations actually need — a station requiring only `swe` never
+triggers an `hs`/`rof` call; `None` (the default) preserves the unscoped
+fetch-every-variable behaviour for callers without a precomputed map. No
+resample/broadcast happens in the adapter; `services/operational_inputs.py
 ._broadcast_deterministic_features_to_members` performs the daily-snow → sub-daily
-51-member IFS broadcast at model-input-assembly time. **Not yet wired into the Flow-1
-storage path** — `fetch_snow_forecast`'s output needs a separate persistence step before
-the broadcast sees it operationally (see `docs/operations/recap-gateway-runbook.md`
-§ Snow-variable status).
+51-member IFS broadcast at model-input-assembly time. Wired into the Flow-1 Phase-A
+task (`_fetch_nwp_task`, `flows/run_forecast_cycle.py`) behind the `SnowForecastSource`
+capability check; storage + broadcast + the `snow_unavailable` cycle outcome are all
+live (Plan 145).
 
-Module: `adapters/recap_gateway.py`, `services/operational_inputs.py`.
+Module: `adapters/recap_gateway.py`, `protocols/adapters.py`, `types/weather.py`,
+`services/operational_inputs.py`, `flows/run_forecast_cycle.py`.
 
 ### RecapGatewayConfig + coverage manifest (Plan 082 Tasks 2A / Phase 3)
 
