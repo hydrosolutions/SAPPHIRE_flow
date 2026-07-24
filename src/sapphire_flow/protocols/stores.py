@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     import polars as pl
 
     from sapphire_flow.types.alert import Alert
+    from sapphire_flow.types.auth import AuditEntry
     from sapphire_flow.types.basin import Basin
     from sapphire_flow.types.calculated_station import ComponentWeight
     from sapphire_flow.types.datetime import UtcDatetime
@@ -627,6 +628,16 @@ class PipelineHealthStore(Protocol):
         check_type: PipelineCheckType | None = None,
         limit: int = 100,
     ) -> list[PipelineHealthRecord]:
+        raise NotImplementedError
+
+
+@runtime_checkable
+class AuditLogStore(Protocol):
+    """Plan 147 Slice B: the append-only audit substrate. ONLY an insert —
+    no update/delete method exists on this Protocol (append-only is a type
+    contract here, and a DB-level guard, migration 0046, backstops it)."""
+
+    def append_entry(self, entry: AuditEntry) -> None:
         raise NotImplementedError
 
 

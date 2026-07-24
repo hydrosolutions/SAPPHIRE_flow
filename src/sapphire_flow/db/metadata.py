@@ -1,7 +1,15 @@
 # pyright: reportUnknownArgumentType=false, reportUnknownMemberType=false
 import sqlalchemy as sa
 from geoalchemy2 import Geometry
-from sqlalchemy.dialects.postgresql import ARRAY, BIGINT, BYTEA, INTERVAL, JSONB, UUID
+from sqlalchemy.dialects.postgresql import (
+    ARRAY,
+    BIGINT,
+    BYTEA,
+    INET,
+    INTERVAL,
+    JSONB,
+    UUID,
+)
 
 metadata = sa.MetaData()
 
@@ -1569,5 +1577,44 @@ pipeline_health = sa.Table(
         sa.DateTime(timezone=True),
         nullable=False,
         server_default=sa.func.now(),
+    ),
+)
+
+# Plan 147 Slice B: the append-only audit substrate every audited mutation
+# depends on. Conforms EXACTLY to the authoritative contract — no
+# `tenant_id`/`action`/`at` columns (tenant context + rejection outcome/
+# reason live in `detail`). No FK on `actor_id`: an append-only row must
+# survive token revocation/deletion. Append-only is enforced by a
+# role-independent DB trigger (migration 0046), NOT by omitting grants here.
+audit_log = sa.Table(
+    "audit_log",
+    metadata,
+    sa.Column("id", BIGINT, primary_key=True, autoincrement=True),
+    sa.Column("event_type", sa.Text, nullable=False),
+    sa.Column("actor_id", UUID(as_uuid=True), nullable=True),
+    sa.Column(
+        "actor_type",
+        sa.Text,
+        sa.CheckConstraint("actor_type IN ('user', 'api_key', 'system')"),
+        nullable=False,
+    ),
+    sa.Column("target_type", sa.Text, nullable=True),
+    sa.Column("target_id", sa.Text, nullable=True),
+    sa.Column("detail", JSONB, nullable=True),
+    sa.Column("ip_address", INET, nullable=True),
+    sa.Column(
+        "created_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+    ),
+    sa.Index("ix_audit_log_created_at", "created_at"),
+    sa.Index("ix_audit_log_event_type_created_at", "event_type", "created_at"),
+    sa.Index("ix_audit_log_target", "target_type", "target_id"),
+    sa.Index("ix_audit_log_actor_id", "actor_id"),
+    sa.CheckConstraint(
+        "(actor_type = 'system' AND actor_id IS NULL) "
+        "OR (actor_type IN ('user', 'api_key') AND actor_id IS NOT NULL)",
+        name="ck_audit_log_actor_id_matches_actor_type",
     ),
 )

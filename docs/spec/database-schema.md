@@ -5,7 +5,7 @@ Derived from table definitions in `architecture-context.md` and scoping rules in
 
 ---
 
-## v0 Schema (25 tables)
+## v0 Schema (27 tables)
 
 Swiss public data, up to ~170 stations (LINDAS-available BAFU gauges), single VM. Architecture supports ~1000 stations across deployments. No partitioning, no auth, no rating curves,
 no forecast adjustments, no DLQ, no cold storage. See `v0-scope.md` §A–C for rationale and plan 013 for scale re-evaluation.
@@ -19,7 +19,7 @@ no forecast adjustments, no DLQ, no cold storage. See `v0-scope.md` §A–C for 
 - `models.artifact_scope`: CHECK constraint includes `'virtual'` for sentinel combination models (`_pooled`, `_bma`, `_consensus`) (v0b, Plan 026)
 - No table partitioning anywhere
 - 8 tables removed entirely (see "Not in v0" below)
-- `tenants` + `stations.tenant_id`/`station_groups.tenant_id`/`station_group_members.tenant_id` land early (Plan 147 Slice A) as a pure data-model foundation — auth/RBAC enforcement itself is still deferred (`access_tokens`/`audit_log` remain "Not in v0" below)
+- `tenants` + `stations.tenant_id`/`station_groups.tenant_id`/`station_group_members.tenant_id` land early (Plan 147 Slice A) as a pure data-model foundation, and `audit_log` (Plan 147 Slice B) lands as an append-only substrate ahead of enforcement — auth/RBAC enforcement itself (access-token auth, DB roles, write-isolation call sites) is still deferred (`users`/`access_tokens`/`refresh_tokens` remain "Not in v0" below)
 
 ```mermaid
 erDiagram
@@ -439,7 +439,7 @@ erDiagram
     stations ||--o{ alerts : "station_id"
 ```
 
-### v0 table inventory (23 tables)
+### v0 table inventory (27 tables)
 
 | # | Table | PK | Domain |
 |---|-------|----|--------|
@@ -461,19 +461,27 @@ erDiagram
 | 16 | `model_states` | UUID | Model |
 | 17 | `forecasts` | UUID | Forecast |
 | 18 | `forecast_values` | UUID | Forecast |
-| 19 | `hindcast_forecasts` | UUID | Forecast |
-| 20 | `hindcast_values` | UUID | Forecast |
-| 21 | `skill_scores` | UUID | Skill |
-| 22 | `skill_diagrams` | UUID | Skill |
-| 23 | `flow_regime_configs` | UUID | Skill |
-| — | `alerts` | UUID | Ops |
-| — | `pipeline_health` | BIGSERIAL | Ops |
+| 19 | `forecast_qc_overrides` | composite | Forecast |
+| 20 | `hindcast_forecasts` | UUID | Forecast |
+| 21 | `hindcast_values` | UUID | Forecast |
+| 22 | `skill_scores` | UUID | Skill |
+| 23 | `skill_diagrams` | UUID | Skill |
+| 24 | `flow_regime_configs` | UUID | Skill |
+| 25 | `audit_log` | BIGSERIAL | Auth |
+| 26 | `alerts` | UUID | Ops |
+| 27 | `pipeline_health` | BIGSERIAL | Ops |
 
-**Note**: `alerts` and `pipeline_health` bring the total to 25 if counted.
-`v0-scope.md` §C predates Plan 147's `tenants` table — the count depends on whether `alerts` + `pipeline_health`
-are included (alerting is optional in v0, controlled by per-source alert flags (see v0-scope.md §A8c)).
+**Note**: this is the ONE canonical v0 table count (27), matching
+`v0-scope.md` §C — `alerts` and `pipeline_health` are always counted
+(alerting is optional in v0, controlled by per-source alert flags, see
+v0-scope.md §A8c, but the table itself always exists). `forecast_qc_overrides`
+(migration 0012, per-station QC threshold overrides) is listed here but not
+drawn in the ER diagram above (a pre-existing gap, not specific to this
+slice). `audit_log` (Plan 147 Slice B) is created early as an unused
+append-only substrate — no call site writes to it yet (Slice C wires token
+create/revoke, Slice E wires onboarding/promotion).
 
-### Not in v0 (8 tables added in v1)
+### Not in v0 (7 tables added in v1)
 
 | Table | Why deferred | Reference |
 |-------|-------------|-----------|
@@ -484,7 +492,6 @@ are included (alerting is optional in v0, controlled by per-source alert flags (
 | `users` | Auth deferred to v1 | v0-scope §B |
 | `access_tokens` | Auth deferred to v1 | v0-scope §B |
 | `refresh_tokens` | Auth deferred to v1 | v0-scope §B |
-| `audit_log` | Auth deferred to v1 | v0-scope §B |
 
 ---
 
@@ -1044,7 +1051,11 @@ Plan 120 (basin/static package importer, Nepal v1) additively adds
 (+ a nullable `basins.package_id` FK) — see "Versioned basin state" in
 `docs/plans/120-basin-static-importer.md`. Plan 147 Slice A additively adds
 `tenants` (+ `tenant_id` on `stations`/`station_groups`/`station_group_members`)
-— already live in v0, see the v0 table inventory above.
+— already live in v0, see the v0 table inventory above. Plan 147 Slice B
+additively adds `audit_log` — also already live in v0 (as an unused
+append-only substrate; see the v0 table inventory note above), listed under
+the AUTH DOMAIN entities below alongside the still-deferred `users` /
+`access_tokens` / `refresh_tokens`.
 
 | # | Table | PK type | Partitioned | Domain |
 |---|-------|---------|-------------|--------|

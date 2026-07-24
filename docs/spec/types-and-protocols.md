@@ -256,6 +256,25 @@ class AuditActorType(Enum):
     API_KEY = "api_key"
     SYSTEM = "system"
 
+class AuditEventType(Enum):     # Plan 147 Slice B: promoted from design-intent to runtime
+    LOGIN = "login"
+    LOGOUT = "logout"
+    LOGIN_FAILED = "login_failed"
+    PASSWORD_CHANGED = "password_changed"
+    USER_CREATED = "user_created"
+    USER_DEACTIVATED = "user_deactivated"
+    API_KEY_CREATED = "api_key_created"
+    API_KEY_REVOKED = "api_key_revoked"
+    API_KEY_REQUEST = "api_key_request"
+    FORECAST_STATUS_CHANGE = "forecast_status_change"
+    FORECAST_ADJUSTED = "forecast_adjusted"
+    MODEL_PROMOTED = "model_promoted"
+    MODEL_REJECTED = "model_rejected"
+    STATION_STATUS_CHANGE = "station_status_change"
+    OBSERVATION_REPROCESSED = "observation_reprocessed"
+    STATION_ONBOARDED = "station_onboarded"     # additive (Plan 147 Slice B)
+    MODEL_ASSIGNED = "model_assigned"           # additive (Plan 147 Slice B)
+
 class StationOwnership(Enum):
     OWN = "own"
     FOREIGN = "foreign"
@@ -312,7 +331,7 @@ class OnboardingOutcome(Enum):                           # in-memory only, no DB
 ## Enums — v1 / deferred (not implemented in v0)
 
 These enums appear in v1 design but are not implemented in `src/sapphire_flow/types/enums.py`.
-Deferred per `docs/v0-scope.md:464` (UserRole, AuditEventType, AdjustmentType, Calendar) and by lack of consumer infrastructure (DlqResolution). Implementers must not import them from `sapphire_flow.types.enums` — the symbols do not exist at runtime.
+Deferred per `docs/v0-scope.md:464` (UserRole, AdjustmentType, Calendar) and by lack of consumer infrastructure (DlqResolution). Implementers must not import them from `sapphire_flow.types.enums` — the symbols do not exist at runtime. (`AuditEventType` was deferred here too, but Plan 147 Slice B promoted it to runtime — see the enums section above.)
 
 ```python
 class DlqResolution(Enum):
@@ -335,23 +354,10 @@ class UserRole(Enum):
     MODEL_ADMIN = "model_admin"
     FORECASTER = "forecaster"
 
-class AuditEventType(Enum):
-    LOGIN = "login"
-    LOGOUT = "logout"
-    LOGIN_FAILED = "login_failed"
-    PASSWORD_CHANGED = "password_changed"
-    USER_CREATED = "user_created"
-    USER_DEACTIVATED = "user_deactivated"
-    API_KEY_CREATED = "api_key_created"
-    API_KEY_REVOKED = "api_key_revoked"
-    API_KEY_REQUEST = "api_key_request"
-    FORECAST_STATUS_CHANGE = "forecast_status_change"
-    FORECAST_ADJUSTED = "forecast_adjusted"
-    MODEL_PROMOTED = "model_promoted"
-    MODEL_REJECTED = "model_rejected"
-    STATION_STATUS_CHANGE = "station_status_change"
-    OBSERVATION_REPROCESSED = "observation_reprocessed"  # Flow 12 reprocessing event
 ```
+
+`AuditEventType` was previously listed here as design-intent only; Plan 147 Slice B promoted it
+to `types/enums.py` (see the runtime enums section above) — it is no longer deferred.
 
 ---
 
@@ -1142,7 +1148,9 @@ Module: `types/pipeline.py`
 
 ### Auth entities
 
-v0 defers auth — these types are defined but unused until v1. See architecture-context.md § Authentication schemas for DB table definitions.
+v0 defers auth. `AuditEntry` (below) is now **implemented** (Plan 147 Slice B, `types/auth.py`) — it
+is the append-only `audit_log` row type. `AccessTokenScope`/`User`/`AccessToken` remain design intent
+only (v1.x / Slice C and later) — do not import them.
 
 ```python
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -1169,11 +1177,16 @@ class AccessToken:
     created_at: UtcDatetime
     last_used_at: UtcDatetime | None     # NULL = never used
     revoked_at: UtcDatetime | None       # NULL = active
+```
 
+**Status** (`AccessTokenScope`/`User`/`AccessToken` above): v1.x — deferred per Plan 042. Not
+implemented yet. Design intent only; do not import them.
+
+```python
 @dataclass(frozen=True, kw_only=True, slots=True)
 class AuditEntry:
     event_type: AuditEventType
-    actor_id: UserId | None              # None for system events
+    actor_id: UserId | AccessTokenId | None  # UserId (user) | AccessTokenId (api_key) | None (system)
     actor_type: AuditActorType
     target_type: str | None
     target_id: str | None
@@ -1184,7 +1197,17 @@ class AuditEntry:
 
 Module: `types/auth.py`
 
-**Status**: v1 — deferred per Plan 042. Not implemented in v0. Types below are design intent only; do not import them.
+**Status**: **implemented** (Plan 147 Slice B, 2026-07-24). The `audit_log` table (migration 0045)
++ its role-independent append-only guard (migration 0046) + the `PgAuditLogStore` writer
+(`store/audit_log_store.py`) are live. Call sites (token create/revoke — Slice C; onboard/promote/
+assign + rejections — Slice E) are still pending in later slices.
+
+`AuditEntry.__post_init__` enforces the `actor_type`/`actor_id` pairing at construction (`SYSTEM` ⇒
+`actor_id=None`; `USER`/`API_KEY` ⇒ `actor_id` present) — `NewType` alone cannot distinguish `UserId`
+from `AccessTokenId` at runtime, so this validates presence/absence only. Migration 0045 also carries
+a matching `ck_audit_log_actor_id_matches_actor_type` DB CHECK constraint as a backstop for writers
+that bypass the domain type. Prefer the `AuditEntry.system(...)` / `.user(...)` / `.api_key(...)`
+typed constructors over calling `AuditEntry(...)` directly.
 
 ---
 
@@ -2617,6 +2640,16 @@ class PipelineHealthStore(Protocol):
         check_type: PipelineCheckType | None = None,
         limit: int = 100,
     ) -> list[PipelineHealthRecord]: ...
+```
+
+#### AuditLogStore
+
+Plan 147 Slice B: the append-only audit substrate. ONLY an insert — no update/delete method, matching
+the role-independent DB guard (migration 0046).
+
+```python
+class AuditLogStore(Protocol):
+    def append_entry(self, entry: AuditEntry) -> None: ...
 ```
 
 #### RatingCurveStore

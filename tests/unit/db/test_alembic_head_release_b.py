@@ -46,8 +46,11 @@ _ALEMBIC_VERSIONS_DIR = Path(__file__).resolve().parents[3] / "alembic" / "versi
 # pinned head to 0040. Plan 147 Slice A then chained 0041 (tenants table + seed)
 # -> 0042 (stations.tenant_id) -> 0043 (station_groups.tenant_id + per-tenant
 # name uniqueness) -> 0044 (station_group_members.tenant_id + composite
-# tenant-match FKs) onto 0040 — advancing the pinned head to 0044.
-_RELEASE_B_HEAD = "0044"
+# tenant-match FKs) onto 0040 — advancing the pinned head to 0044. Plan 147
+# Slice B then chained 0045 (audit_log table) -> 0046 (audit_log
+# role-independent append-only guard trigger) onto 0044 — advancing the
+# pinned head to 0046.
+_RELEASE_B_HEAD = "0046"
 
 
 def _down_revisions() -> dict[str, str | None]:

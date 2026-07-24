@@ -110,15 +110,21 @@ later slice that performs an audited mutation depends on **B**, so no slice ever
 mutation. **C (access-token auth) depends on A + B; D (least-privilege DB roles) depends on C;
 E (tenant write-isolation) depends on A + B.**
 
-**Scope rule for THIS `/implement` run: build Slice A ONLY (the tenant-model foundation) and STOP.** Do NOT
-build Slice B/C/D/E in this run — each is a separate later slice with its own PR (branch
-`feat/plan-147-slice-a` builds Slice A). Slice A is a root (no dependency), so nothing else needs to exist
-first. It is a pure data-model + migration slice (**no auth, no HTTP changes**): the `tenants` table +
-`TenantId`, `stations.tenant_id`/`station_groups.tenant_id NOT NULL`, tenant fields on
-`StationConfig`/`StationGroup` + row conversion + protocols + fakes + fixtures + config parse, per-tenant
-`UNIQUE (tenant_id, name)`, the station↔group composite-FK invariant, and the add-nullable → backfill (default
-`sapphire` tenant) → detect-inconsistency → composite-FK/unique → NOT NULL migration WITH upgrade AND downgrade
-tests on populated data. Live-Postgres integration tests per the Slice-A verification block below.
+**Scope rule for THIS `/implement` run: build Slice B ONLY (the audit-log foundation) and STOP.** Do NOT
+build Slice C/D/E in this run — each is a separate later slice with its own PR (branch `feat/plan-147-slice-b`
+builds Slice B). **Slice A (tenant model) is already on `main` (#130) — CONSUME, do not re-implement.** Slice B
+is a root (no tenant/auth dependency): the `audit_log` table + migration conforming EXACTLY to the
+authoritative contract (`event_type`/`created_at`/`ip_address`/nullable-system-actor — NO `tenant_id`/`action`/
+`at`); the wired `AuditActorType` + promoted-to-runtime `AuditEventType` enums (incl. the additive
+`STATION_ONBOARDED`/`MODEL_ASSIGNED`, synced to both spec docs); the `AuditEntry` domain type; the append-only
+INSERT-only writer store; the **role-independent DB append-only guard** (a `BEFORE UPDATE OR DELETE` trigger
+that RAISEs even for the table owner — owned HERE, not by the roles slice); and the success/rejection
+atomicity mechanism (mutation + success-audit in ONE txn via the existing `transaction_factory` seam — NO
+repo-wide connection refactor; rejection event in a separate committed txn). The stamping CALL-SITES live in
+Slices C (token create/revoke, create-admin) and E (onboard/promote/assign + rejections) — Slice B builds the
+table/enums/writer/guard only, NOT the call-sites. Live-Postgres integration tests per the Slice-B verification
+block below (incl. the append-only-fails-for-owner test + the audit-insert-failure-rolls-back-the-mutation
+test on a real non-AUTOCOMMIT transaction).
 
 ### Slice A — Tenant model foundation (data model, no auth)
 
@@ -235,6 +241,15 @@ nor the roles slice.
   - Add the `AuditEntry` domain type (`types/auth.py`, per `types-and-protocols.md:1140-1149`). Its
     `actor_id` is `UserId | None` (the authoritative spec type) — **`None`** for `system`/config-operator
     events, so the config-operator mapping (F3) needs **no** widening of the actor contract.
+    **SUPERSEDED (fixer round, post-implementation review, 2026-07-24):** the implemented contract widens
+    `actor_id` to `UserId | AccessTokenId | None` — `AccessTokenId` when `actor_type=API_KEY`, matching
+    `types-and-protocols.md`'s own `AuditEntry` shape (`actor_id: UserId | AccessTokenId | None`) and the
+    `audit_log.actor_id` column doc two paragraphs above ("the acting `access_tokens.id` when
+    `actor_type='api_key'`"). `actor_id` remains **`None` only for `system`/config-operator events**,
+    unchanged. The domain type also gained a `__post_init__` invariant (`SYSTEM` ⇒ `actor_id=None`;
+    `USER`/`API_KEY` ⇒ `actor_id` present) plus `.system()`/`.user()`/`.api_key()` typed constructors, and
+    migration 0045 gained a matching DB-level `ck_audit_log_actor_id_matches_actor_type` CHECK constraint
+    as a backstop for writers that bypass the domain type.
 - **Append-only enforcement is SELF-OWNED by this slice (F4) — it does NOT depend on the roles slice.** Two
   layers, both owned here so B never waits on Slice D:
   1. **App-layer:** the writer store exposes **only** an INSERT method — no update/delete code path anywhere.

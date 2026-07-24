@@ -18,6 +18,7 @@ from sapphire_flow.exceptions import (
 )
 from sapphire_flow.store.observation_store import _dedupe_raw_observations
 from sapphire_flow.types.alert import Alert  # noqa: TC001
+from sapphire_flow.types.auth import AuditEntry  # noqa: TC001
 from sapphire_flow.types.basin import Basin  # noqa: TC001
 from sapphire_flow.types.calculated_station import ComponentWeight  # noqa: TC001
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc  # noqa: TC001
@@ -1099,6 +1100,17 @@ class FakeStationGroupStore:
             for (gid, _), a in self._group_model_assignments.items()
             if gid == group_id
         )
+
+
+class FakeAuditLogStore:
+    """Plan 147 Slice B: append-only — no update/delete method exists here
+    either, matching `AuditLogStore`/`PgAuditLogStore`."""
+
+    def __init__(self) -> None:
+        self._entries: list[AuditEntry] = []
+
+    def append_entry(self, entry: AuditEntry) -> None:
+        self._entries.append(entry)
 
 
 class FakePipelineHealthStore:
