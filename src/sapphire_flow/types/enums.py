@@ -242,6 +242,16 @@ class AuditActorType(Enum):
     SYSTEM = "system"
 
 
+class AccessTokenRole(Enum):
+    """Plan 147 Slice C: the v1.0 headless HTTP role model (G4) — exactly
+    two roles, both GET-only. `CONSUMER` is station-scoped (per
+    `access_token_stations`); `ADMIN` is unscoped read + CLI token/tenant
+    management. No third role (no session/operator role in v1.0)."""
+
+    CONSUMER = "consumer"
+    ADMIN = "admin"
+
+
 class AuditEventType(Enum):
     """Plan 147 Slice B: promoted from design-intent
     (`docs/spec/types-and-protocols.md`) to a runtime enum. v1.0 wires

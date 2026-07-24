@@ -19,7 +19,7 @@ no forecast adjustments, no DLQ, no cold storage. See `v0-scope.md` §A–C for 
 - `models.artifact_scope`: CHECK constraint includes `'virtual'` for sentinel combination models (`_pooled`, `_bma`, `_consensus`) (v0b, Plan 026)
 - No table partitioning anywhere
 - 8 tables removed entirely (see "Not in v0" below)
-- `tenants` + `stations.tenant_id`/`station_groups.tenant_id`/`station_group_members.tenant_id` land early (Plan 147 Slice A) as a pure data-model foundation, and `audit_log` (Plan 147 Slice B) lands as an append-only substrate ahead of enforcement — auth/RBAC enforcement itself (access-token auth, DB roles, write-isolation call sites) is still deferred (`users`/`access_tokens`/`refresh_tokens` remain "Not in v0" below)
+- `tenants` + `stations.tenant_id`/`station_groups.tenant_id`/`station_group_members.tenant_id` land early (Plan 147 Slice A) as a pure data-model foundation, and `audit_log` (Plan 147 Slice B) lands as an append-only substrate ahead of enforcement. Plan 147 Slice C then lands `access_tokens` + `access_token_stations` (v1.0-headless access-token auth, migration 0047) — REALIZED with a shape that supersedes the old v1.x-design-intent ERD sketch below (HMAC-SHA-256+pepper `token_hash`, a normalized `access_token_stations` scope join not JSONB, `role`/`tenant_id` not `consumer_name`/`created_by`, no `users` FK — v1.0 is headless, there is no `users` table yet). `users` / `refresh_tokens` — and the least-privilege DB role split (Slice D) — remain deferred ("Not in v0" below); DB-role enforcement of `access_tokens` grants is Slice D, not yet built.
 
 ```mermaid
 erDiagram
@@ -989,7 +989,11 @@ erDiagram
     stations ||--o{ alerts : "station_id"
 
     %% ──────────────────────────────────────────────
-    %% AUTH DOMAIN (v1)
+    %% AUTH DOMAIN — users/refresh_tokens are v1.x design intent (NOT built);
+    %% access_tokens/access_token_stations are REALIZED (Plan 147 Slice C,
+    %% migration 0047) with a shape that supersedes the old design-intent
+    %% access_tokens sketch (JSONB scope / consumer_name / created_by /
+    %% revoked_at) — see the v0 schema note above.
     %% ──────────────────────────────────────────────
 
     users {
@@ -1009,13 +1013,22 @@ erDiagram
 
     access_tokens {
         UUID id PK
-        TEXT consumer_name
-        TEXT token_hash
-        JSONB scope
-        UUID created_by FK
+        TEXT token_hash UK "HMAC-SHA-256 + access_token_pepper, R1"
+        TEXT key_prefix "indexed lookup"
+        TEXT name
+        TEXT role "consumer | admin"
+        UUID tenant_id FK "NULL = unscoped global-admin"
+        SMALLINT pepper_version "default 1 — v1.x dual-pepper rotation hook"
+        TIMESTAMPTZ expires_at
+        TIMESTAMPTZ disabled_at "NULL"
         TIMESTAMPTZ created_at
         TIMESTAMPTZ last_used_at "NULL"
-        TIMESTAMPTZ revoked_at "NULL"
+    }
+
+    access_token_stations {
+        UUID token_id PK,FK
+        UUID station_id PK,FK
+        TIMESTAMPTZ created_at
     }
 
     refresh_tokens {
@@ -1039,9 +1052,11 @@ erDiagram
         TIMESTAMPTZ created_at
     }
 
-    users ||--o{ access_tokens : "created_by"
     users ||--o{ refresh_tokens : "user_id"
     users ||--o{ forecast_adjustments : "forecaster_id"
+    tenants ||--o{ access_tokens : "tenant_id (NULL = unscoped)"
+    access_tokens ||--o{ access_token_stations : "token_id"
+    stations ||--o{ access_token_stations : "station_id"
 ```
 
 ### Full table inventory (36 tables)
@@ -1089,10 +1104,11 @@ the AUTH DOMAIN entities below alongside the still-deferred `users` /
 | 25 | `alerts` | UUID | no | Ops |
 | 26 | `pipeline_health` | BIGSERIAL | no | Ops |
 | 27 | `dead_letter_queue` | BIGSERIAL | no | Ops |
-| 28 | `users` | UUID | no | Auth |
-| 29 | `access_tokens` | UUID | no | Auth |
-| 30 | `refresh_tokens` | UUID | no | Auth |
-| 31 | `audit_log` | BIGSERIAL | no | Auth |
+| 28 | `users` | UUID | no | Auth (v1.x, not built) |
+| 29 | `access_tokens` | UUID | no | Auth (REALIZED, Plan 147 Slice C, migration 0047) |
+| 29a | `access_token_stations` | composite | no | Auth (REALIZED, Plan 147 Slice C, migration 0047) |
+| 30 | `refresh_tokens` | UUID | no | Auth (v1.x, not built) |
+| 31 | `audit_log` | BIGSERIAL | no | Auth (REALIZED, Plan 147 Slice B) |
 | 32 | `observation_versions` | UUID | no | Observation |
 | 33 | `model_artifact_basin_versions` | composite | no | Model |
 

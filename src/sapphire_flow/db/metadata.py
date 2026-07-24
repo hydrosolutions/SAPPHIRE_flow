@@ -1618,3 +1618,77 @@ audit_log = sa.Table(
         name="ck_audit_log_actor_id_matches_actor_type",
     ),
 )
+
+# Plan 147 Slice C: R1 LOCKED = HMAC-SHA-256 + a server-side pepper (NOT
+# bcrypt — matches the `refresh_tokens` keyed-hash precedent and avoids
+# per-request bcrypt CPU on the hot auth path). `tenant_id` NULL denotes an
+# unscoped global-admin token. `token_hash` is UNIQUE (a collision would let
+# two distinct raw keys resolve to the same row); `key_prefix` is UNIQUE too
+# (the fast pre-verification lookup key must never collide —
+# `fetch_by_key_prefix` uses `one_or_none()`; the CLI retries generation on
+# the near-impossible collision). G4 LOCKED role/tenant pairing is enforced
+# by `ck_access_tokens_role_tenant` (role=admin -> tenant_id IS NULL;
+# role=consumer -> tenant_id IS NOT NULL), mirroring
+# `AccessToken.__post_init__` + alembic 0047 so a tenantless consumer /
+# tenant-bound admin is structurally unrepresentable even for rows written
+# outside the dataclass.
+access_tokens = sa.Table(
+    "access_tokens",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True),
+    sa.Column("token_hash", sa.Text, nullable=False, unique=True),
+    sa.Column("key_prefix", sa.Text, nullable=False),
+    sa.Column("name", sa.Text, nullable=False),
+    sa.Column(
+        "role",
+        sa.Text,
+        sa.CheckConstraint(
+            "role IN ('consumer', 'admin')", name="ck_access_tokens_role"
+        ),
+        nullable=False,
+    ),
+    sa.Column(
+        "tenant_id", UUID(as_uuid=True), sa.ForeignKey("tenants.id"), nullable=True
+    ),
+    sa.Column("pepper_version", sa.SmallInteger, nullable=False, server_default="1"),
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("disabled_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column(
+        "created_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+    ),
+    sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),
+    sa.CheckConstraint(
+        "(role = 'admin' AND tenant_id IS NULL) OR "
+        "(role = 'consumer' AND tenant_id IS NOT NULL)",
+        name="ck_access_tokens_role_tenant",
+    ),
+    sa.Index("ix_access_tokens_key_prefix", "key_prefix", unique=True),
+    sa.Index("ix_access_tokens_expires_at", "expires_at"),
+)
+
+# R2 LOCKED = a normalized join (not JSONB) — station-axis scope only for
+# v1.0. Scope membership is validated at the store boundary (create/list):
+# every scoped station must belong to the token's own tenant.
+access_token_stations = sa.Table(
+    "access_token_stations",
+    metadata,
+    sa.Column(
+        "token_id",
+        UUID(as_uuid=True),
+        sa.ForeignKey("access_tokens.id"),
+        nullable=False,
+    ),
+    sa.Column(
+        "station_id", UUID(as_uuid=True), sa.ForeignKey("stations.id"), nullable=False
+    ),
+    sa.Column(
+        "created_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+    ),
+    sa.PrimaryKeyConstraint("token_id", "station_id"),
+)

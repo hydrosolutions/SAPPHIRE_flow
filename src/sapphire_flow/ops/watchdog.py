@@ -35,6 +35,7 @@ generalization of the two near-identical blocks.
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import socket
 import sys
@@ -55,6 +56,10 @@ DEFAULT_HEALTH_URL = "http://localhost:8000/api/v1/health"
 DEFAULT_BACKUP_DIR = Path("/Volumes/sapphire-backup/pg_dumps")
 DEFAULT_STATE_PATH = Path.home() / ".sapphire-watchdog-state.json"
 DEFAULT_SLACK_PATH = Path("./secrets/slack_webhook_url")
+# Plan 147 Slice C: `/health/detail` is admin-only once auth is enforced.
+# HOST secret (not a Docker/Compose mount), same convention as
+# DEFAULT_SLACK_PATH — the watchdog is a launchd host process.
+DEFAULT_PROBE_TOKEN_PATH = Path("./secrets/health_probe_token")
 # Same base as DEFAULT_HEALTH_URL — the JSON API route lives under the same
 # `/api/v1` prefix as `/health`, just with a `/detail` suffix + query params.
 DEFAULT_BAFU_HEALTH_DETAIL_URL = (
@@ -185,18 +190,26 @@ class BafuFreshnessResult:
 
 
 def probe_bafu_freshness(
-    url: str, *, client: httpx.Client | None = None
+    url: str, *, client: httpx.Client | None = None, token: str | None = None
 ) -> BafuFreshnessResult:
     """Synchronous probe of `/health/detail?check_type=bafu_forecast_freshness`.
 
     Returns found=False (never raises) on any HTTP error, non-2xx, invalid
     JSON, or an empty `items` list — the caller treats all of these as
     "no heartbeat found", which is the stale case.
+
+    Plan 147 Slice C: `/health/detail` is admin-only once auth is enforced.
+    `token` (the host-secret admin probe token, read by `read_probe_token`)
+    is sent as `Authorization: Bearer <token>` when present; omitted when
+    None so a pre-auth deployment (or a missing/unreadable/empty token
+    file) degrades to the prior unauthenticated 401 → found=False path
+    rather than crashing the watchdog tick.
     """
     owns_client = client is None
     c = client or httpx.Client(timeout=HEALTH_CHECK_TIMEOUT_S)
+    headers = {"Authorization": f"Bearer {token}"} if token else None
     try:
-        resp = c.get(url)
+        resp = c.get(url, headers=headers)
         status_code = resp.status_code
         if status_code < 200 or status_code >= 300:
             return BafuFreshnessResult(
@@ -269,6 +282,23 @@ def read_slack_webhook(path: Path) -> str | None:
         log.warning(
             "watchdog.slack_webhook_read_failed", path=str(path), error=str(exc)
         )
+        return None
+    return value or None
+
+
+def read_probe_token(path: Path) -> str | None:
+    """Return a stripped admin probe token, or None if
+    missing/unreadable/empty (mirrors `read_slack_webhook`). Plan 147 Slice
+    C: `/health/detail` is admin-only; this is the HOST-secret token
+    (`./secrets/health_probe_token`, NOT a Docker/Compose mount — the
+    watchdog is a launchd host process reading `./secrets/` directly, same
+    as the Slack webhook)."""
+    if not path.exists():
+        return None
+    try:
+        value = path.read_text().strip()
+    except OSError as exc:
+        log.warning("watchdog.probe_token_read_failed", path=str(path), error=str(exc))
         return None
     return value or None
 
@@ -404,6 +434,9 @@ class WatchdogConfig:
     # Plan 136: same semantics as bafu_health_detail_url, for the BAFU LINDAS
     # observation archive collector's freshness check.
     bafu_obs_health_detail_url: str | None = None
+    # Plan 147 Slice C: admin-scoped probe token for the now-authenticated
+    # `/health/detail`.
+    probe_token_path: Path = DEFAULT_PROBE_TOKEN_PATH
 
 
 def run_once(
@@ -658,6 +691,15 @@ def main(argv: list[str] | None = None) -> int:
             "(default: derived from --health-url)"
         ),
     )
+    parser.add_argument(
+        "--probe-token-path",
+        default=str(DEFAULT_PROBE_TOKEN_PATH),
+        help=(
+            "Path to a file containing the admin-scoped bearer token used to "
+            "probe /health/detail (chmod 600, HOST secret — not a Docker "
+            f"mount; default: {DEFAULT_PROBE_TOKEN_PATH})"
+        ),
+    )
     args = parser.parse_args(argv)
 
     configure_cli_logging("INFO")
@@ -669,7 +711,11 @@ def main(argv: list[str] | None = None) -> int:
         slack_path=Path(args.slack_path),
         bafu_health_detail_url=args.bafu_health_detail_url,
         bafu_obs_health_detail_url=args.bafu_obs_health_detail_url,
+        probe_token_path=Path(args.probe_token_path),
     )
+
+    probe_token = read_probe_token(config.probe_token_path)
+    bafu_probe_bound = functools.partial(probe_bafu_freshness, token=probe_token)
 
     try:
         run_once(
@@ -677,8 +723,8 @@ def main(argv: list[str] | None = None) -> int:
             clock=_utc_now,
             probe=probe_health,
             slack_poster=default_slack_poster,
-            bafu_probe=probe_bafu_freshness,
-            bafu_obs_probe=probe_bafu_freshness,
+            bafu_probe=bafu_probe_bound,
+            bafu_obs_probe=bafu_probe_bound,
         )
     except Exception as exc:  # unrecoverable: let launchd see the non-zero
         log.error("watchdog.unrecoverable_error", error=str(exc))

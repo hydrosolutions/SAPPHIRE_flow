@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     import polars as pl
 
     from sapphire_flow.types.alert import Alert
-    from sapphire_flow.types.auth import AuditEntry
+    from sapphire_flow.types.auth import AccessToken, AuditEntry
     from sapphire_flow.types.basin import Basin
     from sapphire_flow.types.calculated_station import ComponentWeight
     from sapphire_flow.types.datetime import UtcDatetime
@@ -59,6 +59,7 @@ if TYPE_CHECKING:
         RawHistoricalForcing,
     )
     from sapphire_flow.types.ids import (
+        AccessTokenId,
         AlertId,
         ArtifactId,
         BasinId,
@@ -323,9 +324,18 @@ class AlertStore(Protocol):
         source: AlertSource | None = None,
         status: AlertStatus | None = None,
         level: str | None = None,
+        scope_station_ids: frozenset[StationId] | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[Alert], int]:
+        """`scope_station_ids=None` means unscoped (admin — no filter).
+        Otherwise ONLY alerts whose `station_id` is a member of
+        `scope_station_ids` match — applied BEFORE `limit`/`offset`/the
+        `total` count (Plan 147 Slice C fixer round: consumer-scope
+        filtering must happen in the query, not after pagination). An empty
+        `scope_station_ids` matches nothing (fail-closed, R2) and a
+        stationless (`station_id IS NULL`) alert never matches a non-None
+        scope (F7)."""
         raise NotImplementedError
 
     def resolve_alert(self, alert_id: AlertId) -> None:
@@ -638,6 +648,32 @@ class AuditLogStore(Protocol):
     contract here, and a DB-level guard, migration 0046, backstops it)."""
 
     def append_entry(self, entry: AuditEntry) -> None:
+        raise NotImplementedError
+
+
+@runtime_checkable
+class AccessTokenStore(Protocol):
+    """Plan 147 Slice C: `access_tokens` + `access_token_stations` scope.
+
+    `create_token` validates every scoped station belongs to the token's own
+    `tenant_id` (R2's scope-membership rule) and raises `ValueError` on a
+    cross-tenant station id — never silently drops it."""
+
+    def create_token(
+        self, token: AccessToken, *, station_ids: frozenset[StationId]
+    ) -> None:
+        raise NotImplementedError
+
+    def fetch_by_key_prefix(self, key_prefix: str) -> AccessToken | None:
+        raise NotImplementedError
+
+    def fetch_token(self, token_id: AccessTokenId) -> AccessToken | None:
+        raise NotImplementedError
+
+    def fetch_all_tokens(self) -> list[AccessToken]:
+        raise NotImplementedError
+
+    def revoke_token(self, token_id: AccessTokenId, *, revoked_at: UtcDatetime) -> None:
         raise NotImplementedError
 
 

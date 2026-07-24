@@ -116,6 +116,7 @@ class PgAlertStore:
         source: AlertSource | None = None,
         status: AlertStatus | None = None,
         level: str | None = None,
+        scope_station_ids: frozenset[StationId] | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[Alert], int]:
@@ -128,6 +129,19 @@ class PgAlertStore:
             filters.append(alerts.c.status == status.value)
         if level is not None:
             filters.append(alerts.c.alert_level == level)
+        if scope_station_ids is not None:
+            # Applied BEFORE count/limit/offset (Plan 147 Slice C fixer
+            # round) — a consumer's scope must narrow the query itself, not
+            # post-filter an already-paginated page. `.in_()` on a NULL
+            # `station_id` column never matches, so stationless alerts are
+            # excluded for free (F7). An empty scope explicitly matches
+            # nothing (fail-closed, R2) — `sa.false()` avoids the
+            # empty-IN-clause SAWarning.
+            filters.append(
+                alerts.c.station_id.in_(scope_station_ids)
+                if scope_station_ids
+                else sa.false()
+            )
 
         where = sa.and_(*filters) if filters else sa.true()
 

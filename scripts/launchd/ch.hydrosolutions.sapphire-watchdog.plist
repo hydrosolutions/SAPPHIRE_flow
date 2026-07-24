@@ -5,6 +5,14 @@
 <dict>
     <key>Label</key>
     <string>ch.hydrosolutions.sapphire-watchdog</string>
+    <!-- Plan 147 Slice C: --probe-token-path is passed EXPLICITLY here
+         (defensive — do NOT rely on the argparse default silently matching
+         WorkingDirectory). It resolves against WorkingDirectory below to the
+         HOST secret file ./secrets/health_probe_token — an admin-scoped
+         access-token raw key the watchdog sends as `Authorization: Bearer`
+         on its /health/detail probes. See docs/standards/cicd.md
+         § Access-token pepper + probe-token rotation for the bootstrap +
+         rotation runbook. -->
     <key>ProgramArguments</key>
     <array>
         <string>/Users/sapphire/.local/bin/uv</string>
@@ -13,6 +21,8 @@
         <string>python</string>
         <string>-m</string>
         <string>sapphire_flow.ops.watchdog</string>
+        <string>--probe-token-path</string>
+        <string>./secrets/health_probe_token</string>
     </array>
     <key>StartInterval</key>
     <integer>300</integer>

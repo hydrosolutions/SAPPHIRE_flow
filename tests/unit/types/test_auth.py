@@ -5,12 +5,60 @@ from datetime import UTC, datetime
 
 import pytest
 
-from sapphire_flow.types.auth import AuditEntry
+from sapphire_flow.types.auth import AccessToken, AuditEntry
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.enums import AuditActorType, AuditEventType
-from sapphire_flow.types.ids import AccessTokenId, UserId
+from sapphire_flow.types.enums import AccessTokenRole, AuditActorType, AuditEventType
+from sapphire_flow.types.ids import AccessTokenId, StationId, TenantId, UserId
 
 _NOW = ensure_utc(datetime(2026, 1, 1, tzinfo=UTC))
+_EXPIRES = ensure_utc(datetime(2026, 2, 1, tzinfo=UTC))
+
+
+def _access_token(**overrides: object) -> AccessToken:
+    defaults: dict[str, object] = dict(
+        id=AccessTokenId(uuid.uuid4()),
+        token_hash="hash",
+        key_prefix="pfx",
+        name="test",
+        role=AccessTokenRole.ADMIN,
+        tenant_id=None,
+        pepper_version=1,
+        expires_at=_EXPIRES,
+        disabled_at=None,
+        created_at=_NOW,
+        last_used_at=None,
+        station_ids=frozenset(),
+    )
+    defaults.update(overrides)
+    return AccessToken(**defaults)  # type: ignore[arg-type]
+
+
+class TestAccessTokenRoleTenantInvariant:
+    """G4 LOCKED (blocker, Slice C fixer round): `role=consumer` requires a
+    non-null `tenant_id`; `role=admin` requires `tenant_id=None` — mirrored
+    by a DB CHECK constraint (`ck_access_tokens_role_tenant`,
+    alembic/versions/0047), so a tenantless consumer or tenant-bound admin
+    is unrepresentable both here and at the DB layer."""
+
+    def test_consumer_with_null_tenant_id_raises(self) -> None:
+        with pytest.raises(ValueError, match="role=consumer requires a non-null"):
+            _access_token(role=AccessTokenRole.CONSUMER, tenant_id=None)
+
+    def test_admin_with_non_null_tenant_id_raises(self) -> None:
+        with pytest.raises(ValueError, match="role=admin requires tenant_id=None"):
+            _access_token(role=AccessTokenRole.ADMIN, tenant_id=TenantId(uuid.uuid4()))
+
+    def test_consumer_with_tenant_id_constructs(self) -> None:
+        token = _access_token(
+            role=AccessTokenRole.CONSUMER,
+            tenant_id=TenantId(uuid.uuid4()),
+            station_ids=frozenset({StationId(uuid.uuid4())}),
+        )
+        assert token.role is AccessTokenRole.CONSUMER
+
+    def test_admin_with_null_tenant_id_constructs(self) -> None:
+        token = _access_token(role=AccessTokenRole.ADMIN, tenant_id=None)
+        assert token.role is AccessTokenRole.ADMIN
 
 
 class TestAuditEntryActorIdActorTypeInvariant:

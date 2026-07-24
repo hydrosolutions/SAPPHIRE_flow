@@ -12,18 +12,28 @@ from sapphire_flow.db.engine import create_engine_from_env
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    # Plan 147 Slice C: fail-closed startup — the API refuses to boot
+    # without a readable, non-empty pepper (R1). Imported lazily to avoid a
+    # module import cycle (api.security imports api.deps.get_connection).
+    from sapphire_flow.api.security import load_access_token_pepper
+
+    app.state.access_token_pepper = load_access_token_pepper()
     app.state.engine = create_engine_from_env()
     yield
     app.state.engine.dispose()
 
 
 def get_connection(request: Request) -> Generator[sa.Connection, None, None]:
-    engine: sa.Engine = request.app.state.engine
-    with engine.connect() as conn:
-        yield conn
+    """The SINGLE request-scoped connection — one transaction per request.
 
-
-def get_connection_rw(request: Request) -> Generator[sa.Connection, None, None]:
+    Plan 147 Slice C (major fix, Codex round 2): auth (`require_principal`)
+    and every route handler share this one RW-capable connection (FastAPI
+    caches the dependency per request), so a request opens EXACTLY ONE
+    connection (`042:105-111` — reuse the request connection, never open a
+    second). It is `engine.begin()` (not `engine.connect()`) so the
+    `last_used_at` write on a successful auth actually commits; read-only
+    routes simply commit an empty transaction.
+    """
     engine: sa.Engine = request.app.state.engine
     with engine.begin() as conn:
         yield conn
