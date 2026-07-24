@@ -163,6 +163,10 @@ class PipelineCheckType(Enum):
     BAFU_FORECAST_FRESHNESS = "bafu_forecast_freshness"
     WEATHER_HISTORY_INGEST = "weather_history_ingest"
     BAFU_OBSERVATION_FRESHNESS = "bafu_observation_freshness"
+    # Plan 146 D7: DEDICATED check type for the recap-reanalysis snow ingest —
+    # kept distinct from WEATHER_HISTORY_INGEST (MeteoSwiss) so an operator
+    # filtering one feed's health never conflates it with the other's.
+    RECAP_SNOW_REANALYSIS_INGEST = "recap_snow_reanalysis_ingest"
 
 
 class NotificationChannel(Enum):

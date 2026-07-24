@@ -1298,3 +1298,125 @@ class TestGroupHindcastUsesGroupModelInputs:
 
         assert recording.last_inputs is not None
         assert isinstance(recording.last_inputs, GroupModelInputs)
+
+
+class TestSnowReachesPastDynamicViaHybridSource:
+    """Plan 146 D4/3a: the SAME stored ``recap_snow_reanalysis`` series
+    reaches ``past_dynamic`` for the hindcast consumer through the real
+    ``default_hybrid_forcing_source``."""
+
+    def test_swe_column_present_with_stored_value(self) -> None:
+        from sapphire_flow.adapters.hybrid_reanalysis_factories import (
+            default_hybrid_forcing_source,
+        )
+        from sapphire_flow.types.enums import ArtifactScope
+        from sapphire_flow.types.model import ModelDataRequirements
+        from tests.fakes.fake_stores import FakeHistoricalForcingStore
+
+        rng = random.Random(0)
+        station = make_station_config()
+        sid = station.id
+        model_id = ModelId("test_model")
+        artifact_id = ArtifactId(uuid4())
+        run_id = uuid4()
+
+        obs_store = FakeObservationStore()
+        hindcast_store = FakeHindcastStore()
+        station_store = FakeStationStore()
+        basin_store = FakeBasinStore()
+
+        station_store.store_station(station)
+        station_store.store_weather_source(
+            StationWeatherSource(
+                station_id=sid,
+                nwp_source="era5_land",
+                extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+                status=WeatherSourceStatus.ACTIVE,
+                role=WeatherSourceRole.REANALYSIS,
+            )
+        )
+
+        data_start = ensure_utc(datetime(2021, 1, 1, tzinfo=UTC))
+        _seed_observations(obs_store, sid, data_start, n_days=400)
+
+        forcing_store = FakeHistoricalForcingStore()
+        forcing_store.store_forcing(
+            [
+                make_raw_historical_forcing(
+                    station_id=sid,
+                    source="recap_snow_reanalysis",
+                    parameter="swe",
+                    valid_time=ensure_utc(
+                        datetime.fromtimestamp(
+                            data_start.timestamp() + i * 3600, tz=UTC
+                        )
+                    ),
+                    value=float(i % 20),
+                )
+                for i in range(400 * 24)
+            ]
+        )
+
+        class _SnowFedModel(FakeStationForecastModel):
+            artifact_scope = ArtifactScope.STATION
+            data_requirements = ModelDataRequirements(
+                target_parameters=frozenset({"discharge"}),
+                past_dynamic_features=frozenset({"swe"}),
+                future_dynamic_features=frozenset(),
+                static_features=frozenset(),
+                supported_time_steps=frozenset({_STEP}),
+                lookback_steps=720,
+                forecast_horizon_steps=5,
+                spatial_input_type=SpatialRepresentation.BASIN_AVERAGE,
+            )
+
+        class RecordingModel:
+            artifact_scope = _SnowFedModel.artifact_scope
+            data_requirements = _SnowFedModel.data_requirements
+
+            def __init__(self) -> None:
+                self.calls: list[StationModelInputs] = []
+
+            def predict(
+                self,
+                artifact: ModelArtifact,
+                inputs: StationModelInputs,
+                rng: random.Random,
+                prior_state: bytes | None = None,
+            ) -> tuple:
+                self.calls.append(inputs)
+                return FakeStationForecastModel().predict(
+                    artifact, inputs, rng, prior_state
+                )
+
+            def serialize_artifact(self, artifact: ModelArtifact) -> bytes:
+                return b""
+
+            def deserialize_artifact(self, raw: bytes) -> ModelArtifact:
+                return raw
+
+        recording = RecordingModel()
+
+        run_station_hindcast(
+            model=recording,
+            artifact=b"artifact",
+            station_id=sid,
+            model_id=model_id,
+            artifact_id=artifact_id,
+            period_start=_PERIOD_START,
+            period_end=_PERIOD_END,
+            time_step=_STEP,
+            forcing_source=default_hybrid_forcing_source(forcing_store=forcing_store),
+            obs_store=obs_store,
+            hindcast_store=hindcast_store,
+            station_store=station_store,
+            basin_store=basin_store,
+            clock=_fixed_clock,
+            rng=rng,
+            hindcast_run_id=run_id,
+        )
+
+        assert len(recording.calls) == 5
+        for inputs in recording.calls:
+            assert "swe" in inputs.data.past_dynamic.columns
+            assert not inputs.data.past_dynamic.is_empty()

@@ -34,6 +34,11 @@ if TYPE_CHECKING:
 # archive-backed RhiresD, falling back to the preliminary live-tail RprelimD
 # for days RhiresD has not yet published; every other parameter is a single-
 # source chain (each has exactly one MeteoSwiss product, no fallback).
+#
+# Plan 146 D4: adds the antecedent snow tier — one single-source chain per
+# snow parameter (swe/snow_depth/snowmelt), each backed by
+# ForcingSource.RECAP_SNOW_REANALYSIS (the only provenance a stored snow row
+# ever carries, Plan 146 D3). No fallback tier exists for snow yet.
 _PRIORITY_CHAINS: dict[str, tuple[ForcingSource, ...]] = {
     "precipitation": (
         ForcingSource.METEOSWISS_RHIRESD,
@@ -43,17 +48,31 @@ _PRIORITY_CHAINS: dict[str, tuple[ForcingSource, ...]] = {
     "temperature_min": (ForcingSource.METEOSWISS_TMIND,),
     "temperature_max": (ForcingSource.METEOSWISS_TMAXD,),
     "relative_sunshine_duration": (ForcingSource.METEOSWISS_SRELD,),
+    "swe": (ForcingSource.RECAP_SNOW_REANALYSIS,),
+    "snow_depth": (ForcingSource.RECAP_SNOW_REANALYSIS,),
+    "snowmelt": (ForcingSource.RECAP_SNOW_REANALYSIS,),
 }
 
 # Public: the canonical parameter set the hybrid chain resolves. Also used by
 # the §6D dashboard forcing endpoint (api/routes/stations.py) to request the
 # full hybrid-resolved series, not just this factory's own default scope.
+#
+# Plan 146 D4: adding the three snow params here is REQUIRED (not merely
+# adding them to _PRIORITY_CHAINS above) — `HybridForcingSource._sources` is
+# derived ONCE at construction from `parameters_in_scope`, and every
+# construction-time caller (training/hindcast/live + six more, see D4's full
+# caller audit) passes no `parameters_in_scope` override, so it always falls
+# back to this default. Without this, the snow `PerSourceStoreReader` is
+# never constructed and a stored snow series is never selected.
 DEFAULT_PARAMETERS: tuple[str, ...] = (
     "precipitation",
     "temperature",
     "temperature_min",
     "temperature_max",
     "relative_sunshine_duration",
+    "swe",
+    "snow_depth",
+    "snowmelt",
 )
 
 

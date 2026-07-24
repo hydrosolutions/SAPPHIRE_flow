@@ -311,6 +311,9 @@ services:
       SCHEDULE_FORECAST_CYCLE: ${SCHEDULE_FORECAST_CYCLE:-0 */6 * * *}
       SCHEDULE_BACKUP_DATABASE: ${SCHEDULE_BACKUP_DATABASE:-0 2 * * *}
       SCHEDULE_INGEST_WEATHER_HISTORY: ${SCHEDULE_INGEST_WEATHER_HISTORY:-0 6 * * *}
+      # Plan 146 D2: recap-Gateway snow-reanalysis ingest — a distinct time
+      # from ingest-weather-history so the two never contend for the DB.
+      SCHEDULE_INGEST_SNOW_REANALYSIS: ${SCHEDULE_INGEST_SNOW_REANALYSIS:-0 5 * * *}
       SCHEDULE_COLLECT_BAFU_OBSERVATIONS: ${SCHEDULE_COLLECT_BAFU_OBSERVATIONS:-5 * * * *}
     depends_on:
       postgres:

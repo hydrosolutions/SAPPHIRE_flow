@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.enums import SpatialRepresentation
+    from sapphire_flow.types.historical_forcing import RawHistoricalForcing
     from sapphire_flow.types.ids import StationId
 
 # Recap Gateway HRU identifier (Plan 145 review fold-in — moved out of
@@ -93,3 +94,39 @@ class SnowForecastFetchResult:
 
     forecasts: dict[StationId, WeatherForecastResult]
     unavailable: Mapping[GatewayHruName, frozenset[str]]
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class SnowReanalysisFetchResult:
+    """Typed ``fetch_snow_reanalysis`` return (Plan 146 D5).
+
+    Mirrors :class:`SnowForecastFetchResult` on the reanalysis side, but adds
+    ``attempted``/``resolved``/``skipped`` — the ingest flow's health
+    classification needs the request DENOMINATOR (which (hru, variable) keys
+    were actually attempted after resolver skips) and the AUTHORITATIVE
+    station-resolution outcome, neither of which the forecast-side result
+    needs to carry.
+
+    ``rows`` — every successfully fetched ``RawHistoricalForcing`` row, across
+    every ``(hru, variable)`` key that did not raise.
+    ``unavailable`` — per-HRU map of ``{canonical variable: failure code}``
+    (``RecapSnowUnavailableError.code``, e.g. ``"source_data_missing"`` /
+    ``"subscription_not_found"``) for keys CONTAINED by the per-``(hru,
+    variable)`` try/except loop. Carries the CODE, not just the variable name,
+    so the caller can classify severity without re-deriving it.
+    ``attempted`` — per-HRU set of canonical variable names actually
+    requested (after the resolver's unknown-name skip) — the denominator for
+    distinguishing partial vs total loss.
+    ``resolved`` — the station -> HRU mapping the adapter actually fetched
+    for (the authoritative resolution outcome; the flow reconciles against
+    this rather than re-resolving independently).
+    ``skipped`` — station -> drop reason (``"unmapped"`` from
+    ``_resolve_all``, ``"prefiltered"`` from ``_prefilter``) for every
+    in-scope station that did NOT make it into ``resolved``.
+    """
+
+    rows: list[RawHistoricalForcing]
+    unavailable: Mapping[GatewayHruName, Mapping[str, str]]
+    attempted: Mapping[GatewayHruName, frozenset[str]]
+    resolved: Mapping[StationId, GatewayHruName]
+    skipped: Mapping[StationId, str]
