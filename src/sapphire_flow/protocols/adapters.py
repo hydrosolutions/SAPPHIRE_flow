@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.forecast import ForeignForecast
     from sapphire_flow.types.historical_forcing import RawHistoricalForcing
@@ -10,7 +12,11 @@ if TYPE_CHECKING:
     from sapphire_flow.types.observation import RawObservation
     from sapphire_flow.types.pipeline import FlowRunStatus
     from sapphire_flow.types.station import StationConfig, StationWeatherSource
-    from sapphire_flow.types.weather import GriddedForecast, WeatherForecastResult
+    from sapphire_flow.types.weather import (
+        GriddedForecast,
+        SnowForecastFetchResult,
+        WeatherForecastResult,
+    )
 
 
 @runtime_checkable
@@ -30,6 +36,29 @@ class WeatherForecastSource(Protocol):
 
         Callers discriminate via ``isinstance(result, GriddedForecast)``.
         """
+        raise NotImplementedError
+
+
+@runtime_checkable
+class SnowForecastSource(Protocol):
+    """Narrow capability Protocol for the deterministic snow-forecast channel.
+
+    Plan 145 D6: NOT part of ``WeatherForecastSource`` — a bare
+    ``adapter.fetch_snow_forecast(...)`` call would fail pyright and could raise at
+    runtime against MeteoSwiss/replay/an ordinary injected ``WeatherForecastSource``.
+    Callers detect this capability via ``isinstance(adapter, SnowForecastSource)``
+    (structural, not an ``isinstance(RecapGatewayForecastAdapter)`` import) so any
+    replay/test double implementing the method is compatible. An adapter that does
+    NOT satisfy this Protocol skips snow entirely — no scoping, no fetch, no
+    ``snow_unavailable`` outcome — behaving exactly as it does today.
+    """
+
+    def fetch_snow_forecast(
+        self,
+        station_configs: list[StationWeatherSource],
+        cycle_time: UtcDatetime,
+        required_snow: Mapping[StationId, frozenset[str]],
+    ) -> SnowForecastFetchResult:
         raise NotImplementedError
 
 

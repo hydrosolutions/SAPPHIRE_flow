@@ -197,8 +197,11 @@ three (`adapters/recap_gateway.py`). Do not assume a unit conversion factor
 without live-verifying against the Gateway response (§ Live smoke execution).
 The deterministic snow-forecast fetch path (`fetch_snow_forecast`) and the
 daily-snow → sub-daily 51-member IFS broadcast (model-input service) are
-built and unit-tested (Plan 082 Task 2H-snow), but are **not** wired into the
-main Flow-1 forecast-cycle storage path — a model consuming snow forecast
-features currently needs a separate integration step to persist
-`fetch_snow_forecast`'s output before the model-input service's broadcast can
-see it operationally.
+built and unit-tested (Plan 082 Task 2H-snow), and are wired into the main
+Flow-1 forecast-cycle storage path (Plan 145): `_fetch_nwp_task` fetches +
+stores snow rows under the SAME resolved IFS cycle for every station whose
+active model assignment(s) require a future snow variable, capability-gated
+via `SnowForecastSource` (Recap Gateway only). No FI model may yet declare a
+canonical unit on `swe`/`snow_depth`/`snowmelt` (see the `convert=None` note
+above) — the pipeline (shape/provenance/co-retrieval) is wired, but consuming
+the magnitudes operationally still needs the unit-resolution follow-on plan.

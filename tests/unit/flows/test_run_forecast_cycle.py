@@ -26,6 +26,7 @@ from sapphire_flow.flows.run_forecast_cycle import (
     _bind_rating_curve,
     _check_nwp_grid_staleness,
     _fetch_nwp_task,
+    _forecast_cycle_health,
     _load_weather_forecast_adapter_config,
     _NwpFetchOutcome,
     run_forecast_cycle_flow,
@@ -72,6 +73,7 @@ from sapphire_flow.types.ids import (
     StationGroupId,
     StationId,
 )
+from sapphire_flow.types.model import ModelDataRequirements
 from sapphire_flow.types.rating_curve import RatingCurve
 from sapphire_flow.types.station import (
     GroupModelAssignment,
@@ -110,6 +112,8 @@ from tests.fakes.fake_stores import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from sapphire_flow.types.pipeline import PipelineHealthRecord
 
 _NOW = ensure_utc(datetime(2026, 4, 1, 6, 0, tzinfo=UTC))
@@ -541,6 +545,39 @@ class _RecordingNwpFakeModel(FakeStationForecastModel):
         prior_state: bytes | None = None,
     ) -> object:
         self.seen_future_dynamic = inputs.data.future_dynamic  # type: ignore[attr-defined]
+        return super().predict(artifact, inputs, rng, prior_state)  # type: ignore[arg-type]
+
+
+class _SnowFedFakeModel(FakeStationForecastModel):
+    """Model whose ENTIRE future requirement is the snow channel ('swe') —
+    records whether ``predict`` was ever reached, to prove the per-model
+    ``assess_future_coverage`` gate suppressed it rather than it running on an
+    empty/absent future frame (Plan 145 review fold-in, full-cycle acceptance)."""
+
+    alert_eligibility = AlertEligibility.SKILL_FORECAST
+    data_requirements = FakeStationForecastModel.data_requirements.__class__(
+        target_parameters=frozenset({"discharge"}),
+        past_dynamic_features=frozenset(),
+        future_dynamic_features=frozenset({"swe"}),
+        static_features=frozenset(),
+        supported_time_steps=frozenset({timedelta(hours=1)}),
+        lookback_steps=20,
+        forecast_horizon_steps=5,
+        spatial_input_type=SpatialRepresentation.POINT,
+        ensemble_mode=EnsembleMode.SINGLE,
+    )
+
+    def __init__(self) -> None:
+        self.predict_called = False
+
+    def predict(
+        self,
+        artifact: object,
+        inputs: object,
+        rng: random.Random,
+        prior_state: bytes | None = None,
+    ) -> object:
+        self.predict_called = True
         return super().predict(artifact, inputs, rng, prior_state)  # type: ignore[arg-type]
 
 
@@ -1160,6 +1197,872 @@ class TestRecapNwpDeliveryWatchdog:
         assert stale is True
         record = _only_nwp_delivery_record(health_store)
         assert record.status == PipelineHealthStatus.CRITICAL
+
+
+def _snow_ws(station_id: StationId) -> StationWeatherSource:
+    return StationWeatherSource(
+        station_id=station_id,
+        nwp_source="ifs_ecmwf",
+        extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+        status=WeatherSourceStatus.ACTIVE,
+        role=WeatherSourceRole.FORECAST,
+    )
+
+
+class TestComputeRequiredSnow:
+    """Plan 145 2a: the pre-submission per-station required-future-snow map."""
+
+    def test_active_snow_model_contributes_its_snow_features(self) -> None:
+        from sapphire_flow.flows.run_forecast_cycle import _compute_required_snow
+
+        sid = StationId(uuid4())
+        model_id = ModelId("snow_model")
+
+        class _SnowModel:
+            data_requirements = ModelDataRequirements(
+                target_parameters=frozenset({"discharge"}),
+                past_dynamic_features=frozenset(),
+                future_dynamic_features=frozenset({"swe", "precipitation"}),
+                static_features=frozenset(),
+                supported_time_steps=frozenset({timedelta(days=1)}),
+                lookback_steps=1,
+                forecast_horizon_steps=5,
+                spatial_input_type=SpatialRepresentation.BASIN_AVERAGE,
+            )
+
+        assignment = ModelAssignment(
+            station_id=sid,
+            model_id=model_id,
+            time_step=timedelta(days=1),
+            status=ModelAssignmentStatus.ACTIVE,
+            priority=1,
+            created_at=_NOW,
+        )
+        required = _compute_required_snow(
+            {sid: [assignment]},
+            {model_id: _SnowModel()},  # type: ignore[dict-item]
+        )
+        assert required == {sid: frozenset({"swe"})}
+
+    def test_inactive_assignment_contributes_nothing(self) -> None:
+        from sapphire_flow.flows.run_forecast_cycle import _compute_required_snow
+
+        sid = StationId(uuid4())
+        model_id = ModelId("snow_model")
+
+        class _SnowModel:
+            data_requirements = ModelDataRequirements(
+                target_parameters=frozenset({"discharge"}),
+                past_dynamic_features=frozenset(),
+                future_dynamic_features=frozenset({"swe"}),
+                static_features=frozenset(),
+                supported_time_steps=frozenset({timedelta(days=1)}),
+                lookback_steps=1,
+                forecast_horizon_steps=5,
+                spatial_input_type=SpatialRepresentation.BASIN_AVERAGE,
+            )
+
+        # Deliberately NOT active-filtered (as _active_only would do); this
+        # locks that the map builder does not need to re-filter -- but it also
+        # proves an unresolved model contributes nothing, below.
+        assignment = ModelAssignment(
+            station_id=sid,
+            model_id=ModelId("missing_model"),
+            time_step=timedelta(days=1),
+            status=ModelAssignmentStatus.ACTIVE,
+            priority=1,
+            created_at=_NOW,
+        )
+        required = _compute_required_snow(
+            {sid: [assignment]},
+            {model_id: _SnowModel()},  # type: ignore[dict-item]
+        )
+        assert required == {}
+
+    def test_past_only_snow_model_contributes_nothing(self) -> None:
+        from sapphire_flow.flows.run_forecast_cycle import _compute_required_snow
+
+        sid = StationId(uuid4())
+        model_id = ModelId("antecedent_snow_model")
+
+        class _PastOnlySnowModel:
+            data_requirements = ModelDataRequirements(
+                target_parameters=frozenset({"discharge"}),
+                past_dynamic_features=frozenset({"swe"}),
+                future_dynamic_features=frozenset(),
+                static_features=frozenset(),
+                supported_time_steps=frozenset({timedelta(days=1)}),
+                lookback_steps=1,
+                forecast_horizon_steps=5,
+                spatial_input_type=SpatialRepresentation.BASIN_AVERAGE,
+            )
+
+        assignment = ModelAssignment(
+            station_id=sid,
+            model_id=model_id,
+            time_step=timedelta(days=1),
+            status=ModelAssignmentStatus.ACTIVE,
+            priority=1,
+            created_at=_NOW,
+        )
+        required = _compute_required_snow(
+            {sid: [assignment]},
+            {model_id: _PastOnlySnowModel()},  # type: ignore[dict-item]
+        )
+        assert required == {}
+
+    def test_non_snow_model_contributes_nothing(self) -> None:
+        from sapphire_flow.flows.run_forecast_cycle import _compute_required_snow
+
+        sid = StationId(uuid4())
+        assignment = ModelAssignment(
+            station_id=sid,
+            model_id=_MODEL_ID,
+            time_step=timedelta(days=1),
+            status=ModelAssignmentStatus.ACTIVE,
+            priority=1,
+            created_at=_NOW,
+        )
+        required = _compute_required_snow(
+            {sid: [assignment]},
+            {_MODEL_ID: FakeStationForecastModel()},  # type: ignore[dict-item]
+        )
+        assert required == {}
+
+
+class TestReconcileSnowCoverageNaN:
+    """Plan 145 review escalation: a required snow parameter present as rows
+    that are all-NaN must be treated as MISSING coverage, not covered -- a
+    NaN forcing value is never usable, and ``_covered_snow_parameters``
+    previously counted mere row presence (via the ``parameter`` column)
+    regardless of whether the ``value`` column was finite."""
+
+    def test_all_nan_parameter_is_reported_missing(self) -> None:
+        from sapphire_flow.flows.run_forecast_cycle import _reconcile_snow_coverage
+
+        sid = StationId(uuid4())
+        rows = [
+            {
+                "valid_time": ensure_utc(_NOW + timedelta(hours=h)),
+                "parameter": "swe",
+                "member_id": None,
+                "value": float("nan"),
+            }
+            for h in (1, 2, 3)
+        ]
+        forecast = BasinAverageForecast(
+            nwp_source="ifs_ecmwf", cycle_time=_NOW, values=pl.DataFrame(rows)
+        )
+        missing = _reconcile_snow_coverage(
+            required_snow={sid: frozenset({"swe"})},
+            bound_station_ids=frozenset({sid}),
+            forecasts={sid: forecast},
+        )
+        assert missing == {sid: frozenset({"swe"})}
+
+    def test_at_least_one_finite_value_is_covered(self) -> None:
+        from sapphire_flow.flows.run_forecast_cycle import _reconcile_snow_coverage
+
+        sid = StationId(uuid4())
+        rows = [
+            {
+                "valid_time": ensure_utc(_NOW + timedelta(hours=1)),
+                "parameter": "swe",
+                "member_id": None,
+                "value": 1.0,
+            },
+            {
+                "valid_time": ensure_utc(_NOW + timedelta(hours=2)),
+                "parameter": "swe",
+                "member_id": None,
+                "value": float("nan"),
+            },
+        ]
+        forecast = BasinAverageForecast(
+            nwp_source="ifs_ecmwf", cycle_time=_NOW, values=pl.DataFrame(rows)
+        )
+        missing = _reconcile_snow_coverage(
+            required_snow={sid: frozenset({"swe"})},
+            bound_station_ids=frozenset({sid}),
+            forecasts={sid: forecast},
+        )
+        assert missing == {}
+
+
+class TestSnowForecastWiring:
+    """Plan 145 2a/2b/2c/2d: capability-gated, station-scoped snow fetch wired
+    into ``_fetch_nwp_task``, riding the SAME resolved IFS cycle, folding
+    per-(hru,variable) unavailability into the returned outcome."""
+
+    def _snow_forecast_result_factory(
+        self, station_id: StationId, *, unavailable: dict | None = None
+    ) -> Callable[[UtcDatetime], object]:
+        """A cycle-aware factory: builds the returned forecast's ``cycle_time``
+        from the ACTUAL argument ``fetch_snow_forecast`` is called with, not a
+        value baked in at fixture-construction time. A fixed (non-factory)
+        result would let a cycle-consistency bug (D4) hide behind a passing
+        test — the stored record must reflect what was actually fetched under,
+        not merely what the fake happened to be built with."""
+        from sapphire_flow.types.weather import SnowForecastFetchResult
+
+        def factory(cycle_time: UtcDatetime) -> object:
+            rows = [
+                {
+                    "valid_time": ensure_utc(cycle_time + timedelta(hours=h)),
+                    "parameter": "swe",
+                    "member_id": None,
+                    "value": 1.0,
+                }
+                for h in (1, 2, 3)
+            ]
+            forecast = BasinAverageForecast(
+                nwp_source="ifs_ecmwf", cycle_time=cycle_time, values=pl.DataFrame(rows)
+            )
+            return SnowForecastFetchResult(
+                forecasts={station_id: forecast}, unavailable=unavailable or {}
+            )
+
+        return factory
+
+    def test_non_snow_capable_adapter_is_skipped_no_snow_fetch(self) -> None:
+        # A plain WeatherForecastSource (no fetch_snow_forecast method) must NOT
+        # be probed for snow, even when required_snow is non-empty.
+        sid = StationId(uuid4())
+        adapter = FakeWeatherForecastSource(result={})
+        outcome = _fetch_nwp_task(
+            adapter,  # type: ignore[arg-type]
+            [_snow_ws(sid)],
+            _NOW,
+            FakeWeatherForecastStore(),
+            _clock,
+            required_snow={sid: frozenset({"swe"})},
+        )
+        assert outcome is not None
+        assert outcome.snow_unavailable is False
+
+    def test_recap_adapter_non_snow_station_zero_snow_calls(self) -> None:
+        sid = StationId(uuid4())
+        from tests.fakes.fake_adapters import FakeSnowCapableWeatherForecastSource
+
+        adapter = FakeSnowCapableWeatherForecastSource(result={})
+        outcome = _fetch_nwp_task(
+            adapter,  # type: ignore[arg-type]
+            [_snow_ws(sid)],
+            _NOW,
+            FakeWeatherForecastStore(),
+            _clock,
+            required_snow={},  # no station requires snow
+        )
+        assert outcome is not None
+        assert adapter.snow_calls == []
+        assert outcome.snow_unavailable is False
+
+    def test_required_snow_station_missing_binding_sets_snow_unavailable(
+        self,
+    ) -> None:
+        # A station requiring snow but with NO matching forecast binding in
+        # this batch (config gap) must not silently degrade to HEALTHY --
+        # it never got a chance to fetch what it needs (minor review finding).
+        sid = StationId(uuid4())
+        from tests.fakes.fake_adapters import FakeSnowCapableWeatherForecastSource
+
+        adapter = FakeSnowCapableWeatherForecastSource(result={})
+        outcome = _fetch_nwp_task(
+            adapter,  # type: ignore[arg-type]
+            [],  # no forecast binding at all for `sid`
+            _NOW,
+            FakeWeatherForecastStore(),
+            _clock,
+            required_snow={sid: frozenset({"swe"})},
+        )
+        assert outcome is not None
+        assert adapter.snow_calls == []
+        assert outcome.snow_unavailable is True
+
+    def test_snow_fetched_stored_and_broadcast_ready(self) -> None:
+        sid = StationId(uuid4())
+        from tests.fakes.fake_adapters import FakeSnowCapableWeatherForecastSource
+
+        nwp_store = FakeWeatherForecastStore()
+        adapter = FakeSnowCapableWeatherForecastSource(
+            result={},
+            snow_result=self._snow_forecast_result_factory(sid),
+        )
+        outcome = _fetch_nwp_task(
+            adapter,  # type: ignore[arg-type]
+            [_snow_ws(sid)],
+            _NOW,
+            nwp_store,
+            _clock,
+            required_snow={sid: frozenset({"swe"})},
+        )
+        assert outcome is not None
+        assert outcome.snow_unavailable is False
+        assert len(adapter.snow_calls) == 1
+        # required_snow reached the adapter call (major finding: it was
+        # previously computed but discarded before the fetch).
+        _, _, snow_required_arg = adapter.snow_calls[0]
+        assert snow_required_arg == {sid: frozenset({"swe"})}
+        # Snow was stored -- readback proves store_weather_forecasts was called.
+        stored = nwp_store.fetch_weather_forecasts(
+            station_id=sid,
+            nwp_source="ifs_ecmwf",
+            cycle_time=_NOW,
+            parameters=["swe"],
+        )
+        assert len(stored) == 3
+        assert all(r.member_id is None for r in stored)
+
+    def test_snow_rides_the_resolved_ifs_cycle_not_the_nominal_request(self) -> None:
+        # IFS falls back to an OLDER cycle; snow must be fetched+stored under
+        # that SAME resolved cycle, not the nominal request (Plan 145 D4). The
+        # snow fake's factory builds the returned forecast FROM the cycle
+        # argument it actually receives, so a bug that threads the wrong cycle
+        # into the snow fetch is caught by the STORED record, not merely by
+        # the call argument.
+        sid = StationId(uuid4())
+        from tests.fakes.fake_adapters import FakeSnowCapableWeatherForecastSource
+
+        resolved_cycle = ensure_utc(_NOW - timedelta(hours=6))
+        ifs_result = _make_basin_avg_result([sid], cycle_time=resolved_cycle)
+        nwp_store = FakeWeatherForecastStore()
+        adapter = FakeSnowCapableWeatherForecastSource(
+            result=ifs_result,
+            snow_result=self._snow_forecast_result_factory(sid),
+        )
+
+        _fetch_nwp_task(
+            adapter,  # type: ignore[arg-type]
+            [_snow_ws(sid)],
+            _NOW,
+            nwp_store,
+            _clock,
+            required_snow={sid: frozenset({"swe"})},
+        )
+
+        assert len(adapter.snow_calls) == 1
+        _, snow_cycle_arg, _ = adapter.snow_calls[0]
+        assert snow_cycle_arg == resolved_cycle
+
+        # Co-retrieval: BOTH the IFS forecast and the snow forecast must be
+        # readable from the store under the exact RESOLVED cycle (not the
+        # nominal _NOW request) -- the exact mismatch the plan required this
+        # test to catch.
+        ifs_stored = nwp_store.fetch_weather_forecasts(
+            station_id=sid,
+            nwp_source=_NWP_SOURCE,
+            cycle_time=resolved_cycle,
+        )
+        snow_stored = nwp_store.fetch_weather_forecasts(
+            station_id=sid,
+            nwp_source="ifs_ecmwf",
+            cycle_time=resolved_cycle,
+            parameters=["swe"],
+        )
+        assert len(ifs_stored) > 0
+        assert len(snow_stored) == 3
+        assert all(r.cycle_time == resolved_cycle for r in (*ifs_stored, *snow_stored))
+
+    def test_unavailable_snow_variable_sets_snow_unavailable_outcome(self) -> None:
+        from sapphire_flow.types.weather import GatewayHruName
+        from tests.fakes.fake_adapters import FakeSnowCapableWeatherForecastSource
+
+        sid = StationId(uuid4())
+        adapter = FakeSnowCapableWeatherForecastSource(
+            result={},
+            snow_result=self._snow_forecast_result_factory(
+                sid,
+                unavailable={GatewayHruName("hru_x"): frozenset({"snow_depth"})},
+            ),
+        )
+        outcome = _fetch_nwp_task(
+            adapter,  # type: ignore[arg-type]
+            [_snow_ws(sid)],
+            _NOW,
+            FakeWeatherForecastStore(),
+            _clock,
+            required_snow={sid: frozenset({"swe", "snow_depth"})},
+        )
+        assert outcome is not None
+        assert outcome.snow_unavailable is True
+
+    def test_snow_success_with_zero_rows_sets_snow_unavailable(self) -> None:
+        # A successful (no exception, EMPTY `unavailable`) but zero-row
+        # response for a required station -- e.g. a still-materializing
+        # variable that returns 200/zero-rows rather than raising -- is a
+        # real coverage gap that `bool(snow_result.unavailable)` alone can
+        # never see (review fold-in, major).
+        from sapphire_flow.types.weather import SnowForecastFetchResult
+        from tests.fakes.fake_adapters import FakeSnowCapableWeatherForecastSource
+
+        sid = StationId(uuid4())
+        adapter = FakeSnowCapableWeatherForecastSource(
+            result={},
+            snow_result=SnowForecastFetchResult(forecasts={}, unavailable={}),
+        )
+        outcome = _fetch_nwp_task(
+            adapter,  # type: ignore[arg-type]
+            [_snow_ws(sid)],
+            _NOW,
+            FakeWeatherForecastStore(),
+            _clock,
+            required_snow={sid: frozenset({"swe"})},
+        )
+        assert outcome is not None
+        assert outcome.snow_unavailable is True
+
+    def test_resolver_skipped_station_among_required_sets_snow_unavailable(
+        self,
+    ) -> None:
+        # ONE required-snow station resolves and returns rows; a SECOND
+        # required station is skipped by the resolver (unmappable to a
+        # polygon) -- `_require_some_resolved` only fails when ALL stations
+        # are unmappable, so the skipped station produces neither a forecast
+        # NOR an `unavailable` entry. Per-station reconciliation must catch
+        # it anyway (review fold-in, major).
+        from sapphire_flow.types.weather import SnowForecastFetchResult
+        from tests.fakes.fake_adapters import FakeSnowCapableWeatherForecastSource
+
+        resolved_sid = StationId(uuid4())
+        skipped_sid = StationId(uuid4())
+        rows = [
+            {
+                "valid_time": ensure_utc(_NOW + timedelta(hours=h)),
+                "parameter": "swe",
+                "member_id": None,
+                "value": 1.0,
+            }
+            for h in (1, 2, 3)
+        ]
+        resolved_forecast = BasinAverageForecast(
+            nwp_source="ifs_ecmwf", cycle_time=_NOW, values=pl.DataFrame(rows)
+        )
+        adapter = FakeSnowCapableWeatherForecastSource(
+            result={},
+            snow_result=SnowForecastFetchResult(
+                forecasts={resolved_sid: resolved_forecast}, unavailable={}
+            ),
+        )
+        outcome = _fetch_nwp_task(
+            adapter,  # type: ignore[arg-type]
+            [_snow_ws(resolved_sid), _snow_ws(skipped_sid)],
+            _NOW,
+            FakeWeatherForecastStore(),
+            _clock,
+            required_snow={
+                resolved_sid: frozenset({"swe"}),
+                skipped_sid: frozenset({"swe"}),
+            },
+        )
+        assert outcome is not None
+        assert outcome.snow_unavailable is True
+
+    def test_one_variable_missing_rows_while_another_succeeds_sets_snow_unavailable(
+        self,
+    ) -> None:
+        # A successful response (no exception, EMPTY `unavailable`) covers
+        # `swe` but never accumulated a row for `snow_depth` at the SAME
+        # station -- another required variable's success must not mask a
+        # sibling variable's shortfall (review fold-in, major).
+        from sapphire_flow.types.weather import SnowForecastFetchResult
+        from tests.fakes.fake_adapters import FakeSnowCapableWeatherForecastSource
+
+        sid = StationId(uuid4())
+        rows = [
+            {
+                "valid_time": ensure_utc(_NOW + timedelta(hours=h)),
+                "parameter": "swe",
+                "member_id": None,
+                "value": 1.0,
+            }
+            for h in (1, 2, 3)
+        ]
+        forecast = BasinAverageForecast(
+            nwp_source="ifs_ecmwf", cycle_time=_NOW, values=pl.DataFrame(rows)
+        )
+        adapter = FakeSnowCapableWeatherForecastSource(
+            result={},
+            snow_result=SnowForecastFetchResult(
+                forecasts={sid: forecast}, unavailable={}
+            ),
+        )
+        outcome = _fetch_nwp_task(
+            adapter,  # type: ignore[arg-type]
+            [_snow_ws(sid)],
+            _NOW,
+            FakeWeatherForecastStore(),
+            _clock,
+            required_snow={sid: frozenset({"swe", "snow_depth"})},
+        )
+        assert outcome is not None
+        assert outcome.snow_unavailable is True
+
+    def test_snow_unavailable_marks_cycle_degraded_not_healthy(self) -> None:
+        outcome_healthy = _forecast_cycle_health(
+            stations_attempted=1,
+            stations_failed=0,
+            alert_suppressed=False,
+            nwp_grid_stale=False,
+            fallback_priority_drift=False,
+            snow_unavailable=False,
+        )
+        outcome_degraded = _forecast_cycle_health(
+            stations_attempted=1,
+            stations_failed=0,
+            alert_suppressed=False,
+            nwp_grid_stale=False,
+            fallback_priority_drift=False,
+            snow_unavailable=True,
+        )
+        assert outcome_healthy == ForecastCycleHealth.HEALTHY
+        assert outcome_degraded == ForecastCycleHealth.DEGRADED
+
+
+class TestSnowStoreBroadcastAssembleComposed:
+    """Plan 145 review fold-in (minor): the READY plan's Phase 2d locked a
+    COMPOSED store->broadcast acceptance test -- ``_fetch_nwp_task`` (fetch +
+    store) followed by ``assemble_station_operational_inputs`` (broadcast +
+    pivot) -- for control-only and partial-member IFS batches. Proves the
+    wiring between persistence and assembly, not merely that each layer
+    works in isolation."""
+
+    class _SnowEnsembleModel:
+        data_requirements = ModelDataRequirements(
+            target_parameters=frozenset(),
+            past_dynamic_features=frozenset(),
+            future_dynamic_features=frozenset({"precipitation", "swe"}),
+            static_features=frozenset(),
+            supported_time_steps=frozenset({timedelta(hours=1)}),
+            lookback_steps=1,
+            forecast_horizon_steps=5,
+            spatial_input_type=SpatialRepresentation.BASIN_AVERAGE,
+            ensemble_mode=EnsembleMode.ENSEMBLE,
+        )
+
+    @pytest.mark.parametrize(
+        "ifs_members", [(0,), (0, 1)], ids=["control_only", "partial_members"]
+    )
+    def test_snow_broadcasts_to_every_present_member_after_store_and_assemble(
+        self, ifs_members: tuple[int, ...]
+    ) -> None:
+        from sapphire_flow.services.operational_inputs import (
+            assemble_station_operational_inputs,
+        )
+        from sapphire_flow.types.weather import SnowForecastFetchResult
+        from tests.fakes.fake_adapters import (
+            FakeSnowCapableWeatherForecastSource,
+            FakeWeatherReanalysisSource,
+        )
+
+        sid = StationId(uuid4())
+        station_store = FakeStationStore()
+        station_store.store_station(make_station_config(station_id=sid))
+        basin_store = FakeBasinStore()
+        obs_store = FakeObservationStore()
+        state_store = FakeModelStateStore()
+        nwp_store = FakeWeatherForecastStore()
+        reanalysis = FakeWeatherReanalysisSource()
+
+        valid_times = [ensure_utc(_NOW + timedelta(hours=h)) for h in (1, 2, 3)]
+        ifs_rows = [
+            {
+                "valid_time": vt,
+                "parameter": "precipitation",
+                "member_id": member,
+                "value": float(i + member),
+            }
+            for i, vt in enumerate(valid_times)
+            for member in ifs_members
+        ]
+        ifs_result = {
+            sid: BasinAverageForecast(
+                nwp_source="ifs_ecmwf", cycle_time=_NOW, values=pl.DataFrame(ifs_rows)
+            )
+        }
+        snow_rows = [
+            {
+                "valid_time": vt,
+                "parameter": "swe",
+                "member_id": None,
+                "value": 1.0,
+            }
+            for vt in valid_times
+        ]
+        snow_forecast = BasinAverageForecast(
+            nwp_source="ifs_ecmwf", cycle_time=_NOW, values=pl.DataFrame(snow_rows)
+        )
+        adapter = FakeSnowCapableWeatherForecastSource(
+            result=ifs_result,
+            snow_result=SnowForecastFetchResult(
+                forecasts={sid: snow_forecast}, unavailable={}
+            ),
+        )
+
+        outcome = _fetch_nwp_task(
+            adapter,  # type: ignore[arg-type]
+            [_snow_ws(sid)],
+            _NOW,
+            nwp_store,
+            _clock,
+            required_snow={sid: frozenset({"swe"})},
+        )
+        assert outcome is not None
+        assert outcome.snow_unavailable is False
+
+        result = assemble_station_operational_inputs(
+            station_id=sid,
+            model=self._SnowEnsembleModel(),  # type: ignore[arg-type]
+            model_id=ModelId("snow_ensemble_model"),
+            issue_time=_NOW,
+            cycle_time=outcome.cycle_time,
+            nwp_source="ifs_ecmwf",
+            forcing_source=reanalysis,  # type: ignore[arg-type]
+            weather_forecast_store=nwp_store,
+            obs_store=obs_store,
+            station_store=station_store,
+            basin_store=basin_store,
+            model_state_store=state_store,
+            clock=_clock,
+            forecast_horizon_steps=5,
+            time_step=timedelta(hours=1),
+        )
+
+        assert result is not None
+        inputs, _ = result
+        columns = set(inputs.data.future_dynamic.columns)
+        for member in ifs_members:
+            assert f"swe_{member}" in columns
+            assert f"precipitation_{member}" in columns
+        assert "swe" not in columns
+        assert "precipitation" not in columns
+
+
+class TestSnowForecastCycleIntegration:
+    """Plan 145 Phase 2d's full end-to-end acceptance scenarios (review
+    fold-in): prove the COMPOSED wiring -- superset requirements_override ->
+    assemble (relaxed guard) -> per-model ``assess_future_coverage`` gate ->
+    fallback loop -> SUCCESSFUL station result -- through a real
+    ``run_forecast_cycle_flow`` call, not just at each layer's unit boundary.
+    """
+
+    def _mixed_station(
+        self,
+    ) -> tuple[
+        StationId,
+        ModelId,
+        ModelId,
+        FakeStationStore,
+        FakeObservationStore,
+        FakeWeatherForecastStore,
+        FakeModelArtifactStore,
+        FakeForecastStore,
+        FakeModelStateStore,
+        FakeAlertStore,
+        FakeClimBaselineStore,
+        FakeBasinStore,
+        FakeHistoricalForcingStore,
+    ]:
+        sid = StationId(uuid4())
+        snow_id = ModelId("snow_fed")
+        native_id = ModelId("native_fallback")
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            native_id,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forcing_store,
+            seed_model_assignment=False,
+            seed_artifact=False,
+        )
+
+        # Snow-fed model FIRST (higher priority = lower number) so the
+        # fallback loop must actually suppress it before reaching native.
+        for model_id, priority in ((snow_id, 0), (native_id, 1)):
+            station_store.store_model_assignment(
+                ModelAssignment(
+                    station_id=sid,
+                    model_id=model_id,
+                    time_step=timedelta(hours=1),
+                    status=ModelAssignmentStatus.ACTIVE,
+                    priority=priority,
+                    created_at=_NOW,
+                )
+            )
+            artifact_store.store_artifact(
+                model_id=model_id,
+                artifact_bytes=b"fake_artifact",
+                training_period_start=ensure_utc(datetime(2020, 1, 1, tzinfo=UTC)),
+                training_period_end=ensure_utc(datetime(2025, 12, 31, tzinfo=UTC)),
+                trained_at=_NOW,
+                station_id=sid,
+                status=ModelArtifactStatus.ACTIVE,
+            )
+
+        return (
+            sid,
+            snow_id,
+            native_id,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forecast_store,
+            state_store,
+            alert_store,
+            baseline_store,
+            basin_store,
+            forcing_store,
+        )
+
+    def test_mixed_assignment_all_snow_missing_falls_back_to_non_snow_success(
+        self,
+    ) -> None:
+        # Snow-fed model (priority 0) + native fallback (priority 1), EVERY
+        # required snow row absent via a CONTAINED Gateway failure
+        # (`unavailable` non-empty). Pre-fix, the assembly `return None` trap
+        # on the empty future-snow read skipped the WHOLE station -- including
+        # the native fallback (Problem Sec3.4 / the plan's must-fail-red case).
+        from sapphire_flow.types.weather import GatewayHruName, SnowForecastFetchResult
+        from tests.fakes.fake_adapters import FakeSnowCapableWeatherForecastSource
+
+        (
+            sid,
+            snow_id,
+            native_id,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forecast_store,
+            state_store,
+            alert_store,
+            baseline_store,
+            basin_store,
+            forcing_store,
+        ) = self._mixed_station()
+
+        snow_model = _SnowFedFakeModel()
+        models = {snow_id: snow_model, native_id: _NativeFakeModel()}
+
+        adapter = FakeSnowCapableWeatherForecastSource(
+            result={},
+            snow_result=SnowForecastFetchResult(
+                forecasts={},
+                unavailable={GatewayHruName("hru_test"): frozenset({"swe"})},
+            ),
+        )
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=adapter,  # type: ignore[arg-type]
+            models=models,  # type: ignore[arg-type]
+            config=_make_config(),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+        )
+
+        assert isinstance(result, ForecastCycleResult)
+        assert result.stations_succeeded == 1
+        assert result.stations_failed == 0
+        # A snow outage that suppresses the preferred snow model while a
+        # non-snow fallback still succeeds is DEGRADED, not silently HEALTHY.
+        assert result.health == ForecastCycleHealth.DEGRADED
+        # The per-model coverage gate suppressed the snow model -- predict was
+        # never reached for it (proves suppression, not merely "no forecast").
+        assert snow_model.predict_called is False
+        assert forecast_store.fetch_latest_forecast(sid, model_id=native_id) is not None
+        assert forecast_store.fetch_latest_forecast(sid, model_id=snow_id) is None
+
+    def test_snow_only_model_with_native_fallback_zero_stored_snow_succeeds(
+        self,
+    ) -> None:
+        # Same shape, but the snow fetch succeeds with ZERO rows and NO
+        # Gateway failure (`unavailable` empty) -- e.g. an unsubscribed/
+        # not-yet-materializing variable rather than an outage. The snow-only
+        # model must still degrade to an empty future frame and get
+        # suppressed, the native fallback must still succeed. Review fold-in
+        # (major): a required station with ZERO rows and no exception is a
+        # real coverage gap the reconciliation must catch -- this cycle is
+        # DEGRADED (the snow-fed model was suppressed for lack of data), not
+        # silently HEALTHY. (Pre-fix, `bool(snow_result.unavailable)` was the
+        # ONLY health signal, so this exact case reported HEALTHY.)
+        from sapphire_flow.types.weather import SnowForecastFetchResult
+        from tests.fakes.fake_adapters import FakeSnowCapableWeatherForecastSource
+
+        (
+            sid,
+            snow_id,
+            native_id,
+            station_store,
+            obs_store,
+            nwp_store,
+            artifact_store,
+            forecast_store,
+            state_store,
+            alert_store,
+            baseline_store,
+            basin_store,
+            forcing_store,
+        ) = self._mixed_station()
+
+        snow_model = _SnowFedFakeModel()
+        models = {snow_id: snow_model, native_id: _NativeFakeModel()}
+
+        adapter = FakeSnowCapableWeatherForecastSource(
+            result={},
+            snow_result=SnowForecastFetchResult(forecasts={}, unavailable={}),
+        )
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,
+            alert_store=alert_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=adapter,  # type: ignore[arg-type]
+            models=models,  # type: ignore[arg-type]
+            config=_make_config(),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+        )
+
+        assert isinstance(result, ForecastCycleResult)
+        assert result.stations_succeeded == 1
+        assert result.stations_failed == 0
+        assert result.health == ForecastCycleHealth.DEGRADED
+        assert snow_model.predict_called is False
+        assert forecast_store.fetch_latest_forecast(sid, model_id=native_id) is not None
+        assert forecast_store.fetch_latest_forecast(sid, model_id=snow_id) is None
 
 
 class TestRecapStalenessThresholdWiring:

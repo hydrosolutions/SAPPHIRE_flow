@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import polars as pl
+from structlog.testing import capture_logs
 
 from sapphire_flow.services.training_data import (
     assemble_group_training_data,
@@ -1024,3 +1025,47 @@ class TestResampleToTimeStep:
         )
         assert result.height == 1
         assert abs(result["discharge"][0] - 96.0) < 1e-9  # 24 * 4.0
+
+
+class TestResampleSnowAggregationFallback:
+    """Plan 145 D2: swe/snow_depth (states) MEAN, snowmelt (flux) SUMs — via the
+    ``_V0_AGGREGATION_FALLBACK`` default (no explicit aggregation_methods)."""
+
+    def _hourly_frame(self, n: int, **columns: float) -> pl.DataFrame:
+        base_ts = [
+            ensure_utc(datetime.fromtimestamp(_BASE.timestamp() + i * 3600, tz=UTC))
+            for i in range(n)
+        ]
+        data: dict[str, object] = {"timestamp": base_ts}
+        for col, value in columns.items():
+            data[col] = [value] * n
+        return pl.DataFrame(data)
+
+    def test_snowmelt_sums_hourly_to_daily(self) -> None:
+        df = self._hourly_frame(24, snowmelt=2.0)
+        result = resample_to_time_step(df, timedelta(days=1))
+        assert result.height == 1
+        assert abs(result["snowmelt"][0] - 48.0) < 1e-9  # 24 * 2.0, not the mean 2.0
+
+    def test_swe_means_hourly_to_daily(self) -> None:
+        df = self._hourly_frame(24, swe=7.5)
+        result = resample_to_time_step(df, timedelta(days=1))
+        assert result.height == 1
+        assert abs(result["swe"][0] - 7.5) < 1e-9  # mean, not the sum 180.0
+
+    def test_snow_depth_means_hourly_to_daily(self) -> None:
+        df = self._hourly_frame(24, snow_depth=3.0)
+        result = resample_to_time_step(df, timedelta(days=1))
+        assert result.height == 1
+        assert abs(result["snow_depth"][0] - 3.0) < 1e-9  # mean, not the sum 72.0
+
+    def test_no_unknown_parameter_warning_for_snow_columns(self) -> None:
+        df = self._hourly_frame(24, swe=1.0, snow_depth=2.0, snowmelt=3.0)
+        with capture_logs() as logs:
+            resample_to_time_step(df, timedelta(days=1))
+        unknown_events = [
+            e
+            for e in logs
+            if e.get("event") == "resample_to_time_step.unknown_parameter"
+        ]
+        assert unknown_events == []

@@ -440,6 +440,18 @@ def assemble_station_operational_inputs(
         else None,
     )
     if not nwp_records and reqs.future_dynamic_features:
+        # Plan 145 D3.2d: log-and-continue rather than abort-the-whole-assembly.
+        # `_pivot_nwp_records([], ...)` below yields an empty `future_dynamic`
+        # frame, and the per-model `assess_future_coverage` gate (run per-model,
+        # AFTER assembly, on the model's OWN `future_dynamic_features` — never
+        # this station-superset `reqs`) is what suppresses an NWP-fed model on
+        # that empty frame ("required feature '<x>' absent"), advancing the
+        # fallback loop to a non-NWP model. Returning `None` here used to skip
+        # the WHOLE station — including a non-NWP fallback assigned alongside
+        # the NWP-fed model — whenever the superset future read was empty
+        # (snow-absent or IFS-absent alike). No superset pruning and no
+        # per-variable availability is threaded here; this is the general,
+        # simpler fix (see the plan's Problem §3.4 / D3.2d).
         log.warning(
             "operational_inputs.no_nwp",
             station_id=str(station_id),
@@ -447,7 +459,6 @@ def assemble_station_operational_inputs(
             nwp_source=nwp_source,
             cycle_time=str(cycle_time),
         )
-        return None
 
     # Aggregate hourly per-member NWP to the model's time_step (daily) on the
     # BARE parameter name (precip SUM, temp MEAN) BEFORE pivoting to member-

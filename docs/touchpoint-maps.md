@@ -128,12 +128,23 @@ gates.
   retired the `camels-ch`/POINT weather binding (migration `0033`) — MUST NOT
   write a `camels-ch` `station_weather_sources` row; only the non-weather
   `icon_ch2_eps`/BASIN_AVERAGE forecast binding is written alongside it
-- preprocessing: `resample_to_time_step` (precip SUM, temp/discharge MEAN), NWP
-  hourly→daily + issue-time filter + horizon cap, lookback wide-pivot, `ensure_utc`
+- preprocessing: `resample_to_time_step` (precip SUM, temp/discharge MEAN,
+  `swe`/`snow_depth` MEAN, `snowmelt` SUM — Plan 145 D2 canonical snow keys in
+  `_V0_AGGREGATION_FALLBACK`), NWP hourly→daily + issue-time filter + horizon
+  cap, lookback wide-pivot, `ensure_utc`
 - the cycle assembles a **superset** (`build_superset_requirements`); each model
   slices it
 - gates: `assess_future_coverage` (horizon truncation), `assess_input_quality`
   (degraded / partial input flags)
+- Plan 145 D3.2d: an empty future-NWP read (`weather_forecast_store.fetch_weather_forecasts`
+  returns nothing while `reqs.future_dynamic_features` is non-empty) does
+  **NOT** return `None` from `assemble_station_operational_inputs` — it logs
+  `operational_inputs.no_nwp` and continues with an empty `future_dynamic`
+  frame. This is a GENERAL fix (not snow-specific): it also repairs the
+  identical IFS-absent station-wide skip. The per-model `assess_future_coverage`
+  gate (run downstream, per-model, on the MODEL's own `future_dynamic_features`
+  — never this station-superset `reqs`) is what suppresses the NWP-fed model;
+  a non-NWP fallback assigned to the same station still forecasts.
 
 **Contracts that must not change silently:**
 
@@ -190,6 +201,8 @@ Before planning or implementation, inspect the relevant touchpoints below and in
 - where forecast / model-state persistence attaches
 - `clock` / `rng` / `config` / `qc_rules` injection at the flow boundary
 - cycle health / result assembly (`ForecastCycleResult`)
+- snow-forecast (JSNOW) scoping/fetch/degradation (Plan 145 — Recap Gateway only,
+  capability-gated via `SnowForecastSource`)
 - tests that exercise cycle sequencing or assignment resolution
 
 **Upstream inputs to inspect:**
@@ -221,6 +234,30 @@ Before planning or implementation, inspect the relevant touchpoints below and in
   `_fetch_obs_timestamps_task.submit` (the only concurrency in the flow)
 - drift guard: `_check_fallback_priority_drift`
 - health: `_forecast_cycle_health` → `ForecastCycleResult`
+- snow-forecast wiring (Plan 145): `_compute_required_snow` (pre-Phase-A,
+  per-station required future-snow variables from ACTIVE assignments' resolved
+  models' `future_dynamic_features` ∩ `SNOW_CANONICAL_PARAMETERS`) →
+  `_fetch_nwp_task` capability-checks `isinstance(adapter, SnowForecastSource)`
+  → `RecapGatewayForecastAdapter.fetch_snow_forecast` under the SAME resolved
+  IFS cycle → stored via `weather_forecast_store.store_weather_forecasts` →
+  broadcast by the existing `_broadcast_deterministic_features_to_members`
+  (Plan 082 2H-snow) in `operational_inputs.py`. A `(hru, variable)` gap folds
+  into `_NwpFetchOutcome.snow_unavailable` → `_forecast_cycle_health`'s
+  `snow_unavailable` parameter (DEGRADED, never `nwp_unavailable`).
+  `required_snow` is threaded all the way into `fetch_snow_forecast` (not just
+  used to pick which stations reach the call) — the adapter scopes each HRU's
+  Gateway calls to the UNION of variables its resolved stations actually need,
+  so a swe-only station never triggers an hs/rof call. A required-snow station
+  with NO matching forecast binding in the batch (config gap) also sets
+  `snow_unavailable=True` rather than staying silently `HEALTHY`.
+  `_reconcile_snow_coverage` (review fold-in, major) then compares the
+  RESULT against `required_snow` per bound station — a required station the
+  resolver silently skipped (while resolving others), or a required parameter
+  that came back with zero rows on an otherwise-successful fetch (no
+  exception, empty `unavailable`), both fold into `snow_unavailable=True` too.
+  Neither `_require_some_resolved` (all-unmappable-only) nor
+  `bool(snow_result.unavailable)` (raised-and-contained errors only) can see
+  either gap on its own.
 
 **Downstream consumers to inspect when behavior changes:**
 
@@ -260,6 +297,17 @@ Before planning or implementation, inspect the relevant touchpoints below and in
   `NoCycleAvailableError` (`nwp_unavailable`) degrades to runoff-only for the
   cycle, whereas any other Phase A failure (`_fetch_nwp_task` → `None`) aborts
   the WHOLE cycle with `stations_attempted=0`, before Phase B/B2/C run.
+- Snow (Plan 145) is a THIRD, snow-scoped failure mode, distinct from both of
+  the above: an uncontained snow error sets `snow_unavailable=True` (folded into
+  `health=DEGRADED`) and never the cycle-wide `nwp_unavailable` flag, and never
+  aborts Phase A/B/B2/C. A per-`(hru, variable)` gap is contained INSIDE
+  `fetch_snow_forecast` itself and never reaches `_fetch_nwp_task` as an
+  exception at all. The `operational_inputs.assemble_station_operational_inputs`
+  `return None` guard on an empty future-NWP read is RELAXED (Plan 145 D3.2d) —
+  it now logs and continues with an empty `future_dynamic` frame for BOTH the
+  snow-absent and the identical IFS-absent case, relying on the per-model
+  `assess_future_coverage` gate (not this guard, and not a station-wide skip) to
+  suppress only the NWP-fed model.
 - Phase C alerting has a single outer guard around the whole `check_station_alerts`
   call, which itself loops stations internally. A mid-loop exception **stops the
   remaining stations' alert processing** and leaves `alerts_checked=False`, but
