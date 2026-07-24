@@ -1,7 +1,7 @@
 ---
 status: DRAFT
 created: 2026-07-23
-plan: 147
+plan: 148
 title: Forecast-cycle redesign Phase 1 — ModelRunContext + per-assignment prior_state
 scope: The first, behaviour-preserving slice of the forecast-cycle redesign (docs/design/forecast-cycle-redesign.md). Introduce an assignment-keyed `ModelRunContext` and move warm-up state loading in the station-cycle path so each model assignment READS state per `(station_id, model_id)` — fixing the latent shared-state read bug and establishing the per-assignment run unit the rest of the redesign consumes. The shared `assemble_station_operational_inputs` keeps loading warm-up state for its representative `model_id` exactly as today (the GROUP path depends on it); the station-cycle runner additionally loads per-assignment state inside `_run_single_model`, AFTER the model/coverage/artifact eligibility gates, so a state-read failure for an ineligible or non-selected assignment stays assignment-local and never aborts a station whose primary already succeeded. READ-side only: write-side per-assignment state persistence is explicitly deferred (see Non-goals). No per-assignment input assembly, no track resolution, no ensemble/group behaviour changes. Forecast cycle.
 depends_on: []
@@ -9,7 +9,7 @@ blocks: []
 supersedes: []
 ---
 
-# Plan 147 — Forecast-cycle redesign Phase 1: `ModelRunContext` + per-assignment `prior_state`
+# Plan 148 — Forecast-cycle redesign Phase 1: `ModelRunContext` + per-assignment `prior_state`
 
 ## Status
 **DRAFT — Phase 1 of the forecast-cycle redesign** (`docs/design/forecast-cycle-redesign.md`, hardened through 3
