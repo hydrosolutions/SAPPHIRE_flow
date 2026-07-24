@@ -110,21 +110,26 @@ later slice that performs an audited mutation depends on **B**, so no slice ever
 mutation. **C (access-token auth) depends on A + B; D (least-privilege DB roles) depends on C;
 E (tenant write-isolation) depends on A + B.**
 
-**Scope rule for THIS `/implement` run: build Slice B ONLY (the audit-log foundation) and STOP.** Do NOT
-build Slice C/D/E in this run — each is a separate later slice with its own PR (branch `feat/plan-147-slice-b`
-builds Slice B). **Slice A (tenant model) is already on `main` (#130) — CONSUME, do not re-implement.** Slice B
-is a root (no tenant/auth dependency): the `audit_log` table + migration conforming EXACTLY to the
-authoritative contract (`event_type`/`created_at`/`ip_address`/nullable-system-actor — NO `tenant_id`/`action`/
-`at`); the wired `AuditActorType` + promoted-to-runtime `AuditEventType` enums (incl. the additive
-`STATION_ONBOARDED`/`MODEL_ASSIGNED`, synced to both spec docs); the `AuditEntry` domain type; the append-only
-INSERT-only writer store; the **role-independent DB append-only guard** (a `BEFORE UPDATE OR DELETE` trigger
-that RAISEs even for the table owner — owned HERE, not by the roles slice); and the success/rejection
-atomicity mechanism (mutation + success-audit in ONE txn via the existing `transaction_factory` seam — NO
-repo-wide connection refactor; rejection event in a separate committed txn). The stamping CALL-SITES live in
-Slices C (token create/revoke, create-admin) and E (onboard/promote/assign + rejections) — Slice B builds the
-table/enums/writer/guard only, NOT the call-sites. Live-Postgres integration tests per the Slice-B verification
-block below (incl. the append-only-fails-for-owner test + the audit-insert-failure-rolls-back-the-mutation
-test on a real non-AUTOCOMMIT transaction).
+**Scope rule for THIS `/implement` run: build Slice C ONLY (access-token auth + enforcement + close the holes)
+and STOP.** Do NOT build Slice D/E in this run — each is a separate later slice with its own PR (branch
+`feat/plan-147-slice-c` builds Slice C). **Slice A (tenant model, #130) + Slice B (audit-log substrate, #131)
+are already on `main` — CONSUME them, do not re-implement.** C depends on A (`access_tokens.tenant_id` FK +
+per-station scope-tenant validation) and B (token create/revoke + `create-admin` stamp `audit_log` via B's
+writer, in one RW transaction). Slice C builds, per the Slice-C block below: the `access_tokens` table +
+`access_token_stations` scope join + migration (HMAC-SHA-256 + server-side pepper, R1; `tenant_id` FK;
+`AccessTokenId` wired); the full pepper lifecycle (dedicated `access_token_pepper` secret, fail-closed startup,
+redaction, all-token-reissue rotation + `pepper_version` hook); the FastAPI auth `Depends` (Bearer→principal,
+401) enforced on EVERY endpoint (JSON API + legacy `.json` + HTML routers); GET-only classification (remove
+`POST /alerts/{id}/acknowledge` → 501); the health exemption (shallow `/health` public, `/health/detail`
+admin-only, NO capability axis); the authenticated watchdog detail-probing via a HOST-secret token
+(`./secrets/health_probe_token`, launchd wiring — NOT a Compose mount); CORS lockdown (explicit origins, reject
+`*`); legacy HTML routes removed/relocated (R3, admin-gate as fallback); the station-scoped route matrix
+(global model skill-chart admin-only; stationless alerts fail-closed for consumer); per-key station-scope
+filtering (`access_token_stations` join, out-of-scope→404, empty-scope→nothing, scope-station-must-match-token-
+tenant); CLI `create`/`list`/`revoke` + `create-admin` bootstrap (audit via B, atomic); 2 roles
+(`consumer`/`admin`, no third). Live-Postgres + FastAPI TestClient tests per the Slice-C verification block.
+The **config-identity WritePrincipal + flow/CLI write-isolation is Slice E, NOT here** (C is the HTTP/read +
+token-management surface). Red-first: the guard tests fail against today's fully-open routes.
 
 ### Slice A — Tenant model foundation (data model, no auth)
 
