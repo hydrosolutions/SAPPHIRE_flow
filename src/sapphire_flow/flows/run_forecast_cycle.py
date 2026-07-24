@@ -23,6 +23,7 @@ from sapphire_flow.adapters.meteoswiss_nwp import (
     DEFAULT_DISK_GUARD_SCRATCH_SOFT_GB,
 )
 from sapphire_flow.adapters.recap_gateway import (
+    SNOW_CANONICAL_PARAMETERS,
     GatewayResolutionError,
     RecapAuthError,
     RecapConfigurationError,
@@ -35,6 +36,7 @@ from sapphire_flow.exceptions import (
     NoCycleAvailableError,
     StoreError,
 )
+from sapphire_flow.protocols.adapters import SnowForecastSource
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import (
     AlertEligibility,
@@ -55,7 +57,7 @@ from sapphire_flow.types.ids import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
 
     from sapphire_flow.adapters.recap_gateway import (
         GatewayPolygonBindingStoreLike,
@@ -186,11 +188,19 @@ class _NwpFetchOutcome:
     run (the adapter exhausted its fallback budget → ``NoCycleAvailableError``).
     This is NOT a flow-fatal error: the loop falls to runoff-only for THIS cycle
     (NWP-consuming models produce nothing; native/fallback models still forecast).
+
+    ``snow_unavailable`` (Plan 145 D3.2c) is True when the snow-forecast fetch
+    (capability-gated, station-scoped) contained >=1 ``(hru, variable)`` gap this
+    cycle. Distinct from ``nwp_unavailable`` — a snow outage never trips the
+    cycle-wide NWP degrade; it suppresses only the snow-fed model (via the
+    per-model ``assess_future_coverage`` gate) while surfacing the cycle as
+    DEGRADED rather than silently HEALTHY.
     """
 
     cycle_time: UtcDatetime
     fallback_used: bool
     nwp_unavailable: bool = False
+    snow_unavailable: bool = False
 
 
 _GRID_EXTRACTOR_CHOICES: tuple[str, ...] = ("mesh", "exactextract")
@@ -767,6 +777,38 @@ def _active_only(assignments: list[_AssignmentT]) -> list[_AssignmentT]:
     return [a for a in assignments if a.status == ModelAssignmentStatus.ACTIVE]
 
 
+def _compute_required_snow(
+    active_model_assignments: dict[StationId, list],
+    models: dict[ModelId, ForecastModel],
+) -> dict[StationId, frozenset[str]]:
+    """Per-station required future-snow variables (Plan 145 D3.1, station-level v1).
+
+    Built from ACTIVE station assignments only (`active_model_assignments`, already
+    filtered by `_active_only`) and their resolved models' OWN
+    `future_dynamic_features`, intersected with `SNOW_CANONICAL_PARAMETERS`. A
+    station contributes NOTHING (no map entry) unless >=1 active assignment
+    resolves to a model requiring >=1 snow variable — this IS the opt-in gate (no
+    per-HRU "JSNOW subscribed" config flag exists): an inactive assignment or an
+    unresolved/missing model contributes nothing, and a station whose only snow
+    need is `past_dynamic_features` (the antecedent channel, Plan 146) is excluded
+    too. Group-model snow scoping is a deferred follow-up (group assignments only
+    resolve in Phase B2, structurally after this pre-fetch computation).
+    """
+    required: dict[StationId, frozenset[str]] = {}
+    for station_id, assignments in active_model_assignments.items():
+        needed: set[str] = set()
+        for assignment in assignments:
+            model = models.get(assignment.model_id)
+            if model is None:
+                continue
+            needed |= model.data_requirements.future_dynamic_features & (
+                SNOW_CANONICAL_PARAMETERS
+            )
+        if needed:
+            required[station_id] = frozenset(needed)
+    return required
+
+
 def _check_fallback_priority_drift(
     model_assignments: dict[StationId, list],
     group_store: object | None,
@@ -817,6 +859,7 @@ def _forecast_cycle_health(
     alert_suppressed: bool,
     nwp_grid_stale: bool,
     fallback_priority_drift: bool,
+    snow_unavailable: bool = False,
 ) -> ForecastCycleHealth:
     if stations_attempted > 0 and stations_failed >= stations_attempted:
         return ForecastCycleHealth.FAILED
@@ -825,6 +868,7 @@ def _forecast_cycle_health(
         or alert_suppressed
         or nwp_grid_stale
         or fallback_priority_drift
+        or snow_unavailable
     ):
         return ForecastCycleHealth.DEGRADED
     return ForecastCycleHealth.HEALTHY
@@ -858,6 +902,7 @@ def _fetch_nwp_task(
     # for task.map parallelisation deferred from Phase 8), this and the other
     # object params (weather_forecast_store, grid_store) would fail to
     # serialize at .submit() time — revisit all of them at that point.
+    required_snow: Mapping[StationId, frozenset[str]] | None = None,
 ) -> _NwpFetchOutcome | None:
     """Fetch NWP forecast and store weather records.
 
@@ -870,6 +915,17 @@ def _fetch_nwp_task(
     Returns ``None`` only when a true failure occurred (adapter raise,
     extraction raise, store raise, unexpected return type). The caller
     treats ``None`` as a flow-fatal abort condition.
+
+    ``required_snow`` (Plan 145 D3.1/D6) is the pre-computed per-station
+    required-future-snow-variable map. When the adapter satisfies
+    ``SnowForecastSource`` (capability-gated — never an
+    ``isinstance(RecapGatewayForecastAdapter)`` import) AND >=1 station in
+    ``station_configs`` has a non-empty entry, the snow-forecast channel is
+    fetched too, under the SAME resolved cycle the IFS fetch used (D4 — never a
+    second ``_resolve_effective_cycle`` probe), stored, and folded into the
+    returned outcome's ``snow_unavailable`` flag (D3.2c). An adapter that does
+    NOT satisfy the capability, or a batch with no snow-requiring station,
+    skips this entirely — zero ``snow.forecast`` calls, unchanged outcome.
     """
     from sapphire_flow.preprocessing.converters import (
         basin_avg_to_records,
@@ -1167,7 +1223,60 @@ def _fetch_nwp_task(
     fallback_used = floor_to_ifs_cadence(resolved_cycle) != floor_to_ifs_cadence(
         cycle_time
     )
-    return _NwpFetchOutcome(cycle_time=resolved_cycle, fallback_used=fallback_used)
+
+    # Plan 145 D1/D3/D4/D6: capability-gated, station-scoped snow-forecast fetch,
+    # riding the SAME resolved cycle the IFS fetch just used (never a second
+    # `_resolve_effective_cycle` probe). A non-capable adapter (MeteoSwiss/replay/
+    # an ordinary injected WeatherForecastSource) or a batch with zero
+    # snow-requiring stations skips this entirely -- zero `snow.forecast` calls,
+    # unchanged outcome. Any snow-boundary failure (including one NOT already
+    # contained per-(hru,variable) inside `fetch_snow_forecast`) degrades this
+    # cycle's snow channel only -- it never aborts the whole NWP phase, since a
+    # snow outage must never blind non-snow models for the station (Problem §3).
+    snow_unavailable = False
+    if required_snow and isinstance(adapter, SnowForecastSource):
+        snow_station_ids = frozenset(required_snow)
+        scoped_snow_configs = [
+            ws for ws in station_configs if ws.station_id in snow_station_ids
+        ]
+        if scoped_snow_configs:
+            try:
+                snow_result = adapter.fetch_snow_forecast(
+                    scoped_snow_configs, resolved_cycle
+                )
+            except Exception as exc:  # snow-scoped guard: never cycle-fatal
+                log.error("nwp.snow_fetch_failed", error=str(exc))
+                snow_unavailable = True
+            else:
+                snow_records = []
+                for station_id, forecast in snow_result.forecasts.items():
+                    if isinstance(forecast, BasinAverageForecast):
+                        snow_records.extend(
+                            basin_avg_to_records(station_id, forecast, clock, uuid4)
+                        )
+                    else:
+                        log.warning(
+                            "nwp.snow_unknown_forecast_type",
+                            station_id=str(station_id),
+                            type=type(forecast).__name__,
+                        )
+                if snow_records:
+                    weather_forecast_store.store_weather_forecasts(  # type: ignore[union-attr]
+                        snow_records
+                    )
+                snow_unavailable = bool(snow_result.unavailable)
+                log.info(
+                    "nwp.snow_fetch_completed",
+                    records_stored=len(snow_records),
+                    stations=len(snow_result.forecasts),
+                    unavailable_hru_count=len(snow_result.unavailable),
+                )
+
+    return _NwpFetchOutcome(
+        cycle_time=resolved_cycle,
+        fallback_used=fallback_used,
+        snow_unavailable=snow_unavailable,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1600,6 +1709,15 @@ def run_forecast_cycle_flow(
 
         qc_checker = ForecastOutputQualityChecker()
 
+        # Plan 145 D3.1: per-station required future-snow variables, computed
+        # BEFORE Phase A submission from the already-loaded ACTIVE assignments +
+        # model registry (the flow, not `_fetch_nwp_task`, has both). Threaded
+        # into the task below; excludes inactive assignments / unresolved models
+        # / stations with no snow-requiring assignment by construction.
+        required_snow: dict[StationId, frozenset[str]] = _compute_required_snow(
+            active_model_assignments, models
+        )
+
         # --- Phase A: fetch NWP forcing (submit as task) ---
         nwp_future: Any = None
         nwp_outcome: _NwpFetchOutcome | None = None
@@ -1638,6 +1756,7 @@ def run_forecast_cycle_flow(
                 station_basins=station_basins,
                 grid_archive_base_path=config.nwp_grid_archive_base_path,
                 pipeline_health_store=pipeline_health_store,
+                required_snow=required_snow,
             )
 
         # --- Step 1.6: observation timestamps (parallel with Phase A) ---
@@ -2349,6 +2468,9 @@ def run_forecast_cycle_flow(
                 alert_suppressed=alert_suppressed,
                 nwp_grid_stale=nwp_grid_stale,
                 fallback_priority_drift=fallback_priority_drift,
+                snow_unavailable=(
+                    nwp_outcome.snow_unavailable if nwp_outcome is not None else False
+                ),
             ),
             stations_attempted=len(operational),
             stations_succeeded=stations_succeeded,

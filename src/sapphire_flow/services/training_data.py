@@ -38,6 +38,13 @@ _V0_AGGREGATION_FALLBACK: dict[str, AggregationMethod] = {
     "global_radiation": AggregationMethod.MEAN,
     "reference_et": AggregationMethod.SUM,
     "snow_water_equivalent": AggregationMethod.MEAN,
+    # Plan 145 D2: canonical Recap snow variables (recap_gateway.RECAP_VARIABLES).
+    # swe/snow_depth are states (MEAN); snowmelt is a flux (SUM). No `rof` key —
+    # `_accumulate_snow` stamps `parameter=variable.canonical` ("snowmelt"), never
+    # the source name "rof".
+    "swe": AggregationMethod.MEAN,
+    "snow_depth": AggregationMethod.MEAN,
+    "snowmelt": AggregationMethod.SUM,
 }
 
 

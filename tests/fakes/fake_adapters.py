@@ -40,6 +40,41 @@ class FakeWeatherForecastSource:
         return self._result
 
 
+class FakeSnowCapableWeatherForecastSource:
+    """A dict-return ``WeatherForecastSource`` that ALSO satisfies
+    ``SnowForecastSource`` (Plan 145) — for exercising the capability-gated
+    snow-forecast fetch path in ``_fetch_nwp_task`` without a real Recap client.
+    """
+
+    def __init__(
+        self,
+        result: dict[StationId, WeatherForecastResult] | None = None,
+        snow_result: object | None = None,
+    ) -> None:
+        self._result: dict[StationId, WeatherForecastResult] = result or {}
+        self._snow_result = snow_result
+        self.snow_calls: list[tuple[list[StationWeatherSource], UtcDatetime]] = []
+
+    def fetch_forecasts(
+        self,
+        station_configs: list[StationWeatherSource],
+        cycle_time: UtcDatetime,
+    ) -> dict[StationId, WeatherForecastResult]:
+        return self._result
+
+    def fetch_snow_forecast(
+        self,
+        station_configs: list[StationWeatherSource],
+        cycle_time: UtcDatetime,
+    ) -> object:
+        self.snow_calls.append((list(station_configs), cycle_time))
+        if self._snow_result is not None:
+            return self._snow_result
+        from sapphire_flow.adapters.recap_gateway import SnowForecastFetchResult
+
+        return SnowForecastFetchResult(forecasts={}, unavailable={})
+
+
 class FakeStationDataSource:
     def __init__(self, observations: list[RawObservation] | None = None) -> None:
         self._observations = observations or []

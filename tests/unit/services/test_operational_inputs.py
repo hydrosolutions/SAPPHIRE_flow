@@ -255,32 +255,46 @@ class TestAssembleStationOperationalInputs:
         assert metadata.prior_state == b"state_bytes"
         assert metadata.nwp_age_hours > 0
 
-    def test_missing_nwp_returns_none(self) -> None:
+    def test_missing_nwp_returns_inputs_with_empty_future_dynamic_not_none(
+        self,
+    ) -> None:
+        """Plan 145 D3.2d: the assembly ``return None`` trap is relaxed. An empty
+        future-NWP read no longer aborts the WHOLE assembly (which used to skip
+        the station's non-NWP models too, Problem §3.4) — it advances with an
+        EMPTY ``future_dynamic`` frame so the per-model ``assess_future_coverage``
+        gate (not this guard) is what suppresses the NWP-fed model. This is a
+        general fix (not snow-specific) that also repairs the identical
+        IFS-absent station skip."""
         sid = StationId(uuid4())
         model = _make_model()
         station_store, basin_store, obs_store, nwp_store, state_store, reanalysis = (
             _make_stores_and_sources(sid, with_nwp=False)
         )
 
-        result = assemble_station_operational_inputs(
-            station_id=sid,
-            model=model,
-            model_id=_MODEL_ID,
-            issue_time=_ISSUE,
-            cycle_time=_CYCLE,
-            nwp_source=_NWP_SOURCE,
-            forcing_source=reanalysis,
-            weather_forecast_store=nwp_store,
-            obs_store=obs_store,
-            station_store=station_store,
-            basin_store=basin_store,
-            model_state_store=state_store,
-            clock=_clock,
-            forecast_horizon_steps=120,
-            time_step=timedelta(hours=1),
-        )
+        with capture_logs() as logs:
+            result = assemble_station_operational_inputs(
+                station_id=sid,
+                model=model,
+                model_id=_MODEL_ID,
+                issue_time=_ISSUE,
+                cycle_time=_CYCLE,
+                nwp_source=_NWP_SOURCE,
+                forcing_source=reanalysis,
+                weather_forecast_store=nwp_store,
+                obs_store=obs_store,
+                station_store=station_store,
+                basin_store=basin_store,
+                model_state_store=state_store,
+                clock=_clock,
+                forecast_horizon_steps=120,
+                time_step=timedelta(hours=1),
+            )
 
-        assert result is None
+        assert result is not None
+        inputs, _ = result
+        assert inputs.data.future_dynamic.is_empty()
+        # Still logs the gap (unchanged observability) — just no longer aborts.
+        assert any(e.get("event") == "operational_inputs.no_nwp" for e in logs)
 
     def test_missing_observations_returns_inputs_with_none_staleness(self) -> None:
         sid = StationId(uuid4())

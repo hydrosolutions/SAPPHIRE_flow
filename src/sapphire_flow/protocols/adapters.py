@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
+    from sapphire_flow.adapters.recap_gateway import SnowForecastFetchResult
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.forecast import ForeignForecast
     from sapphire_flow.types.historical_forcing import RawHistoricalForcing
@@ -30,6 +31,28 @@ class WeatherForecastSource(Protocol):
 
         Callers discriminate via ``isinstance(result, GriddedForecast)``.
         """
+        raise NotImplementedError
+
+
+@runtime_checkable
+class SnowForecastSource(Protocol):
+    """Narrow capability Protocol for the deterministic snow-forecast channel.
+
+    Plan 145 D6: NOT part of ``WeatherForecastSource`` — a bare
+    ``adapter.fetch_snow_forecast(...)`` call would fail pyright and could raise at
+    runtime against MeteoSwiss/replay/an ordinary injected ``WeatherForecastSource``.
+    Callers detect this capability via ``isinstance(adapter, SnowForecastSource)``
+    (structural, not an ``isinstance(RecapGatewayForecastAdapter)`` import) so any
+    replay/test double implementing the method is compatible. An adapter that does
+    NOT satisfy this Protocol skips snow entirely — no scoping, no fetch, no
+    ``snow_unavailable`` outcome — behaving exactly as it does today.
+    """
+
+    def fetch_snow_forecast(
+        self,
+        station_configs: list[StationWeatherSource],
+        cycle_time: UtcDatetime,
+    ) -> SnowForecastFetchResult:
         raise NotImplementedError
 
 
