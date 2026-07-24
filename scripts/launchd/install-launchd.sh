@@ -22,6 +22,20 @@ log() { printf '[install-launchd] %s\n' "$1"; }
 mkdir -p "${AGENTS_DIR}"
 mkdir -p "${HOME}/Library/Logs"
 
+# Plan 147 Slice C: the watchdog reads its admin probe token from
+# ./secrets/health_probe_token, a HOST secret file (NOT a Docker/Compose
+# mount). The plist intentionally passes no --probe-token-path — it
+# resolves via WorkingDirectory + the watchdog's relative default (see the
+# plist comment + docs/standards/cicd.md § Access-token pepper +
+# probe-token rotation). Warn (don't fail): this installer also runs
+# before the token-CLI bootstrap on a fresh host.
+if [ ! -f "${SCRIPT_DIR}/../../secrets/health_probe_token" ]; then
+    log "WARNING: ./secrets/health_probe_token not found — the watchdog's"
+    log "  BAFU-freshness probe will degrade to found=False (401) until it"
+    log "  is created. See docs/standards/cicd.md § Access-token pepper +"
+    log "  probe-token rotation."
+fi
+
 for plist in "${PLISTS[@]}"; do
     src="${SCRIPT_DIR}/${plist}"
     dst="${AGENTS_DIR}/${plist}"

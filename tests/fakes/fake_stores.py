@@ -537,6 +537,7 @@ class FakeAlertStore:
         source: AlertSource | None = None,
         status: AlertStatus | None = None,
         level: str | None = None,
+        scope_station_ids: frozenset[StationId] | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[Alert], int]:
@@ -547,6 +548,10 @@ class FakeAlertStore:
             and (source is None or a.source == source)
             and (status is None or a.status == status)
             and (level is None or a.alert_level == level)
+            and (
+                scope_station_ids is None
+                or (a.station_id is not None and a.station_id in scope_station_ids)
+            )
         ]
         matches.sort(key=lambda a: (a.triggered_at, a.id), reverse=True)
         total = len(matches)

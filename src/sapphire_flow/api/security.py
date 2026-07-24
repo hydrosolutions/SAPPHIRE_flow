@@ -28,7 +28,8 @@ from typing import TYPE_CHECKING
 import sqlalchemy as sa
 from fastapi import Depends, HTTPException, Request
 
-from sapphire_flow.api.deps import get_connection
+from sapphire_flow.api.deps import get_connection, get_connection_rw
+from sapphire_flow.db.metadata import access_tokens
 from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.store.access_token_store import PgAccessTokenStore
 from sapphire_flow.types.enums import AccessTokenRole
@@ -154,11 +155,17 @@ def _extract_bearer(request: Request) -> str | None:
 def require_principal(
     request: Request,
     conn: sa.Connection = Depends(get_connection),
+    conn_rw: sa.Connection = Depends(get_connection_rw),
 ) -> Principal:
     """FastAPI dependency: Bearer header -> Principal, or 401.
 
-    Reuses the request's own read connection (`get_connection`) rather than
-    opening a second one, per `security.md`/plan 042 precedent.
+    Reuses the request's own read connection (`get_connection`) for lookup
+    rather than opening a second one for reads, per `security.md`/plan 042
+    precedent. `conn_rw` is a SEPARATE RW connection/transaction used ONLY
+    to persist `last_used_at` on a successful auth (security.md's contract:
+    "updated on every authenticated request", used for inactive-key
+    monitoring) — `get_connection` never commits (RO), so the update MUST
+    go through `get_connection_rw` to actually persist.
     """
     raw_key = _extract_bearer(request)
     if raw_key is None:
@@ -183,6 +190,12 @@ def require_principal(
         raise _UNAUTHORIZED
     if token.expires_at <= now:
         raise _UNAUTHORIZED
+
+    conn_rw.execute(
+        sa.update(access_tokens)
+        .where(access_tokens.c.id == token.id)
+        .values(last_used_at=now)
+    )
 
     return Principal(
         token_id=token.id,

@@ -3,11 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from sapphire_flow.types.enums import AuditActorType
+from sapphire_flow.types.enums import AccessTokenRole, AuditActorType
 
 if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
-    from sapphire_flow.types.enums import AccessTokenRole, AuditEventType
+    from sapphire_flow.types.enums import AuditEventType
     from sapphire_flow.types.ids import AccessTokenId, StationId, TenantId, UserId
 
 
@@ -133,6 +133,16 @@ class AccessToken:
     `tenant_id=None` denotes a global-admin token (unscoped). `station_ids`
     is the token's `access_token_stations` scope join — meaningful only for
     `CONSUMER`; empty means "sees nothing" (fail-closed, R2).
+
+    G4 LOCKED role/tenant pairing, enforced in `__post_init__` (mirrored by
+    a DB CHECK constraint, `alembic/versions/0047`, so the invariant holds
+    even for rows written outside this dataclass): `role=consumer` REQUIRES
+    a non-null `tenant_id` (every consumer token belongs to exactly one
+    tenant — there is no such thing as a tenantless consumer); `role=admin`
+    REQUIRES `tenant_id=None` (admin is always unscoped/global — a
+    "tenant-bound admin" is not a representable state, since
+    `Principal.is_admin` grants unrestricted global reads regardless of
+    `tenant_id`).
     """
 
     id: AccessTokenId
@@ -147,3 +157,15 @@ class AccessToken:
     created_at: UtcDatetime
     last_used_at: UtcDatetime | None
     station_ids: frozenset[StationId]
+
+    def __post_init__(self) -> None:
+        if self.role is AccessTokenRole.CONSUMER and self.tenant_id is None:
+            raise ValueError(
+                "AccessToken: role=consumer requires a non-null tenant_id "
+                "(G4 — every consumer token belongs to exactly one tenant)"
+            )
+        if self.role is AccessTokenRole.ADMIN and self.tenant_id is not None:
+            raise ValueError(
+                "AccessToken: role=admin requires tenant_id=None "
+                "(G4 — admin is always unscoped/global, never tenant-bound)"
+            )

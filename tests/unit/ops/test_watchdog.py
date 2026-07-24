@@ -199,6 +199,22 @@ class TestReadProbeToken:
     def test_missing_file_returns_none(self, tmp_path: Path) -> None:
         assert read_probe_token(tmp_path / "nope") is None
 
+    def test_unreadable_file_returns_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The `except OSError` branch (permission-denied, etc) — not
+        reachable via chmod alone in CI (often runs as root, which bypasses
+        POSIX permission checks), so monkeypatch `Path.read_text` directly
+        to raise, mirroring how `path.exists()` still sees the real file."""
+        p = tmp_path / "token"
+        p.write_text("abc123.secret\n")
+
+        def _raise(self: Path, *args: object, **kwargs: object) -> str:
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(Path, "read_text", _raise)
+        assert read_probe_token(p) is None
+
     def test_empty_file_returns_none(self, tmp_path: Path) -> None:
         p = tmp_path / "token"
         p.write_text("")

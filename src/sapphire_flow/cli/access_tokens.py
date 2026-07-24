@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 import structlog
+from sqlalchemy.exc import IntegrityError
 
 from sapphire_flow.api.security import (
     generate_raw_token,
@@ -46,6 +47,10 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 DEFAULT_EXPIRES_DAYS = 365
+# `key_prefix` is now DB-unique (alembic 0047 fixer round) — a collision on
+# mint is astronomically unlikely (48-bit prefix) but must not crash token
+# creation; retry with a freshly generated prefix a bounded number of times.
+_MAX_KEY_PREFIX_COLLISION_RETRIES = 5
 
 
 def _resolve_tenant(conn: sa.Connection, tenant_code: str | None) -> TenantId | None:
@@ -55,6 +60,17 @@ def _resolve_tenant(conn: sa.Connection, tenant_code: str | None) -> TenantId | 
     if tenant is None:
         raise SystemExit(f"unknown tenant code: {tenant_code!r}")
     return tenant.id
+
+
+def _is_key_prefix_collision(exc: IntegrityError) -> bool:
+    orig = exc.orig
+    diag = getattr(orig, "diag", None)
+    constraint_name = (
+        getattr(diag, "constraint_name", None) if diag is not None else None
+    )
+    if constraint_name:
+        return "key_prefix" in constraint_name
+    return "key_prefix" in str(orig)
 
 
 def create_token(
@@ -69,30 +85,58 @@ def create_token(
     now: UtcDatetime,
     pepper: str,
     id_gen: Callable[[], UUID] = uuid4,
+    token_generator: Callable[[], tuple[str, str, str]] = generate_raw_token,
 ) -> str:
     """Create a token row + its `API_KEY_CREATED` audit row atomically.
 
     Returns the raw key — shown to the operator ONCE, never persisted.
-    """
-    raw_key, key_prefix, raw_secret = generate_raw_token()
-    token_hash = hash_token(raw_secret, pepper=pepper)
-    token_id = AccessTokenId(id_gen())
 
-    token = AccessToken(
-        id=token_id,
-        token_hash=token_hash,
-        key_prefix=key_prefix,
-        name=name,
-        role=role,
-        tenant_id=tenant_id,
-        pepper_version=1,
-        expires_at=expires_at,
-        disabled_at=None,
-        created_at=now,
-        last_used_at=None,
-        station_ids=station_ids,
-    )
-    PgAccessTokenStore(conn).create_token(token, station_ids=station_ids)
+    Retries `token_generator` (default `generate_raw_token`) on a
+    `key_prefix` collision — the DB-unique index (alembic 0047) is the
+    source of truth; a failed insert attempt is rolled back to a SAVEPOINT
+    so the outer (CLI-owned) transaction stays usable for the retry and the
+    subsequent audit-log insert.
+    """
+    store = PgAccessTokenStore(conn)
+    token_id = AccessTokenId(id_gen())
+    raw_key = ""
+    last_exc: IntegrityError | None = None
+    for attempt in range(_MAX_KEY_PREFIX_COLLISION_RETRIES):
+        raw_key, key_prefix, raw_secret = token_generator()
+        token_hash = hash_token(raw_secret, pepper=pepper)
+        token = AccessToken(
+            id=token_id,
+            token_hash=token_hash,
+            key_prefix=key_prefix,
+            name=name,
+            role=role,
+            tenant_id=tenant_id,
+            pepper_version=1,
+            expires_at=expires_at,
+            disabled_at=None,
+            created_at=now,
+            last_used_at=None,
+            station_ids=station_ids,
+        )
+        try:
+            with conn.begin_nested():
+                store.create_token(token, station_ids=station_ids)
+        except IntegrityError as exc:
+            if not _is_key_prefix_collision(exc):
+                raise
+            last_exc = exc
+            log.warning(
+                "access_token.key_prefix_collision",
+                attempt=attempt,
+                key_prefix=key_prefix,
+            )
+            continue
+        break
+    else:
+        raise RuntimeError(
+            f"exhausted {_MAX_KEY_PREFIX_COLLISION_RETRIES} key_prefix "
+            "collision retries while creating an access token"
+        ) from last_exc
 
     entry = AuditEntry.system(
         event_type=AuditEventType.API_KEY_CREATED,
@@ -165,12 +209,16 @@ def main(argv: list[str] | None = None) -> int:
     p_create.add_argument("--expires-days", type=int, default=DEFAULT_EXPIRES_DAYS)
 
     p_admin = sub.add_parser(
-        "create-admin", help="Bootstrap/mint an unscoped admin token."
+        "create-admin",
+        help="Bootstrap/mint an unscoped admin token.",
+        description=(
+            "G4 LOCKED: admin is always unscoped/global — there is no "
+            "tenant-bound admin variant, so this subcommand takes no "
+            "--tenant flag (AccessToken.__post_init__ + the DB CHECK "
+            "constraint both reject role=admin with a non-null tenant_id)."
+        ),
     )
     p_admin.add_argument("--name", required=True)
-    p_admin.add_argument(
-        "--tenant", default=None, help="Optional tenant to bind this admin token to."
-    )
     p_admin.add_argument("--expires-days", type=int, default=DEFAULT_EXPIRES_DAYS)
 
     sub.add_parser("list", help="List all access tokens.")
@@ -210,17 +258,21 @@ def main(argv: list[str] | None = None) -> int:
     expires_at = ensure_utc(now + timedelta(days=args.expires_days))
     station_ids = frozenset(StationId(UUID(s)) for s in getattr(args, "stations", []))
 
-    if role is AccessTokenRole.CONSUMER and args.tenant is None:
+    # G4 LOCKED: admin is always unscoped/global — `create-admin` has no
+    # --tenant flag (see `AccessToken.__post_init__`), so `tenant_code` is
+    # only ever read for a consumer token below.
+    tenant_code = args.tenant if role is AccessTokenRole.CONSUMER else None
+    if role is AccessTokenRole.CONSUMER and tenant_code is None:
         raise SystemExit("--tenant is required for a consumer token")
 
     with engine.begin() as conn:
-        tenant_id = _resolve_tenant(conn, args.tenant)
+        tenant_id = _resolve_tenant(conn, tenant_code)
         raw_key = create_token(
             conn,
             name=args.name,
             role=role,
             tenant_id=tenant_id,
-            tenant_code=args.tenant,
+            tenant_code=tenant_code,
             station_ids=station_ids,
             expires_at=expires_at,
             now=now,

@@ -5,6 +5,14 @@
 <dict>
     <key>Label</key>
     <string>ch.hydrosolutions.sapphire-watchdog</string>
+    <!-- Plan 147 Slice C: no --probe-token-path arg is added here
+         DELIBERATELY. DEFAULT_PROBE_TOKEN_PATH
+         (./secrets/health_probe_token, ops/watchdog.py) is relative and
+         resolves against WorkingDirectory below to the correct HOST secret
+         file — same convention already used for --slack-path (also
+         unpassed, also default+WorkingDirectory). See
+         docs/standards/cicd.md § Access-token pepper + probe-token
+         rotation for the bootstrap runbook. -->
     <key>ProgramArguments</key>
     <array>
         <string>/Users/sapphire/.local/bin/uv</string>

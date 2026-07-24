@@ -320,6 +320,14 @@ The `audit_log` table + writer come from **Slice B**; this slice's audited mutat
   `expires_at` (mandatory — `042:96`), `disabled_at`, `created_at`, `last_used_at`. Plus an
   **`access_token_stations` scope join** (`042:65`) — R2 LOCKED to the join (not JSONB).
   Index `(key_prefix)` for lookup; `(expires_at)` for cleanup.
+  **SUPERSEDED (fixer round, post-implementation review, 2026-07-24):** `(key_prefix)` is now a
+  **UNIQUE** index, not a plain one — the fast pre-verification lookup key must never collide
+  (`fetch_by_key_prefix`'s `one_or_none()` would otherwise raise `MultipleResultsFound`, a 500, on a
+  collision); the CLI retries token generation on the rare collision case. A `ck_access_tokens_role_tenant`
+  CHECK constraint was also added: `role='admin' -> tenant_id IS NULL` and `role='consumer' -> tenant_id IS
+  NOT NULL`, mirrored by an `AccessToken.__post_init__` invariant — a "tenantless consumer" or "tenant-bound
+  admin" is now structurally unrepresentable, both at the dataclass boundary and at the DB layer for any
+  writer that bypasses it.
 - **Server-side pepper — full lifecycle (F11/F16):**
   - **Dedicated secret** named `access_token_pepper`, a Docker secret file
     (`/run/secrets/access_token_pepper`), mounted into the **API container** (auth verification) **and** the
@@ -371,6 +379,15 @@ The `audit_log` table + writer come from **Slice B**; this slice's audited mutat
     file + reissue the admin token (documented in `cicd.md`).
   - Tests: valid / **missing** / **unreadable** / **empty** host-secret probe token, and valid / missing /
     expired admin token against `/health/detail`.
+  **SUPERSEDED (fixer round, post-implementation review, 2026-07-24):** the launchd installer/plist/wrapper
+  did not need a code change after all — `DEFAULT_PROBE_TOKEN_PATH` (`./secrets/health_probe_token`) is
+  relative and already resolves correctly against the plist's `WorkingDirectory` /
+  `watchdog.sh`'s `cd`, the same convention already used for `--slack-path`. All three files
+  (`install-launchd.sh`, `watchdog.sh`, the `.plist`) now carry an explicit inline comment saying so, so the
+  omission reads as a verified, deliberate no-op rather than a missed wiring step; `install-launchd.sh` also
+  gained a preflight WARNING if `./secrets/health_probe_token` is absent. The **unreadable** probe-token test
+  case was added (`tests/unit/ops/test_watchdog.py::TestReadProbeToken::test_unreadable_file_returns_none`,
+  via a `Path.read_text` monkeypatch — `chmod 0o000` is unreliable when tests run as root).
 - **Enforce on EVERY other endpoint incl. the holes (G2, F3(a)):** apply the dependency to the JSON API
   routes AND the legacy `.json` exports AND all HTML routers. CORS: lock to explicit `SAPPHIRE_CORS_ORIGINS`,
   reject `*` when auth is on (`042:117`, wire `config.toml:440` or keep env).
@@ -381,6 +398,16 @@ The `audit_log` table + writer come from **Slice B**; this slice's audited mutat
   any observations/health-detail HTML view. For v1.0 headless these browser pages are **removed / relocated
   off the proxied surface**; if any is retained it is **admin-gated** (not merely "any valid key"). A
   route-matrix test covers each HTML endpoint.
+  **SUPERSEDED (fixer round, post-implementation review, 2026-07-24):** the first committed pass's
+  route-matrix test sampled a handful of routes by hand. It is now an EXHAUSTIVE test
+  (`tests/unit/api/test_security.py::TestRouteAuthMatrixExhaustive`) that introspects the live
+  `app.routes` dependency graph and pins the complete method/path/classification for every mounted route
+  (health/observations/forcing/baselines/hindcasts/forecast-data-json/dashboard/model pages/health-detail-html
+  and every table variant included) — a newly added or accidentally-ungated route fails immediately, not
+  just the ones someone remembered to hand-pick. A parallel DB-backed test
+  (`tests/integration/api/test_access_token_auth.py::TestAdminGatedRoutesRejectConsumerAllowAdmin`) fires
+  real requests at every one of those admin-gated routes as both a consumer (403) and an admin (clears the
+  gate).
 - **Station-scoped route matrix — lock the non-station-filterable GETs (F7).** Two JSON GETs do not carry a
   station and cannot be station-filtered:
   - **Global model skill chart** `GET /api/v1/models/{model_id}/skill-chart.json`
@@ -392,6 +419,14 @@ The `audit_log` table + writer come from **Slice B**; this slice's audited mutat
     is in their scope; stationless (null-station) alerts are NOT returned to a `consumer` (fail-closed);
     `admin` sees all.** Test: a consumer's `GET /alerts` excludes both out-of-scope-station and null-station
     alerts; admin's includes them.
+    **SUPERSEDED (fixer round, post-implementation review, 2026-07-24):** the first committed pass applied
+    the scope filter to the route's ALREADY-paginated page (post-`fetch_alerts`, after `LIMIT`/`OFFSET` and
+    the unscoped `total` count) — a consumer could get short/empty pages despite later in-scope alerts, and a
+    wrong `total`. `AlertStore.fetch_alerts` now takes a `scope_station_ids` parameter applied INSIDE the
+    query, before count/limit/offset (`station_id.in_(scope_station_ids)` — NULL never matches, so
+    stationless exclusion falls out for free); the route passes `principal.station_ids` when not admin,
+    `None` (unscoped) when admin. Locked by a DB-integration test that seeds real
+    in-scope/out-of-scope/stationless alerts and asserts correct multi-page pagination.
 - **Per-key scope filtering — R2 LOCKED = `access_token_stations` join, STATION scope only.** `security.md:21`
   documents a three-axis scope contract (station + parameter + geographic); v1.0 deliberately implements
   **only the station axis** and **explicitly narrows the v1.0 standard** — parameter and geographic scoping
@@ -419,6 +454,11 @@ The `audit_log` table + writer come from **Slice B**; this slice's audited mutat
 - **Roles (headless subset of `042:67`, G4):** `consumer` (read, station-scoped), `admin` (read, unscoped, +
   CLI token/tenant mgmt). The 5-role human matrix + `operator`/`forecaster` session roles are v1.x. **No
   third role** (the removed `health-reader` capability does not add one).
+  **SUPERSEDED (fixer round, post-implementation review, 2026-07-24):** the first committed pass let
+  `create-admin` accept an optional `--tenant <code>` and persisted it on the token row — but
+  `Principal.is_admin`/`station_in_scope` never consult `tenant_id` (admin is unconditionally unscoped, per
+  G4), so a "tenant-bound admin" was a misleading, unenforced state. `create-admin` now takes **no** `--tenant`
+  flag at all; admin tokens are always minted with `tenant_id=None`, matching the CHECK constraint above.
 
 **Verify:** shallow `GET /api/v1/health` returns **200 without a key**; every *other* endpoint returns 401
 without a valid key (incl. `/health/detail`); a scoped consumer key sees only its stations (out-of-scope id
@@ -442,6 +482,11 @@ documented split with **per-table grants** (NOT a blanket `UPDATE/DELETE`):
   read tables + `access_tokens` (SELECT/INSERT/UPDATE, incl. `last_used_at`), **INSERT + SELECT on
   `audit_log`, never UPDATE/DELETE** (append-only per `conventions.md:317` "INSERT only on audit_log" —
   a **defense-in-depth** grant atop Slice B's role-independent append-only guard).
+  **REALIZED (fixer round, post-implementation review, 2026-07-24):** `last_used_at` is now actually written
+  — `require_principal` issues a single-column `UPDATE access_tokens SET last_used_at = now()` through a
+  dedicated RW connection/transaction on every SUCCESSFUL auth (never on a 401), before this slice it was
+  wired end-to-end (column, migration, domain type) but never updated, so it stayed permanently NULL and the
+  inactive-key monitoring signal (`security.md` § API key lifecycle) was dead.
 - **`sapphire_worker`** (Prefect flows / CLI write paths — onboarding, training, promotion, assignment):
   `SELECT/INSERT/UPDATE` on the domain tables it already writes (per `conventions.md:317`) **plus** the write
   grants the v1.0 flow write paths need (stations/station_groups/station_group_members writes for onboarding;

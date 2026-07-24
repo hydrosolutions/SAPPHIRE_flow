@@ -324,9 +324,18 @@ class AlertStore(Protocol):
         source: AlertSource | None = None,
         status: AlertStatus | None = None,
         level: str | None = None,
+        scope_station_ids: frozenset[StationId] | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[Alert], int]:
+        """`scope_station_ids=None` means unscoped (admin — no filter).
+        Otherwise ONLY alerts whose `station_id` is a member of
+        `scope_station_ids` match — applied BEFORE `limit`/`offset`/the
+        `total` count (Plan 147 Slice C fixer round: consumer-scope
+        filtering must happen in the query, not after pagination). An empty
+        `scope_station_ids` matches nothing (fail-closed, R2) and a
+        stationless (`station_id IS NULL`) alert never matches a non-None
+        scope (F7)."""
         raise NotImplementedError
 
     def resolve_alert(self, alert_id: AlertId) -> None:

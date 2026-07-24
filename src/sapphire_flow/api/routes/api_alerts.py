@@ -88,21 +88,23 @@ def list_alerts(
                 items=[], total=0, limit=limit, offset=offset
             )
 
+    # F7/G4 LOCKED: an admin is unscoped (no filter); a consumer's scope is
+    # applied INSIDE the store query — before count/limit/offset — so
+    # pagination totals and page contents are correct even when in-scope
+    # and out-of-scope alerts are interleaved (Plan 147 Slice C fixer
+    # round). Stationless (null-station) alerts never match a non-None
+    # scope (F7 — `station_id.in_(...)` never matches NULL).
+    scope_station_ids = None if principal.is_admin else principal.station_ids
+
     items, total = stores["alert_store"].fetch_alerts(
         station_id=parsed_station_id,
         source=parsed_source,
         status=parsed_status,
         level=level,
+        scope_station_ids=scope_station_ids,
         limit=limit,
         offset=offset,
     )
-
-    if not principal.is_admin:
-        # F7 LOCKED: a consumer sees ONLY alerts whose station_id is in its
-        # scope; stationless (null-station) alerts are excluded (fail-closed
-        # — `station_in_scope(None)` is False for a consumer).
-        items = [a for a in items if principal.station_in_scope(a.station_id)]
-        total = len(items)
 
     return PaginatedResponse[AlertResponse](
         items=[_to_alert_response(a) for a in items],

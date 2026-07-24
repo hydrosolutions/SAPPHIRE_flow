@@ -12,6 +12,8 @@ from sapphire_flow.api.security import (
     generate_raw_token,
     hash_token,
     load_access_token_pepper,
+    require_admin,
+    require_principal,
     split_raw_token,
 )
 from sapphire_flow.types.enums import AccessTokenRole
@@ -204,3 +206,86 @@ class TestEndpointEnforcement:
             "/api/v1/stations", headers={"Authorization": "Bearer no-dot-here"}
         )
         assert resp.status_code == 401
+
+
+def _flat_dependant_calls(dependant: object) -> list[object]:
+    """Recursively flatten a FastAPI `Dependant` tree's `.call` targets."""
+    call = getattr(dependant, "call", None)
+    calls: list[object] = [call] if call is not None else []
+    for sub in getattr(dependant, "dependencies", []):
+        calls.extend(_flat_dependant_calls(sub))
+    return calls
+
+
+def _classify_routes() -> dict[tuple[str, str], str]:
+    """method+path -> "PUBLIC" | "PRINCIPAL" | "ADMIN", derived from each
+    mounted route's actual dependency graph (not a hand-maintained belief
+    about which router it lives in) — a route added to an existing router
+    without `dependencies=[Depends(require_admin/require_principal)]`
+    inherits whatever the router already declares, but a BRAND NEW router
+    mounted with `app.include_router(...)` and no `dependencies=` at all
+    would show up here as PUBLIC and fail `test_only_health_is_public`."""
+    from sapphire_flow.api import app as fastapi_app
+
+    result: dict[tuple[str, str], str] = {}
+    for route in fastapi_app.routes:
+        dependant = getattr(route, "dependant", None)
+        if dependant is None:
+            continue
+        calls = _flat_dependant_calls(dependant)
+        tag = (
+            "ADMIN"
+            if require_admin in calls
+            else ("PRINCIPAL" if require_principal in calls else "PUBLIC")
+        )
+        for method in route.methods:  # type: ignore[attr-defined]
+            result[(method, route.path)] = tag  # type: ignore[attr-defined]
+    return result
+
+
+class TestRouteAuthMatrixExhaustive:
+    """Major finding (Slice C fixer round): the plan requires EVERY
+    endpoint, EVERY legacy HTML route, and EVERY `.json` export to be
+    classified — not just a hand-picked sample. This walks the live
+    `app.routes` table and pins the complete method/path/auth
+    classification, so a newly added or accidentally-ungated router fails
+    here immediately (`test_only_health_is_public`) even before any
+    behavioral test would catch it."""
+
+    _EXPECTED: dict[tuple[str, str], str] = {
+        ("GET", "/api/v1/health"): "PUBLIC",
+        ("GET", "/api/v1/health/detail"): "ADMIN",
+        ("GET", "/health/detail/"): "ADMIN",
+        ("GET", "/"): "ADMIN",
+        ("GET", "/tables/"): "ADMIN",
+        ("GET", "/tables/{table_name}/"): "ADMIN",
+        ("GET", "/tables/{table_name}/rows"): "ADMIN",
+        ("GET", "/observations/"): "ADMIN",
+        ("GET", "/stations/"): "ADMIN",
+        ("GET", "/stations/{station_id}/"): "ADMIN",
+        ("GET", "/api/v1/stations/{station_id}/observations.json"): "ADMIN",
+        ("GET", "/api/v1/stations/{station_id}/forcing.json"): "ADMIN",
+        ("GET", "/api/v1/stations/{station_id}/baselines.json"): "ADMIN",
+        ("GET", "/api/v1/stations/{station_id}/hindcasts.json"): "ADMIN",
+        ("GET", "/forecasts/"): "ADMIN",
+        ("GET", "/forecasts/{forecast_id}/"): "ADMIN",
+        ("GET", "/api/v1/forecasts/{forecast_id}/data.json"): "ADMIN",
+        ("GET", "/models/"): "ADMIN",
+        ("GET", "/models/{model_id}/"): "ADMIN",
+        ("GET", "/api/v1/models/{model_id}/skill-chart.json"): "ADMIN",
+        ("GET", "/api/v1/stations"): "PRINCIPAL",
+        ("GET", "/api/v1/stations/{station_id}"): "PRINCIPAL",
+        ("GET", "/api/v1/stations/{station_id}/observations"): "PRINCIPAL",
+        ("GET", "/api/v1/stations/{station_id}/forecasts"): "PRINCIPAL",
+        ("GET", "/api/v1/forecasts/{forecast_id}"): "PRINCIPAL",
+        ("GET", "/api/v1/alerts"): "PRINCIPAL",
+        ("POST", "/api/v1/alerts/{alert_id}/acknowledge"): "PRINCIPAL",
+    }
+
+    def test_every_mounted_route_matches_the_expected_classification(self) -> None:
+        assert _classify_routes() == self._EXPECTED
+
+    def test_only_health_is_public(self) -> None:
+        actual = _classify_routes()
+        public_routes = {path for path, tag in actual.items() if tag == "PUBLIC"}
+        assert public_routes == {("GET", "/api/v1/health")}
