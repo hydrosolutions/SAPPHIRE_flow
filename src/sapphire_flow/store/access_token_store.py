@@ -144,17 +144,27 @@ class PgAccessTokenStore:
             .scalars()
             .all()
         )
+        station_ids = frozenset(StationId(sid) for sid in scope_rows)
+        tenant_id = TenantId(row["tenant_id"]) if row["tenant_id"] else None
+        if station_ids:
+            # Fail-closed re-validation on the READ/auth path (Plan 147 Slice C,
+            # Codex round 2): a scope row introduced out-of-band (corruption, a
+            # future bug, direct SQL) must NOT become an authorized principal
+            # scope. Re-assert every scope station belongs to this token's
+            # tenant — raises CrossTenantScopeError if not (create-time
+            # validation at `_assert_stations_in_tenant` is not enough alone).
+            self._assert_stations_in_tenant(station_ids, tenant_id)
         return AccessToken(
             id=AccessTokenId(row["id"]),
             token_hash=row["token_hash"],
             key_prefix=row["key_prefix"],
             name=row["name"],
             role=AccessTokenRole(row["role"]),
-            tenant_id=TenantId(row["tenant_id"]) if row["tenant_id"] else None,
+            tenant_id=tenant_id,
             pepper_version=row["pepper_version"],
             expires_at=utc_from_row(row["expires_at"]),
             disabled_at=utc_or_none(row["disabled_at"]),
             created_at=utc_from_row(row["created_at"]),
             last_used_at=utc_or_none(row["last_used_at"]),
-            station_ids=frozenset(StationId(sid) for sid in scope_rows),
+            station_ids=station_ids,
         )

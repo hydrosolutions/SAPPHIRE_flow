@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from sapphire_flow.api import app
-from sapphire_flow.api.deps import get_connection, get_connection_rw, get_stores
+from sapphire_flow.api.deps import get_connection, get_stores
 from sapphire_flow.api.security import Principal, require_admin, require_principal
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import AccessTokenRole, AlertStatus
@@ -79,7 +79,6 @@ def client(fake_stores: dict[str, Any]) -> Generator[TestClient, None, None]:
     os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
     app.dependency_overrides[get_stores] = lambda: fake_stores
     app.dependency_overrides[get_connection] = lambda: _DummyConnection()
-    app.dependency_overrides[get_connection_rw] = lambda: _DummyConnection()
     app.dependency_overrides[require_principal] = lambda: ADMIN_PRINCIPAL
     app.dependency_overrides[require_admin] = lambda: ADMIN_PRINCIPAL
     with TestClient(app) as c:

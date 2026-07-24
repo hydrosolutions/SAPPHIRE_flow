@@ -16,9 +16,19 @@ _TEMPLATES_DIR = Path(__file__).parent / "templates"
 # in compose (Plan 053 D4).
 _PREFECT_UI_URL = os.environ.get("PREFECT_UI_URL", "http://localhost:4200")
 
+# Plan 147 Slice C (blocker fix): the headless v1.0 API is served behind an
+# authenticating proxy — FastAPI's built-in interactive docs are DISABLED so
+# `/openapi.json` (full schema leak), `/docs`, `/docs/oauth2-redirect`, and
+# `/redoc` are never mounted UNAUTHENTICATED. There is no interactive-docs need
+# on the proxied surface; admin-gating them would still ship a schema route we
+# do not want. The route-matrix test (tests/unit/api/test_security.py) fails if
+# any of these is re-enabled.
 app = FastAPI(
     title="SAPPHIRE Flow",
     lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 # jinja2 stubs over-narrow env.globals' value type to the default-globals

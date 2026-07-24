@@ -92,6 +92,31 @@ class TestLoadAccessTokenPepperFailsClosed:
         monkeypatch.setenv("ACCESS_TOKEN_PEPPER", "env-pepper")
         assert load_access_token_pepper(secret_path=tmp_path / "nope") == "env-pepper"
 
+    def test_whitespace_only_env_var_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Blocker/major fix (Codex round 2): a whitespace-only pepper is
+        NOT a pepper — strip + reject fail-closed, never accept `"   "`."""
+        monkeypatch.setenv("ACCESS_TOKEN_PEPPER", "   \t\n")
+        with pytest.raises(PepperNotConfiguredError):
+            load_access_token_pepper(secret_path=tmp_path / "nope")
+
+    def test_whitespace_only_file_and_no_env_var_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("ACCESS_TOKEN_PEPPER", raising=False)
+        p = tmp_path / "pepper"
+        p.write_text("   \n")
+        with pytest.raises(PepperNotConfiguredError):
+            load_access_token_pepper(secret_path=p)
+
+    def test_env_var_is_stripped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ACCESS_TOKEN_PEPPER", "  padded-pepper  ")
+        got = load_access_token_pepper(secret_path=tmp_path / "nope")
+        assert got == "padded-pepper"
+
 
 def _principal(
     *,
@@ -217,29 +242,52 @@ def _flat_dependant_calls(dependant: object) -> list[object]:
     return calls
 
 
-def _classify_routes() -> dict[tuple[str, str], str]:
+def _classify_routes(fastapi_app: object | None = None) -> dict[tuple[str, str], str]:
     """method+path -> "PUBLIC" | "PRINCIPAL" | "ADMIN", derived from each
     mounted route's actual dependency graph (not a hand-maintained belief
     about which router it lives in) — a route added to an existing router
     without `dependencies=[Depends(require_admin/require_principal)]`
     inherits whatever the router already declares, but a BRAND NEW router
     mounted with `app.include_router(...)` and no `dependencies=` at all
-    would show up here as PUBLIC and fail `test_only_health_is_public`."""
-    from sapphire_flow.api import app as fastapi_app
+    would show up here as PUBLIC and fail `test_only_health_is_public`.
+
+    Blocker fix (Codex round 2): this now walks EVERY entry in `app.routes`
+    — APIRoute, Mount, and FastAPI's built-in `/openapi.json`/`/docs`/
+    `/redoc` `Route`s — with NO escape hatch for routes lacking a
+    `dependant`. A dependant-less route (a built-in doc endpoint, a static
+    Mount, an ungated `include_router`) is classified PUBLIC, so it MUST be
+    the single allowed public route or it fails the matrix. Re-enabling the
+    OpenAPI schema or mounting any ungated route therefore trips the test."""
+    if fastapi_app is None:
+        from sapphire_flow.api import app as _app
+
+        fastapi_app = _app
 
     result: dict[tuple[str, str], str] = {}
-    for route in fastapi_app.routes:
+    for route in fastapi_app.routes:  # type: ignore[attr-defined]
+        path = getattr(route, "path", None)
+        if path is None:
+            continue
         dependant = getattr(route, "dependant", None)
         if dependant is None:
+            # No auth dependency at all (built-in docs/openapi, a static
+            # Mount, or an ungated router) — fail-closed as PUBLIC.
+            tag = "PUBLIC"
+        else:
+            calls = _flat_dependant_calls(dependant)
+            tag = (
+                "ADMIN"
+                if require_admin in calls
+                else ("PRINCIPAL" if require_principal in calls else "PUBLIC")
+            )
+        methods = getattr(route, "methods", None)
+        if not methods:
+            # A Mount / method-less route is still addressable — record it so
+            # an ungated mount cannot slip past the matrix.
+            result[("*", path)] = tag
             continue
-        calls = _flat_dependant_calls(dependant)
-        tag = (
-            "ADMIN"
-            if require_admin in calls
-            else ("PRINCIPAL" if require_principal in calls else "PUBLIC")
-        )
-        for method in route.methods:  # type: ignore[attr-defined]
-            result[(method, route.path)] = tag  # type: ignore[attr-defined]
+        for method in methods:
+            result[(method, path)] = tag
     return result
 
 
@@ -289,3 +337,44 @@ class TestRouteAuthMatrixExhaustive:
         actual = _classify_routes()
         public_routes = {path for path, tag in actual.items() if tag == "PUBLIC"}
         assert public_routes == {("GET", "/api/v1/health")}
+
+
+class TestRouteMatrixCatchesUngatedRoutes:
+    """Blocker red-first proof (Codex round 2): the exhaustive matrix must
+    FAIL the instant an unauthenticated route is mounted — FastAPI's built-in
+    `/openapi.json`/`/docs`/`/redoc` (which the real app disables) or any
+    hand-added ungated route. The old matrix skipped dependant-less routes,
+    so these evaded it entirely."""
+
+    def test_reenabling_openapi_docs_is_caught_as_ungated_public(self) -> None:
+        from fastapi import FastAPI
+
+        # Defaults: openapi_url/docs_url/redoc_url ENABLED — i.e. the state
+        # the real app used to ship in. These carry no `dependant`.
+        leaky = FastAPI(title="leaky")
+        classified = _classify_routes(leaky)
+        public = {path for path, tag in classified.items() if tag == "PUBLIC"}
+        # openapi.json / docs / redoc all surface as ungated PUBLIC — so a
+        # `test_only_health_is_public`-shaped assertion would fail here.
+        assert ("GET", "/openapi.json") in public
+        assert public != {("GET", "/api/v1/health")}
+
+    def test_added_ungated_route_is_caught_as_public(self) -> None:
+        from fastapi import FastAPI
+
+        leaky = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+        @leaky.get("/leak")
+        def _leak() -> dict[str, str]:  # pragma: no cover - never called
+            return {}
+
+        classified = _classify_routes(leaky)
+        assert classified[("GET", "/leak")] == "PUBLIC"
+
+    def test_real_app_disables_builtin_docs(self) -> None:
+        """Green side: the real app mounts NO openapi/docs/redoc route."""
+        classified = _classify_routes()
+        paths = {path for _method, path in classified}
+        assert "/openapi.json" not in paths
+        assert "/docs" not in paths
+        assert "/redoc" not in paths

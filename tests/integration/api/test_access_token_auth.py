@@ -13,11 +13,14 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 import pytest
+import sqlalchemy as sa
 from fastapi.testclient import TestClient
+from sqlalchemy import event
 
 from sapphire_flow.api import app
-from sapphire_flow.api.deps import get_connection, get_connection_rw
+from sapphire_flow.api.deps import get_connection
 from sapphire_flow.api.security import hash_token, load_access_token_pepper
+from sapphire_flow.db.metadata import access_token_stations, access_tokens
 from sapphire_flow.store.access_token_store import (
     CrossTenantScopeError,
     PgAccessTokenStore,
@@ -35,8 +38,6 @@ from tests.conftest import make_alert, make_station_config
 
 if TYPE_CHECKING:
     from collections.abc import Generator
-
-    import sqlalchemy as sa
 
 _NOW = ensure_utc(datetime(2026, 1, 1, tzinfo=UTC))
 # require_principal compares token.expires_at against the REAL wall clock
@@ -92,17 +93,16 @@ def client(db_connection: sa.Connection) -> Generator[TestClient, None, None]:
     def _override_conn() -> Generator[sa.Connection, None, None]:
         yield db_connection
 
-    # Both get_connection (RO reads) and get_connection_rw (the
-    # last_used_at write in require_principal) resolve to the SAME
-    # rollback-isolated db_connection — a genuinely separate connection
-    # would open its own transaction and never see this test's
-    # not-yet-committed token/station rows.
+    # The SINGLE request connection (get_connection, now RW-capable) resolves
+    # to the rollback-isolated db_connection so the last_used_at write + reads
+    # share it and see this test's not-yet-committed token/station rows. There
+    # is no second connection dependency to override (Codex round 2 — auth uses
+    # exactly one connection; that invariant is proven against the REAL engine
+    # in TestAuthUsesExactlyOneConnectionPerRequest below, not masked here).
     app.dependency_overrides[get_connection] = _override_conn
-    app.dependency_overrides[get_connection_rw] = _override_conn
     with TestClient(app, raise_server_exceptions=True) as c:
         yield c
     app.dependency_overrides.pop(get_connection, None)
-    app.dependency_overrides.pop(get_connection_rw, None)
 
 
 def _auth(raw_key: str) -> dict[str, str]:
@@ -479,3 +479,131 @@ class TestAdminGatedRoutesRejectConsumerAllowAdmin:
         raw_key = _make_token(db_connection, role=AccessTokenRole.ADMIN, tenant_id=None)
         resp = client.request(method, path, headers=_auth(raw_key))
         assert resp.status_code not in (401, 403)
+
+
+class TestAuthUsesExactlyOneConnectionPerRequest:
+    """MAJOR (Codex round 2): auth must NOT open a second connection for the
+    `last_used_at` write. This uses the REAL dependency wiring against the live
+    engine (no override of get_connection to a shared object) and counts pool
+    checkouts — a single request must check out EXACTLY ONE connection. Before
+    the fix (a separate get_connection_rw), a request checked out two."""
+
+    def test_single_request_checks_out_one_connection(
+        self, db_engine: sa.Engine
+    ) -> None:
+        pepper = load_access_token_pepper()
+        token_id = AccessTokenId(uuid4())
+        key_prefix = f"conn{uuid4().hex[:8]}"
+        raw_secret = uuid4().hex
+        token = AccessToken(
+            id=token_id,
+            token_hash=hash_token(raw_secret, pepper=pepper),
+            key_prefix=key_prefix,
+            name="one-conn-token",
+            role=AccessTokenRole.ADMIN,
+            tenant_id=None,
+            pepper_version=1,
+            expires_at=_FUTURE,
+            disabled_at=None,
+            created_at=_NOW,
+            last_used_at=None,
+            station_ids=frozenset(),
+        )
+        # Seed a COMMITTED token on the real engine so the live get_connection
+        # (its own transaction) can see it.
+        with db_engine.begin() as conn:
+            PgAccessTokenStore(conn).create_token(token, station_ids=frozenset())
+
+        checkouts = 0
+
+        def _count(*_args: object) -> None:
+            nonlocal checkouts
+            checkouts += 1
+
+        event.listen(db_engine, "checkout", _count)
+        try:
+            with TestClient(app) as c:
+                original_engine = app.state.engine
+                app.state.engine = db_engine
+                try:
+                    checkouts = 0  # ignore startup/seed checkouts
+                    resp = c.get(
+                        "/api/v1/stations",
+                        headers=_auth(f"{key_prefix}.{raw_secret}"),
+                    )
+                finally:
+                    app.state.engine = original_engine
+            assert resp.status_code == 200
+            assert checkouts == 1, (
+                f"expected exactly one connection checkout per request, got {checkouts}"
+            )
+        finally:
+            event.remove(db_engine, "checkout", _count)
+            with db_engine.begin() as conn:
+                conn.execute(
+                    sa.delete(access_tokens).where(access_tokens.c.id == token_id)
+                )
+
+
+class TestCrossTenantScopeRejectedOnLoad:
+    """MAJOR (Codex round 2): stored consumer scope is re-validated against the
+    token's tenant on LOAD (the read/auth path), not only at create. A scope
+    row for a station in another tenant introduced out-of-band (corruption /
+    direct SQL) must FAIL CLOSED — the load raises and auth returns 401, never
+    silently authorizing the cross-tenant station."""
+
+    def _seed_cross_tenant_scope_row(
+        self, db_connection: sa.Connection
+    ) -> tuple[str, StationId]:
+        # A consumer token in DEFAULT_TENANT_ID, initially validly scoped to an
+        # in-tenant station...
+        in_tenant_sid = _seed_station(
+            db_connection, seed=40, tenant_id=DEFAULT_TENANT_ID
+        )
+        raw_key = _make_token(
+            db_connection,
+            role=AccessTokenRole.CONSUMER,
+            tenant_id=DEFAULT_TENANT_ID,
+            station_ids=frozenset({in_tenant_sid}),
+        )
+        # ...then a station in ANOTHER tenant + a scope row wired directly
+        # (bypassing create_token's validation), simulating corruption.
+        other_tenant = Tenant(
+            id=TenantId(uuid4()),
+            code=f"other-{uuid4().hex[:6]}",
+            name="Other",
+            created_at=_NOW,
+        )
+        PgTenantStore(db_connection).store_tenant(other_tenant)
+        foreign_sid = _seed_station(db_connection, seed=41, tenant_id=other_tenant.id)
+
+        prefix = raw_key.split(".")[0]
+        token = PgAccessTokenStore(db_connection).fetch_by_key_prefix(prefix)
+        assert token is not None
+        db_connection.execute(
+            sa.insert(access_token_stations).values(
+                token_id=token.id, station_id=foreign_sid
+            )
+        )
+        return raw_key, foreign_sid
+
+    def test_load_raises_cross_tenant_scope_error(
+        self, db_connection: sa.Connection
+    ) -> None:
+        raw_key, _foreign = self._seed_cross_tenant_scope_row(db_connection)
+        prefix = raw_key.split(".")[0]
+        with pytest.raises(CrossTenantScopeError):
+            PgAccessTokenStore(db_connection).fetch_by_key_prefix(prefix)
+
+    def test_auth_fails_closed_with_401_not_authorized(
+        self, client: TestClient, db_connection: sa.Connection
+    ) -> None:
+        raw_key, foreign_sid = self._seed_cross_tenant_scope_row(db_connection)
+        # The corrupt cross-tenant scope must NOT authorize the foreign
+        # station — the whole token is rejected 401 (fail-closed).
+        resp = client.get("/api/v1/stations", headers=_auth(raw_key))
+        assert resp.status_code == 401
+        resp_foreign = client.get(
+            f"/api/v1/stations/{foreign_sid}", headers=_auth(raw_key)
+        )
+        assert resp_foreign.status_code == 401

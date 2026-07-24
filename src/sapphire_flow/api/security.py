@@ -28,10 +28,13 @@ from typing import TYPE_CHECKING
 import sqlalchemy as sa
 from fastapi import Depends, HTTPException, Request
 
-from sapphire_flow.api.deps import get_connection, get_connection_rw
+from sapphire_flow.api.deps import get_connection
 from sapphire_flow.db.metadata import access_tokens
 from sapphire_flow.exceptions import ConfigurationError
-from sapphire_flow.store.access_token_store import PgAccessTokenStore
+from sapphire_flow.store.access_token_store import (
+    CrossTenantScopeError,
+    PgAccessTokenStore,
+)
 from sapphire_flow.types.enums import AccessTokenRole
 
 if TYPE_CHECKING:
@@ -72,8 +75,12 @@ def load_access_token_pepper(*, secret_path: Path | None = None) -> str:
         if value:
             return value
     env_value = os.environ.get(_ENV_VAR)
-    if env_value:
-        return env_value
+    if env_value is not None:
+        # Strip + reject whitespace-only: `ACCESS_TOKEN_PEPPER="   "` is NOT a
+        # pepper (fail-closed, matching the file branch above).
+        env_value = env_value.strip()
+        if env_value:
+            return env_value
     raise PepperNotConfiguredError(
         f"access_token_pepper not found: neither {path} nor {_ENV_VAR} is set "
         "(fail-closed — no unpeppered fallback)"
@@ -155,17 +162,21 @@ def _extract_bearer(request: Request) -> str | None:
 def require_principal(
     request: Request,
     conn: sa.Connection = Depends(get_connection),
-    conn_rw: sa.Connection = Depends(get_connection_rw),
 ) -> Principal:
     """FastAPI dependency: Bearer header -> Principal, or 401.
 
-    Reuses the request's own read connection (`get_connection`) for lookup
-    rather than opening a second one for reads, per `security.md`/plan 042
-    precedent. `conn_rw` is a SEPARATE RW connection/transaction used ONLY
-    to persist `last_used_at` on a successful auth (security.md's contract:
-    "updated on every authenticated request", used for inactive-key
-    monitoring) — `get_connection` never commits (RO), so the update MUST
-    go through `get_connection_rw` to actually persist.
+    Uses the request's SINGLE RW-capable connection (`get_connection`) for
+    BOTH the token lookup AND the `last_used_at` write — one connection per
+    request (`042:105-111`), never a second. `get_connection` is now
+    transactional (`engine.begin()`), so the `last_used_at` update (security's
+    "updated on every authenticated request" contract, for inactive-key
+    monitoring) commits with the request. The same connection is reused
+    downstream by every route handler's stores.
+
+    Fail-closed on a corrupt stored scope: if loading the token re-validates
+    its station scope against its tenant and finds a cross-tenant row
+    (`CrossTenantScopeError`), the request is rejected 401 — a scope row
+    introduced out-of-band never becomes an authorized principal scope.
     """
     raw_key = _extract_bearer(request)
     if raw_key is None:
@@ -177,7 +188,12 @@ def require_principal(
 
     pepper: str = request.app.state.access_token_pepper
     store = PgAccessTokenStore(conn)
-    token: AccessToken | None = store.fetch_by_key_prefix(key_prefix)
+    try:
+        token: AccessToken | None = store.fetch_by_key_prefix(key_prefix)
+    except CrossTenantScopeError:
+        # Corrupt/out-of-band cross-tenant scope row — fail closed, never
+        # authorize the cross-tenant station.
+        raise _UNAUTHORIZED from None
     if token is None:
         raise _UNAUTHORIZED
 
@@ -191,7 +207,7 @@ def require_principal(
     if token.expires_at <= now:
         raise _UNAUTHORIZED
 
-    conn_rw.execute(
+    conn.execute(
         sa.update(access_tokens)
         .where(access_tokens.c.id == token.id)
         .values(last_used_at=now)

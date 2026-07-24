@@ -232,6 +232,11 @@ def main(argv: list[str] | None = None) -> int:
 
     configure_cli_logging()
 
+    # Fail-closed for EVERY subcommand (Plan 147 Slice C, Codex round 2): the
+    # token CLI refuses to run without a readable, non-empty pepper — loaded
+    # BEFORE touching the DB so list/revoke also fail closed, not just create.
+    pepper = load_access_token_pepper()
+
     engine = create_engine_from_env()
     now = ensure_utc(datetime.now(UTC))
 
@@ -248,8 +253,7 @@ def main(argv: list[str] | None = None) -> int:
         log.info("access_token.revoked", token_id=str(token_id))
         return 0
 
-    # create / create-admin
-    pepper = load_access_token_pepper()
+    # create / create-admin (pepper already loaded + required above)
     role = (
         AccessTokenRole.ADMIN
         if args.command == "create-admin"
