@@ -2367,7 +2367,13 @@ Refresh token rotation: each use invalidates the current token (`revoked_at = no
 
 ### `audit_log` table
 
-Append-only. INSERT only for `sapphire_api` — no UPDATE or DELETE. See security.md § Audit logging for recorded event categories.
+**Implemented (Plan 147 Slice B, 2026-07-24)** — migration `0045` (table) + `0046` (append-only
+guard); writer `store/audit_log_store.py::PgAuditLogStore`. Append-only is enforced by a
+**role-independent** `BEFORE UPDATE OR DELETE` trigger (migration 0046) that RAISEs for every role,
+including the table owner — not by a per-role grant, since the `sapphire_api`/`sapphire_worker`
+scoped roles do not exist yet (Slice D). Once Slice D lands, its `INSERT`+`SELECT`-only grant for
+`sapphire_api`/`sapphire_worker` is additional defense-in-depth on top of this trigger, not the
+primary guarantee. See security.md § Audit logging for recorded event categories.
 
 ```
 audit_log:
@@ -2395,13 +2401,17 @@ AuditEventType enum (Python members → DB values):
   API_KEY_CREATED → 'api_key_created' | API_KEY_REVOKED → 'api_key_revoked' | API_KEY_REQUEST → 'api_key_request' |
   FORECAST_STATUS_CHANGE → 'forecast_status_change' | FORECAST_ADJUSTED → 'forecast_adjusted' |
   MODEL_PROMOTED → 'model_promoted' | MODEL_REJECTED → 'model_rejected' |
-  STATION_STATUS_CHANGE → 'station_status_change' | OBSERVATION_REPROCESSED → 'observation_reprocessed'
+  STATION_STATUS_CHANGE → 'station_status_change' | OBSERVATION_REPROCESSED → 'observation_reprocessed' |
+  STATION_ONBOARDED → 'station_onboarded' | MODEL_ASSIGNED → 'model_assigned'
+    # STATION_ONBOARDED/MODEL_ASSIGNED are additive members (Plan 147 Slice B) not in the
+    # original design-intent list. Rejections reuse the attempted event's event_type with
+    # detail.outcome = "rejected" — no rejection-specific members.
 
 AuditActorType enum (Python members → DB values):
   USER → 'user' | API_KEY → 'api_key' | SYSTEM → 'system'
 ```
 
-Indexes: `(event_type, created_at DESC)` for event-type queries. `(actor_id, created_at DESC)` for per-user audit trail. `(target_type, target_id, created_at DESC)` for entity history.
+Indexes (as created by migration 0045): `(created_at)`, `(event_type, created_at)`, `(target_type, target_id)`, `(actor_id)`.
 
 Retention: permanent. Included in database backup. Not partitioned (moderate volume — auth events, not per-observation).
 

@@ -22,6 +22,7 @@ from sapphire_flow.protocols.grid_extractor import GridExtractor
 from sapphire_flow.protocols.notification import NotificationAdapter
 from sapphire_flow.protocols.stores import (
     AlertStore,
+    AuditLogStore,
     BasinStore,
     ClimBaselineStore,
     FlowRegimeConfigStore,
@@ -67,6 +68,7 @@ from tests.fakes.fake_models import (
 )
 from tests.fakes.fake_stores import (
     FakeAlertStore,
+    FakeAuditLogStore,
     FakeBasinStore,
     FakeClimBaselineStore,
     FakeFlowRegimeConfigStore,
@@ -161,6 +163,9 @@ class TestFakeStoreConformance:
 
     def test_nwp_grid_store(self) -> None:
         assert isinstance(FakeNwpGridStore(), NwpGridStore)
+
+    def test_audit_log_store(self) -> None:
+        assert isinstance(FakeAuditLogStore(), AuditLogStore)
 
 
 class TestFakeAdapterConformance:

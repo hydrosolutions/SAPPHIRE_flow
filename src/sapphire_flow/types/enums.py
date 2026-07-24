@@ -242,6 +242,36 @@ class AuditActorType(Enum):
     SYSTEM = "system"
 
 
+class AuditEventType(Enum):
+    """Plan 147 Slice B: promoted from design-intent
+    (`docs/spec/types-and-protocols.md`) to a runtime enum. v1.0 wires
+    API_KEY_CREATED / API_KEY_REVOKED (Slice C) and MODEL_PROMOTED /
+    MODEL_REJECTED / STATION_ONBOARDED / MODEL_ASSIGNED (Slice E); the
+    remaining members are v1.x session-auth events, kept here so the enum
+    matches the authoritative spec/architecture-context contract in full.
+    STATION_ONBOARDED and MODEL_ASSIGNED are additive members (Plan 147
+    Slice B) not present in the original spec-only draft.
+    """
+
+    LOGIN = "login"
+    LOGOUT = "logout"
+    LOGIN_FAILED = "login_failed"
+    PASSWORD_CHANGED = "password_changed"
+    USER_CREATED = "user_created"
+    USER_DEACTIVATED = "user_deactivated"
+    API_KEY_CREATED = "api_key_created"
+    API_KEY_REVOKED = "api_key_revoked"
+    API_KEY_REQUEST = "api_key_request"
+    FORECAST_STATUS_CHANGE = "forecast_status_change"
+    FORECAST_ADJUSTED = "forecast_adjusted"
+    MODEL_PROMOTED = "model_promoted"
+    MODEL_REJECTED = "model_rejected"
+    STATION_STATUS_CHANGE = "station_status_change"
+    OBSERVATION_REPROCESSED = "observation_reprocessed"
+    STATION_ONBOARDED = "station_onboarded"
+    MODEL_ASSIGNED = "model_assigned"
+
+
 class ForcingProvenance(Enum):
     NWP_DIRECT = "nwp_direct"
     OBSERVED = "observed"

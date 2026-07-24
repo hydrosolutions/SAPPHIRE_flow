@@ -628,12 +628,30 @@ API-only responses (JSON) benefit from `X-Content-Type-Options` and `Strict-Tran
 
 > The `audit_log` table is created in v1; v0 relies on structured application logs for traceability.
 
-The `audit_log` table is INSERT-only for `sapphire_api` (no UPDATE/DELETE). Records:
-- All authentication events (login, logout, failed attempts, password changes)
-- All forecast status transitions (raw → reviewed → published)
-- All forecast adjustments (with forecaster ID and rationale)
-- All model promotion/rejection decisions
-- All API key creation/revocation
+**Implemented (Plan 147 Slice B, 2026-07-24):** the `audit_log` table (migration `0045`), its
+role-independent append-only guard (migration `0046` — a `BEFORE UPDATE OR DELETE` trigger that
+RAISEs for every role, including the table owner), and the `PgAuditLogStore` writer
+(`store/audit_log_store.py`). **Append-only is enforced by that trigger, not (yet) by a per-role
+grant** — the `sapphire_api`/`sapphire_worker` scoped roles do not exist until the DB-roles slice
+(Slice D) lands; once they do, their `INSERT`+`SELECT`-only grant on `audit_log` is additional
+defense-in-depth atop the trigger, not the primary guarantee. **Call sites are not yet wired**: no
+mutation currently stamps an `audit_log` row — that lands with access-token create/revoke (Slice C)
+and the onboard/promote/assign + rejection paths (Slice E).
+
+Records (`AuditEventType`, `types/enums.py`):
+- All authentication events (login, logout, failed attempts, password changes) — v1.x, session auth
+- All forecast status transitions (raw → reviewed → published) — v1.x
+- All forecast adjustments (with forecaster ID and rationale) — v1.x
+- All model promotion/rejection decisions (`MODEL_PROMOTED`/`MODEL_REJECTED`) — Slice E
+- All API key creation/revocation (`API_KEY_CREATED`/`API_KEY_REVOKED`) — Slice C
+- Station onboarding / model assignment (`STATION_ONBOARDED`/`MODEL_ASSIGNED`, additive members) — Slice E
+
+Atomicity: a successful mutation and its audit `INSERT` run in ONE transaction (a caller-owned,
+non-AUTOCOMMIT connection threaded into both the domain store and `PgAuditLogStore` — no repo-wide
+connection refactor, reusing the existing injectable `transaction_factory` seam,
+`store/station_group_store.py:29-36`); a rejected write persists its rejection event
+(`detail.outcome = "rejected"`) in a SEPARATE, independently-committed transaction after the
+domain rollback.
 
 Retention: permanent. Included in database backup.
 

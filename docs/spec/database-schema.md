@@ -19,7 +19,7 @@ no forecast adjustments, no DLQ, no cold storage. See `v0-scope.md` §A–C for 
 - `models.artifact_scope`: CHECK constraint includes `'virtual'` for sentinel combination models (`_pooled`, `_bma`, `_consensus`) (v0b, Plan 026)
 - No table partitioning anywhere
 - 8 tables removed entirely (see "Not in v0" below)
-- `tenants` + `stations.tenant_id`/`station_groups.tenant_id`/`station_group_members.tenant_id` land early (Plan 147 Slice A) as a pure data-model foundation — auth/RBAC enforcement itself is still deferred (`access_tokens`/`audit_log` remain "Not in v0" below)
+- `tenants` + `stations.tenant_id`/`station_groups.tenant_id`/`station_group_members.tenant_id` land early (Plan 147 Slice A) as a pure data-model foundation, and `audit_log` (Plan 147 Slice B) lands as an append-only substrate ahead of enforcement — auth/RBAC enforcement itself (access-token auth, DB roles, write-isolation call sites) is still deferred (`users`/`access_tokens`/`refresh_tokens` remain "Not in v0" below)
 
 ```mermaid
 erDiagram
