@@ -41,7 +41,7 @@ from sapphire_flow.types.enums import (
 )
 from sapphire_flow.types.ids import StationId
 from sapphire_flow.types.station import StationWeatherSource
-from sapphire_flow.types.weather import BasinAverageForecast
+from sapphire_flow.types.weather import BasinAverageForecast, SnowReanalysisFetchResult
 
 _SID = StationId(UUID("00000000-0000-0000-0000-000000000001"))
 _SID_A = StationId(UUID("00000000-0000-0000-0000-00000000000a"))
@@ -1670,3 +1670,211 @@ class TestReanalysisLeakageGuard:
 
         assert len(rows) == 1
         assert rows[0].value == pytest.approx(1000.0)  # 1.0 m -> 1000 mm
+
+
+class _CodedReanalysisError(Exception):
+    def __init__(self, message: str, *, code: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+class _SnowReanalysisFake:
+    """Fake ``snow.reanalysis``: raises a coded error for configured
+    unavailable variables; otherwise returns a healthy observed frame."""
+
+    def __init__(
+        self,
+        *,
+        unavailable: dict[str, str] | None = None,
+        value: float = 9.0,
+        polygon: str = _POLY_A,
+    ) -> None:
+        self.calls: list[dict[str, object]] = []
+        self._unavailable = unavailable or {}
+        self._value = value
+        self._polygon = polygon
+
+    def reanalysis(self, **kwargs: object) -> object:
+        self.calls.append(dict(kwargs))
+        variable = str(kwargs["variable"])
+        if variable in self._unavailable:
+            raise _CodedReanalysisError(
+                f"{variable} unavailable", code=self._unavailable[variable]
+            )
+        return _wide_df(
+            [self._polygon],
+            value=self._value,
+            with_provenance=True,
+            source="jsnow_reanalysis",
+            source_run=_SOURCE_RUN,
+        )
+
+    def forecast(self, **kwargs: object) -> object:
+        raise AssertionError("reanalysis test must not call snow.forecast")
+
+
+class _AuthFailSnowReanalysis:
+    def reanalysis(self, **kwargs: object) -> object:
+        raise _FakeClientError("unauthorized", status_code=401)
+
+    def forecast(self, **kwargs: object) -> object:
+        raise AssertionError("reanalysis test must not call snow.forecast")
+
+
+class _MixedProvenanceSnowReanalysis:
+    def reanalysis(self, **kwargs: object) -> object:
+        return _mixed_source_snow_frame()
+
+    def forecast(self, **kwargs: object) -> object:
+        raise AssertionError("reanalysis test must not call snow.forecast")
+
+
+def _snow_ws(
+    station_id: StationId,
+    *,
+    status: WeatherSourceStatus = WeatherSourceStatus.ACTIVE,
+    extraction: SpatialRepresentation = SpatialRepresentation.BASIN_AVERAGE,
+) -> StationWeatherSource:
+    return _ws(
+        station_id,
+        nwp_source="era5_land",
+        role=WeatherSourceRole.REANALYSIS,
+        status=status,
+        extraction=extraction,
+    )
+
+
+class TestSnowReanalysisFetch:
+    """Plan 146 D5/2a: fetch_snow_reanalysis + SnowReanalysisFetchResult."""
+
+    def test_returns_typed_result(self) -> None:
+        snow = _SnowReanalysisFake()
+        adapter = _reanalysis_adapter(
+            _ReanalysisEcmwf(), snow, _MapResolver({_SID_A: _ref(_SID_A, _POLY_A)})
+        )
+        result = adapter.fetch_snow_reanalysis([_snow_ws(_SID_A)], _START, _END)
+        assert isinstance(result, SnowReanalysisFetchResult)
+
+    def test_partial_unavailable_stores_others_and_names_code(self) -> None:
+        snow = _SnowReanalysisFake(unavailable={"hs": "source_data_missing"})
+        adapter = _reanalysis_adapter(
+            _ReanalysisEcmwf(), snow, _MapResolver({_SID_A: _ref(_SID_A, _POLY_A)})
+        )
+
+        result = adapter.fetch_snow_reanalysis([_snow_ws(_SID_A)], _START, _END)
+
+        assert {row.parameter for row in result.rows} == {"snowmelt", "swe"}
+        assert result.unavailable == {
+            GatewayHruName(_HRU): {"snow_depth": "source_data_missing"}
+        }
+        assert result.attempted == {
+            GatewayHruName(_HRU): frozenset({"snow_depth", "snowmelt", "swe"})
+        }
+
+    def test_total_loss_unavailable_keys_equal_attempted_keys(self) -> None:
+        snow = _SnowReanalysisFake(
+            unavailable={
+                "hs": "source_data_missing",
+                "rof": "source_data_missing",
+                "swe": "source_data_missing",
+            }
+        )
+        adapter = _reanalysis_adapter(
+            _ReanalysisEcmwf(), snow, _MapResolver({_SID_A: _ref(_SID_A, _POLY_A)})
+        )
+
+        result = adapter.fetch_snow_reanalysis([_snow_ws(_SID_A)], _START, _END)
+
+        assert result.rows == []
+        assert (
+            set(result.unavailable[GatewayHruName(_HRU)])
+            == result.attempted[GatewayHruName(_HRU)]
+        )
+
+    def test_subscription_not_found_vs_source_data_missing_distinct_codes(
+        self,
+    ) -> None:
+        snow = _SnowReanalysisFake(
+            unavailable={"hs": "subscription_not_found", "rof": "source_data_missing"}
+        )
+        adapter = _reanalysis_adapter(
+            _ReanalysisEcmwf(), snow, _MapResolver({_SID_A: _ref(_SID_A, _POLY_A)})
+        )
+
+        result = adapter.fetch_snow_reanalysis([_snow_ws(_SID_A)], _START, _END)
+
+        gaps = result.unavailable[GatewayHruName(_HRU)]
+        assert gaps["snow_depth"] == "subscription_not_found"
+        assert gaps["snowmelt"] == "source_data_missing"
+
+    def test_fatal_auth_error_propagates_uncontained(self) -> None:
+        adapter = _reanalysis_adapter(
+            _ReanalysisEcmwf(),
+            _AuthFailSnowReanalysis(),
+            _MapResolver({_SID_A: _ref(_SID_A, _POLY_A)}),
+        )
+
+        with pytest.raises(RecapAuthError):
+            adapter.fetch_snow_reanalysis([_snow_ws(_SID_A)], _START, _END)
+
+    def test_resolved_and_skipped_populated_mixed_resolution(self) -> None:
+        resolver = _MapResolver({_SID_A: _ref(_SID_A, _POLY_A), _SID_B: None})
+        snow = _SnowReanalysisFake()
+        adapter = _reanalysis_adapter(_ReanalysisEcmwf(), snow, resolver)
+
+        result = adapter.fetch_snow_reanalysis(
+            [_snow_ws(_SID_A), _snow_ws(_SID_B)], _START, _END
+        )
+
+        assert result.resolved == {_SID_A: GatewayHruName(_HRU)}
+        assert result.skipped == {_SID_B: "unmapped"}
+
+    def test_prefiltered_station_recorded_with_reason(self) -> None:
+        resolver = _MapResolver({_SID_A: _ref(_SID_A, _POLY_A)})
+        snow = _SnowReanalysisFake()
+        adapter = _reanalysis_adapter(_ReanalysisEcmwf(), snow, resolver)
+        inactive = _snow_ws(_SID_B, status=WeatherSourceStatus.INACTIVE)
+
+        result = adapter.fetch_snow_reanalysis(
+            [_snow_ws(_SID_A), inactive], _START, _END
+        )
+
+        assert result.skipped == {_SID_B: "prefiltered"}
+        assert _SID_B not in result.resolved
+
+    def test_all_unmappable_raises_gateway_resolution_error(self) -> None:
+        resolver = _MapResolver({_SID_A: None})
+        adapter = _reanalysis_adapter(
+            _ReanalysisEcmwf(), _SnowReanalysisFake(), resolver
+        )
+
+        with pytest.raises(GatewayResolutionError):
+            adapter.fetch_snow_reanalysis([_snow_ws(_SID_A)], _START, _END)
+
+    def test_forecast_fill_row_excluded_from_rows(self) -> None:
+        adapter = _reanalysis_adapter(
+            _ReanalysisEcmwf(),
+            _MixedProvenanceSnowReanalysis(),
+            _MapResolver({_SID_A: _ref(_SID_A, _POLY_A)}),
+        )
+
+        result = adapter.fetch_snow_reanalysis(
+            [_snow_ws(_SID_A)], _START, _END, variables=["snow_depth"]
+        )
+
+        assert len(result.rows) == 1
+        assert result.rows[0].value == 1.0
+        assert result.rows[0].source == "recap_snow_reanalysis"
+
+    def test_variables_allowlist_restricts_attempted_set(self) -> None:
+        snow = _SnowReanalysisFake()
+        adapter = _reanalysis_adapter(
+            _ReanalysisEcmwf(), snow, _MapResolver({_SID_A: _ref(_SID_A, _POLY_A)})
+        )
+
+        result = adapter.fetch_snow_reanalysis(
+            [_snow_ws(_SID_A)], _START, _END, variables=["swe"]
+        )
+
+        assert result.attempted == {GatewayHruName(_HRU): frozenset({"swe"})}
+        assert {row.parameter for row in result.rows} == {"swe"}

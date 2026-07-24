@@ -1945,6 +1945,18 @@ selector — a dual identity impossible to satisfy honestly. Splitting them mirr
 path (`MeteoSwissNwpAdapter` forecast-only, `MeteoSwissOpenDataReanalysisAdapter`
 reanalysis-only) and makes each `NWP_SOURCE` unambiguous.
 
+`fetch_snow_reanalysis(station_configs, start, end, variables=None) -> SnowReanalysisFetchResult`
+(Plan 146 D5) is a NEW method, deliberately NOT part of `WeatherReanalysisSource` — mirrors
+`RecapGatewayForecastAdapter.fetch_snow_forecast`'s reasoning: per-`(hru, variable)`
+containment of a Gateway `source_data_missing`/`subscription_not_found` gap, which the
+Protocol-locked `list[RawHistoricalForcing]` return of `fetch_reanalysis` cannot express.
+`SnowReanalysisFetchResult` (`types/weather.py`) additionally carries `attempted` (the
+per-HRU request denominator), `resolved` (station → HRU, authoritative), and `skipped`
+(station → drop reason) — the dedicated `ingest-recap-reanalysis` flow's health
+classification and station-resolution reconciliation. `RawHistoricalForcing.source` for a
+Snowmapper row is `recap_snow_reanalysis` — the persisted literal backing the
+`ForcingSource.RECAP_SNOW_REANALYSIS` provenance member (`types/forcing_sources.py`).
+
 Module: `adapters/recap_gateway.py`
 
 ### §5a mapping table + store-backed resolver (Plan 082 Task 2D)

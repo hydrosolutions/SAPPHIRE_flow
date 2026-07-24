@@ -40,6 +40,12 @@ def _build_specs() -> list[DeploymentSpec]:
     cron_weather_history = os.environ.get(
         "SCHEDULE_INGEST_WEATHER_HISTORY", "0 6 * * *"
     )
+    # Plan 146 D2: daily rolling ingest for the recap-Gateway snow-reanalysis
+    # channel — a distinct time from ingest-weather-history so both never
+    # contend for the DB at the same moment.
+    cron_snow_reanalysis = os.environ.get(
+        "SCHEDULE_INGEST_SNOW_REANALYSIS", "0 5 * * *"
+    )
     # Plan 111 route-C BAFU forecast collector. Hourly matches BAFU's issue
     # rhythm; a run is ~70s and dedups on issued_at, so hourly never overlaps
     # and re-fetches are cheap no-ops. Retune via the env var without a redeploy.
@@ -109,6 +115,13 @@ def _build_specs() -> list[DeploymentSpec]:
             flow_attr="ingest_weather_history_flow",
             deployment_name="ingest-weather-history",
             cron=cron_weather_history,
+            concurrency_limit=1,
+        ),
+        DeploymentSpec(
+            flow_module="sapphire_flow.flows.ingest_recap_reanalysis",
+            flow_attr="ingest_recap_reanalysis_flow",
+            deployment_name="ingest-recap-reanalysis",
+            cron=cron_snow_reanalysis,
             concurrency_limit=1,
         ),
         DeploymentSpec(

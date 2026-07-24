@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-07-23
 plan: 146
 title: Antecedent (past) snow reanalysis channel — provenance + owning ingest flow + read-side routing
@@ -12,7 +12,9 @@ supersedes: []
 # Plan 146 — Antecedent (past) snow reanalysis channel
 
 ## Status
-**DRAFT — split from Plan 145 (owner 2026-07-23).** This is the load-bearing half of the original snow-forcing
+**READY (owner 2026-07-24) → /implement (hold-at-PR).** Design converged through two `/plan` runs (7 rounds) +
+the model-agnostic pivot + two direct-folds; all Open items resolved or accepted (licence gate CLOSED —
+`"SnowMapper Operational (MIT License, 2026)"`). Split from Plan 145 (owner 2026-07-23). This is the load-bearing half of the original snow-forcing
 plan: the antecedent channel needs a new provenance source, a read-side snow tier, and — the blocker — an
 **owning ingest flow/schedule** (today the snow-reanalysis adapter has zero production callers). **D2 DECIDED
 (owner 2026-07-24): a SCHEDULED daily ingest deployment bounded by a FIXED ROLLING WINDOW** — no persisted
@@ -151,12 +153,14 @@ A model needing snow **lookback** (antecedent SWE/depth/melt in its `past_dynami
   `RECAP_SNOW_REANALYSIS = "recap_snow_reanalysis"` for the persisted literal (`recap_gateway.py:323`) + its
   `SOURCE_ATTRIBUTIONS` entry (`forcing_sources.py:38-47`); round-trips through the provenance layer. **This does
   NOT touch `CANONICAL_FORCING_SCHEMA`** (`forcing_schema.py:37-53` keeps exactly its five MeteoSwiss params —
-  expanding it is gated on unit resolution, D6). **Attribution string — authoritative text is a HARD READY/merge
-  gate; NO provisional string ships.** The product is the recap-gateway JSNOW reanalysis (client per-row source
-  literal `jsnow_reanalysis`, `recap_gateway.py:332`; live-probed in [[reference_recap_gateway_12300_products]]).
-  The exact acknowledgement/licence text is not repo-grounded, so it MUST be obtained from the owner and recorded
-  in this plan BEFORE the plan becomes READY — `SOURCE_ATTRIBUTIONS[RECAP_SNOW_REANALYSIS]` is populated with that
-  confirmed text at implementation time and never with an invented placeholder. **Test scope:** `SOURCE_ATTRIBUTIONS` values are unrestricted
+  expanding it is gated on unit resolution, D6). **Attribution string — RESOLVED (owner 2026-07-24).** The product
+  is the recap-gateway JSNOW reanalysis, known operationally as **SnowMapper** (client per-row source literal
+  `jsnow_reanalysis`, `recap_gateway.py:332`; live-probed in [[reference_recap_gateway_12300_products]]). The
+  owner-confirmed attribution string is **`SOURCE_ATTRIBUTIONS[RECAP_SNOW_REANALYSIS] = "SnowMapper Operational
+  (MIT License, 2026)"`** — the exact value the Phase-1 equality test asserts against. (Note: the SnowMapper
+  package is not yet public — it goes public at project end — so this string MAY be revised then; that is a normal
+  attribution-maintenance update, NOT a placeholder, and does not re-open the READY gate.) **Test scope:**
+  `SOURCE_ATTRIBUTIONS` values are unrestricted
   strings (`forcing_sources.py:38-47`), so a dictionary-membership assertion can only prove an entry is *present*,
   NOT that it is non-placeholder — a completeness test alone cannot detect a placeholder. The Phase-1 test
   therefore does exactly two things and claims exactly two things: (a) it blocks a member with a **missing**
@@ -639,12 +643,11 @@ A model needing snow **lookback** (antecedent SWE/depth/melt in its `past_dynami
   in-scope HRU every run; per-HRU subscription is discovered at runtime via `RecapSnowUnavailableError.code`,
   never pre-computed from model/group requirements. See D5. This closes the former
   `required_snow`/`ModelStore`/`StationGroupStore`/group-scoping/`no_snow_requirement` design entirely.)*
-1. **Snow attribution/licence string — HARD READY GATE, STILL OPEN.** The exact acknowledgement/licence text is
-   not repo-grounded, so it MUST be obtained from the owner and **recorded in D3 here** BEFORE this plan goes
-   READY. No provisional/placeholder string ships. Two complementary guards (D3, Phase 1): the completeness test
-   blocks a **missing** entry, and an **equality** test asserts the member's value equals the exact recorded
-   string (equality-vs-membership rationale: see D3). This is the one item that must close before READY; the plan
-   stays DRAFT until the owner text is folded into D3.
+1. **Snow attribution/licence string — RESOLVED (owner 2026-07-24).** The final READY gate is CLOSED:
+   `SOURCE_ATTRIBUTIONS[RECAP_SNOW_REANALYSIS] = "SnowMapper Operational (MIT License, 2026)"` (recorded in D3;
+   the Phase-1 equality test asserts against exactly this value). The SnowMapper package goes public at project
+   end, so this string may be revised then — a normal attribution-maintenance update that does NOT re-open this
+   gate.
 2. **Gateway snow-call-volume trade-off — ACCEPTED for v1, monitor follow-on tracked.** The model-agnostic flow
    issues an unconditional daily Gateway call for all 3 snow variables, for every in-scope recap-reanalysis HRU,
    in perpetuity — including HRUs whose bound models never consume snow; no Gateway rate/quota data is cited to

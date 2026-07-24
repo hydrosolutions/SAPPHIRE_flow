@@ -1174,3 +1174,98 @@ class TestBuildSupersetEnsembleMode:
             ),
         ]
         assert build_superset_requirements(reqs).ensemble_mode is EnsembleMode.ENSEMBLE
+
+
+class TestSnowReachesPastDynamicViaHybridSourceLive:
+    """Plan 146 D4/3a: the SAME stored ``recap_snow_reanalysis`` series
+    reaches ``past_dynamic`` for the LIVE-inference consumer through the
+    real ``default_hybrid_forcing_source`` (mirrors the training/hindcast
+    consumer proofs — the third of the three call paths D4 requires)."""
+
+    def test_swe_column_present_with_stored_value(self) -> None:
+        from sapphire_flow.adapters.hybrid_reanalysis_factories import (
+            default_hybrid_forcing_source,
+        )
+        from sapphire_flow.types.enums import ArtifactScope
+        from sapphire_flow.types.model import ModelDataRequirements
+        from sapphire_flow.types.station import StationWeatherSource
+        from tests.fakes.fake_stores import FakeHistoricalForcingStore
+
+        class _SnowFedModel:
+            artifact_scope = ArtifactScope.STATION
+            data_requirements = ModelDataRequirements(
+                target_parameters=frozenset({"discharge"}),
+                past_dynamic_features=frozenset({"swe"}),
+                future_dynamic_features=frozenset(),
+                static_features=frozenset(),
+                supported_time_steps=frozenset({timedelta(hours=1)}),
+                lookback_steps=10,
+                forecast_horizon_steps=5,
+                spatial_input_type=SpatialRepresentation.BASIN_AVERAGE,
+            )
+
+            def train(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+                return b""
+
+            def predict(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+                return ({}, None)
+
+            def serialize_artifact(self, artifact):  # type: ignore[no-untyped-def]
+                return b""
+
+            def deserialize_artifact(self, raw):  # type: ignore[no-untyped-def]
+                return raw
+
+        sid = StationId(uuid4())
+        station_store, basin_store, obs_store, nwp_store, state_store, _ = (
+            _make_stores_and_sources(sid)
+        )
+        station_store.store_weather_source(
+            StationWeatherSource(
+                station_id=sid,
+                nwp_source="era5_land",
+                extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+                status=WeatherSourceStatus.ACTIVE,
+                role=WeatherSourceRole.REANALYSIS,
+            )
+        )
+
+        forcing_store = FakeHistoricalForcingStore()
+        obs_start = ensure_utc(_ISSUE - 20 * timedelta(hours=1))
+        forcing_store.store_forcing(
+            [
+                make_raw_historical_forcing(
+                    station_id=sid,
+                    source="recap_snow_reanalysis",
+                    parameter="swe",
+                    valid_time=ensure_utc(
+                        datetime.fromtimestamp(obs_start.timestamp() + i * 3600, tz=UTC)
+                    ),
+                    value=float(100 + i),
+                )
+                for i in range(20)
+            ]
+        )
+
+        result = assemble_station_operational_inputs(
+            station_id=sid,
+            model=_SnowFedModel(),
+            model_id=_MODEL_ID,
+            issue_time=_ISSUE,
+            cycle_time=_CYCLE,
+            nwp_source=_NWP_SOURCE,
+            forcing_source=default_hybrid_forcing_source(forcing_store=forcing_store),
+            weather_forecast_store=nwp_store,
+            obs_store=obs_store,
+            station_store=station_store,
+            basin_store=basin_store,
+            model_state_store=state_store,
+            clock=_clock,
+            forecast_horizon_steps=5,
+            time_step=timedelta(hours=1),
+        )
+
+        assert result is not None
+        inputs, _ = result
+        assert "swe" in inputs.data.past_dynamic.columns
+        assert not inputs.data.past_dynamic.is_empty()
