@@ -2857,24 +2857,74 @@ Two return paths:
 
 Callers discriminate between the two return types using `isinstance(result, GriddedForecast)` — the canonical pattern used in `run_forecast_cycle.py`.
 
-> **Forecast-cycle redesign — widened source contract + new types (planned, 2026-07-24).** `docs/design/forecast-cycle-redesign.md` widens this Protocol with a **requirement-aware** capability while keeping `fetch_forecasts` as the compatibility contract during migration:
+> **Forecast-cycle redesign — widened source contract + new types (planned, 2026-07-24).** `docs/design/forecast-cycle-redesign.md` adds a **requirement-aware** capability via a SEPARATE Protocol (adding a required method to `WeatherForecastSource` would make every legacy adapter/fake non-conforming). The adapter factory's **return type** is the dispatch contract — migrated adapters satisfy both; legacy adapters satisfy only `WeatherForecastSource`; the flow selects the per-track path via `isinstance(source, CandidateAwareForecastSource)`. Walk-back **policy** is a pure `services/` concern, never inside the adapter.
+>
 > ```python
-> class WeatherForecastSource(Protocol):
->     def fetch_forecasts(...) -> GriddedForecast | dict[StationId, WeatherForecastResult]: ...   # existing / legacy
+> class CandidateAwareForecastSource(Protocol):
 >     def fetch_requirement(
 >         self, track: ForcingTrackKey, stations: list[StationWeatherSource], nominal_cycle: UtcDatetime,
->     ) -> CandidateFetchResult: ...   # fetch EXACTLY the requested cycle; no adapter-side walk-back
-> ```
-> Adding `fetch_requirement` as a **required** method is a breaking Protocol change — every implementation + fake becomes non-conforming until migrated — so the flow/bootstrap dispatches candidate-aware vs legacy-only adapters explicitly (a factory return type or capability check), with a conformance test proving `fetch_requirement` fetches only the requested cycle. Walk-back **policy** is a pure `services/` concern, never inside the adapter.
+>     ) -> CandidateFetchResult: ...   # fetch EXACTLY nominal_cycle; NO adapter-side walk-back
 >
-> New domain types (all `@dataclass(frozen=True, kw_only=True, slots=True)`; every timestamp `UtcDatetime`):
-> - `FutureSteps` (positive-int semantic wrapper / NewType); `FeatureFetchHorizons = Mapping[FeatureName, FutureSteps]`, `InputFrameHorizon`, `OutputHorizon` — three **distinct** horizon types.
-> - `ForcingTrackKey(nwp_source, ensemble_mode, time_step, feature_horizons, spatial_representation)`.
-> - `StationTrackOutcome` = discriminated `StationTrackAvailable(cycle, records, provenance) | StationTrackUnavailable(reason)` (not a nullable payload).
-> - `CandidateFetchResult` (candidate-local ownership — validated by the completeness predicate **before** any persist; never reused across candidates); `TrackFetchResult(resolved_cycle, station_outcomes: Mapping[StationId, StationTrackOutcome])`.
-> - `AssignmentFailureCause` — a discriminated cause distinguishing *missing-context* (model not called), a *returned FI `ModelFailure`* (cause preserved structurally), and an *unexpected exception*; all assignment-local (advance the fallback chain).
-> - A **candidate-fetch outcome taxonomy** (complete / absent-incomplete / transient / auth-config / store / station-unavailable) mapping the existing adapter exceptions to walk-back-eligible vs flow-fatal vs assignment-local policy.
-> - `ModelRunContext` — **service-local** (defined in `services/`; shape documented here) per Plan 148.
+> FeatureName = NewType("FeatureName", str)
+>
+> @dataclass(frozen=True, kw_only=True, slots=True)
+> class FutureSteps:                      # validated wrapper — NOT a NewType (must enforce > 0)
+>     value: int
+>     def __post_init__(self) -> None:
+>         if self.value <= 0: raise ValueError(f"FutureSteps must be > 0, got {self.value}")
+>
+> # three DISTINCT horizon types (not interchangeable ints)
+> FeatureFetchHorizons = Mapping[FeatureName, FutureSteps]
+> @dataclass(frozen=True, kw_only=True, slots=True)
+> class InputFrameHorizon: steps: FutureSteps
+> @dataclass(frozen=True, kw_only=True, slots=True)
+> class OutputHorizon:     steps: FutureSteps
+>
+> @dataclass(frozen=True, kw_only=True, slots=True)
+> class ForcingTrackKey:
+>     nwp_source: NwpSource                # existing NewType/enum
+>     ensemble_mode: EnsembleMode          # existing enum
+>     time_step: timedelta
+>     feature_horizons: FeatureFetchHorizons
+>     spatial_representation: SpatialRepresentation  # existing enum
+>
+> # StationTrackOutcome — discriminated union (NOT a nullable payload)
+> @dataclass(frozen=True, kw_only=True, slots=True)
+> class StationTrackAvailable:
+>     cycle: UtcDatetime
+>     records: object                      # station-keyed records (typed in the build plan)
+>     provenance: NwpCycleSource
+> @dataclass(frozen=True, kw_only=True, slots=True)
+> class StationTrackUnavailable:
+>     reason: StationUnavailableReason     # enum: NO_DATA_AT_CYCLE | EXTRACTION_EMPTY | NOT_SUBSCRIBED
+> StationTrackOutcome = StationTrackAvailable | StationTrackUnavailable
+>
+> @dataclass(frozen=True, kw_only=True, slots=True)
+> class TrackFetchResult:
+>     resolved_cycle: UtcDatetime
+>     station_outcomes: Mapping[StationId, StationTrackOutcome]
+>
+> class CandidateFetchStatus(Enum):        # candidate-fetch outcome taxonomy
+>     COMPLETE = auto()                    # accept
+>     ABSENT_INCOMPLETE = auto()           # walk-back eligible
+>     TRANSIENT = auto()                   # retry, then walk-back
+>     AUTH_CONFIG = auto()                 # flow-fatal (misconfiguration, not a data gap)
+>     STORE = auto()                       # flow-fatal
+>     # (per-station availability is NOT a candidate status — it lives in StationTrackOutcome)
+>
+> @dataclass(frozen=True, kw_only=True, slots=True)
+> class CandidateFetchResult:              # candidate-LOCAL ownership: fresh per candidate, never reused/mutated;
+>     status: CandidateFetchStatus         # completeness predicate validates the RAW result BEFORE any persist
+>     cycle: UtcDatetime
+>     raw: GriddedForecast | dict[StationId, WeatherForecastResult] | None
+>
+> class AssignmentFailureCause(Enum):      # all three are assignment-local (advance the fallback chain)
+>     MISSING_CONTEXT = auto()             # track/context absent -> model NOT called (expected)
+>     MODEL_FAILURE = auto()               # returned FI ModelFailure -> ModelFailure.cause preserved structurally
+>     UNEXPECTED_EXCEPTION = auto()        # SAP3 backstop
+> ```
+> `ModelRunContext` stays **service-local** (defined in `services/`; shape per Plan 148). Enum/NewType names above
+> reuse existing symbols where they exist (`EnsembleMode`, `NwpCycleSource`, `StationId`/`ModelId`/`GroupId`).
 
 **Raw NWP grid** (pre-extraction, not per-station):
 

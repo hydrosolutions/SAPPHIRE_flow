@@ -85,14 +85,18 @@ Components:
    max-collapse (`forecast_interface.py:471,476,479`). Do **not** reuse `ModelDataRequirements` (one scalar
    `forecast_horizon_steps`, `types/model.py:262`) as the fetch requirement. Three distinct, typed horizons with
    explicit ownership:
-   - **`FeatureFetchHorizons: Mapping[feature, int]`** — the fetch-acceptance contract; owned by the track
-     projection, derived per-feature at the FI boundary. A cycle is accepted iff every feature has ≥ its own steps.
-   - **`InputFrameHorizon: int`** — the rectangular assembled-frame horizon (= max of the feature horizons),
-     owned by assembly; the FI boundary then **slices each variable to its own `future_steps`** before the
-     per-variable NaN gate (`forecast_interface.py:705,717`), so a short-horizon feature isn't rejected for
-     lacking long-horizon steps.
-   - **`OutputHorizon: int`** — the forecast horizon the model emits; separate from forcing, owned by the model.
-   Non-FI models project into these via their declared requirements (single-feature-horizon = the scalar case).
+   - **`FeatureFetchHorizons = Mapping[FeatureName, FutureSteps]`** — the fetch-acceptance contract; owned by the
+     track projection, derived per-feature at the FI boundary. A cycle is accepted iff every feature has ≥ its
+     own steps.
+   - **`InputFrameHorizon`** (a distinct `FutureSteps`-valued type) — the rectangular assembled-frame horizon
+     (= max of the feature horizons), owned by assembly; the FI boundary then **slices each variable to its own
+     `future_steps`** before the per-variable NaN gate (`forecast_interface.py:705,717`), so a short-horizon
+     feature isn't rejected for lacking long-horizon steps.
+   - **`OutputHorizon`** (a distinct `FutureSteps`-valued type) — the forecast horizon the model emits; separate
+     from forcing, owned by the model.
+   These three are **distinct, non-interchangeable** types (all built on the validated `FutureSteps` wrapper — see
+   § "Formal contracts"); not raw `int`s. Non-FI models project into them via their declared requirements
+   (single-feature-horizon = the scalar case).
 2. **A requirement-aware source contract + per-track cycle resolution.** Add
    `fetch_requirement(track, stations, nominal_cycle) -> CandidateFetchResult` (immutable) alongside the existing
    `fetch_forecasts` (kept as a compatibility adapter until control has migrated). Per track, walk back to the
@@ -174,10 +178,10 @@ in `docs/architecture-context.md`. Definitions here are design-level — signatu
   - `flows/` — the fetch/validate/walk-back **loop** + `task.map` fan-out + gather barriers.
 - **Formal types (all `@dataclass(frozen=True, kw_only=True, slots=True)` unless noted; every timestamp is
   `UtcDatetime`, `ensure_utc()` only at external/config/API boundaries — locked-decision "UTC everywhere").**
-  - `FutureSteps` — a semantic wrapper for a **positive** step count (a validated frozen wrapper with a
-    `__post_init__` rejecting ≤0, or `NewType('FutureSteps', int)` if zero-cost tagging is preferred — build
-    plan picks). `FeatureFetchHorizons = Mapping[FeatureName, FutureSteps]`, `InputFrameHorizon`, `OutputHorizon`
-    are **distinct** types, not interchangeable ints.
+  - `FutureSteps` — a **validated** frozen wrapper (`__post_init__` rejects ≤0), **not** a `NewType` (a `NewType`
+    cannot enforce `> 0`, leaving invalid states representable — contrary to parse-don't-validate).
+    `FeatureFetchHorizons = Mapping[FeatureName, FutureSteps]`, `InputFrameHorizon`, `OutputHorizon` are
+    **distinct** `FutureSteps`-valued types, not interchangeable ints.
   - `ForcingTrackKey` — `(NwpSource, EnsembleMode, time_step: timedelta, FeatureFetchHorizons,
     SpatialRepresentation)`; reuses the existing `EnsembleMode`/spatial enums + `StationId`/`ModelId`/`GroupId`
     NewTypes.
@@ -198,15 +202,21 @@ in `docs/architecture-context.md`. Definitions here are design-level — signatu
   the station's assignment fails locally, chain advances). Maps the existing adapter exceptions
   (`NoCycleAvailableError`, `RecapDataUnavailableError`, `RecapAuthError`, `RecapConfigurationError`, disk-limit,
   `AdapterError`) onto these classes; the build plan defines the exact type.
-- **Completeness is validated on the RAW fetch BEFORE the archive/extract/persist pipeline** — track-level
-  completeness (D1 exact-51 member count + per-feature horizon) is checkable directly on the candidate's raw
-  result, so walk-back rejects a candidate **without** running GridExtractor/archiving/persisting it. This is the
-  "commit only on full pass" invariant (today rejected rows already never reach Postgres — do not regress it).
-- **Track-level acceptance rule.** A candidate cycle is *accepted* for a track when it satisfies completeness for
-  the track's **required** stations at their per-feature horizon; per-station availability then varies within the
-  accepted cycle (an unavailable station → its assignment fails → fallback). **Group** assignments are
-  atomic — a group track requires **all** member stations available at one common cycle (per the round-3 group
-  contract), else the group assignment fails atomically.
+- **Two SEPARATE gates: global raw-candidate completeness (rejects the cycle) vs per-station availability
+  (assignment-local).** These are distinct and must not be conflated:
+  1. **Global raw-candidate completeness — checked on the RAW fetch, BEFORE archive/extract/persist.** For an
+     ENSEMBLE track, the raw candidate must carry the full member set (`member_ids == {0..50}`) at each feature's
+     horizon; for CONTROL, `fc`. This is a property of the raw result (member/step counts), checkable without
+     extraction, so a candidate failing it is **rejected and walked back WITHOUT** running
+     GridExtractor/archiving/persisting — the "commit only on full pass" invariant (today rejected rows already
+     never reach Postgres; do not regress it).
+  2. **Per-station availability — determined AFTER extraction/readback, within an already-accepted cycle.** A
+     station with no extracted data at the accepted cycle yields `StationTrackUnavailable`; **that station's
+     assignment fails locally** and the chain advances. This does **not** reject the cycle.
+  So: raw-completeness failure → walk back to an older cycle; per-station unavailability at an accepted cycle →
+  assignment-local fallback. **Group** assignments are **atomic**: a group track requires **all** member stations
+  available (post-extraction) at the one accepted cycle (per the round-3 group contract), else the group
+  assignment fails atomically (it does not partially run).
 - **FI failure semantics (three typed causes, all assignment-local — per the FI adherence mandate).** A typed
   `AssignmentFailureCause` distinguishes: (i) **missing track/context** → orchestrator-local *expected* failure,
   the model is **not called**; (ii) model-declared insufficient/degraded inputs → a **returned FI `ModelFailure`**
@@ -217,10 +227,16 @@ in `docs/architecture-context.md`. Definitions here are design-level — signatu
 - **Observation fetch stays parallel with track fetch.** Do not serialize observations behind track fetching —
   observation fetch runs concurrently with track projection + Phase-A candidate fetch, with an explicit **gather
   barrier** before Phase B (preserves today's Flow 1 concurrency + the forecast-cycle performance target).
-- **Protocol migration dispatch.** The flow/bootstrap distinguishes candidate-aware adapters from legacy-only ones
-  by an explicit mechanism (a factory return type or capability check — build plan picks), and a conformance test
-  proves `fetch_requirement` fetches **exactly the requested cycle** with no hidden adapter-side walk-back
-  (MeteoSwiss currently resolves the cycle inside `fetch_forecasts`).
+- **Protocol migration dispatch — a distinct `CandidateAwareForecastSource` Protocol (DECIDED, not a menu).**
+  Define `CandidateAwareForecastSource(Protocol)` with **only** `fetch_requirement(...)` (do NOT add the method to
+  `WeatherForecastSource`, which would make every legacy adapter/fake structurally non-conforming). A migrated
+  adapter satisfies **both** Protocols; a legacy adapter satisfies only `WeatherForecastSource`. The adapter
+  **factory's return type** is the dispatch contract: it returns a `CandidateAwareForecastSource` for migrated
+  sources and a plain `WeatherForecastSource` for legacy ones, and the flow selects the per-track path by that
+  typed return (an `isinstance(source, CandidateAwareForecastSource)` check at the seam, backed by the factory's
+  type). A conformance test proves `fetch_requirement` fetches **exactly the requested cycle** with no hidden
+  adapter-side walk-back (MeteoSwiss currently resolves the cycle inside `fetch_forecasts`; its migration must
+  move that walk-back out to `services/`).
 - **Prefect topology + logging + resource gate (standards).** `task.map` fetch over tracks and forecast over
   assignments; per-member model calls stay **inside** the assignment task; explicit gather barriers before
   persistence/combination/Phase C. Canonical `{entity}.{action}` events — `nwp.candidate_rejected`,
