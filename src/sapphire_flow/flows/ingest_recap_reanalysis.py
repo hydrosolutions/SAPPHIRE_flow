@@ -217,13 +217,17 @@ def _classify_run(
             if code == "subscription_not_found":
                 subscription_not_found.append(f"{hru_name}/{variable}")
                 continue
-            advanced = any(
-                after.get(variable, {}).get(sid, set())
-                > before.get(variable, {}).get(sid, set())
-                for sid in stations_for_hru
-            )
-            if not advanced:
-                stalled.append(f"{hru_name}/{variable}")
+            # Plan 146 fold #1: per-(station, parameter) granularity — a
+            # station that did not advance must stall on its own, never be
+            # masked by a sibling station (same HRU) that did advance.
+            after_variable = after.get(variable, {})
+            before_variable = before.get(variable, {})
+            for sid in stations_for_hru:
+                station_advanced = after_variable.get(sid, set()) > before_variable.get(
+                    sid, set()
+                )
+                if not station_advanced:
+                    stalled.append(f"{hru_name}/{variable} (station {sid})")
 
     if subscription_not_found:
         log.info(
@@ -233,24 +237,23 @@ def _classify_run(
 
     dropped = [str(sid) for sid in result.skipped] + [str(sid) for sid in unexplained]
 
+    # Plan 146 fold #2: a stalled key must never hide a dropped/unresolved
+    # in-scope station (and vice versa) — surface BOTH when both fire,
+    # rather than the first condition checked winning the return.
+    reasons: list[str] = []
+    detail: dict[str, object] = {}
     if stalled:
-        return _Classification(
-            status=PipelineHealthStatus.WARNING,
-            detail={
-                "reason": "no_horizon_advance",
-                "stalled_keys": stalled,
-                "variables": list(attempted_variables),
-            },
-        )
+        reasons.append("no_horizon_advance")
+        detail["stalled_keys"] = stalled
+        detail["variables"] = list(attempted_variables)
     if dropped:
-        return _Classification(
-            status=PipelineHealthStatus.WARNING,
-            detail={
-                "reason": "station_resolution_dropped",
-                "dropped_stations": dropped,
-                "skipped": {str(k): v for k, v in result.skipped.items()},
-            },
-        )
+        reasons.append("station_resolution_dropped")
+        detail["dropped_stations"] = dropped
+        detail["skipped"] = {str(k): v for k, v in result.skipped.items()}
+
+    if reasons:
+        detail["reason"] = reasons[0] if len(reasons) == 1 else reasons
+        return _Classification(status=PipelineHealthStatus.WARNING, detail=detail)
     return _Classification(
         status=PipelineHealthStatus.OK,
         detail={"variables": list(attempted_variables)},

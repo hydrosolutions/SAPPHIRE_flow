@@ -359,8 +359,8 @@ class TestMultiHruPartialStall:
             check_type=PipelineCheckType.RECAP_SNOW_REANALYSIS_INGEST
         )
         stalled = records[-1].detail["stalled_keys"]
-        assert f"{_HRU_B}/swe" in stalled
-        assert f"{_HRU}/swe" not in stalled
+        assert f"{_HRU_B}/swe (station {sid_b})" in stalled
+        assert not any(entry.startswith(f"{_HRU}/swe") for entry in stalled)
 
 
 class TestResolutionReconciliation:
@@ -406,6 +406,120 @@ class TestResolutionReconciliation:
         assert detail["reason"] == "station_resolution_dropped"
         assert str(sid_b) in detail["dropped_stations"]
         assert detail["skipped"][str(sid_b)] == "unmapped"
+
+
+class TestPerStationParameterGranularity:
+    def test_same_hru_partial_station_stall_yields_warning_naming_station(
+        self,
+    ) -> None:
+        # Two stations resolve to the SAME HRU. Station A advances this run;
+        # station B does not. any()-across-stations would wrongly call the
+        # (hru, variable) key advanced because A advanced -> masks B's
+        # stall. Plan 146 fold #1 requires per-(station, parameter)
+        # granularity: OK only when EVERY attempted (station, variable) key
+        # advanced.
+        sid_a = StationId(uuid4())
+        sid_b = StationId(uuid4())
+        station_store = _station_store_with_binding(sid_a, sid_b)
+        forcing_store = FakeHistoricalForcingStore()
+        # Pre-seed station B's swe so its "after" looks unchanged (stalled).
+        forcing_store.store_forcing(
+            [
+                make_raw_historical_forcing(
+                    station_id=sid_b,
+                    source="recap_snow_reanalysis",
+                    parameter="swe",
+                    valid_time=datetime(2026, 6, 1, tzinfo=UTC),
+                )
+            ]
+        )
+        health_store = FakePipelineHealthStore()
+
+        rows = [
+            make_raw_historical_forcing(
+                station_id=sid_a,
+                source="recap_snow_reanalysis",
+                parameter="swe",
+                valid_time=datetime(2026, 6, 1, tzinfo=UTC),
+            )
+        ]
+        fake_result = _FakeResult(
+            rows=rows,
+            unavailable={},
+            attempted={_HRU: frozenset({"swe"})},
+            resolved={sid_a: _HRU, sid_b: _HRU},
+            skipped={},
+        )
+        adapter = _FakeSnowAdapter(fake_result)
+
+        result = ingest_recap_reanalysis_flow(
+            station_store=station_store,
+            forcing_store=forcing_store,
+            gateway_polygon_store=object(),
+            pipeline_health_store=health_store,
+            adapter=adapter,
+            clock=_clock,
+        )
+
+        assert result.status is PipelineHealthStatus.WARNING
+        records = health_store.fetch_recent(
+            check_type=PipelineCheckType.RECAP_SNOW_REANALYSIS_INGEST
+        )
+        stalled = records[-1].detail["stalled_keys"]
+        assert any(str(sid_b) in entry for entry in stalled)
+        assert not any(str(sid_a) in entry for entry in stalled)
+
+
+class TestStalledAndDroppedBothSurface:
+    def test_stalled_and_dropped_both_appear_in_one_warning(self) -> None:
+        # One in-scope station is dropped (skipped) AND another attempted
+        # key stalls in the SAME run. The first-return-wins branching used
+        # to hide `dropped_stations` behind the `stalled_keys` reason (or
+        # vice versa) -> fold #2 requires both to surface together.
+        sid_a = StationId(uuid4())
+        sid_b = StationId(uuid4())
+        station_store = _station_store_with_binding(sid_a, sid_b)
+        forcing_store = FakeHistoricalForcingStore()
+        # Pre-seed station A's swe so it looks unchanged (stalled) this run.
+        forcing_store.store_forcing(
+            [
+                make_raw_historical_forcing(
+                    station_id=sid_a,
+                    source="recap_snow_reanalysis",
+                    parameter="swe",
+                    valid_time=datetime(2026, 6, 1, tzinfo=UTC),
+                )
+            ]
+        )
+        health_store = FakePipelineHealthStore()
+
+        fake_result = _FakeResult(
+            rows=[],  # nothing new stored this run -> station A stalls
+            unavailable={},
+            attempted={_HRU: frozenset({"swe"})},
+            resolved={sid_a: _HRU},
+            skipped={sid_b: "unmapped"},
+        )
+        adapter = _FakeSnowAdapter(fake_result)
+
+        result = ingest_recap_reanalysis_flow(
+            station_store=station_store,
+            forcing_store=forcing_store,
+            gateway_polygon_store=object(),
+            pipeline_health_store=health_store,
+            adapter=adapter,
+            clock=_clock,
+        )
+
+        assert result.status is PipelineHealthStatus.WARNING
+        records = health_store.fetch_recent(
+            check_type=PipelineCheckType.RECAP_SNOW_REANALYSIS_INGEST
+        )
+        detail = records[-1].detail
+        assert "stalled_keys" in detail
+        assert "dropped_stations" in detail
+        assert str(sid_b) in detail["dropped_stations"]
+        assert any(str(sid_a) in entry for entry in detail["stalled_keys"])
 
 
 class TestD2aBackfill:
