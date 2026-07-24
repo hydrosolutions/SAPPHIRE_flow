@@ -27,6 +27,7 @@ from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import ModelArtifactStatus, ModelAssignmentStatus
 from sapphire_flow.types.ids import ModelId, StationGroupId, StationId
 from sapphire_flow.types.station import GroupModelAssignment, StationGroup
+from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 
 
 @contextmanager
@@ -63,6 +64,7 @@ def _seed_station(conn: sa.Connection) -> StationId:
             timezone="Europe/Zurich",
             measured_parameters=["discharge"],
             ownership="own",
+            tenant_id=DEFAULT_TENANT_ID,
         )
     )
     return sid
@@ -88,6 +90,7 @@ def _seed_group(conn: sa.Connection, *station_ids: StationId) -> StationGroupId:
             id=gid,
             name=f"onb-grp-{gid.hex[:6]}",
             description=None,
+            tenant_id=DEFAULT_TENANT_ID,
         )
     )
     for sid in station_ids:
@@ -95,6 +98,7 @@ def _seed_group(conn: sa.Connection, *station_ids: StationId) -> StationGroupId:
             sa.insert(station_group_members).values(
                 group_id=gid,
                 station_id=sid,
+                tenant_id=DEFAULT_TENANT_ID,
             )
         )
     return gid

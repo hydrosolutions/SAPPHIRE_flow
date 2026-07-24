@@ -57,6 +57,10 @@ FALLBACK_ASSIGNMENT_PRIORITIES: dict[ModelId, int] = {
 }
 StationGroupId = NewType("StationGroupId", UUID)
 ForeignForecastId = NewType("ForeignForecastId", UUID)
+# Plan 147 Slice A: the tenant-model foundation. A tenant's identity, used to
+# scope stations/groups (canonical on `stations.tenant_id`, see
+# `types/tenant.py`).
+TenantId = NewType("TenantId", UUID)
 HistoricalForcingId = NewType("HistoricalForcingId", UUID)
 # Plan 120: basin/static package importer provenance + versioning.
 # Producer-declared identifier (manifest.json "package_id"), NOT a UUID —

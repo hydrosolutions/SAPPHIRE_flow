@@ -21,6 +21,7 @@ from sapphire_flow.types.enums import (
 )
 from sapphire_flow.types.ids import ModelId, StationId
 from sapphire_flow.types.station import ModelAssignment, StationWeatherSource
+from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 from tests.conftest import make_station_config
 
 _NOW = datetime(2025, 1, 1, tzinfo=UTC)
@@ -89,6 +90,7 @@ class TestStoreAndFetchStation:
             network="meteoswiss",
             ownership=StationOwnership.OWN,
             wigos_id=None,
+            tenant_id=DEFAULT_TENANT_ID,
         )
         store.store_station(station)
         fetched = store.fetch_station(sid)

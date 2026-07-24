@@ -19,6 +19,7 @@ from sapphire_flow.types.enums import (
 from sapphire_flow.types.ids import StationId
 from sapphire_flow.types.observation import RawObservation
 from sapphire_flow.types.station import StationConfig
+from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -44,6 +45,7 @@ def _make_station_config(code: str) -> StationConfig:
         ownership=StationOwnership.FOREIGN,
         wigos_id=None,
         gauging_status=GaugingStatus.GAUGED,
+        tenant_id=DEFAULT_TENANT_ID,
     )
 
 

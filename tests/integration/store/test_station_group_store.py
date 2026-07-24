@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import uuid
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -7,11 +8,13 @@ from datetime import UTC, datetime, timedelta
 import pytest
 import sqlalchemy as sa
 
-from sapphire_flow.db.metadata import station_group_members, station_groups
+from sapphire_flow.db.metadata import station_group_members, station_groups, tenants
+from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.store.station_group_store import PgStationGroupStore
 from sapphire_flow.types.enums import ModelAssignmentStatus
-from sapphire_flow.types.ids import ModelId, StationGroupId, StationId
+from sapphire_flow.types.ids import ModelId, StationGroupId, StationId, TenantId
 from sapphire_flow.types.station import GroupModelAssignment, StationGroup
+from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 from tests.conftest import make_station_config
 
 
@@ -136,13 +139,13 @@ class TestFetchGroupByName:
         )
         store.store_group(group)
 
-        fetched = store.fetch_group_by_name("named-group")
+        fetched = store.fetch_group_by_name(DEFAULT_TENANT_ID, "named-group")
         assert fetched is not None
         assert fetched.id == group.id
 
     def test_missing_name_returns_none(self, db_connection: sa.Connection) -> None:
         store = PgStationGroupStore(db_connection)
-        assert store.fetch_group_by_name("no-such-group") is None
+        assert store.fetch_group_by_name(DEFAULT_TENANT_ID, "no-such-group") is None
 
 
 class TestFetchGroupsForStation:
@@ -278,7 +281,7 @@ class TestFetchNonexistent:
         self, db_connection: sa.Connection
     ) -> None:
         store = PgStationGroupStore(db_connection)
-        result = store.fetch_group_by_name("ghost-group")
+        result = store.fetch_group_by_name(DEFAULT_TENANT_ID, "ghost-group")
         assert result is None
 
 
@@ -547,6 +550,7 @@ class TestStoreGroupIsolationHolds:
                     name=group.name,
                     description=group.description,
                     created_at=group.created_at,
+                    tenant_id=DEFAULT_TENANT_ID,
                 )
             )
             sp.rollback()
@@ -557,3 +561,288 @@ class TestStoreGroupIsolationHolds:
                 sa.select(station_groups.c.id).where(station_groups.c.id == group.id)
             ).first()
         assert row is None, "rolled-back savepoint write leaked to a fresh connection"
+
+
+def _seed_tenant(conn: sa.Connection, tenant_id: TenantId, code: str) -> None:
+    conn.execute(
+        sa.insert(tenants).values(id=tenant_id, code=code, name=f"Tenant {code}")
+    )
+
+
+class TestStoreGroupTenantImmutable:
+    """MAJOR 2 (Plan 147 Slice A): a persisted group's tenant is IMMUTABLE. A
+    re-store under a DIFFERENT tenant is rejected (never silently keeping the
+    stored tenant, never mutating another tenant's group metadata); a re-store
+    under the SAME tenant stays idempotent.
+
+    Soundness: fails against the pre-fix ``store_group`` (whose ON CONFLICT DO
+    UPDATE ignored tenant_id — the mismatched re-store would silently succeed,
+    leaving the persisted tenant disagreeing with the supplied StationGroup).
+    """
+
+    def test_restore_with_different_tenant_raises(
+        self, db_connection: sa.Connection
+    ) -> None:
+        other_tenant = TenantId(uuid.uuid4())
+        _seed_tenant(db_connection, other_tenant, "dhm")
+        store = PgStationGroupStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+        gid = StationGroupId(uuid.uuid4())
+        store.store_group(
+            StationGroup(
+                id=gid,
+                name="immutable-group",
+                station_ids=frozenset(),
+                created_at=_NOW,
+                tenant_id=DEFAULT_TENANT_ID,
+            )
+        )
+
+        with pytest.raises(ConfigurationError, match="immutable"):
+            store.store_group(
+                StationGroup(
+                    id=gid,
+                    name="immutable-group",
+                    station_ids=frozenset(),
+                    created_at=_NOW,
+                    tenant_id=other_tenant,
+                )
+            )
+
+        # The persisted tenant is unchanged — the mismatched re-store was refused.
+        stored_tenant = db_connection.execute(
+            sa.select(station_groups.c.tenant_id).where(station_groups.c.id == gid)
+        ).scalar_one()
+        assert TenantId(stored_tenant) == DEFAULT_TENANT_ID
+
+    def test_restore_with_same_tenant_is_idempotent(
+        self, db_connection: sa.Connection
+    ) -> None:
+        store = PgStationGroupStore(
+            db_connection, transaction_factory=savepoint_factory(db_connection)
+        )
+        gid = StationGroupId(uuid.uuid4())
+        store.store_group(
+            StationGroup(
+                id=gid,
+                name="idempotent-group",
+                station_ids=frozenset(),
+                description="first",
+                created_at=_NOW,
+                tenant_id=DEFAULT_TENANT_ID,
+            )
+        )
+        # Same id + same tenant, updated metadata: succeeds and updates in place.
+        store.store_group(
+            StationGroup(
+                id=gid,
+                name="idempotent-group-renamed",
+                station_ids=frozenset(),
+                description="second",
+                created_at=_NOW,
+                tenant_id=DEFAULT_TENANT_ID,
+            )
+        )
+
+        fetched = store.fetch_group(gid)
+        assert fetched is not None
+        assert fetched.name == "idempotent-group-renamed"
+        assert fetched.description == "second"
+        assert fetched.tenant_id == DEFAULT_TENANT_ID
+
+
+class TestStoreGroupConditionalUpsertDirect:
+    """Drive the conditional-upsert statement's RETURNING contract directly.
+
+    A conflict against a row whose stored tenant_id disagrees with the
+    proposed tenant_id must make `WHERE station_groups.tenant_id =
+    EXCLUDED.tenant_id` exclude the DO UPDATE, so RETURNING yields zero rows
+    — which is exactly what ``store_group`` treats as "raise
+    ConfigurationError". This isolates that SQL-level contract from the
+    Python control flow around it (already covered end-to-end by
+    ``test_restore_with_different_tenant_raises`` above).
+    """
+
+    def test_conflict_with_mismatched_tenant_returns_no_row(
+        self, db_connection: sa.Connection
+    ) -> None:
+        other_tenant = TenantId(uuid.uuid4())
+        _seed_tenant(db_connection, other_tenant, "direct")
+
+        gid = StationGroupId(uuid.uuid4())
+        db_connection.execute(
+            sa.insert(station_groups).values(
+                id=gid,
+                name="direct-original",
+                description=None,
+                created_at=_NOW,
+                tenant_id=DEFAULT_TENANT_ID,
+            )
+        )
+
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        result = db_connection.execute(
+            pg_insert(station_groups)
+            .values(
+                id=gid,
+                name="direct-hijacked",
+                description="attempted cross-tenant write",
+                created_at=_NOW,
+                tenant_id=other_tenant,
+            )
+            .on_conflict_do_update(
+                index_elements=["id"],
+                set_={"name": "direct-hijacked", "description": "hijacked"},
+                where=station_groups.c.tenant_id == other_tenant,
+            )
+            .returning(station_groups.c.id)
+        )
+        assert result.first() is None, (
+            "conditional upsert must return no row on a tenant mismatch"
+        )
+
+        # And the stored row is untouched by the excluded update.
+        row = db_connection.execute(
+            sa.select(station_groups.c.name, station_groups.c.tenant_id).where(
+                station_groups.c.id == gid
+            )
+        ).one()
+        assert row.name == "direct-original"
+        assert TenantId(row.tenant_id) == DEFAULT_TENANT_ID
+
+    def test_soundness_unguarded_do_update_would_silently_hijack(
+        self, db_connection: sa.Connection
+    ) -> None:
+        """Prove the WHERE guard is load-bearing.
+
+        Same setup as above, but without ``where=`` on the DO UPDATE clause
+        — reproducing the bug this fix closes. The update must succeed and
+        RETURNING must yield a row, demonstrating that dropping the guard
+        (or reverting to the pre-fix statement shape) reopens the hijack.
+        """
+        other_tenant = TenantId(uuid.uuid4())
+        _seed_tenant(db_connection, other_tenant, "unguarded")
+
+        gid = StationGroupId(uuid.uuid4())
+        db_connection.execute(
+            sa.insert(station_groups).values(
+                id=gid,
+                name="unguarded-original",
+                description=None,
+                created_at=_NOW,
+                tenant_id=DEFAULT_TENANT_ID,
+            )
+        )
+
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        result = db_connection.execute(
+            pg_insert(station_groups)
+            .values(
+                id=gid,
+                name="unguarded-hijacked",
+                description="attempted cross-tenant write",
+                created_at=_NOW,
+                tenant_id=other_tenant,
+            )
+            .on_conflict_do_update(
+                index_elements=["id"],
+                set_={"name": "unguarded-hijacked", "description": "hijacked"},
+                # deliberately no `where=` — this is the pre-fix shape.
+            )
+            .returning(station_groups.c.id)
+        )
+        assert result.first() is not None, (
+            "without the WHERE guard the cross-tenant update silently succeeds "
+            "(proves the guard, not incidental DB behavior, blocks the hijack)"
+        )
+        row = db_connection.execute(
+            sa.select(station_groups.c.name).where(station_groups.c.id == gid)
+        ).one()
+        assert row.name == "unguarded-hijacked"
+
+
+class TestStoreGroupConcurrentTenantRace:
+    """Real two-connection concurrency test for the TOCTOU this fix closes.
+
+    Two threads, each on its OWN connection/transaction (the default
+    ``store_group`` transaction factory is ``engine.begin`` — a fresh
+    connection per call), attempt to ``store_group`` the SAME new group id
+    under DIFFERENT tenants at (as close to) the same instant, synchronized
+    via a barrier. Postgres serializes the two conflicting INSERTs on the
+    row's primary key: whichever commits first wins; the second blocks until
+    the first commits, then re-evaluates the conditional DO UPDATE against
+    the now-committed row and (since the tenant differs) gets no row back —
+    which ``store_group`` turns into ``ConfigurationError``.
+
+    This is only reachable because the guard is now part of the single
+    atomic upsert statement: the old SELECT-then-Python-check let both
+    threads observe "no row yet" and both proceed to insert/update.
+    """
+
+    def test_concurrent_store_different_tenants_exactly_one_wins(
+        self, db_engine: sa.Engine
+    ) -> None:
+        other_tenant = TenantId(uuid.uuid4())
+        with db_engine.connect() as seed_conn:
+            _seed_tenant(seed_conn, other_tenant, "race")
+            seed_conn.commit()
+
+        gid = StationGroupId(uuid.uuid4())
+        barrier = threading.Barrier(2)
+        outcomes: dict[str, object] = {}
+
+        def _attempt(tenant_id: TenantId, name: str, key: str) -> None:
+            with db_engine.connect() as conn:
+                store = PgStationGroupStore(conn)
+                barrier.wait(timeout=10)
+                try:
+                    store.store_group(
+                        StationGroup(
+                            id=gid,
+                            name=name,
+                            station_ids=frozenset(),
+                            description=None,
+                            created_at=_NOW,
+                            tenant_id=tenant_id,
+                        )
+                    )
+                    outcomes[key] = "ok"
+                except ConfigurationError as exc:
+                    outcomes[key] = exc
+
+        t_a = threading.Thread(target=_attempt, args=(DEFAULT_TENANT_ID, "race-a", "a"))
+        t_b = threading.Thread(target=_attempt, args=(other_tenant, "race-b", "b"))
+        t_a.start()
+        t_b.start()
+        t_a.join(timeout=15)
+        t_b.join(timeout=15)
+
+        assert not t_a.is_alive() and not t_b.is_alive(), "race threads hung"
+        assert set(outcomes) == {"a", "b"}
+
+        oks = [k for k, v in outcomes.items() if v == "ok"]
+        errs = [
+            (k, v) for k, v in outcomes.items() if isinstance(v, ConfigurationError)
+        ]
+        assert len(oks) == 1, f"expected exactly one winner, got {outcomes}"
+        assert len(errs) == 1, (
+            f"expected exactly one ConfigurationError, got {outcomes}"
+        )
+        assert "immutable" in str(errs[0][1])
+
+        winner_key = oks[0]
+        winner_tenant = DEFAULT_TENANT_ID if winner_key == "a" else other_tenant
+        winner_name = "race-a" if winner_key == "a" else "race-b"
+
+        with db_engine.connect() as check_conn:
+            row = check_conn.execute(
+                sa.select(station_groups.c.tenant_id, station_groups.c.name).where(
+                    station_groups.c.id == gid
+                )
+            ).one()
+        # The loser's write never landed — persisted row matches the winner only.
+        assert TenantId(row.tenant_id) == winner_tenant
+        assert row.name == winner_name

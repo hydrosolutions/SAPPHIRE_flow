@@ -189,14 +189,18 @@ def main(argv: list[str] | None = None) -> int:
             config_data_dir = load_config(config_path).paths_data_dir
         data_dir = resolve_data_dir(config_data_dir) / "raw" / "CAMELS_CH"
 
-    basin_ids: list[str] | None = args.basin_ids
-    if basin_ids is None:
-        config_path = os.environ.get("SAPPHIRE_CONFIG")
-        if config_path is not None:
-            from sapphire_flow.config.onboarding import load_onboarding_config
+    from sapphire_flow.types.tenant import DEFAULT_TENANT_CODE
 
-            onboarding_cfg = load_onboarding_config(config_path)
-            if onboarding_cfg is not None:
+    tenant_code: str = DEFAULT_TENANT_CODE
+    basin_ids: list[str] | None = args.basin_ids
+    config_path = os.environ.get("SAPPHIRE_CONFIG")
+    if config_path is not None:
+        from sapphire_flow.config.onboarding import load_onboarding_config
+
+        onboarding_cfg = load_onboarding_config(config_path)
+        if onboarding_cfg is not None:
+            tenant_code = onboarding_cfg.tenant_code
+            if basin_ids is None:
                 basin_ids = list(onboarding_cfg.basin_ids)
                 log.info(
                     "basin_ids_from_config",
@@ -269,7 +273,9 @@ def main(argv: list[str] | None = None) -> int:
             from sapphire_flow.store.model_store import PgModelStore
             from sapphire_flow.store.skill_store import PgSkillStore
             from sapphire_flow.store.station_group_store import PgStationGroupStore
+            from sapphire_flow.store.tenant_store import PgTenantStore
 
+            tenant_store = PgTenantStore(conn)
             model_store = PgModelStore(conn)
             artifact_store = PgModelArtifactStore(conn, resolve_artifact_dir())
             group_store = PgStationGroupStore(conn)
@@ -354,6 +360,8 @@ def main(argv: list[str] | None = None) -> int:
                 reanalysis_adapter_factory=reanalysis_adapter_factory,
                 require_meteoswiss_backfill=True,
                 lineage_writer=lineage_writer,
+                tenant_store=tenant_store,
+                tenant_code=tenant_code,
             )
     except Exception as exc:
         log.error("onboarding_failed", error=str(exc))

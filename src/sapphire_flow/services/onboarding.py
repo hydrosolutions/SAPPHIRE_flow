@@ -20,6 +20,7 @@ from sapphire_flow.services.qc_datum import (
     obs_skipped_rules,
     shift_observations_for_water_level_datum,
 )
+from sapphire_flow.services.tenant_boundary import resolve_tenant_code
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.domain import aggregate_qc_status
 from sapphire_flow.types.enums import (
@@ -34,6 +35,7 @@ from sapphire_flow.types.enums import (
 )
 from sapphire_flow.types.ids import CLIMATOLOGY_FALLBACK_MODEL_ID
 from sapphire_flow.types.onboarding import OnboardingResult
+from sapphire_flow.types.tenant import DEFAULT_TENANT_CODE, DEFAULT_TENANT_ID
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -57,13 +59,14 @@ if TYPE_CHECKING:
         SkillStore,
         StationGroupStore,
         StationStore,
+        TenantStore,
     )
     from sapphire_flow.services.reanalysis_backfill import MeteoSwissBackfillAdapter
     from sapphire_flow.types.basin import Basin
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.domain import QcRuleSet
     from sapphire_flow.types.historical_forcing import RawHistoricalForcing
-    from sapphire_flow.types.ids import ModelId, StationId
+    from sapphire_flow.types.ids import ModelId, StationId, TenantId
     from sapphire_flow.types.observation import RawObservation
     from sapphire_flow.types.station import StationConfig
 
@@ -224,6 +227,7 @@ def _run_onboarding(
     formula_store: FormulaStore | None = None,
     calculated_specs: Sequence[CalculatedStationSpec] = (),
     lineage_writer: object = None,
+    tenant_id: TenantId = DEFAULT_TENANT_ID,
 ) -> OnboardingResult:
     errors: list[str] = []
     stations_created = 0
@@ -352,6 +356,7 @@ def _run_onboarding(
                         clock,
                         _WIDE_START,
                         end_utc,
+                        tenant_id=tenant_id,
                     )
                     calc = outcome.station
                     station_map[calc.code] = calc.id
@@ -1002,11 +1007,25 @@ def onboard_from_camelsch(
     formula_store: FormulaStore | None = None,
     calculated_specs: Sequence[CalculatedStationSpec] = (),
     lineage_writer: object = None,
+    tenant_store: TenantStore | None = None,
+    tenant_code: str = DEFAULT_TENANT_CODE,
 ) -> OnboardingResult:
     from sapphire_flow.adapters.camelsch_adapter import (
         load_forcing,
         load_observations,
         load_stations,
+    )
+
+    # Plan 147 Slice A boundary: resolve the config tenant CODE to a TenantId
+    # ONCE, here, before any data is loaded — an unknown code fails fast with a
+    # ConfigurationError instead of silently defaulting to Swiss. Production
+    # callers (flows.onboard / scripts.onboard) always pass a tenant_store; when
+    # absent (unit contexts that bypass the DB), the single-tenant Swiss default
+    # applies — no production path reaches that branch.
+    tenant_id = (
+        resolve_tenant_code(tenant_store, tenant_code)
+        if tenant_store is not None
+        else DEFAULT_TENANT_ID
     )
 
     start_utc = (
@@ -1034,6 +1053,7 @@ def onboard_from_camelsch(
         basin_ids,
         water_level_datums_masl=water_level_datums_masl,
         water_level_units=water_level_units,
+        tenant_id=tenant_id,
     )
 
     station_map: dict[str, StationId] = {}
@@ -1075,6 +1095,7 @@ def onboard_from_camelsch(
         formula_store=formula_store,
         calculated_specs=calculated_specs,
         lineage_writer=lineage_writer,
+        tenant_id=tenant_id,
     )
 
     log.info(

@@ -19,8 +19,9 @@ from sapphire_flow.types.enums import (
     QcStatus,
     StationStatus,
 )
-from sapphire_flow.types.ids import StationId
+from sapphire_flow.types.ids import StationId, TenantId
 from sapphire_flow.types.observation import RawObservation
+from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 from tests.conftest import make_station_config
 from tests.fakes.fake_stores import (
     FakeBasinStore,
@@ -101,6 +102,21 @@ def _spec(
     )
 
 
+def _qc_rules() -> QcRuleSet:
+    return QcRuleSet(
+        version="test",
+        rules=(
+            QcRuleParams(
+                rule_id="range_check",
+                rule_version="1.0",
+                parameter="discharge",
+                time_step=timedelta(days=1),
+                thresholds={"value_min": 0.0, "value_max": 10000.0},
+            ),
+        ),
+    )
+
+
 def _derived(obs_store: FakeObservationStore, calc_id: StationId) -> list:
     return sorted(
         (
@@ -111,6 +127,99 @@ def _derived(obs_store: FakeObservationStore, calc_id: StationId) -> list:
         ),
         key=lambda o: o.timestamp,
     )
+
+
+class TestOnboardCalculatedStationTenant:
+    """Plan 147 Slice A: the resolved tenant is threaded explicitly into the
+    calculated station's StationConfig — not silently defaulted."""
+
+    def test_stamps_the_explicit_tenant_on_the_calculated_station(self) -> None:
+        ss, os_ = FakeStationStore(), FakeObservationStore()
+        fs = FakeFormulaStore()
+        _seed_component(ss, os_, "GAUGE-A", {0: 10.0, 1: 11.0})
+        _seed_component(ss, os_, "GAUGE-B", {0: 20.0, 1: 21.0})
+        other_tenant = TenantId(uuid.uuid4())
+
+        outcome = onboard_calculated_station(
+            _spec(
+                [
+                    ComponentSpec(code="GAUGE-A", weight=0.5),
+                    ComponentSpec(code="GAUGE-B", weight=0.5),
+                ]
+            ),
+            None,
+            ss,
+            os_,
+            fs,
+            _clock,
+            _WINDOW_START,
+            _WINDOW_END,
+            tenant_id=other_tenant,
+        )
+
+        assert outcome.station.tenant_id == other_tenant
+
+    def test_run_onboarding_threads_tenant_to_calculated_station(self) -> None:
+        ss, os_ = FakeStationStore(), FakeObservationStore()
+        fs = FakeFormulaStore()
+        _seed_component(ss, os_, "GAUGE-A", {0: 10.0, 1: 11.0})
+        _seed_component(ss, os_, "GAUGE-B", {0: 20.0, 1: 21.0})
+        other_tenant = TenantId(uuid.uuid4())
+
+        _run_onboarding(
+            stations=[],
+            basins=[],
+            obs_by_station={},
+            forcing_by_station={},
+            basin_store=FakeBasinStore(),
+            station_store=ss,
+            obs_store=os_,
+            forcing_store=FakeHistoricalForcingStore(),
+            baseline_store=FakeClimBaselineStore(),
+            flow_regime_store=FakeFlowRegimeConfigStore(),
+            qc_rules=_qc_rules(),
+            clock=_clock,
+            start_utc=_WINDOW_START,
+            end_utc=_WINDOW_END,
+            formula_store=fs,
+            calculated_specs=[
+                _spec(
+                    [
+                        ComponentSpec(code="GAUGE-A", weight=0.5),
+                        ComponentSpec(code="GAUGE-B", weight=0.5),
+                    ]
+                )
+            ],
+            tenant_id=other_tenant,
+        )
+
+        calc = ss.fetch_station_by_code("CALC-1", "bafu")
+        assert calc is not None
+        assert calc.tenant_id == other_tenant
+
+    def test_defaults_to_the_sapphire_tenant_when_unset(self) -> None:
+        ss, os_ = FakeStationStore(), FakeObservationStore()
+        fs = FakeFormulaStore()
+        _seed_component(ss, os_, "GAUGE-A", {0: 10.0, 1: 11.0})
+        _seed_component(ss, os_, "GAUGE-B", {0: 20.0, 1: 21.0})
+
+        outcome = onboard_calculated_station(
+            _spec(
+                [
+                    ComponentSpec(code="GAUGE-A", weight=0.5),
+                    ComponentSpec(code="GAUGE-B", weight=0.5),
+                ]
+            ),
+            None,
+            ss,
+            os_,
+            fs,
+            _clock,
+            _WINDOW_START,
+            _WINDOW_END,
+        )
+
+        assert outcome.station.tenant_id == DEFAULT_TENANT_ID
 
 
 class TestOnboardCalculatedStation:

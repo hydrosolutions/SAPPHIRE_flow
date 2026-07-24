@@ -13,6 +13,7 @@ from sapphire_flow.config._overlay import (
     _resolve_overlay_paths,  # pyright: ignore[reportPrivateUsage]
     load_merged_toml,
 )
+from sapphire_flow.types.tenant import DEFAULT_TENANT_CODE
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -41,6 +42,11 @@ class CalculatedStationSpec:
     timezone: str = "UTC"
     basin_code: str | None = None
     effective_from: str | None = None
+    # Plan 147 Slice A: the tenant this calculated station belongs to, as a raw
+    # config CODE. Resolved to a TenantId at the onboarding boundary
+    # (services.tenant_boundary.resolve_tenant_code) — an unknown code is a hard
+    # ConfigurationError, never a silent Swiss default.
+    tenant_code: str = DEFAULT_TENANT_CODE
 
 
 class _ComponentModel(BaseModel):
@@ -69,6 +75,7 @@ class _CalculatedStationModel(BaseModel):
     timezone: str = "UTC"
     basin_code: str | None = None
     effective_from: str | None = None
+    tenant_code: str = Field(default=DEFAULT_TENANT_CODE, min_length=1)
 
     @field_validator("effective_from")
     @classmethod
@@ -98,6 +105,10 @@ class OnboardingConfig:
     water_level_datums_masl: dict[str, float] | None = None
     water_level_units: dict[str, str] | None = None
     calculated: tuple[CalculatedStationSpec, ...] = ()
+    # Plan 147 Slice A: the deployment tenant (raw config CODE) that every
+    # bulk-imported station is stamped with. Resolved once, at the onboarding
+    # boundary, to a TenantId — an unknown code is a hard error.
+    tenant_code: str = DEFAULT_TENANT_CODE
 
 
 def _parse_calculated(section: dict[str, Any]) -> tuple[CalculatedStationSpec, ...]:
@@ -120,6 +131,7 @@ def _parse_calculated(section: dict[str, Any]) -> tuple[CalculatedStationSpec, .
                 timezone=model.timezone,
                 basin_code=model.basin_code,
                 effective_from=model.effective_from,
+                tenant_code=model.tenant_code,
             )
         )
     return tuple(specs)
@@ -155,4 +167,5 @@ def load_onboarding_config(
         },
         water_level_units={str(code): str(unit) for code, unit in units_raw.items()},
         calculated=_parse_calculated(section),
+        tenant_code=str(section.get("tenant", DEFAULT_TENANT_CODE)),
     )

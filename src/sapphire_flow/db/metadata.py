@@ -5,6 +5,13 @@ from sqlalchemy.dialects.postgresql import ARRAY, BIGINT, BYTEA, INTERVAL, JSONB
 
 metadata = sa.MetaData()
 
+# Plan 147 Slice A: every `tenant_id` column is NOT NULL with NO server
+# default — tenant ownership is an explicit decision at every writer boundary
+# (migrations 0042-0044 backfill the seeded `sapphire` tenant onto pre-existing
+# rows, then DROP the backfill default). A raw INSERT that omits tenant_id
+# therefore fails loud (NotNullViolation) instead of silently defaulting to
+# Swiss.
+
 # ──────────────────────────────────────────────
 # REFERENCE DATA
 # ──────────────────────────────────────────────
@@ -192,6 +199,24 @@ sa.Index(
     model_artifact_basin_versions.c.basin_version_id,
 )
 
+# Plan 147 Slice A: the tenant-model foundation. `code` is the human/config
+# handle (e.g. "sapphire", "dhm") resolved to a TenantId once at the
+# config/CLI boundary (services/tenant_boundary.py). Seeded with a default
+# `sapphire` tenant by migration 0041 (types/tenant.py:DEFAULT_TENANT_ID).
+tenants = sa.Table(
+    "tenants",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True),
+    sa.Column("code", sa.Text, nullable=False, unique=True),
+    sa.Column("name", sa.Text, nullable=False),
+    sa.Column(
+        "created_at",
+        sa.DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.func.now(),
+    ),
+)
+
 stations = sa.Table(
     "stations",
     metadata,
@@ -256,7 +281,18 @@ stations = sa.Table(
         nullable=False,
         server_default="gauged",
     ),
+    # Plan 147 Slice A: canonical tenant ownership (R4 LOCKED). Added by
+    # migration 0042 (add-nullable -> backfill `sapphire` -> NOT NULL).
+    sa.Column(
+        "tenant_id",
+        UUID(as_uuid=True),
+        sa.ForeignKey("tenants.id"),
+        nullable=False,
+    ),
     sa.UniqueConstraint("network", "code", name="uq_stations_network_code"),
+    # (id, tenant_id) is redundant with the PK alone but is the FK target the
+    # station_group_members composite FK binds tenant identity through.
+    sa.UniqueConstraint("id", "tenant_id", name="uq_stations_id_tenant_id"),
 )
 
 station_thresholds = sa.Table(
@@ -379,7 +415,10 @@ station_groups = sa.Table(
     "station_groups",
     metadata,
     sa.Column("id", UUID(as_uuid=True), primary_key=True),
-    sa.Column("name", sa.Text, nullable=False, unique=True),
+    # Plan 147 Slice A: name is unique PER TENANT (migration 0043 replaces the
+    # old global UNIQUE(name) with UNIQUE(tenant_id, name)) — name alone is no
+    # longer a key.
+    sa.Column("name", sa.Text, nullable=False),
     sa.Column("description", sa.Text, nullable=True),
     sa.Column(
         "created_at",
@@ -387,6 +426,14 @@ station_groups = sa.Table(
         nullable=False,
         server_default=sa.func.now(),
     ),
+    sa.Column(
+        "tenant_id",
+        UUID(as_uuid=True),
+        sa.ForeignKey("tenants.id"),
+        nullable=False,
+    ),
+    sa.UniqueConstraint("tenant_id", "name", name="uq_station_groups_tenant_id_name"),
+    sa.UniqueConstraint("id", "tenant_id", name="uq_station_groups_id_tenant_id"),
 )
 
 station_group_members = sa.Table(
@@ -407,7 +454,26 @@ station_group_members = sa.Table(
         nullable=False,
         server_default=sa.func.now(),
     ),
+    # Plan 147 Slice A: participates in TWO composite FKs below so tenant
+    # identity is structurally forced to agree across station/group/member —
+    # a mismatched row is unrepresentable at the DB, through every writer
+    # (added by migration 0044).
+    sa.Column(
+        "tenant_id",
+        UUID(as_uuid=True),
+        nullable=False,
+    ),
     sa.PrimaryKeyConstraint("group_id", "station_id"),
+    sa.ForeignKeyConstraint(
+        ["station_id", "tenant_id"],
+        ["stations.id", "stations.tenant_id"],
+        name="fk_station_group_members_station_tenant",
+    ),
+    sa.ForeignKeyConstraint(
+        ["group_id", "tenant_id"],
+        ["station_groups.id", "station_groups.tenant_id"],
+        name="fk_station_group_members_group_tenant",
+    ),
 )
 
 sa.Index(

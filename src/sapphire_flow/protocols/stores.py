@@ -71,6 +71,7 @@ if TYPE_CHECKING:
         RatingCurveId,
         StationGroupId,
         StationId,
+        TenantId,
     )
     from sapphire_flow.types.model import ModelArtifactRecord, ModelRecord
     from sapphire_flow.types.observation import (
@@ -89,6 +90,7 @@ if TYPE_CHECKING:
         StationGroup,
         StationWeatherSource,
     )
+    from sapphire_flow.types.tenant import Tenant
     from sapphire_flow.types.weather import GriddedForecast, WeatherForecastRecord
 
 
@@ -491,6 +493,23 @@ class ModelStateStore(Protocol):
 
 
 @runtime_checkable
+class TenantStore(Protocol):
+    """Plan 147 Slice A: the tenant-model foundation root."""
+
+    def fetch_tenant(self, tenant_id: TenantId) -> Tenant | None:
+        raise NotImplementedError
+
+    def fetch_tenant_by_code(self, code: str) -> Tenant | None:
+        raise NotImplementedError
+
+    def fetch_all_tenants(self) -> list[Tenant]:
+        raise NotImplementedError
+
+    def store_tenant(self, tenant: Tenant) -> TenantId:
+        raise NotImplementedError
+
+
+@runtime_checkable
 class StationStore(Protocol):
     def fetch_station(self, station_id: StationId) -> StationConfig | None:
         raise NotImplementedError
@@ -560,7 +579,11 @@ class StationGroupStore(Protocol):
     def fetch_group(self, group_id: StationGroupId) -> StationGroup | None:
         raise NotImplementedError
 
-    def fetch_group_by_name(self, name: str) -> StationGroup | None:
+    def fetch_group_by_name(
+        self, tenant_id: TenantId, name: str
+    ) -> StationGroup | None:
+        # Plan 147 Slice A: name is unique PER TENANT, not globally — a
+        # lookup by name alone is no longer a valid key.
         raise NotImplementedError
 
     def fetch_groups_for_station(self, station_id: StationId) -> list[StationGroup]:

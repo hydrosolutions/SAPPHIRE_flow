@@ -26,7 +26,7 @@ from sapphire_flow.types.enums import (
     WeatherSourceRole,
     WeatherSourceStatus,
 )
-from sapphire_flow.types.ids import BasinId, ModelId, StationId
+from sapphire_flow.types.ids import BasinId, ModelId, StationId, TenantId
 from sapphire_flow.types.station import (
     ModelAssignment,
     StationConfig,
@@ -148,6 +148,7 @@ class PgStationStore:
                 ownership=station.ownership.value,
                 wigos_id=station.wigos_id,
                 gauging_status=station.gauging_status.value,
+                tenant_id=station.tenant_id,
             )
         )
         return station.id
@@ -368,6 +369,7 @@ def _row_to_station(row: sa.engine.row.RowMapping) -> StationConfig:
         gauging_status=GaugingStatus(row["gauging_status"]),
         water_level_datum_masl=row["water_level_datum_masl"],
         water_level_unit=row["water_level_unit"],
+        tenant_id=TenantId(row["tenant_id"]),
     )
 
 

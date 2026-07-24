@@ -1550,14 +1550,39 @@ models:
 
 Python type: `ModelRecord` (`types/model.py`). Populated at startup by `ModelRegistry` scanning entry points (see conventions.md "Model discovery"). The `artifact_scope` value comes from the model class attribute and determines training granularity and artifact lookup strategy.
 
+#### `tenants` table (Plan 147 Slice A — the v1.0 tenant-model foundation)
+
+```
+tenants:
+  id: UUID PK
+  code: TEXT UNIQUE                      # human/config handle, e.g. "sapphire", "dhm"
+  name: TEXT
+  created_at: TIMESTAMPTZ
+```
+
+Seeded with a default `sapphire` tenant (migration 0041, fixed id
+`types/tenant.py::DEFAULT_TENANT_ID`) so existing single-tenant Swiss data
+backfills onto it. `stations.tenant_id` is canonical (R4 LOCKED — a
+station's tenant is authoritative on the station itself, never derived from
+group membership); `station_groups.tenant_id` is additive. A tenant CODE
+string (from `config.toml`'s `[deployment]` block or a `--tenant` CLI arg,
+v1.x write-isolation slice) is parsed into a `TenantId` once, at the
+config/CLI boundary, by resolving it against this table — an unknown code is
+a hard error. This slice lands the data model only; auth/RBAC enforcement
+(access tokens, per-key station scope, audit log) is a later slice of Plan
+147.
+
 #### `station_groups` table (station groups for group-scoped models)
 
 ```
 station_groups:
   id: UUID PK
-  name: TEXT UNIQUE                      # e.g. "swiss_alpine", "nepal_koshi_basin"
+  name: TEXT                             # e.g. "swiss_alpine", "nepal_koshi_basin"
   description: TEXT NULL
   created_at: TIMESTAMPTZ
+  tenant_id: UUID FK → tenants.id NOT NULL  # Plan 147 Slice A — a group belongs to exactly one tenant
+  UNIQUE (tenant_id, name)               # NOT globally unique — replaces the old UNIQUE(name)
+  UNIQUE (id, tenant_id)                 # composite-FK target for station_group_members below
 ```
 
 #### `station_group_members` table (group membership)
@@ -1567,8 +1592,15 @@ station_group_members:
   group_id: UUID FK → station_groups.id
   station_id: UUID FK → stations.id
   created_at: TIMESTAMPTZ
+  tenant_id: UUID NOT NULL                # Plan 147 Slice A — see below
   PK: (group_id, station_id)
+  FK (station_id, tenant_id) → stations(id, tenant_id)
+  FK (group_id, tenant_id) → station_groups(id, tenant_id)
 ```
+
+The two composite FKs structurally force `station.tenant_id == group.tenant_id
+== member.tenant_id` — a station cannot be added to a group of a different
+tenant through any writer, including raw SQL (Plan 147 Slice A, R4/G3).
 
 A station can belong to multiple groups (e.g. one group per ML model trained on different subsets). Group membership is managed during station onboarding (Flow 5 step 5.10) and can be updated independently.
 
@@ -2625,9 +2657,11 @@ stations:
   wigos_id: TEXT NULL                      # WMO station identifier for transboundary exchange
   created_at: TIMESTAMPTZ
   updated_at: TIMESTAMPTZ
+  tenant_id: UUID FK → tenants.id NOT NULL  # Plan 147 Slice A — canonical, R4 LOCKED (not derived from group membership)
 ```
 
-Unique constraint: `(network, code)` — station codes are unique within a network, not globally.
+Unique constraints: `(network, code)` — station codes are unique within a network, not globally.
+`(id, tenant_id)` — the composite-FK target `station_group_members` binds tenant identity through (see the `station_groups` section above).
 
 Supporting enums:
 

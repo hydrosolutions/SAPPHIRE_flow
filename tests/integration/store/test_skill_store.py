@@ -16,6 +16,7 @@ from sapphire_flow.types.enums import (
 )
 from sapphire_flow.types.ids import ArtifactId, ModelId, StationId
 from sapphire_flow.types.skill import SkillDiagram, SkillScore
+from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 
 _T0 = ensure_utc(datetime(2024, 1, 1, tzinfo=UTC))
 _T1 = ensure_utc(datetime(2024, 6, 1, tzinfo=UTC))
@@ -37,6 +38,7 @@ def _seed_station(conn: sa.Connection) -> StationId:
             timezone="Europe/Zurich",
             measured_parameters=["discharge"],
             ownership="own",
+            tenant_id=DEFAULT_TENANT_ID,
         )
     )
     return sid

@@ -9,6 +9,7 @@ from sapphire_flow.db.metadata import models, stations
 from sapphire_flow.store.model_state_store import PgModelStateStore
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.ids import ModelId, StationId
+from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 
 _T0 = ensure_utc(datetime(2026, 1, 1, 0, tzinfo=UTC))
 _T1 = ensure_utc(datetime(2026, 1, 1, 1, tzinfo=UTC))
@@ -28,6 +29,7 @@ def _seed_station(conn: sa.Connection) -> StationId:
             timezone="Europe/Zurich",
             measured_parameters=["discharge"],
             ownership="own",
+            tenant_id=DEFAULT_TENANT_ID,
         )
     )
     return sid

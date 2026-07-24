@@ -19,6 +19,7 @@ from sapphire_flow.store.basin_store import PgBasinStore
 from sapphire_flow.types.basin import Basin
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.ids import BasinId, PackageId
+from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
 
 _GEOM = MultiPolygon(
     [Polygon([(7.0, 46.0), (8.0, 46.0), (8.0, 47.0), (7.0, 47.0), (7.0, 46.0)])]
@@ -151,6 +152,7 @@ class TestPgBasinStore:
                 "ownership": "foreign",
                 "created_at": now,
                 "updated_at": now,
+                "tenant_id": DEFAULT_TENANT_ID,
             }
 
         db_connection.execute(stations.insert().values(**_station_row("S-UQ-01")))
