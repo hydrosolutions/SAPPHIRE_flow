@@ -256,6 +256,29 @@ class AuditActorType(Enum):
     API_KEY = "api_key"
     SYSTEM = "system"
 
+class AccessTokenRole(Enum):    # Plan 147 Slice C: v1.0 headless HTTP role model — exactly 2 roles, both GET-only
+    CONSUMER = "consumer"       # read, station-scoped (access_token_stations)
+    ADMIN = "admin"             # read, unscoped + CLI token/tenant management
+
+class AuditEventType(Enum):     # Plan 147 Slice B: promoted from design-intent to runtime
+    LOGIN = "login"
+    LOGOUT = "logout"
+    LOGIN_FAILED = "login_failed"
+    PASSWORD_CHANGED = "password_changed"
+    USER_CREATED = "user_created"
+    USER_DEACTIVATED = "user_deactivated"
+    API_KEY_CREATED = "api_key_created"
+    API_KEY_REVOKED = "api_key_revoked"
+    API_KEY_REQUEST = "api_key_request"
+    FORECAST_STATUS_CHANGE = "forecast_status_change"
+    FORECAST_ADJUSTED = "forecast_adjusted"
+    MODEL_PROMOTED = "model_promoted"
+    MODEL_REJECTED = "model_rejected"
+    STATION_STATUS_CHANGE = "station_status_change"
+    OBSERVATION_REPROCESSED = "observation_reprocessed"
+    STATION_ONBOARDED = "station_onboarded"     # additive (Plan 147 Slice B)
+    MODEL_ASSIGNED = "model_assigned"           # additive (Plan 147 Slice B)
+
 class StationOwnership(Enum):
     OWN = "own"
     FOREIGN = "foreign"
@@ -312,7 +335,7 @@ class OnboardingOutcome(Enum):                           # in-memory only, no DB
 ## Enums — v1 / deferred (not implemented in v0)
 
 These enums appear in v1 design but are not implemented in `src/sapphire_flow/types/enums.py`.
-Deferred per `docs/v0-scope.md:464` (UserRole, AuditEventType, AdjustmentType, Calendar) and by lack of consumer infrastructure (DlqResolution). Implementers must not import them from `sapphire_flow.types.enums` — the symbols do not exist at runtime.
+Deferred per `docs/v0-scope.md:464` (UserRole, AdjustmentType, Calendar) and by lack of consumer infrastructure (DlqResolution). Implementers must not import them from `sapphire_flow.types.enums` — the symbols do not exist at runtime. (`AuditEventType` was deferred here too, but Plan 147 Slice B promoted it to runtime — see the enums section above.)
 
 ```python
 class DlqResolution(Enum):
@@ -335,23 +358,10 @@ class UserRole(Enum):
     MODEL_ADMIN = "model_admin"
     FORECASTER = "forecaster"
 
-class AuditEventType(Enum):
-    LOGIN = "login"
-    LOGOUT = "logout"
-    LOGIN_FAILED = "login_failed"
-    PASSWORD_CHANGED = "password_changed"
-    USER_CREATED = "user_created"
-    USER_DEACTIVATED = "user_deactivated"
-    API_KEY_CREATED = "api_key_created"
-    API_KEY_REVOKED = "api_key_revoked"
-    API_KEY_REQUEST = "api_key_request"
-    FORECAST_STATUS_CHANGE = "forecast_status_change"
-    FORECAST_ADJUSTED = "forecast_adjusted"
-    MODEL_PROMOTED = "model_promoted"
-    MODEL_REJECTED = "model_rejected"
-    STATION_STATUS_CHANGE = "station_status_change"
-    OBSERVATION_REPROCESSED = "observation_reprocessed"  # Flow 12 reprocessing event
 ```
+
+`AuditEventType` was previously listed here as design-intent only; Plan 147 Slice B promoted it
+to `types/enums.py` (see the runtime enums section above) — it is no longer deferred.
 
 ---
 
@@ -1142,15 +1152,16 @@ Module: `types/pipeline.py`
 
 ### Auth entities
 
-v0 defers auth — these types are defined but unused until v1. See architecture-context.md § Authentication schemas for DB table definitions.
+v0 defers auth. `AuditEntry` (below) is now **implemented** (Plan 147 Slice B, `types/auth.py`) — it
+is the append-only `audit_log` row type. `AccessToken` (below) is ALSO now **implemented** (Plan 147
+Slice C, `types/auth.py` + `types/enums.py::AccessTokenRole`) — but with a shape that **supersedes**
+the v1.x-design-intent sketch that used to live here (`consumer_name`/`AccessTokenScope`/`created_by`/
+`revoked_at`): v1.0 is headless (no `users` table yet), R1 LOCKED the hash to HMAC-SHA-256+pepper (not
+bcrypt), and R2 LOCKED the scope carrier to a normalized `access_token_stations` join (not a JSONB
+`AccessTokenScope`, and station-axis only — parameter/geographic scope are v1.x). `User` remains
+design intent only (v1.x) — do not import it.
 
 ```python
-@dataclass(frozen=True, kw_only=True, slots=True)
-class AccessTokenScope:
-    stations: list[StationId] | None     # None = all stations
-    parameters: list[str] | None         # None = all parameters
-    boundary: dict | None                # GeoJSON boundary or None = no geographic restriction
-
 @dataclass(frozen=True, kw_only=True, slots=True)
 class User:
     id: UserId
@@ -1159,21 +1170,46 @@ class User:
     role: UserRole
     is_active: bool
     created_at: UtcDatetime
+```
 
+**Status** (`User` above): v1.x — deferred per Plan 042. Not implemented yet. Design intent only; do
+not import it.
+
+```python
 @dataclass(frozen=True, kw_only=True, slots=True)
 class AccessToken:
-    id: AccessTokenId
-    consumer_name: str
-    scope: AccessTokenScope
-    created_by: UserId
-    created_at: UtcDatetime
-    last_used_at: UtcDatetime | None     # NULL = never used
-    revoked_at: UtcDatetime | None       # NULL = active
+    """The `access_tokens` row (v1.0 headless, Plan 147 Slice C — supersedes
+    the old consumer_name/AccessTokenScope/created_by/revoked_at sketch)."""
 
+    id: AccessTokenId
+    token_hash: str                      # HMAC-SHA-256(pepper, raw_secret) hex digest — R1
+    key_prefix: str                      # fast pre-verification lookup key
+    name: str
+    role: AccessTokenRole                # CONSUMER (station-scoped) | ADMIN (unscoped)
+    tenant_id: TenantId | None           # None = unscoped global-admin token
+    pepper_version: int                  # v1.x dual-pepper rotation forward hook
+    expires_at: UtcDatetime              # mandatory (Plan 042:96)
+    disabled_at: UtcDatetime | None      # None = active
+    created_at: UtcDatetime
+    last_used_at: UtcDatetime | None     # None = never used
+    station_ids: frozenset[StationId]    # access_token_stations scope join (R2); consumer-only
+```
+
+Module: `types/auth.py`. **Status**: **implemented** (Plan 147 Slice C, 2026-07-24). Table + migration
+0047 (`access_tokens` + `access_token_stations`); store `store/access_token_store.py::PgAccessTokenStore`
+(scope-membership validated against the token's own `tenant_id` at `create_token`, raising
+`CrossTenantScopeError` on a cross-tenant station id); the FastAPI auth boundary
+(`api/security.py::require_principal`/`require_admin`) resolves a Bearer header to a `Principal`
+(a request-scoped API-boundary type, distinct from the persisted `AccessToken` row) on the request's
+own read connection. CLI: `python -m sapphire_flow.cli.access_tokens {create,list,revoke,create-admin}`.
+Deferred to v1.x: `AccessTokenScope`'s parameter/geographic axes, in-place rotation, dashboard key
+management.
+
+```python
 @dataclass(frozen=True, kw_only=True, slots=True)
 class AuditEntry:
     event_type: AuditEventType
-    actor_id: UserId | None              # None for system events
+    actor_id: UserId | AccessTokenId | None  # UserId (user) | AccessTokenId (api_key) | None (system)
     actor_type: AuditActorType
     target_type: str | None
     target_id: str | None
@@ -1184,7 +1220,17 @@ class AuditEntry:
 
 Module: `types/auth.py`
 
-**Status**: v1 — deferred per Plan 042. Not implemented in v0. Types below are design intent only; do not import them.
+**Status**: **implemented** (Plan 147 Slice B, 2026-07-24). The `audit_log` table (migration 0045)
++ its role-independent append-only guard (migration 0046) + the `PgAuditLogStore` writer
+(`store/audit_log_store.py`) are live. Call sites (token create/revoke — Slice C; onboard/promote/
+assign + rejections — Slice E) are still pending in later slices.
+
+`AuditEntry.__post_init__` enforces the `actor_type`/`actor_id` pairing at construction (`SYSTEM` ⇒
+`actor_id=None`; `USER`/`API_KEY` ⇒ `actor_id` present) — `NewType` alone cannot distinguish `UserId`
+from `AccessTokenId` at runtime, so this validates presence/absence only. Migration 0045 also carries
+a matching `ck_audit_log_actor_id_matches_actor_type` DB CHECK constraint as a backstop for writers
+that bypass the domain type. Prefer the `AuditEntry.system(...)` / `.user(...)` / `.api_key(...)`
+typed constructors over calling `AuditEntry(...)` directly.
 
 ---
 
@@ -2627,6 +2673,31 @@ class PipelineHealthStore(Protocol):
     ) -> list[PipelineHealthRecord]: ...
 ```
 
+#### AuditLogStore
+
+Plan 147 Slice B: the append-only audit substrate. ONLY an insert — no update/delete method, matching
+the role-independent DB guard (migration 0046).
+
+```python
+class AuditLogStore(Protocol):
+    def append_entry(self, entry: AuditEntry) -> None: ...
+```
+
+#### AccessTokenStore
+
+Plan 147 Slice C: `access_tokens` + `access_token_stations` scope. `create_token` validates every
+scoped station belongs to the token's own `tenant_id` (R2), raising `CrossTenantScopeError` (a
+`ValueError` subclass) on a cross-tenant station id — never silently dropping it.
+
+```python
+class AccessTokenStore(Protocol):
+    def create_token(self, token: AccessToken, *, station_ids: frozenset[StationId]) -> None: ...
+    def fetch_by_key_prefix(self, key_prefix: str) -> AccessToken | None: ...
+    def fetch_token(self, token_id: AccessTokenId) -> AccessToken | None: ...
+    def fetch_all_tokens(self) -> list[AccessToken]: ...
+    def revoke_token(self, token_id: AccessTokenId, *, revoked_at: UtcDatetime) -> None: ...
+```
+
 #### RatingCurveStore
 
 ```python
@@ -3614,7 +3685,7 @@ src/sapphire_flow/
 │   ├── basin.py            # Basin
 │   ├── rating_curve.py     # RatingCurve
 │   ├── pipeline.py         # PipelineHealthRecord, FlowRunStatus
-│   └── auth.py             # User, AccessToken, AccessTokenScope, AuditEntry
+│   └── auth.py             # User (v1.x design intent), AccessToken (REALIZED, Slice C), AuditEntry (REALIZED, Slice B)
 ├── schemas/
 │   └── forecast.py         # ForecastAdjustmentItem (Pydantic boundary validation)
 ├── protocols/

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import random
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
@@ -7,6 +8,11 @@ from uuid import UUID
 
 import polars as pl
 import pytest
+
+# Plan 147 Slice C: the API fails closed at startup without a readable
+# access_token_pepper (R1). Tests never talk to Docker secrets, so provide
+# the env-var fallback process-wide for any TestClient(app) instantiation.
+os.environ.setdefault("ACCESS_TOKEN_PEPPER", "test-only-pepper-do-not-use-in-prod")
 
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.domain import (

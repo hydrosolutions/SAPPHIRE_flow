@@ -250,7 +250,7 @@ These are deferred in architecture-context.md. For v0, don't create their tables
 
 | Item | Tables/types to skip |
 |------|---------------------|
-| Auth (v1) | `users`, `access_tokens`, `refresh_tokens`, `audit_log`, UserRole, AuditEventType |
+| Auth (v1) | `users`, `access_tokens`, `refresh_tokens`, UserRole — enforcement (access-token auth, DB roles, write-isolation call sites) deferred to v1. `audit_log` + `AuditEventType`/`AuditActorType` land early in v0 (Plan 147 Slice B) as an unused append-only substrate — see §C |
 | Flow 3 — Forecast review | `forecast_adjustments`, AdjustmentType |
 | Rating curves (v1) | `rating_curves`, `rating_curve_id` on observations, Stage 2 QC |
 | Notification routing | `notification_routing`, `notification_recipients` |
@@ -268,10 +268,14 @@ These are deferred in architecture-context.md. For v0, don't create their tables
 
 ## C. Database schema (v0 subset)
 
-25 tables. No partitioning, no DLQ, no auth, no cold storage dispatch.
+27 tables. No partitioning, no DLQ, no auth enforcement, no cold storage dispatch.
+(`tenants` and `audit_log` land early as data-model/substrate foundations —
+Plan 147 Slices A and B — ahead of auth enforcement itself; see the notes
+below and §B.)
 
 ### Reference data
 - `parameters` — as designed (canonical parameter names, units, aggregation methods). Seeded via Alembic migration with the 10 canonical parameters defined in `architecture-context.md`.
+- `tenants` — as designed (Plan 147 Slice A); `tenant_id` FK added to `stations`, `station_groups`, `station_group_members` for write-path isolation. A single `DEFAULT_TENANT_ID` row is seeded; auth enforcement (access-token auth, DB roles, per-request tenant scoping) is deferred to v1.
 
 ### Core entities
 - `stations` — as designed (without override columns); includes `network`, `ownership`, `wigos_id`, `gauging_status`, `water_level_datum_masl`, and `water_level_unit` columns; unique constraint is `(network, code)`; `forecast_targets` is JSONB nullable (NULL for weather stations; e.g. `["discharge"]` or `["discharge","water_level"]`). Water-level QC preserves raw absolute values and subtracts the station datum before relative-stage rules; if the datum is missing, datum-dependent rules are skipped until metadata is filled and baselines can be recomputed.
@@ -313,8 +317,11 @@ These are deferred in architecture-context.md. For v0, don't create their tables
 - `alerts` — as designed, plus `model_ids` (JSONB, `[]` for observation/pipeline alerts) and `alert_model_strategy` (TEXT, NULL for observation/pipeline alerts) for forecast alert traceability (see §A8d). Keep `notified_at` as always-NULL.
 - `pipeline_health` — as designed. Plan 100 exposes a minimal read endpoint and dashboard page for recent records.
 
+### Auth substrate (unused pending v1 enforcement)
+- `audit_log` — as designed (Plan 147 Slice B); append-only, enforced by a role-independent DB trigger rejecting UPDATE/DELETE/TRUNCATE for every role, including the table owner (defense-in-depth ahead of Slice D's scoped DB roles). No call site writes to it in **v0** — v0 itself stays auth-free by definition. Slice C (REALIZED, v1.0 headless — CLI token create/revoke + create-admin) now wires the first writers, layered on top of v0, not inside it; Slice E (onboarding/promotion/assignment + rejections) is still pending.
+
 ### Not created in v0
-`dead_letter_queue`, `forecast_adjustments`, `users`, `access_tokens`, `refresh_tokens`, `audit_log`, `rating_curves`, `notification_routing`, `notification_recipients`
+`dead_letter_queue`, `forecast_adjustments`, `users`, `access_tokens`, `refresh_tokens`, `rating_curves`, `notification_routing`, `notification_recipients`
 
 ---
 

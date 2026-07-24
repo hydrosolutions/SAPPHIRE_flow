@@ -18,6 +18,7 @@ from sapphire_flow.exceptions import (
 )
 from sapphire_flow.store.observation_store import _dedupe_raw_observations
 from sapphire_flow.types.alert import Alert  # noqa: TC001
+from sapphire_flow.types.auth import AuditEntry  # noqa: TC001
 from sapphire_flow.types.basin import Basin  # noqa: TC001
 from sapphire_flow.types.calculated_station import ComponentWeight  # noqa: TC001
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc  # noqa: TC001
@@ -536,6 +537,7 @@ class FakeAlertStore:
         source: AlertSource | None = None,
         status: AlertStatus | None = None,
         level: str | None = None,
+        scope_station_ids: frozenset[StationId] | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[Alert], int]:
@@ -546,6 +548,10 @@ class FakeAlertStore:
             and (source is None or a.source == source)
             and (status is None or a.status == status)
             and (level is None or a.alert_level == level)
+            and (
+                scope_station_ids is None
+                or (a.station_id is not None and a.station_id in scope_station_ids)
+            )
         ]
         matches.sort(key=lambda a: (a.triggered_at, a.id), reverse=True)
         total = len(matches)
@@ -1099,6 +1105,17 @@ class FakeStationGroupStore:
             for (gid, _), a in self._group_model_assignments.items()
             if gid == group_id
         )
+
+
+class FakeAuditLogStore:
+    """Plan 147 Slice B: append-only — no update/delete method exists here
+    either, matching `AuditLogStore`/`PgAuditLogStore`."""
+
+    def __init__(self) -> None:
+        self._entries: list[AuditEntry] = []
+
+    def append_entry(self, entry: AuditEntry) -> None:
+        self._entries.append(entry)
 
 
 class FakePipelineHealthStore:

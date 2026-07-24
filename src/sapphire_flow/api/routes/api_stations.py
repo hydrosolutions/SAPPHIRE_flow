@@ -24,6 +24,11 @@ from sapphire_flow.api.schemas import (
     ThresholdResponse,
     WeatherSourceResponse,
 )
+from sapphire_flow.api.security import (
+    Principal,
+    ensure_station_in_scope,
+    require_principal,
+)
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.enums import QcStatus, StationKind, StationStatus
 from sapphire_flow.types.ids import ModelId, StationId
@@ -143,6 +148,7 @@ def list_stations(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     stores: dict[str, Any] = Depends(get_stores),
+    principal: Principal = Depends(require_principal),
 ) -> PaginatedResponse[StationSummary]:
     station_kind: StationKind | None = None
     if kind is not None:
@@ -153,6 +159,9 @@ def list_stations(
     if status is not None:
         station_status = _parse_enum(status, StationStatus, "status")
         all_stations = [s for s in all_stations if s.station_status == station_status]
+
+    if not principal.is_admin:
+        all_stations = [s for s in all_stations if principal.station_in_scope(s.id)]
 
     total = len(all_stations)
     page = all_stations[offset : offset + limit]
@@ -170,8 +179,10 @@ def get_station(
     station_id: str,
     stores: dict[str, Any] = Depends(get_stores),
     conn: sa.Connection = Depends(get_connection),
+    principal: Principal = Depends(require_principal),
 ) -> StationDetail:
     sid = StationId(UUID(station_id))
+    ensure_station_in_scope(principal, sid)
     station = stores["station_store"].fetch_station(sid)
     if station is None:
         raise HTTPException(status_code=404, detail="Station not found")
@@ -225,8 +236,10 @@ def list_observations(
     end: str = Query(...),
     qc_status: str | None = Query(None),
     stores: dict[str, Any] = Depends(get_stores),
+    principal: Principal = Depends(require_principal),
 ) -> list[ObservationResponse]:
     sid = StationId(UUID(station_id))
+    ensure_station_in_scope(principal, sid)
     start_dt = _parse_datetime(start, "start")
     end_dt = _parse_datetime(end, "end")
 
@@ -250,8 +263,10 @@ def list_forecasts(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     stores: dict[str, Any] = Depends(get_stores),
+    principal: Principal = Depends(require_principal),
 ) -> PaginatedResponse[ForecastSummary]:
     sid = StationId(UUID(station_id))
+    ensure_station_in_scope(principal, sid)
     now = UtcDatetime(datetime.now(UTC))
 
     start_dt = (

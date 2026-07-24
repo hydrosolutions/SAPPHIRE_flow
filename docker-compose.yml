@@ -193,9 +193,12 @@ services:
       PREFECT_API_URL: http://prefect-server:4200/api
       PREFECT_UI_URL: http://prefect-server:4200
       SAPPHIRE_DATA_DIR: /data
-      # v0 only: default * is acceptable (no auth, test server).
-      # Restrict to explicit origin list before v1 (security.md § CORS policy).
-      SAPPHIRE_CORS_ORIGINS: ${SAPPHIRE_CORS_ORIGINS:-*}
+      # Plan 147 Slice C: "*" is REJECTED at startup once auth is enforced
+      # (a wildcard origin would let any site's JS ride a browser-held
+      # bearer token — security.md § CORS/CSRF). Empty (the default) means
+      # no CORS middleware — same-origin only. Set an explicit
+      # comma-separated origin list for a browser-based consumer.
+      SAPPHIRE_CORS_ORIGINS: ${SAPPHIRE_CORS_ORIGINS:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -215,6 +218,7 @@ services:
       - FOWNER
     secrets:
       - db_password
+      - access_token_pepper
     read_only: true
     tmpfs:
       - /tmp
@@ -326,6 +330,14 @@ volumes:
 secrets:
   db_password:
     file: ./secrets/db_password
+  # Plan 147 Slice C: R1 LOCKED = HMAC-SHA-256 + a server-side pepper for
+  # access_tokens.token_hash. Mounted ONLY into the `api` service — auth
+  # verification AND the token-management CLI (`docker compose exec api
+  # python -m sapphire_flow.cli.access_tokens ...`), never worker/prefect
+  # (they never verify tokens). Fail-closed at API startup if absent/empty
+  # (security.md § API key lifecycle / pepper rotation).
+  access_token_pepper:
+    file: ./secrets/access_token_pepper
   # BUILD-time secret (NOT a runtime secret): authenticates the private
   # hydrosolutions/recap-dg-client git clone during the image build's `uv sync`
   # step (Dockerfile lines 20-33). Env-sourced — matches the

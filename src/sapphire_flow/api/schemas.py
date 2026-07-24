@@ -139,6 +139,10 @@ class AlertResponse(BaseModel):
     alert_model_strategy: str | None = None
 
 
+# Plan 147 Slice C (G4): POST /alerts/{id}/acknowledge is removed from the
+# v1.0 HTTP surface (returns 501) — these schemas are unused until the v1.x
+# session-token/Flow-3 dashboard reinstates the endpoint. Kept (not deleted)
+# so the v1.x re-activation does not need to reconstruct the shape.
 class AcknowledgeRequest(BaseModel):
     acknowledged_by: str
 

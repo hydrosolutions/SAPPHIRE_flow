@@ -2335,10 +2335,39 @@ Index: `(username)` unique. `(role)` for role-based queries.
 
 ### `access_tokens` table
 
-API keys for external consumers. See security.md § API key authentication for lifecycle rules.
+API keys for external consumers. **REALIZED as of Plan 147 Slice C (v1.0 headless)** — with a shape
+that supersedes the design-intent sketch below it in most respects (see security.md § v1.0 headless
+subset for the authoritative v1.0 contract):
 
 ```
-access_tokens:
+access_tokens:                           # ACTUAL v1.0 shape (migration 0047)
+  id: UUID PK
+  token_hash: TEXT UNIQUE                # HMAC-SHA-256(access_token_pepper, raw_secret) — NOT bcrypt (R1)
+  key_prefix: TEXT                       # fast pre-verification lookup key, indexed
+  name: TEXT
+  role: TEXT                             # 'consumer' | 'admin' — no JSONB scope, no created_by/users FK (headless)
+  tenant_id: UUID FK → tenants.id NULL   # NULL = unscoped global-admin token
+  pepper_version: SMALLINT DEFAULT 1     # v1.x dual-pepper rotation forward hook
+  expires_at: TIMESTAMPTZ                # mandatory
+  disabled_at: TIMESTAMPTZ NULL          # NULL = active (NOT `revoked_at`)
+  created_at: TIMESTAMPTZ
+  last_used_at: TIMESTAMPTZ NULL
+
+access_token_stations:                   # the R2-LOCKED normalized scope join — NOT a JSONB `scope` column
+  token_id: UUID PK,FK → access_tokens.id
+  station_id: UUID PK,FK → stations.id
+  created_at: TIMESTAMPTZ
+```
+
+Indexes: `(key_prefix)`, `(expires_at)`. No `(token_hash)` lookup index — verification looks up by
+`key_prefix` first, then constant-time-compares the presented secret's hash against that one row.
+
+**Design-intent sketch below is v1.x/aspirational and NOT what is built** — kept for historical
+context on the still-deferred axes (parameter/geographic scope via `AccessTokenScope`, `created_by`/
+`users` FK, dashboard-driven `revoked_at`):
+
+```
+access_tokens (v1.x design intent, NOT the v1.0 shape above):
   id: UUID PK
   consumer_name: TEXT                    # human-readable label, e.g. "Bipad Portal"
   token_hash: TEXT                       # bcrypt hash of the bearer token
@@ -2349,9 +2378,9 @@ access_tokens:
   revoked_at: TIMESTAMPTZ NULL           # NULL = active; non-NULL = revoked
 ```
 
-Index: `(token_hash)` for lookup on each request. Partial index: `(revoked_at) WHERE revoked_at IS NULL` for active-key queries.
-
-Usage tracking: `last_used_at` is updated by the API middleware on each authenticated request (lightweight single-column UPDATE). Historical usage counts (e.g. requests per 30 days) are derived from `audit_log` entries with `event_type = 'api_key_request'` — no separate counter or aggregation table.
+Usage tracking (`last_used_at` updated per-request; `audit_log`-derived usage counts) is v1.x —
+**not implemented in v1.0** (Slice C omits the per-request `last_used_at` UPDATE to avoid a write on
+the hot read-auth path; `api_key_request` audit logging is explicitly deferred, see security.md).
 
 ### `refresh_tokens` table
 
@@ -2371,7 +2400,13 @@ Refresh token rotation: each use invalidates the current token (`revoked_at = no
 
 ### `audit_log` table
 
-Append-only. INSERT only for `sapphire_api` — no UPDATE or DELETE. See security.md § Audit logging for recorded event categories.
+**Implemented (Plan 147 Slice B, 2026-07-24)** — migration `0045` (table) + `0046` (append-only
+guard); writer `store/audit_log_store.py::PgAuditLogStore`. Append-only is enforced by a
+**role-independent** `BEFORE UPDATE OR DELETE` trigger (migration 0046) that RAISEs for every role,
+including the table owner — not by a per-role grant, since the `sapphire_api`/`sapphire_worker`
+scoped roles do not exist yet (Slice D). Once Slice D lands, its `INSERT`+`SELECT`-only grant for
+`sapphire_api`/`sapphire_worker` is additional defense-in-depth on top of this trigger, not the
+primary guarantee. See security.md § Audit logging for recorded event categories.
 
 ```
 audit_log:
@@ -2399,13 +2434,17 @@ AuditEventType enum (Python members → DB values):
   API_KEY_CREATED → 'api_key_created' | API_KEY_REVOKED → 'api_key_revoked' | API_KEY_REQUEST → 'api_key_request' |
   FORECAST_STATUS_CHANGE → 'forecast_status_change' | FORECAST_ADJUSTED → 'forecast_adjusted' |
   MODEL_PROMOTED → 'model_promoted' | MODEL_REJECTED → 'model_rejected' |
-  STATION_STATUS_CHANGE → 'station_status_change' | OBSERVATION_REPROCESSED → 'observation_reprocessed'
+  STATION_STATUS_CHANGE → 'station_status_change' | OBSERVATION_REPROCESSED → 'observation_reprocessed' |
+  STATION_ONBOARDED → 'station_onboarded' | MODEL_ASSIGNED → 'model_assigned'
+    # STATION_ONBOARDED/MODEL_ASSIGNED are additive members (Plan 147 Slice B) not in the
+    # original design-intent list. Rejections reuse the attempted event's event_type with
+    # detail.outcome = "rejected" — no rejection-specific members.
 
 AuditActorType enum (Python members → DB values):
   USER → 'user' | API_KEY → 'api_key' | SYSTEM → 'system'
 ```
 
-Indexes: `(event_type, created_at DESC)` for event-type queries. `(actor_id, created_at DESC)` for per-user audit trail. `(target_type, target_id, created_at DESC)` for entity history.
+Indexes (as created by migration 0045): `(created_at)`, `(event_type, created_at)`, `(target_type, target_id)`, `(actor_id)`.
 
 Retention: permanent. Included in database backup. Not partitioned (moderate volume — auth events, not per-observation).
 

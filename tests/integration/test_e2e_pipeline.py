@@ -712,21 +712,29 @@ class TestE2ePipeline:
         t6 = time.perf_counter()
 
         from sapphire_flow.api import app
-        from sapphire_flow.api.deps import get_connection, get_connection_rw, get_stores
+        from sapphire_flow.api.deps import get_connection, get_stores
+        from sapphire_flow.api.security import Principal, require_principal
+        from sapphire_flow.types.enums import AccessTokenRole
+        from sapphire_flow.types.ids import AccessTokenId
 
-        # Wire real stores from our e2e engine.
-        # Override get_connection/get_connection_rw; get_stores chains on get_connection
-        # automatically via Depends, so no separate override needed.
+        # Wire real stores from our e2e engine. The single request connection
+        # (get_connection, RW-capable) is shared by auth + get_stores via
+        # Depends, so no separate override is needed (Plan 147 Slice C, Codex
+        # round 2 — one connection per request).
         def _override_connection():
-            with engine.connect() as conn:
-                yield conn
-
-        def _override_connection_rw():
             with engine.begin() as conn:
                 yield conn
 
         app.dependency_overrides[get_connection] = _override_connection
-        app.dependency_overrides[get_connection_rw] = _override_connection_rw
+        # Step 6 exercises the API's data shape end-to-end, not auth — use an
+        # unscoped admin principal so all 7 stations remain visible
+        # (Plan 147 Slice C).
+        app.dependency_overrides[require_principal] = lambda: Principal(
+            token_id=AccessTokenId(uuid4()),
+            role=AccessTokenRole.ADMIN,
+            tenant_id=None,
+            station_ids=frozenset(),
+        )
 
         try:
             with TestClient(app, raise_server_exceptions=True) as client:
@@ -788,8 +796,8 @@ class TestE2ePipeline:
 
         finally:
             app.dependency_overrides.pop(get_connection, None)
-            app.dependency_overrides.pop(get_connection_rw, None)
             app.dependency_overrides.pop(get_stores, None)
+            app.dependency_overrides.pop(require_principal, None)
 
         log.info(
             "e2e.step6_api_complete",

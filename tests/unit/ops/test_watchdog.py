@@ -22,6 +22,7 @@ from sapphire_flow.ops.watchdog import (
     WatchdogConfig,
     WatchdogState,
     newest_backup_mtime,
+    read_probe_token,
     read_slack_webhook,
     run_once,
     should_alert_health,
@@ -186,6 +187,48 @@ class TestReadSlackWebhook:
         p = tmp_path / "slack"
         p.write_text("https://hooks.slack.com/XXX\n")
         assert read_slack_webhook(p) == "https://hooks.slack.com/XXX"
+
+
+# ---------- read_probe_token (Plan 147 Slice C) -------------------------------
+
+
+class TestReadProbeToken:
+    """Mirrors TestReadSlackWebhook — the admin probe token is a HOST
+    secret file, same convention, same missing/empty/unreadable handling."""
+
+    def test_missing_file_returns_none(self, tmp_path: Path) -> None:
+        assert read_probe_token(tmp_path / "nope") is None
+
+    def test_unreadable_file_returns_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The `except OSError` branch (permission-denied, etc) — not
+        reachable via chmod alone in CI (often runs as root, which bypasses
+        POSIX permission checks), so monkeypatch `Path.read_text` directly
+        to raise, mirroring how `path.exists()` still sees the real file."""
+        p = tmp_path / "token"
+        p.write_text("abc123.secret\n")
+
+        def _raise(self: Path, *args: object, **kwargs: object) -> str:
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(Path, "read_text", _raise)
+        assert read_probe_token(p) is None
+
+    def test_empty_file_returns_none(self, tmp_path: Path) -> None:
+        p = tmp_path / "token"
+        p.write_text("")
+        assert read_probe_token(p) is None
+
+    def test_whitespace_only_returns_none(self, tmp_path: Path) -> None:
+        p = tmp_path / "token"
+        p.write_text("   \n  \n")
+        assert read_probe_token(p) is None
+
+    def test_populated_returns_stripped(self, tmp_path: Path) -> None:
+        p = tmp_path / "token"
+        p.write_text("abc123.secret\n")
+        assert read_probe_token(p) == "abc123.secret"
 
 
 # ---------- newest_backup_mtime ----------------------------------------------
@@ -537,6 +580,41 @@ class TestProbeBafuFreshness:
         assert result.found is True
         assert result.checked_at is not None
         assert result.checked_at.tzinfo is not None
+
+    def test_sends_bearer_header_when_token_provided(self) -> None:
+        """Plan 147 Slice C: /health/detail is admin-only once auth is
+        enforced — the watchdog must present its admin probe token as a
+        Bearer header, or every probe 401s and reports false staleness."""
+        import httpx
+
+        from sapphire_flow.ops.watchdog import probe_bafu_freshness
+
+        seen_auth_headers: list[str | None] = []
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            seen_auth_headers.append(req.headers.get("authorization"))
+            return httpx.Response(200, json={"items": [], "total": 0, "limit": 1})
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        probe_bafu_freshness(
+            "http://x/health/detail", client=client, token="prefix.secret"
+        )
+        assert seen_auth_headers == ["Bearer prefix.secret"]
+
+    def test_omits_authorization_header_when_token_absent(self) -> None:
+        import httpx
+
+        from sapphire_flow.ops.watchdog import probe_bafu_freshness
+
+        seen_auth_headers: list[str | None] = []
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            seen_auth_headers.append(req.headers.get("authorization"))
+            return httpx.Response(200, json={"items": [], "total": 0, "limit": 1})
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        probe_bafu_freshness("http://x/health/detail", client=client, token=None)
+        assert seen_auth_headers == [None]
 
 
 # ---------- run_once: BAFU forecast collector freshness (Flow 4 hook) --------

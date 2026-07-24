@@ -4,7 +4,6 @@ import random
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
-from unittest.mock import patch
 from uuid import uuid4
 
 from sapphire_flow.types.datetime import ensure_utc
@@ -126,81 +125,30 @@ class TestListAlerts:
         assert body["items"][0]["alert_level"] == "High"
 
 
-class TestAcknowledgeAlert:
-    def test_acknowledge_raised_alert(
+class TestAcknowledgeAlertRemovedFromV10Surface:
+    """G4 LOCKED: the sole HTTP mutation is removed from the v1.0
+    access-token surface (returns 501), regardless of alert state — no
+    bearer key of any role may POST."""
+
+    def test_acknowledge_returns_501_for_existing_raised_alert(
         self, client: TestClient, fake_stores: dict[str, Any]
     ) -> None:
         alert = make_alert(status=AlertStatus.RAISED, rng=random.Random(1))
         fake_stores["alert_store"].upsert_alert(alert)
         user_id = str(uuid4())
 
-        with patch(
-            "sapphire_flow.api.routes.api_alerts.PgAlertStore",
-            return_value=fake_stores["alert_store"],
-        ):
-            resp = client.post(
-                f"/api/v1/alerts/{alert.id}/acknowledge",
-                json={"acknowledged_by": user_id},
-            )
+        resp = client.post(
+            f"/api/v1/alerts/{alert.id}/acknowledge",
+            json={"acknowledged_by": user_id},
+        )
+        assert resp.status_code == 501
 
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["id"] == str(alert.id)
-        assert body["status"] == "acknowledged"
-        assert body["acknowledged_at"] is not None
-
-    def test_acknowledge_not_found(self, client: TestClient) -> None:
+    def test_acknowledge_returns_501_for_unknown_alert(
+        self, client: TestClient
+    ) -> None:
         user_id = str(uuid4())
         resp = client.post(
             f"/api/v1/alerts/{uuid4()}/acknowledge",
             json={"acknowledged_by": user_id},
         )
-        assert resp.status_code == 404
-        body = resp.json()
-        assert "error" in body
-
-    def test_acknowledge_resolved_alert_returns_409(
-        self, client: TestClient, fake_stores: dict[str, Any]
-    ) -> None:
-        alert = make_alert(status=AlertStatus.RESOLVED, rng=random.Random(1))
-        fake_stores["alert_store"].upsert_alert(alert)
-        user_id = str(uuid4())
-
-        resp = client.post(
-            f"/api/v1/alerts/{alert.id}/acknowledge",
-            json={"acknowledged_by": user_id},
-        )
-        assert resp.status_code == 409
-        body = resp.json()
-        assert "error" in body
-
-    def test_acknowledge_invalid_user_uuid(
-        self, client: TestClient, fake_stores: dict[str, Any]
-    ) -> None:
-        alert = make_alert(status=AlertStatus.RAISED, rng=random.Random(1))
-        fake_stores["alert_store"].upsert_alert(alert)
-
-        resp = client.post(
-            f"/api/v1/alerts/{alert.id}/acknowledge",
-            json={"acknowledged_by": "not-a-uuid"},
-        )
-        assert resp.status_code == 400
-
-    def test_acknowledge_already_acknowledged(
-        self, client: TestClient, fake_stores: dict[str, Any]
-    ) -> None:
-        alert = make_alert(status=AlertStatus.ACKNOWLEDGED, rng=random.Random(1))
-        fake_stores["alert_store"].upsert_alert(alert)
-        user_id = str(uuid4())
-
-        with patch(
-            "sapphire_flow.api.routes.api_alerts.PgAlertStore",
-            return_value=fake_stores["alert_store"],
-        ):
-            resp = client.post(
-                f"/api/v1/alerts/{alert.id}/acknowledge",
-                json={"acknowledged_by": user_id},
-            )
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["status"] == "acknowledged"
+        assert resp.status_code == 501
