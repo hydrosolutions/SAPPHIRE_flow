@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-07-23
 plan: 146
 title: Antecedent (past) snow reanalysis channel — provenance + owning ingest flow + read-side routing
@@ -12,7 +12,9 @@ supersedes: []
 # Plan 146 — Antecedent (past) snow reanalysis channel
 
 ## Status
-**DRAFT — split from Plan 145 (owner 2026-07-23).** This is the load-bearing half of the original snow-forcing
+**READY (owner 2026-07-24) → /implement (hold-at-PR).** Design converged through two `/plan` runs (7 rounds) +
+the model-agnostic pivot + two direct-folds; all Open items resolved or accepted (licence gate CLOSED —
+`"SnowMapper Operational (MIT License, 2026)"`). Split from Plan 145 (owner 2026-07-23). This is the load-bearing half of the original snow-forcing
 plan: the antecedent channel needs a new provenance source, a read-side snow tier, and — the blocker — an
 **owning ingest flow/schedule** (today the snow-reanalysis adapter has zero production callers). **D2 DECIDED
 (owner 2026-07-24): a SCHEDULED daily ingest deployment bounded by a FIXED ROLLING WINDOW** — no persisted
