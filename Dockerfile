@@ -72,6 +72,13 @@ WORKDIR /app
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
+# Plan 147 Slice D: idempotent least-privilege DB role bootstrap, run by the
+# `init` service (docker-compose.yml) after `alembic upgrade head`. `init`'s
+# CMD runs as the non-root `app` user (entrypoint.sh's `gosu app`), so these
+# need explicit app ownership + execute bit — not just root-readable.
+COPY --chown=app:app docker/bootstrap-roles.sh docker/bootstrap-roles.sql /app/docker/
+RUN chmod 755 /app/docker/bootstrap-roles.sh
+
 COPY --from=builder --chown=app:app /app/.venv /app/.venv
 COPY --from=builder --chown=app:app /app/src /app/src
 COPY --from=builder --chown=app:app /app/alembic.ini /app/alembic.ini

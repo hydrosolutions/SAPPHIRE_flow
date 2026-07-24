@@ -92,7 +92,12 @@ services:
     environment:
       SAPPHIRE_DATA_DIR: /data
       SAPPHIRE_CONFIG: /app/config.toml
-      DATABASE_URL_TEMPLATE: postgresql+psycopg://${DB_USER:-sapphire}@postgres:5432/sapphire
+      # Plan 147 Slice D: least-privilege — workers connect as the scoped
+      # `sapphire_worker` role (never the owner/migration superuser); its
+      # password lives in a DEDICATED secret distinct from the API's and the
+      # owner's (docker/entrypoint.sh DB_PASSWORD_SECRET below).
+      DATABASE_URL_TEMPLATE: postgresql+psycopg://sapphire_worker@postgres:5432/sapphire
+      DB_PASSWORD_SECRET: /run/secrets/sapphire_worker_db_password
       PREFECT_API_URL: http://prefect-server:4200/api
       PREFECT_LOGGING_LEVEL: WARNING
       # Plan 103: /home/app/.prefect is on the read-only root FS. /tmp is
@@ -113,7 +118,7 @@ services:
       - CHOWN
       - FOWNER
     secrets:
-      - db_password
+      - sapphire_worker_db_password
     read_only: true
     tmpfs:
       - /tmp
@@ -149,7 +154,9 @@ services:
     environment:
       SAPPHIRE_DATA_DIR: /data
       SAPPHIRE_CONFIG: /app/config.toml
-      DATABASE_URL_TEMPLATE: postgresql+psycopg://${DB_USER:-sapphire}@postgres:5432/sapphire
+      # Plan 147 Slice D: see prefect-worker above for rationale.
+      DATABASE_URL_TEMPLATE: postgresql+psycopg://sapphire_worker@postgres:5432/sapphire
+      DB_PASSWORD_SECRET: /run/secrets/sapphire_worker_db_password
       PREFECT_API_URL: http://prefect-server:4200/api
       PREFECT_LOGGING_LEVEL: WARNING
       # Plan 103: see prefect-worker above for rationale.
@@ -167,7 +174,7 @@ services:
       - CHOWN
       - FOWNER
     secrets:
-      - db_password
+      - sapphire_worker_db_password
     read_only: true
     tmpfs:
       - /tmp
@@ -189,7 +196,13 @@ services:
     image: sapphire-flow:${VERSION:?VERSION is required; set in .env or export before compose up}
     command: uvicorn sapphire_flow.api:app --host 0.0.0.0 --port 8000
     environment:
-      DATABASE_URL_TEMPLATE: postgresql+psycopg://${DB_USER:-sapphire}@postgres:5432/sapphire
+      # Plan 147 Slice D: least-privilege — the API connects as the scoped
+      # `sapphire_api` role (never the owner/migration superuser); its
+      # password lives in a DEDICATED secret the API container cannot use to
+      # reconstruct the owner credential (docker/entrypoint.sh
+      # DB_PASSWORD_SECRET below).
+      DATABASE_URL_TEMPLATE: postgresql+psycopg://sapphire_api@postgres:5432/sapphire
+      DB_PASSWORD_SECRET: /run/secrets/sapphire_api_db_password
       PREFECT_API_URL: http://prefect-server:4200/api
       PREFECT_UI_URL: http://prefect-server:4200
       SAPPHIRE_DATA_DIR: /data
@@ -217,7 +230,7 @@ services:
       - CHOWN
       - FOWNER
     secrets:
-      - db_password
+      - sapphire_api_db_password
       - access_token_pepper
     read_only: true
     tmpfs:
@@ -275,11 +288,21 @@ services:
     command: >
       sh -c "
         alembic upgrade head &&
+        /app/docker/bootstrap-roles.sh &&
         python -m sapphire_flow.cli.register_deployments &&
         echo 'Init complete'
       "
     environment:
+      # Plan 147 Slice D: `init` runs migrations AND the idempotent
+      # least-privilege role bootstrap as the DB OWNER (the Postgres
+      # bootstrap superuser) — the only service that keeps the owner
+      # credential. Role bootstrap runs AFTER migrations so its grants cover
+      # every migrated table (docker/bootstrap-roles.sql), and re-runs
+      # harmlessly on every deploy (fresh volume AND in-place upgrade both
+      # converge — docs/standards/cicd.md § DB role bootstrap).
       DATABASE_URL_TEMPLATE: postgresql+psycopg://${DB_USER:-sapphire}@postgres:5432/sapphire
+      SAPPHIRE_API_DB_PASSWORD_FILE: /run/secrets/sapphire_api_db_password
+      SAPPHIRE_WORKER_DB_PASSWORD_FILE: /run/secrets/sapphire_worker_db_password
       PREFECT_API_URL: http://prefect-server:4200/api
       # Plan 103: see prefect-worker above for rationale. `init` uses the
       # Prefect client (register_deployments) so it needs the same fix.
@@ -303,6 +326,8 @@ services:
       - FOWNER
     secrets:
       - db_password
+      - sapphire_api_db_password
+      - sapphire_worker_db_password
     read_only: true
     tmpfs:
       - /tmp
@@ -330,6 +355,17 @@ volumes:
 secrets:
   db_password:
     file: ./secrets/db_password
+  # Plan 147 Slice D: least-privilege — DISTINCT credentials for the scoped
+  # `sapphire_api`/`sapphire_worker` roles, separate from the owner/migration
+  # `db_password` above. Mounted ONLY into the services that connect as that
+  # role (api / prefect-worker / prefect-worker-ingest) plus `init` (which
+  # needs to read both to bootstrap/rotate the roles' passwords — see
+  # docker/bootstrap-roles.sh). Neither app service mounts `db_password`
+  # anymore, so neither can reconstruct the owner credential.
+  sapphire_api_db_password:
+    file: ./secrets/sapphire_api_db_password
+  sapphire_worker_db_password:
+    file: ./secrets/sapphire_worker_db_password
   # Plan 147 Slice C: R1 LOCKED = HMAC-SHA-256 + a server-side pepper for
   # access_tokens.token_hash. Mounted ONLY into the `api` service — auth
   # verification AND the token-management CLI (`docker compose exec api

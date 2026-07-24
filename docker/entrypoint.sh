@@ -2,11 +2,18 @@
 # entrypoint.sh — reads Docker secrets, constructs DATABASE_URL, drops to app user
 set -e
 
-# Read DB password from Docker secret (with env var fallback for local dev)
-if [ -f /run/secrets/db_password ]; then
-    DB_PASSWORD=$(cat /run/secrets/db_password)
+# Plan 147 Slice D: which secret file to read is now NAMED, not hard-coded —
+# distinct services mount distinct DB credentials so no app container can
+# reconstruct the owner/migration password from its own secrets (least
+# privilege, F3(b)). Defaults to the pre-Slice-D owner secret path so any
+# caller that does not set DB_PASSWORD_SECRET keeps working unchanged.
+DB_PASSWORD_SECRET="${DB_PASSWORD_SECRET:-/run/secrets/db_password}"
+
+# Read DB password from the named Docker secret (with env var fallback for local dev)
+if [ -f "${DB_PASSWORD_SECRET}" ]; then
+    DB_PASSWORD=$(cat "${DB_PASSWORD_SECRET}")
 else
-    DB_PASSWORD="${DB_PASSWORD:?DB_PASSWORD is required (set via Docker secret or env var)}"
+    DB_PASSWORD="${DB_PASSWORD:?DB_PASSWORD is required (set via Docker secret at \$DB_PASSWORD_SECRET or env var)}"
 fi
 
 # Construct DATABASE_URL if template is provided

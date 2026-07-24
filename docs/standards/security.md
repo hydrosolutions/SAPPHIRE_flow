@@ -6,7 +6,7 @@
 
 v0 defers auth — single-user, no access control. Everything below applies from v1.
 
-### v1.0 headless subset (implemented, Plan 147 Slice C)
+### v1.0 headless subset (implemented, Plan 147 Slices A-D)
 
 Plan 147 (v1.0-headless, per `docs/plans/106-v1-critical-path-roadmap.md` D6) implements a
 **deliberately narrowed** subset of the full v1 authentication/authorization design below, ahead of
@@ -49,11 +49,16 @@ the human-session/dashboard stack. Everything in this subsection is REALIZED cod
 - **`create-admin` / `create` / `list` / `revoke` CLI** — see § Initial deployment bootstrap and
   § API key lifecycle management below. In-place `rotate`/scope-edit are deferred to v1.x; v1.0
   rotation = `revoke` + `create` (re-materializing the token's scope rows).
+- **Least-privilege DB roles are REALIZED** (Plan 147 Slice D — see § Least-privilege DB roles below):
+  the app runs as scoped `sapphire_api`/`sapphire_worker` roles (never the owner/migration superuser),
+  each with its own credential, per-table grants (not blanket `UPDATE`/`DELETE`), and no
+  `CREATE`/`DROP`/cross-database access. `sapphire_prefect` remains the owner credential — a documented
+  residual, not built by this slice.
 - **Deferred to v1.x** (not built by Plan 147): OAuth2 human sessions, TOTP MFA, JWT/refresh tokens,
   dashboard user management, the `forecaster`/`model-admin` session roles, `POST
   /forecasts/{id}/adjust`, `PATCH /forecasts/{id}/status`, `POST /alerts/{id}/acknowledge`, concurrent-
   session limits, account lockout, per-request `api_key_request` audit logging, parameter/geographic
-  scope axes, in-place token rotation, and the least-privilege DB role split (Plan 147 Slice D).
+  scope axes, in-place token rotation, and a distinct scoped `sapphire_prefect` role.
 
 ### Session-based authentication (human users)
 
@@ -726,12 +731,12 @@ API-only responses (JSON) benefit from `X-Content-Type-Options` and `Strict-Tran
 **Implemented (Plan 147 Slice B, 2026-07-24):** the `audit_log` table (migration `0045`), its
 role-independent append-only guard (migration `0046` — a `BEFORE UPDATE OR DELETE` trigger that
 RAISEs for every role, including the table owner), and the `PgAuditLogStore` writer
-(`store/audit_log_store.py`). **Append-only is enforced by that trigger, not (yet) by a per-role
-grant** — the `sapphire_api`/`sapphire_worker` scoped roles do not exist until the DB-roles slice
-(Slice D) lands; once they do, their `INSERT`+`SELECT`-only grant on `audit_log` is additional
-defense-in-depth atop the trigger, not the primary guarantee. **Call sites are not yet wired**: no
-mutation currently stamps an `audit_log` row — that lands with access-token create/revoke (Slice C)
-and the onboard/promote/assign + rejection paths (Slice E).
+(`store/audit_log_store.py`). **Append-only is now ALSO enforced by per-role grants (Plan 147 Slice
+D, REALIZED):** `sapphire_api` and `sapphire_worker` both exist (`docker/bootstrap-roles.sql`) with
+`INSERT`+`SELECT`-only on `audit_log` — defense-in-depth atop the role-independent trigger, not the
+primary guarantee (the trigger alone already rejects `UPDATE`/`DELETE`/`TRUNCATE` for every role,
+including the table owner). Access-token create/revoke (Slice C) stamp rows through this writer; the
+onboard/promote/assign + rejection paths (Slice E) are the remaining unwired call sites.
 
 Records (`AuditEventType`, `types/enums.py`):
 - All authentication events (login, logout, failed attempts, password changes) — v1.x, session auth
@@ -749,6 +754,44 @@ connection refactor, reusing the existing injectable `transaction_factory` seam,
 domain rollback.
 
 Retention: permanent. Included in database backup.
+
+## Least-privilege DB roles **(REALIZED, Plan 147 Slice D)**
+
+The app no longer runs as the Postgres bootstrap superuser. `docker/bootstrap-roles.sql` (run
+idempotently by the `init` service, as the DB owner, immediately after `alembic upgrade head`)
+creates two scoped, non-superuser roles and grants them per-table:
+
+- **`sapphire_api`** — connects as itself (`docker-compose.yml` `DATABASE_URL_TEMPLATE`), its own
+  Docker secret (`sapphire_api_db_password`, distinct from the owner's `db_password`). Broad
+  `SELECT`; `INSERT`/`UPDATE` on `access_tokens`; `INSERT` on `access_token_stations`; `INSERT`-only
+  on `audit_log`. No write grant on any other domain table — matches the GET-only HTTP surface (G4).
+- **`sapphire_worker`** — connects as itself (`prefect-worker`/`prefect-worker-ingest`), its own
+  secret (`sapphire_worker_db_password`). Broad `SELECT`; per-table `INSERT`/`UPDATE`/`DELETE` on the
+  domain tables the flow/CLI write paths actually write (see `conventions.md` § Service users for the
+  exact matrix); `INSERT`-only on `audit_log`.
+- **Neither role** has `CREATE`/`DROP`/`CREATEDB`/`CREATEROLE`/superuser, and neither can `CONNECT` to
+  the separate `prefect` database (`REVOKE CONNECT ... FROM PUBLIC` — revoking from the named role
+  alone is insufficient, since every role implicitly inherits PUBLIC's ACL).
+- **Migrations run as the owner** (`init`'s own `DATABASE_URL_TEMPLATE`, unchanged) — `sapphire_api`/
+  `sapphire_worker` cannot run DDL, so a migration accidentally invoked under a scoped role fails
+  closed rather than silently degrading privilege checking.
+- **Credential separation**: the owner/migration secret (`db_password`) is mounted ONLY into `init`
+  (which also needs the two scoped secrets, to bootstrap/rotate their passwords) and `postgres`/
+  `prefect-server` (unchanged — `sapphire_prefect` is a documented residual, still the owner
+  credential). `api`/`prefect-worker`/`prefect-worker-ingest` mount only their OWN role's secret —
+  none can reconstruct the owner password.
+- **Idempotent, converges fresh-volume AND in-place-upgrade deployments**: role creation is
+  create-if-not-exists / else `ALTER ROLE ... PASSWORD`, and every `GRANT`/`REVOKE` is a no-op when
+  already applied. Re-running `init` on an existing database (the standard upgrade procedure,
+  `cicd.md`) re-applies the same bootstrap harmlessly and picks up a rotated password.
+- **`sapphire_prefect` is UNCHANGED by this slice** — `prefect-server` still connects with the owner
+  credential against the separate `prefect` database (`docker/init-db.sh`). Realizing a distinct
+  scoped `sapphire_prefect` role is a documented residual, not built here.
+
+See `docker/bootstrap-roles.sql` (the grants), `docker/bootstrap-roles.sh` (the psql wrapper, reads
+`$DATABASE_URL` + the two scoped-password secret files), `docker/entrypoint.sh`
+(`$DB_PASSWORD_SECRET` — which secret file a given service reads), `cicd.md` § DB role bootstrap
+(deploy/rotation runbook), and `conventions.md` § Service users (the full grant matrix).
 
 ## OWASP top 10 mitigations
 

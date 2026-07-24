@@ -7,10 +7,11 @@
 # the Recap adapters are never constructed on Swiss (Task 2C/2D `type` selector).
 #
 # Compose merges service-level `secrets` sequences ADDITIVELY, so re-listing only
-# `sapphire_dg_api_key` here appends it to each worker's base secrets (db_password
-# stays). Verify with:
+# `sapphire_dg_api_key` here appends it to each worker's base secrets
+# (sapphire_worker_db_password stays — Plan 147 Slice D). Verify with:
 #   docker compose -f docker-compose.yml -f docker-compose.recap.yml config
-# Each worker must show BOTH db_password AND sapphire_dg_api_key (no dupes/losses).
+# Each worker must show BOTH sapphire_worker_db_password AND
+# sapphire_dg_api_key (no dupes/losses).
 services:
   prefect-worker:
     secrets:

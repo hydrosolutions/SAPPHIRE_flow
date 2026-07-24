@@ -106,7 +106,8 @@ Responsibilities are split across two stages:
 
 **PostgreSQL container** (`docker-entrypoint-initdb.d/init-db.sh`, runs once on first `pgdata` volume creation):
 - Creates the `sapphire` database and installs PostGIS (and v1-only pg_partman, pg_cron extensions)
-- Creates DB service users (`sapphire_api`, `sapphire_worker`, `sapphire_prefect`) with permissions per conventions.md § Database connection patterns
+- Creates the separate `prefect` database (`sapphire_prefect` stays the owner credential — Plan 147
+  Slice D does not touch it, see § DB role bootstrap below)
 
 > **v1-only** (v0-scope.md §A1): pg_partman and pg_cron extensions are not used in v0.
 
@@ -114,11 +115,15 @@ Responsibilities are split across two stages:
 
 1. Wait for PostgreSQL and Prefect Server health checks to pass (implicit via `depends_on`)
 2. Run `alembic upgrade head` — creates all tables, indexes, constraints
-3. > **v1-only** (v0-scope.md §A1)
+3. Run `/app/docker/bootstrap-roles.sh` — idempotently creates/updates the scoped `sapphire_api` /
+   `sapphire_worker` DB roles and their per-table grants (§ DB role bootstrap below, Plan 147 Slice D).
+   Runs AFTER migrations (so grants cover every migrated table) and on EVERY `init` run, not just
+   first boot — unlike `init-db.sh` above, which only fires on a fresh `pgdata` volume.
+4. > **v1-only** (v0-scope.md §A1)
    Run `SELECT partman.run_maintenance_proc()` — creates initial partitions
-4. Register Prefect deployments (`python -m sapphire_flow.cli.register_deployments`) — idempotent, updates existing deployments
+5. Register Prefect deployments (`python -m sapphire_flow.cli.register_deployments`) — idempotent, updates existing deployments
 
-`init` steps are idempotent — safe to rerun on container restart. Re-running `init` on an existing database is the expected path during upgrades (step 3 of the upgrade procedure).
+`init` steps are idempotent — safe to rerun on container restart. Re-running `init` on an existing database is the expected path during upgrades (step 3 of the upgrade procedure) — this is also how an EXISTING (already-deployed) database picks up the Plan 147 Slice D role bootstrap: role creation does not depend on a fresh volume.
 
 **Worker/API runtime** (happens at service startup, not during `init`):
 
@@ -725,3 +730,67 @@ lazily re-hash) — not implemented in v1.0.
 If only the watchdog's own admin token needs rotating (compromise suspected, routine hygiene):
 `revoke` the old token id, `create-admin` a new one, overwrite `./secrets/health_probe_token`
 (chmod 600), no pepper change needed.
+
+## DB role bootstrap (Plan 147 Slice D, REALIZED)
+
+The app no longer runs as the Postgres bootstrap superuser. Two least-privilege roles —
+`sapphire_api` and `sapphire_worker` — are created (or updated) by `docker/bootstrap-roles.sh`, run
+by the `init` service as the DB owner, immediately after `alembic upgrade head`
+(`docker-compose.yml`). The bootstrap is **idempotent**: it re-runs on every `init` invocation
+(fresh volume AND in-place upgrade both converge to the same roles/grants), and re-running it with a
+changed password picks up the rotation. See `docker/bootstrap-roles.sql` for the exact grant matrix
+and `conventions.md` § Service users for the human-readable table.
+
+Three DB password secrets exist, one per credential tier:
+
+| Secret | Where | Purpose |
+|---|---|---|
+| `db_password` | Docker secret, `./secrets/db_password`, mounted into `postgres`, `prefect-server`, and `init` ONLY | The owner/migration superuser password (`${DB_USER:-sapphire}`). `init` uses it to run `alembic upgrade head` and the role-bootstrap SQL; `prefect-server` uses it against the separate `prefect` database (unchanged by this slice — `sapphire_prefect` residual, see `security.md` § Least-privilege DB roles). |
+| `sapphire_api_db_password` | Docker secret, `./secrets/sapphire_api_db_password`, mounted into `api` AND `init` (`init` needs it to bootstrap/rotate the role's password) | The `sapphire_api` role's password. |
+| `sapphire_worker_db_password` | Docker secret, `./secrets/sapphire_worker_db_password`, mounted into `prefect-worker`/`prefect-worker-ingest` AND `init` | The `sapphire_worker` role's password. |
+
+Each service's `DATABASE_URL_TEMPLATE` (docker-compose.yml) names its own role
+(`sapphire_api@postgres/sapphire`, `sapphire_worker@postgres/sapphire`, or the owner for `init`), and
+`DB_PASSWORD_SECRET` tells `docker/entrypoint.sh` which secret file to read when constructing
+`DATABASE_URL` — the generalization from a single hard-coded `/run/secrets/db_password` (pre-Slice-D)
+to a per-service named secret, so no app container can reconstruct the owner password from its own
+mounts.
+
+### First deploy
+
+1. Generate the two scoped-role secrets alongside `db_password`: `openssl rand -base64 32 >
+   ./secrets/sapphire_api_db_password` and `openssl rand -base64 32 >
+   ./secrets/sapphire_worker_db_password`.
+2. `docker compose up -d --build` — `init` runs migrations, then the role bootstrap (creating both
+   roles with the passwords from step 1 and granting them per-table), then registers deployments.
+3. Verify: `docker compose exec postgres psql -U ${DB_USER:-sapphire} -d sapphire -c "\du sapphire_api
+   sapphire_worker"` shows both roles present, `Superuser`/`Create role`/`Create DB` all unset.
+
+### Scoped-password rotation
+
+Because the bootstrap is idempotent and keyed off the secret file's current contents:
+
+1. Generate a new password: `openssl rand -base64 32 >
+   ./secrets/sapphire_api_db_password.new` (or the worker equivalent).
+2. Swap the file: `mv ./secrets/sapphire_api_db_password.new ./secrets/sapphire_api_db_password`.
+3. `docker compose run --rm init` — re-runs `alembic upgrade head` (a no-op if already at head) then
+   the role bootstrap, which `ALTER ROLE ... PASSWORD`s the role to match the new secret.
+4. `docker compose up -d --build api` (or the worker services) — the service picks up the new
+   password on restart. The owner (`db_password`) is untouched by this rotation.
+
+### Existing-volume upgrade (a database deployed BEFORE Plan 147 Slice D)
+
+No special procedure — the standard upgrade procedure (§ Upgrade procedure above) already runs
+`init` on every deploy, and `docker/bootstrap-roles.sh` is idempotent regardless of whether the two
+scoped roles already exist. Generate the two new secret files (§ First deploy above) before the next
+`docker compose up -d --build`/`docker compose run --rm --build init` — the bootstrap fails closed
+(non-zero exit, migrations already applied but roles not yet granted) if either secret file is
+missing, rather than silently skipping the role bootstrap.
+
+### Rollback
+
+The roles/grants are additive and safe to leave in place — rolling back to a pre-Slice-D image
+(§ Rollback above: restore from backup + redeploy the previous tag) does not require dropping
+`sapphire_api`/`sapphire_worker`; the previous image's `entrypoint.sh` simply falls back to the
+pre-Slice-D default secret path (`DB_PASSWORD_SECRET` unset → `/run/secrets/db_password`) and
+connects as the owner again, same as before this slice.

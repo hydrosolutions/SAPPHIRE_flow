@@ -318,11 +318,23 @@ for logging and notification.
 
 ### Service users (least privilege)
 
+**REALIZED for v1.0-headless by Plan 147 Slice D** (`docker/bootstrap-roles.sql`,
+run idempotently by the `init` service after `alembic upgrade head` —
+`docs/standards/cicd.md` § DB role bootstrap). Both `sapphire_api` and
+`sapphire_worker` get broad `SELECT` (the least-privilege boundary this slice
+enforces is per-table `INSERT`/`UPDATE`/`DELETE`, **not** `SELECT` breadth —
+never blanket `UPDATE`/`DELETE`), **with one exception**: `sapphire_worker`'s
+blanket `SELECT` is revoked back off `access_tokens`/`access_token_stations`
+(caught by a live docker-compose deploy rehearsal, not static review — a
+Prefect worker running flows has no business reading token hashes/scopes).
+Neither role has `CREATE`/`DROP`/superuser, and neither can `CONNECT` to the
+separate `prefect` database.
+
 | User | Permissions |
 |------|-------------|
-| `sapphire_api` | SELECT all (incl. parameters, weather_forecasts, dead_letter_queue *(v1)*, station_weather_sources); INSERT/UPDATE on forecast_adjustments *(v1)*, bulletins *(v1)*, alerts, forecasts (status+version), access_tokens *(v1)*, users *(v1)*, refresh_tokens *(v1)*; UPDATE `last_used_at` on access_tokens (API middleware); INSERT only on audit_log *(v1)* (append-only) |
-| `sapphire_worker` | SELECT on stations, parameters, station_weather_sources, station_groups, station_group_members, rating_curves; SELECT/INSERT/UPDATE on observations, forecasts, forecast_values, alerts, skill_scores, skill_diagrams, weather_forecasts, model_artifacts, dead_letter_queue *(v1)*; SELECT/INSERT on hindcast_forecasts, hindcast_values, pipeline_health, observation_versions *(v1)* |
-| `sapphire_prefect` | Full access to `prefect` database only |
+| `sapphire_api` | `SELECT` on all tables. Plus `INSERT`/`UPDATE` on `access_tokens` (CLI create/revoke via `docker compose exec api ...`, and `last_used_at` on every successful auth); `INSERT` on `access_token_stations` (scope rows); `INSERT` only on `audit_log` (append-only — never `UPDATE`/`DELETE`, defense-in-depth atop the role-independent append-only trigger, migration 0046). Access tokens are strictly GET-only at the HTTP layer (Plan 147 G4), so `sapphire_api` has **no** write grant on any other domain table (no `alerts`, `forecasts`, etc.) — `POST /alerts/{id}/acknowledge` and forecast-adjustment endpoints are deferred to v1.x with a session-role auth model (`forecast_adjustments`, `bulletins`, `users`, `refresh_tokens` *(v1.x, unimplemented tables)*). |
+| `sapphire_worker` | `SELECT` on all tables **except `access_tokens`/`access_token_stations`** — those two are explicitly `REVOKE`d back off `sapphire_worker` after the blanket grant; a flow-running worker has no business reading auth-table contents, and only `sapphire_api`'s auth path needs them. Plus `INSERT`/`UPDATE` on: `stations`, `station_groups`, `station_thresholds`, `station_weather_sources`, `model_assignments`, `group_model_assignments`, `observations`, `forecasts`, `alerts`, `model_artifacts`, `hindcast_forecasts`, `basins`, `basin_versions`, `rating_curves`, `recap_gateway_polygon_bindings`, `calculated_station_formulas`; `INSERT`/`DELETE` on `station_group_members`, `hindcast_values`, `clim_baselines`; `INSERT` only on: `observation_versions`, `forecast_values`, `weather_forecasts`, `model_artifact_basin_versions`, `model_states`, `models`, `skill_scores`, `skill_diagrams`, `pipeline_health`, `basin_static_packages`, `historical_forcing`, `flow_regime_configs`, `audit_log` (append-only, Slice E's write-isolation rejection events run as the worker too — never `UPDATE`/`DELETE`). `dead_letter_queue` *(v1.x, unimplemented table)*. A NEW table's write grants need an explicit line added to `docker/bootstrap-roles.sql` (its blanket `GRANT SELECT ON ALL TABLES` line already covers reads on any new table automatically on the next `init` run). |
+| `sapphire_prefect` | Full access to `prefect` database only — **UNCHANGED by Slice D** (still the owner/migration credential via `docker/init-db.sh`; realizing a distinct scoped `sapphire_prefect` role is a documented residual, not in this slice's scope). |
 
 ---
 
