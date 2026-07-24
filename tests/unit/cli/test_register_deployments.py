@@ -23,6 +23,7 @@ DEPLOYMENT_NAMES = {
     "onboard-stations",
     "onboard-model",
     "ingest-weather-history",
+    "ingest-recap-reanalysis",
     "collect-bafu-forecasts",
     "collect-bafu-observations",
 }
@@ -63,6 +64,7 @@ class TestBuildSpecs:
         assert by_name["train-models"].concurrency_limit == 1
         assert by_name["onboard-model"].concurrency_limit == 1
         assert by_name["ingest-weather-history"].concurrency_limit == 1
+        assert by_name["ingest-recap-reanalysis"].concurrency_limit == 1
         # Others should have no concurrency limit
         assert by_name["ingest-observations"].concurrency_limit is None
         assert by_name["backup-database"].concurrency_limit is None
@@ -95,9 +97,10 @@ class TestBuildSpecs:
 
     def test_returns_all_specs(self) -> None:
         # Plan 071 adds weather-history ingest; Plan 111 adds the BAFU
-        # forecast collector; Plan 136 adds the BAFU observation collector.
+        # forecast collector; Plan 136 adds the BAFU observation collector;
+        # Plan 146 adds the recap-reanalysis snow ingest.
         specs = _build_specs()
-        assert len(specs) == 12
+        assert len(specs) == 13
         assert {s.deployment_name for s in specs} == DEPLOYMENT_NAMES
 
     def test_bafu_collector_hourly_and_serialized(self) -> None:
@@ -135,6 +138,26 @@ class TestBuildSpecs:
         assert spec.cron == "0 6 * * *"
         assert spec.flow_module == "sapphire_flow.flows.ingest_weather_history"
         assert spec.flow_attr == "ingest_weather_history_flow"
+
+    def test_ingest_recap_reanalysis_daily_deployment(self) -> None:
+        """Plan 146 D2: the recap-reanalysis snow ingest is a daily, serialized
+        deployment — mirrors ingest-weather-history's shape."""
+        specs = _build_specs()
+        by_name = {s.deployment_name: s for s in specs}
+
+        spec = by_name["ingest-recap-reanalysis"]
+        assert spec.cron == "0 5 * * *"
+        assert spec.concurrency_limit == 1
+        assert spec.flow_module == "sapphire_flow.flows.ingest_recap_reanalysis"
+        assert spec.flow_attr == "ingest_recap_reanalysis_flow"
+        assert spec.work_pool_name == WORK_POOL
+
+    def test_ingest_recap_reanalysis_cron_env_override(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SCHEDULE_INGEST_SNOW_REANALYSIS", "15 4 * * *")
+        by_name = {s.deployment_name: s for s in _build_specs()}
+        assert by_name["ingest-recap-reanalysis"].cron == "15 4 * * *"
 
     def test_all_deployment_names_unique(self) -> None:
         specs = _build_specs()

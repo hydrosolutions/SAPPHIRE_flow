@@ -129,3 +129,27 @@ class TestAuditEventType:
         audit_event_type = _require_audit_event_type()
         for member in audit_event_type:
             assert audit_event_type(member.value) is member
+
+
+class TestPipelineCheckTypeRecapSnowReanalysisIngest:
+    """Plan 146 D7: a DEDICATED check type, distinct from WEATHER_HISTORY_INGEST."""
+
+    def test_member_exists_and_round_trips_value(self) -> None:
+        from sapphire_flow.types.enums import PipelineCheckType
+
+        assert (
+            PipelineCheckType.RECAP_SNOW_REANALYSIS_INGEST.value
+            == "recap_snow_reanalysis_ingest"
+        )
+        assert (
+            PipelineCheckType("recap_snow_reanalysis_ingest")
+            is PipelineCheckType.RECAP_SNOW_REANALYSIS_INGEST
+        )
+
+    def test_distinct_from_weather_history_ingest(self) -> None:
+        from sapphire_flow.types.enums import PipelineCheckType
+
+        assert (
+            PipelineCheckType.RECAP_SNOW_REANALYSIS_INGEST
+            is not PipelineCheckType.WEATHER_HISTORY_INGEST
+        )

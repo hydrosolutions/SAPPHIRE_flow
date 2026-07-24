@@ -33,6 +33,10 @@ class ForcingSource(Enum):
     # Reserved (no v0b consumer); kept for a potential v0c re-introduction of an
     # NWP-archive forcing source with a train/test-matched design.
     NWP_ARCHIVE = "nwp_archive"
+    # Plan 146 D3: the recap Gateway JSNOW reanalysis endpoint (swe/snow_depth/
+    # snowmelt), persisted under the literal `recap_gateway.py:_SNOW_SOURCE`.
+    # Round-trips that same literal — see test_forcing_sources.py.
+    RECAP_SNOW_REANALYSIS = "recap_snow_reanalysis"
 
 
 SOURCE_ATTRIBUTIONS: dict[ForcingSource, str] = {
@@ -44,4 +48,9 @@ SOURCE_ATTRIBUTIONS: dict[ForcingSource, str] = {
     ForcingSource.METEOSWISS_SRELD: "MeteoSwiss (CC-BY)",
     ForcingSource.CAMELS_CH: "CAMELS-CH (CC-BY 4.0, Höge et al. 2023)",
     ForcingSource.NWP_ARCHIVE: "NWP archive (attribution per source NWP model)",
+    # Plan 146 D3 (owner-confirmed 2026-07-24): the SnowMapper package is not
+    # yet public (goes public at project end) — this string is a normal
+    # attribution-maintenance value, not a placeholder, and may be revised
+    # then without re-opening this plan.
+    ForcingSource.RECAP_SNOW_REANALYSIS: "SnowMapper Operational (MIT License, 2026)",
 }

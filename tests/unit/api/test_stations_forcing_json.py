@@ -110,3 +110,48 @@ class TestStationForcingJson:
         )
 
         assert resp.status_code == 400
+
+    def test_stored_snow_series_surfaces_via_default_parameters(
+        self, client: TestClient, fake_stores: dict[str, Any]
+    ) -> None:
+        """Plan 146 D4 accepted side effect: DEFAULT_PARAMETERS now includes
+        the three snow params, so a stored ``recap_snow_reanalysis`` row
+        surfaces through this endpoint too (the forcing-inspection endpoint
+        should show snow when present)."""
+        station = make_station_config(code="12300", name="Snow Basin")
+        fake_stores["station_store"].store_station(station)
+        fake_stores["station_store"].store_weather_source(
+            StationWeatherSource(
+                station_id=station.id,
+                nwp_source="era5_land",
+                extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+                status=WeatherSourceStatus.ACTIVE,
+                role=WeatherSourceRole.REANALYSIS,
+            )
+        )
+        fake_stores["forcing_store"].store_forcing(
+            [
+                make_raw_historical_forcing(
+                    station_id=station.id,
+                    source=ForcingSource.RECAP_SNOW_REANALYSIS.value,
+                    version="v1",
+                    valid_time=ensure_utc(_DAY),
+                    parameter="swe",
+                    value=42.0,
+                )
+            ]
+        )
+
+        resp = client.get(
+            f"/api/v1/stations/{station.id}/forcing.json",
+            params={
+                "start": "2026-04-01T00:00:00+00:00",
+                "end": "2026-06-01T00:00:00+00:00",
+            },
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        swe = body["series"]["swe"]
+        assert swe["values"][0] == 42.0
+        assert swe["sources"][0] == "recap_snow_reanalysis"

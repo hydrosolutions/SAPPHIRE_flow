@@ -23,6 +23,7 @@ from sapphire_flow.types.weather import (
     ElevationBandForecast,
     GatewayHruName,
     SnowForecastFetchResult,
+    SnowReanalysisFetchResult,
 )
 
 if TYPE_CHECKING:
@@ -282,14 +283,16 @@ class RecapAuthError(AdapterError):
 
 
 class RecapSnowUnavailableError(AdapterError):
-    """Snow-forecast source data unavailable for ONE (HRU, variable) (Plan 145 D3.2a).
+    """Snow source data unavailable for ONE (HRU, variable) (Plan 145 D3.2a; 146 D5).
 
-    Raised only at the ``fetch_snow_forecast`` boundary (never by ``_map_recap_error``,
-    which stays IFS/reanalysis-only) and CONTAINED per ``(hru, canonical variable)``
-    inside ``fetch_snow_forecast`` — it must never escape to abort the whole fetch
-    the way an uncaught ``RecapDataUnavailableError`` would. Covers both a Gateway
-    ``source_data_missing`` response and a not-yet-subscribed ``subscription_not_found``
-    variable (the "hs/rof still materializing" case, see the plan's Open items).
+    Raised only at a snow-request boundary (never by ``_map_recap_error``, which
+    stays IFS/reanalysis-only) and CONTAINED per ``(hru, canonical variable)`` by
+    the caller — it must never escape to abort the whole fetch the way an
+    uncaught ``RecapDataUnavailableError`` would. Reused across BOTH the
+    forecast (``fetch_snow_forecast``) and reanalysis (``fetch_snow_reanalysis``,
+    Plan 146 D5) boundaries. Covers both a Gateway ``source_data_missing``
+    response and a not-yet-subscribed ``subscription_not_found`` variable (the
+    "hs/rof still materializing" case, see the plan's Open items).
     """
 
     def __init__(self, message: str, *, code: str | None) -> None:
@@ -301,11 +304,12 @@ _SNOW_UNAVAILABLE_CODES = frozenset({"source_data_missing", "subscription_not_fo
 
 
 def _guarded_snow_fetch(fn: Callable[..., object], /, **kwargs: object) -> object:
-    """Snow-scoped guard (Plan 145 D3.2a): distinct from ``_guarded_fetch``.
+    """Snow-scoped guard (Plan 145 D3.2a; 146 D5): distinct from ``_guarded_fetch``.
 
     ``source_data_missing``/``subscription_not_found`` map to
-    ``RecapSnowUnavailableError`` — contained per ``(hru, variable)`` by the caller,
-    never propagated as a cycle-fatal abort. Every other error (config/auth/other)
+    ``RecapSnowUnavailableError`` — contained per ``(hru, variable)`` by the
+    caller (``fetch_snow_forecast`` or ``fetch_snow_reanalysis``), never
+    propagated as a cycle-fatal abort. Every other error (config/auth/other)
     maps via the existing ``_map_recap_error`` and propagates exactly as it does for
     IFS/reanalysis (regression: those semantics are UNCHANGED by this guard).
     """
@@ -558,6 +562,29 @@ def _prefilter(
         and c.role is role
         and c.status == WeatherSourceStatus.ACTIVE
         and c.extraction_type == SpatialRepresentation.BASIN_AVERAGE
+    ]
+
+
+def _prefiltered_stations(
+    station_configs: list[StationWeatherSource],
+    *,
+    nwp_source: str,
+    role: WeatherSourceRole,
+) -> list[StationId]:
+    """Station ids matching ``nwp_source``+``role`` but excluded by
+    :func:`_prefilter`'s remaining conditions (inactive status or a
+    non-basin-average ``extraction_type``) — Plan 146 D5's ``skipped``
+    ``"prefiltered"`` reason. A config for a different ``nwp_source``/``role``
+    is simply irrelevant to this adapter and is never included here."""
+    return [
+        c.station_id
+        for c in station_configs
+        if c.nwp_source == nwp_source
+        and c.role is role
+        and not (
+            c.status == WeatherSourceStatus.ACTIVE
+            and c.extraction_type == SpatialRepresentation.BASIN_AVERAGE
+        )
     ]
 
 
@@ -1119,6 +1146,152 @@ class RecapGatewayReanalysisAdapter:
             RawHistoricalForcing(
                 station_id=ref.station_id,
                 source=source,
+                version=_source_run_to_version(row_run),
+                valid_time=valid_time,
+                parameter=variable.canonical,
+                spatial_type=SpatialRepresentation.BASIN_AVERAGE,
+                band_id=None,
+                member_id=None,
+                value=value,
+            )
+            for ref, valid_time, value, row_run in rows
+            if start <= valid_time < end
+        ]
+
+    def fetch_snow_reanalysis(
+        self,
+        station_configs: list[StationWeatherSource],
+        start: UtcDatetime,
+        end: UtcDatetime,
+        variables: list[str] | None = None,
+    ) -> SnowReanalysisFetchResult:
+        """Snow-reanalysis fetch with per-``(hru, variable)`` containment (Plan 146 D5).
+
+        Deliberately NOT part of the ``WeatherReanalysisSource`` Protocol — mirrors
+        ``fetch_snow_forecast``'s reasoning exactly: ``fetch_reanalysis`` is
+        Protocol-locked to ``list[RawHistoricalForcing]`` and has zero exception
+        handling in its inner loop, so it cannot report WHICH ``(hru, variable)``
+        failed while keeping rows that succeeded. This method borrows the
+        per-``(hru, variable)`` try/except loop SHAPE from ``fetch_snow_forecast``/
+        ``_accumulate_snow``, but its per-row ROW-BUILD reuses the reanalysis
+        branch of ``_rows_for_variable`` (leakage guard, window filter, per-row
+        version) via ``_snow_reanalysis_rows_for_variable`` below — NOT
+        ``_accumulate_snow``, which has none of those three things and is the
+        wrong precedent for a row destined for ``HistoricalForcingStore``.
+
+        ``variables`` is an optional allowlist override (canonical names)
+        defaulting to the full snow ceiling (``swe``/``snow_depth``/``snowmelt``)
+        — NOT a model-derived requirement map (Plan 146 D5 is model-agnostic).
+        Boundary validation of ``variables`` (non-empty/no-unknown/no-duplicate)
+        is the ingest FLOW's responsibility (Plan 146 D5 point 2, item B), not
+        this adapter method's — an unknown name here is simply not in
+        ``_snow_variables()`` and silently contributes nothing, matching
+        ``_requested_reanalysis_variables``'s existing unknown-name-skip
+        precedent on the ``fetch_reanalysis`` side.
+
+        Preserves ``fetch_reanalysis``'s fail-loud all-unmappable semantics via
+        ``_require_some_resolved`` (Plan 146 D5 "All-unmappable behavior").
+        """
+        requested = [
+            v
+            for v in _snow_variables()
+            if variables is None or v.canonical in variables
+        ]
+        if not requested:
+            return SnowReanalysisFetchResult(
+                rows=[], unavailable={}, attempted={}, resolved={}, skipped={}
+            )
+
+        in_scope = _prefilter(
+            station_configs,
+            nwp_source=self.NWP_SOURCE,
+            role=WeatherSourceRole.REANALYSIS,
+        )
+        if not in_scope:
+            return SnowReanalysisFetchResult(
+                rows=[], unavailable={}, attempted={}, resolved={}, skipped={}
+            )
+
+        resolved_refs, unmapped_ids = _resolve_all(self._resolver, in_scope)
+        _require_some_resolved(in_scope, resolved_refs, unmapped_ids)
+
+        prefiltered_ids = _prefiltered_stations(
+            station_configs,
+            nwp_source=self.NWP_SOURCE,
+            role=WeatherSourceRole.REANALYSIS,
+        )
+        skipped: dict[StationId, str] = {sid: "unmapped" for sid in unmapped_ids}
+        skipped.update({sid: "prefiltered" for sid in prefiltered_ids})
+
+        by_hru = _group_by_hru(resolved_refs)
+        resolved_map: dict[StationId, GatewayHruName] = {
+            ref.station_id: ref.hru_name for ref in resolved_refs
+        }
+
+        rows: list[RawHistoricalForcing] = []
+        unavailable: dict[GatewayHruName, dict[str, str]] = {}
+        attempted: dict[GatewayHruName, frozenset[str]] = {}
+
+        for hru_name, refs_by_polygon in by_hru.items():
+            attempted[hru_name] = frozenset(v.canonical for v in requested)
+            hru_gaps: dict[str, str] = {}
+            for variable in requested:
+                try:
+                    rows.extend(
+                        self._snow_reanalysis_rows_for_variable(
+                            variable, hru_name, refs_by_polygon, start, end
+                        )
+                    )
+                except RecapSnowUnavailableError as exc:
+                    log.warning(
+                        "recap.snow_reanalysis_variable_unavailable",
+                        hru_name=hru_name,
+                        variable=variable.canonical,
+                        code=exc.code,
+                    )
+                    hru_gaps[variable.canonical] = exc.code or "unknown"
+            if hru_gaps:
+                unavailable[hru_name] = hru_gaps
+
+        return SnowReanalysisFetchResult(
+            rows=rows,
+            unavailable=unavailable,
+            attempted=attempted,
+            resolved=resolved_map,
+            skipped=skipped,
+        )
+
+    def _snow_reanalysis_rows_for_variable(
+        self,
+        variable: RecapVariable,
+        hru_name: GatewayHruName,
+        refs_by_polygon: dict[GatewayPolygonName, GatewayPolygonRef],
+        start: UtcDatetime,
+        end: UtcDatetime,
+    ) -> list[RawHistoricalForcing]:
+        snow_name = variable.snow_name
+        if snow_name is None:
+            return []
+        df = cast(
+            "pd.DataFrame",
+            _guarded_snow_fetch(
+                self._client.snow.reanalysis,
+                hru_code=hru_name,
+                variable=snow_name,
+                start_date=start,
+                end_date=end,
+            ),
+        )
+        # Same two boundary guards as `_rows_for_variable`'s reanalysis branch
+        # (leakage guard + per-row version + [start, end) filter) — reused
+        # verbatim so a row destined for HistoricalForcingStore has identical
+        # provenance mechanics on both call paths.
+        df = _drop_forecast_fill_rows(df)
+        rows, _ = _iter_long_rows(df, refs_by_polygon, variable.convert)
+        return [
+            RawHistoricalForcing(
+                station_id=ref.station_id,
+                source=_SNOW_SOURCE,
                 version=_source_run_to_version(row_run),
                 valid_time=valid_time,
                 parameter=variable.canonical,

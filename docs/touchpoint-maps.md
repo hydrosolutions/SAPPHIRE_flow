@@ -160,6 +160,14 @@ gates.
   neither) — a change there hits operational *and* training preprocessing
 - `HybridForcingSource` `priority` order decides which source's forcing wins per
   `(station, valid_time, parameter)` — reordering it silently changes model inputs
+- Plan 146 D4: `swe`/`snow_depth`/`snowmelt` are wired into `_PRIORITY_CHAINS`
+  **and** `DEFAULT_PARAMETERS` in `hybrid_reanalysis_factories.py` — both are
+  required (not just the priority-chain entry) because every real
+  construction-time caller (training/hindcast/live + 6 more) relies on the
+  `DEFAULT_PARAMETERS` fallback to decide which `PerSourceStoreReader`s get
+  built at all. A stored `recap_snow_reanalysis` row (Plan 146's dedicated
+  `ingest-recap-reanalysis` flow, not this map's ingest section) is otherwise
+  never selected even though it exists in the store.
 - repo-specific Task Exit Gate still applies before PR approval
 
 **Suggested verification:**
@@ -470,7 +478,7 @@ Before planning or implementation, inspect the relevant touchpoints below and in
 **Core implementation touchpoints:**
 
 - **Deployment registration**: `register_deployments` (`src/sapphire_flow/cli/`) — a hand-rolled registrar (**no `prefect.yaml`**; uses `afrom_source().adeploy()`) that registers flows + creates pools + sets schedules/concurrency, run idempotently as the compose `init` service. It, not the standards tables, is the source of truth for what is deployed.
-- **Work pools**: `default` and `ingest` only. The `ops`/`training`/`hindcast` split in `orchestration.md` is **aspirational**; conversely `ingest_weather_history_flow` is implemented + scheduled but **absent from the orchestration tables** — drift runs both ways.
+- **Work pools**: `default` and `ingest` only. The `ops`/`training`/`hindcast` split in `orchestration.md` is **aspirational**; conversely `ingest_weather_history_flow` and (Plan 146) `ingest_recap_reanalysis_flow` are implemented + scheduled but **absent from the main Flow-to-Prefect mapping table** — both are documented in their own `orchestration.md` § "Rolling-window ingest flows" subsection instead — drift runs both ways; verify which table you're reading before depending on it.
 - **Schedules / concurrency**: cron + env overrides + `concurrency_limit` in `register_deployments`; the only implemented named-resource slot is `model_training:{model_id}`. The `db_bulk_write` / `observation_write` slots, `retries=`, and `ThreadPoolTaskRunner(max_workers=)` in `orchestration.md` are **aspirational** — Prefect 3 defaults apply.
 - **Docker build**: two-stage `Dockerfile` (builder + slim non-root runtime; rationale in `cicd.md`). Net-new facts: **`git` is required in the builder** for the git-pinned `forecastinterface`; the actual base image is **`python:3.14.6-slim`** while `cicd.md` / `security.md` (and even the Dockerfile's own comments) are **stale**.
 - **Entrypoint**: `docker/entrypoint.sh` drops to non-root via `gosu` (rationale in `security.md`) and splices a password into the DB URLs. **Plan 147 Slice D**: the secret file it reads is now NAMED (`$DB_PASSWORD_SECRET`, default `/run/secrets/db_password`) — each service's compose entry points it at its OWN credential (owner / `sapphire_api` / `sapphire_worker`), so no app container can reconstruct another service's password. `docker/init-db.sh` still only creates the separate `prefect` DB (fresh-volume-only, `docker-entrypoint-initdb.d`) — it does NOT create the scoped app roles; that is `docker/bootstrap-roles.sh` (below), run by `init` on EVERY deploy, not just first boot.

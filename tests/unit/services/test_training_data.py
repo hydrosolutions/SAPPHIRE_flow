@@ -1069,3 +1069,80 @@ class TestResampleSnowAggregationFallback:
             if e.get("event") == "resample_to_time_step.unknown_parameter"
         ]
         assert unknown_events == []
+
+
+class TestSnowReachesPastDynamicViaHybridSource:
+    """Plan 146 D4/3a: the SAME stored ``recap_snow_reanalysis`` series reaches
+    ``past_dynamic`` through the real ``default_hybrid_forcing_source`` — not
+    a fake reanalysis source — proving the read-side routing wiring end to
+    end for the training consumer."""
+
+    def test_swe_column_present_with_stored_value(self) -> None:
+        from sapphire_flow.adapters.hybrid_reanalysis_factories import (
+            default_hybrid_forcing_source,
+        )
+        from sapphire_flow.types.enums import ArtifactScope
+        from sapphire_flow.types.model import ModelDataRequirements
+        from tests.fakes.fake_stores import FakeHistoricalForcingStore
+
+        class _SnowFedModel(FakeStationForecastModel):
+            artifact_scope = ArtifactScope.STATION
+            data_requirements = ModelDataRequirements(
+                target_parameters=frozenset({"discharge"}),
+                past_dynamic_features=frozenset({"swe"}),
+                future_dynamic_features=frozenset(),
+                static_features=frozenset(),
+                supported_time_steps=frozenset({_DAILY}),
+                lookback_steps=7,
+                forecast_horizon_steps=5,
+                spatial_input_type=SpatialRepresentation.BASIN_AVERAGE,
+            )
+
+        station_id = _sid()
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        station_store.store_station(make_station_config(station_id=station_id))
+        station_store.store_weather_source(
+            StationWeatherSource(
+                station_id=station_id,
+                nwp_source="era5_land",
+                extraction_type=SpatialRepresentation.BASIN_AVERAGE,
+                status=WeatherSourceStatus.ACTIVE,
+                role=WeatherSourceRole.REANALYSIS,
+            )
+        )
+        obs = make_observations(
+            n=5, station_id=station_id, start=_daily_ts(0), interval=_DAILY
+        )
+        obs_store.store_observations(obs)
+
+        forcing_store = FakeHistoricalForcingStore()
+        forcing_store.store_forcing(
+            [
+                make_raw_historical_forcing(
+                    station_id=station_id,
+                    source="recap_snow_reanalysis",
+                    parameter="swe",
+                    valid_time=_daily_ts(i),
+                    value=100.0 + i,
+                )
+                for i in range(5)
+            ]
+        )
+
+        result = assemble_station_training_data(
+            station_id=station_id,
+            model=_SnowFedModel(),
+            period_start=_daily_ts(0),
+            period_end=_daily_ts(30),
+            time_step=_DAILY,
+            forcing_source=default_hybrid_forcing_source(forcing_store=forcing_store),
+            obs_store=obs_store,
+            basin_store=FakeBasinStore(),
+            station_store=station_store,
+        )
+
+        assert result is not None
+        assert "swe" in result.past_dynamic.columns
+        values = result.past_dynamic.sort("timestamp")["swe"].to_list()
+        assert values == [100.0, 101.0, 102.0, 103.0, 104.0]

@@ -286,3 +286,59 @@ class TestDefaultHybridForcingSource:
         assert by_parameter_at_post["temperature_min"].source == "meteoswiss_tmind"
         assert by_parameter_at_post["temperature_max"].source == "meteoswiss_tmaxd"
         assert by_parameter_at_post[_SRELD_PARAM].source == "meteoswiss_sreld"
+
+
+class TestSnowTier:
+    """Plan 146 D4: swe/snow_depth/snowmelt are wired into the default hybrid
+    chain — a stored ``recap_snow_reanalysis`` row is selected."""
+
+    def test_default_parameters_include_all_three_snow_params(self) -> None:
+        from sapphire_flow.adapters.hybrid_reanalysis_factories import (
+            DEFAULT_PARAMETERS,
+        )
+
+        assert {"swe", "snow_depth", "snowmelt"}.issubset(set(DEFAULT_PARAMETERS))
+
+    def test_stored_snow_row_is_selected_by_default_hybrid_source(self) -> None:
+        store = FakeHistoricalForcingStore()
+        store.store_forcing(
+            [
+                _raw(
+                    source="recap_snow_reanalysis",
+                    parameter="swe",
+                    when=_POST,
+                    value=123.0,
+                )
+            ]
+        )
+        hybrid = default_hybrid_forcing_source(forcing_store=store)
+
+        result = hybrid.fetch_reanalysis([_cfg()], _WINDOW_START, _WINDOW_END, ["swe"])
+
+        assert len(result) == 1
+        assert result[0].source == "recap_snow_reanalysis"
+        assert result[0].value == 123.0
+
+    def test_snow_params_default_construction_scope_no_override_needed(self) -> None:
+        # D4: the snow PerSourceStoreReader must be constructed WITHOUT any
+        # caller passing parameters_in_scope=... explicitly — every real
+        # caller relies on the default falling back to DEFAULT_PARAMETERS.
+        store = FakeHistoricalForcingStore()
+        store.store_forcing(
+            [
+                _raw(
+                    source="recap_snow_reanalysis",
+                    parameter="snow_depth",
+                    when=_POST,
+                    value=7.0,
+                )
+            ]
+        )
+        hybrid = default_hybrid_forcing_source(forcing_store=store)  # no override
+
+        result = hybrid.fetch_reanalysis(
+            [_cfg()], _WINDOW_START, _WINDOW_END, ["snow_depth"]
+        )
+
+        assert len(result) == 1
+        assert result[0].value == 7.0

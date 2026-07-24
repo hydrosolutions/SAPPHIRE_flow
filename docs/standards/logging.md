@@ -283,6 +283,29 @@ Rules:
 
 A snow outage is surfaced as cycle `health=DEGRADED` (never `nwp_unavailable`, which stays reserved for a cycle-wide IFS/NWP outage) — see `_forecast_cycle_health`'s `snow_unavailable` parameter.
 
+### Antecedent snow-reanalysis ingest events (Plan 146, Nepal v1 / Recap Gateway only)
+
+The dedicated `ingest-recap-reanalysis` flow (`flows/ingest_recap_reanalysis.py`) is **model-agnostic** — it fetches the full snow ceiling for every in-scope HRU every run and classifies health by EFFECT (a `HistoricalForcingStore.fetch_covered_days` readback per `(station_id, parameter)`, never a fetch-success/`rows_stored` counter). Emits one `PipelineHealthRecord` per run keyed `PipelineCheckType.RECAP_SNOW_REANALYSIS_INGEST` — a DEDICATED check type, never conflated with `WEATHER_HISTORY_INGEST`.
+
+| Event | Level | Notes |
+|---|---|---|
+| `recap_snow_reanalysis.no_stations` | INFO | Zero in-scope recap-reanalysis-bound stations this run — the benign no-op (D5a step 3). Emitted BEFORE any `[adapters.recap_gateway]` config is read; the concrete proof a Swiss deployment never touches Recap config. Health record: `OK`, `reason=no_stations_bound`. |
+| `recap_snow_reanalysis.starting` | INFO | Kwargs: `stations`, `start`, `end`, `variables` (the ceiling actually attempted this run). |
+| `recap_snow_reanalysis.subscription_not_found` | INFO | Once per run, summarizing every `(hru, variable)` key classified `subscription_not_found` (permanent/structural — e.g. a basin subscribed to `swe` but not `snow_depth`). Excluded from WARNING entirely — this is expected, not alarming; the adapter's own `recap.snow_reanalysis_variable_unavailable` WARNING (below) is the per-fetch signal, this is the flow's once-per-run summary. Kwargs: `keys` (list of `"{hru}/{variable}"` strings). |
+| `recap.snow_reanalysis_variable_unavailable` | WARNING | Adapter-level: one `(hru, variable)` gap contained inside `fetch_snow_reanalysis` (Gateway `source_data_missing`/`subscription_not_found`). Kwargs: `hru_name`, `variable`, `code`. Rows for OTHER variables in the same HRU are preserved. |
+| `recap_snow_reanalysis.fetch_complete` / `.store_complete` | INFO | Row counts only — NOT used for health (Plan 146 D5: `rows_stored` reports `len(records)` even on a pure-duplicate re-fetch). |
+| `recap_snow_reanalysis.complete` | INFO | Kwargs: `stations_targeted`, `rows_fetched`, `rows_stored`, `status` (the classified `PipelineHealthStatus.value`). |
+| `pipeline.health_record_write_failed` | WARNING | Shared best-effort event (also used by `ingest_weather_history`) — a `pipeline_health_store` write failure never fails the ingest run itself. |
+
+**Classification → health status** (WARNING-only vocabulary; no `DEGRADED` member exists, Plan 146 D5):
+- `subscription_not_found` keys → excluded from WARNING entirely (structural/permanent).
+- `source_data_missing` keys, or any attempted non-`subscription_not_found` key whose `fetch_covered_days` snapshot shows no advance → `WARNING` `reason=no_horizon_advance`, naming the stalled `(hru, variable)` keys.
+- A dropped in-scope station (present in neither the adapter's `resolved` nor `skipped` maps, or present in `skipped`) → at least `WARNING` `reason=station_resolution_dropped`, naming the station and drop reason.
+- Config/auth/unanticipated errors → raised, the flow fails loudly (not contained, not logged as a health record).
+- Otherwise (every attempted non-`subscription_not_found` key advanced, no dropped stations) → `OK`.
+
+Deliberate divergence from `ingest_weather_history` (which classifies `no_horizon_advance` as `CRITICAL`): 146 uses `WARNING` because JSNOW's ~7-day reanalysis lag makes a no-advance window far more often normal lag than a true outage.
+
 ```python
 # CORRECT
 log.info("forecast.run_completed", lead_time_hours=120, ensemble_size=21, duration_ms=3400)
