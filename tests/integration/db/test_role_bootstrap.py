@@ -334,6 +334,57 @@ class TestPerTableGrantsAreNotBlanket:
         )
 
 
+class TestWorkerCannotReadAuthTables:
+    """A live docker-compose deploy rehearsal caught a least-privilege
+    over-grant static review missed: the blanket `GRANT SELECT ON ALL
+    TABLES ...` handed sapphire_worker (a Prefect worker running flows) read
+    access to the auth tables (access_tokens/access_token_stations) it has
+    no business reading. sapphire_api legitimately needs access_tokens for
+    auth and keeps it.
+
+    RED against the blanket-grant-only bootstrap (no REVOKE): sapphire_worker
+    CAN select from access_tokens/access_token_stations, so the `denied(...)`
+    assertions below fail. GREEN after the fix (explicit REVOKE SELECT ...
+    FROM sapphire_worker appended after the blanket GRANT and the per-table
+    grants): sapphire_worker is denied, sapphire_api and the worker's own
+    domain-table access are unaffected.
+    """
+
+    def test_sapphire_worker_cannot_select_access_tokens(
+        self, bootstrapped: _RoleBootstrapHarness
+    ) -> None:
+        url = bootstrapped.role_url("sapphire_worker", "worker-pw-initial")
+        assert bootstrapped.denied(url, "SELECT * FROM access_tokens")
+
+    def test_sapphire_worker_cannot_select_access_token_stations(
+        self, bootstrapped: _RoleBootstrapHarness
+    ) -> None:
+        url = bootstrapped.role_url("sapphire_worker", "worker-pw-initial")
+        assert bootstrapped.denied(url, "SELECT * FROM access_token_stations")
+
+    def test_sapphire_api_can_select_access_tokens(
+        self, bootstrapped: _RoleBootstrapHarness
+    ) -> None:
+        # sapphire_api's auth path legitimately reads access_tokens — the
+        # fix must not touch sapphire_api's grants.
+        url = bootstrapped.role_url("sapphire_api", "api-pw-initial")
+        assert not bootstrapped.denied(url, "SELECT * FROM access_tokens")
+
+    def test_sapphire_worker_can_still_select_stations(
+        self, bootstrapped: _RoleBootstrapHarness
+    ) -> None:
+        # The revoke is scoped to the two auth tables only — the worker's
+        # broad SELECT elsewhere (its own domain tables) is unaffected.
+        url = bootstrapped.role_url("sapphire_worker", "worker-pw-initial")
+        assert not bootstrapped.denied(url, "SELECT count(*) FROM stations")
+
+    def test_sapphire_worker_can_still_write_stations(
+        self, bootstrapped: _RoleBootstrapHarness
+    ) -> None:
+        url = bootstrapped.role_url("sapphire_worker", "worker-pw-initial")
+        assert not bootstrapped.denied(url, "UPDATE stations SET name = name")
+
+
 class TestBootstrapIsIdempotent:
     def test_rerun_with_same_passwords_succeeds_and_role_set_is_unchanged(
         self, role_harness: _RoleBootstrapHarness

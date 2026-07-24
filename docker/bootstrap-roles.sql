@@ -169,3 +169,16 @@ GRANT INSERT ON flow_regime_configs TO sapphire_worker;
 GRANT INSERT, UPDATE ON recap_gateway_polygon_bindings TO sapphire_worker;
 GRANT INSERT, UPDATE ON calculated_station_formulas TO sapphire_worker;
 GRANT INSERT ON audit_log TO sapphire_worker;
+
+-- sapphire_worker must NOT be able to read the auth tables. The blanket
+-- `GRANT SELECT ON ALL TABLES ...` above intentionally includes
+-- access_tokens/access_token_stations (a schema-wide convenience grant —
+-- see the comment above that GRANT), but a Prefect worker running flows has
+-- no business reading token hashes/scopes; only sapphire_api's auth path
+-- needs that table. Revoke it back off for sapphire_worker specifically,
+-- leaving sapphire_api's SELECT (and its INSERT/UPDATE grants above)
+-- untouched. Runs unconditionally on every bootstrap (fresh volume AND
+-- in-place upgrade converge here, same as the rest of this file); REVOKE of
+-- a privilege not held is a no-op, so a second run is a no-op too.
+-- Caught by a live docker-compose deploy rehearsal, not static review.
+REVOKE SELECT ON access_tokens, access_token_stations FROM sapphire_worker;
