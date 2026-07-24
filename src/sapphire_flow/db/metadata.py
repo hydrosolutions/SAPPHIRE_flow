@@ -1612,4 +1612,9 @@ audit_log = sa.Table(
     sa.Index("ix_audit_log_event_type_created_at", "event_type", "created_at"),
     sa.Index("ix_audit_log_target", "target_type", "target_id"),
     sa.Index("ix_audit_log_actor_id", "actor_id"),
+    sa.CheckConstraint(
+        "(actor_type = 'system' AND actor_id IS NULL) "
+        "OR (actor_type IN ('user', 'api_key') AND actor_id IS NOT NULL)",
+        name="ck_audit_log_actor_id_matches_actor_type",
+    ),
 )
