@@ -50,6 +50,50 @@ SELECT format(
 WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = 'sapphire_worker')
 \gexec
 
+-- ── CONVERGE PRE-EXISTING ROLES TO LEAST PRIVILEGE ─────────────────────────
+-- The CREATE branch above sets NOSUPERUSER/... on a FRESH role, but a role
+-- that ALREADY EXISTS (an in-place upgrade on an existing volume) took the
+-- ALTER-PASSWORD branch and had ONLY its password reset. Without the block
+-- below it would RETAIN any SUPERUSER/CREATEDB/CREATEROLE/REPLICATION/
+-- BYPASSRLS attributes, role memberships, and stale table/schema/DB grants
+-- (including UPDATE/DELETE on audit_log) left by an earlier, over-broad
+-- deploy — so an in-place upgrade would NOT converge to least privilege,
+-- contradicting Plan 147 Slice D's "a fresh volume AND an in-place existing-
+-- volume upgrade converge to the same roles/grants" requirement. These
+-- statements run UNCONDITIONALLY on the SAME path for fresh and pre-existing
+-- roles, so both reach the identical least-privilege state; every one is
+-- idempotent (a re-run on already-correct roles is a no-op).
+
+-- (1) Normalize attributes: strip every attribute that grants escalation. A
+--     fresh role is already in this state (no-op); a pre-existing SUPERUSER
+--     role is demoted here.
+ALTER ROLE sapphire_api NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+ALTER ROLE sapphire_worker NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS;
+
+-- (2) Revoke every role membership either app role currently holds — a stale
+--     membership in a privileged group (e.g. an owner/admin role) would
+--     otherwise keep re-conferring privileges the per-table matrix never
+--     grants. One row per (granted_role, app_role) held; `\gexec` runs each
+--     REVOKE (no rows -> no-op when the roles hold no memberships).
+SELECT format('REVOKE %I FROM %I', granted.rolname, member.rolname)
+FROM pg_catalog.pg_auth_members am
+JOIN pg_catalog.pg_roles granted ON granted.oid = am.roleid
+JOIN pg_catalog.pg_roles member ON member.oid = am.member
+WHERE member.rolname IN ('sapphire_api', 'sapphire_worker')
+\gexec
+
+-- (3) Revoke all prior object privileges before the GRANTs below re-apply the
+--     intended least-privilege set, so a stale grant from an earlier over-
+--     broad deploy (e.g. UPDATE/DELETE on audit_log) cannot linger past this
+--     run. REVOKE of a privilege not held is a no-op, so this is safe on a
+--     freshly created role too. The intended grants are re-applied by the
+--     unchanged, Codex-approved per-table matrix that follows.
+REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM sapphire_api, sapphire_worker;
+REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM sapphire_api, sapphire_worker;
+REVOKE ALL PRIVILEGES ON SCHEMA public FROM sapphire_api, sapphire_worker;
+REVOKE ALL PRIVILEGES ON DATABASE sapphire FROM sapphire_api, sapphire_worker;
+REVOKE ALL PRIVILEGES ON DATABASE prefect FROM sapphire_api, sapphire_worker;
+
 -- Neither app role may create objects in `public` (PG16 already denies
 -- CREATE on `public` to PUBLIC by default since PG15 — explicit here so the
 -- invariant holds regardless of the cluster's default, and is documented).

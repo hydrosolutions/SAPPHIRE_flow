@@ -435,6 +435,71 @@ class TestApplicationStoresWorkUnderScopedRoles:
         assert fetched.code == "ROLE-BOOTSTRAP-TEST"
 
 
+class TestPreExistingOverprivilegedRoleConvergesToLeastPriv:
+    """The in-place-upgrade convergence contract (Plan 147 Slice D): a role
+    that ALREADY exists with escalated attributes + broad grants — left behind
+    by an earlier, over-broad deploy on the SAME volume — MUST be normalized to
+    least privilege by a bootstrap re-run, not merely have its password reset.
+
+    RED against the password-only bootstrap: the pre-existing SUPERUSER role
+    keeps SUPERUSER + UPDATE/DELETE on audit_log, so the assertions below fail.
+    GREEN after the convergence fix (normalize attrs + revoke-before-regrant):
+    the role converges to the identical least-privilege state a fresh volume
+    would produce.
+    """
+
+    def test_overprivileged_pre_existing_api_role_is_demoted_and_stripped(
+        self, role_harness: _RoleBootstrapHarness
+    ) -> None:
+        # Arrange: forge a deliberately OVERPRIVILEGED pre-existing sapphire_api
+        # role (superuser, CREATEDB/CREATEROLE, UPDATE/DELETE on audit_log),
+        # standing in for one an earlier over-broad deploy left on the volume.
+        with role_harness.owner_engine.connect().execution_options(
+            isolation_level="AUTOCOMMIT"
+        ) as conn:
+            conn.execute(
+                sa.text(
+                    "DO $$ BEGIN "
+                    "IF EXISTS (SELECT 1 FROM pg_roles "
+                    "WHERE rolname = 'sapphire_api') THEN "
+                    "  EXECUTE 'DROP OWNED BY sapphire_api CASCADE'; "
+                    "  EXECUTE 'DROP ROLE sapphire_api'; "
+                    "END IF; END $$"
+                )
+            )
+            conn.execute(
+                sa.text(
+                    "CREATE ROLE sapphire_api SUPERUSER CREATEDB CREATEROLE "
+                    "LOGIN PASSWORD 'overprivileged-pw'"
+                )
+            )
+            conn.execute(sa.text("GRANT UPDATE, DELETE ON audit_log TO sapphire_api"))
+
+        # Act: run the SHIPPED bootstrap against the pre-existing role.
+        result = role_harness.run_bootstrap("api-pw-converged", "worker-pw-conv")
+        assert result.returncode == 0, result.stderr
+
+        # Assert: attributes are demoted to least privilege.
+        with role_harness.owner_engine.connect() as conn:
+            row = conn.execute(
+                sa.text(
+                    "SELECT rolsuper, rolcreatedb, rolcreaterole "
+                    "FROM pg_roles WHERE rolname = 'sapphire_api'"
+                )
+            ).one()
+        assert row.rolsuper is False
+        assert row.rolcreatedb is False
+        assert row.rolcreaterole is False
+
+        # Assert: the converged role can no longer CREATE/DROP objects nor
+        # UPDATE/DELETE audit_log (the stale grants were revoked).
+        url = role_harness.role_url("sapphire_api", "api-pw-converged")
+        assert role_harness.denied(url, "CREATE TABLE evil_converge (id int)")
+        assert role_harness.denied(url, "DROP TABLE stations")
+        assert role_harness.denied(url, "UPDATE audit_log SET event_type = event_type")
+        assert role_harness.denied(url, "DELETE FROM audit_log")
+
+
 class TestMigrationUnderScopedRoleFails:
     def test_sapphire_worker_cannot_run_a_schema_migration(
         self, bootstrapped: _RoleBootstrapHarness
