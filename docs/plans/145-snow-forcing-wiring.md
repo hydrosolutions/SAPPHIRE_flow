@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-07-23
 plan: 145
 title: Future-snow (JSNOW) forecast forcing wiring — fetch → store → broadcast, + canonical aggregation
@@ -17,7 +17,7 @@ channel here is clean/foldable and unblocks 144; the PAST/antecedent channel (ne
 + read-side hybrid snow tier + an owning recap-reanalysis ingest flow — the blocker) is now **Plan 146**. This plan's confirming `/plan` (2026-07-24) converged after folding a proportionality simplification (relax the
 assembly `return None` guard + let the existing per-model `assess_future_coverage` gate suppress — no superset
 pruning / no availability threaded into assembly), a typed `SnowForecastFetchResult`, `snow_unavailable`→DEGRADED
-health, and the pre-submission required-snow scoping map. Ready for READY. Grounded in
+health, and the pre-submission required-snow scoping map. **READY (owner 2026-07-24) → /implement (hold-at-PR).** Grounded in
 [[reference_recap_gateway_12300_products]] (JSNOW is a **single deterministic stream** — no ensemble members;
 hourly; swe subscribed for 12300, hs/rof newly subscribed with forecast still materializing).
 
