@@ -1239,10 +1239,27 @@ def _fetch_nwp_task(
         scoped_snow_configs = [
             ws for ws in station_configs if ws.station_id in snow_station_ids
         ]
+        # A station requiring snow but with NO matching forecast binding in
+        # this batch (config gap — e.g. no active FORECAST-role weather
+        # source) must not silently degrade to HEALTHY: it never got a
+        # chance to fetch what it needs. Surface it as snow_unavailable and
+        # log the affected stations (review fold-in — minor finding).
+        bound_station_ids = frozenset(ws.station_id for ws in scoped_snow_configs)
+        unbound_required = snow_station_ids - bound_station_ids
+        if unbound_required:
+            log.warning(
+                "nwp.snow_required_station_missing_binding",
+                station_ids=[str(s) for s in sorted(unbound_required, key=str)],
+            )
+            snow_unavailable = True
         if scoped_snow_configs:
             try:
+                # required_snow is threaded through so the adapter can scope its
+                # OWN Gateway calls to the variables each station actually needs
+                # (review fold-in) — a swe-only station must never trigger an
+                # hs/rof call whose unavailability would falsely degrade it.
                 snow_result = adapter.fetch_snow_forecast(
-                    scoped_snow_configs, resolved_cycle
+                    scoped_snow_configs, resolved_cycle, required_snow=required_snow
                 )
             except Exception as exc:  # snow-scoped guard: never cycle-fatal
                 log.error("nwp.snow_fetch_failed", error=str(exc))
@@ -1264,7 +1281,10 @@ def _fetch_nwp_task(
                     weather_forecast_store.store_weather_forecasts(  # type: ignore[union-attr]
                         snow_records
                     )
-                snow_unavailable = bool(snow_result.unavailable)
+                # OR (never overwrite) — an unbound-required-station gap
+                # detected above must survive even when the BOUND stations'
+                # fetch fully succeeds.
+                snow_unavailable = snow_unavailable or bool(snow_result.unavailable)
                 log.info(
                     "nwp.snow_fetch_completed",
                     records_stored=len(snow_records),

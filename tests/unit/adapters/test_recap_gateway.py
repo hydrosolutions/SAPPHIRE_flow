@@ -1341,6 +1341,103 @@ class TestSnowForecastFetch:
         assert snow.calls == []
 
 
+class _OnlyAllowedVariableSnow:
+    """Raises loudly if any Gateway call requests a variable outside ``allowed``.
+
+    Distinct from ``_PartiallyUnavailableSnow`` (which CONTAINS a failure per
+    variable): this fake proves the caller never even ATTEMPTS an out-of-scope
+    variable, so its unavailability (real or simulated) cannot leak into the
+    outcome of a station that never needed it.
+    """
+
+    def __init__(self, df: pd.DataFrame, *, allowed: frozenset[str]) -> None:
+        self.calls: list[dict[str, object]] = []
+        self._df = df
+        self._allowed = allowed
+
+    def reanalysis(self, **kwargs: object) -> object:
+        raise AssertionError("snow-forecast test must not call reanalysis")
+
+    def forecast(self, **kwargs: object) -> object:
+        self.calls.append(dict(kwargs))
+        if kwargs["variable"] not in self._allowed:
+            raise AssertionError(
+                f"unexpected snow.forecast call for variable={kwargs['variable']!r}; "
+                f"only {sorted(self._allowed)} should ever be requested"
+            )
+        return self._df
+
+
+class TestSnowForecastRequiredVariableScoping:
+    """Plan 145 review fold-in (major finding): ``required_snow`` must reach
+    the Gateway call and scope it to the requested variable(s) ONLY -- a
+    swe-only station must never trigger an hs/rof call, so their (real or
+    simulated) unavailability cannot affect its outcome."""
+
+    def test_swe_only_station_makes_exactly_one_call_for_swe(self) -> None:
+        cycle = ensure_utc(datetime(2026, 1, 1, 0, tzinfo=UTC))
+        snow = _OnlyAllowedVariableSnow(
+            _wide_df([_POLY_A], value=5.0), allowed=frozenset({"swe"})
+        )
+        adapter = RecapGatewayForecastAdapter(
+            client=_Client(_GoodEcmwf(), snow),  # type: ignore[arg-type]
+            resolver=_GoodResolver(),  # type: ignore[arg-type]
+        )
+
+        result = adapter.fetch_snow_forecast(
+            [_ws(_SID, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST)],
+            cycle,
+            required_snow={_SID: frozenset({"swe"})},
+        )
+
+        assert len(snow.calls) == 1
+        assert snow.calls[0]["variable"] == "swe"
+        assert result.unavailable == {}
+        parameters = set(result.forecasts[_SID].values["parameter"].unique().to_list())
+        assert parameters == {"swe"}
+
+    def test_required_snow_none_preserves_unscoped_all_variable_fetch(self) -> None:
+        # Backward compatibility: omitting `required_snow` (None, the default)
+        # must preserve the pre-scoping behaviour of fetching every snow
+        # variable for every in-scope HRU.
+        cycle = ensure_utc(datetime(2026, 1, 1, 0, tzinfo=UTC))
+        snow = _RecordingForecastSnow(_wide_df([_POLY_A], value=5.0))
+        adapter = RecapGatewayForecastAdapter(
+            client=_Client(_GoodEcmwf(), snow),  # type: ignore[arg-type]
+            resolver=_GoodResolver(),  # type: ignore[arg-type]
+        )
+
+        adapter.fetch_snow_forecast(
+            [_ws(_SID, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST)],
+            cycle,
+        )
+
+        assert len(snow.calls) == 3  # hs, rof, swe -- unscoped
+
+    def test_empty_required_snow_for_station_fetches_no_variables(self) -> None:
+        # A station present in `station_configs` but ABSENT from `required_snow`
+        # (or mapped to an empty set) contributes nothing to the HRU's union --
+        # zero Gateway calls, not "unscoped".
+        cycle = ensure_utc(datetime(2026, 1, 1, 0, tzinfo=UTC))
+        snow = _OnlyAllowedVariableSnow(
+            _wide_df([_POLY_A], value=5.0), allowed=frozenset()
+        )
+        adapter = RecapGatewayForecastAdapter(
+            client=_Client(_GoodEcmwf(), snow),  # type: ignore[arg-type]
+            resolver=_GoodResolver(),  # type: ignore[arg-type]
+        )
+
+        result = adapter.fetch_snow_forecast(
+            [_ws(_SID, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST)],
+            cycle,
+            required_snow={},
+        )
+
+        assert snow.calls == []
+        assert result.forecasts == {}
+        assert result.unavailable == {}
+
+
 class _CodedError(Exception):
     """Structurally mimics a recap-dg-client error carrying a ``.code`` attribute."""
 

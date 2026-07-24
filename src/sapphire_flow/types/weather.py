@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, NewType
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from uuid import UUID
 
     import polars as pl
@@ -12,6 +13,13 @@ if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.enums import SpatialRepresentation
     from sapphire_flow.types.ids import StationId
+
+# Recap Gateway HRU identifier (Plan 145 review fold-in — moved out of
+# `adapters/recap_gateway.py` so the shared `SnowForecastFetchResult` contract
+# below does not force a Protocol/types consumer to import a Recap-specific
+# type out of the adapter module). `recap_gateway.py` imports this name rather
+# than defining its own.
+GatewayHruName = NewType("GatewayHruName", str)
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -67,3 +75,21 @@ class GriddedForecast:
 
 
 WeatherForecastResult = PointForecast | BasinAverageForecast | ElevationBandForecast
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class SnowForecastFetchResult:
+    """Typed ``fetch_snow_forecast`` return (Plan 145 D6).
+
+    ``forecasts`` carries every station that accumulated >=1 row (station-keyed,
+    like ``fetch_forecasts``). ``unavailable`` carries the per-``(HRU, canonical
+    variable)`` gaps contained by a snow-boundary error — a plain dict cannot
+    represent a per-variable/HRU failure, only success. ``unavailable`` is used
+    for the ``snow_unavailable`` outcome/logging ONLY — assembly relies on the
+    relaxed ``operational_inputs`` guard + ``assess_future_coverage``, never on
+    this map. Lives in ``types/`` (not ``adapters/recap_gateway.py``) so the
+    shared ``SnowForecastSource`` Protocol never imports from a concrete adapter.
+    """
+
+    forecasts: dict[StationId, WeatherForecastResult]
+    unavailable: Mapping[GatewayHruName, frozenset[str]]

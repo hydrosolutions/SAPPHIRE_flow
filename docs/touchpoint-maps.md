@@ -243,6 +243,12 @@ Before planning or implementation, inspect the relevant touchpoints below and in
   (Plan 082 2H-snow) in `operational_inputs.py`. A `(hru, variable)` gap folds
   into `_NwpFetchOutcome.snow_unavailable` → `_forecast_cycle_health`'s
   `snow_unavailable` parameter (DEGRADED, never `nwp_unavailable`).
+  `required_snow` is threaded all the way into `fetch_snow_forecast` (not just
+  used to pick which stations reach the call) — the adapter scopes each HRU's
+  Gateway calls to the UNION of variables its resolved stations actually need,
+  so a swe-only station never triggers an hs/rof call. A required-snow station
+  with NO matching forecast binding in the batch (config gap) also sets
+  `snow_unavailable=True` rather than staying silently `HEALTHY`.
 
 **Downstream consumers to inspect when behavior changes:**
 

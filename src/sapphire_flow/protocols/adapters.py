@@ -3,7 +3,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
-    from sapphire_flow.adapters.recap_gateway import SnowForecastFetchResult
+    from collections.abc import Mapping
+
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.forecast import ForeignForecast
     from sapphire_flow.types.historical_forcing import RawHistoricalForcing
@@ -11,7 +12,11 @@ if TYPE_CHECKING:
     from sapphire_flow.types.observation import RawObservation
     from sapphire_flow.types.pipeline import FlowRunStatus
     from sapphire_flow.types.station import StationConfig, StationWeatherSource
-    from sapphire_flow.types.weather import GriddedForecast, WeatherForecastResult
+    from sapphire_flow.types.weather import (
+        GriddedForecast,
+        SnowForecastFetchResult,
+        WeatherForecastResult,
+    )
 
 
 @runtime_checkable
@@ -52,6 +57,7 @@ class SnowForecastSource(Protocol):
         self,
         station_configs: list[StationWeatherSource],
         cycle_time: UtcDatetime,
+        required_snow: Mapping[StationId, frozenset[str]],
     ) -> SnowForecastFetchResult:
         raise NotImplementedError
 
