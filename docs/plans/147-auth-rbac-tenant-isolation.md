@@ -110,26 +110,25 @@ later slice that performs an audited mutation depends on **B**, so no slice ever
 mutation. **C (access-token auth) depends on A + B; D (least-privilege DB roles) depends on C;
 E (tenant write-isolation) depends on A + B.**
 
-**Scope rule for THIS `/implement` run: build Slice C ONLY (access-token auth + enforcement + close the holes)
-and STOP.** Do NOT build Slice D/E in this run — each is a separate later slice with its own PR (branch
-`feat/plan-147-slice-c` builds Slice C). **Slice A (tenant model, #130) + Slice B (audit-log substrate, #131)
-are already on `main` — CONSUME them, do not re-implement.** C depends on A (`access_tokens.tenant_id` FK +
-per-station scope-tenant validation) and B (token create/revoke + `create-admin` stamp `audit_log` via B's
-writer, in one RW transaction). Slice C builds, per the Slice-C block below: the `access_tokens` table +
-`access_token_stations` scope join + migration (HMAC-SHA-256 + server-side pepper, R1; `tenant_id` FK;
-`AccessTokenId` wired); the full pepper lifecycle (dedicated `access_token_pepper` secret, fail-closed startup,
-redaction, all-token-reissue rotation + `pepper_version` hook); the FastAPI auth `Depends` (Bearer→principal,
-401) enforced on EVERY endpoint (JSON API + legacy `.json` + HTML routers); GET-only classification (remove
-`POST /alerts/{id}/acknowledge` → 501); the health exemption (shallow `/health` public, `/health/detail`
-admin-only, NO capability axis); the authenticated watchdog detail-probing via a HOST-secret token
-(`./secrets/health_probe_token`, launchd wiring — NOT a Compose mount); CORS lockdown (explicit origins, reject
-`*`); legacy HTML routes removed/relocated (R3, admin-gate as fallback); the station-scoped route matrix
-(global model skill-chart admin-only; stationless alerts fail-closed for consumer); per-key station-scope
-filtering (`access_token_stations` join, out-of-scope→404, empty-scope→nothing, scope-station-must-match-token-
-tenant); CLI `create`/`list`/`revoke` + `create-admin` bootstrap (audit via B, atomic); 2 roles
-(`consumer`/`admin`, no third). Live-Postgres + FastAPI TestClient tests per the Slice-C verification block.
-The **config-identity WritePrincipal + flow/CLI write-isolation is Slice E, NOT here** (C is the HTTP/read +
-token-management surface). Red-first: the guard tests fail against today's fully-open routes.
+**Scope rule for THIS `/implement` run: build Slice D ONLY (least-privilege DB roles, F3(b)) and STOP.** Do NOT
+build Slice E in this run — it is a separate later slice with its own PR (branch `feat/plan-147-slice-d` builds
+Slice D). **Slices A (tenant model, #130), B (audit-log substrate, #131), and C (access-token auth, #132) are
+already on `main` — CONSUME them, do not re-implement.** D depends on C (its `sapphire_api` grants cover
+`access_tokens` + the `last_used_at` write). Slice D is a DEPLOYMENT/DB-privilege slice (per the Slice-D block
+below): realize the documented `sapphire_api`/`sapphire_worker`/`sapphire_prefect` role split (do NOT collapse
+to one role) with **per-table grants** (not blanket UPDATE/DELETE); INSERT+SELECT-only on `audit_log` for both
+app roles (defense-in-depth atop B's role-independent guard, never UPDATE/DELETE); **separate credentials** —
+distinct owner/migration + `sapphire_api` + `sapphire_worker` secrets so the app CANNOT reconstruct the owner
+password (generalize `entrypoint.sh` from the single `db_password` to a named `DB_PASSWORD_SECRET`, per-service
+mounts + URL templates); split migrations (run as owner) from app/workers (scoped roles) in compose/init; an
+**idempotent privileged bootstrap** (CREATE ROLE IF NOT EXISTS + re-grant, run as owner from `init`) so BOTH a
+fresh volume AND an in-place existing-volume upgrade converge to the same roles/grants; and doc updates
+(`conventions.md` grant matrix, `security.md`, `cicd.md`). Verify (upgrade+downgrade): app roles cannot
+DROP/CREATE or read another DB; `UPDATE`/`DELETE audit_log` fail under both app roles; the full pipeline works
+under scoped roles; a migration under a scoped role fails (least-priv proof); fresh + in-place both converge +
+the bootstrap re-run is a no-op; the owner password is absent from API/worker containers; scoped-password
+rotation works; documented rollback. The **config-identity WritePrincipal / flow-CLI write-isolation is Slice E,
+NOT here.** Red-first: today the app runs as the Postgres SUPERUSER (no scoped role exists).
 
 ### Slice A — Tenant model foundation (data model, no auth)
 
