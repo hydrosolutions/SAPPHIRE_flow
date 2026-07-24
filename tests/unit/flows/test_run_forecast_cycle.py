@@ -1330,6 +1330,65 @@ class TestComputeRequiredSnow:
         assert required == {}
 
 
+class TestReconcileSnowCoverageNaN:
+    """Plan 145 review escalation: a required snow parameter present as rows
+    that are all-NaN must be treated as MISSING coverage, not covered -- a
+    NaN forcing value is never usable, and ``_covered_snow_parameters``
+    previously counted mere row presence (via the ``parameter`` column)
+    regardless of whether the ``value`` column was finite."""
+
+    def test_all_nan_parameter_is_reported_missing(self) -> None:
+        from sapphire_flow.flows.run_forecast_cycle import _reconcile_snow_coverage
+
+        sid = StationId(uuid4())
+        rows = [
+            {
+                "valid_time": ensure_utc(_NOW + timedelta(hours=h)),
+                "parameter": "swe",
+                "member_id": None,
+                "value": float("nan"),
+            }
+            for h in (1, 2, 3)
+        ]
+        forecast = BasinAverageForecast(
+            nwp_source="ifs_ecmwf", cycle_time=_NOW, values=pl.DataFrame(rows)
+        )
+        missing = _reconcile_snow_coverage(
+            required_snow={sid: frozenset({"swe"})},
+            bound_station_ids=frozenset({sid}),
+            forecasts={sid: forecast},
+        )
+        assert missing == {sid: frozenset({"swe"})}
+
+    def test_at_least_one_finite_value_is_covered(self) -> None:
+        from sapphire_flow.flows.run_forecast_cycle import _reconcile_snow_coverage
+
+        sid = StationId(uuid4())
+        rows = [
+            {
+                "valid_time": ensure_utc(_NOW + timedelta(hours=1)),
+                "parameter": "swe",
+                "member_id": None,
+                "value": 1.0,
+            },
+            {
+                "valid_time": ensure_utc(_NOW + timedelta(hours=2)),
+                "parameter": "swe",
+                "member_id": None,
+                "value": float("nan"),
+            },
+        ]
+        forecast = BasinAverageForecast(
+            nwp_source="ifs_ecmwf", cycle_time=_NOW, values=pl.DataFrame(rows)
+        )
+        missing = _reconcile_snow_coverage(
+            required_snow={sid: frozenset({"swe"})},
+            bound_station_ids=frozenset({sid}),
+            forecasts={sid: forecast},
+        )
+        assert missing == {}
+
+
 class TestSnowForecastWiring:
     """Plan 145 2a/2b/2c/2d: capability-gated, station-scoped snow fetch wired
     into ``_fetch_nwp_task``, riding the SAME resolved IFS cycle, folding

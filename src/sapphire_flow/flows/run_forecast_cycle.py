@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar, cast
 from uuid import uuid4
 
+import polars as pl
 import structlog
 import structlog.contextvars
 from prefect import flow, task
@@ -810,16 +811,25 @@ def _compute_required_snow(
 
 
 def _covered_snow_parameters(forecast: object) -> frozenset[str]:
-    """Canonical parameters actually present (>=1 row) in a fetched snow forecast.
+    """Canonical parameters with >=1 FINITE value in a fetched snow forecast.
 
-    Reads the ``parameter`` column off the result's ``values`` frame -- present
-    on every member of ``WeatherForecastResult`` (Point/BasinAverage/
-    ElevationBand). Returns an empty set for anything unexpected rather than
-    raising, so a malformed/no-op stub used in tests never crashes reconciliation."""
+    Reads the ``parameter`` and ``value`` columns off the result's ``values``
+    frame -- both present on every member of ``WeatherForecastResult`` (Point/
+    BasinAverage/ElevationBand; ``value`` per ``WeatherForecastRecord``). A
+    parameter whose rows are all null/NaN is NOT covered -- a NaN forcing value
+    is never usable, and merely appearing as a row is not enough (Plan 145
+    review escalation). Returns an empty set for anything unexpected rather
+    than raising, so a malformed/no-op stub used in tests never crashes
+    reconciliation."""
     values = getattr(forecast, "values", None)
-    if values is None or "parameter" not in getattr(values, "columns", []):
+    columns = getattr(values, "columns", [])
+    if values is None or "parameter" not in columns or "value" not in columns:
         return frozenset()
-    return frozenset(values.get_column("parameter").unique().to_list())
+    predicate = pl.col("value").is_not_null()
+    if values.schema["value"].is_float():
+        predicate = predicate & pl.col("value").is_not_nan()
+    finite = values.filter(predicate)
+    return frozenset(finite.get_column("parameter").unique().to_list())
 
 
 def _reconcile_snow_coverage(
