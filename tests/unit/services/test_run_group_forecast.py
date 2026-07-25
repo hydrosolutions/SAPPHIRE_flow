@@ -20,6 +20,8 @@ from sapphire_flow.types.domain import ForecastQcRuleParams, ForecastQcRuleSet, 
 from sapphire_flow.types.ensemble import ForecastEnsemble
 from sapphire_flow.types.enums import (
     ForecastStatus,
+    InputQualityCategory,
+    InputQualityLevel,
     ModelArtifactStatus,
     ModelAssignmentStatus,
     NwpCycleSource,
@@ -547,6 +549,87 @@ class TestRealAssemblerWarmUpProvenance:
         assert metadata_by_station[sid_a].warm_up_state_age_hours < 24.0
         assert metadata_by_station[sid_b].warm_up_source == WarmUpSource.COLD_START
         assert metadata_by_station[sid_b].warm_up_state_age_hours is None
+
+
+class TestRealRunGroupForecastRegression:
+    """Plan 148 T3(d) — forecast-facing regression through the REAL, unpatched
+    ``run_group_forecast`` path, fed by the REAL ``assemble_group_operational_inputs``
+    (no monkeypatching anywhere in the chain). ``TestRealAssemblerWarmUpProvenance``
+    above only asserts on the intermediate ``OperationalInputMetadata`` — it never
+    calls ``run_group_forecast``, so it has zero coverage of whether that provenance
+    actually reaches the resulting ``OperationalForecast`` objects. This proves it
+    does: two stations with different seeded warm-up state each get correct
+    per-forecast ``warm_up_source``/``warm_up_state_age_hours`` AND the
+    corresponding ``input_quality_flags``.
+    """
+
+    def test_forecast_warm_up_provenance_and_input_quality_flags(self) -> None:
+        sid_a = StationId(uuid4())
+        sid_b = StationId(uuid4())
+        group = _make_group(sid_a, sid_b)
+
+        state_store = FakeModelStateStore()
+        state_store.store_state(
+            sid_a, _MODEL_ID, ensure_utc(_ISSUE - timedelta(hours=1)), b"group-state-a"
+        )
+        # sid_b has NO stored state -> COLD_START.
+
+        assemble_result = service.assemble_group_operational_inputs(
+            group=group,
+            model=FakeGroupForecastModel(),
+            model_id=_MODEL_ID,
+            issue_time=_ISSUE,
+            cycle_time=_CYCLE,
+            nwp_source_by_station={sid_a: "icon_ch2_eps", sid_b: "icon_ch2_eps"},
+            forcing_source=FakeWeatherReanalysisSource(),
+            weather_forecast_store=FakeWeatherForecastStore(),
+            obs_store=FakeObservationStore(),
+            station_store=FakeStationStore(),
+            basin_store=FakeBasinStore(),
+            model_state_store=state_store,
+            clock=_clock,
+            forecast_horizon_steps=2,
+            time_step=_STEP,
+        )
+        assert assemble_result is not None
+        group_inputs, metadata_by_station = assemble_result
+
+        artifact_store = FakeModelArtifactStore()
+        _seed_group_artifact(artifact_store, group)
+        model = _BatchGroupModel(
+            {
+                sid_a: ({"discharge": _make_ensemble(sid_a, 10.0)}, b"new-state-a"),
+                sid_b: ({"discharge": _make_ensemble(sid_b, 20.0)}, b"new-state-b"),
+            }
+        )
+
+        results = _call_run_group_forecast(
+            group=group,
+            group_inputs=group_inputs,
+            metadata_by_station=metadata_by_station,
+            model=model,
+            artifact_store=artifact_store,
+        )
+
+        assert set(results) == {sid_a, sid_b}
+        forecast_a = results[sid_a].forecasts[0]
+        forecast_b = results[sid_b].forecasts[0]
+
+        assert forecast_a.warm_up_source == WarmUpSource.FRESH
+        assert forecast_a.warm_up_state_age_hours is not None
+        assert forecast_a.warm_up_state_age_hours < 24.0
+        assert not any(
+            flag.category == InputQualityCategory.WARM_UP
+            for flag in forecast_a.input_quality_flags
+        )
+
+        assert forecast_b.warm_up_source == WarmUpSource.COLD_START
+        assert forecast_b.warm_up_state_age_hours is None
+        assert any(
+            flag.category == InputQualityCategory.WARM_UP
+            and flag.level == InputQualityLevel.DEGRADED
+            for flag in forecast_b.input_quality_flags
+        )
 
 
 def test_discover_group_runs_only_group_scoped_models() -> None:

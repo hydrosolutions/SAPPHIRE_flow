@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import dataclasses
 import random
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 import polars as pl
@@ -17,7 +19,7 @@ from sapphire_flow.services.run_station_forecast import (
     run_all_station_forecasts,
     run_station_forecast,
 )
-from sapphire_flow.types.datetime import ensure_utc
+from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.domain import ForecastQcRuleParams, ForecastQcRuleSet, QcFlag
 from sapphire_flow.types.ensemble import ForecastEnsemble
 from sapphire_flow.types.enums import (
@@ -44,6 +46,9 @@ from sapphire_flow.types.model import (
 from sapphire_flow.types.station import ModelAssignment
 from tests.fakes.fake_models import FakeStationForecastModel
 from tests.fakes.fake_stores import FakeModelArtifactStore, FakeModelStateStore
+
+if TYPE_CHECKING:
+    from pytest import MonkeyPatch
 
 _NOW = ensure_utc(datetime(2025, 6, 1, 6, 0, tzinfo=UTC))
 _STEP = timedelta(hours=24)
@@ -73,8 +78,10 @@ def _make_metadata(
     )
 
 
-def _make_inputs() -> StationModelInputs:
-    rows = [{"timestamp": _NOW - timedelta(hours=i), "value": 10.0} for i in range(10)]
+def _make_inputs(issue_time: UtcDatetime = _NOW) -> StationModelInputs:
+    rows = [
+        {"timestamp": issue_time - timedelta(hours=i), "value": 10.0} for i in range(10)
+    ]
     obs_df = pl.DataFrame(rows).with_columns(
         pl.col("timestamp").cast(pl.Datetime("us", "UTC"))
     )
@@ -89,7 +96,7 @@ def _make_inputs() -> StationModelInputs:
             future_dynamic=empty_df,
             static=None,
         ),
-        issue_time=_NOW,
+        issue_time=issue_time,
         forecast_horizon_steps=5,
         time_step=_STEP,
     )
@@ -178,6 +185,25 @@ def _fixed_clock() -> object:
         return _NOW
 
     return clock
+
+
+def _ticking_clock(start: object, step: timedelta) -> tuple[object, list[object]]:
+    """A clock that returns a NEW value on every call and records every call
+    it made. A fixed clock (``_fixed_clock``) cannot distinguish "called once"
+    from "called twice, same instant" — this can, which is what a golden test
+    for D4 (byte-identical timestamps under ANY clock, exactly one runner
+    ``clock()`` call on an empty state store) needs.
+    """
+    current: list[object] = [start]
+    calls: list[object] = []
+
+    def clock() -> object:
+        value = current[0]
+        calls.append(value)
+        current[0] = value + step  # type: ignore[operator]
+        return value
+
+    return clock, calls
 
 
 def _sequential_id_gen() -> object:
@@ -1145,8 +1171,10 @@ class _StatefulSpyModel(FakeStationForecastModel):
         return super().predict(artifact, inputs, rng, prior_state=prior_state)
 
 
-def _ensemble_member_inputs(k_members: int = 3) -> StationModelInputs:
-    times = [_NOW + (i + 1) * _STEP for i in range(2)]
+def _ensemble_member_inputs(
+    k_members: int = 3, issue_time: UtcDatetime = _NOW
+) -> StationModelInputs:
+    times = [issue_time + (i + 1) * _STEP for i in range(2)]
     data: dict[str, list] = {"timestamp": times}
     for k in range(k_members):
         data[f"precipitation_{k}"] = [1.0, 1.0]
@@ -1154,7 +1182,7 @@ def _ensemble_member_inputs(k_members: int = 3) -> StationModelInputs:
         pl.col("timestamp").cast(pl.Datetime("us", "UTC"))
     )
     obs_rows = [
-        {"timestamp": _NOW - timedelta(hours=i), "value": 10.0} for i in range(10)
+        {"timestamp": issue_time - timedelta(hours=i), "value": 10.0} for i in range(10)
     ]
     obs_df = pl.DataFrame(obs_rows).with_columns(
         pl.col("timestamp").cast(pl.Datetime("us", "UTC"))
@@ -1170,7 +1198,7 @@ def _ensemble_member_inputs(k_members: int = 3) -> StationModelInputs:
             future_dynamic=future_dynamic,
             static=None,
         ),
-        issue_time=_NOW,
+        issue_time=issue_time,
         forecast_horizon_steps=2,
         time_step=_STEP,
     )
@@ -1673,3 +1701,236 @@ class TestGoldenWarmUpProvenance:
         assert fc_b.warm_up_source == WarmUpSource.FRESH
         assert fc_b.warm_up_state_age_hours is not None
         assert fc_b.warm_up_state_age_hours < 24.0
+
+
+class TestClockSensitiveGolden:
+    """Plan 148 D4 — a fixed clock (``_fixed_clock``, used everywhere else in
+    this file) returns the SAME instant no matter how many times it is
+    called, so it cannot detect an extra ``clock()`` call sneaking into the
+    runner, nor a ``created_at``/``updated_at`` that drifted off the ONE call
+    D4 promises. A ticking/spy clock can. Single-model, EMPTY state store
+    (today's only live-production shape) — golden result plus an exact call
+    count on the clock.
+    """
+
+    def test_single_model_empty_state_store_exactly_one_clock_call(self) -> None:
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, _MODEL_ID_A)
+        clock, calls = _ticking_clock(_NOW, timedelta(seconds=1))
+
+        result = run_station_forecast(
+            station_id=_STATION_ID,
+            inputs=_make_inputs(),
+            input_metadata=_make_metadata(),
+            assignments=[_make_assignment(_MODEL_ID_A)],
+            models={_MODEL_ID_A: FakeStationForecastModel()},  # type: ignore[dict-item]
+            artifact_store=store,
+            qc_checker=ForecastOutputQualityChecker(),
+            qc_rules=_empty_qc_rules(),
+            qc_overrides=[],
+            baselines=[],
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            config=_make_config(),
+            clock=clock,  # type: ignore[arg-type]
+            id_gen=_sequential_id_gen(),  # type: ignore[arg-type]
+            rng=random.Random(42),
+            model_state_store=FakeModelStateStore(),
+        )
+
+        assert result is not None
+        # D2/D4: an empty state store returns COLD_START WITHOUT consulting
+        # clock() at all — so the ONLY clock() call left is the runner's own
+        # ``now = clock()`` for created_at/updated_at (run_station_forecast.py).
+        assert len(calls) == 1
+        assert result.forecasts
+        for forecast in result.forecasts:
+            assert forecast.created_at == calls[0]
+            assert forecast.updated_at == calls[0]
+        assert result.forecasts[0].warm_up_source == WarmUpSource.COLD_START
+        assert result.forecasts[0].warm_up_state_age_hours is None
+
+
+class _EnsembleValueSpyModel:
+    """Stateless ensemble model that echoes the ``precipitation`` column
+    straight into the forecast value, so a test can prove WHICH
+    ``StationModelInputs`` object the fan-out actually sliced."""
+
+    artifact_scope = ArtifactScope.STATION
+    data_requirements = ModelDataRequirements(
+        target_parameters=frozenset({"discharge"}),
+        past_dynamic_features=frozenset(),
+        future_dynamic_features=frozenset({"precipitation"}),
+        static_features=frozenset(),
+        supported_time_steps=frozenset({_STEP}),
+        lookback_steps=1,
+        forecast_horizon_steps=2,
+        spatial_input_type=SpatialRepresentation.BASIN_AVERAGE,
+        ensemble_mode=EnsembleMode.ENSEMBLE,
+    )
+
+    def train(self, *args: object, **kwargs: object) -> bytes:
+        return b"artifact"
+
+    def predict(
+        self,
+        artifact: object,
+        inputs: StationModelInputs,
+        rng: random.Random,
+        prior_state: bytes | None = None,
+    ) -> tuple[dict[str, ForecastEnsemble], bytes | None]:
+        fd = inputs.data.future_dynamic
+        values = fd.select(
+            pl.col("timestamp").alias("valid_time"),
+            pl.lit(1).cast(pl.Int32).alias("member_id"),
+            pl.col("precipitation").cast(pl.Float64).alias("value"),
+        )
+        ensemble = ForecastEnsemble.from_members(
+            station_id=inputs.station_id,
+            issued_at=inputs.issue_time,
+            parameter="discharge",
+            units="m³/s",
+            time_step=inputs.time_step,
+            values=values,
+        )
+        return {"discharge": ensemble}, None
+
+    def serialize_artifact(self, artifact: object) -> bytes:
+        return b"artifact"
+
+    def deserialize_artifact(self, raw: bytes) -> object:
+        return raw
+
+
+class TestContextInputsIsTheSingleInputAuthority:
+    """Review fix (Plan 148 diff review, major finding) — ``predict``,
+    ensemble fan-out, and ``issued_at`` must read ``ModelRunContext.inputs``,
+    never the raw ``inputs`` argument. Phase 1 keeps ``context.inputs is
+    inputs`` for every real caller (per-assignment inputs is a later phase),
+    so an end-to-end run with matching objects can't distinguish the two
+    authorities. These tests inject a DISTINGUISHABLE ``context.inputs`` (a
+    spy wrapping ``ModelRunContext`` construction) that differs from the raw
+    param, and assert every consumer follows ``context.inputs`` — closing the
+    "two competing input authorities" finding structurally, not just by
+    inspection.
+    """
+
+    def test_non_ensemble_predict_and_issued_at_use_context_inputs(
+        self, monkeypatch: MonkeyPatch
+    ) -> None:
+        import sapphire_flow.services.run_station_forecast as rsf_module
+
+        raw_inputs = _make_inputs(issue_time=_NOW)
+        context_inputs = _make_inputs(issue_time=_NOW + timedelta(hours=7))
+        assert context_inputs.issue_time != raw_inputs.issue_time
+
+        real_context_cls = rsf_module.ModelRunContext
+
+        def spy_context(**kwargs: object) -> object:
+            kwargs["inputs"] = context_inputs
+            return real_context_cls(**kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(rsf_module, "ModelRunContext", spy_context)
+
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, _MODEL_ID_A)
+
+        class _InputSpyModel(FakeStationForecastModel):
+            def __init__(self) -> None:
+                self.seen_inputs: StationModelInputs | None = None
+
+            def predict(
+                self,
+                artifact: object,
+                inputs: StationModelInputs,
+                rng: random.Random,
+                prior_state: bytes | None = None,
+            ) -> tuple[dict[str, ForecastEnsemble], bytes | None]:
+                self.seen_inputs = inputs
+                return super().predict(artifact, inputs, rng, prior_state=prior_state)
+
+        spy_model = _InputSpyModel()
+
+        result = run_station_forecast(
+            station_id=_STATION_ID,
+            inputs=raw_inputs,
+            input_metadata=_make_metadata(),
+            assignments=[_make_assignment(_MODEL_ID_A)],
+            models={_MODEL_ID_A: spy_model},  # type: ignore[dict-item]
+            artifact_store=store,
+            qc_checker=ForecastOutputQualityChecker(),
+            qc_rules=_empty_qc_rules(),
+            qc_overrides=[],
+            baselines=[],
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            config=_make_config(),
+            clock=_fixed_clock(),  # type: ignore[arg-type]
+            id_gen=_sequential_id_gen(),  # type: ignore[arg-type]
+            rng=random.Random(42),
+            model_state_store=FakeModelStateStore(),
+        )
+
+        assert result is not None
+        # predict() must receive context.inputs, NOT the raw `inputs` param.
+        assert spy_model.seen_inputs is context_inputs
+        # issued_at must be stamped from context.inputs, NOT the raw param.
+        assert result.forecasts[0].issued_at == context_inputs.issue_time
+        assert result.forecasts[0].issued_at != raw_inputs.issue_time
+
+    def test_ensemble_fan_out_uses_context_inputs(
+        self, monkeypatch: MonkeyPatch
+    ) -> None:
+        import sapphire_flow.services.run_station_forecast as rsf_module
+
+        raw_inputs = _ensemble_member_inputs(k_members=2)
+        distinguishable_future_dynamic = raw_inputs.data.future_dynamic.with_columns(
+            pl.lit(77.0).alias("precipitation_0"),
+            pl.lit(77.0).alias("precipitation_1"),
+        )
+        context_inputs = dataclasses.replace(
+            raw_inputs,
+            data=dataclasses.replace(
+                raw_inputs.data, future_dynamic=distinguishable_future_dynamic
+            ),
+        )
+
+        real_context_cls = rsf_module.ModelRunContext
+
+        def spy_context(**kwargs: object) -> object:
+            kwargs["inputs"] = context_inputs
+            return real_context_cls(**kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(rsf_module, "ModelRunContext", spy_context)
+
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, _MODEL_ID_A)
+
+        result = run_station_forecast(
+            station_id=_STATION_ID,
+            inputs=raw_inputs,
+            input_metadata=_make_metadata(),
+            assignments=[_make_assignment(_MODEL_ID_A)],
+            models={_MODEL_ID_A: _EnsembleValueSpyModel()},  # type: ignore[dict-item]
+            artifact_store=store,
+            qc_checker=ForecastOutputQualityChecker(),
+            qc_rules=_empty_qc_rules(),
+            qc_overrides=[],
+            baselines=[],
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            config=_make_config(),
+            clock=_fixed_clock(),  # type: ignore[arg-type]
+            id_gen=_sequential_id_gen(),  # type: ignore[arg-type]
+            rng=random.Random(42),
+            model_state_store=FakeModelStateStore(),
+        )
+
+        assert result is not None
+        # `_EnsembleValueSpyModel.predict` echoes the future_dynamic
+        # "precipitation" column verbatim as the ensemble value: if the
+        # fan-out consumed the RAW `inputs` param (value 1.0), every member
+        # value would be 1.0; consuming `context.inputs` yields 77.0.
+        values = result.forecasts[0].ensemble.values["value"].to_list()
+        assert values
+        assert all(v == 77.0 for v in values)

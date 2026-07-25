@@ -235,7 +235,7 @@ def _run_single_model(
             )
             ensembles = fan_out_ensemble(
                 predict_fn,
-                inputs,
+                context.inputs,
                 rng,
                 future_features=model.data_requirements.future_dynamic_features,  # type: ignore[union-attr]
             )
@@ -244,7 +244,7 @@ def _run_single_model(
         else:
             ensembles, new_state = model.predict(  # type: ignore[union-attr]
                 artifact,
-                inputs,
+                context.inputs,
                 rng,
                 prior_state=context.prior_state,
             )
@@ -332,7 +332,7 @@ def _run_single_model(
             station_id=station_id,
             model_id=assignment.model_id,
             model_artifact_id=artifact_id,
-            issued_at=inputs.issue_time,
+            issued_at=context.inputs.issue_time,
             nwp_cycle_reference_time=nwp_cycle_reference_time,
             nwp_cycle_source=nwp_cycle_source,
             representation=ensemble.representation,
