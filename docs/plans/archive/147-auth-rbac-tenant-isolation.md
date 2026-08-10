@@ -1,6 +1,7 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-07-23
+completed: 2026-08-10
 plan: 147
 title: Auth / RBAC / audit + tenant write-isolation foundation (v1.0 headless)
 scope: The v1.0-headless authentication + authorization foundation for the multi-tenant Nepal deployment. Its FOUNDATION is a first-class tenant model (a `tenants` table + `TenantId` + `stations.tenant_id`/`station_groups.tenant_id NOT NULL` + per-tenant group-name uniqueness + a station↔group composite-FK invariant), on top of which sit access-token (API-key) auth with per-key station scope filtering, enforcement across ALL HTTP endpoints (closing the current unauthenticated /tables/ + .json data-exposure holes, with only the shallow public liveness probe exempt), a least-privilege DB role model (drop superuser, preserve the documented sapphire_api/sapphire_worker split), an actor-stamped append-only audit log conforming EXACTLY to the authoritative `audit_log` contract, and tenant write-isolation on the flow/CLI write paths (onboarding/training/promotion/assignment) whose write authority derives from CONFIG-declared deployment identity + a validated run principal — never from the target row and never from a read-only access-token. Reuses the spec'd `access_tokens` table + `AccessToken`/`AccessTokenId` types (NOT a new `api_keys` name) and wires the dead `AuditActorType`/`AuditEventType`. Folds in the deferred Plan 042. Human OAuth2 sessions + TOTP MFA + dashboard user-management + alert-acknowledge (state-change) defer to v1.x with Flow 3/the dashboard.

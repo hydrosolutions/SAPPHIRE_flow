@@ -150,6 +150,12 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
   calls the `import_loaded_basin_package` core programmatically. Remaining gate is OPERATIONAL only (run
   the importer against a real accepted package before 082's resolver returns non-`None` in production —
   the "Production-gate note"). See [archive/120-basin-static-importer.md](archive/120-basin-static-importer.md).
+- **147** — Auth / RBAC / audit + tenant write-isolation foundation (v1.0 headless) — **COMPLETE, ARCHIVED
+  (all 5 slices merged: #130 tenant model / #131 audit-log substrate / #132 access-token auth+enforcement /
+  #134 least-privilege DB roles / #140 tenant write-isolation, 2026-08-10).** Config-declared `WritePrincipal`
+  (never target-derived, never a read-token) enforced pre-write on every flow/CLI write path, with success-path
+  mutation+audit atomicity; hardened through 3 independent Codex rounds. Unblocks Flow-0 Nepal onboarding. See
+  [archive/147-auth-rbac-tenant-isolation.md](archive/147-auth-rbac-tenant-isolation.md).
 - **035** — Rating-curve provenance for skill integrity — `READY` — v1 DHM hQ.
 - **017** — Manual vs automatic station support — `DRAFT` — v1, DHM mixed networks.
 - **015** — Calculated station support (component-derived) — **MERGED (#109 storage+trigger,
@@ -235,4 +241,4 @@ These are named in `architecture-context.md` / `v0-scope.md` but have no dedicat
 
 ## Archived
 
-See [archive/](archive/) for completed and archived plans (73 entries).
+See [archive/](archive/) for completed and archived plans (74 entries).
