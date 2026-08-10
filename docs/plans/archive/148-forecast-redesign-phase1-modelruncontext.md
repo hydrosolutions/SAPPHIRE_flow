@@ -1,6 +1,7 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-07-23
+completed: 2026-08-10
 plan: 148
 title: Forecast-cycle redesign Phase 1 — ModelRunContext + per-assignment prior_state
 scope: The first, behaviour-preserving slice of the forecast-cycle redesign (docs/design/forecast-cycle-redesign.md). Introduce an assignment-keyed `ModelRunContext` and move warm-up state loading in the station-cycle path so each model assignment READS state per `(station_id, model_id)` — fixing the latent shared-state read bug and establishing the per-assignment run unit the rest of the redesign consumes. The station-cycle runner loads warm-up state UNIFORMLY per assignment inside `_run_single_model`, AFTER the model/coverage/artifact eligibility gates, so a state-read failure for an ineligible or non-selected assignment stays assignment-local and never aborts a station whose primary already succeeded. The shared `assemble_station_operational_inputs` keeps loading warm-up state for its representative `model_id` exactly as today (the GROUP path depends on the `warm_up_source`/age it stamps on `OperationalInputMetadata`) and its return type is UNCHANGED (`tuple[StationModelInputs, OperationalInputMetadata]`) — so the GROUP path is byte-for-byte untouched. READ-side only: write-side per-assignment state persistence is explicitly deferred (see Non-goals). No per-assignment input assembly, no track resolution, no GROUP-path behaviour change, and no change to what a successful ensemble forecast produces; the one deliberate ensemble-adjacent change is that the stateful-ensemble reject-guards (`ModelOutputError` only, at their existing two call sites) become assignment-local instead of aborting the whole station — see the State-load failure semantics section. Forecast cycle.
@@ -12,14 +13,14 @@ supersedes: []
 # Plan 148 — Forecast-cycle redesign Phase 1: `ModelRunContext` + per-assignment `prior_state`
 
 ## Status
-**DRAFT — Phase 1 of the forecast-cycle redesign** (`docs/design/forecast-cycle-redesign.md`, hardened through 3
+**COMPLETE — Phase 1 of the forecast-cycle redesign** (`docs/design/forecast-cycle-redesign.md`, hardened through 3
 independent Codex reviews). This is the deliberately small, **behaviour-preserving-except-one-bugfix** first
 slice: it introduces the per-assignment run unit (`ModelRunContext`) and moves the warm-up state **read** to be
 per-assignment (inside `_run_single_model`, after the eligibility gates). READ-side only — the write side stays
 primary-only and is a named deferred follow-on (Non-goals). **READY (owner-authorized, 2026-07-24) → /implement
 (hold-at-PR).** Converged via `/plan` + direct-fold: placement conformed to the locked parent design (service-local
 in `services/`); ensemble reject-guards precisely scoped as assignment-local (design-sanctioned); clock/timestamp
-design byte-identical for every current configuration (independent Codex CLEAN).
+design byte-identical for every current configuration (independent Codex CLEAN). **Merged to `main` — PR #139.**
 
 ## Problem — one warm-up state is shared across all of a station's models
 `assemble_station_operational_inputs` loads warm-up state **once**, for a single representative `model_id`

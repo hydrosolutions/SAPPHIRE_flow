@@ -3,6 +3,7 @@ from __future__ import annotations
 import random  # noqa: TC003
 from collections.abc import Callable  # noqa: TC003
 from dataclasses import dataclass
+from enum import Enum, auto
 from typing import TYPE_CHECKING, cast
 from uuid import UUID  # noqa: TC003
 
@@ -67,13 +68,44 @@ class StationForecastResult:
     ensembles: dict[str, ForecastEnsemble]
 
 
+class AssignmentFailureCause(Enum):
+    """Why THIS assignment failed — assignment-level (Plan 150 D1), so Phase
+    3's MISSING_CONTEXT/TRACK_UNAVAILABLE can be added as new members with no
+    rework of AssignmentFailure/AssignmentOutcome/failed_models's type."""
+
+    # --- the seven concrete anticipated causes that exist today ---
+    MODEL_NOT_FOUND = auto()
+    INSUFFICIENT_COVERAGE = auto()
+    NO_ARTIFACT = auto()
+    WARM_UP_LOAD_FAILED = auto()
+    UNSUPPORTED_STATEFUL_ENSEMBLE = auto()  # shared by two return sites (D2)
+    PREDICT_FAILED = auto()  # conflates FI ModelFailure + unexpected-in-predict
+    QC_FAILED = auto()
+    # --- added by the loop-level backstop (D3) only ---
+    UNEXPECTED_EXCEPTION = auto()  # never returned by _run_single_model itself
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class AssignmentSuccess:
+    result: StationForecastResult
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class AssignmentFailure:
+    cause: AssignmentFailureCause
+    detail: str
+
+
+AssignmentOutcome = AssignmentSuccess | AssignmentFailure
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class MultiModelForecastResult:
     station_id: StationId
     results: dict[ModelId, StationForecastResult]
     priorities: dict[ModelId, int]
     primary_model_id: ModelId | None
-    failed_models: dict[ModelId, str]
+    failed_models: dict[ModelId, AssignmentFailure]
 
     @property
     def combinable_results(self) -> dict[ModelId, StationForecastResult]:
@@ -115,7 +147,7 @@ def _run_single_model(
     clock: Callable[[], UtcDatetime],
     id_gen: Callable[[], UUID],
     rng: random.Random,
-) -> StationForecastResult | str:
+) -> AssignmentOutcome:
     model = models.get(assignment.model_id)
     if model is None:
         log.warning(
@@ -123,7 +155,10 @@ def _run_single_model(
             station_id=str(station_id),
             model_id=str(assignment.model_id),
         )
-        return f"model {assignment.model_id} not found in registry"
+        return AssignmentFailure(
+            cause=AssignmentFailureCause.MODEL_NOT_FOUND,
+            detail=f"model {assignment.model_id} not found in registry",
+        )
 
     # Plan 090 D1/D2d/D3: post-download coverage safety net. A model that
     # declares future NWP forcing must receive >= its own forecast_horizon_steps
@@ -152,7 +187,10 @@ def _run_single_model(
                 available_steps=coverage.available_steps,
                 detail=coverage.detail,
             )
-            return f"insufficient NWP coverage: {coverage.detail}"
+            return AssignmentFailure(
+                cause=AssignmentFailureCause.INSUFFICIENT_COVERAGE,
+                detail=f"insufficient NWP coverage: {coverage.detail}",
+            )
 
     artifact_result = artifact_store.fetch_active_artifact_for_station(
         station_id, assignment.model_id
@@ -163,7 +201,10 @@ def _run_single_model(
             station_id=str(station_id),
             model_id=str(assignment.model_id),
         )
-        return f"no active artifact for model {assignment.model_id}"
+        return AssignmentFailure(
+            cause=AssignmentFailureCause.NO_ARTIFACT,
+            detail=f"no active artifact for model {assignment.model_id}",
+        )
 
     artifact_id, artifact_bytes = artifact_result
 
@@ -182,7 +223,10 @@ def _run_single_model(
             model_id=str(assignment.model_id),
             error=str(exc),
         )
-        return f"warm-up state load failed: {exc}"
+        return AssignmentFailure(
+            cause=AssignmentFailureCause.WARM_UP_LOAD_FAILED,
+            detail=f"warm-up state load failed: {exc}",
+        )
 
     context = ModelRunContext(
         station_id=station_id,
@@ -218,7 +262,10 @@ def _run_single_model(
                 model_id=str(assignment.model_id),
                 error=str(exc),
             )
-            return f"unsupported stateful ensemble: {exc}"
+            return AssignmentFailure(
+                cause=AssignmentFailureCause.UNSUPPORTED_STATEFUL_ENSEMBLE,
+                detail=f"unsupported stateful ensemble: {exc}",
+            )
 
     ensemble_member_states: list[bytes | None] | None = None
     try:
@@ -255,7 +302,10 @@ def _run_single_model(
             model_id=str(assignment.model_id),
             error=str(exc),
         )
-        return f"predict failed: {exc}"
+        return AssignmentFailure(
+            cause=AssignmentFailureCause.PREDICT_FAILED,
+            detail=f"predict failed: {exc}",
+        )
 
     # Combining N per-member warm-up states into one aggregate is ill-defined.
     # Stateless ensemble models (all per-member states ``None``) lose nothing —
@@ -272,7 +322,10 @@ def _run_single_model(
                 model_id=str(assignment.model_id),
                 error=str(exc),
             )
-            return f"unsupported stateful ensemble: {exc}"
+            return AssignmentFailure(
+                cause=AssignmentFailureCause.UNSUPPORTED_STATEFUL_ENSEMBLE,
+                detail=f"unsupported stateful ensemble: {exc}",
+            )
 
     ensembles = cast("dict[str, ForecastEnsemble]", ensembles)
     new_state = cast("bytes | None", new_state)
@@ -307,7 +360,10 @@ def _run_single_model(
                 model_id=str(assignment.model_id),
                 parameter=param,
             )
-            return f"QC failed for parameter {param}"
+            return AssignmentFailure(
+                cause=AssignmentFailureCause.QC_FAILED,
+                detail=f"QC failed for parameter {param}",
+            )
 
     iq_config = config.input_quality
     input_quality, input_quality_flags = assess_input_quality(
@@ -351,13 +407,15 @@ def _run_single_model(
         )
         forecasts.append(forecast)
 
-    return StationForecastResult(
-        station_id=station_id,
-        model_id=assignment.model_id,
-        artifact_id=artifact_id,
-        forecasts=forecasts,
-        new_state=new_state,
-        ensembles=dict(ensembles),
+    return AssignmentSuccess(
+        result=StationForecastResult(
+            station_id=station_id,
+            model_id=assignment.model_id,
+            artifact_id=artifact_id,
+            forecasts=forecasts,
+            new_state=new_state,
+            ensembles=dict(ensembles),
+        )
     )
 
 
@@ -390,38 +448,51 @@ def run_all_station_forecasts(
 
     results: dict[ModelId, StationForecastResult] = {}
     priorities: dict[ModelId, int] = {}
-    failed_models: dict[ModelId, str] = {}
+    failed_models: dict[ModelId, AssignmentFailure] = {}
     primary_model_id: ModelId | None = None
 
     for assignment in sorted_assignments:
         priorities[assignment.model_id] = assignment.priority
-        outcome = _run_single_model(
-            station_id=station_id,
-            assignment=assignment,
-            inputs=inputs,
-            observation_staleness_hours=observation_staleness_hours,
-            nwp_age_hours=nwp_age_hours,
-            model_state_store=model_state_store,
-            models=models,
-            artifact_store=artifact_store,
-            qc_checker=qc_checker,
-            qc_rules=qc_rules,
-            qc_overrides=qc_overrides,
-            baselines=baselines,
-            water_level_datum_masl=water_level_datum_masl,
-            nwp_cycle_reference_time=nwp_cycle_reference_time,
-            nwp_cycle_source=nwp_cycle_source,
-            config=config,
-            clock=clock,
-            id_gen=id_gen,
-            rng=rng,
-        )
-        if isinstance(outcome, StationForecastResult):
-            results[assignment.model_id] = outcome
-            if primary_model_id is None:
-                primary_model_id = assignment.model_id
-        else:
-            failed_models[assignment.model_id] = outcome
+        try:
+            outcome = _run_single_model(
+                station_id=station_id,
+                assignment=assignment,
+                inputs=inputs,
+                observation_staleness_hours=observation_staleness_hours,
+                nwp_age_hours=nwp_age_hours,
+                model_state_store=model_state_store,
+                models=models,
+                artifact_store=artifact_store,
+                qc_checker=qc_checker,
+                qc_rules=qc_rules,
+                qc_overrides=qc_overrides,
+                baselines=baselines,
+                water_level_datum_masl=water_level_datum_masl,
+                nwp_cycle_reference_time=nwp_cycle_reference_time,
+                nwp_cycle_source=nwp_cycle_source,
+                config=config,
+                clock=clock,
+                id_gen=id_gen,
+                rng=rng,
+            )
+        except Exception as exc:  # backstop for UNANTICIPATED bugs only (D3/D6)
+            log.error(
+                "run_station_forecast.unexpected_exception",
+                station_id=str(station_id),
+                model_id=str(assignment.model_id),
+                error=str(exc),
+            )
+            outcome = AssignmentFailure(
+                cause=AssignmentFailureCause.UNEXPECTED_EXCEPTION,
+                detail=f"unexpected error: {exc}",
+            )
+        match outcome:
+            case AssignmentSuccess(result=result):
+                results[assignment.model_id] = result
+                if primary_model_id is None:
+                    primary_model_id = assignment.model_id
+            case AssignmentFailure() as failure:
+                failed_models[assignment.model_id] = failure
 
     return MultiModelForecastResult(
         station_id=station_id,

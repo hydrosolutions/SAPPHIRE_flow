@@ -66,6 +66,7 @@ from sapphire_flow.types.forecast import OperationalForecast
 from sapphire_flow.types.ids import (
     CLIMATOLOGY_FALLBACK_MODEL_ID,
     NWP_REGRESSION_MODEL_ID,
+    ArtifactId,
     BasinId,
     ForecastId,
     ModelId,
@@ -500,6 +501,31 @@ class _SmallFakeModel(FakeStationForecastModel):
         forecast_horizon_steps=5,
         spatial_input_type=SpatialRepresentation.POINT,
     )
+
+
+class _RaisingForModelArtifactStore:
+    """Wraps a ``FakeModelArtifactStore``, raising an unanticipated exception
+    from ``fetch_active_artifact_for_station`` for one ``model_id`` — a call
+    OUTSIDE ``_run_single_model``'s guarded regions. Used by the Plan 150 T2
+    flow-level backstop regression to prove an unexpected exception in a
+    lower-priority assignment no longer darkens the whole station (D3/D6).
+    """
+
+    def __init__(self, inner: FakeModelArtifactStore, raise_for: ModelId) -> None:
+        self._inner = inner
+        self._raise_for = raise_for
+        self.raised_for_target = False
+
+    def fetch_active_artifact_for_station(
+        self, station_id: StationId, model_id: ModelId
+    ) -> tuple[ArtifactId, bytes] | None:
+        if model_id == self._raise_for:
+            self.raised_for_target = True
+            raise RuntimeError("unexpected artifact-store failure")
+        return self._inner.fetch_active_artifact_for_station(station_id, model_id)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
 
 
 class _NativeFakeModel(FakeStationForecastModel):
@@ -4346,6 +4372,101 @@ enabled = false
         }
         assert model_id_a in individual_model_ids
         assert model_id_b in individual_model_ids
+
+    def test_backstop_unexpected_exception_in_lower_priority_does_not_darken_station(
+        self,
+    ) -> None:
+        """Plan 150 T2 (MAJOR-2, flow-level regression): a station whose
+        higher-priority assignment SUCCEEDS and whose lower-priority
+        assignment raises an UNANTICIPATED exception (outside
+        ``_run_single_model``'s guarded regions) must still persist the
+        higher-priority success and must NOT take the station-failure path.
+        Against pre-D3 code the exception escapes ``run_all_station_forecasts``
+        into the outer ``except Exception`` at ``run_forecast_cycle.py:2285``,
+        which darkens the WHOLE station (``stations_failed += 1``) and
+        discards the already-recorded success — this test fails then.
+        """
+        sid = StationId(uuid4())
+        model_id_a = ModelId("fake_model_a")
+        model_id_b = ModelId("fake_model_b")
+
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+        nwp_store = FakeWeatherForecastStore()
+        inner_artifact_store = FakeModelArtifactStore()
+        forecast_store = FakeForecastStore()
+        state_store = FakeModelStateStore()
+        alert_store = FakeAlertStore()
+        baseline_store = FakeClimBaselineStore()
+        basin_store = FakeBasinStore()
+        forcing_store = FakeHistoricalForcingStore()
+
+        _build_station_and_stores(
+            sid,
+            model_id_a,
+            station_store,
+            obs_store,
+            nwp_store,
+            inner_artifact_store,
+            forcing_store,
+        )
+
+        station_store.store_model_assignment(
+            ModelAssignment(
+                station_id=sid,
+                model_id=model_id_b,
+                time_step=timedelta(hours=1),
+                status=ModelAssignmentStatus.ACTIVE,
+                priority=2,
+                created_at=_NOW,
+            )
+        )
+        inner_artifact_store.store_artifact(
+            model_id=model_id_b,
+            artifact_bytes=b"fake_artifact_b",
+            training_period_start=ensure_utc(datetime(2020, 1, 1, tzinfo=UTC)),
+            training_period_end=ensure_utc(datetime(2025, 12, 31, tzinfo=UTC)),
+            trained_at=_NOW,
+            station_id=sid,
+            status=ModelArtifactStatus.ACTIVE,
+        )
+        artifact_store = _RaisingForModelArtifactStore(
+            inner_artifact_store, raise_for=model_id_b
+        )
+
+        result = run_forecast_cycle_flow(
+            station_store=station_store,
+            obs_store=obs_store,
+            weather_forecast_store=nwp_store,
+            forecast_store=forecast_store,
+            model_state_store=state_store,
+            artifact_store=artifact_store,  # type: ignore[arg-type]
+            alert_store=alert_store,
+            baseline_store=baseline_store,
+            basin_store=basin_store,
+            forcing_store=forcing_store,
+            adapter=FakeWeatherForecastSource(result={}),
+            models={model_id_a: _SmallFakeModel(), model_id_b: _SmallFakeModel()},  # type: ignore[dict-item]
+            config=_make_config(
+                forecast_combination_strategy=ModelCombinationStrategy.POOLED
+            ),
+            qc_rules=_empty_qc_rules(),
+            clock=_clock,
+            rng=random.Random(42),
+        )
+
+        assert result.stations_succeeded == 1
+        assert result.stations_failed == 0
+        assert not any("produced zero forecasts" in err for err in result.errors)
+
+        stored = list(forecast_store._forecasts.values())
+        primary_forecasts = [f for f in stored if f.model_id == model_id_a]
+        assert len(primary_forecasts) > 0
+
+        # Proves assignment B was actually reached and its unanticipated
+        # exception fired — closes the false-pass path where the flow could
+        # stop after A's success without ever invoking B.
+        assert artifact_store.raised_for_target is True
 
     def test_station_skipped_when_model_not_loaded(self) -> None:
         sid = StationId(uuid4())

@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 import polars as pl
 from structlog.testing import capture_logs
 
+import sapphire_flow.services.run_station_forecast as rsf_module
 from sapphire_flow.config.deployment import DeploymentConfig
 from sapphire_flow.exceptions import ModelOutputError
 from sapphire_flow.services.forecast_qc import ForecastOutputQualityChecker
@@ -528,6 +529,56 @@ class TestQcFailureFallback:
         fc = result.forecasts[0]
         assert fc.qc_status == QcStatus.QC_PASSED
 
+    def test_qc_failed_returns_typed_failure_via_run_all(self) -> None:
+        """Red-first (T1 item 4): the same QC-fallback scenario as above,
+        called via ``run_all_station_forecasts`` directly, asserting on the
+        FAILED assignment's recorded ``.cause`` (not just that the fallback
+        succeeded).
+        """
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, _MODEL_ID_A)
+        _seed_artifact(store, _MODEL_ID_B)
+
+        call_count = [0]
+
+        class _FirstFailThenPassChecker:
+            def check(
+                self,
+                ensemble: ForecastEnsemble,
+                rule_set: ForecastQcRuleSet,
+                overrides: list,
+                baselines: list,
+            ) -> list[QcFlag]:
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    return [
+                        QcFlag(
+                            rule_id="test_rule",
+                            rule_version="1.0",
+                            status=QcStatus.QC_FAILED,
+                            detail="first model fails QC",
+                        )
+                    ]
+                return []
+
+        result = _run_all(
+            assignments=[
+                _make_assignment(_MODEL_ID_A, priority=1),
+                _make_assignment(_MODEL_ID_B, priority=2),
+            ],
+            models={
+                _MODEL_ID_A: FakeStationForecastModel(),
+                _MODEL_ID_B: FakeStationForecastModel(),
+            },
+            store=store,
+            qc_checker=_FirstFailThenPassChecker(),
+        )
+
+        assert result.primary_model_id == _MODEL_ID_B
+        failure = result.failed_models[_MODEL_ID_A]
+        assert isinstance(failure, rsf_module.AssignmentFailure)
+        assert failure.cause is rsf_module.AssignmentFailureCause.QC_FAILED
+
 
 class TestAllModelsFail:
     def test_returns_none_when_all_models_fail(self) -> None:
@@ -734,6 +785,10 @@ class TestRunAllStationForecasts:
         )
 
         assert _MODEL_ID_A in result.failed_models
+        assert (
+            result.failed_models[_MODEL_ID_A].cause
+            is rsf_module.AssignmentFailureCause.PREDICT_FAILED
+        )
         assert _MODEL_ID_B in result.results
         assert result.primary_model_id == _MODEL_ID_B
 
@@ -771,6 +826,14 @@ class TestRunAllStationForecasts:
         assert result.primary_model_id is None
         assert _MODEL_ID_A in result.failed_models
         assert _MODEL_ID_B in result.failed_models
+        assert (
+            result.failed_models[_MODEL_ID_A].cause
+            is rsf_module.AssignmentFailureCause.PREDICT_FAILED
+        )
+        assert (
+            result.failed_models[_MODEL_ID_B].cause
+            is rsf_module.AssignmentFailureCause.PREDICT_FAILED
+        )
 
     def test_combinable_results_uses_fallback_membership_not_priority(self) -> None:
         store = FakeModelArtifactStore()
@@ -800,6 +863,133 @@ class TestRunAllStationForecasts:
         assert _MODEL_ID_B in combinable
         assert _MODEL_ID_C in combinable
         assert CLIMATOLOGY_FALLBACK_MODEL_ID not in combinable
+
+
+class _RaisingForModelArtifactStore:
+    """A ``ModelArtifactStore`` fake whose ``fetch_active_artifact_for_station``
+    raises for one specific ``model_id`` — a call OUTSIDE
+    ``_run_single_model``'s two guarded regions (the warm-up ``try`` and the
+    deserialize/predict ``try``), used to prove the loop-level backstop (D3)
+    is load-bearing: an unanticipated exception here must not escape
+    ``run_all_station_forecasts`` and discard an already-succeeded
+    higher-priority primary.
+    """
+
+    def __init__(self, inner: FakeModelArtifactStore, raise_for: ModelId) -> None:
+        self._inner = inner
+        self._raise_for = raise_for
+
+    def fetch_active_artifact_for_station(
+        self, station_id: StationId, model_id: ModelId
+    ) -> tuple[ArtifactId, bytes] | None:
+        if model_id == self._raise_for:
+            raise RuntimeError("unexpected artifact-store failure")
+        return self._inner.fetch_active_artifact_for_station(station_id, model_id)
+
+
+class TestAssignmentOutcomeShape:
+    """Plan 150 T1 — red-first proof that ``_run_single_model`` /
+    ``run_all_station_forecasts`` return a discriminated ``AssignmentOutcome``
+    (``AssignmentSuccess | AssignmentFailure``) instead of
+    ``StationForecastResult | str``, and that the loop-level backstop (D3)
+    closes the fallback-invariant gap (Problem #3 / D6).
+    """
+
+    def test_no_active_artifact_returns_typed_failure(self) -> None:
+        store = FakeModelArtifactStore()  # no artifacts seeded
+
+        result = _run_all(
+            assignments=[_make_assignment(_MODEL_ID_A)],
+            models={_MODEL_ID_A: FakeStationForecastModel()},
+            store=store,
+        )
+
+        failure = result.failed_models[_MODEL_ID_A]
+        assert isinstance(failure, rsf_module.AssignmentFailure)
+        assert failure.cause is rsf_module.AssignmentFailureCause.NO_ARTIFACT
+
+    def test_successful_assignment_wraps_in_assignment_success(self) -> None:
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, _MODEL_ID_A)
+
+        outcome = rsf_module._run_single_model(
+            station_id=_STATION_ID,
+            assignment=_make_assignment(_MODEL_ID_A),
+            inputs=_make_inputs(),
+            observation_staleness_hours=1.0,
+            nwp_age_hours=0.5,
+            model_state_store=FakeModelStateStore(),
+            models={_MODEL_ID_A: FakeStationForecastModel()},  # type: ignore[dict-item]
+            artifact_store=store,
+            qc_checker=ForecastOutputQualityChecker(),
+            qc_rules=_empty_qc_rules(),
+            qc_overrides=[],
+            baselines=[],
+            water_level_datum_masl=None,
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            config=_make_config(),
+            clock=_fixed_clock(),  # type: ignore[arg-type]
+            id_gen=_sequential_id_gen(),  # type: ignore[arg-type]
+            rng=random.Random(42),
+        )
+
+        assert isinstance(outcome, rsf_module.AssignmentSuccess)
+        assert isinstance(outcome.result, StationForecastResult)
+        assert outcome.result.model_id == _MODEL_ID_A
+
+    def test_model_not_found_returns_typed_failure(self) -> None:
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, _MODEL_ID_A)
+
+        result = _run_all(
+            assignments=[_make_assignment(_MODEL_ID_A)],
+            models={},  # registry empty
+            store=store,
+        )
+
+        failure = result.failed_models[_MODEL_ID_A]
+        assert isinstance(failure, rsf_module.AssignmentFailure)
+        assert failure.cause is rsf_module.AssignmentFailureCause.MODEL_NOT_FOUND
+
+    def test_unexpected_exception_in_lower_priority_assignment_is_backstopped(
+        self,
+    ) -> None:
+        """D3/D6 (blocker-requested, RUNNER level): an unanticipated exception
+        raised OUTSIDE ``_run_single_model``'s guarded regions, in a
+        lower-priority assignment, must not discard an already-succeeded
+        higher-priority primary. Against pre-D3 code this exception escapes
+        ``run_all_station_forecasts`` entirely (this test fails, not just its
+        assertions) — after D3 it is caught and recorded assignment-locally.
+        """
+        inner_store = FakeModelArtifactStore()
+        _seed_artifact(inner_store, _MODEL_ID_A)
+        _seed_artifact(inner_store, _MODEL_ID_B)
+        store = _RaisingForModelArtifactStore(inner_store, raise_for=_MODEL_ID_B)
+
+        with capture_logs() as logs:
+            result = _run_all(
+                assignments=[
+                    _make_assignment(_MODEL_ID_A, priority=1),
+                    _make_assignment(_MODEL_ID_B, priority=2),
+                ],
+                models={
+                    _MODEL_ID_A: FakeStationForecastModel(),
+                    _MODEL_ID_B: FakeStationForecastModel(),
+                },
+                store=store,  # type: ignore[arg-type]
+            )
+
+        assert result.primary_model_id == _MODEL_ID_A
+        assert _MODEL_ID_A in result.results
+        failure = result.failed_models[_MODEL_ID_B]
+        assert isinstance(failure, rsf_module.AssignmentFailure)
+        assert failure.cause is rsf_module.AssignmentFailureCause.UNEXPECTED_EXCEPTION
+        assert any(
+            e.get("event") == "run_station_forecast.unexpected_exception"
+            and e.get("log_level") == "error"
+            for e in logs
+        )
 
 
 class _ShortHorizonNwpModel:
@@ -947,7 +1137,9 @@ class TestNwpCoverageGuard:
 
         assert self._NWP_ID not in result.results
         assert self._NWP_ID in result.failed_models
-        assert "insufficient NWP coverage" in result.failed_models[self._NWP_ID]
+        failure = result.failed_models[self._NWP_ID]
+        assert failure.cause is rsf_module.AssignmentFailureCause.INSUFFICIENT_COVERAGE
+        assert "insufficient NWP coverage" in failure.detail
         # The native fallback (no future features) still forecasts, at full horizon.
         assert result.primary_model_id == self._NATIVE_ID
         native = result.results[self._NATIVE_ID]
@@ -1098,7 +1290,9 @@ class TestEnsembleMemberSetCoverage:
 
         assert self._NWP_ID not in result.results
         assert self._NWP_ID in result.failed_models
-        assert "insufficient NWP coverage" in result.failed_models[self._NWP_ID]
+        failure = result.failed_models[self._NWP_ID]
+        assert failure.cause is rsf_module.AssignmentFailureCause.INSUFFICIENT_COVERAGE
+        assert "insufficient NWP coverage" in failure.detail
         assert result.primary_model_id == self._NATIVE_ID
 
 
@@ -1471,9 +1665,63 @@ class TestPerAssignmentWarmUpState:
         assert result.primary_model_id == _MODEL_ID_A
         assert _MODEL_ID_A in result.results
         assert _MODEL_ID_B in result.failed_models
+        assert (
+            result.failed_models[_MODEL_ID_B].cause
+            is rsf_module.AssignmentFailureCause.UNSUPPORTED_STATEFUL_ENSEMBLE
+        )
         assert any(
             e.get("event") == "run_station_forecast.unsupported_stateful_ensemble"
             for e in logs
+        )
+
+    def test_ensemble_input_side_reject_guard_via_run_all_returns_typed_failure(
+        self,
+    ) -> None:
+        """Red-first (T1 item 5b): the INPUT-side reject guard's failure is
+        exercised via ``run_all_station_forecasts`` directly (not just the
+        ``None``-returning wrapper), proving it round-trips a typed
+        ``AssignmentFailure`` into ``failed_models`` too.
+        """
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, _MODEL_ID_A)
+        _seed_artifact(store, _MODEL_ID_B)
+
+        state_store = FakeModelStateStore()
+        state_store.store_state(
+            _STATION_ID, _MODEL_ID_B, _NOW - timedelta(hours=1), b"secondary-state"
+        )
+
+        result = run_all_station_forecasts(
+            station_id=_STATION_ID,
+            inputs=_make_inputs(),
+            input_metadata=_make_metadata(),
+            assignments=[
+                _make_assignment(_MODEL_ID_A, priority=1),
+                _make_assignment(_MODEL_ID_B, priority=2),
+            ],
+            models={
+                _MODEL_ID_A: FakeStationForecastModel(),  # type: ignore[dict-item]
+                _MODEL_ID_B: _EnsembleModeNoFutureFeaturesModel(),  # type: ignore[dict-item]
+            },
+            artifact_store=store,
+            qc_checker=ForecastOutputQualityChecker(),
+            qc_rules=_empty_qc_rules(),
+            qc_overrides=[],
+            baselines=[],
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            config=_make_config(),
+            clock=_fixed_clock(),  # type: ignore[arg-type]
+            id_gen=_sequential_id_gen(),  # type: ignore[arg-type]
+            rng=random.Random(42),
+            model_state_store=state_store,
+        )
+
+        assert result.primary_model_id == _MODEL_ID_A
+        assert _MODEL_ID_B in result.failed_models
+        assert (
+            result.failed_models[_MODEL_ID_B].cause
+            is rsf_module.AssignmentFailureCause.UNSUPPORTED_STATEFUL_ENSEMBLE
         )
 
     def test_assignment_local_read_failure_keeps_primary(self) -> None:
@@ -1513,7 +1761,9 @@ class TestPerAssignmentWarmUpState:
         assert result.primary_model_id == _MODEL_ID_A
         assert _MODEL_ID_A in result.results
         assert _MODEL_ID_B in result.failed_models
-        assert "store connection lost" in result.failed_models[_MODEL_ID_B]
+        failure = result.failed_models[_MODEL_ID_B]
+        assert failure.cause is rsf_module.AssignmentFailureCause.WARM_UP_LOAD_FAILED
+        assert "store connection lost" in failure.detail
         assert any(
             e.get("event") == "run_station_forecast.warm_up_load_failed" for e in logs
         )
@@ -1548,11 +1798,226 @@ class TestPerAssignmentWarmUpState:
             )
 
         assert _MODEL_ID_A in result.failed_models
-        assert "predict failed" in result.failed_models[_MODEL_ID_A]
+        failure = result.failed_models[_MODEL_ID_A]
+        assert failure.cause is rsf_module.AssignmentFailureCause.PREDICT_FAILED
+        assert "predict failed" in failure.detail
         events = {e.get("event") for e in logs}
         assert "run_station_forecast.predict_failed" in events
         assert "run_station_forecast.unsupported_stateful_ensemble" not in events
         assert "run_station_forecast.warm_up_load_failed" not in events
+
+
+class TestPerCauseFallbackAdvancesChain:
+    """Plan 150 T1 item 7 (red-first, parametrized): a station whose PRIMARY
+    (priority=1) assignment fails with each of the seven anticipated causes in
+    turn still produces a successful forecast from the next-priority (B)
+    assignment, and ``failed_models[_MODEL_ID_A].cause`` is exactly the
+    expected variant. ``UNSUPPORTED_STATEFUL_ENSEMBLE`` uses one guard here —
+    both of that cause's return sites are proven independently elsewhere
+    (``TestPerAssignmentWarmUpState``); the loop backstop's
+    ``UNEXPECTED_EXCEPTION`` is proven in ``TestAssignmentOutcomeShape``.
+    """
+
+    def _assert_fallback_advances(
+        self,
+        *,
+        models: dict,
+        store: object,
+        state_store: object,
+        inputs: StationModelInputs,
+        expected_cause: object,
+    ) -> None:
+        result = run_all_station_forecasts(
+            station_id=_STATION_ID,
+            inputs=inputs,
+            input_metadata=_make_metadata(),
+            assignments=[
+                _make_assignment(_MODEL_ID_A, priority=1),
+                _make_assignment(_MODEL_ID_B, priority=2),
+            ],
+            models=models,  # type: ignore[arg-type]
+            artifact_store=store,  # type: ignore[arg-type]
+            qc_checker=ForecastOutputQualityChecker(),
+            qc_rules=_empty_qc_rules(),
+            qc_overrides=[],
+            baselines=[],
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            config=_make_config(),
+            clock=_fixed_clock(),  # type: ignore[arg-type]
+            id_gen=_sequential_id_gen(),  # type: ignore[arg-type]
+            rng=random.Random(42),
+            model_state_store=state_store,  # type: ignore[arg-type]
+        )
+
+        assert result.primary_model_id == _MODEL_ID_B
+        assert _MODEL_ID_B in result.results
+        failure = result.failed_models[_MODEL_ID_A]
+        assert isinstance(failure, rsf_module.AssignmentFailure)
+        assert failure.cause is expected_cause
+
+    def test_model_not_found_falls_through(self) -> None:
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, _MODEL_ID_B)
+        self._assert_fallback_advances(
+            models={_MODEL_ID_B: FakeStationForecastModel()},
+            store=store,
+            state_store=FakeModelStateStore(),
+            inputs=_make_inputs(),
+            expected_cause=rsf_module.AssignmentFailureCause.MODEL_NOT_FOUND,
+        )
+
+    def test_insufficient_coverage_falls_through(self) -> None:
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, _MODEL_ID_A)
+        _seed_artifact(store, _MODEL_ID_B)
+        self._assert_fallback_advances(
+            models={
+                _MODEL_ID_A: _ShortHorizonNwpModel(),
+                _MODEL_ID_B: FakeStationForecastModel(),
+            },
+            store=store,
+            state_store=FakeModelStateStore(),
+            inputs=_short_nwp_inputs(future_rows=1),
+            expected_cause=rsf_module.AssignmentFailureCause.INSUFFICIENT_COVERAGE,
+        )
+
+    def test_no_artifact_falls_through(self) -> None:
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, _MODEL_ID_B)  # A's artifact is NOT seeded
+        self._assert_fallback_advances(
+            models={
+                _MODEL_ID_A: FakeStationForecastModel(),
+                _MODEL_ID_B: FakeStationForecastModel(),
+            },
+            store=store,
+            state_store=FakeModelStateStore(),
+            inputs=_make_inputs(),
+            expected_cause=rsf_module.AssignmentFailureCause.NO_ARTIFACT,
+        )
+
+    def test_warm_up_load_failed_falls_through(self) -> None:
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, _MODEL_ID_A)
+        _seed_artifact(store, _MODEL_ID_B)
+        self._assert_fallback_advances(
+            models={
+                _MODEL_ID_A: FakeStationForecastModel(),
+                _MODEL_ID_B: FakeStationForecastModel(),
+            },
+            store=store,
+            state_store=_RaisingModelStateStore(raise_for=_MODEL_ID_A),
+            inputs=_make_inputs(),
+            expected_cause=rsf_module.AssignmentFailureCause.WARM_UP_LOAD_FAILED,
+        )
+
+    def test_unsupported_stateful_ensemble_falls_through(self) -> None:
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, _MODEL_ID_A)
+        _seed_artifact(store, _MODEL_ID_B)
+        state_store = FakeModelStateStore()
+        state_store.store_state(
+            _STATION_ID, _MODEL_ID_A, _NOW - timedelta(hours=1), b"primary-state"
+        )
+        self._assert_fallback_advances(
+            models={
+                _MODEL_ID_A: _EnsembleModeNoFutureFeaturesModel(),
+                _MODEL_ID_B: FakeStationForecastModel(),
+            },
+            store=store,
+            state_store=state_store,
+            inputs=_make_inputs(),
+            expected_cause=(
+                rsf_module.AssignmentFailureCause.UNSUPPORTED_STATEFUL_ENSEMBLE
+            ),
+        )
+
+    def test_predict_failed_falls_through(self) -> None:
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, _MODEL_ID_A)
+        _seed_artifact(store, _MODEL_ID_B)
+
+        class _CrashingModel:
+            artifact_scope = FakeStationForecastModel.artifact_scope
+            data_requirements = FakeStationForecastModel.data_requirements
+
+            def predict(self, *args: object, **kwargs: object) -> None:
+                raise RuntimeError("model crashed")
+
+            def serialize_artifact(self, artifact: object) -> bytes:
+                return b""
+
+            def deserialize_artifact(self, raw: bytes) -> object:
+                return raw
+
+        self._assert_fallback_advances(
+            models={
+                _MODEL_ID_A: _CrashingModel(),
+                _MODEL_ID_B: FakeStationForecastModel(),
+            },
+            store=store,
+            state_store=FakeModelStateStore(),
+            inputs=_make_inputs(),
+            expected_cause=rsf_module.AssignmentFailureCause.PREDICT_FAILED,
+        )
+
+    def test_qc_failed_falls_through(self) -> None:
+        store = FakeModelArtifactStore()
+        _seed_artifact(store, _MODEL_ID_A)
+        _seed_artifact(store, _MODEL_ID_B)
+
+        call_count = [0]
+
+        class _FirstFailThenPassChecker:
+            def check(
+                self,
+                ensemble: ForecastEnsemble,
+                rule_set: ForecastQcRuleSet,
+                overrides: list,
+                baselines: list,
+            ) -> list[QcFlag]:
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    return [
+                        QcFlag(
+                            rule_id="test_rule",
+                            rule_version="1.0",
+                            status=QcStatus.QC_FAILED,
+                            detail="first model fails QC",
+                        )
+                    ]
+                return []
+
+        result = run_all_station_forecasts(
+            station_id=_STATION_ID,
+            inputs=_make_inputs(),
+            input_metadata=_make_metadata(),
+            assignments=[
+                _make_assignment(_MODEL_ID_A, priority=1),
+                _make_assignment(_MODEL_ID_B, priority=2),
+            ],
+            models={
+                _MODEL_ID_A: FakeStationForecastModel(),  # type: ignore[dict-item]
+                _MODEL_ID_B: FakeStationForecastModel(),  # type: ignore[dict-item]
+            },
+            artifact_store=store,
+            qc_checker=_FirstFailThenPassChecker(),  # type: ignore[arg-type]
+            qc_rules=_empty_qc_rules(),
+            qc_overrides=[],
+            baselines=[],
+            nwp_cycle_reference_time=_NOW,
+            nwp_cycle_source=NwpCycleSource.PRIMARY,
+            config=_make_config(),
+            clock=_fixed_clock(),  # type: ignore[arg-type]
+            id_gen=_sequential_id_gen(),  # type: ignore[arg-type]
+            rng=random.Random(42),
+            model_state_store=FakeModelStateStore(),
+        )
+
+        assert result.primary_model_id == _MODEL_ID_B
+        failure = result.failed_models[_MODEL_ID_A]
+        assert isinstance(failure, rsf_module.AssignmentFailure)
+        assert failure.cause is rsf_module.AssignmentFailureCause.QC_FAILED
 
 
 class TestGoldenWarmUpProvenance:
