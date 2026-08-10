@@ -110,25 +110,34 @@ later slice that performs an audited mutation depends on **B**, so no slice ever
 mutation. **C (access-token auth) depends on A + B; D (least-privilege DB roles) depends on C;
 E (tenant write-isolation) depends on A + B.**
 
-**Scope rule for THIS `/implement` run: build Slice D ONLY (least-privilege DB roles, F3(b)) and STOP.** Do NOT
-build Slice E in this run — it is a separate later slice with its own PR (branch `feat/plan-147-slice-d` builds
-Slice D). **Slices A (tenant model, #130), B (audit-log substrate, #131), and C (access-token auth, #132) are
-already on `main` — CONSUME them, do not re-implement.** D depends on C (its `sapphire_api` grants cover
-`access_tokens` + the `last_used_at` write). Slice D is a DEPLOYMENT/DB-privilege slice (per the Slice-D block
-below): realize the documented `sapphire_api`/`sapphire_worker`/`sapphire_prefect` role split (do NOT collapse
-to one role) with **per-table grants** (not blanket UPDATE/DELETE); INSERT+SELECT-only on `audit_log` for both
-app roles (defense-in-depth atop B's role-independent guard, never UPDATE/DELETE); **separate credentials** —
-distinct owner/migration + `sapphire_api` + `sapphire_worker` secrets so the app CANNOT reconstruct the owner
-password (generalize `entrypoint.sh` from the single `db_password` to a named `DB_PASSWORD_SECRET`, per-service
-mounts + URL templates); split migrations (run as owner) from app/workers (scoped roles) in compose/init; an
-**idempotent privileged bootstrap** (CREATE ROLE IF NOT EXISTS + re-grant, run as owner from `init`) so BOTH a
-fresh volume AND an in-place existing-volume upgrade converge to the same roles/grants; and doc updates
-(`conventions.md` grant matrix, `security.md`, `cicd.md`). Verify (upgrade+downgrade): app roles cannot
-DROP/CREATE or read another DB; `UPDATE`/`DELETE audit_log` fail under both app roles; the full pipeline works
-under scoped roles; a migration under a scoped role fails (least-priv proof); fresh + in-place both converge +
-the bootstrap re-run is a no-op; the owner password is absent from API/worker containers; scoped-password
-rotation works; documented rollback. The **config-identity WritePrincipal / flow-CLI write-isolation is Slice E,
-NOT here.** Red-first: today the app runs as the Postgres SUPERUSER (no scoped role exists).
+**Scope rule for THIS `/implement` run: build Slice E ONLY (tenant write-isolation, the Flow-0 gate, G3/G6)
+and STOP.** This is the LAST slice — no later slice follows it. **Slices A (tenant model, #130), B (audit-log
+substrate + append-only writer + rejection-event path, #131), C (access-token auth, #132), and D
+(least-privilege DB roles, #134) are already on `main` — CONSUME them, do not re-implement.** E depends on
+A + B: the tenant columns + composite-FK invariant (Slice A) and the audit writer + rejection-event
+transaction (Slice B) already exist. Build the Slice-E block below: the config-declared `[deployment]`
+identity (`writable_tenants` / `global_admin` + optional `operator`, validated to `TenantId` at startup, an
+unknown code is a hard startup error); the `WritePrincipal(id: PrincipalId | None, tenant_id: TenantId |
+None)` value type with **`PrincipalId = NewType("PrincipalId", str)`** in `types/ids.py` (a config-declared
+operator handle — NEVER materialized from an access-token, NEVER from a target row); the enforcing check on
+every write path (station onboarding, group/model assignment, `onboard_model`, `promote_artifact` /
+`store_and_promote_artifact`) that **rejects** a target whose `tenant_id` differs from the principal's
+(`TenantIsolationError`, fail-loud, recorded as a **separate** Slice-B rejection-event transaction — never
+the rolled-back mutation txn; unscoped global-admin bypasses); the interactive-CLI `--tenant`/`--operator`
+run-principal construction (validated against the host's `writable_tenants`); the **scheduled
+`train_models_flow`** building **exactly one** config-selected run principal **BEFORE** `_determine_scope_task`
+selects any unit — never from `unit.station_id`/`unit.group_id` — then selecting/filtering `scope.units` to
+that tenant and **skipping-with-audit (or rejecting)** foreign-tenant units; provenance recorded via the
+**`audit_log` `MODEL_PROMOTED` row** (`actor_type='system'`, `actor_id=NULL`, `detail.operator`/`detail.tenant_code`)
+with `model_artifacts.promoted_by` left **NULL** in v1.0 headless (a config string does not fit the UUID
+column); and doc updates. Read-isolation is OUT of scope (D4 — WRITE-isolation only). Verify per the
+Slice-E block's **Verify** paragraph (tenant-A principal cannot onboard/promote/assign into tenant B; can
+within A; global-admin crosses; out-of-`writable_tenants` code rejected at validation; scheduled flow builds
+ONE principal before unit selection and skips-with-audit foreign units; promotion writes the `MODEL_PROMOTED`
+audit row with `promoted_by` NULL; the Slice-A composite FK still rejects a cross-tenant group add; existing
+single-tenant Swiss flows still work under the default `sapphire` tenant). Red-first: the cross-tenant write
+(interactive AND scheduled) SUCCEEDS against today's no-principal paths and the scheduled flow trains every
+tenant's units indiscriminately.
 
 ### Slice A — Tenant model foundation (data model, no auth)
 

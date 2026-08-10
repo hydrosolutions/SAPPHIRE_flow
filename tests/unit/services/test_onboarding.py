@@ -1406,3 +1406,49 @@ class TestOnboardFromCamelschTenantResolution:
                 tenant_store=FakeTenantStore(),
                 tenant_code="no-such-tenant",
             )
+
+
+class TestOnboardFromCamelschTenantIsolation:
+    """Plan 147 Slice E (R5/G6): a WritePrincipal whose tenant does not match
+    the onboarding batch's resolved tenant_code is rejected BEFORE any data
+    is loaded (no domain change) and the rejection is audited. Soundness:
+    fails against a pre-Slice-E onboard_from_camelsch that had no
+    principal/audit_log_store parameters (TypeError) or that ignored the
+    principal (the cross-tenant write would silently attempt to load data
+    from the nonexistent path, raising a different error than
+    TenantIsolationError)."""
+
+    def test_cross_tenant_principal_rejected_before_loading_data(self) -> None:
+        from sapphire_flow.exceptions import TenantIsolationError
+        from sapphire_flow.services.onboarding import onboard_from_camelsch
+        from sapphire_flow.types.ids import TenantId
+        from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
+        from sapphire_flow.types.write_principal import WritePrincipal
+        from tests.fakes.fake_stores import FakeAuditLogStore, FakeTenantStore
+
+        other_tenant = TenantId(
+            __import__("uuid").UUID("00000000-0000-0000-0000-0000000000c3")
+        )
+        audit = FakeAuditLogStore()
+        principal = WritePrincipal(id=None, tenant_id=other_tenant)
+        assert other_tenant != DEFAULT_TENANT_ID
+
+        with pytest.raises(TenantIsolationError):
+            onboard_from_camelsch(
+                data_dir="/nonexistent/path/must/not/be/read",
+                basin_store=FakeBasinStore(),
+                station_store=FakeStationStore(),
+                obs_store=FakeObservationStore(),
+                forcing_store=FakeHistoricalForcingStore(),
+                baseline_store=FakeClimBaselineStore(),
+                flow_regime_store=FakeFlowRegimeConfigStore(),
+                qc_rules=_TEST_RULES,
+                clock=lambda: _EPOCH,
+                tenant_store=FakeTenantStore(),
+                principal=principal,
+                audit_log_store=audit,
+            )
+
+        assert len(audit._entries) == 1  # type: ignore[attr-defined]
+        assert audit._entries[0].event_type.value == "station_onboarded"  # type: ignore[attr-defined]
+        assert audit._entries[0].detail["outcome"] == "rejected_tenant_mismatch"  # type: ignore[attr-defined]

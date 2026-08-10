@@ -1569,12 +1569,13 @@ Seeded with a default `sapphire` tenant (migration 0041, fixed id
 backfills onto it. `stations.tenant_id` is canonical (R4 LOCKED — a
 station's tenant is authoritative on the station itself, never derived from
 group membership); `station_groups.tenant_id` is additive. A tenant CODE
-string (from `config.toml`'s `[deployment]` block or a `--tenant` CLI arg,
-v1.x write-isolation slice) is parsed into a `TenantId` once, at the
-config/CLI boundary, by resolving it against this table — an unknown code is
-a hard error. This slice lands the data model only; auth/RBAC enforcement
-(access tokens, per-key station scope, audit log) is a later slice of Plan
-147.
+string (from `config.toml`'s `[deployment]` block or a `--tenant` CLI arg —
+**REALIZED as of Plan 147 Slice E**, `services/write_principal.py`) is parsed
+into a `TenantId` once, at the config/CLI boundary, by resolving it against
+this table — an unknown code is a hard error. This slice (A) landed the data
+model only; auth/RBAC enforcement (access tokens, per-key station scope,
+audit log — Slice C) and write-isolation (`WritePrincipal` — Slice E) are
+later slices of Plan 147, both now REALIZED.
 
 #### `station_groups` table (station groups for group-scoped models)
 
@@ -2403,10 +2404,11 @@ Refresh token rotation: each use invalidates the current token (`revoked_at = no
 **Implemented (Plan 147 Slice B, 2026-07-24)** — migration `0045` (table) + `0046` (append-only
 guard); writer `store/audit_log_store.py::PgAuditLogStore`. Append-only is enforced by a
 **role-independent** `BEFORE UPDATE OR DELETE` trigger (migration 0046) that RAISEs for every role,
-including the table owner — not by a per-role grant, since the `sapphire_api`/`sapphire_worker`
-scoped roles do not exist yet (Slice D). Once Slice D lands, its `INSERT`+`SELECT`-only grant for
-`sapphire_api`/`sapphire_worker` is additional defense-in-depth on top of this trigger, not the
-primary guarantee. See security.md § Audit logging for recorded event categories.
+including the table owner — not by a per-role grant. **Slice D (REALIZED)** additionally grants
+`sapphire_api`/`sapphire_worker` `INSERT`+`SELECT`-only on this table — defense-in-depth on top of the
+trigger, not the primary guarantee. **Slice E (REALIZED)** wires every write chokepoint (onboarding,
+model promotion, station/group-model assignment, the scheduled training flow's tenant-isolation
+rejection) through this writer. See security.md § Audit logging for recorded event categories.
 
 ```
 audit_log:
@@ -2437,8 +2439,10 @@ AuditEventType enum (Python members → DB values):
   STATION_STATUS_CHANGE → 'station_status_change' | OBSERVATION_REPROCESSED → 'observation_reprocessed' |
   STATION_ONBOARDED → 'station_onboarded' | MODEL_ASSIGNED → 'model_assigned'
     # STATION_ONBOARDED/MODEL_ASSIGNED are additive members (Plan 147 Slice B) not in the
-    # original design-intent list. Rejections reuse the attempted event's event_type with
-    # detail.outcome = "rejected" — no rejection-specific members.
+    # original design-intent list. A Slice-E tenant-isolation rejection reuses the attempted
+    # event's event_type with detail.outcome = "rejected_tenant_mismatch" (onboard/promote/
+    # assign) or "skipped_foreign_tenant" (the scheduled train_models_flow unit filter) — no
+    # rejection-specific event_type members.
 
 AuditActorType enum (Python members → DB values):
   USER → 'user' | API_KEY → 'api_key' | SYSTEM → 'system'

@@ -6,7 +6,7 @@
 
 v0 defers auth — single-user, no access control. Everything below applies from v1.
 
-### v1.0 headless subset (implemented, Plan 147 Slices A-D)
+### v1.0 headless subset (implemented, Plan 147 Slices A-E)
 
 Plan 147 (v1.0-headless, per `docs/plans/106-v1-critical-path-roadmap.md` D6) implements a
 **deliberately narrowed** subset of the full v1 authentication/authorization design below, ahead of
@@ -54,11 +54,55 @@ the human-session/dashboard stack. Everything in this subsection is REALIZED cod
   each with its own credential, per-table grants (not blanket `UPDATE`/`DELETE`), and no
   `CREATE`/`DROP`/cross-database access. `sapphire_prefect` remains the owner credential — a documented
   residual, not built by this slice.
+- **Tenant write-isolation is REALIZED** (Plan 147 Slice E — see § Tenant write-isolation below): the
+  flow/CLI write paths (station onboarding, group/model assignment, model promotion, incl. the
+  scheduled `train_models_flow`) reject a cross-tenant write via a config-declared `WritePrincipal` —
+  never a read-only access token, never the target row itself.
 - **Deferred to v1.x** (not built by Plan 147): OAuth2 human sessions, TOTP MFA, JWT/refresh tokens,
   dashboard user management, the `forecaster`/`model-admin` session roles, `POST
   /forecasts/{id}/adjust`, `PATCH /forecasts/{id}/status`, `POST /alerts/{id}/acknowledge`, concurrent-
   session limits, account lockout, per-request `api_key_request` audit logging, parameter/geographic
   scope axes, in-place token rotation, and a distinct scoped `sapphire_prefect` role.
+
+### Tenant write-isolation (v1.0, Plan 147 Slice E)
+
+Write authority on the flow/CLI write paths (onboarding, group/model assignment, model promotion) is
+**config-declared, never derived from the target row and never from a read-only access token** (G3/G6).
+A third principal kind — distinct from the two HTTP read roles above.
+
+- **`[deployment]` config block** (`config.toml`): `writable_tenants = ["<code>", ...]` (one or more
+  tenant codes this host may write to) OR `global_admin = true` (an unscoped host — mutually exclusive
+  with `writable_tenants`), plus an optional `operator = "<handle>"` label. Parsed by
+  `config/deployment_identity.py`; every declared code is resolved against the `tenants` table at
+  principal-resolution time — an unknown code is a hard `ConfigurationError`, not a silent skip.
+- **`WritePrincipal`** (`types/write_principal.py`): `WritePrincipal(id: PrincipalId | None, tenant_id:
+  TenantId | None)`. `PrincipalId = NewType("PrincipalId", str)` is the config operator handle — never a
+  `UserId`/UUID, never an `AccessTokenId`. `tenant_id=None` = unscoped/global-admin (may write to any
+  tenant); a set `tenant_id` binds every write to that one tenant.
+  - **Interactive CLI / flow param**: an explicit `--tenant <code>` (or `tenant_code=` flow parameter)
+    is validated against the host's `writable_tenants` (bypassed for `global_admin`) and resolved to a
+    `TenantId`. Absent, a single-writable-tenant host binds its sole tenant; a `global_admin` host is
+    unscoped; a host declaring more than one writable tenant with no explicit code is ambiguous and
+    raises.
+  - **Scheduled `train_models_flow`**: builds exactly ONE run principal from config **before**
+    `_determine_scope_task` selects any training unit — never from `unit.station_id`/`unit.group_id`.
+    `scope.units` is then filtered to that principal's tenant; a foreign-tenant unit already in scope is
+    **skipped-with-audit**, never trained/promoted. One scheduled deployment per tenant (or an
+    explicitly-declared `global_admin` run that trains across tenants).
+- **Enforcement** (`services/write_principal.py::enforce_tenant_isolation`, called at every write
+  chokepoint — `services/training.py::promote_artifact`/`store_and_promote_artifact`,
+  `services/model_onboarding.py::create_station_assignment`/`create_group_assignment`,
+  `services/onboarding.py::onboard_from_camelsch`): a target whose `tenant_id` differs from the
+  principal's raises `TenantIsolationError` **before** any domain-state write, and persists a
+  `system`-actor `audit_log` rejection row (operator handle + both tenant ids in `detail` — `actor_id`
+  stays `NULL`, a config operator is not a `UserId`/`AccessTokenId`). An unscoped (`global_admin`)
+  principal bypasses the check.
+- **Promotion provenance**: a successful promotion writes a `MODEL_PROMOTED` `audit_log` row
+  (`actor_type='system'`, `detail.operator`/`detail.tenant_id`). `model_artifacts.promoted_by` (the
+  legacy nullable UUID column) stays `NULL` in v1.0 headless — a config-string `PrincipalId` does not
+  fit a UUID column; it is reserved for the v1.x human-session `UserId`.
+- **Read isolation is explicitly OUT of scope** (D4): Slice C's per-key station-scope filtering already
+  bounds what a `consumer` token can read; this slice is write-isolation only.
 
 ### Session-based authentication (human users)
 
@@ -735,8 +779,14 @@ RAISEs for every role, including the table owner), and the `PgAuditLogStore` wri
 D, REALIZED):** `sapphire_api` and `sapphire_worker` both exist (`docker/bootstrap-roles.sql`) with
 `INSERT`+`SELECT`-only on `audit_log` — defense-in-depth atop the role-independent trigger, not the
 primary guarantee (the trigger alone already rejects `UPDATE`/`DELETE`/`TRUNCATE` for every role,
-including the table owner). Access-token create/revoke (Slice C) stamp rows through this writer; the
-onboard/promote/assign + rejection paths (Slice E) are the remaining unwired call sites.
+including the table owner). Access-token create/revoke (Slice C) stamp rows through this writer.
+**Also REALIZED (Plan 147 Slice E):** the onboard/promote/assign write chokepoints
+(`services/onboarding.py::onboard_from_camelsch`,
+`services/training.py::promote_artifact`/`store_and_promote_artifact`,
+`services/model_onboarding.py::create_station_assignment`/`create_group_assignment`) and the scheduled
+`train_models_flow`'s foreign-tenant-unit skip all stamp `audit_log` rows through this writer — both
+the success path (`STATION_ONBOARDED`/`MODEL_ASSIGNED`/`MODEL_PROMOTED`) and the tenant-mismatch
+rejection path (`detail.outcome = "rejected_tenant_mismatch"` / `"skipped_foreign_tenant"`).
 
 Records (`AuditEventType`, `types/enums.py`):
 - All authentication events (login, logout, failed attempts, password changes) — v1.x, session auth
@@ -746,12 +796,37 @@ Records (`AuditEventType`, `types/enums.py`):
 - All API key creation/revocation (`API_KEY_CREATED`/`API_KEY_REVOKED`) — Slice C
 - Station onboarding / model assignment (`STATION_ONBOARDED`/`MODEL_ASSIGNED`, additive members) — Slice E
 
-Atomicity: a successful mutation and its audit `INSERT` run in ONE transaction (a caller-owned,
-non-AUTOCOMMIT connection threaded into both the domain store and `PgAuditLogStore` — no repo-wide
-connection refactor, reusing the existing injectable `transaction_factory` seam,
-`store/station_group_store.py:29-36`); a rejected write persists its rejection event
-(`detail.outcome = "rejected"`) in a SEPARATE, independently-committed transaction after the
-domain rollback.
+Atomicity: each DISCRETE audited write — model promotion (`promote_artifact` /
+`store_and_promote_artifact`) and station/group-model assignment (`create_station_assignment` /
+`create_group_assignment`) — runs its domain mutation and its `audit_log` INSERT in ONE real
+(non-AUTOCOMMIT) transaction, so a failed audit insert rolls the domain write back. The production
+flow/service call sites own that transaction via the `AuditedWriter` seam (`store/audited_writer.py`),
+which builds the mutation store(s) + `PgAuditLogStore` on ONE `engine.begin()` connection — no
+repo-wide connection refactor (the Slice C token CLI does the same with its own `engine.begin()`
+block). Non-audited flow work stays on the shared AUTOCOMMIT connection (`flows/_db.py`). Covered:
+`train_models_flow` (store-and-promote), `onboard_model_flow` (promote, assignment), and the CAMELS-CH
+batch's per-station STATION_ONBOARDED (the station-row `store_station`/`update_station` + its audit
+row), per-station model assignment, and per-unit promotion/assignment (`onboard_from_camelsch` →
+`_run_onboarding` / `onboard_model`). Each per-station / per-unit write is its OWN transaction — the
+CAMELS-CH batch is deliberately NOT wrapped in a single transaction (a mid-batch failure must keep
+already-onboarded stations), so partial-progress-on-failure is preserved. `STATION_ONBOARDED` is
+therefore emitted PER STATION, atomically with that station's row write (there is no longer a single,
+non-atomic, post-batch batch-summary audit row); observations/forcing/baselines/QC stay on AUTOCOMMIT
+to preserve per-station resilience.
+
+Rejection: Slice E's tenant-isolation check runs BEFORE any domain-state write is attempted, so a
+rejection needs no rollback — it persists its rejection event (`detail.outcome =
+"rejected_tenant_mismatch"` for onboard/promote/assign, `detail.outcome = "skipped_foreign_tenant"`
+for the scheduled flow's unit filter) on the DURABLE (AUTOCOMMIT) connection — a separate,
+independently-committed event that never rolls back with a write txn — and raises
+`TenantIsolationError` fail-loud (never swallowed into a per-unit "failed" outcome), with no domain
+change either way. `train_models_flow` pre-filters foreign-tenant units before the atomic write;
+`onboard_model_flow` and the service `onboard_model` pre-authorize EACH unit on the durable connection
+at the TOP of its iteration — before compatibility/training and before the FIRST store write — so a
+foreign-tenant unit never leaves a durable TRAINING artifact/lineage row (and a skill-gate early-return
+can never skip the check); `onboard_from_camelsch`/`_run_onboarding` additionally reject a cross-tenant
+`(code, network)` collision (a batch that would otherwise flip an existing station's tenant) on the
+durable connection before the update. A station update never changes a row's tenant.
 
 Retention: permanent. Included in database backup.
 

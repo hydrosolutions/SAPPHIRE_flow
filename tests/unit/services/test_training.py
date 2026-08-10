@@ -5,7 +5,9 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import polars as pl
+import pytest
 
+from sapphire_flow.exceptions import TenantIsolationError
 from sapphire_flow.services.training import (
     promote_artifact,
     store_and_promote_artifact,
@@ -14,10 +16,12 @@ from sapphire_flow.services.training import (
 )
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import ModelArtifactStatus
-from sapphire_flow.types.ids import ModelId, StationGroupId, StationId
+from sapphire_flow.types.ids import ModelId, StationGroupId, StationId, TenantId
 from sapphire_flow.types.model import GroupTrainingData, StationTrainingData
+from sapphire_flow.types.tenant import DEFAULT_TENANT_ID
+from sapphire_flow.types.write_principal import WritePrincipal
 from tests.fakes.fake_models import FakeGroupForecastModel, FakeStationForecastModel
-from tests.fakes.fake_stores import FakeModelArtifactStore
+from tests.fakes.fake_stores import FakeAuditLogStore, FakeModelArtifactStore
 
 _START = ensure_utc(datetime(2020, 1, 1, tzinfo=UTC))
 _END = ensure_utc(datetime(2021, 1, 1, tzinfo=UTC))
@@ -307,3 +311,135 @@ class TestPromoteArtifact:
         assert first_record.status == ModelArtifactStatus.SUPERSEDED
         assert second_record is not None
         assert second_record.status == ModelArtifactStatus.ACTIVE
+
+
+class TestPromotionTenantIsolation:
+    """Plan 147 Slice E (R5/G6): promote_artifact/store_and_promote_artifact
+    is the single promotion chokepoint every write path funnels through —
+    tenant write-isolation is proven here. A rejection leaves NO domain
+    change (no artifact row for store_and_promote_artifact; the artifact
+    stays TRAINING, never ACTIVE, for standalone promote_artifact)."""
+
+    def test_cross_tenant_store_and_promote_rejected_no_domain_change(self) -> None:
+        store = FakeModelArtifactStore()
+        model_id = ModelId("test_model")
+        rng = random.Random(20)
+        station_id = StationId(UUID(int=rng.getrandbits(128), version=4))
+        tenant_b = TenantId(UUID(int=random.Random(21).getrandbits(128), version=4))
+        audit = FakeAuditLogStore()
+        principal = WritePrincipal(id=None, tenant_id=DEFAULT_TENANT_ID)
+
+        with pytest.raises(TenantIsolationError):
+            store_and_promote_artifact(
+                artifact_store=store,
+                model_id=model_id,
+                artifact_bytes=b"v1",
+                period_start=_START,
+                period_end=_END,
+                clock=_CLOCK,
+                station_id=station_id,
+                principal=principal,
+                target_tenant_id=tenant_b,
+                audit_log_store=audit,
+            )
+
+        # No domain change: no artifact row was ever stored.
+        assert (
+            store.fetch_artifacts_by_status(
+                model_id=model_id, status=ModelArtifactStatus.ACTIVE
+            )
+            == []
+        )
+        assert (
+            store.fetch_artifacts_by_status(
+                model_id=model_id, status=ModelArtifactStatus.TRAINING
+            )
+            == []
+        )
+        assert len(audit._entries) == 1  # type: ignore[attr-defined]
+        assert audit._entries[0].event_type.value == "model_rejected"  # type: ignore[attr-defined]
+
+    def test_same_tenant_store_and_promote_succeeds_and_audits(self) -> None:
+        store = FakeModelArtifactStore()
+        model_id = ModelId("test_model")
+        rng = random.Random(22)
+        station_id = StationId(UUID(int=rng.getrandbits(128), version=4))
+        audit = FakeAuditLogStore()
+        principal = WritePrincipal(id=None, tenant_id=DEFAULT_TENANT_ID)
+
+        artifact_id = store_and_promote_artifact(
+            artifact_store=store,
+            model_id=model_id,
+            artifact_bytes=b"v1",
+            period_start=_START,
+            period_end=_END,
+            clock=_CLOCK,
+            station_id=station_id,
+            principal=principal,
+            target_tenant_id=DEFAULT_TENANT_ID,
+            audit_log_store=audit,
+        )
+
+        record = store.fetch_artifact_record(artifact_id)
+        assert record is not None
+        assert record.status == ModelArtifactStatus.ACTIVE
+        assert any(
+            e.event_type.value == "model_promoted"  # type: ignore[attr-defined]
+            for e in audit._entries  # type: ignore[attr-defined]
+        )
+
+    def test_global_admin_promotes_across_tenants(self) -> None:
+        store = FakeModelArtifactStore()
+        model_id = ModelId("test_model")
+        rng = random.Random(23)
+        station_id = StationId(UUID(int=rng.getrandbits(128), version=4))
+        tenant_b = TenantId(UUID(int=random.Random(24).getrandbits(128), version=4))
+        principal = WritePrincipal(id=None, tenant_id=None)
+
+        artifact_id = store_and_promote_artifact(
+            artifact_store=store,
+            model_id=model_id,
+            artifact_bytes=b"v1",
+            period_start=_START,
+            period_end=_END,
+            clock=_CLOCK,
+            station_id=station_id,
+            principal=principal,
+            target_tenant_id=tenant_b,
+        )
+
+        record = store.fetch_artifact_record(artifact_id)
+        assert record is not None
+        assert record.status == ModelArtifactStatus.ACTIVE
+
+    def test_cross_tenant_standalone_promote_rejected_leaves_training(self) -> None:
+        store = FakeModelArtifactStore()
+        model_id = ModelId("test_model")
+        rng = random.Random(25)
+        station_id = StationId(UUID(int=rng.getrandbits(128), version=4))
+        tenant_b = TenantId(UUID(int=random.Random(26).getrandbits(128), version=4))
+        principal = WritePrincipal(id=None, tenant_id=DEFAULT_TENANT_ID)
+
+        new_id, _sha = store.store_artifact(
+            model_id=model_id,
+            artifact_bytes=b"artifact",
+            training_period_start=_START,
+            training_period_end=_END,
+            trained_at=_NOW,
+            station_id=station_id,
+        )
+
+        with pytest.raises(TenantIsolationError):
+            promote_artifact(
+                artifact_store=store,
+                model_id=model_id,
+                new_id=new_id,
+                station_id=station_id,
+                principal=principal,
+                target_tenant_id=tenant_b,
+                now=_NOW,
+            )
+
+        record = store.fetch_artifact_record(new_id)
+        assert record is not None
+        assert record.status == ModelArtifactStatus.TRAINING

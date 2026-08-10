@@ -1,15 +1,16 @@
+# pyright: reportUnknownMemberType=false
 from __future__ import annotations
 
 import random as _random
 import time
 from dataclasses import replace
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 import structlog
 
-from sapphire_flow.exceptions import ConfigurationError
+from sapphire_flow.exceptions import ConfigurationError, TenantIsolationError
 from sapphire_flow.services.baselines import compute_clim_baselines
 from sapphire_flow.services.flow_regime import compute_flow_regime
 from sapphire_flow.services.qc import Stage1QualityChecker
@@ -25,6 +26,7 @@ from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.domain import aggregate_qc_status
 from sapphire_flow.types.enums import (
     ArtifactScope,
+    AuditEventType,
     ModelArtifactStatus,
     QcStatus,
     SpatialRepresentation,
@@ -46,6 +48,7 @@ if TYPE_CHECKING:
     from sapphire_flow.protocols.adapters import WeatherReanalysisSource
     from sapphire_flow.protocols.forecast_model import ForecastModel
     from sapphire_flow.protocols.stores import (
+        AuditLogStore,
         BasinStore,
         ClimBaselineStore,
         FlowRegimeConfigStore,
@@ -62,6 +65,7 @@ if TYPE_CHECKING:
         TenantStore,
     )
     from sapphire_flow.services.reanalysis_backfill import MeteoSwissBackfillAdapter
+    from sapphire_flow.store.audited_writer import AuditedWriter
     from sapphire_flow.types.basin import Basin
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.domain import QcRuleSet
@@ -69,6 +73,7 @@ if TYPE_CHECKING:
     from sapphire_flow.types.ids import ModelId, StationId, TenantId
     from sapphire_flow.types.observation import RawObservation
     from sapphire_flow.types.station import StationConfig
+    from sapphire_flow.types.write_principal import WritePrincipal
 
 log = structlog.get_logger(__name__)
 
@@ -228,6 +233,9 @@ def _run_onboarding(
     calculated_specs: Sequence[CalculatedStationSpec] = (),
     lineage_writer: object = None,
     tenant_id: TenantId = DEFAULT_TENANT_ID,
+    principal: WritePrincipal | None = None,
+    audit_log_store: AuditLogStore | None = None,
+    audited_writer: AuditedWriter | None = None,
 ) -> OnboardingResult:
     errors: list[str] = []
     stations_created = 0
@@ -272,6 +280,49 @@ def _run_onboarding(
     # Build lookup: station_id → forecast_targets parameter for QC/baseline/regime
     station_target: dict[StationId, str] = {}
     station_by_id: dict[StationId, StationConfig] = {}
+
+    # Per-station atomic write (Plan 147 Slice E / MAJOR 4): the station-row
+    # write and its STATION_ONBOARDED audit row run in ONE real transaction
+    # (production `audited_writer`), so a failed audit insert rolls the station
+    # write back. Each station is its OWN txn — the batch stays partial-
+    # progress-resilient (a mid-batch failure keeps already-onboarded
+    # stations). No writer (or no audit store) → direct AUTOCOMMIT path
+    # (fake-store unit tests); the audit row is still emitted when an audit
+    # store is present.
+    def _write_station_with_audit(
+        station_obj: StationConfig, *, is_update: bool
+    ) -> None:
+        from sapphire_flow.types.auth import AuditEntry
+
+        entry = AuditEntry.system(
+            event_type=AuditEventType.STATION_ONBOARDED,
+            target_type="station",
+            target_id=str(station_obj.id),
+            detail={
+                "code": station_obj.code,
+                "network": station_obj.network,
+                "outcome": "updated" if is_update else "onboarded",
+                "operator": principal.id if principal is not None else None,
+            },
+            ip_address=None,
+            created_at=clock(),
+        )
+        if audited_writer is None or audit_log_store is None:
+            if is_update:
+                station_store.update_station(station_obj)
+            else:
+                station_store.store_station(station_obj)
+            if audit_log_store is not None:
+                audit_log_store.append_entry(entry)
+        else:
+            with audited_writer.transaction() as _stores:
+                _st = cast("StationStore", _stores["station_store"])
+                if is_update:
+                    _st.update_station(station_obj)
+                else:
+                    _st.store_station(station_obj)
+                cast("AuditLogStore", _stores["audit_log_store"]).append_entry(entry)
+
     for station in stations:
         try:
             if (
@@ -288,6 +339,31 @@ def _run_onboarding(
                 station.code, station.network
             )
             if existing is not None:
+                # Plan 147 Slice E (BLOCKER 1): a station update must NEVER
+                # change a row's tenant. A cross-tenant (code, network)
+                # collision — an incoming batch under tenant A matching an
+                # existing tenant-B station — is rejected on the DURABLE
+                # connection (durable rejection audit + raise fail-loud)
+                # rather than silently taking the row over. Same-tenant /
+                # global-admin bypass via enforce_tenant_isolation's own no-op.
+                from sapphire_flow.services.write_principal import (
+                    enforce_tenant_isolation,
+                )
+
+                enforce_tenant_isolation(
+                    principal=principal,
+                    target_tenant_id=existing.tenant_id,
+                    audit_log_store=audit_log_store,
+                    event_type=AuditEventType.STATION_ONBOARDED,
+                    target_type="station",
+                    target_id=str(existing.id),
+                    detail={
+                        "code": station.code,
+                        "network": station.network,
+                        "reason": "cross_tenant_code_collision",
+                    },
+                    now=clock(),
+                )
                 station_to_store = replace(station, id=existing.id)
                 station_map[station.code] = existing.id
                 station_by_id[existing.id] = station_to_store
@@ -295,7 +371,7 @@ def _run_onboarding(
                     ft = station_to_store.forecast_targets
                     station_target[existing.id] = next(iter(ft), "discharge")
                 t0 = time.perf_counter()
-                station_store.update_station(station_to_store)
+                _write_station_with_audit(station_to_store, is_update=True)
                 duration_ms = round((time.perf_counter() - t0) * 1000, 1)
                 stations_updated += 1
                 log.info(
@@ -306,7 +382,7 @@ def _run_onboarding(
                     duration_ms=duration_ms,
                 )
             else:
-                station_store.store_station(station)
+                _write_station_with_audit(station, is_update=False)
                 station_map[station.code] = station.id
                 station_by_id[station.id] = station
                 stations_created += 1
@@ -314,7 +390,9 @@ def _run_onboarding(
                     ft = station.forecast_targets
                     station_target[station.id] = next(iter(ft), "discharge")
                 log.info("station_stored", code=station.code)
-        except ConfigurationError:
+        except (ConfigurationError, TenantIsolationError):
+            # Fail-loud on a config error or a cross-tenant takeover attempt —
+            # never swallow the isolation rejection into `errors`.
             raise
         except Exception as exc:
             msg = f"Failed to store station {station.code}: {exc}"
@@ -734,15 +812,53 @@ def _run_onboarding(
                         priority = FALLBACK_ASSIGNMENT_PRIORITIES[model_id]
                     else:
                         priority = DEFAULT_PRIORITY
-                    create_station_assignment(
-                        station_id=station_id,
-                        model_id=model_id,
-                        time_step=time_step,
-                        priority=priority,
-                        station_store=station_store,
-                        clock=clock,
-                    )
+                    # Plan 147 Slice E: the assignment write + its
+                    # MODEL_ASSIGNED audit row run in ONE real transaction
+                    # (production `audited_writer`) so a failed audit insert
+                    # rolls the assignment back. The batch is authorized
+                    # against its single tenant up front
+                    # (`onboard_from_camelsch`), so this never rejects; None →
+                    # direct AUTOCOMMIT path (fake-store unit tests). Each
+                    # station's assignment is its own txn — the batch keeps its
+                    # partial-progress-on-failure behavior.
+                    if audited_writer is None or audit_log_store is None:
+                        create_station_assignment(
+                            station_id=station_id,
+                            model_id=model_id,
+                            time_step=time_step,
+                            priority=priority,
+                            station_store=station_store,
+                            clock=clock,
+                            principal=principal,
+                            audit_log_store=audit_log_store,
+                        )
+                    else:
+                        # Inside the atomic txn the internal tenant check is
+                        # RAISE-ONLY (no rejection row into a rollback-able txn —
+                        # residual BLOCKER 3).
+                        with audited_writer.transaction() as _stores:
+                            create_station_assignment(
+                                station_id=station_id,
+                                model_id=model_id,
+                                time_step=time_step,
+                                priority=priority,
+                                station_store=cast(
+                                    "StationStore", _stores["station_store"]
+                                ),
+                                clock=clock,
+                                principal=principal,
+                                audit_log_store=cast(
+                                    "AuditLogStore | None", _stores["audit_log_store"]
+                                ),
+                                audit_rejection=False,
+                            )
                     model_assignments_created += 1
+                except TenantIsolationError:
+                    # Fail-loud: a defensive TOCTOU isolation rejection in the
+                    # assignment txn must propagate, never be swallowed into
+                    # `errors` (Plan 147 Slice E). Unreachable given the
+                    # batch's loop-top pre-authorization; defense-in-depth.
+                    raise
                 except Exception as exc:
                     errors.append(
                         f"Model assignment failed for {station_id}/{model_id}: {exc}"
@@ -888,8 +1004,15 @@ def _run_onboarding(
                     compute_skill_fn=_make_skill_fn(),
                     parameter_store=parameter_store,
                     lineage_writer=lineage_writer,
+                    principal=principal,
+                    audit_log_store=audit_log_store,
+                    audited_writer=audited_writer,
                 )
                 models_trained += result_mo.promoted_count()
+            except TenantIsolationError:
+                # Fail-loud: a cross-tenant rejection from onboard_model must
+                # propagate, never be swallowed into `errors` (BLOCKER 3).
+                raise
             except Exception as exc:
                 errors.append(f"Training failed for model {model_id}: {exc}")
                 log.error(
@@ -1009,6 +1132,9 @@ def onboard_from_camelsch(
     lineage_writer: object = None,
     tenant_store: TenantStore | None = None,
     tenant_code: str = DEFAULT_TENANT_CODE,
+    principal: WritePrincipal | None = None,
+    audit_log_store: AuditLogStore | None = None,
+    audited_writer: AuditedWriter | None = None,
 ) -> OnboardingResult:
     from sapphire_flow.adapters.camelsch_adapter import (
         load_forcing,
@@ -1027,6 +1153,26 @@ def onboard_from_camelsch(
         if tenant_store is not None
         else DEFAULT_TENANT_ID
     )
+
+    # Plan 147 Slice E (G3/G6): the ENTIRE batch resolves to one tenant_id
+    # above, so a single guard here covers every station this call would
+    # store — checked BEFORE any data is loaded (no domain change on
+    # rejection). principal=None (back-compat, no enforcement) only in
+    # test/replay wiring; every production flow entrypoint threads a real
+    # principal.
+    if principal is not None and principal.tenant_id is not None:
+        from sapphire_flow.services.write_principal import enforce_tenant_isolation
+
+        enforce_tenant_isolation(
+            principal=principal,
+            target_tenant_id=tenant_id,
+            audit_log_store=audit_log_store,
+            event_type=AuditEventType.STATION_ONBOARDED,
+            target_type="onboarding_run",
+            target_id=tenant_code,
+            detail={"basin_ids": basin_ids},
+            now=clock(),
+        )
 
     start_utc = (
         ensure_utc(datetime.fromisoformat(start_date).replace(tzinfo=UTC))
@@ -1096,8 +1242,17 @@ def onboard_from_camelsch(
         calculated_specs=calculated_specs,
         lineage_writer=lineage_writer,
         tenant_id=tenant_id,
+        principal=principal,
+        audit_log_store=audit_log_store,
+        audited_writer=audited_writer,
     )
 
+    # Plan 147 Slice E (MAJOR 4): STATION_ONBOARDED is now emitted PER STATION,
+    # atomically with that station's row write inside `_run_onboarding`
+    # (`_write_station_with_audit`). The old single, post-batch, AUTOCOMMIT
+    # batch-summary audit row is dropped — it was best-effort and not paired
+    # with any single mutation. The batch totals remain observable via the
+    # structlog line below (non-audited).
     log.info(
         "onboarding_complete",
         stations_created=result.stations_created,

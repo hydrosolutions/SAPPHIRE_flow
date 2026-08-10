@@ -157,6 +157,13 @@ label = "excellent"
 # Station onboarding — v0 Swiss station set
 # 169 CAMELS-CH stations with verified LINDAS match (EXACT_ID)
 # See v0-scope.md § A4, architecture-context.md § Flow 5 step 5.1
+# Plan 147 Slice E (G6): this host's tenant write-authority. The Swiss v0
+# deployment is single-tenant — writable_tenants declares the ONE tenant this
+# host may onboard/train/promote/assign into; a write targeting any other
+# tenant is rejected (TenantIsolationError) + audited.
+[deployment]
+writable_tenants = ["sapphire"]
+
 [onboarding]
 data_source = "camels-ch"
 basin_ids = [

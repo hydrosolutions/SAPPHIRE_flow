@@ -114,6 +114,8 @@ def onboard_stations_flow(
     lineage_writer: object = None,
     tenant_store: object = None,
     tenant_code: str | None = None,
+    operator: str | None = None,
+    audit_log_store: object = None,
 ) -> object:
     if clock is None:
         clock = lambda: ensure_utc(datetime.now(UTC))  # noqa: E731
@@ -146,6 +148,8 @@ def onboard_stations_flow(
             tenant_store = stores.get("tenant_store")
         if lineage_writer is None:
             lineage_writer = stores.get("lineage_writer")
+        if audit_log_store is None:
+            audit_log_store = stores.get("audit_log_store")
 
         # Plan 115b2 §2B/§2C: the MeteoSwiss reanalysis binding + per-station
         # backfill-or-hold, wired ONLY on this production DB-backed path (not
@@ -248,6 +252,30 @@ def onboard_stations_flow(
     if qc_rules is None:
         qc_rules = _load_qc_rules()
 
+    resolved_tenant_code = tenant_code or DEFAULT_TENANT_CODE
+
+    # Plan 147 Slice E (G3/G6): the run's WritePrincipal — built from
+    # SAPPHIRE_CONFIG's [deployment] block, validated against the resolved
+    # target tenant_code. None (no enforcement) only in test/replay wiring
+    # with no tenant_store/SAPPHIRE_CONFIG.
+    from sapphire_flow.services.write_principal import resolve_flow_run_principal
+
+    principal = resolve_flow_run_principal(
+        tenant_store=tenant_store,  # type: ignore[arg-type]
+        tenant_code=resolved_tenant_code,
+        operator=operator,
+    )
+
+    # Plan 147 Slice E: the real-transaction seam for the batch's discrete
+    # audited writes (per-station assignment + per-unit promotion). Built only
+    # on the production DB-backed path (a bootstrapped `_conn` exists); None
+    # keeps the direct AUTOCOMMIT path for caller-injected stores.
+    audited_writer: object = None
+    if _conn is not None:
+        from sapphire_flow.store.audited_writer import make_audited_writer
+
+        audited_writer = make_audited_writer(_conn)
+
     log.info(
         "onboarding_starting",
         data_dir=data_dir,
@@ -286,7 +314,10 @@ def onboard_stations_flow(
         calculated_specs=calculated_specs or (),  # type: ignore[arg-type]
         lineage_writer=lineage_writer,
         tenant_store=tenant_store,  # type: ignore[arg-type]
-        tenant_code=tenant_code or DEFAULT_TENANT_CODE,
+        tenant_code=resolved_tenant_code,
+        principal=principal,
+        audit_log_store=audit_log_store,  # type: ignore[arg-type]
+        audited_writer=audited_writer,  # type: ignore[arg-type]
     )
 
     log.info(
