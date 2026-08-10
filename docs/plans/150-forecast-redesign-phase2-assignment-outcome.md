@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-10
 plan: 150
 title: Forecast-cycle redesign Phase 2 — per-assignment outcome SHAPE (structured fallback channel)
@@ -33,7 +33,7 @@ behaviour-preserving on every currently-green path, plus the one intended backst
 consistent with the ratified taxonomy decision (a) in Open items.
 
 ## Status
-**DRAFT — outcome-SHAPE sub-slice of the forecast-cycle redesign** (`docs/design/forecast-cycle-redesign.md`,
+**READY — outcome-SHAPE sub-slice of the forecast-cycle redesign** (`docs/design/forecast-cycle-redesign.md`,
 "Build sequence" item 2, `:272`: *"Migrate the station runner to consume per-assignment `ModelRunContext`,
 returning a per-assignment success/failure result (fallback chain intact; a missing context ≠ a dead station). Still
 one cycle."* — Phase 2 delivers the **success/failure result shape** half of that item; see the Owner scope
