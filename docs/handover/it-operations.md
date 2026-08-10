@@ -336,9 +336,10 @@ All human roles (org admin, IT admin, model admin, forecaster) require two-facto
 After first boot, the system has no users. Run this command on the server to create the first org admin account:
 
 ```bash
-docker compose exec api python -m sapphire_flow.cli create-admin \
-    --username "admin@dhm.gov.np" \
+docker compose exec api /entrypoint.sh python -m sapphire_flow.cli.access_tokens create-admin \
     --name "Admin Name"
+# `/entrypoint.sh` supplies DATABASE_URL (docker compose exec bypasses the ENTRYPOINT);
+# create-admin takes only --name (+ optional --expires-days) — it is always unscoped/global.
 ```
 
 This command:

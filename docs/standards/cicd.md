@@ -707,7 +707,7 @@ Two host/Docker secrets `/health/detail`-auth introduces:
 
 1. `openssl rand -base64 32 > ./secrets/access_token_pepper` (or the `~/.config/sapphire-flow/secrets/` dev path — § Secrets management § Development in `security.md`).
 2. `docker compose up -d --build` (the API will refuse to start without the pepper).
-3. `docker compose exec api python -m sapphire_flow.cli.access_tokens create-admin --name "watchdog-probe"` — prints the raw key ONCE.
+3. `docker compose exec api /entrypoint.sh python -m sapphire_flow.cli.access_tokens create-admin --name "watchdog-probe"` — prints the raw key ONCE. (The `/entrypoint.sh` wrapper is required — `docker compose exec` bypasses the ENTRYPOINT, so `DATABASE_URL` is otherwise unset and the CLI errors.)
 4. `printf '%s' '<raw-key>' > ./secrets/health_probe_token && chmod 600 ./secrets/health_probe_token` on the watchdog host (the mac-mini itself for the current deployment — same filesystem as `./secrets/slack_webhook_url`).
 5. Restart/re-trigger the watchdog launchd agent (or wait for its next 5-min tick) — `read_probe_token` picks up the file with no code change. The launchd plist (and `watchdog.sh`) pass `--probe-token-path ./secrets/health_probe_token` explicitly, resolved against the agent's `WorkingDirectory`.
 
@@ -716,7 +716,7 @@ Two host/Docker secrets `/health/detail`-auth introduces:
 Because the v1.0 key set is small (a handful of Nepal/Swiss consumer + admin keys):
 
 1. Generate a new pepper: `openssl rand -base64 32 > ./secrets/access_token_pepper.new`.
-2. `docker compose exec api python -m sapphire_flow.cli.access_tokens list` — record every active token's name/role/tenant/scope for re-creation.
+2. `docker compose exec api /entrypoint.sh python -m sapphire_flow.cli.access_tokens list` — record every active token's name/role/tenant/scope for re-creation.
 3. Swap the pepper file (`mv ./secrets/access_token_pepper.new ./secrets/access_token_pepper`) and `docker compose up -d --build api` to pick it up.
 4. For every token recorded in step 2: `revoke` the old id, then `create`/`create-admin` a replacement with the same name/role/tenant/station scope. Distribute the new raw keys to consumers out of band.
 5. Re-run step 4's watchdog admin token through the "First deploy" steps 3-5 above (the watchdog's probe token is itself an access token and must be reissued too).
