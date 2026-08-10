@@ -3039,6 +3039,9 @@ Callers discriminate between the two return types using `isinstance(result, Grid
 >     cycle: UtcDatetime
 >     raw: GriddedForecast | dict[StationId, WeatherForecastResult] | None
 >
+> # AssignmentFailureCause — FORWARD FI-BOUNDARY GROUPING (target). The three COARSE buckets the concrete
+> # assignment-level enum (below, landed by Plan 150) rolls up into once the FI-adapter follow-on stops flattening
+> # ModelFailure. NOT the code enum today; kept side-by-side with the landed one per Plan 150 D5.
 > class AssignmentFailureCause(Enum):      # all three are assignment-local (advance the fallback chain)
 >     MISSING_CONTEXT = auto()             # track/context absent -> model NOT called (expected)
 >     MODEL_FAILURE = auto()               # returned FI ModelFailure -> ModelFailure.cause preserved structurally
@@ -3046,6 +3049,40 @@ Callers discriminate between the two return types using `isinstance(result, Grid
 > ```
 > `ModelRunContext` stays **service-local** (defined in `services/`; shape per Plan 148). Enum/NewType names above
 > reuse existing symbols where they exist (`EnsembleMode`, `NwpCycleSource`, `StationId`/`ModelId`/`GroupId`).
+>
+> **`AssignmentFailureCause` — landed concrete, assignment-level (Plan 150, service-local in
+> `services/run_station_forecast.py`).** Placed **side-by-side** with the coarse FI-boundary grouping above (per
+> Plan 150 D5 — one is not replacing the other). This is the enum Plan 150 **lands in code**: eight concrete causes
+> at the assignment level, extensible by Phase 3 with **no runner/type rework** (new members + new production sites
+> only).
+> ```python
+> class AssignmentFailureCause(Enum):      # assignment-level: "why did THIS assignment fail" (advance the fallback chain)
+>     MODEL_NOT_FOUND = auto()
+>     INSUFFICIENT_COVERAGE = auto()
+>     NO_ARTIFACT = auto()
+>     WARM_UP_LOAD_FAILED = auto()
+>     UNSUPPORTED_STATEFUL_ENSEMBLE = auto()   # two return sites, one cause
+>     PREDICT_FAILED = auto()                  # conflates FI ModelFailure + unexpected-in-predict FOR NOW (Phase 2-FI follow-on splits it -> FI MODEL_FAILURE | UNEXPECTED_EXCEPTION)
+>     QC_FAILED = auto()
+>     UNEXPECTED_EXCEPTION = auto()            # loop-level SAP3 backstop only (maps 1:1 to the FI-side UNEXPECTED_EXCEPTION bucket)
+>     # Phase 3 ADDS (purely additive): MISSING_CONTEXT, TRACK_UNAVAILABLE
+>
+> @dataclass(frozen=True, kw_only=True, slots=True)
+> class AssignmentSuccess:
+>     result: StationForecastResult
+> @dataclass(frozen=True, kw_only=True, slots=True)
+> class AssignmentFailure:
+>     cause: AssignmentFailureCause
+>     detail: str
+> AssignmentOutcome = AssignmentSuccess | AssignmentFailure
+> ```
+> `MultiModelForecastResult.failed_models` (see "Multi-model combination types and services" below) changes from
+> `dict[ModelId, str]` to `dict[ModelId, AssignmentFailure]` with Plan 150. Mapping to the forward FI-boundary
+> grouping: "model not called before/around
+> predict" (`MODEL_NOT_FOUND`, `INSUFFICIENT_COVERAGE`, `NO_ARTIFACT`, `WARM_UP_LOAD_FAILED`,
+> `UNSUPPORTED_STATEFUL_ENSEMBLE`) vs "SAP3 backstop / graceful post-predict reject" (`PREDICT_FAILED`, `QC_FAILED`,
+> `UNEXPECTED_EXCEPTION`); Phase 3's `MISSING_CONTEXT`/`TRACK_UNAVAILABLE` land on the FI-side `MISSING_CONTEXT`
+> bucket.
 >
 > **`ModelRunContext` / `WarmUpState` (Plan 148, Phase 1 — shipped, READ side).** Both are **service-local**
 > (defined in `services/operational_inputs.py`, next to `OperationalInputMetadata`) — this spec documents their

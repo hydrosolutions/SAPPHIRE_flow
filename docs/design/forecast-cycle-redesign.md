@@ -271,6 +271,14 @@ canonical from the recap adapter · reuse the already-wired `ensemble_fanout`/`F
    no-op on both sides.
 2. **Migrate the station runner** to consume per-assignment `ModelRunContext`, returning a per-assignment
    success/failure result (fallback chain intact; a missing context ≠ a dead station). Still one cycle.
+   > **Reconciliation note (Plan 150, option A):** this item is delivered by **three** pieces, NOT by Plan 150
+   > alone — (i) **Plan 150 (Phase 2)** lands the per-assignment success/failure **result shape** (`AssignmentSuccess
+   > | AssignmentFailure`, assignment-level `AssignmentFailureCause`) + a loop-level backstop; (ii) a **Phase 2-FI
+   > follow-on** stops the FI adapter flattening a returned `ModelFailure` (so `PREDICT_FAILED` can split into FI
+   > `MODEL_FAILURE | UNEXPECTED_EXCEPTION`); (iii) the **`ModelRunContext`-consumption seam** (runner *receives* a
+   > per-assignment context, and missing context is determined *before* model execution) is **Phase 3** / a
+   > dedicated seam follow-on. Plan 150 still builds `ModelRunContext` internally in `_run_single_model` — it does
+   > not migrate the consumption seam.
 3. **`ForcingTrackKey` projection + per-track resolution + per-assignment assembly — ONE atomic phase (round-2
    merged old 3+4).** A per-`(track,station)` cycle has no coherent consumer while assembly is a single shared
    frame, so track resolution and per-assignment assembly land **together**: deduplicated tracks, the
