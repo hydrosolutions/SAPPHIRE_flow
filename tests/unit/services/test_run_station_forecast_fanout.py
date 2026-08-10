@@ -8,19 +8,22 @@ untouched: predict is called once, receiving the raw suffixed columns.
 RED reason (pre-implementation): ``EnsembleMode`` / the ``ensemble_mode`` field do
 not exist (collection error); and ``_run_single_model`` calls ``model.predict``
 directly instead of fanning out.
+
+Plan 148 (State-load failure semantics): the stateful-ensemble reject-guards are
+now ASSIGNMENT-LOCAL rather than a station-abort — a single-assignment station
+whose only assignment trips a reject-guard now returns ``None`` (recorded in
+``failed_models``, same channel as any other graceful predict failure) instead
+of the guard's ``ModelOutputError`` propagating out of ``run_station_forecast``.
 """
 
 from __future__ import annotations
 
-import dataclasses
 import random
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import polars as pl
-import pytest
 
-from sapphire_flow.exceptions import ModelOutputError
 from sapphire_flow.services.forecast_qc import ForecastOutputQualityChecker
 from sapphire_flow.services.run_station_forecast import (
     OperationalInputMetadata,
@@ -47,7 +50,7 @@ from sapphire_flow.types.model import (
     StationTrainingData,
 )
 from sapphire_flow.types.station import ModelAssignment
-from tests.fakes.fake_stores import FakeModelArtifactStore
+from tests.fakes.fake_stores import FakeModelArtifactStore, FakeModelStateStore
 
 _NOW = ensure_utc(datetime(2025, 6, 1, 6, 0, tzinfo=UTC))
 _STEP = timedelta(days=1)
@@ -234,7 +237,6 @@ def _metadata() -> OperationalInputMetadata:
         warm_up_source=WarmUpSource.FRESH,
         warm_up_state_age_hours=None,
         observation_staleness_hours=1.0,
-        prior_state=None,
         nwp_age_hours=0.5,
     )
 
@@ -275,7 +277,11 @@ def _id_gen() -> object:
     return gen
 
 
-def _run(model: object, metadata: OperationalInputMetadata | None = None) -> object:
+def _run(
+    model: object,
+    metadata: OperationalInputMetadata | None = None,
+    model_state_store: object | None = None,
+) -> object:
     from tests.conftest import make_deployment_config
 
     store = FakeModelArtifactStore()
@@ -297,6 +303,9 @@ def _run(model: object, metadata: OperationalInputMetadata | None = None) -> obj
         clock=lambda: _NOW,  # type: ignore[arg-type,return-value]
         id_gen=_id_gen(),  # type: ignore[arg-type]
         rng=random.Random(42),
+        model_state_store=model_state_store  # type: ignore[arg-type]
+        if model_state_store is not None
+        else FakeModelStateStore(),
     )
 
 
@@ -330,22 +339,30 @@ class TestEnsembleFanOutState:
         assert result.new_state is None
         assert result.ensembles["discharge"].member_count == 21
 
-    def test_stateful_ensemble_fails_loudly(self) -> None:
+    def test_stateful_ensemble_fails_assignment_locally(self) -> None:
         # A per-member predict returning a NON-None state is unsupported: combining
-        # N per-member states is ill-defined, so the fan-out must raise rather than
-        # silently drop the state.
-        with pytest.raises(ModelOutputError, match=r"(?i)per-member state|warm-up"):
-            _run(_StatefulEnsembleModel())
+        # N per-member states is ill-defined. Plan 148: the reject-guard is now
+        # ASSIGNMENT-LOCAL — this station has only ONE assignment, so it fails
+        # gracefully (recorded in ``failed_models``) and ``run_station_forecast``
+        # returns ``None`` (no primary), rather than the guard's
+        # ``ModelOutputError`` propagating out.
+        result = _run(_StatefulEnsembleModel())
 
-    def test_prior_state_on_ensemble_path_fails_loudly(self) -> None:
+        assert result is None
+
+    def test_prior_state_on_ensemble_path_fails_assignment_locally(self) -> None:
         # INPUT-side complement: an aggregate ``prior_state`` cannot be split per
-        # member, so feeding one to an ensemble-mode model is unsupported. The
-        # guard must PROPAGATE (raise), not be swallowed into a graceful string,
-        # and predict must never see the forwarded aggregate state.
+        # member, so feeding one to an ensemble-mode model is unsupported. Plan
+        # 148: the guard is assignment-local (caught, not propagated) — the
+        # single-assignment station returns ``None`` — and predict must never see
+        # the forwarded aggregate state.
         model = _PriorStateSpyEnsembleModel()
-        metadata = dataclasses.replace(_metadata(), prior_state=b"aggregate-state")
+        state_store = FakeModelStateStore()
+        state_store.store_state(
+            _STATION_ID, _MODEL_ID, _NOW - timedelta(hours=1), b"aggregate-state"
+        )
 
-        with pytest.raises(ModelOutputError, match=r"(?i)per-member state|warm-up"):
-            _run(model, metadata)
+        result = _run(model, model_state_store=state_store)
 
+        assert result is None
         assert model.seen_prior_states == []

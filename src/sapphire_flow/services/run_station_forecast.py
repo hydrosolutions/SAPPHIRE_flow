@@ -8,6 +8,7 @@ from uuid import UUID  # noqa: TC003
 
 import structlog
 
+from sapphire_flow.exceptions import ModelOutputError
 from sapphire_flow.services.ensemble_fanout import (
     ensembles_only,
     fan_out_ensemble,
@@ -17,7 +18,9 @@ from sapphire_flow.services.ensemble_fanout import (
 from sapphire_flow.services.input_quality import assess_input_quality
 from sapphire_flow.services.nwp_coverage import assess_future_coverage
 from sapphire_flow.services.operational_inputs import (
+    ModelRunContext,
     OperationalInputMetadata,  # noqa: TC001
+    load_warm_up_state,
 )
 from sapphire_flow.services.qc_datum import (
     add_forecast_datum_details,
@@ -37,7 +40,7 @@ from sapphire_flow.types.ids import (
 if TYPE_CHECKING:
     from sapphire_flow.config.deployment import DeploymentConfig
     from sapphire_flow.protocols.forecast_model import ForecastModel
-    from sapphire_flow.protocols.stores import ModelArtifactStore
+    from sapphire_flow.protocols.stores import ModelArtifactStore, ModelStateStore
     from sapphire_flow.services.forecast_qc import ForecastOutputQualityChecker
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.domain import (
@@ -96,7 +99,9 @@ def _run_single_model(
     station_id: StationId,
     assignment: ModelAssignment,
     inputs: StationModelInputs,
-    input_metadata: OperationalInputMetadata,
+    observation_staleness_hours: float | None,
+    nwp_age_hours: float | None,
+    model_state_store: ModelStateStore,
     models: dict[ModelId, ForecastModel],
     artifact_store: ModelArtifactStore,
     qc_checker: ForecastOutputQualityChecker,
@@ -162,6 +167,34 @@ def _run_single_model(
 
     artifact_id, artifact_bytes = artifact_result
 
+    # Plan 148 D3: resolve THIS assignment's warm-up state uniformly, after
+    # every eligibility gate above, before the reject-guard first reads state
+    # below. A store-read failure is assignment-local — it never aborts a
+    # station whose earlier (higher-priority) assignment already succeeded.
+    try:
+        warm_up = load_warm_up_state(
+            model_state_store, station_id, assignment.model_id, clock
+        )
+    except Exception as exc:
+        log.warning(
+            "run_station_forecast.warm_up_load_failed",
+            station_id=str(station_id),
+            model_id=str(assignment.model_id),
+            error=str(exc),
+        )
+        return f"warm-up state load failed: {exc}"
+
+    context = ModelRunContext(
+        station_id=station_id,
+        model_id=assignment.model_id,
+        inputs=inputs,
+        observation_staleness_hours=observation_staleness_hours,
+        nwp_age_hours=nwp_age_hours,
+        prior_state=warm_up.prior_state,
+        warm_up_source=warm_up.warm_up_source,
+        warm_up_state_age_hours=warm_up.warm_up_state_age_hours,
+    )
+
     is_ensemble = (
         model.data_requirements.ensemble_mode is EnsembleMode.ENSEMBLE  # type: ignore[union-attr]
     )
@@ -169,10 +202,23 @@ def _run_single_model(
         # INPUT-side complement of the output-side stateful check below: the
         # fan-out would forward the SAME aggregate ``prior_state`` into every
         # member's ``predict`` (no way to split one aggregate state per member),
-        # so a stateful ensemble model on the input side is unsupported. Raise
-        # OUTSIDE the ``try`` so it propagates loudly rather than being swallowed
-        # into a graceful "predict failed" string.
-        reject_prior_state_for_fanout(input_metadata.prior_state)
+        # so a stateful ensemble model on the input side is unsupported.
+        # Assignment-local (Plan 148 State-load failure semantics): caught
+        # here rather than propagated, so a lower-priority stateful-ensemble
+        # assignment never discards an already-succeeded higher-priority
+        # primary. Catches ``ModelOutputError`` ONLY — never widened to span
+        # ``predict`` below, so an FI ``ModelFailure`` (same exception class,
+        # raised from inside ``predict``) still maps to ``predict_failed``.
+        try:
+            reject_prior_state_for_fanout(context.prior_state)
+        except ModelOutputError as exc:
+            log.warning(
+                "run_station_forecast.unsupported_stateful_ensemble",
+                station_id=str(station_id),
+                model_id=str(assignment.model_id),
+                error=str(exc),
+            )
+            return f"unsupported stateful ensemble: {exc}"
 
     ensemble_member_states: list[bytes | None] | None = None
     try:
@@ -189,7 +235,7 @@ def _run_single_model(
             )
             ensembles = fan_out_ensemble(
                 predict_fn,
-                inputs,
+                context.inputs,
                 rng,
                 future_features=model.data_requirements.future_dynamic_features,  # type: ignore[union-attr]
             )
@@ -198,9 +244,9 @@ def _run_single_model(
         else:
             ensembles, new_state = model.predict(  # type: ignore[union-attr]
                 artifact,
-                inputs,
+                context.inputs,
                 rng,
-                prior_state=input_metadata.prior_state,
+                prior_state=context.prior_state,
             )
     except Exception as exc:
         log.warning(
@@ -214,9 +260,19 @@ def _run_single_model(
     # Combining N per-member warm-up states into one aggregate is ill-defined.
     # Stateless ensemble models (all per-member states ``None``) lose nothing —
     # report ``new_state = None``. But a NON-None per-member state means a stateful
-    # ensemble model, which is unsupported: fail loudly rather than silently drop.
+    # ensemble model, which is unsupported. Assignment-local, same rationale as
+    # the input-side guard above.
     if ensemble_member_states is not None:
-        reject_stateful_ensemble_states(ensemble_member_states)
+        try:
+            reject_stateful_ensemble_states(ensemble_member_states)
+        except ModelOutputError as exc:
+            log.warning(
+                "run_station_forecast.unsupported_stateful_ensemble",
+                station_id=str(station_id),
+                model_id=str(assignment.model_id),
+                error=str(exc),
+            )
+            return f"unsupported stateful ensemble: {exc}"
 
     ensembles = cast("dict[str, ForecastEnsemble]", ensembles)
     new_state = cast("bytes | None", new_state)
@@ -255,11 +311,11 @@ def _run_single_model(
 
     iq_config = config.input_quality
     input_quality, input_quality_flags = assess_input_quality(
-        observation_staleness_hours=input_metadata.observation_staleness_hours,
-        warm_up_source=input_metadata.warm_up_source,  # type: ignore[arg-type]
-        warm_up_state_age_hours=input_metadata.warm_up_state_age_hours,
+        observation_staleness_hours=context.observation_staleness_hours,
+        warm_up_source=context.warm_up_source,
+        warm_up_state_age_hours=context.warm_up_state_age_hours,
         nwp_cycle_source=nwp_cycle_source,
-        nwp_age_hours=input_metadata.nwp_age_hours,
+        nwp_age_hours=context.nwp_age_hours,  # type: ignore[arg-type]
         obs_partial_hours=config.observation_staleness_warning_hours,
         config=iq_config,
         warmup_partial_hours=iq_config.warmup_snapshot_age_partial_hours,
@@ -276,15 +332,15 @@ def _run_single_model(
             station_id=station_id,
             model_id=assignment.model_id,
             model_artifact_id=artifact_id,
-            issued_at=inputs.issue_time,
+            issued_at=context.inputs.issue_time,
             nwp_cycle_reference_time=nwp_cycle_reference_time,
             nwp_cycle_source=nwp_cycle_source,
             representation=ensemble.representation,
             status=ForecastStatus.RAW,
             version=1,
-            warm_up_source=input_metadata.warm_up_source,  # type: ignore[arg-type]
-            warm_up_state_age_hours=input_metadata.warm_up_state_age_hours,
-            observation_staleness_hours=input_metadata.observation_staleness_hours,
+            warm_up_source=context.warm_up_source,
+            warm_up_state_age_hours=context.warm_up_state_age_hours,
+            observation_staleness_hours=context.observation_staleness_hours,
             ensemble=ensemble,
             created_at=now,
             updated_at=now,
@@ -322,9 +378,15 @@ def run_all_station_forecasts(
     clock: Callable[[], UtcDatetime],
     id_gen: Callable[[], UUID],
     rng: random.Random,
+    model_state_store: ModelStateStore,
     water_level_datum_masl: float | None = None,
 ) -> MultiModelForecastResult:
     sorted_assignments = sorted(assignments, key=lambda a: a.priority)
+    # Slim per-run scalars extracted ONCE from the shared ``input_metadata``
+    # (Plan 148 D3) — every assignment's own warm-up state is read separately,
+    # per-assignment, inside ``_run_single_model``.
+    observation_staleness_hours = input_metadata.observation_staleness_hours
+    nwp_age_hours = input_metadata.nwp_age_hours
 
     results: dict[ModelId, StationForecastResult] = {}
     priorities: dict[ModelId, int] = {}
@@ -337,7 +399,9 @@ def run_all_station_forecasts(
             station_id=station_id,
             assignment=assignment,
             inputs=inputs,
-            input_metadata=input_metadata,
+            observation_staleness_hours=observation_staleness_hours,
+            nwp_age_hours=nwp_age_hours,
+            model_state_store=model_state_store,
             models=models,
             artifact_store=artifact_store,
             qc_checker=qc_checker,
@@ -385,6 +449,7 @@ def run_station_forecast(
     clock: Callable[[], UtcDatetime],
     id_gen: Callable[[], UUID],
     rng: random.Random,
+    model_state_store: ModelStateStore,
     water_level_datum_masl: float | None = None,
 ) -> StationForecastResult | None:
     multi = run_all_station_forecasts(
@@ -404,6 +469,7 @@ def run_station_forecast(
         clock=clock,
         id_gen=id_gen,
         rng=rng,
+        model_state_store=model_state_store,
         water_level_datum_masl=water_level_datum_masl,
     )
     if multi.primary_model_id is None:

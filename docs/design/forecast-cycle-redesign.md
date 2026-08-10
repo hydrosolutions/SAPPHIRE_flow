@@ -254,13 +254,21 @@ canonical from the recap adapter · reuse the already-wired `ensemble_fanout`/`F
 - **Separate:** 134 (control bridge), 145/146 (snow forcing), 143 (onboarding). Reuses the existing fan-out stack.
 
 ## Build sequence (re-ordered per round-1/2; control-only green at every step)
-1. **Assignment-keyed `ModelRunContext` + split prior-state loading (round-2).** Per-assignment inputs +
-   metadata + provenance + `prior_state`. Note state is already fetched by `(station_id, model_id)` inside
-   assembly (`operational_inputs.py:489`) but today that model id is only the *assembly* assignment
-   (`run_forecast_cycle.py:1851`) — so Phase 1 must **split prior-state loading from the shared input assembly**
-   and load state per assignment, with a test proving two deterministic assignments get distinct states
-   (ensemble rejection unchanged, `ensemble_fanout.py:47`). Inputs are still filled from today's shared frame
-   (behaviour-preserving); this is the consumer everything else needs.
+1. **Assignment-keyed `ModelRunContext` + split prior-state loading (round-2). — DONE (Plan 148, READ side).**
+   Per-assignment inputs + metadata + provenance + `prior_state`. Note state is already fetched by
+   `(station_id, model_id)` inside assembly (`operational_inputs.py:489`) but today that model id is only the
+   *assembly* assignment (`run_forecast_cycle.py:1851`) — so Phase 1 must **split prior-state loading from the
+   shared input assembly** and load state per assignment, with a test proving two deterministic assignments get
+   distinct states (ensemble rejection unchanged, `ensemble_fanout.py:47`). Inputs are still filled from today's
+   shared frame (behaviour-preserving); this is the consumer everything else needs. **Shipped**: `ModelRunContext`
+   + `WarmUpState` (service-local, `services/operational_inputs.py`); the station-cycle runner
+   (`_run_single_model`) now reads warm-up state per `(station_id, model_id)`, uniformly, after the eligibility
+   gates; the stateful-ensemble reject-guards are assignment-local. `inputs`/the shared scalars are still the
+   station superset (component 3 below, not yet built). **The WRITE side remains primary-only**
+   (`run_forecast_cycle.py` still persists only the primary/combination-loop `new_state` per station-cycle) — a
+   genuinely heterogeneous-stateful station still cannot round-trip end-to-end until a later phase makes the write
+   side per-assignment too; deliberately deferred (Plan 148 Non-goals) since every current (stateless) config is a
+   no-op on both sides.
 2. **Migrate the station runner** to consume per-assignment `ModelRunContext`, returning a per-assignment
    success/failure result (fallback chain intact; a missing context ≠ a dead station). Still one cycle.
 3. **`ForcingTrackKey` projection + per-track resolution + per-assignment assembly — ONE atomic phase (round-2
