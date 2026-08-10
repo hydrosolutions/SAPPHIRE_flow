@@ -107,7 +107,7 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
   `COMPLETE (archived, PR #139)` — first behaviour-preserving slice of `docs/design/forecast-cycle-redesign.md`:
   split warm-up state loading to per-`(station_id, model_id)` + the assignment-keyed run unit. `/plan`-reviewed (0
   blockers, majors folded). Fixes a latent shared-state bug; foundation for later phases. Merged to `main` at
-  `fa14b9a`.
+  `fa14b9a`. See [archive/148-forecast-redesign-phase1-modelruncontext.md](archive/148-forecast-redesign-phase1-modelruncontext.md).
 - **149** — Reconcile the forecast-cycle redesign with the repo architecture + standards — `SUPERSEDED / ABSORBED`
   (2026-07-24). The alignment findings + 3 real contract gaps were folded DIRECTLY into `forecast-cycle-redesign.md`
   (§ Formal contracts/layering), `architecture-context.md` (Flow 1 + combination rule), and
@@ -249,4 +249,4 @@ These are named in `architecture-context.md` / `v0-scope.md` but have no dedicat
 
 ## Archived
 
-See [archive/](archive/) for completed and archived plans (74 entries).
+See [archive/](archive/) for completed and archived plans (75 entries).

@@ -514,11 +514,13 @@ class _RaisingForModelArtifactStore:
     def __init__(self, inner: FakeModelArtifactStore, raise_for: ModelId) -> None:
         self._inner = inner
         self._raise_for = raise_for
+        self.raised_for_target = False
 
     def fetch_active_artifact_for_station(
         self, station_id: StationId, model_id: ModelId
     ) -> tuple[ArtifactId, bytes] | None:
         if model_id == self._raise_for:
+            self.raised_for_target = True
             raise RuntimeError("unexpected artifact-store failure")
         return self._inner.fetch_active_artifact_for_station(station_id, model_id)
 
@@ -4460,6 +4462,11 @@ enabled = false
         stored = list(forecast_store._forecasts.values())
         primary_forecasts = [f for f in stored if f.model_id == model_id_a]
         assert len(primary_forecasts) > 0
+
+        # Proves assignment B was actually reached and its unanticipated
+        # exception fired — closes the false-pass path where the flow could
+        # stop after A's success without ever invoking B.
+        assert artifact_store.raised_for_target is True
 
     def test_station_skipped_when_model_not_loaded(self) -> None:
         sid = StationId(uuid4())
