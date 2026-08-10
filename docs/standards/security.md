@@ -154,9 +154,10 @@ At this point the system is running with zero users.
 A one-time CLI command, run directly on the server via `docker compose exec`. This is the only path that bypasses the authentication system.
 
 ```
-docker compose exec api python -m sapphire_flow.cli create-admin \
-    --username "<email>" \
+docker compose exec api /entrypoint.sh python -m sapphire_flow.cli.access_tokens create-admin \
     --name "<display name>"
+# `/entrypoint.sh` supplies DATABASE_URL (docker compose exec bypasses the ENTRYPOINT);
+# create-admin takes only --name (+ optional --expires-days), no --username.
 ```
 
 The command:

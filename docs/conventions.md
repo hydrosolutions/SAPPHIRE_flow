@@ -73,8 +73,9 @@ POST   /api/v1/access-tokens/{id}/regenerate
 **v1.0 headless auth (REALIZED, Plan 147 Slice C):** every route above except `GET /api/v1/health`
 requires a valid, non-expired, non-disabled `Authorization: Bearer <key>` access token (`consumer`,
 station-scoped, or `admin`, unscoped). There is no `/access-tokens` HTTP management surface yet —
-token lifecycle is CLI-only: `docker compose exec api python -m sapphire_flow.cli.access_tokens
-{create,list,revoke,create-admin}`. See `security.md` § v1.0 headless subset.
+token lifecycle is CLI-only: `docker compose exec api /entrypoint.sh python -m sapphire_flow.cli.access_tokens
+{create,list,revoke,create-admin}` (the `/entrypoint.sh` wrapper supplies `DATABASE_URL`, which
+`docker compose exec` otherwise skips). See `security.md` § v1.0 headless subset.
 
 - Version always in path: `/api/v1/`
 - Pagination: `limit` + `after` (cursor-based)

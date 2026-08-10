@@ -3,9 +3,15 @@
 `create`/`list`/`revoke` + a `create-admin` bootstrap for v1.0 — in-place
 `rotate`/`scope`-edit are deferred to v1.x; rotation = revoke + create).
 
-Run via: docker compose exec api python -m sapphire_flow.cli.access_tokens <command> ...
-(needs DATABASE_URL + the access_token_pepper secret mounted — the same `api`
-service the CLI shares with the running API, per `security.md` bootstrap).
+Run via (note the `/entrypoint.sh` wrapper — REQUIRED):
+
+    docker compose exec api /entrypoint.sh \
+        python -m sapphire_flow.cli.access_tokens <command> ...
+
+`docker compose exec` bypasses the image ENTRYPOINT, so `DATABASE_URL` (which
+`entrypoint.sh` builds from the mounted DB-password secret) is otherwise unset
+and the CLI raises `KeyError: 'DATABASE_URL'`. The access_token_pepper secret is
+mounted into the same `api` service, per `security.md` bootstrap.
 
 Token create/revoke and their `audit_log` insert share ONE RW transaction
 (Slice B atomicity rule) — a failed audit insert rolls back the token write.
