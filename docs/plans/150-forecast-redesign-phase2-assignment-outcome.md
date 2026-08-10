@@ -344,17 +344,17 @@ Strictly sequential: T1 → T2 → T3.
 - Any write-side / state-persistence change (still Plan 148's named deferred follow-on, unrelated to this phase).
 
 ## Open items
-- **OWNER DECISION — blocks READY. Failure-taxonomy shape:** should Phase 2 (a) land the 7 concrete gate-causes
-  now with `PREDICT_FAILED` conflating FI-`ModelFailure` and unexpected-exception, splitting later when an
-  FI-adapter follow-on emits a typed signal (this plan's current direction — pure refactor, minimal scope, but a
-  later enum SPLIT); or (b) pull the FI-adapter typed-`ModelFailure` signal into Phase 2 so `MODEL_FAILURE` vs.
-  `UNEXPECTED_EXCEPTION` are distinct from the start (larger scope, touches the MANDATORY FI-adherence boundary, no
-  later split); or (c) keep only the spec's 3 coarse variants and NOT introduce the 7 concrete ones. Recommendation:
-  (a) — keeps Phase 2 a behaviour-preserving refactor and defers FI-boundary work to a focused follow-on; the later
-  split is a small, well-contained enum change. Owner to ratify before READY.
+- **RESOLVED (owner ratified 2026-08-10): option (a).** Failure-taxonomy shape = land the 7 concrete gate-causes
+  now; `PREDICT_FAILED` conflates FI-`ModelFailure` and unexpected-exception for Phase 2, and a later focused
+  FI-adapter follow-on emits a typed signal and SPLITS it into `MODEL_FAILURE`/`UNEXPECTED_EXCEPTION`. Phase 2 stays
+  a behaviour-preserving refactor; the spec's 3-variant FI sketch is kept as the forward target (not erased, D5).
+  (Rejected: (b) pull the FI-adapter typed signal in now — larger scope, touches the MANDATORY FI-adherence
+  boundary; (c) keep only the 3 coarse variants — loses today's concrete per-gate reasons.)
 - D5's reconciliation of the spec's 3-variant sketch with this phase's 7-variant landed enum (kept side-by-side,
   not one replacing the other, per the owner-decision item above) is otherwise settled for direction (a); flagged
   here rather than left as a silent TBD.
-- **Gate contingent on #139.** If Plan 148's PR #139 changes line numbers before merging to `main` (e.g. a review
-  round shifts `_run_single_model`'s body), re-verify this plan's D2 table and D6 line citations against the
-  merged `main` state before `/implement` runs — the citations here are pinned to worktree commit `d11e20e`.
+- **#139 MERGED (2026-08-10, main `fa14b9a`) — grounding gate lifted.** Plan 148's code (`ModelRunContext`, the
+  post-148 `_run_single_model`) is now on `main`, so this plan is groundable and `/plan`-finalizable. Citation
+  re-ground note: source citations are stable (148's files squash-merged unchanged — e.g. `_run_single_model ->
+  StationForecastResult | str` still at `run_station_forecast.py:118`), but SPEC line numbers drifted (147 added
+  ~30 lines: `MultiModelForecastResult.failed_models` moved `3609 → 3639`). `/plan` re-grounds these against `main`.
