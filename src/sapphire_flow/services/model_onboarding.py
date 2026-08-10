@@ -1,8 +1,10 @@
+# pyright: reportUnknownMemberType=false, reportUnknownArgumentType=false
 from __future__ import annotations
 
 import hashlib
 import time
 import traceback
+from contextlib import nullcontext
 from datetime import UTC
 from typing import TYPE_CHECKING, Protocol, cast
 from uuid import UUID
@@ -14,10 +16,12 @@ from sapphire_flow.exceptions import (
     ConfigurationError,
     ModelSmokeTestError,
     StoreError,
+    TenantIsolationError,
 )
 from sapphire_flow.types.basin import non_null_static_keys
 from sapphire_flow.types.enums import (
     ArtifactScope,
+    AuditEventType,
     EnsembleMode,
     EnsembleRepresentation,
     ModelAssignmentStatus,
@@ -54,6 +58,7 @@ if TYPE_CHECKING:
         StationForecastModel,
     )
     from sapphire_flow.protocols.stores import (
+        AuditLogStore,
         BasinStore,
         FlowRegimeConfigStore,
         HindcastStore,
@@ -65,6 +70,7 @@ if TYPE_CHECKING:
         StationGroupStore,
         StationStore,
     )
+    from sapphire_flow.store.audited_writer import AuditedWriter
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.ensemble import ForecastEnsemble
     from sapphire_flow.types.ids import ArtifactId
@@ -74,6 +80,7 @@ if TYPE_CHECKING:
         StationTrainingData,
     )
     from sapphire_flow.types.station import StationConfig
+    from sapphire_flow.types.write_principal import WritePrincipal
 
 log = structlog.get_logger(__name__)
 
@@ -865,8 +872,38 @@ def create_station_assignment(
     priority: int,
     station_store: StationStore,
     clock: Callable[[], UtcDatetime],
+    *,
+    principal: WritePrincipal | None = None,
+    audit_log_store: AuditLogStore | None = None,
+    audit_rejection: bool = True,
 ) -> ModelAssignment:
+    """Plan 147 Slice E: tenant write-isolation chokepoint for station-model
+    assignment. ``principal``/``audit_log_store`` are optional for back-compat
+    (tests/replay); production flow entrypoints always thread a real
+    principal (see ``services/write_principal.py``).
+
+    ``audit_rejection=False`` → the internal tenant check is RAISE-ONLY (no
+    rejection ``audit_log`` row); atomic (txn) call sites pass ``False`` so a
+    defensive rejection is never written into a rollback-able txn (residual
+    BLOCKER 3). SUCCESS ``MODEL_ASSIGNED`` still writes on ``audit_log_store``."""
     _assert_assignment_priority_invariant(model_id, priority)
+
+    if principal is not None and principal.tenant_id is not None:
+        from sapphire_flow.services.write_principal import enforce_tenant_isolation
+
+        station = station_store.fetch_station(station_id)
+        if station is not None:
+            enforce_tenant_isolation(
+                principal=principal,
+                target_tenant_id=station.tenant_id,
+                audit_log_store=audit_log_store if audit_rejection else None,
+                event_type=AuditEventType.MODEL_ASSIGNED,
+                target_type="station",
+                target_id=str(station_id),
+                detail={"model_id": str(model_id)},
+                now=clock(),
+            )
+
     existing = station_store.fetch_model_assignments(station_id)
     for assignment in existing:
         if assignment.model_id == model_id:
@@ -888,6 +925,24 @@ def create_station_assignment(
         created_at=clock(),
     )
     station_store.store_model_assignment(new_assignment)
+
+    if audit_log_store is not None:
+        from sapphire_flow.types.auth import AuditEntry
+
+        audit_log_store.append_entry(
+            AuditEntry.system(
+                event_type=AuditEventType.MODEL_ASSIGNED,
+                target_type="station",
+                target_id=str(station_id),
+                detail={
+                    "model_id": str(model_id),
+                    "operator": principal.id if principal is not None else None,
+                    "outcome": "assigned",
+                },
+                ip_address=None,
+                created_at=new_assignment.created_at,
+            )
+        )
     return new_assignment
 
 
@@ -898,8 +953,38 @@ def create_group_assignment(
     priority: int,
     group_store: StationGroupStore,
     clock: Callable[[], UtcDatetime],
+    *,
+    principal: WritePrincipal | None = None,
+    audit_log_store: AuditLogStore | None = None,
+    audit_rejection: bool = True,
 ) -> GroupModelAssignment:
+    """Plan 147 Slice E: tenant write-isolation chokepoint for group-model
+    assignment. ``principal``/``audit_log_store`` are optional for back-compat
+    (tests/replay); production flow entrypoints always thread a real
+    principal (see ``services/write_principal.py``).
+
+    ``audit_rejection=False`` → the internal tenant check is RAISE-ONLY (no
+    rejection ``audit_log`` row); atomic (txn) call sites pass ``False`` so a
+    defensive rejection is never written into a rollback-able txn (residual
+    BLOCKER 3). SUCCESS ``MODEL_ASSIGNED`` still writes on ``audit_log_store``."""
     _assert_assignment_priority_invariant(model_id, priority)
+
+    if principal is not None and principal.tenant_id is not None:
+        from sapphire_flow.services.write_principal import enforce_tenant_isolation
+
+        group = group_store.fetch_group(group_id)
+        if group is not None:
+            enforce_tenant_isolation(
+                principal=principal,
+                target_tenant_id=group.tenant_id,
+                audit_log_store=audit_log_store if audit_rejection else None,
+                event_type=AuditEventType.MODEL_ASSIGNED,
+                target_type="station_group",
+                target_id=str(group_id),
+                detail={"model_id": str(model_id)},
+                now=clock(),
+            )
+
     existing = group_store.fetch_group_model_assignments(group_id)
     for assignment in existing:
         if assignment.model_id == model_id:
@@ -921,6 +1006,24 @@ def create_group_assignment(
         created_at=clock(),
     )
     group_store.store_group_model_assignment(new_assignment)
+
+    if audit_log_store is not None:
+        from sapphire_flow.types.auth import AuditEntry
+
+        audit_log_store.append_entry(
+            AuditEntry.system(
+                event_type=AuditEventType.MODEL_ASSIGNED,
+                target_type="station_group",
+                target_id=str(group_id),
+                detail={
+                    "model_id": str(model_id),
+                    "operator": principal.id if principal is not None else None,
+                    "outcome": "assigned",
+                },
+                ip_address=None,
+                created_at=new_assignment.created_at,
+            )
+        )
     return new_assignment
 
 
@@ -1022,6 +1125,9 @@ def onboard_model(
     skip_smoke_test: bool = False,
     parameter_store: ParameterStore | None = None,
     lineage_writer: object = None,
+    principal: WritePrincipal | None = None,
+    audit_log_store: AuditLogStore | None = None,
+    audited_writer: AuditedWriter | None = None,
 ) -> ModelOnboardingResult:
     from sapphire_flow.protocols.forecast_model import (
         GroupForecastModel,
@@ -1065,6 +1171,36 @@ def onboard_model(
             station_id=sid_str,
             group_id=gid_str,
         )
+
+        # Plan 147 Slice E (BLOCKER 2): authorize this unit's tenant on the
+        # DURABLE connection BEFORE any store write (compat/train/store below).
+        # Previously the tenant check only ran at promotion (Step 8), so a
+        # foreign-tenant unit could persist a TRAINING artifact + lineage (and
+        # a skill-gate early-return could skip promotion entirely, never
+        # checking it). Foreign → durable rejection audit + raise fail-loud.
+        # Promotion/assignment keep their own checks as defense-in-depth.
+        if principal is not None and principal.tenant_id is not None:
+            from sapphire_flow.services.write_principal import (
+                enforce_tenant_isolation,
+                target_tenant_id_for_unit,
+            )
+
+            _unit_tenant = target_tenant_id_for_unit(unit, station_store, group_store)
+            if _unit_tenant is not None:
+                enforce_tenant_isolation(
+                    principal=principal,
+                    target_tenant_id=_unit_tenant,
+                    audit_log_store=audit_log_store,
+                    event_type=AuditEventType.MODEL_REJECTED,
+                    target_type="training_unit",
+                    target_id=sid_str or gid_str or str(model_id),
+                    detail={
+                        "model_id": str(model_id),
+                        "station_id": sid_str,
+                        "group_id": gid_str,
+                    },
+                    now=clock(),
+                )
 
         # Step 1: Compatibility check
         avail_static: dict[StationId, frozenset[str]] = {}
@@ -1470,13 +1606,57 @@ def onboard_model(
 
         # Step 8: Promote artifact (TRAINING → ACTIVE)
         try:
-            promote_artifact(
-                artifact_store=artifact_store,
-                model_id=model_id,
-                new_id=artifact_id,
-                station_id=unit.station_id,
-                group_id=unit.group_id,
+            _target_tenant_id = None
+            if principal is not None and principal.tenant_id is not None:
+                from sapphire_flow.services.write_principal import (
+                    target_tenant_id_for_unit,
+                )
+
+                _target_tenant_id = target_tenant_id_for_unit(
+                    unit, station_store, group_store
+                )
+
+            # Plan 147 Slice E: the SUPERSEDED/ACTIVE transitions + the
+            # MODEL_PROMOTED audit row run in ONE real transaction (production
+            # `audited_writer`) so a failed audit insert rolls the promotion
+            # back. The onboarding batch is authorized against its single
+            # tenant up front (`onboard_from_camelsch`), so this in-batch
+            # promotion never rejects — no separate pre-authorize is needed.
+            # No writer (or no audit store) → the direct AUTOCOMMIT path,
+            # unchanged (fake-store unit tests). Each unit's promotion is its
+            # own txn, preserving the batch's partial-progress semantics.
+            _promote_direct = audited_writer is None or audit_log_store is None
+            _promote_ctx = (
+                nullcontext(
+                    {
+                        "artifact_store": artifact_store,
+                        "audit_log_store": audit_log_store,
+                    }
+                )
+                if _promote_direct
+                else audited_writer.transaction()
             )
+            with _promote_ctx as _stores:
+                # Inside the atomic txn the internal tenant check is RAISE-ONLY
+                # (no rejection row written into a rollback-able txn — residual
+                # BLOCKER 3); the loop-top pre-authorization is the audited
+                # rejection point.
+                promote_artifact(
+                    artifact_store=cast(
+                        "ModelArtifactStore", _stores["artifact_store"]
+                    ),
+                    model_id=model_id,
+                    new_id=artifact_id,
+                    station_id=unit.station_id,
+                    group_id=unit.group_id,
+                    principal=principal,
+                    target_tenant_id=_target_tenant_id,
+                    audit_log_store=cast(
+                        "AuditLogStore | None", _stores["audit_log_store"]
+                    ),
+                    now=clock(),
+                    audit_rejection=_promote_direct,
+                )
             log.info(
                 "model.promotion_completed",
                 model_id=str(model_id),
@@ -1484,6 +1664,12 @@ def onboard_model(
                 station_id=sid_str,
                 group_id=gid_str,
             )
+        except TenantIsolationError:
+            # Fail-loud: a tenant-isolation rejection must propagate, never be
+            # converted to a per-unit FAILED_ASSIGNMENT (BLOCKER 3). The
+            # loop-top pre-authorization above should make this unreachable;
+            # this is the defense-in-depth backstop.
+            raise
         except Exception as exc:
             log.error(
                 "model.promotion_failed",
@@ -1508,27 +1694,60 @@ def onboard_model(
 
         # Step 9: Create assignment
         try:
-            if unit.station_id is not None:
-                create_station_assignment(
-                    station_id=unit.station_id,
-                    model_id=model_id,
-                    time_step=unit.time_step,
-                    priority=resolved_assignment_priority,
-                    station_store=station_store,
-                    clock=clock,
+            # Plan 147 Slice E: the assignment write + its MODEL_ASSIGNED audit
+            # row run in ONE real transaction (production `audited_writer`).
+            # Batch-authorized up front, so no in-batch rejection; no writer
+            # (or no audit store) → direct AUTOCOMMIT path (fake-store tests).
+            _assign_direct = audited_writer is None or audit_log_store is None
+            _assign_ctx = (
+                nullcontext(
+                    {
+                        "station_store": station_store,
+                        "group_store": group_store,
+                        "audit_log_store": audit_log_store,
+                    }
                 )
-            else:
-                # TrainingUnit.__post_init__ guarantees exactly-one-of
-                # station_id / group_id; group_id is set in this branch.
-                assert unit.group_id is not None
-                create_group_assignment(
-                    group_id=unit.group_id,
-                    model_id=model_id,
-                    time_step=unit.time_step,
-                    priority=resolved_assignment_priority,
-                    group_store=group_store,
-                    clock=clock,
-                )
+                if _assign_direct
+                else audited_writer.transaction()
+            )
+            # Inside the atomic txn the internal check is RAISE-ONLY (no
+            # rejection row into a rollback-able txn — residual BLOCKER 3).
+            with _assign_ctx as _stores:
+                _st_store = cast("StationStore", _stores["station_store"])
+                _gp_store = cast("StationGroupStore", _stores["group_store"])
+                _audit = cast("AuditLogStore | None", _stores["audit_log_store"])
+                if unit.station_id is not None:
+                    create_station_assignment(
+                        station_id=unit.station_id,
+                        model_id=model_id,
+                        time_step=unit.time_step,
+                        priority=resolved_assignment_priority,
+                        station_store=_st_store,
+                        clock=clock,
+                        principal=principal,
+                        audit_log_store=_audit,
+                        audit_rejection=_assign_direct,
+                    )
+                else:
+                    # TrainingUnit.__post_init__ guarantees exactly-one-of
+                    # station_id / group_id; group_id is set in this branch.
+                    assert unit.group_id is not None
+                    create_group_assignment(
+                        group_id=unit.group_id,
+                        model_id=model_id,
+                        time_step=unit.time_step,
+                        priority=resolved_assignment_priority,
+                        group_store=_gp_store,
+                        clock=clock,
+                        principal=principal,
+                        audit_log_store=_audit,
+                        audit_rejection=_assign_direct,
+                    )
+        except TenantIsolationError:
+            # Fail-loud: never convert an isolation rejection to
+            # FAILED_ASSIGNMENT (BLOCKER 3). Unreachable given the loop-top
+            # pre-authorization; defense-in-depth backstop.
+            raise
         except Exception as exc:
             log.error(
                 "model.assignment_failed",
