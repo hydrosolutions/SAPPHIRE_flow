@@ -3673,7 +3673,7 @@ class MultiModelForecastResult:
     results: dict[ModelId, StationForecastResult]  # all successful models
     priorities: dict[ModelId, int]                  # model_id → assignment priority
     primary_model_id: ModelId | None               # highest-priority success (for fallback)
-    failed_models: dict[ModelId, str]              # model_id → error message
+    failed_models: dict[ModelId, AssignmentFailure] # model_id → structured failure (cause + detail)
 
     @property
     def combinable_results(self) -> dict[ModelId, StationForecastResult]:
@@ -3683,6 +3683,15 @@ class MultiModelForecastResult:
             if mid not in FALLBACK_MODEL_IDS
         }
 ```
+
+**Plan 150 (landed):** `failed_models`'s value type changed from `str` to `AssignmentFailure`
+(`cause: AssignmentFailureCause`, `detail: str`) — see the landed concrete `AssignmentFailureCause` /
+`AssignmentSuccess` / `AssignmentFailure` / `AssignmentOutcome` shapes documented above (§ "AssignmentFailureCause —
+landed concrete, assignment-level"). `_run_single_model` returns `AssignmentOutcome` instead of
+`StationForecastResult | str`; `run_all_station_forecasts` dispatches via `match` and wraps the call in a
+per-assignment backstop `try` that converts an unanticipated exception into
+`AssignmentFailure(cause=AssignmentFailureCause.UNEXPECTED_EXCEPTION, ...)` rather than letting it escape and darken
+the whole station.
 
 ### Forecast combination service
 
