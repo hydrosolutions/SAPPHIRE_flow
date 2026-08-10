@@ -1,6 +1,7 @@
 ---
-status: READY
+status: COMPLETE
 created: 2026-08-10
+completed: 2026-08-10
 plan: 150
 title: Forecast-cycle redesign Phase 2 — per-assignment outcome SHAPE (structured fallback channel)
 scope: The outcome-SHAPE sub-slice of the forecast-cycle redesign (docs/design/forecast-cycle-redesign.md). Migrate the station-cycle runner (_run_single_model / run_all_station_forecasts / MultiModelForecastResult) from today's `StationForecastResult | str` return + `failed_models: dict[ModelId, str]` to an ASSIGNMENT-LEVEL discriminated outcome (AssignmentSuccess | AssignmentFailure, with an assignment-level AssignmentFailureCause enum holding today's concrete causes and extensible by Phase 3), AND close one latent fallback-invariant gap with a loop-level backstop so an unexpected exception in a lower-priority assignment can no longer darken a station whose higher-priority assignment already succeeded. This is a pure failure-channel refactor (behaviour-preserving except the one named backstop delta). It does NOT complete redesign build-sequence item 2 on its own — the FI-typed `ModelFailure`-signal preservation and the runner's `ModelRunContext`-consumption seam are explicit named follow-ons (option A). Still one cycle: no ForcingTrackKey, no per-track resolution, no per-assignment input assembly, no superset removal.

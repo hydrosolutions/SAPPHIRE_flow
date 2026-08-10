@@ -113,14 +113,14 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
   (§ Formal contracts/layering), `architecture-context.md` (Flow 1 + combination rule), and
   `types-and-protocols.md` (widened Protocol + types) — a /plan loop over-expanded the meta-plan, so the
   reconciliation was done by direct fold + an alignment re-review instead. Do not implement from 149.
-- **150** — Forecast-cycle redesign **Phase 2**: per-assignment outcome SHAPE — `READY, implemented` — the
+- **150** — Forecast-cycle redesign **Phase 2**: per-assignment outcome SHAPE — **COMPLETE, ARCHIVED (#141, 2026-08-10)** — the
   outcome-SHAPE sub-slice of build-sequence item 2 (option A): `_run_single_model` /
   `run_all_station_forecasts` / `MultiModelForecastResult.failed_models` migrated from `StationForecastResult | str`
   to a discriminated `AssignmentSuccess | AssignmentFailure` (assignment-level `AssignmentFailureCause`), plus a
   loop-level backstop closing a latent fallback-invariant gap (an unanticipated exception in a lower-priority
   assignment no longer darkens a station whose higher-priority assignment already succeeded). Does NOT complete
   build-item 2 alone — the FI typed `ModelFailure`-signal preservation (Phase 2-FI follow-on) and the runner's
-  `ModelRunContext`-consumption seam (Phase 3) are explicit named follow-ons.
+  `ModelRunContext`-consumption seam (Phase 3) are explicit named follow-ons. See [archive/150-forecast-redesign-phase2-assignment-outcome.md](archive/150-forecast-redesign-phase2-assignment-outcome.md).
 - **124** — Station active-assignment consistency — `DRAFT` — **scope-locked, ready to implement
   directly (owner 2026-07-18).** NARROW: INACTIVE station assignments stop forecasting + leave the
   alert-priority index (match the group path); the fallback-priority-drift health check stays
@@ -249,4 +249,4 @@ These are named in `architecture-context.md` / `v0-scope.md` but have no dedicat
 
 ## Archived
 
-See [archive/](archive/) for completed and archived plans (75 entries).
+See [archive/](archive/) for completed and archived plans (76 entries).
