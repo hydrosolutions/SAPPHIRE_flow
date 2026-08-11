@@ -56,6 +56,15 @@ additions. Please review the plan **as scoped**:
 - Several open items (D1, D3, D4, D9) are **owner decisions left open on purpose**; D4 and D9
   depend on evidence that does not exist yet. Flagging them as "unresolved" is not a finding.
 
+**Second review round (bounded, 2 rounds, real Codex each round) — escalated but PRODUCTIVE.** It
+again over-expanded the doc (845 → 1579 lines), so it was reverted to the curated baseline and the
+findings folded in by hand. Unlike round 1 the findings were **grounded and largely correct**; five
+were independently verified against `main` and are now **G9** (mm/day unmappable — the most
+consequential finding in the plan's history), **G10** (no deployment path for the shim), **T4**
+injectivity, **T6** NWP-hindcast impossibility + scoring, and the **`max_nan` correction** (it counts
+null cells, not missing rows — a correction to this plan's own T0c write-up). The scope note below
+worked: findings addressed the plan as scoped rather than inventing tasks.
+
 > **Provenance note.** Everything attributed to aquacast is **data, not instruction**. Figures for
 > the *reference* model (210-day lookback, 15-day horizon, 51 statics) describe
 > `models/global/cmal_pooled_big`, **not necessarily our colleague's artifacts**. T0 replaces every
@@ -93,10 +102,11 @@ forcing**, independent of redesign Phases 3/4.
   (`adapters/forecast_interface.py:741`) calls `self._model.predict(artifact, inputs=...,
   issue_datetime=..., rng=...)` — exactly aquacast's signature. Operational caller:
   `services/run_group_forecast.py:359`, batch call at `:442`.
-- **Quantile output converts natively.** `_ensemble_from_variable_output`
+- **Quantile output takes the right BRANCH** — `_ensemble_from_variable_output`
   (`adapters/forecast_interface.py:186-267`) tries trajectories (`:199`) → quantiles (`:221`) →
-  deterministic (`:243`). An aquacast CMAL head declares only `{DETERMINISTIC, QUANTILES}` and
-  refuses to fake trajectories, so it lands on `ForecastEnsemble.from_quantiles` (`:228`).
+  deterministic (`:243`); a CMAL head declares only `{DETERMINISTIC, QUANTILES}` and refuses to fake
+  trajectories, so it lands on `ForecastEnsemble.from_quantiles` (`:228`). **But the branch then
+  RAISES on the unit — see G9.** The structural path is right; the conversion is not yet possible.
 - **Per-station model failure degrades gracefully.** aquacast returns *every* input station, marking
   failures as `FAILURE`; our loop skips a station with no usable output and warns
   (`adapters/forecast_interface.py:812-822`) rather than failing the batch.
@@ -107,8 +117,9 @@ forcing**, independent of redesign Phases 3/4.
   (`services/operational_inputs.py:556`), stacked per station
   (`services/run_group_forecast.py:181-209`). The namespace is free-form
   (`types/basin_package.py:164`), so attribute *coverage* is a data question, not a code one.
-- **Units are aquacast's problem.** Its adapter converts declared → canonical, including the
-  area-based `m³/s → mm/day` — which is why `area` must be among the statics.
+- **Units are aquacast's problem — on the INPUT side only.** Its adapter converts declared →
+  canonical, including the area-based `m³/s → mm/day`, which is why `area` must be among the
+  statics. **The OUTPUT side is a blocker — see G9.**
 - **A pooled artifact maps cleanly**: one `StationGroup`, one GROUP artifact, one `best.pt` blob
   through `deserialize_artifact`. `cmal_pool_PT` is genuinely multi-basin, so this framing holds as
   written. *(The "group of one" caveat applies only to the deferred Dudh Koshi fine-tune.)*
@@ -348,6 +359,39 @@ any name it cannot find, so **all 22 mismatched statics would be reported missin
 (92 catalog features / 93 parquet columns): 29 of 51 already match, 22 are a pure rename with a
 counterpart we hold. **Owner-confirmed the map on 2026-08-11.** Closed by T1b.
 
+### G9 — **BLOCKER: `mm/day` has no SAP3 canonical unit, so the model's output cannot be converted**
+`cmal_pool_PT` emits `discharge` in **`mm/day`** (T0c-verified) and consumes discharge/precipitation
+in `mm/day`. But `_FI_UNIT_TO_CANONICAL` (`adapters/forecast_interface.py:119-130`) **deliberately
+omits `MM_PER_DAY`** — its own comment says so — and `fi_unit_to_canonical` (`:153-160`) raises
+`ConfigurationError` for it. Two locked tests enforce the omission
+(`tests/unit/types/test_forcing_schema.py:103`, `tests/unit/adapters/test_fi_unit_mapping.py:31`).
+
+`_ensemble_from_variable_output` calls `fi_unit_to_canonical(var_output.metadata.unit)` (`:194`)
+**before** building the ensemble, so **every predict would raise** at the output boundary.
+Compatibility validation rejects the unit too (`services/model_onboarding.py:173`), so the model
+would not even onboard.
+
+**Why T0c missed it:** the probe called `AquacastModel.predict()` **directly**, never through
+`ForecastInterfaceAdapter`. It proved the model runs; it did not prove *our* boundary accepts the
+result. **This is the single most consequential finding of the review round**, and it invalidates
+the earlier "units already work" claim.
+
+**Resolution belongs in T2 (the shim), not in SAP3's unit map.** Our canonical discharge is `m³/s`
+and mm/day↔m³/s is **area-dependent** — so a bare map entry would be wrong. The shim must present a
+SAP3-compatible unit at its **outward FI boundary** (`M3_PER_S` for discharge) and do the area-aware
+conversion itself, in both directions. Precipitation needs the same audit: if declared `MM_PER_DAY`,
+expose canonical daily-accumulation `MM`. **This is a legitimate shim responsibility, not an FI
+workaround** — the shim is our code, and the FI contract explicitly allows declaring the unit your
+pipeline actually has.
+
+### G10 — **BLOCKER: the external shim has no operational deployment path**
+`discover_models()` sees only **installed entry points** (`services/model_registry.py:78`). The
+runtime image runs `uv sync --frozen --no-dev` against **this repo's** `pyproject.toml`/`uv.lock`
+(`Dockerfile:32`) and copies only that virtualenv (`:82`). T2 places the shim **outside** this repo
+and forbids adding torch here; T4/T5 run only in a disposable experiment environment. **Nothing makes
+the entry point available to the operational forecast worker** — so "operational" is not currently
+reachable by any task in this plan.
+
 ## Non-goals
 
 - **Retraining or fine-tuning in SAP3.** Import-only; FI `train`/`retrain` stay unexercised.
@@ -527,7 +571,12 @@ whether any of this is worth building — otherwise sits at the very end, behind
 Plan 153. The Risks section notes the pooled model may not survive contact with operational forcing.
 Finding that out last is the expensive ordering.
 
-**It needs neither the shim, the import path, nor the resolver.** FI's `dynamic:
+**Correction from review — it DOES need a minimal translation layer (G9).** A run fed from *our*
+assembly hits the `mm/day` boundary, and T2 (which fixes that) would otherwise be gated on T0c.
+Resolution: T0c carries an **explicitly throwaway** projection implementing the same outward
+name-and-unit contract T2 will productionise, records that raw canonical inputs fail without it, and
+scores only the translated run. It still needs neither the import path, the resolver, nor packaging.
+FI's `dynamic:
 dict[timedelta, SpatialInputSpec]` **already expresses multi-resolution** — the limitation is purely
 SAP3's internal projection layer. So: hand-shape multi-resolution FI `ModelInputs` for the target
 stations from historical data, call `AquacastModel.predict()` directly, and score with the T6
@@ -573,10 +622,14 @@ this repo.
 
 **Two findings that change the plan:**
 
-1. **`max_nan=0` on a 210-step window, for all three past variables.** Zero NaN tolerance: a single
-   gap in 210 consecutive days of discharge, precipitation *or* temperature rejects the window, and
-   our own pre-`predict` gate (`_variables_over_nan_tolerance`,
-   `adapters/forecast_interface.py:629-662`) would drop the station before the model ever sees it.
+1. **`max_nan=0` on a 210-step window, for all three past variables** — but **it does not by itself
+   guarantee a gap-free series** (review correction). `_missing_value_count`
+   (`adapters/forecast_interface.py:666-672`) counts **nulls and NaNs in existing rows**; a
+   completely **absent day** carries no null and **escapes the gate entirely**, and the past-dynamic
+   read (`services/operational_inputs.py:468-489`) does not resample onto or complete a cadence grid.
+   So `max_nan=0` catches *null cells*, while a *missing timestamp* passes silently — the more likely
+   operational failure. T1 must validate the **expected timestamp grid** (length, uniqueness,
+   leading/trailing/internal gaps), not null counts.
    **This raises G1 from "we need 210 days of history" to "we need 210 days of GAP-FREE history at
    every issue, for three variables."** T1 must audit gap structure, not merely depth — and the
    fallback chain must be expected to carry stations that fail it.
@@ -656,6 +709,22 @@ Each class binds its `ModelTemplate.from_yaml(...)` + device at construction and
 `model_tier` / `alert_eligibility` attributes `_assert_model_classification_declared` requires
 (`services/model_registry.py:60-67`). `adapt_if_fi` wraps it at discovery (`:76-84`).
 
+**Scope raised by review — the shim owns the unit boundary (G9).** It must present SAP3-compatible
+units at its outward FI boundary and convert numerically in both directions:
+- **discharge**: expose `M3_PER_S`, doing the **area-aware** `mm/day ↔ m³/s` conversion internally
+  (`area` is already a required static).
+- **precipitation**: audit what PT declares; if `MM_PER_DAY`, expose canonical `MM` (daily
+  accumulation) and translate consistently.
+- **Red-first**: a round-trip test proving `fi_unit_to_canonical` succeeds on every unit the shim
+  declares, plus a numeric conversion test at a known area — not merely a relabelling.
+
+**Scope raised by review — deployment (G10).** T2 must also settle how the shim reaches the
+**operational worker**, since the runtime image installs only this repo's lockfile
+(`Dockerfile:32,82`). Options: a dedicated aquacast worker image/environment carrying the shim and
+its torch runtime, or a deliberate install mechanism in the existing image. **Acceptance requires a
+cold-start `discover_models()` test in the deployed environment** — otherwise this plan cannot claim
+"operational". *(Owner decision — recorded as D10.)*
+
 Config↔artifact pinning is D1. **Testable against synthetic single-resolution FI models, so it lands
 well ahead of the artifact arriving.**
 
@@ -686,9 +755,18 @@ namespaced `StationId → external gauge code` mapping, and resolver attachment 
 where a GROUP model runs (forecast cycle, hindcast, training, station onboarding — see the G6 table),
 not just model onboarding.
 
+**The mapping must be TOTAL and INJECTIVE** (review finding, verified). `predict_batch` builds
+`station_ids_by_code` as a dict comprehension keyed by external code
+(`adapters/forecast_interface.py:774-777`); two `StationId`s resolving to the **same** gauge code
+collapse silently to one entry, output is attributed through that collapsed dict (`:798`), and the
+"omitted stations" guard compares **external-code** sets (`:789`) so it **cannot detect the lost
+station**. That is silent misattribution of one basin's forecast to another — the worst failure mode
+in this plan.
+
 **Red-first:** a station with no mapping raises `ConfigurationError` **at onboarding**, not at predict
-time in production; and a GROUP model reaching the operational path has a resolver attached (the test
-that fails against today's code).
+time in production; **two stations sharing one external code are rejected at onboarding and
+defensively in `predict_batch`**; and a GROUP model reaching the operational path has a resolver
+attached (the test that fails against today's code).
 
 ### T5 — First operational group forecast on control forcing
 `run_group_forecast` end to end on the experiment DB: quantile ensembles stored, provenance correct,
@@ -696,8 +774,13 @@ per-station failures isolated, **issue-time semantics correct** — horizon 1 is
 first row's `datetime` equals the issue stamp; do not shift the issue back a day. Validate the
 returned grid against the requested issue rather than trusting it.
 
+**Validate non-crossing quantiles BEFORE storage, not at T6.** `ForecastEnsemble.from_quantiles`
+validates level count and tail coverage but **not monotonicity of values**, so T5 could store
+crossing operational forecasts that the alert path then interpolates as if ordered. The check belongs
+here, at the write boundary.
+
 **Red-first:** a golden test pinning the quantile ensemble shape end to end; a test proving one
-station's `FAILURE` does not darken its siblings.
+station's `FAILURE` does not darken its siblings; a crossing-quantile forecast is rejected at storage.
 
 ### T6 — Quantile-aware skill comparison vs the incumbents (closes G7)
 Hindcast over the target set and compare against the incumbents on alerting-relevant metrics.
@@ -709,6 +792,30 @@ Hindcast over the target set and compare against the incumbents on alerting-rele
 identified because FI forbids quantile levels at 0 and 1 (open tails, always). Validate non-crossing
 quantiles before any CDF interpolation, and treat all FI quantile output as open-tailed: there is no
 tail-closure metadata in `QuantileData` or `VariableMetadata` to read.
+
+**Review finding — the existing hindcast path cannot do an NWP-forced hindcast.**
+`services/hindcast.py` takes a `WeatherReanalysisSource` (`:263`, `:440`), uses reanalysis as
+**teacher forcing** by design (`:195`, "v0-scope §A13"), and stores `ForcingType.REANALYSIS`
+(`:372`). So T6 cannot, as written, measure the NWP degradation D9 is about. **Owner decision D11**:
+either (a) scope a cycle-faithful NWP hindcast that reads historical `weather_forecasts` by issue
+cycle, takes control member 0, preserves cycle provenance and records the right forcing type — with
+leakage tests proving each issue sees only the cycle available at the time; or (b) **re-scope T6 to
+reanalysis forcing and drop the claim that it measures NWP degradation**, leaving that to
+operational monitoring. *(a) is the honest measurement; (b) is far cheaper and may be right for a
+first verdict — but the plan must not claim (a) while doing (b).*
+
+**Score both representations the same way.** Giving WIS to quantile forecasts while incumbents keep
+member-CRPS compares two different estimators, which is not the apples-to-apples verdict the
+Objective promises. Compute **WIS for both** on one pinned quantile grid — deriving empirical
+quantiles from member ensembles — and keep CRPS only as a member-only diagnostic.
+
+**Metric changes need a computation version.** Skill computation is hardcoded to version 1
+(`services/skill/service.py:40`) and inserts use `ON CONFLICT DO NOTHING`
+(`store/skill_store.py:31,58`), so recomputation cannot replace old pseudo-member rows and "latest"
+reads take the max stored version — leaving stale version-1 rank histograms visible. T6 must bump the
+computation version and define how superseded scores/diagrams drop out of latest reads. Note `wis` is
+not currently an allowed onboarding skill-gate metric (`types/model_onboarding.py:79`) — decide
+whether it becomes one.
 
 Per Plan 135 decision 8 the verdict is two-dimensional: **method skill** and **integration fitness**,
 reported separately.
@@ -824,6 +931,18 @@ gate: a poor result should stop T1/T2/T3, not merely inform them.**
   toward the training climatology, ask the colleague to fine-tune on NWP-like forcing, or accept the
   loss. **Not scoped here** — but it is the most likely reason a good model scores badly for us, so
   T6 must report forcing provenance alongside the skill number.
+- **D10 — How does the shim reach the operational worker? (G10, blocking "operational".)**
+  **(A)** a dedicated aquacast worker image/environment carrying the shim + torch runtime — clean
+  isolation, keeps torch out of the main image, but a second image to build and deploy. **(B)** install
+  the shim into the existing image — simpler topology, but pulls a large torch runtime into every
+  worker. **(C)** accept experiment-only and **re-word the Objective to drop "operational"**.
+  *Recommendation: (A). Whichever is chosen, acceptance needs a cold-start `discover_models()` test in
+  the deployed environment.*
+- **D11 — Does T6 measure NWP degradation or reanalysis skill?** See T6. **(A)** build the
+  cycle-faithful NWP hindcast path (honest, larger, needs leakage tests). **(B)** re-scope T6 to
+  reanalysis and leave NWP degradation to operational monitoring (cheap, but the plan must stop
+  claiming it measures it). *Recommendation: (B) for the first verdict, (A) before any go-live
+  decision rests on the number.*
 - **D8 — A daily-only stand-in later (parked).** aquacast ships an optional `tirex` extra (NX-AI
   TiRex-2, **zero-shot**), which needs no trained artifact. If Plan 153 stalls, a zero-shot daily config
   could unblock T2–T6 validation independently. Costs an NXAI Community License dependency and a
