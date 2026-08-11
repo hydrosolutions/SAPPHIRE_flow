@@ -82,7 +82,14 @@ forcing**, independent of redesign Phases 3/4.
 - **Units are aquacast's problem.** Its adapter converts declared → canonical, including the
   area-based `m³/s → mm/day` — which is why `area` must be among the statics.
 - **A pooled artifact maps cleanly**: one `StationGroup`, one GROUP artifact, one `best.pt` blob
-  through `deserialize_artifact`.
+  through `deserialize_artifact`. **Caveat — the pilot artifact is a group of ONE**; see § Artifact
+  identity.
+- **The model generalizes to stations it never saw.** `tests/operational/test_unknown_station.py::
+  test_unknown_station_generalizes` asserts `result.kind == "success"` for an unknown gauge (it logs
+  "unknown" and proceeds). This is what makes the Swiss track possible at all. The binding
+  constraint is instead the **feature manifest**: `test_feature_manifest_mismatch_configuration`
+  returns `ModelFailure(CONFIGURATION)` naming the offending feature, so static/dynamic names must
+  match **exactly**.
 
 ## Uncertainty ownership (owner decision, 2026-08-11)
 
@@ -106,6 +113,57 @@ MeteoSwiss has its own floor (`adapters/meteoswiss_nwp.py:963-971`) and
 `min_operational_ensemble_size` defaults to 20 (`config/deployment.py:123`). The hardcoded-51 risk
 is introduced by **Plan 151**, where it is **already tracked as round-0 blocker B0-1**. **No action
 here — do not duplicate it.**
+
+## Artifact identity and the two tracks (grill-me, 2026-08-11)
+
+An owner grill-me settled what we are actually integrating. This section supersedes any earlier
+reading of "pooled".
+
+**Neither Nepal config is itself pooled.** Both are built *from* a pooled pretrained donor
+(`nepal_daily_cmal` refers to "the 13.7k-basin pretrain"; a recent aquacast commit reads
+"13.7k -> 17.0k pool"). `aquacast/operational/model.py:505-511` derives scope from the config:
+`gauge_ids` of length exactly 1 → STATION, otherwise GROUP.
+
+| Artifact | Scope reported | Contract | Serves |
+|---|---|---|---|
+| **Dudh Koshi fine-tune** (delivered) | **GROUP** — scopes via `basins_files`, so `gauge_ids` is `None` | multi-res daily+hourly, 210 d/168 h, 3 d/72 h, precip + temp, **no radiation** | **one basin** (`configs/basins/dudh_koshi.txt` = `nepal_20010`) |
+| **The donor** (to request) | GROUP | same contract (inferred — `_lstm_cov_feed.yaml` injects donor weights under an "identical feature contract"; a manifest mismatch hard-fails) | ~13.7k basins |
+| `nepal_daily_cmal` (not chosen) | STATION — "one gauge per sweep via `--gauge-ids`" | daily-only, 15 d, **requires radiation** | one gauge per model |
+
+**Consequences, all owner-ratified:**
+
+- **The pilot artifact is a group of ONE.** It declares GROUP scope, so onboarding takes the GROUP
+  branch (`services/model_onboarding.py:489`) and the resolver gap (G6) still applies — but the
+  `StationGroup` has a single member. The plan's GROUP framing is right for the **destination**, not
+  for the pilot's economics. **T4 must verify the degenerate group-of-one case explicitly.**
+- **Production target**: one multi-basin fine-tune across Nepal, with the donor as its base.
+- **Only 1 of 11 DHM gauges has hourly discharge.** `configs/regions/nepal.yaml`: "DHM, 11 gauges;
+  **one** with native sub-daily data" / "the **sole** native hourly discharge (`nepal_20010`)". The
+  hourly branch needs hourly *observed* discharge (`is_target_in_past: true`, `past_dynamic:
+  [discharge]` at hourly), so multi-resolution can serve exactly one basin today. **Plan 153 is
+  justified by DHM's deployment roadmap, not by today's coverage** — owner: more stations are
+  coming; daily-only sites are a documented **backup tier** (a lower-priority assignment in the
+  fallback chain, which is architecturally clean). *Open: a daily-only backup on the
+  `nepal_daily_cmal` contract would reintroduce radiation (G2) — a radiation-free daily config
+  would be needed instead.*
+- **Trained on ERA5-Land reanalysis.** `configs/regions/nepal.yaml`: "ERA5-Land daily is the ONLY
+  forcing (Nepal ships no native daily meteorology)". Operationally we feed NWP. This makes the
+  out-of-distribution-forcing risk **concrete, not hypothetical**.
+
+**Two tracks, run in parallel (owner, 2026-08-11):**
+
+1. **Swiss — interim, unblocks now.** Apply the model to Swiss basins **directly, not fine-tuned**.
+   Feasible because the model generalizes to unknown stations, our basin package is HydroATLAS-derived
+   (Plan 117), the hourly branch needs only 168 h ≈ 7 days of hourly discharge, and Swiss daily
+   discharge history is deep. **What it proves depends on which artifact runs it** — see T0c.
+2. **Dudh Koshi — the real target.** Requires Nepal onboarding: no Nepal station config exists in
+   the repo, **Plan 143 is unimplemented**, and the DHM questionnaire is unanswered. Proceeds in
+   parallel; it is the source of the *trustworthy* skill verdict.
+
+**Artifact availability — we do not have either.** Verified 2026-08-11: no `models/` tree and no
+`.pt`/`.ckpt` in the aquacast repo, `.gitignore` excludes `/experiments/`, no GitHub releases or LFS
+assets, no weights repo in the org. `models/global/cmal_pooled_big` is a path in the colleague's
+workspace. **Both artifacts are a human ask — this is exactly what T0 is gated on.**
 
 ## The real gaps
 
@@ -249,8 +307,41 @@ Every task is red-first, with the standard exit gate: `uv run pytest -q` + `uv r
 `uv run ruff check`. Multi-model review before READY and post-implementation per `docs/workflow.md`.
 
 ### T0 — Feasibility audit against the *delivered* artifacts (no production code)
-**A gate, not a formality.** Obtain the artifacts + `config.yaml`, construct the model, and report
-as a committed audit doc:
+**A gate, not a formality**, and it is **blocked on a human round-trip** — we hold neither artifact.
+A wrong question list costs a full round-trip, so it is pinned here.
+
+**T0.0 — the colleague request (send first).**
+
+*Artifacts*
+1. Which can you send — the **Dudh Koshi fine-tune**, the **donor** it was fine-tuned from, or
+   both? For each: `config.yaml` **and** `checkpoints/best.pt`. *(We want both: the fine-tune to
+   start integration immediately, the donor for a meaningful Swiss signal and as the production
+   base.)*
+2. Confirm the donor uses the **same multi-resolution radiation-free contract** as the Dudh Koshi
+   configs (inferred from `_lstm_cov_feed.yaml`; please confirm).
+3. How many basins is the donor pooled over, and does its config scope via `gauge_ids` or
+   `basins_files`? (Determines STATION vs GROUP on our side.)
+
+*Contract*
+4. Exact `input_requirement`: resolutions, lookback/horizon **per resolution**, exact feature names
+   + units, full **static** list. (We verify by construction; this confirms intent.)
+5. Statics: the Nepal HydroATLAS set from `configs/regions/nepal.yaml`? Is **`area`** present?
+   (Mandatory — `m³/s → mm/day` fails without it.)
+6. **Does the hourly branch require hourly *observed* discharge**, or can it run on daily obs +
+   hourly forcing? We read `is_target_in_past: true` + `past_dynamic: [discharge]` as requiring
+   hourly obs — which confines multi-resolution to `nepal_20010` today. Confirm or correct.
+
+*Applicability*
+7. Zero-shot on Swiss basins: known caveats — statics namespace, normalization, expected degradation?
+8. Training used **ERA5-Land reanalysis**; operationally we feed NWP (ICON-CH2-EPS / IFS). Expected
+   degradation, and any recommended bias handling?
+9. `issue_hours: [0, 3, …, 21]` — is 8 issues/day the intended operational cadence?
+
+*Forward*
+10. For the Nepal multi-basin fine-tune: which gauges, and what would it take to get hourly discharge
+    beyond `nepal_20010`?
+
+**Then, on the delivered artifacts**, construct the model and report as a committed audit doc:
 
 1. **The real `input_requirement`** — per-resolution lookback/horizon, exact variable names + units +
    ensemble modes, target, full static list. Confirm it is radiation-free (G2).
@@ -297,11 +388,21 @@ SAP3's internal projection layer. So: hand-shape multi-resolution FI `ModelInput
 stations from historical data, call `AquacastModel.predict()` directly, and score with the T6
 quantile-aware metrics. Entirely decoupled from `discover_models()`.
 
-**Exit gate:** a skill number against the incumbents on *operational-like* forcing, and an **owner
-go/no-go on committing to T1/T2/T3/Plan 153**. Heredoc probe, deliberately not checked in.
+**Run it on the Swiss track** (the Nepal target is not onboarded). **What it proves depends on which
+artifact runs it — do not conflate these:**
+
+| Artifact | What a Swiss run proves | What it does NOT prove |
+|---|---|---|
+| **Dudh Koshi fine-tune** | **Integration only** — assembly, multi-resolution input shaping, quantile conversion, scoring path all work end to end | **Nothing about skill.** A single-basin Nepali fine-tune applied to Switzerland measures transfer degradation, a known-bad transfer. Do not read a verdict from it |
+| **The donor** (pooled ~13.7k basins) | **A meaningful zero-shot skill signal** — generalising to unseen basins is what a pooled model is *for*, and `test_unknown_station_generalizes` confirms the mechanism | Nepal-specific skill; the Dudh Koshi verdict still comes from the Nepal track |
+
+**Exit gate:** integration proven end to end, plus — **if the donor is available** — a skill number
+against the incumbents on *operational-like* forcing (NWP, not the ERA5-Land training feed) and an
+**owner go/no-go on committing to T1/T2/T3/Plan 153**. If only the fine-tune arrives, the gate is
+integration-only and the go/no-go defers to the Nepal track.
 
 *(This also substitutes for the stepping stone lost when D7 rejected option (C): it needs no
-daily-only artifact, only the multi-resolution one we have.)*
+daily-only artifact.)*
 
 ### T1 — Past-forcing depth to the required lookback (long pole; data, not code)
 **Scope defined by T0.4.** Extend stored historical forcing and past-target coverage so every target
@@ -446,9 +547,12 @@ stop T1/T2/T3 and Plan 153 rather than merely inform them.**
   DB state. **(C)** artifact metadata/lineage JSONB. *Whichever is chosen, a config change that alters
   the requirement shape must produce a new model id — a same-id config swap can strand an ACTIVE
   artifact.*
-- **D2 — Target station set: Swiss or Nepal?** **(A)** Swiss BAFU — validates on data we hold; makes
-  Plan 130 the immediate dependency. **(B)** Nepal — the real v1 target, but blocked on onboarding
-  (Plan 143) and DHM data. *Changes T1's entire scope; decide before T1 is written.*
+- **D2 — Target station set — RESOLVED (owner grill-me, 2026-08-11): BOTH, as parallel tracks.**
+  **Dudh Koshi is onboarded as the real target** (accepting the Plan 143 + DHM dependency), and
+  **while that proceeds the model is applied to Swiss data directly — not fine-tuned**. See
+  § Artifact identity. T1's scope therefore splits: Swiss depth (which we largely hold; Plan 130
+  applies) unblocks T0c now, Nepal depth follows onboarding. *(Rejected: Swiss-only via a Swiss
+  fine-tune — an extra ask on the colleague for a basin we do not ultimately target.)*
 - **D3 — Import-only, or must retrain work?** This plan assumes import-only (T3). If v1 needs
   SAP3-side fine-tuning, the FI `train`/`retrain` path and `assemble_group_training_data` must also be
   exercised — a materially larger T3.
