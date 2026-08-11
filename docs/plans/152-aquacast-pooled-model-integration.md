@@ -531,10 +531,60 @@ the number flatters the model on exactly the axis the Risks section flags.
 go/no-go on committing to T1/T2/T3**. A poor number here should stop the plan — that is the whole
 point of running it third rather than last.
 
+### T0c RESULT — the model runs on a SAPPHIRE-shaped feed (executed 2026-08-11)
+
+`cmal_pool_PT` was constructed from its `config.yaml`, `best.pt` deserialized, and `predict()` run
+against a **synthetic SAPPHIRE-shaped feed** (one station, 210 daily past steps ending at issue−1,
+15 future forcing steps starting at the issue, 50 statics). Throwaway heredoc probe per
+`CLAUDE.md` § Ad-hoc Analyses; the aquacast env was installed in a scratch clone, **not** added to
+this repo.
+
+**Confirmed — every output-path claim in this plan is now empirical, not argued:**
+
+| Check | Result |
+|---|---|
+| construct + `deserialize_artifact` | OK → `ModelBundle` |
+| `artifact_scope` | **`ArtifactScope.GROUP`** ✓ |
+| statics | **50** ✓ |
+| past_known (product `aquacast`) | `discharge`, `precipitation`, `mean_temperature` — all `lookback=210`, **`max_nan=0`** |
+| future_known | `precipitation`, `mean_temperature`, `steps=15`, **`ensemble_mode=SINGLE`** ✓ (control-only, by declaration) |
+| target | `discharge`, `mm/day` |
+| **`predict()`** | **`kind=success`**, `status=SUCCESS`, 0 rejected samples |
+| output representations | `det=True, quant=True, traj=False, epi=False` → **exactly the `from_quantiles` branch** (`adapters/forecast_interface.py:221-228`) |
+| quantile levels | `[0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95]`, 15 rows |
+| issue semantics | `forecast_horizon=15`, `offset=1`, **first row's `datetime` == issue stamp** (nowcast) ✓ |
+| AR channel | **consumed** — perturbing past discharge 1.0 → 50.0 moves the median path ~0.95 → ~41 |
+| target product namespace | **not sensitive** — identical results under the declared `aquacast` product and under `obs` |
+
+**Two findings that change the plan:**
+
+1. **`max_nan=0` on a 210-step window, for all three past variables.** Zero NaN tolerance: a single
+   gap in 210 consecutive days of discharge, precipitation *or* temperature rejects the window, and
+   our own pre-`predict` gate (`_variables_over_nan_tolerance`,
+   `adapters/forecast_interface.py:629-662`) would drop the station before the model ever sees it.
+   **This raises G1 from "we need 210 days of history" to "we need 210 days of GAP-FREE history at
+   every issue, for three variables."** T1 must audit gap structure, not merely depth — and the
+   fallback chain must be expected to carry stations that fail it.
+2. **Ungauged mode is NOT a way out of G1.** Omitting past discharge entirely does not degrade
+   gracefully — it **raises** `ColumnNotFoundError: unable to find column "discharge"` from
+   `build_qc` → `compute_annual_maxima`, i.e. an unanticipated crash rather than a returned
+   `ModelFailure`. So the README's "ungauged mode" is not reachable by withholding the FI input; it
+   needs a config change (`data.quality_control`) or the `predict --withhold-past-discharge` path.
+   **G1 stands at full 210-day depth.** *(Worth raising with the colleague: per `CLAUDE.md` § FI
+   Adherence an anticipated failure should be RETURNED, not raised — this looks like an FI-contract
+   deviation on the aquacast side, and is a candidate upstream issue rather than a SAP3 workaround.)*
+
+**Not yet proven** (T0c's remaining scope): a skill number on real Swiss data with operational NWP
+forcing. The mechanics are proven; the value is not.
+
 ### T1 — Past-forcing depth to the required lookback (long pole; data, not code)
 **Scope defined by T0.4.** Extend stored historical forcing and past-target coverage so every target
 station carries the full lookback at every operational issue, **for both resolutions**. If the target
 set is Swiss this **depends on Plan 130** (READY, unimplemented) — land it rather than duplicating it.
+
+**Scope raised by T0c: `max_nan=0` means GAP-FREE, not merely deep.** Audit gap structure across
+210 days for discharge, precipitation and temperature per station — a single missing day disqualifies
+the issue. Expect the fallback chain to carry stations that fail this, and size how often that is.
 
 Additionally harden the silent-degradation hole: a station with insufficient lookback must yield an
 explicit assignment failure, not a warning plus a forecast
