@@ -15,6 +15,10 @@ supersedes: []
 **DRAFT.** Grounded against `main` `7c2eaf3` on 2026-08-11 by direct grep/read; aquacast facts come
 from `hydrosolutions/aquacast` `main` (pushed 2026-08-10) via the GitHub API.
 
+**The artifacts are in hand** (owner's Dropbox, `2025-01-BARHKH/models/global/`) and
+**`cmal_pool_PT`'s contract is verified from its own `config.yaml`** — see T0.0. T0 is no longer
+blocked on a human round-trip, and the plan's central premise is confirmed rather than assumed.
+
 **Review history — read this before reviewing.** A `/plan` run (3 rounds, real Codex every round, 0
 reviewer failures) **escalated without converging**: it expanded the doc from ~300 to 1244 lines and
 7 to 14 tasks, then stalled reviewing its own additions (round 3: *"no progress (open 12 >= prev
@@ -368,6 +372,57 @@ A wrong question list costs a full round-trip, so it is pinned here.
 
 **T0.0 — the colleague request (send first).**
 
+**T0.0 — ARTIFACTS LOCATED AND CONTRACT VERIFIED (2026-08-11).** The models are on the owner's
+Dropbox — `.../2025-01-BARHKH/models/global/` — holding `cmal_pool_PT`, `cmal_pool_20s_no_wd`,
+`cmal_pooled_big`, `cmal_2`, and a `README.md`. Files are materialised (PT's `checkpoints/best.pt`
+is 5,087,101 bytes), so **T0 is no longer blocked on a human round-trip.**
+
+**`cmal_pool_PT` verified contract** (read directly from its `config.yaml`, superseding every
+owner-reported description in this plan):
+
+| Property | Value |
+|---|---|
+| resolutions | `[daily]` — **daily only**, confirming D6/D7 |
+| window | `lookback_days: 210`, `forecast_days: 15`, `issue_hours: [0]` (once daily, 00Z) |
+| target / past | `targets: [discharge]`, `is_target_in_past: true`, `past_dynamic: [discharge]` |
+| **future_dynamic** | **`[precipitation, mean_temperature]` — NO radiation** ✓ |
+| statics | **50** — the pooled-big set of 51 **minus `degree_of_regulation`** |
+| inference | `strategy: {kind: point}`, `n_aleatoric: 200`, `quantile_levels: [0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95]` |
+| training pool | 12,952 train / 1,500 test basins |
+
+**Consequences:**
+- The plan's premise **holds as written** — PT's forcing is exactly our `tp` + `t_2m` allowlist.
+- **The rename map is 21 entries, not 22** (T1b): PT drops `degree_of_regulation` (`dor_pc_pva`).
+- `strategy: {kind: point}` means **no epistemic spread** — PT emits DETERMINISTIC + 7 QUANTILES,
+  precisely the `ForecastEnsemble.from_quantiles` path (`adapters/forecast_interface.py:221-228`).
+- `inference.stride: 3` is present but **the FI adapter forces stride 1**, so it is inert.
+
+**Skill baseline (from the models' `README.md`, owner's colleague):**
+- `cmal_pooled_big`: ungauged spatial holdout (750+ basins) **median NSE 0.52**; "uncertainty bands
+  generally a bit too wide, especially for short lead times".
+- `cmal_pool_20s_no_wd`: less regularisation → **ungauged median NSE 0.56** globally, but
+  **"slightly worse performance on the Nepal basins"**. *This materially weakens the case for ever
+  paying the radiation cost to get the globally-best model: it is not the best model for our target
+  region.*
+- `cmal_pool_PT`: "a quick train on only precipitation and temperature_2m … **worse** than the other
+  models, but might be useful if the other forcing inputs are not available" — which is exactly our
+  situation. No ungauged-holdout figure given; PT's own `metrics.csv` final epoch reads
+  `val_nse_median_daily = 0.680` on 998 **gauged** validation basins, which is **not** comparable to
+  the 0.52/0.56 ungauged numbers. **T0c produces our own comparable number.**
+
+**Potentially major, needs verifying (T0):** the README says the model "can use past discharge if it
+is available but **also can run without it (ungauged mode)**", and aquacast has a
+`predict --withhold-past-discharge` path. If that applies to PT, the **210-day past-discharge
+requirement is optional**, which would substantially shrink G1 for stations lacking discharge
+history. Do not assume it — PT's config sets `is_target_in_past: true`, so ungauged is a
+*predict-time* option, not the configured default.
+
+**Still worth asking the colleague** (no longer blocking): PT's ungauged-holdout NSE, so its gap to
+0.52/0.56 is a number rather than "worse".
+
+*(Superseded — the original question list is preserved below for the record; items 1, 2, 5 and 6 are
+now answered by the artifacts themselves.)*
+
 **Most of the original list was answered without the colleague (owner + repo, 2026-08-11): pool
 size ~17,007 basins; `no_wd` = no weight decay, i.e. a training hyperparameter, so `20s_no_wd`
 almost certainly shares the radiation-requiring contract; cadence `issue_hours: [0]` (once daily at
@@ -519,8 +574,9 @@ with 151's T2.)*
 (proves the gap); with aliasing it resolves. Pin the map in one place with a test asserting all 51
 of the model's declared statics resolve.
 
-**Depends on T0** — the map is confirmed for the 51-static pooled contract; T0 must check whether
-`cmal_pool_PT` uses that same set or a reduced one.
+**Resolved by T0 (2026-08-11):** `cmal_pool_PT` uses **50** statics — the pooled set minus
+`degree_of_regulation`. So the map PT actually needs is **21 renames**, and every one is covered by
+names our basin package already carries. `dor_pc_pva` stays mapped anyway for the radiation models.
 
 ### T2 — `sapphire-aquacast` shim distribution (external repo; closes G3)
 A thin package **outside this repo** (Plan 135 decision 3 — no torch in our `pyproject.toml`)
