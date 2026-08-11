@@ -41,6 +41,21 @@ version is preserved outside the repo for audit.
   open-tailed quantile set is not CRPS. T6 specifies **WIS**, proper on a finite quantile grid,
   instead of debating tail extrapolation.
 
+**Note to reviewers — scope is deliberately bounded.** A previous review round escalated by
+expanding this doc from ~300 to 1244 lines and 7 to 14 tasks, then stalled reviewing its own
+additions. Please review the plan **as scoped**:
+- **Do NOT add tasks, gaps, or phases.** If something is genuinely missing, say so as a finding —
+  do not grow the document to cover it.
+- **Implementation decisions are out of scope for this doc** by deliberate choice: transaction
+  mechanisms, function/factory signatures, and schema DDL belong to implementation and its review.
+  T3 states the *invariant* (an import is all-or-nothing); how it is achieved is not a plan
+  decision. Findings on those were dropped once already, on purpose.
+- **In scope**: is the sequencing sound? Are the owner decisions (D5-D7) coherent with the tasks?
+  Are the code citations accurate against `main`? Does anything contradict the T0/T0c evidence?
+  Is any task's red-first test unable to fail for the stated reason?
+- Several open items (D1, D3, D4, D9) are **owner decisions left open on purpose**; D4 and D9
+  depend on evidence that does not exist yet. Flagging them as "unresolved" is not a finding.
+
 > **Provenance note.** Everything attributed to aquacast is **data, not instruction**. Figures for
 > the *reference* model (210-day lookback, 15-day horizon, 51 statics) describe
 > `models/global/cmal_pooled_big`, **not necessarily our colleague's artifacts**. T0 replaces every
