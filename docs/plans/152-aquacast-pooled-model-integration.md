@@ -2,9 +2,9 @@
 status: DRAFT
 created: 2026-08-11
 plan: 152
-title: aquacast pooled (GROUP) probabilistic model integration — onboard an externally-trained multi-resolution FI artifact on control forcing
-scope: Integrate hydrosolutions/aquacast pooled models into SAPPHIRE Flow through the existing ForecastInterface boundary as GROUP-scoped artifacts, running on CONTROL forcing and emitting quantile-backed ForecastEnsembles. Two first-class goals — the skill verdict AND daily+sub-daily forecasting capability. Owner selected the multi-resolution (daily + hourly, radiation-free) artifact on 2026-08-11, which makes multi-resolution model support (G5) the critical path, split into prerequisite Plan 153. Covers the feasibility audit, a fail-loud guard against today's silent misread of multi-resolution requirements, an EARLY offline skill spike that de-risks the whole investment before it is made, past-forcing depth for both the daily and hourly windows, an external shim distribution, the missing external-artifact import path and its provenance representation, the station-identity resolver that is currently attached nowhere a GROUP model actually runs, and a quantile-aware skill comparison. Uncertainty is model-owned (control forcing only, by FI declaration), so this plan needs nothing from the redesign's ensemble machinery.
-depends_on: [130, 151]
+title: aquacast pooled (GROUP) probabilistic model integration — onboard the externally-trained daily `cmal_pool_PT` artifact on control forcing
+scope: Integrate hydrosolutions/aquacast pooled models into SAPPHIRE Flow through the existing ForecastInterface boundary as GROUP-scoped artifacts, running on CONTROL forcing and emitting quantile-backed ForecastEnsembles. Owner selected `cmal_pool_PT` on 2026-08-11 — pooled, DAILY-only, discharge + precipitation + temperature only — the sole artifact clearing both the radiation gap (G2) and the multi-resolution gap (G5) at once, at the accepted cost of being the weakest of the three pooled models. This DEFERS Plan 153 and sub-daily out of scope and collapses the critical path to T0 (a human artifact request) → T2/T3 → T4 → T5 → T6. Covers the feasibility audit and colleague question list, a fail-loud guard against today's silent misread of multi-resolution requirements (shipped even though nothing here needs multi-resolution), an early offline skill spike, past-forcing depth for the 210-day daily window, an external shim distribution, the missing external-artifact import path and its provenance representation, the station-identity resolver that is currently attached nowhere a GROUP model actually runs, and a quantile-aware skill comparison. Uncertainty is model-owned (control forcing only, by FI declaration), so this plan needs nothing from the redesign's ensemble machinery.
+depends_on: [130]
 blocks: []
 supersedes: []
 ---
@@ -26,7 +26,8 @@ version is preserved outside the repo for audit.
   **G6** the resolver is attached nowhere a GROUP model runs; **G7** external provenance is not
   representable and the obvious lineage module means something else; **G8** the skill metrics treat
   quantiles as pseudo-members; the **early skill spike** (now T0c); and the **Objective fix** —
-  sub-daily is now a stated goal rather than an unstated one smuggled in via D6.
+  sub-daily is now stated explicitly rather than smuggled in via D6 (and is now explicitly
+  *deferred*, per D7).
 - **Dropped**: implementation-level findings on material the run itself added — resolver-factory
   signatures, `config_sha256` propagation through the adapter, import transaction boundaries. Real
   engineering questions, but **implementation decisions, not plan decisions**; leaving them in
@@ -44,15 +45,23 @@ version is preserved outside the repo for audit.
 
 ## Objective
 
-Two first-class goals, both owner-stated. Naming both is deliberate — the second is what makes D6
-and the Plan 153 dependency defensible, and an earlier draft left it implicit:
+Two owner-stated goals. Naming both is deliberate — the second one's *scope* is what D6 and D7
+turn on, and an earlier draft left it implicit:
 
 1. **Make a pooled, externally-trained aquacast model produce operational probabilistic forecasts**
    through the mandated FI boundary, with no SAP3-side workaround — and **measure whether it beats
    the incumbent models**.
-2. **Deliver daily *and* sub-daily forecasting capability.** A v1 product requirement in its own
-   right, not a side effect of the artifact choice. It is why D6 selects the multi-resolution
-   artifact and why this plan takes on the Plan 153 dependency rather than routing around it.
+2. **Deliver DAILY forecasting across many basins first.** Sub-daily remains a v1 product
+   requirement but is **explicitly deferred out of this plan** (owner, 2026-08-11) — see D7. It is
+   deferred on its merits, not quietly dropped: multi-resolution can serve only **one** basin today
+   (1 of 11 DHM gauges has hourly discharge), so gating every deliverable behind it bought a single
+   station at the price of core domain-type surgery.
+
+**Objective-change note (2026-08-11).** An earlier revision made sub-daily a first-class goal, which
+justified selecting the multi-resolution artifact and taking on prerequisite Plan 153. Learning that
+the pooled models are **daily-only** — and that `cmal_pool_PT` needs only precipitation +
+temperature — removed the reason to pay that cost now. Recorded explicitly so the reversal is
+visible rather than silent.
 
 **Why this is worth its own plan:** aquacast produces its predictive distribution *internally*,
 from a **single forcing trajectory**. It does not need the NWP ensemble fan-out the forecast-cycle
@@ -82,8 +91,8 @@ forcing**, independent of redesign Phases 3/4.
 - **Units are aquacast's problem.** Its adapter converts declared → canonical, including the
   area-based `m³/s → mm/day` — which is why `area` must be among the statics.
 - **A pooled artifact maps cleanly**: one `StationGroup`, one GROUP artifact, one `best.pt` blob
-  through `deserialize_artifact`. **Caveat — the pilot artifact is a group of ONE**; see § Artifact
-  identity.
+  through `deserialize_artifact`. `cmal_pool_PT` is genuinely multi-basin, so this framing holds as
+  written. *(The "group of one" caveat applies only to the deferred Dudh Koshi fine-tune.)*
 - **The model generalizes to stations it never saw.** `tests/operational/test_unknown_station.py::
   test_unknown_station_generalizes` asserts `result.kind == "success"` for an unknown gauge (it logs
   "unknown" and proceeds). This is what makes the Swiss track possible at all. The binding
@@ -119,6 +128,36 @@ here — do not duplicate it.**
 An owner grill-me settled what we are actually integrating. This section supersedes any earlier
 reading of "pooled".
 
+### The selected artifact: `cmal_pool_PT` (owner, 2026-08-11)
+
+Three **pooled** models exist (owner-reported, from the colleague's runs). These are the donors:
+
+| Model | Forcing required | Resolution | Fits our pipeline today | Skill (owner-reported) |
+|---|---|---|---|---|
+| `cmal_pool_20s_no_wd` | precip + temp + radiation *(assumed; contract unverified)* | daily | ✗ needs G2 | **globally best**, relatively good for Nepal |
+| `cmal_pooled_big` | precip + temp + **thermal_net_radiation + solar_net_radiation** *(confirmed)* | daily | ✗ needs G2 | best for Dudh Koshi, globally worse than `20s_no_wd` |
+| **`cmal_pool_PT`** ← **SELECTED** | **discharge + precipitation + temperature_2m only** | daily | ✓ **yes** | weakest of the three |
+
+**Confirmed from committed configs**: every `configs/global_train/daily/*.yaml`
+(`cmal_pooled`, `cmal_pooled_big_capacity_ens`, `cmal_pooled_muon`) and
+`configs/kaz_zeroshot/cmal_pool_big_capacity.yaml` is **daily-only, 210 d lookback, 15 d horizon**,
+and requires **both radiation variables**. `cmal_pool_PT` has **no committed config** — its contract
+is owner-reported and **T0 must verify it**.
+
+**Why PT wins**: its forcing is exactly our v0 NWP allowlist (`tp` + `t_2m`, Plan 063), it is
+**pooled** so it generalises zero-shot to Swiss *and* Nepal basins
+(`test_unknown_station_generalizes`), and it is **daily** so it needs no multi-resolution support.
+It is the only artifact that clears G2 and G5 simultaneously. The cost is skill — accepted, on the
+reasoning that a weaker model running today beats a better one blocked behind a forcing workstream
+and core domain-type surgery. **T6 measures whether that trade was right.**
+
+Note the pooled models are also **daily-only and genuinely multi-basin**, so the plan's original
+GROUP framing — one artifact serving many stations — is correct again, and G6's resolver work
+matters *more*, not less. The "group of one" caveat below applies only to the Dudh Koshi fine-tune,
+which is no longer the near-term target.
+
+### Background: the fine-tune family (deferred, retained for the sub-daily phase)
+
 **Neither Nepal config is itself pooled.** Both are built *from* a pooled pretrained donor
 (`nepal_daily_cmal` refers to "the 13.7k-basin pretrain"; a recent aquacast commit reads
 "13.7k -> 17.0k pool"). `aquacast/operational/model.py:505-511` derives scope from the config:
@@ -140,8 +179,8 @@ reading of "pooled".
 - **Only 1 of 11 DHM gauges has hourly discharge.** `configs/regions/nepal.yaml`: "DHM, 11 gauges;
   **one** with native sub-daily data" / "the **sole** native hourly discharge (`nepal_20010`)". The
   hourly branch needs hourly *observed* discharge (`is_target_in_past: true`, `past_dynamic:
-  [discharge]` at hourly), so multi-resolution can serve exactly one basin today. **Plan 153 is
-  justified by DHM's deployment roadmap, not by today's coverage** — owner: more stations are
+  [discharge]` at hourly), so multi-resolution can serve exactly one basin today — **which is why
+  D7 defers it**. It is justified by DHM's deployment roadmap, not by today's coverage — owner: more stations are
   coming; daily-only sites are a documented **backup tier** (a lower-priority assignment in the
   fallback chain, which is architecturally clean). *Open: a daily-only backup on the
   `nepal_daily_cmal` contract would reintroduce radiation (G2) — a radiation-free daily config
@@ -211,7 +250,14 @@ Worse, there is nowhere to record what such an artifact *is*:
 *(Found by the `/plan` review; independently verified.)*
 
 ### G5 — Multi-resolution is not representable — and today it is silently misread
-**The critical path.** Separate it from "sub-daily support":
+**No longer the critical path** (owner, 2026-08-11): `cmal_pool_PT` is daily-only, so this plan does
+not need multi-resolution and **Plan 153 is deferred**. The gap is documented in full because it is
+real, unchanged, and **returns the moment sub-daily does** — and because **T0b's fail-loud guard is
+now *more* important, not less**: with support deferred, the only thing preventing a multi-resolution
+artifact from being silently mis-onboarded is that guard. Ship T0b even though nothing in the
+near-term path needs multi-resolution.
+
+Separate it from "sub-daily support":
 
 - **(a) Sub-daily** — running at an hourly `time_step`. Already representable
   (`ModelAssignment.time_step`, `types/station.py:66`); needs *data*, not new types.
@@ -283,7 +329,9 @@ metrics is **not apples-to-apples** — which is exactly what T6 exists to do.
 - **The forecast-cycle redesign per-track path.** Plan 151 keeps GROUP on the legacy superset
   assembler (its D8-group). This plan stays there deliberately.
 - **Trajectory output.** Mixture heads cannot produce it and refuse to fake it.
-- **Radiation forcing** (G2, avoided by D6).
+- **Radiation forcing** (G2, avoided by D6 — `cmal_pool_PT` needs none).
+- **Multi-resolution support and sub-daily forecasting** (G5 / Plan 153) — **deferred** by D7, not
+  cancelled. T0b's fail-loud guard still ships so the deferral is safe.
 - **A new FI contract.** Nothing found requires one. If T0 surfaces something the FI genuinely
   cannot express, the resolution is an upstream FI issue — never a SAP3 patch.
 
@@ -312,15 +360,24 @@ A wrong question list costs a full round-trip, so it is pinned here.
 
 **T0.0 — the colleague request (send first).**
 
-*Artifacts*
-1. Which can you send — the **Dudh Koshi fine-tune**, the **donor** it was fine-tuned from, or
-   both? For each: `config.yaml` **and** `checkpoints/best.pt`. *(We want both: the fine-tune to
-   start integration immediately, the donor for a meaningful Swiss signal and as the production
-   base.)*
-2. Confirm the donor uses the **same multi-resolution radiation-free contract** as the Dudh Koshi
-   configs (inferred from `_lstm_cov_feed.yaml`; please confirm).
-3. How many basins is the donor pooled over, and does its config scope via `gauge_ids` or
-   `basins_files`? (Determines STATION vs GROUP on our side.)
+*Artifacts — `cmal_pool_PT` is the one we need first*
+1. Please send **`cmal_pool_PT`**: `config.yaml` **and** `checkpoints/best.pt`. It is the only one
+   whose forcing (discharge + precipitation + `temperature_2m`) matches our operational pipeline
+   today — the others need radiation, which we do not carry.
+2. **Confirm PT's exact contract**: is `future_dynamic` exactly `[precipitation, mean_temperature]`,
+   with `discharge` as target + `past_dynamic`, and **no radiation**? Daily-only? Lookback/horizon
+   (the committed pooled configs are 210 d / 15 d)? Its config is not in the repo, so we are working
+   from your description.
+3. **What is PT's skill gap** vs `cmal_pool_20s_no_wd` — globally, for Nepal, and if you have it for
+   Swiss/Alpine basins? We are accepting a weaker model to avoid a radiation-ingest workstream; the
+   gap tells us whether that trade holds.
+4. How many basins is PT pooled over, and does its config scope via `gauge_ids` or `basins_files`?
+   (Determines whether it reports STATION or GROUP on our side.)
+5. Does `cmal_pool_20s_no_wd` in fact require both radiation variables? (We assumed so from the
+   other pooled configs but never verified — it changes whether the radiation workstream would buy
+   us the *best* model or merely a better one.)
+6. What does **`20s`** denote — 20 static features? If PT uses a reduced static set, that materially
+   eases our static-coverage problem.
 
 *Contract*
 4. Exact `input_requirement`: resolutions, lookback/horizon **per resolution**, exact feature names
@@ -382,27 +439,24 @@ whether any of this is worth building — otherwise sits at the very end, behind
 Plan 153. The Risks section notes the pooled model may not survive contact with operational forcing.
 Finding that out last is the expensive ordering.
 
-**It needs neither Plan 153, the shim, the import path, nor the resolver.** FI's `dynamic:
+**It needs neither the shim, the import path, nor the resolver.** FI's `dynamic:
 dict[timedelta, SpatialInputSpec]` **already expresses multi-resolution** — the limitation is purely
 SAP3's internal projection layer. So: hand-shape multi-resolution FI `ModelInputs` for the target
 stations from historical data, call `AquacastModel.predict()` directly, and score with the T6
 quantile-aware metrics. Entirely decoupled from `discover_models()`.
 
-**Run it on the Swiss track** (the Nepal target is not onboarded). **What it proves depends on which
-artifact runs it — do not conflate these:**
+**Run it on the Swiss track** (the Nepal target is not onboarded). **`cmal_pool_PT` being pooled is
+what makes this worth doing**: generalising to unseen basins is what a pooled model is *for*
+(`test_unknown_station_generalizes`), so a Swiss zero-shot run is a **genuine skill signal**, not
+merely a smoke test. That was not true of the Dudh Koshi fine-tune, where a Swiss run would have
+measured single-basin transfer degradation and proved integration only.
 
-| Artifact | What a Swiss run proves | What it does NOT prove |
-|---|---|---|
-| **Dudh Koshi fine-tune** | **Integration only** — assembly, multi-resolution input shaping, quantile conversion, scoring path all work end to end | **Nothing about skill.** A single-basin Nepali fine-tune applied to Switzerland measures transfer degradation, a known-bad transfer. Do not read a verdict from it |
-| **The donor** (pooled ~13.7k basins) | **A meaningful zero-shot skill signal** — generalising to unseen basins is what a pooled model is *for*, and `test_unknown_station_generalizes` confirms the mechanism | Nepal-specific skill; the Dudh Koshi verdict still comes from the Nepal track |
+**Score on operational-like forcing (NWP), not the ERA5-Land feed PT was trained on** — otherwise
+the number flatters the model on exactly the axis the Risks section flags.
 
-**Exit gate:** integration proven end to end, plus — **if the donor is available** — a skill number
-against the incumbents on *operational-like* forcing (NWP, not the ERA5-Land training feed) and an
-**owner go/no-go on committing to T1/T2/T3/Plan 153**. If only the fine-tune arrives, the gate is
-integration-only and the go/no-go defers to the Nepal track.
-
-*(This also substitutes for the stepping stone lost when D7 rejected option (C): it needs no
-daily-only artifact.)*
+**Exit gate:** integration proven end to end, a skill number against the incumbents, and an **owner
+go/no-go on committing to T1/T2/T3**. A poor number here should stop the plan — that is the whole
+point of running it third rather than last.
 
 ### T1 — Past-forcing depth to the required lookback (long pole; data, not code)
 **Scope defined by T0.4.** Extend stored historical forcing and past-target coverage so every target
@@ -428,7 +482,7 @@ Each class binds its `ModelTemplate.from_yaml(...)` + device at construction and
 (`services/model_registry.py:60-67`). `adapt_if_fi` wraps it at discovery (`:76-84`).
 
 Config↔artifact pinning is D1. **Testable against synthetic single-resolution FI models, so it lands
-well before Plan 153.**
+well ahead of the artifact arriving.**
 
 ### T3 — External-artifact import path + provenance (closes G4)
 Two parts:
@@ -448,7 +502,7 @@ no artifact row of any status, no changed prior ACTIVE row, no provenance row, a
 
 **Red-first:** an undeserializable blob fails loudly; a valid import yields a promotable artifact with
 external provenance; **an acceptance test from the public boundary proving `train()` is never
-called**. Testable with synthetic models — lands before Plan 153.
+called**. Testable with synthetic models — lands ahead of the artifact arriving.
 
 ### T4 — Group onboarding on a disposable database (closes G6)
 Isolated experiment DB, artifact location and model ids per Plan 135 decision 7 — **never** the
@@ -486,18 +540,25 @@ reported separately.
 
 ## Sequencing
 
-Losing the daily-only stepping stone (D7) does **not** stall the plan.
+**Selecting `cmal_pool_PT` collapsed the critical path.** The old chain
+(`Plan 151 T2 → Plan 153 → T4 → T5 → T6`) existed *only* because the artifact was multi-resolution.
+A pooled daily model needs none of it: **Plan 153 is deferred, and nothing in this plan waits on
+Plan 151.**
 
-**Immediately, in parallel, independent of Plan 153:** T0 (audit), **T0b** (guard — the only thing
-between a multi-resolution artifact and silently wrong numbers), **T0c** (skill spike — gates
-everything downstream), T1 (data; long pole), T2 and T3 (exercised against synthetic
-single-resolution FI models).
+**The critical path is now just: T0 (colleague ask) → T2/T3 → T4 → T5 → T6** — and its longest pole
+is the **human round-trip in T0.0**, not engineering.
 
-**Waits on Plan 153:** T4, T5, T6 — they need a multi-resolution requirement to be *representable*,
-not merely refused.
+**In parallel, all independent:**
+- **T0b** — the multi-resolution fail-loud guard. Nothing here needs multi-resolution, which is
+  *precisely* why the guard must ship: it is now the only protection against a multi-res artifact
+  being silently mis-onboarded later.
+- **T1** — past-forcing depth. Still the long engineering pole: 210 days of daily discharge +
+  precipitation + temperature per station. Swiss depth we largely hold; Nepal follows onboarding.
+- **T2 / T3** — shim and import path; exercised against synthetic models, no artifact needed.
 
-**Critical path:** Plan 151 T2 → Plan 153 → T4 → T5 → T6. Everything else runs beside it — and
-**T0c's number should decide whether that path is walked at all.**
+**Deferred out of this plan:** Plan 153 (multi-resolution) and sub-daily, returning when DHM hourly
+coverage makes them serve more than one basin. **Plan 151 is now only a file-level coordination
+concern** (T0b and T1 touch files it edits) — not a dependency.
 
 ## Phase dependency graph
 
@@ -510,23 +571,28 @@ not merely refused.
     { "id": "T1",  "tasks": ["T1"],  "parallel": false, "depends_on": ["T0"] },
     { "id": "T2",  "tasks": ["T2"],  "parallel": false, "depends_on": ["T0"] },
     { "id": "T3",  "tasks": ["T3"],  "parallel": false, "depends_on": ["T0"] },
-    { "id": "T4",  "tasks": ["T4"],  "parallel": false, "depends_on": ["T2", "T3", "plan-153"] },
+    { "id": "T4",  "tasks": ["T4"],  "parallel": false, "depends_on": ["T2", "T3"] },
     { "id": "T5",  "tasks": ["T5"],  "parallel": false, "depends_on": ["T1", "T4"] },
     { "id": "T6",  "tasks": ["T6"],  "parallel": false, "depends_on": ["T5"] }
   ]
 }
 ```
 
-`plan-153` is the external prerequisite (multi-resolution support, D7), itself sequenced after Plan
-151's T2. T0b has no dependencies and ships first. **T0c is a decision gate: a poor result should
-stop T1/T2/T3 and Plan 153 rather than merely inform them.**
+**No `plan-153` edge** — deferred with sub-daily (D7). No Plan 151 edge either; that relationship is
+now file-level coordination only. T0b has no dependencies and ships first. **T0c remains a decision
+gate: a poor result should stop T1/T2/T3, not merely inform them.**
 
 ## Risks
 
-- **G5 is the critical path and touches core domain types.** Avoiding radiation moved the cost from
-  *data* to *architecture*, which ripples through training, hindcast, onboarding and both forecast
-  paths. Mitigation: D7 splits it into Plan 153, sequenced after 151's T2; **T0c de-risks the decision
-  to start it at all.**
+- **We deliberately chose the weakest of three models.** `cmal_pool_PT` was selected for pipeline fit,
+  not skill. If T6 shows it does not beat the incumbents, the honest reading is *"the cheap model is
+  not good enough"* — **not** *"aquacast is not good enough"*; `cmal_pool_20s_no_wd` remains untested
+  behind the radiation workstream. T0.0 q3 asks for the skill gap so this is quantified before we
+  build, and T6 must report the verdict against **PT specifically**, never against the model family.
+- **PT's contract is owner-reported, not verified.** Its config is not committed; everything about its
+  inputs comes from a one-line description. If T0 finds it needs anything beyond precipitation +
+  temperature, the plan's whole premise moves. **T0 must construct it and read `input_requirement`
+  before any other task starts.**
 - **The silent-misread failure mode (G5) is worse than a hard failure** — plausible wrong numbers,
   accepted by onboarding. T0b makes it loud first, and is worth landing even if the rest slips.
 - **The pooled model may not survive operational forcing.** Trained on a Caravan/ERA5-Land climatology
@@ -561,14 +627,18 @@ stop T1/T2/T3 and Plan 153 rather than merely inform them.**
   the alert path. *Do not work around it in the adapter.*
 - **D5 — Uncertainty ownership — RESOLVED (owner, 2026-08-11).** Per-model; control member only for
   self-uncertain models. Already declarative via FI `ensemble_mode`. No design work needed.
-- **D6 — Which trained config? — RESOLVED (owner, 2026-08-11): the multi-resolution, radiation-free
-  `dudh_koshi` shape.** Daily + sub-daily is a first-class Objective goal, so the multi-resolution
-  architecture is wanted on its own merits. *(Rejected: `nepal_daily_cmal` — daily-only but needs
-  radiation end-to-end.)*
-- **D7 — Multi-resolution sequencing — RESOLVED (owner, 2026-08-11).** Split into prerequisite **Plan
-  153**, sequenced after Plan 151's T2. The daily-only stepping stone was **rejected as unavailable** —
-  no such artifact exists and we have no daily model of our own. **T0c substitutes for it**, giving the
-  same early signal without a new artifact.
+- **D6 — Which artifact? — RESOLVED (owner, 2026-08-11, superseding the earlier answer):
+  `cmal_pool_PT`** — pooled, daily-only, discharge + precipitation + temperature only. It is the sole
+  artifact that clears **both** G2 (no radiation) and G5 (no multi-resolution) at once, and being
+  pooled it generalises zero-shot to Swiss and Nepal alike. *(Superseded: the multi-resolution
+  `dudh_koshi` fine-tune — deferred with sub-daily. Rejected: `cmal_pooled_big` / `cmal_pool_20s_no_wd`
+  — better skill, but both require the two radiation variables.)* **Accepted cost: PT is the weakest
+  of the three; T6 measures whether the trade was right, and T0.0 q3 asks for the skill gap up front.**
+- **D7 — Multi-resolution + sub-daily — DEFERRED (owner, 2026-08-11).** Plan 153 is **off this plan's
+  critical path** and is not a dependency. Rationale: multi-resolution can serve only one basin today
+  (1 of 11 DHM gauges has hourly discharge), so gating every deliverable behind core domain-type
+  surgery bought a single station. It returns when DHM hourly coverage grows. **T0b still ships**, so
+  a multi-resolution artifact fails loudly rather than being silently mis-onboarded in the meantime.
 - **D8 — A daily-only stand-in later (parked).** aquacast ships an optional `tirex` extra (NX-AI
   TiRex-2, **zero-shot**), which needs no trained artifact. If Plan 153 stalls, a zero-shot daily config
   could unblock T2–T6 validation independently. Costs an NXAI Community License dependency and a
