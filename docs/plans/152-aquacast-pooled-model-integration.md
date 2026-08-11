@@ -321,6 +321,14 @@ Comparing a 7-quantile aquacast forecast against a 21-member ICON ensemble throu
 metrics is **not apples-to-apples** — which is exactly what T6 exists to do.
 *(Found by the `/plan` review; independently verified.)*
 
+### G8 — Statics are declared in Caravan names; we store raw HydroATLAS codes
+aquacast declares its 51 statics in **Caravan** names; our basin package carries **raw HydroATLAS**
+codes. `_static_inputs` (`adapters/forecast_interface.py:1059-1071`) raises `ConfigurationError` on
+any name it cannot find, so **all 22 mismatched statics would be reported missing at every predict**
+— the model would never run. Verified against `tests/fixtures/basin_static/nepal-dhm-basins/`
+(92 catalog features / 93 parquet columns): 29 of 51 already match, 22 are a pure rename with a
+counterpart we hold. **Owner-confirmed the map on 2026-08-11.** Closed by T1b.
+
 ## Non-goals
 
 - **Retraining or fine-tuning in SAP3.** Import-only; FI `train`/`retrain` stay unexercised.
@@ -360,17 +368,26 @@ A wrong question list costs a full round-trip, so it is pinned here.
 
 **T0.0 — the colleague request (send first).**
 
+**Most of the original list was answered without the colleague (owner + repo, 2026-08-11): pool
+size ~17,007 basins; `no_wd` = no weight decay, i.e. a training hyperparameter, so `20s_no_wd`
+almost certainly shares the radiation-requiring contract; cadence `issue_hours: [0]` (once daily at
+00Z); the 51 statics enumerated and the rename map CONFIRMED (T1b); NWP-fed degradation expected.
+Only the following remain.**
+
 *Artifacts — `cmal_pool_PT` is the one we need first*
-1. Please send **`cmal_pool_PT`**: `config.yaml` **and** `checkpoints/best.pt`. It is the only one
+1. Please send **`cmal_pool_PT`** — **exactly two files** suffice (aquacast's own
+   `docs/operational/fi_integration.md`: "The adapter needs exactly two of these files"):
+   **`config.yaml`** and **`checkpoints/best.pt`**. Paths on shared storage are fine if we can read
+   them. It is the only one
    whose forcing (discharge + precipitation + `temperature_2m`) matches our operational pipeline
    today — the others need radiation, which we do not carry.
-2. **Confirm PT's exact contract**: is `future_dynamic` exactly `[precipitation, mean_temperature]`,
-   with `discharge` as target + `past_dynamic`, and **no radiation**? Daily-only? Lookback/horizon
-   (the committed pooled configs are 210 d / 15 d)? Its config is not in the repo, so we are working
-   from your description.
-3. **What is PT's skill gap** vs `cmal_pool_20s_no_wd` — globally, for Nepal, and if you have it for
-   Swiss/Alpine basins? We are accepting a weaker model to avoid a radiation-ingest workstream; the
-   gap tells us whether that trade holds.
+2. **PT's exact contract — self-resolving on receipt** (owner, 2026-08-11): we read
+   `input_requirement` by constructing the model from its `config.yaml`. No question needed; T0
+   verifies. **Until then every statement about PT's inputs in this plan is owner-reported, not
+   verified.**
+3. **PT's skill gap** vs `cmal_pool_20s_no_wd`, globally and for Nepal. **No Swiss/Alpine numbers
+   exist yet** (owner) — T0c produces the first Swiss evidence, so it is measured against *our
+   incumbents*, not against a known PT-vs-`20s` baseline.
 4. How many basins is PT pooled over, and does its config scope via `gauge_ids` or `basins_files`?
    (Determines whether it reports STATION or GROUP on our side.)
 5. Does `cmal_pool_20s_no_wd` in fact require both radiation variables? (We assumed so from the
@@ -382,8 +399,9 @@ A wrong question list costs a full round-trip, so it is pinned here.
 *Contract*
 4. Exact `input_requirement`: resolutions, lookback/horizon **per resolution**, exact feature names
    + units, full **static** list. (We verify by construction; this confirms intent.)
-5. Statics: the Nepal HydroATLAS set from `configs/regions/nepal.yaml`? Is **`area`** present?
-   (Mandatory — `m³/s → mm/day` fails without it.)
+5. Statics: **does PT use the same 51-static set** as the other pooled configs, or a reduced one?
+   (The Caravan↔HydroATLAS rename map is confirmed — T1b — so only the *set* is open. `area` must be
+   in it: `m³/s → mm/day` fails without it.)
 6. **Does the hourly branch require hourly *observed* discharge**, or can it run on daily obs +
    hourly forcing? We read `is_target_in_past: true` + `past_dynamic: [discharge]` as requiring
    hourly obs — which confines multi-resolution to `nepal_20010` today. Confirm or correct.
@@ -467,6 +485,42 @@ Additionally harden the silent-degradation hole: a station with insufficient loo
 explicit assignment failure, not a warning plus a forecast
 (`services/operational_inputs.py:443-466`). **Red-first.** *(Touches `services/operational_inputs.py`
 — see collision map.)*
+
+### T1b — Caravan↔HydroATLAS static alias map (closes G8)
+**Owner-confirmed 2026-08-11.** aquacast declares statics in **Caravan** names; our basin package
+carries **raw HydroATLAS codes**. Verified against
+`tests/fixtures/basin_static/nepal-dhm-basins/`: 29 of the model's 51 statics already match exactly
+(`area`, `p_mean`, `frac_snow`, `high_prec_*`, `low_prec_*`, all 22 `glc_pc_s*`); the other **22 are
+a pure rename**, every one with a counterpart we already hold:
+
+`slope`→`slp_dg_sav`, `stream_gradient`→`sgr_dk_sav`, `lake_fraction`→`lka_pc_sse`,
+`degree_of_regulation`→`dor_pc_pva`, `air_temperature`→`tmp_dc_syr`, `precip_annual`→`pre_mm_syr`,
+`pet_annual`→`pet_mm_syr`, `aet_annual`→`aet_mm_syr`, `aridity_index`→`ari_ix_sav`,
+`climate_moisture_index`→`cmi_ix_syr`, `snow_cover`→`snw_pc_syr`, `snow_cover_max`→`snw_pc_smx`,
+`glacier_fraction`→`gla_pc_sse`, `cropland_fraction`→`crp_pc_sse`, `pasture_fraction`→`pst_pc_sse`,
+`clay_fraction`→`cly_pc_sav`, `silt_fraction`→`slt_pc_sav`, `sand_fraction`→`snd_pc_sav`,
+`soil_organic_carbon`→`soc_th_sav`, `soil_water_content`→`swc_pc_syr`, `karst_fraction`→`kar_pc_sse`,
+`irrigated_fraction`→`ire_pc_sse`.
+
+**Without this the model fails at every predict**: `_static_inputs`
+(`adapters/forecast_interface.py:1059-1071`) computes `missing = static_names - set(static.columns)`
+and raises `ConfigurationError` — all 22 would be reported missing.
+
+**Approach — additive aliasing (recommended).** Emit the Caravan aliases as **additional columns**
+alongside the HydroATLAS canonicals when building the static frame. Purely additive: our canonical
+namespace and the `feature_catalog.json` / `required_by_models` seam
+(`services/basin_importer.py:185`) are untouched, `_static_inputs` selects only what the model asks
+for so extra columns are inert, and — importantly — **it needs no change to
+`adapters/forecast_interface.py`**, avoiding the Plan 151 collision. *(Rejected: renaming at import,
+which would churn our canonical namespace; or an alias layer inside the FI adapter, which collides
+with 151's T2.)*
+
+**Red-first:** a static frame carrying only HydroATLAS names fails with all 22 listed as missing
+(proves the gap); with aliasing it resolves. Pin the map in one place with a test asserting all 51
+of the model's declared statics resolve.
+
+**Depends on T0** — the map is confirmed for the 51-static pooled contract; T0 must check whether
+`cmal_pool_PT` uses that same set or a reduced one.
 
 ### T2 — `sapphire-aquacast` shim distribution (external repo; closes G3)
 A thin package **outside this repo** (Plan 135 decision 3 — no torch in our `pyproject.toml`)
@@ -569,6 +623,7 @@ concern** (T0b and T1 touch files it edits) — not a dependency.
     { "id": "T0b", "tasks": ["T0b"], "parallel": false },
     { "id": "T0c", "tasks": ["T0c"], "parallel": false, "depends_on": ["T0"] },
     { "id": "T1",  "tasks": ["T1"],  "parallel": false, "depends_on": ["T0"] },
+    { "id": "T1b", "tasks": ["T1b"], "parallel": false, "depends_on": ["T0"] },
     { "id": "T2",  "tasks": ["T2"],  "parallel": false, "depends_on": ["T0"] },
     { "id": "T3",  "tasks": ["T3"],  "parallel": false, "depends_on": ["T0"] },
     { "id": "T4",  "tasks": ["T4"],  "parallel": false, "depends_on": ["T2", "T3"] },
@@ -595,9 +650,13 @@ gate: a poor result should stop T1/T2/T3, not merely inform them.**
   before any other task starts.**
 - **The silent-misread failure mode (G5) is worse than a hard failure** — plausible wrong numbers,
   accepted by onboarding. T0b makes it loud first, and is worth landing even if the rest slips.
-- **The pooled model may not survive operational forcing.** Trained on a Caravan/ERA5-Land climatology
-  we cannot reproduce; a pooled model on out-of-distribution forcing can be confidently wrong. T0c
-  must score on *operational-like* forcing, not the training feed.
+- **Degradation from ERA5-Land training to NWP-fed operation is EXPECTED, not hypothetical**
+  (owner-confirmed 2026-08-11; `configs/regions/nepal.yaml`: "ERA5-Land daily is the ONLY forcing").
+  A pooled model on out-of-distribution forcing can be confidently wrong. **T0c and T6 must score on
+  operational-like NWP forcing, never the ERA5-Land training feed** — otherwise the number flatters
+  the model on exactly the axis we know is weak. If degradation proves large, bias correction of the
+  NWP forcing toward the training climatology becomes a follow-on (see D9); it is explicitly NOT
+  scoped here.
 - **Silent lookback truncation** produces plausible bad forecasts. Mitigated by T1's hardening.
 - **Station-identity mapping is a hidden coupling** — a wrong map silently forecasts the wrong basin.
   Mitigated by T4's fail-at-onboarding test.
@@ -639,6 +698,11 @@ gate: a poor result should stop T1/T2/T3, not merely inform them.**
   (1 of 11 DHM gauges has hourly discharge), so gating every deliverable behind core domain-type
   surgery bought a single station. It returns when DHM hourly coverage grows. **T0b still ships**, so
   a multi-resolution artifact fails loudly rather than being silently mis-onboarded in the meantime.
+- **D9 — NWP forcing bias correction (parked, likely needed).** PT is trained on ERA5-Land; we feed
+  NWP. Owner expects degradation. If T0c/T6 show it is material, options are: correct the NWP forcing
+  toward the training climatology, ask the colleague to fine-tune on NWP-like forcing, or accept the
+  loss. **Not scoped here** — but it is the most likely reason a good model scores badly for us, so
+  T6 must report forcing provenance alongside the skill number.
 - **D8 — A daily-only stand-in later (parked).** aquacast ships an optional `tirex` extra (NX-AI
   TiRex-2, **zero-shot**), which needs no trained artifact. If Plan 153 stalls, a zero-shot daily config
   could unblock T2–T6 validation independently. Costs an NXAI Community License dependency and a
