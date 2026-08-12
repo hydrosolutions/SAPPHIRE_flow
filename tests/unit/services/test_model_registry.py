@@ -280,8 +280,14 @@ class TestDiscoverModels:
             def deserialize_artifact(self, raw: bytes) -> object:
                 raise NotImplementedError
 
-        class _GoodEntryPoint:
-            name = "good_model"
+        class _GoodEntryPointBefore:
+            name = "good_model_before"
+
+            def load(self) -> type[DeclaredModel]:
+                return DeclaredModel
+
+        class _GoodEntryPointAfter:
+            name = "good_model_after"
 
             def load(self) -> type[DeclaredModel]:
                 return DeclaredModel
@@ -292,12 +298,22 @@ class TestDiscoverModels:
             def load(self) -> type[_MultiResolutionFakeFIModel]:
                 return _MultiResolutionFakeFIModel
 
+        # The bad entry point sits BETWEEN two good ones: a subtly broken
+        # implementation that `break`s or `return`s early on the bad model
+        # (instead of `continue`-ing the loop) would still pass a
+        # before-only assertion because the first good model was already
+        # recorded — the after-model catches that class of bug.
         monkeypatch.setattr(
             "importlib.metadata.entry_points",
-            lambda group: [_GoodEntryPoint(), _BadEntryPoint()],
+            lambda group: [
+                _GoodEntryPointBefore(),
+                _BadEntryPoint(),
+                _GoodEntryPointAfter(),
+            ],
         )
 
         result = discover_models()
 
-        assert ModelId("good_model") in result
+        assert ModelId("good_model_before") in result
+        assert ModelId("good_model_after") in result
         assert ModelId("bad_multi_resolution_model") not in result

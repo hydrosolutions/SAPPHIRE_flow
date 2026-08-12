@@ -8,7 +8,10 @@ import polars as pl
 import pytest
 
 from sapphire_flow.adapters import forecast_interface as fi_boundary
-from sapphire_flow.exceptions import ConfigurationError
+from sapphire_flow.exceptions import (
+    ConfigurationError,
+    UnsupportedModelRequirementError,
+)
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.ids import StationGroupId, StationId
 from sapphire_flow.types.model import (
@@ -440,3 +443,47 @@ def test_train_delegates_converted_inputs_config_rng_and_returns_artifact() -> N
     assert set(fake.train_inputs.stations) == {"AARE", "RHINE"}
     assert fake.train_config is params
     assert fake.train_rng is rng
+
+
+def _one_future_forced_plus_past_only_requirement() -> fi_boundary.InputRequirement:
+    """1h future-forced branch (`_requirement()`'s shape) plus a 24h
+    past-only branch declaring ``soil_moisture`` — the shape Plan 156
+    ACCEPTS at adapter construction (Plan 151 T2 needs it constructible),
+    but that a review found is silently truncated at predict/train time."""
+    base = _requirement()
+    daily_spec = fi_boundary.DynamicInputSpec(
+        past_known={"era5": {"soil_moisture": _past(fi_boundary.Unit.PERCENT)}}
+    )
+    return fi_boundary.InputRequirement(
+        targets=base.targets,
+        dynamic={
+            **base.dynamic,
+            timedelta(hours=24): fi_boundary.SpatialInputSpec(
+                data={fi_boundary.FISpatialRepresentation.POINT: daily_spec}
+            ),
+        },
+        static=base.static,
+    )
+
+
+def test_past_only_second_branch_rejected_at_predict_time() -> None:
+    """BLOCKER follow-up (Plan 156 review): before this guard, the 24h
+    branch's ``soil_moisture`` was fetched into ``past_dynamic`` and
+    NaN-checked (both flatten across ALL branches at projection time) yet
+    silently OMITTED from what the model actually received — because
+    `_station_inputs_from_frames` builds only ONE `StationInputs.dynamic`
+    entry, the active 1h branch. That is an incomplete input producing a
+    plausible but wrong result, exactly what Plan 156 exists to prevent.
+    Delivery must fail loudly instead of silently truncating.
+    """
+    adapter = fi_boundary.ForecastInterfaceAdapter(
+        RecordingFIForecastModel(_one_future_forced_plus_past_only_requirement())
+    )
+    # Sanity: the requirement really is accepted at construction and really
+    # does claim soil_moisture as a past feature — proving the omission
+    # would otherwise be silent (a claimed-but-undelivered feature), not an
+    # upfront rejection.
+    assert "soil_moisture" in adapter.data_requirements.past_dynamic_features
+
+    with pytest.raises(UnsupportedModelRequirementError, match="time_step branch"):
+        adapter.train(_station_training_data(static=None), {}, random.Random(1))

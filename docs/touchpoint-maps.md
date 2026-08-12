@@ -86,6 +86,16 @@ include them in the task context packet.
   whole registry); a past-only second branch stays constructible (Plan 151's
   shape). `supported_time_steps` is projected from the future-forced
   branch(es) only, never a past-only one
+- Plan 156 (follow-up): the accepted one-future-forced-plus-past-only shape is
+  only constructible, not deliverable — `_station_inputs_from_frames`
+  (predict/train time) raises `UnsupportedModelRequirementError` via
+  `_assert_single_deliverable_dynamic_branch()` if the `InputRequirement`
+  declares more than one `time_step` branch, rather than silently omitting
+  the non-active branch's variables from `ModelInputs`. Every
+  `next(iter(supported_time_steps))` call site (native + FI-adapted models)
+  goes through `resolve_single_supported_time_step()`
+  (`services/model_onboarding.py`), which requires exactly one element and
+  raises `ConfigurationError` naming the ambiguous set otherwise
 - operational input assembly
 - forecast cycle orchestration
 - model execution call sites

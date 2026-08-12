@@ -27,7 +27,16 @@ class FakeStationForecastModel:
         past_dynamic_features=frozenset({"precipitation", "temperature"}),
         future_dynamic_features=frozenset(),
         static_features=frozenset(),
-        supported_time_steps=frozenset({timedelta(hours=1), timedelta(hours=24)}),
+        # Plan 156: a single time step. SAP3 domain types are single-resolution
+        # by construction (every real native model — climatology_fallback,
+        # persistence_fallback, linear_regression_daily — declares exactly
+        # one), and the shared onboarding/smoke-test call sites now require
+        # `resolve_single_supported_time_step` to succeed rather than
+        # arbitrarily picking via ``next(iter(...))``. Tests exercising a
+        # GENUINELY multi-time-step model build their own
+        # ``ModelDataRequirements`` locally instead of relying on this shared
+        # fake's default.
+        supported_time_steps=frozenset({timedelta(hours=1)}),
         lookback_steps=720,
         forecast_horizon_steps=5,
         spatial_input_type=SpatialRepresentation.POINT,
@@ -157,7 +166,8 @@ class FakeGroupForecastModel:
         past_dynamic_features=frozenset({"precipitation", "temperature"}),
         future_dynamic_features=frozenset(),
         static_features=frozenset(),
-        supported_time_steps=frozenset({timedelta(hours=1), timedelta(hours=24)}),
+        # Plan 156: single time step — see FakeStationForecastModel above.
+        supported_time_steps=frozenset({timedelta(hours=1)}),
         lookback_steps=720,
         forecast_horizon_steps=5,
         spatial_input_type=SpatialRepresentation.POINT,

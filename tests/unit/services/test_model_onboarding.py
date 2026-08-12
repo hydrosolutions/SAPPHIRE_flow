@@ -11,6 +11,7 @@ from sapphire_flow.services.model_onboarding import (
     create_group_assignment,
     create_station_assignment,
     evaluate_skill_gate,
+    resolve_single_supported_time_step,
     smoke_test_model,
     validate_compatibility_for_unit,
 )
@@ -316,11 +317,80 @@ class TestPastVsFutureAvailabilitySplit:
         )
 
 
+class TestResolveSingleSupportedTimeStep:
+    """Plan 156 (major follow-up): every ``next(iter(supported_time_steps))``
+    call site now goes through this helper instead of picking an ARBITRARY
+    member when a model declares more than one — see
+    ``docs/spec/types-and-protocols.md`` § ``ModelDataRequirements``."""
+
+    def _req(
+        self, *, supported_time_steps: frozenset[timedelta]
+    ) -> ModelDataRequirements:
+        return ModelDataRequirements(
+            target_parameters=frozenset({"discharge"}),
+            past_dynamic_features=frozenset(),
+            future_dynamic_features=frozenset(),
+            static_features=frozenset(),
+            supported_time_steps=supported_time_steps,
+            lookback_steps=1,
+            forecast_horizon_steps=1,
+            spatial_input_type=SpatialRepresentation.POINT,
+        )
+
+    def test_returns_the_sole_time_step(self) -> None:
+        req = self._req(supported_time_steps=frozenset({timedelta(hours=1)}))
+        assert resolve_single_supported_time_step(req, context="test") == timedelta(
+            hours=1
+        )
+
+    def test_raises_for_multiple_time_steps_instead_of_picking_arbitrarily(
+        self,
+    ) -> None:
+        req = self._req(
+            supported_time_steps=frozenset({timedelta(hours=1), timedelta(hours=24)})
+        )
+        with pytest.raises(ConfigurationError, match="expected exactly one"):
+            resolve_single_supported_time_step(req, context="my context")
+
+    def test_raises_for_empty_time_steps(self) -> None:
+        req = self._req(supported_time_steps=frozenset())
+        with pytest.raises(ConfigurationError, match="expected exactly one"):
+            resolve_single_supported_time_step(req, context="my context")
+
+
 class TestSmokeTestModel:
     def test_passes_for_valid_model(self) -> None:
         model = FakeStationForecastModel()
         rng = random.Random(7)
         smoke_test_model(model=model, rng=rng)
+
+    def test_native_model_with_multiple_time_steps_fails_loud_not_arbitrary(
+        self,
+    ) -> None:
+        """Before this fix, `_run_synthetic_train_predict` picked
+        ``next(iter(req.supported_time_steps))`` — an arbitrary,
+        non-deterministic member whenever a NATIVE model declared more than
+        one supported time step. Locks that the smoke test now fails loudly
+        instead of silently picking one."""
+
+        class MultiTimeStepModel(FakeStationForecastModel):
+            data_requirements = ModelDataRequirements(
+                target_parameters=frozenset({"discharge"}),
+                past_dynamic_features=frozenset({"precipitation", "temperature"}),
+                future_dynamic_features=frozenset(),
+                static_features=frozenset(),
+                supported_time_steps=frozenset(
+                    {timedelta(hours=1), timedelta(hours=24)}
+                ),
+                lookback_steps=720,
+                forecast_horizon_steps=5,
+                spatial_input_type=SpatialRepresentation.POINT,
+            )
+
+        model = MultiTimeStepModel()
+        rng = random.Random(7)
+        with pytest.raises(ModelSmokeTestError, match="expected exactly one"):
+            smoke_test_model(model=model, rng=rng)
 
     def test_fails_for_broken_model(self) -> None:
         class BrokenModel(FakeStationForecastModel):

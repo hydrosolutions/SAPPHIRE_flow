@@ -105,6 +105,30 @@ def _assert_assignment_priority_invariant(model_id: ModelId, priority: int) -> N
         )
 
 
+def resolve_single_supported_time_step(
+    req: ModelDataRequirements, *, context: str
+) -> timedelta:
+    """Return the model's one supported time step, or fail loudly.
+
+    Plan 156: every call site that previously did
+    ``next(iter(req.supported_time_steps))`` picked an ARBITRARY member when
+    a model declared more than one — a non-deterministic resolution choice.
+    The FI adapter now projects at most one FUTURE-FORCED time step, but
+    ``ModelDataRequirements.supported_time_steps`` is generic (native models
+    may still declare more than one), so this helper is the single place
+    that turns an ambiguous or empty set into a clear ``ConfigurationError``
+    instead of silently picking one.
+    """
+    if len(req.supported_time_steps) != 1:
+        steps = ", ".join(str(step) for step in sorted(req.supported_time_steps))
+        raise ConfigurationError(
+            f"{context}: expected exactly one supported time step, got "
+            f"{{{steps}}}; a model declaring zero or multiple time steps "
+            "cannot have one selected automatically"
+        )
+    return next(iter(req.supported_time_steps))
+
+
 def validate_compatibility(
     model: ForecastModel,
     station_config: StationConfig,
@@ -292,7 +316,9 @@ def _make_synthetic_station_training_data(
 
     from sapphire_flow.types.model import StationTrainingData
 
-    time_step = next(iter(req.supported_time_steps))
+    time_step = resolve_single_supported_time_step(
+        req, context="synthetic station training data"
+    )
     base = datetime(2000, 1, 1, tzinfo=UTC)
     past_ts = [base + i * time_step for i in range(n_past_rows)]
 
@@ -365,7 +391,9 @@ def _make_synthetic_group_training_data(
 
     from sapphire_flow.types.model import GroupTrainingData
 
-    time_step = next(iter(req.supported_time_steps))
+    time_step = resolve_single_supported_time_step(
+        req, context="synthetic group training data"
+    )
     base = datetime(2000, 1, 1, tzinfo=UTC)
     past_ts = [base + i * time_step for i in range(n_past_rows)]
     # StationId is a UUID NewType; the stacked-frame "station_id" column must
@@ -482,7 +510,9 @@ def _run_synthetic_train_predict(
     # these same past_ts rows (see _make_synthetic_*_training_data).
     smoke_horizon = max(req.forecast_horizon_steps, 10)
     n_past = req.lookback_steps + smoke_horizon + 10
-    time_step = next(iter(req.supported_time_steps))
+    time_step = resolve_single_supported_time_step(
+        req, context="synthetic train/predict smoke test"
+    )
     issue_time = _synthetic_issue_time(time_step, n_past)
 
     if model.artifact_scope is ArtifactScope.GROUP:

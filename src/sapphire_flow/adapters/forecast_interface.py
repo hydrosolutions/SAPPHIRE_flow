@@ -960,6 +960,32 @@ class ForecastInterfaceAdapter:
             time_step=time_step,
         )
 
+    def _assert_single_deliverable_dynamic_branch(self) -> None:
+        # Plan 156 (blocker follow-up): a requirement with one FUTURE-FORCED
+        # branch plus a past-only branch is ACCEPTED at construction (Plan
+        # 151 T2 needs that shape constructible), but delivery below builds
+        # only ONE `dynamic={time_step: ...}` entry — the ACTIVE branch
+        # matching the caller's `time_step`. A second, past-only branch's
+        # variables (e.g. a daily `soil_moisture`) would be fetched and
+        # NaN-checked (both flatten across ALL branches) yet silently
+        # OMITTED from what the model actually receives — an incomplete
+        # input that produces a plausible but wrong result, exactly what
+        # this plan exists to prevent. Until real multi-resolution delivery
+        # lands (Plan 153), fail loudly here instead of construction time,
+        # so Plan 151's per-branch accessors stay usable without the
+        # adapter claiming full operational support.
+        branches = self._model.input_requirement.dynamic
+        if len(branches) > 1:
+            resolutions = ", ".join(str(step) for step in sorted(branches))
+            raise UnsupportedModelRequirementError(
+                "ForecastInterface InputRequirement declares more than one "
+                f"time_step branch ({resolutions}); SAP3 can only deliver "
+                "ONE branch's dynamic inputs per predict/train call, so the "
+                "non-active branch(es) would be silently omitted from "
+                "ModelInputs. Multi-resolution input delivery is not yet "
+                "supported (Plan 153)."
+            )
+
     def _station_inputs_from_frames(
         self,
         *,
@@ -969,6 +995,7 @@ class ForecastInterfaceAdapter:
         static: pl.DataFrame | None,
         time_step: timedelta,
     ) -> StationInputs:
+        self._assert_single_deliverable_dynamic_branch()
         rep, spec = self._dynamic_spec_for_time_step(time_step)
         dynamic_inputs = DynamicInputs(
             past_known=self._past_known_inputs(

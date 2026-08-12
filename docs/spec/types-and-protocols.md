@@ -1471,6 +1471,29 @@ so this set has at most one member for an FI-adapted model. A past-only second b
 `future_known`) stays constructible and is simply excluded from `supported_time_steps`. Native (non-FI)
 models are unaffected — they declare `supported_time_steps` directly.
 
+**Every `next(iter(supported_time_steps))` call site is guarded (Plan 156 follow-up):**
+`resolve_single_supported_time_step()` (`services/model_onboarding.py`) replaces the five
+sites that used to pick an element via `next(iter(...))` — an arbitrary, non-deterministic
+choice whenever a model declared more than one supported time step. It requires exactly one
+element and raises `ConfigurationError` naming the ambiguous set otherwise. Native models with
+more than one genuinely supported time step (§ `ModelDataRequirements` above) still work with
+`validate_compatibility`/`validate_compatibility_for_unit` (membership, not "pick one"); only
+the automatic-selection call sites (synthetic smoke-test data generation, and Flow 0's
+automatic model assignment/training-scope resolution when no per-station time step is
+configured yet) require the singleton.
+
+**Delivery-time guard for the accepted one-future-forced-plus-past-only shape (Plan 156
+follow-up):** `ForecastInterfaceAdapter` accepts a requirement with one future-forced branch
+plus a past-only branch at *construction* (needed for Plan 151's per-branch accessors), but
+`_station_inputs_from_frames` — the actual predict/train delivery path — builds only ONE
+`StationInputs.dynamic` entry (the branch matching the caller's `time_step`). A past-only
+second branch's variables (e.g. a daily `soil_moisture`) are fetched into `past_dynamic` and
+NaN-checked (both flatten across all branches), but were being silently OMITTED from what the
+model actually received. `_assert_single_deliverable_dynamic_branch()` now raises
+`UnsupportedModelRequirementError` the moment `predict()`/`train()`/`predict_batch()` is
+called on such a model, instead of silently dropping the non-active branch. Real
+multi-resolution delivery (populating every declared branch) is Plan 153.
+
 Module: `types/model.py`
 
 ### ModelParams
