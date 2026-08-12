@@ -161,7 +161,10 @@ reading of "pooled".
 
 ### The selected artifact: `cmal_pool_PT` (owner, 2026-08-11)
 
-Three **pooled** models exist (owner-reported, from the colleague's runs). These are the donors:
+Three **pooled** models exist (from the colleague's runs). These are the donors. **All three are in
+hand** (owner's Dropbox, `2025-01-BARHKH/models/global/`), and **PT's row below is verified from its
+own `config.yaml` and by running the model** (T0.0 / T0c RESULT) — the other two rows remain
+owner-reported:
 
 | Model | Forcing required | Resolution | Fits our pipeline today | Skill (owner-reported) |
 |---|---|---|---|---|
@@ -202,9 +205,12 @@ which is no longer the near-term target.
 
 **Consequences, all owner-ratified:**
 
-- **The pilot artifact is a group of ONE.** It declares GROUP scope, so onboarding takes the GROUP
-  branch (`services/model_onboarding.py:489`) and the resolver gap (G6) still applies — but the
-  `StationGroup` has a single member. The plan's GROUP framing is right for the **destination**, not
+- **The Dudh Koshi fine-tune is a group of ONE** — *background only; it is NOT the selected
+  artifact.* **`cmal_pool_PT` is genuinely multi-basin, so T4 onboards a real multi-station group and
+  the degenerate case does not arise.** For the fine-tune: it declares GROUP scope, so onboarding
+  takes the GROUP branch (`services/model_onboarding.py:489`) and the resolver gap (G6) still
+  applies — but the `StationGroup` has a single member. The plan's GROUP framing is right for the
+  **destination**, not
   for the pilot's economics. **T4 must verify the degenerate group-of-one case explicitly.**
 - **Production target**: one multi-basin fine-tune across Nepal, with the donor as its base.
 - **Only 1 of 11 DHM gauges has hourly discharge.** `configs/regions/nepal.yaml`: "DHM, 11 gauges;
@@ -354,12 +360,13 @@ metrics is **not apples-to-apples** — which is exactly what T6 exists to do.
 *(Found by the `/plan` review; independently verified.)*
 
 ### G8 — Statics are declared in Caravan names; we store raw HydroATLAS codes
-aquacast declares its 51 statics in **Caravan** names; our basin package carries **raw HydroATLAS**
-codes. `_static_inputs` (`adapters/forecast_interface.py:1059-1071`) raises `ConfigurationError` on
+aquacast declares its statics in **Caravan** names; our basin package carries **raw HydroATLAS**
+codes. (The pooled family declares **51**; **`cmal_pool_PT` declares 50** — it omits
+`degree_of_regulation`.) `_static_inputs` (`adapters/forecast_interface.py:1059-1071`) raises `ConfigurationError` on
 any name it cannot find, so **all 22 mismatched statics would be reported missing at every predict**
 — the model would never run. Verified against `tests/fixtures/basin_static/nepal-dhm-basins/`
-(92 catalog features / 93 parquet columns): 29 of 51 already match, 22 are a pure rename with a
-counterpart we hold. **Owner-confirmed the map on 2026-08-11.** Closed by T1b.
+(92 catalog features / 93 parquet columns): 29 already match and **22 are a pure rename** against the
+pooled 51-static set — **21 of which PT actually needs**. **Owner-confirmed the map on 2026-08-11.** Closed by T1b.
 
 ### G9 — **BLOCKER: `mm/day` has no SAP3 canonical unit, so the model's output cannot be converted**
 `cmal_pool_PT` emits `discharge` in **`mm/day`** (T0c-verified) and consumes discharge/precipitation
@@ -445,7 +452,9 @@ Every task is red-first, with the standard exit gate: `uv run pytest -q` + `uv r
 up on the owner's Dropbox and PT's contract is now verified** (T0.0 below), so T0 is verification
 work. The residual colleague questions are kept because a wrong list would still cost a round-trip.
 
-**T0.0 — the colleague request (send first).**
+**T0.0 (superseded — kept for the record).** The original colleague request, before the artifacts
+were found on the owner's Dropbox. Items 1, 2, 4, 5 and 6 are now answered by the artifacts
+themselves; only the **skill gap** question remains outstanding, and it is **not blocking**.
 
 **T0.0 — ARTIFACTS LOCATED AND CONTRACT VERIFIED (2026-08-11).** The models are on the owner's
 Dropbox — `.../2025-01-BARHKH/models/global/` — holding `cmal_pool_PT`, `cmal_pool_20s_no_wd`,
@@ -527,14 +536,15 @@ Only the following remain.**
    eases our static-coverage problem.
 
 *Contract*
-4. Exact `input_requirement`: resolutions, lookback/horizon **per resolution**, exact feature names
-   + units, full **static** list. (We verify by construction; this confirms intent.)
+4. Exact `input_requirement` — **answered for PT by construction** (daily-only, 210 d / 15 d, 50
+   statics). Retained as the standing check for **any future artifact**, whose shape must not be
+   assumed to match PT's.
 5. Statics: **does PT use the same 51-static set** as the other pooled configs, or a reduced one?
    (The Caravan↔HydroATLAS rename map is confirmed — T1b — so only the *set* is open. `area` must be
    in it: `m³/s → mm/day` fails without it.)
-6. **Does the hourly branch require hourly *observed* discharge**, or can it run on daily obs +
-   hourly forcing? We read `is_target_in_past: true` + `past_dynamic: [discharge]` as requiring
-   hourly obs — which confines multi-resolution to `nepal_20010` today. Confirm or correct.
+6. ~~Does the hourly branch require hourly *observed* discharge?~~ **Moot for this plan** — PT is
+   daily-only. The question returns with the deferred multi-resolution work, where our reading of
+   `is_target_in_past: true` + `past_dynamic: [discharge]` confines it to `nepal_20010` today.
 
 *Applicability*
 7. Zero-shot on Swiss basins: known caveats — statics namespace, normalization, expected degradation?
@@ -593,9 +603,7 @@ assembly hits the `mm/day` boundary, and T2 (which fixes that) would otherwise b
 Resolution: T0c carries an **explicitly throwaway** projection implementing the same outward
 name-and-unit contract T2 will productionise, records that raw canonical inputs fail without it, and
 scores only the translated run. It still needs neither the import path, the resolver, nor packaging.
-FI's `dynamic:
-dict[timedelta, SpatialInputSpec]` **already expresses multi-resolution** — the limitation is purely
-SAP3's internal projection layer. So: hand-shape multi-resolution FI `ModelInputs` for the target
+So: hand-shape **daily** FI `ModelInputs` (PT is daily-only, `issue_hours: [0]`) for the target
 stations from historical data, call `AquacastModel.predict()` directly, and score with the T6
 quantile-aware metrics. Entirely decoupled from `discover_models()`.
 
@@ -681,7 +689,7 @@ explicit assignment failure, not a warning plus a forecast
 ### T1b — Caravan↔HydroATLAS static alias map (closes G8)
 **Owner-confirmed 2026-08-11.** aquacast declares statics in **Caravan** names; our basin package
 carries **raw HydroATLAS codes**. Verified against
-`tests/fixtures/basin_static/nepal-dhm-basins/`: 29 of the model's 51 statics already match exactly
+`tests/fixtures/basin_static/nepal-dhm-basins/`: against the pooled **51**-static set, 29 match exactly
 (`area`, `p_mean`, `frac_snow`, `high_prec_*`, `low_prec_*`, all 22 `glc_pc_s*`); the other **22 are
 a pure rename**, every one with a counterpart we already hold:
 
@@ -746,8 +754,9 @@ This keeps ~2 GB of PyTorch out of every existing worker. **Acceptance requires 
 `discover_models()` test in that deployed environment** — without it this plan may not claim
 "operational". Update `docs/standards/cicd.md` with the topology.
 
-Config↔artifact pinning is D1. **Testable against synthetic single-resolution FI models, so it lands
-well ahead of the artifact arriving.**
+Config↔artifact pinning is D1. **The unit and packaging work is testable against synthetic
+single-resolution FI models**, so it does not wait on anything — though the artifacts are in hand, so
+the real config can be used directly.
 
 ### T3 — External-artifact import path + provenance (closes G4)
 Two parts:
@@ -828,7 +837,15 @@ number rather than leave the reader to infer it.
 **First fix the hindcast representation (G11).** The path hardcodes a MEMBERS header
 (`services/hindcast.py:669`) and reconstruction follows it (`store/hindcast_store.py:283-323`), so a
 quantile hindcast is silently converted to members before scoring. Preserve the returned
-representation end to end — red-first: store a quantile ensemble, assert it round-trips as QUANTILES.
+representation end to end.
+
+**Red-first — at the SERVICE boundary, not the store.** Run `run_group_hindcast` with a model
+returning QUANTILES and assert the persisted `HindcastForecast.representation` is `QUANTILES`; it
+fails today because `hindcast.py:669` hardcodes MEMBERS. **A store-level round-trip test would NOT
+work**: `store_hindcast` already branches on the *actual* ensemble representation
+(`store/hindcast_store.py:50`) and reconstruction honours the stored header, so such a test passes
+against today's code and proves nothing. The defect is introduced upstream, and the test must sit
+upstream of it.
 
 **Score both representations the same way.** Giving WIS to quantile forecasts while incumbents keep
 member-CRPS compares two different estimators, which is not the apples-to-apples verdict the
@@ -853,7 +870,9 @@ reported separately.
 A pooled daily model needs none of it: **Plan 153 is deferred, and nothing in this plan waits on
 Plan 151.**
 
-**The critical path is now: T0 → T0c (go/no-go gate) → T1 ‖ T1b ‖ T2 ‖ T3 → T4 → T5 → T6.**
+**The critical path is now: T0 → T0c (go/no-go gate) → T2 ‖ T3 → T4 → T5 → T6**, with **T1 and T1b
+running alongside and joining at T5** (T4 onboards against synthetic data, so it needs neither the
+real forcing depth nor the alias map; T5 is the first task that touches real assembly).
 The artifacts are in hand, so **the longest pole is engineering, not a human round-trip** — and
 within it, **T1** (210 days of gap-free daily history per station) and **T2** (the G9 unit boundary
 plus the G10 worker image) are the two that actually set the date.
@@ -995,22 +1014,26 @@ predict at all.
   the NWP forcing toward the training climatology, ask the colleague to fine-tune on NWP-like
   forcing, or accept the loss. **Not scoped here** — but it is the most likely reason a good model
   scores badly for us, so every skill number must carry its forcing provenance.
-- **D10 — How does the shim reach the operational worker? (G10, blocking "operational".)**
-  **(A)** a dedicated aquacast worker image/environment carrying the shim + torch runtime — clean
-  isolation, keeps torch out of the main image, but a second image to build and deploy. **(B)** install
-  the shim into the existing image — simpler topology, but pulls a large torch runtime into every
-  worker. **(C)** accept experiment-only and **re-word the Objective to drop "operational"**.
-  **RESOLVED (owner, 2026-08-12): option (A) — a dedicated aquacast worker image/environment**
+- **D10 — How does the shim reach the operational worker? — RESOLVED (owner, 2026-08-12): option
+  (A), a dedicated aquacast worker image/environment**
   carrying the shim + torch runtime, keeping ~2 GB of PyTorch out of every existing worker and
   isolating the model's dependency closure. **Acceptance requires a cold-start `discover_models()`
   test in that deployed environment**; without it this plan may not claim "operational". T2 owns the
-  image; `docs/standards/cicd.md` must be updated with the new topology.
+  image; `docs/standards/cicd.md` must be updated with the new topology. *(Rejected: (B) install the
+  shim into the existing image — pulls a large torch runtime into every worker; (C) accept
+  experiment-only and drop "operational" from the Objective.)*
 - **D11 — Does T6 measure NWP degradation or reanalysis skill? — RESOLVED (owner, 2026-08-12):
-  option (B), reanalysis.** See T6. **(A)** build the
-  cycle-faithful NWP hindcast path (honest, larger, needs leakage tests). **(B)** re-scope T6 to
-  reanalysis and leave NWP degradation to operational monitoring (cheap, but the plan must stop
-  claiming it measures it). *Recommendation: (B) for the first verdict, (A) before any go-live
-  decision rests on the number.*
+  option (B), reanalysis.** T6 uses the existing reanalysis hindcast and **drops the claim that it
+  measures NWP degradation**. Because PT was trained on ERA5-Land, a reanalysis-only verdict
+  **systematically flatters** it, so the caveat must travel beside the number. The **cycle-faithful
+  NWP hindcast is a named follow-on, REQUIRED before any go-live decision rests on the skill
+  number** — read historical `weather_forecasts` by issue cycle, control member 0, cycle provenance
+  preserved, correct forcing type, with leakage tests proving each issue sees only the cycle
+  available then. **T0c is the only NWP-forced evidence in this plan until it lands.** *(Rejected:
+  (A) build that path now — the honest measurement, but a substantial task inside a plan already
+  carrying three blockers.)*
+
+
 - **D8 — A daily-only stand-in later (parked).** aquacast ships an optional `tirex` extra (NX-AI
   TiRex-2, **zero-shot**), which needs no trained artifact. If Plan 153 stalls, a zero-shot daily config
   could unblock T2–T6 validation independently. Costs an NXAI Community License dependency and a
