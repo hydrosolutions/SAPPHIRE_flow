@@ -1269,10 +1269,14 @@ def _fetch_nwp_task(
             and ws.status == WeatherSourceStatus.ACTIVE
             and ws.extraction_type == SpatialRepresentation.BASIN_AVERAGE
         )
-        if 0 < len(returned_station_ids) < len(requested_station_ids):
-            missing_station_ids = sorted(
-                requested_station_ids - returned_station_ids, key=str
-            )
+        # Gate on the SET DIFFERENCE, not on cardinality: a return that
+        # substitutes an unexpected station for a missing one has equal counts
+        # but is still a genuine gap, and `len(returned) < len(requested)`
+        # would silently skip the alarm.
+        missing_station_ids = sorted(
+            requested_station_ids - returned_station_ids, key=str
+        )
+        if missing_station_ids:
             nwp_delivery_partial = True
             partial_detail: dict[str, object] = {
                 "missing_station_ids": [str(sid) for sid in missing_station_ids],
