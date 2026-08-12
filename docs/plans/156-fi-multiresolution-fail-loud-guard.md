@@ -2,8 +2,8 @@
 status: DRAFT
 created: 2026-08-12
 plan: 156
-title: FI multi-resolution requirement — fail loudly instead of silently flattening
-scope: Reject a ForecastInterface model whose InputRequirement declares MORE THAN ONE time_step, instead of silently flattening its branches into one feature set with max-collapsed lookback/horizon and an arbitrarily-chosen resolution. Split out of Plan 152 (its T0b) because it is a standalone safety fix with no dependency on the aquacast integration — it protects every FI model, ships immediately, and is the only thing standing between a multi-resolution artifact and plausible wrong numbers while real multi-resolution support (Plan 153) stays deferred.
+title: FI multi-FUTURE-FORCED-resolution requirement — fail loudly instead of silently flattening
+scope: Reject a ForecastInterface model whose InputRequirement declares non-empty future_known in MORE THAN ONE time_step branch, instead of silently flattening its branches into one feature set with max-collapsed lookback/horizon and an arbitrarily-chosen resolution. The rule is deliberately narrower than "more than one time_step": a past-only second branch stays constructible, because Plan 151 T2 requires that shape and 8 existing tests share a two-branch fixture. Rejecting on multiple FUTURE-FORCED branches targets the actual flattening bug without contradicting 151. Split out of Plan 152 (its T0b) because it is a standalone safety fix with no dependency on the aquacast integration — it protects every FI model, ships immediately, and is the only thing standing between a multi-resolution artifact and plausible wrong numbers while real multi-resolution support (Plan 153) stays deferred.
 depends_on: []
 blocks: []
 supersedes: []
@@ -33,8 +33,8 @@ a multi-resolution requirement rather than refusing it:
   `next(iter(req.supported_time_steps))` (`services/model_onboarding.py:295`, `:368`, `:485`;
   `services/onboarding.py:806`, `:962`) — a non-deterministic choice over a `frozenset`.
 
-**The failure is silent.** A multi-resolution artifact onboarded today would have its features
-merged, its lookback/horizon **max-collapsed as bare step counts** (e.g. 210 daily vs 168 hourly →
+**The failure is silent.** A multi-**future-forced**-resolution artifact onboarded today (an
+MTS-LSTM config, say) would have its features merged, its lookback/horizon **max-collapsed as bare step counts** (e.g. 210 daily vs 168 hourly →
 `210`, then applied at whichever resolution won the coin toss), and be handed a single-resolution
 frame by a pipeline that believes it complied. **It would produce numbers, and they would be wrong.**
 
