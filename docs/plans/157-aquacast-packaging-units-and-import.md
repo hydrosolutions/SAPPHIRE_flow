@@ -22,6 +22,13 @@ contract, and the owner decisions — especially **D1** (config ships as shim pa
 so it blocks on nothing — not the Swiss data (Plan 155), not the modeller's 5-day variant, not the
 artifacts. It is the work that can start today.
 
+**Note to reviewers — scope is bounded.** State INVARIANTS, not mechanisms: transaction protocols,
+schema column lists, unique-index definitions, CLI flag design and wire contracts belong to
+implementation and its review, and putting them in a plan doc regenerates findings every round (it
+did — a review round expanded this doc 4.8x and then faulted its own additions). **Do not add tasks
+or phases.** In scope: contradictions, unowned work, inaccurate citations, and red-first tests that
+cannot fail for the stated reason.
+
 **Note to reviewers — this plan is one of a FAMILY (152 / 155 / 156 / 157).** Shared context (the
 selected artifact and its verified contract, owner decisions D1–D13, and what the Swiss run can and
 cannot prove) lives in **Plan 152 only, by design** — the siblings reference it rather than
@@ -105,7 +112,12 @@ the model as `mean_temperature`.
 **The shim owns the unit boundary (G9).** It must present SAP3-compatible units outward and convert
 numerically in both directions:
 - **discharge** — expose `M3_PER_S`, doing the **area-aware** `mm/day ↔ m³/s` conversion internally
-  (`area` is already a required static).
+  (`area` is already a required static). **Split the area contract by failure mode:** a *missing*
+  declared static is rejected by SAP3 during compatibility/input assembly — `_static_inputs`
+  (`adapters/forecast_interface.py:1059-1071`) raises `ConfigurationError` **before** the shim's
+  `predict()` runs, so the shim cannot promise a `ModelFailure` there. What the shim *can* own is an
+  **invalid supplied** area (zero, negative, non-finite), which must return `ModelFailure` per the FI
+  contract rather than raising.
 - **precipitation** — audit what PT declares; if `MM_PER_DAY`, expose canonical `MM` (daily
   accumulation) and translate consistently.
 
@@ -136,8 +148,30 @@ via the model's own `deserialize_artifact`, store, record provenance, and promot
 entering the training path**. Flow 13 has no artifact/provenance/import inputs today, so this needs a
 real flow or CLI boundary plus deployment registration.
 
-**Invariant (implementation owns the mechanism):** an import is **all-or-nothing** — a failure leaves
-no artifact row of any status, no changed prior ACTIVE row, no provenance row, and no orphaned file.
+**Invariants (implementation owns the mechanisms) — all verified against `main`:**
+- **All-or-nothing.** A failure leaves no artifact row of any status, no changed prior ACTIVE row, no
+  provenance row, and no orphaned file. *(Note the current store generates the id and writes the file
+  before inserting the row (`store/model_artifact_store.py:44-80`), so a naive caller cannot know
+  which file to clean up — a recoverable write protocol must be chosen at implementation time.)*
+- **A new table needs an explicit write GRANT, or the import fails only in production.**
+  `docker/bootstrap-roles.sql:114-120` grants broad SELECT but says in its own comment that "a NEW
+  table's write grants still need an explicit line below". Any provenance table therefore needs
+  `GRANT INSERT … TO sapphire_worker` plus the service-user matrix in `docs/conventions.md`, and the
+  import must be **tested under the real scoped worker role** — a superuser test would pass while
+  production fails.
+- **`trained_at` ≠ import time.** `store_and_promote_artifact` takes a single `clock()` value
+  (`services/training.py:185`) and uses it both as `trained_at` and as the audit/authorization `now`
+  (`:213`). For an externally-trained artifact these are **different instants**: passing the real
+  training-completion time would backdate the promotion audit event to the model's training date.
+  Separate them.
+- **Authorize against the tenant DERIVED from the target, never one supplied by the caller.**
+  Resolve the station/group first, take its `tenant_id`, and require any operator-supplied value to
+  match. Existing code already derives it this way (`services/run_group_forecast.py:408-412`);
+  trusting an argument would let a caller authorize against a tenant it does not own.
+- **A config/artifact mismatch must fail loudly, never silently predict.** D1 ships the config as
+  shim package data while the artifact is the native `best.pt`, so the two can drift across a shim
+  release. The stored-artifact format must make that detectable; the format itself is an
+  implementation choice.
 
 **Red-first:** an undeserializable blob fails loudly; a valid import yields a promotable artifact with
 external provenance; **an acceptance test from the public boundary proving `train()` is never
