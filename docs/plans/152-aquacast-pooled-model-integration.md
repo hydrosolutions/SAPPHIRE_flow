@@ -417,6 +417,40 @@ score them**, making T6's quantile-aware WIS comparison unsatisfiable through th
 representation end to end**; a red-first test storing a quantile ensemble and asserting it round-trips
 as QUANTILES fails against today's code.
 
+### G12 — **BLOCKER: Swiss basins do not carry HydroATLAS statics at all**
+T1b's rename map was verified against `tests/fixtures/basin_static/nepal-dhm-basins/` and the plan
+then generalised it to "our basin package". **That generalisation is wrong for Switzerland.** Swiss
+`Basin.attributes` are built from the **CAMELS-CH** attribute row
+(`adapters/camelsch_adapter.py:214`), a different namespace entirely; no Swiss basin *package* has
+ever been imported, and the HydroATLAS codes (`slp_dg_sav`, `gla_pc_sse`, `pre_mm_syr`, `glc_pc_s*`)
+appear in **exactly one file in the whole repo** — the Nepal fixture. Verified by grep.
+
+So on the Swiss track the shortfall is **not 21 renames**: it is a large fraction of PT's 50 statics,
+including all 22 `glc_pc_s*` land-cover classes and the HydroATLAS-coded soil/topography set, which
+have **no CAMELS-CH counterpart under any alias**. `_static_inputs`
+(`adapters/forecast_interface.py:1059-1071`) raises on every one it cannot find.
+
+Closing it means a **HydroATLAS extraction over the Swiss basin polygons plus a package import** — a
+data workstream of the same order as the radiation ingest this plan deferred as too expensive.
+**This bites T0c, the go/no-go gate, not just T5**: T0c hand-shapes `ModelInputs` for Swiss stations
+and needs the 50 static *values*, which do not exist. **Owner decision required — see D12.**
+
+### G13 — **BLOCKER: Swiss NWP tops out at 5 days; PT declares a 15-day horizon**
+PT's contract is `forecast_days: 15` with `future_known steps=15, max_nan=0`. The Swiss operational
+source is ICON-CH2-EPS only, whose fetch window is **120 h = 5 days**
+(`adapters/meteoswiss_nwp.py:689`). The recap gateway (IFS, ~15 d) is HRU-registered and
+Nepal-scoped, so it is not available for Swiss basins.
+
+**And the shortfall would be silent.** Per this plan's own T0c finding, `_missing_value_count`
+(`adapters/forecast_interface.py:666-672`) counts nulls in *existing rows*, so **missing rows escape
+the `max_nan` gate**; nothing else validates horizon. PT would receive a two-thirds-truncated
+forecast window and return numbers.
+
+This also makes T0c's stated requirement — "score on operational-like NWP forcing" — unbuildable at
+15-day lead on the Swiss track. Since D11 leans on T0c as **the only NWP-forced evidence in the
+plan**, a T0c that quietly degrades to reanalysis leaves the plan with **zero** NWP evidence and D9
+permanently unmeasurable. **Owner decision required — see D12.**
+
 ## Non-goals
 
 - **Retraining or fine-tuning in SAP3.** Import-only; FI `train`/`retrain` stay unexercised.
@@ -1039,6 +1073,23 @@ predict at all.
   (1 of 11 DHM gauges has hourly discharge), so gating every deliverable behind core domain-type
   surgery bought a single station. It returns when DHM hourly coverage grows. **T0b still ships**, so
   a multi-resolution artifact fails loudly rather than being silently mis-onboarded in the meantime.
+- **D12 — BLOCKING FORK: the Swiss track cannot satisfy PT's input contract (G12 + G13).** Nepal is
+  blocked on Plan 143 + DHM; Swiss was the executable track, and it can supply neither PT's 50
+  HydroATLAS statics nor its 15-day forcing window. **T0c — the gate the whole plan is sequenced
+  around — cannot run as scoped.** Options:
+  **(A)** Swiss HydroATLAS extraction over the basin polygons + package import, and accept a
+  reanalysis-forced T0c (no 15-day Swiss NWP exists). Unblocks the pilot on data we control, at a
+  data-workstream cost comparable to the deferred radiation ingest.
+  **(B)** Wait for Nepal onboarding (Plan 143 + DHM). The Nepal basin package already carries the
+  HydroATLAS statics, and recap/IFS reaches ~15 days — **both blockers vanish on the Nepal track**.
+  Cost: no date, gated on an unanswered DHM questionnaire.
+  **(C)** Ask the colleague for a PT variant matched to our envelope — reduced static set and/or a
+  5-day horizon. Cheapest for us, a model-side change for them, and it changes what we are
+  evaluating.
+  *Recommendation: ask (C) first — it is a config-and-retrain on their side and may cost days rather
+  than weeks — while scoping (A) as the fallback. (B) is the architecturally cleanest but has no
+  date. **Do not start T1/T1b/T2/T3 until this is settled**: their scope depends on the answer.*
+
 - **D9 — NWP forcing bias correction (parked, likely needed).** PT is trained on ERA5-Land; we feed
   NWP. Owner expects degradation. **Only T0c (NWP-forced) or the D11 follow-on can measure this — T6
   cannot**, since D11 scopes it to reanalysis forcing. If it proves material, options are: correct
