@@ -242,8 +242,10 @@ which is no longer the near-term target.
   hourly branch needs hourly *observed* discharge (`is_target_in_past: true`, `past_dynamic:
   [discharge]` at hourly), so multi-resolution can serve exactly one basin today — **which is why
   D7 defers it**. It is justified by DHM's deployment roadmap, not by today's coverage — owner: more stations are
-  coming; daily-only sites are a documented **backup tier** (a lower-priority assignment in the
-  fallback chain, which is architecturally clean). *Open: a daily-only backup on the
+  coming; daily-only sites are a documented **backup tier**. *(Caveat added 2026-08-12: a
+  lower-priority assignment only degrades gracefully on the STATION path — the GROUP path has no
+  fallback chain, so a "backup tier" for group models needs explicit orchestration, not priority
+  ordering alone.)* *Open: a daily-only backup on the
   `nepal_daily_cmal` contract would reintroduce radiation (G2) — a radiation-free daily config
   would be needed instead.*
 - **Trained on ERA5-Land reanalysis.** `configs/regions/nepal.yaml`: "ERA5-Land daily is the ONLY
@@ -783,7 +785,8 @@ this repo.
    leading/trailing/internal gaps), not null counts.
    **This raises G1 from "we need 210 days of history" to "we need 210 days of GAP-FREE history at
    every issue, for three variables."** T1 must audit gap structure, not merely depth — and the
-   fallback chain must be expected to carry stations that fail it.
+   there is **NO fallback chain on the GROUP path** (see the correction under T5), so a station that
+   fails simply goes dark for this model — and a *coverage* shortfall takes the **whole group** down.
 2. **Ungauged mode is NOT a way out of G1.** Omitting past discharge entirely does not degrade
    gracefully — it **raises** `ColumnNotFoundError: unable to find column "discharge"` from
    `build_qc` → `compute_annual_maxima`, i.e. an unanticipated crash rather than a returned
