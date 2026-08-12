@@ -60,7 +60,7 @@ outage that only a human at the keyboard can end.
   **Acceptance verifies *effective* values** (`colima status`/`list`) plus a representative NWP-on forecast run
   completing without a cgroup kill.
 - **D4 — Application-image staging is a first-class step, not a side effect** *(reviewer blocker-fix)*. Compose pins
-  `image: sapphire-flow:${VERSION}` alongside a `build:` section (`docker-compose.yml:81-82,150-151,195-196,287`),
+  `image: sapphire-flow:${VERSION}` alongside a `build:` section (`docker-compose.yml:81-82,150-151,195-196,286-287`),
   while `start-sapphire.sh` runs `up -d` **without `--build`** and never exports `RECAP_DG_CLIENT_TOKEN`. On an empty
   engine the image is absent, so the boot path would attempt a build without the required BuildKit secret and fail —
   **the cutover would not start the stack**. Therefore, before any downtime:
@@ -71,9 +71,9 @@ outage that only a human at the keyboard can end.
 - **D5 — Volume and database migration.** The runtime owns nine named volumes (`docker-compose.yml:347-356`), but
   **the mac-mini overlay replaces `backups` with a host bind** (`/Volumes/sapphire-backup/pg_dumps:/data/backups`,
   `docker-compose.macmini.yml:26-29`), so the effective named-volume set for this deployment is **eight** *(reviewer
-  major-fix)*. There are also **two** databases in one server — `sapphire` **and** `prefect`
+  major-fix)*. There are also **two** databases in one server — `sapphire` (created by Compose, `docker-compose.yml:23`) **and** `prefect`
   (`docker/init-db.sh:4-7`) — while the backup flow dumps **only** `sapphire`
-  (`src/sapphire_flow/flows/backup.py:53-68`), so restoring `sapphire_*.dump` alone silently abandons Prefect's
+  (`src/sapphire_flow/flows/backup.py:53-68`, which dumps whatever `DATABASE_URL` names — the worker's targets `sapphire`, `docker-compose.yml:99`), so restoring `sapphire_*.dump` alone silently abandons Prefect's
   entire history.
 
   | Volume | Contents | Disposition | Evidence |
@@ -116,7 +116,7 @@ outage that only a human at the keyboard can end.
   and `df -h` **first** — the memory read is a go/no-go gate (D13). Commit the profile and
   `ch.hydrosolutions.colima.plist`; install via Plan 158's system-domain installer; bring the VM up empty.
   **Verify:** effective CPU/memory/disk/vm-type via `colima status` · `docker info` reaches Colima ·
-  `sudo launchctl kill -9 system/ch.hydrosolutions.colima` **and** a hand-run `colima stop` each return the VM within
+  `sudo launchctl kill SIGKILL system/ch.hydrosolutions.colima` **and** a hand-run `colima stop` each return the VM within
   `ThrottleInterval` + boot · **`launchctl bootout system/ch.hydrosolutions.colima` leaves no orphaned VM, socket or
   port-forwarder**, then bootstraps cleanly again *(reviewer major-fix — the shutdown path was previously untested)* ·
   a reboot with **no GUI login** leaves it running.

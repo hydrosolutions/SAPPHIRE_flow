@@ -12,7 +12,7 @@ supersedes: []
 # Plan 158 — Session-independent operational stack
 
 ## Status
-**DRAFT.** **Split on 2026-08-12:** the runtime migration that was Plan 159 is now **Plan 159**, after a `/plan`
+**DRAFT.** **Split on 2026-08-12:** the runtime migration that was Phase 3 is now **Plan 159**, after a `/plan`
 review produced 3 blockers and 12 majors against it — the objections were sound and it is a project, not a phase.
 158 keeps the low-risk, high-value half: it makes an outage *visible within minutes* and survivable across reboots,
 and it lands the system-domain conversion that 159 hard-depends on. **158 does not remove the GUI dependency** — with
@@ -50,7 +50,8 @@ two weeks and depends on someone being logged in is not an operational system.
 
 **Goals**
 1. **Detection** — an outage is known within minutes, off-box, without anyone looking at a log file.
-2. **Recovery** — the stack returns by itself after a reboot, an engine crash, or a session ending.
+2. **Recovery** — the stack returns by itself **after a reboot**. Recovery from a session ending or an engine crash
+   requires the headless runtime and is **Plan 159**; with Docker Desktop as the engine, 158 cannot deliver it.
 3. **Host-job independence** — the watchdog, stack starter and prune jobs survive a logout (system domain).
    Full engine independence is **Plan 159**; 158 is its prerequisite.
 
@@ -71,7 +72,7 @@ two weeks and depends on someone being logged in is not an operational system.
 
 ## Design
 
-Three phases, ordered by **value per unit of risk**. Phase 1 is independently valuable and must not be blocked on
+Two phases, ordered by **value per unit of risk**. Phase 1 is independently valuable and must not be blocked on
 Plan 159. Phase 2 is *not* optional decoration: its LaunchDaemon conversions are a **hard prerequisite** of Plan 159's
 acceptance criterion (see the dependency graph).
 
@@ -208,8 +209,10 @@ reviewable in a diff; "Host" tasks are operator cutovers whose evidence is captu
 - **T3 — Host cutover: secrets + watchdog as a LaunchDaemon + dead-man wired (Host, D1/D2/D3).**
   Create `secrets/slack_webhook_url` and `secrets/deadman_url` (`chmod 600`, owner `sapphire`); register the
   dead-man check (D11) with a 15-min grace; `sudo ./scripts/launchd/install-launchd.sh` for the watchdog only.
-  **Verify (host):** `launchctl print system/ch.hydrosolutions.sapphire-watchdog | head -40` shows `loaded + last-exit-0`
-  and `UserName = sapphire` · `launchctl print gui/$(id -u)/ch.hydrosolutions.sapphire-watchdog` returns **not
+  **Verify (host):** `launchctl print system/ch.hydrosolutions.sapphire-watchdog | head -40` shows the service
+  **loaded** with `UserName = sapphire` · then `sudo launchctl kickstart -k system/ch.hydrosolutions.sapphire-watchdog`,
+  wait for completion, and re-`print` to assert **`last exit status = 0`** — a scheduled one-shot is loaded-not-running
+  between invocations, so the exit status must be produced by an explicit kickstart, not read from whatever ran last · `launchctl print gui/$(id -u)/ch.hydrosolutions.sapphire-watchdog` returns **not
   found** (no duplicate) · the ping lands in the dead-man dashboard within one interval.
   **Acceptance (both must be *demonstrated*):** (a) with the stack deliberately stopped, a Slack message arrives
   within one watchdog interval (300 s); (b) with the **watchdog itself** booted out, the external service alarms
@@ -237,8 +240,11 @@ reviewable in a diff; "Host" tasks are operator cutovers whose evidence is captu
   successful log line, and record whether it predates 2026-07-29 (the disk-capacity check the Non-goals section
   points at).
   **Verify (host):** `launchctl print system/ch.hydrosolutions.sapphire` and
-  `…system/ch.hydrosolutions.sapphire-docker-prune` both `loaded + last-exit-0`/loaded; neither label present in
-  `gui/$(id -u)`; `sudo launchctl kickstart -k system/ch.hydrosolutions.sapphire` brings the stack up;
+  `…system/ch.hydrosolutions.sapphire-docker-prune` are both **loaded**; neither label present in `gui/$(id -u)`;
+  then **kickstart each explicitly and assert `last exit status = 0` afterwards** —
+  `sudo launchctl kickstart -k system/ch.hydrosolutions.sapphire` brings the stack up, and
+  `sudo launchctl kickstart -k system/ch.hydrosolutions.sapphire-docker-prune` completes cleanly (prune is a
+  one-shot too, and was previously never exercised by this gate);
   `curl -fsS localhost:8000/api/v1/health` returns `status=ok`.
   *Known accepted noise:* pre-auto-login boots will log one 240 s `docker info` timeout per retry (D5).
   *Rollback:* boot out system labels, re-bootstrap GUI agents.
@@ -263,7 +269,7 @@ reviewable in a diff; "Host" tasks are operator cutovers whose evidence is captu
 **Why these edges:**
 - **T5 (starter into the system domain) is the hard prerequisite Plan 159 consumes.** "No GUI session at all" is
   undemonstrable while `ch.hydrosolutions.sapphire` lives in `gui/$(id -u)`
-  (`scripts/launchd/install-launchd.sh:63-64`) — the starter that runs `docker compose up -d` will not launch without
+  (`scripts/launchd/install-launchd.sh:65`) — the starter that runs `docker compose up -d` will not launch without
   a session regardless of the engine layer.
 - **T3 gates everything downstream:** the migration must be observable. Attempting a runtime cutover (Plan 159) while
   alerting is still blind repeats the original mistake.
