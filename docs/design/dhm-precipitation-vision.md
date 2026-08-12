@@ -1,0 +1,212 @@
+---
+status: VISION
+created: 2026-08-12
+revised: 2026-08-12
+title: DHM precipitation — QC, validation, and the case for operational use
+scope: What we do with DHM gauge precipitation: how we quality-control it, what we validate against it, and under what conditions it could ever reach the operational forcing path. Sets direction only — milestones are broken out separately.
+related: [143, 152, 153]
+---
+
+# DHM precipitation — vision
+
+**Status: VISION.** Owner-aligned via grill-me 2026-08-12; revised the same day after an independent
+Codex review (25 findings, 6 blockers). Not a plan. Breaks down into milestones separately.
+
+## Source
+
+`combined_precipitation_37_stations.xlsx`, delivered via the `2026_BSc_precipitation` channel
+(`.../SAPPHIRE Flow - DHM Shared/04_students/2026_BSc_precipitation/2nd_meeting/`).
+**sha256 `8dc57e4364ef788b022779a42df86918200d1c8dc723948f22657bc70ff98f57`.**
+2020-01-01 → 2025-12-31, column 0 `Time (UTC)`, 37 station columns in mm, one sheet.
+
+Sub-hourly data is out of scope per DHM, though 10–15 min data is what should be operationally
+available for this project.
+
+**The figures in Findings were produced by exploratory analysis that is not yet version-controlled.
+They are provisional.** Milestone **M-A1** exists to re-derive every one of them from a
+committed, parameterised script before any of them is relied on. Statistics below are computed on the
+on-the-hour subset, JJAS where stated, with a 0.2 mm/h wet threshold where a threshold applies.
+
+## The question
+
+1. **Phase 1 (now) — research/validation.** What QC must and can we do, and what does this data tell
+   us about the weather products we actually force our models with?
+2. **Phase 2 (gated) — operational.** Can this data ever improve our forcing, and if so how?
+
+Phase 1 does not commit to a Phase 2 design. That ordering is deliberate: undercatch means a
+naively-fitted correction would *dry* the forcing of a flood-forecasting system.
+
+## Findings
+
+### Inventory
+- **26 usable stations, not 37.** Eleven columns are empty across the entire file: Kathmandu Airport
+  (AWOS), Dhankuta_AWS, Okhaldhunga_AWS, Chautara, Salleri, Sarmathang, Mai Pokhari, Gaighat,
+  Dharan Bazar, Gaida (Kankai), Madi Kalyanpur.
+- Median 21 stations reporting per hour.
+- **No coordinates, elevation, DHM station IDs, instrument metadata or QC flags.** Missing values
+  conflate "genuinely absent" with "removed by DHM QC".
+- **The station-selection mechanism is unknown.** Every network-wide statement below is conditional
+  on an unknown selection process and must not be generalised to "Nepal" until it is explained.
+
+### Time axis — unresolved, and blocking
+- 55,379 rows against 52,597 clean hourly slots. Monotonic, no duplicates.
+- **3,350 rows sit off the hourly grid** (minute ∈ {1–7, 10, 15, 30, 45, 55}), 0.6 % of observations,
+  mostly Lukla and Udayapur Gadhi. The minute-15/45 pattern suggests an NPT (UTC+5:45) → UTC
+  conversion applied to some rows and not others.
+- **The accumulation convention (period-beginning vs period-ending) is unknown.** A one-hour error
+  systematically shifts every sub-daily result. **This blocks all diurnal analysis** — see **M-D3/M-A2**.
+
+### Two *reporting* populations
+| Group | Reported resolution | Stations | JJAS wet-hour fraction | q99.9 |
+|---|---|---|---|---|
+| **A** | 0.01 mm | Syangboche, Humde, Ghorepani, Lukla, Olangchunggola, Lete | 0.14–0.55 | 4.8–19.5 mm/h |
+| **B** | 0.2 mm | the other 20 | 0.08–0.33 | 13–33 mm/h |
+
+Group A's modal non-zero value is 0.03–0.06 mm/h. **Reported decimal granularity is not proof of
+instrument type** — it could equally reflect a different processing chain, unit conversion or
+averaging step. "Weighing gauge vs tipping bucket" is a *hypothesis to confirm with DHM*, not a finding.
+
+Sub-0.1 mm hours are 22–34 % of Group A's wet hours but only **0.8–2.1 % of its recorded mass**. That
+bounds the contribution of the noise floor *to the recorded total*; it does **not** establish that
+Group A totals are accurate overall, which is a separate question requiring instrument metadata.
+
+**Confound:** Group A is simultaneously the 0.01 mm-reporting subset *and* the high-altitude subset.
+Reporting precision and altitude cannot be separated in this sample. No conclusion may attribute an
+effect to one rather than the other.
+
+### Defects that survived DHM QC
+- **Sentinels**: Lukla carries 46 values of `-9999999.0`.
+- **Stuck-high sensor**: Sindhuli Madhi, 2025-08-03 → 08-08, every hour pinned at ~72 mm →
+  1,728.4 mm/day for four consecutive days, 8,642 mm in 120 hours.
+- **Long zero runs — CANDIDATE false zeros, not adjudicated.** Longest consecutive `0.0` run during
+  monsoon: Aiselukhark 52.5 days, Nagarkot_AWS 36.9 d, Lete 35.5 d, Pakhribas 23.4 d, Simara 13.5 d,
+  Kanyam 13.2 d, Biratnagar 12.2 d. A clogged or disconnected gauge is one explanation; QC-removed
+  data written as zero, logger defaults, and station relocation are others. **They require
+  adjudication before being called false zeros** — which the students' track does, and ours deliberately
+  does not: we discard the periods wholesale instead.
+- Consequence either way: Khumaltar 2023 totals 294 mm vs 1,504 mm in 2024, while passing a naive
+  ≥85 % coverage filter. **Coverage % is not a usable quality filter for precipitation.**
+
+Genuine extremes cross-validate: Tarahara 438 mm and Kanyam 403 mm on the same day, 2021-10-19 — the
+documented mid-October 2021 eastern Nepal flood. This establishes that real daily totals reach
+~400 mm. It does **not** establish a physical hourly ceiling; QC bounds must come from regional
+extreme-value literature, not from this sample's maxima.
+
+### Missingness is not wet-biased *(re-tested after review)*
+Initially computed with an endogenous wet indicator. **Re-tested with the station under test excluded
+from the regional wet indicator: median ratio 1.01, max 1.55, one station above 1.5.** Conclusion
+holds — telemetry loss is roughly rain-independent. The bias risk lives in the zero runs, not the gaps.
+
+### Winter precipitation — open question, not a diagnosis
+DJF share of annual total: Syangboche (3,780 m) 2.7 %, Lete 3.8 %, Ghorepani 5.4 %; but Humde 20.3 %
+and Olangchunggola 17.6 %. Solid-precipitation loss in unheated gauges is *one* explanation.
+East–west and windward–leeward winter climatology gradients across Nepal are large enough to produce
+the same pattern. **Cannot be resolved without instrument metadata and coordinates.**
+
+### Structure — corrected after review
+- **Spatial coherence, network-wide and undistanced**: median inter-station r, JJAS — hourly 0.05,
+  3-hourly 0.09, daily 0.28. Computed across *all* station pairs with no distance stratification
+  (we have no coordinates), so this describes the network as a whole and **says little about
+  near-neighbour coherence**. Whether neighbour-based gap-filling is viable is *open* until pairs
+  can be binned by separation distance.
+- **Intensity distribution — the earlier "r = 0.998, universal shape" claim was WRONG and is
+  withdrawn.** Pearson correlation between quantile vectors is near-1 by construction (verified:
+  exponential vs Pareto r = 0.943, exponential vs lognormal r = 0.950). Proper scale-normalised tests:
+
+  | Test | Result |
+  |---|---|
+  | Shape ratio q99/q50 across stations | **8.5 → 55.3** (6.5× spread) |
+  | CV of shape ratio | 0.11 @ q60 → 0.24 @ q80 → **0.40 @ q99** |
+  | Leave-one-out prediction of held-out q99 from median × pooled ratio | median abs error 12.3 %, **range −49 % to +241 %**, only 65 % of stations within ±25 % |
+
+  So: the distribution **body is moderately transferable; the tail is not**. For a flood system the
+  tail is the operative part. A one-parameter scale model for extreme intensity is **not supported**.
+- **Diurnal profile**: median between-station Pearson r = 0.347 (10th pct −0.206). This statistic
+  mixes phase, amplitude and profile sharpness and does not isolate phase. It is **suggestive of
+  weak transferability, not evidence of it** — and it rests on an unresolved time axis (above), so
+  it cannot be relied on at all until the accumulation convention is confirmed.
+
+## Decisions
+
+| # | Decision | Rationale |
+|---|---|---|
+| **D1** | **Two phases: validation/research first, operational use as a gated second question.** | Undercatch means a correction fitted now would dry a flood-forecasting system. |
+| **D2** | **Validate against ERA5-Land first**, not IFS. | Hourly, continuous, spans the full record, already subscribed. We hold no IFS forecast archive back to 2020 and the gateway offers no point-level access. |
+| **D2a** | **Do NOT claim this directly quantifies Plan 152's OOD-forcing risk.** | aquacast is *trained* on ERA5-Land and would be *run* on ERA5-Land, so an ERA5-Land bias vs gauges partially cancels rather than propagating. Gauge-vs-ERA5 bias is evidence about ERA5-Land, not directly about aquacast's input-distribution risk. The two questions are related but distinct. |
+| **D3** | **Scale-stratified, metric-matched comparison.** Monthly/seasonal → bias magnitude and elevation dependence. Daily → wet-day frequency, intensity distribution, categorical skill. Hourly → climatological composites. | A 9 km cell in the Khumbu spans >2,000 m of relief. |
+| **D3a** | Hourly matched pairs may be **computed and reported, but never interpreted as model error** without an explicit representativeness-error decomposition alongside. | A categorical ban would suppress the operationally relevant quantity. The danger is misattribution, not the statistic itself. |
+| **D4** | **Zero-run adjudication uses a satellite QPE. ERA5-Land is NEVER a QC input.** Use **IMERG Early/Late (satellite-only)**, not IMERG-Final. | Using ERA5 to clean the reference and then judging ERA5 by it manufactures agreement. IMERG-**Final** incorporates GPCC gauge analysis and is therefore *not* independent of the gauge network; Early/Late are satellite-only. Used strictly as a daily wet/dry discriminator — it underestimates in high mountains and is weak on snowfall, never a magnitude reference, and its own miss rate must be characterised before it adjudicates anything. |
+| **D5** | **Harmonise to a common 0.2 mm/h detection floor for all frequency statistics; keep unthresholded values for mass statistics.** | The two populations have incomparable reporting granularity. Any pooled wet-day frequency or POD/FAR compares reporting chains, not climates. |
+| **D6** | **No numeric undercatch correction. Season-stratify and carry a signed caveat — scoped correctly.** | Transfer functions are gauge-type-specific; we know neither gauge type nor wind speed. **The sign constraint applies to catch efficiency on POST-QC data only: for a correctly-functioning gauge, catch ≤ true precipitation.** It is *not* a universal bound on reported values — this sample contains a gauge reporting 1,728 mm/day. Stated correctly: *a post-QC gauge total is a lower bound on true precipitation; a pre-QC one is not.* |
+| **D7** | **Phase 1 characterises; it commits to no correction design and pre-selects no Phase-2 hypothesis.** *(D7 and D8 merged after review.)* | The earlier preference for temporal disaggregation rested on the withdrawn r = 0.998 result. With the tail shown to be non-transferable (−49 % to +241 %), neither temporal nor spatial correction is established as viable by this data. Phase 1 measures both and decides afterwards. |
+| **D8** | **Time-boxed research, judgement call at the end.** No pre-registered thresholds. | Genuinely exploratory work on a thesis cycle. *Accepted risk: with no stated bar, a null result is harder to declare.* |
+| **D9** | **Safety constraint, independent of D8:** no precipitation-derived correction reaches the operational forcing path without a hydrological test showing it does not degrade discharge forecast skill — evaluated on high-flow events, not on all-flow averages. | D8 governs the *research* gate, which the owner chose to leave to judgement. This is a separate *deployment* constraint. Better agreement with gauges does not imply better runoff forcing, and an all-flow average can improve while flood performance degrades. |
+| **D10** | **Durable output: QC rules + regression fixtures + a versioned QC'd dataset — held in a research data folder, NOT onboarded.** | The defects are properties of the delivered file. Whether they recur live is **unverified** — the operational API, cadence and encoding are unknown, so this is an expectation, not a fact (see R7). |
+| **D11** | **Do not block on DHM metadata.** Ask whoever assembled the file first; send DHM the formal request in parallel. | Most QC and per-station work proceeds without coordinates. |
+
+## QC design
+
+Today precipitation has only **daily** rules in `config/qc_rules.py` (`range_check` 0–500 mm,
+`gross_outlier` k=5) — nothing at sub-daily step.
+
+| Defect | Approach | Repo reality |
+|---|---|---|
+| Sentinels (`-9999999`) | `range_check` at hourly step | Config only. Bounds must be sourced from regional extreme-value literature, **not** from this sample's maxima |
+| Stuck-high (Sindhuli 72 mm × 120 h) | `frozen_sensor` **excluding zero values** | **Code change, not config.** `_apply_frozen_sensor` (`services/qc.py:92`) accepts only `tolerance` and `min_consecutive`; it has no value-based exclusion. Without one it would fire on every legitimate dry spell |
+| Long zero runs | New rule: run length vs the station's own seasonal dry-spell climatology, adjudicated by IMERG Early/Late | New rule. Detection floor: gross runs caught, 3–10 day runs not |
+| Sub-tip noise (Group A) | 0.2 mm/h floor, frequency statistics only | Never applied to mass statistics |
+| Off-grid timestamps | Normalise with recorded provenance | Blocked on the accumulation convention |
+| — | **Do NOT reuse `gross_outlier` for precipitation** | `_apply_gross_outlier` (`services/qc.py:197`) is a symmetric `\|value − mean\| > k·std` test against a climatological baseline. On a zero-inflated, right-skewed variable it flags real heavy rain and never flags zeros |
+
+Flag, do not delete. `QcStatus` provides `RAW / QC_PASSED / QC_FAILED / QC_SUSPECT / MISSING`, which
+maps onto but is not identical to the WMO-168 vocabulary (good / suspect / erroneous / missing).
+
+## Repo capability gaps
+
+Prerequisites for any Phase-2 operational use. *Corrected after review — the onboarding gap was
+overstated.*
+
+1. **No weather-station observation ingest.** `flows/ingest_observations.py:461-462` fetches only
+   `RIVER` and `LAKE`. This is the real gap.
+2. **Onboarding already handles weather stations** — `services/onboarding.py:794` branches on
+   `StationKind.WEATHER` and skips model assignment for them. *Not* a gap.
+3. **No DHM precipitation adapter**; DHM's operational precipitation API is unconfirmed.
+4. **No sub-daily precipitation QC rules**, and `frozen_sensor` needs a code change (above).
+5. **No gauge-catch-efficiency guidance in `docs/standards/wmo.md`** — WMO-168 Vol I Ch.6 and
+   WMO-SPICE absent from the inventory.
+6. **No point-level NWP access** — `adapters/recap_gateway.py` fetches per registered polygon and
+   prefilters to basin averages; no lat/lon or grid-cell path.
+
+## Ownership — superseded by the milestone decomposition
+
+**An earlier revision of this section listed a research programme as "student-led; we specify and
+consume". That is superseded.** The owner has since set the scope: **we run a full independent
+track**, and the BSc students run a parallel thesis on the same data whose output is **corroboration,
+never a dependency**.
+
+The authoritative breakdown is **`docs/design/dhm-precipitation-milestones.md`**. Where the two
+documents disagree, the milestone document wins.
+
+Two decisions above are narrowed by that scope change:
+
+| Decision | Status under the independent track |
+|---|---|
+| **D4** (IMERG adjudication of zero runs) | **Applies to the students' track, not ours.** We drop candidate zero-run periods **wholesale without adjudication**, so we need no independent arbiter. IMERG remains available if the comparison turns out to need it |
+| **D8** (time-boxed, judgement call) | Governs the thesis. Our track is paced by our own milestones and ends at an explicit Phase-2 GO/NO-GO decision node (`M-DEC`) |
+
+Wholesale zero-run removal carries a cost this document must record: the retained sample is
+**missing-not-at-random**, and identical masking of ERA5-Land makes the *pairing* consistent without
+recovering unconditional behaviour. Wet-day frequency, FAR, CSI, unconditional intensity
+distributions and diurnal means all stay biased and are reportable only as conditional-on-retention
+estimands. See the milestone document's Rule 1.
+
+Similarly, **D3a is downgraded there**: one point gauge against one ERA5 cell cannot empirically
+*decompose* representativeness error from model error. It can only be *characterised* — via
+extraction-operator sensitivity, station-to-grid elevation difference, within-cell topographic spread
+and neighbouring-cell variability.
+
+## Relation to other work
+
+- **Plan 152 (aquacast)** — see D2a. Related but not a direct de-risking.
+- **Plan 153 (multi-resolution)** — DHM precipitation is hourly/sub-hourly.
+- **Plan 143 (DHM onboarding)** — targets river gauges; the weather-ingest gap is not in its scope.
