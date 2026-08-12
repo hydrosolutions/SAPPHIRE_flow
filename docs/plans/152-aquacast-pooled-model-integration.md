@@ -904,6 +904,17 @@ issue rather than trusted); one station's `FAILURE` leaving siblings intact; and
 ensemble being dropped by QC **at the service level**. Anything here that goes red is a genuine
 regression, not planned work.
 
+**T5 also owns the PRODUCTION CUTOVER — otherwise every task can complete and PT still never runs in
+production** (design-review finding). Nothing else in the family creates the wiring: `store_group`
+and `add_station_to_group` have **no caller anywhere in `src/`**
+(`store/station_group_store.py:39`, `:166`), and the cycle reads an ACTIVE `GroupModelAssignment` at
+`flows/run_forecast_cycle.py:2327-2340`. T5 must state and gate:
+1. creating the `StationGroup` over the target set;
+2. creating the ACTIVE group assignment via `services/model_onboarding.create_group_assignment`;
+3. **the priority chosen relative to the incumbents** — group ensembles join the fallback/priority
+   chain and become alert-eligible input to Phase C, so **enabling PT changes alerting for stations
+   that already have models.** That is a decision, not a step: state the priority and the reasoning.
+
 ### T6 — Quantile-aware skill comparison vs the incumbents (closes G7)
 Hindcast over the target set and compare against the incumbents on alerting-relevant metrics.
 
