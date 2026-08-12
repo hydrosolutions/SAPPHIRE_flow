@@ -78,8 +78,13 @@ Two owner-stated goals. Naming both is deliberate — the second one's *scope* i
 turn on, and an earlier draft left it implicit:
 
 1. **Make a pooled, externally-trained aquacast model produce operational probabilistic forecasts**
-   through the mandated FI boundary, with no SAP3-side workaround — and **measure whether it beats
-   the incumbent models**.
+   through the mandated FI boundary, with no SAP3-side workaround. **Primary goal: prove the
+   principal data flow end to end.**
+   **Secondary, and now heavily qualified: measure whether it beats the incumbents.** Four accepted
+   substitutions (ICON for IFS, NWP for ERA5-Land, 5-day for 15-day, and training-set overlap on many
+   candidate basins) mean the Swiss number is an **operational number for our configuration**, not a
+   clean verdict on the model — see § What the Swiss run can and cannot tell us. The plan must not
+   promise more than that.
 2. **Deliver DAILY forecasting across many basins first.** Sub-daily remains a v1 product
    requirement but is **explicitly deferred out of this plan** (owner, 2026-08-11) — see D7. It is
    deferred on its merits, not quietly dropped: multi-resolution can serve only **one** basin today
@@ -458,15 +463,54 @@ permanently unmeasurable. **RESOLVED (D12, owner 2026-08-12), two prongs:**
 1. **Ask the modeller for a PT variant accepting a 5-day horizon** — required regardless, since ICON
    is structurally 5 days and is our only Swiss NWP source. Until it exists, **no Swiss operational
    NWP run of PT is possible at all.**
-2. **Establish whether 15-day Swiss forcing is reachable.** MeteoSwiss cannot supply it. The only
-   candidate is **registering Swiss HRUs with the recap gateway** for IFS (~15 d) — the gateway is
-   HRU-scoped rather than inherently Nepal-scoped, so this is worth a direct question to the recap
-   team. If it is reachable, the 15-day contract stands and prong 1 becomes a stopgap; if not, the
-   5-day variant is permanent for the Swiss track.
+2. ~~Establish whether 15-day Swiss forcing is reachable.~~ **CLOSED (owner, 2026-08-12): it is
+   NOT.** The **Swiss region is not deployed on the ECMWF data gateway**, so IFS cannot be coupled to
+   Swiss basins — and MeteoSwiss ICON is structurally 120 h. **There is no 15-day Swiss forcing, now
+   or later.** The 5-day variant is therefore **permanent for the Swiss track**, not a stopgap.
+
+**Accepted substitution (owner, 2026-08-12): ICON stands in for IFS.** We knowingly feed
+ICON-CH2-EPS where PT was trained on ERA5-Land and would operationally see IFS, **in order to test
+the principal data flow**. This is a deliberate trade, and the plan must not let it be forgotten when
+the numbers arrive — see § What the Swiss run can and cannot tell us.
 
 **Until prong 1 lands, T0c can only run reanalysis-forced** — which, with D11 already scoping T6 to
 reanalysis, would leave the plan with **zero NWP-forced evidence**. Say so plainly in any interim
 result rather than presenting a reanalysis number as operational.
+
+### G14 — **129 Swiss basins are in PT's TRAINING set: an in-sample evaluation would flatter it**
+PT's `train_basins.txt` contains **129 `caravan_camels_ch_*`** gauges and its `test_basins.txt` a
+further **15**. CAMELS-CH is part of Caravan, and the ids carry **BAFU station numbers** — the same
+4-digit codes our own config uses (`caravan_camels_ch_2030`, `_2034`, `_2070` … vs our `2004`,
+`2009`, `2011` …). So our candidate stations are **not** unseen basins: many are in the pool PT was
+fitted on.
+
+**Consequences, both actionable:**
+1. **Evaluation validity.** A skill number computed on training basins is in-sample and optimistic —
+   it is not a verdict. **T0c and T6 must classify every candidate station as train / test / unseen
+   against PT's own basin lists and report the strata separately.** The **15 held-out Swiss gauges**
+   are the fair evaluation set. *(Note `caravan_camels_ch_2070` appears in BOTH lists — a leak in the
+   model's own split; exclude it from evaluation and mention it to the modeller.)*
+2. **G6's Swiss resolver is SOLVED, concretely.** The station-code mapping is
+   `StationId → "caravan_camels_ch_<BAFU code>"`. T4 should pin exactly that, with the
+   total-and-injective checks it already requires.
+
+### What the Swiss run can and cannot tell us (read before quoting any number)
+Four substitutions now separate this exercise from a clean verdict on PT, **all deliberate and all
+owner-accepted**:
+
+| Substitution | Effect on the number |
+|---|---|
+| ICON-CH2-EPS instead of IFS (Swiss not on the gateway) | different NWP model, different biases |
+| NWP instead of the ERA5-Land feed PT was trained on | the D9 distribution shift, expected to hurt |
+| 5-day instead of 15-day horizon | shorter leads are easier; not comparable to 15-day scores |
+| many candidate basins inside PT's training pool (G14) | in-sample, optimistic |
+
+**So the Swiss exercise validates the DATA FLOW, and produces an operational number for our actual
+configuration — it does not produce a clean verdict on the model**, and a poor result cannot be
+attributed between model and forcing. State this beside any number rather than leaving a reader to
+infer it. The two things that would restore attribution are **re-training on ICON forcing** (owner
+raised it; it is the principled fix, and it reopens **D3**, currently import-only) and evaluating
+**only on the held-out Swiss gauges** (G14).
 
 ## Non-goals
 
@@ -684,8 +728,12 @@ measured single-basin transfer degradation and proved integration only.
 the number flatters the model on exactly the axis the Risks section flags. T0c is therefore the
 **only** NWP-forced evidence in this plan until the D11 follow-on lands (T6 is reanalysis-forced).
 
-**Exit gate:** integration proven end to end, a skill number against the incumbents, and an **owner
-go/no-go on committing to T1/T2/T3**. A poor number here should stop the plan — that is the whole
+**Stratify by PT's own basin lists (G14).** Report train / test / unseen separately; the **15
+held-out Swiss gauges** are the fair set, excluding the leaked `_2070`. An unstratified number is
+in-sample and must not be quoted as a verdict.
+
+**Exit gate:** integration proven end to end, a **stratified** skill number against the incumbents
+carrying its four substitution caveats, and an **owner go/no-go on committing to T1/T2/T3**. A poor number here should stop the plan — that is the whole
 point of running it third rather than last.
 
 ### T0c RESULT — the model runs on a SAPPHIRE-shaped feed (executed 2026-08-11)
@@ -893,6 +941,9 @@ collapse silently to one entry, output is attributed through that collapsed dict
 station**. That is silent misattribution of one basin's forecast to another — the worst failure mode
 in this plan.
 
+**The Swiss mapping is known (G14):** `StationId → "caravan_camels_ch_<BAFU code>"` — PT's basin ids
+carry BAFU station numbers. Pin exactly that.
+
 **Red-first:** a station with no mapping raises `ConfigurationError` **at onboarding**, not at predict
 time in production; **two stations sharing one external code are rejected at onboarding and
 defensively in `predict_batch`**; and a GROUP model reaching the operational path has a resolver
@@ -1092,7 +1143,14 @@ predict at all.
   unaffected by this plan.
 
 
-- **D3 — Import-only, or must retrain work? — RESOLVED (owner, 2026-08-12): import-only for v1.**
+- **D3 — Import-only, or must retrain work? — RESOLVED (import-only for v1), but FLAGGED FOR REVISIT
+  (2026-08-12).** The owner raised **re-training on ICON forcing** as a possible next step. That is
+  the *principled* fix for the ERA5-Land→ICON distribution shift (better than D9's bias correction,
+  because it removes the mismatch rather than compensating for it) — and it would need exactly the
+  FI `train`/`retrain` path this decision currently leaves unexercised. **If ICON re-training is
+  taken up, D3 flips and T3 grows substantially.** Not scoped now; recorded so the connection is not
+  rediscovered later.
+  *(Original decision, unchanged for v1:)* **import-only.**
   We import artifacts the colleague trains; T3 stays a validate → store → provenance → promote path
   and FI `train`/`retrain` plus `assemble_group_training_data` stay unexercised. Matches how the
   fine-tunes are produced today (on their side). **Retrain/fine-tune in SAP3 is a named follow-on** —
