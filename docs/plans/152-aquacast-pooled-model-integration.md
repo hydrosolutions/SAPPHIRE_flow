@@ -3,7 +3,7 @@ status: DRAFT
 created: 2026-08-11
 plan: 152
 title: aquacast pooled (GROUP) probabilistic model integration — onboard the externally-trained daily `cmal_pool_PT` artifact on control forcing
-scope: Integrate hydrosolutions/aquacast pooled models into SAPPHIRE Flow through the existing ForecastInterface boundary as GROUP-scoped artifacts, running on CONTROL forcing and emitting quantile-backed ForecastEnsembles. Owner selected `cmal_pool_PT` (pooled, DAILY-only, discharge + precipitation + temperature only) — the sole artifact clearing both the radiation gap (G2) and the multi-resolution gap (G5) at once, at the accepted cost of being the weakest of the three pooled models; this DEFERS Plan 153 and sub-daily out of scope. The artifacts are IN HAND and PT's contract is verified from its own config.yaml (T0.0), and T0c has run the model end to end — so the remaining critical path is engineering, not a human round-trip. TWO BLOCKERS dominate it: G9, the model emits discharge in mm/day which has NO SAP3 canonical unit (fi_unit_to_canonical raises; two locked tests enforce the omission), so the shim must expose m³/s and do the area-aware conversion; and G10, an external shim is invisible to discover_models() in production, resolved by a dedicated aquacast worker image (D10). Also covers the fail-loud guard against today's silent misread of multi-resolution requirements, gap-structure validation of the 210-day daily window, the Caravan↔HydroATLAS static alias map, the external-artifact import path and its provenance representation, the total-and-injective station-identity mapping (attached nowhere a GROUP model actually runs today), and a quantile-aware skill comparison — which per D11 is REANALYSIS-forced and therefore flatters a model trained on ERA5-Land, with the cycle-faithful NWP hindcast a named follow-on required before go-live. Uncertainty is model-owned (control forcing only, by FI declaration), so this plan needs nothing from the redesign's ensemble machinery.
+scope: Integrate hydrosolutions/aquacast pooled models into SAPPHIRE Flow through the existing ForecastInterface boundary as GROUP-scoped artifacts, running on CONTROL forcing and emitting quantile-backed ForecastEnsembles. Owner selected `cmal_pool_PT` (pooled, DAILY-only, discharge + precipitation + temperature only) — the sole artifact clearing both the radiation gap (G2) and the multi-resolution gap (G5) at once, at the accepted cost of being the weakest of the three pooled models; this DEFERS Plan 153 and sub-daily out of scope. The artifacts are IN HAND and PT's contract is verified from its own config.yaml (T0.0), and T0c has run the model on a synthetic feed (mechanics proven; its real skill number and go/no-go still outstanding) — so the remaining critical path is engineering, not a human round-trip. TWO BLOCKERS dominate it: G9, the model emits discharge in mm/day which has NO SAP3 canonical unit (fi_unit_to_canonical raises; two locked tests enforce the omission), so the shim must expose m³/s and do the area-aware conversion; and G10, an external shim is invisible to discover_models() in production, resolved by a dedicated aquacast worker image (D10). Also covers the fail-loud guard against today's silent misread of multi-resolution requirements, gap-structure validation of the 210-day daily window, the Caravan↔HydroATLAS static alias map, the external-artifact import path and its provenance representation, the total-and-injective station-identity mapping (attached nowhere a GROUP model actually runs today), and a quantile-aware skill comparison — which per D11 is REANALYSIS-forced and therefore flatters a model trained on ERA5-Land, with the cycle-faithful NWP hindcast a named follow-on required before go-live. Uncertainty is model-owned (control forcing only, by FI declaration), so this plan needs nothing from the redesign's ensemble machinery.
 depends_on: [130]
 blocks: []
 supersedes: []
@@ -163,7 +163,8 @@ reading of "pooled".
 
 Three **pooled** models exist (from the colleague's runs). These are the donors. **All three are in
 hand** (owner's Dropbox, `2025-01-BARHKH/models/global/`), and **PT's row below is verified from its
-own `config.yaml` and by running the model** (T0.0 / T0c RESULT) — the other two rows remain
+own `config.yaml` and by running the model on a synthetic feed** (T0.0 / T0c RESULT — the mechanics
+only; **T0c's real Swiss/NWP skill number and its go/no-go are still outstanding**) — the other two rows remain
 owner-reported:
 
 | Model | Forcing required | Resolution | Fits our pipeline today | Skill (owner-reported) |
@@ -209,8 +210,9 @@ which is no longer the near-term target.
   artifact.* **`cmal_pool_PT` is genuinely multi-basin, so T4 onboards a real multi-station group and
   the degenerate case does not arise.** For the fine-tune: it declares GROUP scope, so onboarding
   takes the GROUP branch (`services/model_onboarding.py:489`) and the resolver gap (G6) still
-  applies — but the `StationGroup` has a single member. The plan's GROUP framing is right for the
-  **destination**, not
+  applies — but the `StationGroup` has a single member. **No task in this plan needs to verify that
+  degenerate case**; it returns only if the fine-tune is ever onboarded. The plan's GROUP framing is
+  right for the **destination**, not
   for the pilot's economics. **T4 must verify the degenerate group-of-one case explicitly.**
 - **Production target**: one multi-basin fine-tune across Nepal, with the donor as its base.
 - **Only 1 of 11 DHM gauges has hourly discharge.** `configs/regions/nepal.yaml`: "DHM, 11 gauges;
@@ -363,7 +365,8 @@ metrics is **not apples-to-apples** — which is exactly what T6 exists to do.
 aquacast declares its statics in **Caravan** names; our basin package carries **raw HydroATLAS**
 codes. (The pooled family declares **51**; **`cmal_pool_PT` declares 50** — it omits
 `degree_of_regulation`.) `_static_inputs` (`adapters/forecast_interface.py:1059-1071`) raises `ConfigurationError` on
-any name it cannot find, so **all 22 mismatched statics would be reported missing at every predict**
+any name it cannot find, so **every mismatched static is reported missing at every predict** — **21**
+for `cmal_pool_PT`, 22 against the pooled 51-static set
 — the model would never run. Verified against `tests/fixtures/basin_static/nepal-dhm-basins/`
 (92 catalog features / 93 parquet columns): 29 already match and **22 are a pure rename** against the
 pooled 51-static set — **21 of which PT actually needs**. **Owner-confirmed the map on 2026-08-11.** Closed by T1b.
@@ -504,14 +507,16 @@ history. Do not assume it — PT's config sets `is_target_in_past: true`, so ung
 **Still worth asking the colleague** (no longer blocking): PT's ungauged-holdout NSE, so its gap to
 0.52/0.56 is a number rather than "worse".
 
-*(Superseded — the original question list is preserved below for the record; items 1, 2, 5 and 6 are
-now answered by the artifacts themselves.)*
+*(Historical record — the original colleague question list. **Every item below is now ANSWERED
+except the skill gap (item 3), which is outstanding and non-blocking.** Items 1, 2, 4, 5 and 6 were
+answered by the artifacts themselves or by the repo; do not re-send them. Kept so the reasoning
+behind each question survives.)*
 
-**Most of the original list was answered without the colleague (owner + repo, 2026-08-11): pool
-size ~17,007 basins; `no_wd` = no weight decay, i.e. a training hyperparameter, so `20s_no_wd`
-almost certainly shares the radiation-requiring contract; cadence `issue_hours: [0]` (once daily at
-00Z); the 51 statics enumerated and the rename map CONFIRMED (T1b); NWP-fed degradation expected.
-Only the following remain.**
+**Answered without the colleague (owner + repo, 2026-08-11):** pool size ~17,007 basins in
+`global_pool.txt` (PT itself trained on 12,952); `no_wd` = no weight decay, a training
+hyperparameter, so `20s_no_wd` shares the radiation-requiring contract; cadence `issue_hours: [0]`
+(once daily at 00Z); the statics enumerated and the rename map CONFIRMED (T1b); NWP-fed degradation
+expected.**
 
 *Artifacts — `cmal_pool_PT` is the one we need first*
 1. Please send **`cmal_pool_PT`** — **exactly two files** suffice (aquacast's own
@@ -585,9 +590,16 @@ is rejected with a clear `ConfigurationError` naming the resolutions, instead of
 Sweep the arbitrary `next(iter(req.supported_time_steps))` sites (`services/model_onboarding.py:295`,
 `:368`, `:485`; `services/onboarding.py:806`, `:962`) so none can silently pick a resolution.
 
-**Note:** any `ConfigurationError` inside `discover_models`' try block — including from
-`_project_requirements` via `adapt_if_fi` (`services/model_registry.py:82`) — is caught per entry
-point; the guard must not turn one bad model into a registry-wide blackout.
+**CONSTRAINT (verification round 3 — an earlier note here was wrong).** `discover_models` does
+**not** contain a `ConfigurationError`: it catches and **re-raises** it
+(`services/model_registry.py:93-95`), swallowing only generic `Exception`. So a `ConfigurationError`
+raised anywhere in the try block — including from `_project_requirements` via `adapt_if_fi` — **aborts
+discovery for EVERY model, a registry-wide blackout.** T0b's guard therefore must **not** simply
+raise `ConfigurationError` from inside the projection. Either the guard signals in a way discovery
+skips per entry point, or `discover_models` is changed to skip-and-continue on a bad model. **Which
+one is an implementation choice; the invariant is that one unsupported model must never darken the
+registry.** Red-first must include that: with one multi-resolution model installed alongside good
+ones, `discover_models()` still returns the good ones.
 
 This converts a silent misread into a loud refusal, and its red test is what Plan 153 later turns
 green. *(Touches `adapters/forecast_interface.py` — coordinate with 151 T2.)*
@@ -690,7 +702,8 @@ explicit assignment failure, not a warning plus a forecast
 **Owner-confirmed 2026-08-11.** aquacast declares statics in **Caravan** names; our basin package
 carries **raw HydroATLAS codes**. Verified against
 `tests/fixtures/basin_static/nepal-dhm-basins/`: against the pooled **51**-static set, 29 match exactly
-(`area`, `p_mean`, `frac_snow`, `high_prec_*`, `low_prec_*`, all 22 `glc_pc_s*`); the other **22 are
+(`area`, `p_mean`, `frac_snow`, `high_prec_*`, `low_prec_*`, all 22 `glc_pc_s*`); the other **22 (of
+which PT needs 21) are
 a pure rename**, every one with a counterpart we already hold:
 
 `slope`→`slp_dg_sav`, `stream_gradient`→`sgr_dk_sav`, `lake_fraction`→`lka_pc_sse`,
@@ -704,7 +717,7 @@ a pure rename**, every one with a counterpart we already hold:
 
 **Without this the model fails at every predict**: `_static_inputs`
 (`adapters/forecast_interface.py:1059-1071`) computes `missing = static_names - set(static.columns)`
-and raises `ConfigurationError` — all 22 would be reported missing.
+and raises `ConfigurationError` — all of PT's 21 unaliased statics would be reported missing.
 
 **Approach — additive aliasing (recommended).** Emit the Caravan aliases as **additional columns**
 alongside the HydroATLAS canonicals when building the static frame. Purely additive: our canonical
@@ -715,8 +728,11 @@ for so extra columns are inert, and — importantly — **it needs no change to
 which would churn our canonical namespace; or an alias layer inside the FI adapter, which collides
 with 151's T2.)*
 
-**Red-first:** a static frame carrying only HydroATLAS names fails with the missing aliases listed
-(proves the gap); with aliasing it resolves. Pin the map in one place with a test asserting **all 50
+**Red-first — the RED assertion is the positive one.** With aliasing, a HydroATLAS-named static
+frame **resolves all of PT's declared statics**; that fails today because `_static_inputs`
+(`adapters/forecast_interface.py:1059-1071`) demands exact declared names and has no aliasing. (The
+converse — that an unaliased frame raises — is a *characterization* assertion that already passes;
+keep it, but it is not the gate.) Pin the map in one place with a test asserting **all 50
 of `cmal_pool_PT`'s declared statics resolve** (PT needs **21** renames — it does not declare
 `degree_of_regulation`). Keep the 22nd mapping (`degree_of_regulation` → `dor_pc_pva`) as optional
 forward-compatibility for the radiation-requiring pooled models.
@@ -744,8 +760,12 @@ units at its outward FI boundary and convert numerically in both directions:
   (`area` is already a required static).
 - **precipitation**: audit what PT declares; if `MM_PER_DAY`, expose canonical `MM` (daily
   accumulation) and translate consistently.
-- **Red-first**: a round-trip test proving `fi_unit_to_canonical` succeeds on every unit the shim
-  declares, plus a numeric conversion test at a known area — not merely a relabelling.
+- **Red-first — assert NUMBERS, not mappability.** `M3_PER_S` and `MM` are **already** in
+  `_FI_UNIT_TO_CANONICAL` (`adapters/forecast_interface.py:119-130`), so a test that merely proves
+  `fi_unit_to_canonical` succeeds on the shim's declared units **passes today and proves nothing**.
+  The genuinely red assertions are: (i) a **numeric** area-aware round trip — a known discharge in
+  mm/day at a known `area` arrives as the correct m³/s value, catching relabelling-without-conversion;
+  and (ii) the **cold-start `discover_models()`** check in the deployed worker image (G10).
 
 **Scope raised by review — deployment (G10), decided (D10).** T2 **builds a dedicated aquacast
 worker image/environment** carrying the shim and its torch runtime, because the runtime image
@@ -776,7 +796,7 @@ no artifact row of any status, no changed prior ACTIVE row, no provenance row, a
 
 **Red-first:** an undeserializable blob fails loudly; a valid import yields a promotable artifact with
 external provenance; **an acceptance test from the public boundary proving `train()` is never
-called**. Testable with synthetic models — lands ahead of the artifact arriving.
+called**. Testable with synthetic models, so it does not wait on anything.
 
 ### T4 — Group onboarding on a disposable database (closes G6)
 Isolated experiment DB, artifact location and model ids per Plan 135 decision 7 — **never** the
@@ -804,13 +824,24 @@ per-station failures isolated, **issue-time semantics correct** — horizon 1 is
 first row's `datetime` equals the issue stamp; do not shift the issue back a day. Validate the
 returned grid against the requested issue rather than trusting it.
 
-**Validate non-crossing quantiles BEFORE storage, not at T6.** `ForecastEnsemble.from_quantiles`
-validates level count and tail coverage but **not monotonicity of values**, so T5 could store
-crossing operational forecasts that the alert path then interpolates as if ordered. The check belongs
-here, at the write boundary.
+**CORRECTION (verification round 3): T5 is a CHARACTERIZATION task, not a red-first one.** An
+earlier revision required "validate non-crossing quantiles before storage" — **that guard already
+exists**: `_apply_quantile_crossing` (`services/forecast_qc.py:204`) flags crossing QUANTILES
+ensembles and `run_group_forecast.py:296` drops them on `QC_FAILED` before a forecast is built.
+Likewise the quantile representation is already carried into `OperationalForecast`
+(`run_group_forecast.py:319`) and round-tripped by the store (`store/forecast_store.py:285`), and a
+failed station already does not suppress its siblings (`run_group_forecast.py:468`). **All three
+behaviours T5 was going to "add" are present.**
 
-**Red-first:** a golden test pinning the quantile ensemble shape end to end; a test proving one
-station's `FAILURE` does not darken its siblings; a crossing-quantile forecast is rejected at storage.
+So T5 **proves the existing path carries PT end to end** — it must not pretend to be red-first, and a
+store-level crossing test would fail only by bypassing the service guard, not by finding a defect.
+
+**Acceptance (characterization, expected GREEN on a correct implementation):** a golden test pinning
+the quantile ensemble shape end to end through `run_group_forecast`; the issue-time semantics
+(horizon 1 is the nowcast, first row's `datetime` == issue stamp, validated against the *requested*
+issue rather than trusted); one station's `FAILURE` leaving siblings intact; and a crossing-quantile
+ensemble being dropped by QC **at the service level**. Anything here that goes red is a genuine
+regression, not planned work.
 
 ### T6 — Quantile-aware skill comparison vs the incumbents (closes G7)
 Hindcast over the target set and compare against the incumbents on alerting-relevant metrics.
