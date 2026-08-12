@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-11
 plan: 154
 title: Recap IFS fetch containment — one station's missing data must not degrade the whole cycle
@@ -12,7 +12,9 @@ supersedes: []
 # Plan 154 — Recap IFS fetch containment
 
 ## Status
-**DRAFT.** A standalone operational-reliability fix (category **A**), independent of the forecast-cycle redesign.
+**READY** (owner-ratified 2026-08-12). A standalone operational-reliability fix (category **A**), independent of the
+forecast-cycle redesign. No open questions: D10 answered by the owner, the requirement-driven variable selection it
+raised split out as a follow-on, and the full adversarial review's blocker + two majors folded in.
 Numbered 154 because 152 is taken (aquacast) and 153 is informally reserved for multi-resolution domain-type support.
 
 **Provenance.** Two manual Codex passes plus a `/plan` review shaped this document; the `/plan` run escalated by
