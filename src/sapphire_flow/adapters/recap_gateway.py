@@ -821,62 +821,121 @@ class RecapGatewayForecastAdapter:
         station_ref = {ref.station_id: ref for ref in resolved}
         acc: dict[StationId, list[dict[str, object]]] = {}
         cycle_source_run: object | None = None
+        hru_discarded = False
 
         for hru_name, refs_by_polygon in by_hru.items():
-            for variable in _ifs_variables():
-                ifs_name = variable.ifs_name
-                if ifs_name is None:
-                    continue
-                cycle_source_run = self._accumulate_member(
-                    acc,
-                    refs_by_polygon,
-                    variable=variable,
-                    ifs_name=ifs_name,
+            # Plan 154 D1/D2: stage this HRU's rows LOCALLY and commit them into
+            # the shared accumulator only when every variable for this HRU
+            # succeeds. An HRU is the Gateway call unit (one call per
+            # `(hru, variable, member)`), so a raised control fetch yields no
+            # rows for ANY station resolved into this HRU -- never a subset
+            # (D2 invariant: within one HRU, all stations share the same fetch
+            # outcome per variable). Provenance (`cycle_source_run`) commits on
+            # the SAME boundary -- a discarded HRU must never determine the
+            # returned results' `cycle_time`.
+            hru_acc: dict[StationId, list[dict[str, object]]] = {}
+            hru_source_run = cycle_source_run
+            discarded_variable: str | None = None
+            try:
+                for variable in _ifs_variables():
+                    ifs_name = variable.ifs_name
+                    if ifs_name is None:
+                        continue
+                    discarded_variable = variable.canonical
+                    hru_source_run = self._accumulate_member(
+                        hru_acc,
+                        refs_by_polygon,
+                        variable=variable,
+                        ifs_name=ifs_name,
+                        hru_name=hru_name,
+                        cycle_time=effective_cycle_time,
+                        ifs_type="fc",
+                        member=None,
+                        member_id=_FC_MEMBER_ID,
+                        prior=hru_source_run,
+                    )
+                    for member in range(_PF_MEMBER_MIN, _PF_MEMBER_MAX + 1):
+                        # Plan 127 Fix 1: ECMWF disseminates fc before pf, so
+                        # during that window every pf member is absent. Tolerate
+                        # ONLY a data-unavailable pf fetch (never config/auth/
+                        # other errors) -- log and stop probing pf for this
+                        # variable, keeping fc (+ any pf members already
+                        # accumulated) rather than discarding the whole HRU. The
+                        # first missing pf member is enough (all pf are absent
+                        # together in that window), so this costs ~1 wasted
+                        # call/cycle, not 50.
+                        try:
+                            hru_source_run = self._accumulate_member(
+                                hru_acc,
+                                refs_by_polygon,
+                                variable=variable,
+                                ifs_name=ifs_name,
+                                hru_name=hru_name,
+                                cycle_time=effective_cycle_time,
+                                ifs_type="pf",
+                                member=str(member),
+                                member_id=_pf_member_id(member),
+                                prior=hru_source_run,
+                            )
+                        except RecapDataUnavailableError:
+                            log.warning(
+                                "recap.pf_unavailable_control_only",
+                                hru_name=hru_name,
+                                variable=variable.canonical,
+                                member=member,
+                            )
+                            break
+            except RecapDataUnavailableError:
+                # Plan 154 D1/D4: this HRU's CONTROL fetch is unavailable --
+                # discard only this HRU (never abort the whole cycle) and keep
+                # serving every other HRU's stations. This can only be raised by
+                # the fc call above (the pf inner loop always contains its own
+                # RecapDataUnavailableError and never re-raises), so `ifs_type`
+                # is always "fc" here. The CRITICAL `pipeline_health` alarm (D4)
+                # is the FLOW's job -- the adapter cannot see which stations
+                # were requested across the whole batch, only this HRU's.
+                hru_discarded = True
+                log.warning(
+                    "recap.hru_unavailable_contained",
                     hru_name=hru_name,
-                    cycle_time=effective_cycle_time,
+                    variable=discarded_variable,
                     ifs_type="fc",
-                    member=None,
-                    member_id=_FC_MEMBER_ID,
-                    prior=cycle_source_run,
                 )
-                for member in range(_PF_MEMBER_MIN, _PF_MEMBER_MAX + 1):
-                    # Plan 127 Fix 1: ECMWF disseminates fc before pf, so during
-                    # that window every pf member is absent. Tolerate ONLY a
-                    # data-unavailable pf fetch (never config/auth/other errors)
-                    # -- log and stop probing pf for this variable, keeping fc
-                    # (+ any pf members already accumulated) rather than
-                    # aborting the whole NWP fetch. The first missing pf member
-                    # is enough (all pf are absent together in that window), so
-                    # this costs ~1 wasted call/cycle, not 50.
-                    try:
-                        cycle_source_run = self._accumulate_member(
-                            acc,
-                            refs_by_polygon,
-                            variable=variable,
-                            ifs_name=ifs_name,
-                            hru_name=hru_name,
-                            cycle_time=effective_cycle_time,
-                            ifs_type="pf",
-                            member=str(member),
-                            member_id=_pf_member_id(member),
-                            prior=cycle_source_run,
-                        )
-                    except RecapDataUnavailableError:
-                        log.warning(
-                            "recap.pf_unavailable_control_only",
-                            hru_name=hru_name,
-                            variable=variable.canonical,
-                            member=member,
-                        )
-                        break
+                continue
 
-        cycle = _normalize_source_run_to_utc(cycle_source_run) or effective_cycle_time
-        return {
-            station_id: _build_forecast_result(
-                station_ref[station_id], rows, cycle, self.NWP_SOURCE
+            for station_id, rows in hru_acc.items():
+                acc.setdefault(station_id, []).extend(rows)
+            cycle_source_run = hru_source_run
+
+        if acc:
+            # D3: at least one HRU COMMITTED (contributed >=1 row) -- return its
+            # stations. Stations absent from the mapping are already how this
+            # return shape says "no data for this station"; the downstream
+            # per-station path degrades them individually.
+            cycle = (
+                _normalize_source_run_to_utc(cycle_source_run) or effective_cycle_time
             )
-            for station_id, rows in acc.items()
-        }
+            return {
+                station_id: _build_forecast_result(
+                    station_ref[station_id], rows, cycle, self.NWP_SOURCE
+                )
+                for station_id, rows in acc.items()
+            }
+        if hru_discarded:
+            # D3: NO HRU committed AND >=1 HRU discarded -- re-raise so the
+            # flow's existing cycle-wide handler fires unchanged (preserves
+            # today's total-failure behaviour). Without this, an empty-but-
+            # successful HRU elsewhere could mask a real total failure by
+            # returning `{}` (treated as success) instead of raising.
+            raise RecapDataUnavailableError(
+                "every in-scope HRU's IFS control fetch was discarded for cycle "
+                f"{effective_cycle_time.isoformat()} (0 of {len(by_hru)} HRU(s) "
+                "committed)",
+                code="source_data_missing",
+            )
+        # D3: no HRU committed and NONE discarded -- every response was
+        # well-formed but empty. Not a failure; return {} exactly as today.
+        return {}
 
     def _accumulate_member(
         self,
