@@ -191,3 +191,113 @@ class TestDiscoverModels:
             result[ModelId("declared_model")].alert_eligibility
             is AlertEligibility.SKILL_FORECAST
         )
+
+    def test_multi_resolution_fi_model_does_not_darken_discovery(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Plan 156 T1, red-first criterion #2.
+
+        ``discover_models()`` re-raises ``ConfigurationError`` for every
+        entry point (a registry-wide blackout, ``:93-95``). A multi-
+        FUTURE-FORCED-resolution FI model must not use that path: one bad
+        model must not prevent good models from being discovered.
+        """
+        from datetime import timedelta
+
+        from sapphire_flow.adapters import forecast_interface as fi_boundary
+
+        class DeclaredModel(FakeStationForecastModel):
+            model_tier = ModelTier.SKILL
+            alert_eligibility = AlertEligibility.SKILL_FORECAST
+
+        class _MultiResolutionFakeFIModel:
+            """Structurally satisfies forecast_interface.ForecastModel (the
+            runtime_checkable Protocol) with an InputRequirement declaring
+            non-empty future_known in TWO time_step branches — the
+            unsupported shape Plan 156 rejects. Declares ModelTier/
+            AlertEligibility so classification is NOT why it is excluded —
+            isolating the multi-resolution guard as the sole reason."""
+
+            model_tier = ModelTier.SKILL
+            alert_eligibility = AlertEligibility.SKILL_FORECAST
+
+            def __init__(self) -> None:
+                self.artifact_scope = fi_boundary.FIArtifactScope.STATION
+                future = fi_boundary.FutureKnownVariable(
+                    future_steps=5, max_nan=0, unit=fi_boundary.Unit.MM
+                )
+                self._input_requirement = fi_boundary.InputRequirement(
+                    targets={
+                        "discharge": fi_boundary.TargetSpec(
+                            unit=fi_boundary.Unit.M3_PER_S,
+                            representations=frozenset(
+                                {fi_boundary.OutputRepresentation.DETERMINISTIC}
+                            ),
+                        )
+                    },
+                    dynamic={
+                        timedelta(hours=1): fi_boundary.SpatialInputSpec(
+                            data={
+                                fi_boundary.FISpatialRepresentation.POINT: (
+                                    fi_boundary.DynamicInputSpec(
+                                        future_known={"nwp": {"precip": future}}
+                                    )
+                                )
+                            }
+                        ),
+                        timedelta(hours=24): fi_boundary.SpatialInputSpec(
+                            data={
+                                fi_boundary.FISpatialRepresentation.POINT: (
+                                    fi_boundary.DynamicInputSpec(
+                                        future_known={"nwp": {"temp": future}}
+                                    )
+                                )
+                            }
+                        ),
+                    },
+                )
+
+            @property
+            def input_requirement(self) -> fi_boundary.InputRequirement:
+                return self._input_requirement
+
+            def train(self, inputs: object, *, config: object, rng: object) -> object:
+                raise NotImplementedError
+
+            def predict(
+                self,
+                artifact: object,
+                *,
+                inputs: object,
+                issue_datetime: object,
+                rng: object,
+            ) -> object:
+                raise NotImplementedError
+
+            def serialize_artifact(self, artifact: object) -> bytes:
+                raise NotImplementedError
+
+            def deserialize_artifact(self, raw: bytes) -> object:
+                raise NotImplementedError
+
+        class _GoodEntryPoint:
+            name = "good_model"
+
+            def load(self) -> type[DeclaredModel]:
+                return DeclaredModel
+
+        class _BadEntryPoint:
+            name = "bad_multi_resolution_model"
+
+            def load(self) -> type[_MultiResolutionFakeFIModel]:
+                return _MultiResolutionFakeFIModel
+
+        monkeypatch.setattr(
+            "importlib.metadata.entry_points",
+            lambda group: [_GoodEntryPoint(), _BadEntryPoint()],
+        )
+
+        result = discover_models()
+
+        assert ModelId("good_model") in result
+        assert ModelId("bad_multi_resolution_model") not in result

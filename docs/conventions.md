@@ -249,6 +249,7 @@ All exceptions inherit from `SapphireError`. Authoritative class definitions in
 | `ConflictError` | Optimistic locking conflict | Return 409 Conflict |
 | `AdapterError` | External source error/timeout | Retry, then fallback |
 | `ConfigurationError` | Invalid/missing config | Fail fast at startup |
+| `UnsupportedModelRequirementError` | ForecastInterface `InputRequirement` declares non-empty `future_known` in more than one `time_step` branch (Plan 156) — SAP3 domain types are single-resolution | `discover_models()` skips the entry point and logs, but keeps discovering the rest; every other `ConfigurationError` still darkens the whole registry (see `services/model_registry.py::discover_models`) |
 | `ModelSmokeTestError` | Model raised exception during smoke test | Flow 13: unit outcome = `FAILED_SMOKE_TEST`; continue other units |
 | `ArtifactIntegrityError` | SHA-256 hash mismatch on fetched artifact bytes | Do not deserialize; task failure |
 | `ExtractionError` | Preprocessing/extraction failure (GridExtractor) | Log, skip station or fail cycle depending on scope |

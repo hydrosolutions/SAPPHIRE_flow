@@ -1461,6 +1461,16 @@ class ModelDataRequirements:
 
 `ensemble_mode` (`EnsembleMode` enum: `SINGLE` | `ENSEMBLE`, mirrors the ForecastInterface `FutureKnownVariable.ensemble_mode` values) marks a model whose future-known forcing is delivered as member-suffixed columns (`precipitation_0`, `precipitation_1`, …). The FI adapter projects `ENSEMBLE` when any `future_known` variable declares it; the operational and conformance paths then fan such a model out over the members (see `services/ensemble_fanout.py`), assembling one N-member ensemble from N single-trajectory predictions. Defaulted to `SINGLE` so native single-trajectory models are unaffected. The hindcast path never fans out (reanalysis is a single teacher-forced trajectory).
 
+**`supported_time_steps` for FI-adapted models (Plan 156):** the FI adapter projects this as the
+`time_step` branch(es) of `InputRequirement.dynamic` whose `future_known` is non-empty — never a
+past-only branch — so a downstream `next(iter(model.data_requirements.supported_time_steps))` (e.g.
+`services/model_onboarding.py`, `services/onboarding.py`) cannot land on a resolution the model has
+no forecast horizon at. A requirement is rejected at construction (`UnsupportedModelRequirementError`)
+if more than one branch declares non-empty `future_known` — SAP3 domain types are single-resolution,
+so this set has at most one member for an FI-adapted model. A past-only second branch (no
+`future_known`) stays constructible and is simply excluded from `supported_time_steps`. Native (non-FI)
+models are unaffected — they declare `supported_time_steps` directly.
+
 Module: `types/model.py`
 
 ### ModelParams
@@ -2294,6 +2304,14 @@ class AdapterError(SapphireError):
 class ConfigurationError(SapphireError):
     """Invalid or missing configuration.
     Startup-level handling: fail fast with clear message."""
+
+class UnsupportedModelRequirementError(SapphireError):
+    """A ForecastInterface model's InputRequirement declares non-empty
+    future_known in more than one time_step branch (Plan 156) — SAP3 domain
+    types are single-resolution. Deliberately NOT a ConfigurationError
+    subclass: discover_models() re-raises ConfigurationError for every entry
+    point (a registry-wide blackout); this is instead skipped per entry
+    point so one unsupported model does not darken discovery for the rest."""
 
 class ModelSmokeTestError(SapphireError):
     """Model raised an exception during smoke test (predict() on random-shaped data).

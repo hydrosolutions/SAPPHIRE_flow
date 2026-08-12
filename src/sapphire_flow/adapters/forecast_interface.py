@@ -44,7 +44,11 @@ from forecast_interface import (
     SpatialRepresentation as FISpatialRepresentation,
 )
 
-from sapphire_flow.exceptions import ConfigurationError, ModelOutputError
+from sapphire_flow.exceptions import (
+    ConfigurationError,
+    ModelOutputError,
+    UnsupportedModelRequirementError,
+)
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.ensemble import ForecastEnsemble
 from sapphire_flow.types.enums import (
@@ -455,7 +459,30 @@ class ForecastInterfaceAdapter:
         self._station_code_resolver = resolver
         return self
 
+    def _future_forced_time_steps(self, req: InputRequirement) -> tuple[timedelta, ...]:
+        # Iterates req.dynamic directly (NOT _iter_dynamic_specs, which
+        # discards the time_step key) so each branch's future_known-ness can
+        # be attributed to ITS time_step, not flattened away.
+        return tuple(
+            sorted(
+                time_step
+                for time_step, spatial_spec in req.dynamic.items()
+                if any(spec.future_known for spec in spatial_spec.data.values())
+            )
+        )
+
     def _project_requirements(self, req: InputRequirement) -> ModelDataRequirements:
+        future_forced_time_steps = self._future_forced_time_steps(req)
+        if len(future_forced_time_steps) > 1:
+            resolutions = ", ".join(str(step) for step in future_forced_time_steps)
+            raise UnsupportedModelRequirementError(
+                "ForecastInterface InputRequirement declares non-empty "
+                "future_known in more than one time_step branch: "
+                f"{resolutions}. SAP3 domain types are single-resolution; "
+                "a model that genuinely needs multiple FUTURE-FORCED "
+                "resolutions simultaneously is not yet supported (Plan 153)."
+            )
+
         spatial_reps: set[FISpatialRepresentation] = set()
         future_dynamic_features: set[str] = set()
         past_variables: list[tuple[str, PastKnownVariable]] = []
@@ -516,7 +543,12 @@ class ForecastInterfaceAdapter:
             past_dynamic_features=frozenset(past_dynamic_features),
             future_dynamic_features=frozenset(future_dynamic_features),
             static_features=frozenset(req.static),
-            supported_time_steps=frozenset(req.dynamic),
+            # Plan 156: the FUTURE-FORCED branch(es) only — never a past-only
+            # branch — so a downstream `next(iter(supported_time_steps))`
+            # (services/model_onboarding.py, services/onboarding.py) can no
+            # longer land on a resolution the model cannot forecast at. At
+            # most one entry survives the guard above.
+            supported_time_steps=frozenset(future_forced_time_steps),
             lookback_steps=lookback_steps,
             # V1 proxy: FI declares horizon only at output time; future_steps is
             # the input-forcing length used as the horizon proxy, endorsed in SF2.

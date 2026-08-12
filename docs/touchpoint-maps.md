@@ -79,6 +79,13 @@ include them in the task context packet.
 - ForecastInterface definition and adapters
 - model discovery / registry wrapping — FI entry-point models wrapped via
   `adapt_if_fi()` in `discover_models()` so all callers get SAP3-compatible models
+- Plan 156: `_project_requirements` rejects an `InputRequirement` declaring
+  non-empty `future_known` in more than one `time_step` branch
+  (`UnsupportedModelRequirementError`, deliberately not `ConfigurationError` —
+  `discover_models()` skips just that entry point rather than darkening the
+  whole registry); a past-only second branch stays constructible (Plan 151's
+  shape). `supported_time_steps` is projected from the future-forced
+  branch(es) only, never a past-only one
 - operational input assembly
 - forecast cycle orchestration
 - model execution call sites
@@ -151,6 +158,12 @@ gates.
 - FI model anticipated failures return `ModelFailure` (never raised from inside
   the model); the SAP3 adapter surfaces the pre-`predict` `max_nan` gate and total
   FI failure as `ModelOutputError` at the adapter/orchestration boundary
+- **one unsupported model must never darken the registry** (Plan 156): a
+  multi-FUTURE-FORCED-resolution `InputRequirement` raises
+  `UnsupportedModelRequirementError`, NOT `ConfigurationError` —
+  `discover_models()` re-raises `ConfigurationError` for every entry point,
+  so a future FI-boundary check that reuses `ConfigurationError` for a
+  per-model-rejectable condition reintroduces a registry-wide blackout
 - data requirements must match what input assembly actually provides
 - output shape and station / issue-time identity remain stable
 - assignment priority and fallback semantics remain explicit

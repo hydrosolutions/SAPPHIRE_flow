@@ -127,6 +127,10 @@ def _dynamic_spec() -> fi_boundary.DynamicInputSpec:
 
 
 def _daily_dynamic_spec() -> fi_boundary.DynamicInputSpec:
+    # Plan 156: past-only (no future_known) — the 24h branch's temp_forecast
+    # was DROPPED, not moved, so this stays the shape Plan 151 needs (one
+    # future-forced branch + one past-only branch) rather than a second
+    # future-forced branch, which Plan 156 now rejects at construction.
     return fi_boundary.DynamicInputSpec(
         past_known={
             "era5": {
@@ -137,19 +141,15 @@ def _daily_dynamic_spec() -> fi_boundary.DynamicInputSpec:
                 ),
             },
         },
-        future_known={
-            "nwp": {
-                "temp_forecast": _future(
-                    future_steps=6,
-                    max_nan=2,
-                    unit=fi_boundary.Unit.DEG_C,
-                ),
-            },
-        },
     )
 
 
 def _multi_product_requirement() -> fi_boundary.InputRequirement:
+    # Plan 156 (seam review, 2026-08-12): the 1h branch is the SOLE
+    # future-forced branch; the 24h branch is past-only. Two future-forced
+    # branches is exactly the shape Plan 156 rejects (see
+    # test_multi_future_forced_time_step_requirement_rejected below) — this
+    # fixture must stay on the allowed side of that rule.
     return fi_boundary.InputRequirement(
         targets={
             "discharge": _target(fi_boundary.Unit.M3_PER_S),
@@ -197,14 +197,13 @@ def test_projects_multi_product_multi_variable_input_requirement() -> None:
     assert req.past_dynamic_features == frozenset(
         {"precip", "temp", "snow_depth", "soil_moisture"}
     )
-    assert req.future_dynamic_features == frozenset(
-        {"precip_forecast", "wind", "temp_forecast"}
-    )
+    assert req.future_dynamic_features == frozenset({"precip_forecast", "wind"})
     assert req.lookback_steps == 10
     assert req.forecast_horizon_steps == 8
-    assert req.supported_time_steps == frozenset(
-        {timedelta(hours=1), timedelta(hours=24)}
-    )
+    # Plan 156: supported_time_steps is the FUTURE-FORCED branch(es) only —
+    # never the past-only 24h branch — so no downstream `next(iter(...))`
+    # site can arbitrarily land on a resolution the model cannot forecast at.
+    assert req.supported_time_steps == frozenset({timedelta(hours=1)})
     assert req.spatial_input_type is SpatialRepresentation.POINT
     assert req.static_features == frozenset({"catchment_area", "elevation"})
 
@@ -282,6 +281,105 @@ def test_no_future_known_input_raises_configuration_error() -> None:
         fi_boundary.ForecastInterfaceAdapter(FakeFIForecastModel(requirement))
 
 
+def _two_future_forced_branch_requirement() -> fi_boundary.InputRequirement:
+    """The genuinely unsupportable shape (Plan 156): TWO time_step branches
+    each declaring non-empty future_known — e.g. an MTS-LSTM config. Today
+    this is silently flattened (features merged, lookback/horizon
+    max-collapsed, one resolution picked arbitrarily); Plan 156 rejects it.
+    """
+    return fi_boundary.InputRequirement(
+        targets={"discharge": _target(fi_boundary.Unit.M3_PER_S)},
+        dynamic={
+            timedelta(hours=1): fi_boundary.SpatialInputSpec(
+                data={fi_boundary.FISpatialRepresentation.POINT: _dynamic_spec()}
+            ),
+            timedelta(hours=24): fi_boundary.SpatialInputSpec(
+                data={
+                    fi_boundary.FISpatialRepresentation.POINT: (
+                        fi_boundary.DynamicInputSpec(
+                            future_known={
+                                "nwp": {
+                                    "temp_forecast": _future(
+                                        future_steps=6,
+                                        max_nan=2,
+                                        unit=fi_boundary.Unit.DEG_C,
+                                    ),
+                                },
+                            },
+                        )
+                    )
+                }
+            ),
+        },
+    )
+
+
+def test_multi_future_forced_time_step_requirement_rejected() -> None:
+    """Plan 156 T1, red-first criterion #1 (rejection half).
+
+    Guard the import: ``UnsupportedModelRequirementError`` does not exist
+    before the guard lands, and a bare ``from ... import`` would turn this
+    into a collection ERROR rather than a RED assertion. ``getattr`` +
+    ``pytest.fail`` keeps the failure a clean assertion either way.
+    """
+    from sapphire_flow import exceptions as sapphire_exceptions
+
+    expected_error = getattr(
+        sapphire_exceptions, "UnsupportedModelRequirementError", None
+    )
+    if expected_error is None:
+        pytest.fail(
+            "sapphire_flow.exceptions.UnsupportedModelRequirementError does "
+            "not exist yet — a requirement with two future-forced time_step "
+            "branches must be rejected at ForecastInterfaceAdapter "
+            "construction (Plan 156 T1)"
+        )
+
+    with pytest.raises(expected_error, match="future_known"):
+        fi_boundary.ForecastInterfaceAdapter(
+            FakeFIForecastModel(_two_future_forced_branch_requirement())
+        )
+
+
+def test_multi_future_forced_time_step_error_names_both_resolutions() -> None:
+    """The rejection error must NAME the offending resolutions (plan text:
+    "rejected with a clear error naming the resolutions") — not just say
+    "multiple time steps"."""
+    from sapphire_flow import exceptions as sapphire_exceptions
+
+    expected_error = getattr(
+        sapphire_exceptions, "UnsupportedModelRequirementError", None
+    )
+    if expected_error is None:
+        pytest.fail(
+            "sapphire_flow.exceptions.UnsupportedModelRequirementError does "
+            "not exist yet (Plan 156 T1)"
+        )
+
+    with pytest.raises(expected_error) as excinfo:
+        fi_boundary.ForecastInterfaceAdapter(
+            FakeFIForecastModel(_two_future_forced_branch_requirement())
+        )
+
+    message = str(excinfo.value)
+    assert str(timedelta(hours=1)) in message
+    assert str(timedelta(hours=24)) in message
+
+
+def test_one_future_forced_plus_one_past_only_branch_is_accepted() -> None:
+    """Plan 156 T1, red-first criterion #1 (acceptance half — guards against
+    over-rejection). This is exactly the shape Plan 151 T2 needs: one
+    future-forced branch (1h) plus a past-only branch (24h, no
+    future_known)."""
+    adapter = fi_boundary.ForecastInterfaceAdapter(
+        FakeFIForecastModel(_multi_product_requirement())
+    )
+
+    assert adapter.data_requirements.supported_time_steps == frozenset(
+        {timedelta(hours=1)}
+    )
+
+
 def test_declared_units_returns_sap3_canonical_strings() -> None:
     adapter = fi_boundary.ForecastInterfaceAdapter(
         FakeFIForecastModel(_multi_product_requirement())
@@ -296,7 +394,6 @@ def test_declared_units_returns_sap3_canonical_strings() -> None:
         "precip_forecast": "mm",
         "wind": "m/s",
         "soil_moisture": "%",
-        "temp_forecast": "°C",
     }
     assert adapter.unsupported_units() == frozenset()
 
@@ -408,7 +505,6 @@ def test_max_nan_tolerances_returns_declared_ints() -> None:
         "precip_forecast": 0,
         "wind": 3,
         "soil_moisture": 4,
-        "temp_forecast": 2,
     }
 
 
