@@ -286,6 +286,17 @@ Rules:
 
 A snow outage is surfaced as cycle `health=DEGRADED` (never `nwp_unavailable`, which stays reserved for a cycle-wide IFS/NWP outage) — see `_forecast_cycle_health`'s `snow_unavailable` parameter.
 
+### Per-HRU IFS fetch containment events (Plan 154, Nepal v1 / Recap Gateway only)
+
+`RecapGatewayForecastAdapter.fetch_forecasts` contains a `RecapDataUnavailableError` from an HRU's control (`fc`) fetch **per HRU** (D1) instead of letting it propagate out of the whole batch — a discarded HRU contributes nothing, but every other HRU is still served. `_fetch_nwp_task` separately reconciles what it requested against what a dict-return adapter delivered, so a resulting partial delivery is diagnosed loudly instead of silently read as "those stations have no NWP forcing this cycle" (D4).
+
+| Event | Level | Notes |
+|---|---|---|
+| `recap.hru_unavailable_contained` | WARNING | Adapter-level (`fetch_forecasts`): one HRU's control (`fc`) fetch raised `RecapDataUnavailableError` — the whole HRU (both IFS variables, all members) is discarded; every OTHER HRU is still attempted and served. Mirrors the existing `recap.pf_unavailable_control_only` precedent. Kwargs: `hru_name`, `variable` (canonical name of the variable being fetched when the raise happened), `ifs_type` (always `"fc"` — a `pf` gap never re-raises past its own contained loop). |
+| `nwp.delivery_partial` | ERROR | Flow-level (`_fetch_nwp_task`): a dict-return adapter delivered forecasts for a non-empty PROPER SUBSET of the requested stations this cycle (`0 < returned < requested`) — an ANOMALY, since IFS publication is global and per-HRU divergence signals a fault in that HRU or the Data Gateway, not a routine gap. Paired with a CRITICAL `pipeline_health` record (`PipelineCheckType.NWP_DELIVERY`, `subject="nwp_delivery"`) naming the affected stations. An EMPTY mapping (`returned == 0`) is today's legitimate no-op-NWP success and is explicitly excluded — it never fires this event or the paired record. Kwargs: `missing_station_ids` (list of str), `requested`, `returned` (counts). |
+
+A partial delivery is surfaced as cycle `health=DEGRADED` (never `nwp_unavailable`, which stays reserved for a total cycle-wide IFS outage) — see `_forecast_cycle_health`'s `nwp_delivery_partial` parameter. The healthy stations' forecasts are stored and used normally; only the affected stations fall back to their non-NWP models for this cycle.
+
 ### Antecedent snow-reanalysis ingest events (Plan 146, Nepal v1 / Recap Gateway only)
 
 The dedicated `ingest-recap-reanalysis` flow (`flows/ingest_recap_reanalysis.py`) is **model-agnostic** — it fetches the full snow ceiling for every in-scope HRU every run and classifies health by EFFECT (a `HistoricalForcingStore.fetch_covered_days` readback per `(station_id, parameter)`, never a fetch-success/`rows_stored` counter). Emits one `PipelineHealthRecord` per run keyed `PipelineCheckType.RECAP_SNOW_REANALYSIS_INGEST` — a DEDICATED check type, never conflated with `WEATHER_HISTORY_INGEST`.
