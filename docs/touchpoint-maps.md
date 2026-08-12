@@ -366,7 +366,13 @@ Before planning or implementation, inspect the relevant touchpoints below and in
   stations (`recap.hru_unavailable_contained` at the adapter, `nwp.delivery_
   partial` at the flow — see `docs/standards/logging.md`). An EMPTY mapping
   (`returned == 0`) is excluded — that is still today's legitimate no-op-NWP
-  success, not divergence.
+  success, not divergence. A committed HRU's complete-variable-set invariant is
+  enforced INSIDE that same per-HRU staging step (fixer-round fold-in): if one
+  required IFS variable's control fetch is a well-formed EMPTY response while
+  another variable's is populated for the SAME HRU, `fetch_forecasts` raises an
+  uncontained `AdapterError` (never `RecapDataUnavailableError`) rather than
+  shipping partial-variable forcing — the same uncontained-malformed-response
+  treatment as the pre-existing missing-polygon-column raise.
 - Phase C alerting has a single outer guard around the whole `check_station_alerts`
   call, which itself loops stations internally. A mid-loop exception **stops the
   remaining stations' alert processing** and leaves `alerts_checked=False`, but
