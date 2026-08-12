@@ -3,7 +3,7 @@ status: DRAFT
 created: 2026-08-11
 plan: 154
 title: Recap IFS fetch containment — one station's missing data must not degrade the whole cycle
-scope: Contain RecapDataUnavailableError inside RecapGatewayForecastAdapter.fetch_forecasts so a data gap affecting one HRU no longer discards every other station's already-accumulated rows and no longer escalates a station-scoped gap into the flow's cycle-wide runoff-only degradation. Containment and commit are both per HRU (the Gateway call unit): an HRU is committed only with its complete variable set, and station-level partiality within an HRU is unrepresentable at this boundary (one call per HRU/variable; every polygon column required). Partial loss is surfaced as a queryable pipeline_health record and a DEGRADED cycle health, per the logging standard. Preserves today's behaviour when no HRU commits. No adapter return-type change, no Protocol change. The single-HRU cycle PROBE is explicitly out of scope.
+scope: Contain RecapDataUnavailableError inside RecapGatewayForecastAdapter.fetch_forecasts so a data gap affecting one HRU no longer discards every other station's already-accumulated rows and no longer escalates a station-scoped gap into the flow's cycle-wide runoff-only degradation. Containment and commit are both per HRU (the Gateway call unit): an HRU is committed only with its complete variable set, and station-level partiality within an HRU is unrepresentable at this boundary (one call per HRU/variable; every polygon column required). Per-HRU divergence is an ANOMALY (owner-confirmed): healthy HRUs are still served, and the fault is raised as an ERROR/CRITICAL pipeline_health record with DEGRADED cycle health, per the logging standard. Preserves today's behaviour when no HRU commits. No adapter return-type change, no Protocol change. The single-HRU cycle probe is retained unchanged (publication is global, so one HRU is representative), but its hardcoded probe VARIABLE becomes derived from the operational requirement set.
 depends_on: []
 blocks: []
 supersedes: []
@@ -52,6 +52,11 @@ the cycle-wide remedy to both.
 
 **Reachability.** Latent on the current single-HRU deployment; live for multi-HRU Nepal.
 
+**Note on framing (owner, 2026-08-12).** Per-HRU divergence is **not** an expected operating condition — publication
+is global, so divergence means the HRU or the Gateway is broken (D10). Containment therefore exists to **diagnose the
+fault accurately and keep healthy basins served**, not to normalise a routine gap. Today's behaviour fails both
+tests: it discards healthy HRUs' data *and* reports the cause as cycle-wide non-publication.
+
 ## Design
 
 - **D1 — Contain the exception per HRU (the fetch unit).** Wrap each HRU's fetch in
@@ -93,21 +98,30 @@ the cycle-wide remedy to both.
   - **No HRU committed and NO HRU discarded** (every response well-formed but empty) → return `{}`, exactly as
     today. Without this split, an empty-but-successful HRU could mask a real total failure: the flow would treat `{}`
     as success and never set `nwp_unavailable`.
-- **D4 — Partial loss must be operator-visible, not log-only.** *(Reviewer blocker-fix; this overrides the draft's
-  "adapter logs only" recommendation.)* `docs/standards/logging.md:428` requires that forecast-feed resilience events
-  affecting operator trust — explicitly including **dark station forecasts** — carry a queryable `pipeline_health`
-  record in addition to any structlog event. A partial fetch darkens specific stations, so log-only would violate that
-  standard, and the cycle could report `HEALTHY` while an NWP-fed model was silently suppressed.
+- **D4 — Divergence is an ANOMALY: serve the healthy HRUs, alarm LOUDLY.** *(Owner-answered 2026-08-12, D10.)*
+  The owner confirms the NWP fetch is **global**: all HRUs should resolve to the same cycle, and a forecast present
+  for one HRU but absent for another **in one deployment indicates a fault in that HRU or in the Data Gateway** —
+  not a routine timing gap. This changes what containment is *for*: not to absorb an expected condition, but to
+  **diagnose it accurately** instead of misattributing it to a cycle-wide non-publication, and to keep healthy basins
+  served while the fault is raised.
+  - **Behaviour on divergence (owner-ratified):** the healthy HRUs' stations get their forecasts; the affected HRU's
+    stations fall back locally; an **ERROR/CRITICAL** `pipeline_health` record names the affected HRU(s) and cycle;
+    cycle health is **DEGRADED**. Withholding a valid forecast for a healthy basin does not repair the broken HRU —
+    the alarm is what makes the failure loud, not the withholding.
+  - **Severity is deliberately higher than a routine warning.** `docs/standards/logging.md:428` requires a queryable
+    `pipeline_health` record for resilience events affecting operator trust, explicitly including **dark station
+    forecasts**; because divergence signals a fault rather than a timing gap, it is recorded at ERROR/CRITICAL, not
+    the WARNING used for a genuine cycle-wide `source_data_missing`. Log-only would both violate the standard and let
+    the cycle report `HEALTHY` while an NWP-fed model was silently suppressed.
   - **No adapter contract change is needed.** The flow already knows which stations it requested, so `_fetch_nwp_task`
-    reconciles requested station ids against the returned mapping's keys, appends an `NWP_DELIVERY` / WARNING
-    `pipeline_health` record naming the missing stations, and threads an internal partial flag through
-    `_NwpFetchOutcome` into `_forecast_cycle_health` so the cycle reports **DEGRADED**.
+    reconciles requested station ids against the returned mapping's keys, appends the `NWP_DELIVERY` record naming the
+    missing stations, and threads an internal partial flag through `_NwpFetchOutcome` into `_forecast_cycle_health`.
   - **Reconciliation fires ONLY on a non-empty PROPER SUBSET** (reviewer blocker-fix). An empty mapping is *not*
-    partial loss: `{}` is today's legitimate no-op-NWP success (D3), and reconciling it would mark every station
-    missing and degrade a cycle that behaves exactly as it does on `main`. Partial-loss handling requires
+    divergence: `{}` is today's legitimate no-op-NWP success (D3), and reconciling it would mark every station missing
+    and alarm on a cycle that behaves exactly as it does on `main`. Divergence handling requires
     `0 < len(returned) < len(requested)`; `len(returned) == 0` keeps its existing semantics untouched.
-  - The adapter additionally logs a WARNING per contained HRU naming the HRU, variable and `ifs_type`, mirroring the
-    existing `recap.pf_unavailable_control_only` precedent (`:862-868`). Event: `recap.hru_unavailable_contained`.
+  - The adapter additionally logs per contained HRU naming the HRU, variable and `ifs_type`, mirroring the existing
+    `recap.pf_unavailable_control_only` precedent (`:862-868`). Event: `recap.hru_unavailable_contained`.
 - **D5 — Auth and configuration errors stay fatal and uncontained.** `RecapAuthError` and `RecapConfigurationError`
   keep propagating; the flow hard-aborts on auth (`run_forecast_cycle.py:1086-1100`) because an expired or
   misconfigured key needs operator action, not a per-station skip. Containment applies **only** to the temporal
@@ -125,23 +139,49 @@ the cycle-wide remedy to both.
 - **D8 — Return type, Protocol, and flow contract are otherwise unchanged.** No new types, no `WeatherForecastSource`
   change, no per-station outcome model — those belong to Plan 151 Phase 3. This is the smallest change that stops one
   station's gap darkening the deployment.
-- **D9 — The single-HRU cycle PROBE is OUT OF SCOPE, and named as a separate defect.**
-  `_resolve_effective_cycle` probes **one** HRU — `resolved[0].hru_name` (`:784`) — and raises
-  `RecapDataUnavailableError` before the accumulation loop exists (`:791-796`) when no candidate falls within
-  `max_cycle_age_hours`. If the *probe* HRU is the unavailable one, the cycle still degrades wholesale and this plan's
-  containment never runs. That is a **second, distinct** manifestation of the same root cause, gated on the factual
-  question in D10. **T1's tests must stub the probe explicitly** so they exercise the accumulation loop rather than
-  passing accidentally. Scoping this out keeps the fix small and honest; it does not claim to close every path.
+- **D9 — The single-HRU cycle PROBE stays as-is. RESOLVED by D10, not deferred.**
+  `_resolve_effective_cycle` probes **one** HRU — `resolved[0].hru_name` (`:784`) — via a real `ifs_forecast` request
+  and raises `RecapDataUnavailableError` before the accumulation loop exists (`:791-796`) when no candidate falls
+  within `max_cycle_age_hours`. The owner confirms (D10) that publication is global and per-HRU gaps should not
+  occur, so **one HRU's answer is representative and probe fallback across HRUs is not needed**. Two consequences are
+  recorded rather than fixed:
+  - If the *probe* HRU is itself the faulty one, the probe reports "no cycle published" and the whole cycle degrades —
+    the correct outcome under D10 (something is broken) but with a **misleading diagnostic**, since the record says
+    cycle-wide non-publication rather than "probe HRU faulty". Acceptable for now; revisit if it is ever observed.
+  - **T1's tests must stub the probe explicitly** so they exercise the accumulation loop rather than passing
+    accidentally.
+- **D11 — Required IFS variables drive BOTH the probe and the fetch set.** *(Owner-answered 2026-08-12, D10 #3;
+  extended after review.)* Two hardcoded assumptions that `tp` is always required:
+  - `_PROBE_VARIABLE = "tp"` (`:376`) — the cycle probe.
+  - `_ifs_variables()` returns **every** IFS-capable variable unconditionally (`:673-674`), so `fetch_forecasts`
+    always fetches `tp` **and** `2t` regardless of what the deployment's models require.
+  Both are correct **today only by coincidence** — the shipped FI models require precipitation
+  (`models/nwp_regression.py:223`, shared by all three entry points at `pyproject.toml:141`), which maps to `tp`
+  (`RECAP_VARIABLES`, `:75-90`). The owner's rule: **if an operational model subscribes to `tp`, `tp` must be present
+  or it is a hard failure; if no operational model subscribes to `tp`, check another variable.** Deriving only the
+  probe would leave the gap half-closed — a temperature-only deployment would probe `2t` and then still fetch `tp`
+  and hard-fail on a variable nothing needs.
+  - **Therefore:** the batch's **required** IFS variable set drives the probe variable *and* the fetch set, and D2's
+    "complete variable set" means the **required** set. An empty required set is a configuration error.
+  - **Not a behaviour change today** (the required set is `{tp, t_2m}`, matching what is fetched now), so this stays
+    a small, verifiable generalisation rather than new capability. It also preserves the existing hard-failure
+    semantics for a missing *required* variable (`_map_recap_error:364-371` — only `source_data_missing` is
+    retriable; `subscription_not_found` surfaces as a configuration error and aborts).
 
 ## Phases
 
 - **T1 — Per-HRU containment with all-or-nothing HRU commit (D1–D6) + docs.**
   - **In scope:** `src/sapphire_flow/adapters/recap_gateway.py` — per-HRU exception containment, an HRU-local staging
     buffer merged into the shared accumulator only when that HRU has its complete variable set, provenance committed
-    on the same boundary, the three-way committed/discarded/empty outcome, and the contained-gap WARNING.
+    on the same boundary, the three-way committed/discarded/empty outcome, and the contained-gap **application-log**
+    event (a log line, distinct from the ERROR/CRITICAL `pipeline_health` record D4 requires — the two destinations
+    serve different audiences per `docs/standards/logging.md`).
     `src/sapphire_flow/flows/run_forecast_cycle.py` — requested-vs-returned station reconciliation **restricted to a
-    non-empty proper subset**, the `NWP_DELIVERY` WARNING `pipeline_health` record, and the partial flag into
-    `_forecast_cycle_health` (D4). Add the event to `docs/standards/logging.md` and the entry to `docs/plans/README.md`.
+    non-empty proper subset**, the `NWP_DELIVERY` **ERROR/CRITICAL** `pipeline_health` record naming the affected
+    HRU(s), and the partial flag into `_forecast_cycle_health` → DEGRADED (D4). **Plus D11:** select the probe
+    variable from the batch's required IFS variables instead of the `_PROBE_VARIABLE = "tp"` constant (`:376`), and
+    treat "no required variable to probe" as a configuration error. Add the event to `docs/standards/logging.md` and
+    the entry to `docs/plans/README.md`.
   - **Red-first acceptance tests** (extend `tests/unit/adapters/test_recap_gateway.py`; each stubs the cycle probe so
     D9 cannot mask the behaviour under test):
     1. **Two HRUs, A discarded, B complete** → returns B's stations, not A's; no raise. **Fails today.**
@@ -164,12 +204,17 @@ the cycle-wide remedy to both.
     9. **`pf` containment unchanged** — the "fc present, pf absent" window still yields control + accumulated pf
        members; no regression to Plan 127 Fix 1.
     10. **Provenance** — a discarded HRU cannot determine the returned results' `cycle_time`.
-    11. **Flow-level partial** (`tests/unit/flows/test_run_forecast_cycle.py`): with one station returned and one
-        missing, the complete station is persisted, the missing station falls back locally, a queryable
-        `NWP_DELIVERY` WARNING `pipeline_health` record names it, and cycle health is **DEGRADED** (D4). **Plus the
-        boundary case:** an **empty** mapping records **no** partial-loss health record and does **not** degrade the
-        cycle — proving reconciliation is restricted to a non-empty proper subset.
-    12. **A contained gap logs** `recap.hru_unavailable_contained` with HRU name + variable.
+    11. **Flow-level divergence** (`tests/unit/flows/test_run_forecast_cycle.py`): with one station returned and one
+        missing, the complete station **is persisted and forecast**, the missing station falls back locally, a
+        queryable `NWP_DELIVERY` **ERROR/CRITICAL** `pipeline_health` record names the affected HRU, and cycle health
+        is **DEGRADED** (D4) — locking "serve healthy, alarm loudly". **Plus the boundary case:** an **empty** mapping
+        records **no** divergence record and does **not** alarm, proving reconciliation is restricted to a non-empty
+        proper subset.
+    12. **Required-variable derivation** (D11): a batch whose models require precipitation probes and fetches
+        `tp`; a batch requiring a **different** IFS variable probes and fetches **that** variable and **not** `tp` —
+        **fails today** against both the hardcoded `_PROBE_VARIABLE` and the unconditional `_ifs_variables()`. An
+        empty required set raises a configuration error.
+    13. **A contained gap logs** `recap.hru_unavailable_contained` with HRU name + variable.
   - **Test soundness:** tests 1–2 must be shown failing against unmodified `fetch_forecasts`; test 4 against a naïve "any rows → return" implementation. State which baseline
     each was proven against.
   - **Exit gate:** `uv run pytest tests/unit/adapters/test_recap_gateway.py tests/unit/flows/test_run_forecast_cycle.py -q`
@@ -185,23 +230,28 @@ the cycle-wide remedy to both.
 ```
 
 ## Non-goals
-- **The single-HRU cycle probe** (D9) — named, not fixed; gated on D10.
+- **Probe FALLBACK across HRUs** — not needed: publication is global, so one HRU's answer is representative (D9/D10). The probe itself is unchanged, but its **variable** becomes derived (D11, in scope).
 - **Any per-station outcome modelling** (`StationTrackOutcome`, `CandidateFetchResult`) — Plan 151.
 - **The missing-polygon-column batch-wide raise** (D6) — unchanged.
 - **The snow channel** — already contained (D7).
 - **MeteoSwiss** — different adapter, different failure model.
 
-## Open items
-- **D10-probe-representativeness — FACTUAL QUESTION for the owner / hydrosolutions; gates D9.**
-  `_resolve_effective_cycle` documents "IFS publication cadence is global across HRUs, so ONE already-resolved in-scope
-  HRU is used as the probe" (`src/sapphire_flow/adapters/recap_gateway.py:773-783`). Global cadence is **not
-  sufficient** to make that safe: the probe issues a real **HRU-specific** `ifs_forecast` request (`:403`), so an
-  HRU-specific data or subscription gap can make the *probe* HRU fail even when the cycle is published everywhere
-  else. **The question is therefore broader than cadence:** does the probe HRU's availability for the probe variable
-  reliably represent cycle availability across **all** in-scope HRUs? **If yes**, the probe is sound and this
-  containment is the whole fix. **If no**, the probe is a second instance of this bug and needs its own fix (probe
-  fallback across HRUs, or per-HRU resolution). Worth confirming before Nepal onboarding, since the entire
-  single-probe design rests on it.
+## Resolved questions
+- **D10-probe-representativeness — RESOLVED (owner-answered 2026-08-12).** The question was whether the single-HRU
+  cycle probe's answer holds for every other HRU. Answers, which now govern D4, D9 and D11:
+  1. **Publication is global.** A new NWP fetch covers all HRUs; optimally every HRU uses the **same** cycle. A
+     forecast present for one HRU and absent for another **within one deployment indicates a problem with that HRU or
+     with the Data Gateway** — an anomaly, not a timing gap — and **must fail loudly** (see D4 for what "loudly"
+     means operationally: healthy basins are still served, the fault is raised at ERROR/CRITICAL).
+  2. **Per-HRU gaps are not expected.** No routine case where one HRU legitimately lacks a cycle others have.
+  3. **Required variables are hard requirements.** If an operational model subscribes to `tp`, `tp` must be present or
+     it is a **hard failure**. If no operational model subscribes to `tp`, the probe must check a different variable —
+     hence D11's derivation of the probe variable from the operational requirement set.
+  **Consequences:** probe fallback across HRUs is **not** needed (D9 resolved, probe unchanged); divergence handling
+  is an alarm path rather than a routine-degradation path (D4); and the hardcoded probe variable becomes derived
+  (D11). One residual is recorded in D9: a faulty *probe* HRU produces a correct outcome with a misleading
+  diagnostic.
+## Cross-plan notes
 - **Relationship to Plan 151.** Plan 151 D7 requires exactly this containment for its per-track path and currently
   carries it inside its own T4. Landing 154 first shrinks 151's T4 and de-risks it; landing 151 first would leave 154
   still needed on the legacy path, which persists until Phase 4. They do not conflict. Recommended order: **154
