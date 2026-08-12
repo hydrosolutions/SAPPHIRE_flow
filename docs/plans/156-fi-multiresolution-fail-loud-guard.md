@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-12
 plan: 156
 title: FI multi-FUTURE-FORCED-resolution requirement — fail loudly instead of silently flattening
