@@ -11,6 +11,23 @@ supersedes: []
 
 # Plan 152 — aquacast pooled model integration
 
+## The plan family (split 2026-08-12)
+
+This plan grew to ~1250 lines and 11 tasks spanning three disciplines. It is now the **integration
+spine**, with three siblings owning the separable work. **Shared context — the artifact, its verified
+contract, all owner decisions D1–D12, and what the Swiss run can and cannot prove — lives HERE and is
+deliberately not duplicated** (duplication is what produced the drift three review rounds corrected).
+
+| Plan | Owns | Blocked by |
+|---|---|---|
+| **152** (this) | the integration: audit, go/no-go spike, onboarding, operational run, skill verdict | 155, 157 |
+| **155** — Swiss data readiness | HydroATLAS basin package, static alias map, gap-free 210-day forcing | Plan 130; possibly a Gateway request |
+| **156** — FI multi-resolution guard | fail loudly instead of silently flattening | **nothing — ships now** |
+| **157** — aquacast packaging | shim, `mm/day` unit boundary, worker image, artifact import | **nothing — synthetic-testable** |
+
+**Two external tracks gate this plan and neither is engineering:** the modeller's 5-day-horizon PT
+variant (G13) and the Swiss HydroATLAS extraction (Plan 155 T1).
+
 ## Status
 **DRAFT.** Grounded against `main` `7c2eaf3` on 2026-08-11 by direct grep/read; aquacast facts come
 from `hydrosolutions/aquacast` `main` (pushed 2026-08-10) via the GitHub API.
@@ -680,28 +697,10 @@ expected.**
 **Exit gate:** committed audit + owner decision on the target station set (D2). Heredoc probe per
 `CLAUDE.md` § Ad-hoc Analyses, not a checked-in script.
 
-### T0b — Fail loudly on a multi-resolution requirement (ship first, no dependencies)
-Small, high-value, independent. Today a multi-resolution `InputRequirement` is silently flattened
-(G5) and produces plausible wrong numbers.
-
-**Red-first:** an FI model whose `InputRequirement.dynamic` carries **more than one `time_step` key**
-is rejected with a clear `ConfigurationError` naming the resolutions, instead of being flattened.
-Sweep the arbitrary `next(iter(req.supported_time_steps))` sites (`services/model_onboarding.py:295`,
-`:368`, `:485`; `services/onboarding.py:806`, `:962`) so none can silently pick a resolution.
-
-**CONSTRAINT (verification round 3 — an earlier note here was wrong).** `discover_models` does
-**not** contain a `ConfigurationError`: it catches and **re-raises** it
-(`services/model_registry.py:93-95`), swallowing only generic `Exception`. So a `ConfigurationError`
-raised anywhere in the try block — including from `_project_requirements` via `adapt_if_fi` — **aborts
-discovery for EVERY model, a registry-wide blackout.** T0b's guard therefore must **not** simply
-raise `ConfigurationError` from inside the projection. Either the guard signals in a way discovery
-skips per entry point, or `discover_models` is changed to skip-and-continue on a bad model. **Which
-one is an implementation choice; the invariant is that one unsupported model must never darken the
-registry.** Red-first must include that: with one multi-resolution model installed alongside good
-ones, `discover_models()` still returns the good ones.
-
-This converts a silent misread into a loud refusal, and its red test is what Plan 153 later turns
-green. *(Touches `adapters/forecast_interface.py` — coordinate with 151 T2.)*
+### T0b — Fail loudly on a multi-resolution requirement → **SPLIT OUT: Plan 156**
+Moved verbatim to `docs/plans/156-fi-multiresolution-fail-loud-guard.md`. It is a standalone safety
+fix protecting **every** FI model, with no dependency on this integration — it ships immediately
+while this plan waits on external tracks. G5 (the gap) stays documented here for context.
 
 ### T0c — Offline skill spike (throwaway; **gates the whole investment**)
 **The highest-leverage task in the plan, and it comes near the start.** T6 — the number that says
@@ -844,87 +843,18 @@ forward-compatibility for the radiation-requiring pooled models.
 `degree_of_regulation`. So the map PT actually needs is **21 renames**, and every one is covered by
 names our basin package already carries. `dor_pc_pva` stays mapped anyway for the radiation models.
 
-### T1c — Swiss basin package: HydroATLAS extraction + import (closes G12)
-**The single hardest prerequisite, and it gates T0c.** PT needs 50 statics in the HydroATLAS/Caravan
-namespace; Swiss `Basin.attributes` today come from CAMELS-CH (`adapters/camelsch_adapter.py:214`)
-and carry none of them.
+### T1 / T1b / T1c — Swiss data readiness → **SPLIT OUT: Plan 155**
+Moved to `docs/plans/155-swiss-data-readiness-for-aquacast.md`: the Swiss HydroATLAS basin package
+(G12), the Caravan↔HydroATLAS alias map re-derived against it (G8), and 210 days of **gap-free**
+daily forcing (G1). One data workstream, one owner, one discipline. **Plan 155 gates T0c below** —
+the spike cannot hand-shape real Swiss inputs until the statics exist.
 
-**The two halves have very different costs:**
-- **Producing the package** (`basins.gpkg` + `static_attributes.parquet` + `feature_catalog.json`
-  over the Swiss basin polygons) is the expensive half — and **we do not hold the extraction
-  tooling**: `extract_hydroatlas.py` / `hydroatlas.py` are Gateway-side (Plan 117 cites them as prior
-  art; nothing matches in this repo). **The Gateway already produced the Nepal package, so a Swiss
-  package is plausibly a REQUEST rather than a build.** Establish which before scoping the work — it
-  is the difference between a ticket and a data workstream.
-- **Importing it** is cheap and already built: `cli/import_basin_package.py` + the Plan 120 loader,
-  which validates `feature_catalog.json` against the parquet columns.
-
-**Exit gate:** every one of PT's 50 declared statics resolves for every Swiss candidate station —
-via the T1b alias map where a HydroATLAS counterpart exists, and from the imported package
-otherwise. **`area` must be present** or the `m³/s ↔ mm/day` conversion fails at predict.
-
-**Red-first:** the Swiss candidate set resolves 0 of the 22 `glc_pc_s*` statics today (proves G12);
-after import, all 50 resolve.
-
-**Note for T1b:** its 21-entry map was derived against the *Nepal* fixture. Re-derive it against the
-**Swiss** package once imported — do not assume the two packages use identical names.
-
-### T2 — `sapphire-aquacast` shim distribution (external repo; closes G3)
-A thin package **outside this repo** (Plan 135 decision 3 — no torch in our `pyproject.toml`)
-exposing **one zero-argument entry-point class per trained config**:
-
-```toml
-[project.entry-points."sapphire_flow.models"]
-aquacast_cmal_pooled_daily = "sapphire_aquacast.models:AquacastCmalPooledDaily"
-```
-
-Each class binds its `ModelTemplate.from_yaml(...)` + device at construction and declares the
-`model_tier` / `alert_eligibility` attributes `_assert_model_classification_declared` requires
-(`services/model_registry.py:60-67`). `adapt_if_fi` wraps it at discovery (`:76-84`).
-
-**Scope raised by review — the shim owns the unit boundary (G9).** It must present SAP3-compatible
-units at its outward FI boundary and convert numerically in both directions:
-- **discharge**: expose `M3_PER_S`, doing the **area-aware** `mm/day ↔ m³/s` conversion internally
-  (`area` is already a required static).
-- **precipitation**: audit what PT declares; if `MM_PER_DAY`, expose canonical `MM` (daily
-  accumulation) and translate consistently.
-- **Red-first — assert NUMBERS, not mappability.** `M3_PER_S` and `MM` are **already** in
-  `_FI_UNIT_TO_CANONICAL` (`adapters/forecast_interface.py:119-130`), so a test that merely proves
-  `fi_unit_to_canonical` succeeds on the shim's declared units **passes today and proves nothing**.
-  The genuinely red assertions are: (i) a **numeric** area-aware round trip — a known discharge in
-  mm/day at a known `area` arrives as the correct m³/s value, catching relabelling-without-conversion;
-  and (ii) the **cold-start `discover_models()`** check in the deployed worker image (G10).
-
-**Scope raised by review — deployment (G10), decided (D10).** T2 **builds a dedicated aquacast
-worker image/environment** carrying the shim and its torch runtime, because the runtime image
-installs only this repo's lockfile (`Dockerfile:32,82`) and would never see an external entry point.
-This keeps ~2 GB of PyTorch out of every existing worker. **Acceptance requires a cold-start
-`discover_models()` test in that deployed environment** — without it this plan may not claim
-"operational". Update `docs/standards/cicd.md` with the topology.
-
-Config↔artifact pinning is D1. **The unit and packaging work is testable against synthetic
-single-resolution FI models**, so it does not wait on anything — though the artifacts are in hand, so
-the real config can be used directly.
-
-### T3 — External-artifact import path + provenance (closes G4)
-Two parts:
-
-**(a) Provenance must become representable.** Decide and implement how an artifact we did not train
-records what it is — source repo, commit, config hash — given `store_artifact` demands
-`training_period_start`/`end`/`trained_at` as non-nullable (`db/metadata.py:934-936`). Do **not**
-reuse `record_artifact_basin_lineage`: it asserts *training* basins and would record a falsehood.
-
-**(b) An executable import entry point**, not just a service function: validate the bytes deserialize
-via the model's own `deserialize_artifact`, store, record provenance, and promote — **without
-entering the training path**. Flow 13 has no artifact/provenance/import inputs today, so this needs a
-real flow or CLI boundary plus deployment registration.
-
-**Invariant (implementation owns the mechanism):** an import is **all-or-nothing** — a failure leaves
-no artifact row of any status, no changed prior ACTIVE row, no provenance row, and no orphaned file.
-
-**Red-first:** an undeserializable blob fails loudly; a valid import yields a promotable artifact with
-external provenance; **an acceptance test from the public boundary proving `train()` is never
-called**. Testable with synthetic models, so it does not wait on anything.
+### T2 / T3 — Packaging, units and import → **SPLIT OUT: Plan 157**
+Moved to `docs/plans/157-aquacast-packaging-units-and-import.md`: the shim distribution (G3), the
+**`mm/day` unit boundary** (G9), the aquacast worker image (G10), and the external-artifact import
+path + provenance (G4/G7). All of it is exercised against **synthetic** FI models, so it blocks on
+nothing and is the work that can start today. Plan 157 also carries **D13**, the unresolved question
+of how the worker image actually decomposes.
 
 ### T4 — Group onboarding on a disposable database (closes G6)
 Isolated experiment DB, artifact location and model ids per Plan 135 decision 7 — **never** the
@@ -1014,50 +944,35 @@ member-CRPS compares two different estimators, which is not the apples-to-apples
 Objective promises. Compute **WIS for both** on one pinned quantile grid — deriving empirical
 quantiles from member ensembles — and keep CRPS only as a member-only diagnostic.
 
-**Metric changes need a computation version.** Skill computation is hardcoded to version 1
-(`services/skill/service.py:40`) and inserts use `ON CONFLICT DO NOTHING`
-(`store/skill_store.py:31,58`), so recomputation cannot replace old pseudo-member rows and "latest"
-reads take the max stored version — leaving stale version-1 rank histograms visible. T6 must bump the
-computation version and define how superseded scores/diagrams drop out of latest reads. Note `wis` is
-not currently an allowed onboarding skill-gate metric (`types/model_onboarding.py:79`) — decide
-whether it becomes one.
+**Skill-store lifecycle is OUT of T6 (design-review finding — proportionality).** Bumping the
+hardcoded computation version (`services/skill/service.py:40`), defining how superseded
+scores/diagrams drop out of "latest" reads given `ON CONFLICT DO NOTHING`
+(`store/skill_store.py:31,58`), and deciding whether `wis` joins the onboarding gate metrics
+(`types/model_onboarding.py:79`) are **metric-store lifecycle work**, whose beneficiary is a world
+where aquacast scores are **recomputed repeatedly in production** — not the one-off verdict this plan
+needs, produced once on an experiment DB. **Moved to the same follow-on as the D11 NWP hindcast.**
+
+T6 keeps three jobs: the **G11 representation fix**, **WIS on both representations**, and the
+**two-dimensional verdict**.
 
 Per Plan 135 decision 8 the verdict is two-dimensional: **method skill** and **integration fitness**,
 reported separately.
 
 ## Sequencing
 
-**Selecting `cmal_pool_PT` collapsed the critical path.** The old chain
-(`Plan 151 T2 → Plan 153 → T4 → T5 → T6`) existed *only* because the artifact was multi-resolution.
-A pooled daily model needs none of it: **Plan 153 is deferred, and nothing in this plan waits on
-Plan 151.**
+**Critical path: Plan 155 (Swiss data) → T0c (go/no-go) → T4 → T5 → T6**, with **Plan 157**
+(packaging) running fully in parallel and joining at T4, and **Plan 156** shipping independently of
+everything.
 
-**The critical path is now: T0 → T1c (Swiss basin package) → T0c (go/no-go gate) → T2 ‖ T3 → T4 →
-T5 → T6**, with a **hard external dependency**: T0c cannot produce an NWP-forced number until the
-modeller ships a 5-day-horizon PT variant (G13). Until then T0c is reanalysis-only.
-**The old head of the path was**, with **T1 and T1b
-running alongside and joining at T5** (T4 onboards against synthetic data, so it needs neither the
-real forcing depth nor the alias map; T5 is the first task that touches real assembly).
-The artifacts are in hand, so **the longest pole is engineering, not a human round-trip** — and
-within it, **T1** (210 days of gap-free daily history per station) and **T2** (the G9 unit boundary
-plus the G10 worker image) are the two that actually set the date.
+**Starts today, blocked on nothing:** Plan 156 (the guard) and Plan 157 (shim, units, worker image,
+import) — all synthetic-testable.
 
-**Before the gate:** **T0** (verification, not a request — artifacts in hand) and **T0b**, which has
-no dependencies at all. T0b ships regardless: nothing here needs multi-resolution, which is *precisely*
-why the guard matters — it is the only protection against a multi-resolution artifact being silently
-mis-onboarded later.
+**Blocked on external tracks the owner holds:** Plan 155 T1 (the Swiss HydroATLAS package, possibly a
+Gateway request) and the modeller's 5-day PT variant. **Until the 5-day variant lands, T0c can only
+run reanalysis-forced** — which, with D11 already scoping T6 to reanalysis, leaves the plan with zero
+NWP-forced evidence. Say so plainly rather than presenting a reanalysis number as operational.
 
-**After T0c's go/no-go, in parallel:**
-- **T1** — past-forcing depth, the long engineering pole: 210 days of **gap-free daily** discharge +
-  precipitation + temperature per station. Swiss depth we largely hold; Nepal follows onboarding.
-- **T1b** — the Caravan↔HydroATLAS static alias map. Small, but **PT cannot predict without it**.
-- **T2** — shim, the **G9 unit boundary**, and the **G10 aquacast worker image**; the unit and
-  packaging work is exercised against synthetic FI models, the image needs a cold-start test.
-- **T3** — import path + provenance; exercised against synthetic models, no artifact needed.
-
-**Deferred out of this plan:** Plan 153 (multi-resolution) and sub-daily, returning when DHM hourly
-coverage makes them serve more than one basin. **Plan 151 is now only a file-level coordination
-concern** (T0b and T1 touch files it edits) — not a dependency.
+**T0c remains the gate:** a poor result should stop the integration, not merely inform it.
 
 ## Phase dependency graph
 
@@ -1065,15 +980,9 @@ concern** (T0b and T1 touch files it edits) — not a dependency.
 {
   "phases": [
     { "id": "T0",  "tasks": ["T0"],  "parallel": false },
-    { "id": "T0b", "tasks": ["T0b"], "parallel": false },
-    { "id": "T1c", "tasks": ["T1c"], "parallel": false, "depends_on": ["T0"] },
-    { "id": "T0c", "tasks": ["T0c"], "parallel": false, "depends_on": ["T0", "T1c"] },
-    { "id": "T1",  "tasks": ["T1"],  "parallel": false, "depends_on": ["T0c"] },
-    { "id": "T1b", "tasks": ["T1b"], "parallel": false, "depends_on": ["T0c"] },
-    { "id": "T2",  "tasks": ["T2"],  "parallel": false, "depends_on": ["T0c"] },
-    { "id": "T3",  "tasks": ["T3"],  "parallel": false, "depends_on": ["T0c"] },
-    { "id": "T4",  "tasks": ["T4"],  "parallel": false, "depends_on": ["T2", "T3"] },
-    { "id": "T5",  "tasks": ["T5"],  "parallel": false, "depends_on": ["T1", "T1b", "T4"] },
+    { "id": "T0c", "tasks": ["T0c"], "parallel": false, "depends_on": ["T0", "plan-155"] },
+    { "id": "T4",  "tasks": ["T4"],  "parallel": false, "depends_on": ["T0c", "plan-157"] },
+    { "id": "T5",  "tasks": ["T5"],  "parallel": false, "depends_on": ["T4", "plan-155"] },
     { "id": "T6",  "tasks": ["T6"],  "parallel": false, "depends_on": ["T5"] }
   ]
 }
