@@ -349,6 +349,30 @@ Before planning or implementation, inspect the relevant touchpoints below and in
   snow-absent and the identical IFS-absent case, relying on the per-model
   `assess_future_coverage` gate (not this guard, and not a station-wide skip) to
   suppress only the NWP-fed model.
+- Per-HRU IFS delivery gaps (Plan 154) are a FOURTH failure mode, distinct from
+  all three above: `RecapGatewayForecastAdapter.fetch_forecasts` contains a
+  station-scoped `RecapDataUnavailableError` (one HRU's control fetch missing)
+  PER HRU — a discarded HRU contributes nothing, but every other HRU is still
+  attempted, staged, and committed (all-or-nothing per HRU, never a subset —
+  station-level partiality within an HRU is unrepresentable at this boundary
+  until Plan 151's per-track path lands). The adapter still re-raises
+  `RecapDataUnavailableError` when NO HRU committed a row (total loss,
+  unchanged today-behaviour), so `nwp_unavailable`/runoff-only is untouched.
+  When the adapter returns a non-empty PROPER SUBSET of the requested stations
+  (`0 < returned < requested`), `_fetch_nwp_task` reconciles requested-vs-
+  returned station ids and sets `_NwpFetchOutcome.nwp_delivery_partial=True`
+  (folded into `health=DEGRADED`, never `nwp_unavailable`) plus a CRITICAL
+  `PipelineCheckType.NWP_DELIVERY` `pipeline_health` record naming the missing
+  stations (`recap.hru_unavailable_contained` at the adapter, `nwp.delivery_
+  partial` at the flow — see `docs/standards/logging.md`). An EMPTY mapping
+  (`returned == 0`) is excluded — that is still today's legitimate no-op-NWP
+  success, not divergence. A committed HRU's complete-variable-set invariant is
+  enforced INSIDE that same per-HRU staging step (fixer-round fold-in): if one
+  required IFS variable's control fetch is a well-formed EMPTY response while
+  another variable's is populated for the SAME HRU, `fetch_forecasts` raises an
+  uncontained `AdapterError` (never `RecapDataUnavailableError`) rather than
+  shipping partial-variable forcing — the same uncontained-malformed-response
+  treatment as the pre-existing missing-polygon-column raise.
 - Phase C alerting has a single outer guard around the whole `check_station_alerts`
   call, which itself loops stations internally. A mid-loop exception **stops the
   remaining stations' alert processing** and leaves `alerts_checked=False`, but

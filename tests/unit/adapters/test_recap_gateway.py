@@ -46,10 +46,14 @@ from sapphire_flow.types.weather import BasinAverageForecast, SnowReanalysisFetc
 _SID = StationId(UUID("00000000-0000-0000-0000-000000000001"))
 _SID_A = StationId(UUID("00000000-0000-0000-0000-00000000000a"))
 _SID_B = StationId(UUID("00000000-0000-0000-0000-00000000000b"))
+_SID_C = StationId(UUID("00000000-0000-0000-0000-00000000000c"))
+_SID_D = StationId(UUID("00000000-0000-0000-0000-00000000000d"))
 
 _HRU = "hru_dhm_west_v001"
 _POLY_A = "g_15013"
 _POLY_B = "g_15020"
+_POLY_C = "g_15099"
+_POLY_D = "g_15100"
 _CYCLE = ensure_utc(datetime(2026, 1, 1, tzinfo=UTC))
 _START = ensure_utc(datetime(2026, 1, 1, tzinfo=UTC))
 _END = ensure_utc(datetime(2026, 1, 2, tzinfo=UTC))
@@ -1878,3 +1882,570 @@ class TestSnowReanalysisFetch:
 
         assert result.attempted == {GatewayHruName(_HRU): frozenset({"swe"})}
         assert {row.parameter for row in result.rows} == {"swe"}
+
+
+# ---------------------------------------------------------------------------
+# Plan 154 — per-HRU fetch containment (D1-D6)
+# ---------------------------------------------------------------------------
+
+
+def _stub_probe(monkeypatch: pytest.MonkeyPatch, cycle: object = _CYCLE) -> None:
+    """Force `_resolve_effective_cycle`'s probe to succeed regardless of which
+    HRU it happens to pick (`resolved[0].hru_name`) -- D9's own note: tests must
+    stub the probe explicitly so they exercise the accumulation loop rather than
+    passing (or failing) by accident of HRU ordering. `resolve_latest_cycle` is a
+    plain module-level function looked up by name at call time, so patching the
+    module attribute intercepts every call the adapter makes to it."""
+    from sapphire_flow.adapters import recap_gateway
+
+    monkeypatch.setattr(recap_gateway, "resolve_latest_cycle", lambda *a, **kw: cycle)
+
+
+def _empty_wide_df(polygons: list[str]) -> pd.DataFrame:
+    """A well-formed Gateway response with the expected polygon columns but
+    ZERO data rows -- the "empty success" shape D3 distinguishes from both a
+    discarded (raising) HRU and a row-producing one."""
+    index = pd.DatetimeIndex([], name="time")
+    return pd.DataFrame({p: pd.Series(dtype="float64") for p in polygons}, index=index)
+
+
+class _MultiHruEcmwf:
+    """Configurable per-``(hru_code, ifs variable)`` FC-failure fake for
+    HRU-containment tests. PF calls always succeed (never exercised as the
+    failure trigger here -- that is `TestPfUnavailableControlOnly`'s job,
+    unchanged by Plan 154). ``empty_hrus`` names HRUs whose response is
+    well-formed but carries zero rows for EVERY variable.
+    ``empty_control_variables`` names individual ``(hru_code, ifs variable)``
+    FC calls whose response is well-formed but carries zero rows -- while
+    every OTHER variable for that same HRU stays populated, exercising the
+    mixed empty/populated-variable case (Plan 154 review fold-in, major)."""
+
+    def __init__(
+        self,
+        *,
+        polygons_by_hru: dict[str, list[str]],
+        fail_control: frozenset[tuple[str, str]] = frozenset(),
+        empty_hrus: frozenset[str] = frozenset(),
+        empty_control_variables: frozenset[tuple[str, str]] = frozenset(),
+        source_run_by_hru: dict[str, object] | None = None,
+    ) -> None:
+        self.calls: list[dict[str, object]] = []
+        self._polygons_by_hru = polygons_by_hru
+        self._fail_control = fail_control
+        self._empty_hrus = empty_hrus
+        self._empty_control_variables = empty_control_variables
+        self._source_run_by_hru = source_run_by_hru or {}
+
+    def ifs_forecast(self, **kwargs: object) -> object:
+        self.calls.append(dict(kwargs))
+        hru = str(kwargs["hru_code"])
+        variable = str(kwargs["variable"])
+        if kwargs.get("ifs_type") == "fc" and (hru, variable) in self._fail_control:
+            raise _FallbackFakeClientError(
+                f"{variable} unavailable in {hru}", code="source_data_missing"
+            )
+        polygons = self._polygons_by_hru[hru]
+        if hru in self._empty_hrus:
+            return _empty_wide_df(polygons)
+        if (
+            kwargs.get("ifs_type") == "fc"
+            and (
+                hru,
+                variable,
+            )
+            in self._empty_control_variables
+        ):
+            return _empty_wide_df(polygons)
+        return _wide_df(
+            polygons,
+            value=1.0,
+            with_provenance=True,
+            source="ifs",
+            source_run=self._source_run_by_hru.get(hru, _SOURCE_RUN),
+        )
+
+    def era5_land_reanalysis(self, **kwargs: object) -> object:
+        raise AssertionError("forecast adapter must not call era5_land_reanalysis")
+
+
+class _AuthFailEcmwf:
+    """FC calls to ``auth_fail_hru`` raise an auth error (status_code=401);
+    every other HRU is healthy. Used to prove auth stays uncontained (D5)."""
+
+    def __init__(
+        self, *, auth_fail_hru: str, polygons_by_hru: dict[str, list[str]]
+    ) -> None:
+        self.calls: list[dict[str, object]] = []
+        self._auth_fail_hru = auth_fail_hru
+        self._polygons_by_hru = polygons_by_hru
+
+    def ifs_forecast(self, **kwargs: object) -> object:
+        self.calls.append(dict(kwargs))
+        hru = str(kwargs["hru_code"])
+        if kwargs.get("ifs_type") == "fc" and hru == self._auth_fail_hru:
+            raise _FallbackFakeClientError("unauthorized", status_code=401)
+        return _wide_df(
+            self._polygons_by_hru[hru],
+            value=1.0,
+            with_provenance=True,
+            source="ifs",
+            source_run=_SOURCE_RUN,
+        )
+
+    def era5_land_reanalysis(self, **kwargs: object) -> object:
+        raise AssertionError("forecast adapter must not call era5_land_reanalysis")
+
+
+def _two_hru_resolver(hru_a: str = "hru_a", hru_b: str = "hru_b") -> _MapResolver:
+    return _MapResolver(
+        {
+            _SID_A: _ref(_SID_A, _POLY_A, hru=hru_a),
+            _SID_B: _ref(_SID_B, _POLY_B, hru=hru_b),
+        }
+    )
+
+
+class TestHruContainment:
+    """Plan 154 D1-D6: per-HRU exception containment with all-or-nothing HRU
+    commit. Every test stubs the cycle probe (D9) so the accumulation loop is
+    what is actually exercised."""
+
+    def test_discarded_hru_does_not_drop_healthy_hru(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Acceptance test 1: two HRUs, A discarded, B complete -> returns B's
+        # stations, not A's; no raise. Fails against unmodified fetch_forecasts
+        # (the uncontained fc raise propagates out of the whole HRU loop,
+        # discarding B's already-accumulated rows too).
+        _stub_probe(monkeypatch)
+        ecmwf = _MultiHruEcmwf(
+            polygons_by_hru={"hru_a": [_POLY_A], "hru_b": [_POLY_B]},
+            fail_control=frozenset({("hru_a", "tp")}),
+        )
+        adapter = _forecast_adapter(ecmwf, _two_hru_resolver())
+
+        result = adapter.fetch_forecasts(
+            [
+                _ws(_SID_A, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST),
+                _ws(_SID_B, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST),
+            ],
+            _CYCLE,
+        )
+
+        assert set(result.keys()) == {_SID_B}
+
+    def test_order_independence_failure_after_success(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Acceptance test 2: same scenario, B (healthy) processed FIRST and A
+        # (discarded) SECOND -- locks that a LATER failure does not wipe out an
+        # EARLIER HRU's already-committed rows (the exact bug D1 fixes: the
+        # original code's uncontained raise unwinds the whole `for hru_name`
+        # loop, discarding everything accumulated so far). Fails against
+        # unmodified fetch_forecasts in BOTH orderings.
+        _stub_probe(monkeypatch)
+        ecmwf = _MultiHruEcmwf(
+            polygons_by_hru={"hru_a": [_POLY_A], "hru_b": [_POLY_B]},
+            fail_control=frozenset({("hru_a", "tp")}),
+        )
+        resolver = _MapResolver(
+            {
+                _SID_B: _ref(_SID_B, _POLY_B, hru="hru_b"),
+                _SID_A: _ref(_SID_A, _POLY_A, hru="hru_a"),
+            }
+        )
+        adapter = _forecast_adapter(ecmwf, resolver)
+
+        result = adapter.fetch_forecasts(
+            [
+                _ws(_SID_B, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST),
+                _ws(_SID_A, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST),
+            ],
+            _CYCLE,
+        )
+
+        assert set(result.keys()) == {_SID_B}
+
+    def test_discarded_hru_drops_neither_of_its_two_stations(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Acceptance test 3: two stations SHARE one HRU. A discarded HRU must
+        # yield NEITHER station -- never a subset -- locking D2's "within one
+        # HRU, all stations share the same fetch outcome" invariant.
+        _stub_probe(monkeypatch)
+        ecmwf = _MultiHruEcmwf(
+            polygons_by_hru={_HRU: [_POLY_C, _POLY_D]},
+            fail_control=frozenset({(_HRU, "tp")}),
+        )
+        resolver = _MapResolver(
+            {
+                _SID_C: _ref(_SID_C, _POLY_C, hru=_HRU),
+                _SID_D: _ref(_SID_D, _POLY_D, hru=_HRU),
+            }
+        )
+        adapter = _forecast_adapter(ecmwf, resolver)
+
+        with pytest.raises(RecapDataUnavailableError):
+            adapter.fetch_forecasts(
+                [
+                    _ws(
+                        _SID_C, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST
+                    ),
+                    _ws(
+                        _SID_D, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST
+                    ),
+                ],
+                _CYCLE,
+            )
+
+    def test_partial_forcing_never_returned(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Acceptance test 4: precipitation's control fetch succeeds and stages
+        # rows, but temperature's control fetch fails for the SAME (only) HRU
+        # -- the HRU must contribute NOTHING (never ship incomplete forcing),
+        # so with that HRU alone the call re-raises. Fails against a naive "any
+        # rows -> return" implementation, which would return precipitation-only
+        # forcing instead of raising.
+        _stub_probe(monkeypatch)
+        ecmwf = _MultiHruEcmwf(
+            polygons_by_hru={_HRU: [_POLY_A]},
+            fail_control=frozenset({(_HRU, "2t")}),
+        )
+        adapter = _forecast_adapter(
+            ecmwf, _MapResolver({_SID_A: _ref(_SID_A, _POLY_A, hru=_HRU)})
+        )
+
+        with pytest.raises(RecapDataUnavailableError):
+            adapter.fetch_forecasts(
+                [_ws(_SID_A, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST)],
+                _CYCLE,
+            )
+
+    def test_mixed_empty_and_populated_control_variables_raises_tp_first(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Review fold-in (major): precipitation's control fetch (processed
+        # FIRST) returns a well-formed EMPTY response (no raise) while
+        # temperature's (processed SECOND) is populated, for the SAME HRU.
+        # This must fail loud with AdapterError -- never silently commit
+        # temperature-only forcing. Distinct from `test_partial_forcing_never_
+        # returned`, which fails via a RAISE; here neither call raises at all,
+        # only D2's "complete variable set" invariant is violated.
+        _stub_probe(monkeypatch)
+        ecmwf = _MultiHruEcmwf(
+            polygons_by_hru={_HRU: [_POLY_A]},
+            empty_control_variables=frozenset({(_HRU, "tp")}),
+        )
+        adapter = _forecast_adapter(
+            ecmwf, _MapResolver({_SID_A: _ref(_SID_A, _POLY_A, hru=_HRU)})
+        )
+
+        with pytest.raises(AdapterError):
+            adapter.fetch_forecasts(
+                [_ws(_SID_A, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST)],
+                _CYCLE,
+            )
+
+    def test_mixed_empty_and_populated_control_variables_raises_2t_first(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Same as above with the ordering REVERSED: temperature (processed
+        # FIRST) is well-formed EMPTY, precipitation (processed SECOND) is
+        # populated. Locks that the mixed-coverage check is order-independent
+        # -- a check that only inspects the LAST variable processed would miss
+        # this ordering.
+        _stub_probe(monkeypatch)
+        ecmwf = _MultiHruEcmwf(
+            polygons_by_hru={_HRU: [_POLY_A]},
+            empty_control_variables=frozenset({(_HRU, "2t")}),
+        )
+        adapter = _forecast_adapter(
+            ecmwf, _MapResolver({_SID_A: _ref(_SID_A, _POLY_A, hru=_HRU)})
+        )
+
+        with pytest.raises(AdapterError):
+            adapter.fetch_forecasts(
+                [_ws(_SID_A, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST)],
+                _CYCLE,
+            )
+
+    def test_all_control_variables_empty_with_populated_pf_never_ships_pf_only(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Fixer-round finding (major): EVERY control (`fc`) response for this
+        # HRU is well-formed but EMPTY (both tp and 2t), while `pf` members
+        # 1-50 are populated. Neither `fc` call raises, so the OLD `covered
+        # and len(covered) < len(control_coverage)` guard never fired
+        # (`covered` was itself empty, hence falsy) and `hru_acc` committed
+        # PF-only rows -- no member-0 control row at all. CONTROL-mode input
+        # assembly selects member 0 explicitly, so this silently starved
+        # NWP-fed models while the station still looked "delivered". Must
+        # fail loud with `AdapterError`, exactly like the mixed
+        # some-covered/some-not case above -- never ship PF-only forcing.
+        _stub_probe(monkeypatch)
+        ecmwf = _MultiHruEcmwf(
+            polygons_by_hru={_HRU: [_POLY_A]},
+            empty_control_variables=frozenset({(_HRU, "tp"), (_HRU, "2t")}),
+        )
+        adapter = _forecast_adapter(
+            ecmwf, _MapResolver({_SID_A: _ref(_SID_A, _POLY_A, hru=_HRU)})
+        )
+
+        with pytest.raises(AdapterError):
+            adapter.fetch_forecasts(
+                [_ws(_SID_A, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST)],
+                _CYCLE,
+            )
+
+    def test_total_unavailability_unchanged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Acceptance test 5: every HRU discarded -> RecapDataUnavailableError
+        # still propagates (today's total-failure behaviour, unchanged).
+        _stub_probe(monkeypatch)
+        ecmwf = _MultiHruEcmwf(
+            polygons_by_hru={"hru_a": [_POLY_A], "hru_b": [_POLY_B]},
+            fail_control=frozenset({("hru_a", "tp"), ("hru_b", "tp")}),
+        )
+        adapter = _forecast_adapter(ecmwf, _two_hru_resolver())
+
+        with pytest.raises(RecapDataUnavailableError) as excinfo:
+            adapter.fetch_forecasts(
+                [
+                    _ws(
+                        _SID_A, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST
+                    ),
+                    _ws(
+                        _SID_B, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST
+                    ),
+                ],
+                _CYCLE,
+            )
+        assert excinfo.value.code == "source_data_missing"
+
+    def test_well_formed_empty_is_not_a_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Acceptance test 6: all HRUs return empty (zero rows), none discarded
+        # -> returns {} with no raise, exactly as today. Distinct from test 5.
+        _stub_probe(monkeypatch)
+        ecmwf = _MultiHruEcmwf(
+            polygons_by_hru={"hru_a": [_POLY_A], "hru_b": [_POLY_B]},
+            empty_hrus=frozenset({"hru_a", "hru_b"}),
+        )
+        adapter = _forecast_adapter(ecmwf, _two_hru_resolver())
+
+        result = adapter.fetch_forecasts(
+            [
+                _ws(_SID_A, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST),
+                _ws(_SID_B, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST),
+            ],
+            _CYCLE,
+        )
+
+        assert result == {}
+
+    def test_empty_success_plus_discarded_still_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Acceptance test 7 (the decisive mixed case): one empty-success HRU
+        # PLUS one discarded HRU, zero row-producing commits -> raises. Tests 5
+        # and 6 both pass an implementation that returns {} whenever any HRU
+        # merely succeeded (regardless of row count) -- only this case pins
+        # D3's actual rule ("no HRU COMMITTED [contributed rows] AND >=1
+        # discarded -> raise"), the empty-masks-total-loss bug itself.
+        _stub_probe(monkeypatch)
+        ecmwf = _MultiHruEcmwf(
+            polygons_by_hru={"hru_a": [_POLY_A], "hru_b": [_POLY_B]},
+            fail_control=frozenset({("hru_a", "tp")}),
+            empty_hrus=frozenset({"hru_b"}),
+        )
+        adapter = _forecast_adapter(ecmwf, _two_hru_resolver())
+
+        with pytest.raises(RecapDataUnavailableError):
+            adapter.fetch_forecasts(
+                [
+                    _ws(
+                        _SID_A, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST
+                    ),
+                    _ws(
+                        _SID_B, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST
+                    ),
+                ],
+                _CYCLE,
+            )
+
+    def test_total_loss_reraise_preserves_original_diagnostic(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Review fold-in (minor): the SAME mixed empty-success + discarded
+        # scenario as `test_empty_success_plus_discarded_still_raises`, but
+        # asserting the RAISED EXCEPTION ITSELF is accurate and does not
+        # discard the original Gateway diagnostic. Pre-fix, the synthetic
+        # message falsely claimed "every ... HRU ... was discarded" (false
+        # here -- hru_b was a well-formed empty success, not discarded) and
+        # dropped hru_a's original "tp unavailable in hru_a" error entirely
+        # (no `__cause__`, no mention in the message).
+        _stub_probe(monkeypatch)
+        ecmwf = _MultiHruEcmwf(
+            polygons_by_hru={"hru_a": [_POLY_A], "hru_b": [_POLY_B]},
+            fail_control=frozenset({("hru_a", "tp")}),
+            empty_hrus=frozenset({"hru_b"}),
+        )
+        adapter = _forecast_adapter(ecmwf, _two_hru_resolver())
+
+        with pytest.raises(RecapDataUnavailableError) as excinfo:
+            adapter.fetch_forecasts(
+                [
+                    _ws(
+                        _SID_A, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST
+                    ),
+                    _ws(
+                        _SID_B, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST
+                    ),
+                ],
+                _CYCLE,
+            )
+
+        message = str(excinfo.value)
+        assert "every" not in message.lower()
+        assert "1" in message  # exactly 1 of 2 HRUs discarded
+        assert "tp unavailable in hru_a" in message
+        assert excinfo.value.__cause__ is not None
+        assert "tp unavailable in hru_a" in str(excinfo.value.__cause__)
+
+    def test_single_hru_deployment_unchanged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Acceptance test 8: today's single-HRU production shape yields the
+        # same returned result as before containment was added.
+        _stub_probe(monkeypatch)
+        ecmwf = _ForecastEcmwf(_wide_df([_POLY_A], value=1.0))
+        adapter = _forecast_adapter(
+            ecmwf, _MapResolver({_SID_A: _ref(_SID_A, _POLY_A)})
+        )
+
+        result = adapter.fetch_forecasts(
+            [_ws(_SID_A, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST)],
+            _CYCLE,
+        )
+
+        assert set(result.keys()) == {_SID_A}
+        forecast = result[_SID_A]
+        assert isinstance(forecast, BasinAverageForecast)
+        assert set(forecast.values["member_id"].to_list()) == set(range(0, 51))
+
+    def test_auth_not_contained(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Acceptance test 9: RecapAuthError propagates immediately; no partial
+        # result is produced.
+        _stub_probe(monkeypatch)
+        ecmwf = _AuthFailEcmwf(
+            auth_fail_hru="hru_a",
+            polygons_by_hru={"hru_a": [_POLY_A], "hru_b": [_POLY_B]},
+        )
+        adapter = _forecast_adapter(ecmwf, _two_hru_resolver())
+
+        with pytest.raises(RecapAuthError):
+            adapter.fetch_forecasts(
+                [
+                    _ws(
+                        _SID_A, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST
+                    ),
+                    _ws(
+                        _SID_B, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST
+                    ),
+                ],
+                _CYCLE,
+            )
+
+    def test_pf_containment_unchanged(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Acceptance test 10: the "fc present, pf absent" window still yields
+        # control + accumulated pf members; no regression to Plan 127 Fix 1.
+        _stub_probe(monkeypatch)
+        ecmwf = _PfUnavailableEcmwf()
+        adapter = _forecast_adapter(
+            ecmwf, _MapResolver({_SID_A: _ref(_SID_A, _POLY_A)})
+        )
+
+        result = adapter.fetch_forecasts(
+            [_ws(_SID_A, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST)],
+            _CYCLE,
+        )
+
+        assert set(result.keys()) == {_SID_A}
+        forecast = result[_SID_A]
+        assert isinstance(forecast, BasinAverageForecast)
+        assert set(forecast.values["member_id"].to_list()) == {0}
+
+    def test_discarded_hru_does_not_determine_cycle_time(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Acceptance test 11: HRU D's precipitation succeeds (updating ITS OWN
+        # provenance) before its temperature call fails and discards the whole
+        # HRU; HRU G is healthy throughout with a DIFFERENT source_run. The
+        # returned cycle_time must reflect ONLY the committed HRU (G) --
+        # proving a discarded HRU's partial provenance never leaks into the
+        # shared result, even though it ran BEFORE the committed HRU.
+        _stub_probe(monkeypatch)
+        run_d = pd.Timestamp("2026-01-01T00:00:00Z")
+        run_g = pd.Timestamp("2026-01-01T06:00:00Z")
+        ecmwf = _MultiHruEcmwf(
+            polygons_by_hru={"hru_d": [_POLY_A], "hru_g": [_POLY_B]},
+            fail_control=frozenset({("hru_d", "2t")}),
+            source_run_by_hru={"hru_d": run_d, "hru_g": run_g},
+        )
+        resolver = _MapResolver(
+            {
+                _SID_A: _ref(_SID_A, _POLY_A, hru="hru_d"),
+                _SID_B: _ref(_SID_B, _POLY_B, hru="hru_g"),
+            }
+        )
+        adapter = _forecast_adapter(ecmwf, resolver)
+
+        result = adapter.fetch_forecasts(
+            [
+                _ws(_SID_A, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST),
+                _ws(_SID_B, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST),
+            ],
+            _CYCLE,
+        )
+
+        assert set(result.keys()) == {_SID_B}
+        forecast = result[_SID_B]
+        assert isinstance(forecast, BasinAverageForecast)
+        assert forecast.cycle_time == ensure_utc(run_g.to_pydatetime())
+
+    def test_contained_gap_logs_hru_variable_and_ifs_type(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Acceptance test 13: a contained gap logs
+        # `recap.hru_unavailable_contained` naming the HRU, variable, and
+        # ifs_type.
+        _stub_probe(monkeypatch)
+        ecmwf = _MultiHruEcmwf(
+            polygons_by_hru={"hru_a": [_POLY_A], "hru_b": [_POLY_B]},
+            fail_control=frozenset({("hru_a", "tp")}),
+        )
+        adapter = _forecast_adapter(ecmwf, _two_hru_resolver())
+
+        with structlog.testing.capture_logs() as captured:
+            adapter.fetch_forecasts(
+                [
+                    _ws(
+                        _SID_A, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST
+                    ),
+                    _ws(
+                        _SID_B, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST
+                    ),
+                ],
+                _CYCLE,
+            )
+
+        contained = [
+            e for e in captured if e.get("event") == "recap.hru_unavailable_contained"
+        ]
+        assert len(contained) == 1
+        assert contained[0]["hru_name"] == "hru_a"
+        assert contained[0]["variable"] == "precipitation"
+        assert contained[0]["ifs_type"] == "fc"

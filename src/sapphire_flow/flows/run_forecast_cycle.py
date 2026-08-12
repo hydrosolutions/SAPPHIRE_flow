@@ -46,9 +46,11 @@ from sapphire_flow.types.enums import (
     NwpCycleSource,
     PipelineCheckType,
     PipelineHealthStatus,
+    SpatialRepresentation,
     StationKind,
     StationStatus,
     WeatherSourceRole,
+    WeatherSourceStatus,
 )
 from sapphire_flow.types.ids import (
     ALERT_ELIGIBILITIES,
@@ -196,12 +198,22 @@ class _NwpFetchOutcome:
     cycle-wide NWP degrade; it suppresses only the snow-fed model (via the
     per-model ``assess_future_coverage`` gate) while surfacing the cycle as
     DEGRADED rather than silently HEALTHY.
+
+    ``nwp_delivery_partial`` (Plan 154 D4) is True when a dict-return adapter
+    (e.g. Recap Gateway, after per-HRU containment) delivered forecasts for a
+    non-empty PROPER SUBSET of the requested stations this cycle -- an ANOMALY
+    (publication is global; per-HRU divergence signals a fault, not a routine
+    gap). Distinct from ``nwp_unavailable`` -- the cycle is NOT runoff-only,
+    the healthy stations' forecasts are used normally, and the alarm is a
+    CRITICAL ``pipeline_health`` record naming the affected stations rather
+    than a cycle-wide degrade.
     """
 
     cycle_time: UtcDatetime
     fallback_used: bool
     nwp_unavailable: bool = False
     snow_unavailable: bool = False
+    nwp_delivery_partial: bool = False
 
 
 _GRID_EXTRACTOR_CHOICES: tuple[str, ...] = ("mesh", "exactextract")
@@ -914,6 +926,7 @@ def _forecast_cycle_health(
     nwp_grid_stale: bool,
     fallback_priority_drift: bool,
     snow_unavailable: bool = False,
+    nwp_delivery_partial: bool = False,
 ) -> ForecastCycleHealth:
     if stations_attempted > 0 and stations_failed >= stations_attempted:
         return ForecastCycleHealth.FAILED
@@ -923,6 +936,7 @@ def _forecast_cycle_health(
         or nwp_grid_stale
         or fallback_priority_drift
         or snow_unavailable
+        or nwp_delivery_partial
     ):
         return ForecastCycleHealth.DEGRADED
     return ForecastCycleHealth.HEALTHY
@@ -1233,6 +1247,53 @@ def _fetch_nwp_task(
         log.error("nwp.unexpected_return_type", type=type(result_object).__name__)
         return None
 
+    # Plan 154 D4: a dict-return adapter's per-HRU containment may legitimately
+    # drop SOME requested stations (a discarded HRU) while serving the rest --
+    # reconcile requested-vs-returned so a partial delivery is diagnosed loudly
+    # (CRITICAL) rather than read as "those stations simply have no NWP forcing
+    # this cycle" (the return shape's ordinary, silent meaning). ``requested``
+    # mirrors the adapter's own prefilter (nwp_source/role/status/extraction) so
+    # an inactive or non-basin-average binding is never a false-positive gap.
+    # Restricted to a NON-EMPTY PROPER SUBSET: an empty mapping is today's
+    # legitimate no-op-NWP success and must not alarm (Plan 154 D3 on the
+    # adapter side keeps that case a silent ``{}``).
+    returned_station_ids = frozenset(result_object.keys())
+    nwp_delivery_partial = False
+    if returned_station_ids:
+        returned_nwp_source = next(iter(result_object.values())).nwp_source
+        requested_station_ids = frozenset(
+            ws.station_id
+            for ws in station_configs
+            if ws.nwp_source == returned_nwp_source
+            and ws.role == WeatherSourceRole.FORECAST
+            and ws.status == WeatherSourceStatus.ACTIVE
+            and ws.extraction_type == SpatialRepresentation.BASIN_AVERAGE
+        )
+        # Gate on the SET DIFFERENCE, not on cardinality: a return that
+        # substitutes an unexpected station for a missing one has equal counts
+        # but is still a genuine gap, and `len(returned) < len(requested)`
+        # would silently skip the alarm.
+        missing_station_ids = sorted(
+            requested_station_ids - returned_station_ids, key=str
+        )
+        if missing_station_ids:
+            nwp_delivery_partial = True
+            partial_detail: dict[str, object] = {
+                "missing_station_ids": [str(sid) for sid in missing_station_ids],
+                "requested": len(requested_station_ids),
+                "returned": len(returned_station_ids),
+            }
+            log.error("nwp.delivery_partial", **partial_detail)
+            _append_pipeline_health_record(
+                pipeline_health_store,
+                check_type=PipelineCheckType.NWP_DELIVERY,
+                checked_at=clock(),
+                status=PipelineHealthStatus.CRITICAL,
+                subject="nwp_delivery",
+                detail=partial_detail,
+                cycle_time=cycle_time,
+            )
+
     all_records = []
     for station_id, forecast in result_object.items():
         if isinstance(forecast, PointForecast):
@@ -1370,6 +1431,7 @@ def _fetch_nwp_task(
         cycle_time=resolved_cycle,
         fallback_used=fallback_used,
         snow_unavailable=snow_unavailable,
+        nwp_delivery_partial=nwp_delivery_partial,
     )
 
 
@@ -2566,6 +2628,11 @@ def run_forecast_cycle_flow(
                 fallback_priority_drift=fallback_priority_drift,
                 snow_unavailable=(
                     nwp_outcome.snow_unavailable if nwp_outcome is not None else False
+                ),
+                nwp_delivery_partial=(
+                    nwp_outcome.nwp_delivery_partial
+                    if nwp_outcome is not None
+                    else False
                 ),
             ),
             stations_attempted=len(operational),
