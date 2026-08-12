@@ -52,9 +52,14 @@ outage that only a human at the keyboard can end.
   - **Ordering:** launchd has no `depends_on`; `start-sapphire.sh`'s existing 240 s `docker info` wait remains the
     ordering mechanism (its comment must stop naming Docker Desktop).
 - **D3 — The VM must be explicitly provisioned; defaults are not survivable.** `prefect-worker` carries
-  `mem_limit: 8g` (`docker-compose.yml:91`) **plus** a RAM-backed 4 GiB tmpfs at `/tmp/sapphire_nwp`
-  (`:135-138`), both sized against the ~15.84 GiB Docker Desktop VM (`:84-90`); `docker system df` reports
-  **136.2 GB** of local volumes. Stock Colima defaults hold neither. Before any data moves, pin an
+  `mem_limit: 8g` (`docker-compose.yml:91`) and a RAM-backed 4 GiB tmpfs at `/tmp/sapphire_nwp` (`:135-138`);
+  `docker system df` reports **136.2 GB** of local volumes. Stock Colima defaults hold neither.
+  **Sizing rationale, corrected** *(reviewer major-fix)*: the tmpfs lives **inside** the worker's own cgroup, so its
+  pages count toward the same 8 GiB limit — it is **not** additive, and neither figure is a reservation. "8 + 4" does
+  **not** establish 16 GiB. The defensible basis is empirical: the workload has been running successfully against a
+  Docker Desktop VM of **~15.84 GiB** (`docker-compose.yml:84-90`), so **≥ 16 GiB reproduces a known-good envelope**
+  rather than deriving a new one. Likewise `--disk` ≥ 2 × measured volume total is **migration headroom** (source and
+  target coexist), not a growth model; growth retention is out of scope here. Before any data moves, pin an
   operator-audited profile: `--vm-type vz`, `--arch aarch64`, `--runtime docker`, explicit `--cpu`, `--memory`
   **≥ 16 GiB**, `--disk` ≥ 2 × measured volume total (floor **300 GiB**), explicit `--mount` for every host path.
   **Acceptance verifies *effective* values** (`colima status`/`list`) plus a representative NWP-on forecast run
@@ -67,7 +72,15 @@ outage that only a human at the keyboard can end.
   - Transfer the exact running image between engines (`docker save` → `docker load`), **or** build it on Colima with
     the private token explicitly exported. Recording which was used is part of the evidence.
   - Preload every pinned third-party image (postgis, prefect, caddy — all digest-pinned in compose).
-  - **Gate:** `docker image inspect sapphire-flow:${VERSION}` succeeds on Colima *before* the migration starts.
+  - **Gate:** the image on Colima is the **same image the production stack is running**, verified by comparing image
+    **ID/digest** against the running Desktop container's — `docker image inspect` on a *tag* proves only that
+    something holds that tag *(reviewer major-fix)*. Record where `${VERSION}` came from; note `start-sapphire.sh`
+    does **not** set it (`scripts/launchd/start-sapphire.sh:24`) while Compose requires it (`docker-compose.yml:82`).
+- **D10 — Every dual-engine command names its endpoint explicitly** *(reviewer major-fix)*. Desktop and Colima
+  coexist through staging, rehearsal and cutover, and Colima creates and activates its own Docker context. A silent
+  context switch can dump the empty target, load an image back into Desktop, or copy the wrong volumes — all exiting
+  **successfully**. Every command in the runbooks carries an explicit `--context` (or `DOCKER_HOST`) for source and
+  target, and each migration step re-asserts which engine it is addressing before acting.
 - **D5 — Volume and database migration.** The runtime owns nine named volumes (`docker-compose.yml:347-356`), but
   **the mac-mini overlay replaces `backups` with a host bind** (`/Volumes/sapphire-backup/pg_dumps:/data/backups`,
   `docker-compose.macmini.yml:26-29`), so the effective named-volume set for this deployment is **eight** *(reviewer
@@ -83,7 +96,7 @@ outage that only a human at the keyboard can end.
   | `nwp_grids` | NWP Zarr hot tier | **Copy** | object count + bytes; spot-read one store |
   | `bafu_forecast_archive` | Permanent, forward-only | **Copy** | file count + checksums |
   | `bafu_observation_archive` | Permanent, forward-only | **Copy** | file count + checksums |
-  | `prefect_data` | Prefect server local state | **Copy** — not assumed derivable | file count |
+  | `prefect_data` | Prefect server local state | **Inspect first, then decide** — `docs/handover/it-operations.md:93` calls it reconstructible and durable orchestration state lives in the `prefect` DB; do not expand the checksum matrix on an assumption *(reviewer minor-fix)* | contents listing + the disposition decision recorded |
   | `caddy_data` / `caddy_config` | ACME material / autosave | **Rebuild allowed** (LAN-only, re-issuable; config in-repo) | note in cutover log |
 
   **Host binds are verified separately**, not migrated: the repo, `/Users/sapphire/camels-ch`, and
@@ -91,13 +104,24 @@ outage that only a human at the keyboard can end.
 - **D6 — Postgres restore, specified** *(reviewer major-fix)*. A fresh target already has the bootstrap owner and the
   `prefect` database, so a blind `pg_dumpall --globals-only` restore collides with existing roles. Pin: restore order
   (globals → per-DB), how pre-existing bootstrap roles/databases are reconciled, `ON_ERROR_STOP=1`, ownership/ACL
-  error policy, and a final idempotent `bootstrap-roles.sh` convergence with role/grant tests. The globals file
-  contains **credential verifiers** — create it `0600` and securely delete it after use.
+  error policy, and a final idempotent `bootstrap-roles.sh` convergence with role/grant tests. The globals output
+  contains **credential verifiers**. "Securely delete afterwards" is **not achievable on APFS/SSD** (copy-on-write,
+  snapshots, wear levelling) *(reviewer major-fix)*, so the plan does not promise it: prefer **never persisting
+  plaintext** — stream globals through a pipe directly into the target `psql`, or stage it on an encrypted ephemeral
+  volume — and if a file is unavoidable, create it under `umask 077` and treat its disk residue as a known,
+  documented exposure rather than a solved problem.
 - **D7 — The rollback boundary, stated honestly** *(reviewer blocker-fix)*. "Keep the Desktop VM intact" is **not** a
   rollback plan once workers write to Colima: new observations, forecasts, Prefect state and archives would exist
   only on the new engine, and re-pointing at Desktop silently discards them. Choose and record one:
   - **(a) No-loss:** all writers stay stopped until cutover is accepted; rollback is a clean endpoint flip. Longer
     downtime, zero data loss. **Recommended.**
+  **The point of no return (PONR) is a specific moment, not a mood** *(reviewer blocker-fix)*: it is **the first
+  write by any worker to the Colima Postgres**. Option (a) is only coherent if every acceptance check performed
+  *before* that moment is **read-only** — which is why T4 splits its verification in two. The write-bearing checks (a
+  fresh observation, a forecast cycle) **are themselves past the PONR**: once they run, Desktop is stale and rollback
+  is no longer lossless. The first draft demanded those checks *before* acceptance while promising a clean flip,
+  which is not satisfiable. Under (a), rollback after the PONR means accepting the loss of everything written since
+  it, or reverse-migrating.
   - **(b) Bounded-loss:** writers start immediately; rollback requires reverse-migrating both DBs and every changed
     volume. Faster, but rollback becomes a migration in itself.
   Either way the plan must name **the point of no return** and, if (b), an owner-approved maximum data-loss window.
@@ -112,11 +136,21 @@ outage that only a human at the keyboard can end.
 
 ## Phases
 
+> **Where the commands live** — as in Plan 158: this document owns decisions and acceptance; **each host task
+> delivers a runbook in `docs/operations/`** with the exact commands, in order, each naming its source/target engine
+> explicitly (D10). The migration especially cannot be executed from prose: `docs/operations/colima-cutover-runbook.md`
+> must pin engine selection, Compose-prefixed volume names, destination volume creation, ownership/mode/symlink
+> preservation, manifest generation, the per-database dump/restore invocations with `ON_ERROR_STOP=1`, and the
+> evidence comparisons. A task is not complete until its runbook exists and has been walked once in rehearsal.
+
 - **T1 — Runtime provisioned, empty (D1/D2/D3/D8).** Admin installs pinned Colima+Lima. Record `sysctl hw.memsize`
   and `df -h` **first** — the memory read is a go/no-go gate (D13). Commit the profile and
   `ch.hydrosolutions.colima.plist`; install via Plan 158's system-domain installer; bring the VM up empty.
   **Verify:** effective CPU/memory/disk/vm-type via `colima status` · `docker info` reaches Colima ·
-  `sudo launchctl kill SIGKILL system/ch.hydrosolutions.colima` **and** a hand-run `colima stop` each return the VM within
+  `sudo launchctl kill SIGKILL system/ch.hydrosolutions.colima` (which tests only the **supervisor link** — SIGKILL
+  prevents cleanup, so the VM may survive or orphan; a passing `docker info` afterwards does **not** by itself prove
+  launchd recovered a *dead engine*, reviewer major-fix) · a **separate VM-layer failure test** — kill the Lima VM /
+  host-agent process directly and confirm launchd brings the engine back · and a hand-run `colima stop` — each return the VM within
   `ThrottleInterval` + boot · **`launchctl bootout system/ch.hydrosolutions.colima` leaves no orphaned VM, socket or
   port-forwarder**, then bootstraps cleanly again *(reviewer major-fix — the shutdown path was previously untested)* ·
   a reboot with **no GUI login** leaves it running.
@@ -134,11 +168,26 @@ outage that only a human at the keyboard can end.
   it healthy** *(reviewer major-fix — the first draft quiesced production and never said to restart it)*.
   *Rollback:* trivial; nothing was cut over.
 
-- **T4 — Cutover (D5/D6/D7).** Re-run the rehearsal for real inside the agreed window, re-point the endpoint contract
-  (Plan 158 T4) at Colima, start the stack, re-verify. Honour the D7 boundary: under (a) writers stay down until
-  accepted. **Verify:** the T3 evidence set reproduced · `curl -fsS localhost:8000/api/v1/health` · a fresh
-  `observations` row · a representative NWP-on forecast cycle with no cgroup kill (proves D3's sizing) ·
-  `prune-docker.sh` resolves a working `docker` **under launchd**, not merely in an interactive shell.
+- **T4 — Cutover (D5/D6/D7).**
+  **T4.0 — RESET THE TARGET FIRST** *(reviewer blocker-fix)*. T3 restored real data into Colima, so
+  "empty-but-imaged" is **only true before T3**. Restoring again over a populated target collides on primary keys,
+  duplicates rows, or leaves rehearsal-only files in the copied archives. T4 therefore **begins** by destroying and
+  recreating the Colima data state — drop/recreate both databases and remove every migrated volume — and **verifies
+  emptiness** (zero rows in a named state-bearing table per DB; volume list empty) **before** any restore. The images
+  from T2 are retained; only data is reset.
+  Then re-run the migration for real inside the agreed window, re-point the endpoint contract (Plan 158 T4) at
+  Colima, start the stack, re-verify.
+  **Verification is split by the point of no return (D7):**
+  - **Before the PONR — read-only:** the T3 evidence set reproduced (row counts, Alembic revisions, `\du` grants,
+    Prefect deployment/schedule counts, `model_artifacts` SHA-256 set), plus the API health endpoint asserted on
+    parsed JSON `status == "ok"` — **not** merely a 2xx from `curl -fsS`. A failure here is still a clean rollback.
+  - **After the PONR — write-bearing:** a fresh `observations` row (asserted against a baseline timestamp captured
+    pre-start, with an explicit timeout), a representative NWP-on forecast cycle completing with no cgroup kill
+    (proves D3's sizing), and `prune-docker.sh` reaching the Colima daemon **under launchd** — asserted on its
+    "stack is running" and terminal "done" log lines, **not** exit status 0 (the script deliberately exits 0 when the
+    daemon is unreachable, `scripts/launchd/prune-docker.sh:38`).
+  **Deliverable:** `docs/operations/colima-cutover-runbook.md` — the exact commands, in order, with the explicit
+  source/target context on every dual-engine invocation (D10).
 
 - **T5 — Prove independence and retire the shims (D9).** Disable auto-login and Docker-Desktop-at-login; optionally
   uninstall Docker Desktop after the soak.

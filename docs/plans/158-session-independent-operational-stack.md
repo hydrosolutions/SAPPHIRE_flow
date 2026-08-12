@@ -3,7 +3,7 @@ status: DRAFT
 created: 2026-08-12
 plan: 158
 title: Session-independent operational stack — the mac-mini must collect data without a GUI login
-scope: Make the mac-mini's data collection OBSERVABLE and reboot-survivable without a GUI login: stage the missing Slack webhook, add an off-box dead-man's-switch, and move the watchdog, stack-starter and prune jobs from LaunchAgents into the system domain, plus a transitional auto-login. Removing the GUI dependency ITSELF (replacing Docker Desktop with a headless launchd-supervised runtime, and the volume/database migration that entails) is Plan 159, which depends on this one. Backup-target relocation and the disk-capacity investigation are named follow-ons.
+scope: Make the mac-mini's data collection OBSERVABLE, and reboot-survivable IF the optional T6 is taken: stage the missing Slack webhook, add an off-box dead-man's-switch, and move the watchdog, stack-starter and prune jobs from LaunchAgents into the system domain, plus a transitional auto-login. Removing the GUI dependency ITSELF (replacing Docker Desktop with a headless launchd-supervised runtime, and the volume/database migration that entails) is Plan 159, which depends on this one. Backup-target relocation and the disk-capacity investigation are named follow-ons.
 depends_on: []
 blocks: []
 supersedes: []
@@ -33,7 +33,7 @@ layers went with it — and each one independently prevented recovery:
 | Layer | Scope | What it did |
 |---|---|---|
 | Docker Desktop engine | GUI application | Died with the session. Cannot be started over SSH — `open -a Docker` fails with `OSLaunchdErrorDomain Code=125`, because macOS will not launch a GUI app into an Aqua session from the SSH launchd domain. |
-| `ch.hydrosolutions.sapphire` (stack start) | **LaunchAgent** (`scripts/launchd/install-launchd.sh:15`, bootstrapped into `gui/$(id -u)` at `:63-64`) | Died with the session. Its script `scripts/launchd/start-sapphire.sh:16-23` only **waits** for `docker info` (240 s) — it has no ability to *start* the engine, so even had it survived it would have retried forever. |
+| `ch.hydrosolutions.sapphire` (stack start) | **LaunchAgent** (`scripts/launchd/install-launchd.sh:15`, bootstrapped into `gui/$(id -u)` at `:64`) | Died with the session. Its script `scripts/launchd/start-sapphire.sh:16-23` only **waits** for `docker info` (240 s) — it has no ability to *start* the engine, so even had it survived it would have retried forever. |
 | `ch.hydrosolutions.sapphire-watchdog` | **LaunchAgent** (`scripts/launchd/install-launchd.sh:16`) | Died with the session, so nothing detected the outage. Its log jumps straight from `2026-07-29T11:16Z` to `2026-08-12T12:39Z`. |
 | `ch.hydrosolutions.sapphire-docker-prune` | **LaunchAgent** (`scripts/launchd/install-launchd.sh:17`; weekly Sunday 04:00, `docs/standards/cicd.md:632`) | **Also died with the session** — same failure mode, previously unlisted. A weekly `docker system prune` that has not run since the session ended is a plausible contributor to the disk-capacity discrepancy below (see Non-goals). |
 | `ch.hydrosolutions.sapphire-recap-probe` | **LaunchAgent**, installed by hand (`docs/operations/recap-probe-runbook.md:87-92`) — *not* in the installer's `PLISTS` array | Died with the session. Zero operational impact: the runbook states it is "an **exploratory experiment**, not a pipeline component… it writes an append-only JSONL log and touches **nothing** in the DB or the forecast path" (`docs/operations/recap-probe-runbook.md:16-18`). Listed for completeness, not because it needs fixing. |
@@ -50,8 +50,11 @@ two weeks and depends on someone being logged in is not an operational system.
 
 **Goals**
 1. **Detection** — an outage is known within minutes, off-box, without anyone looking at a log file.
-2. **Recovery** — the stack returns by itself **after a reboot**. Recovery from a session ending or an engine crash
-   requires the headless runtime and is **Plan 159**; with Docker Desktop as the engine, 158 cannot deliver it.
+2. **Recovery — conditional, and the condition is T6** *(reviewer major-fix)*. Nothing in 158 starts the Docker
+   Desktop **engine**; only T6 (auto-login + Docker-at-login) does. **If T6 is declined, 158 delivers detection and
+   host-job survival only — not stack recovery**, because the system-domain starter will wait 240 s for an engine
+   that never appears. Recovery from a session ending or an engine crash requires the headless runtime and is
+   **Plan 159** regardless.
 3. **Host-job independence** — the watchdog, stack starter and prune jobs survive a logout (system domain).
    Full engine independence is **Plan 159**; 158 is its prerequisite.
 
@@ -168,6 +171,20 @@ acceptance criterion (see the dependency graph).
 
 ## Phases
 
+> **Where the commands live** *(owner decision, 2026-08-12, after two reviews disagreed on depth)*. One reviewer
+> asked for exact commands for every host step; another judged parts of this plan already over-specified for a plan.
+> Both are right about different things, so the split is explicit: **this document owns decisions, invariants and
+> acceptance criteria; each HOST task's deliverable is a runbook in `docs/operations/`** carrying the exact commands
+> in order — the same shape as `docs/standards/plan-147-mini-rollout.md`, which exists precisely because host
+> operations need commands where they will be executed and maintained, not buried in a design plan. A host task is
+> not complete until its runbook exists and has been followed once.
+>
+> | Task | Runbook deliverable |
+> |---|---|
+> | T3 (secrets + watchdog daemon + dead-man) | `docs/operations/watchdog-daemon-runbook.md` |
+> | T5 (starter + prune daemons) | `docs/operations/launchd-system-domain-runbook.md` |
+> | T6 (auto-login + Docker-at-login) | folded into the T5 runbook; **includes the rollback steps**, which the plan text does not carry |
+
 Each task states in/out scope, artefacts, and the **exact** commands that gate it. "Repo" tasks are code/doc changes
 reviewable in a diff; "Host" tasks are operator cutovers whose evidence is captured text, not a diff.
 
@@ -207,17 +224,31 @@ reviewable in a diff; "Host" tasks are operator cutovers whose evidence is captu
   *Rollback trigger:* dry-run shows a label targeted in two domains.
 
 - **T3 — Host cutover: secrets + watchdog as a LaunchDaemon + dead-man wired (Host, D1/D2/D3).**
-  Create `secrets/slack_webhook_url` and `secrets/deadman_url` (`chmod 600`, owner `sapphire`); register the
-  dead-man check (D11) with a 15-min grace; `sudo ./scripts/launchd/install-launchd.sh` for the watchdog only.
-  **Verify (host):** `launchctl print system/ch.hydrosolutions.sapphire-watchdog | head -40` shows the service
+  Create `secrets/slack_webhook_url` and `secrets/deadman_url` **atomically under `umask 077`** — not created-then-
+  `chmod`, which leaves a readable window *(reviewer major-fix)*. **Ownership exception, stated explicitly:**
+  `docs/standards/security.md:213` requires `./secrets/` be root-owned 600, but these two are read by the
+  **watchdog host process running as `UserName=sapphire`**, so root:600 would make them unreadable. They are
+  therefore `sapphire:600` and the standard needs a documented carve-out for host-process secrets (as distinct from
+  container-mounted ones) — record it rather than silently contradicting the standard.
+  Register the dead-man check (D11) with a 15-min grace; install **the watchdog label only**, which requires T2's
+  label selector (`--label`) — the current installer processes every entry in `PLISTS`
+  (`scripts/launchd/install-launchd.sh:14`), so "for the watchdog only" is not expressible without it
+  *(reviewer major-fix)*.
+  **Verify (host):** `launchctl print system/ch.hydrosolutions.sapphire-watchdog` shows the service
   **loaded** with `UserName = sapphire` · then `sudo launchctl kickstart -k system/ch.hydrosolutions.sapphire-watchdog`,
-  wait for completion, and re-`print` to assert **`last exit status = 0`** — a scheduled one-shot is loaded-not-running
+  poll `launchctl print` until the job is no longer running (bounded timeout, and compare against the
+  invocation marker captured before the kickstart so a **stale** prior exit status cannot satisfy the gate,
+  reviewer major-fix), then assert **`last exit status = 0`** — a scheduled one-shot is loaded-not-running
   between invocations, so the exit status must be produced by an explicit kickstart, not read from whatever ran last · `launchctl print gui/$(id -u)/ch.hydrosolutions.sapphire-watchdog` returns **not
   found** (no duplicate) · the ping lands in the dead-man dashboard within one interval.
   **Acceptance (both must be *demonstrated*):** (a) with the stack deliberately stopped, a Slack message arrives
   within one watchdog interval (300 s); (b) with the **watchdog itself** booted out, the external service alarms
   within the grace period — **and the operator SSHes out and closes the session for the duration of (b)**, which is
-  the specific thing that was missing. *Evidence:* Slack screenshot, dead-man alert, both `launchctl print` outputs.
+  the specific thing that was missing.
+  **Restore before the task is complete** *(reviewer major-fix — the first draft deliberately caused an outage and
+  never ended it)*: re-bootstrap the watchdog, restart the stack, and **verify ingestion has resumed** (a fresh
+  `observations` row past a baseline captured before the test, within an explicit timeout) before T3 is signed off.
+  *Evidence:* Slack screenshot, dead-man alert, both `launchctl print` outputs, and the post-restore fresh-row query.
   *Rollback:* boot out `system/…`, re-bootstrap the GUI agent from the previous plist.
 
 ### Phase B — Session-independent host jobs
@@ -243,9 +274,11 @@ reviewable in a diff; "Host" tasks are operator cutovers whose evidence is captu
   `…system/ch.hydrosolutions.sapphire-docker-prune` are both **loaded**; neither label present in `gui/$(id -u)`;
   then **kickstart each explicitly and assert `last exit status = 0` afterwards** —
   `sudo launchctl kickstart -k system/ch.hydrosolutions.sapphire` brings the stack up, and
-  `sudo launchctl kickstart -k system/ch.hydrosolutions.sapphire-docker-prune` completes cleanly (prune is a
-  one-shot too, and was previously never exercised by this gate);
-  `curl -fsS localhost:8000/api/v1/health` returns `status=ok`.
+  `sudo launchctl kickstart -k system/ch.hydrosolutions.sapphire-docker-prune` produces its **"stack is running"
+  and terminal "done" log lines** — **exit status 0 is NOT sufficient evidence** *(reviewer major-fix)*:
+  `prune-docker.sh` deliberately exits 0 when the daemon is unreachable ("Guard-command errors default to SKIP",
+  `scripts/launchd/prune-docker.sh:38`), so an exit-0 gate would certify the exact endpoint failure this task exists
+  to prevent; the API health check asserts **parsed JSON `status == "ok"`**, not merely a 2xx from `curl -fsS`.
   *Known accepted noise:* pre-auto-login boots will log one 240 s `docker info` timeout per retry (D5).
   *Rollback:* boot out system labels, re-bootstrap GUI agents.
 
@@ -275,6 +308,13 @@ reviewable in a diff; "Host" tasks are operator cutovers whose evidence is captu
   alerting is still blind repeats the original mistake.
 - **T6 is a leaf, not a prerequisite.** Auto-login is a transitional convenience; nothing depends on it and Plan 159
   T5 removes it. If the owner declines the D12 trade-off, T6 drops without touching the critical path.
+
+## Added after review — free-space alert (cheap win)
+- **D14-free-space-alert** *(reviewer: missing cheap win)*. The Data volume sits at **95%**, both plans already read
+  `df`, and nothing warns before exhaustion stops PostgreSQL or the VM. Weekly pruning is not a safety net — it
+  skips silently when the daemon is unreachable (above). Add a **free-bytes threshold check to the watchdog tick**,
+  alerting on the same Slack path as every other check. It costs almost nothing, needs no privileged access, and
+  does **not** depend on resolving the TCC-blocked 3.4 TB attribution question. Folded into T1's scope.
 
 ## Open items
 - *(Runtime-choice, downtime window, host-RAM go/no-go and rollback boundary moved to **Plan 159**.)*
