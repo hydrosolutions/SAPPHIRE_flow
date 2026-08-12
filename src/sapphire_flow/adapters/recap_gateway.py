@@ -904,17 +904,28 @@ class RecapGatewayForecastAdapter:
                                 member=member,
                             )
                             break
-                # Plan 154 review fold-in (major): a MIXED outcome -- some
-                # required control variables covered, others a well-formed
-                # empty response -- is not producible by a well-behaved
-                # Gateway (D4: publication is global, so within one HRU every
-                # variable should agree). Fail loud with `AdapterError`
+                # Plan 154 review fold-in (major): an INCOMPLETE control
+                # outcome -- one or more required control variables lacking
+                # coverage, whether SOME are covered (mixed) or NONE are
+                # (every control response well-formed-empty) -- is not
+                # producible by a well-behaved Gateway (D4: publication is
+                # global, so within one HRU every variable should agree).
+                # Gate on `hru_acc` (not `covered`): a fixer-round finding
+                # showed that when EVERY control variable is empty but PF
+                # members are still populated (`covered` itself empty, so
+                # the OLD `covered and ...` guard was falsy and never fired),
+                # `hru_acc` holds PF-only rows for members 1-50 with no
+                # member-0 control row -- exactly the shape CONTROL-mode
+                # input assembly cannot use. Fail loud with `AdapterError`
                 # (uncontained -- not `RecapDataUnavailableError`, so this
                 # propagates out of the whole call, matching the D6 malformed-
                 # response precedent) rather than silently shipping
-                # partial-variable forcing for this HRU's stations.
+                # partial-variable (including PF-only) forcing for this HRU's
+                # stations. `hru_acc` being empty (D3's well-formed-empty
+                # case, e.g. `test_well_formed_empty_is_not_a_failure`) must
+                # NOT raise here -- there is nothing partial to ship.
                 covered = {v for v, has_rows in control_coverage.items() if has_rows}
-                if covered and len(covered) < len(control_coverage):
+                if hru_acc and len(covered) < len(control_coverage):
                     empty = sorted(set(control_coverage) - covered)
                     raise AdapterError(
                         f"Recap Gateway HRU {hru_name} returned control rows for "

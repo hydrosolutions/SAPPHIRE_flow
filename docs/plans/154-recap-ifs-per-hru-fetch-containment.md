@@ -259,6 +259,47 @@ plan's implementation (no scope change; T1's phase boundary and design stand):
   `test_total_loss_reraise_preserves_original_diagnostic`; proven to fail (RED) against the original synthetic
   message.
 
+## Second fixer round (post-implementation review fold-in, 2026-08-12)
+An independent Codex pass over the committed diff (`9cbf16a`) plus a Claude design pass raised one major finding
+against T1's implementation, two minors against test strength, and one minor (disputed) about diff provenance:
+
+- **Major — an all-empty control response with populated `pf` still committed PF-only forcing.** The fixer round's
+  mixed-coverage guard (`covered and len(covered) < len(control_coverage)`) only fired when `covered` was non-empty
+  (some control variable had rows). When **every** control (`fc`) response for an HRU was well-formed but EMPTY
+  (`covered` itself empty, so the guard was falsy) while `pf` members 1–50 were still populated, `hru_acc` committed
+  those PF-only rows with no member-0 control row at all — CONTROL-mode input assembly explicitly selects member 0,
+  so this silently starved NWP-fed models while the station still looked "delivered" and cycle health stayed
+  healthy. **Fix:** the guard is now gated on `hru_acc` truthiness rather than `covered` truthiness
+  (`if hru_acc and len(covered) < len(control_coverage):`) — it fires whenever ANY rows accumulated (from `fc` or
+  `pf`) but NOT every control variable is covered, catching both the "some covered" (mixed) and "none covered but
+  PF populated" (this bug) shapes, while leaving D3's genuine well-formed-empty case (`hru_acc` empty) unaffected.
+  Locked by `test_all_control_variables_empty_with_populated_pf_never_ships_pf_only`
+  (`tests/unit/adapters/test_recap_gateway.py`); proven to fail (RED) against the pre-fix `covered and ...` guard.
+- **Minor — acceptance-test-12 full-flow test only asserted "some forecast exists" for the missing station.** A
+  broken flow that wrongly selected the higher-priority NWP-fed assignment for the missing station (rather than
+  correctly falling through to its local fallback) could still have passed. **Fix (test-only):**
+  `test_healthy_station_forecasts_missing_station_falls_back_cycle_degraded` now fetches the missing station's
+  stored `OperationalForecast` and asserts `model_id == fallback_id`. (Not asserting `nwp_cycle_source`: that field
+  is cycle-wide — set once per cycle from whether the CYCLE fetched/used NWP at all, reused for every station's
+  `OperationalForecast` that cycle — not a per-assignment "did this model consume NWP" signal, so it is `PRIMARY`
+  for the fallback forecast too and cannot discriminate the two models here; `model_id` is the correct and
+  sufficient check.)
+- **Minor — the `nwp.delivery_partial` ERROR log event was unlocked.** The CRITICAL `pipeline_health` record was
+  tested, but no test asserted the application-log event itself; downgrading it to WARNING (or removing it) would
+  have left every Plan 154 test green. **Fix:** new `test_partial_delivery_logs_error_event`
+  (`tests/unit/flows/test_run_forecast_cycle.py`) captures structured logs and asserts exactly one
+  `nwp.delivery_partial` event with `log_level == "error"` and the correct `missing_station_ids`/`requested`/
+  `returned` fields. Proven to fail (RED) when the call site is changed to `log.warning(...)`.
+- **Minor — disputed: unrelated access-token diff.** The reviewer's `main...HEAD` diff pulled in an already-upstream
+  access-token CLI/docs patch (`b51f76e`, PR #142) because this branch's *local* `main` ref predates that merge,
+  even though `origin/main` already contains it. Confirmed by diffing Plan 154's own commit range
+  (`e15f3b5..9cbf16a`): it touches only `recap_gateway.py`, `run_forecast_cycle.py`, their tests, and this plan doc's
+  own docs (`docs/standards/logging.md`, `docs/touchpoint-maps.md`, `docs/plans/README.md`) — never
+  `src/sapphire_flow/cli/access_tokens.py` or the other files the finding names. No plan-doc or code change needed;
+  the PR step should diff against a `main` ref updated to include `origin/main`'s tip (or open the PR from a
+  git-hosting compare view against `origin/main` directly) so a stale local ref doesn't misattribute already-merged
+  content.
+
 ## Phase dependency graph
 ```json
 {

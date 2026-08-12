@@ -1805,6 +1805,44 @@ class TestNwpDeliveryPartialDivergence:
         assert str(sid_missing) in record.detail["missing_station_ids"]
         assert str(sid_ok) not in record.detail["missing_station_ids"]
 
+    def test_partial_delivery_logs_error_event(self) -> None:
+        # Fixer-round finding (minor): the CRITICAL pipeline_health record is
+        # locked above, but nothing pinned the `nwp.delivery_partial`
+        # structured-log EVENT itself -- silently downgrading it to WARNING
+        # (or dropping it) would leave every other Plan 154 test green.
+        # Capture logs and assert exactly one `nwp.delivery_partial` event at
+        # ERROR with the correct station/count fields.
+        import structlog.testing
+
+        sid_ok = StationId(uuid4())
+        sid_missing = StationId(uuid4())
+        adapter = FakeWeatherForecastSource(
+            result={sid_ok: self._basin_forecast(sid_ok)}
+        )
+        nwp_store = FakeWeatherForecastStore()
+        health_store = FakePipelineHealthStore()
+
+        with structlog.testing.capture_logs() as captured:
+            outcome = _fetch_nwp_task(
+                adapter,  # type: ignore[arg-type]
+                [_snow_ws(sid_ok), _snow_ws(sid_missing)],
+                _NOW,
+                nwp_store,
+                _clock,
+                pipeline_health_store=health_store,
+            )
+
+        assert outcome is not None
+        partial_events = [
+            event for event in captured if event.get("event") == "nwp.delivery_partial"
+        ]
+        assert len(partial_events) == 1
+        event = partial_events[0]
+        assert event.get("log_level") == "error"
+        assert event.get("missing_station_ids") == [str(sid_missing)]
+        assert event.get("requested") == 2
+        assert event.get("returned") == 1
+
     def test_partial_delivery_degrades_cycle_health(self) -> None:
         outcome_healthy = _forecast_cycle_health(
             stations_attempted=1,
@@ -1981,6 +2019,27 @@ class TestNwpDeliveryPartialDivergenceFullFlow:
         # The missing station is NEVER dropped from the cycle -- its own
         # local fallback assignment still produces a forecast.
         assert sid_missing in stored_station_ids
+
+        # Fixer-round finding (minor): "some forecast exists" alone would
+        # still pass if a broken flow wrongly picked the higher-priority
+        # NWP-fed `_MODEL_ID` assignment for sid_missing (e.g. reading stale
+        # or partially-populated NWP rows instead of correctly skipping that
+        # assignment for insufficient coverage). Pin that sid_missing's
+        # stored forecast actually came from `fallback_id`. (Not asserting
+        # `nwp_cycle_source` here: it is a cycle-wide field -- PRIMARY
+        # whenever the CYCLE fetched/used NWP at all, set once and reused for
+        # every station's `OperationalForecast` this cycle -- not a
+        # per-assignment "did THIS model consume NWP" signal, so it is
+        # PRIMARY for sid_missing's fallback forecast too and cannot
+        # distinguish the two models here; `model_id` is the correct and
+        # sufficient discriminator.)
+        missing_forecasts = [
+            fc
+            for fc in forecast_store._forecasts.values()
+            if fc.station_id == sid_missing
+        ]
+        assert len(missing_forecasts) == 1
+        assert missing_forecasts[0].model_id == fallback_id
 
         # The gap is diagnosed loudly rather than silently: a queryable
         # CRITICAL NWP_DELIVERY record names exactly the missing station.

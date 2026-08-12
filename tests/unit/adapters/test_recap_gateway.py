@@ -2170,6 +2170,34 @@ class TestHruContainment:
                 _CYCLE,
             )
 
+    def test_all_control_variables_empty_with_populated_pf_never_ships_pf_only(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Fixer-round finding (major): EVERY control (`fc`) response for this
+        # HRU is well-formed but EMPTY (both tp and 2t), while `pf` members
+        # 1-50 are populated. Neither `fc` call raises, so the OLD `covered
+        # and len(covered) < len(control_coverage)` guard never fired
+        # (`covered` was itself empty, hence falsy) and `hru_acc` committed
+        # PF-only rows -- no member-0 control row at all. CONTROL-mode input
+        # assembly selects member 0 explicitly, so this silently starved
+        # NWP-fed models while the station still looked "delivered". Must
+        # fail loud with `AdapterError`, exactly like the mixed
+        # some-covered/some-not case above -- never ship PF-only forcing.
+        _stub_probe(monkeypatch)
+        ecmwf = _MultiHruEcmwf(
+            polygons_by_hru={_HRU: [_POLY_A]},
+            empty_control_variables=frozenset({(_HRU, "tp"), (_HRU, "2t")}),
+        )
+        adapter = _forecast_adapter(
+            ecmwf, _MapResolver({_SID_A: _ref(_SID_A, _POLY_A, hru=_HRU)})
+        )
+
+        with pytest.raises(AdapterError):
+            adapter.fetch_forecasts(
+                [_ws(_SID_A, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST)],
+                _CYCLE,
+            )
+
     def test_total_unavailability_unchanged(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
