@@ -88,6 +88,12 @@ const FINAL = {
 const CLAUDE_LENSES = [
   'DESIGN SOUNDNESS — is the proposed approach correct, and is it the SIMPLEST correct approach? Name a better alternative if the plan ignores one. Flag internal contradictions.',
   'PROPORTIONALITY (guard against over-engineering) — is the solution more complex than the problem requires? Flag over-scope, gold-plating, speculative generality, unnecessary phases/abstractions, and REFERENCE detail that belongs in code/docstrings (it rots in a plan). Judge detail against what the artifact is FOR — not "is anything missing". Propose specific cuts. Empty findings if already lean.',
+  // TEST SOUNDNESS — added after Plan 152, where TWO tasks specified red-first tests
+  // that could not fail for the stated reason (the asserted behavior ALREADY existed
+  // elsewhere in the code). `implement` cannot catch this: it proves a test goes red
+  // when the FIX is stashed, but if the behavior already exists there is no fix to
+  // stash — the defect is in the PLAN, so it must be caught here.
+  'TEST SOUNDNESS — for EVERY task, take its stated red-first test / acceptance assertion and ask: **would this actually FAIL against the CURRENT repo, for the reason the plan claims?** VERIFY against real code with Read/Grep — never reason from the plan\'s prose. The error class to hunt: a test aimed at a boundary that ALREADY behaves correctly, while the claimed defect lives upstream or downstream of it (e.g. a plan asserting "the store must reject X" when the store already handles X and the bug is in the service that calls it — such a test passes on day one and gates nothing). Also flag: a test whose failure would be an import/collection ERROR rather than a red ASSERTION; an assertion that is already true today; and a task claiming to ADD behavior the repo already has. For each task report "sound" or the file:line proving it would not fail as claimed. Empty findings only if every task\'s gate genuinely fails today.',
 ]
 
 // The INDEPENDENT Codex reviewer prompt — repo-grounded, adversarial, file:line.
