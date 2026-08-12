@@ -67,9 +67,27 @@ skips per entry point, or `discover_models` is changed to skip-and-continue on a
 invariant above; plus the `next(iter(req.supported_time_steps))` sweep so no site can silently pick
 a resolution.
 
+**THE RULE IS NARROWER THAN "more than one `time_step`" (seam review, 2026-08-12 — this was a
+blocking contradiction with Plan 151).** Rejecting every multi-`time_step` requirement would:
+- break **8 existing tests** that share `_multi_product_requirement()`
+  (`tests/unit/adapters/test_forecast_interface_adapter.py:152-168`), which legitimately declares a
+  1 h and a 24 h branch; and
+- **contradict Plan 151 T2**, whose canonical red test requires exactly that shape — a model with two
+  time steps carrying different features, each branch exposed separately. Whoever landed second would
+  turn the other's acceptance test red. **That is a contradictory contract, not a rebase.**
+
+**Reject on the ACTUAL flattening bug instead: more than one branch declaring non-empty
+`future_known`.** That is what the damage comes from — the cross-branch `max` collapse of
+`future_steps` (`adapters/forecast_interface.py:472-481`) and
+`supported_time_steps=frozenset(req.dynamic)` (`:519`). Plan 151's supported shape (one future-forced
+branch plus a past-only branch) stays constructible; the genuinely unsupportable shape (two
+future-forced resolutions, as in an MTS-LSTM config) fails loudly.
+
 **Red-first (all three must fail against current code, for the stated reason):**
-1. An FI model whose `InputRequirement.dynamic` carries **more than one `time_step` key** is
-   **rejected with a clear error naming the resolutions** — today it is flattened and accepted.
+1. An FI model declaring **non-empty `future_known` in more than one `time_step` branch** is
+   **rejected with a clear error naming the resolutions** — today it is flattened and accepted. A
+   requirement with one future-forced branch and one past-only branch is **accepted** (guards against
+   over-rejection, and is the shape Plan 151 needs).
 2. **With one multi-resolution model installed alongside good ones, `discover_models()` still
    returns the good ones** — today a `ConfigurationError` from the projection aborts the whole loop
    (`services/model_registry.py:93-95`).
@@ -82,12 +100,24 @@ a resolution.
 - **Multi-resolution SUPPORT** — that is Plan 153, deferred (Plan 152 D7). This plan only refuses.
 - Any aquacast-specific work.
 
-## Coordination
+## Coordination — **NOT rebasable; requires ordering by the owner**
 
-**`adapters/forecast_interface.py` is also edited by Plan 151 (its T2, per-`time_step` accessors)**
-and by Plan 157 (the aquacast unit boundary). Sequence against 151 or accept a rebase; when 151's
-per-`time_step` accessors land, they are the natural foundation for Plan 153 and this guard should
-compose with them rather than duplicate them.
+**This plan and Plan 151 hold rules for the same FI seam, and 151 is being implemented NOW.**
+- **The contract conflict** is resolved above by narrowing the rule to *multiple future-forced
+  branches*. **Both plans must agree on that boundary before either is built** — it is a shared
+  contract, not a file-level rebase.
+- **This plan must land BEFORE Plan 151 T2** for a second reason. 151's ratified global conformance
+  sweep (its D21) raises `ConfigurationError` at adapter construction
+  (`adapters/forecast_interface.py:449`), and `discover_models` **re-raises** it
+  (`services/model_registry.py:93-95`). So one non-conformant entry point would darken discovery for
+  the forecast cycle, training and onboarding. **This plan's T1 red test #2 is the only funded fix
+  for that invariant**, so 151's sweep should signal through it rather than raise.
+- **Shared fixture:** `_multi_product_requirement()`
+  (`tests/unit/adapters/test_forecast_interface_adapter.py:152-168`) is used by 8 tests and by 151
+  T2's red test. Changes to it must be agreed, not made unilaterally.
+- Plan 157 also touches `adapters/forecast_interface.py`'s neighbourhood; when 151's per-`time_step`
+  accessors land they are the natural foundation for Plan 153, and this guard should compose with
+  them rather than duplicate them.
 
 ## References
 - `docs/plans/152-aquacast-pooled-model-integration.md` — parent; § G5 for the full gap analysis.

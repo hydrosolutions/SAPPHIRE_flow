@@ -90,9 +90,18 @@ window degrades silently rather than announcing itself.
 `water_level`". The CAMELS-CH adapter emits `water_level` for such stations
 (`adapters/camelsch_adapter.py:98`) and `discharge` only where `discharge_vol` exists (`:48-65`).
 
-**Derive the candidate manifest from PT compatibility** — at minimum `forecast_targets` and
-`measured_parameters` containing `discharge` — sweep the whole set for further non-discharge
-stations, and **freeze the resulting count**. Every coverage figure in T1/T2/T3 is a fraction of
+**Two-stage, because a compatibility-derived freeze is CIRCULAR** (seam review, 2026-08-12).
+Running PT compatibility needs a live model object — which needs Plan 157's shim installed
+(`services/model_registry.py:78-85`) — and it subtracts PT's **Caravan-named** statics from the raw
+`basin.attributes` key set (`services/model_onboarding.py:251-252`), which cannot pass until T1 and
+T2 land. But T1/T2/T3's gates are denominated in the manifest. So:
+- **T0a — provisional manifest, NOW, from station data alone:** stations whose `forecast_targets` and
+  `measured_parameters` contain `discharge`, excluding lake/`water_level`-only stations. This needs
+  no model object and unblocks T1/T2/T3.
+- **T0b — confirm by compatibility, AFTER T2 and Plan 157's shim:** re-run the freeze through real PT
+  compatibility and reconcile against T0a. A divergence is a finding, not a silent update.
+
+Sweep the whole set for further non-discharge stations and **freeze the resulting count**. Every coverage figure in T1/T2/T3 is a fraction of
 *that* denominator, not of the onboarding manifest. Getting this wrong inflates every readiness
 percentage in this plan.
 
@@ -108,13 +117,30 @@ percentage in this plan.
   art; nothing matches in this repo). **The Gateway already produced the Nepal package, so a Swiss
   package is plausibly a REQUEST rather than a build.** Establish which first — it is the difference
   between a ticket and a data workstream.
-- **Importing it** is cheap and already built: `cli/import_basin_package.py` plus the Plan 120
-  loader, which validates `feature_catalog.json` against the parquet columns.
+- **Importing it is NOT the cheap half it first appears** (seam review, 2026-08-12). The mechanism
+  exists (`cli/import_basin_package.py` + the Plan 120 loader), but Swiss stations are **already bound
+  to CAMELS-CH basins** created at station onboarding (`services/onboarding.py:262-269`;
+  `adapters/camelsch_adapter.py:244-254`, `network="bafu"`). The importer reaches those only via the
+  correction branch keyed on `(network, basin_code)` (`store/basin_importer.py:662-692`), and:
+  - on an identity mismatch, `_assign_station_basin` raises **`BasinPackageRejectedError` — rejecting
+    the WHOLE package**, not one basin (`store/basin_importer.py:697-720`);
+  - where it *does* match, it **replaces attributes, geometry and area wholesale**, sets
+    `material_change=True` and returns an affected-artifact set (`:810-833`) — i.e. it overwrites the
+    CAMELS-CH namespace and **flags the incumbent artifacts T6 is meant to compare against.**
+
+  **T1 must therefore settle basin identity and rebinding explicitly**: does the Swiss package carry
+  `(network="bafu", code=<BAFU>)` identities that match the existing rows, and is overwriting the
+  CAMELS-CH attributes acceptable given it invalidates incumbents? That is a decision, not a step.
 
 **Exit gate:** every one of PT's **50** declared statics resolves, to a **non-null, finite** value
 (`math.isfinite`) — note `_is_missing` (`services/basin_package_loader.py:1390`) rejects only `None`
 and NaN, so **infinities pass it** and it is not a finiteness definition — for every station in the
-T0 manifest. **`area` must be present** or the area-based `m³/s ↔ mm/day` conversion fails at predict.
+T0 manifest. **`area` must be present, with its DEFINITION and UNIT pinned across the 155↔157 seam** — the
+package documents it as `km²`, "area of the complete delineated basin **polygon**", whereas Caravan's
+`area` is the gauge's **upstream catchment** area. Where the polygon is not exactly that catchment
+the two differ by a constant, which would **rescale every discharge value** while passing 157's
+synthetic round-trip test *and* this plan's non-null/finite gate. Pin which definition PT was trained
+on and assert it here. or the area-based `m³/s ↔ mm/day` conversion fails at predict.
 
 **Red-first:** the Swiss candidate set resolves **0 of the 22 `glc_pc_s*`** statics today (proves
 G12); after import, all 50 resolve.
@@ -172,9 +198,11 @@ rebase.)*
 ```json
 {
   "phases": [
-    { "id": "T1", "tasks": ["T1"], "parallel": false },
-    { "id": "T2", "tasks": ["T2"], "parallel": false, "depends_on": ["T1"] },
-    { "id": "T3", "tasks": ["T3"], "parallel": false }
+    { "id": "T0a", "tasks": ["T0a"], "parallel": false },
+    { "id": "T1",  "tasks": ["T1"],  "parallel": false, "depends_on": ["T0a"] },
+    { "id": "T2",  "tasks": ["T2"],  "parallel": false, "depends_on": ["T1"] },
+    { "id": "T3",  "tasks": ["T3"],  "parallel": false, "depends_on": ["T0a"] },
+    { "id": "T0b", "tasks": ["T0b"], "parallel": false, "depends_on": ["T2", "plan-157"] }
   ]
 }
 ```
