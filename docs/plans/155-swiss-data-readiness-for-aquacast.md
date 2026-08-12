@@ -23,6 +23,13 @@ spent three review rounds correcting.
 a different skillset from the packaging and integration engineering. And **T1c gates Plan 152's T0c**
 — the go/no-go spike cannot hand-shape real Swiss inputs until the statics exist.
 
+**Note to reviewers — this plan is one of a FAMILY (152 / 155 / 156 / 157).** Shared context (the
+selected artifact and its verified contract, owner decisions D1–D13, and what the Swiss run can and
+cannot prove) lives in **Plan 152 only, by design** — the siblings reference it rather than
+duplicating it, because duplication is what produced the drift Plan 152 spent three review rounds
+correcting. **"This plan does not explain X" is NOT a finding if X is in 152.** Do flag it if a
+statement here CONTRADICTS 152, or if this plan depends on something no plan in the family owns.
+
 ## Objective
 
 Make Switzerland able to feed PT at all. Switzerland is not a convenience here — **it is the only

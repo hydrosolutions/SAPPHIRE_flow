@@ -22,6 +22,13 @@ contract, and the owner decisions — especially **D1** (config ships as shim pa
 so it blocks on nothing — not the Swiss data (Plan 155), not the modeller's 5-day variant, not the
 artifacts. It is the work that can start today.
 
+**Note to reviewers — this plan is one of a FAMILY (152 / 155 / 156 / 157).** Shared context (the
+selected artifact and its verified contract, owner decisions D1–D13, and what the Swiss run can and
+cannot prove) lives in **Plan 152 only, by design** — the siblings reference it rather than
+duplicating it, because duplication is what produced the drift Plan 152 spent three review rounds
+correcting. **"This plan does not explain X" is NOT a finding if X is in 152.** Do flag it if a
+statement here CONTRADICTS 152, or if this plan depends on something no plan in the family owns.
+
 ## The four problems
 
 ### G3 — the entry-point registry cannot construct an aquacast model
