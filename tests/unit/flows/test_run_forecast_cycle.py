@@ -1805,6 +1805,39 @@ class TestNwpDeliveryPartialDivergence:
         assert str(sid_missing) in record.detail["missing_station_ids"]
         assert str(sid_ok) not in record.detail["missing_station_ids"]
 
+    def test_equal_count_substitution_still_alarms(self) -> None:
+        # Review fold-in (minor): detection must gate on the SET DIFFERENCE,
+        # not on cardinality. Requested {A, B} but returned {A, X} has EQUAL
+        # counts, so a `len(returned) < len(requested)` guard silently skips
+        # the alarm even though B is genuinely missing. Fails against the
+        # cardinality-based guard; passes against the set-difference one.
+        sid_ok = StationId(uuid4())
+        sid_missing = StationId(uuid4())
+        sid_unexpected = StationId(uuid4())
+        adapter = FakeWeatherForecastSource(
+            result={
+                sid_ok: self._basin_forecast(sid_ok),
+                sid_unexpected: self._basin_forecast(sid_unexpected),
+            }
+        )
+        nwp_store = FakeWeatherForecastStore()
+        health_store = FakePipelineHealthStore()
+
+        outcome = _fetch_nwp_task(
+            adapter,  # type: ignore[arg-type]
+            [_snow_ws(sid_ok), _snow_ws(sid_missing)],
+            _NOW,
+            nwp_store,
+            lambda: _NOW,
+            pipeline_health_store=health_store,
+        )
+
+        assert outcome is not None
+        assert outcome.nwp_delivery_partial is True
+        record = _only_nwp_delivery_record(health_store)
+        assert record.status == PipelineHealthStatus.CRITICAL
+        assert str(sid_missing) in record.detail["missing_station_ids"]
+
     def test_partial_delivery_logs_error_event(self) -> None:
         # Fixer-round finding (minor): the CRITICAL pipeline_health record is
         # locked above, but nothing pinned the `nwp.delivery_partial`
