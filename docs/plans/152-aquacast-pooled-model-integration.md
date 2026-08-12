@@ -468,10 +468,21 @@ source is ICON-CH2-EPS only, whose fetch window is **120 h = 5 days**
 (`adapters/meteoswiss_nwp.py:689`). The recap gateway (IFS, ~15 d) is HRU-registered and
 Nepal-scoped, so it is not available for Swiss basins.
 
-**And the shortfall would be silent.** Per this plan's own T0c finding, `_missing_value_count`
-(`adapters/forecast_interface.py:666-672`) counts nulls in *existing rows*, so **missing rows escape
-the `max_nan` gate**; nothing else validates horizon. PT would receive a two-thirds-truncated
-forecast window and return numbers.
+**CORRECTION (seam review, 2026-08-12) — the failure is LOUD, and far worse than truncation.** An
+earlier revision claimed the shortfall would be silent because `_missing_value_count` counts nulls in
+existing rows. That reasoning holds in general, but **the GROUP path has an explicit coverage gate
+ahead of it**: `run_group_forecast.py:388-396` calls `assess_future_coverage` per station with
+`required_steps = model.data_requirements.forecast_horizon_steps`, and on the **first** short station
+does **`return {}` for the ENTIRE group** (`:406`).
+
+So PT at `future_steps=15` against ICON's 120 h does not return truncated numbers — **it returns
+nothing, every cycle**, logging `nwp.insufficient_coverage`. **Until the modeller's 5-day variant
+lands, the Swiss group is structurally dark: zero forecasts, not wrong ones.**
+
+Note the **failure granularity is inconsistent** on the group path: a `max_nan` violation drops
+**one station** and the batch continues (`adapters/forecast_interface.py:752-767`), but a coverage
+shortfall is **all-or-nothing for the group**. So a single short station takes the whole Swiss group
+down — which is the real question Plan 155's depth work must size.
 
 This also makes T0c's stated requirement — "score on operational-like NWP forcing" — unbuildable at
 15-day lead on the Swiss track. Since D11 leans on T0c as **the only NWP-forced evidence in the
@@ -784,64 +795,6 @@ this repo.
 
 **Not yet proven** (T0c's remaining scope): a skill number on real Swiss data with operational NWP
 forcing. The mechanics are proven; the value is not.
-
-### T1 — Past-forcing depth to the required lookback (long pole; data, not code)
-**Scope defined by T0.4.** Extend stored historical forcing and past-target coverage so every target
-station carries the full lookback at every operational issue, **for the daily branch** (PT is
-daily-only; the hourly branch went with the deferred multi-resolution work). If the target
-set is Swiss this **depends on Plan 130** (READY, unimplemented) — land it rather than duplicating it.
-
-**Scope raised by T0c: `max_nan=0` means GAP-FREE, not merely deep.** Audit gap structure across
-210 days for discharge, precipitation and temperature per station — a single missing day disqualifies
-the issue. Expect the fallback chain to carry stations that fail this, and size how often that is.
-
-Additionally harden the silent-degradation hole: a station with insufficient lookback must yield an
-explicit assignment failure, not a warning plus a forecast
-(`services/operational_inputs.py:443-466`). **Red-first.** *(Touches `services/operational_inputs.py`
-— see collision map.)*
-
-### T1b — Caravan↔HydroATLAS static alias map (closes G8)
-**Owner-confirmed 2026-08-11.** aquacast declares statics in **Caravan** names; our basin package
-carries **raw HydroATLAS codes**. Verified against
-`tests/fixtures/basin_static/nepal-dhm-basins/`: against the pooled **51**-static set, 29 match exactly
-(`area`, `p_mean`, `frac_snow`, `high_prec_*`, `low_prec_*`, all 22 `glc_pc_s*`); the other **22 (of
-which PT needs 21) are
-a pure rename**, every one with a counterpart we already hold:
-
-`slope`→`slp_dg_sav`, `stream_gradient`→`sgr_dk_sav`, `lake_fraction`→`lka_pc_sse`,
-`degree_of_regulation`→`dor_pc_pva`, `air_temperature`→`tmp_dc_syr`, `precip_annual`→`pre_mm_syr`,
-`pet_annual`→`pet_mm_syr`, `aet_annual`→`aet_mm_syr`, `aridity_index`→`ari_ix_sav`,
-`climate_moisture_index`→`cmi_ix_syr`, `snow_cover`→`snw_pc_syr`, `snow_cover_max`→`snw_pc_smx`,
-`glacier_fraction`→`gla_pc_sse`, `cropland_fraction`→`crp_pc_sse`, `pasture_fraction`→`pst_pc_sse`,
-`clay_fraction`→`cly_pc_sav`, `silt_fraction`→`slt_pc_sav`, `sand_fraction`→`snd_pc_sav`,
-`soil_organic_carbon`→`soc_th_sav`, `soil_water_content`→`swc_pc_syr`, `karst_fraction`→`kar_pc_sse`,
-`irrigated_fraction`→`ire_pc_sse`.
-
-**Without this the model fails at every predict**: `_static_inputs`
-(`adapters/forecast_interface.py:1059-1071`) computes `missing = static_names - set(static.columns)`
-and raises `ConfigurationError` — all of PT's 21 unaliased statics would be reported missing.
-
-**Approach — additive aliasing (recommended).** Emit the Caravan aliases as **additional columns**
-alongside the HydroATLAS canonicals when building the static frame. Purely additive: our canonical
-namespace and the `feature_catalog.json` / `required_by_models` seam
-(`services/basin_importer.py:185`) are untouched, `_static_inputs` selects only what the model asks
-for so extra columns are inert, and — importantly — **it needs no change to
-`adapters/forecast_interface.py`**, avoiding the Plan 151 collision. *(Rejected: renaming at import,
-which would churn our canonical namespace; or an alias layer inside the FI adapter, which collides
-with 151's T2.)*
-
-**Red-first — the RED assertion is the positive one.** With aliasing, a HydroATLAS-named static
-frame **resolves all of PT's declared statics**; that fails today because `_static_inputs`
-(`adapters/forecast_interface.py:1059-1071`) demands exact declared names and has no aliasing. (The
-converse — that an unaliased frame raises — is a *characterization* assertion that already passes;
-keep it, but it is not the gate.) Pin the map in one place with a test asserting **all 50
-of `cmal_pool_PT`'s declared statics resolve** (PT needs **21** renames — it does not declare
-`degree_of_regulation`). Keep the 22nd mapping (`degree_of_regulation` → `dor_pc_pva`) as optional
-forward-compatibility for the radiation-requiring pooled models.
-
-**Resolved by T0 (2026-08-11):** `cmal_pool_PT` uses **50** statics — the pooled set minus
-`degree_of_regulation`. So the map PT actually needs is **21 renames**, and every one is covered by
-names our basin package already carries. `dor_pc_pva` stays mapped anyway for the radiation models.
 
 ### T1 / T1b / T1c — Swiss data readiness → **SPLIT OUT: Plan 155**
 Moved to `docs/plans/155-swiss-data-readiness-for-aquacast.md`: the Swiss HydroATLAS basin package

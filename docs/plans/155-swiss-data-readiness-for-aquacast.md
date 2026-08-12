@@ -191,9 +191,15 @@ establishing whether T1 is a request or a build.
 - **T1 may be a data workstream rather than a ticket.** If the Gateway cannot produce a Swiss
   package, extraction over the Swiss polygons is comparable in cost to the radiation ingest Plan 152
   deferred as too expensive. **Establish this before committing.**
-- **Gap structure may be worse than depth suggests.** BAFU has documented blackout and
-  weekly-publishing fragility; `max_nan=0` is unforgiving. Expect the fallback chain to carry
-  stations that fail, and size how often.
+- **Gap structure may be worse than depth suggests, and there is NO safety net.** BAFU has
+  documented blackout and weekly-publishing fragility; `max_nan=0` is unforgiving. **There is no
+  fallback chain on the GROUP path** (Plan 152, under T5): a failed station goes dark for this model.
+  Worse, the granularity is **inconsistent** — a `max_nan` violation drops one station
+  (`adapters/forecast_interface.py:752-767`) but a future-coverage shortfall returns `{}` for the
+  **whole group** (`services/run_group_forecast.py:406`). **T3 must size the question that actually
+  matters: how often does ONE station take the entire Swiss group dark?** *(Note the repo comment at
+  `run_group_forecast.py:381-383` claims "the fallback chain still runs, mirroring the STATION path"
+  — that comment is wrong and seeded this error; worth correcting when the file is next touched.)*
 
 ## References
 - `docs/plans/152-aquacast-pooled-model-integration.md` — parent; artifact contract, decisions,
