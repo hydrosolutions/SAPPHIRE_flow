@@ -59,6 +59,18 @@ aquacast declares statics in **Caravan** names; a HydroATLAS package carries raw
 needs** — it omits `degree_of_regulation`). **That map was derived against Nepal and must not be
 assumed to carry over** — the same over-generalisation produced G12.
 
+### G15 — `mean_temperature` vs `temperature`: a NAME mismatch nobody owns
+aquacast declares **`mean_temperature`**; SAP3's canonical forcing names are
+**`{"precipitation", "temperature"}`** (`config/deployment.py:132`), and the MeteoSwiss reanalysis
+adapter emits `temperature`. So compatibility reports **both past and future forcing missing** under
+the name this plan uses, and the operational read would look for a series that does not exist.
+
+**Plan 157 scopes the UNIT boundary (`mm/day`) but not the NAME boundary** — this fell between the
+siblings. **It belongs in the shim, with the units**: expose canonical `temperature` in the outward
+FI requirement and translate internally to aquacast's `mean_temperature`. Recorded here because T3
+must audit **stored `temperature`**, not a non-existent `mean_temperature` series. *(Assigned to Plan
+157; tracked here so the dependency is visible from the data side.)*
+
 ### G1 — 210 days of GAP-FREE daily history
 `max_nan=0` on every past variable. But `_missing_value_count`
 (`adapters/forecast_interface.py:666-672`) counts **nulls in existing rows**; a completely **absent
@@ -68,6 +80,21 @@ real requirement is **calendar completeness**, and the real risk is a silent tru
 
 Separately, `operational_inputs` only **warns** on a short lookback (`:443-466`) — an under-fed
 window degrades silently rather than announcing itself.
+
+## T0 — Freeze the candidate manifest FIRST (review finding, 2026-08-12)
+
+**The Swiss station list is not the aquacast candidate list.** Our onboarding manifest includes
+**lake stations that cannot run a discharge model at all** — `docs/deployment/dress-rehearsal-2026-04-21.md`
+§F7 records that Murten (**station 2004**) "was onboarded as a row but never marked
+`station_operational` because all three registered models target `discharge` — Murten only has
+`water_level`". The CAMELS-CH adapter emits `water_level` for such stations
+(`adapters/camelsch_adapter.py:98`) and `discharge` only where `discharge_vol` exists (`:48-65`).
+
+**Derive the candidate manifest from PT compatibility** — at minimum `forecast_targets` and
+`measured_parameters` containing `discharge` — sweep the whole set for further non-discharge
+stations, and **freeze the resulting count**. Every coverage figure in T1/T2/T3 is a fraction of
+*that* denominator, not of the onboarding manifest. Getting this wrong inflates every readiness
+percentage in this plan.
 
 ## Tasks
 
@@ -84,8 +111,10 @@ window degrades silently rather than announcing itself.
 - **Importing it** is cheap and already built: `cli/import_basin_package.py` plus the Plan 120
   loader, which validates `feature_catalog.json` against the parquet columns.
 
-**Exit gate:** every one of PT's **50** declared statics resolves for every Swiss candidate station.
-**`area` must be present** or the area-based `m³/s ↔ mm/day` conversion fails at predict.
+**Exit gate:** every one of PT's **50** declared statics resolves, to a **non-null, finite** value
+(`math.isfinite`) — note `_is_missing` (`services/basin_package_loader.py:1390`) rejects only `None`
+and NaN, so **infinities pass it** and it is not a finiteness definition — for every station in the
+T0 manifest. **`area` must be present** or the area-based `m³/s ↔ mm/day` conversion fails at predict.
 
 **Red-first:** the Swiss candidate set resolves **0 of the 22 `glc_pc_s*`** statics today (proves
 G12); after import, all 50 resolve.
@@ -102,10 +131,27 @@ importantly — **it needs no change to `adapters/forecast_interface.py`**, avoi
 Plan 157 collisions. *(Rejected: renaming at import, which churns our canonical namespace; or an
 alias layer inside the FI adapter, which collides with 151's T2.)*
 
-**Red-first — the RED assertion is the positive one.** With aliasing, a HydroATLAS-named static frame
-**resolves all of PT's declared statics**; that fails today because `_static_inputs` demands exact
-declared names and has no aliasing. *(The converse — that an unaliased frame raises — already passes
-and is a characterization assertion, not the gate.)*
+**The projection must cover the COMPATIBILITY path, not just the frame (review finding — this was a
+hole in the original design).** Onboarding derives each station's available statics from the **raw**
+`basin.attributes` key set (`flows/onboard_model.py:262-263`) and compatibility then subtracts PT's
+**Caravan-named** `req.static_features` from that raw set
+(`services/model_onboarding.py:251-252`). **So onboarding fails even if every frame is projected
+correctly** — the check never sees the aliases. Training performs its missing-static check before
+constructing the projected frame too. The projection must therefore operate on **attribute/key sets**
+as well as frames, and be applied in both onboarding-compatibility paths and ahead of training's
+check.
+
+**Define alias collision semantics.** If a package ever carries both the raw code and the canonical
+Caravan name, equal finite values are accepted and **conflicting values fail loudly** naming station,
+alias, canonical name and both values. Never silently overwrite a package value.
+
+**Red-first — the RED assertion is the positive one, and it must be asserted at BOTH boundaries:**
+1. **compatibility** — PT reports zero missing statics for a Swiss station (fails today: the raw key
+   set contains no Caravan names);
+2. **frame** — a HydroATLAS-named static frame resolves all of PT's declared statics (fails today:
+   `_static_inputs` demands exact declared names).
+*(The converse — that an unaliased frame raises — already passes and is a characterization
+assertion, not the gate. `_static_inputs` success alone is insufficient evidence.)*
 
 ### T3 — Gap-free 210-day forcing depth (closes G1)
 Extend stored historical forcing and past-target coverage so every target station carries the full

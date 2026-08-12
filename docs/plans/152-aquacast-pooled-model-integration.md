@@ -904,6 +904,16 @@ issue rather than trusted); one station's `FAILURE` leaving siblings intact; and
 ensemble being dropped by QC **at the service level**. Anything here that goes red is a genuine
 regression, not planned work.
 
+**CORRECTION (review of Plan 155, 2026-08-12): there is NO fallback chain for GROUP assignments.**
+This plan has assumed in several places that a failed assignment "advances the fallback chain". That
+is true for the *station* path; for **GROUP** it is false. `run_group_forecast` returns a dict, and
+the cycle merely iterates it (`flows/run_forecast_cycle.py:2464`) — if the group run yields `{}`,
+the loop body never executes. There is **no priority-loop retry and no typed group failure** there.
+So a failed aquacast assignment leaves those stations **dark for that model**, with no automatic
+fall-back to a lower-priority incumbent. This sharpens T5's priority decision below (the interaction
+with incumbents is not a graceful degradation) and means G1's gap-free-history risk has **no safety
+net** on the group path.
+
 **T5 also owns the PRODUCTION CUTOVER — otherwise every task can complete and PT still never runs in
 production** (design-review finding). Nothing else in the family creates the wiring: `store_group`
 and `add_station_to_group` have **no caller anywhere in `src/`**

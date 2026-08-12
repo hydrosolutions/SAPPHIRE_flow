@@ -92,6 +92,16 @@ Each class binds its `ModelTemplate.from_yaml(...)` + device at construction and
 (`services/model_registry.py:60-67`). `adapt_if_fi` wraps it at discovery (`:76-84`). The config
 ships as **package data** (D1).
 
+**The shim owns the NAME boundary too (G15 — review finding, 2026-08-12).** aquacast declares
+**`mean_temperature`**; SAP3's canonical forcing names are `{"precipitation", "temperature"}`
+(`config/deployment.py:132`) and the MeteoSwiss reanalysis adapter emits `temperature`. Under the
+aquacast name, compatibility reports **both past and future forcing missing** and the operational
+read looks for a series that does not exist. This fell between the sibling plans — it is the same
+class as G9 but for names, and it belongs in the same place: **expose canonical `temperature`
+outward, translate internally to `mean_temperature`.** Red-first: compatibility reports zero missing
+forcing for a Swiss station (fails today), and an FI input built from a `temperature` series reaches
+the model as `mean_temperature`.
+
 **The shim owns the unit boundary (G9).** It must present SAP3-compatible units outward and convert
 numerically in both directions:
 - **discharge** — expose `M3_PER_S`, doing the **area-aware** `mm/day ↔ m³/s` conversion internally
