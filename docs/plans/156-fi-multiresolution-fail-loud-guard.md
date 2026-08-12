@@ -83,11 +83,26 @@ blocking contradiction with Plan 151).** Rejecting every multi-`time_step` requi
 branch plus a past-only branch) stays constructible; the genuinely unsupportable shape (two
 future-forced resolutions, as in an MTS-LSTM config) fails loudly.
 
-**Red-first (all three must fail against current code, for the stated reason):**
+**THE RULE IS TWO-LEVEL (recorded post-implementation, 2026-08-12).** Implementation found that one
+level is not sufficient, and the distinction matters to Plan 151:
+- **At CONSTRUCTION / projection** — reject only **multiple FUTURE-FORCED branches**. One
+  future-forced branch plus a past-only branch is **accepted**, so Plan 151 T2's per-branch accessors
+  stay usable.
+- **At DELIVERY** (`predict` / `predict_batch` / `train`) — reject **any** multi-branch requirement,
+  via `_assert_single_deliverable_dynamic_branch` in `_station_inputs_from_frames`. Reason: SAP3
+  builds only ONE `dynamic={time_step: …}` entry — the branch matching the caller's `time_step` —
+  while fetch and the NaN gate flatten across **all** branches. A second branch's variables would
+  therefore be fetched, NaN-checked, and then **silently omitted** from what the model receives:
+  precisely the plausible-but-wrong outcome this plan exists to prevent. It lifts when Plan 153 lands
+  real multi-resolution delivery.
+
+**Red-first (all must fail against current code, for the stated reason):**
 1. An FI model declaring **non-empty `future_known` in more than one `time_step` branch** is
-   **rejected with a clear error naming the resolutions** — today it is flattened and accepted. A
-   requirement with one future-forced branch and one past-only branch is **accepted** (guards against
-   over-rejection, and is the shape Plan 151 needs).
+   **rejected at construction** with a clear error naming the resolutions — today it is flattened and
+   accepted. A requirement with one future-forced branch and one past-only branch **constructs
+   successfully** (guards against over-rejection at that level).
+1b. Any multi-branch requirement — **including** the one-future-forced-plus-past-only shape — raises
+   `UnsupportedModelRequirementError` at **delivery**.
 2. **With one multi-resolution model installed alongside good ones, `discover_models()` still
    returns the good ones** — today a `ConfigurationError` from the projection aborts the whole loop
    (`services/model_registry.py:93-95`).
@@ -112,9 +127,22 @@ future-forced resolutions, as in an MTS-LSTM config) fails loudly.
   (`services/model_registry.py:93-95`). So one non-conformant entry point would darken discovery for
   the forecast cycle, training and onboarding. **This plan's T1 red test #2 is the only funded fix
   for that invariant**, so 151's sweep should signal through it rather than raise.
-- **Shared fixture:** `_multi_product_requirement()`
-  (`tests/unit/adapters/test_forecast_interface_adapter.py:152-168`) is used by 8 tests and by 151
-  T2's red test. Changes to it must be agreed, not made unilaterally.
+- **Shared fixture — CHANGED, and the plan's earlier premise about it was WRONG.** This plan claimed
+  the fixture "legitimately declares a 1 h and a 24 h branch" and so needed no edit under the narrowed
+  rule. **False:** on `main` *both* its branches carried non-empty `future_known`
+  (`_daily_dynamic_spec` had `future_known={"nwp": {"temp_forecast": …}}`), making the fixture itself
+  an instance of the rejected shape. Implementation resolved it by dropping that `future_known`, so
+  the 24 h branch is past-only — which preserves the fixture's qualitative shape (two time steps,
+  different features) **and** matches the shape Plan 151 T2 needs. Recorded here rather than left in a
+  test comment, since this plan required fixture changes to be agreed.
+- **⚠️ Plan 151 T6 is at risk from the DELIVERY-level guard — T2 is not.** 151 T2's red tests are
+  *accessor* tests, and the 151 plan contains **zero** references to `predict(`, `predict_batch` or
+  `.train(`, so construction-level acceptance is all it needs. But **151 T6** asserts a
+  branch-specific `max_nan` is "honoured from the **selected branch** only" — implying a multi-branch
+  fixture — and it exercises `InputSeries` construction, which is where
+  `_assert_single_deliverable_dynamic_branch` sits. **If T6 drives a multi-branch requirement through
+  the assembly path, this guard raises.** The 151 session must either use a single-branch fixture for
+  that assertion or agree to lift the delivery guard for the assembly path.
 - Plan 157 also touches `adapters/forecast_interface.py`'s neighbourhood; when 151's per-`time_step`
   accessors land they are the natural foundation for Plan 153, and this guard should compose with
   them rather than duplicate them.
