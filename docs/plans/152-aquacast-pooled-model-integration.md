@@ -589,7 +589,8 @@ merely a smoke test. That was not true of the Dudh Koshi fine-tune, where a Swis
 measured single-basin transfer degradation and proved integration only.
 
 **Score on operational-like forcing (NWP), not the ERA5-Land feed PT was trained on** — otherwise
-the number flatters the model on exactly the axis the Risks section flags.
+the number flatters the model on exactly the axis the Risks section flags. T0c is therefore the
+**only** NWP-forced evidence in this plan until the D11 follow-on lands (T6 is reanalysis-forced).
 
 **Exit gate:** integration proven end to end, a skill number against the incumbents, and an **owner
 go/no-go on committing to T1/T2/T3**. A poor number here should stop the plan — that is the whole
@@ -796,13 +797,13 @@ tail-closure metadata in `QuantileData` or `VariableMetadata` to read.
 **Review finding — the existing hindcast path cannot do an NWP-forced hindcast.**
 `services/hindcast.py` takes a `WeatherReanalysisSource` (`:263`, `:440`), uses reanalysis as
 **teacher forcing** by design (`:195`, "v0-scope §A13"), and stores `ForcingType.REANALYSIS`
-(`:372`). So T6 cannot, as written, measure the NWP degradation D9 is about. **Owner decision D11**:
-either (a) scope a cycle-faithful NWP hindcast that reads historical `weather_forecasts` by issue
-cycle, takes control member 0, preserves cycle provenance and records the right forcing type — with
-leakage tests proving each issue sees only the cycle available at the time; or (b) **re-scope T6 to
-reanalysis forcing and drop the claim that it measures NWP degradation**, leaving that to
-operational monitoring. *(a) is the honest measurement; (b) is far cheaper and may be right for a
-first verdict — but the plan must not claim (a) while doing (b).*
+(`:372`). So T6 cannot, as written, measure the NWP degradation D9 is about. **RESOLVED (D11, owner 2026-08-12): option (b).** T6 uses the existing
+**reanalysis** hindcast and **claims only reanalysis skill**. The cycle-faithful NWP hindcast (read
+historical `weather_forecasts` by issue cycle, control member 0, cycle provenance preserved, correct
+forcing type, leakage tests proving each issue sees only the cycle available then) is a **named
+follow-on, REQUIRED before any go-live decision rests on the skill number**. Because PT was trained
+on ERA5-Land, a reanalysis-only verdict **systematically flatters** it — T6 must say so beside the
+number rather than leave the reader to infer it.
 
 **Score both representations the same way.** Giving WIS to quantile forecasts while incumbents keep
 member-CRPS compares two different estimators, which is not the apples-to-apples verdict the
@@ -880,9 +881,10 @@ gate: a poor result should stop T1/T2/T3, not merely inform them.**
   accepted by onboarding. T0b makes it loud first, and is worth landing even if the rest slips.
 - **Degradation from ERA5-Land training to NWP-fed operation is EXPECTED, not hypothetical**
   (owner-confirmed 2026-08-11; `configs/regions/nepal.yaml`: "ERA5-Land daily is the ONLY forcing").
-  A pooled model on out-of-distribution forcing can be confidently wrong. **T0c and T6 must score on
-  operational-like NWP forcing, never the ERA5-Land training feed** — otherwise the number flatters
-  the model on exactly the axis we know is weak. If degradation proves large, bias correction of the
+  A pooled model on out-of-distribution forcing can be confidently wrong. **T0c scores on operational-like NWP forcing.
+  T6 does NOT** — per D11 it uses the reanalysis hindcast path, so its number flatters the model on
+  exactly the axis we know is weak, and must be reported with that caveat attached. Closing the gap
+  is the D11 follow-on, required before go-live. If degradation proves large, bias correction of the
   NWP forcing toward the training climatology becomes a follow-on (see D9); it is explicitly NOT
   scoped here.
 - **Silent lookback truncation** produces plausible bad forecasts. Mitigated by T1's hardening.
@@ -894,24 +896,48 @@ gate: a poor result should stop T1/T2/T3, not merely inform them.**
 
 ## Open items (design forks for the owner)
 
-- **D1 — Where the aquacast `config.yaml` lives.** **(A, recommended)** package data in the shim, one
-  entry point per config — version-pins config↔code, but each retrain needs a shim release. **(B)**
-  artifact-store sidecar — decouples retrains, but adds a store surface and makes discovery depend on
-  DB state. **(C)** artifact metadata/lineage JSONB. *Whichever is chosen, a config change that alters
-  the requirement shape must produce a new model id — a same-id config swap can strand an ACTIVE
-  artifact.*
+- **D1 — Where the aquacast `config.yaml` lives — RESOLVED (owner, 2026-08-12): option (A),
+  package data in the shim, one entry point per trained config.** The shim release *is* the
+  config↔weights contract, so they cannot drift; no new store surface; and `discover_models()` stays
+  a pure function of what is installed rather than gaining a DB dependency at discovery time — a
+  change that would touch the registry every model uses. Cost: a shim release + aquacast-worker
+  image redeploy per new model, acceptable while models arrive occasionally. **Reversible** — moving
+  to (B) later is possible; doing (B) first would change the registry before the first model is
+  proven. *(Rejected: (B) artifact-store sidecar, (C) metadata JSONB — both decouple retrains from
+  releases but require discovery to read DB state.)* **Revisit if** aquacast models start being
+  swapped frequently (monthly experiments), where (B)'s decoupling would start to earn its cost.
+
+
 - **D2 — Target station set — RESOLVED (owner grill-me, 2026-08-11): BOTH, as parallel tracks.**
   **Dudh Koshi is onboarded as the real target** (accepting the Plan 143 + DHM dependency), and
   **while that proceeds the model is applied to Swiss data directly — not fine-tuned**. See
   § Artifact identity. T1's scope therefore splits: Swiss depth (which we largely hold; Plan 130
   applies) unblocks T0c now, Nepal depth follows onboarding. *(Rejected: Swiss-only via a Swiss
   fine-tune — an extra ask on the colleague for a basin we do not ultimately target.)*
-- **D3 — Import-only, or must retrain work?** This plan assumes import-only (T3). If v1 needs
-  SAP3-side fine-tuning, the FI `train`/`retrain` path and `assemble_group_training_data` must also be
-  exercised — a materially larger T3.
-- **D4 — Alert eligibility of a quantile-backed ensemble.** If T0.6 finds the floors or alert path
-  assume member-backed ensembles, decide between forecast-only-not-alert-eligible for v1, or extending
-  the alert path. *Do not work around it in the adapter.*
+- **D3 — Import-only, or must retrain work? — RESOLVED (owner, 2026-08-12): import-only for v1.**
+  We import artifacts the colleague trains; T3 stays a validate → store → provenance → promote path
+  and FI `train`/`retrain` plus `assemble_group_training_data` stay unexercised. Matches how the
+  fine-tunes are produced today (on their side). **Retrain/fine-tune in SAP3 is a named follow-on** —
+  it would enlarge T3 substantially (training-data assembly, finetune config, checkpoint monitor) and
+  pull training compute into our deployment.
+
+
+- **D4 — Alert eligibility of a quantile-backed ensemble — RESOLVED BY EVIDENCE (2026-08-12): it
+  already works.** The system carries a **dedicated quantile floor**,
+  `min_operational_quantile_levels` (default **7**, validated `>= 7`,
+  `config/deployment.py:124,192-199`), applied in both the alert gate
+  (`services/alert_checker.py:184-187`) and the onboarding floor
+  (`services/model_onboarding.py:726-728`). Quantile ensembles are **never** judged against the
+  20-member `min_operational_ensemble_size`. `cmal_pool_PT` emits `[0.05, 0.1, 0.25, 0.5, 0.75, 0.9,
+  0.95]` and `ForecastEnsemble.from_quantiles` requires ≥7 levels with min ≤0.05 and max ≥0.95
+  (`types/ensemble.py:97-106`) — **PT satisfies every check.**
+  **⚠ Zero margin, and that is a real fragility:** 7 levels is exactly the floor, 0.05 exactly the
+  required minimum, 0.95 exactly the required maximum. Any narrowing of `inference.quantile_levels`
+  in a future config breaks onboarding *and* alert eligibility at once. **T0 must re-verify the
+  declared levels for every delivered artifact**, and this is worth stating to the colleague as a
+  contract we depend on.
+
+
 - **D5 — Uncertainty ownership — RESOLVED (owner, 2026-08-11).** Per-model; control member only for
   self-uncertain models. Already declarative via FI `ensemble_mode`. No design work needed.
 - **D6 — Which artifact? — RESOLVED (owner, 2026-08-11, superseding the earlier answer):
@@ -936,8 +962,11 @@ gate: a poor result should stop T1/T2/T3, not merely inform them.**
   isolation, keeps torch out of the main image, but a second image to build and deploy. **(B)** install
   the shim into the existing image — simpler topology, but pulls a large torch runtime into every
   worker. **(C)** accept experiment-only and **re-word the Objective to drop "operational"**.
-  *Recommendation: (A). Whichever is chosen, acceptance needs a cold-start `discover_models()` test in
-  the deployed environment.*
+  **RESOLVED (owner, 2026-08-12): option (A) — a dedicated aquacast worker image/environment**
+  carrying the shim + torch runtime, keeping ~2 GB of PyTorch out of every existing worker and
+  isolating the model's dependency closure. **Acceptance requires a cold-start `discover_models()`
+  test in that deployed environment**; without it this plan may not claim "operational". T2 owns the
+  image; `docs/standards/cicd.md` must be updated with the new topology.
 - **D11 — Does T6 measure NWP degradation or reanalysis skill?** See T6. **(A)** build the
   cycle-faithful NWP hindcast path (honest, larger, needs leakage tests). **(B)** re-scope T6 to
   reanalysis and leave NWP degradation to operational monitoring (cheap, but the plan must stop
