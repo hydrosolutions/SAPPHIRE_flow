@@ -228,7 +228,12 @@ which is no longer the near-term target.
   forcing (Nepal ships no native daily meteorology)". Operationally we feed NWP. This makes the
   out-of-distribution-forcing risk **concrete, not hypothetical**.
 
-**Two tracks, run in parallel (owner, 2026-08-11):**
+**~~Two tracks~~ — ONE track (revised 2026-08-12).** Nepal is out of reach (no operational DHM
+access), so Dudh Koshi cannot be the test case and **Switzerland is where this plan is proven**. The
+original two-track framing is kept below for the record; only track 1 is live, and G12/G13 are
+blocking *because* there is no fallback track.
+
+**Two tracks, as originally scoped (superseded):**
 
 1. **Swiss — interim, unblocks now.** Apply the model to Swiss basins **directly, not fine-tuned**.
    Feasible because the model generalizes to unknown stations, our basin package is HydroATLAS-derived
@@ -449,7 +454,19 @@ forecast window and return numbers.
 This also makes T0c's stated requirement — "score on operational-like NWP forcing" — unbuildable at
 15-day lead on the Swiss track. Since D11 leans on T0c as **the only NWP-forced evidence in the
 plan**, a T0c that quietly degrades to reanalysis leaves the plan with **zero** NWP evidence and D9
-permanently unmeasurable. **Owner decision required — see D12.**
+permanently unmeasurable. **RESOLVED (D12, owner 2026-08-12), two prongs:**
+1. **Ask the modeller for a PT variant accepting a 5-day horizon** — required regardless, since ICON
+   is structurally 5 days and is our only Swiss NWP source. Until it exists, **no Swiss operational
+   NWP run of PT is possible at all.**
+2. **Establish whether 15-day Swiss forcing is reachable.** MeteoSwiss cannot supply it. The only
+   candidate is **registering Swiss HRUs with the recap gateway** for IFS (~15 d) — the gateway is
+   HRU-scoped rather than inherently Nepal-scoped, so this is worth a direct question to the recap
+   team. If it is reachable, the 15-day contract stands and prong 1 becomes a stopgap; if not, the
+   5-day variant is permanent for the Swiss track.
+
+**Until prong 1 lands, T0c can only run reanalysis-forced** — which, with D11 already scoping T6 to
+reanalysis, would leave the plan with **zero NWP-forced evidence**. Say so plainly in any interim
+result rather than presenting a reanalysis number as operational.
 
 ## Non-goals
 
@@ -563,7 +580,11 @@ expected.**
    `input_requirement` by constructing the model from its `config.yaml`. No question needed; T0
    verifies. **Until then every statement about PT's inputs in this plan is owner-reported, not
    verified.**
-3. **PT's skill gap** vs `cmal_pool_20s_no_wd`, globally and for Nepal. **No Swiss/Alpine numbers
+3. **PT's skill gap** vs `cmal_pool_20s_no_wd`, globally and for Nepal.
+3b. **NEW AND BLOCKING (2026-08-12): a PT variant that accepts a 5-day forecast horizon.** Our only
+   Swiss NWP source (ICON-CH2-EPS) fetches 120 h; PT declares `forecast_days: 15`, and a short feed
+   would be silently truncated rather than rejected on our side. Without a 5-day variant there is no
+   Swiss operational NWP run. Also worth asking: how much skill is lost at 5 days versus 15? **No Swiss/Alpine numbers
    exist yet** (owner) — T0c produces the first Swiss evidence, so it is measured against *our
    incumbents*, not against a known PT-vs-`20s` baseline.
 4. How many basins is PT pooled over, and does its config scope via `gauge_ids` or `basins_files`?
@@ -775,6 +796,31 @@ forward-compatibility for the radiation-requiring pooled models.
 `degree_of_regulation`. So the map PT actually needs is **21 renames**, and every one is covered by
 names our basin package already carries. `dor_pc_pva` stays mapped anyway for the radiation models.
 
+### T1c — Swiss basin package: HydroATLAS extraction + import (closes G12)
+**The single hardest prerequisite, and it gates T0c.** PT needs 50 statics in the HydroATLAS/Caravan
+namespace; Swiss `Basin.attributes` today come from CAMELS-CH (`adapters/camelsch_adapter.py:214`)
+and carry none of them.
+
+**The two halves have very different costs:**
+- **Producing the package** (`basins.gpkg` + `static_attributes.parquet` + `feature_catalog.json`
+  over the Swiss basin polygons) is the expensive half — and **we do not hold the extraction
+  tooling**: `extract_hydroatlas.py` / `hydroatlas.py` are Gateway-side (Plan 117 cites them as prior
+  art; nothing matches in this repo). **The Gateway already produced the Nepal package, so a Swiss
+  package is plausibly a REQUEST rather than a build.** Establish which before scoping the work — it
+  is the difference between a ticket and a data workstream.
+- **Importing it** is cheap and already built: `cli/import_basin_package.py` + the Plan 120 loader,
+  which validates `feature_catalog.json` against the parquet columns.
+
+**Exit gate:** every one of PT's 50 declared statics resolves for every Swiss candidate station —
+via the T1b alias map where a HydroATLAS counterpart exists, and from the imported package
+otherwise. **`area` must be present** or the `m³/s ↔ mm/day` conversion fails at predict.
+
+**Red-first:** the Swiss candidate set resolves 0 of the 22 `glc_pc_s*` statics today (proves G12);
+after import, all 50 resolve.
+
+**Note for T1b:** its 21-entry map was derived against the *Nepal* fixture. Re-derive it against the
+**Swiss** package once imported — do not assume the two packages use identical names.
+
 ### T2 — `sapphire-aquacast` shim distribution (external repo; closes G3)
 A thin package **outside this repo** (Plan 135 decision 3 — no torch in our `pyproject.toml`)
 exposing **one zero-argument entry-point class per trained config**:
@@ -935,7 +981,10 @@ reported separately.
 A pooled daily model needs none of it: **Plan 153 is deferred, and nothing in this plan waits on
 Plan 151.**
 
-**The critical path is now: T0 → T0c (go/no-go gate) → T2 ‖ T3 → T4 → T5 → T6**, with **T1 and T1b
+**The critical path is now: T0 → T1c (Swiss basin package) → T0c (go/no-go gate) → T2 ‖ T3 → T4 →
+T5 → T6**, with a **hard external dependency**: T0c cannot produce an NWP-forced number until the
+modeller ships a 5-day-horizon PT variant (G13). Until then T0c is reanalysis-only.
+**The old head of the path was**, with **T1 and T1b
 running alongside and joining at T5** (T4 onboards against synthetic data, so it needs neither the
 real forcing depth nor the alias map; T5 is the first task that touches real assembly).
 The artifacts are in hand, so **the longest pole is engineering, not a human round-trip** — and
@@ -966,7 +1015,8 @@ concern** (T0b and T1 touch files it edits) — not a dependency.
   "phases": [
     { "id": "T0",  "tasks": ["T0"],  "parallel": false },
     { "id": "T0b", "tasks": ["T0b"], "parallel": false },
-    { "id": "T0c", "tasks": ["T0c"], "parallel": false, "depends_on": ["T0"] },
+    { "id": "T1c", "tasks": ["T1c"], "parallel": false, "depends_on": ["T0"] },
+    { "id": "T0c", "tasks": ["T0c"], "parallel": false, "depends_on": ["T0", "T1c"] },
     { "id": "T1",  "tasks": ["T1"],  "parallel": false, "depends_on": ["T0c"] },
     { "id": "T1b", "tasks": ["T1b"], "parallel": false, "depends_on": ["T0c"] },
     { "id": "T2",  "tasks": ["T2"],  "parallel": false, "depends_on": ["T0c"] },
@@ -977,6 +1027,10 @@ concern** (T0b and T1 touch files it edits) — not a dependency.
   ]
 }
 ```
+
+**T1c now gates T0c**: the skill spike hand-shapes real Swiss inputs, so it cannot run until the
+Swiss basin package supplies PT's 50 statics (G12). That makes T1c — not T2 — the true head of the
+critical path.
 
 **No `plan-153` edge** — deferred with sub-daily (D7). No Plan 151 edge either; that relationship is
 now file-level coordination only. T0b has no dependencies and ships first.
@@ -1029,12 +1083,15 @@ predict at all.
   swapped frequently (monthly experiments), where (B)'s decoupling would start to earn its cost.
 
 
-- **D2 — Target station set — RESOLVED (owner grill-me, 2026-08-11): BOTH, as parallel tracks.**
-  **Dudh Koshi is onboarded as the real target** (accepting the Plan 143 + DHM dependency), and
-  **while that proceeds the model is applied to Swiss data directly — not fine-tuned**. See
-  § Artifact identity. T1's scope therefore splits: Swiss depth (which we largely hold; Plan 130
-  applies) unblocks T0c now, Nepal depth follows onboarding. *(Rejected: Swiss-only via a Swiss
-  fine-tune — an extra ask on the colleague for a basin we do not ultimately target.)*
+- **D2 — Target station set — REVISED (owner, 2026-08-12): SWISS is the target, not an interim.**
+  The earlier answer ran Swiss and Dudh Koshi as parallel tracks. **Nepal is now out of reach** — no
+  operational DHM access in any near-term horizon — so Dudh Koshi cannot be the test case and the
+  "two tracks" framing is retired. **Switzerland is where this plan is proven**, which is what makes
+  G12 (statics) and G13 (horizon) blocking rather than merely inconvenient: there is no second track
+  to fall back on. Nepal onboarding (Plan 143 + DHM) remains the eventual v1 destination and is
+  unaffected by this plan.
+
+
 - **D3 — Import-only, or must retrain work? — RESOLVED (owner, 2026-08-12): import-only for v1.**
   We import artifacts the colleague trains; T3 stays a validate → store → provenance → promote path
   and FI `train`/`retrain` plus `assemble_group_training_data` stay unexercised. Matches how the
@@ -1073,22 +1130,15 @@ predict at all.
   (1 of 11 DHM gauges has hourly discharge), so gating every deliverable behind core domain-type
   surgery bought a single station. It returns when DHM hourly coverage grows. **T0b still ships**, so
   a multi-resolution artifact fails loudly rather than being silently mis-onboarded in the meantime.
-- **D12 — BLOCKING FORK: the Swiss track cannot satisfy PT's input contract (G12 + G13).** Nepal is
-  blocked on Plan 143 + DHM; Swiss was the executable track, and it can supply neither PT's 50
-  HydroATLAS statics nor its 15-day forcing window. **T0c — the gate the whole plan is sequenced
-  around — cannot run as scoped.** Options:
-  **(A)** Swiss HydroATLAS extraction over the basin polygons + package import, and accept a
-  reanalysis-forced T0c (no 15-day Swiss NWP exists). Unblocks the pilot on data we control, at a
-  data-workstream cost comparable to the deferred radiation ingest.
-  **(B)** Wait for Nepal onboarding (Plan 143 + DHM). The Nepal basin package already carries the
-  HydroATLAS statics, and recap/IFS reaches ~15 days — **both blockers vanish on the Nepal track**.
-  Cost: no date, gated on an unanswered DHM questionnaire.
-  **(C)** Ask the colleague for a PT variant matched to our envelope — reduced static set and/or a
-  5-day horizon. Cheapest for us, a model-side change for them, and it changes what we are
-  evaluating.
-  *Recommendation: ask (C) first — it is a config-and-retrain on their side and may cost days rather
-  than weeks — while scoping (A) as the fallback. (B) is the architecturally cleanest but has no
-  date. **Do not start T1/T1b/T2/T3 until this is settled**: their scope depends on the answer.*
+- **D12 — the Swiss input-contract blockers — RESOLVED (owner, 2026-08-12).**
+  **G12 → option (A):** we do a **Swiss HydroATLAS extraction + basin-package import** (new task
+  **T1c**). **G13 → option (C):** we **ask the modeller for a PT variant that accepts a 5-day
+  horizon** — required regardless of what else we find, because ICON is structurally 5 days. In
+  parallel we establish **whether a 15-day Swiss forcing is reachable at all** (the only candidate is
+  registering Swiss HRUs with the recap gateway for IFS; MeteoSwiss cannot supply it).
+  **Nepal option (B) is CLOSED** — the owner confirms no operational access to DHM data any time
+  soon, so Nepal cannot be the test case. *(Rejected: (B) wait for Nepal.)*
+
 
 - **D9 — NWP forcing bias correction (parked, likely needed).** PT is trained on ERA5-Land; we feed
   NWP. Owner expects degradation. **Only T0c (NWP-forced) or the D11 follow-on can measure this — T6
