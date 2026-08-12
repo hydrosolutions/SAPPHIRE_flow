@@ -1914,7 +1914,11 @@ class _MultiHruEcmwf:
     HRU-containment tests. PF calls always succeed (never exercised as the
     failure trigger here -- that is `TestPfUnavailableControlOnly`'s job,
     unchanged by Plan 154). ``empty_hrus`` names HRUs whose response is
-    well-formed but carries zero rows."""
+    well-formed but carries zero rows for EVERY variable.
+    ``empty_control_variables`` names individual ``(hru_code, ifs variable)``
+    FC calls whose response is well-formed but carries zero rows -- while
+    every OTHER variable for that same HRU stays populated, exercising the
+    mixed empty/populated-variable case (Plan 154 review fold-in, major)."""
 
     def __init__(
         self,
@@ -1922,12 +1926,14 @@ class _MultiHruEcmwf:
         polygons_by_hru: dict[str, list[str]],
         fail_control: frozenset[tuple[str, str]] = frozenset(),
         empty_hrus: frozenset[str] = frozenset(),
+        empty_control_variables: frozenset[tuple[str, str]] = frozenset(),
         source_run_by_hru: dict[str, object] | None = None,
     ) -> None:
         self.calls: list[dict[str, object]] = []
         self._polygons_by_hru = polygons_by_hru
         self._fail_control = fail_control
         self._empty_hrus = empty_hrus
+        self._empty_control_variables = empty_control_variables
         self._source_run_by_hru = source_run_by_hru or {}
 
     def ifs_forecast(self, **kwargs: object) -> object:
@@ -1940,6 +1946,15 @@ class _MultiHruEcmwf:
             )
         polygons = self._polygons_by_hru[hru]
         if hru in self._empty_hrus:
+            return _empty_wide_df(polygons)
+        if (
+            kwargs.get("ifs_type") == "fc"
+            and (
+                hru,
+                variable,
+            )
+            in self._empty_control_variables
+        ):
             return _empty_wide_df(polygons)
         return _wide_df(
             polygons,
@@ -2107,6 +2122,54 @@ class TestHruContainment:
                 _CYCLE,
             )
 
+    def test_mixed_empty_and_populated_control_variables_raises_tp_first(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Review fold-in (major): precipitation's control fetch (processed
+        # FIRST) returns a well-formed EMPTY response (no raise) while
+        # temperature's (processed SECOND) is populated, for the SAME HRU.
+        # This must fail loud with AdapterError -- never silently commit
+        # temperature-only forcing. Distinct from `test_partial_forcing_never_
+        # returned`, which fails via a RAISE; here neither call raises at all,
+        # only D2's "complete variable set" invariant is violated.
+        _stub_probe(monkeypatch)
+        ecmwf = _MultiHruEcmwf(
+            polygons_by_hru={_HRU: [_POLY_A]},
+            empty_control_variables=frozenset({(_HRU, "tp")}),
+        )
+        adapter = _forecast_adapter(
+            ecmwf, _MapResolver({_SID_A: _ref(_SID_A, _POLY_A, hru=_HRU)})
+        )
+
+        with pytest.raises(AdapterError):
+            adapter.fetch_forecasts(
+                [_ws(_SID_A, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST)],
+                _CYCLE,
+            )
+
+    def test_mixed_empty_and_populated_control_variables_raises_2t_first(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Same as above with the ordering REVERSED: temperature (processed
+        # FIRST) is well-formed EMPTY, precipitation (processed SECOND) is
+        # populated. Locks that the mixed-coverage check is order-independent
+        # -- a check that only inspects the LAST variable processed would miss
+        # this ordering.
+        _stub_probe(monkeypatch)
+        ecmwf = _MultiHruEcmwf(
+            polygons_by_hru={_HRU: [_POLY_A]},
+            empty_control_variables=frozenset({(_HRU, "2t")}),
+        )
+        adapter = _forecast_adapter(
+            ecmwf, _MapResolver({_SID_A: _ref(_SID_A, _POLY_A, hru=_HRU)})
+        )
+
+        with pytest.raises(AdapterError):
+            adapter.fetch_forecasts(
+                [_ws(_SID_A, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST)],
+                _CYCLE,
+            )
+
     def test_total_unavailability_unchanged(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -2184,6 +2247,45 @@ class TestHruContainment:
                 ],
                 _CYCLE,
             )
+
+    def test_total_loss_reraise_preserves_original_diagnostic(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Review fold-in (minor): the SAME mixed empty-success + discarded
+        # scenario as `test_empty_success_plus_discarded_still_raises`, but
+        # asserting the RAISED EXCEPTION ITSELF is accurate and does not
+        # discard the original Gateway diagnostic. Pre-fix, the synthetic
+        # message falsely claimed "every ... HRU ... was discarded" (false
+        # here -- hru_b was a well-formed empty success, not discarded) and
+        # dropped hru_a's original "tp unavailable in hru_a" error entirely
+        # (no `__cause__`, no mention in the message).
+        _stub_probe(monkeypatch)
+        ecmwf = _MultiHruEcmwf(
+            polygons_by_hru={"hru_a": [_POLY_A], "hru_b": [_POLY_B]},
+            fail_control=frozenset({("hru_a", "tp")}),
+            empty_hrus=frozenset({"hru_b"}),
+        )
+        adapter = _forecast_adapter(ecmwf, _two_hru_resolver())
+
+        with pytest.raises(RecapDataUnavailableError) as excinfo:
+            adapter.fetch_forecasts(
+                [
+                    _ws(
+                        _SID_A, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST
+                    ),
+                    _ws(
+                        _SID_B, nwp_source="ifs_ecmwf", role=WeatherSourceRole.FORECAST
+                    ),
+                ],
+                _CYCLE,
+            )
+
+        message = str(excinfo.value)
+        assert "every" not in message.lower()
+        assert "1" in message  # exactly 1 of 2 HRUs discarded
+        assert "tp unavailable in hru_a" in message
+        assert excinfo.value.__cause__ is not None
+        assert "tp unavailable in hru_a" in str(excinfo.value.__cause__)
 
     def test_single_hru_deployment_unchanged(
         self, monkeypatch: pytest.MonkeyPatch

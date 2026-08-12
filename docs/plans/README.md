@@ -46,7 +46,13 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
   DEGRADED cycle health rather than silently darkening the whole deployment. No
   adapter return-type/Protocol change. Independent of the forecast-cycle redesign;
   Plan 151 D7 needs this same containment for its own per-track path (154 first
-  shrinks 151's T4).
+  shrinks 151's T4). **Fixer round (2026-08-12, post-implementation review):** folded
+  in a mixed-empty/populated-control-variable `AdapterError` guard (D2's "complete
+  variable set" invariant covers this shape too, not just the raising case), a
+  `run_forecast_cycle_flow` end-to-end test proving the divergence wiring (was
+  previously only unit-tested in isolation), and an accurate total-loss re-raise
+  message that preserves the original Gateway diagnostic as `__cause__`. See the
+  plan doc's "Fixer round" section.
 - **103** — Writable `PREFECT_HOME` under the read-only container — `READY, implemented (hold-at-PR)` — set
   `PREFECT_HOME=/tmp/prefect` on the 3 client services (worker, worker-ingest, init). **Supersedes 062 and
   141.** Trivial/env-only. The flow-run-**log-persistence** half was **split to

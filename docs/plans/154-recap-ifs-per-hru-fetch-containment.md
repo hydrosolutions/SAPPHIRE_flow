@@ -209,10 +209,55 @@ tests: it discards healthy HRUs' data *and* reports the cause as cycle-wide non-
         records **no** divergence record and does **not** alarm, proving reconciliation is restricted to a non-empty
         proper subset.
     13. **A contained gap logs** `recap.hru_unavailable_contained` with HRU name, variable **and `ifs_type`** (D4).
-  - **Test soundness:** tests 1–2 must be shown failing against unmodified `fetch_forecasts`; test 4 against a naïve "any rows → return" implementation. State which baseline
+    14. **Mixed empty/populated control variables raise** (fixer-round fold-in, major) — for the SAME HRU, one
+        required IFS variable's control fetch returns a well-formed EMPTY response (no raise) while the other's is
+        POPULATED → `AdapterError` (both orderings locked: `tp`-empty-first and `2t`-empty-first).
+    15. **Full-flow divergence wiring** (fixer-round fold-in, major, `TestNwpDeliveryPartialDivergenceFullFlow` in
+        `tests/unit/flows/test_run_forecast_cycle.py`) — `run_forecast_cycle_flow` itself (not the isolated
+        `_fetch_nwp_task`/`_forecast_cycle_health` units) produces the healthy station's forecast, the missing
+        station's fallback forecast, the CRITICAL record, and `DEGRADED` cycle health, all from one flow run.
+    16. **Total-loss re-raise preserves the original diagnostic** (fixer-round fold-in, minor) — the mixed
+        discarded+empty-success re-raise (test 7) reports accurate discarded/empty counts, embeds the original
+        per-HRU Gateway error text, and chains it as `__cause__`.
+  - **Test soundness:** tests 1–2 must be shown failing against unmodified `fetch_forecasts`; test 4 against a naïve "any rows → return" implementation; tests 14 and 16 shown failing against the pre-fixer-round code (RED confirmed for both). State which baseline
     each was proven against.
   - **Exit gate:** `uv run pytest tests/unit/adapters/test_recap_gateway.py tests/unit/flows/test_run_forecast_cycle.py -q`
     + full `uv run pytest -q` + `uv run pyright` + `uv run ruff check`.
+
+## Fixer round (post-implementation review fold-in, 2026-08-12)
+An independent Codex pass over the committed diff (`52ab9c8`) plus a Claude design pass raised one major finding
+against T1's tests and one against the flow-level acceptance test, plus one minor. All three are resolved in this
+plan's implementation (no scope change; T1's phase boundary and design stand):
+
+- **Major — mixed-variable coverage was unrepresented.** `fetch_forecasts` committed an HRU whenever `hru_acc`
+  contained ANY rows, without checking that EVERY required IFS variable (`tp`, `2t`) contributed control rows. A
+  well-formed-EMPTY response for one variable (zero rows, no raise — the same shape D3's "well-formed empty" case
+  legitimately produces at the whole-HRU level) alongside a POPULATED response for the other would have silently
+  shipped incomplete (e.g. temperature-only) forcing, violating D2's "a committed HRU has its complete variable set"
+  invariant. **Fix:** `fetch_forecasts` now tracks per-canonical-variable control-row coverage within each HRU and
+  raises `AdapterError` (uncontained — not `RecapDataUnavailableError`, mirroring the D6 malformed-response
+  precedent) on any mixed covered/empty split, before that HRU's rows are ever merged into the shared accumulator.
+  Locked by two new tests (`test_mixed_empty_and_populated_control_variables_raises_tp_first`/`_2t_first`,
+  `tests/unit/adapters/test_recap_gateway.py`) covering both variable orderings; both proven to fail against the
+  pre-fix code (RED confirmed by disabling the check and re-running).
+- **Major — acceptance test 12 was not proven end-to-end.** The original T1 tests exercised `_fetch_nwp_task`'s
+  reconciliation and `_forecast_cycle_health`'s flag independently, but nothing invoked `run_forecast_cycle_flow`
+  itself — so the wiring at the flow's final `_forecast_cycle_health(..., nwp_delivery_partial=...)` call site could
+  regress silently. **Fix (test-only — the wiring was already correct):** a new
+  `TestNwpDeliveryPartialDivergenceFullFlow` end-to-end test (`tests/unit/flows/test_run_forecast_cycle.py`) runs a
+  two-station cycle (one delivered by the adapter, one a divergence gap with its own lower-priority non-NWP fallback
+  assignment) through the full flow and asserts: the healthy station's forecast is stored, the missing station's
+  forecast is ALSO stored (via its own local fallback — never dropped from the cycle), the CRITICAL `NWP_DELIVERY`
+  record names exactly the missing station, and `result.health is DEGRADED`. Proven to fail (RED) when the
+  `nwp_delivery_partial=` wiring at the flow's final health call is stubbed out.
+- **Minor — total-loss re-raise discarded the original Gateway diagnostic.** The re-raise on total HRU loss (D3,
+  "no HRU committed AND ≥1 discarded") used a synthetic message claiming "every ... HRU ... was discarded", false for
+  the mixed discarded+well-formed-empty case (acceptance test 7) that this exact branch handles, and dropped the
+  original per-HRU `RecapDataUnavailableError`'s diagnostic text entirely. **Fix:** the message now reports discarded
+  vs. well-formed-empty HRU counts accurately, embeds the last discarded HRU's original error text, and chains that
+  original exception as `__cause__`. Locked by
+  `test_total_loss_reraise_preserves_original_diagnostic`; proven to fail (RED) against the original synthetic
+  message.
 
 ## Phase dependency graph
 ```json

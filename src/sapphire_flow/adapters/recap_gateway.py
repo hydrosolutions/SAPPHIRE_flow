@@ -822,6 +822,13 @@ class RecapGatewayForecastAdapter:
         acc: dict[StationId, list[dict[str, object]]] = {}
         cycle_source_run: object | None = None
         hru_discarded = False
+        hru_discarded_count = 0
+        # Plan 154 review fold-in (minor): remember the LAST HRU's original
+        # Gateway diagnostic so the total-loss re-raise below can chain it as
+        # `__cause__` instead of discarding it -- the flow-level error log
+        # must not lose the real reason (e.g. "tp unavailable in hru_a") behind
+        # a synthetic aggregate message.
+        last_discarded_error: RecapDataUnavailableError | None = None
 
         for hru_name, refs_by_polygon in by_hru.items():
             # Plan 154 D1/D2: stage this HRU's rows LOCALLY and commit them into
@@ -836,12 +843,22 @@ class RecapGatewayForecastAdapter:
             hru_acc: dict[StationId, list[dict[str, object]]] = {}
             hru_source_run = cycle_source_run
             discarded_variable: str | None = None
+            # Plan 154 review fold-in (major): a well-formed but EMPTY control
+            # response (zero rows, no raise) is indistinguishable from a
+            # populated one at the `except RecapDataUnavailableError` level
+            # below -- both leave the HRU loop without discarding it. Track,
+            # per canonical variable, whether the FC call actually contributed
+            # >=1 row so a tp-empty/2t-populated (or reverse) mix can be
+            # caught below rather than silently committed as incomplete
+            # forcing (D2: "a committed HRU has its complete variable set").
+            control_coverage: dict[str, bool] = {}
             try:
                 for variable in _ifs_variables():
                     ifs_name = variable.ifs_name
                     if ifs_name is None:
                         continue
                     discarded_variable = variable.canonical
+                    rows_before = sum(len(rows) for rows in hru_acc.values())
                     hru_source_run = self._accumulate_member(
                         hru_acc,
                         refs_by_polygon,
@@ -854,6 +871,8 @@ class RecapGatewayForecastAdapter:
                         member_id=_FC_MEMBER_ID,
                         prior=hru_source_run,
                     )
+                    rows_after = sum(len(rows) for rows in hru_acc.values())
+                    control_coverage[variable.canonical] = rows_after > rows_before
                     for member in range(_PF_MEMBER_MIN, _PF_MEMBER_MAX + 1):
                         # Plan 127 Fix 1: ECMWF disseminates fc before pf, so
                         # during that window every pf member is absent. Tolerate
@@ -885,7 +904,25 @@ class RecapGatewayForecastAdapter:
                                 member=member,
                             )
                             break
-            except RecapDataUnavailableError:
+                # Plan 154 review fold-in (major): a MIXED outcome -- some
+                # required control variables covered, others a well-formed
+                # empty response -- is not producible by a well-behaved
+                # Gateway (D4: publication is global, so within one HRU every
+                # variable should agree). Fail loud with `AdapterError`
+                # (uncontained -- not `RecapDataUnavailableError`, so this
+                # propagates out of the whole call, matching the D6 malformed-
+                # response precedent) rather than silently shipping
+                # partial-variable forcing for this HRU's stations.
+                covered = {v for v, has_rows in control_coverage.items() if has_rows}
+                if covered and len(covered) < len(control_coverage):
+                    empty = sorted(set(control_coverage) - covered)
+                    raise AdapterError(
+                        f"Recap Gateway HRU {hru_name} returned control rows for "
+                        f"{sorted(covered)} but a well-formed EMPTY response for "
+                        f"{empty} in the same cycle {effective_cycle_time.isoformat()} "
+                        "-- partial-variable forcing is never shipped (Plan 154 D2)"
+                    )
+            except RecapDataUnavailableError as exc:
                 # Plan 154 D1/D4: this HRU's CONTROL fetch is unavailable --
                 # discard only this HRU (never abort the whole cycle) and keep
                 # serving every other HRU's stations. This can only be raised by
@@ -895,6 +932,8 @@ class RecapGatewayForecastAdapter:
                 # is the FLOW's job -- the adapter cannot see which stations
                 # were requested across the whole batch, only this HRU's.
                 hru_discarded = True
+                hru_discarded_count += 1
+                last_discarded_error = exc
                 log.warning(
                     "recap.hru_unavailable_contained",
                     hru_name=hru_name,
@@ -927,12 +966,26 @@ class RecapGatewayForecastAdapter:
             # today's total-failure behaviour). Without this, an empty-but-
             # successful HRU elsewhere could mask a real total failure by
             # returning `{}` (treated as success) instead of raising.
+            #
+            # Plan 154 review fold-in (minor): the aggregate message counts
+            # DISCARDED HRUs separately from well-formed-EMPTY ones (that
+            # count is real -- test 7 covers exactly the mixed case where some
+            # HRUs raised and the rest were merely empty), embeds the LAST
+            # HRU's original Gateway diagnostic text, and chains that original
+            # exception as `__cause__` -- so both the message string alone
+            # (what the flow's `log.warning(..., error=str(exc))` call reads,
+            # `run_forecast_cycle.py:1101-1116`) and a full traceback still
+            # carry the real reason instead of only a synthetic summary.
+            hru_empty_count = len(by_hru) - hru_discarded_count
+            assert last_discarded_error is not None
             raise RecapDataUnavailableError(
-                "every in-scope HRU's IFS control fetch was discarded for cycle "
-                f"{effective_cycle_time.isoformat()} (0 of {len(by_hru)} HRU(s) "
-                "committed)",
+                f"no in-scope HRU's IFS control fetch produced rows for cycle "
+                f"{effective_cycle_time.isoformat()} ({hru_discarded_count} of "
+                f"{len(by_hru)} HRU(s) discarded, {hru_empty_count} well-formed "
+                f"empty; 0 committed) -- last discarded HRU's Gateway error: "
+                f"{last_discarded_error}",
                 code="source_data_missing",
-            )
+            ) from last_discarded_error
         # D3: no HRU committed and NONE discarded -- every response was
         # well-formed but empty. Not a failure; return {} exactly as today.
         return {}
