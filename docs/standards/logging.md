@@ -320,6 +320,18 @@ The dedicated `ingest-recap-reanalysis` flow (`flows/ingest_recap_reanalysis.py`
 
 Deliberate divergence from `ingest_weather_history` (which classifies `no_horizon_advance` as `CRITICAL`): 146 uses `WARNING` because JSNOW's ~7-day reanalysis lag makes a no-advance window far more often normal lag than a true outage.
 
+### BAFU forecast station skip / schema-drift events (Plan 160, evaluation-only route-C collector)
+
+`BafuForecastAdapter.fetch_station_inventory` (`adapters/bafu_forecast.py`) validates each of the ~54 GeoJSON features **individually** (Plan 160 D3) — a single feature that fails schema validation (most commonly an icon value BAFU has not documented yet) is skipped and counted, not fatal to the whole inventory. This is the class fix behind the 2026-08-12 outage, where BAFU's undocumented `river_missing` icon aborted collection for all 54 stations on one bad value.
+
+| Event | Level | Notes |
+|---|---|---|
+| `bafu_forecast.station_skipped` | WARNING | Adapter-level: one feature failed `_StationFeatureModel` validation (most commonly an unrecognised icon — see `parse_bafu_icon`, `types/bafu_forecast.py`) or its station key failed the path-traversal shape check. Kwargs: `station_key` (best-effort — `None` if the feature was too malformed to carry one) and `error` (the pydantic/AdapterError message, which names the offending value). The station is excluded from the returned inventory; every OTHER station is still attempted. |
+| `bafu_forecast.inventory_fetch_completed` / `bafu_forecast.inventory_resolved` | INFO | Carries `skipped_count` alongside `station_count` — the per-run drift signal at a glance. |
+| `bafu_forecast.complete` | INFO | Carries `stations_skipped` (from `BafuForecastCollectionResult`) alongside the existing fetch/dedup/failure counts. |
+
+A payload where **no** feature validates (not just one) still raises `AdapterError` and aborts the run — the same partial-vs-total distinction Plan 154 drew for per-HRU NWP containment. `stations_skipped > 0` folds into the Flow 4 `BAFU_FORECAST_FRESHNESS` heartbeat's `WARNING` status (alongside the pre-existing `variants_failed` trigger) and appears in its `pipeline_health` `detail` dict — per the "resilience events that affect operator trust must be queryable" rule above, drift is a WARNING an operator can see in `/api/v1/health/detail`, not only in application logs.
+
 ```python
 # CORRECT
 log.info("forecast.run_completed", lead_time_hours=120, ensemble_size=21, duration_ms=3400)

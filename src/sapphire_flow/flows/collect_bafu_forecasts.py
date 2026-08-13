@@ -100,6 +100,11 @@ class _ForecastAdapter(Protocol):
 @dataclass(frozen=True, kw_only=True, slots=True)
 class BafuForecastCollectionResult:
     stations_seen: int
+    # Stations dropped by inventory containment (Plan 160 D3/D5) -- a feature
+    # that failed per-station validation (e.g. an unrecognised icon). Distinct
+    # from variants_failed below, which counts per-variant FETCH failures on
+    # stations that DID make it into the inventory.
+    stations_skipped: int
     variants_fetched: int
     variants_absent: int
     variants_skipped_dedup: int
@@ -109,6 +114,7 @@ class BafuForecastCollectionResult:
 
 _EMPTY_RESULT = BafuForecastCollectionResult(
     stations_seen=0,
+    stations_skipped=0,
     variants_fetched=0,
     variants_absent=0,
     variants_skipped_dedup=0,
@@ -174,13 +180,16 @@ def _append_bafu_health_record(
 
     from sapphire_flow.types.pipeline import PipelineHealthRecord
 
+    # Plan 160 D5: drift (a skipped station) is a WARNING signal here too,
+    # not just a fetch failure -- both mean an operator should look.
     status = (
         PipelineHealthStatus.OK
-        if result.variants_failed == 0
+        if result.variants_failed == 0 and result.stations_skipped == 0
         else PipelineHealthStatus.WARNING
     )
     detail: dict[str, object] = {
         "stations_seen": result.stations_seen,
+        "stations_skipped": result.stations_skipped,
         "variants_fetched": result.variants_fetched,
         "variants_absent": result.variants_absent,
         "variants_skipped_dedup": result.variants_skipped_dedup,
@@ -216,14 +225,21 @@ def _append_bafu_health_record(
 def _variants_for_station(
     station: BafuForecastStation,
 ) -> tuple[BafuForecastVariant, ...]:
-    # "missing" = station with no current data (BAFU's own legend); it has no
-    # forecast to fetch, so skip it entirely rather than waste 404 requests.
-    if station.icon == "missing":
+    icon = station.icon
+    # Legacy bare "missing" (BAFU's own legend; no water-body kind) is 0/54 in
+    # the live feed as of 2026-08-13, so there is no evidence about what it
+    # denotes today -- behaviour here is UNCHANGED: skip rather than waste a
+    # 404 request. This is NOT the same case as `{kind}_missing` below (Plan
+    # 160 D2).
+    if icon == "missing":
         return ()
-    # River stations only ever publish q_forecast; only lake/level stations
-    # also carry p_forecast (Plan 111 Phase 0b). Deciding this station-side
-    # (rather than always attempting both) keeps the client polite.
-    if station.icon == "lake":
+    # Plan 160 D2/D8 (probe-backed): routing follows water-body KIND alone,
+    # WITH OR WITHOUT live data. A `{kind}_missing` icon (the gauge is
+    # currently down) still demonstrably returns a full forecast -- probed
+    # directly against station 2034 (HTTP 200, comparable byte size to a
+    # healthy control station) -- so the `_missing` suffix must NOT suppress
+    # the fetch the way bare "missing" does.
+    if icon.kind == "lake":
         return ("q_forecast", "p_forecast")
     return ("q_forecast",)
 
@@ -353,6 +369,7 @@ def _collect_forecasts_task(
     archive_base_path: Path,
     sleeper: Callable[[float], None],
     request_delay_seconds: float,
+    stations_skipped: int,
 ) -> BafuForecastCollectionResult:
     from sapphire_flow.exceptions import AdapterError
 
@@ -434,6 +451,7 @@ def _collect_forecasts_task(
 
     return BafuForecastCollectionResult(
         stations_seen=len(stations),
+        stations_skipped=stations_skipped,
         variants_fetched=variants_fetched,
         variants_absent=variants_absent,
         variants_skipped_dedup=variants_skipped_dedup,
@@ -522,6 +540,7 @@ def collect_bafu_forecasts_flow(
         log.info(
             "bafu_forecast.inventory_resolved",
             station_count=len(inventory.stations),
+            skipped_count=inventory.skipped_count,
             produced_at=inventory.produced_at.isoformat(),
         )
 
@@ -532,11 +551,13 @@ def collect_bafu_forecasts_flow(
             archive_base_path,
             sleeper_t,
             _DEFAULT_REQUEST_DELAY_SECONDS,
+            inventory.skipped_count,
         )
 
         log.info(
             "bafu_forecast.complete",
             stations_seen=result.stations_seen,
+            stations_skipped=result.stations_skipped,
             variants_fetched=result.variants_fetched,
             variants_absent=result.variants_absent,
             variants_skipped_dedup=result.variants_skipped_dedup,
