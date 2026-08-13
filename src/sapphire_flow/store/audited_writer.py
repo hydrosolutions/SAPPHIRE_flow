@@ -32,6 +32,7 @@ def make_audited_stores(conn: sa.Connection) -> dict[str, object]:
     with it (Plan 147 Slice E success-path atomicity)."""
     from sapphire_flow.config.paths import resolve_artifact_dir
     from sapphire_flow.store.audit_log_store import PgAuditLogStore
+    from sapphire_flow.store.model_artifact_provenance import PgArtifactProvenanceStore
     from sapphire_flow.store.model_artifact_store import PgModelArtifactStore
     from sapphire_flow.store.station_group_store import PgStationGroupStore
     from sapphire_flow.store.station_store import PgStationStore
@@ -42,6 +43,9 @@ def make_audited_stores(conn: sa.Connection) -> dict[str, object]:
         "station_store": PgStationStore(conn),
         "group_store": PgStationGroupStore(conn),
         "audit_log_store": PgAuditLogStore(conn),
+        # Plan 157 T3: external-artifact import provenance shares this same
+        # transaction — see services/model_import.py.
+        "provenance_store": PgArtifactProvenanceStore(conn),
     }
 
 

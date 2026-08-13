@@ -19,6 +19,14 @@ log = structlog.get_logger(__name__)
 
 WORK_POOL = "default"
 INGEST_POOL = "ingest"
+# Plan 157 D13 (design decision, NOT yet wired here): the forecast cycle is
+# meant to get its own pool once a "forecast-cycle" worker image/service
+# exists (docs/standards/cicd.md § The forecast-cycle pool). Deliberately
+# NOT switching `forecast-cycle`'s work_pool_name yet — T2 (the worker
+# image) depends on T1 (the external `sapphire-aquacast` shim), which does
+# not exist yet; routing this deployment to a pool with no worker would
+# leave it workerless and dark the operational forecast cycle the instant
+# this change deployed (the exact Plan 098 partial-deploy failure mode).
 FLOW_SOURCE_ROOT = "/app"
 
 
@@ -136,6 +144,16 @@ def _build_specs() -> list[DeploymentSpec]:
             flow_attr="collect_bafu_observations_flow",
             deployment_name="collect-bafu-observations",
             cron=cron_bafu_observation,
+            concurrency_limit=1,
+        ),
+        # Plan 157 T3: manually-triggered — no cron. Runs on `default`
+        # (it never touches an aquacast-specific model class; discovery
+        # still requires whatever entry point the imported model_id names
+        # to be installed wherever this deployment's worker runs).
+        DeploymentSpec(
+            flow_module="sapphire_flow.flows.import_model_artifact",
+            flow_attr="import_model_artifact_flow",
+            deployment_name="import-model-artifact",
             concurrency_limit=1,
         ),
     ]

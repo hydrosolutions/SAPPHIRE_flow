@@ -305,3 +305,22 @@ class ModelArtifactRecord:
     promoted_by: UUID | None
     superseded_at: UtcDatetime | None
     created_at: UtcDatetime
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ModelArtifactProvenance:
+    """Plan 157 T3 (G4/G7): marks a `model_artifacts` row as EXTERNALLY
+    IMPORTED rather than trained by SAP3. Presence of a row keyed by
+    `artifact_id` is the provenance signal — absence means SAP3-trained.
+    `imported_at` (this import's own instant) is deliberately a SEPARATE
+    field from `ModelArtifactRecord.trained_at` (the artifact's external
+    training-completion instant, supplied by the importer) — conflating
+    them would backdate the import event to the model's training date."""
+
+    artifact_id: ArtifactId
+    source_repository: str | None
+    source_commit: str | None
+    config_hash: str | None
+    imported_at: UtcDatetime
+    imported_by: str | None
+    notes: str | None

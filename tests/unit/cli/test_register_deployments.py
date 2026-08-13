@@ -26,6 +26,7 @@ DEPLOYMENT_NAMES = {
     "ingest-recap-reanalysis",
     "collect-bafu-forecasts",
     "collect-bafu-observations",
+    "import-model-artifact",
 }
 
 # ---------------------------------------------------------------------------
@@ -98,9 +99,10 @@ class TestBuildSpecs:
     def test_returns_all_specs(self) -> None:
         # Plan 071 adds weather-history ingest; Plan 111 adds the BAFU
         # forecast collector; Plan 136 adds the BAFU observation collector;
-        # Plan 146 adds the recap-reanalysis snow ingest.
+        # Plan 146 adds the recap-reanalysis snow ingest; Plan 157 adds the
+        # external-artifact import flow.
         specs = _build_specs()
-        assert len(specs) == 13
+        assert len(specs) == 14
         assert {s.deployment_name for s in specs} == DEPLOYMENT_NAMES
 
     def test_bafu_collector_hourly_and_serialized(self) -> None:

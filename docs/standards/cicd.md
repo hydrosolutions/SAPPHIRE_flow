@@ -17,6 +17,7 @@ Single VM deployment. All services in one `docker-compose.yml`. Swiss v0 targets
 | `prefect-server` | `prefecthq/prefect:3-python3.11` | postgres (healthy) | `curl -f http://localhost:4200/api/health` | `unless-stopped` | v0+v1 |
 | `prefect-worker` | custom (sapphire-flow) | prefect-server (healthy), init (completed) | — | `unless-stopped` | **v0** (§A6) |
 | `prefect-worker-ingest` | custom (sapphire-flow) | prefect-server (healthy), init (completed) | — | `unless-stopped` | **v0b** (§A6) — dedicated `ingest` pool worker isolating `*/5` obs ingest from the shared `default` pool (Plan 098) |
+| `prefect-worker-forecast-cycle` *(design decision only — NOT in `docker-compose.yml`, NOT wired in `cli/register_deployments.py`)* | custom (sapphire-flow), **would be a superset of `prefect-worker`'s image** | prefect-server (healthy), init (completed) | — | `unless-stopped` | **v0b** (§A6) — planned dedicated `forecast-cycle` pool worker serving ONLY the `forecast-cycle` deployment (Plan 157 D13). Blocked on Plan 157 T1: it would carry the `sapphire-aquacast` shim + torch runtime, which do not exist as an installable distribution yet. The `forecast-cycle` deployment still routes to the `default` pool today — switching it before this service exists would leave the `forecast-cycle` pool workerless and dark the operational cycle. The compose service and the routing change ship together, in one release, once T1 lands. |
 | `prefect-worker-ops` | custom (sapphire-flow) | prefect-server, pgbouncer | — | `unless-stopped` | **v1** (§A6) |
 | `prefect-worker-hindcast` | custom (sapphire-flow) | prefect-server, pgbouncer | — | `unless-stopped` | **v1** (§A6) |
 | `prefect-worker-training` | custom (sapphire-flow) | prefect-server, pgbouncer | — | `unless-stopped` | **v1** (§A6) |
@@ -59,7 +60,7 @@ postgres ──→ pgbouncer ──→ api ──→ caddy
     init (one-shot, runs before workers/api)
 ```
 
-> **v0 variant** (v0-scope.md §A3, §A6): No PgBouncer intermediary; `prefect-worker` (general `default` pool) plus `prefect-worker-ingest` (dedicated `ingest` pool, Plan 098) replace the three specialized workers. Both workers are init-gated one-shot dependents of `prefect-server`.
+> **v0 variant** (v0-scope.md §A3, §A6): No PgBouncer intermediary; `prefect-worker` (general `default` pool) plus `prefect-worker-ingest` (dedicated `ingest` pool, Plan 098) replace the three specialized workers. Both workers are init-gated one-shot dependents of `prefect-server`. A third, `prefect-worker-forecast-cycle` (dedicated `forecast-cycle` pool, Plan 157 D13), is **designed but not yet added** — see the service table above and § The `forecast-cycle` pool below.
 > ```
 > postgres ──→ api ──→ caddy
 >     │
@@ -73,7 +74,45 @@ All `depends_on` use `condition: service_healthy` where health checks are define
 
 ## Prefect work pool separation
 
-> **v1-only** (v0-scope.md §A6): v0 now runs **two** work pools — the general `default` pool plus a dedicated `ingest` pool served by `prefect-worker-ingest` (a v0b obs-feed-isolation addition, Plan 098, that keeps the `*/5` observation ingest off the shared `default` pool). The three-pool ops/training/hindcast topology below still applies to v1.
+> **v1-only** (v0-scope.md §A6): v0 today runs **two** work pools — the general `default` pool plus a dedicated `ingest` pool served by `prefect-worker-ingest` (a v0b obs-feed-isolation addition, Plan 098, that keeps the `*/5` observation ingest off the shared `default` pool). A third, `forecast-cycle`, is **planned** (Plan 157 D13, § below) but not yet wired. The three-pool ops/training/hindcast topology below still applies to v1.
+
+### The `forecast-cycle` pool (Plan 157 D13)
+
+Plan 157 originally scoped a dedicated "aquacast worker image" carrying only
+the `sapphire-aquacast` shim + torch runtime, kept isolated from the
+operational forecast worker (D10's stated rationale: "keep ~2 GB of PyTorch
+out of every existing worker"). That decomposition does not hold: group
+forecasting (Phase B2, the aquacast pooled model's only entry point) runs
+**inside** `run_forecast_cycle`, in the same process as station forecasting,
+and Phase C alerting consumes both in-process — Prefect workers are
+`--type process` on a single image, so splitting Phase B2 into its own
+deployment would mean re-joining group and station ensembles across a
+process boundary (real, unscoped work the redesign does not need).
+
+**Resolved: the `forecast-cycle` pool's image IS a superset of the standard
+one**, not an isolated aquacast image. `prefect-worker-forecast-cycle`
+serves only the `forecast-cycle` deployment and is the one image that will
+carry the shim + torch once Plan 157 T1 publishes the external
+`sapphire-aquacast` distribution; `prefect-worker` (`default`) and
+`prefect-worker-ingest` (`ingest`) no longer run the cycle and stay
+torch-free. D10's *decision* (route the cycle off the general workers)
+survives; its *rationale* ("an isolated aquacast image") does not — the
+honest framing is "one heavier cycle worker," not "an isolated aquacast
+worker."
+
+**As of this plan: this is a DESIGN DECISION ONLY, deliberately not yet wired
+into code.** `cli/register_deployments.py` still routes the `forecast-cycle`
+deployment to the `default` pool — switching it to a `forecast-cycle` pool
+before a worker exists to serve that pool would leave the deployment
+workerless the instant the change deployed (exactly the Plan 098
+partial-deploy failure mode documented under Upgrade Procedure below): every
+scheduled run would queue and never execute, darkening the operational
+forecast/alert pipeline. Both the `docker-compose.yml` service and the
+routing change must ship together, in the SAME release, once the external
+`sapphire-aquacast` shim exists (Plan 157 T1) and the image can carry it.
+The acceptance criterion this pool split exists to satisfy — a cold-start
+`discover_models()` test in the deployed `forecast-cycle` worker — is
+correspondingly not yet satisfiable.
 
 Three work pools isolate workloads with different resource and concurrency profiles:
 

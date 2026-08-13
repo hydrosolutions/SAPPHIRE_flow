@@ -1579,6 +1579,31 @@ class ModelArtifactRecord:
 
 Module: `types/model.py`
 
+### ModelArtifactProvenance
+
+Plan 157 T3 (G4/G7): marks a `model_artifacts` row as EXTERNALLY IMPORTED
+rather than trained by SAP3. Presence of a `model_artifact_provenance` row
+keyed by `artifact_id` is the provenance signal — absence means SAP3-trained.
+`training_period_start`/`training_period_end`/`trained_at` on
+`ModelArtifactRecord` stay non-nullable for an import too (see
+`services/model_import.py`); `imported_at` here is a deliberately SEPARATE
+field from `trained_at` — conflating them would backdate the import event to
+the model's external training-completion instant.
+
+```python
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ModelArtifactProvenance:
+    artifact_id: ArtifactId
+    source_repository: str | None
+    source_commit: str | None
+    config_hash: str | None
+    imported_at: UtcDatetime
+    imported_by: str | None
+    notes: str | None
+```
+
+Module: `types/model.py`
+
 ### OperationalForecast
 
 Wraps the `forecasts` + `forecast_values` join. Contains a `ForecastEnsemble` for the
@@ -2646,6 +2671,29 @@ onboarding._run_onboarding`/`onboard_from_camelsch` thread it through from
 station-onboarding path records lineage too, not just the two Prefect-flow
 call sites. Tests inject `tests.fakes.fake_stores.FakeArtifactLineageWriter`
 with the same shape.
+
+##### External-artifact import + provenance write (Plan 157 T3)
+
+`record_artifact_provenance(conn, provenance)`
+(`sapphire_flow.store.model_artifact_provenance`) is, like the basin-lineage
+helper above, a **standalone helper, not a `ModelArtifactStore` method**.
+`PgArtifactProvenanceStore(conn)` is its thin flow-facing adapter
+(`.record(...)`/`.fetch(...)`); tests inject
+`tests.fakes.fake_stores.FakeArtifactProvenanceStore` with the same shape.
+
+`import_external_artifact` (`sapphire_flow.services.model_import`) is the
+executable entry point that closes G4/G7 — Flow 13
+(`flows/onboard_model.py`) has no path for an artifact SAP3 did not train.
+It validates (config/artifact-hash match, then `model.deserialize_artifact`)
+BEFORE any write, derives the target tenant from the station/group being
+imported into (never trusts a caller-supplied tenant id), and — with a real
+`AuditedWriter` (`store/audited_writer.py`, extended here with a
+`provenance_store` entry) — runs `store_artifact` + the provenance write +
+`promote_artifact` in ONE transaction: on any failure no artifact row, no
+provenance row, and no orphaned artifact file survive. It never calls
+`model.train`. Deployed as the standalone `import-model-artifact` Prefect
+deployment (`flows/import_model_artifact.py`, no cron —
+`cli/register_deployments.py`).
 
 #### ModelStore
 

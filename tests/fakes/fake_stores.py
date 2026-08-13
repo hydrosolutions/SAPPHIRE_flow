@@ -77,6 +77,7 @@ from sapphire_flow.types.ids import (
     TenantId,
 )
 from sapphire_flow.types.model import (  # noqa: TC001
+    ModelArtifactProvenance,
     ModelArtifactRecord,
     ModelRecord,
 )
@@ -1116,6 +1117,21 @@ class FakeAuditLogStore:
 
     def append_entry(self, entry: AuditEntry) -> None:
         self._entries.append(entry)
+
+
+class FakeArtifactProvenanceStore:
+    """Plan 157 T3: mirrors `PgArtifactProvenanceStore`'s `.record(...)`
+    shape — the object `import_external_artifact` calls in test/replay
+    wiring (no real `AuditedWriter`)."""
+
+    def __init__(self) -> None:
+        self._records: dict[ArtifactId, ModelArtifactProvenance] = {}
+
+    def record(self, provenance: ModelArtifactProvenance) -> None:
+        self._records[provenance.artifact_id] = provenance
+
+    def fetch(self, artifact_id: ArtifactId) -> ModelArtifactProvenance | None:
+        return self._records.get(artifact_id)
 
 
 class FakePipelineHealthStore:
