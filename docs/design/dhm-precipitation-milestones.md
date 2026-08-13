@@ -119,7 +119,15 @@ inventory, coverage, off-grid-row, reporting-precision, defect and climatology t
 threshold, quantile grid and missing-data rule is an explicit parameter.
 
 **Exit:** pipeline reproduces the vision's Findings, or the vision is corrected where they disagree.
-**Until this lands, no number in the vision may be cited externally.**
+**COMPLETE 2026-08-13** (Plan 158). 24 of 38 expectations reproduced exactly; 2 were corrected
+(a scope refinement and a draft-estimate supersession); 12 are `withdrawn_unreproducible` with a
+complete Phase-4 record each. **The citation ban lifts per family (D11), not all at once**: it is
+now lifted for `AXIS_INDEPENDENT` and `RAW_AXIS_DIAGNOSTIC` results (workbook column inventory,
+row/off-grid counts, station geometry) — these may be cited externally. Every `RAW_PROVISIONAL`
+result (intensity distributions, shape ratios, coherence, DJF share, missingness, sub-threshold
+mass) stays barred until its own D11 successor lands: M-A2 (axis normalisation), M-A3 (the QC
+mask) or M-A7 (temporal characterisation). See `scripts/dhm_precip/expectations.toml` for the
+per-statistic disposition and evidence record.
 
 ### M-A2 · Time-axis normalisation
 **Depends: M-D3, M-A1.** Blocks M-A7.

@@ -38,6 +38,15 @@ naively-fitted correction would *dry* the forcing of a flood-forecasting system.
 
 ## Findings
 
+**M-A1 reproduction status (Plan 158, 2026-08-13):** the committed pipeline
+(`scripts/dhm_precip/`) reproduced 24 of 38 statistics exactly, corrected 2,
+and could not reproduce 12 on unmasked ON_GRID data (see D6 in the plan and
+the disposition/evidence record in `scripts/dhm_precip/expectations.toml`).
+Per-item notes are inlined below. The external-citation ban is now lifted
+**only** for structural facts (row/column counts, off-grid counts, station
+geometry) — every intensity/coherence/climatology figure below stays barred
+until its own successor milestone (M-A2, M-A3 or M-A7) lands.
+
 ### Inventory
 - **26 usable stations, not 37.** Eleven columns are empty across the entire file: Kathmandu Airport
   (AWOS), Dhankuta_AWS, Okhaldhunga_AWS, Chautara, Salleri, Sarmathang, Mai Pokhari, Gaighat,
@@ -62,6 +71,14 @@ naively-fitted correction would *dry* the forcing of a flood-forecasting system.
 | **A** | 0.01 mm | Syangboche, Humde, Ghorepani, Lukla, Olangchunggola, Lete | 0.14–0.55 | 4.8–19.5 mm/h |
 | **B** | 0.2 mm | the other 20 | 0.08–0.33 | 13–33 mm/h |
 
+**M-A1 (Plan 158):** Group A's wet-hour fraction and q99.9, and Group B's q99.9, are
+`withdrawn_unreproducible` — computed on unmasked ON_GRID data they read [0.080, 0.373],
+[9.99, 41.91] mm/h and [33.02, 77.58] mm/h respectively. Group B's wet-hour fraction reproduces
+exactly. The unmasked maxima are consistent with candidate defects still in the population (M-A1
+builds no exclusion mask): Sindhuli Madhi's own q99.9 (72.2 mm/h) directly reflects its stuck-high
+block below. See `expectations.toml` ids `prec_group_a_wet_hour_fraction`, `prec_group_a_q999`,
+`prec_group_b_q999`.
+
 Group A's modal non-zero value is 0.03–0.06 mm/h. **Reported decimal granularity is not proof of
 instrument type** — it could equally reflect a different processing chain, unit conversion or
 averaging step. "Weighing gauge vs tipping bucket" is a *hypothesis to confirm with DHM*, not a finding.
@@ -69,15 +86,23 @@ averaging step. "Weighing gauge vs tipping bucket" is a *hypothesis to confirm w
 Sub-0.1 mm hours are 22–34 % of Group A's wet hours but only **0.8–2.1 % of its recorded mass**. That
 bounds the contribution of the noise floor *to the recorded total*; it does **not** establish that
 Group A totals are accurate overall, which is a separate question requiring instrument metadata.
+**M-A1:** the mass-fraction range is `withdrawn_unreproducible` — [0.43, 1.95] %
+(`expectations.toml` id `prec_group_a_subthreshold_mass_fraction`); the floor is close but the
+minimum (Ghorepani) sits below 0.8 %, tracking the same unmasked-extreme station as its own q99.9.
 
 **Confound:** Group A is simultaneously the 0.01 mm-reporting subset *and* the high-altitude subset.
 Reporting precision and altitude cannot be separated in this sample. No conclusion may attribute an
 effect to one rather than the other.
 
 ### Defects that survived DHM QC
-- **Sentinels**: Lukla carries 46 values of `-9999999.0`.
+- **Sentinels**: Lukla carries 46 values of `-9999999.0`. **M-A1 (corrected):** the ON_GRID-scoped
+  count (D7's declared population) is 45 — one sentinel sits at an off-grid timestamp
+  (2022-02-01 08:15). 46 is still correct as a raw, any-minute count; 45 is this pipeline's number
+  under its own declared method. See `expectations.toml` id `defect_lukla_sentinel_count`.
 - **Stuck-high sensor**: Sindhuli Madhi, 2025-08-03 → 08-08, every hour pinned at ~72 mm →
-  1,728.4 mm/day for four consecutive days, 8,642 mm in 120 hours.
+  1,728.4 mm/day for four consecutive days, 8,642 mm in 120 hours. **M-A1: reproduces exactly**
+  (120 hours, 8,642.2 mm) once the run-detection tolerance allows for sensor noise around the
+  pinned value (72.0/72.2/72.4 mm) rather than requiring one bit-exact repeated value.
 - **Long zero runs — CANDIDATE false zeros, not adjudicated.** Longest consecutive `0.0` run during
   monsoon: Aiselukhark 52.5 days, Nagarkot_AWS 36.9 d, Lete 35.5 d, Pakhribas 23.4 d, Simara 13.5 d,
   Kanyam 13.2 d, Biratnagar 12.2 d. A clogged or disconnected gauge is one explanation; QC-removed
@@ -96,19 +121,36 @@ extreme-value literature, not from this sample's maxima.
 Initially computed with an endogenous wet indicator. **Re-tested with the station under test excluded
 from the regional wet indicator: median ratio 1.01, max 1.55, one station above 1.5.** Conclusion
 holds — telemetry loss is roughly rain-independent. The bias risk lives in the zero runs, not the gaps.
+**M-A1 (`withdrawn_unreproducible`):** reproduces median 0.73, max 1.21 over the 26 usable stations
+— the qualitative conclusion (ratio near 1, no strong wet-bias) is directionally consistent, but the
+regional-wet-indicator threshold is a declared method choice (D8b) the original analysis did not
+record and it is not recoverable. See `expectations.toml` ids `clim_missingness_ratio_median`,
+`clim_missingness_ratio_max`.
 
 ### Winter precipitation — open question, not a diagnosis
 DJF share of annual total: Syangboche (3,780 m) 2.7 %, Lete 3.8 %, Ghorepani 5.4 %; but Humde 20.3 %
 and Olangchunggola 17.6 %. Solid-precipitation loss in unheated gauges is *one* explanation.
 East–west and windward–leeward winter climatology gradients across Nepal are large enough to produce
 the same pattern. **Cannot be resolved without instrument metadata and coordinates.**
+**M-A1 (`withdrawn_unreproducible`):** Humde's DJF share reproduces at 24.0 %, not 20.3 % — a ratio
+of two unmasked sums, sensitive to the same unresolved axis/defect issues as the other provisional
+statistics. See `expectations.toml` id `clim_djf_share_humde`.
 
 ### Structure — corrected after review
 - **Spatial coherence, network-wide and undistanced**: median inter-station r, JJAS — hourly 0.05,
   3-hourly 0.09, daily 0.28. Computed across *all* station pairs with no distance stratification
   (we have no coordinates), so this describes the network as a whole and **says little about
   near-neighbour coherence**. Whether neighbour-based gap-filling is viable is *open* until pairs
-  can be binned by separation distance.
+  can be binned by separation distance. **M-A1 (Plan 158, coordinates now landed via M-D2):** the
+  hourly figure reproduces exactly (0.047 → rounds to 0.05); the daily figure is
+  `withdrawn_unreproducible` (reproduces at 0.14, not 0.28 — daily aggregation of unmasked hourly
+  values is far more sensitive to candidate defects than hourly comparison). **Distance-stratified**
+  coherence is now available and supersedes the "no coordinates" caveat: within 25 km, hourly
+  r = 0.208, decaying to r = 0.030 beyond 200 km — confirming near-neighbour coherence is real but
+  the network is too sparse to exploit it directly (median nearest-neighbour distance 27 km, only
+  7 of 325 pairs closer than 25 km). See `expectations.toml` ids `coh_hourly_r_undistanced`,
+  `coh_daily_r_undistanced`, `coh_hourly_r_within_25km`, `coh_hourly_r_beyond_200km`, and Plan 158
+  §"What changed since the DRAFT".
 - **Intensity distribution — the earlier "r = 0.998, universal shape" claim was WRONG and is
   withdrawn.** Pearson correlation between quantile vectors is near-1 by construction (verified:
   exponential vs Pareto r = 0.943, exponential vs lognormal r = 0.950). Proper scale-normalised tests:
@@ -119,12 +161,22 @@ the same pattern. **Cannot be resolved without instrument metadata and coordinat
   | CV of shape ratio | 0.11 @ q60 → 0.24 @ q80 → **0.40 @ q99** |
   | Leave-one-out prediction of held-out q99 from median × pooled ratio | median abs error 12.3 %, **range −49 % to +241 %**, only 65 % of stations within ±25 % |
 
+  **M-A1 (`withdrawn_unreproducible`):** the shape-ratio range reproduces at its minimum (8.5) but
+  not its maximum (60.0, not 55.3) — it inherits the same unmasked-q99 sensitivity as the
+  intensity-quantile Findings above, since the ratio's numerator IS q99. The CV likewise reproduces
+  at 0.45, not 0.40. The leave-one-out prediction-error figures were not re-run by M-A1 (out of
+  scope for this pass) and remain provisional pending M-A7. See `expectations.toml` ids
+  `prec_shape_ratio_range`, `prec_shape_ratio_cv_q99`.
+
   So: the distribution **body is moderately transferable; the tail is not**. For a flood system the
   tail is the operative part. A one-parameter scale model for extreme intensity is **not supported**.
 - **Diurnal profile**: median between-station Pearson r = 0.347 (10th pct −0.206). This statistic
   mixes phase, amplitude and profile sharpness and does not isolate phase. It is **suggestive of
   weak transferability, not evidence of it** — and it rests on an unresolved time axis (above), so
-  it cannot be relied on at all until the accumulation convention is confirmed.
+  it cannot be relied on at all until the accumulation convention is confirmed. **M-A1
+  (`withdrawn_unreproducible`):** reproduces at 0.29, not 0.347 — same unmasked-aggregation
+  sensitivity as the daily coherence figure above, and independently still unreliable pending the
+  accumulation-convention resolution named here. See `expectations.toml` id `coh_diurnal_median_r`.
 
 ## Decisions
 
