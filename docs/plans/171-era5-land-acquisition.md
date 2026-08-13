@@ -49,6 +49,56 @@ downstream if handled naively.
 6. **Polars is the repo standard for tabular data**, but this is gridded — `xarray` + `cfgrib` /
    `h5netcdf`, already dependencies. Convert to Polars only at the point extraction (M-A5), not here.
 
+## Observed CDS payload — supplied by the operator 2026-08-13
+
+Task 1a's first act is to capture the **exact** payload the live CDS download form emits (constraint 3).
+A subagent has no logged-in browser, so the operator captured it. **This is the authoritative request
+shape and supersedes every indicative CDS statement elsewhere in this plan.** Task 1a's builder must
+reproduce it exactly; its test asserts against this literal.
+
+```python
+import cdsapi
+
+dataset = "reanalysis-era5-land"
+request = {
+    "variable": ["total_precipitation"],
+    "year": "2021",
+    "month": "10",
+    "day": ["01", "02", ..., "31"],          # all 31, zero-padded strings
+    "time": ["00:00", "01:00", ..., "23:00"], # all 24, "HH:00" strings
+    "data_format": "netcdf",
+    "download_format": "unarchived",
+    "area": [31, 80, 26, 89],
+}
+
+client = cdsapi.Client()
+client.retrieve(dataset, request).download()
+```
+
+**Every D2 prediction is confirmed:**
+
+| Prediction | Observed |
+|---|---|
+| dataset `reanalysis-era5-land` | ✅ exact |
+| `data_format` and `download_format` are **separate** fields | ✅ both present |
+| unarchived delivery must be requested explicitly | ✅ `"unarchived"` |
+| `area` ordered **north/west/south/east** | ✅ `[31, 80, 26, 89]` = 31 °N, 80 °E, 26 °N, 89 °E |
+| **no `product_type`** for this dataset | ✅ absent |
+| client package is `cdsapi` (D13, dev-only) | ✅ `cdsapi.Client()` |
+
+**Two shape details the builder must honour:**
+1. **Scalars and lists are both accepted.** `year` and `month` are bare strings here while `day` and
+   `time` are lists. A whole-year window will need `month` as a 12-element list. The builder emits
+   whichever the window implies; the test asserts the literal, so this is pinned by observation.
+2. **Day lists are zero-padded strings**, and times are `"HH:00"` — not integers.
+
+**A refinement to D2's no-Cartesian-spill test.** A whole-year window necessarily implies
+non-existent dates (31 February, 31 September, and 29 February in non-leap years) because
+`year × month × day` is a plain product. CDS's behaviour on those is to be observed, not assumed. The
+test therefore asserts that the **set of *valid* calendar stamps** implied by the payload equals the
+window exactly — non-existent dates are neither spill nor omission, and the manifest records what the
+response actually returned.
+
 ## Human prerequisites (operator gate, not delegatable tasks)
 
 `docs/workflow.md:17` defines a task as *a unit of work delegatable to a single subagent*. The
