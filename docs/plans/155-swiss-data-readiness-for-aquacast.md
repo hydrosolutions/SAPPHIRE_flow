@@ -53,11 +53,22 @@ So the shortfall is **not 21 renames**: it is a large fraction of PT's 50 static
 CAMELS-CH counterpart under any alias**. `_static_inputs`
 (`adapters/forecast_interface.py:1059-1071`) raises on every name it cannot find.
 
-### G8 — the alias map, and why it must be re-derived
-aquacast declares statics in **Caravan** names; a HydroATLAS package carries raw codes. Against the
-**Nepal** fixture, 29 of the pooled 51 match exactly and 22 are a pure rename (**21 of which PT
-needs** — it omits `degree_of_regulation`). **That map was derived against Nepal and must not be
-assumed to carry over** — the same over-generalisation produced G12.
+### G8 — the alias map, now AUTHORITATIVE
+aquacast declares statics in **Caravan** names; the attributes parquet ships the raw **HydroATLAS**
+codes. The mapping is no longer inferred: it is published in the modeller's own
+`aquacast/docs/static_attributes.md`, whose table gives `code → canonical type` for every attribute.
+
+Checked against PT's 50: **29 direct + 21 aliased = 50, zero unresolved.** The 21:
+`slope←slp_dg_sav`, `stream_gradient←sgr_dk_sav`, `lake_fraction←lka_pc_sse`,
+`air_temperature←tmp_dc_syr`, `precip_annual←pre_mm_syr`, `pet_annual←pet_mm_syr`,
+`aet_annual←aet_mm_syr`, `aridity_index←ari_ix_sav`, `climate_moisture_index←cmi_ix_syr`,
+`snow_cover←snw_pc_syr`, `snow_cover_max←snw_pc_smx`, `glacier_fraction←gla_pc_sse`,
+`cropland_fraction←crp_pc_sse`, `pasture_fraction←pst_pc_sse`, `clay_fraction←cly_pc_sav`,
+`silt_fraction←slt_pc_sav`, `sand_fraction←snd_pc_sav`, `soil_organic_carbon←soc_th_sav`,
+`soil_water_content←swc_pc_syr`, `karst_fraction←kar_pc_sse`, `irrigated_fraction←ire_pc_sse`.
+
+*(This independently confirms the map previously derived from the Nepal fixture — same count, same
+pairs. The earlier warning to re-derive it stands as method; the answer happened to hold.)*
 
 ### G15 — `mean_temperature` vs `temperature`: a NAME mismatch nobody owns
 aquacast declares **`mean_temperature`**; SAP3's canonical forcing names are
@@ -107,43 +118,52 @@ percentage in this plan.
 
 ## Tasks
 
-### T1 — Swiss HydroATLAS basin package: produce and import (closes G12)
-**The hardest prerequisite, and it gates Plan 152's T0c.**
+### T1 — Import Caravan's CAMELS-CH attributes (closes G12 for 148/169 gauges)
+**MAJOR SIMPLIFICATION (2026-08-13).** This task was scoped as a Swiss HydroATLAS extraction —
+BasinATLAS download, regional clip, MERIT HFX, an ERA5-Land cube on a 128 GiB EC2 host with the
+`temenos` toolchain. **Almost none of that is needed.** The attributes already exist, published by
+Caravan, and are the **same ones `cmal_pool_PT` was trained on** — which is a correctness
+requirement, not a convenience: attributes derived a different way are a distribution shift the model
+never saw.
 
-**The two halves have very different costs, and the first should be settled before scoping:**
-- **Producing the package** (`basins.gpkg` + `static_attributes.parquet` + `feature_catalog.json`
-  over the Swiss basin polygons) is the expensive half — and **we do not hold the extraction
-  tooling**: `extract_hydroatlas.py` / `hydroatlas.py` are Gateway-side (Plan 117 cites them as prior
-  art; nothing matches in this repo). **The Gateway already produced the Nepal package, so a Swiss
-  package is plausibly a REQUEST rather than a build.** Establish which first — it is the difference
-  between a ticket and a data workstream.
-- **Importing it is NOT the cheap half it first appears** (seam review, 2026-08-12). The mechanism
-  exists (`cli/import_basin_package.py` + the Plan 120 loader), but Swiss stations are **already bound
-  to CAMELS-CH basins** created at station onboarding (`services/onboarding.py:262-269`;
-  `adapters/camelsch_adapter.py:244-254`, `network="bafu"`). The importer reaches those only via the
-  correction branch keyed on `(network, basin_code)` (`store/basin_importer.py:662-692`), and:
-  - on an identity mismatch, `_assign_station_basin` raises **`BasinPackageRejectedError` — rejecting
-    the WHOLE package**, not one basin (`store/basin_importer.py:697-720`);
-  - where it *does* match, it **replaces attributes, geometry and area wholesale**, sets
-    `material_change=True` and returns an affected-artifact set (`:810-833`) — i.e. it overwrites the
-    CAMELS-CH namespace and **flags the incumbent artifacts T6 is meant to compare against.**
+**Verified against the delivered parquet (296 rows × 216 cols, `caravan_camels_ch_<BAFU code>`):**
+- **All 50 of PT's declared statics are present** — 29 under PT's own names, 21 under their raw
+  HydroATLAS codes (all 21 confirmed present).
+- **148 of our 169 configured gauges are covered.** *(PT's own training subset covered only 70 —
+  Sandro filtered by basin QC and discharge sufficiency, so his training list understates what
+  Caravan publishes.)*
+- **21 gauges have no Caravan row:** `2004 2017 2021 2025 2027 2028 2031 2066 2073 2074 2081 2088
+  2097 2101 2118 2137 2168 2208 2446 2484 2642`.
 
-  **T1 must therefore settle basin identity and rebinding explicitly**: does the Swiss package carry
-  `(network="bafu", code=<BAFU>)` identities that match the existing rows, and is overwriting the
-  CAMELS-CH attributes acceptable given it invalidates incumbents? That is a decision, not a step.
+**ADD — do NOT overwrite the existing BAFU attributes (owner decision, 2026-08-13).** Our Swiss
+`Basin.attributes` today are the **CAMELS-CH release** passed through verbatim
+(`adapters/camelsch_adapter.py:239-254`). Caravan's are a **different derivation** of similar
+concepts. Overwriting is actively harmful: the importer's correction branch replaces attributes,
+geometry and area wholesale, sets `material_change=True` and returns an affected-artifact set
+(`store/basin_importer.py:810-833`) — **invalidating the incumbent artifacts T6 exists to compare
+against**. Keep both, clearly namespaced: incumbents keep their inputs, PT gets the ones it was
+trained on, and a material disagreement between the two becomes diagnostic rather than silent.
 
-**Exit gate:** every one of PT's **50** declared statics resolves, to a **non-null, finite** value
-(`math.isfinite`) — note `_is_missing` (`services/basin_package_loader.py:1390`) rejects only `None`
-and NaN, so **infinities pass it** and it is not a finiteness definition — for every station in the
-T0 manifest. **`area` must be present, with its DEFINITION and UNIT pinned across the 155↔157 seam** — the
-package documents it as `km²`, "area of the complete delineated basin **polygon**", whereas Caravan's
-`area` is the gauge's **upstream catchment** area. Where the polygon is not exactly that catchment
-the two differ by a constant, which would **rescale every discharge value** while passing 157's
-synthetic round-trip test *and* this plan's non-null/finite gate. Pin which definition PT was trained
-on and assert it here. or the area-based `m³/s ↔ mm/day` conversion fails at predict.
+**The residual gap is ~21 gauges, not 169 — and shrinks further.** Lake / water-level-only stations
+are **out of scope for these attributes** (owner, 2026-08-13): they feed deep-learning **runoff**
+models, and a lake station cannot run a discharge model at all (`2004`, Murten — see T0a and
+`docs/deployment/dress-rehearsal-2026-04-21.md` §F7). **T0a must classify the 21 before any
+extraction is scoped.**
 
-**Red-first:** the Swiss candidate set resolves **0 of the 22 `glc_pc_s*`** statics today (proves
-G12); after import, all 50 resolve.
+**Only if a genuine gap survives T0a** does the extraction appliance apply — `hydrosolutions/static-attrs-nepal`,
+a no-code appliance emitting a `basin-static-artifact/v1` ZIP from gauge lat/lons. Note it needs
+three **region-scoped** datasets (MERIT HFX, a HydroATLAS clip, an ERA5-Land cube), all currently
+Nepal/Pfaf-L2-45; a Swiss run means rebuilding them, and the ERA5 cube alone required a 128 GiB EC2
+host (a 64 GiB one was OOM-killed). **That cost is justified for ~20 basins only if those basins
+matter operationally.**
+
+**Exit gate:** every station in the T0a manifest resolves all 50 of PT's statics to non-null, finite
+values (`math.isfinite` — note `_is_missing`, `services/basin_package_loader.py:1390`, rejects only
+`None` and NaN, so infinities pass it). **`area` must be present** or the area-based `m³/s ↔ mm/day`
+conversion fails at predict.
+
+**Red-first:** a Swiss station resolves **0** of PT's 50 statics today (the CAMELS-CH namespace
+carries none of them); after import + aliasing, all 50 resolve.
 
 ### T2 — Caravan↔HydroATLAS static alias map (closes G8)
 **Depends on T1** — re-derive the map against the **Swiss** package, do not port the Nepal map
