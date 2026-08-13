@@ -20,6 +20,7 @@ from scripts.dhm_precip.stats_precision import (
     infer_group_membership,
     leave_one_out_tail_prediction_error,
     per_station_intensity_quantiles,
+    per_station_modal_intensity,
     per_station_subthreshold_mass_fraction,
     per_station_wet_hour_fraction,
     shape_ratio,
@@ -171,6 +172,35 @@ class TestWetHourFractionAndQuantiles:
         params = DEFAULT_PARAMS.__class__(quantile_grid=(0.5,))
         result = per_station_intensity_quantiles(frame, params)
         assert result["q0.5"][0] == pytest.approx(2.0)  # median of [1,2,3]
+
+
+class TestPerStationModalIntensity:
+    def test_reports_the_bin_with_the_most_observations(self) -> None:
+        from scripts.dhm_precip.params import DhmPrecipParams
+
+        params = DhmPrecipParams(modal_bin_width_mm=0.1)
+        # 5 hours at 0.20 mm (its own 0.1-wide bin), 2 hours at 0.50, one
+        # dry hour (excluded) and one sentinel-scale value that must not
+        # shift the mode. Bin [0.2, 0.3) wins on count.
+        values = [0.2, 0.21, 0.24, 0.29, 0.2, 0.5, 0.55, 0.0]
+        rows = [
+            {"station": "A", "timestamp": datetime(2024, 6, 1, h), "value_mm": v}
+            for h, v in enumerate(values)
+        ]
+        frame = _on_grid_frame(rows)
+        result = per_station_modal_intensity(frame, params)
+        assert result["modal_value_mm"][0] == pytest.approx(0.2)
+
+    def test_excludes_dry_and_null_hours(self) -> None:
+        rows = [
+            {"station": "A", "timestamp": datetime(2024, 6, 1, 0), "value_mm": 0.0},
+            {"station": "A", "timestamp": datetime(2024, 6, 1, 1), "value_mm": None},
+            {"station": "A", "timestamp": datetime(2024, 6, 1, 2), "value_mm": 0.3},
+        ]
+        frame = _on_grid_frame(rows)
+        result = per_station_modal_intensity(frame, DEFAULT_PARAMS)
+        assert result.height == 1
+        assert result["modal_value_mm"][0] == pytest.approx(0.3)
 
 
 class TestSubthresholdMassFraction:

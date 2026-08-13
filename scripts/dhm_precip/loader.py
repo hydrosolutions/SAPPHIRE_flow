@@ -130,9 +130,15 @@ def resolve_coords_path(env: dict[str, str] | None = None) -> Path:
 
 def compute_sha256(path: Path) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(chunk)
+    try:
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(chunk)
+    except OSError as exc:
+        # A permission error (or any other filesystem access failure) on an
+        # otherwise-existing path is an UNREADABLE source (exit 2, D9), never
+        # a parse failure (exit 5) — the content was never even reached.
+        raise SourceUnreadableError(f"source file not readable: {path}: {exc}") from exc
     return digest.hexdigest()
 
 
@@ -252,7 +258,14 @@ def load_station_coordinates(
 
     try:
         df = pl.read_csv(path)
-    except Exception as exc:  # noqa: BLE001 — any parse-time failure becomes a typed error
+    except OSError as exc:
+        # Readable-per-exists()-but-not-actually-readable (e.g. a permission
+        # error) is an UNREADABLE source (exit 2, D9), never a parse failure
+        # (exit 5) — the content was never even reached.
+        raise SourceUnreadableError(
+            f"coordinate table not readable: {path}: {exc}"
+        ) from exc
+    except Exception as exc:  # noqa: BLE001 — any other parse-time failure becomes a typed error
         raise ParseFailureError(
             f"failed to parse coordinate table {path}: {exc}"
         ) from exc

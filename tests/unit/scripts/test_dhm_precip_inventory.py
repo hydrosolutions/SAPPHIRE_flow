@@ -95,6 +95,40 @@ class TestStationSpanAndCoverage:
         assert row_a["first_timestamp"][0] == datetime(2024, 6, 1, 0)
         assert row_a["last_timestamp"][0] == datetime(2024, 6, 1, 2)
 
+    def test_coverage_uses_the_stations_own_span_not_the_workbook_wide_slot_count(
+        self,
+    ) -> None:
+        # Global ON_GRID grid: hours 0..4 (5 slots). Station A reports at
+        # every one of them (own span == the whole grid, coverage 1.0 either
+        # way — not diagnostic on its own). Station B only ever reports at
+        # hours 2-3 (own span = 2 slots) and is null everywhere else in the
+        # workbook, including OUTSIDE its own span. A denominator of "all
+        # ON_GRID timestamps in the workbook" (5) would wrongly read B's
+        # coverage as 2/5 = 0.4; the correct denominator is B's own [2, 3]
+        # window (2 slots), giving 2/2 = 1.0 — B never dropped a single
+        # reading during the period it was actually live.
+        rows = (
+            [
+                {"station": "A", "timestamp": datetime(2024, 6, 1, h), "value_mm": 1.0}
+                for h in range(5)
+            ]
+            + [
+                {"station": "B", "timestamp": datetime(2024, 6, 1, h), "value_mm": None}
+                for h in (0, 1, 4)
+            ]
+            + [
+                {"station": "B", "timestamp": datetime(2024, 6, 1, h), "value_mm": 1.0}
+                for h in (2, 3)
+            ]
+        )
+        frame = _on_grid_frame(rows)
+        result = station_span_and_coverage(frame).sort("station")
+        row_b = result.filter(pl.col("station") == "B")
+        assert row_b["non_null_count"][0] == 2
+        assert row_b["first_timestamp"][0] == datetime(2024, 6, 1, 2)
+        assert row_b["last_timestamp"][0] == datetime(2024, 6, 1, 3)
+        assert row_b["coverage_fraction"][0] == pytest.approx(1.0)
+
 
 class TestGroupElevationOverlap:
     def test_computes_group_a_min_minus_group_b_max(self) -> None:

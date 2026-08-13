@@ -15,11 +15,22 @@ succeeding at all is itself part of the gate.
 
 from __future__ import annotations
 
+import json
 import os
 
+import polars as pl
 import pytest
 
-from scripts.dhm_precip.evaluate import run_report
+from scripts.dhm_precip.evaluate import (
+    DeclaredTableMismatchError,
+    ExpectationCoverageError,
+    run_report,
+    validate_artefacts,
+    validate_expectation_coverage,
+)
+from scripts.dhm_precip.expectations import load_expectations
+from scripts.dhm_precip.manifest_io import read_manifest
+from scripts.dhm_precip.run import run as run_pipeline
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("DHM_PRECIP_XLSX"),
@@ -79,3 +90,77 @@ def test_every_withdrawn_expectation_has_a_complete_phase4_record() -> None:
         )
         assert entry.get("evidence"), f"{entry['id']}: missing evidence"
         assert entry.get("successor"), f"{entry['id']}: missing successor"
+
+
+class TestArtefactGateCatchesTampering:
+    """Blocker-1 fix: `validate_artefacts` reopens every declared parquet and
+    RECOMPUTES values/counts/schema from them — these mutation tests prove
+    it actually catches a tampered artefact, not merely that it "looks
+    right" on an untouched run."""
+
+    def test_a_mutated_parquet_value_is_caught_by_the_recompute_check(
+        self, tmp_path
+    ) -> None:
+        out = tmp_path / "m_a1_out"
+        run_pipeline(out)
+        manifest = read_manifest(out / "results.json")
+
+        # Corrupt a persisted table's value AFTER the manifest was written —
+        # results.json still claims the original number, but the parquet no
+        # longer agrees with it.
+        path = out / "tables" / "row_counts.parquet"
+        mutated = pl.read_parquet(path).with_columns(
+            pl.lit(999_999).alias("total_rows")
+        )
+        mutated.write_parquet(path)
+
+        with pytest.raises(DeclaredTableMismatchError):
+            validate_artefacts(manifest, out)
+
+    def test_a_mutated_table_axis_status_is_caught(self, tmp_path) -> None:
+        out = tmp_path / "m_a1_out"
+        run_pipeline(out)
+        manifest = read_manifest(out / "results.json")
+
+        # Relabel a geometry table's axis_status — the (view, axis_status)
+        # set recomputed from the reopened parquet no longer matches what
+        # results.json declared for this table.
+        path = out / "tables" / "geometry_summary.parquet"
+        mutated = pl.read_parquet(path).with_columns(
+            pl.lit("RAW_PROVISIONAL").alias("axis_status")
+        )
+        mutated.write_parquet(path)
+
+        with pytest.raises(DeclaredTableMismatchError):
+            validate_artefacts(manifest, out)
+
+    def test_a_mutated_counts_by_view_is_caught(self, tmp_path) -> None:
+        out = tmp_path / "m_a1_out"
+        run_pipeline(out)
+        results_path = out / "results.json"
+        payload = json.loads(results_path.read_text())
+        payload["counts_by_view"]["RAW"]["source_timestamp_rows"] += 1
+        results_path.write_text(json.dumps(payload))
+        manifest = read_manifest(results_path)
+
+        with pytest.raises(DeclaredTableMismatchError):
+            validate_artefacts(manifest, out)
+
+    def test_deleting_a_withdrawn_expectations_value_fails_coverage(
+        self, tmp_path
+    ) -> None:
+        out = tmp_path / "m_a1_out"
+        run_pipeline(out)
+        results_path = out / "results.json"
+        payload = json.loads(results_path.read_text())
+        expectations = load_expectations()
+        withdrawn_id = next(
+            e.id for e in expectations if e.disposition == "withdrawn_unreproducible"
+        )
+        assert withdrawn_id in payload["values"]
+        del payload["values"][withdrawn_id]
+        results_path.write_text(json.dumps(payload))
+        manifest = read_manifest(results_path)
+
+        with pytest.raises(ExpectationCoverageError, match=withdrawn_id):
+            validate_expectation_coverage(manifest, expectations)

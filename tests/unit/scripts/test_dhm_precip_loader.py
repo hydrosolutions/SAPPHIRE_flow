@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import os
 import random
+import sys
 from datetime import UTC, datetime
 
 import pytest
@@ -49,6 +51,12 @@ class TestResolveCoordsPath:
         assert path == tmp_path / "c.csv"
 
 
+requires_permission_enforcement = pytest.mark.skipif(
+    sys.platform == "win32" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+    reason="permission bits are not enforceable on Windows or when running as root",
+)
+
+
 @pytest.fixture()
 def synthetic_workbook(tmp_path):
     rng = random.Random(158)
@@ -80,6 +88,22 @@ class TestLoadLongFrameDigestGate:
     def test_missing_file_raises_source_unreadable(self, tmp_path) -> None:
         with pytest.raises(SourceUnreadableError):
             load_long_frame(tmp_path / "nope.xlsx", expected_sha256="0" * 64)
+
+    @requires_permission_enforcement
+    def test_a_permission_denied_source_raises_source_unreadable_not_exit_5(
+        self, synthetic_workbook
+    ) -> None:
+        # D9: an unreadable path is exit 2 (SourceUnreadableError), never
+        # exit 5 (ParseFailureError) — the content was never even reached.
+        # compute_sha256() runs before pl.read_excel(), so an unreadable
+        # file must be caught there, not fall through as an uncaught OSError
+        # or get mis-typed as a parse failure.
+        os.chmod(synthetic_workbook, 0o000)
+        try:
+            with pytest.raises(SourceUnreadableError):
+                load_long_frame(synthetic_workbook, expected_sha256="0" * 64)
+        finally:
+            os.chmod(synthetic_workbook, 0o644)
 
 
 class TestLoadLongFrameSchema:
@@ -177,6 +201,22 @@ class TestLoadStationCoordinates:
             load_station_coordinates(
                 tmp_path / "nope.csv", expected_stations=frozenset()
             )
+
+    @requires_permission_enforcement
+    def test_a_permission_denied_coords_file_raises_source_unreadable_not_parse_failure(
+        self, tmp_path
+    ) -> None:
+        # D9: an unreadable coordinate table is exit 2, never exit 5 — a
+        # permission error must not be caught by the generic parse-failure
+        # handler and mis-reported as malformed content.
+        path = tmp_path / "coords.csv"
+        path.write_text("station,excel_col,lat,lon,elev\nA,A (mm),27.0,85.0,1000\n")
+        os.chmod(path, 0o000)
+        try:
+            with pytest.raises(SourceUnreadableError):
+                load_station_coordinates(path, expected_stations=frozenset())
+        finally:
+            os.chmod(path, 0o644)
 
     def test_rejects_wrong_schema(self, tmp_path) -> None:
         path = tmp_path / "coords.csv"

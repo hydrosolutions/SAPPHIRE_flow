@@ -119,13 +119,20 @@ inventory, coverage, off-grid-row, reporting-precision, defect and climatology t
 threshold, quantile grid and missing-data rule is an explicit parameter.
 
 **Exit:** pipeline reproduces the vision's Findings, or the vision is corrected where they disagree.
-**COMPLETE 2026-08-13** (Plan 158). 24 of 38 expectations reproduced exactly; 2 were corrected
-(a scope refinement and a draft-estimate supersession); 12 are `withdrawn_unreproducible` with a
-complete Phase-4 record each. **The citation ban lifts per family (D11), not all at once**: it is
-now lifted for `AXIS_INDEPENDENT` and `RAW_AXIS_DIAGNOSTIC` results (workbook column inventory,
-row/off-grid counts, station geometry) — these may be cited externally. Every `RAW_PROVISIONAL`
-result (intensity distributions, shape ratios, coherence, DJF share, missingness, sub-threshold
-mass) stays barred until its own D11 successor lands: M-A2 (axis normalisation), M-A3 (the QC
+**COMPLETE 2026-08-13** (Plan 158), **revised after a fixer round the same day**. 26 of 45
+expectations reproduced exactly; 5 were corrected (a scope refinement and four draft-estimate
+supersessions); 14 are `withdrawn_unreproducible` with a complete Phase-4 record each. (Counts are
+parsed directly from `scripts/dhm_precip/expectations.toml`'s `disposition` field — see that file's
+header comment for the exact reconciliation.) The fixer round closed three Findings the vision
+quotes that the first pass never gated at all — 3-hourly coherence, modal intensity, and the
+leave-one-out tail-prediction error (implemented and unit-tested from Task 2c, but never wired into
+the runner) — and fixed four correctness bugs (monotonicity, daily/3-hourly coherence
+completeness, per-station coverage denominator, modal-intensity population). **The citation ban
+lifts per family (D11), not all at once**: it is now lifted for `AXIS_INDEPENDENT` and
+`RAW_AXIS_DIAGNOSTIC` results (workbook column inventory, row/off-grid counts, station geometry) —
+these may be cited externally. Every `RAW_PROVISIONAL` result (intensity distributions, shape
+ratios, coherence, DJF share, missingness, sub-threshold mass, the leave-one-out tail-prediction
+error) stays barred until its own D11 successor lands: M-A2 (axis normalisation), M-A3 (the QC
 mask) or M-A7 (temporal characterisation). See `scripts/dhm_precip/expectations.toml` for the
 per-statistic disposition and evidence record.
 

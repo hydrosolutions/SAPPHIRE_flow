@@ -172,20 +172,23 @@ class TestCandidateZeroRuns:
         assert result["run_length_days"][0] == pytest.approx(2.0)
 
     def test_a_run_crossing_out_of_jjas_is_not_extended_past_the_season(self) -> None:
-        # Sep 30 -> Oct 1 crosses out of JJAS; the September portion is
-        # still a candidate (JJAS-scoped, not merged across the boundary).
-        start = datetime(2024, 9, 29, 12)
+        # A genuinely uninterrupted zero-value sequence in wall-clock time
+        # that spans Sep 30 23:00 -> Oct 1 03:00 (JJAS = months 6-9, so Oct
+        # is out of season). If the season-boundary filter were broken (e.g.
+        # silently including October), this run would report 8 hours ending
+        # Oct 1 03:00; the correct answer stops at Sep 30 23:00 with only
+        # the 4 in-season hours counted — the October hours are not merely
+        # "not merged", they never enter the population run detection sees.
+        start = datetime(2024, 9, 30, 20)
         rows = [
             {"station": "A", "timestamp": start + timedelta(hours=i), "value_mm": 0.0}
-            for i in range(36)  # runs into Oct 1
+            for i in range(8)  # Sep 30 20:00 .. Oct 1 03:00
         ]
-        params = DhmPrecipParams(minimum_run_duration_hours=6)
+        params = DhmPrecipParams(minimum_run_duration_hours=2)
         result = candidate_zero_runs(_on_grid_frame(rows), params)
         assert result.height == 1
-        # Sep 29 12:00 -> Sep 30 23:00 inclusive = 36 hours, but JJAS ends at
-        # month 9 -> all of Sep is JJAS, so this fixture never leaves JJAS in
-        # September; length should be exactly the September portion (30 hrs).
-        assert result["run_end"][0].month == 9
+        assert result["run_end"][0] == datetime(2024, 9, 30, 23)
+        assert result["run_length_hours"][0] == 4
 
 
 class TestDailyAndAnnualTotals:

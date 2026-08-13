@@ -67,7 +67,11 @@ class ComputedTables:
     pairwise_distances: pl.DataFrame
     nearest_neighbour: pl.DataFrame
     diurnal_profiles: pl.DataFrame
+    geometry_summary: pl.DataFrame
     coherence_summary: pl.DataFrame
+    modal_intensity: pl.DataFrame
+    interannual_stability: pl.DataFrame
+    loo_tail_prediction: pl.DataFrame
 
 
 def compute_all(
@@ -87,17 +91,32 @@ def compute_all(
     diurnal_correlations = stats_coherence.diurnal_profile_correlations(
         diurnal_profiles, stations.stations, params
     )
-    coherence_summary = pl.DataFrame(
+    intensity_quantiles = stats_precision.per_station_intensity_quantiles(
+        on_grid, params
+    )
+    loo_input = intensity_quantiles.select("station", "q0.5", "q0.99").drop_nulls()
+    loo_result = stats_precision.leave_one_out_tail_prediction_error(
+        dict(zip(loo_input["station"], loo_input["q0.5"], strict=True)),
+        dict(zip(loo_input["station"], loo_input["q0.99"], strict=True)),
+    )
+    loo_tail_prediction = pl.DataFrame(
         {
-            "statistic": [
-                "median_nn_distance_km",
-                "pairs_within_25km_count",
-                "hourly_r_within_25km",
-                "hourly_r_beyond_200km",
-                "hourly_r_undistanced",
-                "daily_r_undistanced",
-                "diurnal_median_r",
-            ],
+            "statistic": list(loo_result.keys()),
+            "value": list(loo_result.values()),
+        }
+    ).with_columns(
+        pl.lit(View.ON_GRID.value).alias("view"),
+        pl.lit(AxisStatus.RAW_PROVISIONAL.value).alias("axis_status"),
+    )
+
+    # D7/major-6: geometry (coordinate-only) and correlation (data-derived)
+    # statistics get their own tables with distinct, internally-consistent
+    # `axis_status` values — a single table cannot honestly carry both
+    # `AXIS_INDEPENDENT` and `RAW_PROVISIONAL` rows tagged uniformly as one
+    # or the other.
+    geometry_summary = pl.DataFrame(
+        {
+            "statistic": ["median_nn_distance_km", "pairs_within_25km_count"],
             "value": [
                 as_float(
                     stats_coherence.nearest_neighbour_distances(pairwise_distances)[
@@ -109,6 +128,25 @@ def compute_all(
                         pairwise_distances, params.distance_bin_edges_km[0]
                     )
                 ),
+            ],
+        }
+    ).with_columns(
+        pl.lit(View.ON_GRID.value).alias("view"),
+        pl.lit(AxisStatus.AXIS_INDEPENDENT.value).alias("axis_status"),
+    )
+    coherence_summary = pl.DataFrame(
+        {
+            "statistic": [
+                "hourly_r_within_25km",
+                "hourly_r_beyond_200km",
+                "hourly_r_undistanced",
+                "3h_r_undistanced",
+                "daily_r_undistanced",
+                "daily_r_within_25km",
+                "daily_r_beyond_200km",
+                "diurnal_median_r",
+            ],
+            "value": [
                 stats_coherence.distance_stratified_median_r(
                     frequency_correlations["hourly"],
                     pairwise_distances,
@@ -120,7 +158,18 @@ def compute_all(
                     min_km=params.distance_bin_edges_km[2],
                 ),
                 stats_coherence.undistanced_median_r(frequency_correlations["hourly"]),
+                stats_coherence.undistanced_median_r(frequency_correlations["3h"]),
                 stats_coherence.undistanced_median_r(frequency_correlations["daily"]),
+                stats_coherence.distance_stratified_median_r(
+                    frequency_correlations["daily"],
+                    pairwise_distances,
+                    max_km=params.distance_bin_edges_km[0],
+                ),
+                stats_coherence.distance_stratified_median_r(
+                    frequency_correlations["daily"],
+                    pairwise_distances,
+                    min_km=params.distance_bin_edges_km[2],
+                ),
                 stats_coherence.undistanced_median_r(diurnal_correlations),
             ],
         }
@@ -144,9 +193,7 @@ def compute_all(
         wet_hour_fraction=stats_precision.per_station_wet_hour_fraction(
             on_grid, params
         ),
-        intensity_quantiles=stats_precision.per_station_intensity_quantiles(
-            on_grid, params
-        ),
+        intensity_quantiles=intensity_quantiles,
         subthreshold_mass=stats_precision.per_station_subthreshold_mass_fraction(
             on_grid, params
         ),
@@ -168,7 +215,13 @@ def compute_all(
             pairwise_distances
         ),
         diurnal_profiles=diurnal_profiles,
+        geometry_summary=geometry_summary,
         coherence_summary=coherence_summary,
+        modal_intensity=stats_precision.per_station_modal_intensity(on_grid, params),
+        interannual_stability=stats_coherence.interannual_diurnal_stability(
+            on_grid, params
+        ),
+        loo_tail_prediction=loo_tail_prediction,
     )
 
 
@@ -311,6 +364,13 @@ def extract_values(tables: ComputedTables) -> dict[str, ExpectationValue]:
         as_float(missingness.max()) if missingness.len() else None
     )
 
+    geometry = dict(
+        zip(
+            tables.geometry_summary["statistic"].to_list(),
+            tables.geometry_summary["value"].to_list(),
+            strict=True,
+        )
+    )
     summary = dict(
         zip(
             tables.coherence_summary["statistic"].to_list(),
@@ -323,13 +383,40 @@ def extract_values(tables: ComputedTables) -> dict[str, ExpectationValue]:
         value = summary[key]
         return None if value != value else value  # NaN != NaN
 
-    values["coh_median_nn_distance_km"] = round(summary["median_nn_distance_km"])
-    values["coh_pairs_within_25km_count"] = int(summary["pairs_within_25km_count"])
+    values["coh_median_nn_distance_km"] = round(geometry["median_nn_distance_km"])
+    values["coh_pairs_within_25km_count"] = int(geometry["pairs_within_25km_count"])
     values["coh_hourly_r_within_25km"] = _nan_safe("hourly_r_within_25km")
     values["coh_hourly_r_beyond_200km"] = _nan_safe("hourly_r_beyond_200km")
     values["coh_hourly_r_undistanced"] = _nan_safe("hourly_r_undistanced")
+    values["coh_3h_r_undistanced"] = _nan_safe("3h_r_undistanced")
     values["coh_daily_r_undistanced"] = _nan_safe("daily_r_undistanced")
+    values["coh_daily_r_within_25km"] = _nan_safe("daily_r_within_25km")
+    values["coh_daily_r_beyond_200km"] = _nan_safe("daily_r_beyond_200km")
     values["coh_diurnal_median_r"] = _nan_safe("diurnal_median_r")
+
+    a_modal = tables.modal_intensity.join(tables.group_membership, on="station").filter(
+        pl.col("group") == "A"
+    )
+    values["prec_group_a_modal_intensity"] = (
+        _range(a_modal, "modal_value_mm") if a_modal.height else None
+    )
+
+    loo = dict(
+        zip(
+            tables.loo_tail_prediction["statistic"].to_list(),
+            tables.loo_tail_prediction["value"].to_list(),
+            strict=True,
+        )
+    )
+
+    def _loo_safe(key: str) -> float | None:
+        value = loo.get(key)
+        return None if value is None or value != value else value
+
+    values["prec_loo_median_abs_error"] = _loo_safe("median_abs_error")
+    values["prec_loo_min_error"] = _loo_safe("min_error")
+    values["prec_loo_max_error"] = _loo_safe("max_error")
+    values["prec_loo_within_25pct_fraction"] = _loo_safe("within_25pct_fraction")
 
     return values
 

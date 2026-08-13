@@ -93,6 +93,37 @@ class TestRowCountDiagnostics:
         result = row_count_diagnostics(frame, DEFAULT_PARAMS)
         assert result["duplicate_timestamp_count"][0] == 1
 
+    def test_detects_a_non_monotonic_delivery_order(self) -> None:
+        # source_row_index ascends (the file's own row order) but the
+        # timestamps it carries go 02:00 -> 00:00 -> 01:00 — a genuinely
+        # reordered workbook. A buggy implementation that sorts timestamps
+        # before checking `.is_sorted()` would report this as monotonic;
+        # the real answer, checked against delivery order, is False.
+        frame = _raw_frame(
+            [
+                {
+                    "source_row_index": 0,
+                    "station": "A",
+                    "timestamp": datetime(2024, 1, 1, 2, 0),
+                    "value_mm": 0.0,
+                },
+                {
+                    "source_row_index": 1,
+                    "station": "A",
+                    "timestamp": datetime(2024, 1, 1, 0, 0),
+                    "value_mm": 1.0,
+                },
+                {
+                    "source_row_index": 2,
+                    "station": "A",
+                    "timestamp": datetime(2024, 1, 1, 1, 0),
+                    "value_mm": 2.0,
+                },
+            ]
+        )
+        result = row_count_diagnostics(frame, DEFAULT_PARAMS)
+        assert result["timestamp_monotonic"][0] is False
+
 
 class TestOffGridObservationDiagnostics:
     def test_fraction_uses_observation_grain_not_row_grain(self) -> None:

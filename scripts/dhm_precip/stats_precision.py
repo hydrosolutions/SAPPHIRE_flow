@@ -100,6 +100,43 @@ def per_station_subthreshold_mass_fraction(
     )
 
 
+def per_station_modal_intensity(
+    on_grid: pl.DataFrame, params: DhmPrecipParams
+) -> pl.DataFrame:
+    """Method D8b `modal_binning` — per-station modal non-zero value, JJAS
+    (vision: "Group A's modal **non-zero** value" — deliberately NOT
+    restricted to the wet threshold; the vision's own quoted range,
+    0.03-0.06 mm/h, sits below the 0.2 mm/h wet floor, so a wet-restricted
+    population could never reproduce it). Bin non-zero JJAS values into
+    fixed `modal_bin_width_mm`-wide bins and report the bin (left edge)
+    with the most observations. Ties broken by the smallest bin
+    (deterministic)."""
+    jjas_nonzero = _jjas(on_grid, params).filter(
+        pl.col("value_mm").is_not_null() & (pl.col("value_mm") > 0.0)
+    )
+    # `+ resolution_epsilon_mm / modal_bin_width_mm`: a value that is an
+    # exact multiple of the bin width (e.g. 0.3 with a 0.1 mm bin) can land
+    # a hair below the intended integer ratio in float64 (0.3 / 0.1 ==
+    # 2.9999999999999996), which `.floor()` would silently misbin one step
+    # low. The nudge is far smaller than any real reading difference.
+    binned = jjas_nonzero.with_columns(
+        (
+            pl.col("value_mm") / params.modal_bin_width_mm
+            + params.resolution_epsilon_mm / params.modal_bin_width_mm
+        )
+        .floor()
+        .mul(params.modal_bin_width_mm)
+        .alias("_bin")
+    )
+    counts = binned.group_by(["station", "_bin"]).agg(pl.len().alias("_count"))
+    modal = (
+        counts.sort(["_count", "_bin"], descending=[True, False])
+        .group_by("station", maintain_order=True)
+        .agg(pl.col("_bin").first().alias("modal_value_mm"))
+    )
+    return _tag(modal)
+
+
 def shape_ratio(
     values: Sequence[float] | np.ndarray,
     *,

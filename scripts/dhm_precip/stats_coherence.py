@@ -105,19 +105,40 @@ def _jjas(on_grid: pl.DataFrame, params: DhmPrecipParams) -> pl.DataFrame:
 
 
 def _bucketed_frequencies(on_grid: pl.DataFrame, params: DhmPrecipParams) -> _Bucketed:
+    """Rule 3 (aggregation validity): a bucket total is formed only from
+    hours actually present (`hours_present`), and incomplete buckets are
+    DROPPED (never treated as complete, never silently summed to 0.0 for an
+    all-null bucket — Polars' `.sum()` over an all-null group returns 0.0,
+    not null, so without this filter a station with NO data that bucket
+    would enter the correlation as "recorded zero precipitation")."""
     jjas = _jjas(on_grid, params)
     hourly = jjas.select("station", "timestamp", "value_mm")
-    three_hourly = (
+
+    three_hourly_raw = (
         jjas.with_columns(
-            (pl.col("timestamp").dt.hour() // 3 * 3).alias("_bucket_hour")
+            (pl.col("timestamp").dt.hour() // 3 * 3).alias("_bucket_hour"),
+            pl.col("timestamp").dt.truncate("1d").alias("_day"),
         )
-        .with_columns(pl.col("timestamp").dt.truncate("1d").alias("_day"))
         .group_by(["station", "_day", "_bucket_hour"])
-        .agg(pl.col("value_mm").sum().alias("value_mm"))
+        .agg(
+            pl.col("value_mm").sum().alias("value_mm"),
+            pl.col("value_mm").is_not_null().sum().alias("_hours_present"),
+        )
     )
-    daily = jjas.group_by(["station", pl.col("timestamp").dt.date().alias("_day")]).agg(
-        pl.col("value_mm").sum().alias("value_mm")
+    three_hourly = three_hourly_raw.filter(
+        pl.col("_hours_present") >= params.three_hourly_completeness_min_hours
+    ).select("station", "_day", "_bucket_hour", "value_mm")
+
+    daily_raw = jjas.group_by(
+        ["station", pl.col("timestamp").dt.date().alias("_day")]
+    ).agg(
+        pl.col("value_mm").sum().alias("value_mm"),
+        pl.col("value_mm").is_not_null().sum().alias("_hours_present"),
     )
+    daily = daily_raw.filter(
+        pl.col("_hours_present") >= params.daily_completeness_min_hours
+    ).select("station", "_day", "value_mm")
+
     return _Bucketed(hourly=hourly, three_hourly=three_hourly, daily=daily)
 
 
@@ -207,6 +228,53 @@ def diurnal_profiles(on_grid: pl.DataFrame, params: DhmPrecipParams) -> pl.DataF
         .agg(pl.col("value_mm").mean().alias("mean_value_mm"))
     )
     return _tag_provisional(profile)
+
+
+def interannual_diurnal_stability(
+    on_grid: pl.DataFrame, params: DhmPrecipParams
+) -> pl.DataFrame:
+    """`RAW_PROVISIONAL` — Task 2f's "interannual stability" deliverable: for
+    each station, the median Pearson r between every pair of that station's
+    own per-year JJAS diurnal profiles (24-hour mean vectors). A high value
+    means the station's diurnal shape repeats from year to year. This has no
+    vision-quoted number to gate against (D8: no statistic is invented to be
+    reproduced) — it is computed and stored as a Task 2f table, not an
+    expectation."""
+    jjas = _jjas(on_grid, params).filter(pl.col("value_mm").is_not_null())
+    per_year_profile = (
+        jjas.with_columns(
+            pl.col("timestamp").dt.hour().alias("hour"),
+            pl.col("timestamp").dt.year().cast(pl.Utf8).alias("year"),
+        )
+        .group_by(["station", "year", "hour"])
+        .agg(pl.col("value_mm").mean().alias("mean_value_mm"))
+    )
+    rows: list[dict[str, object]] = []
+    for station in sorted(per_year_profile["station"].unique().to_list()):
+        wide = (
+            per_year_profile.filter(pl.col("station") == station)
+            .pivot(on="year", index="hour", values="mean_value_mm")
+            .sort("hour")
+        )
+        years = [c for c in wide.columns if c != "hour"]
+        pair_rs: list[float] = []
+        for year_a, year_b in itertools.combinations(years, 2):
+            pair = wide.select(year_a, year_b).drop_nulls()
+            if pair.height < params.min_diurnal_paired_hours:
+                continue
+            r = pair.select(pl.corr(year_a, year_b)).item()
+            if r is not None:
+                pair_rs.append(as_float(r))
+        rows.append(
+            {
+                "station": station,
+                "interannual_diurnal_stability_median_r": (
+                    as_float(pl.Series(pair_rs).median()) if pair_rs else None
+                ),
+                "n_year_pairs": len(pair_rs),
+            }
+        )
+    return _tag_provisional(pl.DataFrame(rows))
 
 
 def diurnal_profile_correlations(

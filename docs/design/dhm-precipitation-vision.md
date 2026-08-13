@@ -38,14 +38,33 @@ naively-fitted correction would *dry* the forcing of a flood-forecasting system.
 
 ## Findings
 
-**M-A1 reproduction status (Plan 158, 2026-08-13):** the committed pipeline
-(`scripts/dhm_precip/`) reproduced 24 of 38 statistics exactly, corrected 2,
-and could not reproduce 12 on unmasked ON_GRID data (see D6 in the plan and
-the disposition/evidence record in `scripts/dhm_precip/expectations.toml`).
-Per-item notes are inlined below. The external-citation ban is now lifted
-**only** for structural facts (row/column counts, off-grid counts, station
-geometry) — every intensity/coherence/climatology figure below stays barred
-until its own successor milestone (M-A2, M-A3 or M-A7) lands.
+**M-A1 reproduction status (Plan 158, 2026-08-13, revised after a fixer
+round):** the committed pipeline (`scripts/dhm_precip/`) reproduced 26 of 45
+statistics exactly, corrected 5, and could not reproduce 14 on unmasked
+ON_GRID data (see D6 in the plan and the disposition/evidence record in
+`scripts/dhm_precip/expectations.toml` — counts there are parsed directly
+from the manifest, not hand-maintained). Per-item notes are inlined below.
+The external-citation ban is now lifted **only** for structural facts
+(row/column counts, off-grid counts, station geometry) — every
+intensity/coherence/climatology figure below stays barred until its own
+successor milestone (M-A2, M-A3 or M-A7) lands.
+
+A fixer round after the initial Phase-4a pass closed three gaps: the
+3-hourly coherence figure, the modal-intensity Finding and the
+leave-one-out tail-prediction-error Finding were quoted below but never
+gated against the manifest (the LOO statistic was implemented and
+unit-tested but never wired into the runner at all); it also fixed four
+correctness bugs found by review (monotonicity checked against a
+pre-sorted copy instead of delivery order; the daily/3-hourly coherence
+buckets summed incomplete or all-null station-periods as a hard zero
+instead of dropping them; per-station coverage divided by the
+workbook-wide slot count instead of each station's own reporting span; the
+modal-intensity statistic was wet-threshold-restricted even though this
+Finding's own quoted range sits below that threshold). Two of those bug
+fixes changed a previously-recorded `withdrawn_unreproducible` evidence
+number (the daily coherence figure moved from 0.136 to 0.185; both remain
+non-reproducing either way) — see `expectations.toml`'s per-entry
+`method_comparison` for detail.
 
 ### Inventory
 - **26 usable stations, not 37.** Eleven columns are empty across the entire file: Kathmandu Airport
@@ -82,6 +101,10 @@ block below. See `expectations.toml` ids `prec_group_a_wet_hour_fraction`, `prec
 Group A's modal non-zero value is 0.03–0.06 mm/h. **Reported decimal granularity is not proof of
 instrument type** — it could equally reflect a different processing chain, unit conversion or
 averaging step. "Weighing gauge vs tipping bucket" is a *hypothesis to confirm with DHM*, not a finding.
+**M-A1: reproduces exactly** (0.03–0.06 mm/h) once the population is non-zero JJAS values with no
+wet-threshold restriction — the vision's own range sits below the 0.2 mm/h wet floor, so a
+wet-restricted population could never have reproduced it. See `expectations.toml` id
+`prec_group_a_modal_intensity`.
 
 Sub-0.1 mm hours are 22–34 % of Group A's wet hours but only **0.8–2.1 % of its recorded mass**. That
 bounds the contribution of the noise floor *to the recorded total*; it does **not** establish that
@@ -142,15 +165,19 @@ statistics. See `expectations.toml` id `clim_djf_share_humde`.
   (we have no coordinates), so this describes the network as a whole and **says little about
   near-neighbour coherence**. Whether neighbour-based gap-filling is viable is *open* until pairs
   can be binned by separation distance. **M-A1 (Plan 158, coordinates now landed via M-D2):** the
-  hourly figure reproduces exactly (0.047 → rounds to 0.05); the daily figure is
-  `withdrawn_unreproducible` (reproduces at 0.14, not 0.28 — daily aggregation of unmasked hourly
-  values is far more sensitive to candidate defects than hourly comparison). **Distance-stratified**
+  hourly figure reproduces exactly (0.047 → rounds to 0.05); the 3-hourly figure also reproduces
+  exactly (0.085 → rounds to 0.09); the daily figure is `withdrawn_unreproducible` (reproduces at
+  0.185, not 0.28 — daily aggregation of unmasked hourly values is far more sensitive to candidate
+  defects than hourly comparison; the exact daily number moved from an earlier 0.136 to 0.185 after
+  a fixer round fixed the daily bucket silently treating incomplete/all-null station-days as a
+  recorded zero instead of dropping them, but neither reproduces 0.28). **Distance-stratified**
   coherence is now available and supersedes the "no coordinates" caveat: within 25 km, hourly
-  r = 0.208, decaying to r = 0.030 beyond 200 km — confirming near-neighbour coherence is real but
-  the network is too sparse to exploit it directly (median nearest-neighbour distance 27 km, only
-  7 of 325 pairs closer than 25 km). See `expectations.toml` ids `coh_hourly_r_undistanced`,
-  `coh_daily_r_undistanced`, `coh_hourly_r_within_25km`, `coh_hourly_r_beyond_200km`, and Plan 158
-  §"What changed since the DRAFT".
+  r = 0.208, decaying to r = 0.030 beyond 200 km; daily r = 0.415 within 25 km, decaying to r = 0.146
+  beyond 200 km — confirming near-neighbour coherence is real but the network is too sparse to
+  exploit it directly (median nearest-neighbour distance 27 km, only 7 of 325 pairs closer than
+  25 km). See `expectations.toml` ids `coh_hourly_r_undistanced`, `coh_3h_r_undistanced`,
+  `coh_daily_r_undistanced`, `coh_hourly_r_within_25km`, `coh_hourly_r_beyond_200km`,
+  `coh_daily_r_within_25km`, `coh_daily_r_beyond_200km`, and Plan 158 §"What changed since the DRAFT".
 - **Intensity distribution — the earlier "r = 0.998, universal shape" claim was WRONG and is
   withdrawn.** Pearson correlation between quantile vectors is near-1 by construction (verified:
   exponential vs Pareto r = 0.943, exponential vs lognormal r = 0.950). Proper scale-normalised tests:
@@ -164,9 +191,15 @@ statistics. See `expectations.toml` id `clim_djf_share_humde`.
   **M-A1 (`withdrawn_unreproducible`):** the shape-ratio range reproduces at its minimum (8.5) but
   not its maximum (60.0, not 55.3) — it inherits the same unmasked-q99 sensitivity as the
   intensity-quantile Findings above, since the ratio's numerator IS q99. The CV likewise reproduces
-  at 0.45, not 0.40. The leave-one-out prediction-error figures were not re-run by M-A1 (out of
-  scope for this pass) and remain provisional pending M-A7. See `expectations.toml` ids
-  `prec_shape_ratio_range`, `prec_shape_ratio_cv_q99`.
+  at 0.45, not 0.40. See `expectations.toml` ids `prec_shape_ratio_range`, `prec_shape_ratio_cv_q99`.
+  **The leave-one-out prediction-error figures were wired into the runner in a fixer round** (the
+  statistic itself was implemented and unit-tested from the start, but never called from the
+  pipeline or gated against the manifest — a real gap in the first Phase-4a pass, closed here):
+  the median absolute error and the min/max range are all `withdrawn_unreproducible` (reproduces at
+  15.6 % median abs error, range −57.3 % to +225.9 %, inheriting the same unmasked-q99 sensitivity);
+  the within-±25 % fraction reproduces exactly at 65.4 % → rounds to 65 %. See `expectations.toml`
+  ids `prec_loo_median_abs_error`, `prec_loo_min_error`, `prec_loo_max_error`,
+  `prec_loo_within_25pct_fraction`.
 
   So: the distribution **body is moderately transferable; the tail is not**. For a flood system the
   tail is the operative part. A one-parameter scale model for extreme intensity is **not supported**.

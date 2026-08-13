@@ -52,7 +52,11 @@ class DhmPrecipParams:
 
     # --- modal / sub-threshold mass (method D8b: modal_binning) ---
     modal_bin_width_mm: float = 0.01
-    modal_binning: str = "0.01 mm fixed-width bins over non-zero wet-hour values"
+    modal_binning: str = (
+        "0.01 mm fixed-width bins over non-zero JJAS values, "
+        "no wet-threshold restriction (vision quotes a modal NON-ZERO "
+        "value, 0.03-0.06 mm/h, below the 0.2 mm/h wet floor)"
+    )
 
     # --- reporting-resolution inference ---
     resolution_epsilon_mm: float = 1e-9
@@ -88,6 +92,10 @@ class DhmPrecipParams:
     bucket_alignment: BucketAlignment = "hour_start"
     daily_completeness_min_hours: int = 20
     """Of 24 possible ON_GRID hours; below this a daily total is not formed."""
+    three_hourly_completeness_min_hours: int = 3
+    """Of 3 possible ON_GRID hours per bucket; below this (i.e. any missing
+    hour) a 3-hourly bucket total is not formed — a partial bucket must never
+    silently enter a coherence correlation as if it were complete."""
     period_completeness_min_fraction: float = 0.85
     """Minimum retained-hour fraction to form a monthly/annual aggregate. No
     rescaling of incomplete totals (D8b: "no rescaling")."""

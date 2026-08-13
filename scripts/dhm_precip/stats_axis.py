@@ -39,7 +39,19 @@ def row_count_diagnostics(raw: pl.DataFrame, params: DhmPrecipParams) -> pl.Data
         .filter(pl.col("timestamp").dt.minute() != params.on_grid_minute)
         .height
     )
-    monotonic = bool(timestamps["timestamp"].is_sorted())
+    # Monotonicity must be checked against the ORIGINAL delivery order, not a
+    # sorted copy — `timestamps` above is `.sort()`-ed for the span
+    # computation, so `timestamps["timestamp"].is_sorted()` would trivially
+    # always be True regardless of how the source file actually arrived.
+    # One row per `source_row_index` shares one timestamp across all 37
+    # station columns (the melt's per-original-row grain); dedup on
+    # `source_row_index` and order by it to recover the file's own row order.
+    original_order = (
+        raw.select("source_row_index", "timestamp")
+        .unique(subset=["source_row_index"])
+        .sort("source_row_index")
+    )
+    monotonic = bool(original_order["timestamp"].is_sorted())
 
     return _tag(
         pl.DataFrame(

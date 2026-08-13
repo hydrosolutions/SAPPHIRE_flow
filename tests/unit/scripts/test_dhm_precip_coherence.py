@@ -18,6 +18,7 @@ from scripts.dhm_precip.stats_coherence import (
     diurnal_profile_correlations,
     diurnal_profiles,
     frequency_correlations,
+    interannual_diurnal_stability,
     nearest_neighbour_distances,
     pair_count_within,
     pairwise_distances,
@@ -127,6 +128,43 @@ class TestFrequencyCorrelations:
         assert ("A", "B") not in correlations["hourly"]
 
 
+class TestDailyBucketExcludesIncompleteDays:
+    def test_an_all_null_station_day_is_dropped_not_summed_to_zero(self) -> None:
+        # Six JJAS days where A and B move in perfect lockstep (daily totals
+        # 1..6 mm, spread evenly over each day's 24 ON_GRID hours), plus a
+        # seventh day where A has NO data at all (every hour null) while B
+        # reports 7 mm. Polars' `.sum()` over an all-null group returns 0.0,
+        # not null — so a buggy implementation that never filters on
+        # `hours_present` would silently record A's day 7 total as 0.0 mm
+        # and pair it against B's 7 mm, corrupting an otherwise perfect
+        # correlation. The correct behaviour drops day 7 for A entirely (0
+        # of 24 hours present, far below `daily_completeness_min_hours`),
+        # so the wide pivot's `drop_nulls()` excludes the pair and the
+        # remaining six perfectly-matched days give r == 1.0 exactly.
+        start = datetime(2024, 6, 1)
+        rows: list[dict[str, object]] = []
+        for day in range(6):
+            daily_total = float(day + 1)
+            for hour in range(24):
+                ts = start + timedelta(days=day, hours=hour)
+                rows.append(
+                    {"station": "A", "timestamp": ts, "value_mm": daily_total / 24}
+                )
+                rows.append(
+                    {"station": "B", "timestamp": ts, "value_mm": daily_total / 24}
+                )
+        # Day 7 (index 6): A entirely null, B fully present at 7 mm/day.
+        for hour in range(24):
+            ts = start + timedelta(days=6, hours=hour)
+            rows.append({"station": "A", "timestamp": ts, "value_mm": None})
+            rows.append({"station": "B", "timestamp": ts, "value_mm": 7.0 / 24})
+        frame = _on_grid_frame(rows)
+        stations = _stations(("A", 27.0, 85.0), ("B", 27.0, 85.0))
+        params = DhmPrecipParams(min_paired_samples=3)
+        correlations = frequency_correlations(frame, stations, params)
+        assert correlations["daily"][("A", "B")] == pytest.approx(1.0, abs=1e-9)
+
+
 class TestUndistancedMedianR:
     def test_median_of_the_correlation_values(self) -> None:
         correlations = {("A", "B"): 0.2, ("A", "C"): 0.4, ("B", "C"): 0.6}
@@ -143,6 +181,42 @@ class TestDiurnalProfiles:
         assert result.filter(pl.col("hour") == 0)["mean_value_mm"][0] == pytest.approx(
             2.0
         )
+
+
+class TestInterannualDiurnalStability:
+    def test_identical_year_over_year_profiles_give_r_near_one(self) -> None:
+        rows = []
+        for year in (2021, 2022, 2023):
+            for hour, value in enumerate([1.0, 2.0, 3.0, 4.0]):
+                rows.append(
+                    {
+                        "station": "A",
+                        "timestamp": datetime(year, 6, 1, hour),
+                        "value_mm": value,
+                    }
+                )
+        frame = _on_grid_frame(rows)
+        result = interannual_diurnal_stability(
+            frame, DhmPrecipParams(min_diurnal_paired_hours=2)
+        )
+        row_a = result.filter(pl.col("station") == "A")
+        assert row_a["interannual_diurnal_stability_median_r"][0] == pytest.approx(
+            1.0, abs=1e-6
+        )
+        assert row_a["n_year_pairs"][0] == 3  # 2021-22, 2021-23, 2022-23
+
+    def test_a_single_year_of_data_yields_no_pairs(self) -> None:
+        rows = [
+            {"station": "A", "timestamp": datetime(2024, 6, 1, h), "value_mm": 1.0}
+            for h in range(4)
+        ]
+        frame = _on_grid_frame(rows)
+        result = interannual_diurnal_stability(
+            frame, DhmPrecipParams(min_diurnal_paired_hours=2)
+        )
+        row_a = result.filter(pl.col("station") == "A")
+        assert row_a["n_year_pairs"][0] == 0
+        assert row_a["interannual_diurnal_stability_median_r"][0] is None
 
 
 class TestDiurnalProfileCorrelations:

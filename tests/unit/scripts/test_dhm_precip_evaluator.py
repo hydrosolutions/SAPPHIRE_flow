@@ -12,20 +12,18 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-import polars as pl
 import pytest
 
 from scripts.dhm_precip.domain_types import (
-    AxisStatus,
     RunManifest,
-    TableDeclaration,
-    View,
 )
 from scripts.dhm_precip.evaluate import (
     DeclaredTableMismatchError,
+    ExpectationCoverageError,
     compare_expectation,
     evaluate_manifest,
-    validate_declared_tables,
+    read_computed_tables,
+    validate_expectation_coverage,
 )
 from scripts.dhm_precip.expectations import Expectation
 
@@ -65,10 +63,17 @@ class TestWithdrawnUnreproducibleExemptFromMatching:
         result = compare_expectation(expectation, 99999.0)
         assert result.matched is True
 
-    def test_a_missing_actual_value_still_matches(self) -> None:
+    def test_a_missing_actual_value_is_a_machinery_failure_not_a_match(self) -> None:
+        # D9: the gate cannot pass while the artefacts are wrong. A
+        # withdrawn_unreproducible expectation is exempt from NUMERIC
+        # matching (the vision's figure is expected to differ), but the
+        # runner must still have attempted the computation — a missing
+        # value means it never ran at all, which is a real regression the
+        # gate must catch, not silently wave through as "exempt".
         expectation = _expectation(disposition="withdrawn_unreproducible")
         result = compare_expectation(expectation, None)
-        assert result.matched is True
+        assert result.matched is False
+        assert "no value" in result.reason
 
     def test_active_disposition_is_not_exempt(self) -> None:
         expectation = _expectation(
@@ -168,43 +173,43 @@ class TestEvaluateManifest:
         assert report.all_matched is False
 
 
-class TestValidateDeclaredTables:
-    def _manifest(self, tables: tuple[TableDeclaration, ...]) -> RunManifest:
+class TestReadComputedTables:
+    """`read_computed_tables` reopens every `ComputedTables` field's parquet
+    — the D9 machinery blocker-1 fix requires. Full round-trip coverage
+    (schema/(view,axis_status)/counts recomputation against real artefacts)
+    lives in the integration-level mutation tests
+    (`tests/integration/test_dhm_precip_reproduction.py`), which run
+    against the real pipeline's actual ~27-table output — a synthetic
+    stand-in here would not exercise the real `ComputedTables` shape."""
+
+    def test_raises_when_any_declared_table_file_is_missing(self, tmp_path) -> None:
+        (tmp_path / "tables").mkdir()
+        with pytest.raises(DeclaredTableMismatchError, match="missing"):
+            read_computed_tables(tmp_path)
+
+
+class TestValidateExpectationCoverage:
+    def _manifest(self, values: dict[str, object]) -> RunManifest:
         return RunManifest(
             run_id="r",
             source_path="p",
             source_sha256="0" * 64,
             generated_at=datetime(2024, 1, 1, tzinfo=UTC),
             parameters={},
-            tables=tables,
+            values=values,  # type: ignore[arg-type]
         )
 
-    def test_raises_when_a_declared_table_file_is_missing(self, tmp_path) -> None:
-        manifest = self._manifest(
-            (TableDeclaration(name="missing_table", view_axis_pairs=()),)
-        )
-        with pytest.raises(DeclaredTableMismatchError, match="missing"):
-            validate_declared_tables(manifest, tmp_path)
+    def test_raises_when_an_expectation_id_has_no_runner_produced_key(self) -> None:
+        expectations = (_expectation(id="a"), _expectation(id="b"))
+        manifest = self._manifest({"a": 1.0})  # "b" never computed at all
+        with pytest.raises(ExpectationCoverageError, match="b"):
+            validate_expectation_coverage(manifest, expectations)
 
-    def test_raises_when_view_axis_pairs_disagree(self, tmp_path) -> None:
-        tables_dir = tmp_path / "tables"
-        tables_dir.mkdir()
-        frame = pl.DataFrame({"view": ["ON_GRID"], "axis_status": ["RAW_PROVISIONAL"]})
-        frame.write_parquet(tables_dir / "t.parquet")
-        declared = ((View.RAW, AxisStatus.RAW_AXIS_DIAGNOSTIC),)
-        manifest = self._manifest(
-            (TableDeclaration(name="t", view_axis_pairs=declared),)
-        )
-        with pytest.raises(DeclaredTableMismatchError, match="declared"):
-            validate_declared_tables(manifest, tmp_path)
-
-    def test_passes_when_the_table_matches_its_declaration(self, tmp_path) -> None:
-        tables_dir = tmp_path / "tables"
-        tables_dir.mkdir()
-        frame = pl.DataFrame({"view": ["ON_GRID"], "axis_status": ["RAW_PROVISIONAL"]})
-        frame.write_parquet(tables_dir / "t.parquet")
-        declared = ((View.ON_GRID, AxisStatus.RAW_PROVISIONAL),)
-        manifest = self._manifest(
-            (TableDeclaration(name="t", view_axis_pairs=declared),)
-        )
-        validate_declared_tables(manifest, tmp_path)  # must not raise
+    def test_passes_when_every_expectation_id_has_a_key_even_if_the_value_is_none(
+        self,
+    ) -> None:
+        expectations = (_expectation(id="a"),)
+        # None is a legitimate "not computable this run" value — the key
+        # still exists, so this is coverage, not a missing computation.
+        manifest = self._manifest({"a": None})
+        validate_expectation_coverage(manifest, expectations)  # must not raise

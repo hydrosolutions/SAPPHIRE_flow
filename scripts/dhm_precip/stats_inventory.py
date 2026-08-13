@@ -52,16 +52,31 @@ def hourly_reporting_simultaneity(on_grid: pl.DataFrame) -> pl.DataFrame:
 
 def station_span_and_coverage(on_grid: pl.DataFrame) -> pl.DataFrame:
     """RAW_PROVISIONAL — per-station first/last non-null timestamp and coverage
-    fraction (non-null ON_GRID cells / ON_GRID slots spanned)."""
+    fraction (non-null ON_GRID cells / ON_GRID slots spanned by THAT
+    station's own [first, last] window — never the workbook-wide slot
+    count, which would penalise a late-starting or early-ending station
+    for slots outside its own record entirely)."""
     non_null = on_grid.filter(pl.col("value_mm").is_not_null())
     span = non_null.group_by("station").agg(
         pl.col("timestamp").min().alias("first_timestamp"),
         pl.col("timestamp").max().alias("last_timestamp"),
         pl.len().alias("non_null_count"),
     )
-    total_slots = on_grid.select("timestamp").n_unique()
+    all_slots = on_grid.select("timestamp").unique()
+    spanned = (
+        span.join(all_slots, how="cross")
+        .filter(
+            (pl.col("timestamp") >= pl.col("first_timestamp"))
+            & (pl.col("timestamp") <= pl.col("last_timestamp"))
+        )
+        .group_by("station")
+        .agg(pl.len().alias("spanned_slot_count"))
+    )
+    span = span.join(spanned, on="station")
     return span.with_columns(
-        (pl.col("non_null_count") / pl.lit(total_slots)).alias("coverage_fraction"),
+        (pl.col("non_null_count") / pl.col("spanned_slot_count")).alias(
+            "coverage_fraction"
+        ),
         pl.lit(View.ON_GRID.value).alias("view"),
         pl.lit(AxisStatus.RAW_PROVISIONAL.value).alias("axis_status"),
     )
