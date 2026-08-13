@@ -241,9 +241,11 @@ gate tasks 2b and 4b.
     non-finite cells is recorded in the manifest** and a fully-NaN field is a failure.
 
 - **D10 — Period-ending stamps are recorded, not silently assumed.** ERA5-Land's convention (hour *t*
-  covers *t−1 → t*) is *known*, unlike the gauge convention (M-D3). The manifest and the file attrs
-  record it explicitly so M-A6's alignment is arithmetic once M-D3 answers — and so that, if M-D3
-  never answers, this is the fixed reference the ±1 h uncertainty is measured against.
+  covers *t−1 → t*) is *known*. **M-D3 answered 2026-08-13 that the DHM gauge convention is also
+  period-ending** (16:00 UTC = 15:00 → 16:00 UTC, per DHM via the student team), **so the two align
+  directly and M-A6 needs no offset correction.** The manifest and file attrs still record ours
+  explicitly — an alignment that happens to be trivial today must not become an unstated assumption
+  the next dataset silently violates.
 
 - **D11 — A provenance manifest per acquisition, written atomically after every completed stage.**
   Contents: dataset identifier; the full literal request payload sent; client package version; P0's

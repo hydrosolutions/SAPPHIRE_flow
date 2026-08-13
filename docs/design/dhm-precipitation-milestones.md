@@ -97,15 +97,23 @@ of a chain.
 cannot run without it — but the owner has confirmed delivery, so this is sequencing, not risk.
 
 ### M-D3 · Processing provenance
-**Depends: —** Blocks M-A2.
+**Depends: —** Blocks M-A2. **PARTIALLY ANSWERED 2026-08-13** — DHM (Sunny Maharjan, Senior
+Meteorologist), relayed by the student team.
 
-What happened between DHM's raw export and the delivered file: aggregation method (**sum or mean** —
-if mean, every total in the file is wrong by a factor), timestamp assignment (period-beginning or
-period-ending), unit and timezone conversion, station-selection mechanism, why 11 columns are empty,
-whether the raw export is available, and instrument type per station.
+| Question | Status |
+|---|---|
+| Timestamp assignment | **ANSWERED: period-ending.** 16:00 UTC = accumulation 15:00 → 16:00 UTC. **ERA5-Land is also period-ending, so the two align directly** — the ±1 h phase uncertainty is removed and no offset is needed at M-A6 |
+| Off-grid sub-hourly rows | **ANSWERED: processing errors**, to be flagged and excluded. Validates the `ON_GRID` view retrospectively, and settles the Lukla sentinel count at 45 |
+| **Aggregation: sum or mean** | **STILL OPEN** — follow-up with DHM. The one that changes totals by a factor |
+| Station selection · the 11 empty columns · raw export availability · instrument type | still open (see `docs/requirements/dhm-precipitation-provenance-questions.md`) |
+
+**What this unblocks now.** A sum-vs-mean error rescales every value by a constant, so it moves
+**magnitudes** (totals, intensity quantiles, mass fractions) but not normalised **shape** (diurnal
+profiles, wet/dry timing, between-station profile correlation). **M-A7's diurnal-shape work is
+therefore unblocked**; magnitude-bearing results still wait on the aggregation answer.
 
 **Exit:** written processing-chain statement, or a recorded "unknown" that downstream inherits as a
-caveat.
+caveat. *Partially met: the timestamp and off-grid answers are recorded; aggregation is outstanding.*
 
 ---
 

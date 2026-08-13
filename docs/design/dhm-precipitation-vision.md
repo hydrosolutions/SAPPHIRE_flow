@@ -76,13 +76,28 @@ non-reproducing either way) — see `expectations.toml`'s per-entry
 - **The station-selection mechanism is unknown.** Every network-wide statement below is conditional
   on an unknown selection process and must not be generalised to "Nepal" until it is explained.
 
-### Time axis — unresolved, and blocking
+### Time axis — PARTIALLY RESOLVED 2026-08-13 (M-D3, via DHM)
 - 55,379 rows against 52,597 clean hourly slots. Monotonic, no duplicates.
 - **3,350 rows sit off the hourly grid** (minute ∈ {1–7, 10, 15, 30, 45, 55}), 0.6 % of observations,
-  mostly Lukla and Udayapur Gadhi. The minute-15/45 pattern suggests an NPT (UTC+5:45) → UTC
-  conversion applied to some rows and not others.
-- **The accumulation convention (period-beginning vs period-ending) is unknown.** A one-hour error
-  systematically shifts every sub-daily result. **This blocks all diurnal analysis** — see **M-D3/M-A2**.
+  mostly Lukla and Udayapur Gadhi.
+  **ANSWERED** — DHM (Sunny Maharjan, Senior Meteorologist, relayed by the student team, 2026-08-13):
+  these sub-hourly timestamps are **processing errors**, to be **flagged and excluded**, not treated as
+  valid readings. This retrospectively validates the `ON_GRID` view (D6): restricting to `minute == 0`
+  was the correct call, not merely a declared convention. It also settles the Lukla sentinel count —
+  the 46th sentinel sits on an off-grid row, so **45 is simply correct**, not just "this pipeline's
+  number under its own method".
+- **The accumulation convention is ANSWERED: period-ending.** A timestamp of 16:00 UTC denotes
+  precipitation accumulated 15:00 → 16:00 UTC (same source).
+  **This matters more than it appears: ERA5-Land is *also* period-ending.** The two therefore align
+  directly, and the ±1 h phase uncertainty that blocked all diurnal analysis is **removed** — no offset
+  correction is required at the M-A6 comparison.
+- **STILL OPEN — sum vs mean.** Whether an hourly value is the *sum* of the 10-minute intervals or an
+  independent measurement is not yet answered; a follow-up is with DHM. This is the question that
+  changes totals by a **factor**.
+  **Scope of the remaining block, precisely:** a sum-vs-mean error rescales every value by a constant,
+  so it affects **magnitudes** (totals, intensity quantiles, mass fractions) but **not** normalised
+  **shape** (diurnal profiles, wet/dry timing, between-station profile correlation). Diurnal *shape*
+  results are therefore unblocked by the period-ending answer; magnitude results are not.
 
 ### Two *reporting* populations
 | Group | Reported resolution | Stations | JJAS wet-hour fraction | q99.9 |
