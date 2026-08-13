@@ -24,11 +24,11 @@ from __future__ import annotations
 import re
 import time
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 import structlog
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ValidationError, field_validator
 
 from sapphire_flow import __version__
 from sapphire_flow.exceptions import AdapterError
@@ -40,6 +40,7 @@ from sapphire_flow.types.bafu_forecast import (
     BafuMetric,
     BafuStationInventory,
     BafuVariantFetch,
+    parse_bafu_icon,
 )
 from sapphire_flow.types.datetime import ensure_utc
 
@@ -108,6 +109,19 @@ class _StationPropertiesModel(BaseModel):
     unit: str
     plot: str
 
+    @field_validator("icon", mode="before")
+    @classmethod
+    def _parse_icon(cls, value: object) -> BafuIcon:
+        # Plan 160 D1: parse the raw `{kind}` / `{kind}_missing` / legacy
+        # `missing` vocabulary into the compositional BafuIcon here, at the
+        # boundary. A ValueError becomes a pydantic ValidationError, which is
+        # exactly the per-FEATURE failure fetch_station_inventory below
+        # catches and skips (D3/D4) -- an icon this adapter has never seen
+        # degrades one station, not the whole inventory.
+        if not isinstance(value, str):
+            raise ValueError(f"BAFU icon must be a string, got {value!r}")
+        return parse_bafu_icon(value)
+
 
 class _StationFeatureModel(BaseModel):
     properties: _StationPropertiesModel
@@ -118,7 +132,14 @@ class _StationMetaModel(BaseModel):
 
 
 class _StationCollectionModel(BaseModel):
-    features: list[_StationFeatureModel]
+    # Raw, unvalidated feature objects. Plan 160 D3: per-station validation
+    # containment means a single malformed feature must not fail the whole
+    # collection at this envelope level -- each item is individually
+    # revalidated into _StationFeatureModel in fetch_station_inventory, where
+    # a failure is skipped and recorded rather than raised. `meta` stays
+    # strict here: an unparseable produced_at affects the WHOLE batch (every
+    # row needs it), so it is still a structural, batch-wide failure.
+    features: list[Any]
     meta: _StationMetaModel
 
 
@@ -198,23 +219,85 @@ class BafuForecastAdapter:
                 f"parseable ISO8601 timestamp: {parsed.meta.produced_at!r}"
             ) from exc
 
-        stations = [
-            BafuForecastStation(
-                key=self._validate_station_key(feature.properties.key),
-                label=feature.properties.label,
-                icon=feature.properties.icon,
-                metric=feature.properties.metric,
-                unit=feature.properties.unit,
-                plot_path=feature.properties.plot,
+        stations: list[BafuForecastStation] = []
+        skipped_count = 0
+        for raw_feature in parsed.features:
+            try:
+                feature = _StationFeatureModel.model_validate(raw_feature)
+            except ValidationError as exc:
+                # The feature never parsed, so there is no typed `.properties`
+                # to read a key from -- best-effort dig into the raw payload
+                # for the diagnostic only (never raises).
+                skipped_count += 1
+                log.warning(
+                    "bafu_forecast.station_skipped",
+                    station_key=self._best_effort_feature_key(raw_feature),
+                    error=str(exc),
+                )
+                continue
+
+            try:
+                key = self._validate_station_key(feature.properties.key)
+            except AdapterError as exc:
+                skipped_count += 1
+                log.warning(
+                    "bafu_forecast.station_skipped",
+                    station_key=feature.properties.key,
+                    error=str(exc),
+                )
+                continue
+            stations.append(
+                BafuForecastStation(
+                    key=key,
+                    label=feature.properties.label,
+                    icon=feature.properties.icon,
+                    metric=feature.properties.metric,
+                    unit=feature.properties.unit,
+                    plot_path=feature.properties.plot,
+                )
             )
-            for feature in parsed.features
-        ]
+
+        # Plan 160 D3: partial vs total. A per-feature failure degrades one
+        # station (skipped_count above); only a payload where NO station
+        # validated is a total loss worth aborting the run for. This also
+        # covers a STRUCTURALLY valid envelope with zero features to begin
+        # with (`features: []`) -- operationally indistinguishable from
+        # "every feature failed", and a zero-station "success" would mask a
+        # total collector outage behind an OK health heartbeat (review
+        # fold-in, Plan 160).
+        if not stations:
+            raise AdapterError(
+                f"BAFU forecast station GeoJSON at {_STATIONS_URL}: all "
+                f"{len(parsed.features)} feature(s) failed validation"
+            )
+
         log.info(
             "bafu_forecast.inventory_fetch_completed",
             station_count=len(stations),
+            skipped_count=skipped_count,
             produced_at=produced_at.isoformat(),
         )
-        return BafuStationInventory(stations=stations, produced_at=produced_at)
+        return BafuStationInventory(
+            stations=stations, produced_at=produced_at, skipped_count=skipped_count
+        )
+
+    @staticmethod
+    def _best_effort_feature_key(raw_feature: object) -> str | None:
+        # Diagnostic-only extraction for the skip warning above -- the raw
+        # feature already failed validation, so this is deliberately
+        # permissive (no raising) and returns None rather than guess when the
+        # shape is too broken to even carry a key. Explicit dict[str, object]
+        # cast keeps this in strict-pyright territory (no Unknown leaking
+        # from an untyped `dict` narrow of an `object`-typed parameter).
+        if not isinstance(raw_feature, dict):
+            return None
+        raw_feature_dict = cast("dict[str, object]", raw_feature)
+        properties = raw_feature_dict.get("properties")
+        if not isinstance(properties, dict):
+            return None
+        properties_dict = cast("dict[str, object]", properties)
+        key = properties_dict.get("key")
+        return key if isinstance(key, str) else None
 
     def fetch_variant_forecast(
         self,

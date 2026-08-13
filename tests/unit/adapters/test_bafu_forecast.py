@@ -6,9 +6,12 @@ from pathlib import Path
 
 import httpx
 import pytest
+import structlog.testing
 
 from sapphire_flow.adapters.bafu_forecast import USER_AGENT, BafuForecastAdapter
 from sapphire_flow.exceptions import AdapterError
+from sapphire_flow.flows.collect_bafu_forecasts import _variants_for_station
+from sapphire_flow.types.bafu_forecast import BafuGaugeDataStatus, BafuWaterBodyIcon
 from sapphire_flow.types.datetime import ensure_utc
 
 _FIXTURE_DIR = Path(__file__).parent.parent.parent / "fixtures" / "reference"
@@ -55,7 +58,9 @@ class TestFetchStationInventory:
 
         station = next(s for s in inventory.stations if s.key == "2135")
         assert station.label == "Aare - Bern, Schönau"
-        assert station.icon == "river"
+        assert station.icon == BafuWaterBodyIcon(
+            kind="river", data_status=BafuGaugeDataStatus.PRESENT
+        )
         assert station.metric == "discharge_ms"
         assert station.unit == "m³/s"
         assert station.plot_path == "/web/hydro/hydro_sensor_pq_forecast/2135/plots"
@@ -78,6 +83,9 @@ class TestFetchStationInventory:
     def test_rejects_path_traversal_station_key(self) -> None:
         # A spoofed/hijacked feed must not smuggle a traversal key into an
         # archive path — the key is validated against the expected shape.
+        # Plan 160 D3: this is now per-feature containment, not a whole-batch
+        # abort — the poisoned station is skipped and the other 53 are still
+        # returned (matching the icon-drift containment path exactly).
         payload = json.loads(json.dumps(_STATIONS_JSON))
         payload["features"][0]["properties"]["key"] = "../../../etc/cron.d/x"
 
@@ -85,8 +93,10 @@ class TestFetchStationInventory:
             return httpx.Response(200, json=payload)
 
         adapter = _make_adapter(httpx.MockTransport(handler))
-        with pytest.raises(AdapterError, match="does not match the expected"):
-            adapter.fetch_station_inventory()
+        inventory = adapter.fetch_station_inventory()
+        assert len(inventory.stations) == 53
+        assert inventory.skipped_count == 1
+        assert all(s.key != "../../../etc/cron.d/x" for s in inventory.stations)
 
     def test_user_agent_header_sent(self) -> None:
         seen: list[str] = []
@@ -118,6 +128,20 @@ class TestFetchStationInventory:
         with pytest.raises(AdapterError, match="schema validation"):
             adapter.fetch_station_inventory()
 
+    def test_raises_adapter_error_on_unparseable_produced_at(self) -> None:
+        # T2 (D3): an unparseable meta.produced_at is structurally unusable --
+        # every row in the batch needs it -- so it must still be a batch-wide
+        # AdapterError, not silently skipped like a per-feature failure.
+        payload = json.loads(json.dumps(_STATIONS_JSON))
+        payload["meta"]["produced_at"] = "not-a-timestamp"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=payload)
+
+        adapter = _make_adapter(httpx.MockTransport(handler))
+        with pytest.raises(AdapterError, match="not a parseable ISO8601 timestamp"):
+            adapter.fetch_station_inventory()
+
     def test_total_failure_raises_adapter_error_on_connect_error(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("no route to host", request=request)
@@ -128,6 +152,174 @@ class TestFetchStationInventory:
             adapter.fetch_station_inventory()
         # Retried up to the cap without a real sleep.
         assert len(spy.calls) == 2
+
+
+class TestIconSchemaDriftResilience:
+    """Plan 160: the live-outage class fix. Key acceptance criteria (T1/T2)."""
+
+    def test_river_missing_icon_routes_like_river(self) -> None:
+        # T1 (D1/D2/D8, probe-backed): "river_missing" describes the live
+        # GAUGE, not forecast availability -- BAFU still publishes a full
+        # forecast for it, so it must route exactly like plain "river", not
+        # be skipped. Before this plan, "river_missing" is not a member of
+        # the flat BafuIcon Literal, so this raises AdapterError before
+        # routing is ever reached.
+        payload = json.loads(json.dumps(_STATIONS_JSON))
+        target = next(
+            f for f in payload["features"] if f["properties"]["icon"] == "river"
+        )
+        target["properties"]["icon"] = "river_missing"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=payload)
+
+        adapter = _make_adapter(httpx.MockTransport(handler))
+        inventory = adapter.fetch_station_inventory()
+        assert inventory.skipped_count == 0
+        station = next(
+            s for s in inventory.stations if s.key == target["properties"]["key"]
+        )
+        # Parsed as MISSING data status, not silently coerced to PRESENT — a
+        # parser that dropped the `_missing` suffix would still route this
+        # station correctly (kind alone drives routing, D2) but would be
+        # lying about the gauge's actual state.
+        assert station.icon == BafuWaterBodyIcon(
+            kind="river", data_status=BafuGaugeDataStatus.MISSING
+        )
+        assert _variants_for_station(station) == ("q_forecast",)
+
+    def test_lake_missing_icon_routes_like_lake(self) -> None:
+        # T1 (D1/D2/D6): "lake_missing" has never appeared in the live feed
+        # (0/54 as of 2026-08-13) but is the forward-looking lock that stops
+        # the NEXT outage -- the first lake station whose gauge goes down.
+        # Same reasoning as river_missing: raises today, must route like
+        # plain "lake" (both variants) once fixed.
+        payload = json.loads(json.dumps(_STATIONS_JSON))
+        target = next(
+            f for f in payload["features"] if f["properties"]["icon"] == "lake"
+        )
+        target["properties"]["icon"] = "lake_missing"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=payload)
+
+        adapter = _make_adapter(httpx.MockTransport(handler))
+        inventory = adapter.fetch_station_inventory()
+        assert inventory.skipped_count == 0
+        station = next(
+            s for s in inventory.stations if s.key == target["properties"]["key"]
+        )
+        assert station.icon == BafuWaterBodyIcon(
+            kind="lake", data_status=BafuGaugeDataStatus.MISSING
+        )
+        assert _variants_for_station(station) == ("q_forecast", "p_forecast")
+
+    def test_river_lake_and_legacy_missing_routing_unchanged(self) -> None:
+        # D2/D6: the three previously-recognised icon values keep their
+        # exact routing -- this plan only ADDS the {kind}_missing case.
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=_STATIONS_JSON)
+
+        adapter = _make_adapter(httpx.MockTransport(handler))
+        inventory = adapter.fetch_station_inventory()
+
+        river = next(
+            s
+            for s in inventory.stations
+            if isinstance(s.icon, BafuWaterBodyIcon) and s.icon.kind == "river"
+        )
+        assert _variants_for_station(river) == ("q_forecast",)
+
+        lake = next(
+            s
+            for s in inventory.stations
+            if isinstance(s.icon, BafuWaterBodyIcon) and s.icon.kind == "lake"
+        )
+        assert _variants_for_station(lake) == ("q_forecast", "p_forecast")
+
+    def test_single_invalid_icon_is_skipped_other_53_stations_returned(self) -> None:
+        # T2 (D3, the class fix): the exact shape of the production outage --
+        # ONE of 54 features has an icon BAFU has not documented. Today this
+        # aborts the whole inventory (AdapterError); after the fix it must be
+        # skipped and recorded, with the other 53 stations still returned.
+        payload = json.loads(json.dumps(_STATIONS_JSON))
+        assert len(payload["features"]) == 54
+        original_keys = {f["properties"]["key"] for f in payload["features"]}
+        poisoned_key = payload["features"][0]["properties"]["key"]
+        payload["features"][0]["properties"]["icon"] = "reservoir"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=payload)
+
+        adapter = _make_adapter(httpx.MockTransport(handler))
+        inventory = adapter.fetch_station_inventory()
+        assert len(inventory.stations) == 53
+        assert inventory.skipped_count == 1
+        # Not just a count check: the SURVIVING 53 must be exactly the
+        # original set minus the poisoned station -- an implementation that
+        # dropped a different (valid) station while still returning 53
+        # entries would pass a bare length assertion.
+        returned_keys = {s.key for s in inventory.stations}
+        assert returned_keys == original_keys - {poisoned_key}
+        assert poisoned_key not in returned_keys
+
+    def test_every_feature_invalid_still_raises(self) -> None:
+        # T2 (D3): the "no station validates" edge of the partial/total
+        # distinction. This is unchanged behaviour (already raises today),
+        # locked so the containment fix does not accidentally widen into
+        # "always return whatever validated, even if that's nothing".
+        payload = json.loads(json.dumps(_STATIONS_JSON))
+        for feature in payload["features"]:
+            feature["properties"]["icon"] = "reservoir"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=payload)
+
+        adapter = _make_adapter(httpx.MockTransport(handler))
+        with pytest.raises(AdapterError, match="failed validation"):
+            adapter.fetch_station_inventory()
+
+    def test_empty_feature_collection_raises_not_silently_empty(self) -> None:
+        # A structurally valid envelope with ZERO features is operationally a
+        # total loss -- BAFU serving a broken/empty feed -- indistinguishable
+        # from "every feature failed validation" in effect. It must raise,
+        # never be reported as a healthy zero-station run (which would mask
+        # a total collector outage behind an OK heartbeat).
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "features": [],
+                    "meta": {"produced_at": "2026-07-10T09:43:08.786000+00:00"},
+                },
+            )
+
+        adapter = _make_adapter(httpx.MockTransport(handler))
+        with pytest.raises(AdapterError, match="0 feature"):
+            adapter.fetch_station_inventory()
+
+    def test_skipped_station_emits_warning_with_key_and_offending_value(self) -> None:
+        # D5: drift is telemetry, not silence -- the operator must be able to
+        # see WHICH station and WHAT value caused the skip from the log alone.
+        payload = json.loads(json.dumps(_STATIONS_JSON))
+        target = payload["features"][0]
+        target["properties"]["icon"] = "reservoir"
+        target_key = target["properties"]["key"]
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=payload)
+
+        adapter = _make_adapter(httpx.MockTransport(handler))
+        with structlog.testing.capture_logs() as captured:
+            adapter.fetch_station_inventory()
+
+        skip_events = [
+            e for e in captured if e.get("event") == "bafu_forecast.station_skipped"
+        ]
+        assert len(skip_events) == 1
+        assert skip_events[0]["log_level"] == "warning"
+        assert skip_events[0].get("station_key") == target_key
+        assert "reservoir" in skip_events[0].get("error", "")
 
 
 class TestFetchVariantForecast:

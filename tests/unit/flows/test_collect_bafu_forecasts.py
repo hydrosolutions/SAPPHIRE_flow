@@ -11,13 +11,16 @@ from sapphire_flow.config.deployment import DeploymentConfig
 from sapphire_flow.exceptions import AdapterError
 from sapphire_flow.flows.collect_bafu_forecasts import (
     _EMPTY_RESULT,
+    _variants_for_station,
     collect_bafu_forecasts_flow,
 )
 from sapphire_flow.types.bafu_forecast import (
     BafuForecastRow,
     BafuForecastStation,
+    BafuGaugeDataStatus,
     BafuStationInventory,
     BafuVariantFetch,
+    BafuWaterBodyIcon,
 )
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import PipelineCheckType, PipelineHealthStatus
@@ -33,22 +36,32 @@ def _make_config(**overrides: object) -> DeploymentConfig:
     return DeploymentConfig(**defaults)  # type: ignore[arg-type]
 
 
-def _river_station(key: str = "2135") -> BafuForecastStation:
+def _river_station(
+    key: str = "2135", *, data_present: bool = True
+) -> BafuForecastStation:
+    status = (
+        BafuGaugeDataStatus.PRESENT if data_present else BafuGaugeDataStatus.MISSING
+    )
     return BafuForecastStation(
         key=key,
         label=f"River {key}",
-        icon="river",
+        icon=BafuWaterBodyIcon(kind="river", data_status=status),
         metric="discharge_ms",
         unit="m³/s",
         plot_path=f"/web/hydro/hydro_sensor_pq_forecast/{key}/plots",
     )
 
 
-def _lake_station(key: str = "3001") -> BafuForecastStation:
+def _lake_station(
+    key: str = "3001", *, data_present: bool = True
+) -> BafuForecastStation:
+    status = (
+        BafuGaugeDataStatus.PRESENT if data_present else BafuGaugeDataStatus.MISSING
+    )
     return BafuForecastStation(
         key=key,
         label=f"Lake {key}",
-        icon="lake",
+        icon=BafuWaterBodyIcon(kind="lake", data_status=status),
         metric="masl",
         unit="m ü.M.",
         plot_path=f"/web/hydro/hydro_sensor_pq_forecast/{key}/plots",
@@ -162,6 +175,40 @@ class TestQuarantineGate:
         assert result.stations_seen == 0
         assert result.variants_fetched == 0
         assert result.rows_archived == 0
+
+
+class TestVariantsForStation:
+    """Plan 160 D2: unit-level lock on the routing table itself."""
+
+    def test_river_routes_q_forecast_only(self) -> None:
+        assert _variants_for_station(_river_station()) == ("q_forecast",)
+
+    def test_lake_routes_both_variants(self) -> None:
+        assert _variants_for_station(_lake_station()) == (
+            "q_forecast",
+            "p_forecast",
+        )
+
+    def test_river_missing_data_routes_like_river(self) -> None:
+        # The `_missing` suffix describes the live GAUGE, not forecast
+        # availability (D8, probe-backed) -- it must NOT suppress the fetch.
+        station = _river_station(data_present=False)
+        assert _variants_for_station(station) == ("q_forecast",)
+
+    def test_lake_missing_data_routes_like_lake(self) -> None:
+        station = _lake_station(data_present=False)
+        assert _variants_for_station(station) == ("q_forecast", "p_forecast")
+
+    def test_legacy_bare_missing_is_not_fetched(self) -> None:
+        station = BafuForecastStation(
+            key="9999",
+            label="No data 9999",
+            icon="missing",
+            metric="discharge_ms",
+            unit="m³/s",
+            plot_path="/web/hydro/hydro_sensor_pq_forecast/9999/plots",
+        )
+        assert _variants_for_station(station) == ()
 
 
 class TestCollection:
@@ -499,6 +546,7 @@ class TestBafuHealthHeartbeat:
         assert record.created_at == _PRODUCED_AT
         assert record.detail == {
             "stations_seen": result.stations_seen,
+            "stations_skipped": result.stations_skipped,
             "variants_fetched": result.variants_fetched,
             "variants_absent": result.variants_absent,
             "variants_skipped_dedup": result.variants_skipped_dedup,
@@ -507,6 +555,7 @@ class TestBafuHealthHeartbeat:
         }
         assert record.detail == {
             "stations_seen": 2,
+            "stations_skipped": 0,
             "variants_fetched": 3,
             "variants_absent": 0,
             "variants_skipped_dedup": 0,
@@ -540,6 +589,34 @@ class TestBafuHealthHeartbeat:
         assert len(records) == 1
         assert records[0].status is PipelineHealthStatus.WARNING
         assert records[0].detail["variants_failed"] == 1
+
+    def test_warning_status_when_stations_skipped(self, tmp_path: Path) -> None:
+        # Plan 160 D5: drift (a station dropped by inventory containment) is
+        # its own WARNING trigger, independent of any variant fetch failure.
+        healthy = _river_station("2135")
+        inventory = BafuStationInventory(
+            stations=[healthy], produced_at=_PRODUCED_AT, skipped_count=1
+        )
+        variant_results: dict[tuple[str, str], BafuVariantFetch | None | Exception] = {
+            ("2135", "q_forecast"): _fetch("2135", "q_forecast", n_rows=1),
+        }
+        adapter = _FakeAdapter(inventory, variant_results)
+        config = _make_config(bafu_forecast_archive_path=tmp_path)
+        health_store = FakePipelineHealthStore()
+
+        collect_bafu_forecasts_flow(
+            config=config,
+            adapter=adapter,
+            clock=_ClockSpy(_PRODUCED_AT),
+            sleeper=_SleepSpy(),
+            pipeline_health_store=health_store,
+        )
+
+        records = health_store.fetch_recent(PipelineCheckType.BAFU_FORECAST_FRESHNESS)
+        assert len(records) == 1
+        assert records[0].status is PipelineHealthStatus.WARNING
+        assert records[0].detail["stations_skipped"] == 1
+        assert records[0].detail["variants_failed"] == 0
 
     def test_health_write_failure_does_not_fail_the_collection_run(
         self, tmp_path: Path
