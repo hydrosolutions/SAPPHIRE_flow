@@ -211,6 +211,115 @@ statistics. See `expectations.toml` id `clim_djf_share_humde`.
   sensitivity as the daily coherence figure above, and independently still unreliable pending the
   accumulation-convention resolution named here. See `expectations.toml` id `coh_diurnal_median_r`.
 
+## Literature grounding (added 2026-08-13)
+
+A targeted sweep after M-A1. **Our elevation-dependent diurnal result is established science, not a
+novel finding** — which is reassuring for the pipeline and, more importantly, changes what M-A6 should
+expect from ERA5-Land. Full texts read for all four papers cited below.
+
+### The elevation gradient is confirmed by three independent sources
+
+| Source | Method | Result |
+|---|---|---|
+| Nepal J. Sci. Tech. (TRMM PR, 1998–2010, 0.05°) | satellite radar | Lesser Himalaya **~2,000–2,200 m** → afternoon–evening peak; southern margin **~500–700 m** → early-morning peak |
+| Watters et al. (2021), via Hunt et al. (2022) | GPM-IMERG | early-morning maximum over the Himalaya with a cross-slope gradient — **earlier maximum at higher altitudes** |
+| Hunt et al. (2022) | GPM-IMERG + CMORPH | foothill band peaks **0300 IST**; within it the **southern (lower) boundary peaks 1–2 h later than the northern** |
+
+All three give the direction our data gives: **higher = earlier**. Our hills (1,200–2,150 m) peak
+22–02 local; our Terai (67–223 m) peaks 03–08 local. Barros et al. (2000), over Nepal specifically,
+add that the cycle is bimodal but **in valleys only the early-morning peak is present**.
+
+Season matters, and the JJAS restriction was right: the pre-monsoon (MAM) has an *afternoon* maximum,
+the monsoon (JJA) a midnight–early-morning one.
+
+### The mechanism, and why elevation is the predictor
+
+Hunt et al. (2022) separate two modes: a late-afternoon **convective** peak (~1700 IST, enhanced by
+anabatic upslope flow) and a stronger early-morning **katabatic** peak (~0200 IST, nocturnal downslope
+flow converging with the background monsoon circulation, strengthened when the monsoon trough is
+active). **Our elevation gradient is best read as the elevation-dependence of which mode dominates** —
+hills convective, lowlands katabatic. Hunt's own latitude stratification finds the cycle's amplitude
+*and* the relative magnitude of the nocturnal peak both decrease with elevation. The NJST result that
+*"the morning precipitation moves southward in the mature monsoon season"* supplies the propagation.
+
+Elevation is therefore not an arbitrary correlate but a **proxy for position along a propagating
+overnight system** — which is why it predicts phase and horizontal distance does not.
+
+### One mechanism explains BOTH of our structural findings
+
+NJST decomposes the two regimes by character, not just timing: *"early-morning rainfall over foothill
+regions … is a consequence of strong conditional rain rate whereas afternoon to midnight rainfall
+maxima over LH regions is a consequence of relatively very high frequency of rainfall."*
+
+So the lowland early-morning peak is **intensity-driven** (fewer, harder events) and the hill evening
+peak is **frequency-driven**. That predicts heavier tails at low elevation — which is what we measure
+(Terai q99 ≈ 29–38 mm/h against 6–15 mm/h at high altitude). **Our intensity gradient and our diurnal
+gradient are the same physical structure**, not two separate results.
+
+### ERA5's foothill phase error is far larger than the global figure
+
+The global number often quoted is ~2 h early. **In the Himalayan foothills it approaches 12 h.**
+Hunt et al. (2022): the reanalyses *"extend the tropical convection signal northward over the
+foothills, placing a mid-afternoon peak along much of the region, at odds with the two satellite-based
+datasets. Early-morning peaks are only present, for both reanalyses, towards the far northwest and at
+small, isolated locations along the very southern boundary."* Observations put the foothill peak at
+0300 IST.
+
+Three points make this structural rather than incidental:
+- **ERA5 and IMDAA suffer the same error** despite different underlying models (ECMWF IFS vs Met
+  Office UM) and different assimilated data — a failure of parametrised convection, not a vendor quirk.
+- **Norris et al. (2017)**: below 3 km the cycle is bimodal (0600 and 2100 LT), above 3 km unimodal
+  (1500 LT), and a **parametrised-convection run cannot capture the nocturnal 0600 peak at lower
+  elevations**. Moving to 2.8 km explicit convection fixed it; further refinement added little.
+- ERA5 gets the Indo-Gangetic Plain (1500 IST) approximately right — the failure is specific to the
+  orographic band where nearly all 26 of our stations sit.
+
+### Consequences for this programme
+
+1. **M-A6 must treat a diurnal phase error as expected model behaviour**, never as evidence about
+   gauge quality. Finding it confirms the literature; it says nothing about the gauges.
+2. **D6 is sharpened.** ERA5 *over-estimates* precipitation over the Himalaya while gauges
+   *under-catch*. Both errors push the same way, so "ERA5 is wetter than the gauge" is **doubly**
+   uninformative about which is right.
+3. **The "inherit timing from the NWP" Phase-2 option is now disfavoured** — see the milestone doc.
+   Inheriting a 12-hour-displaced diurnal cycle would import a large systematic error.
+4. **IMERG caveat**: Hunt notes GPM-IMERG *"performance falls at higher elevations or when quantifying
+   extreme precipitation events"* — relevant to D4's adjudication idea, though our own track dropped
+   IMERG when wholesale zero-run removal was chosen.
+5. **Our QC finds defects published work would likely miss.** Adhikari et al. (2025) screened outliers
+   by *neighbour corroboration* (>100 mm/h "without supporting nearby station evidence") — but our
+   measured median nearest-neighbour distance is 27 km with hourly r ≈ 0.05–0.24, so corroboration is
+   weak in Nepal; and they excluded stations with >20 % missing, the coverage filter Khumaltar 2023
+   shows to be inadequate. **Neither rule catches a stuck-zero run or a stuck-high block.** Published
+   Nepal hourly statistics may carry the same defects.
+6. **DHM operates ≥63 hourly AWS.** Adhikari et al. used 63, noting a "recent expansion of the AWS
+   network by DHM". We received 37 columns, 26 usable — worth raising alongside M-D3.
+
+### Where our data does NOT fit the literature
+
+**Group A above ~2,500 m.** Norris et al. predict unimodal, peaking 1500 LT above 3 km. Olangchunggola
+peaks 03 UTC and Lukla 02 UTC (≈ 08–09 local), matching neither the literature nor our own hill band.
+Both are the stations with 54–55 % wet-hour fractions — the most noise-contaminated in the sample.
+Treat the high-altitude end as **unresolved**, not contradictory. This is awkward: it is the band that
+matters most for Dudh Koshi runoff.
+
+### References
+
+- Hunt, K. M. R., Turner, A. G., and Schiemann, R. K. H.: Katabatic and convective processes drive two
+  preferred peaks in the precipitation diurnal cycle over the Central Himalaya, *Q. J. R. Meteorol.
+  Soc.*, 148(745), 1731–1751, doi:10.1002/qj.4275, 2022. (CC BY)
+- Adhikari, S., et al.: Analyzing extreme precipitation during the prolonged summer monsoon of 2022 in
+  Nepal: insights from hourly observational data, *J. Inst. Sci. Tech.*, 30(1), 179–188,
+  doi:10.3126/jist.v30i1.70014, 2025.
+- Dawadi, B., et al.: Diurnal cycle of precipitation and extremes in Nepal, *J. Inst. Sci. Tech.*
+  (IMERG, 2015–2021). Monsoon diurnal peak ~0.65 mm/h around midnight, minimum ~0.2 mm/h late morning;
+  monsoon extremes exceed 15 mm/h; intensity concentrated in mid- and low-elevation central/eastern
+  Nepal.
+- *Spatial Variations in the Diurnal Pattern of Precipitation over Nepal Himalayas*, *Nepal J. Sci.
+  Tech.* (TRMM PR, 1998–2010).
+- Norris, J., et al. (2017) and Barros, A. P., et al. (2000) — as cited within Hunt et al. (2022);
+  not read in full.
+
 ## Decisions
 
 | # | Decision | Rationale |

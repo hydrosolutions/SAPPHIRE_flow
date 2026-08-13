@@ -249,9 +249,17 @@ Per-station wet-hour intensity distributions and diurnal structure, 0.2 mm/h har
 frequency statistics (vision D5). Body and tail transferability reported separately with bootstrap
 uncertainty, per rule 2.
 
+**Stratify the diurnal analysis by elevation, not only by station** (literature grounding, vision
+2026-08-13). Three independent sources put the monsoon diurnal peak earlier at higher elevation —
+Lesser Himalaya ~2,000–2,200 m afternoon–evening against southern margin ~500–700 m early-morning —
+and our own exploratory check reproduces it: within Group B alone (one reporting population, 67–2,147 m,
+190 pairs) profile similarity correlates with **elevation difference at r = −0.486** and with
+**horizontal distance at r = −0.027**. Elevation predicts diurnal regime; proximity does not.
+
 **Exit:** distributions and profiles with uncertainty, and a quantified statement of what transfers
-between stations. *Marginals plus mean profiles inform but do not suffice to design a disaggregator —
-that needs temporal dependence structure, which is a Phase-2 question.*
+between stations — **reported by elevation band as well as per station**. *Marginals plus mean profiles
+inform but do not suffice to design a disaggregator — that needs temporal dependence structure, which
+is a Phase-2 question.*
 
 ### M-A8 · Elevation and regime structure
 **Depends: M-D2 (elevation), M-A6, M-A7.**
@@ -445,8 +453,30 @@ The residual unknowns are ordinary engineering: ERA5-Land deaccumulation, and th
 
 Unblocked regardless: **M-D1, M-D3, M-A1, M-A4, M-I1, M-I3.**
 
+## Phase-2 constraint from the literature (2026-08-13)
+
+**"Correct the intensity, inherit the timing from the NWP" is now DISFAVOURED as a Phase-2 option.**
+It was live when the phase-vs-intensity fork was discussed; the literature sweep undercuts it.
+
+In the Himalayan foothills — where nearly all 26 stations sit — ERA5 places the diurnal peak in the
+**mid-afternoon** while observations put it at **0300 IST**, approaching a **12-hour** phase error
+(Hunt et al., 2022). It is structural, not incidental: ERA5 and IMDAA suffer the same error despite
+different models and different assimilated data, and Norris et al. (2017) show a parametrised-convection
+run **cannot** reproduce the nocturnal low-elevation peak at all. ERA5 gets the Indo-Gangetic Plain
+right; the failure is specific to the orographic band we care about.
+
+Inheriting model timing would therefore import a large systematic error. **An observationally-derived,
+elevation-banded diurnal profile stops being a refinement and becomes the only defensible source of
+sub-daily timing in this region** — which raises the value of M-A7's elevation stratification and of
+any future regime classification. Recorded as a constraint, not a decision: vision D7 still holds that
+Phase 1 commits to no correction design.
+
 ## Known weaknesses carried forward
 
+- **The high-altitude diurnal signal is unresolved.** Above ~2,500 m our Group A stations match
+  neither the literature (Norris: unimodal, ~1500 LT above 3 km) nor our own hill band —
+  Olangchunggola peaks 03 UTC, Lukla 02 UTC. Both are the most noise-contaminated stations in the
+  sample (54–55 % wet-hour fractions). This is the band that matters most for Dudh Koshi.
 - **Duplication of the students' QC and characterisation is DELIBERATE, not a cost to minimise**
   (owner 2026-08-12). Two independent passes over the same file are expected to teach each side
   something; findings flow both ways during the work, not only at M-A9. Where our fit-for-purpose
