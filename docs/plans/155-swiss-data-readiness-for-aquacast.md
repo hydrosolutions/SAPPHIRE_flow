@@ -109,6 +109,61 @@ T2 land. But T1/T2/T3's gates are denominated in the manifest. So:
 - **T0a — provisional manifest, NOW, from station data alone:** stations whose `forecast_targets` and
   `measured_parameters` contain `discharge`, excluding lake/`water_level`-only stations. This needs
   no model object and unblocks T1/T2/T3.
+- **T0a — ✅ DONE, 2026-08-13 (executed).** Result below.
+
+#### T0a result — the frozen manifest is **149 discharge stations**, and the extraction gap is **ONE basin**
+
+Run over all 169 configured `basin_ids` (`config.toml`) using **two independent signals that agree
+perfectly**: observed discharge loaded through *the adapter's own loader*
+(`camelsch.timeseries.load_basin_timeseries`, not a raw CSV read — see the note below), and
+CAMELS-CH's authoritative `water_body_type` column.
+
+| | count | |
+|---|---|---|
+| configured `basin_ids` | **169** | the onboarding manifest |
+| `water_body_type == lake` | **20** | **out of scope** (owner, 2026-08-13) — zero observed discharge, all 20 |
+| `water_body_type == stream` | **149** | **← the frozen T0a denominator**; no other type exists in the set |
+| streams Caravan covers | **148 / 149** | **99.3 %** |
+| streams Caravan does NOT cover | **1** | `2446` |
+
+The 20 lakes are exactly the 20 lake-typed gauges in the whole 169 — the sweep T0 mandates found no
+further non-discharge station hiding among the covered 148. Each of the 20 has **0** observed
+discharge values and ~14 610 water-level values, so the two signals never disagree. They are:
+`2004` Murten/Murtensee, `2017` Zug, `2021` Ponte Tresa, `2025` Brunnen, `2027` St-Prex, `2028`
+Genève-Sécheron, `2031` Unterägeri, `2066` St. Moritz, `2073` Silvaplana, `2074` Brissago, `2081`
+Pfäffikon, `2088` Sarnen, `2097` Meisterschwanden, `2101` Melide-Ferrera, `2118` Murg/Walensee,
+`2137` Gelfingen, `2168` Sempach, `2208` Ligerz, `2484` Lauerz, `2642` Neuchâtel.
+
+**Caravan covers none of the 20 lakes and 148 of the 149 streams** — i.e. its exclusion rule is
+essentially "no lakes", plus one stream.
+
+**⚠️ The single survivor needs an owner call, and it is not a clear keep.** `2446`
+**Gampelen-Zihlbrücke** is typed `stream` and has 13 832 observed discharge values, so it passes T0a
+mechanically. But it is the **Zihlkanal** — the regulated outflow canal carrying Lac de Neuchâtel
+into Bielersee, part of the Jura water correction — and its "catchment" is **2695.5 km²**, i.e. the
+entire upstream lake system. Its discharge is a **regulation decision, not a rainfall-runoff
+response**, which is the one hydrological regime a pooled rainfall-runoff model cannot represent, and
+is the most plausible reason Caravan excluded it while keeping every other Swiss stream.
+
+**Recommendation: drop `2446` as well and record the extraction gap as ZERO.** Standing up a Swiss
+HydroATLAS extraction — rebuilding three region-scoped datasets, including an ERA5-Land cube that
+needed a 128 GiB EC2 host — to serve **one regulated canal whose physics the model cannot capture**
+fails this plan's own test that the cost "is justified for ~20 basins only if those basins matter
+operationally". If the owner wants `2446` forecast anyway, it is a candidate for a different model
+class, not a reason to build the extraction pipeline.
+
+**Consequence: T1's `Only if a genuine gap survives T0a` branch does NOT fire.** The
+`static-attrs-nepal` appliance and the Swiss BasinATLAS/ERA5-cube work are **out of scope for Plan
+155**. This removes the largest single cost item in the plan.
+
+**Method note (worth keeping).** A first pass read the CSVs directly and reported all 21 as having
+neither discharge *nor* water level — a uniform result that was a **parsing artefact**, not a
+finding: CAMELS-CH ships unit-suffixed headers (`discharge_vol(m3/s)`), so an exact-name match hits
+nothing. `camelsch.load_basin_timeseries` strips the units, which is why
+`adapters/camelsch_adapter.py:48`'s exact `"discharge_vol" not in df.columns` is **correct as
+written** — checked, not assumed, and not a bug. The rule that caught it: a classification where
+every input lands in the same bucket is a failed instrument until proven otherwise.
+
 - **T0b — confirm by compatibility, AFTER T2 and Plan 157's shim:** re-run the freeze through real PT
   compatibility and reconcile against T0a. A divergence is a finding, not a silent update.
 
@@ -118,7 +173,7 @@ percentage in this plan.
 
 ## Tasks
 
-### T1 — Import Caravan's CAMELS-CH attributes (closes G12 for 148/169 gauges)
+### T1 — Import Caravan's CAMELS-CH attributes (closes G12 for 148/149 discharge gauges)
 **MAJOR SIMPLIFICATION (2026-08-13).** This task was scoped as a Swiss HydroATLAS extraction —
 BasinATLAS download, regional clip, MERIT HFX, an ERA5-Land cube on a 128 GiB EC2 host with the
 `temenos` toolchain. **Almost none of that is needed.** The attributes already exist, published by
@@ -129,7 +184,7 @@ never saw.
 **Verified against the delivered parquet (296 rows × 216 cols, `caravan_camels_ch_<BAFU code>`):**
 - **All 50 of PT's declared statics are present** — 29 under PT's own names, 21 under their raw
   HydroATLAS codes (all 21 confirmed present).
-- **148 of our 169 configured gauges are covered.** *(PT's own training subset covered only 70 —
+- **148 of our 149 DISCHARGE gauges are covered (99.3 %) — see T0a; the other 20 of the 169 are lakes and out of scope.** *(PT's own training subset covered only 70 —
   Sandro filtered by basin QC and discharge sufficiency, so his training list understates what
   Caravan publishes.)*
 - **21 gauges have no Caravan row:** `2004 2017 2021 2025 2027 2028 2031 2066 2073 2074 2081 2088
