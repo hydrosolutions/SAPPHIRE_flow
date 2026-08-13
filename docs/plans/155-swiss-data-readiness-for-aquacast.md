@@ -1,9 +1,9 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-12
 plan: 155
 title: Swiss data readiness for aquacast — HydroATLAS basin package, static aliasing, gap-free forcing depth
-scope: Make the Swiss station set satisfy `cmal_pool_PT`'s declared input contract. Three data problems, one owner, one discipline — a Swiss HydroATLAS basin package (our Swiss basins carry CAMELS-CH attributes and NONE of the 50 statics PT declares), the Caravan↔HydroATLAS alias map re-derived against that package, and 210 days of GAP-FREE daily discharge + precipitation + temperature per station. Split out of Plan 152 (its T1, T1b, T1c) because it is a data workstream with a different discipline and owner from the integration engineering, and because it GATES Plan 152's go/no-go spike.
+scope: Make the Swiss station set satisfy `cmal_pool_PT`'s declared input contract. Three data problems — (T1) IMPORT Caravan's published CAMELS-CH statics, namespaced under a `caravan:` prefix per D15, covering 148 of the 149 discharge stations; (T2) the Caravan↔HydroATLAS alias map derived against that import; (T3) 210 days of GAP-FREE daily discharge + precipitation + temperature per station. NOTE (2026-08-13): T1 was originally scoped as a Swiss HydroATLAS EXTRACTION; T0a proved the attributes already exist, published, and that the residual gap is ZERO basins, so the extraction and the `static-attrs-nepal` appliance are OUT OF SCOPE. Split out of Plan 152 (its T1, T1b, T1c) because it is a data workstream with a different discipline and owner from the integration engineering, and because it GATES Plan 152's go/no-go spike.
 depends_on: [130]
 blocks: [152]
 supersedes: []
@@ -12,7 +12,14 @@ supersedes: []
 # Plan 155 — Swiss data readiness for aquacast
 
 ## Status
-**DRAFT.** Split out of **Plan 152** (tasks T1, T1b, T1c) on 2026-08-12.
+**READY** (owner, 2026-08-13). Split out of **Plan 152** (tasks T1, T1b, T1c) on 2026-08-12.
+
+**Implementation scope on flipping READY = T1 + T2 only.** T0a is **done** (result below). **T3 is
+DEFERRED and must NOT be implemented in this pass:** it depends on Plan 130 (READY but
+*unimplemented*) for the MeteoSwiss reanalysis tail, and it edits
+`services/operational_inputs.py`, which **Plan 151 is actively rewriting in a parallel session** —
+implementing it now buys a guaranteed conflict on a file another session owns. T0b remains blocked on
+Plan 157's shim.
 
 **Read Plan 152 first** for shared context: the selected artifact (`cmal_pool_PT`), its verified
 contract, the owner decisions (D1–D12), and § *What the Swiss run can and cannot tell us*. This plan
@@ -247,8 +254,23 @@ bare-name fallback**.
 **Onboarding steps:**
 1. **Join on identity** — `caravan_camels_ch_<code>` → `(network="bafu", code=<code>)`. 148/169 match;
    the rest are T0a's problem.
-2. **Load additively** — never through the importer's correction branch, which replaces attributes,
-   geometry and area wholesale and flags incumbent artifacts (`store/basin_importer.py:810-833`).
+2. **Load additively — and the mechanism does NOT exist yet; build it (2026-08-13).** The package
+   importer's only update path is the correction branch, and
+   `basin_store.update_basin_from_package` replaces `attributes`, geometry and area **wholesale**,
+   sets `material_change=True` and returns an affected-artifact set
+   (`store/basin_importer.py:810-833`) — exactly what T1 must not do. Merging in the caller does not
+   help: it still runs the correction branch and still flags the incumbent artifacts T6 exists to
+   compare against.
+
+   **Add a dedicated additive operation** that unions namespaced keys into `Basin.attributes`
+   **without** superseding the basin version or flagging artifacts. This is honest rather than a
+   loophole: D15 guarantees the `caravan:` keys are **disjoint** from every existing key, so the
+   operation cannot change any value an incumbent artifact was trained on — it is not a correction
+   and must not be recorded as one.
+
+   **Guard it structurally:** the operation must **reject any key lacking the `caravan:` prefix**, so
+   it is incapable of modifying an incumbent attribute even by mistake. That guard is what makes
+   skipping the supersede/flag machinery sound; without it this is just an unaudited write path.
 3. **Resolve PT's 50 through the Caravan namespace only** — no silent fallback to a CAMELS-CH value
    of the same name. A missing Caravan attribute must fail loudly, not quietly resolve to a
    different derivation.
@@ -359,7 +381,7 @@ the field that means "who", not welded onto the dataset name:
 | `source_datasets[].name` | `caravan` | the dataset, matching D15's `caravan:` attribute prefix |
 | `source_datasets[].version` | `unconfirmed@delivered-2026-08-13` | honest and **stays true**; see the immutability warning |
 | `source_datasets[].purpose` | `attributes` | |
-| `extractor_name` | `aquacast` (Sandro) | ← **this is where the deliverer belongs** |
+| `extractor_name` | `hsol` (owner, 2026-08-13) | ← **the deliverer**: the organisation, not a person or a tool version, so it stays true as staff and tooling change |
 | `extractor_version` | the aquacast commit, if obtainable | |
 
 **Not `caravans`.** It sits one character from the `caravan:` prefix D15 pins, in the same system, so
