@@ -18,6 +18,7 @@ from sapphire_flow.exceptions import (
     StoreError,
     TenantIsolationError,
 )
+from sapphire_flow.services.caravan_statics import available_declared_static_keys
 from sapphire_flow.types.basin import non_null_static_keys
 from sapphire_flow.types.enums import (
     ArtifactScope,
@@ -1258,14 +1259,22 @@ def onboard_model(
                 )
 
         # Step 1: Compatibility check
+        # Plan 155 T2 (G8): a Caravan-declaring model's own static names
+        # (e.g. PT's "area") never appear bare in `basin.attributes` --
+        # they live `caravan:`-namespaced (D15) -- so the available set
+        # must also include what the alias/direct resolution rule
+        # satisfies (see `services/caravan_statics.py`), same as the
+        # Prefect-task path (`flows/onboard_model.py`).
+        declared_names = model.data_requirements.static_features
         avail_static: dict[StationId, frozenset[str]] = {}
         for sid in unit.station_ids:
             station = station_store.fetch_station(sid)
             if station is not None and station.basin_id is not None:
                 basin = basin_store.fetch_basin(station.basin_id)
+                attrs = basin.attributes if basin is not None else None
                 avail_static[sid] = non_null_static_keys(
-                    basin.attributes if basin is not None else None
-                )
+                    attrs
+                ) | available_declared_static_keys(attrs, declared_names)
             else:
                 avail_static[sid] = frozenset()
 

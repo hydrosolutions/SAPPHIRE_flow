@@ -14,6 +14,63 @@ supersedes: []
 ## Status
 **READY** (owner, 2026-08-13). Split out of **Plan 152** (tasks T1, T1b, T1c) on 2026-08-12.
 
+**T1 + T2 IMPLEMENTED (2026-08-13, hold-at-PR — not yet merged).** Summary, deviations,
+and residual risks below; full detail in the PR description.
+
+- **T1/T1b** — `adapters/caravan_attributes.py` (pure parquet parsing, sanitises
+  NaN/Inf to `None`), `store/basin_store.py::PgBasinStore.merge_namespaced_attributes`
+  (the dedicated additive operation T1b calls for — JSONB `||` merge, no new
+  `basin_versions` row, no `material_change`, guarded to reject any key without the
+  `caravan:` prefix), and `store/caravan_import.py::import_caravan_attributes`
+  (end-to-end orchestration joining on `(network, code)` identity).
+- **T2** — `services/caravan_statics.py`: `resolve_caravan_static_key` (D15's rule),
+  `available_declared_static_keys` (the compatibility-boundary projection),
+  `project_declared_static_attributes` (the frame-boundary projection, additive —
+  original keys untouched, model-declared bare names added/overridden). Wired into
+  all five call sites that used to read `basin.attributes`/`non_null_static_keys`
+  directly: `flows/onboard_model.py::_validate_compatibility_task`,
+  `services/model_onboarding.py::onboard_model`'s own compatibility step,
+  `services/training_data.py::assemble_station_training_data` (both the missing-static
+  gate and the frame build), `services/hindcast.py::_load_static_attributes`,
+  `services/operational_inputs.py::assemble_station_operational_inputs`. No change to
+  `adapters/forecast_interface.py` (confirmed, per the plan's design constraint).
+- **T1's PROVENANCE fields (structured table in "Provenance of the Swiss parquet")
+  are captured as a returned `CaravanImportProvenance` dataclass, NOT persisted into
+  `basin_static_packages`** (deviation — see below).
+- **DEVIATION — T2 "collision semantics" narrowed.** The plan's "Define alias
+  collision semantics" text ("conflicting values fail loudly") reads, taken literally
+  across ALL of PT's 50 statics, as being in tension with T1's own red test (resolving
+  `area` must succeed and return Caravan's value, not raise) — CAMELS-CH's bare `area`
+  and Caravan's `caravan:area` will differ for essentially every station, so a
+  blanket "raise on any bare-name disagreement" rule would make `area` (and the other
+  6 colliding names) permanently unresolvable, contradicting the plan's own exit gate.
+  Implemented instead: `project_declared_static_attributes` always resolves a
+  model-DECLARED name from its `caravan:` source (D15's explicit "no bare fallback" —
+  Caravan wins, full stop, for names the model itself asks for); the collision guard
+  is kept only for the ambiguity a fixed, one-way `CARAVAN_ALIAS` table cannot itself
+  rule out (two different `caravan:` source keys resolving to the same declared name
+  with differing values) — currently unreachable given the map's shape, so it is
+  forward-compatible defensive code, not a tested behaviour. Flagging for owner
+  confirmation rather than silently picking an interpretation.
+- **DEVIATION — provenance not persisted to `basin_static_packages`.** The plan's
+  provenance table (`source_datasets[].name/version/purpose`, `extractor_name`,
+  `extractor_version`) is designed around `PackageManifest`/the full basin-PACKAGE
+  write pipeline (`store/basin_importer.py::import_basin_package`) — geometry,
+  correction branch, `material_change`, immutable fingerprint. T1b's additive merge is
+  deliberately NOT that pipeline (see `merge_namespaced_attributes`'s docstring), so
+  there is no natural `package_id`/`basin_static_packages` row for it to write without
+  either (a) reusing `basin_static_packages` for a shape it wasn't designed for, or
+  (b) building new schema — neither of which the plan's T1/T2 exit gates require.
+  `import_caravan_attributes` returns a `CaravanImportProvenance` (source dataset name/
+  version/purpose, extractor name/version) as a value the CALLER is responsible for
+  recording; persisting it durably is follow-on work, natural to fold into T0b/T1c.
+- **T0b, T3 remain out of scope for this pass**, per plan.
+- **Real import not yet run.** `import_caravan_attributes` is built and tested against
+  fixtures; running it against the real `/Users/bea/Downloads/data.parquet` over the
+  live 148-station T0a manifest — and asking the modeller for the confirmed Caravan
+  release version before doing so (plan's own guidance) — is an operational step for
+  after this PR merges, not part of this implementation.
+
 **Implementation scope on flipping READY = T1 + T2 only.** T0a is **done** (result below). **T3 is
 DEFERRED and must NOT be implemented in this pass:** it depends on Plan 130 (READY but
 *unimplemented*) for the MeteoSwiss reanalysis tail, and it edits

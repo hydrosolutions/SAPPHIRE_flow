@@ -8,6 +8,7 @@ import polars as pl
 import structlog
 
 from sapphire_flow.exceptions import ConfigurationError
+from sapphire_flow.services.caravan_statics import project_declared_static_attributes
 from sapphire_flow.services.training_data import resample_to_time_step
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.enums import EnsembleMode, QcStatus, WarmUpSource
@@ -553,7 +554,19 @@ def assemble_station_operational_inputs(
     if station_config is not None and station_config.basin_id is not None:
         basin = basin_store.fetch_basin(station_config.basin_id)
         if basin is not None and basin.attributes:
-            static_df = pl.DataFrame([basin.attributes])
+            # Plan 155 T2 (G8): project a Caravan-declaring model's own
+            # static names (D15's `caravan:`-namespaced resolution)
+            # alongside the untouched HydroATLAS canonicals -- see
+            # `services/caravan_statics.py`.
+            static_df = pl.DataFrame(
+                [
+                    project_declared_static_attributes(
+                        basin.attributes,
+                        reqs.static_features,
+                        station_code=station_config.code,
+                    )
+                ]
+            )
 
     # --- warm-up state ---
     # ``clock=lambda: now`` reuses the SAME instant already computed above

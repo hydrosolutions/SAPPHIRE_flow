@@ -17,6 +17,7 @@ from sqlalchemy.exc import (
 )
 
 from sapphire_flow.exceptions import StoreError
+from sapphire_flow.services.caravan_statics import project_declared_static_attributes
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.enums import EnsembleRepresentation, ForcingType, QcStatus
 from sapphire_flow.types.forecast import HindcastForecast
@@ -215,12 +216,24 @@ def _assemble_hindcast_inputs(
 def _load_static_attributes(
     basin_store: BasinStore,
     station_config: StationConfig,
+    declared_names: frozenset[str],
 ) -> pl.DataFrame | None:
     if station_config.basin_id is None:
         return None
     basin = basin_store.fetch_basin(station_config.basin_id)
     if basin is not None and basin.attributes:
-        return pl.DataFrame([basin.attributes])
+        # Plan 155 T2 (G8): project a Caravan-declaring model's own static
+        # names (D15's `caravan:`-namespaced resolution) alongside the
+        # untouched HydroATLAS canonicals -- see `services/caravan_statics.py`.
+        return pl.DataFrame(
+            [
+                project_declared_static_attributes(
+                    basin.attributes,
+                    declared_names,
+                    station_code=station_config.code,
+                )
+            ]
+        )
     return None
 
 
@@ -285,7 +298,9 @@ def run_station_hindcast(
     )
 
     weather_sources = station_store.fetch_reanalysis_bindings(station_id)
-    static_df = _load_static_attributes(basin_store, station_config)
+    static_df = _load_static_attributes(
+        basin_store, station_config, model.data_requirements.static_features
+    )
     # Fetch BOTH past- and future-known forcing from reanalysis: future-dynamic
     # forcing (e.g. NWP precip/temp) is teacher-forced in hindcast and must be
     # present for models whose forcing is future-known only (past set empty).
@@ -455,7 +470,9 @@ def run_group_hindcast(
         sid: station_store.fetch_reanalysis_bindings(sid) for sid in group.station_ids
     }
     static_map: dict[StationId, pl.DataFrame | None] = {
-        sid: _load_static_attributes(basin_store, cfg)
+        sid: _load_static_attributes(
+            basin_store, cfg, model.data_requirements.static_features
+        )
         for sid, cfg in station_configs.items()
         if cfg is not None
     }

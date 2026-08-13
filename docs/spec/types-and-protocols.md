@@ -926,6 +926,17 @@ class Basin:
 
 Module: `types/basin.py`
 
+**Namespaced attribute sources (Plan 155 D15).** `attributes` may hold keys from
+more than one source. A second source is namespaced under a `<source>:` prefix
+(e.g. `caravan:` for Caravan's CAMELS-CH attributes) rather than merged bare —
+a colon cannot appear in a canonical (HydroATLAS-coded or classic-CAMELS) attribute
+name, so collision with the FIRST source is structurally impossible. Resolution
+into a model's own declared name is additive and model-scoped
+(`services/caravan_statics.py::project_declared_static_attributes`) — never a
+blanket unprefixed merge, which would silently change an INCUMBENT model's inputs.
+See Plan 155 for the full rule and `store/basin_store.py::PgBasinStore
+.merge_namespaced_attributes` for the write-side guard.
+
 ### Alert
 
 ```python

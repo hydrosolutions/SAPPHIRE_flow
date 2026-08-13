@@ -20,6 +20,7 @@ from sapphire_flow.protocols.forecast_model import (
     GroupForecastModel,
     StationForecastModel,
 )
+from sapphire_flow.services.caravan_statics import available_declared_static_keys
 from sapphire_flow.services.model_onboarding import (
     assert_model_conforms,
     assert_operational_floors,
@@ -257,15 +258,22 @@ def _validate_compatibility_task(
     parameter_store: object,
     deployment_config: object,
 ) -> CompatibilityReport:
+    # Plan 155 T2 (G8): the raw `basin.attributes` key set alone never
+    # contains a Caravan-declaring model's OWN static names (they live
+    # `caravan:`-namespaced, per D15) -- project the model's declared names
+    # through the alias/direct resolution rule too, so compatibility does
+    # not fail even though `_static_inputs` (unchanged) will see them.
+    declared_names: frozenset[str] = model.data_requirements.static_features  # type: ignore[attr-defined]
     avail_static_by_station: dict[StationId, frozenset[str]] = {}
     for sid in unit.station_ids:
         station = station_store.fetch_station(sid)  # type: ignore[union-attr]
         has_basin = station is not None and station.basin_id is not None
         if has_basin and basin_store is not None:
             basin = basin_store.fetch_basin(station.basin_id)  # type: ignore[union-attr]
+            attrs = basin.attributes if basin is not None else None
             avail_static_by_station[sid] = non_null_static_keys(
-                basin.attributes if basin is not None else None
-            )
+                attrs
+            ) | available_declared_static_keys(attrs, declared_names)
         else:
             avail_static_by_station[sid] = frozenset()
 

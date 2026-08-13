@@ -132,6 +132,49 @@ class PgBasinStore:
         self._conn.execute(stmt)
         return basin.id
 
+    def merge_namespaced_attributes(
+        self,
+        basin_id: BasinId,
+        *,
+        attributes: dict[str, Any],
+        prefix: str = "caravan:",
+    ) -> None:
+        """Plan 155 T1b's dedicated ADDITIVE operation: union ``attributes``
+        into ``basins.attributes`` via a JSONB merge (``||``) -- no new
+        ``basin_versions`` row, no ``material_change`` flag, no
+        affected-artifact set. This is deliberately NOT
+        ``update_basin_from_package`` (the correction branch), which
+        replaces attributes/geometry/area wholesale and always flags
+        incumbent artifacts -- exactly what an additive attribute merge
+        must not do.
+
+        Structurally guarded: every key in ``attributes`` must carry
+        ``prefix`` (default ``"caravan:"``, D15) -- this makes the
+        operation incapable of modifying an existing (non-namespaced)
+        attribute even by mistake, which is what makes skipping the
+        supersede/flag machinery sound in the first place.
+        """
+        bad_keys = sorted(k for k in attributes if not k.startswith(prefix))
+        if bad_keys:
+            raise ValueError(
+                f"merge_namespaced_attributes refuses key(s) without the "
+                f"{prefix!r} prefix: {bad_keys} -- this additive path is "
+                "guarded to be structurally incapable of touching an "
+                "existing (non-namespaced) attribute"
+            )
+        result = self._conn.execute(
+            sa.update(basins)
+            .where(basins.c.id == basin_id)
+            .values(
+                attributes=sa.func.coalesce(
+                    basins.c.attributes, sa.cast(sa.literal("{}"), JSONB)
+                ).op("||")(sa.literal(attributes, type_=JSONB))
+            )
+            .returning(basins.c.id)
+        )
+        if result.first() is None:
+            raise ValueError(f"merge_namespaced_attributes: basin {basin_id} not found")
+
     def update_basin_from_package(
         self,
         *,

@@ -6,6 +6,10 @@ from typing import TYPE_CHECKING, cast
 import polars as pl
 import structlog
 
+from sapphire_flow.services.caravan_statics import (
+    available_declared_static_keys,
+    project_declared_static_attributes,
+)
 from sapphire_flow.types.basin import non_null_static_keys
 from sapphire_flow.types.enums import AggregationMethod, QcStatus
 
@@ -235,11 +239,18 @@ def assemble_station_training_data(
                 )
                 return None
         else:
-            if model.data_requirements.static_features:
-                missing_attrs = (
-                    model.data_requirements.static_features
-                    - non_null_static_keys(basin.attributes)
-                )
+            declared_names = model.data_requirements.static_features
+            if declared_names:
+                # Plan 155 T2 (G8): a Caravan-declaring model's own names
+                # (e.g. PT's "area") never appear bare in `basin.attributes`
+                # -- they live `caravan:`-namespaced (D15) -- so the
+                # available set must include what the alias/direct
+                # resolution rule ALSO satisfies, ahead of training's own
+                # missing-static gate.
+                available = non_null_static_keys(
+                    basin.attributes
+                ) | available_declared_static_keys(basin.attributes, declared_names)
+                missing_attrs = declared_names - available
                 if missing_attrs:
                     log.warning(
                         "training_data.missing_static_attributes",
@@ -247,7 +258,13 @@ def assemble_station_training_data(
                         missing=sorted(missing_attrs),
                     )
                     return None
-            static_attributes = pl.DataFrame([basin.attributes])
+            static_attributes = pl.DataFrame(
+                [
+                    project_declared_static_attributes(
+                        basin.attributes, declared_names, station_code=station.code
+                    )
+                ]
+            )
     elif model.data_requirements.static_features:
         log.warning(
             "training_data.missing_static_attributes",
