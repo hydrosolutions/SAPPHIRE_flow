@@ -1,7 +1,7 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-12
-revised: 2026-08-12
+revised: 2026-08-13
 plan: 158
 title: M-A1 — reproducible DHM precipitation ingest and baseline statistics
 scope: A committed, parameterised Polars pipeline that reads the DHM precipitation sample, emits every statistic the vision's Findings quote, and a gate that asserts the runner's own artefacts against an a-priori expectation manifest. Explicitly NOT QC masking or any exclusion mask (M-A3), time-axis normalisation (M-A2), or anything ERA5-Land (M-A4/A5).
@@ -14,10 +14,17 @@ source: docs/design/dhm-precipitation-milestones.md
 
 ## Status
 
-**DRAFT — reconstructed 2026-08-12** after a `/plan` run escalated (stalled at 3 rounds, 2 blockers +
-9 majors, doc grown 190 → 428 lines). Both blockers traced to the original draft, not to the
-expansion, and are fixed here (D6, D8c). The loop's genuinely good structure — named views, explicit
-grains, `AxisStatus`, an a-priori expectation manifest — is kept; its bulk is not.
+**READY — owner-confirmed 2026-08-13.**
+
+Reconstructed 2026-08-12 after a `/plan` run escalated (stalled at 3 rounds, 2 blockers + 9 majors,
+doc grown 190 → 428 lines). Per the recorded lesson, reconstructed rather than ground the loop, then
+gated with **four manual Codex rounds** converging 2B+8M → 4M → 2M → 1M → clean. Both original
+blockers traced to the first draft, not to the expansion, and are fixed here (D6, D8c/D9). The loop's
+genuinely good structure — named views, explicit grains, `AxisStatus`, an a-priori expectation
+manifest — is kept; its bulk is not.
+
+Two external inputs landed during drafting: **M-D2** (station coordinates, verified — D12) and the
+**public-repository data policy** (constraint 1), which closed M-D1's fixture question restrictively.
 
 Implements milestone **M-A1** (`dhm-precipitation-milestones.md:111-119`). First milestone of the
 Track A spine.
