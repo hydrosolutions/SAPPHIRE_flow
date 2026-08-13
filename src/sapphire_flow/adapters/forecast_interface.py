@@ -459,6 +459,19 @@ class ForecastInterfaceAdapter:
         self._station_code_resolver = resolver
         return self
 
+    @property
+    def config_hash(self) -> str | None:
+        """Plan 157 T3 fixer round: an FI model's own `config_hash` (a
+        SAP3-side convention, not part of the FI protocol — D1 ships an
+        aquacast-style shim's config as package data alongside the native
+        artifact, and this is how import-time drift between the two is
+        detected) is NOT forwarded by default — this class has no
+        `__getattr__` passthrough. Without this, every real FI model reaches
+        `import_external_artifact` wrapped, and `getattr(model,
+        "config_hash", None)` silently returns `None` regardless of what the
+        wrapped model declares, disabling the drift check entirely."""
+        return getattr(self._model, "config_hash", None)
+
     def _future_forced_time_steps(self, req: InputRequirement) -> tuple[timedelta, ...]:
         # Iterates req.dynamic directly (NOT _iter_dynamic_specs, which
         # discards the time_step key) so each branch's future_known-ness can

@@ -761,6 +761,16 @@ erDiagram
         TIMESTAMPTZ created_at
     }
 
+    model_artifact_provenance {
+        UUID artifact_id PK, FK
+        TEXT source_repository "NULL"
+        TEXT source_commit "NULL"
+        TEXT config_hash "NULL"
+        TIMESTAMPTZ imported_at
+        TEXT imported_by "NULL"
+        TEXT notes "NULL"
+    }
+
     model_assignments {
         UUID station_id PK, FK
         TEXT model_id PK, FK
@@ -799,6 +809,7 @@ erDiagram
     stations ||--o{ model_states : "station_id"
     model_artifacts ||--o{ model_artifact_basin_versions : "model_artifact_id"
     basin_versions ||--o{ model_artifact_basin_versions : "basin_version_id"
+    model_artifacts ||--o| model_artifact_provenance : "artifact_id (Plan 157 T3 — external import)"
 
     %% ──────────────────────────────────────────────
     %% FORECAST DOMAIN

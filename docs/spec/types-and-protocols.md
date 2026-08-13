@@ -1579,6 +1579,31 @@ class ModelArtifactRecord:
 
 Module: `types/model.py`
 
+### ModelArtifactProvenance
+
+Plan 157 T3 (G4/G7): marks a `model_artifacts` row as EXTERNALLY IMPORTED
+rather than trained by SAP3. Presence of a `model_artifact_provenance` row
+keyed by `artifact_id` is the provenance signal — absence means SAP3-trained.
+`training_period_start`/`training_period_end`/`trained_at` on
+`ModelArtifactRecord` stay non-nullable for an import too (see
+`services/model_import.py`); `imported_at` here is a deliberately SEPARATE
+field from `trained_at` — conflating them would backdate the import event to
+the model's external training-completion instant.
+
+```python
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ModelArtifactProvenance:
+    artifact_id: ArtifactId
+    source_repository: str | None
+    source_commit: str | None
+    config_hash: str | None
+    imported_at: UtcDatetime
+    imported_by: str | None
+    notes: str | None
+```
+
+Module: `types/model.py`
+
 ### OperationalForecast
 
 Wraps the `forecasts` + `forecast_values` join. Contains a `ForecastEnsemble` for the
@@ -2572,11 +2597,13 @@ class ModelArtifactStore(Protocol):
         station_id: StationId | None = None,   # for station-scoped models
         group_id: StationGroupId | None = None, # for group-scoped models
         status: ModelArtifactStatus = ModelArtifactStatus.TRAINING,  # explicit default; callers may pass TRAINING
-    ) -> tuple[ArtifactId, str]: ...
+    ) -> StoredArtifact: ...
         # Exactly one of station_id or group_id must be provided.
-        # Returns (id, sha256_hash) -- the hash is computed from artifact_bytes
-        # and stored alongside the artifact_path; callers use it to verify
-        # round-trip integrity without re-fetching the bytes.
+        # Returns a StoredArtifact (types/model.py) -- iterates as the historical
+        # (id, sha256_hash) 2-tuple for every pre-existing 2-value-unpacking call
+        # site; also exposes .artifact_path, known atomically with the write
+        # (Plan 157 T3 fixer round), so a caller needing it for failure cleanup
+        # no longer needs a separate fetch_artifact_record query.
     def fetch_artifact(self, artifact_id: ArtifactId) -> tuple[ArtifactId, bytes] | None: ...
     def fetch_active_artifact(
         self,
@@ -2646,6 +2673,82 @@ onboarding._run_onboarding`/`onboard_from_camelsch` thread it through from
 station-onboarding path records lineage too, not just the two Prefect-flow
 call sites. Tests inject `tests.fakes.fake_stores.FakeArtifactLineageWriter`
 with the same shape.
+
+##### External-artifact import + provenance write (Plan 157 T3)
+
+`record_artifact_provenance(conn, provenance)`
+(`sapphire_flow.store.model_artifact_provenance`) is, like the basin-lineage
+helper above, a **standalone helper, not a `ModelArtifactStore` method**.
+`PgArtifactProvenanceStore(conn)` is its thin flow-facing adapter
+(`.record(...)`/`.fetch(...)`); tests inject
+`tests.fakes.fake_stores.FakeArtifactProvenanceStore` with the same shape.
+
+`import_external_artifact` (`sapphire_flow.services.model_import`) is the
+executable entry point that closes G4/G7 — Flow 13
+(`flows/onboard_model.py`) has no path for an artifact SAP3 did not train.
+Before any write it: derives the target tenant from the station/group being
+imported into (never trusts a caller-supplied tenant id); asserts the
+discovered model's declared `artifact_scope` matches the station_id/group_id
+actually supplied (a GROUP-scoped model imported against a station_id, or
+vice versa, is rejected — it would otherwise report success while being
+invisible to whichever lookup path queries by the OTHER scope); registers
+the model in `models` if this is its first import (an idempotent
+`ON CONFLICT DO NOTHING`, mirroring `register_models`, followed by a
+re-read of the authoritative row — a concurrent worker could have inserted
+a DIFFERENT scope between the initial check and this insert, and a stale
+in-hand assumption must not survive that race), or — if a `models` row
+already exists — verifies its `artifact_scope` still matches what the
+model declares today, rejecting registry drift across a shim upgrade;
+requires BOTH the model's own declared `config_hash` and the caller-
+supplied `expected_config_hash` to be present and equal — there is no
+warning-only bypass; a missing or mismatched value fails loudly, before any
+write (Plan 157 T3 fixer round closed a review finding that a caller who
+simply omitted `expected_config_hash` got NO drift check at all); and calls
+`model.deserialize_artifact`. Only then — with a unit of work that is
+ALWAYS present (a real `AuditedWriter`, `store/audited_writer.py`, extended
+here with `provenance_store` AND `model_store` entries, in production; an
+in-memory snapshot/restore wrapper around the caller's fakes,
+`_InMemoryAuditedWriter`, in the test/replay fallback — no caller,
+including a test using fakes, can bypass all-or-nothing) — does it run
+model registration + `store_artifact` + the provenance write +
+`promote_artifact` in ONE unit of work: on any failure no artifact row, no
+provenance row, no `models` row (for a fresh model), and no orphaned
+artifact file survive (`PgModelArtifactStore.store_artifact` also
+self-cleans: if its own INSERT fails — e.g. an FK violation on `model_id`
+— it deletes the file it just wrote before re-raising, so a caller who
+never learns the generated artifact id still cannot leak a file). It never
+calls `model.train`.
+
+`training_period_start`/`training_period_end` (the REAL external training
+window) are separate, REQUIRED parameters, distinct from `trained_at` (the
+external training-COMPLETION instant) and `imported_at` (this import's own
+instant, `clock()`) — none of the three is ever synthesized from another;
+earlier code fabricated a zero-length training period at `trained_at`,
+which this closes.
+
+An FI model's `config_hash` (a SAP3-side convention, not part of the FI
+protocol) is forwarded through `ForecastInterfaceAdapter.config_hash` — a
+property added specifically so the drift check above sees what the wrapped
+model declares rather than silently reading `None` off the adapter.
+
+`ModelArtifactStore.store_artifact` returns a `StoredArtifact` value
+(`types/model.py`) rather than a bare `(ArtifactId, str)` tuple — it
+iterates as that same 2-tuple for every pre-existing 2-value-unpacking call
+site, but also exposes `.artifact_path`, known atomically with the write,
+so `import_external_artifact`'s failure-cleanup path no longer needs a
+separate (fallible) `fetch_artifact_record` query just to learn what to
+delete.
+
+Deployed as the standalone `import-model-artifact` Prefect deployment
+(`flows/import_model_artifact.py`, no cron — `cli/register_deployments.py`,
+`forecast-cycle` pool — see `docs/standards/cicd.md` § The `forecast-cycle`
+pool for why). The deployment's top-level parameter is `artifact_base64:
+str`, not `artifact_bytes: bytes` — a Prefect deployment's parameters cross
+the wire as JSON, and a `bytes`-typed parameter does NOT base64-decode a
+JSON string (pydantic's JSON-mode `bytes` validation does `str.encode()`),
+so it cannot transport an arbitrary binary checkpoint. The flow decodes
+strictly (`base64.b64decode(..., validate=True)`) before calling the
+service.
 
 #### ModelStore
 
