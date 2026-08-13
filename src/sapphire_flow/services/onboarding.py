@@ -776,7 +776,10 @@ def _run_onboarding(
     # Skipped if model infrastructure not wired
     discovered: dict[ModelId, ForecastModel] = {}
     if model_store is not None:
-        from sapphire_flow.services.model_onboarding import create_station_assignment
+        from sapphire_flow.services.model_onboarding import (
+            create_station_assignment,
+            resolve_synthetic_time_step,
+        )
         from sapphire_flow.services.model_registry import (
             discover_models,
             register_models,
@@ -803,7 +806,10 @@ def _run_onboarding(
                 if model.artifact_scope == ArtifactScope.GROUP:
                     continue
                 try:
-                    time_step = next(iter(model.data_requirements.supported_time_steps))
+                    time_step = resolve_synthetic_time_step(
+                        model.data_requirements,
+                        context=f"model assignment for {model_id}",
+                    )
                     if deployment_config is not None:
                         priority = deployment_config.assignment_priority_for_model(
                             model_id
@@ -884,6 +890,7 @@ def _run_onboarding(
         from sapphire_flow.services.model_onboarding import (
             determine_onboarding_scope,
             onboard_model,
+            resolve_synthetic_time_step,
         )
 
         if not discovered:
@@ -959,7 +966,10 @@ def _run_onboarding(
                         hindcast_days=(end_utc - hindcast_start).days,
                     )
 
-                time_step = next(iter(model.data_requirements.supported_time_steps))
+                time_step = resolve_synthetic_time_step(
+                    model.data_requirements,
+                    context=f"training scope for {model_id}",
+                )
                 units = determine_onboarding_scope(
                     model_id=model_id,
                     model=model,

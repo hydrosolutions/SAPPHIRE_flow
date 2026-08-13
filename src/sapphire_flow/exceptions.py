@@ -85,6 +85,21 @@ class ConfigurationError(SapphireError):
     """Invalid or missing configuration."""
 
 
+class UnsupportedModelRequirementError(SapphireError):
+    """A ForecastInterface model's ``InputRequirement`` cannot be represented
+    by SAP3's single-resolution domain types (Plan 156) — e.g. more than one
+    ``time_step`` branch declares non-empty ``future_known`` (raised at
+    adapter construction), or a requirement with more than one ``time_step``
+    branch at all reaches an actual predict/train call (raised there
+    instead — SAP3 can only deliver one branch's dynamic inputs per call, so
+    the non-active branch(es) would otherwise be silently omitted from
+    ``ModelInputs``). Deliberately **not** a ``ConfigurationError``
+    subclass: ``discover_models()`` re-raises ``ConfigurationError`` for
+    every entry point (a registry-wide blackout), but one unsupported model
+    must not darken discovery for the rest — it is skipped per entry point
+    instead (``services/model_registry.py::discover_models``)."""
+
+
 class ModelSmokeTestError(SapphireError):
     """Model failed smoke test during onboarding."""
 
