@@ -185,7 +185,11 @@ discharge** — passing every non-null/finite gate on the way through.
 A flat merge into `Basin.attributes` is therefore **not** an option: it either overwrites ours or is
 overwritten by ours, and both are silent.
 
-**Onboarding steps (once D15 picks the storage shape):**
+**Storage shape — DECIDED (D15/A): namespaced inside `Basin.attributes` under the `caravan:`
+prefix**, resolved as `caravan:` + (alias where the parquet ships a HydroATLAS code), with **no
+bare-name fallback**.
+
+**Onboarding steps:**
 1. **Join on identity** — `caravan_camels_ch_<code>` → `(network="bafu", code=<code>)`. 148/169 match;
    the rest are T0a's problem.
 2. **Load additively** — never through the importer's correction branch, which replaces attributes,
@@ -193,8 +197,9 @@ overwritten by ours, and both are silent.
 3. **Resolve PT's 50 through the Caravan namespace only** — no silent fallback to a CAMELS-CH value
    of the same name. A missing Caravan attribute must fail loudly, not quietly resolve to a
    different derivation.
-4. **Decide the column set** — PT's 50, or the full 216. The full set costs little and spares a
-   re-import for the next model; the 50 is minimal and auditable.
+4. **Column set — store all 216 under the prefix.** A namespaced key cannot collide, so breadth
+   costs only rows, and the next model needing a different subset does not force a re-import.
+   Storing only PT's 50 is a defensible, reversible alternative; the namespacing itself is not.
 
 **Red-first:** with both sources loaded, resolving PT's `area` for a Swiss station returns
 **Caravan's** value, not CAMELS-CH's — and the two are asserted to differ in the fixture, so the test
@@ -264,6 +269,28 @@ rebase.)*
 
 T3 is independent of the package work and is the long pole — start it first, in parallel with
 establishing whether T1 is a request or a build.
+
+## Decisions
+
+- **D15 — how do Caravan attributes coexist with CAMELS-CH's? — RESOLVED (owner, 2026-08-13):
+  option (A), namespace them inside the existing `Basin.attributes` dict.** Smallest change, no
+  schema work, incumbents untouched, one uniform resolution rule for all 50 of PT's statics.
+
+  **Prefix: `caravan:`.** A colon cannot appear in any real attribute name (all `[a-z0-9_]+`), so
+  collision with a source attribute is **structurally impossible** rather than merely unlikely —
+  `caravan_` would not have that property.
+
+  **The resolution rule, in full:** a PT static `X` resolves to `caravan:` + (`alias[X]` where the
+  parquet ships a HydroATLAS code, else `X`) — 21 aliased, 29 direct. **There is NO fallback to a
+  bare `X`.** A missing Caravan attribute must fail loudly; falling back would hand PT a CAMELS-CH
+  value of the same name and a different derivation — the exact silent failure this decision exists
+  to prevent, and the one that would rescale every discharge through `area`.
+
+  *(Rejected: (B) a per-source attribute table keyed by `(basin, source, name)` — cleanest
+  long-term and makes provenance first-class, but schema + migration + store + read path; revisit
+  when a THIRD attribute source appears, at which point (A)'s prefix convention is the natural thing
+  to migrate. (C) store only PT's 50 and overwrite the 7 collisions — silently changes the
+  incumbents' inputs.)*
 
 ## Non-goals
 - Anything aquacast-specific beyond satisfying PT's declared contract (see Plan 152).
