@@ -71,19 +71,22 @@ applied after valid aggregation, never before. Contingency tables include only j
 ### M-D1 · Data authorisation
 **Depends: —** Blocks M-I1 fixtures, M-I2. Cheap; answer it early or it invalidates work.
 
-May real DHM excerpts be committed to the repository as test fixtures? May a derived dataset be
-retained, and **where** — specifically, may DHM data sit in the company-wide Dropbox? Attribution or
-redistribution conditions?
+**Partly RESOLVED 2026-08-13 (owner):** **no DHM data — observations or station metadata — enters the
+public repository.** Research data lives in `data/dhm_precip/`, already gitignored (`.gitignore:21`).
+Test fixtures are therefore **synthetic**, reproducing defect signatures rather than real values.
 
-**Ask storage and fixtures as ONE question**: putting DHM data in a shared Dropbox is a *distribution*
-decision, the same class of question as committing excerpts to a repository.
+**Still open:** may a derived dataset sit in the company-wide Dropbox, and under what attribution or
+redistribution conditions? Still one question with storage — putting DHM data in a shared Dropbox is
+a *distribution* decision of the same class.
 
-**Exit:** written authorisation or explicit restriction, with the fixture strategy chosen — real
-excerpts or synthetic reproductions of each defect signature.
+**Exit:** written authorisation or explicit restriction for the Dropbox question. The repository half
+is already decided: never commit, synthetic fixtures only.
 
 ### M-D2 · Station coordinates and elevation
 **Depends: —** Hard-blocks M-A5, M-A6 and M-A8. *(Not M-A7 — that needs no coordinates.)*
-**Owner 2026-08-12: coordinates will be obtained — treat as an assured input, not a project risk.**
+**LANDED 2026-08-13** — coordinates and elevations for all 26 live stations, verified against the
+live station set (exact match, all inside Nepal, no duplicate locations). Stored **untracked** at
+`data/dhm_precip/station_coordinates.csv`.
 
 lat/lon, elevation, DHM station ID for the 26 live stations. **Ask DHM directly and the students in
 parallel, not in series** — a serial ask would reintroduce the thesis dependency this track exists to
@@ -300,7 +303,9 @@ Package the masked dataset for the research data folder with a provenance manife
 mask definition and version, per-station removal accounting, processing chain, caveats — including
 that unconditional totals are invalid (rule 1). Not onboarded, not in the DB (vision D10).
 
-**Storage (owner 2026-08-12, ~2.4 TB Dropbox available — capacity is not the constraint):**
+**Storage (owner 2026-08-12/13, ~2.4 TB Dropbox available — capacity is not the constraint):**
+- **Never the public repository.** `data/` and `.data/` are gitignored (`.gitignore:21`); all DHM
+  observations and station metadata live under `data/dhm_precip/` locally.
 - **Synced folder holds only what cannot be regenerated**: the source xlsx and the QC'd dataset +
   manifest (~50–100 MB total).
 - **Raw ERA5-Land stays local, unsynced** — ~1 GB regenerable from M-A4's committed request script.

@@ -51,24 +51,31 @@ stations (Kirtipur/Khumaltar, 4.3 km apart, 30 m elevation difference) share a 0
 ERA5-Land work, explicitly out of scope here, and belongs to **M-A5/M-A6**. Recorded in the milestone
 doc rather than smuggled into this plan.
 
-**D12 — coordinate input contract.** **Task 1a loads and validates** a committed
-`scripts/dhm_precip/station_coordinates.csv` (26 rows: station, excel_col, lat, lon, elev), provenance
-recorded as delivered 2026-08-12, schema-validated and asserted to match the live station set exactly.
-*Contingency:* if M-D1 forbids committing it, it moves to the `DHM_PRECIP_XLSX` pattern — an env-var
-path, sha256-pinned. **Geometry results are a distinct expectation class** (`source = plan-158`, not
+**D12 — coordinate input contract.** **Task 1a loads and validates** `station_coordinates.csv`
+(26 rows: station, excel_col, lat, lon, elev), delivered 2026-08-12, schema-validated and asserted to
+match the live station set exactly. It lives at `data/dhm_precip/station_coordinates.csv`
+(**gitignored — never committed**, constraint 1), path overridable via `DHM_PRECIP_COORDS`. Absence is
+a typed loader error, never a skip. **Geometry results are a distinct expectation class** (`source = plan-158`, not
 `vision-findings`) because the vision does not yet quote them; D8's vision-only rule is unchanged for
 Findings expectations.
 
 ## Constraints
 
-1. **Source lives outside the repo** (~2 MB, OneDrive), and M-D1 (authorisation) is open. Path via
-   `DHM_PRECIP_XLSX`, sha256-verified. **The gate must not fail open**: the *only* skip condition is
+1. **NO DHM data — observations or station metadata — may enter this public repository**
+   (`github.com/hydrosolutions/SAPPHIRE_flow`; owner instruction 2026-08-13). All research data lives
+   in **`data/dhm_precip/`**, already gitignored as "Downloaded data (never commit)"
+   (`.gitignore:21`). This covers the workbook **and the station coordinate table**.
+   `DHM_PRECIP_XLSX` defaults to `data/dhm_precip/combined_precipitation_37_stations.xlsx`,
+   sha256-verified; keeping a local materialised copy there also avoids the cloud-placeholder
+   read-stall the milestone doc's storage rule warns about. **The gate must not fail open**: the *only* skip condition is
    `DHM_PRECIP_XLSX` unset, applied by the integration test alone. Library and runner contain no
    pytest semantics — a missing path, digest mismatch, schema mismatch or parse failure is an error,
    never a skip. CI stays green because all statistic logic is unit-tested on synthetic frames.
 2. **Polars, not pandas** — 33 source modules import polars against 3 for pandas.
 3. **No Excel reader *or* writer is a dependency** (`pyproject.toml`). Task 1a adds both: a read
-   engine, and a dev-only writer for synthetic workbook fixtures.
+   engine, and a dev-only writer for **synthetic** workbook fixtures. Fixtures reproduce each defect
+   *signature* — a pinned-value block, a sentinel run — never real DHM values (constraint 1). This
+   closes M-D1's fixture question restrictively.
 4. **The time axis is unresolved** (M-D3/M-A2, `dhm-precipitation-vision.md:56-57`). Every result row
    carries an `AxisStatus` (D7).
 5. **`scripts/` idiom** — `scripts/audit_distribution_shift.py`: shebang, `# ruff: noqa: T201`, a
