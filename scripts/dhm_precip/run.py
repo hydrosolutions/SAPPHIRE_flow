@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # ruff: noqa: T201
 """M-A1 runner — reproducible DHM precipitation ingest and baseline statistics
-(Plan 158, `docs/plans/158-dhm-precip-reproducible-baseline.md`).
+(Plan 170, `docs/plans/170-dhm-precip-reproducible-baseline.md`).
 
 Loads the sha256-pinned production workbook and the D12 coordinate table,
 builds the RAW and ON_GRID views (D6), computes every statistic family

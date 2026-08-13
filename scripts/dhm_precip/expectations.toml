@@ -1,4 +1,4 @@
-# Plan 158 (M-A1) — the a-priori expectation manifest (D8).
+# Plan 170 (M-A1) — the a-priori expectation manifest (D8).
 #
 # Authored BEFORE the statistic code that gates it (D8). Every `id` is
 # computed once by the runner (scripts/dhm_precip/run.py) and compared here
@@ -7,7 +7,7 @@
 #
 # `source = "vision-findings"` entries derive solely from
 # docs/design/dhm-precipitation-vision.md's Findings section (`vision_ref`,
-# file:line). `source = "plan-158"` is the D12 geometry class this plan
+# file:line). `source = "plan-170"` is the D12 geometry class this plan
 # itself introduces (`plan_ref`).
 #
 # `disposition`: active (must match) | corrected (vision edited, new value
@@ -92,8 +92,8 @@ method = { denominator = "26 usable stations; per ON_GRID row, count of stations
 
 [[expectation]]
 id = "inv_group_a_elevation_range"
-source = "plan-158"
-plan_ref = "docs/plans/158-dhm-precip-reproducible-baseline.md:52"
+source = "plan-170"
+plan_ref = "docs/plans/170-dhm-precip-reproducible-baseline.md:52"
 statistic = "group_a_elevation_range_m"
 range = [2490.0, 3700.0]
 unit = "m"
@@ -107,8 +107,8 @@ method = { denominator = "min/max elevation over Group A stations" }
 
 [[expectation]]
 id = "inv_group_b_elevation_range"
-source = "plan-158"
-plan_ref = "docs/plans/158-dhm-precip-reproducible-baseline.md:52"
+source = "plan-170"
+plan_ref = "docs/plans/170-dhm-precip-reproducible-baseline.md:52"
 statistic = "group_b_elevation_range_m"
 range = [67.0, 2147.0]
 unit = "m"
@@ -122,8 +122,8 @@ method = { denominator = "min/max elevation over Group B stations" }
 
 [[expectation]]
 id = "inv_group_elevation_gap"
-source = "plan-158"
-plan_ref = "docs/plans/158-dhm-precip-reproducible-baseline.md:52"
+source = "plan-170"
+plan_ref = "docs/plans/170-dhm-precip-reproducible-baseline.md:52"
 statistic = "group_elevation_gap_m"
 value = 343
 unit = "m"
@@ -558,8 +558,8 @@ method = { wet_threshold_side = ">=", denominator = "P(missing | region wet, sta
 
 [[expectation]]
 id = "coh_median_nn_distance_km"
-source = "plan-158"
-plan_ref = "docs/plans/158-dhm-precip-reproducible-baseline.md:48"
+source = "plan-170"
+plan_ref = "docs/plans/170-dhm-precip-reproducible-baseline.md:48"
 statistic = "nearest_neighbour_distance_km"
 value = 27
 unit = "km"
@@ -573,8 +573,8 @@ method = { denominator = "median over stations of each station's nearest-neighbo
 
 [[expectation]]
 id = "coh_pairs_within_25km_count"
-source = "plan-158"
-plan_ref = "docs/plans/158-dhm-precip-reproducible-baseline.md:48"
+source = "plan-170"
+plan_ref = "docs/plans/170-dhm-precip-reproducible-baseline.md:48"
 statistic = "pair_count_within_25km"
 value = 7
 unit = "count"
@@ -588,8 +588,8 @@ method = { denominator = "unordered station pairs with great-circle distance < 2
 
 [[expectation]]
 id = "coh_hourly_r_within_25km"
-source = "plan-158"
-plan_ref = "docs/plans/158-dhm-precip-reproducible-baseline.md:47"
+source = "plan-170"
+plan_ref = "docs/plans/170-dhm-precip-reproducible-baseline.md:47"
 statistic = "distance_stratified_pearson_r"
 value = 0.243
 unit = "r"
@@ -607,8 +607,8 @@ method = { pairwise_missing_policy = "pairwise_complete", min_paired_samples = "
 
 [[expectation]]
 id = "coh_hourly_r_beyond_200km"
-source = "plan-158"
-plan_ref = "docs/plans/158-dhm-precip-reproducible-baseline.md:47"
+source = "plan-170"
+plan_ref = "docs/plans/170-dhm-precip-reproducible-baseline.md:47"
 statistic = "distance_stratified_pearson_r"
 value = 0.032
 unit = "r"
@@ -686,7 +686,7 @@ method = { pairwise_missing_policy = "pairwise_complete", min_paired_samples = "
 # tail-prediction-error Finding (previously implemented in stats_precision.py
 # but never wired into the runner or the manifest). The daily
 # distance-stratified coherence pair (coh_daily_r_within_25km /
-# coh_daily_r_beyond_200km) closes Plan 158's own "What changed since the
+# coh_daily_r_beyond_200km) closes Plan 170's own "What changed since the
 # DRAFT" commitment to compute both hourly AND daily distance-stratified
 # coherence, mirroring the already-landed coh_hourly_r_within_25km /
 # coh_hourly_r_beyond_200km pair.
@@ -709,8 +709,8 @@ method = { pairwise_missing_policy = "pairwise_complete", min_paired_samples = "
 
 [[expectation]]
 id = "coh_daily_r_within_25km"
-source = "plan-158"
-plan_ref = "docs/plans/158-dhm-precip-reproducible-baseline.md:48"
+source = "plan-170"
+plan_ref = "docs/plans/170-dhm-precip-reproducible-baseline.md:48"
 statistic = "distance_stratified_pearson_r"
 value = 0.463
 unit = "r"
@@ -728,8 +728,8 @@ method = { pairwise_missing_policy = "pairwise_complete", min_paired_samples = "
 
 [[expectation]]
 id = "coh_daily_r_beyond_200km"
-source = "plan-158"
-plan_ref = "docs/plans/158-dhm-precip-reproducible-baseline.md:48"
+source = "plan-170"
+plan_ref = "docs/plans/170-dhm-precip-reproducible-baseline.md:48"
 statistic = "distance_stratified_pearson_r"
 value = 0.165
 unit = "r"

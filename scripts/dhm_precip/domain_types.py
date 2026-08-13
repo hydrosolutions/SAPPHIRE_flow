@@ -1,4 +1,4 @@
-"""Domain types for the M-A1 DHM precipitation pipeline (Plan 158 task 1b).
+"""Domain types for the M-A1 DHM precipitation pipeline (Plan 170 task 1b).
 
 D6 (views), D6b (grains), D7 (AxisStatus), D9 (RunManifest). No I/O here —
 pure type definitions, consumed by every other module in this package.

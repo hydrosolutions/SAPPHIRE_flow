@@ -119,7 +119,7 @@ inventory, coverage, off-grid-row, reporting-precision, defect and climatology t
 threshold, quantile grid and missing-data rule is an explicit parameter.
 
 **Exit:** pipeline reproduces the vision's Findings, or the vision is corrected where they disagree.
-**COMPLETE 2026-08-13** (Plan 158), **revised after a fixer round the same day**. 26 of 45
+**COMPLETE 2026-08-13** (Plan 170), **revised after a fixer round the same day**. 26 of 45
 expectations reproduced exactly; 5 were corrected (a scope refinement and four draft-estimate
 supersessions); 14 are `withdrawn_unreproducible` with a complete Phase-4 record each. (Counts are
 parsed directly from `scripts/dhm_precip/expectations.toml`'s `disposition` field — see that file's

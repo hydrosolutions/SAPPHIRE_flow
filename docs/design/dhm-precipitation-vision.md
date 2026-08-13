@@ -38,7 +38,7 @@ naively-fitted correction would *dry* the forcing of a flood-forecasting system.
 
 ## Findings
 
-**M-A1 reproduction status (Plan 158, 2026-08-13, revised after a fixer
+**M-A1 reproduction status (Plan 170, 2026-08-13, revised after a fixer
 round):** the committed pipeline (`scripts/dhm_precip/`) reproduced 26 of 45
 statistics exactly, corrected 5, and could not reproduce 14 on unmasked
 ON_GRID data (see D6 in the plan and the disposition/evidence record in
@@ -90,7 +90,7 @@ non-reproducing either way) — see `expectations.toml`'s per-entry
 | **A** | 0.01 mm | Syangboche, Humde, Ghorepani, Lukla, Olangchunggola, Lete | 0.14–0.55 | 4.8–19.5 mm/h |
 | **B** | 0.2 mm | the other 20 | 0.08–0.33 | 13–33 mm/h |
 
-**M-A1 (Plan 158):** Group A's wet-hour fraction and q99.9, and Group B's q99.9, are
+**M-A1 (Plan 170):** Group A's wet-hour fraction and q99.9, and Group B's q99.9, are
 `withdrawn_unreproducible` — computed on unmasked ON_GRID data they read [0.080, 0.373],
 [9.99, 41.91] mm/h and [33.02, 77.58] mm/h respectively. Group B's wet-hour fraction reproduces
 exactly. The unmasked maxima are consistent with candidate defects still in the population (M-A1
@@ -164,7 +164,7 @@ statistics. See `expectations.toml` id `clim_djf_share_humde`.
   3-hourly 0.09, daily 0.28. Computed across *all* station pairs with no distance stratification
   (we have no coordinates), so this describes the network as a whole and **says little about
   near-neighbour coherence**. Whether neighbour-based gap-filling is viable is *open* until pairs
-  can be binned by separation distance. **M-A1 (Plan 158, coordinates now landed via M-D2):** the
+  can be binned by separation distance. **M-A1 (Plan 170, coordinates now landed via M-D2):** the
   hourly figure reproduces exactly (0.047 → rounds to 0.05); the 3-hourly figure also reproduces
   exactly (0.085 → rounds to 0.09); the daily figure is `withdrawn_unreproducible` (reproduces at
   0.185, not 0.28 — daily aggregation of unmasked hourly values is far more sensitive to candidate
@@ -177,7 +177,7 @@ statistics. See `expectations.toml` id `clim_djf_share_humde`.
   exploit it directly (median nearest-neighbour distance 27 km, only 7 of 325 pairs closer than
   25 km). See `expectations.toml` ids `coh_hourly_r_undistanced`, `coh_3h_r_undistanced`,
   `coh_daily_r_undistanced`, `coh_hourly_r_within_25km`, `coh_hourly_r_beyond_200km`,
-  `coh_daily_r_within_25km`, `coh_daily_r_beyond_200km`, and Plan 158 §"What changed since the DRAFT".
+  `coh_daily_r_within_25km`, `coh_daily_r_beyond_200km`, and Plan 170 §"What changed since the DRAFT".
 - **Intensity distribution — the earlier "r = 0.998, universal shape" claim was WRONG and is
   withdrawn.** Pearson correlation between quantile vectors is near-1 by construction (verified:
   exponential vs Pareto r = 0.943, exponential vs lognormal r = 0.950). Proper scale-normalised tests:

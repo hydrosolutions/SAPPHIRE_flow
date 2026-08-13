@@ -158,7 +158,7 @@ class TestProvenanceRequired:
 
     def test_plan_158_without_plan_ref_is_rejected(self) -> None:
         with pytest.raises(ValidationError, match="plan_ref"):
-            ExpectationModel.model_validate(_entry(source="plan-158", vision_ref=None))
+            ExpectationModel.model_validate(_entry(source="plan-170", vision_ref=None))
 
 
 _DUPLICATE_ID_TOML = """

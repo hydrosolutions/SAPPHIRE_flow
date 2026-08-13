@@ -2,7 +2,7 @@
 status: READY
 created: 2026-08-12
 revised: 2026-08-13
-plan: 158
+plan: 170
 title: M-A1 — reproducible DHM precipitation ingest and baseline statistics
 scope: A committed, parameterised Polars pipeline that reads the DHM precipitation sample, emits every statistic the vision's Findings quote, and a gate that asserts the runner's own artefacts against an a-priori expectation manifest. Explicitly NOT QC masking or any exclusion mask (M-A3), time-axis normalisation (M-A2), or anything ERA5-Land (M-A4/A5).
 depends_on: []
@@ -10,7 +10,7 @@ blocks: [M-A2, M-A3]
 source: docs/design/dhm-precipitation-milestones.md
 ---
 
-# Plan 158 — M-A1 reproducible ingest and baseline
+# Plan 170 — M-A1 reproducible ingest and baseline
 
 ## Status
 
@@ -62,7 +62,7 @@ doc rather than smuggled into this plan.
 (26 rows: station, excel_col, lat, lon, elev), delivered 2026-08-12, schema-validated and asserted to
 match the live station set exactly. It lives at `data/dhm_precip/station_coordinates.csv`
 (**gitignored — never committed**, constraint 1), path overridable via `DHM_PRECIP_COORDS`. Absence is
-a typed loader error, never a skip. **Geometry results are a distinct expectation class** (`source = plan-158`, not
+a typed loader error, never a skip. **Geometry results are a distinct expectation class** (`source = plan-170`, not
 `vision-findings`) because the vision does not yet quote them; D8's vision-only rule is unchanged for
 Findings expectations.
 
@@ -147,9 +147,9 @@ Findings expectations.
 - **D8 — The expectation manifest is authored before the code it gates.** Committed data, not code
   (`scripts/dhm_precip/expectations.toml`), enumerating every statistic with `id`, a **source-specific
   provenance field** — `vision_ref` (`file:line`) when `source = vision-findings`, `plan_ref` when
-  `source = plan-158` (the D12 geometry class) — `statistic`, `value`/`range`, `unit`, `view`, `grain`, `axis_status`,
+  `source = plan-170` (the D12 geometry class) — `statistic`, `value`/`range`, `unit`, `view`, `grain`, `axis_status`,
   `population`, `quoted_precision`, and a `method` table (D8b). **`vision-findings` entries derive
-  solely from the vision's Findings** — no statistic is invented to be reproduced; the `plan-158`
+  solely from the vision's Findings** — no statistic is invented to be reproduced; the `plan-170`
   geometry class (D12) is the sole exception and is enumerated there. Lands in Phase 1, before any
   statistic is implemented.
 - **D8b — The `method` table pins choices that silently move a quoted digit.** Mandatory where

@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, model_validator
 
 DEFAULT_EXPECTATIONS_PATH = Path(__file__).with_name("expectations.toml")
 
-Source = Literal["vision-findings", "plan-158"]
+Source = Literal["vision-findings", "plan-170"]
 Disposition = Literal["active", "corrected", "withdrawn_unreproducible"]
 ViewName = Literal["RAW", "ON_GRID"]
 GrainName = Literal[
@@ -78,8 +78,8 @@ class ExpectationModel(BaseModel):
             raise ValueError(
                 f"{self.id}: source=vision-findings requires vision_ref (D8)"
             )
-        if self.source == "plan-158" and not self.plan_ref:
-            raise ValueError(f"{self.id}: source=plan-158 requires plan_ref (D8, D12)")
+        if self.source == "plan-170" and not self.plan_ref:
+            raise ValueError(f"{self.id}: source=plan-170 requires plan_ref (D8, D12)")
         return self
 
     @model_validator(mode="after")
