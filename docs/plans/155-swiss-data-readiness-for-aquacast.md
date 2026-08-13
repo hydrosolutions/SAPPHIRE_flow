@@ -137,7 +137,7 @@ Pfäffikon, `2088` Sarnen, `2097` Meisterschwanden, `2101` Melide-Ferrera, `2118
 **Caravan covers none of the 20 lakes and 148 of the 149 streams** — i.e. its exclusion rule is
 essentially "no lakes", plus one stream.
 
-**⚠️ The single survivor needs an owner call, and it is not a clear keep.** `2446`
+**✅ The single survivor was DROPPED (owner, 2026-08-13). The manifest is 148 stations and the extraction gap is ZERO.** `2446`
 **Gampelen-Zihlbrücke** is typed `stream` and has 13 832 observed discharge values, so it passes T0a
 mechanically. But it is the **Zihlkanal** — the regulated outflow canal carrying Lac de Neuchâtel
 into Bielersee, part of the Jura water correction — and its "catchment" is **2695.5 km²**, i.e. the
@@ -145,7 +145,7 @@ entire upstream lake system. Its discharge is a **regulation decision, not a rai
 response**, which is the one hydrological regime a pooled rainfall-runoff model cannot represent, and
 is the most plausible reason Caravan excluded it while keeping every other Swiss stream.
 
-**Recommendation: drop `2446` as well and record the extraction gap as ZERO.** Standing up a Swiss
+**Decision: `2446` is dropped; the extraction gap is ZERO.** Standing up a Swiss
 HydroATLAS extraction — rebuilding three region-scoped datasets, including an ERA5-Land cube that
 needed a 128 GiB EC2 host — to serve **one regulated canal whose physics the model cannot capture**
 fails this plan's own test that the cost "is justified for ~20 basins only if those basins matter
