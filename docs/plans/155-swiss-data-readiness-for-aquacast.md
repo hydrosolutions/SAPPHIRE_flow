@@ -37,6 +37,34 @@ duplicating it, because duplication is what produced the drift Plan 152 spent th
 correcting. **"This plan does not explain X" is NOT a finding if X is in 152.** Do flag it if a
 statement here CONTRADICTS 152, or if this plan depends on something no plan in the family owns.
 
+## Implementation notes (read before writing code)
+
+**Source data:** `/Users/bea/Downloads/data.parquet` — 296 rows x 216 cols, `gauge_id` =
+`caravan_camels_ch_<BAFU code>`. A Caravan **passthrough**, not a re-extraction (see the provenance
+section).
+
+**The seven colliding names** — `area`, `p_mean`, `frac_snow`, `high_prec_freq`, `high_prec_dur`,
+`low_prec_freq`, `low_prec_dur` — are **all among PT's 50**, which is why D15's no-fallback rule is
+load-bearing rather than pedantic. `area` is the dangerous one: it drives the `m3/s <-> mm/day`
+conversion, so silently taking CAMELS-CH's value rescales every discharge.
+
+**Test soundness is the gate, not a formality.** Every locking test must fail against the pre-change
+code **for the right reason** — prove it by running it, do not assert it in prose.
+- **T1's red test**: resolving PT's `area` for a Swiss station returns **Caravan's** value, and the
+  fixture's two `area` values are asserted to **differ**, so the test cannot pass by coincidence.
+  Removing the namespacing must make it fail.
+- **T2's red assertion is the POSITIVE one at both boundaries** (compatibility reports zero missing
+  statics; a HydroATLAS-named frame resolves all of PT's declared statics). The converse — that an
+  unaliased frame raises — **already passes today**, so it is characterization, not a gate.
+
+**Data-reading gotcha:** CAMELS-CH CSVs ship **unit-suffixed headers** (`discharge_vol(m3/s)`), so an
+exact-name match against a raw CSV read silently finds nothing and returns a uniform empty result
+that looks like a finding. `camelsch.timeseries.load_basin_timeseries` strips the units — use the
+loader. (This is why `adapters/camelsch_adapter.py:48`'s exact match is correct as written.)
+
+**Version bumping:** every code commit folds in `uv run bump-my-version bump patch` plus a tag.
+**Other sessions are consuming versions concurrently** — if a version is already claimed, bump again.
+
 ## Objective
 
 Make Switzerland able to feed PT at all. Switzerland is not a convenience here — **it is the only
