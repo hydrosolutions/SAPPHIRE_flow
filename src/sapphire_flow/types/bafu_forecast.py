@@ -10,6 +10,7 @@ a ``ModelId``.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum, auto
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
@@ -17,12 +18,69 @@ if TYPE_CHECKING:
 
 BafuForecastVariant = Literal["q_forecast", "p_forecast"]
 BafuMetric = Literal["discharge_ms", "masl"]
-# BAFU's own map legend documents a third icon value, "missing" (station with
-# no current data, `square_keine_daten.svg`). The inventory parse MUST accept it
-# — a single no-data station would otherwise fail whole-FeatureCollection
-# validation and take down the entire hourly run (no per-station isolation on
-# the inventory fetch). The flow skips "missing" stations at collection time.
-BafuIcon = Literal["river", "lake", "missing"]
+
+BafuWaterBodyKind = Literal["river", "lake"]
+
+
+class BafuGaugeDataStatus(Enum):
+    """Whether the live gauge behind a BAFU icon currently has data. A named
+    domain state, not a bare bool (CLAUDE.md: enums over booleans for a
+    two-state domain concept)."""
+
+    PRESENT = auto()
+    MISSING = auto()
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class BafuWaterBodyIcon:
+    """A recognised BAFU map-symbol icon, modelled compositionally (Plan 160
+    D1) as water-body kind plus whether the live gauge currently has data —
+    derived from the ``{kind}`` / ``{kind}_missing`` pattern. This makes
+    ``lake_missing`` supported before it has ever been seen in the feed:
+    routing (``_variants_for_station``, D2) reads off ``kind`` alone, so an
+    unseen ``{kind}_missing`` combination behaves identically to its
+    data-present counterpart rather than requiring its own case.
+    """
+
+    kind: BafuWaterBodyKind
+    data_status: BafuGaugeDataStatus
+
+
+# BAFU's own map legend documents a fourth, LEGACY icon value, bare "missing"
+# (station with no current data at all, `square_keine_daten.svg` — no water
+# body kind). It is absent from the live feed (0/54 as of 2026-08-13) but the
+# inventory parse must still accept it: nothing guarantees BAFU cannot emit it
+# again, and there is no per-station isolation without this acceptance. It is
+# deliberately NOT unified with BafuWaterBodyIcon's `{kind}_missing` case —
+# unlike that case (which still names a water body and is confirmed to still
+# publish a forecast, D8), bare "missing" states nothing about kind, so `()`
+# (no fetch) remains its only defensible routing (D2).
+BafuIcon = BafuWaterBodyIcon | Literal["missing"]
+
+
+def parse_bafu_icon(raw: str) -> BafuIcon:
+    """Parse BAFU's ``{kind}`` / ``{kind}_missing`` / legacy ``missing`` icon
+    vocabulary into the compositional :data:`BafuIcon` (Plan 160 D1).
+
+    Raises ``ValueError`` on anything else — an unrecognised icon is the
+    caller's signal to skip the station (D4: fail-safe, never fall through to
+    a default routing), not to guess.
+    """
+    match raw:
+        case "river" | "lake":
+            return BafuWaterBodyIcon(kind=raw, data_status=BafuGaugeDataStatus.PRESENT)
+        case "river_missing":
+            return BafuWaterBodyIcon(
+                kind="river", data_status=BafuGaugeDataStatus.MISSING
+            )
+        case "lake_missing":
+            return BafuWaterBodyIcon(
+                kind="lake", data_status=BafuGaugeDataStatus.MISSING
+            )
+        case "missing":
+            return "missing"
+        case _:
+            raise ValueError(f"unrecognised BAFU icon value: {raw!r}")
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -39,6 +97,11 @@ class BafuForecastStation:
 class BafuStationInventory:
     stations: list[BafuForecastStation]
     produced_at: UtcDatetime
+    # Count of features that failed per-feature validation and were skipped
+    # rather than aborting the whole inventory (Plan 160 D3). Defaults to 0 so
+    # existing construction sites (tests, and any future caller building an
+    # inventory directly) do not need to name it.
+    skipped_count: int = 0
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

@@ -34,6 +34,23 @@ recap Data Gateway, DHM gauges, ERA5-Land, multi-tenant east/west). Category tag
 
 ## Active — operational hardening (A) — the gate to any v1 prod deploy
 
+- **160** — BAFU forecast adapter schema-drift resilience — `READY, implemented
+  (hold-at-PR)` — fixes the live BAFU forecast collector outage (dead since
+  2026-08-12 ~16:00 UTC, caught by the Plan 158 Slack alert): BAFU added the icon
+  value `river_missing`, which `BafuIcon`'s flat `Literal["river","lake","missing"]`
+  rejected, and whole-batch validation aborted the inventory for all 54 stations on
+  that ONE bad value. The icon is now modelled compositionally (water-body `kind` ×
+  `BafuGaugeDataStatus`, D1), so `lake_missing` is supported before it has ever been
+  seen (D6, forward-looking lock). Routing follows KIND only — `_missing` does NOT
+  suppress the fetch (D2/D8: probed directly, BAFU still publishes a full forecast
+  for a station whose live gauge is down). `fetch_station_inventory` now validates
+  per FEATURE (D3, the class fix): a bad feature is skipped and recorded, the rest
+  of the batch is still returned; an unrecognised icon SKIPS its station rather than
+  falling through to a river-shaped default fetch (D4, fail-safe not fail-open). A
+  skipped station is a WARNING + a queryable `pipeline_health` WARNING status (D5).
+  Auditing the other Literal-typed external vocabularies (`BafuMetric`,
+  `BafuForecastVariant`, `LindasKind`, `BafuObservationParameter`) is a named
+  follow-on (D9), not in scope here.
 - **154** — Recap IFS fetch containment — `READY, implemented (hold-at-PR)` — a
   station-scoped `RecapDataUnavailableError` (one HRU's control fetch missing) no longer
   discards every other HRU's already-accumulated rows or escalates into the flow's

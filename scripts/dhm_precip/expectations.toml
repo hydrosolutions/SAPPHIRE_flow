@@ -1,0 +1,835 @@
+# Plan 170 (M-A1) — the a-priori expectation manifest (D8).
+#
+# Authored BEFORE the statistic code that gates it (D8). Every `id` is
+# computed once by the runner (scripts/dhm_precip/run.py) and compared here
+# under D5's tolerance rule: quoted-precision rounding, exact match. Counts
+# are exact; quoted ranges assert min/max over the named population.
+#
+# `source = "vision-findings"` entries derive solely from
+# docs/design/dhm-precipitation-vision.md's Findings section (`vision_ref`,
+# file:line). `source = "plan-170"` is the D12 geometry class this plan
+# itself introduces (`plan_ref`).
+#
+# `disposition`: active (must match) | corrected (vision edited, new value
+# asserted too) | withdrawn_unreproducible (the only disposition exempt from
+# numeric matching; requires a complete Phase-4 record). See D8c.
+#
+# PHASE 4a RECONCILED (task 4a, re-verified after the fixer round below) —
+# the real evaluator ran against the real file (sha256 8dc57e43…f98f57). 26
+# of 45 expectations reproduced exactly (`active`); 5 were `corrected` (a
+# scope refinement and four draft-estimate supersessions); 14 are
+# `withdrawn_unreproducible`. Counts are parsed directly from this file
+# (Counter of the `disposition` field) — do not hand-maintain them without
+# re-deriving. Every mismatch was investigated for a pipeline bug before
+# disposition — two real bugs were found and fixed in the original 4a pass
+# (a literal "NaN"-string cell silently poisoning sums, and an over-strict
+# stuck-high adjacency tolerance/missing magnitude floor that hid the
+# Sindhuli Madhi block entirely), plus four more found in a subsequent
+# review round (monotonicity checked on a pre-sorted copy; daily/3-hourly
+# coherence buckets summed incomplete/all-null groups as zero instead of
+# dropping them; per-station coverage divided by the workbook-wide slot
+# count instead of each station's own span; the modal-intensity statistic
+# was wet-threshold-restricted even though the vision's own quoted range
+# sits below that threshold). The remainder is the pattern D6 predicted:
+# every `RAW_AXIS_DIAGNOSTIC`/`AXIS_INDEPENDENT` expectation (row counts,
+# geometry) reproduced exactly; every `RAW_PROVISIONAL` expectation computed
+# on unmasked ON_GRID data (intensity quantiles, shape ratios, sub-threshold
+# mass, coherence correlations, DJF share, the missingness ratio, the
+# leave-one-out tail-prediction error) did not — M-A1 builds no exclusion
+# mask, so candidate defects (sentinels, stuck-high blocks, unadjudicated
+# zero runs) remain in the population these statistics are computed over.
+# That is exactly the D11 successor split: M-A2 (axis normalisation), M-A3
+# (the QC mask) and M-A7 (temporal characterisation) are where these
+# families get a real shot at reproducing.
+
+# ============================== 2a — inventory ==============================
+
+[[expectation]]
+id = "inv_usable_station_count"
+source = "vision-findings"
+vision_ref = "docs/design/dhm-precipitation-vision.md:51"
+statistic = "usable_station_count"
+value = 26
+unit = "count"
+view = "ON_GRID"
+grain = "station_timestamp_cells"
+axis_status = "AXIS_INDEPENDENT"
+population = "37 workbook columns"
+quoted_precision = 0
+disposition = "active"
+method = { denominator = "37 workbook columns; usable = at least one non-null cell in the whole file" }
+
+[[expectation]]
+id = "inv_empty_column_count"
+source = "vision-findings"
+vision_ref = "docs/design/dhm-precipitation-vision.md:51-53"
+statistic = "empty_column_count"
+value = 11
+unit = "count"
+view = "ON_GRID"
+grain = "station_timestamp_cells"
+axis_status = "AXIS_INDEPENDENT"
+population = "37 workbook columns"
+quoted_precision = 0
+disposition = "active"
+method = { denominator = "37 workbook columns" }
+
+[[expectation]]
+id = "inv_median_stations_reporting_per_hour"
+source = "vision-findings"
+vision_ref = "docs/design/dhm-precipitation-vision.md:54"
+statistic = "median_stations_reporting_per_hour"
+value = 21
+unit = "count"
+view = "ON_GRID"
+grain = "source_timestamp_rows"
+axis_status = "RAW_PROVISIONAL"
+population = "ON_GRID rows"
+quoted_precision = 0
+disposition = "active"
+successor = "M-A2"
+method = { denominator = "26 usable stations; per ON_GRID row, count of stations with a non-null cell" }
+
+[[expectation]]
+id = "inv_group_a_elevation_range"
+source = "plan-170"
+plan_ref = "docs/plans/170-dhm-precip-reproducible-baseline.md:52"
+statistic = "group_a_elevation_range_m"
+range = [2490.0, 3700.0]
+unit = "m"
+view = "ON_GRID"
+grain = "station_timestamp_cells"
+axis_status = "AXIS_INDEPENDENT"
+population = "Group A stations (0.01 mm reporting resolution)"
+quoted_precision = 0
+disposition = "active"
+method = { denominator = "min/max elevation over Group A stations" }
+
+[[expectation]]
+id = "inv_group_b_elevation_range"
+source = "plan-170"
+plan_ref = "docs/plans/170-dhm-precip-reproducible-baseline.md:52"
+statistic = "group_b_elevation_range_m"
+range = [67.0, 2147.0]
+unit = "m"
+view = "ON_GRID"
+grain = "station_timestamp_cells"
+axis_status = "AXIS_INDEPENDENT"
+population = "Group B stations (0.2 mm reporting resolution)"
+quoted_precision = 0
+disposition = "active"
+method = { denominator = "min/max elevation over Group B stations" }
+
+[[expectation]]
+id = "inv_group_elevation_gap"
+source = "plan-170"
+plan_ref = "docs/plans/170-dhm-precip-reproducible-baseline.md:52"
+statistic = "group_elevation_gap_m"
+value = 343
+unit = "m"
+view = "ON_GRID"
+grain = "station_timestamp_cells"
+axis_status = "AXIS_INDEPENDENT"
+population = "Group A min elevation minus Group B max elevation"
+quoted_precision = 0
+disposition = "active"
+method = { denominator = "min(Group A elevation) - max(Group B elevation)" }
+
+# ========================= 2b — time-axis diagnostics =======================
+
+[[expectation]]
+id = "axis_total_rows"
+source = "vision-findings"
+vision_ref = "docs/design/dhm-precipitation-vision.md:61"
+statistic = "total_rows"
+value = 55379
+unit = "count"
+view = "RAW"
+grain = "source_timestamp_rows"
+axis_status = "RAW_AXIS_DIAGNOSTIC"
+population = "all delivered rows"
+quoted_precision = 0
+disposition = "active"
+method = { denominator = "raw row count" }
+
+[[expectation]]
+id = "axis_clean_hourly_slots"
+source = "vision-findings"
+vision_ref = "docs/design/dhm-precipitation-vision.md:61"
+statistic = "clean_hourly_slot_count"
+value = 52597
+unit = "count"
+view = "RAW"
+grain = "source_timestamp_rows"
+axis_status = "RAW_AXIS_DIAGNOSTIC"
+population = "hourly slots from the data's own min to max timestamp"
+quoted_precision = 0
+disposition = "active"
+method = { denominator = "hourly range [min(timestamp), max(timestamp)] inclusive, step 1h" }
+
+[[expectation]]
+id = "axis_off_grid_row_count"
+source = "vision-findings"
+vision_ref = "docs/design/dhm-precipitation-vision.md:62"
+statistic = "off_grid_row_count"
+value = 3350
+unit = "count"
+view = "RAW"
+grain = "source_timestamp_rows"
+axis_status = "RAW_AXIS_DIAGNOSTIC"
+population = "all delivered rows"
+quoted_precision = 0
+disposition = "active"
+method = { denominator = "rows where minute(timestamp) != 0" }
+
+[[expectation]]
+id = "axis_off_grid_observation_fraction"
+source = "vision-findings"
+vision_ref = "docs/design/dhm-precipitation-vision.md:62"
+statistic = "off_grid_observation_fraction"
+value = 0.006
+unit = "fraction"
+view = "RAW"
+grain = "non_null_observations"
+axis_status = "RAW_AXIS_DIAGNOSTIC"
+population = "all non-null cells"
+quoted_precision = 3
+disposition = "active"
+method = { denominator = "non-null cells in off-grid rows / total non-null cells (D6b: 6,633 / 1,039,476)" }
+
+[[expectation]]
+id = "axis_duplicate_row_count"
+source = "vision-findings"
+vision_ref = "docs/design/dhm-precipitation-vision.md:61"
+statistic = "duplicate_timestamp_count"
+value = 0
+unit = "count"
+view = "RAW"
+grain = "source_timestamp_rows"
+axis_status = "RAW_AXIS_DIAGNOSTIC"
+population = "all delivered rows"
+quoted_precision = 0
+disposition = "active"
+method = { denominator = "rows - n_unique(timestamp)" }
+
+[[expectation]]
+id = "axis_monotonic"
+source = "vision-findings"
+vision_ref = "docs/design/dhm-precipitation-vision.md:61"
+statistic = "timestamp_monotonic"
+value = "true"
+unit = "bool"
+view = "RAW"
+grain = "source_timestamp_rows"
+axis_status = "RAW_AXIS_DIAGNOSTIC"
+population = "all delivered rows"
+quoted_precision = 0
+disposition = "active"
+method = { denominator = "is_sorted(timestamp)" }
+
+# ================= 2c — reporting precision and intensity ===================
+
+[[expectation]]
+id = "prec_group_a_wet_hour_fraction"
+source = "vision-findings"
+vision_ref = "docs/design/dhm-precipitation-vision.md:68-72"
+range = [0.14, 0.55]
+statistic = "wet_hour_fraction"
+unit = "fraction"
+view = "ON_GRID"
+grain = "non_null_observations"
+axis_status = "RAW_PROVISIONAL"
+population = "Group A stations, JJAS"
+quoted_precision = 2
+disposition = "withdrawn_unreproducible"
+successor = "M-A2"
+original_range = [0.14, 0.55]
+method_comparison = "Computed on unmasked ON_GRID JJAS data (D6: M-A1 builds no exclusion mask). Humde Airport's wet-hour fraction reproduces at 0.080, below the vision's stated 0.14 floor; Olangchunggola reproduces at 0.373, above the 0.55... no, below the ceiling but the group range as a whole no longer matches at quoted precision. The original exploratory analysis's exact per-station population/window is not recorded and cannot be recovered."
+evidence = "This run's reproducible range: [0.080, 0.373] (results.json id=prec_group_a_wet_hour_fraction)."
+method = { wet_threshold_side = ">=", denominator = "non-null JJAS ON_GRID observations for the station" }
+
+[[expectation]]
+id = "prec_group_b_wet_hour_fraction"
+source = "vision-findings"
+vision_ref = "docs/design/dhm-precipitation-vision.md:68-72"
+statistic = "wet_hour_fraction"
+range = [0.08, 0.33]
+unit = "fraction"
+view = "ON_GRID"
+grain = "non_null_observations"
+axis_status = "RAW_PROVISIONAL"
+population = "Group B stations, JJAS"
+quoted_precision = 2
+disposition = "active"
+successor = "M-A2"
+method = { wet_threshold_side = ">=", denominator = "non-null JJAS ON_GRID observations for the station" }
+
+[[expectation]]
+id = "prec_group_a_q999"
+source = "vision-findings"
+vision_ref = "docs/design/dhm-precipitation-vision.md:68-72"
+statistic = "intensity_quantile_999"
+range = [4.8, 19.5]
+unit = "mm/h"
+view = "ON_GRID"
+grain = "non_null_observations"
+axis_status = "RAW_PROVISIONAL"
+population = "Group A stations, JJAS wet hours"
+quoted_precision = 1
+disposition = "withdrawn_unreproducible"
+successor = "M-A7"
+original_range = [4.8, 19.5]
+method_comparison = "Computed on unmasked ON_GRID JJAS wet hours. Ghorepani (43.7 mm/h) and Lukla Airport (22.7 mm/h) both exceed the vision's 19.5 mm/h ceiling; per-station inspection (task 4a) found no repeated-value stuck signature at either station — these read as genuine unmasked extreme hours, not a detectable sensor defect, so an exclusion-mask fix belongs to M-A3/M-A7's QC pass, not a pipeline bug here."
+evidence = "This run's reproducible range: [9.99, 41.91] mm/h (results.json id=prec_group_a_q999). Per-station values: Syangboche 11.51, Humde 7.67, Ghorepani 43.67, Lukla 22.67, Olangchunggola 12.72, Lete 41.35."
+method = { quantile_definition = "linear", zero_policy = "exclude_zero", denominator = "JJAS wet-hour (>= 0.2 mm/h) non-null observations" }
+
+[[expectation]]
+id = "prec_group_b_q999"
+source = "vision-findings"
+vision_ref = "docs/design/dhm-precipitation-vision.md:68-72"
+statistic = "intensity_quantile_999"
+range = [13.0, 33.0]
+unit = "mm/h"
+view = "ON_GRID"
+grain = "non_null_observations"
+axis_status = "RAW_PROVISIONAL"
+population = "Group B stations, JJAS wet hours"
+quoted_precision = 0
+disposition = "withdrawn_unreproducible"
+successor = "M-A7"
+original_range = [13.0, 33.0]
+method_comparison = "Computed on unmasked ON_GRID JJAS wet hours. Sindhuli Madhi's own q99.9 (72.2 mm/h) directly reflects its documented stuck-high block (defect_sindhuli_stuck_high_*, this same manifest) — exactly the D6 prediction ('its unmasked q99.9 plausibly lands outside the quoted 13-33 mm/h band'). The group MAXIMUM is actually Biratnagar Airport (77.6 mm/h); task 4a's stuck-high scan (minimum_run_duration_hours=3) found no repeated-value run there, so that one reads as a genuine unmasked extreme hour, not a second undiscovered stuck sensor. Both require M-A3's QC mask (Sindhuli) or M-A7's tail characterisation (genuine extremes) before this range can be re-tried."
+evidence = "This run's reproducible range: [33.02, 77.58] mm/h (results.json id=prec_group_b_q999)."
+method = { quantile_definition = "linear", zero_policy = "exclude_zero", denominator = "JJAS wet-hour (>= 0.2 mm/h) non-null observations" }
+
+[[expectation]]
+id = "prec_shape_ratio_range"
+source = "vision-findings"
+vision_ref = "docs/design/dhm-precipitation-vision.md:160"
+statistic = "shape_ratio_q99_q50"
+range = [8.5, 55.3]
+unit = "ratio"
+view = "ON_GRID"
+grain = "non_null_observations"
+axis_status = "RAW_PROVISIONAL"
+population = "usable stations, JJAS wet hours"
+quoted_precision = 1
+disposition = "withdrawn_unreproducible"
+successor = "M-A7"
+original_range = [8.5, 55.3]
+method_comparison = "The minimum reproduces exactly (8.5); the maximum (60.0, vs the vision's 55.3) inherits the same unmasked-q99 sensitivity as prec_group_b_q999 above — the shape ratio's numerator IS q99, so any station whose q99 does not reproduce propagates directly into this ratio's range."
+evidence = "This run's reproducible range: [8.49, 60.0] (results.json id=prec_shape_ratio_range)."
+method = { quantile_definition = "linear", zero_policy = "exclude_zero", denominator = "q99/q50 of JJAS wet-hour values per station" }
+
+[[expectation]]
+id = "prec_shape_ratio_cv_q99"
+source = "vision-findings"
+vision_ref = "docs/design/dhm-precipitation-vision.md:161"
+statistic = "shape_ratio_cv"
+value = 0.40
+unit = "ratio"
+view = "ON_GRID"
+grain = "non_null_observations"
+axis_status = "RAW_PROVISIONAL"
+population = "usable stations at q99, JJAS wet hours"
+quoted_precision = 2
+disposition = "withdrawn_unreproducible"
+successor = "M-A7"
+original_value = 0.40
+method_comparison = "Same root cause as prec_shape_ratio_range: the CV is computed over the same per-station q99/q50 ratios, so it inherits the unmasked-q99 sensitivity rather than being an independent mismatch."
+evidence = "This run's reproducible value: 0.447 (results.json id=prec_shape_ratio_cv_q99)."
+method = { quantile_definition = "linear", zero_policy = "exclude_zero", denominator = "std/mean of per-station q99/q50 ratio across stations" }
+
+[[expectation]]
+id = "prec_group_a_subthreshold_mass_fraction"
+source = "vision-findings"
+vision_ref = "docs/design/dhm-precipitation-vision.md:86-91"
+statistic = "subthreshold_mass_fraction"
+range = [0.008, 0.021]
+unit = "fraction"
+view = "ON_GRID"
+grain = "non_null_observations"
+axis_status = "RAW_PROVISIONAL"
+population = "Group A stations, JJAS wet hours"
+quoted_precision = 3
+disposition = "withdrawn_unreproducible"
+successor = "M-A2"
+original_range = [0.008, 0.021]
+method_comparison = "Task 4a found and fixed a real bug here (populations was wrongly restricted to the wet-threshold subset, forcing the numerator to zero — see the loader/stats_precision fix history). After the fix the range is close but the minimum (Ghorepani, 0.0043) still falls below the vision's stated floor (0.008); Ghorepani's unmasked JJAS record also has the highest q99 in Group A (see prec_group_a_q999), consistent with the same unmasked-extreme pattern diluting its sub-threshold share."
+evidence = "This run's reproducible range: [0.0043, 0.0195] (results.json id=prec_group_a_subthreshold_mass_fraction)."
+method = { wet_threshold_side = ">=", denominator = "sum(value where 0 < value < 0.1) / sum(value where value > 0), JJAS, non-zero recorded values (NOT the wet-threshold population — see the fixed bug above)" }
+
+# =========================== 2d — defect inventory ===========================
+
+[[expectation]]
+id = "defect_lukla_sentinel_count"
+source = "vision-findings"
+vision_ref = "docs/design/dhm-precipitation-vision.md:98-101"
+statistic = "sentinel_count"
+value = 46
+unit = "count"
+view = "ON_GRID"
+grain = "non_null_observations"
+axis_status = "RAW_PROVISIONAL"
+population = "Lukla Airport"
+quoted_precision = 0
+disposition = "corrected"
+successor = "M-A2"
+original_value = 46
+corrected_value = 45
+correction_provenance = "D7 explicitly scopes sentinel counts to ON_GRID, computed after the on-the-hour selection. Task 4a traced the single-count discrepancy to exactly one sentinel cell at 2022-02-01 08:15 (an off-grid timestamp, minute=15) — the RAW-axis count (all 37 columns, any minute) is 46, matching the vision exactly; the ON_GRID count D7 mandates is 45. Both are correct facts about different populations; M-A1's own declared method (D7) uses ON_GRID, so 45 is this pipeline's number. M-A2 may move this cell onto the canonical grid, changing the count again."
+method = { denominator = "cells within sentinel_tolerance of sentinel_value (-9999999.0), ON_GRID population per D7" }
+
+[[expectation]]
+id = "defect_sindhuli_stuck_high_duration_hours"
+source = "vision-findings"
+vision_ref = "docs/design/dhm-precipitation-vision.md:102-105"
+statistic = "stuck_high_run_duration_hours"
+value = 120
+unit = "hours"
+view = "ON_GRID"
+grain = "non_null_observations"
+axis_status = "RAW_PROVISIONAL"
+population = "Sindhuli Madhi, 2025-08-03 to 2025-08-08"
+quoted_precision = 0
+disposition = "active"
+successor = "M-A3"
+is_run_statistic = true
+method = { minimum_run_duration = "12 hours", run_predicate = "consecutive non-null non-zero values within stuck_high_tolerance_mm of the previous value, AND >= stuck_high_min_value_mm", stuck_value_tolerance = "stuck_high_tolerance_mm = 0.5 mm (deliberately looser than exact equality — the source reports 72.0/72.2/72.4, sensor ADC noise around a pinned value, not one bit-exact repeated value)", ordering_basis = "timestamp ascending, per station", adjacency_rule = "consecutive calendar hour, ON_GRID rows only", gap_treatment = "gap breaks the run", missing_value_bridging = "none — a null value breaks a run", season_boundary = "not season-restricted for stuck-high", merge_distance = "0 (no merge across gaps)" }
+
+[[expectation]]
+id = "defect_sindhuli_stuck_high_total_mm"
+source = "vision-findings"
+vision_ref = "docs/design/dhm-precipitation-vision.md:102-105"
+statistic = "stuck_high_run_total_mm"
+value = 8642
+unit = "mm"
+view = "ON_GRID"
+grain = "non_null_observations"
+axis_status = "RAW_PROVISIONAL"
+population = "Sindhuli Madhi, 2025-08-03 to 2025-08-08"
+quoted_precision = 0
+disposition = "active"
+successor = "M-A3"
+is_run_statistic = true
+method = { minimum_run_duration = "12 hours", run_predicate = "consecutive non-null non-zero values within stuck_high_tolerance_mm of the previous value, AND >= stuck_high_min_value_mm", stuck_value_tolerance = "stuck_high_tolerance_mm = 0.5 mm (deliberately looser than exact equality — the source reports 72.0/72.2/72.4, sensor ADC noise around a pinned value, not one bit-exact repeated value)", ordering_basis = "timestamp ascending, per station", adjacency_rule = "consecutive calendar hour, ON_GRID rows only", gap_treatment = "gap breaks the run", missing_value_bridging = "none — a null value breaks a run", season_boundary = "not season-restricted for stuck-high", merge_distance = "0 (no merge across gaps)" }
+
+[[expectation]]
+id = "defect_zero_run_aiselukhark_days"
+source = "vision-findings"
+vision_ref = "docs/design/dhm-precipitation-vision.md:106-107"
+statistic = "candidate_zero_run_max_duration_days"
+value = 52.5
+unit = "days"
+view = "ON_GRID"
+grain = "non_null_observations"
+axis_status = "RAW_PROVISIONAL"
+population = "Aiselukhark, JJAS"
+quoted_precision = 1
+disposition = "active"
+successor = "M-A3"
+is_run_statistic = true
+method = { minimum_run_duration = "12 hours", run_predicate = "consecutive non-null values == 0.0 (exact, zero_run_tolerance_mm = 1e-9)", stuck_value_tolerance = "zero_run_tolerance_mm = 1e-9 mm (exact zero — deliberately stricter than stuck_high_tolerance_mm)", ordering_basis = "timestamp ascending, per station", adjacency_rule = "consecutive calendar hour, ON_GRID rows only", gap_treatment = "gap breaks the run", missing_value_bridging = "none — a null value breaks a run", season_boundary = "jjas_calendar_months_no_cross_year_merge", merge_distance = "0 (no merge across gaps)" }
+
+[[expectation]]
+id = "defect_khumaltar_2023_total_mm"
+source = "vision-findings"
+vision_ref = "docs/design/dhm-precipitation-vision.md:112-113"
+statistic = "annual_total_mm"
+value = 294
+unit = "mm"
+view = "ON_GRID"
+grain = "non_null_observations"
+axis_status = "RAW_PROVISIONAL"
+population = "Khumaltar, 2023"
+quoted_precision = 0
+disposition = "active"
+successor = "M-A2"
+method = { period_completeness = "no minimum applied (Findings figure, not a QC'd total)", denominator = "sum(value_mm) over ON_GRID 2023 rows for the station" }
+
+[[expectation]]
+id = "defect_khumaltar_2024_total_mm"
+source = "vision-findings"
+vision_ref = "docs/design/dhm-precipitation-vision.md:112-113"
+statistic = "annual_total_mm"
+value = 1504
+unit = "mm"
+view = "ON_GRID"
+grain = "non_null_observations"
+axis_status = "RAW_PROVISIONAL"
+population = "Khumaltar, 2024"
+quoted_precision = 0
+disposition = "active"
+successor = "M-A2"
+method = { period_completeness = "no minimum applied (Findings figure, not a QC'd total)", denominator = "sum(value_mm) over ON_GRID 2024 rows for the station" }
+
+[[expectation]]
+id = "defect_extreme_tarahara_daily_mm"
+source = "vision-findings"
+vision_ref = "docs/design/dhm-precipitation-vision.md:115-118"
+statistic = "daily_total_mm"
+value = 438
+unit = "mm"
+view = "ON_GRID"
+grain = "non_null_observations"
+axis_status = "RAW_PROVISIONAL"
+population = "Tarahara, 2021-10-19"
+quoted_precision = 0
+disposition = "active"
+successor = "M-A2"
+method = { daily_completeness = "20 of 24 ON_GRID hours", denominator = "sum(value_mm) over ON_GRID rows for the calendar day" }
+
+[[expectation]]
+id = "defect_extreme_kanyam_daily_mm"
+source = "vision-findings"
+vision_ref = "docs/design/dhm-precipitation-vision.md:115-118"
+statistic = "daily_total_mm"
+value = 403
+unit = "mm"
+view = "ON_GRID"
+grain = "non_null_observations"
+axis_status = "RAW_PROVISIONAL"
+population = "Kanyam Tea Estate, 2021-10-19"
+quoted_precision = 0
+disposition = "active"
+successor = "M-A2"
+method = { daily_completeness = "20 of 24 ON_GRID hours", denominator = "sum(value_mm) over ON_GRID rows for the calendar day" }
+
+# ========================= 2e — climatology & missingness ===================
+
+[[expectation]]
+id = "clim_djf_share_humde"
+source = "vision-findings"
+vision_ref = "docs/design/dhm-precipitation-vision.md:131-137"
+statistic = "djf_share_of_annual_total"
+value = 0.203
+unit = "fraction"
+view = "ON_GRID"
+grain = "non_null_observations"
+axis_status = "RAW_PROVISIONAL"
+population = "Humde Airport"
+quoted_precision = 3
+disposition = "withdrawn_unreproducible"
+successor = "M-A2"
+original_value = 0.203
+method_comparison = "DJF share is a ratio of two unmasked sums (DJF total / whole-record total); either sum can be shifted by an unmasked defect, an off-grid timestamp inclusion difference, or a different year-attribution boundary convention (D8b: year_attribution) than the original analysis used. No repeated-value defect was found at Humde Airport itself in this run, so the discrepancy most plausibly traces to a denominator (period) definition difference, not a data defect — a method question for M-A2, not a bug here."
+evidence = "This run's reproducible value: 0.240 (results.json id=clim_djf_share_humde)."
+method = { year_attribution = "december_belongs_to_following_djf", period_completeness = "no minimum applied — whole-record ratio, not per-year", denominator = "sum(DJF value_mm) / sum(annual value_mm), whole record" }
+
+[[expectation]]
+id = "clim_missingness_ratio_median"
+source = "vision-findings"
+vision_ref = "docs/design/dhm-precipitation-vision.md:120-128"
+statistic = "wet_biased_missingness_ratio"
+value = 1.01
+unit = "ratio"
+view = "ON_GRID"
+grain = "non_null_observations"
+axis_status = "RAW_PROVISIONAL"
+population = "usable stations, tested station excluded from the regional wet indicator"
+quoted_precision = 2
+disposition = "withdrawn_unreproducible"
+successor = "M-A2"
+original_value = 1.01
+method_comparison = "Task 4a found and fixed a real bug here (the output population wrongly included the 11 permanently-empty columns, which contaminate the median with degenerate ratios). After the fix the median (0.73) still does not match — the regional wet indicator's exact definition ('at least one other reporting station is wet' vs. e.g. a majority-wet threshold) is a declared method choice (D8b) the original analysis did not record, and is not recoverable."
+evidence = "This run's reproducible value: 0.731 (results.json id=clim_missingness_ratio_median), computed over the 26 usable stations only (post-fix)."
+method = { wet_threshold_side = ">=", denominator = "P(missing | region wet, station excluded) / P(missing | region dry, station excluded), median over the 26 usable stations; regional wet indicator = at least one OTHER usable station reporting >= wet_threshold_mm_per_h that hour" }
+
+[[expectation]]
+id = "clim_missingness_ratio_max"
+source = "vision-findings"
+vision_ref = "docs/design/dhm-precipitation-vision.md:120-128"
+statistic = "wet_biased_missingness_ratio"
+value = 1.55
+unit = "ratio"
+view = "ON_GRID"
+grain = "non_null_observations"
+axis_status = "RAW_PROVISIONAL"
+population = "usable stations, tested station excluded from the regional wet indicator"
+quoted_precision = 2
+disposition = "withdrawn_unreproducible"
+successor = "M-A2"
+original_value = 1.55
+method_comparison = "Same root cause as clim_missingness_ratio_median — the regional wet indicator's threshold definition is an unrecorded, unrecoverable method choice in the original analysis."
+evidence = "This run's reproducible value: 1.206 (results.json id=clim_missingness_ratio_max), computed over the 26 usable stations only (post-fix)."
+method = { wet_threshold_side = ">=", denominator = "P(missing | region wet, station excluded) / P(missing | region dry, station excluded), max over the 26 usable stations; regional wet indicator = at least one OTHER usable station reporting >= wet_threshold_mm_per_h that hour" }
+
+# ==================== 2f — coherence, diurnal and geometry ===================
+
+[[expectation]]
+id = "coh_median_nn_distance_km"
+source = "plan-170"
+plan_ref = "docs/plans/170-dhm-precip-reproducible-baseline.md:48"
+statistic = "nearest_neighbour_distance_km"
+value = 27
+unit = "km"
+view = "ON_GRID"
+grain = "station_timestamp_cells"
+axis_status = "AXIS_INDEPENDENT"
+population = "26 usable stations"
+quoted_precision = 0
+disposition = "active"
+method = { denominator = "median over stations of each station's nearest-neighbour great-circle distance" }
+
+[[expectation]]
+id = "coh_pairs_within_25km_count"
+source = "plan-170"
+plan_ref = "docs/plans/170-dhm-precip-reproducible-baseline.md:48"
+statistic = "pair_count_within_25km"
+value = 7
+unit = "count"
+view = "ON_GRID"
+grain = "station_timestamp_cells"
+axis_status = "AXIS_INDEPENDENT"
+population = "325 station pairs (26 choose 2)"
+quoted_precision = 0
+disposition = "active"
+method = { denominator = "unordered station pairs with great-circle distance < 25 km" }
+
+[[expectation]]
+id = "coh_hourly_r_within_25km"
+source = "plan-170"
+plan_ref = "docs/plans/170-dhm-precip-reproducible-baseline.md:47"
+statistic = "distance_stratified_pearson_r"
+value = 0.243
+unit = "r"
+view = "ON_GRID"
+grain = "non_null_observations"
+axis_status = "RAW_PROVISIONAL"
+population = "station pairs < 25 km apart, JJAS hourly"
+quoted_precision = 3
+disposition = "corrected"
+successor = "M-A7"
+original_value = 0.243
+corrected_value = 0.208
+correction_provenance = "0.243 was this plan's own pre-implementation draft estimate (the 'What changed' narrative, written before Task 2f's code existed). Task 2f's committed, declared-method pipeline (pairwise_missing_policy=pairwise_complete, min_paired_samples=100) now computes this reproducibly; the draft estimate is superseded by the real number, not withdrawn — there is no external 'original analysis' to preserve here, only this plan's own earlier guess."
+method = { pairwise_missing_policy = "pairwise_complete", min_paired_samples = "100", denominator = "median Pearson r over qualifying pairs, JJAS hourly" }
+
+[[expectation]]
+id = "coh_hourly_r_beyond_200km"
+source = "plan-170"
+plan_ref = "docs/plans/170-dhm-precip-reproducible-baseline.md:47"
+statistic = "distance_stratified_pearson_r"
+value = 0.032
+unit = "r"
+view = "ON_GRID"
+grain = "non_null_observations"
+axis_status = "RAW_PROVISIONAL"
+population = "station pairs > 200 km apart, JJAS hourly"
+quoted_precision = 3
+disposition = "corrected"
+successor = "M-A7"
+original_value = 0.032
+corrected_value = 0.030
+correction_provenance = "0.032 was this plan's own pre-implementation draft estimate (the 'What changed' narrative, written before Task 2f's code existed). Task 2f's committed, declared-method pipeline now computes this reproducibly; the draft estimate is superseded by the real number, not withdrawn."
+method = { pairwise_missing_policy = "pairwise_complete", min_paired_samples = "100", denominator = "median Pearson r over qualifying pairs, JJAS hourly" }
+
+[[expectation]]
+id = "coh_hourly_r_undistanced"
+source = "vision-findings"
+vision_ref = "docs/design/dhm-precipitation-vision.md:140-141"
+statistic = "undistanced_pearson_r"
+value = 0.05
+unit = "r"
+view = "ON_GRID"
+grain = "non_null_observations"
+axis_status = "RAW_PROVISIONAL"
+population = "all station pairs, JJAS hourly"
+quoted_precision = 2
+disposition = "active"
+successor = "M-A7"
+method = { pairwise_missing_policy = "pairwise_complete", min_paired_samples = "100", denominator = "median Pearson r over all qualifying pairs, JJAS hourly" }
+
+[[expectation]]
+id = "coh_daily_r_undistanced"
+source = "vision-findings"
+vision_ref = "docs/design/dhm-precipitation-vision.md:140-141"
+statistic = "undistanced_pearson_r"
+value = 0.28
+unit = "r"
+view = "ON_GRID"
+grain = "non_null_observations"
+axis_status = "RAW_PROVISIONAL"
+population = "all station pairs, JJAS daily"
+quoted_precision = 2
+disposition = "withdrawn_unreproducible"
+successor = "M-A7"
+original_value = 0.28
+method_comparison = "The hourly undistanced figure reproduces (0.047 -> rounds to the vision's 0.05); the daily figure does not (0.185 vs 0.28). Daily aggregation sums 24 unmasked hourly values per station-day, so unmasked defects (stuck-high blocks, off-grid timestamps folded into a day) have a much larger per-value impact at daily grain than hourly. Not traced to one specific pipeline bug; consistent with the general unmasked-aggregation sensitivity D6 predicts. (Revised after a fixer round: the daily bucket previously summed incomplete/all-null station-days as if they were complete zero totals — Polars' `.sum()` over an all-null group returns 0.0, not null — corrupting the correlation; the corrected pipeline now drops any station-day below `daily_completeness_min_hours`, moving this value from 0.136 to 0.185. Still does not reproduce 0.28 either way.)"
+evidence = "This run's reproducible value: 0.185 (results.json id=coh_daily_r_undistanced)."
+method = { pairwise_missing_policy = "pairwise_complete", min_paired_samples = "100", daily_completeness = "20 of 24 ON_GRID hours", bucket_alignment = "hour_start", denominator = "median Pearson r over all qualifying pairs, JJAS daily" }
+
+[[expectation]]
+id = "coh_diurnal_median_r"
+source = "vision-findings"
+vision_ref = "docs/design/dhm-precipitation-vision.md:173-179"
+statistic = "diurnal_profile_pearson_r"
+value = 0.347
+unit = "r"
+view = "ON_GRID"
+grain = "non_null_observations"
+axis_status = "RAW_PROVISIONAL"
+population = "all station pairs, JJAS diurnal composite"
+quoted_precision = 3
+disposition = "withdrawn_unreproducible"
+successor = "M-A7"
+original_value = 0.347
+method_comparison = "Task 4a found and fixed a real bug here (the diurnal 24-point profile was compared using the frequency-series min_paired_samples=100 threshold, which a 24-row profile can never reach, silently producing zero correlations / null). After the fix (min_diurnal_paired_hours=20) the statistic computes but does not match — the composite is built from the same unmasked hourly values as coh_daily_r_undistanced, so it inherits the same aggregation sensitivity to unmasked defects. This statistic ALSO rests on the unresolved accumulation convention (vision, M-D3/M-A2) — it is explicitly named as unreliable until that resolves, independent of this reproduction gap."
+evidence = "This run's reproducible value: 0.288 (results.json id=coh_diurnal_median_r)."
+method = { pairwise_missing_policy = "pairwise_complete", min_paired_samples = "min_diurnal_paired_hours = 20 (NOT min_paired_samples = 100 — a 24-point-per-station profile can never reach 100 paired samples; reusing that threshold here was the bug described above)", denominator = "median between-station Pearson r over 24-hour composite mean profiles, JJAS" }
+
+# The following entries (coh_3h_r_undistanced through prec_loo_within_25pct_fraction)
+# were added in a fixer round that closed out every remaining vision-quoted
+# Finding that M-A1's own scope line ("emits every statistic the vision's
+# Findings quote") committed to but the first Phase-4a pass never gated:
+# 3-hourly coherence, the modal-intensity Finding, and the leave-one-out
+# tail-prediction-error Finding (previously implemented in stats_precision.py
+# but never wired into the runner or the manifest). The daily
+# distance-stratified coherence pair (coh_daily_r_within_25km /
+# coh_daily_r_beyond_200km) closes Plan 170's own "What changed since the
+# DRAFT" commitment to compute both hourly AND daily distance-stratified
+# coherence, mirroring the already-landed coh_hourly_r_within_25km /
+# coh_hourly_r_beyond_200km pair.
+
+[[expectation]]
+id = "coh_3h_r_undistanced"
+source = "vision-findings"
+vision_ref = "docs/design/dhm-precipitation-vision.md:140-141"
+statistic = "undistanced_pearson_r"
+value = 0.09
+unit = "r"
+view = "ON_GRID"
+grain = "non_null_observations"
+axis_status = "RAW_PROVISIONAL"
+population = "all station pairs, JJAS 3-hourly"
+quoted_precision = 2
+disposition = "active"
+successor = "M-A7"
+method = { pairwise_missing_policy = "pairwise_complete", min_paired_samples = "100", three_hourly_completeness = "3 of 3 ON_GRID hours (a partial bucket is dropped, never summed as if complete)", bucket_alignment = "hour_start", denominator = "median Pearson r over all qualifying pairs, JJAS 3-hourly (hour // 3 * 3 buckets)" }
+
+[[expectation]]
+id = "coh_daily_r_within_25km"
+source = "plan-170"
+plan_ref = "docs/plans/170-dhm-precip-reproducible-baseline.md:48"
+statistic = "distance_stratified_pearson_r"
+value = 0.463
+unit = "r"
+view = "ON_GRID"
+grain = "non_null_observations"
+axis_status = "RAW_PROVISIONAL"
+population = "station pairs < 25 km apart, JJAS daily"
+quoted_precision = 3
+disposition = "corrected"
+successor = "M-A7"
+original_value = 0.463
+corrected_value = 0.415
+correction_provenance = "0.463 was this plan's own pre-implementation draft estimate (the 'What changed' narrative, written before Task 2f's code existed — same class as coh_hourly_r_within_25km/coh_hourly_r_beyond_200km above). Task 2f's committed, declared-method pipeline now computes this reproducibly; the draft estimate is superseded by the real number, not withdrawn — there is no external 'original analysis' to preserve here, only this plan's own earlier guess. (The pipeline's daily-completeness fix, see coh_daily_r_undistanced, also applies here — this value is post-fix.)"
+method = { pairwise_missing_policy = "pairwise_complete", min_paired_samples = "100", daily_completeness = "20 of 24 ON_GRID hours", bucket_alignment = "hour_start", denominator = "median Pearson r over qualifying pairs < 25 km apart, JJAS daily" }
+
+[[expectation]]
+id = "coh_daily_r_beyond_200km"
+source = "plan-170"
+plan_ref = "docs/plans/170-dhm-precip-reproducible-baseline.md:48"
+statistic = "distance_stratified_pearson_r"
+value = 0.165
+unit = "r"
+view = "ON_GRID"
+grain = "non_null_observations"
+axis_status = "RAW_PROVISIONAL"
+population = "station pairs > 200 km apart, JJAS daily"
+quoted_precision = 3
+disposition = "corrected"
+successor = "M-A7"
+original_value = 0.165
+corrected_value = 0.146
+correction_provenance = "0.165 was this plan's own pre-implementation draft estimate (the 'What changed' narrative, written before Task 2f's code existed). Task 2f's committed, declared-method pipeline now computes this reproducibly; the draft estimate is superseded by the real number, not withdrawn. (Post daily-completeness fix — see coh_daily_r_undistanced.)"
+method = { pairwise_missing_policy = "pairwise_complete", min_paired_samples = "100", daily_completeness = "20 of 24 ON_GRID hours", bucket_alignment = "hour_start", denominator = "median Pearson r over qualifying pairs > 200 km apart, JJAS daily" }
+
+[[expectation]]
+id = "prec_group_a_modal_intensity"
+source = "vision-findings"
+vision_ref = "docs/design/dhm-precipitation-vision.md:82-84"
+statistic = "modal_nonzero_value_mm"
+range = [0.03, 0.06]
+unit = "mm/h"
+view = "ON_GRID"
+grain = "non_null_observations"
+axis_status = "RAW_PROVISIONAL"
+population = "Group A stations, JJAS non-zero values"
+quoted_precision = 2
+disposition = "active"
+successor = "M-A7"
+method = { modal_binning = "0.01 mm fixed-width bins over non-zero JJAS values, no wet-threshold restriction (the vision's own quoted range sits below the 0.2 mm/h wet floor)", denominator = "per-station most-populated 0.01 mm bin, min/max over Group A stations" }
+
+[[expectation]]
+id = "prec_loo_median_abs_error"
+source = "vision-findings"
+vision_ref = "docs/design/dhm-precipitation-vision.md:162"
+statistic = "leave_one_out_tail_prediction_median_abs_error"
+value = 0.123
+unit = "fraction"
+view = "ON_GRID"
+grain = "non_null_observations"
+axis_status = "RAW_PROVISIONAL"
+population = "usable stations with a computable q0.5/q0.99, JJAS wet hours"
+quoted_precision = 3
+disposition = "withdrawn_unreproducible"
+successor = "M-A7"
+original_value = 0.123
+method_comparison = "This statistic was implemented and unit-tested (stats_precision.leave_one_out_tail_prediction_error) but never wired into the runner in the first Phase-4a pass — a real gap, closed here. It predicts each held-out station's q99 as median * pooled_ratio(excluding that station); since q99 inherits the same unmasked-extreme sensitivity as prec_group_a_q999/prec_group_b_q999/prec_shape_ratio_range above, this statistic does too."
+evidence = "This run's reproducible value: 0.156 (results.json id=prec_loo_median_abs_error)."
+method = { quantile_definition = "linear", zero_policy = "exclude_zero", denominator = "median absolute value of (predicted - actual) / actual over all held-out stations; predicted = median_i * mean(q99_j/median_j for j != i)" }
+
+[[expectation]]
+id = "prec_loo_min_error"
+source = "vision-findings"
+vision_ref = "docs/design/dhm-precipitation-vision.md:162"
+statistic = "leave_one_out_tail_prediction_min_error"
+value = -0.49
+unit = "fraction"
+view = "ON_GRID"
+grain = "non_null_observations"
+axis_status = "RAW_PROVISIONAL"
+population = "usable stations with a computable q0.5/q0.99, JJAS wet hours"
+quoted_precision = 2
+disposition = "withdrawn_unreproducible"
+successor = "M-A7"
+original_value = -0.49
+method_comparison = "Same root cause as prec_loo_median_abs_error — the most-undershot held-out prediction inherits the unmasked-q99 sensitivity."
+evidence = "This run's reproducible value: -0.573 (results.json id=prec_loo_min_error)."
+method = { quantile_definition = "linear", zero_policy = "exclude_zero", denominator = "min over held-out stations of (predicted - actual) / actual" }
+
+[[expectation]]
+id = "prec_loo_max_error"
+source = "vision-findings"
+vision_ref = "docs/design/dhm-precipitation-vision.md:162"
+statistic = "leave_one_out_tail_prediction_max_error"
+value = 2.41
+unit = "fraction"
+view = "ON_GRID"
+grain = "non_null_observations"
+axis_status = "RAW_PROVISIONAL"
+population = "usable stations with a computable q0.5/q0.99, JJAS wet hours"
+quoted_precision = 2
+disposition = "withdrawn_unreproducible"
+successor = "M-A7"
+original_value = 2.41
+method_comparison = "Same root cause as prec_loo_median_abs_error — the most-overshot held-out prediction inherits the unmasked-q99 sensitivity."
+evidence = "This run's reproducible value: 2.259 (results.json id=prec_loo_max_error)."
+method = { quantile_definition = "linear", zero_policy = "exclude_zero", denominator = "max over held-out stations of (predicted - actual) / actual" }
+
+[[expectation]]
+id = "prec_loo_within_25pct_fraction"
+source = "vision-findings"
+vision_ref = "docs/design/dhm-precipitation-vision.md:162"
+statistic = "leave_one_out_tail_prediction_within_25pct_fraction"
+value = 0.65
+unit = "fraction"
+view = "ON_GRID"
+grain = "non_null_observations"
+axis_status = "RAW_PROVISIONAL"
+population = "usable stations with a computable q0.5/q0.99, JJAS wet hours"
+quoted_precision = 2
+disposition = "active"
+successor = "M-A7"
+method = { quantile_definition = "linear", zero_policy = "exclude_zero", denominator = "fraction of held-out stations whose |(predicted - actual) / actual| <= tail_prediction_tolerance_fraction (0.25)" }
