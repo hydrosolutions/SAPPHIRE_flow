@@ -80,6 +80,7 @@ from sapphire_flow.types.model import (  # noqa: TC001
     ModelArtifactProvenance,
     ModelArtifactRecord,
     ModelRecord,
+    StoredArtifact,
 )
 from sapphire_flow.types.observation import (  # noqa: TC001
     ArchivedObservationValue,
@@ -707,16 +708,17 @@ class FakeModelArtifactStore:
         station_id: StationId | None = None,
         group_id: StationGroupId | None = None,
         status: ModelArtifactStatus = ModelArtifactStatus.TRAINING,
-    ) -> tuple[ArtifactId, str]:
+    ) -> StoredArtifact:
         aid = ArtifactId(uuid4())
         sha256 = hashlib.sha256(artifact_bytes).hexdigest()
+        artifact_path = f"artifacts/{aid}.bin"
         record = ModelArtifactRecord(
             id=aid,
             model_id=model_id,
             station_id=station_id,
             group_id=group_id,
             status=status,
-            artifact_path=f"artifacts/{aid}.bin",
+            artifact_path=artifact_path,
             sha256_hash=sha256,
             training_period_start=training_period_start,
             training_period_end=training_period_end,
@@ -728,7 +730,9 @@ class FakeModelArtifactStore:
         )
         self._records[aid] = record
         self._bytes[aid] = artifact_bytes
-        return aid, sha256
+        return StoredArtifact(
+            artifact_id=aid, sha256_hash=sha256, artifact_path=artifact_path
+        )
 
     def fetch_artifact(
         self, artifact_id: ArtifactId

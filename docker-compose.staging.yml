@@ -16,6 +16,17 @@ services:
     volumes:
       - ./config/overlays/staging-5-stations.toml:/app/config/overlays/staging-5-stations.toml:ro
 
+  # prefect-worker-forecast-cycle (Plan 157 D13/T2) runs the forecast cycle —
+  # the SAME flow that used to run on prefect-worker — so it needs the SAME
+  # config overlay, or the staging 5-station cycle would silently run
+  # against the default (non-staging) config the moment the pool split
+  # shipped.
+  prefect-worker-forecast-cycle:
+    environment:
+      SAPPHIRE_CONFIG_OVERLAY: /app/config/overlays/staging-5-stations.toml
+    volumes:
+      - ./config/overlays/staging-5-stations.toml:/app/config/overlays/staging-5-stations.toml:ro
+
   api:
     environment:
       SAPPHIRE_CONFIG_OVERLAY: /app/config/overlays/staging-5-stations.toml

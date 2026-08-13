@@ -75,7 +75,11 @@ if TYPE_CHECKING:
         StationId,
         TenantId,
     )
-    from sapphire_flow.types.model import ModelArtifactRecord, ModelRecord
+    from sapphire_flow.types.model import (
+        ModelArtifactRecord,
+        ModelRecord,
+        StoredArtifact,
+    )
     from sapphire_flow.types.observation import (
         ArchivedObservationValue,
         Observation,
@@ -424,7 +428,7 @@ class ModelArtifactStore(Protocol):
         station_id: StationId | None = None,
         group_id: StationGroupId | None = None,
         status: ModelArtifactStatus = ModelArtifactStatus.TRAINING,
-    ) -> tuple[ArtifactId, str]:
+    ) -> StoredArtifact:
         raise NotImplementedError
 
     def fetch_artifact(

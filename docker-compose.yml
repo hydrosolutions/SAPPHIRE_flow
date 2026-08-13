@@ -191,6 +191,76 @@ services:
         max-size: "50m"
         max-file: "5"
 
+  # Dedicated forecast-cycle worker (Plan 157 D13/T2): serves ONLY the
+  # `forecast-cycle` and `import-model-artifact` deployments. It is a
+  # SUPERSET of `prefect-worker`'s image (same Dockerfile/build; see
+  # docs/standards/cicd.md § The forecast-cycle pool) — group forecasting
+  # (the aquacast pooled model's only entry point) runs INSIDE
+  # run_forecast_cycle, in the same process as station forecasting, so the
+  # cycle cannot be split across a torch-carrying/torch-free process
+  # boundary. `prefect-worker` (`default`) and `prefect-worker-ingest`
+  # (`ingest`) no longer serve the cycle and stay free of whatever this
+  # worker's image eventually needs to add (e.g. a real
+  # `sapphire-aquacast` shim + its torch runtime, once that external
+  # distribution exists — Plan 157 T1).
+  prefect-worker-forecast-cycle:
+    build: *app-build
+    image: sapphire-flow:${VERSION:?VERSION is required; set in .env or export before compose up}
+    command: prefect worker start --pool forecast-cycle --type process
+    # Same rationale as prefect-worker (Plan 086) — the cycle runs here now.
+    mem_limit: 8g
+    environment:
+      SAPPHIRE_DATA_DIR: /data
+      SAPPHIRE_CONFIG: /app/config.toml
+      # Plan 147 Slice D: least-privilege — workers connect as the scoped
+      # `sapphire_worker` role (never the owner/migration superuser); its
+      # password lives in a DEDICATED secret distinct from the API's and the
+      # owner's (docker/entrypoint.sh DB_PASSWORD_SECRET below).
+      DATABASE_URL_TEMPLATE: postgresql+psycopg://sapphire_worker@postgres:5432/sapphire
+      DB_PASSWORD_SECRET: /run/secrets/sapphire_worker_db_password
+      PREFECT_API_URL: http://prefect-server:4200/api
+      PREFECT_LOGGING_LEVEL: WARNING
+      # Plan 103: /home/app/.prefect is on the read-only root FS. /tmp is
+      # already a writable tmpfs (below), so no new mount/volume/chown needed.
+      PREFECT_HOME: /tmp/prefect
+    depends_on:
+      prefect-server:
+        condition: service_healthy
+      init:
+        condition: service_completed_successfully
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+      - CHOWN
+      - FOWNER
+    secrets:
+      - sapphire_worker_db_password
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /data/cache
+    restart: unless-stopped
+    networks: [backend]
+    volumes:
+      - model_artifacts:/data/artifacts:rw
+      - backups:/data/backups:rw
+      - nwp_grids:/data/nwp_grids:rw
+      - bafu_forecast_archive:/data/bafu_forecasts:rw
+      - bafu_observation_archive:/data/bafu_observations:rw
+      - ./config.toml:/app/config.toml:ro
+      - type: tmpfs
+        target: /tmp/sapphire_nwp
+        tmpfs:
+          size: 4294967296
+          mode: 1023
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
   api:
     build: *app-build
     image: sapphire-flow:${VERSION:?VERSION is required; set in .env or export before compose up}

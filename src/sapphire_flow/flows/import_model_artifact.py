@@ -46,6 +46,8 @@ def _import_task(  # noqa: PLR0913
     artifact_bytes: bytes,
     artifact_store: object,
     trained_at: object,
+    training_period_start: object,
+    training_period_end: object,
     clock: object,
     station_id: object,
     group_id: object,
@@ -53,7 +55,7 @@ def _import_task(  # noqa: PLR0913
     group_store: object,
     source_repository: str | None,
     source_commit: str | None,
-    expected_config_hash: str | None,
+    expected_config_hash: str,
     imported_by: str | None,
     notes: str | None,
     principal: object,
@@ -71,6 +73,8 @@ def _import_task(  # noqa: PLR0913
         artifact_bytes=artifact_bytes,
         artifact_store=artifact_store,  # type: ignore[arg-type]
         trained_at=trained_at,  # type: ignore[arg-type]
+        training_period_start=training_period_start,  # type: ignore[arg-type]
+        training_period_end=training_period_end,  # type: ignore[arg-type]
         clock=clock,  # type: ignore[arg-type]
         station_id=station_id,  # type: ignore[arg-type]
         group_id=group_id,  # type: ignore[arg-type]
@@ -114,11 +118,13 @@ def import_model_artifact_flow(  # noqa: PLR0913
     model_id: str,
     artifact_base64: str,
     trained_at: str,
+    training_period_start: str,
+    training_period_end: str,
+    expected_config_hash: str,
     station_id: str | None = None,
     group_id: str | None = None,
     source_repository: str | None = None,
     source_commit: str | None = None,
-    expected_config_hash: str | None = None,
     imported_by: str | None = None,
     notes: str | None = None,
     tenant_code: str | None = None,
@@ -166,6 +172,8 @@ def import_model_artifact_flow(  # noqa: PLR0913
         artifact_bytes,
         stores["artifact_store"],
         ensure_utc(datetime.fromisoformat(trained_at)),
+        ensure_utc(datetime.fromisoformat(training_period_start)),
+        ensure_utc(datetime.fromisoformat(training_period_end)),
         clock,
         StationId(UUID(station_id)) if station_id is not None else None,
         StationGroupId(UUID(group_id)) if group_id is not None else None,

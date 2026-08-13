@@ -13,7 +13,7 @@ from sapphire_flow.exceptions import ArtifactIntegrityError
 from sapphire_flow.store._helpers import utc_from_row, utc_or_none
 from sapphire_flow.types.enums import ModelArtifactStatus
 from sapphire_flow.types.ids import ArtifactId, ModelId, StationGroupId, StationId
-from sapphire_flow.types.model import ModelArtifactRecord
+from sapphire_flow.types.model import ModelArtifactRecord, StoredArtifact
 
 if TYPE_CHECKING:
     from sapphire_flow.types.datetime import UtcDatetime
@@ -52,7 +52,7 @@ class PgModelArtifactStore:
         station_id: StationId | None = None,
         group_id: StationGroupId | None = None,
         status: ModelArtifactStatus = ModelArtifactStatus.TRAINING,
-    ) -> tuple[ArtifactId, str]:
+    ) -> StoredArtifact:
         aid = ArtifactId(uuid4())
         sha256 = hashlib.sha256(artifact_bytes).hexdigest()
         safe_model_dir = Path(str(model_id)).name
@@ -87,7 +87,9 @@ class PgModelArtifactStore:
         except Exception:
             artifact_path.unlink(missing_ok=True)
             raise
-        return aid, sha256
+        return StoredArtifact(
+            artifact_id=aid, sha256_hash=sha256, artifact_path=str(artifact_path)
+        )
 
     def fetch_artifact(
         self, artifact_id: ArtifactId

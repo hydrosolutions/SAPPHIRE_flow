@@ -65,9 +65,15 @@ class TestImporterDocs:
         text = _TYPES_AND_PROTOCOLS_PATH.read_text()
         assert "record_artifact_basin_lineage" in text
 
-    def test_types_and_protocols_store_artifact_return_type_is_tuple(self) -> None:
+    def test_types_and_protocols_store_artifact_return_type_is_stored_artifact(
+        self,
+    ) -> None:
+        """Plan 157 T3 fixer round: `store_artifact` now returns a
+        `StoredArtifact` value (`types/model.py`) — it iterates as the
+        historical `(ArtifactId, str)` 2-tuple for backward compatibility,
+        but also exposes `.artifact_path` known atomically with the write."""
         text = _TYPES_AND_PROTOCOLS_PATH.read_text()
-        assert "-> tuple[ArtifactId, str]" in text
+        assert "-> StoredArtifact:" in text
         # The stale single-value return type must not appear anywhere as the
         # actual `store_artifact` signature return.
         assert not re.search(r"store_artifact\([^)]*\)\s*->\s*ArtifactId:", text)

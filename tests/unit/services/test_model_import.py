@@ -6,9 +6,11 @@ Red-first acceptance criteria (plan text):
 - an acceptance test from the public boundary proving `train()` is never
   called.
 Plus the plan's other stated invariants: config/artifact mismatch fails
-loudly before any write; the tenant is DERIVED from the target, never
-trusted from a caller-supplied argument; `trained_at` stays distinct from
-`imported_at`.
+loudly before any write (with NO warning-only bypass — Plan 157 T3 fixer
+round); the tenant is DERIVED from the target, never trusted from a
+caller-supplied argument; `trained_at`, `training_period_start`/
+`training_period_end` and `imported_at` are three distinct values, never
+fabricated from one another.
 """
 
 from __future__ import annotations
@@ -35,9 +37,12 @@ from tests.fakes.fake_stores import (
     FakeStationStore,
 )
 
+_TRAINING_PERIOD_START = ensure_utc(datetime(2024, 6, 1, tzinfo=UTC))
+_TRAINING_PERIOD_END = ensure_utc(datetime(2024, 12, 1, tzinfo=UTC))
 _TRAINED_AT = ensure_utc(datetime(2025, 1, 1, tzinfo=UTC))
 _IMPORTED_AT = ensure_utc(datetime(2026, 8, 13, tzinfo=UTC))
 _MODEL_ID = ModelId("aquacast_cmal_pool_pt")
+_CONFIG_HASH = "shim-config-abc123"
 
 
 class _SpyModel:
@@ -45,7 +50,7 @@ class _SpyModel:
     `import_external_artifact` calls; `train` is spied on so tests can
     assert the public-boundary invariant that it is NEVER called."""
 
-    config_hash = "shim-config-abc123"
+    config_hash = _CONFIG_HASH
     artifact_scope = ArtifactScope.STATION
     display_name = "Spy Model"
     description = "test double"
@@ -71,6 +76,20 @@ def _clock() -> object:
     return _IMPORTED_AT
 
 
+def _import(**overrides: object) -> object:
+    """All calls default to the valid-config-hash, valid-period shape;
+    individual tests override only what they're testing."""
+    kwargs: dict[str, object] = {
+        "trained_at": _TRAINED_AT,
+        "training_period_start": _TRAINING_PERIOD_START,
+        "training_period_end": _TRAINING_PERIOD_END,
+        "expected_config_hash": _CONFIG_HASH,
+        "clock": _clock,
+    }
+    kwargs.update(overrides)
+    return import_external_artifact(**kwargs)  # type: ignore[arg-type]
+
+
 class TestUndeserializableBlobFailsLoudly:
     def test_raises_model_load_error(self) -> None:
         model = _SpyModel(deserialize_ok=False)
@@ -82,13 +101,11 @@ class TestUndeserializableBlobFailsLoudly:
         station_store.store_station(station)
 
         with pytest.raises(ModelLoadError, match="failed to deserialize"):
-            import_external_artifact(
-                model=model,  # type: ignore[arg-type]
+            _import(
+                model=model,
                 model_id=_MODEL_ID,
                 artifact_bytes=b"not-a-real-checkpoint",
                 artifact_store=artifact_store,
-                trained_at=_TRAINED_AT,
-                clock=_clock,
                 station_id=station.id,
                 station_store=station_store,
                 provenance_recorder=provenance_store,
@@ -105,13 +122,11 @@ class TestUndeserializableBlobFailsLoudly:
         station_store.store_station(station)
 
         with pytest.raises(ModelLoadError):
-            import_external_artifact(
-                model=model,  # type: ignore[arg-type]
+            _import(
+                model=model,
                 model_id=_MODEL_ID,
                 artifact_bytes=b"not-a-real-checkpoint",
                 artifact_store=artifact_store,
-                trained_at=_TRAINED_AT,
-                clock=_clock,
                 station_id=station.id,
                 station_store=station_store,
                 provenance_recorder=provenance_store,
@@ -136,13 +151,11 @@ class TestUndeserializableBlobFailsLoudly:
         station_store.store_station(station)
 
         with pytest.raises(ModelLoadError):
-            import_external_artifact(
-                model=model,  # type: ignore[arg-type]
+            _import(
+                model=model,
                 model_id=_MODEL_ID,
                 artifact_bytes=b"not-a-real-checkpoint",
                 artifact_store=artifact_store,
-                trained_at=_TRAINED_AT,
-                clock=_clock,
                 station_id=station.id,
                 station_store=station_store,
                 provenance_recorder=provenance_store,
@@ -163,13 +176,11 @@ class TestConfigArtifactMismatchFailsLoudly:
         station_store.store_station(station)
 
         with pytest.raises(ConfigurationError, match="config/artifact mismatch"):
-            import_external_artifact(
-                model=model,  # type: ignore[arg-type]
+            _import(
+                model=model,
                 model_id=_MODEL_ID,
                 artifact_bytes=b"real-checkpoint-bytes",
                 artifact_store=artifact_store,
-                trained_at=_TRAINED_AT,
-                clock=_clock,
                 station_id=station.id,
                 station_store=station_store,
                 provenance_recorder=provenance_store,
@@ -186,14 +197,52 @@ class TestConfigArtifactMismatchFailsLoudly:
             == []
         )
 
-    def test_omitted_expected_config_hash_is_observable_via_a_warning_log(
+    def test_missing_declared_config_hash_is_rejected_before_any_write(self) -> None:
+        """The model itself must declare a config_hash — a model that
+        declares none (e.g. an FI model whose config_hash was never
+        forwarded) is refused, not silently imported without a drift
+        check."""
+
+        class _NoConfigHashModel(_SpyModel):
+            config_hash = None
+
+        model = _NoConfigHashModel(deserialize_ok=True)
+        artifact_store = FakeModelArtifactStore()
+        provenance_store = FakeArtifactProvenanceStore()
+        model_store = FakeModelStore()
+        station_store = FakeStationStore()
+        station = make_station_config()
+        station_store.store_station(station)
+
+        with pytest.raises(ConfigurationError, match="does not declare a config_hash"):
+            _import(
+                model=model,
+                model_id=_MODEL_ID,
+                artifact_bytes=b"real-checkpoint-bytes",
+                artifact_store=artifact_store,
+                station_id=station.id,
+                station_store=station_store,
+                provenance_recorder=provenance_store,
+                model_store=model_store,
+            )
+
+        assert model.deserialize_calls == []
+        assert (
+            artifact_store.fetch_artifacts_by_status(
+                _MODEL_ID, ModelArtifactStatus.TRAINING
+            )
+            == []
+        )
+
+    def test_omitted_expected_config_hash_is_rejected_at_the_call_boundary(
         self,
     ) -> None:
-        """The drift check is opt-in per call (a caller who omits
-        expected_config_hash gets NO check) — that must at least be
-        OBSERVABLE, not a silent no-op."""
-        from structlog.testing import capture_logs
-
+        """Plan 157 T3 fixer round: the previous code let a caller OMIT
+        expected_config_hash entirely — in which case NO drift check ran at
+        all (only a warning was logged), so a mismatched artifact could be
+        silently promoted. expected_config_hash is now a REQUIRED
+        parameter, so a caller who forgets it fails immediately at the
+        Python call boundary, not deep inside a warning-only bypass."""
         model = _SpyModel(deserialize_ok=True)
         artifact_store = FakeModelArtifactStore()
         provenance_store = FakeArtifactProvenanceStore()
@@ -202,26 +251,29 @@ class TestConfigArtifactMismatchFailsLoudly:
         station = make_station_config()
         station_store.store_station(station)
 
-        with capture_logs() as logs:
-            import_external_artifact(
+        with pytest.raises(TypeError, match="expected_config_hash"):
+            import_external_artifact(  # type: ignore[call-arg]
                 model=model,  # type: ignore[arg-type]
                 model_id=_MODEL_ID,
                 artifact_bytes=b"real-checkpoint-bytes",
-                artifact_store=artifact_store,
                 trained_at=_TRAINED_AT,
+                training_period_start=_TRAINING_PERIOD_START,
+                training_period_end=_TRAINING_PERIOD_END,
                 clock=_clock,
+                artifact_store=artifact_store,
                 station_id=station.id,
                 station_store=station_store,
                 provenance_recorder=provenance_store,
                 model_store=model_store,
-                # expected_config_hash deliberately omitted.
             )
 
-        warnings = [
-            e for e in logs if e.get("event") == "model_import.no_expected_config_hash"
-        ]
-        assert len(warnings) == 1
-        assert warnings[0]["log_level"] == "warning"
+        assert model.deserialize_calls == []
+        assert (
+            artifact_store.fetch_artifacts_by_status(
+                _MODEL_ID, ModelArtifactStatus.TRAINING
+            )
+            == []
+        )
 
 
 class TestValidImportYieldsPromotableArtifactWithProvenance:
@@ -234,20 +286,17 @@ class TestValidImportYieldsPromotableArtifactWithProvenance:
         station = make_station_config()
         station_store.store_station(station)
 
-        artifact_id = import_external_artifact(
-            model=model,  # type: ignore[arg-type]
+        artifact_id = _import(
+            model=model,
             model_id=_MODEL_ID,
             artifact_bytes=b"real-checkpoint-bytes",
             artifact_store=artifact_store,
-            trained_at=_TRAINED_AT,
-            clock=_clock,
             station_id=station.id,
             station_store=station_store,
             provenance_recorder=provenance_store,
             model_store=model_store,
             source_repository="hydrosolutions/sapphire-aquacast",
             source_commit="deadbeef",
-            expected_config_hash="shim-config-abc123",
             imported_by="operator@hydrosolutions.ch",
         )
 
@@ -264,20 +313,17 @@ class TestValidImportYieldsPromotableArtifactWithProvenance:
         station = make_station_config()
         station_store.store_station(station)
 
-        artifact_id = import_external_artifact(
-            model=model,  # type: ignore[arg-type]
+        artifact_id = _import(
+            model=model,
             model_id=_MODEL_ID,
             artifact_bytes=b"real-checkpoint-bytes",
             artifact_store=artifact_store,
-            trained_at=_TRAINED_AT,
-            clock=_clock,
             station_id=station.id,
             station_store=station_store,
             provenance_recorder=provenance_store,
             model_store=model_store,
             source_repository="hydrosolutions/sapphire-aquacast",
             source_commit="deadbeef",
-            expected_config_hash="shim-config-abc123",
             imported_by="operator@hydrosolutions.ch",
         )
 
@@ -285,7 +331,7 @@ class TestValidImportYieldsPromotableArtifactWithProvenance:
         assert provenance is not None
         assert provenance.source_repository == "hydrosolutions/sapphire-aquacast"
         assert provenance.source_commit == "deadbeef"
-        assert provenance.config_hash == "shim-config-abc123"
+        assert provenance.config_hash == _CONFIG_HASH
         assert provenance.imported_by == "operator@hydrosolutions.ch"
 
     def test_train_never_called_on_the_success_path(self) -> None:
@@ -298,13 +344,11 @@ class TestValidImportYieldsPromotableArtifactWithProvenance:
         station = make_station_config()
         station_store.store_station(station)
 
-        import_external_artifact(
-            model=model,  # type: ignore[arg-type]
+        _import(
+            model=model,
             model_id=_MODEL_ID,
             artifact_bytes=b"real-checkpoint-bytes",
             artifact_store=artifact_store,
-            trained_at=_TRAINED_AT,
-            clock=_clock,
             station_id=station.id,
             station_store=station_store,
             provenance_recorder=provenance_store,
@@ -313,10 +357,10 @@ class TestValidImportYieldsPromotableArtifactWithProvenance:
 
         assert model.train_calls == 0
 
-    def test_trained_at_distinct_from_imported_at(self) -> None:
-        """trained_at (the external training-completion instant, supplied
-        by the caller) must never be conflated with imported_at (clock(),
-        this import's own instant)."""
+    def test_trained_at_training_period_and_imported_at_stay_distinct(self) -> None:
+        """None of trained_at / training_period_start / training_period_end
+        / imported_at (clock()) is ever synthesized from another — all four
+        are caller-supplied and independently preserved."""
         model = _SpyModel(deserialize_ok=True)
         artifact_store = FakeModelArtifactStore()
         provenance_store = FakeArtifactProvenanceStore()
@@ -325,13 +369,11 @@ class TestValidImportYieldsPromotableArtifactWithProvenance:
         station = make_station_config()
         station_store.store_station(station)
 
-        artifact_id = import_external_artifact(
-            model=model,  # type: ignore[arg-type]
+        artifact_id = _import(
+            model=model,
             model_id=_MODEL_ID,
             artifact_bytes=b"real-checkpoint-bytes",
             artifact_store=artifact_store,
-            trained_at=_TRAINED_AT,
-            clock=_clock,
             station_id=station.id,
             station_store=station_store,
             provenance_recorder=provenance_store,
@@ -342,9 +384,17 @@ class TestValidImportYieldsPromotableArtifactWithProvenance:
         provenance = provenance_store.fetch(artifact_id)
         assert record is not None
         assert provenance is not None
+        assert record.training_period_start == _TRAINING_PERIOD_START
+        assert record.training_period_end == _TRAINING_PERIOD_END
         assert record.trained_at == _TRAINED_AT
         assert provenance.imported_at == _IMPORTED_AT
-        assert record.trained_at != provenance.imported_at
+        values = {
+            record.training_period_start,
+            record.training_period_end,
+            record.trained_at,
+            provenance.imported_at,
+        }
+        assert len(values) == 4, "all four instants must be distinct, never fabricated"
 
 
 class TestTenantDerivedFromTargetNotTrustedArgument:
@@ -361,13 +411,11 @@ class TestTenantDerivedFromTargetNotTrustedArgument:
         assert wrong_tenant != station.tenant_id
 
         with pytest.raises(TenantIsolationError, match="does not match"):
-            import_external_artifact(
-                model=model,  # type: ignore[arg-type]
+            _import(
+                model=model,
                 model_id=_MODEL_ID,
                 artifact_bytes=b"real-checkpoint-bytes",
                 artifact_store=artifact_store,
-                trained_at=_TRAINED_AT,
-                clock=_clock,
                 station_id=station.id,
                 station_store=station_store,
                 provenance_recorder=provenance_store,
@@ -390,13 +438,11 @@ class TestTenantDerivedFromTargetNotTrustedArgument:
         station = make_station_config()
         station_store.store_station(station)
 
-        artifact_id = import_external_artifact(
-            model=model,  # type: ignore[arg-type]
+        artifact_id = _import(
+            model=model,
             model_id=_MODEL_ID,
             artifact_bytes=b"real-checkpoint-bytes",
             artifact_store=artifact_store,
-            trained_at=_TRAINED_AT,
-            clock=_clock,
             station_id=station.id,
             station_store=station_store,
             provenance_recorder=provenance_store,
@@ -412,13 +458,11 @@ class TestTenantDerivedFromTargetNotTrustedArgument:
         model_store = FakeModelStore()
 
         with pytest.raises(ConfigurationError, match="exactly one of"):
-            import_external_artifact(
-                model=model,  # type: ignore[arg-type]
+            _import(
+                model=model,
                 model_id=_MODEL_ID,
                 artifact_bytes=b"real-checkpoint-bytes",
                 artifact_store=artifact_store,
-                trained_at=_TRAINED_AT,
-                clock=_clock,
                 provenance_recorder=provenance_store,
                 model_store=model_store,
             )
@@ -447,13 +491,11 @@ class TestModelScopeValidatedAgainstTarget:
         group_model_id = ModelId("aquacast_group_pt")
 
         with pytest.raises(ConfigurationError, match="GROUP-scoped"):
-            import_external_artifact(
-                model=model,  # type: ignore[arg-type]
+            _import(
+                model=model,
                 model_id=group_model_id,
                 artifact_bytes=b"real-checkpoint-bytes",
                 artifact_store=artifact_store,
-                trained_at=_TRAINED_AT,
-                clock=_clock,
                 station_id=station.id,
                 station_store=station_store,
                 provenance_recorder=provenance_store,
@@ -489,19 +531,74 @@ class TestModelScopeValidatedAgainstTarget:
         model_store = FakeModelStore()
 
         with pytest.raises(ConfigurationError, match="STATION-scoped"):
-            import_external_artifact(
-                model=model,  # type: ignore[arg-type]
+            _import(
+                model=model,
                 model_id=_MODEL_ID,
                 artifact_bytes=b"real-checkpoint-bytes",
                 artifact_store=artifact_store,
-                trained_at=_TRAINED_AT,
-                clock=_clock,
                 group_id=group.id,
                 group_store=group_store,
                 provenance_recorder=provenance_store,
                 model_store=model_store,
             )
         assert model_store.fetch_model(_MODEL_ID) is None
+
+
+class TestGroupScopedImportSucceedsThroughTheFullPath:
+    """Major finding (Plan 157 T3 fixer round review): every SUCCESS-path
+    test above uses a STATION-scoped model — the GROUP model appeared only
+    in rejection tests. A bug dropping group_id, or one that only worked by
+    accident for STATION scope, would stay green without this."""
+
+    def test_group_artifact_is_active_with_group_id_and_provenance_preserved(
+        self,
+    ) -> None:
+        from sapphire_flow.types.station import StationGroup
+        from tests.fakes.fake_stores import FakeStationGroupStore
+
+        group_store = FakeStationGroupStore()
+        group = StationGroup(
+            id=StationGroupId(uuid4()),
+            name="aquacast-pool-group",
+            station_ids=frozenset(),
+            created_at=_TRAINED_AT,
+        )
+        group_store.store_group(group)
+
+        group_model_id = ModelId("aquacast_group_pt")
+        model = _GroupSpyModel(deserialize_ok=True)
+        artifact_store = FakeModelArtifactStore()
+        provenance_store = FakeArtifactProvenanceStore()
+        model_store = FakeModelStore()
+
+        artifact_id = _import(
+            model=model,
+            model_id=group_model_id,
+            artifact_bytes=b"real-checkpoint-bytes",
+            artifact_store=artifact_store,
+            group_id=group.id,
+            group_store=group_store,
+            provenance_recorder=provenance_store,
+            model_store=model_store,
+            source_repository="hydrosolutions/sapphire-aquacast",
+            source_commit="deadbeef",
+            imported_by="operator@hydrosolutions.ch",
+        )
+
+        record = artifact_store.fetch_artifact_record(artifact_id)
+        assert record is not None
+        assert record.status == ModelArtifactStatus.ACTIVE
+        assert record.group_id == group.id
+        assert record.station_id is None
+
+        provenance = provenance_store.fetch(artifact_id)
+        assert provenance is not None
+        assert provenance.source_repository == "hydrosolutions/sapphire-aquacast"
+
+        registered = model_store.fetch_model(group_model_id)
+        assert registered is not None
+        assert registered.artifact_scope == ArtifactScope.GROUP
+        assert model.train_calls == 0
 
 
 class TestFreshExternalModelIsRegistered:
@@ -520,13 +617,11 @@ class TestFreshExternalModelIsRegistered:
 
         assert model_store.fetch_model(_MODEL_ID) is None
 
-        import_external_artifact(
-            model=model,  # type: ignore[arg-type]
+        _import(
+            model=model,
             model_id=_MODEL_ID,
             artifact_bytes=b"real-checkpoint-bytes",
             artifact_store=artifact_store,
-            trained_at=_TRAINED_AT,
-            clock=_clock,
             station_id=station.id,
             station_store=station_store,
             provenance_recorder=provenance_store,
@@ -561,13 +656,11 @@ class TestFreshExternalModelIsRegistered:
         )
 
         with pytest.raises(ConfigurationError, match="registry drift"):
-            import_external_artifact(
-                model=model,  # type: ignore[arg-type]
+            _import(
+                model=model,
                 model_id=_MODEL_ID,
                 artifact_bytes=b"real-checkpoint-bytes",
                 artifact_store=artifact_store,
-                trained_at=_TRAINED_AT,
-                clock=_clock,
                 station_id=station.id,
                 station_store=station_store,
                 provenance_recorder=provenance_store,
@@ -580,3 +673,96 @@ class TestFreshExternalModelIsRegistered:
             )
             == []
         )
+
+    def test_concurrent_registration_drift_is_caught_after_registering(self) -> None:
+        """Plan 157 T3 fixer round (race-condition minor): registration is
+        `ON CONFLICT DO NOTHING` — a concurrent worker (or a mixed-version
+        deployment) could insert a row with a DIFFERENT scope between our
+        `fetch_model` check and our own `register_model` call. Simulates
+        that by having `register_model` itself install a conflicting row
+        (standing in for the concurrent writer that won the race) and
+        asserts the import still refuses to proceed on stale in-hand
+        assumptions."""
+
+        class _RaceModelStore(FakeModelStore):
+            def register_model(self, record: object) -> None:
+                # A concurrent worker's row "wins" — GROUP-scoped — instead
+                # of whatever this caller intended to register.
+                from sapphire_flow.types.model import ModelRecord as _ModelRecord
+
+                super().register_model(
+                    _ModelRecord(
+                        id=_MODEL_ID,
+                        display_name="Concurrent winner",
+                        artifact_scope=ArtifactScope.GROUP,
+                        description="registered by a simulated concurrent worker",
+                        created_at=_TRAINED_AT,
+                    )
+                )
+
+        model = _SpyModel(deserialize_ok=True)  # declares STATION
+        artifact_store = FakeModelArtifactStore()
+        provenance_store = FakeArtifactProvenanceStore()
+        model_store = _RaceModelStore()
+        station_store = FakeStationStore()
+        station = make_station_config()
+        station_store.store_station(station)
+
+        assert model_store.fetch_model(_MODEL_ID) is None  # no row yet — no race lost
+
+        with pytest.raises(ConfigurationError, match="registered concurrently"):
+            _import(
+                model=model,
+                model_id=_MODEL_ID,
+                artifact_bytes=b"real-checkpoint-bytes",
+                artifact_store=artifact_store,
+                station_id=station.id,
+                station_store=station_store,
+                provenance_recorder=provenance_store,
+                model_store=model_store,
+            )
+
+        assert (
+            artifact_store.fetch_artifacts_by_status(
+                _MODEL_ID, ModelArtifactStatus.TRAINING
+            )
+            == []
+        )
+
+
+class TestUnitOfWorkAppliesToTheFakeBackedPath:
+    """Plan 157 T3 fixer round: 'require a unit-of-work for every import,
+    including fakes.' Without `_InMemoryAuditedWriter`, a mid-sequence
+    failure on the fake-backed (audited_writer=None) path left whatever the
+    fakes had already mutated — a TRAINING-status artifact stuck forever,
+    with no provenance and no promotion. This proves that no longer
+    happens: the artifact store rolls back to its PRE-import state."""
+
+    def test_provenance_failure_leaves_no_artifact_row_behind(self) -> None:
+        model = _SpyModel(deserialize_ok=True)
+        artifact_store = FakeModelArtifactStore()
+        model_store = FakeModelStore()
+        station_store = FakeStationStore()
+        station = make_station_config()
+        station_store.store_station(station)
+
+        class _RaisingRecorder(FakeArtifactProvenanceStore):
+            def record(self, provenance: object) -> None:  # type: ignore[override]
+                raise RuntimeError("provenance boom")
+
+        with pytest.raises(RuntimeError, match="provenance boom"):
+            _import(
+                model=model,
+                model_id=_MODEL_ID,
+                artifact_bytes=b"real-checkpoint-bytes",
+                artifact_store=artifact_store,
+                station_id=station.id,
+                station_store=station_store,
+                provenance_recorder=_RaisingRecorder(),
+                model_store=model_store,
+            )
+
+        # Pre-fix, this artifact would have been left behind at TRAINING
+        # status forever — the fake-backed path had no rollback at all.
+        assert artifact_store._records == {}  # noqa: SLF001
+        assert artifact_store._bytes == {}  # noqa: SLF001

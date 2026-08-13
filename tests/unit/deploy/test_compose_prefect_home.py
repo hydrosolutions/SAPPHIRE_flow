@@ -67,6 +67,10 @@ class TestPrefectHomeSetOnClientServices:
         env = _service_env(_base_compose(), "prefect-worker-ingest")
         assert env.get("PREFECT_HOME") == "/tmp/prefect"
 
+    def test_prefect_worker_forecast_cycle_has_prefect_home_under_tmp(self) -> None:
+        env = _service_env(_base_compose(), "prefect-worker-forecast-cycle")
+        assert env.get("PREFECT_HOME") == "/tmp/prefect"
+
     def test_init_has_prefect_home_under_tmp(self) -> None:
         env = _service_env(_base_compose(), "init")
         assert env.get("PREFECT_HOME") == "/tmp/prefect"
@@ -90,6 +94,11 @@ class TestPrefectHomeUnderWritableTmpfs:
 
     def test_prefect_worker_ingest_tmp_is_tmpfs(self) -> None:
         assert "/tmp" in _service_tmpfs(_base_compose(), "prefect-worker-ingest")
+
+    def test_prefect_worker_forecast_cycle_tmp_is_tmpfs(self) -> None:
+        assert "/tmp" in _service_tmpfs(
+            _base_compose(), "prefect-worker-forecast-cycle"
+        )
 
     def test_init_tmp_is_tmpfs(self) -> None:
         assert "/tmp" in _service_tmpfs(_base_compose(), "init")

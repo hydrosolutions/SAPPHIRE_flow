@@ -42,11 +42,14 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
 
+_TRAINING_PERIOD_START = ensure_utc(datetime(2024, 6, 1, tzinfo=UTC))
+_TRAINING_PERIOD_END = ensure_utc(datetime(2024, 12, 1, tzinfo=UTC))
 _TRAINED_AT = ensure_utc(datetime(2025, 1, 1, tzinfo=UTC))
+_CONFIG_HASH = "atomicity-config-hash"
 
 
 class _FakeModel:
-    config_hash = None
+    config_hash = _CONFIG_HASH
     artifact_scope = ArtifactScope.STATION
     display_name = "Import Atomicity Fake"
     description = "test double"
@@ -179,6 +182,9 @@ class TestImportAtomicity:
                 model_id=model_id,
                 artifact_bytes=b"real-checkpoint-bytes",
                 trained_at=_TRAINED_AT,
+                training_period_start=_TRAINING_PERIOD_START,
+                training_period_end=_TRAINING_PERIOD_END,
+                expected_config_hash=_CONFIG_HASH,
                 clock=lambda: _TRAINED_AT,
                 station_id=station_id,
                 station_store=PgStationStore(station_conn),
@@ -191,6 +197,84 @@ class TestImportAtomicity:
         model_dir = tmp_path / str(model_id)
         leftover = list(model_dir.glob("*.bin")) if model_dir.exists() else []
         assert leftover == [], f"orphaned artifact file(s): {leftover}"
+
+    def test_promotion_audit_failure_rolls_back_supersede_and_activate(
+        self,
+        pg_engine: sa.Engine,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The prior test fails BEFORE promotion even starts, so it cannot
+        prove a transaction that ends PARTWAY THROUGH promote_artifact —
+        after the prior ACTIVE artifact is superseded and the new one
+        activated, but before the audit row commits — rolls both
+        transitions back together. Seeds a prior ACTIVE artifact and fails
+        the audit append (the step AFTER both status transitions)."""
+        from sapphire_flow.store.audit_log_store import PgAuditLogStore
+
+        model_id, station_id = _seed_model_and_station(pg_engine)
+        monkeypatch.setattr(
+            "sapphire_flow.config.paths.resolve_artifact_dir", lambda: tmp_path
+        )
+
+        # Seed a prior ACTIVE artifact directly, outside the import path.
+        with pg_engine.begin() as conn:
+            prior = PgModelArtifactStore(conn, tmp_path).store_artifact(
+                model_id=model_id,
+                artifact_bytes=b"prior-active-bytes",
+                training_period_start=_TRAINING_PERIOD_START,
+                training_period_end=_TRAINING_PERIOD_END,
+                trained_at=_TRAINED_AT,
+                station_id=station_id,
+                status=ModelArtifactStatus.ACTIVE,
+            )
+        prior_id = prior.artifact_id
+
+        def _raise_append_entry(self: object, entry: object) -> None:  # noqa: ARG001
+            raise RuntimeError("audit boom")
+
+        monkeypatch.setattr(PgAuditLogStore, "append_entry", _raise_append_entry)
+
+        writer = AuditedWriter(begin=pg_engine.begin)
+        with (
+            pg_engine.connect() as station_conn,
+            pytest.raises(RuntimeError, match="audit boom"),
+        ):
+            import_external_artifact(
+                model=_FakeModel(),  # type: ignore[arg-type]
+                model_id=model_id,
+                artifact_bytes=b"new-checkpoint-bytes",
+                trained_at=_TRAINED_AT,
+                training_period_start=_TRAINING_PERIOD_START,
+                training_period_end=_TRAINING_PERIOD_END,
+                expected_config_hash=_CONFIG_HASH,
+                clock=lambda: _TRAINED_AT,
+                station_id=station_id,
+                station_store=PgStationStore(station_conn),
+                audited_writer=writer,
+            )
+
+        # The prior artifact must remain ACTIVE — not superseded.
+        with pg_engine.connect() as conn:
+            prior_status = conn.execute(
+                sa.text("SELECT status FROM model_artifacts WHERE id = :id"),
+                {"id": str(prior_id)},
+            ).scalar_one()
+        assert prior_status == ModelArtifactStatus.ACTIVE.value
+
+        # The new artifact row and its provenance row must not survive.
+        assert _artifact_row_count(pg_engine, model_id) == 1  # the prior one only
+        assert _provenance_row_count(pg_engine, model_id) == 0
+
+        # The new artifact's file must not survive either (the prior
+        # artifact's file legitimately still does).
+        model_dir = tmp_path / str(model_id)
+        new_files = [
+            p
+            for p in (model_dir.glob("*.bin") if model_dir.exists() else [])
+            if p.stem != str(prior_id)
+        ]
+        assert new_files == [], f"orphaned NEW artifact file(s): {new_files}"
 
     def test_store_artifact_fk_violation_leaves_no_orphan_file(
         self,
@@ -247,6 +331,9 @@ class TestImportAtomicity:
                 artifact_bytes=b"real-checkpoint-bytes",
                 artifact_store=PgModelArtifactStore(conn, tmp_path),
                 trained_at=_TRAINED_AT,
+                training_period_start=_TRAINING_PERIOD_START,
+                training_period_end=_TRAINING_PERIOD_END,
+                expected_config_hash=_CONFIG_HASH,
                 clock=lambda: _TRAINED_AT,
                 station_id=station_id,
                 station_store=PgStationStore(conn),
@@ -286,6 +373,9 @@ class TestFreshExternalModelAutoRegisters:
                 model_id=model_id,
                 artifact_bytes=b"real-checkpoint-bytes",
                 trained_at=_TRAINED_AT,
+                training_period_start=_TRAINING_PERIOD_START,
+                training_period_end=_TRAINING_PERIOD_END,
+                expected_config_hash=_CONFIG_HASH,
                 clock=lambda: _TRAINED_AT,
                 station_id=station_id,
                 station_store=PgStationStore(station_conn),
@@ -340,6 +430,9 @@ class TestFreshExternalModelAutoRegisters:
                 model_id=model_id,
                 artifact_bytes=b"real-checkpoint-bytes",
                 trained_at=_TRAINED_AT,
+                training_period_start=_TRAINING_PERIOD_START,
+                training_period_end=_TRAINING_PERIOD_END,
+                expected_config_hash=_CONFIG_HASH,
                 clock=lambda: _TRAINED_AT,
                 station_id=station.id,
                 station_store=PgStationStore(station_conn),

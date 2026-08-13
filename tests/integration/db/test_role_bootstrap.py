@@ -486,71 +486,97 @@ class TestApplicationStoresWorkUnderScopedRoles:
         assert fetched.code == "ROLE-BOOTSTRAP-TEST"
 
     def test_worker_can_write_and_read_back_artifact_provenance(
-        self, role_harness: _RoleBootstrapHarness, tmp_path: Path
+        self,
+        role_harness: _RoleBootstrapHarness,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Plan 157 T3: the exact failure mode the plan warned about — a
         superuser test staying green while the scoped `sapphire_worker` role
         is denied the NEW `model_artifact_provenance` INSERT grant in
-        production. Runs the real store classes end to end (register a
-        model, store an artifact, record its provenance) authenticated as
-        `sapphire_worker`, then reads the provenance row back as
-        `sapphire_api`."""
+        production. Runs the REAL `import_external_artifact` service (Plan
+        157 T3 fixer round — not raw store calls: register a model,
+        deserialize-validate, store the artifact, record its provenance, AND
+        promote it — through a real `AuditedWriter` transaction)
+        authenticated as `sapphire_worker`, then reads the provenance row
+        back as `sapphire_api`. A missing grant on ANY step — including
+        `promote_artifact`'s status transitions or its `audit_log` INSERT —
+        fails this test, not just raw INSERT/store_artifact."""
         from datetime import UTC, datetime
         from uuid import uuid4
 
+        from sapphire_flow.services.model_import import import_external_artifact
+        from sapphire_flow.store.audited_writer import AuditedWriter
         from sapphire_flow.store.model_artifact_provenance import (
             PgArtifactProvenanceStore,
         )
-        from sapphire_flow.store.model_artifact_store import PgModelArtifactStore
         from sapphire_flow.types.datetime import ensure_utc
-        from sapphire_flow.types.ids import ModelId
-        from sapphire_flow.types.model import ModelArtifactProvenance
+        from sapphire_flow.types.enums import ArtifactScope, ModelArtifactStatus
+        from sapphire_flow.types.ids import ModelId, StationId
+
+        class _RoleBootstrapTestModel:
+            """Structurally satisfies `import_external_artifact`'s model
+            boundary — a discoverable, deserializable synthetic FI-style
+            model, standing in for a real aquacast-shim entry point."""
+
+            config_hash = "abc123"
+            artifact_scope = ArtifactScope.STATION
+            display_name = "Role bootstrap test model"
+            description = "role bootstrap test double"
+            data_requirements = None
+
+            def deserialize_artifact(self, raw: bytes) -> object:
+                return {"weights": raw}
+
+            def train(self, *args: object, **kwargs: object) -> object:
+                raise AssertionError(
+                    "train() must never be called from the import path"
+                )
 
         result = role_harness.run_bootstrap("prov-api-pw", "prov-worker-pw")
         assert result.returncode == 0, result.stderr
-
-        from sapphire_flow.types.ids import StationId
 
         model_id = ModelId(f"prov-role-test-{uuid4().hex[:8]}")
         station = make_station_config(
             station_id=StationId(uuid4()), code=f"PROV-ROLE-{uuid4().hex[:8]}"
         )
         now = ensure_utc(datetime.now(UTC))
+        monkeypatch.setattr(
+            "sapphire_flow.config.paths.resolve_artifact_dir", lambda: tmp_path
+        )
 
         worker_engine = sa.create_engine(
             role_harness.role_url("sapphire_worker", "prov-worker-pw")
         )
         try:
             with worker_engine.begin() as conn:
-                conn.execute(
-                    sa.text(
-                        "INSERT INTO models (id, display_name, artifact_scope, "
-                        "description) VALUES (:id, :dn, 'station', :d)"
-                    ),
-                    {"id": str(model_id), "dn": "Role test", "d": "role test model"},
-                )
                 PgStationStore(conn).store_station(station)
-                artifact_id, _sha256 = PgModelArtifactStore(
-                    conn, tmp_path
-                ).store_artifact(
+
+            writer = AuditedWriter(begin=worker_engine.begin)
+            with worker_engine.connect() as station_conn:
+                artifact_id = import_external_artifact(
+                    model=_RoleBootstrapTestModel(),  # type: ignore[arg-type]
                     model_id=model_id,
                     artifact_bytes=b"role-test-checkpoint-bytes",
+                    trained_at=now,
                     training_period_start=now,
                     training_period_end=now,
-                    trained_at=now,
+                    expected_config_hash="abc123",
+                    clock=lambda: now,
                     station_id=station.id,
+                    station_store=PgStationStore(station_conn),
+                    source_repository="hydrosolutions/sapphire-aquacast",
+                    source_commit="deadbeef",
+                    imported_by="operator@hydrosolutions.ch",
+                    audited_writer=writer,
                 )
-                PgArtifactProvenanceStore(conn).record(
-                    ModelArtifactProvenance(
-                        artifact_id=artifact_id,
-                        source_repository="hydrosolutions/sapphire-aquacast",
-                        source_commit="deadbeef",
-                        config_hash="abc123",
-                        imported_at=now,
-                        imported_by="operator@hydrosolutions.ch",
-                        notes=None,
-                    )
-                )
+
+            with worker_engine.connect() as conn:
+                status = conn.execute(
+                    sa.text("SELECT status FROM model_artifacts WHERE id = :id"),
+                    {"id": str(artifact_id)},
+                ).scalar_one()
+            assert status == ModelArtifactStatus.ACTIVE.value
         finally:
             worker_engine.dispose()
 

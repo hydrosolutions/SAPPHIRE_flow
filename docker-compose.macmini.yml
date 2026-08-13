@@ -34,6 +34,19 @@ services:
     volumes:
       - ./config/overlays/mac-mini.toml:/app/config/overlays/mac-mini.toml:ro
 
+  # prefect-worker-forecast-cycle (Plan 157 D13/T2) runs the forecast cycle —
+  # the SAME flow that used to run on prefect-worker — so it needs the SAME
+  # config overlay AND the SAME SAPPHIRE_REQUIRE_NWP=1 enforcement.
+  # Omitting either here would silently run the mac-mini's operational
+  # cycle against the default (non-mac-mini) config the moment the pool
+  # split shipped, or silently stop enforcing NWP-on.
+  prefect-worker-forecast-cycle:
+    environment:
+      SAPPHIRE_CONFIG_OVERLAY: /app/config/overlays/mac-mini.toml
+      SAPPHIRE_REQUIRE_NWP: "1"
+    volumes:
+      - ./config/overlays/mac-mini.toml:/app/config/overlays/mac-mini.toml:ro
+
   api:
     ports:
       - "8000:8000"

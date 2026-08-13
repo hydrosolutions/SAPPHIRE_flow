@@ -9,32 +9,46 @@ artifact WITHOUT ever calling `model.train` — the public-boundary
 acceptance criterion this module is built to satisfy.
 
 Invariants (Plan 157 T3):
-- **A config/artifact mismatch fails loudly, before any write.**
+- **A config/artifact mismatch fails loudly, before any write.** Both the
+  model's declared `config_hash` and the caller-supplied
+  `expected_config_hash` (the digest carried by the artifact's own import
+  manifest — D1 ships the shim config as package data, so the artifact and
+  its config can drift across a shim release) are REQUIRED and must match.
+  There is no warning-only bypass — a caller that omits either value is
+  refused, not merely logged.
 - **An undeserializable blob fails loudly, before any write.**
 - **The tenant is DERIVED from the target** (station/group), never trusted
   from a caller-supplied argument.
-- **`trained_at` (external training completion) is distinct from
-  `imported_at`** (this import's own instant, `clock()`) — never conflated.
-- **All-or-nothing**: with a real `AuditedWriter`, `store_artifact` +
-  provenance + `promote_artifact` run in ONE transaction; on any failure no
-  artifact row of any status, no changed prior ACTIVE row, and no
-  provenance row survive, and the artifact file (if written) is deleted —
-  no orphan.
+- **`trained_at` (external training completion), `training_period_start`/
+  `training_period_end` (the real external training window) and
+  `imported_at`** (this import's own instant, `clock()`) are three
+  DISTINCT, caller-supplied values — never conflated, never fabricated as a
+  zero-length window at `trained_at`.
+- **All-or-nothing, always — including the fake-backed test/replay path.**
+  `store_artifact` + provenance + `promote_artifact` run inside ONE unit of
+  work: a real `AuditedWriter` transaction in production, or an in-memory
+  snapshot/restore wrapper around the caller's fakes otherwise. On any
+  failure no artifact row of any status, no changed prior ACTIVE row, and
+  no provenance row survive, and the artifact file (if written) is deleted
+  — no orphan.
 """
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
 
 import structlog
 
 from sapphire_flow.exceptions import ConfigurationError, ModelLoadError
+from sapphire_flow.store.audited_writer import AuditedWriter
 from sapphire_flow.types.enums import ArtifactScope, AuditEventType, ModelArtifactStatus
 from sapphire_flow.types.model import ModelArtifactProvenance, ModelRecord
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
     from sapphire_flow.protocols.forecast_model import ForecastModel
     from sapphire_flow.protocols.stores import (
@@ -44,7 +58,6 @@ if TYPE_CHECKING:
         StationGroupStore,
         StationStore,
     )
-    from sapphire_flow.store.audited_writer import AuditedWriter
     from sapphire_flow.types.datetime import UtcDatetime
     from sapphire_flow.types.ids import (
         ArtifactId,
@@ -64,6 +77,77 @@ class ProvenanceRecorder(Protocol):
     fakes — matches the existing `lineage_writer.record(...)` convention."""
 
     def record(self, provenance: ModelArtifactProvenance) -> None: ...
+
+
+@dataclass(slots=True)
+class _InMemoryAuditedWriter:
+    """The unit-of-work for the test/replay fallback path (no real
+    `AuditedWriter`/Postgres transaction available) — Plan 157 T3 fixer
+    round, finding: "require a unit-of-work for every import, including
+    fakes." Without this, a mid-sequence failure (e.g. `provenance_store.
+    record` raising) left whatever the fakes had already mutated — an
+    artifact stuck at TRAINING forever — with nothing to prove or enforce
+    all-or-nothing for the fake-backed path the unit test suite actually
+    exercises.
+
+    Snapshots each fake store's private in-memory dict on entry and
+    restores it verbatim on any exception, mirroring what a real Postgres
+    ROLLBACK does for the DB-backed path. Stores that do not expose the
+    expected private attribute (e.g. `PgModelArtifactStore` used directly,
+    with no `AuditedWriter`, on an AUTOCOMMIT connection) are left alone —
+    that combination is deliberately NON-atomic and
+    `test_provenance_failure_persists_orphan_on_autocommit_wiring`
+    characterizes exactly that."""
+
+    artifact_store: ModelArtifactStore
+    provenance_store: ProvenanceRecorder
+    audit_log_store: AuditLogStore | None
+    model_store: ModelStore
+
+    def _snapshot(self) -> dict[str, object]:
+        return {
+            name: dict(state)
+            for name, state in (
+                ("artifact_records", getattr(self.artifact_store, "_records", None)),
+                ("artifact_bytes", getattr(self.artifact_store, "_bytes", None)),
+                (
+                    "provenance_records",
+                    getattr(self.provenance_store, "_records", None),
+                ),
+                ("models", getattr(self.model_store, "_models", None)),
+            )
+            if state is not None
+        }
+
+    def _restore(self, snapshot: dict[str, object]) -> None:
+        targets = (
+            ("artifact_records", self.artifact_store, "_records"),
+            ("artifact_bytes", self.artifact_store, "_bytes"),
+            ("provenance_records", self.provenance_store, "_records"),
+            ("models", self.model_store, "_models"),
+        )
+        for key, owner, attr in targets:
+            if key not in snapshot:
+                continue
+            live = getattr(owner, attr, None)
+            if live is None:
+                continue
+            live.clear()
+            live.update(cast("dict[object, object]", snapshot[key]))
+
+    @contextmanager
+    def transaction(self) -> Iterator[dict[str, object]]:
+        snapshot = self._snapshot()
+        try:
+            yield {
+                "artifact_store": self.artifact_store,
+                "provenance_store": self.provenance_store,
+                "audit_log_store": self.audit_log_store,
+                "model_store": self.model_store,
+            }
+        except Exception:
+            self._restore(snapshot)
+            raise
 
 
 def _derive_target_tenant_id(
@@ -180,8 +264,28 @@ def _register_or_verify_model(
         created_at=now,
     )
     model_store.register_model(record)
+    # Re-read the authoritative row rather than trusting `record` blindly:
+    # registration is `ON CONFLICT DO NOTHING` (idempotent), so a concurrent
+    # worker (or a mixed-version deployment) could have inserted a row with a
+    # DIFFERENT scope between the `fetch_model` above and this insert. A
+    # stale in-hand `record` would let the rest of this import proceed
+    # against an assumption the database no longer holds.
+    authoritative = model_store.fetch_model(model_id)
+    if authoritative is None:
+        raise ConfigurationError(
+            f"import_external_artifact: model {model_id} registration did not "
+            "produce a readable row"
+        )
+    if authoritative.artifact_scope != declared_scope:
+        raise ConfigurationError(
+            f"import_external_artifact: model {model_id} was registered "
+            f"concurrently with artifact_scope "
+            f"{authoritative.artifact_scope.value!r}, but the discovered "
+            f"model declares {declared_scope.value!r} — refusing to import "
+            "(registry drift)"
+        )
     log.info("model_import.model_registered", model_id=str(model_id))
-    return record
+    return authoritative
 
 
 def import_external_artifact(  # noqa: PLR0913
@@ -190,6 +294,9 @@ def import_external_artifact(  # noqa: PLR0913
     model_id: ModelId,
     artifact_bytes: bytes,
     trained_at: UtcDatetime,
+    training_period_start: UtcDatetime,
+    training_period_end: UtcDatetime,
+    expected_config_hash: str,
     clock: Callable[[], UtcDatetime],
     station_id: StationId | None = None,
     group_id: StationGroupId | None = None,
@@ -197,7 +304,6 @@ def import_external_artifact(  # noqa: PLR0913
     group_store: StationGroupStore | None = None,
     source_repository: str | None = None,
     source_commit: str | None = None,
-    expected_config_hash: str | None = None,
     imported_by: str | None = None,
     notes: str | None = None,
     principal: WritePrincipal | None = None,
@@ -210,9 +316,19 @@ def import_external_artifact(  # noqa: PLR0913
 ) -> ArtifactId:
     """`artifact_store`/`provenance_recorder`/`model_store` are the
     test/replay fallback (`audited_writer=None`) wiring — all three required
-    in that mode. With a real `audited_writer`, the transactional stores it
-    builds are used instead and any of the three, if given, are ignored (a
-    real production import always threads `audited_writer`)."""
+    in that mode; they are wrapped in an `_InMemoryAuditedWriter` so the
+    all-or-nothing guarantee holds there too. With a real `audited_writer`,
+    the transactional stores it builds are used instead and any of the
+    three, if given, are ignored (a real production import always threads
+    `audited_writer`).
+
+    `trained_at`, `training_period_start`/`training_period_end` (the REAL
+    external training window) and `imported_at` (`clock()`, below) are three
+    deliberately distinct values — none is ever synthesized from another.
+    `expected_config_hash` is REQUIRED: it is the digest carried by the
+    artifact's own import manifest, and it must match the model's declared
+    `config_hash` (also required, non-`None`) before anything is written —
+    there is no warning-only opt-out."""
     derived_tenant_id = _derive_target_tenant_id(
         station_id=station_id,
         group_id=group_id,
@@ -261,18 +377,20 @@ def import_external_artifact(  # noqa: PLR0913
 
     # Config/artifact mismatch — fail loudly, before any write (D1 ships the
     # shim config as package data while the artifact is the native weights
-    # file; the two can drift across a shim release).
+    # file; the two can drift across a shim release). Both the model's own
+    # declared config_hash and the caller-supplied expected_config_hash (the
+    # artifact manifest's digest) are REQUIRED — a missing value is refused,
+    # never silently skipped (Plan 157 T3 fixer round: a warning-only bypass
+    # let a mismatched artifact promote and later predict against the wrong
+    # packaged config).
     declared_config_hash = getattr(model, "config_hash", None)
-    if expected_config_hash is None:
-        log.warning(
-            "model_import.no_expected_config_hash",
-            model_id=str(model_id),
-            detail=(
-                "expected_config_hash was not supplied — importing WITHOUT "
-                "a config/artifact drift check"
-            ),
+    if declared_config_hash is None:
+        raise ConfigurationError(
+            f"import_external_artifact: model {model_id} does not declare a "
+            "config_hash — refusing to import without a config/artifact "
+            "drift check"
         )
-    elif declared_config_hash != expected_config_hash:
+    if declared_config_hash != expected_config_hash:
         raise ConfigurationError(
             f"import_external_artifact: config/artifact mismatch for "
             f"{model_id} — the model declares config_hash "
@@ -319,19 +437,21 @@ def import_external_artifact(  # noqa: PLR0913
             now=now,
         )
 
-        new_id, _sha256 = store.store_artifact(
+        stored = store.store_artifact(
             model_id=model_id,
             artifact_bytes=artifact_bytes,
-            training_period_start=trained_at,
-            training_period_end=trained_at,
+            training_period_start=training_period_start,
+            training_period_end=training_period_end,
             trained_at=trained_at,
             station_id=station_id,
             group_id=group_id,
             status=ModelArtifactStatus.TRAINING,
         )
-        record = store.fetch_artifact_record(new_id)
-        if record is not None:
-            artifact_path_for_cleanup = record.artifact_path
+        new_id = stored.artifact_id
+        # Store-owned, known atomically with the write — no separate
+        # (fallible) fetch_artifact_record query needed just to learn what
+        # to clean up on transaction failure (Plan 157 T3 fixer round).
+        artifact_path_for_cleanup = stored.artifact_path
 
         recorder.record(
             ModelArtifactProvenance(
@@ -359,36 +479,57 @@ def import_external_artifact(  # noqa: PLR0913
         )
         return new_id
 
+    writer: AuditedWriter | _InMemoryAuditedWriter
     if audited_writer is None:
-        # Test/replay wiring — no real transaction available. Fakes hold
-        # in-memory state that a SQL rollback could not undo anyway, so
-        # there is no atomicity to lose here; production always threads a
-        # real AuditedWriter (see flows/import_model_artifact.py).
+        # Test/replay wiring — no real AuditedWriter/Postgres transaction
+        # available. Wrapped in `_InMemoryAuditedWriter` so the
+        # all-or-nothing guarantee still holds: EVERY call goes through
+        # `.transaction()`, real or fake (Plan 157 T3 fixer round —
+        # production always threads a real AuditedWriter; see
+        # flows/import_model_artifact.py).
         if artifact_store is None or provenance_recorder is None or model_store is None:
             raise ConfigurationError(
                 "import_external_artifact: artifact_store, "
                 "provenance_recorder and model_store are all required when "
                 "audited_writer is not provided"
             )
-        return _run(
-            artifact_store,
-            provenance_recorder,
-            audit_log_store,
-            model_store,
-            audit_rejection=True,
+        writer = _InMemoryAuditedWriter(
+            artifact_store=artifact_store,
+            provenance_store=provenance_recorder,
+            audit_log_store=audit_log_store,
+            model_store=model_store,
         )
+    else:
+        writer = audited_writer
+
+    # `_InMemoryAuditedWriter` is not a real (non-AUTOCOMMIT) Postgres
+    # transaction, so `promote_artifact`'s defensive tenant-rejection audit
+    # row must still be written directly there — matching the historical
+    # "direct callers (fakes, no txn) leave it True" convention.
+    audit_rejection = not isinstance(writer, AuditedWriter)
 
     try:
-        with audited_writer.transaction() as stores:
+        with writer.transaction() as stores:
             new_id = _run(
                 cast("ModelArtifactStore", stores["artifact_store"]),
                 cast("ProvenanceRecorder", stores["provenance_store"]),
                 cast("AuditLogStore", stores["audit_log_store"]),
                 cast("ModelStore", stores["model_store"]),
-                audit_rejection=False,
+                audit_rejection=audit_rejection,
             )
     except Exception:
-        if artifact_path_for_cleanup is not None:
+        # Only unlink the file when the STORE's own record of it was also
+        # rolled back — a real AuditedWriter transaction always rolls back;
+        # `_InMemoryAuditedWriter` only rolls back stores it can snapshot
+        # (fakes exposing `_records`). A bare `PgModelArtifactStore` on a
+        # plain AUTOCOMMIT connection (no writer at all — the
+        # non-atomic characterization path) rolls back NEITHER: deleting the
+        # file there would leave the still-committed DB row pointing at a
+        # file that no longer exists, which is worse than the orphan itself.
+        db_state_rolled_back = isinstance(writer, AuditedWriter) or hasattr(
+            writer.artifact_store, "_records"
+        )
+        if artifact_path_for_cleanup is not None and db_state_rolled_back:
             Path(artifact_path_for_cleanup).unlink(missing_ok=True)
             log.warning(
                 "model_import.rolled_back_orphan_file_deleted",

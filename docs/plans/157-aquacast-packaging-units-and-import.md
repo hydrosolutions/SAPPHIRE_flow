@@ -259,6 +259,17 @@ T3 is independent of the shim and can run in parallel. T2 needs something to ins
 multi-resolution guard). This plan should need **no** change to it — the unit work lives in the shim
 by design. If a task proposes editing it, stop and coordinate.
 
+**Actual outcome (T3 fixer round, 2026-08-13):** one small, additive change landed anyway — a
+`config_hash` property on `ForecastInterfaceAdapter` (`adapters/forecast_interface.py:462-473`)
+forwarding the wrapped FI model's own `config_hash` attribute, which the adapter otherwise silently
+dropped (no `__getattr__` passthrough), disabling T3's config/artifact drift check for every real FI
+model. This is outside the unit-conversion logic the coordination note above was worried about, adds
+no new surface to the multi-resolution guard or T2's accessors, and is proven necessary by
+`tests/unit/adapters/test_forecast_interface_adapter.py::test_config_hash_is_forwarded_from_the_wrapped_fi_model`
+and its sibling (both fail without it). Checked against `main` at fixer time — no active conflict with
+Plans 151/156's own edits to this file. Noted here per the coordination rule, after the fact rather
+than before, since the need surfaced mid-fix rather than at planning time.
+
 ## References
 - `docs/plans/152-aquacast-pooled-model-integration.md` — parent; artifact contract and decisions
   D1/D3/D10.
