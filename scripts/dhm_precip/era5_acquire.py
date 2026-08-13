@@ -4,6 +4,11 @@ validate -> checksum -> `os.replace` -> atomic manifest update. No
 transformation whatsoever (D3).
 """
 
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false
+# pyright: reportUnknownArgumentType=false
+# Precedent: src/sapphire_flow/adapters/meteoswiss_nwp.py:1 — xarray/cdsapi
+# ship partial type stubs; the same three rules are relaxed repo-wide for
+# every adapter that touches them.
 from __future__ import annotations
 
 import os
@@ -25,6 +30,7 @@ from scripts.dhm_precip.era5_manifest import (
     OperatorProvenance,
     RawWindowRecord,
     checksum_file,
+    manifest_path_for,
     publish_atomic,
     raw_artifact_path,
     raw_dir,
@@ -46,6 +52,7 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     import numpy as np
+    import requests
 
 log = structlog.get_logger(__name__)
 
@@ -143,7 +150,18 @@ def classify_cds_exception(
 @dataclass(frozen=True, kw_only=True, slots=True)
 class RealCdsClient:
     """Thin wrapper over `cdsapi.Client()`. Constructed and exception-mapped
-    here so the retry/validation driver never imports `cdsapi` directly."""
+    here so the retry/validation driver never imports `cdsapi` directly.
+
+    `session` is test-only (4a's credential-redaction contract, D12): it lets
+    a test construct the REAL `cdsapi.Client` fully offline by injecting a
+    session whose HTTP verbs fail locally instead of touching the network —
+    `cdsapi.Client.__init__` never calls the session itself, but `.retrieve()`
+    does, so this is the only seam that can exercise the real client's own
+    error-handling/redaction path without a live CDS connection. Production
+    never sets it: `None` reproduces the exact `cdsapi.Client()` call this
+    class always made."""
+
+    session: requests.Session | None = None
 
     def retrieve_to_path(
         self, *, dataset: str, payload: Mapping[str, object], target: Path
@@ -151,7 +169,11 @@ class RealCdsClient:
         import cdsapi  # dev-only (D13); imported lazily so this module loads
 
         try:
-            client = cdsapi.Client()
+            client = (
+                cdsapi.Client(session=self.session)
+                if self.session is not None
+                else cdsapi.Client()
+            )
         except Exception as exc:  # noqa: BLE001 - reclassified into our typed hierarchy
             raise classify_cds_exception(exc) from exc
         try:
@@ -246,7 +268,7 @@ def _validate_variable(
         (int(ts.astype("datetime64[Y]").astype(int)) + 1970, *_month_day_hour(ts))
         for ts in valid_time
     }
-    if observed != expected:
+    if frozenset(observed) != expected:
         raise Era5ValidationError(
             f"temporal coverage mismatch: {len(observed)} observed stamps vs "
             f"{len(expected)} expected for window {window.window_id}"
@@ -272,7 +294,7 @@ def acquire_window(
     payload = build_request_payload(window, spec)
     identity = raw_request_identity(spec.dataset, payload)
     final_path = raw_artifact_path(window.window_id, data_root)
-    manifest_path = data_root / "era5_land" / "era5_land_manifest.json"
+    manifest_path = manifest_path_for(data_root)
 
     manifest = read_manifest(manifest_path)
     if manifest is None:

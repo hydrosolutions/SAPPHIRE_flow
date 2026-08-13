@@ -213,6 +213,16 @@ current endpoint, dataset name and licence-acceptance step rather than assuming.
 **Exit:** deaccumulated hourly ERA5-Land precipitation over the study box, stored locally, regenerable
 from a committed request script, with the CDS dataset identifier and request parameters recorded.
 
+**Code COMPLETE 2026-08-13 (Plan 171)**: `scripts/dhm_precip/era5_request.py` (D2 request builder, the
+observed-payload literal), `era5_manifest.py` (D5 identities, atomic writer, D11 provenance), the
+`era5_acquire.py`/`era5_transform.py` drivers, `era5_deaccumulate.py` (D6's accumulation-day rule,
+red-first against a naive-global-diff candidate), and the `acquire_era5.py` CLI (D14 gate: 92 unit
+tests, `ruff check`/`format` clean, `pyright scripts/dhm_precip/` 0 errors, `pyright src/` ratchet
+clean). **Pending the operator steps that follow the code (2b, 4b)**: the real October-2021 sample
+acquisition and the full 2020–2025 acquisition + transform — both require a credentialed human and are
+explicitly out of a subagent's scope (plan `## Human prerequisites`); P0 (CDS account + licence
+acceptance) is done, and `data/dhm_precip/era5_land_provenance.json` (D15) is in place.
+
 ### M-A5 · Point extraction at station locations
 **Depends: M-D2, M-A4.** *(M-A4 needs no coordinates; only the extraction does.)*
 

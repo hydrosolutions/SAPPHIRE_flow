@@ -37,29 +37,42 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import structlog
+# Bootstrap: running this file directly (`python scripts/dhm_precip/acquire_era5.py`,
+# per the Usage line above) puts this file's own directory at sys.path[0], not
+# the repo root — `scripts.dhm_precip.*` would not resolve. Insert the repo
+# root ahead of it so the package imports below work either way (direct
+# script execution or `-m scripts.dhm_precip.acquire_era5`). Precedent:
+# scripts/dhm_precip/run.py:44.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-from sapphire_flow.logging import configure_cli_logging
-from scripts.dhm_precip.era5_acquire import (
+import structlog  # noqa: E402
+
+from sapphire_flow.logging import configure_cli_logging  # noqa: E402
+from scripts.dhm_precip.era5_acquire import (  # noqa: E402
     RealCdsClient,
     acquire_window,
     redact_secrets,
 )
-from scripts.dhm_precip.era5_errors import (
+from scripts.dhm_precip.era5_errors import (  # noqa: E402
     Era5AcquisitionError,
     Era5CredentialsError,
     Era5RequestFailedError,
     Era5StorageError,
     Era5TransformFailedError,
 )
-from scripts.dhm_precip.era5_manifest import DEFAULT_DATA_ROOT, load_operator_provenance
-from scripts.dhm_precip.era5_request import (
+from scripts.dhm_precip.era5_manifest import (  # noqa: E402
+    DEFAULT_DATA_ROOT,
+    load_operator_provenance,
+)
+from scripts.dhm_precip.era5_request import (  # noqa: E402
     ALL_ACQUISITION_WINDOWS,
     DEFAULT_REQUEST_SPEC,
     STUDY_YEARS,
     parse_window_arg,
 )
-from scripts.dhm_precip.era5_transform import transform_year
+from scripts.dhm_precip.era5_transform import transform_year  # noqa: E402
 
 if TYPE_CHECKING:
     from collections.abc import Callable

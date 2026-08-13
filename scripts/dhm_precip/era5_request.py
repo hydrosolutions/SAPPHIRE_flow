@@ -18,6 +18,7 @@ from __future__ import annotations
 import calendar
 from dataclasses import dataclass
 from datetime import date
+from typing import cast
 
 from scripts.dhm_precip.era5_errors import NonExpressibleWindowError
 
@@ -217,8 +218,10 @@ def payload_implied_valid_time_stamps(
     return frozenset(stamps)
 
 
-def _as_list(value: object) -> list[object]:
-    return list(value) if isinstance(value, list) else [value]
+def _as_list(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in cast("list[object]", value)]
+    return [str(value)]
 
 
 def parse_window_arg(text: str) -> AcquisitionWindow:

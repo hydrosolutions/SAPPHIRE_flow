@@ -172,8 +172,12 @@ class Era5ProvenanceManifest:
     dataset: str
     client_package_version: str
     operator_provenance: OperatorProvenance
-    raw_windows: dict[str, RawWindowRecord] = field(default_factory=dict)
-    transformed_years: dict[str, TransformYearRecord] = field(default_factory=dict)
+    raw_windows: dict[str, RawWindowRecord] = field(
+        default_factory=dict[str, "RawWindowRecord"]
+    )
+    transformed_years: dict[str, TransformYearRecord] = field(
+        default_factory=dict[str, "TransformYearRecord"]
+    )
 
 
 def with_raw_window(
@@ -306,10 +310,15 @@ def _to_domain(model: _Era5ProvenanceManifestModel) -> Era5ProvenanceManifest:
         },
         transformed_years={
             key: TransformYearRecord(
-                **{
-                    **record.model_dump(exclude={"packing"}),
-                    "packing": PackingAccounting(**record.packing.model_dump()),
-                }
+                product_year=record.product_year,
+                transform_identity=record.transform_identity,
+                sha256=record.sha256,
+                accumulation_convention=record.accumulation_convention,
+                units_conversion=record.units_conversion,
+                packing=PackingAccounting(**record.packing.model_dump()),
+                non_finite_cell_count=record.non_finite_cell_count,
+                dropped_boundary_stamp=record.dropped_boundary_stamp,
+                transformed_at=record.transformed_at,
             )
             for key, record in model.transformed_years.items()
         },

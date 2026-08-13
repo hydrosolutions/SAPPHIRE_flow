@@ -8,6 +8,11 @@ the red-first proof that a naive global diff violates the post-conditions
 asserted here.
 """
 
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false
+# pyright: reportUnknownArgumentType=false
+# Precedent: src/sapphire_flow/adapters/meteoswiss_nwp.py:1 — xarray ships
+# partial type stubs; the same three rules are relaxed repo-wide for every
+# adapter that touches it.
 from __future__ import annotations
 
 from dataclasses import dataclass

@@ -5,6 +5,11 @@ validate the D9 schema, and updates the manifest atomically. Never touches
 CDS (D3): fully re-runnable against local raw files.
 """
 
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false
+# pyright: reportUnknownArgumentType=false
+# Precedent: src/sapphire_flow/adapters/meteoswiss_nwp.py:1 — xarray ships
+# partial type stubs; the same three rules are relaxed repo-wide for every
+# adapter that touches it.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
