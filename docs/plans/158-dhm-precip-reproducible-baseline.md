@@ -134,8 +134,10 @@ Findings expectations.
   (`scripts/dhm_precip/expectations.toml`), enumerating every statistic with `id`, a **source-specific
   provenance field** — `vision_ref` (`file:line`) when `source = vision-findings`, `plan_ref` when
   `source = plan-158` (the D12 geometry class) — `statistic`, `value`/`range`, `unit`, `view`, `grain`, `axis_status`,
-  `population`, `quoted_precision`, and a `method` table (D8b). Derived solely from the vision's
-  Findings; lands in Phase 1 before any statistic is implemented.
+  `population`, `quoted_precision`, and a `method` table (D8b). **`vision-findings` entries derive
+  solely from the vision's Findings** — no statistic is invented to be reproduced; the `plan-158`
+  geometry class (D12) is the sole exception and is enumerated there. Lands in Phase 1, before any
+  statistic is implemented.
 - **D8b — The `method` table pins choices that silently move a quoted digit.** Mandatory where
   applicable, rejected by the manifest test if omitted: `quantile_definition`, `zero_policy`,
   `wet_threshold_side` (`>` vs `>=` at 0.2 mm/h), `modal_binning`, `pairwise_missing_policy`,
