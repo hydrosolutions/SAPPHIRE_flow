@@ -122,8 +122,18 @@ def resolve_synthetic_time_step(
     ``ModelAssignment.time_step`` selecting per station, and
     ``build_superset_requirements`` legitimately unions into multi-element
     sets. Raising outlawed a supported shape that Plan 153 would then have to
-    re-legalise, for no benefit: every caller here is synthesising smoke-test
-    data and needs only *a* valid step, not *the* operational one.
+    re-legalise, for no benefit.
+
+    CALLER CAVEAT (independent check, 2026-08-13): three callers synthesise
+    smoke-test data and need only *a* valid step, but two do NOT —
+    ``onboarding.py:809`` writes the result as the **operational**
+    ``ModelAssignment.time_step`` via ``create_station_assignment``, and
+    ``onboarding.py:969`` drives ``determine_onboarding_scope``'s training
+    window. Both are safe today (every native model, and post-Plan-156 every
+    FI model, declares exactly one step) and both are strictly better than
+    the ``next(iter(...))`` they replaced — but a future multi-step model
+    would have its assignment pinned to the finest declared step. Those call
+    sites should take the step from the assignment once one exists.
 
     Empty stays fatal — there is genuinely nothing to resolve.
     """

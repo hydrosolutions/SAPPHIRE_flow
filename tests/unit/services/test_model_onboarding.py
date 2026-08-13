@@ -405,10 +405,16 @@ class TestSmokeTestModel:
                 spatial_input_type=SpatialRepresentation.POINT,
             )
 
-        # Repeat: a non-deterministic resolution would make this flaky, which
-        # is the defect the helper exists to prevent.
-        for _ in range(5):
-            smoke_test_model(model=MultiTimeStepModel(), rng=random.Random(7))
+        smoke_test_model(model=MultiTimeStepModel(), rng=random.Random(7))
+
+        # The smoke test itself passes at ANY step, so running it repeatedly
+        # would NOT distinguish smallest-step from ``next(iter(...))``
+        # (independent check, 2026-08-13). Assert the resolution directly —
+        # note ``next(iter(frozenset({1h, 24h})))`` yields 24h, so requiring
+        # 1h genuinely gates the smallest-step rule rather than restating it.
+        assert resolve_synthetic_time_step(
+            MultiTimeStepModel.data_requirements, context="smoke"
+        ) == timedelta(hours=1)
 
     def test_fails_for_broken_model(self) -> None:
         class BrokenModel(FakeStationForecastModel):

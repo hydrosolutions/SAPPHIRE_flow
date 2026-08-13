@@ -160,8 +160,10 @@ against the code before anything was folded. Four fixes followed:
 1. **BLOCKER — guard ordering.** The delivery guard ran *after* the flattened NaN gate in `predict`
    and `predict_batch`, so a multi-branch requirement surfaced as a misleading `ModelOutputError`
    ("max_nan exceeded") or `ConfigurationError` ("missing `<past-only-branch variable>`") instead of
-   `UnsupportedModelRequirementError`. It is now the **first statement** in all three delivery
-   entry points. The old test was named `..._at_predict_time` but called only `train()` — the one
+   `UnsupportedModelRequirementError`. It now runs **before any frame access, NaN gate or model
+   call** in all three delivery entry points (the `artifact_scope` dispatch
+   check legitimately precedes it — a programming error outranks a
+   model-shape error). The old test was named `..._at_predict_time` but called only `train()` — the one
    entry point where the ordering happened to work. **Soundness proven** by disabling the guard and
    reproducing the exact wrong error.
 2. **MAJOR — the registry invariant only half-held.** Multi-spatial and past-only/no-future

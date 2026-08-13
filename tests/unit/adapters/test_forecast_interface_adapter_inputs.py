@@ -506,6 +506,20 @@ def test_past_only_second_branch_rejected_at_every_delivery_entry_point() -> Non
     with pytest.raises(UnsupportedModelRequirementError, match="time_step branch"):
         station_adapter.predict(b"artifact", _station_model_inputs(), random.Random(1))
 
+    # predict_batch() — the GROUP path, and the entry point Plan 152's
+    # aquacast model will actually use. Added after an independent check
+    # (2026-08-13) caught that this test CLAIMED to cover "every delivery
+    # entry point" while asserting only two of three — the same
+    # name-promises-more-than-body defect that let the original blocker
+    # through.
+    group_adapter = adapter.with_station_code_resolver(
+        lambda sid: {_SID_A: "AARE", _SID_B: "RHINE"}[sid]
+    )
+    with pytest.raises(UnsupportedModelRequirementError, match="time_step branch"):
+        group_adapter.predict_batch(
+            b"artifact", _group_model_inputs(), random.Random(1)
+        )
+
     # The fake implements no `predict`, so reaching the model at all would
     # raise AttributeError rather than the guard's error — the assertions
     # above therefore also prove the model was never invoked.
