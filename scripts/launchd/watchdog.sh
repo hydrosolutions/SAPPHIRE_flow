@@ -14,8 +14,12 @@
 # WorkingDirectory) resolves the relative ./secrets/health_probe_token to the
 # correct host secret file. See docs/standards/cicd.md § Access-token pepper +
 # probe-token rotation.
+#
+# Plan 158 D3/T1: --deadman-url-path is passed EXPLICITLY too, same
+# convention — ./secrets/deadman_url (missing/empty -> feature off).
 
 set -e
 cd /Users/sapphire/SAPPHIRE_flow
 exec uv run --no-sync python -m sapphire_flow.ops.watchdog \
-    --probe-token-path ./secrets/health_probe_token
+    --probe-token-path ./secrets/health_probe_token \
+    --deadman-url-path ./secrets/deadman_url

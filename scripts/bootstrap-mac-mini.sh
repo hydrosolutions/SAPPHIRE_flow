@@ -98,13 +98,30 @@ CAMELS_CH_DIR="${HOME}/camels-ch"
 if [ "${UNINSTALL}" -eq 1 ]; then
     hdr "Uninstalling SAPPHIRE Mac-mini stack"
     UID_VAL="$(id -u)"
-    for label in ch.hydrosolutions.sapphire ch.hydrosolutions.sapphire-watchdog; do
-        plist="${HOME}/Library/LaunchAgents/${label}.plist"
-        if [ -f "${plist}" ]; then
-            log "bootout ${label}"
+    # Mirrors scripts/launchd/install-launchd.sh's PLISTS array — keep the
+    # two lists in sync. Plan 158 T2: uninstall must cover EVERY installed
+    # label (the docker-prune job was previously missing here entirely) and
+    # boot out BOTH launchd domains, since D2 moves the watchdog into
+    # "system" (a LaunchDaemon survives what a plain gui/<uid> bootout does
+    # not touch).
+    for label in ch.hydrosolutions.sapphire ch.hydrosolutions.sapphire-watchdog ch.hydrosolutions.sapphire-docker-prune; do
+        agent_plist="${HOME}/Library/LaunchAgents/${label}.plist"
+        daemon_plist="/Library/LaunchDaemons/${label}.plist"
+        if [ -f "${agent_plist}" ]; then
+            log "bootout gui/${UID_VAL}/${label}"
             run launchctl bootout "gui/${UID_VAL}/${label}" 2>/dev/null || true
         else
-            log "no plist at ${plist} (skipping)"
+            log "no agent plist at ${agent_plist} (skipping gui bootout)"
+        fi
+        if [ -f "${daemon_plist}" ]; then
+            log "bootout system/${label}"
+            run launchctl bootout "system/${label}" 2>/dev/null || true
+            if [ "$(id -u)" -ne 0 ] && [ "${DRY_RUN}" -eq 0 ]; then
+                warn "system/${label} bootout may require root — if it is"
+                warn "  still loaded, re-run: sudo launchctl bootout system/${label}"
+            fi
+        else
+            log "no daemon plist at ${daemon_plist} (skipping system bootout)"
         fi
     done
     log "docker compose down"
@@ -314,6 +331,17 @@ FAILED_STEP="LaunchAgent install"
 hdr "11. LaunchAgent install"
 run "${REPO_ROOT}/scripts/launchd/install-launchd.sh"
 success "LaunchAgents installed"
+# Plan 158 D2/T2: ch.hydrosolutions.sapphire-watchdog is now a LaunchDaemon
+# (system domain) — this unprivileged run only installs the two
+# agent-domain jobs; the installer ITSELF refuses to escalate privileges
+# for the daemon, so the watchdog needs a separate, explicit, one-time
+# privileged step (see docs/plans/158-session-independent-operational-stack.md
+# T3 for the host-cutover runbook):
+if [ "$(id -u)" -ne 0 ]; then
+    warn "ch.hydrosolutions.sapphire-watchdog (LaunchDaemon) was NOT installed by"
+    warn "  the step above — it needs a separate, one-time privileged step:"
+    warn "    sudo ${REPO_ROOT}/scripts/launchd/install-launchd.sh --label ch.hydrosolutions.sapphire-watchdog"
+fi
 
 # --- Step 12: final report ---------------------------------------------------
 hdr "12. Summary"

@@ -169,7 +169,10 @@ token at boot.
 4. **Repo path check** — warns if not at `/Users/sapphire/SAPPHIRE_flow`.
 5. **Secrets** — `mkdir -p secrets && chmod 700`; generates
    `secrets/db_password` with `openssl rand -base64 32` if absent;
-   reports whether `secrets/slack_webhook_url` is configured.
+   reports whether `secrets/slack_webhook_url` is configured. (Plan 158
+   D3/T1: `secrets/deadman_url`, the off-box dead-man's-switch ping URL,
+   is staged the same way but not yet checked by this script — see
+   § LaunchAgents / LaunchDaemons below.)
 6. **USB disk** — verifies
    `/Volumes/sapphire-backup/pg_dumps/.sapphire-backup-volume` exists.
 7. **CAMELS-CH** — verifies `~/camels-ch` exists and is non-empty.
@@ -178,8 +181,10 @@ token at boot.
    docker-compose.macmini.yml up -d`.
 10. **Health wait** — polls `http://localhost:8000/api/v1/health`
     every 5 s for up to 300 s; breaks when `.status == "ok"`.
-11. **LaunchAgent install** — copies the two plists to
-    `~/Library/LaunchAgents/` and `launchctl bootstrap`s them.
+11. **LaunchAgent install** — copies the agent-domain plists to
+    `~/Library/LaunchAgents/` and `launchctl bootstrap`s them. (Plan
+    158 D2/T2: the watchdog is now a LaunchDaemon — this unprivileged
+    step skips it with a warning; see § LaunchAgents / LaunchDaemons.)
 12. **Summary** — prints stack URLs, health status, LaunchAgent
     listing, next steps.
 
@@ -225,9 +230,28 @@ The first-run helper install needs admin rights — if `sapphire` is a
 Standard user, grant it temporary admin (System Settings → Users &
 Groups), complete Docker Desktop setup, then demote if desired.
 
-## LaunchAgents
+## LaunchAgents / LaunchDaemons
 
-Two agents, user-context (`gui/$(id -u)`):
+**Plan 158 D2/D2b (T2): the three jobs are no longer all one domain.**
+`scripts/launchd/install-launchd.sh` now installs each label into the launchd
+*domain* its `domain_for_label()` table assigns:
+
+| Label | Domain | Why |
+|---|---|---|
+| `ch.hydrosolutions.sapphire-watchdog` | **daemon** (`/Library/LaunchDaemons`, system-wide, requires root) | Moved first — it is the piece that must report an outage it does not itself cause (a `gui/$(id -u)` agent dies with the session, exactly the 2026-07-29 outage). |
+| `ch.hydrosolutions.sapphire` | agent (`gui/$(id -u)`) | Still session-scoped — full engine independence is Plan 159. |
+| `ch.hydrosolutions.sapphire-docker-prune` | agent (`gui/$(id -u)`) | Same; conversion is a separate host cutover (D5/T5). |
+
+A plain (non-root) installer run installs the two agent jobs and **skips the
+daemon with a warning** — it never escalates privileges itself. Install (or
+re-install) the watchdog daemon explicitly:
+
+```bash
+sudo ./scripts/launchd/install-launchd.sh --label ch.hydrosolutions.sapphire-watchdog
+```
+
+`--dry-run` previews exactly what every label would do (including the daemon
+path and this privileged step) without touching `plutil`/`launchctl`.
 
 - **`ch.hydrosolutions.sapphire`** — runs
   `scripts/launchd/start-sapphire.sh` at login. The wrapper waits up
@@ -243,7 +267,15 @@ Two agents, user-context (`gui/$(id -u)`):
   `/api/v1/health`, checks `pg_dumps/*.dump` mtimes against a 26 h
   threshold, posts Slack alerts with hysteresis (1st failure, every
   6th thereafter, and recovery). Without `secrets/slack_webhook_url`
-  the watchdog runs log-only.
+  the watchdog runs log-only. **Plan 158 D3/T1**: it also pings an
+  off-box dead-man's-switch at the end of every tick
+  (`secrets/deadman_url`, missing/empty → feature off) — a ping means
+  "the tick completed", not "the stack is healthy"; an unhealthy
+  stack still pings, because Slack (above) carries the health signal
+  and the dead-man's only distinct signal is *silence* (a watchdog
+  that dies before it can report anything). **Plan 158 D14**: the
+  same tick alerts on the same Slack path if the Data volume drops
+  below 20 GiB free.
 
 ### Watchdog log rotation (manual, one-time)
 
@@ -445,6 +477,22 @@ launchctl bootout gui/$(id -u)/ch.hydrosolutions.sapphire \
 ./scripts/launchd/install-launchd.sh
 ```
 
+### Watchdog (LaunchDaemon) isn't firing
+
+Plan 158 D2: the watchdog lives in the **system** domain, not `gui/$(id -u)`:
+
+```bash
+sudo launchctl print system/ch.hydrosolutions.sapphire-watchdog | head -40
+tail -50 ~/Library/Logs/sapphire-watchdog.log
+```
+
+To force a reload:
+
+```bash
+sudo launchctl bootout system/ch.hydrosolutions.sapphire-watchdog
+sudo ./scripts/launchd/install-launchd.sh --label ch.hydrosolutions.sapphire-watchdog
+```
+
 ### Watchdog isn't alerting
 
 ```bash
@@ -457,9 +505,14 @@ Look for `pipeline.health_check_completed` every 5 min. If you see
 ```bash
 echo 'https://hooks.slack.com/services/...' > secrets/slack_webhook_url
 chmod 600 secrets/slack_webhook_url
-launchctl kickstart -k gui/$(id -u)/ch.hydrosolutions.sapphire-watchdog
+sudo launchctl kickstart -k system/ch.hydrosolutions.sapphire-watchdog
 tail -f ~/Library/Logs/sapphire-watchdog.log
 ```
+
+`watchdog.deadman_skipped_no_url` (Plan 158 D3) means
+`secrets/deadman_url` isn't staged — the dead-man's-switch ping is off
+(does not affect Slack). `watchdog.disk_space_low_alert` (Plan 158
+D14) means the Data volume dropped below 20 GiB free.
 
 You can simulate a failure by stopping the API:
 
@@ -511,11 +564,16 @@ VERSION=v0.1.410 ./scripts/bootstrap-mac-mini.sh
 ./scripts/bootstrap-mac-mini.sh --uninstall
 ```
 
-Boots out both LaunchAgents and runs `docker compose down`. Leaves
-secrets and LaunchAgent plist files in place. For a full wipe:
+Boots out all three jobs (agent AND daemon domain, Plan 158 T2) and
+runs `docker compose down`. Leaves secrets and plist files in place.
+**The watchdog's `system/` daemon registration may require root to
+boot out** — the script attempts it and warns if it can't confirm; if
+still loaded, run `sudo launchctl bootout system/ch.hydrosolutions.sapphire-watchdog`.
+For a full wipe:
 
 ```bash
 rm -f ~/Library/LaunchAgents/ch.hydrosolutions.sapphire*.plist
+sudo rm -f /Library/LaunchDaemons/ch.hydrosolutions.sapphire-watchdog.plist
 rm -rf ~/SAPPHIRE_flow/secrets
 ```
 

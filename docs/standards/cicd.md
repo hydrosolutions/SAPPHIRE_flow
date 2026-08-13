@@ -676,7 +676,22 @@ build remains a fallback.
 ### Registration
 
 Run `scripts/launchd/install-launchd.sh` once (or re-run after plist changes) to
-register all three launchd agents — the installer is idempotent.
+register the launchd jobs — the installer is idempotent.
+
+**Plan 158 D2/D2b (T2): the installer has a per-label launchd *domain*.**
+`ch.hydrosolutions.sapphire-watchdog` is `daemon` (system-wide, `/Library/LaunchDaemons`,
+survives logout/reboot, requires root); `ch.hydrosolutions.sapphire` and
+`ch.hydrosolutions.sapphire-docker-prune` stay `agent` (`gui/$(id -u)`, dies at logout) —
+their conversion is a separate host cutover (D5/T5). A plain (non-root) run of the
+installer installs the two agent jobs and **skips the daemon job with a warning** — it
+never escalates privileges itself. To install (or re-install) the watchdog daemon:
+
+```bash
+sudo ./scripts/launchd/install-launchd.sh --label ch.hydrosolutions.sapphire-watchdog
+```
+
+`--dry-run` prints exactly what every label would do (including the daemon path and the
+privileged step) without calling `plutil` or `launchctl` — safe to run anywhere.
 
 ## Host-level watchdog
 
@@ -688,6 +703,30 @@ Independent of Docker and Prefect. A cron job on the host VM:
 ```
 
 `alert.sh` sends a notification (email or SMS) directly using system tools (`sendmail`, `curl` to SMS API). This is the last-resort alerting mechanism — it works even when Docker, Prefect, and the application are all down (as long as the VM is up). See architecture-context.md § Backup and disaster recovery for the health endpoint specification.
+
+### Off-box dead-man's-switch + free-disk-space check (Plan 158 D3/D14, T1)
+
+The watchdog can itself go silent (its host LaunchAgent/LaunchDaemon dies with the
+session, or the process crashes before it can alert) — this is exactly what happened in
+the 2026-07-29 outage (§ Plan 158). A ping to an external dead-man's-switch service fires
+at the **end of every tick**, after state is persisted: a ping means "the tick
+completed", **not** "the stack is healthy" — Slack (above) is the channel for *detected*
+failure, the dead-man is the channel for *undetected* failure (a watchdog that dies
+before it can report anything). Configured via `--deadman-url-path` (default
+`./secrets/deadman_url`, HOST secret, chmod 600, same missing/empty/unreadable → feature
+off contract as `slack_webhook_url`/`health_probe_token`). An exception anywhere earlier
+in the tick skips the ping and propagates to `main()`'s `except Exception`, which returns
+2 without pinging — an internal watchdog failure therefore correctly reads as silence.
+Ping failures (including timeout, 5 s) are logged and non-fatal.
+
+The same tick also checks free disk space on the Data volume (`--disk-path`, default
+`/`; threshold 20 GiB free, not CLI-configurable) and alerts on the same Slack path as
+every other check — a cheap addition folded into the same change (the Data volume sat at
+95% used when this was added).
+
+See `docs/plans/158-session-independent-operational-stack.md` D3/D14/T1 and
+`docs/deployment/mac-mini-staging.md` § LaunchAgents / LaunchDaemons for the host-secret
+staging + verification runbook.
 
 > The launchd-based mac-mini watchdog (`sapphire_flow.ops.watchdog`, § Host-level watchdog operational
 > details elsewhere in this doc / `docs/operations/`) is the REALIZED implementation — the cron

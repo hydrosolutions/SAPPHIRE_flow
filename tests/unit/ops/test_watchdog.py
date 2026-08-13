@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path  # noqa: TC003 — used at runtime in helper
 
+import httpx
 import pytest
 
 from sapphire_flow.ops.watchdog import (
@@ -18,10 +19,15 @@ from sapphire_flow.ops.watchdog import (
     BAFU_OBS_STALE_THRESHOLD,
     BAFU_STALE_THRESHOLD,
     BafuFreshnessResult,
+    DiskSpaceResult,
     HealthProbeResult,
     WatchdogConfig,
     WatchdogState,
+    default_deadman_poster,
+    main,
     newest_backup_mtime,
+    probe_disk_free,
+    read_deadman_url,
     read_probe_token,
     read_slack_webhook,
     run_once,
@@ -107,6 +113,16 @@ class _SlackRecorder:
         return self.succeed
 
 
+class _DeadmanRecorder:
+    def __init__(self, succeed: bool = True) -> None:
+        self.calls: list[str] = []
+        self.succeed = succeed
+
+    def __call__(self, url: str) -> bool:
+        self.calls.append(url)
+        return self.succeed
+
+
 def _make_fresh_backup(tmp: Path, *, hours_ago: float) -> Path:
     path = tmp / "pg_dumps"
     path.mkdir(parents=True, exist_ok=True)
@@ -122,11 +138,16 @@ def _make_fresh_backup(tmp: Path, *, hours_ago: float) -> Path:
 def _config(tmp: Path, *, backup_dir: Path | None = None) -> WatchdogConfig:
     state_path = tmp / "state.json"
     slack_path = tmp / "slack_webhook_url"
+    # Deliberately not created — mirrors slack_path: every pre-existing test
+    # in this file gets the missing-secret "feature off" path by default, so
+    # adding the dead-man ping (Plan 158 D3) changes none of their behaviour.
+    deadman_url_path = tmp / "deadman_url"
     return WatchdogConfig(
         health_url="http://localhost:8000/api/v1/health",
         backup_dir=backup_dir or (tmp / "pg_dumps_missing"),
         state_path=state_path,
         slack_path=slack_path,
+        deadman_url_path=deadman_url_path,
     )
 
 
@@ -1025,6 +1046,307 @@ class TestWatchdogStateBafuObsBackwardCompat:
         assert s.consecutive_bafu_obs_failures == 0
         assert s.consecutive_bafu_failures == 1
         assert s.consecutive_health_failures == 2
+
+
+# ---------- read_deadman_url (Plan 158 D3) ------------------------------------
+
+
+class TestReadDeadmanUrl:
+    """Mirrors TestReadSlackWebhook/TestReadProbeToken — same
+    missing/empty/unreadable -> None contract."""
+
+    def test_missing_file_returns_none(self, tmp_path: Path) -> None:
+        assert read_deadman_url(tmp_path / "nope") is None
+
+    def test_empty_file_returns_none(self, tmp_path: Path) -> None:
+        p = tmp_path / "deadman_url"
+        p.write_text("")
+        assert read_deadman_url(p) is None
+
+    def test_whitespace_only_returns_none(self, tmp_path: Path) -> None:
+        p = tmp_path / "deadman_url"
+        p.write_text("   \n  \n")
+        assert read_deadman_url(p) is None
+
+    def test_populated_returns_stripped(self, tmp_path: Path) -> None:
+        p = tmp_path / "deadman_url"
+        p.write_text("https://hc-ping.com/abc-123\n")
+        assert read_deadman_url(p) == "https://hc-ping.com/abc-123"
+
+    def test_unreadable_file_returns_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        p = tmp_path / "deadman_url"
+        p.write_text("https://hc-ping.com/abc-123\n")
+
+        def _raise(self: Path, *args: object, **kwargs: object) -> str:
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(Path, "read_text", _raise)
+        assert read_deadman_url(p) is None
+
+
+# ---------- default_deadman_poster (Plan 158 D3) -------------------------------
+
+
+class TestDefaultDeadmanPoster:
+    def test_timeout_returns_false_without_raising(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _raise_timeout(*args: object, **kwargs: object) -> httpx.Response:
+            raise httpx.TimeoutException("timed out")
+
+        monkeypatch.setattr(httpx, "post", _raise_timeout)
+        assert default_deadman_poster("https://hc-ping.com/abc-123") is False
+
+    def test_non_2xx_returns_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _fake_post(*args: object, **kwargs: object) -> httpx.Response:
+            return httpx.Response(500, request=httpx.Request("POST", args[0]))
+
+        monkeypatch.setattr(httpx, "post", _fake_post)
+        assert default_deadman_poster("https://hc-ping.com/abc-123") is False
+
+
+# ---------- run_once: dead-man's-switch ping (Plan 158 D3, T1) -----------------
+
+
+class TestRunOnceDeadman:
+    def test_healthy_stack_pings(self, tmp_path: Path) -> None:
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.deadman_url_path.write_text("https://hc-ping.com/abc-123")
+        deadman = _DeadmanRecorder()
+
+        run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=_SlackRecorder(),
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            deadman_poster=deadman,
+        )
+
+        assert deadman.calls == ["https://hc-ping.com/abc-123"]
+
+    def test_unhealthy_stack_still_pings(self, tmp_path: Path) -> None:
+        # A ping means "the tick completed", not "the stack is healthy" —
+        # Slack carries the health signal, the dead-man carries only silence.
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.deadman_url_path.write_text("https://hc-ping.com/abc-123")
+        deadman = _DeadmanRecorder()
+
+        run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_fail_probe,
+            slack_poster=_SlackRecorder(),
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            deadman_poster=deadman,
+        )
+
+        assert len(deadman.calls) == 1
+
+    def test_missing_secret_skips_ping_without_error(self, tmp_path: Path) -> None:
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        # cfg.deadman_url_path deliberately not created.
+        deadman = _DeadmanRecorder()
+
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=_SlackRecorder(),
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            deadman_poster=deadman,
+        )
+
+        assert deadman.calls == []
+        assert state.consecutive_health_failures == 0  # tick completed normally
+
+    def test_empty_secret_skips_ping(self, tmp_path: Path) -> None:
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.deadman_url_path.write_text("   \n")
+        deadman = _DeadmanRecorder()
+
+        run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=_SlackRecorder(),
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            deadman_poster=deadman,
+        )
+
+        assert deadman.calls == []
+
+    def test_ping_failure_does_not_raise_and_tick_completes(
+        self, tmp_path: Path
+    ) -> None:
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.deadman_url_path.write_text("https://hc-ping.com/abc-123")
+        failing_deadman = _DeadmanRecorder(succeed=False)
+
+        state = run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=_SlackRecorder(),
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            deadman_poster=failing_deadman,
+        )
+
+        assert failing_deadman.calls == ["https://hc-ping.com/abc-123"]
+        assert state.consecutive_health_failures == 0
+
+    def test_exception_earlier_in_tick_skips_ping(self, tmp_path: Path) -> None:
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.deadman_url_path.write_text("https://hc-ping.com/abc-123")
+        deadman = _DeadmanRecorder()
+
+        def _raising_probe(_url: str) -> HealthProbeResult:
+            raise RuntimeError("boom")
+
+        with pytest.raises(RuntimeError, match="boom"):
+            run_once(
+                config=cfg,
+                clock=_clock,
+                probe=_raising_probe,
+                slack_poster=_SlackRecorder(),
+                bafu_probe=_bafu_ok_probe,
+                bafu_obs_probe=_bafu_obs_ok_probe,
+                deadman_poster=deadman,
+            )
+
+        assert deadman.calls == []  # ping never reached
+
+
+# ---------- main(): exception -> return 2, no ping (Plan 158 D3, T1) -----------
+
+
+class TestMainDeadmanOnUnrecoverableError:
+    def test_unrecoverable_error_returns_2_and_skips_ping(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sapphire_flow.ops.watchdog as watchdog_module
+
+        def _raise(_url: str) -> HealthProbeResult:
+            raise RuntimeError("boom")
+
+        deadman_recorder = _DeadmanRecorder()
+        monkeypatch.setattr(watchdog_module, "probe_health", _raise)
+        monkeypatch.setattr(watchdog_module, "default_deadman_poster", deadman_recorder)
+
+        deadman_path = tmp_path / "deadman_url"
+        deadman_path.write_text("https://hc-ping.com/abc-123")
+
+        argv = [
+            "--state-path",
+            str(tmp_path / "state.json"),
+            "--slack-path",
+            str(tmp_path / "slack_webhook_url"),
+            "--deadman-url-path",
+            str(deadman_path),
+            "--backup-dir",
+            str(tmp_path / "pg_dumps_missing"),
+            "--probe-token-path",
+            str(tmp_path / "probe_token"),
+        ]
+
+        rc = main(argv)
+
+        assert rc == 2
+        assert deadman_recorder.calls == []
+
+
+# ---------- probe_disk_free / run_once free-space check (Plan 158 D14) ---------
+
+
+class TestProbeDiskFree:
+    def test_ample_free_space_is_ok(self, tmp_path: Path) -> None:
+        result = probe_disk_free(tmp_path)
+        assert result.ok is True
+        assert result.free_bytes is not None
+        assert result.free_bytes > 0
+
+    def test_missing_path_returns_not_ok(self, tmp_path: Path) -> None:
+        result = probe_disk_free(tmp_path / "does" / "not" / "exist")
+        assert result.ok is False
+        assert result.error is not None
+
+
+class TestRunOnceDiskSpace:
+    def test_disk_probe_none_skips_check(self, tmp_path: Path) -> None:
+        # disk_probe defaults to None: every pre-existing call site (and
+        # every test in this file that doesn't pass it) is unaffected —
+        # main() always wires in the real probe in production.
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        slack = _SlackRecorder()
+
+        run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+        )
+
+        assert slack.calls == []
+
+    def test_low_free_space_alerts(self, tmp_path: Path) -> None:
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+        slack = _SlackRecorder()
+
+        def _low_disk(_path: Path) -> DiskSpaceResult:
+            return DiskSpaceResult(ok=False, free_bytes=1024)
+
+        run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            disk_probe=_low_disk,
+        )
+
+        assert len(slack.calls) == 1
+        _, msg = slack.calls[0]
+        assert "disk space LOW" in msg
+
+    def test_ample_free_space_no_alert(self, tmp_path: Path) -> None:
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.slack_path.write_text("https://hooks.slack.com/FAKE")
+        slack = _SlackRecorder()
+
+        def _ample_disk(_path: Path) -> DiskSpaceResult:
+            return DiskSpaceResult(ok=True, free_bytes=100 * 1024**3)
+
+        run_once(
+            config=cfg,
+            clock=_clock,
+            probe=_ok_probe,
+            slack_poster=slack,
+            bafu_probe=_bafu_ok_probe,
+            bafu_obs_probe=_bafu_obs_ok_probe,
+            disk_probe=_ample_disk,
+        )
+
+        assert slack.calls == []
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -12,7 +12,10 @@
          access-token raw key the watchdog sends as `Authorization: Bearer`
          on its /health/detail probes. See docs/standards/cicd.md
          § Access-token pepper + probe-token rotation for the bootstrap +
-         rotation runbook. -->
+         rotation runbook.
+
+         Plan 158 D3/T1: --deadman-url-path is passed EXPLICITLY too, same
+         convention — ./secrets/deadman_url (missing/empty -> feature off). -->
     <key>ProgramArguments</key>
     <array>
         <string>/Users/sapphire/.local/bin/uv</string>
@@ -23,11 +26,24 @@
         <string>sapphire_flow.ops.watchdog</string>
         <string>--probe-token-path</string>
         <string>./secrets/health_probe_token</string>
+        <string>--deadman-url-path</string>
+        <string>./secrets/deadman_url</string>
     </array>
     <key>StartInterval</key>
     <integer>300</integer>
     <key>WorkingDirectory</key>
     <string>/Users/sapphire/SAPPHIRE_flow</string>
+    <!-- Plan 158 D2/T2: the system domain (LaunchDaemon) inherits almost no
+         environment — HOME and PATH must be set explicitly, or `uv` (at
+         ~/.local/bin/uv) can't be found and ./secrets/* relative-path
+         resolution has no HOME to anchor against. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/sapphire</string>
+        <key>PATH</key>
+        <string>/Users/sapphire/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
     <key>StandardOutPath</key>
     <string>/Users/sapphire/Library/Logs/sapphire-watchdog.log</string>
     <key>StandardErrorPath</key>

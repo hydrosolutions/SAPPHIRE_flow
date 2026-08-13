@@ -30,6 +30,15 @@ BAFU LINDAS observation archive collector (`flows/collect_bafu_observations.py`,
 check_type=bafu_observation_freshness) — additive only; the forecast block
 above is untouched. See § Follow-up in Plan 136 for a deferred table-driven
 generalization of the two near-identical blocks.
+
+Plan 158 D3 adds an off-box dead-man's-switch ping at the end of every tick
+(``./secrets/deadman_url``, missing/empty -> feature off): a ping means "the
+tick completed", not "the stack is healthy" — an unhealthy stack still pings,
+because Slack (above) is the channel for *detected* failure and the dead-man
+is the channel for a watchdog that dies before it can report anything at all.
+Plan 158 D14 adds a free-disk-space check (alerts on the same Slack path,
+default threshold 20 GiB free on ``/``) — a cheap addition folded into the
+same change.
 """
 
 from __future__ import annotations
@@ -37,6 +46,7 @@ from __future__ import annotations
 import argparse
 import functools
 import json
+import shutil
 import socket
 import sys
 from collections.abc import Callable
@@ -60,6 +70,11 @@ DEFAULT_SLACK_PATH = Path("./secrets/slack_webhook_url")
 # HOST secret (not a Docker/Compose mount), same convention as
 # DEFAULT_SLACK_PATH — the watchdog is a launchd host process.
 DEFAULT_PROBE_TOKEN_PATH = Path("./secrets/health_probe_token")
+# Plan 158 D3: off-box dead-man's-switch. HOST secret, same convention as
+# DEFAULT_SLACK_PATH/DEFAULT_PROBE_TOKEN_PATH.
+DEFAULT_DEADMAN_PATH = Path("./secrets/deadman_url")
+# Plan 158 D14: free-disk-space check target (the Data volume).
+DEFAULT_DISK_PATH = Path("/")
 # Same base as DEFAULT_HEALTH_URL — the JSON API route lives under the same
 # `/api/v1` prefix as `/health`, just with a `/detail` suffix + query params.
 DEFAULT_BAFU_HEALTH_DETAIL_URL = (
@@ -99,6 +114,11 @@ BAFU_OBS_STALE_THRESHOLD = timedelta(hours=3)
 HEALTH_CHECK_TIMEOUT_S = 5.0
 SLACK_POST_TIMEOUT_S = 5.0
 ALERT_REPEAT_EVERY = 6  # every 6th consecutive failure (~30 min at 5 min tick)
+DEADMAN_PING_TIMEOUT_S = 5.0
+# Plan 158 D14: the Data volume sits at 95% used. 20 GiB gives enough runway
+# to alert and act before PostgreSQL or the Docker VM is starved. Not
+# CLI-configurable (mirrors BACKUP_STALE_THRESHOLD).
+DISK_FREE_THRESHOLD_BYTES = 20 * 1024**3
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -272,6 +292,58 @@ def newest_backup_mtime(backup_dir: Path) -> datetime | None:
     return datetime.fromtimestamp(newest, tz=UTC)
 
 
+def read_deadman_url(path: Path) -> str | None:
+    """Return a stripped dead-man's-switch ping URL, or None if the file is
+    missing/empty/unreadable (mirrors read_slack_webhook/read_probe_token)."""
+    if not path.exists():
+        return None
+    try:
+        value = path.read_text().strip()
+    except OSError as exc:
+        log.warning("watchdog.deadman_url_read_failed", path=str(path), error=str(exc))
+        return None
+    return value or None
+
+
+DeadmanPoster = Callable[[str], bool]
+"""(deadman_url) -> pinged_successfully. Raises nothing."""
+
+
+def default_deadman_poster(url: str) -> bool:
+    """POST an empty ping to the dead-man's-switch URL. Never raises — a
+    timeout or connection failure is caught, logged, and reported as False;
+    a dead-man outage must never take down the watchdog it monitors."""
+    try:
+        resp = httpx.post(url, timeout=DEADMAN_PING_TIMEOUT_S)
+    except httpx.HTTPError as exc:
+        log.warning("watchdog.deadman_ping_failed", error=str(exc))
+        return False
+    if resp.status_code >= 300:
+        log.warning("watchdog.deadman_ping_failed", http_status=resp.status_code)
+        return False
+    return True
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class DiskSpaceResult:
+    ok: bool
+    free_bytes: int | None
+    error: str | None = None
+
+
+def probe_disk_free(path: Path) -> DiskSpaceResult:
+    """Free bytes on the filesystem containing `path`. Never raises — an
+    unreadable/missing path counts as ok=False (fail safe: a false alert is
+    better than a silently-skipped check)."""
+    try:
+        usage = shutil.disk_usage(path)
+    except OSError as exc:
+        return DiskSpaceResult(ok=False, free_bytes=None, error=str(exc))
+    return DiskSpaceResult(
+        ok=usage.free >= DISK_FREE_THRESHOLD_BYTES, free_bytes=usage.free
+    )
+
+
 def read_slack_webhook(path: Path) -> str | None:
     """Return a stripped webhook URL, or None if file absent/empty/unreadable."""
     if not path.exists():
@@ -423,6 +495,22 @@ def _format_bafu_obs_recovery_alert(*, hostname: str, now: datetime) -> str:
     )
 
 
+def _format_disk_space_alert(
+    *, hostname: str, path: Path, result: DiskSpaceResult
+) -> str:
+    free_str = (
+        f"{result.free_bytes / (1024**3):.1f} GiB"
+        if result.free_bytes is not None
+        else "unknown"
+    )
+    threshold_str = f"{DISK_FREE_THRESHOLD_BYTES / (1024**3):.0f} GiB"
+    detail = f", error: {result.error}" if result.error else ""
+    return (
+        f"[SAPPHIRE staging] disk space LOW — host: {hostname}, path: {path}, "
+        f"free: {free_str}, threshold: {threshold_str}{detail}"
+    )
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class WatchdogConfig:
     health_url: str = DEFAULT_HEALTH_URL
@@ -437,6 +525,10 @@ class WatchdogConfig:
     # Plan 147 Slice C: admin-scoped probe token for the now-authenticated
     # `/health/detail`.
     probe_token_path: Path = DEFAULT_PROBE_TOKEN_PATH
+    # Plan 158 D3: off-box dead-man's-switch ping URL secret.
+    deadman_url_path: Path = DEFAULT_DEADMAN_PATH
+    # Plan 158 D14: filesystem path checked for free space.
+    disk_path: Path = DEFAULT_DISK_PATH
 
 
 def run_once(
@@ -448,6 +540,11 @@ def run_once(
     hostname: str | None = None,
     bafu_probe: Callable[[str], BafuFreshnessResult] = probe_bafu_freshness,
     bafu_obs_probe: Callable[[str], BafuFreshnessResult] = probe_bafu_freshness,
+    deadman_poster: DeadmanPoster = default_deadman_poster,
+    # None (the default) turns the free-disk-space check OFF, so every
+    # existing call site is unaffected — main() always wires in the real
+    # `probe_disk_free` in production (Plan 158 D14).
+    disk_probe: Callable[[Path], DiskSpaceResult] | None = None,
 ) -> WatchdogState:
     """Single watchdog tick. Returns the updated state (also persisted)."""
     now = clock()
@@ -518,6 +615,29 @@ def run_once(
         else:
             log.info("watchdog.slack_skipped_log_only")
         state = replace(state, last_backup_alert_iso=now.isoformat())
+
+    # --- Free-disk-space check (Plan 158 D14, additive cheap win) ---
+    if disk_probe is not None:
+        disk_result = disk_probe(config.disk_path)
+        log.info(
+            "watchdog.disk_space_check_completed",
+            path=str(config.disk_path),
+            free_bytes=disk_result.free_bytes,
+            ok=disk_result.ok,
+            error=disk_result.error,
+        )
+        if not disk_result.ok:
+            message = _format_disk_space_alert(
+                hostname=host, path=config.disk_path, result=disk_result
+            )
+            # Alert every tick while low, same rationale as backup staleness
+            # above — no added hysteresis (out of scope for this check).
+            log.warning("watchdog.disk_space_low_alert", message=message)
+            if webhook:
+                posted = slack_poster(webhook, message)
+                log.info("watchdog.slack_post_attempted", posted=posted)
+            else:
+                log.info("watchdog.slack_skipped_log_only")
 
     # --- BAFU forecast collector freshness (Flow 4 staleness hook) ---
     bafu_url = config.bafu_health_detail_url or _bafu_url_from_health(config.health_url)
@@ -643,6 +763,22 @@ def run_once(
         state = replace(state, consecutive_bafu_obs_failures=0)
 
     state.dump(config.state_path)
+
+    # --- Dead-man's-switch ping (Plan 158 D3) ------------------------------
+    # Fires unconditionally from here on — a ping means "the tick completed",
+    # NOT "the stack is healthy" (Slack carries the health signal; the
+    # dead-man's only distinct signal is silence). Anything that raises
+    # earlier in this tick (a probe bug, a state-dump failure) skips this
+    # line entirely and propagates to main()'s except-Exception, which
+    # returns 2 WITHOUT pinging — an internal watchdog failure therefore
+    # correctly reads as silence to the external service.
+    deadman_url = read_deadman_url(config.deadman_url_path)
+    if deadman_url:
+        pinged = deadman_poster(deadman_url)
+        log.info("watchdog.deadman_ping_attempted", pinged=pinged)
+    else:
+        log.info("watchdog.deadman_skipped_no_url")
+
     return state
 
 
@@ -700,6 +836,20 @@ def main(argv: list[str] | None = None) -> int:
             f"mount; default: {DEFAULT_PROBE_TOKEN_PATH})"
         ),
     )
+    parser.add_argument(
+        "--deadman-url-path",
+        default=str(DEFAULT_DEADMAN_PATH),
+        help=(
+            "Path to a file containing the off-box dead-man's-switch ping "
+            "URL (chmod 600, HOST secret; missing/empty -> feature off; "
+            f"default: {DEFAULT_DEADMAN_PATH})"
+        ),
+    )
+    parser.add_argument(
+        "--disk-path",
+        default=str(DEFAULT_DISK_PATH),
+        help=f"Filesystem path to check free space on (default: {DEFAULT_DISK_PATH})",
+    )
     args = parser.parse_args(argv)
 
     configure_cli_logging("INFO")
@@ -712,6 +862,8 @@ def main(argv: list[str] | None = None) -> int:
         bafu_health_detail_url=args.bafu_health_detail_url,
         bafu_obs_health_detail_url=args.bafu_obs_health_detail_url,
         probe_token_path=Path(args.probe_token_path),
+        deadman_url_path=Path(args.deadman_url_path),
+        disk_path=Path(args.disk_path),
     )
 
     probe_token = read_probe_token(config.probe_token_path)
@@ -725,6 +877,8 @@ def main(argv: list[str] | None = None) -> int:
             slack_poster=default_slack_poster,
             bafu_probe=bafu_probe_bound,
             bafu_obs_probe=bafu_probe_bound,
+            deadman_poster=default_deadman_poster,
+            disk_probe=probe_disk_free,
         )
     except Exception as exc:  # unrecoverable: let launchd see the non-zero
         log.error("watchdog.unrecoverable_error", error=str(exc))
