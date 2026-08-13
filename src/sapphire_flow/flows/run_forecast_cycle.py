@@ -634,6 +634,57 @@ def _append_pipeline_health_record(
         )
 
 
+def _store_forecast_tracked(
+    forecast_store: ForecastStore,
+    fc: OperationalForecast,
+    *,
+    station_id: StationId,
+    errors: list[str],
+    persisted_ids: set[StationId],
+) -> int:
+    """Station-path store_forecast call, instrumented for Plan 158 D15/T1b's
+    identity-based product-coverage tracking. Returns 1 on success, 0 on
+    failure — NEVER re-raises (matches every station-path store_forecast
+    call site prior to this helper: log + record the error, keep going).
+    Adds `station_id` to `persisted_ids` ONLY on success."""
+    try:
+        forecast_store.store_forecast(fc)  # type: ignore[union-attr]
+    except Exception as exc:
+        log.warning("forecast_cycle.store_forecast_failed", error=str(exc))
+        errors.append(f"Store failed for {station_id}: {exc}")
+        return 0
+    persisted_ids.add(station_id)
+    return 1
+
+
+def _store_group_forecast_tracked(
+    forecast_store: ForecastStore,
+    fc: OperationalForecast,
+    *,
+    station_id: StationId,
+    errors: list[str],
+    persisted_ids: set[StationId],
+) -> int:
+    """Group-path counterpart of `_store_forecast_tracked`. Differs only in
+    re-raising `StoreError` (matches the group-path call site's prior
+    `except StoreError: raise` / `except Exception` split — a StoreError
+    there is NOT swallowed, unlike the station path)."""
+    try:
+        forecast_store.store_forecast(fc)  # type: ignore[union-attr]
+    except StoreError:
+        raise
+    except Exception as exc:
+        log.warning(
+            "forecast_cycle.store_forecast_failed",
+            station_id=str(station_id),
+            error=str(exc),
+        )
+        errors.append(f"Store failed for {station_id}: {exc}")
+        return 0
+    persisted_ids.add(station_id)
+    return 1
+
+
 def _record_station_dark(
     pipeline_health_store: object | None,
     *,
@@ -1743,6 +1794,29 @@ def run_forecast_cycle_flow(
 
         if not operational:
             log.info("forecast_cycle.no_operational_stations")
+            # Plan 158 D15/T1b: this early exit skips the end-of-cycle
+            # emission below entirely — without an explicit CRITICAL record
+            # here, a truly empty deployment would write NO
+            # FORECAST_FRESHNESS record at all, which is a legal "not OK"
+            # reading (missing == stale to the watchdog) but an
+            # inconsistent one (every other exit path emits a record).
+            _append_pipeline_health_record(
+                pipeline_health_store,
+                check_type=PipelineCheckType.FORECAST_FRESHNESS,
+                checked_at=clock(),
+                status=PipelineHealthStatus.CRITICAL,
+                subject="forecast_cycle",
+                detail=cast(
+                    "dict[str, object]",
+                    {
+                        "expected_station_count": 0,
+                        "persisted_station_count": 0,
+                        "missing_station_ids": [],
+                        "forecasts_stored": 0,
+                    },
+                ),
+                cycle_time=resolved_cycle_time,
+            )
             return ForecastCycleResult(
                 cycle_time=resolved_cycle_time,
                 health=ForecastCycleHealth.HEALTHY,
@@ -1947,6 +2021,26 @@ def run_forecast_cycle_flow(
                     )
             if nwp_outcome is None:
                 log.error("forecast_cycle.nwp_fetch_failed_aborting")
+                # Plan 158 D15/T1b: total abort, zero product — same
+                # consistency rationale as the no-operational-stations early
+                # exit above.
+                _append_pipeline_health_record(
+                    pipeline_health_store,
+                    check_type=PipelineCheckType.FORECAST_FRESHNESS,
+                    checked_at=clock(),
+                    status=PipelineHealthStatus.CRITICAL,
+                    subject="forecast_cycle",
+                    detail=cast(
+                        "dict[str, object]",
+                        {
+                            "expected_station_count": len(operational),
+                            "persisted_station_count": 0,
+                            "missing_station_ids": [],
+                            "forecasts_stored": 0,
+                        },
+                    ),
+                    cycle_time=resolved_cycle_time,
+                )
                 return ForecastCycleResult(
                     cycle_time=resolved_cycle_time,
                     health=ForecastCycleHealth.FAILED,
@@ -2040,6 +2134,22 @@ def run_forecast_cycle_flow(
         stations_succeeded = 0
         forecasts_stored = 0
 
+        # Plan 158 D15/T1b: IDENTITY-based product-coverage tracking for the
+        # FORECAST_FRESHNESS heartbeat — a SEPARATE contract from
+        # ForecastCycleHealth (which stays unchanged). `stations_succeeded`/
+        # `forecasts_stored` are COUNTERS and cannot express "did station X's
+        # product actually land": a per-record store_forecast exception is
+        # logged but still lets the station reach stations_succeeded += 1
+        # (see `_store_forecast_tracked` below), and a station with no active
+        # assignment silently `continue`s without ever being counted either
+        # way. `expected_station_ids` is populated at the ONE point a station
+        # is confirmed to have an active assignment (this is expected to
+        # produce this cycle); `persisted_station_ids` only when a store call
+        # for it actually succeeds. `persisted_station_ids` is always a
+        # subset of `expected_station_ids` by construction.
+        expected_station_ids: set[StationId] = set()
+        persisted_station_ids: set[StationId] = set()
+
         # Accumulate for Phase C
         all_ensembles: dict[StationId, dict[ModelId, dict[str, ForecastEnsemble]]] = {}
 
@@ -2058,6 +2168,7 @@ def run_forecast_cycle_flow(
                 log.debug("forecast_cycle.no_assignments")
                 structlog.contextvars.unbind_contextvars("station_id")
                 continue
+            expected_station_ids.add(sid)
 
             # Use time_step from first active assignment (priority-sorted)
             sorted_assignments = sorted(assignments, key=lambda a: a.priority)
@@ -2203,14 +2314,13 @@ def run_forecast_cycle_flow(
 
                     for fc in fc_result.forecasts:
                         fc = _bind_rating_curve(fc, active_rating_curves)
-                        try:
-                            forecast_store.store_forecast(fc)  # type: ignore[union-attr]
-                            forecasts_stored += 1
-                        except Exception as exc:
-                            log.warning(
-                                "forecast_cycle.store_forecast_failed", error=str(exc)
-                            )
-                            errors.append(f"Store failed for {sid}: {exc}")
+                        forecasts_stored += _store_forecast_tracked(
+                            forecast_store,  # type: ignore[arg-type]
+                            fc,
+                            station_id=sid,
+                            errors=errors,
+                            persisted_ids=persisted_station_ids,
+                        )
 
                     if fc_result.new_state is not None:
                         try:
@@ -2277,15 +2387,13 @@ def run_forecast_cycle_flow(
                     for mid, result in multi_result.results.items():
                         for fc in result.forecasts:
                             fc = _bind_rating_curve(fc, active_rating_curves)
-                            try:
-                                forecast_store.store_forecast(fc)  # type: ignore[union-attr]
-                                forecasts_stored += 1
-                            except Exception as exc:
-                                log.warning(
-                                    "forecast_cycle.store_forecast_failed",
-                                    error=str(exc),
-                                )
-                                errors.append(f"Store failed for {sid}: {exc}")
+                            forecasts_stored += _store_forecast_tracked(
+                                forecast_store,  # type: ignore[arg-type]
+                                fc,
+                                station_id=sid,
+                                errors=errors,
+                                persisted_ids=persisted_station_ids,
+                            )
 
                         # Persist warm-up state for primary model only
                         if (
@@ -2317,15 +2425,13 @@ def run_forecast_cycle_flow(
                     if combined_forecasts:
                         for fc in combined_forecasts:
                             fc = _bind_rating_curve(fc, active_rating_curves)
-                            try:
-                                forecast_store.store_forecast(fc)  # type: ignore[union-attr]
-                                forecasts_stored += 1
-                            except Exception as exc:
-                                log.warning(
-                                    "forecast_cycle.store_forecast_failed",
-                                    error=str(exc),
-                                )
-                                errors.append(f"Store failed for {sid}: {exc}")
+                            forecasts_stored += _store_forecast_tracked(
+                                forecast_store,  # type: ignore[arg-type]
+                                fc,
+                                station_id=sid,
+                                errors=errors,
+                                persisted_ids=persisted_station_ids,
+                            )
                         log.info(
                             "forecast_cycle.combined_forecast_stored",
                             n_models=len(multi_result.combinable_results),
@@ -2445,6 +2551,14 @@ def run_forecast_cycle_flow(
                         )
                         continue
 
+                    # Plan 158 D15/T1b: member_ids is final from here on — these
+                    # stations are expected to receive a forecast from THIS
+                    # group run, whatever happens next (a missing binding, a
+                    # failed input assembly, or a group_forecast_failed below
+                    # all now correctly show up as "expected but not
+                    # persisted" instead of vanishing silently.
+                    expected_station_ids.update(member_ids)
+
                     model = models[model_id]  # type: ignore[index]
                     missing_binding_ids = [
                         sid for sid in member_ids if sid not in forecast_bindings
@@ -2526,18 +2640,13 @@ def run_forecast_cycle_flow(
                     for sid, result in group_results.items():
                         for fc in result.forecasts:
                             fc = _bind_rating_curve(fc, active_rating_curves)
-                            try:
-                                forecast_store.store_forecast(fc)  # type: ignore[union-attr]
-                                forecasts_stored += 1
-                            except StoreError:
-                                raise
-                            except Exception as exc:
-                                log.warning(
-                                    "forecast_cycle.store_forecast_failed",
-                                    station_id=str(sid),
-                                    error=str(exc),
-                                )
-                                errors.append(f"Store failed for {sid}: {exc}")
+                            forecasts_stored += _store_group_forecast_tracked(
+                                forecast_store,  # type: ignore[arg-type]
+                                fc,
+                                station_id=sid,
+                                errors=errors,
+                                persisted_ids=persisted_station_ids,
+                            )
 
                         if result.new_state is not None:
                             try:
@@ -2617,6 +2726,60 @@ def run_forecast_cycle_flow(
             log.info("alerts.check_completed", duration_ms=alert_duration_ms)
 
         total_ms = round((time.perf_counter() - flow_t0) * 1000, 1)
+
+        # --- Forecast-production freshness heartbeat (Plan 158 D15/T1b) ---
+        # A SEPARATE contract from `health` above: `ForecastCycleHealth` means
+        # cycle *operational quality* (DEGRADED is legitimately used for
+        # snow loss, partial/stale NWP, fallback drift — conditions where the
+        # product still shipped fine) and is UNCHANGED by this block.
+        # FORECAST_FRESHNESS answers a different question — "did the product
+        # we expected actually land?" — using the identity sets built during
+        # the loops above. `persisted_station_ids` is always a subset of
+        # `expected_station_ids` by construction (see _store_forecast_tracked
+        # / _store_group_forecast_tracked), so:
+        #   - persisted_station_ids empty            -> CRITICAL (total loss;
+        #     also covers the "nothing was expected either" case, so a
+        #     zero-operational-station/zero-group cycle never reads OK)
+        #   - persisted_station_ids < expected_station_ids -> WARNING (partial)
+        #   - persisted_station_ids == expected_station_ids (both nonempty)
+        #     -> OK (full coverage)
+        # A perpetual WARNING is deliberately impossible: total loss is
+        # CRITICAL, never WARNING (Plan 158 D15 reviewer major-fix).
+        missing_station_ids = expected_station_ids - persisted_station_ids
+        if not persisted_station_ids:
+            freshness_status = PipelineHealthStatus.CRITICAL
+        elif missing_station_ids:
+            freshness_status = PipelineHealthStatus.WARNING
+        else:
+            freshness_status = PipelineHealthStatus.OK
+        # Ages the CYCLE's own issue time (cycle_time), not the write time —
+        # the watchdog probe reads this same `cycle_time` field, not
+        # `checked_at`, so a replayed historical cycle cannot reset
+        # freshness (Plan 158 D15 reviewer major-fix). Reuses the existing
+        # best-effort `_append_pipeline_health_record` helper (same
+        # degrade-to-stale-on-write-failure contract as every other check
+        # type emitted in this file — a write failure here is not
+        # distinguished from a dead cycle; the watchdog's staleness
+        # threshold, not a per-write success signal, is the safety net).
+        _append_pipeline_health_record(
+            pipeline_health_store,
+            check_type=PipelineCheckType.FORECAST_FRESHNESS,
+            checked_at=clock(),
+            status=freshness_status,
+            subject="forecast_cycle",
+            detail=cast(
+                "dict[str, object]",
+                {
+                    "expected_station_count": len(expected_station_ids),
+                    "persisted_station_count": len(persisted_station_ids),
+                    "missing_station_ids": [
+                        str(sid) for sid in sorted(missing_station_ids, key=str)
+                    ],
+                    "forecasts_stored": forecasts_stored,
+                },
+            ),
+            cycle_time=resolved_cycle_time,
+        )
 
         result = ForecastCycleResult(
             cycle_time=resolved_cycle_time,

@@ -234,6 +234,24 @@ The first-run helper install needs admin rights — if `sapphire` is a
 Standard user, grant it temporary admin (System Settings → Users &
 Groups), complete Docker Desktop setup, then demote if desired.
 
+**Docker endpoint contract (Plan 158 D8/T4).** Every launchd job that shells
+out to `docker` (`start-sapphire.sh`, `prune-docker.sh`,
+`run-recap-probe.sh`) resolves its binary and daemon socket from ONE
+sourced snippet, `scripts/launchd/docker-endpoint.sh`, instead of each
+carrying its own hardcoded Docker-Desktop-specific value:
+
+```bash
+DOCKER_BIN="${SAPPHIRE_DOCKER_BIN:-/usr/local/bin/docker}"
+export DOCKER_HOST="${SAPPHIRE_DOCKER_HOST:-unix:///var/run/docker.sock}"
+```
+
+The defaults are unchanged from what this host runs today (Docker Desktop,
+proven in production under launchd). `SAPPHIRE_DOCKER_BIN` /
+`SAPPHIRE_DOCKER_HOST` override both — Plan 159's headless Colima runtime
+repoints them (e.g. via each plist's `EnvironmentVariables`) without editing
+any script. `DOCKER_CMD` (the pre-existing test-injection seam) still wins
+over both when set.
+
 ## LaunchAgents / LaunchDaemons
 
 **Plan 158 D2/D2b (T2): the three jobs are no longer all one domain.**
@@ -520,12 +538,33 @@ launchctl print gui/$(id -u)/ch.hydrosolutions.sapphire-watchdog | head -40
 tail -50 ~/Library/Logs/sapphire-watchdog.log
 ```
 
-To force a reload:
+**⚠️ Reload command changed (Plan 158 T1c F3):** the installer now
+classifies `ch.hydrosolutions.sapphire-watchdog` as **daemon-only**
+(`domain_for_label`, `scripts/launchd/install-launchd.sh`) — an
+unprivileged `--label` re-run for this label now hard-fails (refuses to
+escalate). The previously-documented unprivileged reload command
+(`bootout` then a bare `install-launchd.sh --label ...`) **disables
+monitoring**: it boots out the running GUI agent, then the installer
+refuses to reinstall it (no root), leaving no watchdog running at all.
+**Do not run that sequence.** Two safe options instead:
 
-```bash
-launchctl bootout gui/$(id -u)/ch.hydrosolutions.sapphire-watchdog
-./scripts/launchd/install-launchd.sh --label ch.hydrosolutions.sapphire-watchdog
-```
+1. **Run T3 now** (recommended) — this converts the watchdog to the
+   system-domain LaunchDaemon T2 built, which is the actual fix.
+   `docs/operations/watchdog-daemon-runbook.md`. Once converted, use the
+   "After T3 cutover" commands below.
+2. **Reload the pre-migration GUI agent directly**, bypassing the installer
+   entirely (it will not touch a daemon-shaped plist):
+   ```bash
+   launchctl bootout gui/$(id -u)/ch.hydrosolutions.sapphire-watchdog
+   cp /path/to/your/saved/pre-T2-watchdog.plist \
+       ~/Library/LaunchAgents/ch.hydrosolutions.sapphire-watchdog.plist
+   launchctl bootstrap gui/$(id -u) \
+       ~/Library/LaunchAgents/ch.hydrosolutions.sapphire-watchdog.plist
+   ```
+   This requires a copy of the plist as it looked **before** T2's daemon
+   rework (no `UserName`/`EnvironmentVariables` keys) — the current repo
+   source plist is daemon-shaped and is not a safe substitute for a GUI
+   agent.
 
 **After T3 cutover (LaunchDaemon, `system/`):**
 

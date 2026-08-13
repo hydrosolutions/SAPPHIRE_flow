@@ -108,17 +108,57 @@ if [ "${UNINSTALL}" -eq 1 ]; then
         IS_ROOT=1
     fi
 
+    # Plan 158 T1c F4: the account whose Docker Desktop session actually
+    # owns the compose stack. Docker Desktop is per-user — SUDO_USER is NOT
+    # authoritative on its own: another admin's `sudo` session sees ZERO
+    # containers for THIS stack and would falsely "succeed". Refuse rather
+    # than silently operate in the wrong session; a bare root login (no
+    # SUDO_USER at all, e.g. `sudo -i`) has nothing to compare and is let
+    # through.
+    SERVICE_ACCOUNT="${SAPPHIRE_SERVICE_ACCOUNT:-sapphire}"
+    if [ "${IS_ROOT}" -eq 1 ] && [ -n "${SUDO_USER:-}" ] \
+        && [ "${SUDO_USER}" != "${SERVICE_ACCOUNT}" ]; then
+        fail "refusing: invoked via sudo as '${SUDO_USER}', but the Docker"
+        fail "  stack is scoped to the '${SERVICE_ACCOUNT}' login session."
+        fail "  Docker Desktop is per-user — running compose as a different"
+        fail "  account would see ZERO containers and could falsely report"
+        fail "  success. Re-run as:"
+        fail "    sudo -u ${SERVICE_ACCOUNT} $0 --uninstall"
+        exit 1
+    fi
+
+    docker_as_service_account() {
+        # Routes a docker/compose command through the service account's
+        # session when running as root; runs directly otherwise. Goes
+        # through `run` so --dry-run only previews it.
+        if [ "${IS_ROOT}" -eq 1 ]; then
+            run sudo -u "${SERVICE_ACCOUNT}" "$@"
+        else
+            run "$@"
+        fi
+    }
+
+    docker_query_as_service_account() {
+        # Same routing, but for a query whose STDOUT the caller needs to
+        # capture — never goes through `run` (callers only invoke this
+        # outside --dry-run).
+        if [ "${IS_ROOT}" -eq 1 ]; then
+            sudo -u "${SERVICE_ACCOUNT}" "$@"
+        else
+            "$@"
+        fi
+    }
+
     STILL_LOADED=0
-    # Mirrors scripts/launchd/install-launchd.sh's PLISTS array — keep the
-    # two lists in sync. Plan 158 T2: uninstall must cover EVERY installed
-    # label (the docker-prune job was previously missing here entirely) and
-    # boot out BOTH launchd domains, since D2 moves the watchdog into
-    # "system" (a LaunchDaemon survives what a plain gui/<uid> bootout does
-    # not touch). Registration state is checked via `launchctl print` (the
-    # actual source of truth) rather than plist-file existence — a label can
-    # be registered from a plist that was already deleted, or a plist can
-    # sit on disk without ever having been bootstrapped.
-    for label in ch.hydrosolutions.sapphire ch.hydrosolutions.sapphire-watchdog ch.hydrosolutions.sapphire-docker-prune; do
+
+    bootout_label() {
+        # Mirrors scripts/launchd/install-launchd.sh's PLISTS array — keep
+        # the set of labels in sync. Registration state is checked via
+        # `launchctl print` (the actual source of truth) rather than
+        # plist-file existence — a label can be registered from a plist
+        # that was already deleted, or a plist can sit on disk without ever
+        # having been bootstrapped.
+        local label="$1"
         if launchctl print "gui/${UID_VAL}/${label}" >/dev/null 2>&1; then
             log "bootout gui/${UID_VAL}/${label}"
             run launchctl bootout "gui/${UID_VAL}/${label}" 2>/dev/null || true
@@ -152,24 +192,56 @@ if [ "${UNINSTALL}" -eq 1 ]; then
         else
             log "system/${label} not registered (skipping system bootout)"
         fi
+    }
+
+    # Plan 158 T1c F4: boot out the STARTER and PRUNE jobs FIRST, then stop
+    # + VERIFY the stack, and boot out the WATCHDOG LAST — the previous
+    # single-loop order removed monitoring before the shutdown that might
+    # fail, so a failed teardown would go unreported.
+    for label in ch.hydrosolutions.sapphire ch.hydrosolutions.sapphire-docker-prune; do
+        bootout_label "${label}"
     done
+
     log "docker compose down"
+    COMPOSE_ARGS=(-f "${REPO_ROOT}/docker-compose.yml")
     if [ -f "${REPO_ROOT}/docker-compose.macmini.yml" ]; then
-        run docker compose \
-            -f "${REPO_ROOT}/docker-compose.yml" \
-            -f "${REPO_ROOT}/docker-compose.macmini.yml" \
-            down || true
-    else
-        run docker compose -f "${REPO_ROOT}/docker-compose.yml" down || true
+        COMPOSE_ARGS+=(-f "${REPO_ROOT}/docker-compose.macmini.yml")
     fi
+    if ! docker_as_service_account docker compose "${COMPOSE_ARGS[@]}" down; then
+        fail "docker compose down failed"
+        STILL_LOADED=1
+    fi
+
+    if [ "${DRY_RUN}" -eq 0 ]; then
+        # A "down" exit-0 is not, by itself, proof the containers are gone —
+        # verify with a positive check. A FAILED check must NOT be read as
+        # "no containers" (the exact prune-docker.sh silent-success bug this
+        # step exists to avoid repeating).
+        if REMAINING_IDS="$(docker_query_as_service_account docker compose "${COMPOSE_ARGS[@]}" ps -q 2>/dev/null)"; then
+            if [ -n "${REMAINING_IDS}" ]; then
+                fail "containers still running after 'docker compose down'"
+                STILL_LOADED=1
+            fi
+        else
+            fail "could not verify containers were stopped ('docker compose ps' failed)"
+            fail "  NOT assuming this means no containers are running."
+            STILL_LOADED=1
+        fi
+    fi
+
+    bootout_label ch.hydrosolutions.sapphire-watchdog
 
     if [ "${STILL_LOADED}" -eq 1 ]; then
         fail "uninstall INCOMPLETE — one or more labels are still registered (see above)."
         exit 1
     fi
 
-    success "uninstall complete. Remove ~/Library/LaunchAgents/ch.hydrosolutions.*.plist"
+    success "uninstall complete for this session (stack stopped, launchd jobs"
+    success "unregistered). Remove ~/Library/LaunchAgents/ch.hydrosolutions.*.plist"
     success "and ${REPO_ROOT}/secrets/ manually if you want a full wipe."
+    warn "The plist files were NOT removed — the starter carries RunAtLoad,"
+    warn "so the stack (and prune/watchdog jobs) return automatically at the"
+    warn "next login/reboot unless you also delete the plists above."
     exit 0
 fi
 

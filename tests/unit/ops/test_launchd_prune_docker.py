@@ -171,6 +171,78 @@ class TestPruneDockerStackGuard:
         assert "skipping image prune" in combined
 
 
+class TestDockerEndpointContract:
+    """Plan 158 D8/T4: the Docker binary + daemon endpoint must resolve from
+    the single sourced contract (scripts/launchd/docker-endpoint.sh), not a
+    hardcoded Docker-Desktop-specific path — DOCKER_CMD (the pre-existing
+    test seam) still wins over both."""
+
+    def test_sapphire_docker_bin_override_is_used_when_docker_cmd_unset(
+        self, tmp_path: Path
+    ) -> None:
+        # A fake "Colima-style" docker binary at a NON-standard path, wired
+        # in via the CONTRACT variable (not DOCKER_CMD) — proves the script
+        # actually resolves through docker-endpoint.sh's DOCKER_BIN, not a
+        # hardcoded /usr/local/bin/docker.
+        colima_bin_dir = tmp_path / "colima-style-bin"
+        colima_bin_dir.mkdir()
+        fake = colima_bin_dir / "docker"
+        fake.write_text(
+            "#!/bin/bash\n"
+            'if [[ "$1" == "ps" ]]; then exit 1; fi\n'  # no containers -> guard skips
+            "exit 0\n"
+        )
+        fake.chmod(0o755)
+
+        env = {**os.environ}
+        env.pop("DOCKER_CMD", None)
+        env["SAPPHIRE_DOCKER_BIN"] = str(fake)
+
+        result = subprocess.run(
+            ["bash", str(_PRUNE_SCRIPT)],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        combined = result.stdout + result.stderr
+        assert "skipping prune" in combined, combined
+
+    def test_docker_cmd_still_wins_over_sapphire_docker_bin(
+        self, tmp_path: Path
+    ) -> None:
+        # DOCKER_CMD (existing seam) must take priority even when the
+        # contract variable is ALSO set to something else.
+        real_fake = tmp_path / "the-real-fake-docker"
+        real_fake.write_text(
+            '#!/bin/bash\nif [[ "$1" == "ps" ]]; then exit 1; fi\nexit 0\n'
+        )
+        real_fake.chmod(0o755)
+        wrong_bin = tmp_path / "should-not-be-used"
+        wrong_bin.write_text("#!/bin/bash\nexit 99\n")
+        wrong_bin.chmod(0o755)
+
+        env = {
+            **os.environ,
+            "DOCKER_CMD": str(real_fake),
+            "SAPPHIRE_DOCKER_BIN": str(wrong_bin),
+        }
+        result = subprocess.run(
+            ["bash", str(_PRUNE_SCRIPT)],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "skipping prune" in (result.stdout + result.stderr)
+
+    def test_docker_endpoint_snippet_sets_default_docker_host(self) -> None:
+        snippet = (_SCRIPTS_DIR / "docker-endpoint.sh").read_text()
+        assert "unix:///var/run/docker.sock" in snippet
+        assert "SAPPHIRE_DOCKER_HOST" in snippet
+        assert "SAPPHIRE_DOCKER_BIN" in snippet
+
+
 class TestInstallLaunchdPruneRegistration:
     """install-launchd.sh PLISTS array must contain the docker-prune plist."""
 

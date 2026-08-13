@@ -106,6 +106,67 @@ reviewed (one `/plan` round plus three Codex passes, two of them opposed-lens).
     `pyproject.toml` bump, only `0ad6d64` tagged) is left as history — rewriting already-pushed-adjacent local
     commits was judged out of scope for a fixer round and riskier than the finding itself; this fixer commit follows
     the mandatory bump+tag sequence going forward.
+- **2026-08-13 — T1B, T1C AND T4 IMPLEMENTED (`v0.1.712`).** The remaining automated-build tasks named in the Build
+  scope section landed: red-first-tested (each locked criterion confirmed RED against the pre-fix code, several via
+  a `git stash` round-trip on the touched scripts), independently exit-gated (`ruff check`/`format`, pyright ratchet,
+  `shellcheck -x` over every touched script including the new `docker-endpoint.sh`, `plutil -lint`, and the full
+  `tests/unit/` suite — 2787 passed).
+  - **T1b (D15)**: `run_forecast_cycle_flow` now emits a `check_type=forecast_freshness` `PipelineHealthRecord` at
+    the end of every cycle AND at both early-abort exit paths (no-operational-stations, NWP-fetch-failed) — a
+    SEPARATE, identity-based product-coverage contract from `ForecastCycleHealth` (left unchanged, per the ratified
+    "TWO CONTRACTS" design above). `expected_station_ids`/`persisted_station_ids` are built during the station AND
+    group loops via two new tracked-store helpers (`_store_forecast_tracked`/`_store_group_forecast_tracked`,
+    identical prior behaviour, added identity bookkeeping only); coverage maps to OK (full)/WARNING (partial)/
+    CRITICAL (zero persisted — including the zero-expected case, so total loss can never read as a perpetual
+    WARNING). The record ages `cycle_time` (the cycle's own issue time), not the write time — locked by a test that
+    replays an explicit old `cycle_time` and asserts the emitted record's `cycle_time` (not `checked_at`) carries it.
+    The watchdog gained `probe_forecast_freshness` (reads `cycle_time`, unlike the two BAFU probes which read
+    `checked_at`), `--forecast-stale-threshold-hours` (default 12h = 2× the 6h NWP cadence), and
+    `_parse_positive_float` — the threshold is accepted as a raw string and validated with a safe fallback rather
+    than `argparse type=float`, which would `SystemExit` before the dead-man ping on a malformed value. Emission
+    reuses the existing best-effort `_append_pipeline_health_record` (a write failure degrades to "no fresh record",
+    same contract as every other check type in this file — documented, not silently assumed).
+  - **T1c (F1-F6)**: **F1 (blocker)** — `install_daemon` now removes the leftover `AGENTS_DIR` plist FILE on a
+    successful bootstrap (not just the current `gui/<uid>` registration, which launchd re-scans at every login) and
+    rolls back to a backed-up copy of it if the daemon bootstrap fails at any step (copy/chown/chmod/bootstrap/
+    enable), so a half-migration never leaves the host with no watchdog in either domain. **F2 (major)** — an
+    explicit `--label` for an *agent*-domain job is now also refused under `sudo` (previously only a full sweep
+    was), the identical `$HOME`-resolves-to-root's-home bug. **F3 (major, doc-only)** — the pre-T3 watchdog reload
+    section in `mac-mini-staging.md` documented a sequence that now disables monitoring (boots out the GUI agent,
+    then the installer refuses to reinstall it unprivileged); replaced with the two safe options (run T3, or reload
+    a saved pre-migration plist directly, bypassing the installer). **F4 (major)** — `bootstrap-mac-mini.sh
+    --uninstall` now boots out the starter+prune jobs FIRST, stops the stack, POSITIVELY VERIFIES no containers
+    remain (`docker compose ps -q`, a failed check is never read as "no containers" — the `prune-docker.sh`
+    silent-success bug this step exists to avoid repeating), and boots out the watchdog LAST; Docker Desktop being
+    per-user, compose calls route through the configured service account (`SAPPHIRE_SERVICE_ACCOUNT`, default
+    `sapphire`) via `sudo -u`, and a mismatched `SUDO_USER` is refused rather than silently seeing zero containers
+    and falsely "succeeding"; the completion message now discloses that plist files are NOT removed (RunAtLoad
+    brings the stack back at the next login/reboot) rather than silently contradicting that. **F5 (major, a CLASS
+    not an instance)** — `httpx.InvalidURL` (verified NOT an `httpx.HTTPError` subclass) is now caught alongside
+    `httpx.HTTPError` at every HTTP call site in `watchdog.py` (`probe_health`, `probe_bafu_freshness`,
+    `default_slack_poster`, `default_deadman_poster`, and T1b's new `probe_forecast_freshness`) via a shared
+    `_HTTP_CALL_EXCEPTIONS` tuple — a malformed hand-pasted secret (this repo's real incident: today's Slack URL was
+    hand-pasted) no longer kills the watchdog. **F6** — privileged happy-path coverage added: a full daemon install
+    (legacy-plist removal, ownership/mode, rollback-on-failure) with `id`/`plutil`/`chown`/`chmod`/`cp`/a stateful
+    `launchctl` all stubbed, and uninstall ordering/failure-propagation/service-account coverage with `id`/
+    `launchctl`/`docker`/`sudo` stubbed. **F7** was already resolved in the plan doc (Build scope names T1b/T1c/T4;
+    the phase graph already gates T3 on `A1b`) — verified, not re-fixed.
+  - **T4 (D8)**: one Docker endpoint contract, `scripts/launchd/docker-endpoint.sh` (sourced, not executed) —
+    `DOCKER_BIN`/`DOCKER_HOST` from `SAPPHIRE_DOCKER_BIN`/`SAPPHIRE_DOCKER_HOST` (defaulting to the proven-production
+    Docker Desktop values), with `DOCKER_CMD` preserved as the pre-existing test seam winning over both. Applied to
+    `prune-docker.sh`, `run-recap-probe.sh` (both previously hardcoded `/usr/local/bin/docker` /
+    `unix:///var/run/docker.sock` independently) and `start-sapphire.sh` (previously a bare `docker`, resolved from
+    launchd's minimal `PATH`, no test seam at all — now has one, plus a new test file,
+    `tests/unit/ops/test_start_sapphire_wrapper.py`). CI's `shellcheck` list gained `prune-docker.sh` (previously
+    omitted, per F7 in the plan text) and the new `docker-endpoint.sh`; `docs/deployment/mac-mini-staging.md`,
+    `docs/touchpoint-maps.md` and `docs/standards/cicd.md` updated.
+  - **Scope decisions, disclosed**: T1b's coverage identity is per-station (not per-station-per-parameter) — the
+    review's "including partial multi-parameter writes" is not fully realized; a station with ANY persisted forecast
+    counts as covered. T1c's F4 durability question ("remove/disable the plists, or rename the operation and
+    document it as temporary") was resolved via the documentation route — the uninstall message now explicitly
+    discloses plists are not removed, rather than adding plist-deletion logic to a live host-operator command
+    (judged the lower-risk resolution for an automated pass). Both are residual risks for a human/Codex review round
+    to weigh in on.
 
 ## Problem
 

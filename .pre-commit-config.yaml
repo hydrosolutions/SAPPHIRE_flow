@@ -48,7 +48,13 @@ repos:
     hooks:
       - id: shellcheck
         name: shellcheck Mac-mini scripts
-        entry: shellcheck
+        # -x: follow `source`d files (Plan 158 D8/T4 — docker-endpoint.sh is
+        # sourced by prune-docker.sh/run-recap-probe.sh/start-sapphire.sh via
+        # a `# shellcheck source=SCRIPTDIR/...` directive, which alone only
+        # resolves when the target is ALSO among this invocation's file
+        # args — pre-commit may hand shellcheck a single changed file at a
+        # time, so `-x` is required for correctness regardless of batching).
+        entry: shellcheck -x
         language: system
         files: ^(scripts/launchd/.*\.sh|scripts/bootstrap-mac-mini\.sh)$
         types_or: [shell]

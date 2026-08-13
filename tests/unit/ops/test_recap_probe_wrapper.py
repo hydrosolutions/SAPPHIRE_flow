@@ -433,3 +433,118 @@ class TestSoundnessAgainstBuggyWrapper:
         # code propagates), but the error text has ALREADY landed in the
         # JSONL before that -- the discriminating defect.
         assert error_text in host_jsonl.read_text()
+
+
+class TestDockerEndpointContract:
+    """Plan 158 D8/T4: the Docker binary + daemon endpoint must resolve from
+    the single sourced contract (scripts/launchd/docker-endpoint.sh), not
+    the hardcoded Docker-Desktop-specific values this wrapper used to carry
+    inline. DOCKER_CMD (the pre-existing test seam) still wins over both."""
+
+    def _key_file(self, tmp_path: Path) -> Path:
+        key_file = tmp_path / "key"
+        key_file.write_text("test-key-value")
+        return key_file
+
+    def test_sapphire_docker_bin_override_is_used_when_docker_cmd_unset(
+        self, tmp_path: Path
+    ) -> None:
+        colima_bin_dir = tmp_path / "colima-style-bin"
+        colima_bin_dir.mkdir()
+        args_log = tmp_path / "docker-args.log"
+        fake = _write_fake_docker(
+            colima_bin_dir,
+            stdout="ok\n",
+            stderr="",
+            exit_code=0,
+            args_log=args_log,
+        )
+        host_jsonl = tmp_path / "out.jsonl"
+        host_summary = tmp_path / "out.summary.log"
+
+        env = {
+            **os.environ,
+            "RECAP_PROBE_KEY_FILE": str(self._key_file(tmp_path)),
+            "RECAP_PROBE_HOST_LOG": str(host_jsonl),
+            "RECAP_PROBE_HOST_SUMMARY": str(host_summary),
+            "RECAP_PROBE_SCRIPT": str(_write_probe_stub(tmp_path)),
+            "SAPPHIRE_DOCKER_BIN": str(fake),
+        }
+        env.pop("DOCKER_CMD", None)
+        result = subprocess.run(
+            ["bash", str(_WRAPPER_SCRIPT)],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        # The fake docker at the Colima-style path was actually invoked
+        # (recorded its exec args) -- proves resolution went through the
+        # contract, not a hardcoded /usr/local/bin/docker.
+        assert args_log.exists() and args_log.read_text().strip() != ""
+
+    def test_sapphire_docker_host_override_is_exported_to_docker(
+        self, tmp_path: Path
+    ) -> None:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        docker_host_log = tmp_path / "docker-host-seen.log"
+        fake = bin_dir / "docker"
+        fake.write_text(
+            "#!/bin/bash\n"
+            f'printf \'%s\' "${{DOCKER_HOST:-unset}}" > "{docker_host_log}"\n'
+            "exit 0\n"
+        )
+        fake.chmod(0o755)
+        host_jsonl = tmp_path / "out.jsonl"
+        host_summary = tmp_path / "out.summary.log"
+
+        env = {
+            **os.environ,
+            "DOCKER_CMD": str(fake),
+            "RECAP_PROBE_KEY_FILE": str(self._key_file(tmp_path)),
+            "RECAP_PROBE_HOST_LOG": str(host_jsonl),
+            "RECAP_PROBE_HOST_SUMMARY": str(host_summary),
+            "RECAP_PROBE_SCRIPT": str(_write_probe_stub(tmp_path)),
+            "SAPPHIRE_DOCKER_HOST": "unix:///fake/colima/docker.sock",
+        }
+        subprocess.run(
+            ["bash", str(_WRAPPER_SCRIPT)],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert docker_host_log.read_text() == "unix:///fake/colima/docker.sock"
+
+    def test_docker_cmd_still_wins_over_sapphire_docker_bin(
+        self, tmp_path: Path
+    ) -> None:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        args_log = tmp_path / "docker-args.log"
+        real_fake = _write_fake_docker(
+            bin_dir, stdout="ok\n", stderr="", exit_code=0, args_log=args_log
+        )
+        wrong_bin = tmp_path / "should-not-be-used"
+        wrong_bin.write_text("#!/bin/bash\nexit 99\n")
+        wrong_bin.chmod(0o755)
+        host_jsonl = tmp_path / "out.jsonl"
+        host_summary = tmp_path / "out.summary.log"
+
+        env = {
+            **os.environ,
+            "DOCKER_CMD": str(real_fake),
+            "SAPPHIRE_DOCKER_BIN": str(wrong_bin),
+            "RECAP_PROBE_KEY_FILE": str(self._key_file(tmp_path)),
+            "RECAP_PROBE_HOST_LOG": str(host_jsonl),
+            "RECAP_PROBE_HOST_SUMMARY": str(host_summary),
+            "RECAP_PROBE_SCRIPT": str(_write_probe_stub(tmp_path)),
+        }
+        result = subprocess.run(
+            ["bash", str(_WRAPPER_SCRIPT)],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert args_log.read_text().strip() != ""

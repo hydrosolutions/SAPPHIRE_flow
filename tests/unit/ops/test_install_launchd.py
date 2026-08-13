@@ -235,6 +235,64 @@ class TestRootFullSweepRejected:
         assert "full sweep" not in (result.stdout + result.stderr).lower()
 
 
+class TestRootAgentLabelRejected:
+    """Plan 158 T1c F2 (major): `sudo ... --label <agent-domain-label>` must
+    also be refused, not just a root full sweep. The root guard above only
+    covers "no --label" — an explicit AGENT target under sudo still resolves
+    AGENTS_DIR against root's $HOME (not the real operator's), so it would
+    land in /var/root/Library/LaunchAgents while being bootstrapped into
+    gui/$SUDO_UID: it loads once, then vanishes at the next login/reboot."""
+
+    def _run_as_root(
+        self, tmp_path: Path, *args: str, sudo_uid: str | None = "501"
+    ) -> subprocess.CompletedProcess[str]:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        _write_fake_bin(bin_dir, "id", "echo 0")
+        home = tmp_path / "home"
+        home.mkdir()
+        env = {
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        }
+        if sudo_uid is not None:
+            env["SUDO_UID"] = sudo_uid
+        return subprocess.run(
+            ["bash", str(_INSTALL_SCRIPT), *args],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(home),
+        )
+
+    def test_root_plus_starter_label_rejected(self, tmp_path: Path) -> None:
+        result = self._run_as_root(tmp_path, "--dry-run", "--label", _STARTER_LABEL)
+        assert result.returncode != 0, result.stdout + result.stderr
+        combined = result.stdout + result.stderr
+        assert "sudo" in combined.lower()
+        assert "root" in combined.lower()
+
+    def test_root_plus_prune_label_rejected(self, tmp_path: Path) -> None:
+        result = self._run_as_root(tmp_path, "--dry-run", "--label", _PRUNE_LABEL)
+        assert result.returncode != 0, result.stdout + result.stderr
+        combined = result.stdout + result.stderr
+        assert "sudo" in combined.lower()
+        assert "root" in combined.lower()
+
+    def test_rejection_writes_nothing(self, tmp_path: Path) -> None:
+        result = self._run_as_root(tmp_path, "--label", _STARTER_LABEL)
+        assert result.returncode != 0
+        home = tmp_path / "home"
+        assert not (home / "Library" / "LaunchAgents").exists()
+
+    def test_root_plus_daemon_label_still_allowed(self, tmp_path: Path) -> None:
+        # Control case: the daemon label is the documented privileged path
+        # and must NOT be caught by this new guard.
+        result = self._run_as_root(tmp_path, "--dry-run", "--label", _WATCHDOG_LABEL)
+        assert result.returncode == 0, result.stdout + result.stderr
+
+
 class TestStaleGuiBootoutFailureAbortsSystemBootstrap:
     """Blocker fix: install_daemon() must ABORT — never proceed to
     `launchctl bootstrap system ...` — when it cannot positively confirm the
@@ -352,6 +410,165 @@ class TestStaleGuiBootoutFailureAbortsSystemBootstrap:
         assert f"copying {_WATCHDOG_PLIST}" in combined, combined
         log = log_path.read_text()
         assert f"bootout gui/{self._UID}/{_WATCHDOG_LABEL}" in log, log
+
+
+class TestDaemonInstallRemovesLegacyAgentPlist:
+    """Plan 158 T1c F1 (blocker): a successful daemon install must remove
+    (not merely bootout-from-the-current-session) any leftover agent-domain
+    plist FILE at AGENTS_DIR — launchd re-scans that directory at every
+    login, so a leftover file would silently reload as a duplicate
+    LaunchAgent racing the new daemon on the same state file. On a FAILED
+    daemon bootstrap, the legacy plist must be restored (rollback) so a
+    half-migration never leaves the host with no watchdog at all."""
+
+    _UID = "501"
+
+    def _fake_bins(
+        self, tmp_path: Path, *, launchctl_body: str
+    ) -> tuple[Path, Path, Path]:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        _write_fake_bin(bin_dir, "id", "echo 0")
+        _write_fake_bin(bin_dir, "plutil", "exit 0")
+        chown_log = tmp_path / "chown.log"
+        chown_log.write_text("")
+        _write_fake_bin(
+            bin_dir, "chown", f'printf \'%s\\n\' "$*" >> "{chown_log}"\nexit 0'
+        )
+        chmod_log = tmp_path / "chmod.log"
+        chmod_log.write_text("")
+        _write_fake_bin(
+            bin_dir, "chmod", f'printf \'%s\\n\' "$*" >> "{chmod_log}"\nexit 0'
+        )
+
+        cp_log = tmp_path / "cp.log"
+        cp_log.write_text("")
+        cp_body = (
+            f'printf \'%s\\n\' "$*" >> "{cp_log}"\n'
+            'case "$*" in\n'
+            "  */Library/LaunchDaemons/*) exit 0 ;;\n"
+            '  *) exec /bin/cp "$@" ;;\n'
+            "esac\n"
+        )
+        _write_fake_bin(bin_dir, "cp", cp_body)
+
+        log_path = tmp_path / "launchctl.log"
+        log_path.write_text("")
+        _write_fake_bin(
+            bin_dir,
+            "launchctl",
+            f'printf \'%s\\n\' "$*" >> "{log_path}"\n{launchctl_body}\n',
+        )
+        return bin_dir, log_path, cp_log
+
+    def _run(
+        self, tmp_path: Path, *, launchctl_body: str, legacy_content: str
+    ) -> tuple[subprocess.CompletedProcess[str], Path, Path, Path]:
+        bin_dir, log_path, cp_log = self._fake_bins(
+            tmp_path, launchctl_body=launchctl_body
+        )
+        home = tmp_path / "home"
+        agents_dir = home / "Library" / "LaunchAgents"
+        agents_dir.mkdir(parents=True)
+        legacy_plist = agents_dir / _WATCHDOG_PLIST
+        legacy_plist.write_text(legacy_content)
+
+        env = {
+            **os.environ,
+            "HOME": str(home),
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "SUDO_UID": self._UID,
+        }
+        result = subprocess.run(
+            ["bash", str(_INSTALL_SCRIPT), "--label", _WATCHDOG_LABEL],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(home),
+        )
+        return result, legacy_plist, log_path, cp_log
+
+    # Nothing registered anywhere -> every stale-gui/stale-system bootout
+    # branch is skipped; bootstrap/enable succeed.
+    _CLEAN_SUCCESS = 'if [[ "$1" == "print" ]]; then exit 1; fi\nexit 0'
+
+    def test_successful_install_removes_legacy_plist_file(self, tmp_path: Path) -> None:
+        result, legacy_plist, _log_path, _cp_log = self._run(
+            tmp_path,
+            launchctl_body=self._CLEAN_SUCCESS,
+            legacy_content="LEGACY-MARKER",
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert not legacy_plist.exists(), (
+            "legacy agent plist must be removed after a successful daemon "
+            "install, or it silently reloads as a duplicate LaunchAgent at "
+            "the next login"
+        )
+
+    def test_successful_install_sets_root_wheel_ownership_and_0644_mode(
+        self, tmp_path: Path
+    ) -> None:
+        result, _legacy_plist, _log_path, _cp_log = self._run(
+            tmp_path,
+            launchctl_body=self._CLEAN_SUCCESS,
+            legacy_content="LEGACY-MARKER",
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        chown_calls = (tmp_path / "chown.log").read_text().splitlines()
+        chmod_calls = (tmp_path / "chmod.log").read_text().splitlines()
+        assert any(
+            "root:wheel" in c and "/Library/LaunchDaemons/" in c for c in chown_calls
+        ), chown_calls
+        assert any(
+            c.startswith("644 ") and "/Library/LaunchDaemons/" in c for c in chmod_calls
+        ), chmod_calls
+
+    def test_successful_install_bootstraps_system_domain(self, tmp_path: Path) -> None:
+        result, _legacy_plist, log_path, _cp_log = self._run(
+            tmp_path,
+            launchctl_body=self._CLEAN_SUCCESS,
+            legacy_content="LEGACY-MARKER",
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        log = log_path.read_text()
+        assert "bootstrap system" in log, log
+        assert "enable system" in log, log
+
+    # Everything unregistered, but `launchctl bootstrap system ...` itself
+    # fails (e.g. a malformed plist rejected at bootstrap time).
+    _BOOTSTRAP_FAILS = (
+        'if [[ "$1" == "print" ]]; then exit 1; fi\n'
+        'if [[ "$1" == "bootstrap" && "$2" == "system" ]]; then exit 1; fi\n'
+        "exit 0"
+    )
+
+    def test_failed_bootstrap_restores_legacy_plist(self, tmp_path: Path) -> None:
+        result, legacy_plist, _log_path, _cp_log = self._run(
+            tmp_path,
+            launchctl_body=self._BOOTSTRAP_FAILS,
+            legacy_content="LEGACY-MARKER",
+        )
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert legacy_plist.exists(), (
+            "a FAILED daemon bootstrap must roll back to the legacy agent "
+            "plist, or the host is left with NO watchdog running at all"
+        )
+        assert legacy_plist.read_text() == "LEGACY-MARKER"
+
+    def test_failed_bootstrap_reloads_gui_agent(self, tmp_path: Path) -> None:
+        result, _legacy_plist, log_path, _cp_log = self._run(
+            tmp_path,
+            launchctl_body=self._BOOTSTRAP_FAILS,
+            legacy_content="LEGACY-MARKER",
+        )
+        assert result.returncode != 0, result.stdout + result.stderr
+        log = log_path.read_text()
+        gui_bootstraps = [
+            line for line in log.splitlines() if line.startswith("bootstrap gui/")
+        ]
+        assert len(gui_bootstraps) >= 1, (
+            f"rollback must re-bootstrap the gui/<uid> agent: {log}"
+        )
 
 
 class TestUnprivilegedFullSweepSkipsDaemonAndContinues:

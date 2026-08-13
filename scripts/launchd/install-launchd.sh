@@ -129,6 +129,24 @@ if [ "$(id -u)" -eq 0 ] && [ -z "${ONLY_LABEL}" ]; then
     exit 1
 fi
 
+# Plan 158 T1c F2 (major): an explicit --label under sudo is ONLY safe for a
+# daemon-domain target. An agent-domain target under sudo hits the exact
+# same $HOME-resolves-to-root's-home bug as the full-sweep case above — it
+# would land in /var/root/Library/LaunchAgents while being bootstrapped into
+# gui/$SUDO_UID (the real operator's session): it loads once, immediately,
+# then vanishes at the next login/reboot, since launchd re-scans the REAL
+# operator's ~/Library/LaunchAgents, not root's.
+if [ "$(id -u)" -eq 0 ] && [ -n "${ONLY_LABEL}" ] \
+    && [ "$(domain_for_label "${ONLY_LABEL}")" = "agent" ]; then
+    log "ERROR: ${ONLY_LABEL} is an agent-domain (gui/<uid>) label — refusing"
+    log "  to install it under sudo. Under sudo, \$HOME resolves to root's"
+    log "  home, so the plist would be installed under the wrong user's"
+    log "  LaunchAgents and would not survive the next login/reboot."
+    log "  Re-run WITHOUT sudo:"
+    log "    ${SCRIPT_DIR}/install-launchd.sh --label ${ONLY_LABEL}"
+    exit 1
+fi
+
 if [ "${DRY_RUN}" -eq 0 ]; then
     mkdir -p "${HOME}/Library/Logs"
 fi
@@ -194,9 +212,40 @@ install_agent() {
     launchctl enable "gui/${UID_VAL}/${label}"
 }
 
+rollback_to_legacy_agent() {
+    # Plan 158 T1c F1: restore the legacy gui/<uid> agent from `backup` (the
+    # copy install_daemon saved before removing it) when a daemon bootstrap
+    # fails partway through — a half-migration must never leave the host
+    # with NO watchdog running in either domain.
+    local plist="$1" label="$2" backup="$3"
+    if [ -z "${backup}" ]; then
+        log "ERROR: daemon bootstrap failed and no legacy agent plist was"
+        log "  saved to roll back to — ${label} is NOT running. Restore"
+        log "  manually:"
+        log "    cp ${SCRIPT_DIR}/${plist} ${AGENTS_DIR}/${plist}"
+        log "    launchctl bootstrap gui/${UID_VAL} ${AGENTS_DIR}/${plist}"
+        return 1
+    fi
+    log "ROLLING BACK: restoring legacy gui/${UID_VAL}/${label} from backup"
+    mkdir -p "${AGENTS_DIR}"
+    cp "${backup}" "${AGENTS_DIR}/${plist}"
+    chmod 644 "${AGENTS_DIR}/${plist}"
+    if launchctl bootstrap "gui/${UID_VAL}" "${AGENTS_DIR}/${plist}" 2>/dev/null; then
+        launchctl enable "gui/${UID_VAL}/${label}" 2>/dev/null || true
+        log "rollback complete — ${label} is running again as a LaunchAgent"
+        log "  (gui/${UID_VAL})"
+    else
+        log "ERROR: rollback bootstrap ALSO failed. ${label} is NOT running"
+        log "  in either domain — resolve manually."
+    fi
+    rm -f "${backup}"
+}
+
 install_daemon() {
     local plist="$1" label="$2" src="$3"
     local dst="${DAEMONS_DIR}/${plist}"
+    local legacy_plist="${AGENTS_DIR}/${plist}"
+    local legacy_backup=""
 
     if [ "${DRY_RUN}" -eq 1 ]; then
         log "[dry-run] ${label}: install as LaunchDaemon -> system (REQUIRES ROOT)"
@@ -254,10 +303,36 @@ install_daemon() {
         fi
     fi
 
+    # Plan 158 T1c F1 (blocker): the gui bootout above only clears the
+    # CURRENT registration — launchd re-scans AGENTS_DIR at every login, so
+    # a leftover plist FILE there would silently reload as a duplicate
+    # LaunchAgent racing this daemon against the same state file. It cannot
+    # be regenerated from `src` (the repo source plist is now daemon-shaped
+    # — see docs/plans/158-session-independent-operational-stack.md T1c
+    # review fold, F3), so back it up before removing it.
+    if [ -f "${legacy_plist}" ]; then
+        legacy_backup="$(mktemp "${TMPDIR:-/tmp}/${plist}.legacy.XXXXXX")"
+        cp "${legacy_plist}" "${legacy_backup}"
+        log "removing legacy agent plist ${legacy_plist} (backed up for rollback)"
+        rm -f "${legacy_plist}"
+    fi
+
     log "copying ${plist} -> ${dst}"
-    cp "${src}" "${dst}"
-    chown root:wheel "${dst}"
-    chmod 644 "${dst}"
+    if ! cp "${src}" "${dst}"; then
+        log "ERROR: failed to copy ${src} -> ${dst}"
+        rollback_to_legacy_agent "${plist}" "${label}" "${legacy_backup}"
+        exit 1
+    fi
+    if ! chown root:wheel "${dst}"; then
+        log "ERROR: failed to chown ${dst}"
+        rollback_to_legacy_agent "${plist}" "${label}" "${legacy_backup}"
+        exit 1
+    fi
+    if ! chmod 644 "${dst}"; then
+        log "ERROR: failed to chmod ${dst}"
+        rollback_to_legacy_agent "${plist}" "${label}" "${legacy_backup}"
+        exit 1
+    fi
 
     if launchctl print "system/${label}" >/dev/null 2>&1; then
         log "${label} already loaded (system); bootout + bootstrap for fresh state"
@@ -265,8 +340,18 @@ install_daemon() {
     fi
 
     log "bootstrap system/${label}"
-    launchctl bootstrap system "${dst}"
-    launchctl enable "system/${label}"
+    if ! launchctl bootstrap system "${dst}"; then
+        log "ERROR: launchctl bootstrap system/${label} failed."
+        rollback_to_legacy_agent "${plist}" "${label}" "${legacy_backup}"
+        exit 1
+    fi
+    if ! launchctl enable "system/${label}"; then
+        log "ERROR: launchctl enable system/${label} failed."
+        rollback_to_legacy_agent "${plist}" "${label}" "${legacy_backup}"
+        exit 1
+    fi
+
+    [ -n "${legacy_backup}" ] && rm -f "${legacy_backup}"
 }
 
 for plist in "${TARGETS[@]}"; do

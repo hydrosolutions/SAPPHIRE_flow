@@ -25,15 +25,16 @@
 # first non-zero command.
 set -uo pipefail
 
-# Docker binary: absolute path in production (Docker Desktop symlinks its
-# CLI there). DOCKER_CMD lets tests inject a fake docker stub — the same
-# mechanism tests/unit/ops/test_launchd_prune_docker.py uses, not PATH
-# injection.
-DOCKER="${DOCKER_CMD:-/usr/local/bin/docker}"
-
-# The value the live deployment uses and that produced records under
-# launchd on 2026-07-20 (proven).
-export DOCKER_HOST=unix:///var/run/docker.sock
+# Plan 158 D8/T4: single source of truth for the Docker binary + daemon
+# endpoint (was hardcoded here to Docker-Desktop-specific values — this was
+# THE proven-production value, now the shared contract's default). DOCKER_CMD
+# lets tests inject a fake docker stub — the same mechanism
+# tests/unit/ops/test_launchd_prune_docker.py uses, not PATH injection — and
+# is preserved as the seam, winning over both the contract and its override.
+_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=SCRIPTDIR/docker-endpoint.sh
+source "${_SCRIPT_DIR}/docker-endpoint.sh"
+DOCKER="${DOCKER_CMD:-${DOCKER_BIN}}"
 
 CONTAINER="sapphire_flow-prefect-worker-1"
 

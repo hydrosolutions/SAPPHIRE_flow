@@ -423,7 +423,7 @@ This subsection describes the operational topology of `.github/workflows/ci.yml`
 | 1 | `lint` | `uv sync --frozen` | — | `uv sync` (developers typically have a synced venv already) | No |
 | 1 | `lint` | `uv run ruff check src/ tests/` | — | `uv run ruff check src/ tests/` (also via `uv run check` and pre-commit) | No |
 | 1 | `lint` | `uv run ruff format --check src/ tests/` | — | `uv run ruff format --check src/ tests/` (also via `uv run check` and pre-commit) | No |
-| 1 | `lint` | `shellcheck scripts/launchd/start-sapphire.sh scripts/launchd/watchdog.sh scripts/launchd/install-launchd.sh scripts/launchd/run-recap-probe.sh scripts/bootstrap-mac-mini.sh` | — | Same command (also via pre-commit `shellcheck`) | No |
+| 1 | `lint` | `shellcheck -x scripts/launchd/start-sapphire.sh scripts/launchd/watchdog.sh scripts/launchd/install-launchd.sh scripts/launchd/run-recap-probe.sh scripts/launchd/prune-docker.sh scripts/launchd/docker-endpoint.sh scripts/bootstrap-mac-mini.sh` | — | Same command (also via pre-commit `shellcheck`) | No |
 | 1 | `lint` | `uv run pyright --outputjson src/ > /tmp/pyright.json \|\| true` | — | `uv run pyright src/` | No |
 | 1 | `lint` | `uv run python tools/pyright_ratchet.py /tmp/pyright.json tools/pyright_baseline.json` | — | `uv run pyright src/` (then compare against `tools/pyright_baseline.json`) | No |
 | 1 | `lint` | `aquasecurity/trivy-action` (fs scan, `uses:`) | — | `trivy fs --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed --scanners vuln --skip-dirs .venv .` | No (but requires trivy installed) |
@@ -732,6 +732,41 @@ every other check — a cheap addition folded into the same change (the Data vol
 See `docs/plans/158-session-independent-operational-stack.md` D3/D14/T1 and
 `docs/deployment/mac-mini-staging.md` § LaunchAgents / LaunchDaemons for the host-secret
 staging + verification runbook.
+
+### Forecast-production freshness (Plan 158 D15, T1b)
+
+Before this, nothing checked whether the operational forecast cycle was actually
+**producing product** — the watchdog probed the health endpoint, backup freshness and
+both BAFU feeds, but a silently-stopped forecast cycle would look green on every
+existing signal. `run_forecast_cycle_flow` now emits a
+`check_type=forecast_freshness` `PipelineHealthRecord` at the end of every cycle (and at
+every early-abort exit path), and the watchdog probes it alongside the BAFU checks
+(`--forecast-stale-threshold-hours`, default 12h = 2× the 6h NWP cadence).
+
+**This is a SEPARATE contract from `ForecastCycleHealth`**, which is left unchanged —
+`ForecastCycleHealth.DEGRADED` legitimately covers snow loss, partial/stale NWP,
+fallback-priority drift and fallback-only alert suppression, all conditions where the
+product still shipped fine. Conflating the two would either Slack-alarm on healthy
+DEGRADED cycles or weaken DEGRADED's established meaning. Instead, freshness is
+computed **identity-based**: for every station/group member expected to produce a
+forecast this cycle (has an active assignment, or is a group member with an active
+group assignment), was at least one forecast for it actually persisted?
+`stations_succeeded`/`forecasts_stored` cannot answer this — a per-record
+`store_forecast` exception is logged only, and the station still counts as succeeded.
+
+- **OK** — every expected identity got at least one forecast persisted.
+- **WARNING** — some, but not all, expected identities got product.
+- **CRITICAL** — zero identities got product (including the "nothing was expected
+  either" case — a zero-operational-station/zero-group cycle never reads OK). Total
+  product loss is always CRITICAL, never a perpetual WARNING that "never stales, never
+  escalates, never gets actioned."
+
+The record ages the **cycle's own issue time** (`cycle_time`), not the write time
+(`checked_at`) — a `run_forecast_cycle_flow(..., cycle_time=<old ISO>)` replay must not
+reset freshness while producing nothing current. The watchdog's
+`probe_forecast_freshness` reads `cycle_time` specifically (unlike the two BAFU checks,
+which age `checked_at`). Recovery requires a fresh **and** `status="ok"` record — a
+fresh `"warning"` record must never read as recovered.
 
 > The launchd-based mac-mini watchdog (`sapphire_flow.ops.watchdog`, § Host-level watchdog operational
 > details elsewhere in this doc / `docs/operations/`) is the REALIZED implementation — the cron

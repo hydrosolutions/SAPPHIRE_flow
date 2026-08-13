@@ -39,6 +39,14 @@ is the channel for a watchdog that dies before it can report anything at all.
 Plan 158 D14 adds a free-disk-space check (alerts on the same Slack path,
 default threshold 20 GiB free on ``/``) — a cheap addition folded into the
 same change.
+
+Plan 158 D15 adds a forecast-production-freshness check
+(check_type=forecast_freshness, emitted by `flows/run_forecast_cycle.py` at
+the end of every cycle): a SEPARATE, product-coverage signal from
+`ForecastCycleHealth` (which stays unchanged — it means cycle *operational
+quality*, not persisted product). Ages the forecast cycle's own issue time
+(``cycle_time``), not the record's write time, so a replayed historical
+cycle cannot reset freshness.
 """
 
 from __future__ import annotations
@@ -46,6 +54,7 @@ from __future__ import annotations
 import argparse
 import functools
 import json
+import math
 import shutil
 import socket
 import sys
@@ -61,6 +70,13 @@ import structlog
 from sapphire_flow.logging import configure_cli_logging
 
 log = structlog.get_logger(__name__)
+
+# Plan 158 T1c F5: httpx.InvalidURL (raised at request-construction time, e.g.
+# a malformed hand-pasted secret) does NOT inherit from httpx.HTTPError —
+# every HTTP call site in this module must catch both, or a typo'd webhook/
+# probe/dead-man URL escapes to main()'s unrecoverable handler and kills the
+# watchdog (exit 2) from a config typo, skipping the dead-man ping too.
+_HTTP_CALL_EXCEPTIONS: tuple[type[Exception], ...] = (httpx.HTTPError, httpx.InvalidURL)
 
 DEFAULT_HEALTH_URL = "http://localhost:8000/api/v1/health"
 DEFAULT_BACKUP_DIR = Path("/Volumes/sapphire-backup/pg_dumps")
@@ -86,6 +102,12 @@ DEFAULT_BAFU_HEALTH_DETAIL_URL = (
 DEFAULT_BAFU_OBS_HEALTH_DETAIL_URL = (
     DEFAULT_HEALTH_URL + "/detail?check_type=bafu_observation_freshness&limit=1"
 )
+# Plan 158 D15/T1b: the operational forecast cycle's own product-coverage
+# heartbeat (PipelineCheckType.FORECAST_FRESHNESS) — see
+# run_forecast_cycle.py's end-of-cycle emission.
+DEFAULT_FORECAST_HEALTH_DETAIL_URL = (
+    DEFAULT_HEALTH_URL + "/detail?check_type=forecast_freshness&limit=1"
+)
 
 
 def _bafu_url_from_health(health_url: str) -> str:
@@ -104,6 +126,13 @@ def _bafu_obs_url_from_health(health_url: str) -> str:
     return f"{base}/health/detail?check_type=bafu_observation_freshness&limit=1"
 
 
+def _forecast_freshness_url_from_health(health_url: str) -> str:
+    """Same derivation as `_bafu_url_from_health`, for the operational
+    forecast cycle's own product-coverage heartbeat (Plan 158 D15/T1b)."""
+    base = health_url.rsplit("/health", 1)[0]
+    return f"{base}/health/detail?check_type=forecast_freshness&limit=1"
+
+
 BACKUP_STALE_THRESHOLD = timedelta(hours=26)
 # The BAFU collector runs hourly (Plan 111) — no heartbeat in 3h means it has
 # stopped, not merely running slow.
@@ -119,6 +148,12 @@ DEADMAN_PING_TIMEOUT_S = 5.0
 # to alert and act before PostgreSQL or the Docker VM is starved. Not
 # CLI-configurable (mirrors BACKUP_STALE_THRESHOLD).
 DISK_FREE_THRESHOLD_BYTES = 20 * 1024**3
+# Plan 158 D15/T1b: the operational forecast cycle is scheduled on the
+# NWP-driven cadence (_NWP_CADENCE_HOURS = 6h in run_forecast_cycle.py) —
+# twice that gives one missed cycle of slack before alerting. CLI-configurable
+# (unlike the two constants above) because the operational cadence is a
+# deployment choice, not a code constant.
+DEFAULT_FORECAST_STALE_THRESHOLD_HOURS = 12.0
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -129,6 +164,7 @@ class WatchdogState:
     last_backup_alert_iso: str | None = None
     consecutive_bafu_failures: int = 0
     consecutive_bafu_obs_failures: int = 0
+    consecutive_forecast_freshness_failures: int = 0
 
     @classmethod
     def load(cls, path: Path) -> WatchdogState:
@@ -150,6 +186,12 @@ class WatchdogState:
             consecutive_bafu_obs_failures=int(
                 raw.get("consecutive_bafu_obs_failures", 0)
             ),
+            # Backward compatible with state files written before Plan 158
+            # D15/T1b's forecast-production freshness check: absent key
+            # defaults to 0.
+            consecutive_forecast_freshness_failures=int(
+                raw.get("consecutive_forecast_freshness_failures", 0)
+            ),
         )
 
     def dump(self, path: Path) -> None:
@@ -158,6 +200,9 @@ class WatchdogState:
             "last_backup_alert_iso": self.last_backup_alert_iso,
             "consecutive_bafu_failures": self.consecutive_bafu_failures,
             "consecutive_bafu_obs_failures": self.consecutive_bafu_obs_failures,
+            "consecutive_forecast_freshness_failures": (
+                self.consecutive_forecast_freshness_failures
+            ),
         }
         path.write_text(json.dumps(payload, indent=2))
 
@@ -194,7 +239,7 @@ def probe_health(url: str, *, client: httpx.Client | None = None) -> HealthProbe
                 ok=False, http_status=status, error=f"body_status:{body_status}"
             )
         return HealthProbeResult(ok=True, http_status=status)
-    except httpx.HTTPError as exc:
+    except _HTTP_CALL_EXCEPTIONS as exc:
         return HealthProbeResult(ok=False, http_status=None, error=str(exc))
     finally:
         if owns_client:
@@ -266,9 +311,78 @@ def probe_bafu_freshness(
         return BafuFreshnessResult(
             found=True, checked_at=checked_at, status=status, error=None
         )
-    except httpx.HTTPError as exc:
+    except _HTTP_CALL_EXCEPTIONS as exc:
         return BafuFreshnessResult(
             found=False, checked_at=None, status=None, error=str(exc)
+        )
+    finally:
+        if owns_client:
+            c.close()
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ForecastFreshnessResult:
+    found: bool
+    cycle_time: datetime | None
+    status: str | None
+    error: str | None = None
+
+
+def probe_forecast_freshness(
+    url: str, *, client: httpx.Client | None = None, token: str | None = None
+) -> ForecastFreshnessResult:
+    """Synchronous probe of `/health/detail?check_type=forecast_freshness`.
+
+    Structurally mirrors `probe_bafu_freshness` (found=False, never raises,
+    on any HTTP error / non-2xx / invalid JSON / empty `items`) with ONE
+    deliberate difference: it reads the record's `cycle_time` field, NOT
+    `checked_at`. `checked_at` is when the record was WRITTEN; `cycle_time`
+    is the forecast cycle's own issue time. Ageing on `checked_at` would let
+    a REPLAYED historical cycle (run_forecast_cycle_flow accepts an explicit
+    past `cycle_time`) reset freshness while producing nothing current
+    (Plan 158 D15, reviewer major-fix).
+    """
+    owns_client = client is None
+    c = client or httpx.Client(timeout=HEALTH_CHECK_TIMEOUT_S)
+    headers = {"Authorization": f"Bearer {token}"} if token else None
+    try:
+        resp = c.get(url, headers=headers)
+        status_code = resp.status_code
+        if status_code < 200 or status_code >= 300:
+            return ForecastFreshnessResult(
+                found=False,
+                cycle_time=None,
+                status=None,
+                error=f"http_status:{status_code}",
+            )
+        try:
+            payload: dict[str, Any] = resp.json()
+        except ValueError as exc:
+            return ForecastFreshnessResult(
+                found=False, cycle_time=None, status=None, error=f"invalid_json: {exc}"
+            )
+        items: list[Any] = payload.get("items") or []
+        if not items:
+            return ForecastFreshnessResult(
+                found=False, cycle_time=None, status=None, error="no_records"
+            )
+        item: dict[str, Any] = items[0]
+        cycle_time: datetime | None = None
+        cycle_time_raw: str | None = item.get("cycle_time")
+        if isinstance(cycle_time_raw, str):
+            try:
+                cycle_time = datetime.fromisoformat(cycle_time_raw)
+            except ValueError:
+                cycle_time = None
+            if cycle_time is not None and cycle_time.tzinfo is None:
+                cycle_time = cycle_time.replace(tzinfo=UTC)
+        status: str | None = item.get("status")
+        return ForecastFreshnessResult(
+            found=True, cycle_time=cycle_time, status=status, error=None
+        )
+    except _HTTP_CALL_EXCEPTIONS as exc:
+        return ForecastFreshnessResult(
+            found=False, cycle_time=None, status=None, error=str(exc)
         )
     finally:
         if owns_client:
@@ -315,7 +429,7 @@ def default_deadman_poster(url: str) -> bool:
     a dead-man outage must never take down the watchdog it monitors."""
     try:
         resp = httpx.post(url, timeout=DEADMAN_PING_TIMEOUT_S)
-    except httpx.HTTPError as exc:
+    except _HTTP_CALL_EXCEPTIONS as exc:
         log.warning("watchdog.deadman_ping_failed", error=str(exc))
         return False
     if resp.status_code >= 300:
@@ -379,7 +493,7 @@ def default_slack_poster(url: str, message: str) -> bool:
     payload = {"text": message}
     try:
         resp = httpx.post(url, json=payload, timeout=SLACK_POST_TIMEOUT_S)
-    except httpx.HTTPError as exc:
+    except _HTTP_CALL_EXCEPTIONS as exc:
         log.warning("watchdog.slack_post_failed", error=str(exc))
         return False
     if resp.status_code >= 300:
@@ -511,6 +625,39 @@ def _format_disk_space_alert(
     )
 
 
+def _format_forecast_freshness_stale_alert(
+    *,
+    hostname: str,
+    now: datetime,
+    result: ForecastFreshnessResult,
+    threshold_hours: float,
+) -> str:
+    last_str = (
+        result.cycle_time.isoformat() if result.cycle_time else "no heartbeat found"
+    )
+    return (
+        f"[SAPPHIRE staging] forecast production STALE — host: {hostname}, "
+        f"time: {now.isoformat()}, last_cycle: {last_str}, "
+        f"threshold: {threshold_hours:.1f}h"
+    )
+
+
+def _format_forecast_freshness_degraded_alert(
+    *, hostname: str, now: datetime, result: ForecastFreshnessResult
+) -> str:
+    return (
+        f"[SAPPHIRE staging] forecast production INCOMPLETE — host: {hostname}, "
+        f"time: {now.isoformat()}, status: {result.status}"
+    )
+
+
+def _format_forecast_freshness_recovery_alert(*, hostname: str, now: datetime) -> str:
+    return (
+        f"[SAPPHIRE staging] forecast production RECOVERED — "
+        f"host: {hostname}, time: {now.isoformat()}"
+    )
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class WatchdogConfig:
     health_url: str = DEFAULT_HEALTH_URL
@@ -529,6 +676,10 @@ class WatchdogConfig:
     deadman_url_path: Path = DEFAULT_DEADMAN_PATH
     # Plan 158 D14: filesystem path checked for free space.
     disk_path: Path = DEFAULT_DISK_PATH
+    # Plan 158 D15/T1b: same semantics as bafu_health_detail_url, for the
+    # operational forecast cycle's own product-coverage heartbeat.
+    forecast_health_detail_url: str | None = None
+    forecast_stale_threshold_hours: float = DEFAULT_FORECAST_STALE_THRESHOLD_HOURS
 
 
 def run_once(
@@ -540,6 +691,9 @@ def run_once(
     hostname: str | None = None,
     bafu_probe: Callable[[str], BafuFreshnessResult] = probe_bafu_freshness,
     bafu_obs_probe: Callable[[str], BafuFreshnessResult] = probe_bafu_freshness,
+    forecast_freshness_probe: Callable[
+        [str], ForecastFreshnessResult
+    ] = probe_forecast_freshness,
     deadman_poster: DeadmanPoster = default_deadman_poster,
     # None (the default) turns the free-disk-space check OFF, so every
     # existing call site is unaffected — main() always wires in the real
@@ -762,6 +916,81 @@ def run_once(
     else:
         state = replace(state, consecutive_bafu_obs_failures=0)
 
+    # --- Forecast production freshness (Plan 158 D15/T1b) -----------------
+    # Unlike the two BAFU checks above (which age the record's WRITE time),
+    # this ages the forecast CYCLE's own issue time (`cycle_time`, not
+    # `checked_at`) — see `probe_forecast_freshness`'s docstring. A record
+    # found with status "critical" or "warning" is treated as a failure the
+    # same way BAFU's "warning"/"critical" is — recovery therefore requires
+    # BOTH a fresh AND an "ok"-status record, never merely a recent write
+    # (Plan 158 D15 reviewer major-fix: a fresh WARNING must never read as
+    # recovered).
+    forecast_url = (
+        config.forecast_health_detail_url
+        or _forecast_freshness_url_from_health(config.health_url)
+    )
+    forecast_result = forecast_freshness_probe(forecast_url)
+    forecast_threshold = timedelta(hours=config.forecast_stale_threshold_hours)
+    forecast_stale = (
+        not forecast_result.found
+        or forecast_result.cycle_time is None
+        or (now - forecast_result.cycle_time) > forecast_threshold
+    )
+    forecast_degraded = forecast_result.status in {"warning", "critical"}
+    forecast_fail = forecast_stale or forecast_degraded
+    log.info(
+        "watchdog.forecast_freshness_check_completed",
+        url=forecast_url,
+        found=forecast_result.found,
+        cycle_time=forecast_result.cycle_time.isoformat()
+        if forecast_result.cycle_time
+        else None,
+        status=forecast_result.status,
+        error=forecast_result.error,
+        stale=forecast_stale,
+        degraded=forecast_degraded,
+        prev_failures=state.consecutive_forecast_freshness_failures,
+    )
+
+    forecast_alert_now = should_alert_health(
+        state.consecutive_forecast_freshness_failures,
+        current_ok=not forecast_fail,
+        current_fail=forecast_fail,
+    )
+
+    if forecast_alert_now:
+        if not forecast_fail:
+            message = _format_forecast_freshness_recovery_alert(hostname=host, now=now)
+            log.info("watchdog.forecast_freshness_recovery_alert", message=message)
+        elif forecast_stale:
+            message = _format_forecast_freshness_stale_alert(
+                hostname=host,
+                now=now,
+                result=forecast_result,
+                threshold_hours=config.forecast_stale_threshold_hours,
+            )
+            log.warning("watchdog.forecast_freshness_stale_alert", message=message)
+        else:
+            message = _format_forecast_freshness_degraded_alert(
+                hostname=host, now=now, result=forecast_result
+            )
+            log.warning("watchdog.forecast_freshness_degraded_alert", message=message)
+        if webhook:
+            posted = slack_poster(webhook, message)
+            log.info("watchdog.slack_post_attempted", posted=posted)
+        else:
+            log.info("watchdog.slack_skipped_log_only")
+
+    if forecast_fail:
+        state = replace(
+            state,
+            consecutive_forecast_freshness_failures=(
+                state.consecutive_forecast_freshness_failures + 1
+            ),
+        )
+    else:
+        state = replace(state, consecutive_forecast_freshness_failures=0)
+
     state.dump(config.state_path)
 
     # --- Dead-man's-switch ping (Plan 158 D3) ------------------------------
@@ -784,6 +1013,39 @@ def run_once(
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+def _parse_positive_float(raw: str, *, default: float, arg_name: str) -> float:
+    """Parse a CLI float argument, falling back to `default` (never raising)
+    on anything malformed or non-finite/non-positive.
+
+    Plan 158 D15 reviewer major-fix: argparse's `type=float` raises
+    SystemExit(2) DURING `parser.parse_args()` on a bad value — before
+    `main()`'s try/except and therefore before the dead-man ping, so a typo'd
+    threshold would brick monitoring silently. Accepting the raw string and
+    validating it here (with a safe fallback, never a hard exit) keeps a
+    malformed --forecast-stale-threshold-hours from taking the whole
+    watchdog down.
+    """
+    try:
+        value = float(raw)
+    except ValueError:
+        log.warning(
+            "watchdog.invalid_threshold_fallback",
+            arg=arg_name,
+            raw=raw,
+            default=default,
+        )
+        return default
+    if not math.isfinite(value) or value <= 0:
+        log.warning(
+            "watchdog.invalid_threshold_fallback",
+            arg=arg_name,
+            raw=raw,
+            default=default,
+        )
+        return default
+    return value
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -850,9 +1112,27 @@ def main(argv: list[str] | None = None) -> int:
         default=str(DEFAULT_DISK_PATH),
         help=f"Filesystem path to check free space on (default: {DEFAULT_DISK_PATH})",
     )
+    parser.add_argument(
+        "--forecast-stale-threshold-hours",
+        # A raw string, NOT type=float: argparse's own float coercion raises
+        # SystemExit before any of this function's error handling runs (see
+        # _parse_positive_float's docstring) — validated below instead.
+        default=str(DEFAULT_FORECAST_STALE_THRESHOLD_HOURS),
+        help=(
+            "Hours since the last forecast-production heartbeat before it is "
+            "considered stale (default: "
+            f"{DEFAULT_FORECAST_STALE_THRESHOLD_HOURS})"
+        ),
+    )
     args = parser.parse_args(argv)
 
     configure_cli_logging("INFO")
+
+    forecast_stale_threshold_hours = _parse_positive_float(
+        args.forecast_stale_threshold_hours,
+        default=DEFAULT_FORECAST_STALE_THRESHOLD_HOURS,
+        arg_name="--forecast-stale-threshold-hours",
+    )
 
     config = WatchdogConfig(
         health_url=args.health_url,
@@ -864,10 +1144,14 @@ def main(argv: list[str] | None = None) -> int:
         probe_token_path=Path(args.probe_token_path),
         deadman_url_path=Path(args.deadman_url_path),
         disk_path=Path(args.disk_path),
+        forecast_stale_threshold_hours=forecast_stale_threshold_hours,
     )
 
     probe_token = read_probe_token(config.probe_token_path)
     bafu_probe_bound = functools.partial(probe_bafu_freshness, token=probe_token)
+    forecast_freshness_probe_bound = functools.partial(
+        probe_forecast_freshness, token=probe_token
+    )
 
     try:
         run_once(
@@ -877,6 +1161,7 @@ def main(argv: list[str] | None = None) -> int:
             slack_poster=default_slack_poster,
             bafu_probe=bafu_probe_bound,
             bafu_obs_probe=bafu_probe_bound,
+            forecast_freshness_probe=forecast_freshness_probe_bound,
             deadman_poster=default_deadman_poster,
             disk_probe=probe_disk_free,
         )
