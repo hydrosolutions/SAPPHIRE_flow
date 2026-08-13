@@ -126,15 +126,38 @@ def _values_agree(a: Any, b: Any) -> bool:
     return a == b
 
 
+_UNDECLARED: Final[object] = object()
+
+
 def declared_static_naming(model: object) -> StaticNaming:
     """Plan 155 D16: read a model's opt-in static-naming declaration off
     ``model.static_naming`` (a class attribute, exactly like ``model_tier``
     / ``alert_eligibility``, ``services/model_registry.py``). Defaults to
     ``StaticNaming.NATIVE`` -- every model that does not declare otherwise
     keeps today's behaviour byte-for-byte unchanged, so the strict Caravan
-    regime is opt-in, never inferred."""
-    declared = getattr(model, "static_naming", None)
-    return declared if isinstance(declared, StaticNaming) else StaticNaming.NATIVE
+    regime is opt-in, never inferred.
+
+    Fixer round (major finding): the ABSENT case (no ``static_naming``
+    attribute at all) is the only one that silently defaults -- a
+    PRESENT-but-malformed declaration (e.g. the plain string ``"caravan"``
+    instead of ``StaticNaming.CARAVAN``) now raises ``ConfigurationError``
+    instead of being silently downgraded to ``NATIVE``, matching
+    ``model_registry.py``'s ``_declared_model_tier``/
+    ``_declared_alert_eligibility`` pattern of failing loudly on a bad
+    declaration. A sentinel (not ``None``) distinguishes "never declared"
+    from "declared as ``None``" -- both are malformed if declared, but only
+    the former is a legitimate default.
+    """
+    declared = getattr(model, "static_naming", _UNDECLARED)
+    if declared is _UNDECLARED:
+        return StaticNaming.NATIVE
+    if isinstance(declared, StaticNaming):
+        return declared
+    raise ConfigurationError(
+        f"{type(model).__name__} declares static_naming={declared!r}, which is "
+        "not a valid StaticNaming member -- expected StaticNaming.NATIVE or "
+        "StaticNaming.CARAVAN (Plan 155 D16)"
+    )
 
 
 def available_declared_static_keys(
@@ -228,14 +251,94 @@ def project_declared_static_attributes(
     return projected
 
 
+def resolve_shared_static_frame(
+    attributes: Mapping[str, Any] | None,
+    models: Iterable[object],
+    *,
+    station_code: str | None = None,
+) -> dict[str, Any]:
+    """Plan 155 fixer round (major finding): a per-station static frame
+    assembled ONCE and shared across every co-assigned model
+    (``services/operational_inputs.py::assemble_station_operational_inputs``
+    with a ``requirements_override`` UNIONING ``static_features`` across
+    every assigned model -- ``flows/run_forecast_cycle.py``'s fallback-chain
+    assembly) must NOT gate D16's Caravan resolution on a single
+    representative model's ``static_naming`` declaration while resolving
+    against the cross-model SUPERSET of declared names. Doing so silently
+    hands one co-assigned model's declared name the OTHER model's
+    resolution regime for that same bare name -- exactly the silent
+    failure D15/D16 exist to prevent (``area`` rescales every discharge).
+
+    Scopes resolution PER model instead: only a name that a
+    ``StaticNaming.CARAVAN``-declaring model itself asks for is projected
+    through :func:`project_declared_static_attributes`; a name exclusively
+    declared by ``NATIVE`` model(s) is left as today's untouched bare
+    attribute. If two co-assigned models declare the SAME bare name under
+    DIFFERING regimes (one wants Caravan's derivation, one wants the
+    incumbent bare value), there is no single correct shared value --
+    raises ``ConfigurationError`` naming the station and the conflicting
+    name(s) rather than silently picking one model's answer for both.
+    """
+    if not attributes:
+        return {}
+    caravan_names: set[str] = set()
+    native_names: set[str] = set()
+    for model in models:
+        declared_names = set(
+            getattr(getattr(model, "data_requirements", None), "static_features", ())
+            or ()
+        )
+        bucket = (
+            caravan_names
+            if declared_static_naming(model) is StaticNaming.CARAVAN
+            else native_names
+        )
+        bucket |= declared_names
+    conflicting = sorted(caravan_names & native_names)
+    if conflicting:
+        raise ConfigurationError(
+            f"station {station_code or '<unknown>'}: static name(s) "
+            f"{conflicting} are declared under DIFFERING static_naming "
+            "regimes by co-assigned models at this station -- refusing to "
+            "resolve a single shared value for both (Plan 155 D16 "
+            "fallback-chain gap)"
+        )
+    if not caravan_names:
+        return dict(attributes)
+    return project_declared_static_attributes(
+        attributes, caravan_names, station_code=station_code
+    )
+
+
+def _is_finite_numeric(value: Any) -> bool:
+    """T1's exit gate requires a genuine numeric, finite value.
+    ``isinstance(True, int)`` is ``True`` in Python, so ``bool`` must be
+    excluded explicitly or a boolean would pass as "finite"; a ``str``
+    (e.g. an un-parsed parquet cell) is rejected the same way (Plan 155
+    fixer round: `is_missing_static_value` alone accepts both)."""
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return True
+    if isinstance(value, float):
+        return math.isfinite(value)
+    return False
+
+
 @dataclass(frozen=True, kw_only=True, slots=True)
 class StaticCoverageGap:
     """One station's shortfall against T1's exit gate (Plan 155): "every
     station in the T0a manifest resolves all 50 of PT's statics to
-    non-null, finite values"."""
+    non-null, finite values". ``collision_error`` is set instead of
+    ``missing_statics`` being individually diagnosed when T2's collision
+    guard itself raised for this station (Plan 155 fixer round) -- the raw
+    package delivers two disagreeing values for one declared name, so
+    every declared name is reported missing (the whole resolution failed,
+    not just one)."""
 
     station_code: str
     missing_statics: frozenset[str]
+    collision_error: str | None = None
 
 
 def verify_static_coverage(
@@ -246,27 +349,40 @@ def verify_static_coverage(
     script (Plan 155 post-implementation-review finding: `is_missing_
     static_value` alone "rejects only None and NaN, so infinities pass
     it"). For every ``(station_code, basin.attributes)`` pair, resolves
-    each of ``declared_names`` via :func:`resolve_caravan_static_key` and
-    reports it missing when the value is absent, ``None``, NaN, OR a
-    non-finite float (an infinity) -- `math.isfinite`, exactly as the exit
-    gate specifies.
+    ``declared_names`` through the SAME collision-aware resolution the
+    frame boundary uses (:func:`project_declared_static_attributes` --
+    Plan 155 fixer round: the exit gate previously looked up only the
+    PRIMARY key via `resolve_caravan_static_key` directly, so it could
+    never observe a T2 collision a delivered package might carry) and
+    reports a name missing when its resolved value is absent OR not a
+    finite number (:func:`_is_finite_numeric` -- a ``str``/``bool`` no
+    longer passes as "finite").
 
     Returns one :class:`StaticCoverageGap` per station with at least one
-    missing static, station codes sorted, so a caller asserts ``()`` for
-    full coverage and gets an actionable report otherwise.
+    missing static (or an unresolved collision), station codes sorted, so
+    a caller asserts ``()`` for full coverage and gets an actionable
+    report otherwise.
     """
     declared = frozenset(declared_names)
     gaps: list[StaticCoverageGap] = []
     for code in sorted(basins_by_code):
         attrs = basins_by_code[code]
-        missing: set[str] = set()
-        for name in declared:
-            value = attrs.get(resolve_caravan_static_key(name)) if attrs else None
-            non_finite = isinstance(value, float) and not math.isfinite(value)
-            if is_missing_static_value(value) or non_finite:
-                missing.add(name)
-        if missing:
-            gaps.append(
-                StaticCoverageGap(station_code=code, missing_statics=frozenset(missing))
+        try:
+            projected = project_declared_static_attributes(
+                attrs, declared, station_code=code
             )
+        except ConfigurationError as exc:
+            gaps.append(
+                StaticCoverageGap(
+                    station_code=code,
+                    missing_statics=declared,
+                    collision_error=str(exc),
+                )
+            )
+            continue
+        missing = frozenset(
+            name for name in declared if not _is_finite_numeric(projected.get(name))
+        )
+        if missing:
+            gaps.append(StaticCoverageGap(station_code=code, missing_statics=missing))
     return tuple(gaps)

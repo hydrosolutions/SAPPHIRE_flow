@@ -19,6 +19,20 @@ class CaravanImportProvenance:
     import, since correcting it later means a full re-import (immutability
     reasoning would apply if this were ever persisted through the package
     pipeline).
+
+    ``content_fingerprint`` (Plan 155 fixer round, major finding: "provenance
+    is ephemeral ... no fingerprint and no immutability guard") is a stable
+    hash of the parsed parquet rows (`store/caravan_import.py::_fingerprint_
+    rows`) -- a durable IDENTITY for the exact content that was imported, so
+    two imports can be compared for "identical replay" vs. "genuinely
+    different source data" even before any persisted-to-a-table lineage
+    record exists. Persisting this fingerprint (and the rest of this
+    dataclass) into a dedicated source-version record, plus invalidating
+    trained artifacts on a genuine source revision, remains deferred (needs
+    new schema -- see the plan's T1 deviation note); `merge_namespaced_
+    attributes` (`store/basin_store.py`) enforces the "identical replay
+    only" half of that requirement independently, at the per-key level, by
+    rejecting a changed value under an already-merged key.
     """
 
     source_dataset_name: str = "caravan"
@@ -26,6 +40,7 @@ class CaravanImportProvenance:
     source_dataset_purpose: str = "attributes"
     extractor_name: str = "hsol"
     extractor_version: str | None = None
+    content_fingerprint: str | None = None
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

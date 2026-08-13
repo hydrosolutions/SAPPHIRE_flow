@@ -955,6 +955,27 @@ bare Caravan name: equal FINITE values resolve silently, differing values (or
 equal infinities) raise `ConfigurationError` naming station, both keys and
 both values.
 
+**`static_naming` must be forwarded across the FI adapter boundary (Plan 155
+fixer round 2).** `adapters/forecast_interface.py::ForecastInterfaceAdapter`
+does not forward arbitrary attributes from the wrapped model; discovery
+(`services/model_registry.py::_assert_model_classification_declared`) copies
+`static_naming` from the RAW model onto the ADAPTED instance once, at
+discovery time — the same place `model_tier`/`alert_eligibility` already
+survive this boundary. A present-but-invalid `static_naming` (not a
+`StaticNaming` member) raises `ConfigurationError` rather than silently
+defaulting to `NATIVE`; only a genuinely absent declaration defaults.
+
+**A shared static frame across co-assigned models resolves per-model, not
+per-representative.** `services/operational_inputs.py::
+assemble_station_operational_inputs`'s `requirements_override` fallback-chain
+path can union `static_features` across every model assigned to a station;
+`services/caravan_statics.py::resolve_shared_static_frame` scopes Caravan
+resolution to only the names a `CARAVAN`-declaring co-assigned model itself
+declares, leaves names exclusively declared by `NATIVE` co-assignments
+untouched, and raises `ConfigurationError` if two co-assigned models declare
+the identical bare name under differing `StaticNaming` regimes — there is no
+single correct shared value for that case.
+
 ### Alert
 
 ```python

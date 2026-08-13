@@ -8,13 +8,10 @@ import polars as pl
 import structlog
 
 from sapphire_flow.exceptions import ConfigurationError
-from sapphire_flow.services.caravan_statics import (
-    declared_static_naming,
-    project_declared_static_attributes,
-)
+from sapphire_flow.services.caravan_statics import resolve_shared_static_frame
 from sapphire_flow.services.training_data import resample_to_time_step
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.enums import EnsembleMode, QcStatus, StaticNaming, WarmUpSource
+from sapphire_flow.types.enums import EnsembleMode, QcStatus, WarmUpSource
 from sapphire_flow.types.model import (
     ModelDataRequirements,
     StationInputData,
@@ -22,7 +19,7 @@ from sapphire_flow.types.model import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
     from datetime import timedelta
 
     from sapphire_flow.protocols.adapters import WeatherReanalysisSource
@@ -402,6 +399,7 @@ def assemble_station_operational_inputs(
     forecast_horizon_steps: int,
     time_step: timedelta,
     requirements_override: ModelDataRequirements | None = None,
+    static_naming_models: Sequence[object] | None = None,
 ) -> tuple[StationModelInputs, OperationalInputMetadata] | None:
     now = clock()
     # When a station is assigned models with heterogeneous requirements, the
@@ -557,20 +555,29 @@ def assemble_station_operational_inputs(
     if station_config is not None and station_config.basin_id is not None:
         basin = basin_store.fetch_basin(station_config.basin_id)
         if basin is not None and basin.attributes:
-            # Plan 155 T2 (G8) + D16: project a Caravan-DECLARING model's
-            # own static names (D15's `caravan:`-namespaced resolution)
-            # alongside the untouched HydroATLAS canonicals -- see
-            # `services/caravan_statics.py`. A NATIVE model (the default)
-            # keeps today's unprojected frame byte-for-byte.
+            # Plan 155 T2 (G8) + D16, fixer round (major finding): the
+            # frame is shared across EVERY model assigned to this station
+            # (``reqs.static_features`` is a cross-model UNION when a
+            # ``requirements_override`` superset is supplied -- see
+            # ``flows/run_forecast_cycle.py::build_superset_requirements``),
+            # so resolution must be scoped PER assigned model, not gated on
+            # ``model`` alone (a single representative, e.g. the
+            # highest-priority assignment) -- see
+            # ``services/caravan_statics.py::resolve_shared_static_frame``
+            # for why: a bare-name collision between a CARAVAN-declaring and
+            # a NATIVE co-assignment must raise, not silently share one
+            # model's resolution with the other. Defaults to ``[model]``
+            # when the caller has no broader assignment set (e.g. the GROUP
+            # path, which only ever assembles for one model).
             static_df = pl.DataFrame(
                 [
-                    project_declared_static_attributes(
+                    resolve_shared_static_frame(
                         basin.attributes,
-                        reqs.static_features,
+                        static_naming_models
+                        if static_naming_models is not None
+                        else [model],
                         station_code=station_config.code,
                     )
-                    if declared_static_naming(model) is StaticNaming.CARAVAN
-                    else basin.attributes
                 ]
             )
 
