@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-12
 plan: 157
 title: aquacast packaging — shim distribution, the mm/day unit boundary, worker image, and external-artifact import
@@ -229,10 +229,25 @@ T3 is independent of the shim and can run in parallel. T2 needs something to ins
   forecast then runs on the torch-carrying image, which **voids D10's stated rationale**;
   **(B)** extract Phase B2 into its own deployment — which requires re-joining group and station
   ensembles across processes for combination and alerting: real, unscoped, expensive.
-  *Recommendation: (A), reframing the aquacast image as **the forecast-cycle worker image** (a
-  superset of the standard one) served by its own pool, with `default`/`ingest` workers staying
-  torch-free because they no longer run the cycle. State whichever is chosen — the acceptance test's
-  meaning depends on it.*
+  **RESOLVED (owner, 2026-08-13): option (A).** The aquacast image **IS the forecast-cycle worker
+  image** — a superset of the standard one, served by its own pool. `default`/`ingest` workers stay
+  torch-free because they **no longer run the cycle**.
+
+  **This voids D10's stated rationale, and that is accepted: the rationale was wrong, not the
+  decision.** D10 justified a dedicated image as "keeping ~2 GB of PyTorch out of every existing
+  worker". Since group forecasting is Phase B2 *inside* `run_forecast_cycle` and Phase C alerting
+  consumes its results in-process, the cycle cannot be split without re-joining group and station
+  ensembles across a process boundary. So torch lands on whichever worker runs the cycle, and the
+  honest framing is *one heavier cycle worker*, not *an isolated aquacast worker*.
+
+  **What T2 must therefore deliver:** the forecast-cycle worker image carrying the shim + torch, its
+  own Prefect pool, the cycle deployment routed to that pool, `default`/`ingest` left unchanged and
+  torch-free, and `docs/standards/cicd.md` updated with the topology. **Acceptance is unchanged in
+  form but now unambiguous in meaning: a cold-start `discover_models()` test in the deployed
+  forecast-cycle worker** — that is the environment the cycle actually runs in.
+
+  *(Rejected: (B) extract Phase B2 into its own deployment — real, unscoped, and it buys isolation we
+  do not need while the cycle is a single process.)*
 
 ## Non-goals
 - Retraining or fine-tuning in SAP3 (Plan 152 D3 — import-only for v1, flagged for revisit if ICON
