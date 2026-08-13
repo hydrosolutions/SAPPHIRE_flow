@@ -114,6 +114,23 @@ The acceptance criterion this pool split exists to satisfy — a cold-start
 `discover_models()` test in the deployed `forecast-cycle` worker — is
 correspondingly not yet satisfiable.
 
+**Same constraint applies to the `import-model-artifact` deployment**
+(Plan 157 T3, `flows/import_model_artifact.py`): it also runs on the
+`default` pool today, for the same reason — routing it anywhere else before
+a worker serves that pool would leave it workerless. This is harmless for
+any torch-free model (every SAP3-native model, and any FI model whose
+package has no heavy runtime dependency): `default` can deserialize and
+import those artifacts today. It is NOT yet usable for an aquacast-style
+artifact — `model.deserialize_artifact()` needs the shim's torch runtime,
+which `default` does not carry. Importing a torch-dependent artifact is
+blocked on the same T1/T2 sequencing as the cycle: once the `sapphire-
+aquacast` shim exists and the `forecast-cycle` pool/worker exist, either
+retarget this deployment's `work_pool_name` to `forecast-cycle` (it is a
+superset image) or add an explicit `--pool` override at trigger time — no
+new import-path code is required, only the routing decision, which should
+be made and documented alongside T2's other routing changes rather than
+decided ad hoc per import.
+
 Three work pools isolate workloads with different resource and concurrency profiles:
 
 | Pool | Flows | Default concurrency | Container | Default resource limits |

@@ -25,12 +25,13 @@ from sapphire_flow.exceptions import (
 )
 from sapphire_flow.services.model_import import import_external_artifact
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.enums import ModelArtifactStatus
-from sapphire_flow.types.ids import ModelId, TenantId
+from sapphire_flow.types.enums import ArtifactScope, ModelArtifactStatus
+from sapphire_flow.types.ids import ModelId, StationGroupId, TenantId
 from tests.conftest import make_station_config
 from tests.fakes.fake_stores import (
     FakeArtifactProvenanceStore,
     FakeModelArtifactStore,
+    FakeModelStore,
     FakeStationStore,
 )
 
@@ -45,6 +46,10 @@ class _SpyModel:
     assert the public-boundary invariant that it is NEVER called."""
 
     config_hash = "shim-config-abc123"
+    artifact_scope = ArtifactScope.STATION
+    display_name = "Spy Model"
+    description = "test double"
+    data_requirements = None
 
     def __init__(self, *, deserialize_ok: bool = True) -> None:
         self._deserialize_ok = deserialize_ok
@@ -71,6 +76,7 @@ class TestUndeserializableBlobFailsLoudly:
         model = _SpyModel(deserialize_ok=False)
         artifact_store = FakeModelArtifactStore()
         provenance_store = FakeArtifactProvenanceStore()
+        model_store = FakeModelStore()
         station_store = FakeStationStore()
         station = make_station_config()
         station_store.store_station(station)
@@ -86,12 +92,14 @@ class TestUndeserializableBlobFailsLoudly:
                 station_id=station.id,
                 station_store=station_store,
                 provenance_recorder=provenance_store,
+                model_store=model_store,
             )
 
     def test_no_row_or_provenance_written_before_the_failure(self) -> None:
         model = _SpyModel(deserialize_ok=False)
         artifact_store = FakeModelArtifactStore()
         provenance_store = FakeArtifactProvenanceStore()
+        model_store = FakeModelStore()
         station_store = FakeStationStore()
         station = make_station_config()
         station_store.store_station(station)
@@ -107,6 +115,7 @@ class TestUndeserializableBlobFailsLoudly:
                 station_id=station.id,
                 station_store=station_store,
                 provenance_recorder=provenance_store,
+                model_store=model_store,
             )
 
         assert (
@@ -121,6 +130,7 @@ class TestUndeserializableBlobFailsLoudly:
         model = _SpyModel(deserialize_ok=False)
         artifact_store = FakeModelArtifactStore()
         provenance_store = FakeArtifactProvenanceStore()
+        model_store = FakeModelStore()
         station_store = FakeStationStore()
         station = make_station_config()
         station_store.store_station(station)
@@ -136,6 +146,7 @@ class TestUndeserializableBlobFailsLoudly:
                 station_id=station.id,
                 station_store=station_store,
                 provenance_recorder=provenance_store,
+                model_store=model_store,
             )
 
         assert model.train_calls == 0
@@ -146,6 +157,7 @@ class TestConfigArtifactMismatchFailsLoudly:
         model = _SpyModel(deserialize_ok=True)
         artifact_store = FakeModelArtifactStore()
         provenance_store = FakeArtifactProvenanceStore()
+        model_store = FakeModelStore()
         station_store = FakeStationStore()
         station = make_station_config()
         station_store.store_station(station)
@@ -161,6 +173,7 @@ class TestConfigArtifactMismatchFailsLoudly:
                 station_id=station.id,
                 station_store=station_store,
                 provenance_recorder=provenance_store,
+                model_store=model_store,
                 expected_config_hash="a-completely-different-hash",
             )
 
@@ -173,12 +186,50 @@ class TestConfigArtifactMismatchFailsLoudly:
             == []
         )
 
+    def test_omitted_expected_config_hash_is_observable_via_a_warning_log(
+        self,
+    ) -> None:
+        """The drift check is opt-in per call (a caller who omits
+        expected_config_hash gets NO check) — that must at least be
+        OBSERVABLE, not a silent no-op."""
+        from structlog.testing import capture_logs
+
+        model = _SpyModel(deserialize_ok=True)
+        artifact_store = FakeModelArtifactStore()
+        provenance_store = FakeArtifactProvenanceStore()
+        model_store = FakeModelStore()
+        station_store = FakeStationStore()
+        station = make_station_config()
+        station_store.store_station(station)
+
+        with capture_logs() as logs:
+            import_external_artifact(
+                model=model,  # type: ignore[arg-type]
+                model_id=_MODEL_ID,
+                artifact_bytes=b"real-checkpoint-bytes",
+                artifact_store=artifact_store,
+                trained_at=_TRAINED_AT,
+                clock=_clock,
+                station_id=station.id,
+                station_store=station_store,
+                provenance_recorder=provenance_store,
+                model_store=model_store,
+                # expected_config_hash deliberately omitted.
+            )
+
+        warnings = [
+            e for e in logs if e.get("event") == "model_import.no_expected_config_hash"
+        ]
+        assert len(warnings) == 1
+        assert warnings[0]["log_level"] == "warning"
+
 
 class TestValidImportYieldsPromotableArtifactWithProvenance:
     def test_artifact_is_active_after_import(self) -> None:
         model = _SpyModel(deserialize_ok=True)
         artifact_store = FakeModelArtifactStore()
         provenance_store = FakeArtifactProvenanceStore()
+        model_store = FakeModelStore()
         station_store = FakeStationStore()
         station = make_station_config()
         station_store.store_station(station)
@@ -193,6 +244,7 @@ class TestValidImportYieldsPromotableArtifactWithProvenance:
             station_id=station.id,
             station_store=station_store,
             provenance_recorder=provenance_store,
+            model_store=model_store,
             source_repository="hydrosolutions/sapphire-aquacast",
             source_commit="deadbeef",
             expected_config_hash="shim-config-abc123",
@@ -207,6 +259,7 @@ class TestValidImportYieldsPromotableArtifactWithProvenance:
         model = _SpyModel(deserialize_ok=True)
         artifact_store = FakeModelArtifactStore()
         provenance_store = FakeArtifactProvenanceStore()
+        model_store = FakeModelStore()
         station_store = FakeStationStore()
         station = make_station_config()
         station_store.store_station(station)
@@ -221,6 +274,7 @@ class TestValidImportYieldsPromotableArtifactWithProvenance:
             station_id=station.id,
             station_store=station_store,
             provenance_recorder=provenance_store,
+            model_store=model_store,
             source_repository="hydrosolutions/sapphire-aquacast",
             source_commit="deadbeef",
             expected_config_hash="shim-config-abc123",
@@ -239,6 +293,7 @@ class TestValidImportYieldsPromotableArtifactWithProvenance:
         model = _SpyModel(deserialize_ok=True)
         artifact_store = FakeModelArtifactStore()
         provenance_store = FakeArtifactProvenanceStore()
+        model_store = FakeModelStore()
         station_store = FakeStationStore()
         station = make_station_config()
         station_store.store_station(station)
@@ -253,6 +308,7 @@ class TestValidImportYieldsPromotableArtifactWithProvenance:
             station_id=station.id,
             station_store=station_store,
             provenance_recorder=provenance_store,
+            model_store=model_store,
         )
 
         assert model.train_calls == 0
@@ -264,6 +320,7 @@ class TestValidImportYieldsPromotableArtifactWithProvenance:
         model = _SpyModel(deserialize_ok=True)
         artifact_store = FakeModelArtifactStore()
         provenance_store = FakeArtifactProvenanceStore()
+        model_store = FakeModelStore()
         station_store = FakeStationStore()
         station = make_station_config()
         station_store.store_station(station)
@@ -278,6 +335,7 @@ class TestValidImportYieldsPromotableArtifactWithProvenance:
             station_id=station.id,
             station_store=station_store,
             provenance_recorder=provenance_store,
+            model_store=model_store,
         )
 
         record = artifact_store.fetch_artifact_record(artifact_id)
@@ -294,6 +352,7 @@ class TestTenantDerivedFromTargetNotTrustedArgument:
         model = _SpyModel(deserialize_ok=True)
         artifact_store = FakeModelArtifactStore()
         provenance_store = FakeArtifactProvenanceStore()
+        model_store = FakeModelStore()
         station_store = FakeStationStore()
 
         station = make_station_config()
@@ -312,6 +371,7 @@ class TestTenantDerivedFromTargetNotTrustedArgument:
                 station_id=station.id,
                 station_store=station_store,
                 provenance_recorder=provenance_store,
+                model_store=model_store,
                 supplied_target_tenant_id=wrong_tenant,
             )
         assert (
@@ -325,6 +385,7 @@ class TestTenantDerivedFromTargetNotTrustedArgument:
         model = _SpyModel(deserialize_ok=True)
         artifact_store = FakeModelArtifactStore()
         provenance_store = FakeArtifactProvenanceStore()
+        model_store = FakeModelStore()
         station_store = FakeStationStore()
         station = make_station_config()
         station_store.store_station(station)
@@ -339,6 +400,7 @@ class TestTenantDerivedFromTargetNotTrustedArgument:
             station_id=station.id,
             station_store=station_store,
             provenance_recorder=provenance_store,
+            model_store=model_store,
             supplied_target_tenant_id=station.tenant_id,
         )
         assert artifact_store.fetch_artifact_record(artifact_id) is not None
@@ -347,6 +409,7 @@ class TestTenantDerivedFromTargetNotTrustedArgument:
         model = _SpyModel(deserialize_ok=True)
         artifact_store = FakeModelArtifactStore()
         provenance_store = FakeArtifactProvenanceStore()
+        model_store = FakeModelStore()
 
         with pytest.raises(ConfigurationError, match="exactly one of"):
             import_external_artifact(
@@ -357,4 +420,163 @@ class TestTenantDerivedFromTargetNotTrustedArgument:
                 trained_at=_TRAINED_AT,
                 clock=_clock,
                 provenance_recorder=provenance_store,
+                model_store=model_store,
             )
+
+
+class _GroupSpyModel(_SpyModel):
+    artifact_scope = ArtifactScope.GROUP
+
+
+class TestModelScopeValidatedAgainstTarget:
+    """G6: a GROUP-scoped model imported against a station_id (or vice
+    versa) must be rejected — reported success would otherwise be
+    operationally invisible to whichever lookup path queries by the OTHER
+    scope."""
+
+    def test_group_scoped_model_imported_against_station_id_is_rejected(
+        self,
+    ) -> None:
+        model = _GroupSpyModel(deserialize_ok=True)
+        artifact_store = FakeModelArtifactStore()
+        provenance_store = FakeArtifactProvenanceStore()
+        model_store = FakeModelStore()
+        station_store = FakeStationStore()
+        station = make_station_config()
+        station_store.store_station(station)
+        group_model_id = ModelId("aquacast_group_pt")
+
+        with pytest.raises(ConfigurationError, match="GROUP-scoped"):
+            import_external_artifact(
+                model=model,  # type: ignore[arg-type]
+                model_id=group_model_id,
+                artifact_bytes=b"real-checkpoint-bytes",
+                artifact_store=artifact_store,
+                trained_at=_TRAINED_AT,
+                clock=_clock,
+                station_id=station.id,
+                station_store=station_store,
+                provenance_recorder=provenance_store,
+                model_store=model_store,
+            )
+
+        assert (
+            artifact_store.fetch_artifacts_by_status(
+                group_model_id, ModelArtifactStatus.TRAINING
+            )
+            == []
+        )
+        assert model_store.fetch_model(group_model_id) is None
+
+    def test_station_scoped_model_imported_against_group_id_is_rejected(
+        self,
+    ) -> None:
+        from sapphire_flow.types.station import StationGroup
+        from tests.fakes.fake_stores import FakeStationGroupStore
+
+        group_store = FakeStationGroupStore()
+        group = StationGroup(
+            id=StationGroupId(uuid4()),
+            name="scope-mismatch-group",
+            station_ids=frozenset(),
+            created_at=_TRAINED_AT,
+        )
+        group_store.store_group(group)
+
+        model = _SpyModel(deserialize_ok=True)  # STATION-scoped
+        artifact_store = FakeModelArtifactStore()
+        provenance_store = FakeArtifactProvenanceStore()
+        model_store = FakeModelStore()
+
+        with pytest.raises(ConfigurationError, match="STATION-scoped"):
+            import_external_artifact(
+                model=model,  # type: ignore[arg-type]
+                model_id=_MODEL_ID,
+                artifact_bytes=b"real-checkpoint-bytes",
+                artifact_store=artifact_store,
+                trained_at=_TRAINED_AT,
+                clock=_clock,
+                group_id=group.id,
+                group_store=group_store,
+                provenance_recorder=provenance_store,
+                model_store=model_store,
+            )
+        assert model_store.fetch_model(_MODEL_ID) is None
+
+
+class TestFreshExternalModelIsRegistered:
+    """G2: `model_artifacts.model_id` is an FK into `models`. The first
+    import of a genuinely new model must REGISTER it, not depend on some
+    unrelated earlier flow having already done so."""
+
+    def test_fresh_model_gets_registered(self) -> None:
+        model = _SpyModel(deserialize_ok=True)
+        artifact_store = FakeModelArtifactStore()
+        provenance_store = FakeArtifactProvenanceStore()
+        model_store = FakeModelStore()
+        station_store = FakeStationStore()
+        station = make_station_config()
+        station_store.store_station(station)
+
+        assert model_store.fetch_model(_MODEL_ID) is None
+
+        import_external_artifact(
+            model=model,  # type: ignore[arg-type]
+            model_id=_MODEL_ID,
+            artifact_bytes=b"real-checkpoint-bytes",
+            artifact_store=artifact_store,
+            trained_at=_TRAINED_AT,
+            clock=_clock,
+            station_id=station.id,
+            station_store=station_store,
+            provenance_recorder=provenance_store,
+            model_store=model_store,
+        )
+
+        registered = model_store.fetch_model(_MODEL_ID)
+        assert registered is not None
+        assert registered.artifact_scope == ArtifactScope.STATION
+
+    def test_existing_model_with_conflicting_scope_is_rejected_before_any_write(
+        self,
+    ) -> None:
+        from sapphire_flow.types.model import ModelRecord
+
+        model = _SpyModel(deserialize_ok=True)  # declares STATION
+        artifact_store = FakeModelArtifactStore()
+        provenance_store = FakeArtifactProvenanceStore()
+        model_store = FakeModelStore()
+        station_store = FakeStationStore()
+        station = make_station_config()
+        station_store.store_station(station)
+
+        model_store.register_model(
+            ModelRecord(
+                id=_MODEL_ID,
+                display_name="Stale registration",
+                artifact_scope=ArtifactScope.GROUP,
+                description="pre-existing, now-stale registry row",
+                created_at=_TRAINED_AT,
+            )
+        )
+
+        with pytest.raises(ConfigurationError, match="registry drift"):
+            import_external_artifact(
+                model=model,  # type: ignore[arg-type]
+                model_id=_MODEL_ID,
+                artifact_bytes=b"real-checkpoint-bytes",
+                artifact_store=artifact_store,
+                trained_at=_TRAINED_AT,
+                clock=_clock,
+                station_id=station.id,
+                station_store=station_store,
+                provenance_recorder=provenance_store,
+                model_store=model_store,
+            )
+
+        assert (
+            artifact_store.fetch_artifacts_by_status(
+                _MODEL_ID, ModelArtifactStatus.TRAINING
+            )
+            == []
+        )

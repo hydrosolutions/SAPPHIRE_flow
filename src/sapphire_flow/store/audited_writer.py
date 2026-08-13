@@ -34,6 +34,7 @@ def make_audited_stores(conn: sa.Connection) -> dict[str, object]:
     from sapphire_flow.store.audit_log_store import PgAuditLogStore
     from sapphire_flow.store.model_artifact_provenance import PgArtifactProvenanceStore
     from sapphire_flow.store.model_artifact_store import PgModelArtifactStore
+    from sapphire_flow.store.model_store import PgModelStore
     from sapphire_flow.store.station_group_store import PgStationGroupStore
     from sapphire_flow.store.station_store import PgStationStore
 
@@ -46,6 +47,10 @@ def make_audited_stores(conn: sa.Connection) -> dict[str, object]:
         # Plan 157 T3: external-artifact import provenance shares this same
         # transaction — see services/model_import.py.
         "provenance_store": PgArtifactProvenanceStore(conn),
+        # Plan 157 T3 fixer round: a fresh external model has no `models` row
+        # yet — registering/verifying it must share this same transaction so
+        # the whole import stays all-or-nothing.
+        "model_store": PgModelStore(conn),
     }
 
 

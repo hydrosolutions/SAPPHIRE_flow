@@ -60,23 +60,33 @@ class PgModelArtifactStore:
         artifact_path.parent.mkdir(parents=True, exist_ok=True)
         artifact_path.write_bytes(artifact_bytes)
 
-        self._conn.execute(
-            sa.insert(model_artifacts).values(
-                id=aid,
-                model_id=model_id,
-                station_id=station_id,
-                group_id=group_id,
-                status=status.value,
-                artifact_path=str(artifact_path),
-                sha256_hash=sha256,
-                training_period_start=training_period_start,
-                training_period_end=training_period_end,
-                trained_at=trained_at,
-                promoted_at=None,
-                promoted_by=None,
-                superseded_at=None,
+        # The file above is written before this INSERT. If the INSERT itself
+        # fails (e.g. an FK violation on model_id, a check-constraint
+        # violation, ...) the caller has no row and therefore no path to
+        # clean up — self-heal HERE rather than leaking an orphan file that
+        # only a caller who already knows our internal path scheme could
+        # find (Plan 157 T3 fixer round, finding G8).
+        try:
+            self._conn.execute(
+                sa.insert(model_artifacts).values(
+                    id=aid,
+                    model_id=model_id,
+                    station_id=station_id,
+                    group_id=group_id,
+                    status=status.value,
+                    artifact_path=str(artifact_path),
+                    sha256_hash=sha256,
+                    training_period_start=training_period_start,
+                    training_period_end=training_period_end,
+                    trained_at=trained_at,
+                    promoted_at=None,
+                    promoted_by=None,
+                    superseded_at=None,
+                )
             )
-        )
+        except Exception:
+            artifact_path.unlink(missing_ok=True)
+            raise
         return aid, sha256
 
     def fetch_artifact(

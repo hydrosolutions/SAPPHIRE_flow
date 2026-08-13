@@ -2684,16 +2684,44 @@ helper above, a **standalone helper, not a `ModelArtifactStore` method**.
 `import_external_artifact` (`sapphire_flow.services.model_import`) is the
 executable entry point that closes G4/G7 — Flow 13
 (`flows/onboard_model.py`) has no path for an artifact SAP3 did not train.
-It validates (config/artifact-hash match, then `model.deserialize_artifact`)
-BEFORE any write, derives the target tenant from the station/group being
-imported into (never trusts a caller-supplied tenant id), and — with a real
-`AuditedWriter` (`store/audited_writer.py`, extended here with a
-`provenance_store` entry) — runs `store_artifact` + the provenance write +
-`promote_artifact` in ONE transaction: on any failure no artifact row, no
-provenance row, and no orphaned artifact file survive. It never calls
-`model.train`. Deployed as the standalone `import-model-artifact` Prefect
-deployment (`flows/import_model_artifact.py`, no cron —
-`cli/register_deployments.py`).
+Before any write it: derives the target tenant from the station/group being
+imported into (never trusts a caller-supplied tenant id); asserts the
+discovered model's declared `artifact_scope` matches the station_id/group_id
+actually supplied (a GROUP-scoped model imported against a station_id, or
+vice versa, is rejected — it would otherwise report success while being
+invisible to whichever lookup path queries by the OTHER scope); registers
+the model in `models` if this is its first import (an idempotent
+`ON CONFLICT DO NOTHING`, mirroring `register_models`), or — if a `models`
+row already exists — verifies its `artifact_scope` still matches what the
+model declares today, rejecting registry drift across a shim upgrade;
+checks the config/artifact-hash (logging a warning, not failing, when the
+caller omits `expected_config_hash` — the check is opt-in per call, not
+opt-in per deployment); and calls `model.deserialize_artifact`. Only then —
+with a real `AuditedWriter` (`store/audited_writer.py`, extended here with
+`provenance_store` AND `model_store` entries) — does it run model
+registration + `store_artifact` + the provenance write + `promote_artifact`
+in ONE transaction: on any failure no artifact row, no provenance row, no
+`models` row (for a fresh model), and no orphaned artifact file survive
+(`PgModelArtifactStore.store_artifact` also self-cleans: if its own INSERT
+fails — e.g. an FK violation on `model_id` — it deletes the file it just
+wrote before re-raising, so a caller who never learns the generated
+artifact id still cannot leak a file). It never calls `model.train`.
+
+An FI model's `config_hash` (a SAP3-side convention, not part of the FI
+protocol) is forwarded through `ForecastInterfaceAdapter.config_hash` — a
+property added specifically so the drift check above sees what the wrapped
+model declares rather than silently reading `None` off the adapter.
+
+Deployed as the standalone `import-model-artifact` Prefect deployment
+(`flows/import_model_artifact.py`, no cron — `cli/register_deployments.py`,
+`default` pool — see `docs/standards/cicd.md` § The `forecast-cycle` pool
+for why, and its current torch-free limitation). The deployment's top-level
+parameter is `artifact_base64: str`, not `artifact_bytes: bytes` — a
+Prefect deployment's parameters cross the wire as JSON, and a `bytes`-typed
+parameter does NOT base64-decode a JSON string (pydantic's JSON-mode
+`bytes` validation does `str.encode()`), so it cannot transport an arbitrary
+binary checkpoint. The flow decodes strictly (`base64.b64decode(...,
+validate=True)`) before calling the service.
 
 #### ModelStore
 

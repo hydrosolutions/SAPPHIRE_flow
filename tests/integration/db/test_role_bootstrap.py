@@ -485,6 +485,99 @@ class TestApplicationStoresWorkUnderScopedRoles:
         assert fetched is not None
         assert fetched.code == "ROLE-BOOTSTRAP-TEST"
 
+    def test_worker_can_write_and_read_back_artifact_provenance(
+        self, role_harness: _RoleBootstrapHarness, tmp_path: Path
+    ) -> None:
+        """Plan 157 T3: the exact failure mode the plan warned about — a
+        superuser test staying green while the scoped `sapphire_worker` role
+        is denied the NEW `model_artifact_provenance` INSERT grant in
+        production. Runs the real store classes end to end (register a
+        model, store an artifact, record its provenance) authenticated as
+        `sapphire_worker`, then reads the provenance row back as
+        `sapphire_api`."""
+        from datetime import UTC, datetime
+        from uuid import uuid4
+
+        from sapphire_flow.store.model_artifact_provenance import (
+            PgArtifactProvenanceStore,
+        )
+        from sapphire_flow.store.model_artifact_store import PgModelArtifactStore
+        from sapphire_flow.types.datetime import ensure_utc
+        from sapphire_flow.types.ids import ModelId
+        from sapphire_flow.types.model import ModelArtifactProvenance
+
+        result = role_harness.run_bootstrap("prov-api-pw", "prov-worker-pw")
+        assert result.returncode == 0, result.stderr
+
+        from sapphire_flow.types.ids import StationId
+
+        model_id = ModelId(f"prov-role-test-{uuid4().hex[:8]}")
+        station = make_station_config(
+            station_id=StationId(uuid4()), code=f"PROV-ROLE-{uuid4().hex[:8]}"
+        )
+        now = ensure_utc(datetime.now(UTC))
+
+        worker_engine = sa.create_engine(
+            role_harness.role_url("sapphire_worker", "prov-worker-pw")
+        )
+        try:
+            with worker_engine.begin() as conn:
+                conn.execute(
+                    sa.text(
+                        "INSERT INTO models (id, display_name, artifact_scope, "
+                        "description) VALUES (:id, :dn, 'station', :d)"
+                    ),
+                    {"id": str(model_id), "dn": "Role test", "d": "role test model"},
+                )
+                PgStationStore(conn).store_station(station)
+                artifact_id, _sha256 = PgModelArtifactStore(
+                    conn, tmp_path
+                ).store_artifact(
+                    model_id=model_id,
+                    artifact_bytes=b"role-test-checkpoint-bytes",
+                    training_period_start=now,
+                    training_period_end=now,
+                    trained_at=now,
+                    station_id=station.id,
+                )
+                PgArtifactProvenanceStore(conn).record(
+                    ModelArtifactProvenance(
+                        artifact_id=artifact_id,
+                        source_repository="hydrosolutions/sapphire-aquacast",
+                        source_commit="deadbeef",
+                        config_hash="abc123",
+                        imported_at=now,
+                        imported_by="operator@hydrosolutions.ch",
+                        notes=None,
+                    )
+                )
+        finally:
+            worker_engine.dispose()
+
+        api_engine = sa.create_engine(
+            role_harness.role_url("sapphire_api", "prov-api-pw")
+        )
+        try:
+            with api_engine.connect() as conn:
+                fetched = PgArtifactProvenanceStore(conn).fetch(artifact_id)
+        finally:
+            api_engine.dispose()
+
+        assert fetched is not None
+        assert fetched.source_commit == "deadbeef"
+        assert fetched.imported_by == "operator@hydrosolutions.ch"
+
+    def test_worker_cannot_update_artifact_provenance(
+        self, bootstrapped: _RoleBootstrapHarness
+    ) -> None:
+        # model_artifact_provenance is a row a caller "imports" once — the
+        # grant matrix gives sapphire_worker INSERT only, mirroring
+        # audit_log's append-only convention.
+        url = bootstrapped.role_url("sapphire_worker", "worker-pw-initial")
+        assert bootstrapped.denied(
+            url, "UPDATE model_artifact_provenance SET notes = 'x'"
+        )
+
 
 class TestPreExistingOverprivilegedRoleConvergesToLeastPriv:
     """The in-place-upgrade convergence contract (Plan 147 Slice D): a role

@@ -30,8 +30,8 @@ from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
 import structlog
 
 from sapphire_flow.exceptions import ConfigurationError, ModelLoadError
-from sapphire_flow.types.enums import AuditEventType, ModelArtifactStatus
-from sapphire_flow.types.model import ModelArtifactProvenance
+from sapphire_flow.types.enums import ArtifactScope, AuditEventType, ModelArtifactStatus
+from sapphire_flow.types.model import ModelArtifactProvenance, ModelRecord
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from sapphire_flow.protocols.stores import (
         AuditLogStore,
         ModelArtifactStore,
+        ModelStore,
         StationGroupStore,
         StationStore,
     )
@@ -97,6 +98,92 @@ def _derive_target_tenant_id(
     return group.tenant_id
 
 
+def _assert_scope_matches_target(
+    *,
+    model_id: ModelId,
+    artifact_scope: ArtifactScope,
+    station_id: StationId | None,
+    group_id: StationGroupId | None,
+) -> None:
+    """A GROUP-scoped model imported against a station_id (or vice versa)
+    would report success while being operationally invisible to whichever
+    lookup path actually queries by the OTHER scope. `_derive_target_tenant_id`
+    already enforces exactly one of station_id/group_id — this enforces that
+    the one supplied matches what the model itself declares."""
+    if artifact_scope is ArtifactScope.STATION:
+        if station_id is None:
+            raise ConfigurationError(
+                f"import_external_artifact: model {model_id} is STATION-scoped "
+                "but this import supplied a group_id, not a station_id"
+            )
+        return
+    if artifact_scope is ArtifactScope.GROUP:
+        if group_id is None:
+            raise ConfigurationError(
+                f"import_external_artifact: model {model_id} is GROUP-scoped "
+                "but this import supplied a station_id, not a group_id"
+            )
+        return
+    raise ConfigurationError(
+        f"import_external_artifact: model {model_id} declares unsupported "
+        f"artifact_scope {artifact_scope!r} — only STATION and GROUP can be "
+        "imported"
+    )
+
+
+def _declared_artifact_scope(model: ForecastModel, model_id: ModelId) -> ArtifactScope:
+    declared_scope = getattr(model, "artifact_scope", None)
+    if not isinstance(declared_scope, ArtifactScope):
+        raise ConfigurationError(
+            f"import_external_artifact: model {model_id} does not declare a "
+            "valid artifact_scope"
+        )
+    return declared_scope
+
+
+def _register_or_verify_model(
+    *,
+    model_id: ModelId,
+    model: ForecastModel,
+    declared_scope: ArtifactScope,
+    model_store: ModelStore,
+    now: UtcDatetime,
+) -> ModelRecord:
+    """A fresh external model has no `models` row yet — `model_artifacts.
+    model_id` is an FK, so the first import of a genuinely new model would
+    otherwise fail with an opaque FK violation (or, worse, silently depend on
+    some unrelated earlier flow having registered it). Mirrors Flow 13's own
+    `register_models` (idempotent `ON CONFLICT DO NOTHING`), but ALSO
+    verifies a pre-existing row's scope actually matches what the discovered
+    model declares today — registry drift across a shim upgrade must fail
+    loudly, not silently keep stale metadata."""
+    existing = model_store.fetch_model(model_id)
+    if existing is not None:
+        if existing.artifact_scope != declared_scope:
+            raise ConfigurationError(
+                f"import_external_artifact: model {model_id} is already "
+                f"registered with artifact_scope {existing.artifact_scope.value!r}, "
+                f"but the discovered model now declares "
+                f"{declared_scope.value!r} — refusing to import (registry "
+                "drift)"
+            )
+        return existing
+
+    from sapphire_flow.services.model_registry import build_registry_entry
+
+    entry = build_registry_entry(model_id, model, registered_at=now)
+    record = ModelRecord(
+        id=entry.id,
+        display_name=entry.display_name,
+        artifact_scope=entry.artifact_scope,
+        description=entry.description,
+        created_at=now,
+    )
+    model_store.register_model(record)
+    log.info("model_import.model_registered", model_id=str(model_id))
+    return record
+
+
 def import_external_artifact(  # noqa: PLR0913
     *,
     model: ForecastModel,
@@ -118,18 +205,26 @@ def import_external_artifact(  # noqa: PLR0913
     audit_log_store: AuditLogStore | None = None,
     artifact_store: ModelArtifactStore | None = None,
     provenance_recorder: ProvenanceRecorder | None = None,
+    model_store: ModelStore | None = None,
     audited_writer: AuditedWriter | None = None,
 ) -> ArtifactId:
-    """`artifact_store`/`provenance_recorder` are the test/replay fallback
-    (`audited_writer=None`) wiring — both required in that mode. With a real
-    `audited_writer`, the transactional stores it builds are used instead and
-    `artifact_store`/`provenance_recorder`, if given, are ignored (a real
-    production import always threads `audited_writer`)."""
+    """`artifact_store`/`provenance_recorder`/`model_store` are the
+    test/replay fallback (`audited_writer=None`) wiring — all three required
+    in that mode. With a real `audited_writer`, the transactional stores it
+    builds are used instead and any of the three, if given, are ignored (a
+    real production import always threads `audited_writer`)."""
     derived_tenant_id = _derive_target_tenant_id(
         station_id=station_id,
         group_id=group_id,
         station_store=station_store,
         group_store=group_store,
+    )
+    declared_scope = _declared_artifact_scope(model, model_id)
+    _assert_scope_matches_target(
+        model_id=model_id,
+        artifact_scope=declared_scope,
+        station_id=station_id,
+        group_id=group_id,
     )
     if (
         supplied_target_tenant_id is not None
@@ -168,10 +263,16 @@ def import_external_artifact(  # noqa: PLR0913
     # shim config as package data while the artifact is the native weights
     # file; the two can drift across a shim release).
     declared_config_hash = getattr(model, "config_hash", None)
-    if (
-        expected_config_hash is not None
-        and declared_config_hash != expected_config_hash
-    ):
+    if expected_config_hash is None:
+        log.warning(
+            "model_import.no_expected_config_hash",
+            model_id=str(model_id),
+            detail=(
+                "expected_config_hash was not supplied — importing WITHOUT "
+                "a config/artifact drift check"
+            ),
+        )
+    elif declared_config_hash != expected_config_hash:
         raise ConfigurationError(
             f"import_external_artifact: config/artifact mismatch for "
             f"{model_id} — the model declares config_hash "
@@ -203,11 +304,20 @@ def import_external_artifact(  # noqa: PLR0913
         store: ModelArtifactStore,
         recorder: ProvenanceRecorder,
         audit: AuditLogStore | None,
+        registry: ModelStore,
         *,
         audit_rejection: bool,
     ) -> ArtifactId:
         nonlocal artifact_path_for_cleanup
         from sapphire_flow.services.training import promote_artifact
+
+        _register_or_verify_model(
+            model_id=model_id,
+            model=model,
+            declared_scope=declared_scope,
+            model_store=registry,
+            now=now,
+        )
 
         new_id, _sha256 = store.store_artifact(
             model_id=model_id,
@@ -254,16 +364,17 @@ def import_external_artifact(  # noqa: PLR0913
         # in-memory state that a SQL rollback could not undo anyway, so
         # there is no atomicity to lose here; production always threads a
         # real AuditedWriter (see flows/import_model_artifact.py).
-        if artifact_store is None or provenance_recorder is None:
+        if artifact_store is None or provenance_recorder is None or model_store is None:
             raise ConfigurationError(
-                "import_external_artifact: artifact_store and "
-                "provenance_recorder are both required when audited_writer "
-                "is not provided"
+                "import_external_artifact: artifact_store, "
+                "provenance_recorder and model_store are all required when "
+                "audited_writer is not provided"
             )
         return _run(
             artifact_store,
             provenance_recorder,
             audit_log_store,
+            model_store,
             audit_rejection=True,
         )
 
@@ -273,6 +384,7 @@ def import_external_artifact(  # noqa: PLR0913
                 cast("ModelArtifactStore", stores["artifact_store"]),
                 cast("ProvenanceRecorder", stores["provenance_store"]),
                 cast("AuditLogStore", stores["audit_log_store"]),
+                cast("ModelStore", stores["model_store"]),
                 audit_rejection=False,
             )
     except Exception:

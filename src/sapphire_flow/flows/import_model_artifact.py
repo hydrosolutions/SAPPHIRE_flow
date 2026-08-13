@@ -89,10 +89,30 @@ def _import_task(  # noqa: PLR0913
     )
 
 
+def _decode_artifact_base64(artifact_base64: str) -> bytes:
+    """Prefect deployment parameters cross the wire as JSON, and a `bytes`-
+    typed flow parameter does NOT base64-decode a JSON string — pydantic's
+    JSON-mode `bytes` validation does `str.encode()`, so `"AAEC/w=="` becomes
+    the literal ASCII bytes `b"AAEC/w=="`, not the checkpoint it encodes.
+    This is the actual deployment boundary: a `str` parameter, decoded here,
+    strictly (``validate=True`` rejects non-base64 input rather than
+    silently discarding invalid characters)."""
+    import base64
+    import binascii
+
+    try:
+        return base64.b64decode(artifact_base64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ConfigurationError(
+            "import_model_artifact_flow: artifact_base64 is not valid "
+            "base64 — refusing to import"
+        ) from exc
+
+
 @flow(name="import-model-artifact", log_prints=False)
 def import_model_artifact_flow(  # noqa: PLR0913
     model_id: str,
-    artifact_bytes: bytes,
+    artifact_base64: str,
     trained_at: str,
     station_id: str | None = None,
     group_id: str | None = None,
@@ -138,6 +158,7 @@ def import_model_artifact_flow(  # noqa: PLR0913
         return ensure_utc(datetime.now(UTC))
 
     model = _resolve_model_task(model_id)
+    artifact_bytes = _decode_artifact_base64(artifact_base64)
 
     new_id = _import_task(
         model,

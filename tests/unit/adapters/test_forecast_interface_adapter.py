@@ -580,6 +580,26 @@ def test_serialize_artifact_and_deserialize_artifact_delegate() -> None:
     assert fake_model.deserialized_payloads == [b"serialized:artifact"]
 
 
+def test_config_hash_is_forwarded_from_the_wrapped_fi_model() -> None:
+    """Plan 157 T3 fixer round: `import_external_artifact`'s config/artifact
+    drift check reads `getattr(model, "config_hash", None)` off whatever
+    `discover_models()` hands it — for a real FI model that is always this
+    adapter, never the raw model. Without forwarding, the check is silently
+    disabled for every FI model."""
+    fake_model = FakeFIForecastModel(_multi_product_requirement())
+    fake_model.config_hash = "shim-config-abc123"  # type: ignore[attr-defined]
+    adapter = fi_boundary.ForecastInterfaceAdapter(fake_model)
+
+    assert adapter.config_hash == "shim-config-abc123"
+
+
+def test_config_hash_is_none_when_the_wrapped_fi_model_does_not_declare_one() -> None:
+    fake_model = FakeFIForecastModel(_multi_product_requirement())
+    adapter = fi_boundary.ForecastInterfaceAdapter(fake_model)
+
+    assert adapter.config_hash is None
+
+
 def test_adapter_init_raises_when_fi_version_check_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
