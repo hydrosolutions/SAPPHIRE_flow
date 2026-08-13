@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from sapphire_flow.cli.register_deployments import (
-    FORECAST_CYCLE_POOL,
     WORK_POOL,
     DeploymentSpec,
     _build_specs,
@@ -27,6 +26,8 @@ DEPLOYMENT_NAMES = {
     "ingest-recap-reanalysis",
     "collect-bafu-forecasts",
     "collect-bafu-observations",
+    # Plan 157 T3: the external-artifact import path — manually triggered,
+    # no cron, on the `default` pool like every other non-ingest deployment.
     "import-model-artifact",
 }
 
@@ -77,29 +78,11 @@ class TestBuildSpecs:
         by_name = {s.deployment_name: s for s in specs}
 
         assert by_name["ingest-observations"].work_pool_name == "ingest"
-        forecast_cycle_pool_deployments = {"forecast-cycle", "import-model-artifact"}
         for name, spec in by_name.items():
             if name == "ingest-observations":
                 continue
-            if name in forecast_cycle_pool_deployments:
-                continue
             assert spec.work_pool_name == "default"
             assert spec.work_pool_name == WORK_POOL
-
-    def test_forecast_cycle_and_import_model_artifact_route_to_forecast_cycle_pool(
-        self,
-    ) -> None:
-        """Plan 157 T2: `prefect-worker-forecast-cycle` is the ONE worker
-        image that is a superset of the standard one, so it is the pool
-        both forecast-cycle (the aquacast pooled model's only entry point)
-        and import-model-artifact (which may need to deserialize an
-        aquacast-style artifact) route to."""
-        specs = _build_specs()
-        by_name = {s.deployment_name: s for s in specs}
-
-        assert by_name["forecast-cycle"].work_pool_name == FORECAST_CYCLE_POOL
-        assert by_name["import-model-artifact"].work_pool_name == FORECAST_CYCLE_POOL
-        assert FORECAST_CYCLE_POOL != WORK_POOL
 
     def test_env_var_overrides(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("SCHEDULE_INGEST_OBSERVATIONS", "*/10 * * * *")
@@ -119,10 +102,23 @@ class TestBuildSpecs:
         # Plan 071 adds weather-history ingest; Plan 111 adds the BAFU
         # forecast collector; Plan 136 adds the BAFU observation collector;
         # Plan 146 adds the recap-reanalysis snow ingest; Plan 157 adds the
-        # external-artifact import flow.
+        # external-artifact import path.
         specs = _build_specs()
         assert len(specs) == 14
         assert {s.deployment_name for s in specs} == DEPLOYMENT_NAMES
+
+    def test_import_model_artifact_is_manual_and_on_the_default_pool(self) -> None:
+        """Plan 157 T3. Manually triggered (no cron) and serialized. It sits on
+        `default`: a dedicated forecast-cycle pool was built for it and
+        REVERTED — with the same image on both sides it bought nothing while
+        adding a third pool and a mixed-version upgrade window. A shim-backed
+        model will need routing to whichever worker carries that distribution
+        (see the split-out shim plan)."""
+        by_name = {s.deployment_name: s for s in _build_specs()}
+        spec = by_name["import-model-artifact"]
+        assert spec.cron is None
+        assert spec.concurrency_limit == 1
+        assert spec.work_pool_name == WORK_POOL
 
     def test_bafu_collector_hourly_and_serialized(self) -> None:
         by_name = {s.deployment_name: s for s in _build_specs()}
@@ -343,10 +339,10 @@ class TestRegisterAll:
 
             await register_all()
 
-        assert mock_client.create_work_pool.await_count == 3
+        assert mock_client.create_work_pool.await_count == 2
         assert {
             c.args[0].name for c in mock_client.create_work_pool.await_args_list
-        } == {"default", "ingest", "forecast-cycle"}
+        } == {"default", "ingest"}
         assert {
             c.args[0].deployment_name for c in mock_register.await_args_list
         } == DEPLOYMENT_NAMES
@@ -383,10 +379,10 @@ class TestRegisterAll:
             # ("default" pre-exists) while "ingest" is created.
             await register_all()
 
-        # All pools were attempted despite one raising.
+        # Both pools were attempted despite one raising.
         assert {
             c.args[0].name for c in mock_client.create_work_pool.await_args_list
-        } == {"default", "ingest", "forecast-cycle"}
+        } == {"default", "ingest"}
         assert {
             c.args[0].deployment_name for c in mock_register.await_args_list
         } == DEPLOYMENT_NAMES
@@ -398,7 +394,6 @@ class TestRegisterAll:
         mock_client = AsyncMock()
         mock_client.create_work_pool = AsyncMock(
             side_effect=[
-                ObjectAlreadyExists("pool exists"),
                 ObjectAlreadyExists("pool exists"),
                 ObjectAlreadyExists("pool exists"),
             ]
@@ -420,8 +415,8 @@ class TestRegisterAll:
             )
             mock_get_client.return_value.__aexit__ = AsyncMock(return_value=False)
 
-            # All pools already exist — all raises are caught, all specs register.
+            # Both pools already exist — both raises are caught, all specs register.
             await register_all()
 
-        assert mock_client.create_work_pool.await_count == 3
+        assert mock_client.create_work_pool.await_count == 2
         assert mock_register.await_count == len(DEPLOYMENT_NAMES)

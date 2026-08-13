@@ -19,14 +19,6 @@ log = structlog.get_logger(__name__)
 
 WORK_POOL = "default"
 INGEST_POOL = "ingest"
-# Plan 157 D13 / T2: the dedicated forecast-cycle pool. `prefect-worker-
-# forecast-cycle` (docker-compose.yml) is the ONLY worker serving it — a
-# superset of the standard `prefect-worker` image (docs/standards/cicd.md §
-# The forecast-cycle pool). Both `forecast-cycle` and `import-model-
-# artifact` route here TOGETHER, in the same release as the compose
-# service, so neither pool is ever workerless the instant this ships (the
-# Plan 098 partial-deploy failure mode this comment used to warn about).
-FORECAST_CYCLE_POOL = "forecast-cycle"
 FLOW_SOURCE_ROOT = "/app"
 
 
@@ -79,7 +71,6 @@ def _build_specs() -> list[DeploymentSpec]:
             deployment_name="forecast-cycle",
             cron=cron_forecast,
             concurrency_limit=1,
-            work_pool_name=FORECAST_CYCLE_POOL,
         ),
         DeploymentSpec(
             flow_module="sapphire_flow.flows.backup",
@@ -147,21 +138,20 @@ def _build_specs() -> list[DeploymentSpec]:
             cron=cron_bafu_observation,
             concurrency_limit=1,
         ),
-        # Plan 157 T2/T3: manually-triggered — no cron. Runs on the
-        # forecast-cycle pool — the ONE image that is a superset of the
-        # standard worker (docs/standards/cicd.md § The forecast-cycle
-        # pool). discover_models() still requires whatever entry point the
-        # imported model_id names to be installed wherever this
-        # deployment's worker runs; the forecast-cycle pool is the widest
-        # (superset) environment available, so routing it there — rather
-        # than `default` — is strictly more likely to have the shim/runtime
-        # a given import actually needs.
+        # Plan 157 T3: manually-triggered — no cron; runs on the `default`
+        # pool like every other non-ingest deployment. NOTE for whoever
+        # builds the aquacast shim (split out of this plan): an import only
+        # succeeds where the imported model_id's ENTRY POINT is installed,
+        # so a shim-backed model will need this deployment routed to
+        # whichever worker carries that distribution. A dedicated
+        # forecast-cycle pool was built for that and REVERTED — with the
+        # same image on both sides it bought nothing while adding a third
+        # pool and a mixed-version upgrade window.
         DeploymentSpec(
             flow_module="sapphire_flow.flows.import_model_artifact",
             flow_attr="import_model_artifact_flow",
             deployment_name="import-model-artifact",
             concurrency_limit=1,
-            work_pool_name=FORECAST_CYCLE_POOL,
         ),
     ]
 

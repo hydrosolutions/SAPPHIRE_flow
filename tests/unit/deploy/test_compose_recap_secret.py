@@ -63,17 +63,11 @@ class TestBaseComposeHasNoRecapSecret:
         assert "sapphire_dg_api_key" not in names
         assert "sapphire_worker_db_password" in names
 
-    def test_prefect_worker_forecast_cycle_has_no_recap_secret(self) -> None:
-        names = _service_secret_names(_base_compose(), "prefect-worker-forecast-cycle")
-        assert "sapphire_dg_api_key" not in names
-        assert "sapphire_worker_db_password" in names
-
 
 class TestRecapOverlayDeclaresSecret:
-    """The Nepal overlay re-adds the recap secret at the top level and on
-    every worker service that could construct a Recap adapter (Compose
-    merges service ``secrets`` additively, so the overlay lists only the
-    recap secret; db_password comes from the base)."""
+    """The Nepal overlay re-adds the recap secret at the top level and on both
+    worker services (Compose merges service ``secrets`` additively, so the
+    overlay lists only the recap secret; db_password comes from the base)."""
 
     def test_overlay_top_level_secret_declared(self) -> None:
         overlay = _recap_overlay()
@@ -88,11 +82,4 @@ class TestRecapOverlayDeclaresSecret:
 
     def test_overlay_prefect_worker_ingest_declares_the_secret(self) -> None:
         names = _service_secret_names(_recap_overlay(), "prefect-worker-ingest")
-        assert "sapphire_dg_api_key" in names
-
-    def test_overlay_prefect_worker_forecast_cycle_declares_the_secret(self) -> None:
-        """Plan 157 D13/T2: the forecast cycle now runs on its OWN pool —
-        it needs the SAME Nepal recap secret prefect-worker used to carry,
-        or Nepal v1 group/recap-backed forecasting silently loses it."""
-        names = _service_secret_names(_recap_overlay(), "prefect-worker-forecast-cycle")
         assert "sapphire_dg_api_key" in names

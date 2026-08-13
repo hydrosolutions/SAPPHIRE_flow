@@ -114,12 +114,6 @@ class TestWorkerServicesUseScopedRoleOnly:
     def test_prefect_worker_ingest(self) -> None:
         self._assert_worker_wiring("prefect-worker-ingest")
 
-    def test_prefect_worker_forecast_cycle(self) -> None:
-        """Plan 157 T2: the dedicated forecast-cycle worker is a superset
-        of prefect-worker's image and must carry the SAME least-privilege
-        DB wiring, not the owner/migration credential."""
-        self._assert_worker_wiring("prefect-worker-forecast-cycle")
-
 
 class TestInitServiceKeepsOwnerAndBootstrapsRoles:
     def test_init_keeps_owner_secret(self) -> None:

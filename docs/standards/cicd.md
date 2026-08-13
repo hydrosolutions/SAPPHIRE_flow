@@ -17,7 +17,6 @@ Single VM deployment. All services in one `docker-compose.yml`. Swiss v0 targets
 | `prefect-server` | `prefecthq/prefect:3-python3.11` | postgres (healthy) | `curl -f http://localhost:4200/api/health` | `unless-stopped` | v0+v1 |
 | `prefect-worker` | custom (sapphire-flow) | prefect-server (healthy), init (completed) | — | `unless-stopped` | **v0** (§A6) |
 | `prefect-worker-ingest` | custom (sapphire-flow) | prefect-server (healthy), init (completed) | — | `unless-stopped` | **v0b** (§A6) — dedicated `ingest` pool worker isolating `*/5` obs ingest from the shared `default` pool (Plan 098) |
-| `prefect-worker-forecast-cycle` | custom (sapphire-flow) — **a superset of `prefect-worker`'s image** (same Dockerfile/build today; will additionally carry the `sapphire-aquacast` shim + torch runtime once that external distribution exists) | prefect-server (healthy), init (completed) | — | `unless-stopped` | **v0b** (§A6) — dedicated `forecast-cycle` pool worker serving the `forecast-cycle` and `import-model-artifact` deployments (Plan 157 D13/T2, wired in `cli/register_deployments.py`). `prefect-worker`/`prefect-worker-ingest` no longer serve either deployment. See § The `forecast-cycle` pool below for what is and is not yet true of this worker. |
 | `prefect-worker-ops` | custom (sapphire-flow) | prefect-server, pgbouncer | — | `unless-stopped` | **v1** (§A6) |
 | `prefect-worker-hindcast` | custom (sapphire-flow) | prefect-server, pgbouncer | — | `unless-stopped` | **v1** (§A6) |
 | `prefect-worker-training` | custom (sapphire-flow) | prefect-server, pgbouncer | — | `unless-stopped` | **v1** (§A6) |
@@ -34,12 +33,12 @@ One Dockerfile for `prefect-worker-ops`, `prefect-worker-hindcast`, `prefect-wor
 | Volume | Mount path | Used by | Purpose | Scope |
 |--------|-----------|---------|---------|-------|
 | `pgdata` | `/var/lib/postgresql/data` | postgres | PostgreSQL data directory | v0+v1 |
-| `model_artifacts` | `/data/artifacts` | prefect-worker (rw) [v0], prefect-worker-forecast-cycle (rw, v0), prefect-worker-ops (ro), prefect-worker-hindcast (ro), prefect-worker-training (rw), api (ro) | Trained model files | v0+v1 |
+| `model_artifacts` | `/data/artifacts` | prefect-worker (rw) [v0], prefect-worker-ops (ro), prefect-worker-hindcast (ro), prefect-worker-training (rw), api (ro) | Trained model files | v0+v1 |
 | `cold_storage` | `/data/cold` | prefect-worker-ops (rw), prefect-worker-hindcast (ro), api (ro) | Parquet archive | **v1** (§A2) |
-| `nwp_grids` | `/data/nwp_grids` | prefect-worker (rw, v0), prefect-worker-forecast-cycle (rw, v0) | NWP Zarr archive hot tier | v0+ |
-| `bafu_forecast_archive` | `/data/bafu_forecasts` | prefect-worker (rw, v0), prefect-worker-forecast-cycle (rw, v0) | Quarantined, evaluation-only archive for the `collect-bafu-forecasts` deployment (Plan 111 route-C) — permanent, forward-only, gated off by default | v0 |
-| `bafu_observation_archive` | `/data/bafu_observations` | prefect-worker (rw, v0), prefect-worker-forecast-cycle (rw, v0) | Quarantined, evaluation-only archive for the `collect-bafu-observations` deployment (Plan 136), keyed on `(gauge_code, lindas_kind)` — permanent, forward-only, gated off by default | v0 |
-| `backups` | `/data/backups` | prefect-worker (rw), prefect-worker-forecast-cycle (rw) | pg_dump backup files (§A10) | v0+v1 |
+| `nwp_grids` | `/data/nwp_grids` | prefect-worker (rw, v0) | NWP Zarr archive hot tier | v0+ |
+| `bafu_forecast_archive` | `/data/bafu_forecasts` | prefect-worker (rw, v0) | Quarantined, evaluation-only archive for the `collect-bafu-forecasts` deployment (Plan 111 route-C) — permanent, forward-only, gated off by default | v0 |
+| `bafu_observation_archive` | `/data/bafu_observations` | prefect-worker (rw, v0) | Quarantined, evaluation-only archive for the `collect-bafu-observations` deployment (Plan 136), keyed on `(gauge_code, lindas_kind)` — permanent, forward-only, gated off by default | v0 |
+| `backups` | `/data/backups` | prefect-worker (rw) | pg_dump backup files (§A10) | v0+v1 |
 | `prefect_data` | `/data/prefect` | prefect-server | Prefect server state | v0+v1 |
 | `caddy_data` | Caddy internal | caddy | TLS certificates, OCSP staples | v0+v1 |
 | `caddy_config` | Caddy internal | caddy | Persisted Caddy configuration | v0+v1 |
@@ -60,13 +59,12 @@ postgres ──→ pgbouncer ──→ api ──→ caddy
     init (one-shot, runs before workers/api)
 ```
 
-> **v0 variant** (v0-scope.md §A3, §A6): No PgBouncer intermediary; `prefect-worker` (general `default` pool), `prefect-worker-ingest` (dedicated `ingest` pool, Plan 098) and `prefect-worker-forecast-cycle` (dedicated `forecast-cycle` pool, Plan 157 D13/T2) replace the three specialized workers. All three workers are init-gated one-shot dependents of `prefect-server` — see the service table above and § The `forecast-cycle` pool below.
+> **v0 variant** (v0-scope.md §A3, §A6): No PgBouncer intermediary; `prefect-worker` (general `default` pool) plus `prefect-worker-ingest` (dedicated `ingest` pool, Plan 098) replace the three specialized workers. Both workers are init-gated one-shot dependents of `prefect-server`.
 > ```
 > postgres ──→ api ──→ caddy
 >     │
 >     └──→ prefect-server ──→ prefect-worker
 >                        ──→ prefect-worker-ingest
->                        ──→ prefect-worker-forecast-cycle
 >
 >     init (one-shot, runs before workers/api)
 > ```
@@ -75,68 +73,7 @@ All `depends_on` use `condition: service_healthy` where health checks are define
 
 ## Prefect work pool separation
 
-> **v1-only** (v0-scope.md §A6): v0 today runs **three** work pools — the general `default` pool, a dedicated `ingest` pool served by `prefect-worker-ingest` (a v0b obs-feed-isolation addition, Plan 098, that keeps the `*/5` observation ingest off the shared `default` pool), and a dedicated `forecast-cycle` pool served by `prefect-worker-forecast-cycle` (Plan 157 D13/T2, § below). The three-pool ops/training/hindcast topology below still applies to v1.
-
-### The `forecast-cycle` pool (Plan 157 D13/T2)
-
-Plan 157 originally scoped a dedicated "aquacast worker image" carrying only
-the `sapphire-aquacast` shim + torch runtime, kept isolated from the
-operational forecast worker (D10's stated rationale: "keep ~2 GB of PyTorch
-out of every existing worker"). That decomposition does not hold: group
-forecasting (Phase B2, the aquacast pooled model's only entry point) runs
-**inside** `run_forecast_cycle`, in the same process as station forecasting,
-and Phase C alerting consumes both in-process — Prefect workers are
-`--type process` on a single image, so splitting Phase B2 into its own
-deployment would mean re-joining group and station ensembles across a
-process boundary (real, unscoped work the redesign does not need).
-
-**Resolved and wired: the `forecast-cycle` pool's image IS a superset of the
-standard one**, not an isolated aquacast image. `prefect-worker-forecast-
-cycle` serves the `forecast-cycle` AND `import-model-artifact` deployments
-(`cli/register_deployments.py`'s `FORECAST_CYCLE_POOL`) and is the one image
-that will carry the shim + torch once the external `sapphire-aquacast`
-distribution exists; `prefect-worker` (`default`) and `prefect-worker-
-ingest` (`ingest`) no longer run either deployment and stay torch-free.
-D10's *decision* (route the cycle off the general workers) survives; its
-*rationale* ("an isolated aquacast image") does not — the honest framing is
-"one heavier cycle worker," not "an isolated aquacast worker."
-
-**What is wired today (Plan 157 T2):** the `prefect-worker-forecast-cycle`
-compose service (built from the SAME `Dockerfile` as `prefect-worker` — no
-extra dependencies yet, since there is nothing extra to install), the
-`forecast-cycle` work pool (created idempotently by `register_all()`), and
-both the `forecast-cycle` and `import-model-artifact` deployments routed to
-it. A cold-start `discover_models()` proof exists at the process-boundary
-level (`tests/unit/deploy/test_forecast_cycle_worker_cold_start.py`) and a
-torch-free packaging-contract reference proves the shim's discovery/unit/
-name-translation MECHANISM
-(`tests/unit/services/test_aquacast_shim_contract.py`, Plan 157 T1).
-
-**What remains genuinely external (not this repo's to close):** the REAL
-`sapphire-aquacast` distribution — the torch runtime and the trained
-`cmal_pool_PT` weights — is a separate distribution owned by hydrosolutions
-(Plan 135 decision 3: no torch/GPL runtime dependency in this repo's
-`pyproject.toml`) and does not exist yet; it is blocked on Plan 152/155 (the
-selected artifact + Swiss data readiness), not on Plan 157. Once it exists,
-production installation follows the SAME pattern this repo already uses for
-`recap-dg-client` — a private git dependency installed via an authenticated
-`Dockerfile` `RUN --mount=type=secret` step — added ONLY to
-`prefect-worker-forecast-cycle`'s build, keeping `prefect-worker`/`prefect-
-worker-ingest` torch-free. A container-level cold-start proof (build the
-real image, run `discover_models()` inside it) is exercised manually as
-part of the deploy procedure (§ Upgrade Procedure below), the same way
-every other `docker build` step in this repo is — no test in this suite
-builds the full application image.
-
-**Same routing now applies to the `import-model-artifact` deployment**
-(Plan 157 T3, `flows/import_model_artifact.py`): it runs on the
-`forecast-cycle` pool — the widest (superset) image available — rather than
-`default`. This is harmless for any torch-free model (every SAP3-native
-model, and any FI model whose package has no heavy runtime dependency).
-Once the real `sapphire-aquacast` distribution exists and this worker's
-build actually installs it, `model.deserialize_artifact()` for an
-aquacast-style artifact will work here without any further import-path
-routing change.
+> **v1-only** (v0-scope.md §A6): v0 now runs **two** work pools — the general `default` pool plus a dedicated `ingest` pool served by `prefect-worker-ingest` (a v0b obs-feed-isolation addition, Plan 098, that keeps the `*/5` observation ingest off the shared `default` pool). The three-pool ops/training/hindcast topology below still applies to v1.
 
 Three work pools isolate workloads with different resource and concurrency profiles:
 

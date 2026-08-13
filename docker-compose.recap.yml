@@ -12,21 +12,12 @@
 #   docker compose -f docker-compose.yml -f docker-compose.recap.yml config
 # Each worker must show BOTH sapphire_worker_db_password AND
 # sapphire_dg_api_key (no dupes/losses).
-#
-# prefect-worker-forecast-cycle (Plan 157 D13/T2) runs the forecast cycle —
-# the SAME flow that used to run on prefect-worker — so it needs the SAME
-# secret; omitting it here would silently break Nepal v1 group/recap-backed
-# forecasting the moment that pool split shipped.
 services:
   prefect-worker:
     secrets:
       - sapphire_dg_api_key
 
   prefect-worker-ingest:
-    secrets:
-      - sapphire_dg_api_key
-
-  prefect-worker-forecast-cycle:
     secrets:
       - sapphire_dg_api_key
 
