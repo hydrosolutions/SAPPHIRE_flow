@@ -270,6 +270,31 @@ rebase.)*
 T3 is independent of the package work and is the long pole — start it first, in parallel with
 establishing whether T1 is a request or a build.
 
+## Provenance of the Swiss parquet — it is a Caravan PASSTHROUGH, not a re-extraction
+
+**Established by execution, 2026-08-13.** aquacast's own attribute doc states that the FAO
+Penman-Monteith PET variants "that Caravan also publishes are **not** computed — they need a separate
+PET model", and its per-region coverage table lists seven regions (`nepal`, `camels_ind`, `lamah`,
+`camels_nz`, `camels_us`, `camelsh`, `kaz`) — **`camels_ch` is not among them**.
+
+The delivered parquet (296 rows × 216 cols, `gauge_id` = `caravan_camels_ch_*`) **does** carry
+`pet_mean_FAO_PM`, `aridity_FAO_PM`, `moisture_index_FAO_PM`, `seasonality_FAO_PM`. Since the
+extraction pipeline provably does not produce those, the Swiss file is **curated Caravan-published
+values carried through** — the same treatment the doc records for `kaz` ("curated Caravan values
+kept, validated, not overwritten").
+
+**Three consequences:**
+
+1. **This is good for us.** The values are canonical published Caravan, exactly reproducible from a
+   citable release — there is no bespoke derivation to document or re-run. It confirms T1's
+   import-don't-extract framing.
+2. **The provenance string T1 writes must say so** — cite the Caravan release, *not* aquacast's
+   extraction scripts, which did not produce these numbers.
+3. **The Swiss import cannot double as the DHM worked example.** DHM's path is a genuine extraction
+   (as `nepal`'s 11 gauges were); ours is a download. The operator guide still needs its own basis.
+
+**To confirm with the modeller:** which Caravan release/version, so the provenance string is exact.
+
 ## Decisions
 
 - **D15 — how do Caravan attributes coexist with CAMELS-CH's? — RESOLVED (owner, 2026-08-13):
