@@ -21,6 +21,14 @@ Docker Desktop still the engine, a logout still darkens the feed; you would simp
 **DRAFT.** Operational reliability (category **A**). Prompted by the outage diagnosed on 2026-08-12; the owner has
 made this a priority so operational data collection is dependable.
 
+## Progress
+- **2026-08-13 — D1 DONE.** Slack alerting is live: webhook staged on the mini, delivery verified into `#sap3-alerts`
+  through the watchdog's own `read_slack_webhook`/`default_slack_poster` path, stack untouched. The 55 previously
+  suppressed alerts (48 BAFU-staleness, 1 health-failure) would now be delivered.
+  **This does not yet close the outage class:** the watchdog is still a **LaunchAgent**, so a session end kills the
+  alerter along with the engine — it cannot report the outage it dies in. That is D2/T3 (LaunchDaemon) plus D3 (the
+  off-box dead-man's-switch), and it is why silence must not be read as health until both land.
+
 ## Problem
 
 **The mac-mini collected no data for 14 days and nobody found out.** Observations, NWP and forecasts all stopped
@@ -81,7 +89,15 @@ acceptance criterion (see the dependency graph).
 
 ### Phase 1 — Detection (low risk, no downtime, highest value)
 
-- **D1 — Stage `secrets/slack_webhook_url`.** ⚠️ OWNER: the file must be created on the mini; the code already reads
+- **D1 — Stage `secrets/slack_webhook_url`. ✅ DONE 2026-08-13.** The file is installed on the mini
+  (`~/SAPPHIRE_flow/secrets/slack_webhook_url`, `-rw-------`, owner `sapphire`, created under `umask 077` so it was
+  never briefly world-readable), pointing at the HSOL workspace channel **`#sap3-alerts`**. **Verified by delivery,
+  not by inspection:** `read_slack_webhook(DEFAULT_SLACK_PATH)` → `True` and `default_slack_poster(...)` → `True`,
+  with the message confirmed visible in the channel — i.e. the exact two functions the watchdog calls, exercised
+  end-to-end **without stopping the stack** (the repo docs suggest killing the API to test; unnecessary here).
+  *Residual:* the webhook URL passed through a chat transcript during setup and **should be rotated** — regenerate in
+  Slack and re-write the file via `ssh … 'umask 077; cat > …'` (stdin, so it never enters shell history or `argv`).
+  *Original context:* ⚠️ OWNER: the file must be created on the mini; the code already reads
   it (`DEFAULT_SLACK_PATH`, `src/sapphire_flow/ops/watchdog.py:58`), and `read_slack_webhook()`
   (`src/sapphire_flow/ops/watchdog.py:275-285`) returns `None` for a missing/empty/unreadable file, which is exactly
   the degradation observed. Nothing else is needed to turn 55 suppressed alerts into delivered ones.
@@ -224,7 +240,8 @@ reviewable in a diff; "Host" tasks are operator cutovers whose evidence is captu
   *Rollback trigger:* dry-run shows a label targeted in two domains.
 
 - **T3 — Host cutover: secrets + watchdog as a LaunchDaemon + dead-man wired (Host, D1/D2/D3).**
-  Create `secrets/slack_webhook_url` and `secrets/deadman_url` **atomically under `umask 077`** — not created-then-
+  **`secrets/slack_webhook_url` is already staged and delivery-verified (D1, 2026-08-13) — this task's remaining
+  secret is `secrets/deadman_url`.** Create it (and any re-issued webhook) **atomically under `umask 077`** — not created-then-
   `chmod`, which leaves a readable window *(reviewer major-fix)*. **Ownership exception, stated explicitly:**
   `docs/standards/security.md:213` requires `./secrets/` be root-owned 600, but these two are read by the
   **watchdog host process running as `UserName=sapphire`**, so root:600 would make them unreadable. They are
