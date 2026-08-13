@@ -217,8 +217,24 @@ Record the ERA5 grid coordinates and **model orography elevation** per station, 
 station-to-grid elevation mismatch, and run at least one sensitivity comparison against a second
 operator.
 
-**Exit:** extracted series + named operator + per-station elevation mismatch table + the
-operator-sensitivity comparison, all regenerable from the committed pipeline.
+**Also extract IMERG at the same 26 points** (owner 2026-08-13). Nearly free once the extraction
+pipeline exists, and it converts M-A6 into a **three-way comparison — gauge vs ERA5-Land vs IMERG**.
+Use **IMERG Final** here (this is characterisation, not the D4 adjudication role that required
+satellite-only independence — and our track dropped adjudication when wholesale zero-run removal was
+chosen). Record the product version and the same grid/elevation diagnostics as for ERA5-Land.
+
+Rationale, and what it buys without committing to any correction design:
+- **Tests whether satellite diurnal phase is trustworthy at OUR stations and OUR elevations.** Hunt
+  et al. note GPM-IMERG *"performance falls at higher elevations or when quantifying extreme
+  precipitation events"* — the caveat matters most exactly where Dudh Koshi sits.
+- **Settles a live discrepancy in the Nepali literature on our own data**: Dawadi et al. (IMERG) put
+  the national monsoon peak near midnight; Adhikari et al. (63 gauges) put it at 21:00. Our
+  elevation-stratified result suggests sampling explains the gap — a station network over-represents
+  the hills, an area-weighted satellite includes the Terai. Testable here.
+- **Preserves the strongest Phase-2 option** (below) by measurement rather than assumption.
+
+**Exit:** extracted ERA5-Land **and IMERG** series + named operator + per-station elevation mismatch
+table + the operator-sensitivity comparison, all regenerable from the committed pipeline.
 
 ### M-A6 · Gauge vs ERA5-Land comparison
 **Depends: M-A3, M-A5.** *(M-A2 enters transitively through M-A3 — ERA5-Land is on a canonical UTC
@@ -452,6 +468,31 @@ The residual unknowns are ordinary engineering: ERA5-Land deaccumulation, and th
 (account, licence acceptance, queueing, and an API that has changed before).
 
 Unblocked regardless: **M-D1, M-D3, M-A1, M-A4, M-I1, M-I3.**
+
+## Phase-2 hypothesis: satellite-informed diurnal correction (recorded 2026-08-13)
+
+**Recorded as a hypothesis, not a decision** — vision D7 still holds that Phase 1 commits to no
+correction design. M-A5's IMERG extraction exists to let M-A6 *measure* whether this is viable.
+
+**The idea.** Use a satellite-derived diurnal climatology to redistribute an IFS 3 h/6 h basin total
+across hours, instead of inheriting IFS's own (badly displaced) timing. Its decisive advantage over
+our gauges is **spatial completeness**: our central problem was "which diurnal regime applies at an
+*ungauged* basin?", and a 0.1° satellite climatology answers that everywhere, which 26 gauges never can.
+
+**Scope it correctly.** This can only correct the **mean diurnal shape** — a climatological
+weighting. It cannot fix **event-level timing** in a given forecast (putting *this* storm at the right
+hour). Disaggregating a 3 h/6 h total is the former, which is the tractable one.
+
+**Three conditions it must clear before anyone builds it:**
+1. **Satellite phase must be trustworthy at our elevations** — IMERG performance degrades at high
+   elevation and passive-microwave retrieval is weak over snow and ice. M-A5/M-A6 test this directly.
+2. **The satellite-vs-gauge phase discrepancy must be explained** (midnight vs 21:00, above). Treating
+   satellite phase as truth while it disagrees with gauges at the national scale is unsafe.
+3. **It must matter hydrologically.** Dudh Koshi is ~4,000 km² with a response time of order 12–24 h;
+   the catchment integrates sub-daily timing away, and intensity — not hour-of-day — governs runoff
+   generation. Diurnal phase is plausibly **second-order for our first target basin** and first-order
+   only for small steep tributaries. **This is a strong candidate to fail D9's hydrological test
+   cheaply, and finding that out early is worth more than building it.**
 
 ## Phase-2 constraint from the literature (2026-08-13)
 
