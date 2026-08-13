@@ -156,7 +156,7 @@ class TestProvenanceRequired:
         with pytest.raises(ValidationError, match="vision_ref"):
             ExpectationModel.model_validate(_entry(vision_ref=None))
 
-    def test_plan_158_without_plan_ref_is_rejected(self) -> None:
+    def test_plan_170_without_plan_ref_is_rejected(self) -> None:
         with pytest.raises(ValidationError, match="plan_ref"):
             ExpectationModel.model_validate(_entry(source="plan-170", vision_ref=None))
 
