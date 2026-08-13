@@ -1,5 +1,5 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-12
 plan: 158
 title: Session-independent operational stack — the mac-mini must collect data without a GUI login
@@ -20,6 +20,19 @@ Docker Desktop still the engine, a logout still darkens the feed; you would simp
 
 **DRAFT.** Operational reliability (category **A**). Prompted by the outage diagnosed on 2026-08-12; the owner has
 made this a priority so operational data collection is dependable.
+
+## Build scope — READ BEFORE IMPLEMENTING
+**Automated implementation covers the `(Repo, …)` tasks ONLY: T1 and T2.** Every `(Host, …)` task — T3, T4, T5, T6 —
+runs commands against the live mac-mini (staging secrets, bootstrapping launchd domains, enabling auto-login,
+deliberately exercising failure paths) and is performed by a human in a session at the machine, following the runbook
+each task delivers. Do not attempt them from an automated build.
+
+**Open owner decisions do NOT block T1/T2.** D11 (which dead-man service), D12 (auto-login trade-off) and D13 (recap
+probe) gate the *host* tasks only: the dead-man ping is implemented **service-agnostically** (POST to a URL read from
+a file), so the code lands before the provider is chosen, and the auto-login and probe questions belong to T6/T4.
+
+**READY as of 2026-08-13** — D1 is delivered and verified in production; T1/T2 are specified and independently
+reviewed (one `/plan` round plus three Codex passes, two of them opposed-lens).
 
 ## Progress
 - **2026-08-13 — D1 DONE.** Slack alerting is live: webhook staged on the mini, delivery verified into `#sap3-alerts`
