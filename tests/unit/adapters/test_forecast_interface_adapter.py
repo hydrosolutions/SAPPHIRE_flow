@@ -6,7 +6,10 @@ from typing import Any
 import pytest
 
 from sapphire_flow.adapters import forecast_interface as fi_boundary
-from sapphire_flow.exceptions import ConfigurationError
+from sapphire_flow.exceptions import (
+    ConfigurationError,
+    UnsupportedModelRequirementError,
+)
 from sapphire_flow.protocols.forecast_model import (
     GroupForecastModel,
     StationForecastModel,
@@ -229,7 +232,13 @@ def test_projection_excludes_target_history_from_past_dynamic_features() -> None
     assert req.future_dynamic_features == frozenset({"precipitation", "temperature"})
 
 
-def test_multi_spatial_input_raises_configuration_error() -> None:
+def test_multi_spatial_input_raises_unsupported_requirement() -> None:
+    """Review fix (2026-08-13): this raised ``ConfigurationError``, which
+    ``discover_models`` RE-RAISES — so ONE model declaring a multi-spatial
+    (valid FI, unrepresentable in SAP3) requirement darkened discovery for
+    EVERY model. It is the same class as the multi-branch guard and must use
+    the same skippable exception, or Plan 156's registry invariant only
+    half-holds."""
     dynamic_spec = _dynamic_spec()
     requirement = fi_boundary.InputRequirement(
         targets={"discharge": _target(fi_boundary.Unit.M3_PER_S)},
@@ -244,13 +253,16 @@ def test_multi_spatial_input_raises_configuration_error() -> None:
     )
 
     with pytest.raises(
-        ConfigurationError,
+        UnsupportedModelRequirementError,
         match="multi-spatial input not supported in v1",
     ):
         fi_boundary.ForecastInterfaceAdapter(FakeFIForecastModel(requirement))
 
 
-def test_no_future_known_input_raises_configuration_error() -> None:
+def test_no_future_known_input_raises_unsupported_requirement() -> None:
+    """Review fix (2026-08-13): same registry-invariant reasoning as the
+    multi-spatial case above — a past-only requirement is a legal FI shape
+    SAP3 cannot represent, not an application misconfiguration."""
     requirement = fi_boundary.InputRequirement(
         targets={"discharge": _target(fi_boundary.Unit.M3_PER_S)},
         dynamic={
@@ -275,7 +287,7 @@ def test_no_future_known_input_raises_configuration_error() -> None:
     )
 
     with pytest.raises(
-        ConfigurationError,
+        UnsupportedModelRequirementError,
         match="cannot derive forecast horizon",
     ):
         fi_boundary.ForecastInterfaceAdapter(FakeFIForecastModel(requirement))

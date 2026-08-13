@@ -466,7 +466,7 @@ def _one_future_forced_plus_past_only_requirement() -> fi_boundary.InputRequirem
     )
 
 
-def test_past_only_second_branch_rejected_at_predict_time() -> None:
+def test_past_only_second_branch_rejected_at_every_delivery_entry_point() -> None:
     """BLOCKER follow-up (Plan 156 review): before this guard, the 24h
     branch's ``soil_moisture`` was fetched into ``past_dynamic`` and
     NaN-checked (both flatten across ALL branches at projection time) yet
@@ -474,11 +474,16 @@ def test_past_only_second_branch_rejected_at_predict_time() -> None:
     `_station_inputs_from_frames` builds only ONE `StationInputs.dynamic`
     entry, the active 1h branch. That is an incomplete input producing a
     plausible but wrong result, exactly what Plan 156 exists to prevent.
-    Delivery must fail loudly instead of silently truncating.
+
+    SECOND review round (2026-08-13): the original version of this test was
+    named ``..._at_predict_time`` but only called ``train()`` — the one entry
+    point where the guard's position happened to work. ``predict()`` and
+    ``predict_batch()`` ran the flattened NaN gate FIRST, so they surfaced a
+    misleading ``ModelOutputError``/``ConfigurationError`` instead. All three
+    entry points are now asserted, and the model must never be invoked.
     """
-    adapter = fi_boundary.ForecastInterfaceAdapter(
-        RecordingFIForecastModel(_one_future_forced_plus_past_only_requirement())
-    )
+    model = RecordingFIForecastModel(_one_future_forced_plus_past_only_requirement())
+    adapter = fi_boundary.ForecastInterfaceAdapter(model)
     # Sanity: the requirement really is accepted at construction and really
     # does claim soil_moisture as a past feature — proving the omission
     # would otherwise be silent (a claimed-but-undelivered feature), not an
@@ -487,3 +492,20 @@ def test_past_only_second_branch_rejected_at_predict_time() -> None:
 
     with pytest.raises(UnsupportedModelRequirementError, match="time_step branch"):
         adapter.train(_station_training_data(static=None), {}, random.Random(1))
+
+    # predict() — a STATION-scoped adapter, since predict() rejects GROUP up
+    # front. The supplied frames carry ONLY the active 1h branch's variables
+    # (no `soil_moisture`), which is precisely the case that previously
+    # surfaced as ConfigurationError("missing ... soil_moisture") from the
+    # flattened NaN gate, because that gate ran BEFORE the guard.
+    station_model = RecordingFIForecastModel(
+        _one_future_forced_plus_past_only_requirement(),
+        artifact_scope=fi_boundary.FIArtifactScope.STATION,
+    )
+    station_adapter = fi_boundary.ForecastInterfaceAdapter(station_model)
+    with pytest.raises(UnsupportedModelRequirementError, match="time_step branch"):
+        station_adapter.predict(b"artifact", _station_model_inputs(), random.Random(1))
+
+    # The fake implements no `predict`, so reaching the model at all would
+    # raise AttributeError rather than the guard's error — the assertions
+    # above therefore also prove the model was never invoked.

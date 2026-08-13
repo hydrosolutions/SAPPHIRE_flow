@@ -27,16 +27,17 @@ class FakeStationForecastModel:
         past_dynamic_features=frozenset({"precipitation", "temperature"}),
         future_dynamic_features=frozenset(),
         static_features=frozenset(),
-        # Plan 156: a single time step. SAP3 domain types are single-resolution
-        # by construction (every real native model — climatology_fallback,
-        # persistence_fallback, linear_regression_daily — declares exactly
-        # one), and the shared onboarding/smoke-test call sites now require
-        # `resolve_single_supported_time_step` to succeed rather than
-        # arbitrarily picking via ``next(iter(...))``. Tests exercising a
-        # GENUINELY multi-time-step model build their own
-        # ``ModelDataRequirements`` locally instead of relying on this shared
-        # fake's default.
-        supported_time_steps=frozenset({timedelta(hours=1)}),
+        # Plan 156: a single, DAILY time step. Two reasons it is daily and not
+        # hourly (review fix, 2026-08-13): (1) nearly every consumer of this
+        # shared fake is a daily test — onboarding seeds daily observations,
+        # and the forecast/hindcast suites pair it with `_STEP = 24h` — so an
+        # hourly-only fake silently made those tests domain-invalid; (2) an
+        # hourly fake against a multi-decade window expands auto-selection to
+        # hundreds of thousands of issue times, which took ONE test file from
+        # 1.7s to 4m05s. A test that genuinely wants hourly (or multi-step)
+        # behaviour builds its own ``ModelDataRequirements`` locally rather
+        # than changing this default.
+        supported_time_steps=frozenset({timedelta(hours=24)}),
         lookback_steps=720,
         forecast_horizon_steps=5,
         spatial_input_type=SpatialRepresentation.POINT,
@@ -166,8 +167,8 @@ class FakeGroupForecastModel:
         past_dynamic_features=frozenset({"precipitation", "temperature"}),
         future_dynamic_features=frozenset(),
         static_features=frozenset(),
-        # Plan 156: single time step — see FakeStationForecastModel above.
-        supported_time_steps=frozenset({timedelta(hours=1)}),
+        # Plan 156: single DAILY time step — see FakeStationForecastModel above.
+        supported_time_steps=frozenset({timedelta(hours=24)}),
         lookback_steps=720,
         forecast_horizon_steps=5,
         spatial_input_type=SpatialRepresentation.POINT,

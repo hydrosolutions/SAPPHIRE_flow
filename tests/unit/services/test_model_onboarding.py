@@ -11,7 +11,7 @@ from sapphire_flow.services.model_onboarding import (
     create_group_assignment,
     create_station_assignment,
     evaluate_skill_gate,
-    resolve_single_supported_time_step,
+    resolve_synthetic_time_step,
     smoke_test_model,
     validate_compatibility_for_unit,
 )
@@ -339,23 +339,32 @@ class TestResolveSingleSupportedTimeStep:
 
     def test_returns_the_sole_time_step(self) -> None:
         req = self._req(supported_time_steps=frozenset({timedelta(hours=1)}))
-        assert resolve_single_supported_time_step(req, context="test") == timedelta(
-            hours=1
-        )
+        assert resolve_synthetic_time_step(req, context="test") == timedelta(hours=1)
 
-    def test_raises_for_multiple_time_steps_instead_of_picking_arbitrarily(
+    def test_multiple_time_steps_resolve_deterministically_not_arbitrarily(
         self,
     ) -> None:
+        """Review correction (2026-08-13): the complaint was
+        NON-DETERMINISM (``next(iter(frozenset))``), not multi-valued sets.
+        ``supported_time_steps`` is documented as the steps a model *can
+        operate on*, with ``ModelAssignment.time_step`` selecting per station,
+        so raising here would outlaw a supported shape. Lock the smallest step
+        being chosen, repeatably."""
         req = self._req(
-            supported_time_steps=frozenset({timedelta(hours=1), timedelta(hours=24)})
+            supported_time_steps=frozenset({timedelta(hours=24), timedelta(hours=1)})
         )
-        with pytest.raises(ConfigurationError, match="expected exactly one"):
-            resolve_single_supported_time_step(req, context="my context")
+        chosen = {
+            resolve_synthetic_time_step(req, context="my context") for _ in range(20)
+        }
+        assert chosen == {timedelta(hours=1)}, (
+            "resolution must be deterministic across repeated calls"
+        )
 
     def test_raises_for_empty_time_steps(self) -> None:
+        """Empty is the one genuinely unresolvable case."""
         req = self._req(supported_time_steps=frozenset())
-        with pytest.raises(ConfigurationError, match="expected exactly one"):
-            resolve_single_supported_time_step(req, context="my context")
+        with pytest.raises(ConfigurationError, match="no supported time step"):
+            resolve_synthetic_time_step(req, context="my context")
 
 
 class TestSmokeTestModel:
@@ -364,14 +373,23 @@ class TestSmokeTestModel:
         rng = random.Random(7)
         smoke_test_model(model=model, rng=rng)
 
-    def test_native_model_with_multiple_time_steps_fails_loud_not_arbitrary(
+    def test_native_model_with_multiple_time_steps_smoke_tests_deterministically(
         self,
     ) -> None:
-        """Before this fix, `_run_synthetic_train_predict` picked
-        ``next(iter(req.supported_time_steps))`` — an arbitrary,
-        non-deterministic member whenever a NATIVE model declared more than
-        one supported time step. Locks that the smoke test now fails loudly
-        instead of silently picking one."""
+        """REPLACES a test that locked the WRONG contract (review, 2026-08-13).
+
+        The first implementation made the smoke test RAISE whenever a native
+        model declared more than one supported time step. That outlawed a
+        documented shape: ``supported_time_steps`` is explicitly the set of
+        steps a model *can operate on*, with ``ModelAssignment.time_step``
+        selecting per station (`docs/architecture-context.md`), and
+        ``build_superset_requirements`` legitimately unions into multi-element
+        sets. Plan 156's real complaint was the NON-DETERMINISM of
+        ``next(iter(frozenset))``, not multi-valued sets — and Plan 153 would
+        have had to delete the old test to re-legalise the shape.
+
+        Locks the corrected contract: such a model smoke-tests successfully,
+        and repeatedly, because the step is chosen deterministically."""
 
         class MultiTimeStepModel(FakeStationForecastModel):
             data_requirements = ModelDataRequirements(
@@ -387,10 +405,10 @@ class TestSmokeTestModel:
                 spatial_input_type=SpatialRepresentation.POINT,
             )
 
-        model = MultiTimeStepModel()
-        rng = random.Random(7)
-        with pytest.raises(ModelSmokeTestError, match="expected exactly one"):
-            smoke_test_model(model=model, rng=rng)
+        # Repeat: a non-deterministic resolution would make this flaky, which
+        # is the defect the helper exists to prevent.
+        for _ in range(5):
+            smoke_test_model(model=MultiTimeStepModel(), rng=random.Random(7))
 
     def test_fails_for_broken_model(self) -> None:
         class BrokenModel(FakeStationForecastModel):

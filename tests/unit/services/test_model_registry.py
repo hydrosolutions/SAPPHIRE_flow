@@ -81,7 +81,12 @@ class TestBuildRegistryEntryGroupModel:
         entry = build_registry_entry(
             ModelId("regional_lstm"), model, registered_at=_NOW
         )
-        assert timedelta(hours=1) in entry.data_requirements.supported_time_steps
+        # Review fix (2026-08-13): the shared fake is DAILY — an hourly-only
+        # fake made daily consumers domain-invalid and expanded one test file
+        # from 1.7s to 4m05s. See tests/fakes/fake_models.py.
+        assert entry.data_requirements.supported_time_steps == frozenset(
+            {timedelta(hours=24)}
+        )
 
 
 class TestRegisterModels:

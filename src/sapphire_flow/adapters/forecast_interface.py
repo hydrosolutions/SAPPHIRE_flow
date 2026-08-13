@@ -507,18 +507,27 @@ class ForecastInterfaceAdapter:
                             forecast_horizon_steps, variable.future_steps
                         )
 
+        # These three are all "a VALID FI requirement whose shape SAP3 cannot
+        # represent" — the same class as the multi-future-forced-branch guard
+        # above, and therefore the same exception type. Using ConfigurationError
+        # here would defeat the plan's registry invariant: discover_models()
+        # re-raises ConfigurationError, so ONE model declaring an unsupported
+        # (but legal) shape would darken discovery for EVERY model. Genuine
+        # application-configuration faults — a missing ModelTier, say — keep
+        # raising ConfigurationError and keep hard-failing. Review major,
+        # 2026-08-13.
         if not spatial_reps:
-            raise ConfigurationError(
+            raise UnsupportedModelRequirementError(
                 "cannot derive spatial input type: InputRequirement declares no "
                 "dynamic input"
             )
         if len(spatial_reps) > 1:
             rep_names = ", ".join(sorted(rep.value for rep in spatial_reps))
-            raise ConfigurationError(
+            raise UnsupportedModelRequirementError(
                 f"multi-spatial input not supported in v1: {rep_names}"
             )
         if forecast_horizon_steps is None:
-            raise ConfigurationError(
+            raise UnsupportedModelRequirementError(
                 "cannot derive forecast horizon: InputRequirement declares no "
                 "future_known forcing"
             )
@@ -721,6 +730,7 @@ class ForecastInterfaceAdapter:
         params: ModelParams,
         rng: random.Random,
     ) -> ModelArtifact:
+        self._assert_single_deliverable_dynamic_branch()
         model_inputs = self._model_inputs_from_data(data)
         return self._model.train(model_inputs, config=params, rng=rng)
 
@@ -733,6 +743,14 @@ class ForecastInterfaceAdapter:
     ) -> tuple[dict[str, ForecastEnsemble], bytes | None]:
         if self.artifact_scope is ArtifactScope.GROUP:
             raise ConfigurationError("dispatch must key on artifact_scope")
+
+        # BEFORE the NaN gate (review blocker, 2026-08-13): the gate flattens
+        # across ALL branches, so a multi-branch requirement previously
+        # surfaced as a misleading ModelOutputError ("max_nan exceeded") or
+        # ConfigurationError ("missing <past-only-branch variable>") rather
+        # than the real cause. The guard must be the FIRST thing every
+        # delivery entry point does.
+        self._assert_single_deliverable_dynamic_branch()
 
         over_tolerance = self._variables_over_nan_tolerance(
             past_targets=inputs.data.past_targets,
@@ -775,6 +793,9 @@ class ForecastInterfaceAdapter:
     ) -> dict[StationId, tuple[dict[str, ForecastEnsemble], bytes | None]]:
         if self.artifact_scope is ArtifactScope.STATION:
             raise ConfigurationError("dispatch must key on artifact_scope")
+
+        # BEFORE the per-station NaN gate — see predict() above.
+        self._assert_single_deliverable_dynamic_branch()
 
         station_codes_by_id = {
             station_id: self._station_code(station_id)
