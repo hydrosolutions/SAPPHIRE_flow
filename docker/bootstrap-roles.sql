@@ -169,6 +169,11 @@ GRANT INSERT ON flow_regime_configs TO sapphire_worker;
 GRANT INSERT, UPDATE ON recap_gateway_polygon_bindings TO sapphire_worker;
 GRANT INSERT, UPDATE ON calculated_station_formulas TO sapphire_worker;
 GRANT INSERT ON audit_log TO sapphire_worker;
+-- Plan 157 T3: model_artifact_provenance is a NEW table (migration 0048) —
+-- its blanket SELECT above already covers reads, but writes need this
+-- explicit line (conventions.md § Service users). INSERT-only, mirroring
+-- model_artifact_basin_versions: a provenance row is never UPDATEd.
+GRANT INSERT ON model_artifact_provenance TO sapphire_worker;
 
 -- sapphire_worker must NOT be able to read the auth tables. The blanket
 -- `GRANT SELECT ON ALL TABLES ...` above intentionally includes

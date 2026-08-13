@@ -7,6 +7,12 @@ import polars as pl  # noqa: TC002
 
 from sapphire_flow.types.enums import EnsembleMode
 
+# Runtime import (not TYPE_CHECKING-only): StoredArtifact subclasses
+# `tuple[ArtifactId, str]` below, and a class's base-list is evaluated at
+# import time even under `from __future__ import annotations` (which only
+# defers ANNOTATIONS, not base classes).
+from sapphire_flow.types.ids import ArtifactId
+
 if TYPE_CHECKING:
     from datetime import timedelta
     from uuid import UUID
@@ -19,7 +25,7 @@ if TYPE_CHECKING:
         ModelArtifactStatus,
         SpatialRepresentation,
     )
-    from sapphire_flow.types.ids import ArtifactId, ModelId, StationGroupId, StationId
+    from sapphire_flow.types.ids import ModelId, StationGroupId, StationId
 
 ModelParams = dict[str, Any]
 ModelArtifact = Any
@@ -305,3 +311,51 @@ class ModelArtifactRecord:
     promoted_by: UUID | None
     superseded_at: UtcDatetime | None
     created_at: UtcDatetime
+
+
+class StoredArtifact(tuple[ArtifactId, str]):
+    """`ModelArtifactStore.store_artifact`'s return value (Plan 157 T3 fixer
+    round). IS-A `tuple[ArtifactId, str]` — the historical
+    `(artifact_id, sha256_hash)` 2-tuple every existing 2-value-unpacking
+    call site expects, statically typed (not just runtime-duck-typed, which
+    a `__iter__`-only shape would only give as `object`). `.artifact_path`
+    is a plain attribute alongside it — the NEW, store-owned path known
+    atomically with the write, so a caller needing it for failure cleanup
+    (e.g. `services/model_import.py`) no longer has to run a SEPARATE,
+    fallible `fetch_artifact_record` query after the fact."""
+
+    artifact_path: str
+
+    def __new__(
+        cls, artifact_id: ArtifactId, sha256_hash: str, artifact_path: str
+    ) -> StoredArtifact:
+        self = super().__new__(cls, (artifact_id, sha256_hash))
+        self.artifact_path = artifact_path
+        return self
+
+    @property
+    def artifact_id(self) -> ArtifactId:
+        return self[0]
+
+    @property
+    def sha256_hash(self) -> str:
+        return self[1]
+
+
+@dataclass(frozen=True, kw_only=True, slots=True)
+class ModelArtifactProvenance:
+    """Plan 157 T3 (G4/G7): marks a `model_artifacts` row as EXTERNALLY
+    IMPORTED rather than trained by SAP3. Presence of a row keyed by
+    `artifact_id` is the provenance signal — absence means SAP3-trained.
+    `imported_at` (this import's own instant) is deliberately a SEPARATE
+    field from `ModelArtifactRecord.trained_at` (the artifact's external
+    training-completion instant, supplied by the importer) — conflating
+    them would backdate the import event to the model's training date."""
+
+    artifact_id: ArtifactId
+    source_repository: str | None
+    source_commit: str | None
+    config_hash: str | None
+    imported_at: UtcDatetime
+    imported_by: str | None
+    notes: str | None

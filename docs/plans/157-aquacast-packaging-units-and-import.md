@@ -2,14 +2,14 @@
 status: READY
 created: 2026-08-12
 plan: 157
-title: aquacast packaging — shim distribution, the mm/day unit boundary, worker image, and external-artifact import
-scope: Make an externally-trained aquacast artifact installable, discoverable, unit-correct and importable. Four coupled problems that all live at the packaging seam — the entry-point registry cannot construct an aquacast model (it takes no arguments); `mm/day` has NO SAP3 canonical unit so every predict would raise at our output boundary; an external distribution is invisible to `discover_models()` in the production image; and there is no path to register an externally-trained artifact or represent its provenance. Split out of Plan 152 (its T2 and T3) because all of it is exercised against SYNTHETIC FI models and therefore blocks on nothing.
+title: External-artifact import path + provenance (the in-repo half of aquacast packaging)
+scope: Make an externally-trained model artifact importable into SAPPHIRE Flow with representable provenance, without entering the training path. RESCOPED 2026-08-13 after implementation: the shim distribution (G3/G9/G15) and the worker image (G10) are SPLIT OUT — they are an external-repo deliverable that this repo cannot build or test, and putting them in an /implement-driven plan produced two green-but-hollow tests. What remains is T3: the import service and flow, the model_artifact_provenance table and store, AuditedWriter atomicity, the scoped-role write GRANT, and the tenant/trained_at invariants.
 depends_on: []
 blocks: [152]
 supersedes: []
 ---
 
-# Plan 157 — aquacast packaging, units and import
+# Plan 157 — external-artifact import path + provenance
 
 ## Status
 **DRAFT.** Split out of **Plan 152** (tasks T2 and T3) on 2026-08-12.
@@ -35,6 +35,45 @@ cannot prove) lives in **Plan 152 only, by design** — the siblings reference i
 duplicating it, because duplication is what produced the drift Plan 152 spent three review rounds
 correcting. **"This plan does not explain X" is NOT a finding if X is in 152.** Do flag it if a
 statement here CONTRADICTS 152, or if this plan depends on something no plan in the family owns.
+
+## ⚠️ RESCOPED after implementation (2026-08-13) — T1/T2 split out
+
+`/implement` escalated with `redFirstMissed: true`, and its own report named the cause: **T1 and T2
+were "NOT locked / not testable in this repo".**
+
+**That was a PLAN defect, not an implementation one.** T1 specified an external distribution
+(`sapphire-aquacast`, with torch and the trained weights) that by design lives *outside* this repo —
+and then gave it acceptance criteria requiring it to exist and be installed. `/implement` runs
+against **this** repo, so it could not satisfy them. What it produced instead:
+
+- a shim test that **monkeypatched `importlib.metadata.entry_points`** with a fabricated class, green
+  whether or not the real package exists or works;
+- a "cold-start `discover_models()` in the deployed worker" test that ran on the **host interpreter**
+  and asserted only native models — unable to detect the single failure G10 exists to catch, an entry
+  point that resolves in a full dev environment but is invisible in the minimal production image.
+
+**Both tests are deleted.** A test that cannot fail is worse than no test: it makes a green suite
+look like coverage.
+
+**The T2 deployment work is also reverted** — compose services, pool routing, `cicd.md`, and the
+compose tests. It created `prefect-worker-forecast-cycle` using **`build: *app-build` and the same
+`sapphire-flow:${VERSION}` image**, so a pool split with an identical image on both sides bought
+nothing until the shim exists, while adding a third pool, a mixed-version upgrade window and
+contradictions with `orchestration.md`. Both deployments are back on `default`. *(The reason is
+recorded at the `import-model-artifact` spec and in its test, so nobody rebuilds it and rediscovers
+the dead end.)*
+
+**What survives is T3, and it is complete:** the `0048` migration, `model_artifact_provenance` table
++ store, the import service and flow, `AuditedWriter` atomicity proven against **real Postgres**
+(with an AUTOCOMMIT characterization showing the same failure without the writer leaves an orphan),
+`train()` provably never called on either path, the tenant derived from the target rather than a
+caller argument, `trained_at` kept distinct from `imported_at`, and the **INSERT-only write GRANT
+tested under the real scoped worker role** — the check that catches "passes as superuser, fails in
+production".
+
+**Successor plan:** the shim + worker image. It is an **external-repo deliverable that `/implement`
+cannot drive from here**, and it is blocked on the real `sapphire-aquacast` package existing — itself
+gated on Plan 152/155 and the modeller's 5-day-horizon variant.
 
 ## Re-grounded against post-Plan-156 `main` (2026-08-13)
 
@@ -258,6 +297,17 @@ T3 is independent of the shim and can run in parallel. T2 needs something to ins
 **`adapters/forecast_interface.py`** is edited by Plan 151 (T2 accessors) and Plan 156 (the
 multi-resolution guard). This plan should need **no** change to it — the unit work lives in the shim
 by design. If a task proposes editing it, stop and coordinate.
+
+**Actual outcome (T3 fixer round, 2026-08-13):** one small, additive change landed anyway — a
+`config_hash` property on `ForecastInterfaceAdapter` (`adapters/forecast_interface.py:462-473`)
+forwarding the wrapped FI model's own `config_hash` attribute, which the adapter otherwise silently
+dropped (no `__getattr__` passthrough), disabling T3's config/artifact drift check for every real FI
+model. This is outside the unit-conversion logic the coordination note above was worried about, adds
+no new surface to the multi-resolution guard or T2's accessors, and is proven necessary by
+`tests/unit/adapters/test_forecast_interface_adapter.py::test_config_hash_is_forwarded_from_the_wrapped_fi_model`
+and its sibling (both fail without it). Checked against `main` at fixer time — no active conflict with
+Plans 151/156's own edits to this file. Noted here per the coordination rule, after the fact rather
+than before, since the need surfaced mid-fix rather than at planning time.
 
 ## References
 - `docs/plans/152-aquacast-pooled-model-integration.md` — parent; artifact contract and decisions

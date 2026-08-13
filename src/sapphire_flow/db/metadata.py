@@ -972,6 +972,29 @@ sa.Index(
     ),
 )
 
+# Plan 157 T3 (G4/G7): provenance for an EXTERNALLY-IMPORTED artifact. A row
+# here means the paired model_artifacts row was imported, not trained by
+# SAP3 — absence means SAP3-trained. Deliberately NOT a widening of
+# model_artifacts itself (training_period_start/end/trained_at stay
+# non-nullable there; see services/model_import.py for how an import
+# populates them). One row per artifact — the FK is also the PK.
+model_artifact_provenance = sa.Table(
+    "model_artifact_provenance",
+    metadata,
+    sa.Column(
+        "artifact_id",
+        UUID(as_uuid=True),
+        sa.ForeignKey("model_artifacts.id"),
+        primary_key=True,
+    ),
+    sa.Column("source_repository", sa.Text, nullable=True),
+    sa.Column("source_commit", sa.Text, nullable=True),
+    sa.Column("config_hash", sa.Text, nullable=True),
+    sa.Column("imported_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("imported_by", sa.Text, nullable=True),
+    sa.Column("notes", sa.Text, nullable=True),
+)
+
 # INVARIANT: model_assignments must only reference stations with ownership='own'.
 # Foreign stations are display-only and never run through local models.
 # Enforced at application layer; DB trigger deferred to v1.

@@ -26,6 +26,9 @@ DEPLOYMENT_NAMES = {
     "ingest-recap-reanalysis",
     "collect-bafu-forecasts",
     "collect-bafu-observations",
+    # Plan 157 T3: the external-artifact import path — manually triggered,
+    # no cron, on the `default` pool like every other non-ingest deployment.
+    "import-model-artifact",
 }
 
 # ---------------------------------------------------------------------------
@@ -98,10 +101,24 @@ class TestBuildSpecs:
     def test_returns_all_specs(self) -> None:
         # Plan 071 adds weather-history ingest; Plan 111 adds the BAFU
         # forecast collector; Plan 136 adds the BAFU observation collector;
-        # Plan 146 adds the recap-reanalysis snow ingest.
+        # Plan 146 adds the recap-reanalysis snow ingest; Plan 157 adds the
+        # external-artifact import path.
         specs = _build_specs()
-        assert len(specs) == 13
+        assert len(specs) == 14
         assert {s.deployment_name for s in specs} == DEPLOYMENT_NAMES
+
+    def test_import_model_artifact_is_manual_and_on_the_default_pool(self) -> None:
+        """Plan 157 T3. Manually triggered (no cron) and serialized. It sits on
+        `default`: a dedicated forecast-cycle pool was built for it and
+        REVERTED — with the same image on both sides it bought nothing while
+        adding a third pool and a mixed-version upgrade window. A shim-backed
+        model will need routing to whichever worker carries that distribution
+        (see the split-out shim plan)."""
+        by_name = {s.deployment_name: s for s in _build_specs()}
+        spec = by_name["import-model-artifact"]
+        assert spec.cron is None
+        assert spec.concurrency_limit == 1
+        assert spec.work_pool_name == WORK_POOL
 
     def test_bafu_collector_hourly_and_serialized(self) -> None:
         by_name = {s.deployment_name: s for s in _build_specs()}

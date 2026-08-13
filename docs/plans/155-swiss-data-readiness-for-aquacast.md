@@ -14,8 +14,14 @@ supersedes: []
 ## Status
 **READY** (owner, 2026-08-13). Split out of **Plan 152** (tasks T1, T1b, T1c) on 2026-08-12.
 
-**T1 + T2 IMPLEMENTED (2026-08-13, hold-at-PR — not yet merged).** Summary, deviations,
-and residual risks below; full detail in the PR description.
+**T1 + T2 IMPLEMENTED (2026-08-13) — then REVIEWED and found NOT MERGEABLE.** The inventory below
+is accurate and useful; **its two DEVIATION claims are SUPERSEDED** by the review section that
+follows. Specifically: the collision guard is **not** "forward-compatible defensive code", it is
+**dead by construction** (a single-valued resolver can never trip it), and the narrowing rationale
+**conflates two distinct collision cases** — bare-CAMELS-CH-vs-Caravan (which D15 settles: Caravan
+wins) and raw-code-vs-canonical-name *within* the Caravan namespace (which the plan requires to fail
+loudly and which remains undetected). **D16 now supplies the missing piece the implementation guessed
+at.** Read the review section before the deviations.
 
 - **T1/T1b** — `adapters/caravan_attributes.py` (pure parquet parsing, sanitises
   NaN/Inf to `None`), `store/basin_store.py::PgBasinStore.merge_namespaced_attributes`
@@ -93,6 +99,79 @@ cannot prove) lives in **Plan 152 only, by design** — the siblings reference i
 duplicating it, because duplication is what produced the drift Plan 152 spent three review rounds
 correcting. **"This plan does not explain X" is NOT a finding if X is in 152.** Do flag it if a
 statement here CONTRADICTS 152, or if this plan depends on something no plan in the family owns.
+
+## ⚠️ Post-implementation review — T1+T2 landed but are NOT mergeable (2026-08-13)
+
+`/implement` (`wgfj4zqk7`) committed T1+T2 on `feat/plan-155-caravan-statics`
+(`33112b2` + version bump `ecaf401`, worktree `../sapphire-plan155`) and then **ESCALATED**: its
+verifier could not observe pytest finish, so `rounds: 0` — **the Codex review loop never ran**. An
+independent Codex pass was run manually afterwards. It found a **BLOCKER**, and every finding below
+was **confirmed by execution**, not accepted on assertion.
+
+### BLOCKER — D15's "no bare-name fallback" is inverted at BOTH boundaries
+This is the exact silent failure D15 exists to prevent, and it is live for `area`.
+
+- **Frame path.** `project_declared_static_attributes` seeds `projected = dict(attributes)`
+  (`services/caravan_statics.py:123`) and, when the `caravan:` source key is absent, `continue`s
+  (`:126`) — leaving the bare legacy key in place. Executed:
+  `project_declared_static_attributes({"area": 123.0}, ["area"])` → `{"area": 123.0}`. A
+  Caravan-declaring model asking for `area` is handed **CAMELS-CH's** value, which rescales every
+  discharge through the `m3/s <-> mm/day` conversion.
+- **Compatibility path.** `available_declared_static_keys` is correct in isolation (returns
+  `frozenset()` above), but all three callers **union the raw bare keys back in** —
+  `non_null_static_keys(attrs) | available_declared_static_keys(...)`
+  (`flows/onboard_model.py:274`, `services/model_onboarding.py:1275`, `services/training_data.py:250`).
+  So compatibility reports `area` available when Caravan's is missing, and the gate that should catch
+  the frame defect passes instead.
+
+**The underlying design gap:** the code applies Caravan resolution to *every* model's declared names,
+so it cannot simultaneously give PT no-bare-fallback and let an incumbent CAMELS-CH model resolve its
+own bare `area`. It currently resolves that conflict silently in the incumbent's favour, which breaks
+PT. **A fix needs an explicit notion of "this model is Caravan-declaring"** — that concept does not
+exist yet and is not in this plan. Owner decision required before the fixer round.
+
+### MAJOR — T2 collision semantics are not implemented (the guard is dead code)
+`resolve_caravan_static_key` is **single-valued** (`:74`), so the guard at `:130-138` can never fire:
+one declared name yields exactly one source key, hence one value. Executed — with
+`{"caravan:slp_dg_sav": 11.0, "caravan:slope": 99.0}` and declared `slope`, it **silently returns
+11.0** where the plan requires a loud failure. The importer *will* store both keys, since it prefixes
+every input column (`store/caravan_import.py:63`).
+**Latent, not live:** **0 of 21** alias pairs ship both names in the real parquet (verified). But the
+implementer's characterisation — "unreachable given the map's shape", "forward-compatible" — is
+wrong and creates false confidence: it is unreachable *by construction*, and no change to the map can
+make it fire. Also, equal **infinities** are accepted (no finiteness check).
+
+### MAJOR — provenance is ephemeral, and the release cannot even be supplied
+`CaravanImportProvenance` carries every agreed field including `extractor_name="hsol"`, but it is
+constructed *after* the writes and merely **returned** (`store/caravan_import.py:73`); nothing
+persists it. **This inverts the advice recorded above.** There is no fingerprint and no immutability
+guard, so a re-import with *different* source data is silently undetectable — and `basin_store.py:165`
+merges with JSONB `||`, overwriting existing `caravan:*` values without a trace. Worse, the import API
+accepts only `extractor_version` (`:34`), so even once the modeller confirms the Caravan release
+**there is no parameter to pass it through** — `source_dataset_version` always takes its placeholder
+default.
+
+### MAJOR — T1's exit gate is neither enforced nor genuinely tested
+The importer takes no frozen manifest and iterates only rows present in the parquet
+(`store/caravan_import.py:49`), so it cannot detect a manifest station missing from the file, and it
+marks a station matched even when required values sanitised to `None` (`:64`). The "all fifty" test
+builds **25 synthetic values all hard-coded to `1.0`** (`tests/unit/services/test_caravan_statics.py:156`)
+— it proves neither the 50 names nor any real coverage.
+
+### MAJOR — test soundness is weaker than reported
+The stash-based proofs for the *wiring* changes (`training_data.py`, `onboard_model.py`) are
+legitimate red-first evidence. But every test in a **newly added module** fails against the parent
+commit at **collection** (`ImportError`), which is not "failing for the right reason". No test covers
+the non-empty legacy-`area` case (`:90` passes `{}`, hitting the early return), the raw-vs-canonical
+collision, `_static_inputs` itself, or the hindcast/operational projection paths.
+
+### What is sound
+The 21-entry alias table matches the plan; prefix-only storage is guarded; the differing-`area`
+helper test is genuinely non-coincidental; and the flow/training positive tests do fail under the old
+raw-key behaviour. Full suite, ruff and the pyright ratchet all pass.
+
+**Status: hold at branch, do NOT open a PR.** The blocker needs the Caravan-declaring-model decision
+first.
 
 ## Implementation notes (read before writing code)
 
@@ -389,9 +468,23 @@ constructing the projected frame too. The projection must therefore operate on *
 as well as frames, and be applied in both onboarding-compatibility paths and ahead of training's
 check.
 
+**Resolution is gated on D16's model declaration.** `project_declared_static_attributes` and
+`available_declared_static_keys` must take the model's declared static namespace and apply the strict
+no-fallback rule **only** under `caravan`. Two concrete requirements the first implementation
+violated:
+1. **No bare-name fallback under `caravan`** — the projection must NOT leave a bare legacy key
+   standing in for a declared name whose `caravan:` source is absent, and the compatibility callers
+   must NOT union the raw bare key set back in for such a model (`flows/onboard_model.py:274`,
+   `services/model_onboarding.py:1275`, `services/training_data.py:250`). A missing Caravan attribute
+   is a **loud failure**.
+2. **`native` models keep today's behaviour exactly** — bare keys, raw key set, no projection.
+
 **Define alias collision semantics.** If a package ever carries both the raw code and the canonical
 Caravan name, equal finite values are accepted and **conflicting values fail loudly** naming station,
-alias, canonical name and both values. Never silently overwrite a package value.
+alias, canonical name and both values. Never silently overwrite a package value. **The check must
+look up BOTH keys** — a guard driven by a single-valued resolver is dead code and cannot detect the
+case (the first implementation shipped exactly that). Require **finite** equality: equal infinities
+must not pass.
 
 **Red-first — the RED assertion is the positive one, and it must be asserted at BOTH boundaries:**
 1. **compatibility** — PT reports zero missing statics for a Swiss station (fails today: the raw key
@@ -488,6 +581,31 @@ If the answer arrives after import, do the re-import **before T6**, while no art
 the attributes.
 
 ## Decisions
+
+- **D16 — how does resolution know a model is Caravan-declaring? — RESOLVED (owner, 2026-08-13):
+  the MODEL declares it.** This is the fix for the review BLOCKER above; it is a prerequisite for the
+  fixer round, not an optional refinement.
+
+  A model declares its static-naming convention as a **class attribute**, exactly like the existing
+  `model_tier` / `alert_eligibility` pattern that `discover_models` already reads and enforces
+  (`services/model_registry.py:61-76`). Resolution then branches on the declaration instead of
+  guessing:
+
+  | declaration | resolution for a declared static `X` |
+  |---|---|
+  | `native` (**the default**) | the bare `X` — **every incumbent is byte-for-byte unchanged** |
+  | `caravan` | `caravan:` + (`alias[X]` or `X`) **ONLY**; a missing key is a **loud failure** |
+
+  **The default must be `native`**, so the strict regime is opt-in and no existing model changes
+  behaviour when this lands. Plan 155 owns the resolution branch; **Plan 159's shim sets the flag on
+  the aquacast model**, which is the natural owner since it already binds PT's config at import time.
+
+  **Why the alternatives lose.** *Infer from the alias map* cannot work: the 29 **direct** statics —
+  including `area`, the dangerous one — are textually indistinguishable from an incumbent's own
+  names, so inference fails on exactly the case that matters. *Translate in the shim* is clean but
+  moves the fix into an external repo that does not exist yet, so Plan 155 could not close. *Strip
+  the colliding bare keys* breaks D15's explicit promise that incumbents keep their inputs untouched
+  — an incumbent on a Caravan-imported basin would lose its `area` entirely.
 
 - **D15 — how do Caravan attributes coexist with CAMELS-CH's? — RESOLVED (owner, 2026-08-13):
   option (A), namespace them inside the existing `Basin.attributes` dict.** Smallest change, no

@@ -138,6 +138,21 @@ def _build_specs() -> list[DeploymentSpec]:
             cron=cron_bafu_observation,
             concurrency_limit=1,
         ),
+        # Plan 157 T3: manually-triggered — no cron; runs on the `default`
+        # pool like every other non-ingest deployment. NOTE for whoever
+        # builds the aquacast shim (split out of this plan): an import only
+        # succeeds where the imported model_id's ENTRY POINT is installed,
+        # so a shim-backed model will need this deployment routed to
+        # whichever worker carries that distribution. A dedicated
+        # forecast-cycle pool was built for that and REVERTED — with the
+        # same image on both sides it bought nothing while adding a third
+        # pool and a mixed-version upgrade window.
+        DeploymentSpec(
+            flow_module="sapphire_flow.flows.import_model_artifact",
+            flow_attr="import_model_artifact_flow",
+            deployment_name="import-model-artifact",
+            concurrency_limit=1,
+        ),
     ]
 
 
