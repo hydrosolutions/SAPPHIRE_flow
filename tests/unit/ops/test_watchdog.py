@@ -12,12 +12,14 @@ from pathlib import Path  # noqa: TC003 — used at runtime in helper
 
 import httpx
 import pytest
+from structlog.testing import capture_logs
 
 from sapphire_flow.ops.watchdog import (
     ALERT_REPEAT_EVERY,
     BACKUP_STALE_THRESHOLD,
     BAFU_OBS_STALE_THRESHOLD,
     BAFU_STALE_THRESHOLD,
+    DEADMAN_PING_TIMEOUT_S,
     BafuFreshnessResult,
     DiskSpaceResult,
     HealthProbeResult,
@@ -1099,12 +1101,59 @@ class TestDefaultDeadmanPoster:
         monkeypatch.setattr(httpx, "post", _raise_timeout)
         assert default_deadman_poster("https://hc-ping.com/abc-123") is False
 
+    def test_timeout_logs_failure_event(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def _raise_timeout(*args: object, **kwargs: object) -> httpx.Response:
+            raise httpx.TimeoutException("timed out")
+
+        monkeypatch.setattr(httpx, "post", _raise_timeout)
+        with capture_logs() as logs:
+            default_deadman_poster("https://hc-ping.com/abc-123")
+
+        events = [e for e in logs if e.get("event") == "watchdog.deadman_ping_failed"]
+        assert len(events) == 1, logs
+
     def test_non_2xx_returns_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _fake_post(*args: object, **kwargs: object) -> httpx.Response:
             return httpx.Response(500, request=httpx.Request("POST", args[0]))
 
         monkeypatch.setattr(httpx, "post", _fake_post)
         assert default_deadman_poster("https://hc-ping.com/abc-123") is False
+
+    def test_non_2xx_logs_failure_event_with_status(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _fake_post(*args: object, **kwargs: object) -> httpx.Response:
+            return httpx.Response(500, request=httpx.Request("POST", args[0]))
+
+        monkeypatch.setattr(httpx, "post", _fake_post)
+        with capture_logs() as logs:
+            default_deadman_poster("https://hc-ping.com/abc-123")
+
+        events = [e for e in logs if e.get("event") == "watchdog.deadman_ping_failed"]
+        assert len(events) == 1, logs
+        assert events[0]["http_status"] == 500
+
+    def test_success_posts_to_url_with_correct_timeout_and_returns_true(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # This is the finding this test locks: a "poster" that never calls
+        # HTTP and always returns False must NOT pass — we assert both the
+        # True return AND that httpx.post was actually invoked with the
+        # right URL and the DEADMAN_PING_TIMEOUT_S timeout (5.0s).
+        calls: list[tuple[str, dict[str, object]]] = []
+
+        def _fake_post(url: str, **kwargs: object) -> httpx.Response:
+            calls.append((url, kwargs))
+            return httpx.Response(200, request=httpx.Request("POST", url))
+
+        monkeypatch.setattr(httpx, "post", _fake_post)
+        result = default_deadman_poster("https://hc-ping.com/abc-123")
+
+        assert result is True
+        assert DEADMAN_PING_TIMEOUT_S == 5.0
+        assert calls == [
+            ("https://hc-ping.com/abc-123", {"timeout": DEADMAN_PING_TIMEOUT_S})
+        ]
 
 
 # ---------- run_once: dead-man's-switch ping (Plan 158 D3, T1) -----------------
@@ -1229,6 +1278,75 @@ class TestRunOnceDeadman:
 
         assert deadman.calls == []  # ping never reached
 
+    def test_skip_logs_no_url_event(self, tmp_path: Path) -> None:
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        # cfg.deadman_url_path deliberately not created.
+
+        with capture_logs() as logs:
+            run_once(
+                config=cfg,
+                clock=_clock,
+                probe=_ok_probe,
+                slack_poster=_SlackRecorder(),
+                bafu_probe=_bafu_ok_probe,
+                bafu_obs_probe=_bafu_obs_ok_probe,
+                deadman_poster=_DeadmanRecorder(),
+            )
+
+        events = [
+            e for e in logs if e.get("event") == "watchdog.deadman_skipped_no_url"
+        ]
+        assert len(events) == 1, logs
+
+    def test_ping_attempted_logs_event_with_pinged_flag(self, tmp_path: Path) -> None:
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.deadman_url_path.write_text("https://hc-ping.com/abc-123")
+
+        with capture_logs() as logs:
+            run_once(
+                config=cfg,
+                clock=_clock,
+                probe=_ok_probe,
+                slack_poster=_SlackRecorder(),
+                bafu_probe=_bafu_ok_probe,
+                bafu_obs_probe=_bafu_obs_ok_probe,
+                deadman_poster=_DeadmanRecorder(),
+            )
+
+        events = [
+            e for e in logs if e.get("event") == "watchdog.deadman_ping_attempted"
+        ]
+        assert len(events) == 1, logs
+        assert events[0]["pinged"] is True
+
+    def test_state_dump_failure_skips_ping(self, tmp_path: Path) -> None:
+        # Ordering proof: the ping fires AFTER state.dump(). Force dump() to
+        # fail by pointing state_path at a directory instead of a file —
+        # WatchdogState.load() tolerates that (falls back to defaults, logs
+        # a warning) but Path.write_text() in dump() raises IsADirectoryError
+        # (unguarded), so this isolates a dump-specific failure rather than
+        # a load-specific one.
+        backup_dir = _make_fresh_backup(tmp_path, hours_ago=2)
+        cfg = _config(tmp_path, backup_dir=backup_dir)
+        cfg.state_path.mkdir(parents=True, exist_ok=True)
+        cfg.deadman_url_path.write_text("https://hc-ping.com/abc-123")
+        deadman = _DeadmanRecorder()
+
+        with pytest.raises(OSError):
+            run_once(
+                config=cfg,
+                clock=_clock,
+                probe=_ok_probe,
+                slack_poster=_SlackRecorder(),
+                bafu_probe=_bafu_ok_probe,
+                bafu_obs_probe=_bafu_obs_ok_probe,
+                deadman_poster=deadman,
+            )
+
+        assert deadman.calls == []  # dump() raised before the ping ran
+
 
 # ---------- main(): exception -> return 2, no ping (Plan 158 D3, T1) -----------
 
@@ -1266,6 +1384,87 @@ class TestMainDeadmanOnUnrecoverableError:
 
         assert rc == 2
         assert deadman_recorder.calls == []
+
+
+class TestMainWiresDeadmanAndDiskProbes:
+    """main() must wire the REAL default_deadman_poster and probe_disk_free
+    into run_once on a successful tick — the only test above exercises the
+    unrecoverable-error path, where the dead-man is skipped by design. This
+    proves the successful-tick wiring: an actual httpx POST to the
+    configured URL, and an actual disk-space check."""
+
+    def test_successful_tick_pings_deadman_and_checks_disk(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sapphire_flow.ops.watchdog as watchdog_module
+
+        # Keep CLI logging config untouched by main() so nothing here
+        # depends on structlog's global renderer configuration; the actual
+        # wiring proof below is via the httpx.post recorder, not logs.
+        monkeypatch.setattr(
+            watchdog_module, "configure_cli_logging", lambda *a, **k: None
+        )
+        monkeypatch.setattr(watchdog_module, "probe_health", _ok_probe)
+
+        def _bafu_ok_probe_flexible(
+            _url: str, *, token: str | None = None
+        ) -> BafuFreshnessResult:
+            return BafuFreshnessResult(
+                found=True, checked_at=datetime.now(UTC), status="ok", error=None
+            )
+
+        monkeypatch.setattr(
+            watchdog_module, "probe_bafu_freshness", _bafu_ok_probe_flexible
+        )
+
+        post_calls: list[tuple[str, dict[str, object]]] = []
+
+        def _fake_post(url: str, **kwargs: object) -> httpx.Response:
+            post_calls.append((url, kwargs))
+            return httpx.Response(200, request=httpx.Request("POST", url))
+
+        monkeypatch.setattr(httpx, "post", _fake_post)
+
+        deadman_path = tmp_path / "deadman_url"
+        deadman_path.write_text("https://hc-ping.com/abc-123")
+
+        argv = [
+            "--state-path",
+            str(tmp_path / "state.json"),
+            "--slack-path",
+            str(tmp_path / "slack_webhook_url"),
+            "--deadman-url-path",
+            str(deadman_path),
+            "--backup-dir",
+            str(tmp_path / "pg_dumps_missing"),
+            "--probe-token-path",
+            str(tmp_path / "probe_token"),
+            "--disk-path",
+            str(tmp_path),
+        ]
+
+        with capture_logs() as logs:
+            rc = main(argv)
+
+        assert rc == 0
+        # The dead-man poster was really invoked (not a stub that always
+        # returns False without calling HTTP): correct URL, correct timeout.
+        assert post_calls == [
+            ("https://hc-ping.com/abc-123", {"timeout": DEADMAN_PING_TIMEOUT_S})
+        ]
+        # The disk probe was really invoked (against the real filesystem —
+        # main() always wires probe_disk_free, never leaves it None).
+        disk_events = [
+            e for e in logs if e.get("event") == "watchdog.disk_space_check_completed"
+        ]
+        assert len(disk_events) == 1, logs
+        assert disk_events[0]["path"] == str(tmp_path)
+        assert disk_events[0]["free_bytes"] is not None
+        ping_events = [
+            e for e in logs if e.get("event") == "watchdog.deadman_ping_attempted"
+        ]
+        assert len(ping_events) == 1, logs
+        assert ping_events[0]["pinged"] is True
 
 
 # ---------- probe_disk_free / run_once free-space check (Plan 158 D14) ---------

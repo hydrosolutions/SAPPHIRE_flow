@@ -684,14 +684,19 @@ survives logout/reboot, requires root); `ch.hydrosolutions.sapphire` and
 `ch.hydrosolutions.sapphire-docker-prune` stay `agent` (`gui/$(id -u)`, dies at logout) —
 their conversion is a separate host cutover (D5/T5). A plain (non-root) run of the
 installer installs the two agent jobs and **skips the daemon job with a warning** — it
-never escalates privileges itself. To install (or re-install) the watchdog daemon:
+never escalates privileges itself. A root run with NO `--label` (a full sweep) is
+rejected outright, since `$HOME` under `sudo` resolves to root's home and would
+mismatch the `gui/<uid>` domain the agent plists are bootstrapped into — always pair
+`sudo` with `--label` for the one daemon job. To install (or re-install) the watchdog
+daemon:
 
 ```bash
 sudo ./scripts/launchd/install-launchd.sh --label ch.hydrosolutions.sapphire-watchdog
 ```
 
-`--dry-run` prints exactly what every label would do (including the daemon path and the
-privileged step) without calling `plutil` or `launchctl` — safe to run anywhere.
+`--dry-run` previews each label's target domain (including the daemon path and the
+privileged step) without calling `plutil` or `launchctl` — safe to run anywhere, but not
+a full transcript of every action a real run performs.
 
 ## Host-level watchdog
 

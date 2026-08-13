@@ -12,14 +12,16 @@ supersedes: []
 # Plan 158 — Session-independent operational stack
 
 ## Status
-**DRAFT.** **Split on 2026-08-12:** the runtime migration that was Phase 3 is now **Plan 159**, after a `/plan`
-review produced 3 blockers and 12 majors against it — the objections were sound and it is a project, not a phase.
-158 keeps the low-risk, high-value half: it makes an outage *visible within minutes* and survivable across reboots,
-and it lands the system-domain conversion that 159 hard-depends on. **158 does not remove the GUI dependency** — with
-Docker Desktop still the engine, a logout still darkens the feed; you would simply know immediately.
+**READY** (see the dated status line below for the full history). **Split on 2026-08-12:** the runtime migration
+that was Phase 3 is now **Plan 159**, after a `/plan` review produced 3 blockers and 12 majors against it — the
+objections were sound and it is a project, not a phase. 158 keeps the low-risk, high-value half: it makes an outage
+*visible within minutes* and survivable across reboots, and it lands the system-domain conversion that 159
+hard-depends on. **158 does not remove the GUI dependency** — with Docker Desktop still the engine, a logout still
+darkens the feed; you would simply know immediately.
 
-**DRAFT.** Operational reliability (category **A**). Prompted by the outage diagnosed on 2026-08-12; the owner has
-made this a priority so operational data collection is dependable.
+Operational reliability (category **A**). Prompted by the outage diagnosed on 2026-08-12; the owner has made this a
+priority so operational data collection is dependable. (This plan started life as DRAFT on 2026-08-12, same day as
+the split above — see `## Progress` for the dated history of what has since been implemented and reviewed.)
 
 ## Build scope — READ BEFORE IMPLEMENTING
 **Automated implementation covers the `(Repo, …)` tasks ONLY: T1 and T2.** Every `(Host, …)` task — T3, T4, T5, T6 —
@@ -66,6 +68,42 @@ reviewed (one `/plan` round plus three Codex passes, two of them opposed-lens).
     ("Automated implementation covers the `(Repo, …)` tasks ONLY: **T1 and T2**"), T4 was treated as out of the
     automated remit and NOT implemented here. Flagging for owner clarification before a future automated pass
     attempts T4.
+- **2026-08-13 — T1/T2 post-implementation review fixed (`v0.1.702`).** An independent Codex pass over the T1/T2
+  diff raised 1 blocker + 4 majors (+ 5 minors); all blocker/major findings resolved, tests added and proven RED
+  against the pre-fix code before restoring the fix (locking tests), exit gates re-green:
+  - **Blocker** — `install-launchd.sh`'s stale-`gui/<uid>` bootout before a `system/` bootstrap used to swallow a
+    failed `launchctl bootout` and proceed anyway (both domains could end up live, racing the same state file). Now
+    aborts on bootout failure AND verifies via a second `launchctl print` that the registration is actually gone
+    before bootstrapping `system/…`.
+  - **Major** — `bootstrap-mac-mini.sh --uninstall` resolved `UID_VAL` from the wrong uid under `sudo`, checked
+    plist-file existence instead of actual `launchctl print` registration, silently skipped a `system/`-domain
+    removal it couldn't perform, and printed "uninstall complete" regardless. Now derives `UID_VAL` via `SUDO_UID`,
+    inspects real registration state, refuses (nonzero exit) a `system/`-domain removal without root, and exits
+    nonzero — never claims completion — if anything is still registered after the attempt.
+  - **Major** — a root FULL sweep (`sudo install-launchd.sh`, no `--label`) used to install the two agent-domain
+    plists under root's `$HOME` while bootstrapping them into the real operator's `gui/<SUDO_UID>` session — they
+    would load once but not survive the next login/reboot. Now rejected outright with an explicit two-step
+    (`unprivileged` sweep + privileged `--label`) instruction.
+  - **Major** — the dead-man's-switch tests only covered timeout/500 paths; a poster that never called HTTP and
+    always returned `False` would still have passed. Added: a 2xx-success test asserting the actual POST call (URL +
+    `timeout == DEADMAN_PING_TIMEOUT_S == 5.0`), required failure/skip/attempted log-event assertions, a
+    `state.dump()`-before-ping ordering test (forces `dump()` to raise, asserts no ping), and a `main()` wiring test
+    proving the real `default_deadman_poster`/`probe_disk_free` are invoked on a successful tick.
+  - **Major** — `docs/deployment/mac-mini-staging.md`'s watchdog troubleshooting section assumed the T3 host cutover
+    had already happened (system-domain-only commands, which fail on a still-LaunchAgent watchdog). Now labels
+    system-domain commands "after T3 cutover", keeps the transitional `gui/<uid>` commands, and adds a
+    domain-detection snippet so an operator doesn't have to guess.
+  - **Minors folded**: `--label=` (equals-form) with an empty value no longer silently disables filtering (now
+    rejected like the two-arg form); this Status section's stale "DRAFT" labels (contradicting the READY front
+    matter) reworded; the previously-untested "unprivileged full sweep skips the daemon with a warning, keeps going"
+    branch now has a dedicated test (the sibling of the existing root-refusal test); the `--dry-run` preview's
+    "prints exactly what would happen" claim softened to "previews the domain routing" (it does not enumerate every
+    action — validation, directory creation, existing-registration bootout/reload, `launchctl enable` — a real run
+    performs; a full dry-run/real-run unification was judged too large a change for a minor finding and deferred).
+  - **Not changed**: the branch-history version/tag-cadence finding (9 commits since `main`, one aggregate
+    `pyproject.toml` bump, only `0ad6d64` tagged) is left as history — rewriting already-pushed-adjacent local
+    commits was judged out of scope for a fixer round and riskier than the finding itself; this fixer commit follows
+    the mandatory bump+tag sequence going forward.
 
 ## Problem
 

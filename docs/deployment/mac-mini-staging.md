@@ -131,9 +131,13 @@ Flags:
 
 - `--dry-run` — print each intended command with `would run:`; make
   no changes. Useful for verifying the plan on a dev machine.
-- `--uninstall` — bootout the two LaunchAgents and `docker compose
-  down` the stack. Leaves `secrets/` and LaunchAgent plist files in
-  place so re-install is fast.
+- `--uninstall` — bootout every registered label in BOTH launchd
+  domains (agent + the watchdog's daemon) and `docker compose down`
+  the stack. Leaves `secrets/` and plist files in place so re-install
+  is fast. Removing the daemon-domain (`system/`) watchdog needs root
+  — run `sudo ./scripts/bootstrap-mac-mini.sh --uninstall` if it is
+  registered there; the script refuses (exits nonzero, does not claim
+  "uninstall complete") rather than silently leaving it running.
 - `--help` — show usage.
 
 ### Build-time secret — `RECAP_DG_CLIENT_TOKEN`
@@ -250,8 +254,19 @@ re-install) the watchdog daemon explicitly:
 sudo ./scripts/launchd/install-launchd.sh --label ch.hydrosolutions.sapphire-watchdog
 ```
 
-`--dry-run` previews exactly what every label would do (including the daemon
-path and this privileged step) without touching `plutil`/`launchctl`.
+**Always use `--label` under `sudo`.** A root run with no `--label` (a "full
+sweep") is refused outright: under `sudo`, `$HOME` resolves to root's home,
+so the agent-domain plists would land under `/var/root/Library/LaunchAgents`
+while being bootstrapped into the real operator's `gui/<uid>` session — they
+would load once but not survive the next login/reboot. Run the plain
+(unprivileged) sweep for the two agent jobs, and `sudo … --label
+ch.hydrosolutions.sapphire-watchdog` separately for the daemon, as above.
+
+`--dry-run` previews the domain routing for every label (agent vs. daemon,
+including the privileged re-run reminder) without touching
+`plutil`/`launchctl` — it is not a full transcript of every action a real
+run performs (validation, directory creation, existing-registration
+bootout/reload, `launchctl enable`).
 
 - **`ch.hydrosolutions.sapphire`** — runs
   `scripts/launchd/start-sapphire.sh` at login. The wrapper waits up
@@ -477,9 +492,42 @@ launchctl bootout gui/$(id -u)/ch.hydrosolutions.sapphire \
 ./scripts/launchd/install-launchd.sh
 ```
 
-### Watchdog (LaunchDaemon) isn't firing
+### Watchdog isn't firing
 
-Plan 158 D2: the watchdog lives in the **system** domain, not `gui/$(id -u)`:
+Plan 158 D2 MOVES the watchdog from the per-user `gui/<uid>` domain into
+the **system** LaunchDaemon domain — but that move only takes effect on
+this host once the **T3 host-cutover** step
+(`docs/plans/158-session-independent-operational-stack.md` T3;
+`docs/operations/watchdog-daemon-runbook.md`) has actually been run here.
+Until then the watchdog is still a plain LaunchAgent, same as the main
+stack job. **Check which domain it is actually in before picking a
+command below** — a `system/`-domain command run against a still-`gui/`
+watchdog fails outright (no such service), and vice versa:
+
+```bash
+launchctl list | grep hydrosolutions        # present under the current user's list?
+launchctl print gui/$(id -u)/ch.hydrosolutions.sapphire-watchdog >/dev/null 2>&1 \
+    && echo "still gui/<uid> — T3 has NOT run on this host yet" \
+    || echo "not in gui/<uid> — check system/ next"
+sudo launchctl print system/ch.hydrosolutions.sapphire-watchdog >/dev/null 2>&1 \
+    && echo "in system/ — T3 HAS run on this host"
+```
+
+**Before T3 cutover (still a LaunchAgent, `gui/$(id -u)`):**
+
+```bash
+launchctl print gui/$(id -u)/ch.hydrosolutions.sapphire-watchdog | head -40
+tail -50 ~/Library/Logs/sapphire-watchdog.log
+```
+
+To force a reload:
+
+```bash
+launchctl bootout gui/$(id -u)/ch.hydrosolutions.sapphire-watchdog
+./scripts/launchd/install-launchd.sh --label ch.hydrosolutions.sapphire-watchdog
+```
+
+**After T3 cutover (LaunchDaemon, `system/`):**
 
 ```bash
 sudo launchctl print system/ch.hydrosolutions.sapphire-watchdog | head -40
@@ -505,6 +553,9 @@ Look for `pipeline.health_check_completed` every 5 min. If you see
 ```bash
 echo 'https://hooks.slack.com/services/...' > secrets/slack_webhook_url
 chmod 600 secrets/slack_webhook_url
+# Before T3 cutover (LaunchAgent):
+launchctl kickstart -k gui/$(id -u)/ch.hydrosolutions.sapphire-watchdog
+# After T3 cutover (LaunchDaemon):
 sudo launchctl kickstart -k system/ch.hydrosolutions.sapphire-watchdog
 tail -f ~/Library/Logs/sapphire-watchdog.log
 ```
@@ -564,11 +615,19 @@ VERSION=v0.1.410 ./scripts/bootstrap-mac-mini.sh
 ./scripts/bootstrap-mac-mini.sh --uninstall
 ```
 
-Boots out all three jobs (agent AND daemon domain, Plan 158 T2) and
-runs `docker compose down`. Leaves secrets and plist files in place.
-**The watchdog's `system/` daemon registration may require root to
-boot out** — the script attempts it and warns if it can't confirm; if
-still loaded, run `sudo launchctl bootout system/ch.hydrosolutions.sapphire-watchdog`.
+Boots out all three jobs — checking actual `launchctl print` registration
+state in BOTH domains (agent and the watchdog's daemon, Plan 158 T2), not
+just plist-file presence — and runs `docker compose down`. Leaves secrets
+and plist files in place.
+
+**The watchdog's `system/` daemon registration needs root to remove.** If
+it's registered and this script isn't running as root, the script REFUSES
+(prints an error, exits nonzero, does **not** claim "uninstall complete") —
+re-run as `sudo ./scripts/bootstrap-mac-mini.sh --uninstall`. It also exits
+nonzero if a bootout was attempted but the label is still registered
+afterwards (a stubborn/raced removal) — never silently reports success
+while something is still loaded.
+
 For a full wipe:
 
 ```bash

@@ -11,9 +11,13 @@
 # gui/<uid>/<label> registration, so one label is never live in two domains
 # at once.
 #
-# --dry-run prints exactly what would happen and calls neither plutil nor
+# --dry-run prints the install decisions (which domain each label targets,
+# the privileged-step reminder for the daemon) and calls neither plutil nor
 # launchctl — it is a pure preview, safe to run anywhere (including CI,
-# which has neither binary).
+# which has neither binary). It does NOT enumerate every action a real run
+# performs (validation, directory creation, existing-registration
+# bootout/reload, `launchctl enable`) — treat it as a routing preview, not a
+# byte-for-byte transcript of a real install.
 #
 # Spec: docs/plans/046-mac-mini-staging-deployment.md §C1, §C3;
 #       docs/plans/158-session-independent-operational-stack.md D2/D2b/T2.
@@ -53,8 +57,10 @@ usage() {
     cat <<'USAGE'
 Usage: ./scripts/launchd/install-launchd.sh [--dry-run] [--label <label>]
 
-  --dry-run        Print exactly what would happen; calls neither plutil
-                    nor launchctl and writes nothing.
+  --dry-run        Preview the domain routing (agent vs. daemon) for each
+                    label; calls neither plutil nor launchctl and writes
+                    nothing. Not a full transcript of every action a real
+                    run performs.
   --label <label>  Install only this one label (e.g.
                     ch.hydrosolutions.sapphire-watchdog) instead of every
                     entry in PLISTS.
@@ -85,6 +91,10 @@ while [ $# -gt 0 ]; do
             ;;
         --label=*)
             ONLY_LABEL="${1#--label=}"
+            if [ -z "${ONLY_LABEL}" ]; then
+                log "ERROR: --label requires a value"
+                exit 1
+            fi
             shift
             ;;
         -h|--help)
@@ -98,6 +108,26 @@ while [ $# -gt 0 ]; do
             ;;
     esac
 done
+
+# A root FULL sweep (no --label) is refused outright: under sudo, $HOME
+# resolves to root's home, so the agent-domain plists in this sweep would
+# be copied under /var/root/Library/LaunchAgents while being bootstrapped
+# into gui/<SUDO_UID> (the real operator's session) — they would load once,
+# immediately, but never again after the next logout/reboot, since launchd
+# re-scans ~/Library/LaunchAgents under the REAL operator's $HOME, not
+# root's. Split into two runs instead: an unprivileged full sweep (agent
+# jobs only, daemon skipped with a warning — see install_daemon below) plus
+# a privileged --label for the one daemon-domain job.
+if [ "$(id -u)" -eq 0 ] && [ -z "${ONLY_LABEL}" ]; then
+    log "ERROR: refusing a root full sweep (no --label given)."
+    log "  Under sudo, \$HOME resolves to root's home, so agent-domain"
+    log "  plists would be installed under the wrong user's LaunchAgents"
+    log "  and would not survive the next login/reboot."
+    log "  Run in two steps instead:"
+    log "    1. (unprivileged) ${SCRIPT_DIR}/install-launchd.sh"
+    log "    2. (privileged)   sudo ${SCRIPT_DIR}/install-launchd.sh --label ch.hydrosolutions.sapphire-watchdog"
+    exit 1
+fi
 
 if [ "${DRY_RUN}" -eq 0 ]; then
     mkdir -p "${HOME}/Library/Logs"
@@ -200,7 +230,28 @@ install_daemon() {
 
     if launchctl print "gui/${UID_VAL}/${label}" >/dev/null 2>&1; then
         log "boot out stale gui/${UID_VAL}/${label} before system bootstrap"
-        launchctl bootout "gui/${UID_VAL}/${label}" 2>/dev/null || true
+        if ! launchctl bootout "gui/${UID_VAL}/${label}"; then
+            log "ERROR: failed to boot out stale gui/${UID_VAL}/${label}."
+            log "  Refusing to bootstrap system/${label} while a gui/<uid>"
+            log "  registration may still be active — installing both would"
+            log "  race the same state file and duplicate Slack/dead-man"
+            log "  traffic (Plan 158's one-domain invariant). Resolve the"
+            log "  stale gui registration manually, then re-run:"
+            log "    sudo ${SCRIPT_DIR}/install-launchd.sh --label ${label}"
+            exit 1
+        fi
+        # Belt-and-suspenders: bootout can report success (exit 0) while
+        # the registration is still visible for a beat, or a raced
+        # re-registration can slip back in. Verify it is actually gone
+        # before proceeding to the system-domain bootstrap.
+        if launchctl print "gui/${UID_VAL}/${label}" >/dev/null 2>&1; then
+            log "ERROR: gui/${UID_VAL}/${label} still registered after bootout."
+            log "  Refusing to bootstrap system/${label} while both domains"
+            log "  could end up active at once. Resolve the stale gui"
+            log "  registration manually, then re-run:"
+            log "    sudo ${SCRIPT_DIR}/install-launchd.sh --label ${label}"
+            exit 1
+        fi
     fi
 
     log "copying ${plist} -> ${dst}"

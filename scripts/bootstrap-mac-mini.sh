@@ -97,31 +97,60 @@ CAMELS_CH_DIR="${HOME}/camels-ch"
 # ============================================================================
 if [ "${UNINSTALL}" -eq 1 ]; then
     hdr "Uninstalling SAPPHIRE Mac-mini stack"
-    UID_VAL="$(id -u)"
+    # Under sudo, `id -u`/$HOME resolve to root, not the invoking operator's
+    # GUI session — SUDO_UID recovers the real uid (mirrors
+    # scripts/launchd/install-launchd.sh's UID_VAL derivation). Only a TRUE
+    # root uid (not SUDO_UID) grants the privilege to remove a system-domain
+    # (LaunchDaemon) registration.
+    UID_VAL="${SUDO_UID:-$(id -u)}"
+    IS_ROOT=0
+    if [ "$(id -u)" -eq 0 ]; then
+        IS_ROOT=1
+    fi
+
+    STILL_LOADED=0
     # Mirrors scripts/launchd/install-launchd.sh's PLISTS array — keep the
     # two lists in sync. Plan 158 T2: uninstall must cover EVERY installed
     # label (the docker-prune job was previously missing here entirely) and
     # boot out BOTH launchd domains, since D2 moves the watchdog into
     # "system" (a LaunchDaemon survives what a plain gui/<uid> bootout does
-    # not touch).
+    # not touch). Registration state is checked via `launchctl print` (the
+    # actual source of truth) rather than plist-file existence — a label can
+    # be registered from a plist that was already deleted, or a plist can
+    # sit on disk without ever having been bootstrapped.
     for label in ch.hydrosolutions.sapphire ch.hydrosolutions.sapphire-watchdog ch.hydrosolutions.sapphire-docker-prune; do
-        agent_plist="${HOME}/Library/LaunchAgents/${label}.plist"
-        daemon_plist="/Library/LaunchDaemons/${label}.plist"
-        if [ -f "${agent_plist}" ]; then
+        if launchctl print "gui/${UID_VAL}/${label}" >/dev/null 2>&1; then
             log "bootout gui/${UID_VAL}/${label}"
             run launchctl bootout "gui/${UID_VAL}/${label}" 2>/dev/null || true
-        else
-            log "no agent plist at ${agent_plist} (skipping gui bootout)"
-        fi
-        if [ -f "${daemon_plist}" ]; then
-            log "bootout system/${label}"
-            run launchctl bootout "system/${label}" 2>/dev/null || true
-            if [ "$(id -u)" -ne 0 ] && [ "${DRY_RUN}" -eq 0 ]; then
-                warn "system/${label} bootout may require root — if it is"
-                warn "  still loaded, re-run: sudo launchctl bootout system/${label}"
+            if [ "${DRY_RUN}" -eq 0 ] && launchctl print "gui/${UID_VAL}/${label}" >/dev/null 2>&1; then
+                fail "gui/${UID_VAL}/${label} still registered after bootout"
+                STILL_LOADED=1
             fi
         else
-            log "no daemon plist at ${daemon_plist} (skipping system bootout)"
+            log "gui/${UID_VAL}/${label} not registered (skipping gui bootout)"
+        fi
+
+        if launchctl print "system/${label}" >/dev/null 2>&1; then
+            if [ "${IS_ROOT}" -eq 0 ]; then
+                if [ "${DRY_RUN}" -eq 1 ]; then
+                    warn "system/${label} is registered; removing it needs"
+                    warn "  root (dry-run preview only — nothing was done)"
+                else
+                    fail "system/${label} is registered but this script is not"
+                    fail "  running as root — it cannot be removed from here."
+                    fail "  Re-run:  sudo ./scripts/bootstrap-mac-mini.sh --uninstall"
+                    STILL_LOADED=1
+                fi
+            else
+                log "bootout system/${label}"
+                run launchctl bootout "system/${label}" 2>/dev/null || true
+                if [ "${DRY_RUN}" -eq 0 ] && launchctl print "system/${label}" >/dev/null 2>&1; then
+                    fail "system/${label} still registered after bootout"
+                    STILL_LOADED=1
+                fi
+            fi
+        else
+            log "system/${label} not registered (skipping system bootout)"
         fi
     done
     log "docker compose down"
@@ -133,6 +162,12 @@ if [ "${UNINSTALL}" -eq 1 ]; then
     else
         run docker compose -f "${REPO_ROOT}/docker-compose.yml" down || true
     fi
+
+    if [ "${STILL_LOADED}" -eq 1 ]; then
+        fail "uninstall INCOMPLETE — one or more labels are still registered (see above)."
+        exit 1
+    fi
+
     success "uninstall complete. Remove ~/Library/LaunchAgents/ch.hydrosolutions.*.plist"
     success "and ${REPO_ROOT}/secrets/ manually if you want a full wipe."
     exit 0
