@@ -165,6 +165,41 @@ conversion fails at predict.
 **Red-first:** a Swiss station resolves **0** of PT's 50 statics today (the CAMELS-CH namespace
 carries none of them); after import + aliasing, all 50 resolve.
 
+### T1b — ONBOARDING DESIGN: how Caravan attributes land without clobbering ours
+
+**The collision is real and it hits exactly the attributes PT needs.** The delivered parquet
+(296 × 216) breaks down as: 6 identity, 192 HydroATLAS codes (incl. the 48 per-class
+`glc/pnv/wet_pc_s*`), 8 Caravan climate indices under **bare names**, 2 `_ERA5_LAND`, 4 `_FAO_PM`,
+and 4 other (`dis_m3_*`, `area_fraction_used_for_aggregation`).
+
+CAMELS-CH attributes are the union of its own CSVs merged on `gauge_id`
+(`camelsch/attributes.py:30-70`) — and it uses the **same classic CAMELS names**. So these overlap
+by name with **different derivations and different values**:
+
+`area`, `p_mean`, `frac_snow`, `high_prec_freq`, `high_prec_dur`, `low_prec_freq`, `low_prec_dur`
+
+**All 7 are among PT's 50.** `area` is the dangerous one: it drives the area-based `m³/s ↔ mm/day`
+conversion, so taking CAMELS-CH's value where PT was trained on Caravan's **silently rescales every
+discharge** — passing every non-null/finite gate on the way through.
+
+A flat merge into `Basin.attributes` is therefore **not** an option: it either overwrites ours or is
+overwritten by ours, and both are silent.
+
+**Onboarding steps (once D15 picks the storage shape):**
+1. **Join on identity** — `caravan_camels_ch_<code>` → `(network="bafu", code=<code>)`. 148/169 match;
+   the rest are T0a's problem.
+2. **Load additively** — never through the importer's correction branch, which replaces attributes,
+   geometry and area wholesale and flags incumbent artifacts (`store/basin_importer.py:810-833`).
+3. **Resolve PT's 50 through the Caravan namespace only** — no silent fallback to a CAMELS-CH value
+   of the same name. A missing Caravan attribute must fail loudly, not quietly resolve to a
+   different derivation.
+4. **Decide the column set** — PT's 50, or the full 216. The full set costs little and spares a
+   re-import for the next model; the 50 is minimal and auditable.
+
+**Red-first:** with both sources loaded, resolving PT's `area` for a Swiss station returns
+**Caravan's** value, not CAMELS-CH's — and the two are asserted to differ in the fixture, so the test
+cannot pass by coincidence. Removing the namespacing makes it fail.
+
 ### T2 — Caravan↔HydroATLAS static alias map (closes G8)
 **Depends on T1** — re-derive the map against the **Swiss** package, do not port the Nepal map
 unchecked.
