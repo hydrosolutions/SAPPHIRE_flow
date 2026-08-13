@@ -361,6 +361,57 @@ reviewable in a diff; "Host" tasks are operator cutovers whose evidence is captu
   - **Why it is a separate task:** T1 is already implemented and committed (`0ad6d64`); this rides with the
     outstanding blocker/major fold-in rather than silently re-opening a shipped task.
 
+- **T1c — Fix the T1/T2 implementation findings (1 blocker + 5 majors). NEW 2026-08-13.**
+  The `/implement` run shipped T1/T2 (`0ad6d64`, v0.1.701) with gates green, but its review loop escalated with
+  findings that are **not yet fixed**. They are specified here rather than left in a transcript. **None is in
+  production** — the branch is unmerged.
+
+  - **F1 (BLOCKER) — the migrated watchdog comes BACK as a LaunchAgent after the next login.**
+    `install-launchd.sh` boots out `gui/<uid>/<label>` and even documents the one-domain invariant
+    (`:231-241`), but it **never removes or disables the plist file** from `~/Library/LaunchAgents`. `bootout`
+    clears only the *current* registration; launchd re-scans that directory at every login. Result: a system daemon
+    **and** a user agent both running the watchdog, racing the same state file and **double-sending every Slack and
+    dead-man message** — which would also corrupt the hysteresis counters that decide when to alert.
+    **Fix:** resolve the invoking operator's real home, stage the daemon plist, boot out **and remove/disable** the
+    legacy plist from the auto-load directory, then bootstrap the daemon — and **roll back to the GUI job if the
+    bootstrap fails**, so a half-migration never leaves the host with no watchdog at all.
+    **Red-first:** a pre-existing legacy plist must not survive the migration; simulate a login re-scan.
+  - **F2 (MAJOR) — `sudo` plus an *agent* label installs into root's home.** The root guard rejects only full
+    sweeps (`:121`), so an explicit agent target under sudo lands in `/var/root/Library/LaunchAgents` while being
+    bootstrapped into `gui/$SUDO_UID` — it loads once, then vanishes at next login.
+    **Fix:** reject **any** root invocation containing an agent target, or resolve the operator home and ownership
+    explicitly. **Red-first:** root-plus-starter and root-plus-prune both rejected.
+  - **F3 (MAJOR) — the documented pre-T3 reload command leaves NO watchdog running.**
+    `docs/deployment/mac-mini-staging.md:526` boots out the GUI watchdog then re-invokes the installer **without
+    root**, but the installer now classifies that label as a daemon and hard-fails non-root (`:211`) — so the agent
+    is gone and the daemon never installs. A documented command that disables monitoring.
+    **Fix:** document a direct GUI-domain copy/bootstrap for the transitional state, or add an explicit
+    unprivileged legacy-agent mode that cannot be confused with a daemon install.
+  - **F4 (MAJOR) — privileged uninstall can report success while the stack keeps running.** A bare
+    `docker compose down` executes in **root's** context with `|| true` swallowing every failure
+    (`scripts/bootstrap-mac-mini.sh:156`; `mac-mini-staging.md:623`), and the `STILL_LOADED` check tracks only
+    launchd jobs, never Docker.
+    **Fix:** run Compose as `SUDO_USER` with that user's home/context, propagate the failure, and verify no project
+    containers remain. **Red-first:** a failing-Docker case must fail the uninstall.
+  - **F5 (MAJOR) — a malformed dead-man URL kills the watchdog.** `default_deadman_poster` catches only
+    `httpx.HTTPError` (`ops/watchdog.py:317`), but **`httpx.InvalidURL` inherits directly from `Exception`**
+    (verified: `issubclass(InvalidURL, HTTPError)` is `False`). A typo'd URL — exactly what a hand-pasted secret
+    produces — escapes a function whose own docstring says "Never raises", reaching `main()`'s unrecoverable handler
+    and returning exit code 2. **The monitoring dies from a typo in the monitoring config.**
+    **Fix:** catch `httpx.InvalidURL` alongside `httpx.HTTPError`, log `watchdog.deadman_ping_failed`, return
+    `False`. **Red-first:** a malformed-URL test (e.g. `https://hc-ping.com:notaport/check`).
+  - **F6 (MAJOR) — the privileged happy paths have NO test coverage.** Install tests stop before
+    `launchctl bootstrap system`/`enable` (`tests/unit/ops/test_install_launchd.py:329`) and the bootstrap tests
+    never simulate a successful root bootout (`test_bootstrap_mac_mini.py:122`) — **the real privileged code could be
+    deleted and the suite would stay green.** That is the code that runs against production.
+    **Fix:** stub `id`, `cp`, `chown`, `chmod`, Docker and a **stateful** `launchctl`; assert command order, target
+    paths, ownership/mode, post-operation verification and failure propagation, for install **and** uninstall.
+  - **F7 (plan defect, mine) — T4's scope label contradicts the build-scope section.** "Build scope" says automated
+    implementation covers T1/T2 only and lists T4 as a Host task, but T4's own block is labelled `(Repo, D8)` with a
+    Repo-only verify list. The implementer correctly followed the scope section, skipped T4, and reported the
+    contradiction instead of guessing. **Fix:** decide T4's true nature and make both places agree — it is the
+    Docker endpoint contract, which is a repo change, so the build-scope list is what is wrong.
+
 ### Phase B — Session-independent host jobs
 
 - **T4 — Docker endpoint contract in code (Repo, D8).**
