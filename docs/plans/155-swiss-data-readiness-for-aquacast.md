@@ -348,7 +348,37 @@ kept, validated, not overwritten").
 3. **The Swiss import cannot double as the DHM worked example.** DHM's path is a genuine extraction
    (as `nepal`'s 11 gauges were); ours is a download. The operator guide still needs its own basis.
 
-**To confirm with the modeller:** which Caravan release/version, so the provenance string is exact.
+**Provenance is STRUCTURED, not a free-text string — and it is IMMUTABLE (owner decision, 2026-08-13).**
+`PackageManifest` (`types/basin_package.py:50-62`) already separates the three facts we were trying to
+compress into one token: `source_datasets[].{name,version,purpose}` says *what dataset*, and
+`extractor_name`/`extractor_version` say *who produced the package*. So Sandro is recorded — just in
+the field that means "who", not welded onto the dataset name:
+
+| field | value | why |
+|---|---|---|
+| `source_datasets[].name` | `caravan` | the dataset, matching D15's `caravan:` attribute prefix |
+| `source_datasets[].version` | `unconfirmed@delivered-2026-08-13` | honest and **stays true**; see the immutability warning |
+| `source_datasets[].purpose` | `attributes` | |
+| `extractor_name` | `aquacast` (Sandro) | ← **this is where the deliverer belongs** |
+| `extractor_version` | the aquacast commit, if obtainable | |
+
+**Not `caravans`.** It sits one character from the `caravan:` prefix D15 pins, in the same system, so
+a later reader cannot tell whether the two are the same thing or deliberately different — and
+`name` is the field someone will try to match against a published Caravan release, which a
+deliverer-encoded name makes unmatchable.
+
+**⚠️ IMMUTABILITY MAKES A LATE CORRECTION EXPENSIVE.** `name`/`version`/`purpose` all feed the
+canonical package fingerprint (`types/basin_package.py:248-249`), and a differing fingerprint under
+the same `package_id` raises `BasinPackageRejectedError` — "a content change requires a NEW
+package_id" (`store/basin_importer.py:316-372`). So filling the release in later is **not an edit**;
+it is a new package and a re-import of all 148 basins, through the correction branch that sets
+`material_change=True` and flags incumbent artifacts (`:810-833`).
+
+**Therefore: ask the modeller for the Caravan release BEFORE running T1's import** — it is one
+message, and it is much cheaper than the re-import. The placeholder above exists only so a blocked
+T1 can still proceed; it is deliberately phrased so it never becomes *false*, only *less precise*.
+If the answer arrives after import, do the re-import **before T6**, while no artifact yet depends on
+the attributes.
 
 ## Decisions
 
