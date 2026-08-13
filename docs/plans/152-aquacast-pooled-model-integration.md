@@ -542,6 +542,38 @@ infer it. The two things that would restore attribution are **re-training on ICO
 raised it; it is the principled fix, and it reopens **D3**, currently import-only) and evaluating
 **only on the held-out Swiss gauges** (G14).
 
+### G16 — **BLOCKER: the declared horizon is a CEILING for aquacast, but our gate treats it as a FLOOR**
+*(Raised 2026-08-13, after the modeller shipped the relaxed-horizon variant. The blocker G13 named has
+**moved, not lifted**.)*
+
+aquacast commit `85e09a45` — *"trained horizon is a maximum, not a fixed input length"* — added
+`_relax_horizon` (`aquacast/operational/model.py`, +136 lines) so a model **accepts fewer future steps
+than it declares**. But `requirement.py` gained **only a comment**: the declared `future_steps` is
+**still 15**, because — in the modeller's own words — *"forecast-interface has no 'at most' form"*.
+
+**Our side still refuses to call it.** Both paths read `required_steps =
+model.data_requirements.forecast_horizon_steps` (the declared 15) and treat a shortfall as fatal:
+- **station** (`services/run_station_forecast.py:174-193`) → `AssignmentFailure(INSUFFICIENT_COVERAGE)`,
+  advancing the fallback chain;
+- **group** (`services/run_group_forecast.py:390-406`) → `return {}` for the **entire group**, with no
+  fallback at all.
+
+So with ICON's 120 h against a declared 15 days, **the Swiss group is still structurally dark** — the
+model would now happily produce a 5-day forecast and we never ask it.
+
+**The current strictness is DELIBERATE, and must not simply be loosened.**
+`run_station_forecast.py:169-171` states the intent: *"the station gets a runoff-only-style forecast,
+**never a truncated NWP one**."* That was correct while every model treated its horizon as a floor.
+Blanket-relaxing it would let a model that genuinely needs 15 steps silently receive 5 and return a
+plausible-but-wrong forecast — the exact failure class Plan 156 exists to prevent.
+
+**Therefore ceiling semantics must be OPT-IN, per model.** FI cannot express it (see the upstream
+issue in `docs/fi-issues/`), so SAP3 needs its own signal until the contract lands. There is a clean
+precedent: `model_tier` and `alert_eligibility` are already **SAP3-side attributes declared on the
+model object** and enforced by `_assert_model_classification_declared`
+(`services/model_registry.py:61-76`). A horizon-semantics attribute follows exactly that pattern, and
+is read from the FI requirement instead once FI gains an "at most" form.
+
 ## Non-goals
 
 - **Retraining or fine-tuning in SAP3.** Import-only; FI `train`/`retrain` stay unexercised.
@@ -881,6 +913,38 @@ and `add_station_to_group` have **no caller anywhere in `src/`**
    chain and become alert-eligible input to Phase C, so **enabling PT changes alerting for stations
    that already have models.** That is a decision, not a step: state the priority and the reasoning.
 
+### T7 — Horizon as a ceiling, opt-in (closes G16)
+**The new critical-path item on the Swiss track** — until it lands, ICON's 5 days cannot feed a
+15-day-declaring model and the group produces nothing.
+
+**In scope:**
+1. **A per-model opt-in signal.** A model declares whether its `forecast_horizon_steps` is a
+   **ceiling** (fewer steps acceptable) or a **floor** (the default, today's behaviour). Follow the
+   `model_tier` / `alert_eligibility` precedent: a SAP3-side attribute on the model object, surfaced
+   through `ModelDataRequirements`. **Default must remain FLOOR** — a model that says nothing keeps
+   today's strict behaviour, so this cannot silently truncate an existing model.
+2. **A minimum useful horizon.** A ceiling model still needs a floor: decide and enforce the fewest
+   steps worth forecasting (config-driven, alongside `min_operational_ensemble_size` /
+   `min_operational_quantile_levels`). Below it, fail as today.
+3. **Pass the ACTUAL available steps to the model**, not the declared maximum, and record the served
+   horizon on the forecast so a 5-day result is never mistaken for a 15-day one downstream.
+4. **Fix the group path's all-or-nothing shortfall while here** (carried forward from Plan 156's
+   review): one short station currently returns `{}` for the whole group
+   (`run_group_forecast.py:406`), whereas a `max_nan` violation drops just that station
+   (`adapters/forecast_interface.py:752-767`). Inconsistent, and far more damaging under ceiling
+   semantics.
+
+**Red-first:**
+- a **floor** model (no opt-in) with 5 of 15 steps still fails exactly as today — proves the default
+  is unchanged;
+- a **ceiling** model with 5 of 15 steps **produces a forecast**, and the stored forecast records a
+  5-step horizon — fails today, since both paths reject before calling the model;
+- a ceiling model below the configured minimum still fails;
+- on the group path, one short station no longer darkens its siblings.
+
+**Depends on** the shim (Plan 159) declaring the attribute for `cmal_pool_PT`, or a temporary
+in-repo declaration for the spike.
+
 ### T6 — Quantile-aware skill comparison vs the incumbents (closes G7)
 Hindcast over the target set and compare against the incumbents on alerting-relevant metrics.
 
@@ -1074,6 +1138,15 @@ predict at all.
   (1 of 11 DHM gauges has hourly discharge), so gating every deliverable behind core domain-type
   surgery bought a single station. It returns when DHM hourly coverage grows. **T0b still ships**, so
   a multi-resolution artifact fails loudly rather than being silently mis-onboarded in the meantime.
+- **D14 — horizon ceiling: interim opt-in, or wait for the FI contract? (open.)** The clean fix is
+  an FI `horizon_semantics` field (draft filed at `docs/fi-issues/002-future-steps-at-most-semantics.md`);
+  the interim is a SAP3-side per-model attribute (T7). **(A, recommended)** ship the interim now,
+  defaulting to today's strict FLOOR behaviour, and retire it when FI lands the field — the Swiss
+  track is blocked until something ships, and a strict default cannot silently truncate anything.
+  **(B)** wait for FI — cleaner, no interim to retire, but it puts an external contract change on the
+  Swiss critical path with no date. *Recommendation: (A), and file the FI issue in parallel so the
+  interim has a defined end.*
+
 - **D12 — the Swiss input-contract blockers — RESOLVED (owner, 2026-08-12).**
   **G12 → option (A):** we do a **Swiss HydroATLAS extraction + basin-package import** (new task
   **T1c**). **G13 → option (C):** we **ask the modeller for a PT variant that accepts a 5-day
