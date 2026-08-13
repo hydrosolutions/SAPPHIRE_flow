@@ -36,26 +36,52 @@ duplicating it, because duplication is what produced the drift Plan 152 spent th
 correcting. **"This plan does not explain X" is NOT a finding if X is in 152.** Do flag it if a
 statement here CONTRADICTS 152, or if this plan depends on something no plan in the family owns.
 
+## Re-grounded against post-Plan-156 `main` (2026-08-13)
+
+Plan 156 merged (#145, `aaafa12`) and **substantially rewrote `adapters/forecast_interface.py`** —
+the file this plan's G9 work centres on. Re-verified against current `main`:
+
+- **All 9 drifted citations corrected** (the `_FI_UNIT_TO_CANONICAL` dict, `fi_unit_to_canonical`,
+  the `_ensemble_from_variable_output` call site, adapter construction, `_static_inputs`,
+  `discover_models`' `cls()`, the classification assert, the FI compatibility path, and the
+  non-nullable training columns).
+- **G9 HOLDS, verified by execution not citation:** `fi_unit_to_canonical(Unit.MM_PER_DAY)` still
+  raises `ConfigurationError`; both locked tests survive. And `M3_PER_S` → `m³/s`, `MM` → `mm` both
+  map — which is exactly why T1's red assertion must be **numeric**, not mappability.
+
+**NEW interaction introduced by Plan 156 — an unsupported shim model is now SILENTLY SKIPPED.**
+`discover_models` gained an `except UnsupportedModelRequirementError` clause
+(`services/model_registry.py:96`), so a model whose `InputRequirement` SAP3 cannot represent is
+dropped from the registry **per entry point** instead of blacking out discovery. That is the
+behaviour Plan 156 wanted, but it changes the failure mode for **this** plan:
+
+- **`cmal_pool_PT` is safe** — verified to declare exactly one `time_step` branch.
+- **A future multi-resolution aquacast artifact shipped through the shim would not fail loudly at
+  onboarding — it would simply be ABSENT from `discover_models()`**, surfacing downstream as
+  `MODEL_NOT_FOUND` rather than "this requirement is unsupported". T1 must therefore assert that the
+  shim's model **is discoverable** (a positive assertion), not merely that it constructs; and Plan
+  152's deferred multi-resolution artifact inherits this when Plan 153 is picked up.
+
 ## The four problems
 
 ### G3 — the entry-point registry cannot construct an aquacast model
 `discover_models` constructs each entry point **with no arguments** — `raw_instance = cls()`
-(`services/model_registry.py:78-82`; group `"sapphire_flow.models"` at `:23`). aquacast needs
+(`services/model_registry.py:87`; group `"sapphire_flow.models"` at `:23`). aquacast needs
 `AquacastModel(ModelTemplate.from_yaml(...), device=...)`. And the adapter computes
 `data_requirements` from `input_requirement` **at construction**
-(`adapters/forecast_interface.py:449`), which derives from that config — so **the config must bind at
+(`adapters/forecast_interface.py:453`), which derives from that config — so **the config must bind at
 import time**, i.e. **one entry point per trained config** (D1).
 
 ### G9 — **`mm/day` has no SAP3 canonical unit** (the blocker)
 PT emits `discharge` in **`mm/day`** and consumes discharge/precipitation in `mm/day`. But
-`_FI_UNIT_TO_CANONICAL` (`adapters/forecast_interface.py:119-130`) **deliberately omits
-`MM_PER_DAY`** — its own comment says so — and `fi_unit_to_canonical` (`:153-160`) raises
+`_FI_UNIT_TO_CANONICAL` (`adapters/forecast_interface.py:123-134`) **deliberately omits
+`MM_PER_DAY`** — its own comment says so — and `fi_unit_to_canonical` (`:157-164`) raises
 `ConfigurationError` for it. Two locked tests enforce the omission
 (`tests/unit/types/test_forcing_schema.py:103`, `tests/unit/adapters/test_fi_unit_mapping.py:31`).
 
-`_ensemble_from_variable_output` calls it at `:194` **before** building the ensemble, so **every
+`_ensemble_from_variable_output` calls it at `:199` **before** building the ensemble, so **every
 predict would raise**; compatibility validation rejects the unit too
-(`services/model_onboarding.py:173`), so the model would not even onboard.
+(`services/model_onboarding.py:211-320`, the `_fi_compatibility_checks` path), so the model would not even onboard.
 
 **Resolution belongs HERE, in the shim — not in SAP3's unit map.** Our canonical discharge is `m³/s`
 and `mm/day ↔ m³/s` is **area-dependent**, so a bare map entry would be numerically wrong. The FI
@@ -77,7 +103,7 @@ Worse, there is nowhere to record what such an artifact *is*: `model_artifacts` 
 column (`db/metadata.py:907-951`), `ModelArtifactRecord` has no provenance field
 (`types/model.py:292-307`), and `ModelArtifactStore.store_artifact` **requires**
 `training_period_start`/`end`/`trained_at` (`protocols/stores.py:416-427`), all `nullable=False`
-(`db/metadata.py:934-936`), with no meaning for an artifact we did not train. And the
+(`db/metadata.py:935-937`), with no meaning for an artifact we did not train. And the
 obvious-looking module means something **else**:
 `store/model_artifact_lineage.py::record_artifact_basin_lineage` (`:33-103`) writes one row per
 **basin the artifact trained on** (Plan 120 retrain SLA, docstring `:40-58`) — calling it with *our
@@ -96,7 +122,7 @@ aquacast_cmal_pool_pt = "sapphire_aquacast.models:AquacastCmalPoolPT"
 
 Each class binds its `ModelTemplate.from_yaml(...)` + device at construction and declares the
 `model_tier` / `alert_eligibility` attributes `_assert_model_classification_declared` requires
-(`services/model_registry.py:60-67`). `adapt_if_fi` wraps it at discovery (`:76-84`). The config
+(`services/model_registry.py:61-76`). `adapt_if_fi` wraps it at discovery (`:76-84`). The config
 ships as **package data** (D1).
 
 **The shim owns the NAME boundary too (G15 — review finding, 2026-08-12).** aquacast declares
@@ -114,7 +140,7 @@ numerically in both directions:
 - **discharge** — expose `M3_PER_S`, doing the **area-aware** `mm/day ↔ m³/s` conversion internally
   (`area` is already a required static). **Split the area contract by failure mode:** a *missing*
   declared static is rejected by SAP3 during compatibility/input assembly — `_static_inputs`
-  (`adapters/forecast_interface.py:1059-1071`) raises `ConfigurationError` **before** the shim's
+  (`adapters/forecast_interface.py:1139-1151`) raises `ConfigurationError` **before** the shim's
   `predict()` runs, so the shim cannot promise a `ModelFailure` there. What the shim *can* own is an
   **invalid supplied** area (zero, negative, non-finite), which must return `ModelFailure` per the FI
   contract rather than raising.
@@ -122,7 +148,7 @@ numerically in both directions:
   accumulation) and translate consistently.
 
 **Red-first — assert NUMBERS, not mappability.** `M3_PER_S` and `MM` are **already** in
-`_FI_UNIT_TO_CANONICAL` (`adapters/forecast_interface.py:119-130`), so a test that merely proves
+`_FI_UNIT_TO_CANONICAL` (`adapters/forecast_interface.py:123-134`), so a test that merely proves
 `fi_unit_to_canonical` succeeds on the shim's declared units **passes today and proves nothing**. The
 genuinely red assertion is a **numeric** area-aware round trip: a known discharge in `mm/day` at a
 known `area` arrives as the correct `m³/s` value — which is what catches
