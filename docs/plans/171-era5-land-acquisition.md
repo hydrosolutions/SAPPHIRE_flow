@@ -1,6 +1,7 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-13
+revised: 2026-08-13
 plan: 171
 title: M-A4 — ERA5-Land acquisition for the DHM precipitation comparison
 scope: A committed, parameterised, resumable acquisition of hourly ERA5-Land total precipitation over a Nepal bounding box for 2020-2025 from the Copernicus CDS — raw accumulations retained and checksummed, then deaccumulated and unit-converted by a separately re-runnable local transform — stored under data/dhm_precip/ with a provenance manifest. Explicitly NOT point extraction (M-A5), NOT the gauge comparison (M-A6), NOT IMERG acquisition (M-A5's plan).
@@ -12,7 +13,12 @@ source: docs/design/dhm-precipitation-milestones.md
 # Plan 171 — M-A4 ERA5-Land acquisition
 
 ## Status
-**DRAFT.** Implements milestone **M-A4** (`docs/design/dhm-precipitation-milestones.md:177`).
+**READY — owner-confirmed 2026-08-13.** Arrived here after a `/plan` escalation (stalled at 2 rounds,
+3 blockers + 10 majors) followed by a targeted repair and **six manual Codex rounds** converging
+3B+10M → 4M → 2M → 2M → 1M → clean. The loop earned its keep: it corrected this plan's original
+(wrong) statement of the ERA5-Land accumulation convention and added the packing-error policy.
+
+Implements milestone **M-A4** (`docs/design/dhm-precipitation-milestones.md:177`).
 Unblocked: a bounding-box request needs no station coordinates. Builds on Plan 170's
 `scripts/dhm_precip/` package.
 
