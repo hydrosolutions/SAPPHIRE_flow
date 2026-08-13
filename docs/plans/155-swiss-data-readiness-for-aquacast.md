@@ -110,6 +110,57 @@ raw-key behaviour. Full suite, ruff and the pyright ratchet all pass.
 **Status: hold at branch, do NOT open a PR.** The blocker needs the Caravan-declaring-model decision
 first.
 
+## Round-2 review — D16 BLOCKER fixed; a NEW blocker, loop STALLED (2026-08-13)
+
+The fixer ran 2 rounds and **stalled** ("a fix failed to reduce the blocker+major count"), leaving
+1 blocker + 4 majors. Branch `784c566`. Verified by execution, not accepted on report.
+
+### ✅ The original D15/D16 blocker IS fixed
+`resolve_shared_static_frame` gates on D16's `StaticNaming`, executed on all four cases:
+CARAVAN + `caravan:area` absent → `None`, **not** the leaked `123.0`; NATIVE → `123.0`, unchanged;
+CARAVAN + present → Caravan's `500.0`; two co-assigned models declaring the same name under
+**differing** regimes → `ConfigurationError`. That last case is a genuine subtlety the fixer found on
+its own (a shared frame must not resolve one model's name under another's regime) and is a real
+improvement over what D16 specified.
+
+### 🔴 NEW BLOCKER — the T1 exit gate is unusable in BOTH directions
+`store/caravan_import.py:137` raises on `if unmatched or no_basin or missing_from_manifest or
+coverage_gaps`, where `unmatched` collects **every parquet row with no configured station**.
+Measured against the real inputs: the parquet holds **296** codes, `config.toml` holds **169**
+stations, **148** overlap — so **148 rows are permanently out of scope** and land in `unmatched` on
+every run. Therefore:
+- supply `required_static_names` → the gate **always raises**, even on a flawless 148-station import;
+- omit it → the import **returns success with no validation at all**.
+
+There is no third path, and tests lock both behaviours.
+
+**Root cause — a scope conflation, and the plan is not ambiguous here.** T1's exit gate is
+**manifest-scoped**: *"every station in the T0a manifest resolves all 50 of PT's statics"*. The
+implementation made it **parquet-scoped**. A parquet code with no configured station is not a
+failure — the file legitimately covers 296 Swiss gauges of which only ours are relevant, **by
+design**. Fix:
+1. **Gate on the manifest, never on the source file.** Failures = manifest stations *missing from the
+   parquet*, *bound to no basin*, or *with coverage gaps*. Source-only codes are **reported, never
+   fatal**.
+2. **Make the operational entrypoint require `expected_codes` + `required_static_names`**, so the
+   always-skip path cannot be taken by accident.
+3. **Preflight, then write** (see the atomicity major below) — resolve every binding and coverage
+   check *before* the first mutation.
+
+### Remaining majors (unverified by me beyond the blocker; carried from the review)
+- **Atomicity** — writes happen inside the row loop while validation runs after it, and the repo's
+  production connection is **AUTOCOMMIT**, so a gate failure can leave a **partially applied**
+  import. The canonical basin importer explicitly refuses this transaction shape; this one does not.
+- **Compatibility and frame resolution disagree** — `available_declared_static_keys` checks only the
+  primary raw-code key while `project_declared_static_attributes` will accept the secondary canonical
+  key alone, so a station can pass compatibility and then raise at frame build (or the reverse).
+  One resolver must serve compatibility, projection and coverage.
+- **Tests still under-prove the surface** — the "all fifty" test exercises 25 names; no Caravan test
+  reaches the real `model_onboarding`, `hindcast`, `operational_inputs`, or FI `_static_inputs`
+  boundary, so removing a production wiring call could leave the suite green.
+- **MINOR** — `docs/touchpoint-maps.md:482` still documents a caller-supplied `prefix` parameter that
+  round 2 removed; it contradicts line 659 and the shipped signature.
+
 ## Implementation notes (read before writing code)
 
 **Source data:** `/Users/bea/Downloads/data.parquet` — 296 rows x 216 cols, `gauge_id` =
