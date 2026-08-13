@@ -297,6 +297,15 @@ if (redFirstMissed) {
   log(`⚠️ Red-first acceptance NOT achieved (acceptanceTestsRedFirst=false) — proceeding to the independent ` +
       `Codex-diff review, which scrutinises test meaningfulness; surfacing as a residual risk. ` +
       `(If this is the Plan-105 case, a human should hand-author the locked test before merge.)`)
+  // Added after Plan 152: a gate that will NOT go red is not always an implementation
+  // slip — it is often a PLAN defect, where the plan asked for behavior the repo already
+  // has, so there is no fix to stash and nothing to prove. That distinction changes who
+  // must act (plan author vs implementer), so name it explicitly rather than filing every
+  // case under "implementer built test-alongside".
+  log(`   ↳ DISTINGUISH THE CAUSE before treating this as an implementation slip: if the asserted behavior ` +
+      `ALREADY EXISTS in the repo, this is a PLAN DEFECT (the task specified a gate that gates nothing) — ` +
+      `report it against the plan, do not paper over it by weakening or relocating the test. If the behavior ` +
+      `is genuinely absent and the test still would not go red, it is a test-authoring problem.`)
 }
 
 phase('Review loop')

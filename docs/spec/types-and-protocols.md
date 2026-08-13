@@ -1461,6 +1461,39 @@ class ModelDataRequirements:
 
 `ensemble_mode` (`EnsembleMode` enum: `SINGLE` | `ENSEMBLE`, mirrors the ForecastInterface `FutureKnownVariable.ensemble_mode` values) marks a model whose future-known forcing is delivered as member-suffixed columns (`precipitation_0`, `precipitation_1`, …). The FI adapter projects `ENSEMBLE` when any `future_known` variable declares it; the operational and conformance paths then fan such a model out over the members (see `services/ensemble_fanout.py`), assembling one N-member ensemble from N single-trajectory predictions. Defaulted to `SINGLE` so native single-trajectory models are unaffected. The hindcast path never fans out (reanalysis is a single teacher-forced trajectory).
 
+**`supported_time_steps` for FI-adapted models (Plan 156):** the FI adapter projects this as the
+`time_step` branch(es) of `InputRequirement.dynamic` whose `future_known` is non-empty — never a
+past-only branch — so a downstream `next(iter(model.data_requirements.supported_time_steps))` (e.g.
+`services/model_onboarding.py`, `services/onboarding.py`) cannot land on a resolution the model has
+no forecast horizon at. A requirement is rejected at construction (`UnsupportedModelRequirementError`)
+if more than one branch declares non-empty `future_known` — SAP3 domain types are single-resolution,
+so this set has at most one member for an FI-adapted model. A past-only second branch (no
+`future_known`) stays constructible and is simply excluded from `supported_time_steps`. Native (non-FI)
+models are unaffected — they declare `supported_time_steps` directly.
+
+**Every `next(iter(supported_time_steps))` call site is guarded (Plan 156 follow-up):**
+`resolve_single_supported_time_step()` (`services/model_onboarding.py`) replaces the five
+sites that used to pick an element via `next(iter(...))` — an arbitrary, non-deterministic
+choice whenever a model declared more than one supported time step. It requires exactly one
+element and raises `ConfigurationError` naming the ambiguous set otherwise. Native models with
+more than one genuinely supported time step (§ `ModelDataRequirements` above) still work with
+`validate_compatibility`/`validate_compatibility_for_unit` (membership, not "pick one"); only
+the automatic-selection call sites (synthetic smoke-test data generation, and Flow 0's
+automatic model assignment/training-scope resolution when no per-station time step is
+configured yet) require the singleton.
+
+**Delivery-time guard for the accepted one-future-forced-plus-past-only shape (Plan 156
+follow-up):** `ForecastInterfaceAdapter` accepts a requirement with one future-forced branch
+plus a past-only branch at *construction* (needed for Plan 151's per-branch accessors), but
+`_station_inputs_from_frames` — the actual predict/train delivery path — builds only ONE
+`StationInputs.dynamic` entry (the branch matching the caller's `time_step`). A past-only
+second branch's variables (e.g. a daily `soil_moisture`) are fetched into `past_dynamic` and
+NaN-checked (both flatten across all branches), but were being silently OMITTED from what the
+model actually received. `_assert_single_deliverable_dynamic_branch()` now raises
+`UnsupportedModelRequirementError` the moment `predict()`/`train()`/`predict_batch()` is
+called on such a model, instead of silently dropping the non-active branch. Real
+multi-resolution delivery (populating every declared branch) is Plan 153.
+
 Module: `types/model.py`
 
 ### ModelParams
@@ -2294,6 +2327,14 @@ class AdapterError(SapphireError):
 class ConfigurationError(SapphireError):
     """Invalid or missing configuration.
     Startup-level handling: fail fast with clear message."""
+
+class UnsupportedModelRequirementError(SapphireError):
+    """A ForecastInterface model's InputRequirement declares non-empty
+    future_known in more than one time_step branch (Plan 156) — SAP3 domain
+    types are single-resolution. Deliberately NOT a ConfigurationError
+    subclass: discover_models() re-raises ConfigurationError for every entry
+    point (a registry-wide blackout); this is instead skipped per entry
+    point so one unsupported model does not darken discovery for the rest."""
 
 class ModelSmokeTestError(SapphireError):
     """Model raised an exception during smoke test (predict() on random-shaped data).

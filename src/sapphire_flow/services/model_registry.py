@@ -5,7 +5,10 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from sapphire_flow.exceptions import ConfigurationError
+from sapphire_flow.exceptions import (
+    ConfigurationError,
+    UnsupportedModelRequirementError,
+)
 from sapphire_flow.types.enums import AlertEligibility, ModelTier
 from sapphire_flow.types.ids import ALERT_ELIGIBILITIES, MODEL_TIERS
 from sapphire_flow.types.model import ModelRecord, ModelRegistryEntry
@@ -90,6 +93,12 @@ def discover_models() -> dict[ModelId, ForecastModel]:
             )
             result[model_id] = instance
             log.info("model_discovered", model_id=ep.name)
+        except UnsupportedModelRequirementError:
+            # Plan 156: one model's unsupported (multi-FUTURE-FORCED-
+            # resolution) FI requirement must not darken the WHOLE registry —
+            # unlike ConfigurationError below, this entry point is skipped
+            # and discovery continues for the rest.
+            log.exception("model_discovery_unsupported_requirement", model_id=ep.name)
         except ConfigurationError:
             log.exception("model_discovery_classification_failed", model_id=ep.name)
             raise

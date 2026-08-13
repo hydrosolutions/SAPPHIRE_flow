@@ -44,7 +44,11 @@ from forecast_interface import (
     SpatialRepresentation as FISpatialRepresentation,
 )
 
-from sapphire_flow.exceptions import ConfigurationError, ModelOutputError
+from sapphire_flow.exceptions import (
+    ConfigurationError,
+    ModelOutputError,
+    UnsupportedModelRequirementError,
+)
 from sapphire_flow.types.datetime import ensure_utc
 from sapphire_flow.types.ensemble import ForecastEnsemble
 from sapphire_flow.types.enums import (
@@ -455,7 +459,30 @@ class ForecastInterfaceAdapter:
         self._station_code_resolver = resolver
         return self
 
+    def _future_forced_time_steps(self, req: InputRequirement) -> tuple[timedelta, ...]:
+        # Iterates req.dynamic directly (NOT _iter_dynamic_specs, which
+        # discards the time_step key) so each branch's future_known-ness can
+        # be attributed to ITS time_step, not flattened away.
+        return tuple(
+            sorted(
+                time_step
+                for time_step, spatial_spec in req.dynamic.items()
+                if any(spec.future_known for spec in spatial_spec.data.values())
+            )
+        )
+
     def _project_requirements(self, req: InputRequirement) -> ModelDataRequirements:
+        future_forced_time_steps = self._future_forced_time_steps(req)
+        if len(future_forced_time_steps) > 1:
+            resolutions = ", ".join(str(step) for step in future_forced_time_steps)
+            raise UnsupportedModelRequirementError(
+                "ForecastInterface InputRequirement declares non-empty "
+                "future_known in more than one time_step branch: "
+                f"{resolutions}. SAP3 domain types are single-resolution; "
+                "a model that genuinely needs multiple FUTURE-FORCED "
+                "resolutions simultaneously is not yet supported (Plan 153)."
+            )
+
         spatial_reps: set[FISpatialRepresentation] = set()
         future_dynamic_features: set[str] = set()
         past_variables: list[tuple[str, PastKnownVariable]] = []
@@ -480,18 +507,27 @@ class ForecastInterfaceAdapter:
                             forecast_horizon_steps, variable.future_steps
                         )
 
+        # These three are all "a VALID FI requirement whose shape SAP3 cannot
+        # represent" — the same class as the multi-future-forced-branch guard
+        # above, and therefore the same exception type. Using ConfigurationError
+        # here would defeat the plan's registry invariant: discover_models()
+        # re-raises ConfigurationError, so ONE model declaring an unsupported
+        # (but legal) shape would darken discovery for EVERY model. Genuine
+        # application-configuration faults — a missing ModelTier, say — keep
+        # raising ConfigurationError and keep hard-failing. Review major,
+        # 2026-08-13.
         if not spatial_reps:
-            raise ConfigurationError(
+            raise UnsupportedModelRequirementError(
                 "cannot derive spatial input type: InputRequirement declares no "
                 "dynamic input"
             )
         if len(spatial_reps) > 1:
             rep_names = ", ".join(sorted(rep.value for rep in spatial_reps))
-            raise ConfigurationError(
+            raise UnsupportedModelRequirementError(
                 f"multi-spatial input not supported in v1: {rep_names}"
             )
         if forecast_horizon_steps is None:
-            raise ConfigurationError(
+            raise UnsupportedModelRequirementError(
                 "cannot derive forecast horizon: InputRequirement declares no "
                 "future_known forcing"
             )
@@ -516,7 +552,12 @@ class ForecastInterfaceAdapter:
             past_dynamic_features=frozenset(past_dynamic_features),
             future_dynamic_features=frozenset(future_dynamic_features),
             static_features=frozenset(req.static),
-            supported_time_steps=frozenset(req.dynamic),
+            # Plan 156: the FUTURE-FORCED branch(es) only — never a past-only
+            # branch — so a downstream `next(iter(supported_time_steps))`
+            # (services/model_onboarding.py, services/onboarding.py) can no
+            # longer land on a resolution the model cannot forecast at. At
+            # most one entry survives the guard above.
+            supported_time_steps=frozenset(future_forced_time_steps),
             lookback_steps=lookback_steps,
             # V1 proxy: FI declares horizon only at output time; future_steps is
             # the input-forcing length used as the horizon proxy, endorsed in SF2.
@@ -689,6 +730,7 @@ class ForecastInterfaceAdapter:
         params: ModelParams,
         rng: random.Random,
     ) -> ModelArtifact:
+        self._assert_single_deliverable_dynamic_branch()
         model_inputs = self._model_inputs_from_data(data)
         return self._model.train(model_inputs, config=params, rng=rng)
 
@@ -701,6 +743,14 @@ class ForecastInterfaceAdapter:
     ) -> tuple[dict[str, ForecastEnsemble], bytes | None]:
         if self.artifact_scope is ArtifactScope.GROUP:
             raise ConfigurationError("dispatch must key on artifact_scope")
+
+        # BEFORE the NaN gate (review blocker, 2026-08-13): the gate flattens
+        # across ALL branches, so a multi-branch requirement previously
+        # surfaced as a misleading ModelOutputError ("max_nan exceeded") or
+        # ConfigurationError ("missing <past-only-branch variable>") rather
+        # than the real cause. The guard must be the FIRST thing every
+        # delivery entry point does.
+        self._assert_single_deliverable_dynamic_branch()
 
         over_tolerance = self._variables_over_nan_tolerance(
             past_targets=inputs.data.past_targets,
@@ -743,6 +793,9 @@ class ForecastInterfaceAdapter:
     ) -> dict[StationId, tuple[dict[str, ForecastEnsemble], bytes | None]]:
         if self.artifact_scope is ArtifactScope.STATION:
             raise ConfigurationError("dispatch must key on artifact_scope")
+
+        # BEFORE the per-station NaN gate — see predict() above.
+        self._assert_single_deliverable_dynamic_branch()
 
         station_codes_by_id = {
             station_id: self._station_code(station_id)
@@ -928,6 +981,32 @@ class ForecastInterfaceAdapter:
             time_step=time_step,
         )
 
+    def _assert_single_deliverable_dynamic_branch(self) -> None:
+        # Plan 156 (blocker follow-up): a requirement with one FUTURE-FORCED
+        # branch plus a past-only branch is ACCEPTED at construction (Plan
+        # 151 T2 needs that shape constructible), but delivery below builds
+        # only ONE `dynamic={time_step: ...}` entry — the ACTIVE branch
+        # matching the caller's `time_step`. A second, past-only branch's
+        # variables (e.g. a daily `soil_moisture`) would be fetched and
+        # NaN-checked (both flatten across ALL branches) yet silently
+        # OMITTED from what the model actually receives — an incomplete
+        # input that produces a plausible but wrong result, exactly what
+        # this plan exists to prevent. Until real multi-resolution delivery
+        # lands (Plan 153), fail loudly here instead of construction time,
+        # so Plan 151's per-branch accessors stay usable without the
+        # adapter claiming full operational support.
+        branches = self._model.input_requirement.dynamic
+        if len(branches) > 1:
+            resolutions = ", ".join(str(step) for step in sorted(branches))
+            raise UnsupportedModelRequirementError(
+                "ForecastInterface InputRequirement declares more than one "
+                f"time_step branch ({resolutions}); SAP3 can only deliver "
+                "ONE branch's dynamic inputs per predict/train call, so the "
+                "non-active branch(es) would be silently omitted from "
+                "ModelInputs. Multi-resolution input delivery is not yet "
+                "supported (Plan 153)."
+            )
+
     def _station_inputs_from_frames(
         self,
         *,
@@ -937,6 +1016,7 @@ class ForecastInterfaceAdapter:
         static: pl.DataFrame | None,
         time_step: timedelta,
     ) -> StationInputs:
+        self._assert_single_deliverable_dynamic_branch()
         rep, spec = self._dynamic_spec_for_time_step(time_step)
         dynamic_inputs = DynamicInputs(
             past_known=self._past_known_inputs(

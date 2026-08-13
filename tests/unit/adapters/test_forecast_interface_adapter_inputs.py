@@ -8,7 +8,10 @@ import polars as pl
 import pytest
 
 from sapphire_flow.adapters import forecast_interface as fi_boundary
-from sapphire_flow.exceptions import ConfigurationError
+from sapphire_flow.exceptions import (
+    ConfigurationError,
+    UnsupportedModelRequirementError,
+)
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
 from sapphire_flow.types.ids import StationGroupId, StationId
 from sapphire_flow.types.model import (
@@ -440,3 +443,83 @@ def test_train_delegates_converted_inputs_config_rng_and_returns_artifact() -> N
     assert set(fake.train_inputs.stations) == {"AARE", "RHINE"}
     assert fake.train_config is params
     assert fake.train_rng is rng
+
+
+def _one_future_forced_plus_past_only_requirement() -> fi_boundary.InputRequirement:
+    """1h future-forced branch (`_requirement()`'s shape) plus a 24h
+    past-only branch declaring ``soil_moisture`` — the shape Plan 156
+    ACCEPTS at adapter construction (Plan 151 T2 needs it constructible),
+    but that a review found is silently truncated at predict/train time."""
+    base = _requirement()
+    daily_spec = fi_boundary.DynamicInputSpec(
+        past_known={"era5": {"soil_moisture": _past(fi_boundary.Unit.PERCENT)}}
+    )
+    return fi_boundary.InputRequirement(
+        targets=base.targets,
+        dynamic={
+            **base.dynamic,
+            timedelta(hours=24): fi_boundary.SpatialInputSpec(
+                data={fi_boundary.FISpatialRepresentation.POINT: daily_spec}
+            ),
+        },
+        static=base.static,
+    )
+
+
+def test_past_only_second_branch_rejected_at_every_delivery_entry_point() -> None:
+    """BLOCKER follow-up (Plan 156 review): before this guard, the 24h
+    branch's ``soil_moisture`` was fetched into ``past_dynamic`` and
+    NaN-checked (both flatten across ALL branches at projection time) yet
+    silently OMITTED from what the model actually received — because
+    `_station_inputs_from_frames` builds only ONE `StationInputs.dynamic`
+    entry, the active 1h branch. That is an incomplete input producing a
+    plausible but wrong result, exactly what Plan 156 exists to prevent.
+
+    SECOND review round (2026-08-13): the original version of this test was
+    named ``..._at_predict_time`` but only called ``train()`` — the one entry
+    point where the guard's position happened to work. ``predict()`` and
+    ``predict_batch()`` ran the flattened NaN gate FIRST, so they surfaced a
+    misleading ``ModelOutputError``/``ConfigurationError`` instead. All three
+    entry points are now asserted, and the model must never be invoked.
+    """
+    model = RecordingFIForecastModel(_one_future_forced_plus_past_only_requirement())
+    adapter = fi_boundary.ForecastInterfaceAdapter(model)
+    # Sanity: the requirement really is accepted at construction and really
+    # does claim soil_moisture as a past feature — proving the omission
+    # would otherwise be silent (a claimed-but-undelivered feature), not an
+    # upfront rejection.
+    assert "soil_moisture" in adapter.data_requirements.past_dynamic_features
+
+    with pytest.raises(UnsupportedModelRequirementError, match="time_step branch"):
+        adapter.train(_station_training_data(static=None), {}, random.Random(1))
+
+    # predict() — a STATION-scoped adapter, since predict() rejects GROUP up
+    # front. The supplied frames carry ONLY the active 1h branch's variables
+    # (no `soil_moisture`), which is precisely the case that previously
+    # surfaced as ConfigurationError("missing ... soil_moisture") from the
+    # flattened NaN gate, because that gate ran BEFORE the guard.
+    station_model = RecordingFIForecastModel(
+        _one_future_forced_plus_past_only_requirement(),
+        artifact_scope=fi_boundary.FIArtifactScope.STATION,
+    )
+    station_adapter = fi_boundary.ForecastInterfaceAdapter(station_model)
+    with pytest.raises(UnsupportedModelRequirementError, match="time_step branch"):
+        station_adapter.predict(b"artifact", _station_model_inputs(), random.Random(1))
+
+    # predict_batch() — the GROUP path, and the entry point Plan 152's
+    # aquacast model will actually use. Added after an independent check
+    # (2026-08-13) caught that this test CLAIMED to cover "every delivery
+    # entry point" while asserting only two of three — the same
+    # name-promises-more-than-body defect that let the original blocker
+    # through.
+    group_adapter = adapter.with_station_code_resolver(
+        lambda sid: {_SID_A: "AARE", _SID_B: "RHINE"}[sid]
+    )
+    with pytest.raises(UnsupportedModelRequirementError, match="time_step branch"):
+        group_adapter.predict_batch(
+            b"artifact", _group_model_inputs(), random.Random(1)
+        )
+
+    # The fake implements no `predict`, so reaching the model at all would
+    # raise AttributeError rather than the guard's error — the assertions
+    # above therefore also prove the model was never invoked.

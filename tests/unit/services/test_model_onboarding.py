@@ -11,6 +11,7 @@ from sapphire_flow.services.model_onboarding import (
     create_group_assignment,
     create_station_assignment,
     evaluate_skill_gate,
+    resolve_synthetic_time_step,
     smoke_test_model,
     validate_compatibility_for_unit,
 )
@@ -316,11 +317,104 @@ class TestPastVsFutureAvailabilitySplit:
         )
 
 
+class TestResolveSingleSupportedTimeStep:
+    """Plan 156 (major follow-up): every ``next(iter(supported_time_steps))``
+    call site now goes through this helper instead of picking an ARBITRARY
+    member when a model declares more than one — see
+    ``docs/spec/types-and-protocols.md`` § ``ModelDataRequirements``."""
+
+    def _req(
+        self, *, supported_time_steps: frozenset[timedelta]
+    ) -> ModelDataRequirements:
+        return ModelDataRequirements(
+            target_parameters=frozenset({"discharge"}),
+            past_dynamic_features=frozenset(),
+            future_dynamic_features=frozenset(),
+            static_features=frozenset(),
+            supported_time_steps=supported_time_steps,
+            lookback_steps=1,
+            forecast_horizon_steps=1,
+            spatial_input_type=SpatialRepresentation.POINT,
+        )
+
+    def test_returns_the_sole_time_step(self) -> None:
+        req = self._req(supported_time_steps=frozenset({timedelta(hours=1)}))
+        assert resolve_synthetic_time_step(req, context="test") == timedelta(hours=1)
+
+    def test_multiple_time_steps_resolve_deterministically_not_arbitrarily(
+        self,
+    ) -> None:
+        """Review correction (2026-08-13): the complaint was
+        NON-DETERMINISM (``next(iter(frozenset))``), not multi-valued sets.
+        ``supported_time_steps`` is documented as the steps a model *can
+        operate on*, with ``ModelAssignment.time_step`` selecting per station,
+        so raising here would outlaw a supported shape. Lock the smallest step
+        being chosen, repeatably."""
+        req = self._req(
+            supported_time_steps=frozenset({timedelta(hours=24), timedelta(hours=1)})
+        )
+        chosen = {
+            resolve_synthetic_time_step(req, context="my context") for _ in range(20)
+        }
+        assert chosen == {timedelta(hours=1)}, (
+            "resolution must be deterministic across repeated calls"
+        )
+
+    def test_raises_for_empty_time_steps(self) -> None:
+        """Empty is the one genuinely unresolvable case."""
+        req = self._req(supported_time_steps=frozenset())
+        with pytest.raises(ConfigurationError, match="no supported time step"):
+            resolve_synthetic_time_step(req, context="my context")
+
+
 class TestSmokeTestModel:
     def test_passes_for_valid_model(self) -> None:
         model = FakeStationForecastModel()
         rng = random.Random(7)
         smoke_test_model(model=model, rng=rng)
+
+    def test_native_model_with_multiple_time_steps_smoke_tests_deterministically(
+        self,
+    ) -> None:
+        """REPLACES a test that locked the WRONG contract (review, 2026-08-13).
+
+        The first implementation made the smoke test RAISE whenever a native
+        model declared more than one supported time step. That outlawed a
+        documented shape: ``supported_time_steps`` is explicitly the set of
+        steps a model *can operate on*, with ``ModelAssignment.time_step``
+        selecting per station (`docs/architecture-context.md`), and
+        ``build_superset_requirements`` legitimately unions into multi-element
+        sets. Plan 156's real complaint was the NON-DETERMINISM of
+        ``next(iter(frozenset))``, not multi-valued sets — and Plan 153 would
+        have had to delete the old test to re-legalise the shape.
+
+        Locks the corrected contract: such a model smoke-tests successfully,
+        and repeatedly, because the step is chosen deterministically."""
+
+        class MultiTimeStepModel(FakeStationForecastModel):
+            data_requirements = ModelDataRequirements(
+                target_parameters=frozenset({"discharge"}),
+                past_dynamic_features=frozenset({"precipitation", "temperature"}),
+                future_dynamic_features=frozenset(),
+                static_features=frozenset(),
+                supported_time_steps=frozenset(
+                    {timedelta(hours=1), timedelta(hours=24)}
+                ),
+                lookback_steps=720,
+                forecast_horizon_steps=5,
+                spatial_input_type=SpatialRepresentation.POINT,
+            )
+
+        smoke_test_model(model=MultiTimeStepModel(), rng=random.Random(7))
+
+        # The smoke test itself passes at ANY step, so running it repeatedly
+        # would NOT distinguish smallest-step from ``next(iter(...))``
+        # (independent check, 2026-08-13). Assert the resolution directly —
+        # note ``next(iter(frozenset({1h, 24h})))`` yields 24h, so requiring
+        # 1h genuinely gates the smallest-step rule rather than restating it.
+        assert resolve_synthetic_time_step(
+            MultiTimeStepModel.data_requirements, context="smoke"
+        ) == timedelta(hours=1)
 
     def test_fails_for_broken_model(self) -> None:
         class BrokenModel(FakeStationForecastModel):

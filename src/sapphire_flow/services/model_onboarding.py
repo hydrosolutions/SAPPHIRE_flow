@@ -105,6 +105,55 @@ def _assert_assignment_priority_invariant(model_id: ModelId, priority: int) -> N
         )
 
 
+def resolve_synthetic_time_step(
+    req: ModelDataRequirements, *, context: str
+) -> timedelta:
+    """Pick ONE time step DETERMINISTICALLY for synthetic-data generation.
+
+    Plan 156's complaint was that call sites did
+    ``next(iter(req.supported_time_steps))`` — a **non-deterministic** choice
+    over a ``frozenset``, so the same model could smoke-test at a different
+    resolution between runs. The fix is determinism, NOT prohibition.
+
+    Review correction (2026-08-13): an earlier version of this helper *raised*
+    whenever more than one step was declared. That inverted a documented
+    contract — ``supported_time_steps`` is explicitly the set of steps a model
+    "can operate on" (`docs/architecture-context.md`), with
+    ``ModelAssignment.time_step`` selecting per station, and
+    ``build_superset_requirements`` legitimately unions into multi-element
+    sets. Raising outlawed a supported shape that Plan 153 would then have to
+    re-legalise, for no benefit.
+
+    CALLER CAVEAT (independent check, 2026-08-13): three callers synthesise
+    smoke-test data and need only *a* valid step, but two do NOT —
+    ``onboarding.py:809`` writes the result as the **operational**
+    ``ModelAssignment.time_step`` via ``create_station_assignment``, and
+    ``onboarding.py:969`` drives ``determine_onboarding_scope``'s training
+    window. Both are safe today (every native model, and post-Plan-156 every
+    FI model, declares exactly one step) and both are strictly better than
+    the ``next(iter(...))`` they replaced — but a future multi-step model
+    would have its assignment pinned to the finest declared step. Those call
+    sites should take the step from the assignment once one exists.
+
+    Empty stays fatal — there is genuinely nothing to resolve.
+    """
+    if not req.supported_time_steps:
+        raise ConfigurationError(
+            f"{context}: model declares no supported time step, so no "
+            "synthetic input can be generated"
+        )
+    steps = sorted(req.supported_time_steps)
+    chosen = steps[0]
+    if len(steps) > 1:
+        log.info(
+            "model_onboarding.synthetic_time_step_selected",
+            context=context,
+            chosen=str(chosen),
+            available=[str(step) for step in steps],
+        )
+    return chosen
+
+
 def validate_compatibility(
     model: ForecastModel,
     station_config: StationConfig,
@@ -292,7 +341,9 @@ def _make_synthetic_station_training_data(
 
     from sapphire_flow.types.model import StationTrainingData
 
-    time_step = next(iter(req.supported_time_steps))
+    time_step = resolve_synthetic_time_step(
+        req, context="synthetic station training data"
+    )
     base = datetime(2000, 1, 1, tzinfo=UTC)
     past_ts = [base + i * time_step for i in range(n_past_rows)]
 
@@ -365,7 +416,9 @@ def _make_synthetic_group_training_data(
 
     from sapphire_flow.types.model import GroupTrainingData
 
-    time_step = next(iter(req.supported_time_steps))
+    time_step = resolve_synthetic_time_step(
+        req, context="synthetic group training data"
+    )
     base = datetime(2000, 1, 1, tzinfo=UTC)
     past_ts = [base + i * time_step for i in range(n_past_rows)]
     # StationId is a UUID NewType; the stacked-frame "station_id" column must
@@ -482,7 +535,9 @@ def _run_synthetic_train_predict(
     # these same past_ts rows (see _make_synthetic_*_training_data).
     smoke_horizon = max(req.forecast_horizon_steps, 10)
     n_past = req.lookback_steps + smoke_horizon + 10
-    time_step = next(iter(req.supported_time_steps))
+    time_step = resolve_synthetic_time_step(
+        req, context="synthetic train/predict smoke test"
+    )
     issue_time = _synthetic_issue_time(time_step, n_past)
 
     if model.artifact_scope is ArtifactScope.GROUP:
