@@ -344,6 +344,18 @@ reviewable in a diff; "Host" tasks are operator cutovers whose evidence is captu
   *Evidence:* Slack screenshot, dead-man alert, both `launchctl print` outputs, and the post-restore fresh-row query.
   *Rollback:* boot out `system/…`, re-bootstrap the GUI agent from the previous plist.
 
+- **T1b — Forecast-production freshness (Repo, D15). NEW 2026-08-13, added after T1 shipped.**
+  - **In scope:** emit a `FORECAST_FRESHNESS` `pipeline_health` record on each **successfully completed** forecast
+    cycle (mirroring `flows/collect_bafu_forecasts.py:202,214`), and add the matching watchdog probe against
+    `/health/detail?check_type=forecast_freshness&limit=1` alongside the two BAFU probes
+    (`ops/watchdog.py:66,72,82`).
+  - **Red-first:** a completed cycle writes exactly one `forecast_freshness` record — **fails today, because nothing
+    writes that check type at all**; a cycle that *runs but fails* writes **no** record (so it reads as stale, not
+    healthy); the watchdog alerts when the newest record is older than the threshold and recovers when a fresh one
+    lands; the threshold derives from the configured cadence rather than a hardcoded 3h.
+  - **Why it is a separate task:** T1 is already implemented and committed (`0ad6d64`); this rides with the
+    outstanding blocker/major fold-in rather than silently re-opening a shipped task.
+
 ### Phase B — Session-independent host jobs
 
 - **T4 — Docker endpoint contract in code (Repo, D8).**
@@ -408,6 +420,30 @@ reviewable in a diff; "Host" tasks are operator cutovers whose evidence is captu
   skips silently when the daemon is unreachable (above). Add a **free-bytes threshold check to the watchdog tick**,
   alerting on the same Slack path as every other check. It costs almost nothing, needs no privileged access, and
   does **not** depend on resolving the TCC-blocked 3.4 TB attribution question. Folded into T1's scope.
+
+## Added after deployment — forecast-production freshness (D15)
+- **D15-forecast-production-freshness — the system has no heartbeat for its own core job.** *(Owner-requested
+  2026-08-13, after the day's second silent failure.)* **Verified gap, not a suspicion:**
+  `PipelineCheckType.FORECAST_FRESHNESS` is **declared** (`types/enums.py:154`) but **nothing writes it** — the only
+  producer in the codebase is `BAFU_FORECAST_FRESHNESS` from the collector
+  (`flows/collect_bafu_forecasts.py:202,214`), and the live `pipeline_health` table confirms it: `bafu_forecast_freshness`,
+  `bafu_observation_freshness`, `weather_history_ingest` and `disk_usage` all have records; **`forecast_freshness` has
+  none.** So if the operational forecast cycle silently stopped producing forecasts, **nothing would alert** — the
+  watchdog probes the health endpoint, backup freshness and both BAFU feeds, but never the pipeline's actual output.
+  - **This is bigger than the free-space or dead-man checks**, which guard the *infrastructure*. This guards the
+    **product**: a stack that is up, healthy, collecting inputs and quietly producing no forecasts would look green on
+    every existing signal.
+  - **Two parts, and the first is the real work:** (1) the forecast cycle must **emit** a `FORECAST_FRESHNESS`
+    `pipeline_health` record on each completed run — the same pattern `collect_bafu_forecasts` already uses, which is
+    the model to copy; (2) the watchdog then probes
+    `/health/detail?check_type=forecast_freshness&limit=1` exactly as it does for the two BAFU feeds
+    (`ops/watchdog.py:66,72,82`), alerting on staleness.
+  - **Threshold is a decision, not a constant to guess:** the cycle's cadence is configuration-driven, and a fixed
+    "3h" like BAFU's would false-alarm on a daily-cadence deployment. Derive it from the configured schedule, or make
+    it explicitly configurable with a documented default. ⚠️ Owner input if a default is chosen.
+  - **Precedent to follow deliberately:** BAFU's emission writes on **successful completion**, so "stale" means "no
+    successful run recently" rather than "no attempt". That is the correct semantic here too — a cycle that runs and
+    fails every hour must read as stale, not as healthy.
 
 ## Open items
 - *(Runtime-choice, downtime window, host-RAM go/no-go and rollback boundary moved to **Plan 159**.)*
