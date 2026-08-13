@@ -8,10 +8,13 @@ import polars as pl
 import structlog
 
 from sapphire_flow.exceptions import ConfigurationError
-from sapphire_flow.services.caravan_statics import project_declared_static_attributes
+from sapphire_flow.services.caravan_statics import (
+    declared_static_naming,
+    project_declared_static_attributes,
+)
 from sapphire_flow.services.training_data import resample_to_time_step
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.enums import EnsembleMode, QcStatus, WarmUpSource
+from sapphire_flow.types.enums import EnsembleMode, QcStatus, StaticNaming, WarmUpSource
 from sapphire_flow.types.model import (
     ModelDataRequirements,
     StationInputData,
@@ -554,10 +557,11 @@ def assemble_station_operational_inputs(
     if station_config is not None and station_config.basin_id is not None:
         basin = basin_store.fetch_basin(station_config.basin_id)
         if basin is not None and basin.attributes:
-            # Plan 155 T2 (G8): project a Caravan-declaring model's own
-            # static names (D15's `caravan:`-namespaced resolution)
+            # Plan 155 T2 (G8) + D16: project a Caravan-DECLARING model's
+            # own static names (D15's `caravan:`-namespaced resolution)
             # alongside the untouched HydroATLAS canonicals -- see
-            # `services/caravan_statics.py`.
+            # `services/caravan_statics.py`. A NATIVE model (the default)
+            # keeps today's unprojected frame byte-for-byte.
             static_df = pl.DataFrame(
                 [
                     project_declared_static_attributes(
@@ -565,6 +569,8 @@ def assemble_station_operational_inputs(
                         reqs.static_features,
                         station_code=station_config.code,
                     )
+                    if declared_static_naming(model) is StaticNaming.CARAVAN
+                    else basin.attributes
                 ]
             )
 

@@ -173,6 +173,40 @@ raw-key behaviour. Full suite, ruff and the pyright ratchet all pass.
 **Status: hold at branch, do NOT open a PR.** The blocker needs the Caravan-declaring-model decision
 first.
 
+### Fixer round (2026-08-13) — BLOCKER + MAJORs addressed per D16
+
+Implemented D16 (the model declares `static_naming`, `types/enums.py::StaticNaming`, default
+`NATIVE`) and re-fixed T2's collision guard and T1's exit-gate checkability:
+
+- **BLOCKER fixed at both boundaries.** `project_declared_static_attributes` now explicitly `pop`s
+  a stale bare legacy key when its `caravan:` source is absent (was `continue`, leaving it standing).
+  All five call sites (`flows/onboard_model.py`, `services/model_onboarding.py`,
+  `services/training_data.py`, `services/hindcast.py`, `services/operational_inputs.py`) now branch on
+  `declared_static_naming(model)`: a `CARAVAN`-declaring model resolves ONLY through the alias/direct
+  rule (no union with the raw bare key set); a `NATIVE` model (every incumbent, unchanged) keeps the
+  pre-155 raw-key-set/frame behaviour byte-for-byte. Proved sound by reverting each fix in place,
+  confirming the new locking tests fail RED for the right reason, then restoring (not committed).
+- **T2 collision guard fixed.** `project_declared_static_attributes` now checks BOTH an aliased name's
+  raw-HydroATLAS-code key and its bare Caravan-name key (`_collision_keys`) when a delivered package
+  carries both; equal FINITE values resolve silently, differing values or equal infinities raise
+  `ConfigurationError` naming station, both keys and both values (`_values_agree`).
+- **T1 exit gate made checkable.** `services/caravan_statics.py::verify_static_coverage` implements
+  "every station resolves all of a model's declared statics to non-null, FINITE values" (`math.
+  isfinite`, not just `is_missing_static_value`) as a reusable function over a `{station_code:
+  attributes}` manifest, returning per-station `StaticCoverageGap`s.
+- **Provenance/manifest gaps partially closed.** `import_caravan_attributes` gained
+  `source_dataset_version` (threads the modeller-confirmed release into `CaravanImportProvenance`,
+  previously unreachable) and `expected_codes` (`CaravanImportResult.missing_from_manifest` surfaces a
+  T0a-manifest station absent from the parquet entirely — previously invisible to `matched_codes`/
+  `unmatched_codes`, which only ever see codes the parquet contains). Durable persistence of
+  provenance into `basin_static_packages` remains deliberately out of scope (needs new schema — see
+  the original T1 deviation note above; still natural to fold into T0b/T1c).
+- **Real import still not run** — same operational follow-on as before (ask the modeller for the
+  confirmed Caravan release first).
+
+Exit gates: ruff check + format, pyright ratchet (no new errors vs baseline), and the full `caravan`
+test suite (unit + DB-backed integration) green.
+
 ## Implementation notes (read before writing code)
 
 **Source data:** `/Users/bea/Downloads/data.parquet` — 296 rows x 216 cols, `gauge_id` =

@@ -18,7 +18,10 @@ from sapphire_flow.exceptions import (
     StoreError,
     TenantIsolationError,
 )
-from sapphire_flow.services.caravan_statics import available_declared_static_keys
+from sapphire_flow.services.caravan_statics import (
+    available_declared_static_keys,
+    declared_static_naming,
+)
 from sapphire_flow.types.basin import non_null_static_keys
 from sapphire_flow.types.enums import (
     ArtifactScope,
@@ -28,6 +31,7 @@ from sapphire_flow.types.enums import (
     ModelAssignmentStatus,
     OnboardingOutcome,
     SpatialRepresentation,
+    StaticNaming,
     StationStatus,
 )
 from sapphire_flow.types.ids import (
@@ -1259,22 +1263,28 @@ def onboard_model(
                 )
 
         # Step 1: Compatibility check
-        # Plan 155 T2 (G8): a Caravan-declaring model's own static names
-        # (e.g. PT's "area") never appear bare in `basin.attributes` --
-        # they live `caravan:`-namespaced (D15) -- so the available set
-        # must also include what the alias/direct resolution rule
-        # satisfies (see `services/caravan_statics.py`), same as the
-        # Prefect-task path (`flows/onboard_model.py`).
+        # Plan 155 T2 (G8) + D16: a Caravan-DECLARING model's own static
+        # names (e.g. PT's "area") never appear bare in `basin.attributes`
+        # -- they live `caravan:`-namespaced (D15) -- so its available set
+        # must resolve through the alias/direct rule instead of (never in
+        # addition to) the raw bare key set (see
+        # `services/caravan_statics.py`), same as the Prefect-task path
+        # (`flows/onboard_model.py`). A NATIVE model (the default) keeps
+        # today's raw-key-set behaviour byte-for-byte.
         declared_names = model.data_requirements.static_features
+        static_naming = declared_static_naming(model)
         avail_static: dict[StationId, frozenset[str]] = {}
         for sid in unit.station_ids:
             station = station_store.fetch_station(sid)
             if station is not None and station.basin_id is not None:
                 basin = basin_store.fetch_basin(station.basin_id)
                 attrs = basin.attributes if basin is not None else None
-                avail_static[sid] = non_null_static_keys(
-                    attrs
-                ) | available_declared_static_keys(attrs, declared_names)
+                if static_naming is StaticNaming.CARAVAN:
+                    avail_static[sid] = available_declared_static_keys(
+                        attrs, declared_names
+                    )
+                else:
+                    avail_static[sid] = non_null_static_keys(attrs)
             else:
                 avail_static[sid] = frozenset()
 

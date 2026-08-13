@@ -937,6 +937,24 @@ blanket unprefixed merge, which would silently change an INCUMBENT model's input
 See Plan 155 for the full rule and `store/basin_store.py::PgBasinStore
 .merge_namespaced_attributes` for the write-side guard.
 
+**Whether resolution applies at all is the MODEL's own declaration (Plan 155
+D16, post-implementation-review fix).** `types/enums.py::StaticNaming`
+(`NATIVE` | `CARAVAN`) is a class attribute a model declares exactly like
+`model_tier` / `alert_eligibility` (`services/model_registry.py`), read via
+`services/caravan_statics.py::declared_static_naming`. `NATIVE` is the
+default — every incumbent model that does not declare `static_naming` keeps
+today's raw-bare-key behaviour byte-for-byte, with NO union against the
+`caravan:` namespace. Only a model that declares `StaticNaming.CARAVAN` gets
+D15's strict no-bare-fallback resolution. This exists because inference from
+the alias table cannot work: 29 of PT's 50 statics are DIRECT names (e.g.
+`area`), textually indistinguishable from an incumbent's own same-named bare
+attribute — only the model itself can say which regime it wants.
+`project_declared_static_attributes` additionally enforces T2's collision
+semantics for an ALIASED name that ships both its raw HydroATLAS code and its
+bare Caravan name: equal FINITE values resolve silently, differing values (or
+equal infinities) raise `ConfigurationError` naming station, both keys and
+both values.
+
 ### Alert
 
 ```python

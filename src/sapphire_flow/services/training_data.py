@@ -8,10 +8,11 @@ import structlog
 
 from sapphire_flow.services.caravan_statics import (
     available_declared_static_keys,
+    declared_static_naming,
     project_declared_static_attributes,
 )
 from sapphire_flow.types.basin import non_null_static_keys
-from sapphire_flow.types.enums import AggregationMethod, QcStatus
+from sapphire_flow.types.enums import AggregationMethod, QcStatus, StaticNaming
 
 if TYPE_CHECKING:
     from sapphire_flow.protocols.adapters import WeatherReanalysisSource
@@ -240,16 +241,20 @@ def assemble_station_training_data(
                 return None
         else:
             declared_names = model.data_requirements.static_features
+            static_naming = declared_static_naming(model)
+            # Plan 155 T2 (G8) + D16: a Caravan-DECLARING model's own names
+            # (e.g. PT's "area") never appear bare in `basin.attributes` --
+            # they live `caravan:`-namespaced (D15) -- so the available set
+            # must resolve through the alias/direct rule instead of (never
+            # in addition to) the raw bare key set, ahead of training's own
+            # missing-static gate. A NATIVE model (the default) keeps
+            # today's raw-key-set/frame behaviour byte-for-byte.
             if declared_names:
-                # Plan 155 T2 (G8): a Caravan-declaring model's own names
-                # (e.g. PT's "area") never appear bare in `basin.attributes`
-                # -- they live `caravan:`-namespaced (D15) -- so the
-                # available set must include what the alias/direct
-                # resolution rule ALSO satisfies, ahead of training's own
-                # missing-static gate.
-                available = non_null_static_keys(
-                    basin.attributes
-                ) | available_declared_static_keys(basin.attributes, declared_names)
+                available = (
+                    available_declared_static_keys(basin.attributes, declared_names)
+                    if static_naming is StaticNaming.CARAVAN
+                    else non_null_static_keys(basin.attributes)
+                )
                 missing_attrs = declared_names - available
                 if missing_attrs:
                     log.warning(
@@ -263,6 +268,8 @@ def assemble_station_training_data(
                     project_declared_static_attributes(
                         basin.attributes, declared_names, station_code=station.code
                     )
+                    if static_naming is StaticNaming.CARAVAN
+                    else basin.attributes
                 ]
             )
     elif model.data_requirements.static_features:

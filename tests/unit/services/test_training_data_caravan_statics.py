@@ -13,7 +13,11 @@ from sapphire_flow.services.caravan_statics import CARAVAN_PREFIX
 from sapphire_flow.services.training_data import assemble_station_training_data
 from sapphire_flow.types.basin import Basin
 from sapphire_flow.types.datetime import ensure_utc
-from sapphire_flow.types.enums import ArtifactScope, SpatialRepresentation
+from sapphire_flow.types.enums import (
+    ArtifactScope,
+    SpatialRepresentation,
+    StaticNaming,
+)
 from sapphire_flow.types.ids import BasinId, StationId
 from sapphire_flow.types.model import ModelDataRequirements
 from tests.conftest import (
@@ -40,6 +44,7 @@ def _caravan_declaring_model() -> object:
 
     class _CaravanModel(FakeStationForecastModel):
         artifact_scope = ArtifactScope.STATION
+        static_naming = StaticNaming.CARAVAN  # Plan 155 D16
         data_requirements = ModelDataRequirements(
             target_parameters=frozenset({"discharge"}),
             past_dynamic_features=frozenset(),
@@ -111,3 +116,58 @@ class TestAssembleStationTrainingDataResolvesCaravanStatics:
         assert result.static is not None
         assert result.static["area"][0] == 250.0
         assert result.static["slope"][0] == 12.5
+
+    def test_missing_caravan_source_fails_the_gate_not_a_stale_bare_fallback(
+        self,
+    ) -> None:
+        """Plan 155 post-implementation-review BLOCKER, locked at the REAL
+        training-data path: a Caravan-declaring model whose basin carries
+        ONLY the bare CAMELS-CH "area" (no `caravan:area` at all) must be
+        rejected by the missing-static gate, not silently handed the bare
+        CAMELS-CH value as if it were Caravan's (D15's "no bare fallback",
+        inverted at the frame boundary -- `project_declared_static_
+        attributes` used to `continue` and leave the stale key standing)."""
+        station_id = StationId(uuid4())
+        basin_id = BasinId(uuid4())
+        station_store = FakeStationStore()
+        obs_store = FakeObservationStore()
+
+        station_store.store_station(
+            make_station_config(station_id=station_id, basin_id=basin_id)
+        )
+        obs_store.store_observations(
+            make_observations(
+                n=10, station_id=station_id, start=_START, rng=random.Random(1)
+            )
+        )
+        basin_store = FakeBasinStore()
+        basin_store.store_basin(
+            Basin(
+                id=basin_id,
+                code="B-001",
+                name="Basin B-001",
+                geometry=None,
+                area_km2=100.0,
+                attributes={
+                    "area": 100.0,  # CAMELS-CH's own bare attribute only
+                    f"{CARAVAN_PREFIX}slp_dg_sav": 12.5,  # "slope" IS covered
+                },
+                band_geometries=None,
+                created_at=_START,
+                network="bafu",
+            )
+        )
+
+        result = assemble_station_training_data(
+            station_id=station_id,
+            model=_caravan_declaring_model(),
+            period_start=_START,
+            period_end=_END,
+            time_step=_STEP,
+            forcing_source=FakeWeatherReanalysisSource([]),
+            obs_store=obs_store,
+            basin_store=basin_store,
+            station_store=station_store,
+        )
+
+        assert result is None

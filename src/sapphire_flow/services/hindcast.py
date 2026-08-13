@@ -17,9 +17,17 @@ from sqlalchemy.exc import (
 )
 
 from sapphire_flow.exceptions import StoreError
-from sapphire_flow.services.caravan_statics import project_declared_static_attributes
+from sapphire_flow.services.caravan_statics import (
+    declared_static_naming,
+    project_declared_static_attributes,
+)
 from sapphire_flow.types.datetime import UtcDatetime, ensure_utc
-from sapphire_flow.types.enums import EnsembleRepresentation, ForcingType, QcStatus
+from sapphire_flow.types.enums import (
+    EnsembleRepresentation,
+    ForcingType,
+    QcStatus,
+    StaticNaming,
+)
 from sapphire_flow.types.forecast import HindcastForecast
 from sapphire_flow.types.ids import ArtifactId, HindcastForecastId, ModelId, StationId
 from sapphire_flow.types.model import (
@@ -217,23 +225,28 @@ def _load_static_attributes(
     basin_store: BasinStore,
     station_config: StationConfig,
     declared_names: frozenset[str],
+    static_naming: StaticNaming,
 ) -> pl.DataFrame | None:
     if station_config.basin_id is None:
         return None
     basin = basin_store.fetch_basin(station_config.basin_id)
     if basin is not None and basin.attributes:
-        # Plan 155 T2 (G8): project a Caravan-declaring model's own static
-        # names (D15's `caravan:`-namespaced resolution) alongside the
-        # untouched HydroATLAS canonicals -- see `services/caravan_statics.py`.
-        return pl.DataFrame(
-            [
-                project_declared_static_attributes(
-                    basin.attributes,
-                    declared_names,
-                    station_code=station_config.code,
-                )
-            ]
-        )
+        # Plan 155 T2 (G8) + D16: project a Caravan-DECLARING model's own
+        # static names (D15's `caravan:`-namespaced resolution) alongside
+        # the untouched HydroATLAS canonicals -- see
+        # `services/caravan_statics.py`. A NATIVE model (the default) keeps
+        # today's unprojected frame byte-for-byte.
+        if static_naming is StaticNaming.CARAVAN:
+            return pl.DataFrame(
+                [
+                    project_declared_static_attributes(
+                        basin.attributes,
+                        declared_names,
+                        station_code=station_config.code,
+                    )
+                ]
+            )
+        return pl.DataFrame([basin.attributes])
     return None
 
 
@@ -299,7 +312,10 @@ def run_station_hindcast(
 
     weather_sources = station_store.fetch_reanalysis_bindings(station_id)
     static_df = _load_static_attributes(
-        basin_store, station_config, model.data_requirements.static_features
+        basin_store,
+        station_config,
+        model.data_requirements.static_features,
+        declared_static_naming(model),
     )
     # Fetch BOTH past- and future-known forcing from reanalysis: future-dynamic
     # forcing (e.g. NWP precip/temp) is teacher-forced in hindcast and must be
@@ -471,7 +487,10 @@ def run_group_hindcast(
     }
     static_map: dict[StationId, pl.DataFrame | None] = {
         sid: _load_static_attributes(
-            basin_store, cfg, model.data_requirements.static_features
+            basin_store,
+            cfg,
+            model.data_requirements.static_features,
+            declared_static_naming(model),
         )
         for sid, cfg in station_configs.items()
         if cfg is not None

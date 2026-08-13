@@ -30,7 +30,20 @@ class CaravanImportProvenance:
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class CaravanImportResult:
+    """``matched_codes`` records a successful IDENTITY join + additive
+    merge only -- it says nothing about whether the merged row's values
+    satisfy any particular model's declared statics (that is a downstream
+    concern, checked non-null/finite per-declared-name by
+    ``services/caravan_statics.py::verify_static_coverage``, since it
+    depends on WHICH model's static namespace is being verified).
+    ``missing_from_manifest`` is the T0a-manifest gap `matched_codes` alone
+    cannot surface: a caller-supplied ``expected_codes`` manifest station
+    that never appeared as a row in the parquet at all (Plan 155
+    post-implementation-review finding — "cannot detect a manifest station
+    missing from the file")."""
+
     matched_codes: frozenset[str]
     unmatched_codes: frozenset[str]
     stations_without_basin: frozenset[str]
+    missing_from_manifest: frozenset[str]
     provenance: CaravanImportProvenance

@@ -7,15 +7,20 @@ from __future__ import annotations
 import math
 
 import polars as pl
+import pytest
 
+from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.services.caravan_statics import (
     CARAVAN_ALIAS,
     CARAVAN_PREFIX,
     available_declared_static_keys,
+    declared_static_naming,
     project_declared_static_attributes,
     resolve_caravan_static_key,
+    verify_static_coverage,
 )
 from sapphire_flow.types.basin import non_null_static_keys
+from sapphire_flow.types.enums import StaticNaming
 
 
 class TestResolveCaravanStaticKey:
@@ -174,3 +179,135 @@ class TestExitGateAllFiftyResolve:
             value = projected[name]
             assert value is not None
             assert math.isfinite(value)
+
+
+class TestMissingCaravanSourceIsNotABareFallback:
+    def test_non_empty_legacy_bare_key_is_removed_not_leaked(self) -> None:
+        """Plan 155 post-implementation-review BLOCKER, locked directly:
+        `project_declared_static_attributes({"area": 123.0}, ["area"])`
+        must NOT return `{"area": 123.0}` -- the caravan: source is
+        entirely absent, so D15's no-bare-fallback rule means the bare
+        CAMELS-CH value must be dropped, not left standing in for
+        Caravan's. This is the exact scenario the original test suite
+        never covered (it only ever exercised an EMPTY attributes dict)."""
+        projected = project_declared_static_attributes({"area": 123.0}, {"area"})
+        assert "area" not in projected
+
+    def test_other_original_keys_survive_the_removal(self) -> None:
+        projected = project_declared_static_attributes(
+            {"area": 123.0, "unrelated": "x"}, {"area"}
+        )
+        assert "area" not in projected
+        assert projected["unrelated"] == "x"
+
+
+class TestCollisionSemantics:
+    """T2: "if a package ever carries both the raw code and the canonical
+    Caravan name, equal finite values are accepted and conflicting values
+    fail loudly." The guard must look up BOTH keys for an aliased name --
+    a single-valued resolver can never observe this (Plan 155
+    post-implementation-review MAJOR)."""
+
+    def test_both_keys_present_with_equal_values_resolves_without_raising(self) -> None:
+        attributes = {
+            f"{CARAVAN_PREFIX}slp_dg_sav": 12.5,  # the raw HydroATLAS code
+            f"{CARAVAN_PREFIX}slope": 12.5,  # Caravan's own canonical name
+        }
+        projected = project_declared_static_attributes(attributes, {"slope"})
+        assert projected["slope"] == 12.5
+
+    def test_both_keys_present_with_differing_values_raises_naming_both(self) -> None:
+        attributes = {
+            f"{CARAVAN_PREFIX}slp_dg_sav": 11.0,
+            f"{CARAVAN_PREFIX}slope": 99.0,
+        }
+        with pytest.raises(ConfigurationError, match="slope") as exc_info:
+            project_declared_static_attributes(
+                attributes, {"slope"}, station_code="2009"
+            )
+        message = str(exc_info.value)
+        assert "2009" in message
+        assert "11.0" in message
+        assert "99.0" in message
+
+    def test_equal_infinities_do_not_pass_the_collision_guard(self) -> None:
+        attributes = {
+            f"{CARAVAN_PREFIX}slp_dg_sav": math.inf,
+            f"{CARAVAN_PREFIX}slope": math.inf,
+        }
+        with pytest.raises(ConfigurationError, match="slope"):
+            project_declared_static_attributes(attributes, {"slope"})
+
+    def test_unaliased_direct_name_has_no_secondary_key_to_collide_on(self) -> None:
+        # "area" is direct (unaliased): its primary key already IS the bare
+        # `caravan:area` name, so there is no distinct secondary key --
+        # a second, differently-valued "area"-shaped key cannot exist to
+        # collide with it. Sanity check that direct names never spuriously
+        # raise.
+        attributes = {f"{CARAVAN_PREFIX}area": 250.0}
+        projected = project_declared_static_attributes(attributes, {"area"})
+        assert projected["area"] == 250.0
+
+
+class TestDeclaredStaticNaming:
+    """Plan 155 D16: the model itself declares whether it gets Caravan
+    resolution at all; the default is NATIVE (today's behaviour,
+    unchanged) for every model that does not opt in."""
+
+    def test_a_model_with_no_declaration_defaults_to_native(self) -> None:
+        class _PlainModel:
+            pass
+
+        assert declared_static_naming(_PlainModel()) is StaticNaming.NATIVE
+
+    def test_a_model_declaring_caravan_is_read_back(self) -> None:
+        class _CaravanModel:
+            static_naming = StaticNaming.CARAVAN
+
+        assert declared_static_naming(_CaravanModel()) is StaticNaming.CARAVAN
+
+    def test_a_non_enum_declaration_is_ignored_and_defaults_to_native(self) -> None:
+        class _MisdeclaredModel:
+            static_naming = "caravan"  # a plain string, not the enum
+
+        assert declared_static_naming(_MisdeclaredModel()) is StaticNaming.NATIVE
+
+
+class TestVerifyStaticCoverage:
+    """T1's exit gate (Plan 155): every station in the manifest resolves
+    all of a model's declared statics to non-null, FINITE values."""
+
+    def test_full_coverage_returns_no_gaps(self) -> None:
+        basins_by_code = {
+            "2009": {
+                f"{CARAVAN_PREFIX}area": 250.0,
+                f"{CARAVAN_PREFIX}slp_dg_sav": 12.5,
+            }
+        }
+        gaps = verify_static_coverage(basins_by_code, {"area", "slope"})
+        assert gaps == ()
+
+    def test_a_missing_static_is_reported_by_station_code(self) -> None:
+        basins_by_code = {"2009": {f"{CARAVAN_PREFIX}area": 250.0}}
+        gaps = verify_static_coverage(basins_by_code, {"area", "slope"})
+        assert len(gaps) == 1
+        assert gaps[0].station_code == "2009"
+        assert gaps[0].missing_statics == frozenset({"slope"})
+
+    def test_a_non_finite_value_is_reported_missing_even_though_present(self) -> None:
+        # `is_missing_static_value` alone accepts an infinity (it only
+        # rejects None/NaN) -- the exit gate requires `math.isfinite`.
+        basins_by_code = {"2009": {f"{CARAVAN_PREFIX}area": math.inf}}
+        gaps = verify_static_coverage(basins_by_code, {"area"})
+        assert len(gaps) == 1
+        assert gaps[0].missing_statics == frozenset({"area"})
+
+    def test_a_station_with_no_basin_attributes_is_reported_missing(self) -> None:
+        basins_by_code = {"2009": None}
+        gaps = verify_static_coverage(basins_by_code, {"area"})
+        assert gaps[0].missing_statics == frozenset({"area"})
+
+    def test_station_codes_are_sorted_for_a_stable_report(self) -> None:
+        basins_by_code = {"9999": {}, "0001": {}}
+        gaps = verify_static_coverage(basins_by_code, {"area"})
+        assert [gap.station_code for gap in gaps] == ["0001", "9999"]

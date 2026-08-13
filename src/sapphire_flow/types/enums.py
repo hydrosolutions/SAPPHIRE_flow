@@ -110,6 +110,24 @@ class AlertEligibility(Enum):
     NO_EVENT_INFORMATION = "no_event_information"
 
 
+class StaticNaming(Enum):
+    """Plan 155 D16: which namespace a model's declared static-attribute
+    names are written in. Read off the model as a class attribute, exactly
+    like ``model_tier`` / ``alert_eligibility`` (``services/model_registry.py``).
+
+    ``NATIVE`` (the default) is every incumbent model's behaviour today —
+    bare keys, no projection. ``CARAVAN`` opts a model into D15's strict
+    ``caravan:``-namespaced, no-bare-fallback resolution rule
+    (``services/caravan_statics.py``); a model must declare this explicitly
+    because inference from the alias table cannot distinguish a Caravan
+    direct name (e.g. ``area``) from an incumbent's own same-named bare
+    attribute.
+    """
+
+    NATIVE = "native"
+    CARAVAN = "caravan"
+
+
 class ForecastCycleHealth(Enum):
     HEALTHY = "healthy"
     DEGRADED = "degraded"

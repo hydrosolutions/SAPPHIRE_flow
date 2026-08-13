@@ -193,3 +193,109 @@ class TestImportCaravanAttributes:
 
         assert result.stations_without_basin == frozenset({"2011"})
         assert result.matched_codes == frozenset()
+
+    def test_a_manifest_station_absent_from_the_parquet_is_reported(
+        self, db_connection: sa.Connection, tmp_path
+    ) -> None:
+        """Plan 155 post-implementation-review MAJOR: `matched_codes`/
+        `unmatched_codes` alone only ever see codes the parquet actually
+        contains -- a T0a-manifest station that never shows up as a row AT
+        ALL is silently invisible to both. `expected_codes` closes that
+        gap."""
+        station_store = PgStationStore(db_connection)
+        basin_store = PgBasinStore(db_connection)
+
+        basin = _make_basin(code="2009")
+        basin_store.store_basin(basin)
+        station_store.store_station(
+            make_station_config(code="2009", network="bafu", basin_id=basin.id)
+        )
+
+        path = _write_parquet(
+            tmp_path, [{"gauge_id": "caravan_camels_ch_2009", "area": 250.0}]
+        )
+
+        result = import_caravan_attributes(
+            path,
+            station_store=station_store,
+            basin_store=basin_store,
+            expected_codes=frozenset({"2009", "2446"}),
+        )
+
+        assert result.matched_codes == frozenset({"2009"})
+        assert result.missing_from_manifest == frozenset({"2446"})
+
+    def test_no_expected_codes_reports_no_manifest_gap(
+        self, db_connection: sa.Connection, tmp_path
+    ) -> None:
+        station_store = PgStationStore(db_connection)
+        basin_store = PgBasinStore(db_connection)
+
+        basin = _make_basin(code="2009")
+        basin_store.store_basin(basin)
+        station_store.store_station(
+            make_station_config(code="2009", network="bafu", basin_id=basin.id)
+        )
+
+        path = _write_parquet(
+            tmp_path, [{"gauge_id": "caravan_camels_ch_2009", "area": 250.0}]
+        )
+
+        result = import_caravan_attributes(
+            path, station_store=station_store, basin_store=basin_store
+        )
+
+        assert result.missing_from_manifest == frozenset()
+
+    def test_source_dataset_version_threads_into_the_returned_provenance(
+        self, db_connection: sa.Connection, tmp_path
+    ) -> None:
+        """Plan 155 post-implementation-review MAJOR: "the import API
+        accepts only extractor_version ... there is no parameter to pass
+        [the confirmed release] through" -- `source_dataset_version` closes
+        that gap."""
+        station_store = PgStationStore(db_connection)
+        basin_store = PgBasinStore(db_connection)
+
+        basin = _make_basin(code="2009")
+        basin_store.store_basin(basin)
+        station_store.store_station(
+            make_station_config(code="2009", network="bafu", basin_id=basin.id)
+        )
+
+        path = _write_parquet(
+            tmp_path, [{"gauge_id": "caravan_camels_ch_2009", "area": 250.0}]
+        )
+
+        result = import_caravan_attributes(
+            path,
+            station_store=station_store,
+            basin_store=basin_store,
+            source_dataset_version="camels-ch-v1.1",
+        )
+
+        assert result.provenance.source_dataset_version == "camels-ch-v1.1"
+
+    def test_omitted_source_dataset_version_keeps_the_honest_placeholder(
+        self, db_connection: sa.Connection, tmp_path
+    ) -> None:
+        station_store = PgStationStore(db_connection)
+        basin_store = PgBasinStore(db_connection)
+
+        basin = _make_basin(code="2009")
+        basin_store.store_basin(basin)
+        station_store.store_station(
+            make_station_config(code="2009", network="bafu", basin_id=basin.id)
+        )
+
+        path = _write_parquet(
+            tmp_path, [{"gauge_id": "caravan_camels_ch_2009", "area": 250.0}]
+        )
+
+        result = import_caravan_attributes(
+            path, station_store=station_store, basin_store=basin_store
+        )
+
+        assert result.provenance.source_dataset_version == (
+            "unconfirmed@delivered-2026-08-13"
+        )
