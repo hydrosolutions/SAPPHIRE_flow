@@ -30,7 +30,7 @@ some of them change our results by a **factor**, not a margin.
 | 1.2 ⭐ | Does a timestamp label the hour **ending** at that time, or the hour **beginning**? | A one-hour offset shifts every sub-daily result. It currently blocks all our diurnal analysis. | |
 | 1.3 ⭐ | Was any **timezone conversion** applied (NPT = UTC+5:45), and if so, to **all** rows or only some? | 3,350 rows sit off the hourly grid, mostly at minute 15 and 45 — the signature of an NPT→UTC conversion applied to part of the data. See §3. | |
 | 1.4 | How were the **37 stations selected**? | Any statement we make about "Nepal" is conditional on this. Without it we cannot generalise beyond the sample. | |
-| 1.5 | Were the **11 empty columns** expected? Requested but not delivered, or lost in processing? | They are 30 % of the requested stations. See §3. | |
+| 1.5 ⭐ | The file has **37 station columns, but 11 of them contain no data at all** — zero values across all 55,379 rows, header only. Were those stations expected to have data? Requested but not delivered by DHM, or lost somewhere in processing? | This is 30 % of the delivered columns, so the file is effectively **26 stations**. If the data exists at DHM, recovering it is the cheapest possible improvement to the dataset. See §3. | |
 | 1.6 | Is the **raw DHM export** still available? | We would rather start from it than from a processed copy. | |
 | 1.7 | **Instrument type per station** — tipping bucket or weighing gauge; heated; shielded; orifice height. | Six stations report to 0.01 mm and twenty to 0.2 mm. We do not know whether that is two instrument types or two processing chains — see §3. | |
 
@@ -38,7 +38,7 @@ some of them change our results by a **factor**, not a margin.
 
 | # | Question | Your answer |
 |---|---|---|
-| 2.1 | A published study (Adhikari et al., 2025, *J. Inst. Sci. Tech.*) used **hourly data from 63 DHM automatic weather stations** and refers to a "recent expansion of the AWS network". We received 37 columns, 26 with data. **Can the fuller set be made available?** | |
+| 2.1 | *(We understand this is a subset of the national network and are not asking for all of it — the question is only about the 11 empty columns in §1.5, which were apparently meant to be included.)* For context: Adhikari et al. (2025, *J. Inst. Sci. Tech.*) used 63 DHM automatic weather stations, so more hourly data does exist should a wider sample become useful later. | |
 | 2.2 | Are QC flags available, so that **"missing" can be distinguished from "removed by QC"**? At present the two are indistinguishable in the file. | |
 | 2.3 | Is precipitation available **operationally** (the 10–15 min feed), and through what interface? | |
 
