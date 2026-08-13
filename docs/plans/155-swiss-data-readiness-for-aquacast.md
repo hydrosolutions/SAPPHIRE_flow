@@ -405,9 +405,23 @@ constructing the projected frame too. The projection must therefore operate on *
 as well as frames, and be applied in both onboarding-compatibility paths and ahead of training's
 check.
 
+**Resolution is gated on D16's model declaration.** `project_declared_static_attributes` and
+`available_declared_static_keys` must take the model's declared static namespace and apply the strict
+no-fallback rule **only** under `caravan`. Two concrete requirements the first implementation
+violated:
+1. **No bare-name fallback under `caravan`** — the projection must NOT leave a bare legacy key
+   standing in for a declared name whose `caravan:` source is absent, and the compatibility callers
+   must NOT union the raw bare key set back in for such a model (`flows/onboard_model.py:274`,
+   `services/model_onboarding.py:1275`, `services/training_data.py:250`). A missing Caravan attribute
+   is a **loud failure**.
+2. **`native` models keep today's behaviour exactly** — bare keys, raw key set, no projection.
+
 **Define alias collision semantics.** If a package ever carries both the raw code and the canonical
 Caravan name, equal finite values are accepted and **conflicting values fail loudly** naming station,
-alias, canonical name and both values. Never silently overwrite a package value.
+alias, canonical name and both values. Never silently overwrite a package value. **The check must
+look up BOTH keys** — a guard driven by a single-valued resolver is dead code and cannot detect the
+case (the first implementation shipped exactly that). Require **finite** equality: equal infinities
+must not pass.
 
 **Red-first — the RED assertion is the positive one, and it must be asserted at BOTH boundaries:**
 1. **compatibility** — PT reports zero missing statics for a Swiss station (fails today: the raw key
@@ -504,6 +518,31 @@ If the answer arrives after import, do the re-import **before T6**, while no art
 the attributes.
 
 ## Decisions
+
+- **D16 — how does resolution know a model is Caravan-declaring? — RESOLVED (owner, 2026-08-13):
+  the MODEL declares it.** This is the fix for the review BLOCKER above; it is a prerequisite for the
+  fixer round, not an optional refinement.
+
+  A model declares its static-naming convention as a **class attribute**, exactly like the existing
+  `model_tier` / `alert_eligibility` pattern that `discover_models` already reads and enforces
+  (`services/model_registry.py:61-76`). Resolution then branches on the declaration instead of
+  guessing:
+
+  | declaration | resolution for a declared static `X` |
+  |---|---|
+  | `native` (**the default**) | the bare `X` — **every incumbent is byte-for-byte unchanged** |
+  | `caravan` | `caravan:` + (`alias[X]` or `X`) **ONLY**; a missing key is a **loud failure** |
+
+  **The default must be `native`**, so the strict regime is opt-in and no existing model changes
+  behaviour when this lands. Plan 155 owns the resolution branch; **Plan 159's shim sets the flag on
+  the aquacast model**, which is the natural owner since it already binds PT's config at import time.
+
+  **Why the alternatives lose.** *Infer from the alias map* cannot work: the 29 **direct** statics —
+  including `area`, the dangerous one — are textually indistinguishable from an incumbent's own
+  names, so inference fails on exactly the case that matters. *Translate in the shim* is clean but
+  moves the fix into an external repo that does not exist yet, so Plan 155 could not close. *Strip
+  the colliding bare keys* breaks D15's explicit promise that incumbents keep their inputs untouched
+  — an incumbent on a Caravan-imported basin would lose its `area` entirely.
 
 - **D15 — how do Caravan attributes coexist with CAMELS-CH's? — RESOLVED (owner, 2026-08-13):
   option (A), namespace them inside the existing `Basin.attributes` dict.** Smallest change, no
