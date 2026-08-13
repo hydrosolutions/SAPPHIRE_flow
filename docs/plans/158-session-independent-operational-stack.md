@@ -24,7 +24,9 @@ priority so operational data collection is dependable. (This plan started life a
 the split above — see `## Progress` for the dated history of what has since been implemented and reviewed.)
 
 ## Build scope — READ BEFORE IMPLEMENTING
-**Automated implementation covers the `(Repo, …)` tasks ONLY: T1 and T2.** Every `(Host, …)` task — T3, T4, T5, T6 —
+**Automated implementation covers the `(Repo, …)` tasks ONLY: T1, T1b, T1c, T2 and T4.** (T4 is the Docker
+endpoint contract — a repo change; it was previously mislisted below as a Host task, which is the contradiction the
+implementer reported rather than guessed at.) Every `(Host, …)` task — T3, T5, T6 —
 runs commands against the live mac-mini (staging secrets, bootstrapping launchd domains, enabling auto-login,
 deliberately exercising failure paths) and is performed by a human in a session at the machine, following the runbook
 each task delivers. Do not attempt them from an automated build.
@@ -412,6 +414,37 @@ reviewable in a diff; "Host" tasks are operator cutovers whose evidence is captu
     contradiction instead of guessing. **Fix:** decide T4's true nature and make both places agree — it is the
     Docker endpoint contract, which is a repo change, so the build-scope list is what is wrong.
 
+- **T1c review fold (2026-08-13) — corrections to the fixes above.**
+  - **F5 is a CLASS, not an instance** *(both reviews)*. `httpx.InvalidURL` escapes **every** HTTP surface in the
+    watchdog, not just the dead-man poster: the probes at `ops/watchdog.py:176,212` and **`default_slack_poster` at
+    `:378`** all catch only `httpx.HTTPError`. A malformed hand-pasted **Slack** webhook therefore kills the
+    watchdog *precisely when it first tries to report an outage* — before state persistence and before the dead-man
+    ping. (Today's Slack URL was hand-pasted.) Fix all of them, and T1b's new probe too.
+  - **F1 rollback must cover SEMANTIC failure, not just bootstrap failure.** A daemon can bootstrap successfully and
+    still never work — wrong `UserName`, unreadable executable, bad `WorkingDirectory`/log path, or a disabled
+    service — leaving a host that looks migrated and is silently unmonitored. Verification must **kickstart with a
+    fresh invocation marker** and require exit 0, the expected tick log, Slack delivery and a dead-man ping before
+    the legacy plist is considered retired.
+  - **F3's legacy-agent mode must refuse post-migration.** The repo plist now carries daemon-specific `UserName`
+    and environment (`:36`), so it cannot double as the "preserved legacy" plist; and an accidental invocation
+    after migration would recreate the auto-loaded agent and reintroduce F1's duplicate. It must refuse whenever a
+    system registration or the daemon plist exists.
+  - **F4 ordering, context and verification.** Boot out **starter and prune first, stop and verify containers, and
+    boot out the watchdog LAST** — the current order removes monitoring before the shutdown that might fail
+    (`scripts/bootstrap-mac-mini.sh:121,156`). `SUDO_USER` is **not** authoritative: Docker Desktop is per-user, so
+    another admin's context sees no containers and **falsely passes** — target the configured service account or
+    reject a mismatched invoker. And a failed `docker ps`/Compose call must **not** be read as "no containers",
+    which is exactly the `prune-docker.sh` silent-success bug.
+  - **F4 must also make uninstall durable.** It prints "uninstall complete" while deliberately leaving the plists
+    (`bootstrap-mac-mini.sh:171`, `mac-mini-staging.md:618`), and the starter has `RunAtLoad=true`
+    (`ch.hydrosolutions.sapphire.plist:12`) — so **the stack returns at the next login**, by F1's own reasoning.
+    Either remove/disable the plists or rename the operation to "stop" and document it as temporary.
+  - **F6 coverage must include the failure paths**, not just privileged happy paths: F1 first-migration rollback,
+    F1 re-install rollback, alternate-admin rejection, and "Compose fails while the watchdog is restored".
+  - **F7 is bigger than a label** *(reviewer blocker)*. Build scope still names only T1/T2 and must name **T1b, T1c
+    and T4**; more seriously, the phase graph still allows **T3 straight after the shipped T1/T2**, so the host
+    cutover could be performed with F1 unfixed — installing the duplicate-watchdog race. **T3 must depend on T1c.**
+
 ### Phase B — Session-independent host jobs
 
 - **T4 — Docker endpoint contract in code (Repo, D8).**
@@ -453,7 +486,8 @@ reviewable in a diff; "Host" tasks are operator cutovers whose evidence is captu
 {
   "phases": [
     { "id": "A1", "tasks": ["T1", "T2"], "parallel": true },
-    { "id": "A2", "tasks": ["T3"], "parallel": false, "depends_on": ["A1"] },
+    { "id": "A1b", "tasks": ["T1b", "T1c"], "parallel": false, "depends_on": ["A1"] },
+    { "id": "A2", "tasks": ["T3"], "parallel": false, "depends_on": ["A1b"] },
     { "id": "B1", "tasks": ["T4"], "parallel": false, "depends_on": ["A1"] },
     { "id": "B2", "tasks": ["T5"], "parallel": false, "depends_on": ["A2", "B1"] },
     { "id": "B3", "tasks": ["T6"], "parallel": false, "depends_on": ["B2"] }
@@ -461,6 +495,10 @@ reviewable in a diff; "Host" tasks are operator cutovers whose evidence is captu
 }
 ```
 **Why these edges:**
+- **T3 depends on T1c — this edge is load-bearing** *(reviewer blocker-fix)*. T1/T2 already shipped, so without it
+  the graph permits the **host cutover** to run against code that still carries F1: the migration would boot out the
+  GUI watchdog, install the daemon, leave the legacy plist in place, and at the next login produce **two watchdogs
+  racing one state file and double-alerting**. The cutover must not precede its own fixes.
 - **T5 (starter into the system domain) is the hard prerequisite Plan 159 consumes.** "No GUI session at all" is
   undemonstrable while `ch.hydrosolutions.sapphire` lives in `gui/$(id -u)`
   (`scripts/launchd/install-launchd.sh:65`) — the starter that runs `docker compose up -d` will not launch without
@@ -489,37 +527,48 @@ reviewable in a diff; "Host" tasks are operator cutovers whose evidence is captu
   - **This is bigger than the free-space or dead-man checks**, which guard the *infrastructure*. This guards the
     **product**: a stack that is up, healthy, collecting inputs and quietly producing no forecasts would look green on
     every existing signal.
-  - **⚠️ BLOCKER FOUND IN REVIEW — `ForecastCycleHealth` cannot be trusted as-is, and a naive T1b would ship a FALSE
-    GREEN.** Verified in code: a `store_forecast` exception is caught and merely logged
-    (`flows/run_forecast_cycle.py:2204-2210`) — it does **not** increment `stations_failed` and does **not**
-    `continue`; the station then reaches `stations_succeeded += 1` (`:2354`) regardless. `_forecast_cycle_health`
-    (`:921`) ignores `forecasts_stored` entirely, along with `errors`, group failures and runtime `nwp_unavailable`.
-    **So every forecast store could fail, `forecasts_stored` stay 0, and the cycle still report HEALTHY** — the
-    heartbeat would assert freshness while persisting nothing, which is the exact outage it exists to detect.
-    **Therefore T1b's first job is to make cycle health authoritative for PERSISTED PRODUCT** (must account for
-    `forecasts_stored`, store failures, and the group paths at `:2491,:2574`), and only then hang the heartbeat off
-    it. One notion of "healthy", centrally defined — not a second one invented in the heartbeat.
-  - **Emit a STATUS-BEARING heartbeat, not an emit-only-on-perfection one** *(reviewer minor-fix — my original
-    framing misread the precedent)*. BAFU does **not** suppress on partial failure: it emits `OK` when
-    `variants_failed == 0` and **`WARNING` otherwise** (`flows/collect_bafu_forecasts.py:173-181`), suppressing only
-    when an exception prevents reaching convergence. Follow that: partial station/group production → `WARNING`;
-    a runoff-only cycle that **does** persist forecasts stays fresh; only genuine non-production is stale. Treating
-    every imperfect cycle as stale would cry wolf on a normal degraded-but-working cycle.
-  - **Emission seam and the other exit paths, all named** *(reviewer major-fix)*. The normal convergence point is
-    after `ForecastCycleResult` is built (`:2621`) and before its return (`:2659`). Each other exit needs an explicit
-    policy rather than falling through: **no operational stations** returns HEALTHY (`:1744`) — emitting `OK` there
-    would assert production when nothing was produced; **fatal NWP abort** returns FAILED (`:1948`); **runtime
-    `nwp_unavailable`** continues runoff-only (`:1965`); contained per-station/group failures reach normal
-    convergence; and unhandled/`StoreError` failures escape via the outer `finally` (`:2660`), where no heartbeat is
-    written at all — correct, since that is a genuine non-run.
-  - **The watchdog CANNOT derive the cadence — this needs a concrete seam** *(reviewer major-fix; my "derive it from
-    config" was not implementable)*. The real schedule is `SCHEDULE_FORECAST_CYCLE`
-    (`cli/register_deployments.py:35`, `docker-compose.yml:311`); `config.toml`'s `expected_interval_hours` (`:435`)
-    is **discarded** by `load_config()` (`config/deployment.py:432`); and the host watchdog has no config/schedule
-    field (`ops/watchdog.py:514`) with a plist supplying only `HOME`/`PATH`. **Mechanism:** add an explicit
-    `--forecast-stale-threshold-hours` to `WatchdogConfig`/CLI, threaded through `watchdog.sh` and the plist, and
-    provisioned alongside `SCHEDULE_FORECAST_CYCLE` so the two are changed together. Include the missed-cycle grace
-    (recommend: cadence × 2 + margin, stated explicitly rather than implied).
+  - **⚠️ TWO CONTRACTS, NOT ONE — this reverses an earlier correction in this plan.** A first review said "reuse
+    `ForecastCycleHealth`, but make it authoritative for persisted product". A second review showed that conflates
+    two different things, and the tests prove it: `test_run_forecast_cycle.py:3681` asserts
+    **`forecasts_stored == 1` AND `health is DEGRADED`** in the same cycle. DEGRADED is deliberately locked for snow
+    loss, partial/stale NWP, fallback-priority drift and fallback-only alert suppression — **conditions where the
+    product shipped fine**. So mapping DEGRADED → freshness WARNING would Slack-alarm on healthy-but-degraded
+    cycles, and forcing those to HEALTHY when persistence succeeds would break established semantics and their
+    tests.
+    **Ratified design: keep `ForecastCycleHealth` UNCHANGED** (it means *cycle operational quality*) **and compute a
+    SEPARATE product-coverage signal** (did we persist what we expected?). The heartbeat status derives from the
+    latter alone.
+  - **Coverage must be IDENTITY-based, not counter-based** *(both reviews; blocker)*. Counters cannot express it:
+    - a station with no active assignment or no assembled input just `continue`s **without** incrementing
+      `stations_failed` (`:2056`, `:2150`) → false green;
+    - a per-record `store_forecast` exception is logged only (`:2204-2210`) and the station still reaches
+      `stations_succeeded += 1` (`:2354`) → false green, even with `forecasts_stored > 0`;
+    - **a group-only cycle with ZERO station successes is a supported path**
+      (`tests/unit/flows/test_run_forecast_cycle.py:4169`) → a station-counter rule would false-**alarm**;
+    - group failures never touch `stations_failed` or cycle health (`docs/touchpoint-maps.md:381`).
+    So T1b must track **expected vs actually-persisted product identities across BOTH the station and group paths**,
+    including partial multi-parameter writes.
+  - **Freshness ages the CYCLE time, not the write time** *(reviewer major-fix)*. The watchdog currently ages
+    `checked_at` (`ops/watchdog.py:204`), but a forecast cycle accepts an explicit historical `cycle_time`
+    (`run_forecast_cycle.py:576`) — so **replaying an old cycle would reset freshness while producing nothing
+    current**. Age the cycle/issue time. **Red-first: "an old cycle completes now" must still read stale.**
+  - **The emission itself must not fail silently** *(reviewer major-fix)*. The obvious helper returns quietly when
+    the store is absent and swallows append failures (`run_forecast_cycle.py:598`), so a permissions/schema/
+    connection fault would log a warning, the cycle would return normally (`:2659`), and **no heartbeat would
+    exist** — indistinguishable from a dead cycle. The happy-path "exactly one record" test does not cover this;
+    add a store-failure case with an explicit decision (fail the cycle, or surface it another way).
+  - **A perpetual `WARNING` must not be a legal outcome** *(reviewer major-fix — a real blindness mode)*. BAFU's
+    hysteresis repeats only every sixth failure and never escalates severity (`ops/watchdog.py:395,645`). A
+    permanently dark subset could therefore write a **fresh WARNING every cycle**: never stale, never CRITICAL,
+    never actioned. The acceptance must forbid this — total product loss must reach CRITICAL or stale, and
+    "recovery" must not accept any fresh record regardless of status.
+  - **Threshold: validate it, and treat desync as a real risk** *(reviewer major-fix)*. A malformed or non-finite
+    threshold crashes during CLI parsing/config construction — **before** `main()`'s handler and therefore **before
+    the dead-man ping** (`ops/watchdog.py:789,872`), bricking monitoring silently. Validate and fall back to a safe
+    default rather than exiting. Note also that the plist invokes the Python module **directly**, not
+    `watchdog.sh` (`ch.hydrosolutions.sapphire-watchdog.plist:19`), so the earlier "thread it through the wrapper"
+    seam does not exist; and the schedule lives independently in Compose (`docker-compose.yml:311`), so
+    "provision them together" is procedural, not enforced — state the SLA and gate the pair explicitly.
   - **Correct seams** *(reviewer minor-fix)*: the existing watchdog checks live at `ops/watchdog.py:642,701` (not
     `:66,72,82` as first written), and a third check also requires `WatchdogState`, `WatchdogConfig`, CLI/main
     wiring, wrapper/plist config and tests. The documented `forecast_freshness` detail contract is currently
