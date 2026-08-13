@@ -41,6 +41,31 @@ reviewed (one `/plan` round plus three Codex passes, two of them opposed-lens).
   **This does not yet close the outage class:** the watchdog is still a **LaunchAgent**, so a session end kills the
   alerter along with the engine — it cannot report the outage it dies in. That is D2/T3 (LaunchDaemon) plus D3 (the
   off-box dead-man's-switch), and it is why silence must not be read as health until both land.
+- **2026-08-13 — T1 + T2 IMPLEMENTED (Repo tasks; hold-at-PR, commit `0ad6d64`, `v0.1.701`).** Both automated-build
+  tasks landed together, red-first-tested and independently exit-gated (`ruff check`/`format`, pyright ratchet,
+  `shellcheck`, `plutil -lint`, and the full `tests/unit/` suite — 2542 passed).
+  - **T1 (D3/D14)**: `read_deadman_url`/`default_deadman_poster`/`--deadman-url-path` (default
+    `./secrets/deadman_url`) — the ping fires at the end of `run_once` after `state.dump`, unconditionally on health
+    outcome, and is skipped (not raised) when the secret is absent or an earlier exception propagates. D14's
+    free-disk-space check (`--disk-path`, 20 GiB threshold, opt-in via `disk_probe` so every pre-existing test/call
+    site is unaffected) rides the same Slack path. `scripts/launchd/watchdog.sh` and the watchdog plist pass the new
+    flag explicitly, mirroring `--probe-token-path`.
+  - **T2 (D2/D2b)**: `install-launchd.sh` gained a per-label domain table (`ch.hydrosolutions.sapphire-watchdog` →
+    `daemon`; the starter + prune jobs stay `agent`, D5/T5's job), `--dry-run` (writes nothing, never calls
+    `plutil`/`launchctl`), and `--label` (single-plist install). A daemon install without root is refused, never
+    auto-`sudo`'d — a full sweep skips it with a warning so `bootstrap-mac-mini.sh` doesn't break; an explicit
+    `--label` ask hard-fails with the exact `sudo …` re-run. `bootstrap-mac-mini.sh --uninstall` now boots out every
+    installed label (the prune job was previously missing from uninstall entirely) in both domains, and step 11
+    surfaces the watchdog's separate privileged step.
+  - **Residual, host-only**: the mini itself has NOT been cut over — the watchdog is still the LaunchAgent T3 will
+    replace. T1/T2 land the capability; T3 (Host) performs and verifies the live cutover, including the
+    deliberate-outage acceptance test and the `secrets/deadman_url` staging.
+  - **Deviation from the automated build's remit, disclosed**: the Build-scope section's prose lists T4 alongside
+    T3/T5/T6 as a Host task, while T4's own task block is labeled `(Repo, D8)` with a Repo-only Verify list — an
+    internal inconsistency in this document. Per the Build scope section's explicit, prominently-placed instruction
+    ("Automated implementation covers the `(Repo, …)` tasks ONLY: **T1 and T2**"), T4 was treated as out of the
+    automated remit and NOT implemented here. Flagging for owner clarification before a future automated pass
+    attempts T4.
 
 ## Problem
 
