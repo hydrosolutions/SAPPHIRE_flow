@@ -223,6 +223,21 @@ acquisition and the full 2020–2025 acquisition + transform — both require a 
 explicitly out of a subagent's scope (plan `## Human prerequisites`); P0 (CDS account + licence
 acceptance) is done, and `data/dhm_precip/era5_land_provenance.json` (D15) is in place.
 
+**Fixer round 2026-08-13 (post-review)**: a multi-model review (Claude + independent Codex) found
+blockers/majors in the first pass — raw/final schema validation was tolerance-based rather than exact
+(a spatial subset or duplicated timestamps could pass as the full product); a hostile `CdsClient`
+implementation could still leak credentials into a raised exception; `cdsapi.Client()`'s own retry loop
+(500 attempts, real `time.sleep`) silently bypassed the injected, bounded outer retry; masked
+(sea/non-land) NaN cells were wrongly treated as missing boundary context; `diagnose_accumulation_convention`
+(3a) had no operator-invocable path. All are now fixed: `--stage diagnose` wires the convention
+diagnostic to an already-acquired raw window (operator runs it against the real 2b sample before 4b);
+every exception crossing the `CdsClient` seam is sanitized at the seam, not just logged; `RealCdsClient`
+pins `retry_max=1` so the outer driver is the sole retry owner; D9's raw/final schema checks are exact
+(grid count/spacing/order, time uniqueness, dtype, attrs, on-disk encoding via `validate_output_encoding`);
+D6 post-condition 1b (per-day/cell post-clamp accounting) is asserted in code; a manifest-write failure
+mid-revision restores the previous good product (D5); the acquisition-wide dataset is now immutable once
+a manifest exists. See `docs/plans/171-era5-land-acquisition.md` for the full finding list and fixes.
+
 ### M-A5 · Point extraction at station locations
 **Depends: M-D2, M-A4.** *(M-A4 needs no coordinates; only the extraction does.)*
 

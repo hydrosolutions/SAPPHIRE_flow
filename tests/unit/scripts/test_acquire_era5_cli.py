@@ -38,10 +38,21 @@ from scripts.dhm_precip.era5_acquire import RealCdsClient, redact_secrets
 from scripts.dhm_precip.era5_errors import (
     Era5AcquisitionError,
     Era5CredentialsError,
+    Era5TransformFailedError,
     Era5TransientError,
+    NonExpressibleWindowError,
 )
-from scripts.dhm_precip.era5_manifest import manifest_path_for, raw_artifact_path
-from scripts.dhm_precip.era5_request import DEFAULT_REQUEST_SPEC, AcquisitionWindow
+from scripts.dhm_precip.era5_manifest import (
+    PackingAccounting,
+    TransformYearRecord,
+    manifest_path_for,
+    raw_artifact_path,
+)
+from scripts.dhm_precip.era5_request import (
+    DEFAULT_REQUEST_SPEC,
+    AcquisitionWindow,
+    expected_grid_shape,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -75,8 +86,14 @@ def _write_valid_raw_netcdf(path: Path, window: AcquisitionWindow) -> None:
         ]
     )
     north, west, south, east = DEFAULT_REQUEST_SPEC.area
-    lat = np.arange(south, north + 0.1, 0.1)
-    lon = np.arange(west, east + 0.1, 0.1)
+    # An EXACT point count (`expected_grid_shape`) via `np.linspace`, not
+    # `np.arange` with a float step — `np.arange`'s float accumulation is
+    # not guaranteed to land on exactly the expected count, which would
+    # make a genuinely valid fixture fail the exact-grid-shape check the
+    # raw validator now enforces.
+    lat_count, lon_count = expected_grid_shape(DEFAULT_REQUEST_SPEC.area)
+    lat = np.linspace(south, north, lat_count)
+    lon = np.linspace(west, east, lon_count)
     tp = np.zeros((times.size, lat.size, lon.size), dtype=np.float32)
     ds = xr.Dataset(
         {"tp": (["valid_time", "latitude", "longitude"], tp)},
@@ -411,10 +428,13 @@ class TestRealClientOfflineDoesNotLeak:
 class TestHostileFakeClientRedaction:
     """Part 2 of the redaction contract: even when a client's raw exception
     DOES embed the secret (proving this fake has teeth — unlike the real
-    client above), `redact_secrets` scrubs it before it would reach a log
-    line, and the written manifest never carries it either."""
+    client above), the secret must be gone BEFORE the exception ever leaves
+    `_download_with_retry` (the `CdsClient` seam, D12) — not merely scrubbed
+    later at a particular logging call site. The plan is explicit: the
+    sentinel must appear in NONE of stdout, stderr, captured structlog
+    output, any raised exception's string form, or the written manifest."""
 
-    def test_hostile_message_is_scrubbed_before_logging(
+    def test_hostile_message_never_leaks_from_run(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         sentinel = "SENTINEL-hostile-leak-42"
@@ -442,14 +462,11 @@ class TestHostileFakeClientRedaction:
 
         with pytest.raises(Era5AcquisitionError) as excinfo:
             run(args, client=_HostileClient(), sleep=lambda _s: None)
-        # The fake has teeth: the raw exception really does carry the secret.
-        assert sentinel in str(excinfo.value)
+        # The seam sanitizes BEFORE re-raising — the secret must already be
+        # gone here, regardless of what any downstream caller does with it.
+        assert sentinel not in str(excinfo.value)
         assert _exit_code_for(excinfo.value) == 2
 
-        # main()'s except-block logs `redact_secrets(str(exc))` — replicate
-        # that exact call under structlog's test capture, independent of
-        # global stdlib logging config (avoids cross-test pollution from
-        # `configure_cli_logging()`).
         log = structlog.get_logger("scripts.dhm_precip.acquire_era5")
         with structlog.testing.capture_logs() as logs:
             log.error(
@@ -459,6 +476,50 @@ class TestHostileFakeClientRedaction:
             )
         assert len(logs) == 1
         assert sentinel not in json.dumps(logs[0], default=str)
+
+    def test_hostile_transient_error_never_leaks_through_main(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Drives the REAL CLI entry point (`main()`, not `run()` with the
+        exit-code mapping replicated by hand) end-to-end with a hostile
+        TRANSIENT client that exhausts every retry — captured stdout,
+        stderr, and the manifest must all be clean."""
+        sentinel = "SENTINEL-transient-leak-77"
+        monkeypatch.setenv("CDSAPI_KEY", sentinel)
+
+        class _HostileTransientClient:
+            def retrieve_to_path(
+                self, *, dataset: str, payload: Mapping[str, object], target: Path
+            ) -> None:
+                raise Era5TransientError(f"connection reset: {sentinel}")
+
+        provenance = _write_provenance(tmp_path)
+        exit_code = main(
+            [
+                "--stage",
+                "acquire",
+                "--window",
+                "2019-12-31",
+                "--provenance",
+                str(provenance),
+                "--data-root",
+                str(tmp_path),
+            ],
+            client=_HostileTransientClient(),
+            sleep=lambda _s: None,
+        )
+        assert exit_code == 3  # retries exhausted -> Era5RequestFailedError
+
+        captured = capsys.readouterr()
+        assert sentinel not in captured.out
+        assert sentinel not in captured.err
+
+        manifest_path = manifest_path_for(tmp_path)
+        if manifest_path.exists():
+            assert sentinel not in manifest_path.read_text()
 
     def test_hostile_failure_leaves_no_secret_in_manifest(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -485,3 +546,198 @@ class TestHostileFakeClientRedaction:
 
         manifest_text = manifest_path_for(tmp_path).read_text()
         assert sentinel not in manifest_text
+
+
+class TestTransformWindowScoping:
+    """A review finding: `--window`'s year-scoping for `--stage transform`
+    only counted whole-year windows (`month is None`), so a sub-year window
+    (e.g. "2021-10") fell through to the "nothing requested" fallback and
+    silently transformed ALL SIX study years — and an out-of-range whole
+    year silently did NOTHING (a "successful" no-op) rather than erroring.
+    Exercised with an INJECTED `transform_fn` (`run()`'s own seam) so the
+    scoping logic is proven without needing real raw files on disk."""
+
+    def _fake_transform_year(self, year: int, **_kwargs: object) -> TransformYearRecord:
+        return TransformYearRecord(
+            product_year=year,
+            transform_identity="id",
+            sha256="a" * 64,
+            accumulation_convention="era5_land_01_00_accumulation_day_v1",
+            units_conversion="metres_to_mm_x1000",
+            packing=PackingAccounting(
+                packing_corrected_cells=0, max_correction_mm=0.0, mass_adjustment_mm=0.0
+            ),
+            non_finite_cell_count=0,
+            dropped_boundary_stamp=None,
+            transformed_at=datetime(2026, 8, 13, tzinfo=UTC),
+        )
+
+    def test_partial_window_transforms_only_that_year_not_all_six(
+        self, tmp_path: Path
+    ) -> None:
+        provenance = _write_provenance(tmp_path)
+        args = build_parser().parse_args(
+            [
+                "--stage",
+                "transform",
+                "--window",
+                "2021-10",
+                "--provenance",
+                str(provenance),
+                "--data-root",
+                str(tmp_path),
+            ]
+        )
+        called_years: list[int] = []
+
+        def fake_transform(year: int, **kwargs: object) -> TransformYearRecord:
+            called_years.append(year)
+            return self._fake_transform_year(year, **kwargs)
+
+        code = run(args, transform_fn=fake_transform)
+        assert code == 0
+        assert called_years == [2021]
+
+    def test_stage_all_with_partial_window_transforms_only_that_year(
+        self, tmp_path: Path
+    ) -> None:
+        provenance = _write_provenance(tmp_path)
+        window = AcquisitionWindow(year=2021, month=10)
+        args = build_parser().parse_args(
+            [
+                "--stage",
+                "all",
+                "--window",
+                "2021-10",
+                "--provenance",
+                str(provenance),
+                "--data-root",
+                str(tmp_path),
+            ]
+        )
+        called_years: list[int] = []
+
+        def fake_transform(year: int, **kwargs: object) -> TransformYearRecord:
+            called_years.append(year)
+            return self._fake_transform_year(year, **kwargs)
+
+        client = _ScriptedClient(window=window)
+        code = run(
+            args, client=client, transform_fn=fake_transform, sleep=lambda _s: None
+        )
+        assert code == 0
+        assert called_years == [2021]
+
+    def test_out_of_range_window_year_is_rejected_not_silently_skipped(
+        self, tmp_path: Path
+    ) -> None:
+        provenance = _write_provenance(tmp_path)
+        args = build_parser().parse_args(
+            [
+                "--stage",
+                "transform",
+                "--window",
+                "2019",
+                "--provenance",
+                str(provenance),
+                "--data-root",
+                str(tmp_path),
+            ]
+        )
+        with pytest.raises(NonExpressibleWindowError):
+            run(args)
+
+
+class TestDiagnoseStage:
+    """3a's accumulation-convention diagnostic, wired to a real (fake-client
+    -acquired-on-disk) raw window rather than left as dead code reachable
+    only from synthetic-fixture unit tests."""
+
+    def _write_diagnosable_raw(self, tmp_path: Path, *, reset_hour: int) -> None:
+        valid_time = np.datetime64("2021-10-01T00:00") + np.arange(24 * 5) * _HOUR
+        rng = np.random.default_rng(0)
+        true_mm_1d = rng.uniform(0.1, 2.0, size=valid_time.size)
+        true_mm = np.broadcast_to(
+            true_mm_1d[:, None, None], (valid_time.size, 2, 2)
+        ).astype(np.float64)
+        days = valid_time.astype("datetime64[D]")
+        hours = ((valid_time - days) / _HOUR).astype(int)
+        acc = np.empty_like(true_mm)
+        running = np.zeros(true_mm.shape[1:])
+        for i in range(valid_time.size):
+            running = (
+                true_mm[i].copy() if hours[i] == reset_hour else running + true_mm[i]
+            )
+            acc[i] = running
+        window = AcquisitionWindow(year=2021, month=10)
+        path = raw_artifact_path(window.window_id, tmp_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        ds = xr.Dataset(
+            {
+                "tp": (
+                    ["valid_time", "latitude", "longitude"],
+                    (acc / 1000.0).astype(np.float32),
+                )
+            },
+            coords={
+                "valid_time": valid_time,
+                "latitude": np.array([26.0, 26.1]),
+                "longitude": np.array([80.0, 80.1]),
+            },
+        )
+        ds["tp"].attrs["units"] = "m"
+        ds.to_netcdf(path)
+
+    def test_confirms_d6_convention_and_succeeds(self, tmp_path: Path) -> None:
+        self._write_diagnosable_raw(tmp_path, reset_hour=1)  # D6's own rule
+        provenance = _write_provenance(tmp_path)
+        args = build_parser().parse_args(
+            [
+                "--stage",
+                "diagnose",
+                "--window",
+                "2021-10",
+                "--provenance",
+                str(provenance),
+                "--data-root",
+                str(tmp_path),
+            ]
+        )
+        assert run(args) == 0
+
+    def test_disagreeing_convention_is_rejected_not_silent(
+        self, tmp_path: Path
+    ) -> None:
+        # A calendar-midnight reset (hour 0) — NOT D6's hour-1 reset.
+        self._write_diagnosable_raw(tmp_path, reset_hour=0)
+        provenance = _write_provenance(tmp_path)
+        args = build_parser().parse_args(
+            [
+                "--stage",
+                "diagnose",
+                "--window",
+                "2021-10",
+                "--provenance",
+                str(provenance),
+                "--data-root",
+                str(tmp_path),
+            ]
+        )
+        with pytest.raises(Era5TransformFailedError):
+            run(args)
+
+    def test_missing_raw_artifact_is_a_storage_error(self, tmp_path: Path) -> None:
+        provenance = _write_provenance(tmp_path)
+        args = build_parser().parse_args(
+            [
+                "--stage",
+                "diagnose",
+                "--window",
+                "2021-10",
+                "--provenance",
+                str(provenance),
+                "--data-root",
+                str(tmp_path),
+            ]
+        )
+        assert _invoke(args) == 5

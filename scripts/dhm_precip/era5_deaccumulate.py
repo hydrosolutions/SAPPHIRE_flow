@@ -30,11 +30,27 @@ from scripts.dhm_precip.era5_errors import (
     Era5UnitsMismatchError,
 )
 from scripts.dhm_precip.era5_manifest import PackingAccounting
+from scripts.dhm_precip.era5_request import GRID_SPACING_DEG, expected_grid_shape
 
 log = structlog.get_logger(__name__)
 
+# D9: required top-level attrs on the final product (period-ending
+# convention D10, the accumulation rule, both version identifiers and the
+# source dataset). A missing/blank one means the file cannot be traced back
+# to what produced it.
+_REQUIRED_OUTPUT_ATTRS = (
+    "period_ending_convention",
+    "accumulation_rule",
+    "transform_version",
+    "output_schema_version",
+    "source_dataset",
+)
+_OUTPUT_DTYPE = "float32"
+_OUTPUT_DIMS = ("valid_time", "latitude", "longitude")
+_GRID_TOLERANCE_DEG = 1e-6
+
 _HOUR = np.timedelta64(1, "h")
-_DAY_START_HOUR = 1  # D6: the accumulation day is 01 UTC of D ... 00 UTC of D+1.
+DAY_START_HOUR = 1  # D6: the accumulation day is 01 UTC of D ... 00 UTC of D+1.
 ACCUMULATION_RULE_ID = "era5_land_01_00_accumulation_day_v1"
 OUTPUT_SCHEMA_VERSION = "1"
 
@@ -95,11 +111,71 @@ def _accumulation_day(valid_time: np.ndarray) -> np.ndarray:
     return np.where(hours == 0, days - np.timedelta64(1, "D"), days)
 
 
-def diagnose_accumulation_convention(ds: xr.Dataset) -> AccumulationDiagnostic:
+def _assert_post_clamp_accounting(
+    *,
+    full_days: np.ndarray,
+    acc_day: np.ndarray,
+    valid_time: np.ndarray,
+    pre_clamp_increment: xr.DataArray,
+    post_clamp_increment: xr.DataArray,
+    clamp_mask: xr.DataArray,
+    terminal_accumulator: xr.DataArray,
+    tolerance_mm: float,
+) -> None:
+    """D6 post-condition 1b, asserted in code, not just tested — a review
+    finding noted the prior code only totalled `packing_corrected_cells`/
+    `max_correction_mm`/`mass_adjustment_mm` globally, without ever checking
+    the equation those numbers are supposed to satisfy: for every
+    accumulation day fully contained in the file, per grid cell, the
+    published (post-clamp) sum equals
+
+        1000 x original_terminal_accumulator_m + mass_adjustment_mm(day, cell)
+
+    (both sides mm). Checked independently of post-condition 1 (which only
+    covers the PRE-clamp sum, since clamping necessarily breaks exact
+    telescoping) — a broken accounting factor (crediting the wrong day's
+    mass, double-counting a correction, an off-by-one in which cells were
+    clamped) would otherwise pass unnoticed as long as the YEAR-level totals
+    happened to look positive."""
+    for day in full_days:
+        idx = np.where(acc_day == day)[0]
+        terminal_idx = int(idx[np.argmax(valid_time[idx])])
+        terminal_mm = terminal_accumulator.isel(valid_time=terminal_idx) * _METRES_TO_MM
+        published_sum_mm = (
+            post_clamp_increment.isel(valid_time=idx).sum(dim="valid_time")
+            * _METRES_TO_MM
+        )
+        day_clamp_mask = clamp_mask.isel(valid_time=idx)
+        mass_adjustment_mm = (
+            (-pre_clamp_increment.isel(valid_time=idx))
+            .where(day_clamp_mask)
+            .fillna(0.0)
+            .sum(dim="valid_time")
+        ) * _METRES_TO_MM
+        residual = np.abs(published_sum_mm - (terminal_mm + mass_adjustment_mm))
+        if bool((residual > tolerance_mm).any()):
+            raise Era5ConservationError(
+                f"D6 post-condition 1b violated for accumulation day {day}: "
+                "post-clamp sum != terminal + mass_adjustment (max residual "
+                f"{float(residual.max())} mm exceeds tolerance {tolerance_mm} mm)"
+            )
+
+
+def diagnose_accumulation_convention(
+    ds: xr.Dataset,
+    *,
+    tolerance_m: float = DEFAULT_PACKING_TOLERANCE_MM / _METRES_TO_MM,
+) -> AccumulationDiagnostic:
     """3a — an empirical diagnostic: for each candidate reset hour, count
     naive-diff monotonicity violations everywhere except that hour, and pick
     the hour that minimises them. Run against a real 2b sample to confirm
-    (or correct) D6's stated `_DAY_START_HOUR = 1`.
+    (or correct) D6's stated `DAY_START_HOUR = 1`.
+
+    `tolerance_m` defaults to D7's own packing tolerance (1e-7 m) — a review
+    finding noted this diagnostic previously hardcoded a threshold ten times
+    looser (1e-6 m), which is a different number than the one the actual
+    transform enforces and could mask violations the real pipeline would
+    catch.
     """
     valid_time = ds["valid_time"].values
     _require_hourly_grid(valid_time)
@@ -111,7 +187,7 @@ def diagnose_accumulation_convention(ds: xr.Dataset) -> AccumulationDiagnostic:
     violations_by_hour: dict[int, int] = {}
     for candidate in range(24):
         mask = diff_hour != candidate
-        violations_by_hour[candidate] = int(np.sum(diff[mask] < -1e-6))
+        violations_by_hour[candidate] = int(np.sum(diff[mask] < -tolerance_m))
     reset_hour = min(violations_by_hour, key=lambda h: violations_by_hour[h])
     return AccumulationDiagnostic(
         reset_hour=reset_hour,
@@ -147,7 +223,7 @@ def deaccumulate_precipitation(
     _require_hourly_grid(valid_time)
 
     hours = _hours_of(valid_time)
-    is_day_start = hours == _DAY_START_HOUR
+    is_day_start = hours == DAY_START_HOUR
     is_day_start_da = xr.DataArray(
         is_day_start, dims="valid_time", coords={"valid_time": ds["valid_time"]}
     )
@@ -172,8 +248,23 @@ def deaccumulate_precipitation(
     else:
         required_start, required_end = required_range
     in_range = (valid_time >= required_start) & (valid_time <= required_end)
-    required_slice = increment.isel(valid_time=np.where(in_range)[0])
-    if bool(np.isnan(required_slice.values).any()):
+
+    # D9's missing-value policy explicitly permits per-cell NaN (e.g. an
+    # ERA5-Land sea/non-land mask cell that is NaN at every timestep) — that
+    # must never be conflated with a genuinely MISSING predecessor stamp.
+    # The only stamp that structurally lacks a predecessor in `ds` is index 0
+    # of the combined series, and only when it is not itself an
+    # accumulation-day start (which is taken as itself, needing no
+    # predecessor at all). Every other index's predecessor is the
+    # immediately preceding array position, which `_require_hourly_grid`
+    # already guarantees is present — so a NaN there is a source value
+    # (legitimately masked), not a structural gap, and must be allowed to
+    # propagate through to `convert_units`/`validate_output_schema`, where
+    # D9's non-finite-cell-count / fully-NaN-field checks already handle it.
+    missing_predecessor = np.zeros(n, dtype=bool)
+    missing_predecessor[0] = not bool(is_day_start[0])
+    missing_and_required = missing_predecessor & in_range
+    if bool(missing_and_required.any()):
         raise Era5MissingBoundaryContextError(
             "cannot compute hourly increments for the requested range without "
             "boundary context from the adjacent acquisition window"
@@ -215,7 +306,23 @@ def deaccumulate_precipitation(
     else:
         max_correction_mm = 0.0
         mass_adjustment_mm = 0.0
-    increment = increment.where(~clamp_mask, 0.0)
+
+    pre_clamp_increment = increment
+    clamped_increment = increment.where(~clamp_mask, 0.0)
+
+    # --- D6 post-condition 1b: post-clamp accounting, per day AND cell,
+    # asserted BEFORE the totals above are trusted for the manifest ---
+    _assert_post_clamp_accounting(
+        full_days=full_days,
+        acc_day=acc_day,
+        valid_time=valid_time,
+        pre_clamp_increment=pre_clamp_increment,
+        post_clamp_increment=clamped_increment,
+        clamp_mask=clamp_mask,
+        terminal_accumulator=tp,
+        tolerance_mm=conservation_tolerance_m * _METRES_TO_MM,
+    )
+    increment = clamped_increment
 
     # D6 post-condition 2: non-negativity, AFTER the packing clamp.
     if bool((increment.fillna(0.0) < 0).any()):
@@ -276,6 +383,19 @@ def validate_output_schema(
     for coord in ("valid_time", "latitude", "longitude"):
         if coord not in ds.coords and coord not in ds.dims:
             raise Era5SchemaValidationError(f"missing coordinate {coord!r}")
+    if tuple(var.dims) != _OUTPUT_DIMS:
+        raise Era5SchemaValidationError(
+            f"'precipitation' dims {tuple(var.dims)} != {_OUTPUT_DIMS}"
+        )
+    if str(var.dtype) != _OUTPUT_DTYPE:
+        raise Era5SchemaValidationError(
+            f"'precipitation' dtype {var.dtype} != {_OUTPUT_DTYPE!r}"
+        )
+    missing_attrs = [a for a in _REQUIRED_OUTPUT_ATTRS if not str(ds.attrs.get(a, ""))]
+    if missing_attrs:
+        raise Era5SchemaValidationError(
+            f"missing or blank required attrs: {missing_attrs}"
+        )
 
     valid_time = ds["valid_time"].values
     if valid_time.size == 0:
@@ -304,15 +424,46 @@ def validate_output_schema(
     north, west, south, east = expected_area
     lat = ds["latitude"].values
     lon = ds["longitude"].values
-    tol = 0.1 + 1e-6
-    if lat.max() > north + tol or lat.min() < south - tol:
+
+    expected_lat_count, expected_lon_count = expected_grid_shape(expected_area)
+    if lat.size != expected_lat_count:
+        raise Era5SchemaValidationError(
+            f"latitude has {lat.size} points, expected exactly "
+            f"{expected_lat_count} at {GRID_SPACING_DEG} deg spacing for box "
+            f"{expected_area}"
+        )
+    if lon.size != expected_lon_count:
+        raise Era5SchemaValidationError(
+            f"longitude has {lon.size} points, expected exactly "
+            f"{expected_lon_count} at {GRID_SPACING_DEG} deg spacing for box "
+            f"{expected_area}"
+        )
+    if lat.size > 1 and not np.allclose(
+        np.abs(np.diff(np.sort(lat))), GRID_SPACING_DEG, atol=_GRID_TOLERANCE_DEG
+    ):
+        raise Era5SchemaValidationError(
+            f"latitude spacing is not uniformly {GRID_SPACING_DEG} deg"
+        )
+    if lon.size > 1 and not np.allclose(
+        np.abs(np.diff(np.sort(lon))), GRID_SPACING_DEG, atol=_GRID_TOLERANCE_DEG
+    ):
+        raise Era5SchemaValidationError(
+            f"longitude spacing is not uniformly {GRID_SPACING_DEG} deg"
+        )
+    if (
+        lat.max() > north + _GRID_TOLERANCE_DEG
+        or lat.min() < south - _GRID_TOLERANCE_DEG
+    ):
         raise Era5SchemaValidationError("latitude outside requested box")
-    if lon.max() > east + tol or lon.min() < west - tol:
+    if lon.max() > east + _GRID_TOLERANCE_DEG or lon.min() < west - _GRID_TOLERANCE_DEG:
         raise Era5SchemaValidationError("longitude outside requested box")
 
     values = var.values
-    finite = np.isfinite(values)
-    non_finite = int((~finite).sum())
-    if not bool(finite.any()):
+    if bool(np.isinf(values).any()):
+        raise Era5SchemaValidationError(
+            "'precipitation' contains infinite value(s); D9 permits finite or NaN only"
+        )
+    non_finite = int(np.isnan(values).sum())
+    if non_finite == values.size:
         raise Era5SchemaValidationError("'precipitation' field is entirely non-finite")
     return SchemaValidationResult(non_finite_cell_count=non_finite)

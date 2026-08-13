@@ -16,6 +16,7 @@ itself — they are never threaded through this module's objects.
 from __future__ import annotations
 
 import calendar
+import re
 from dataclasses import dataclass
 from datetime import date
 from typing import cast
@@ -28,6 +29,22 @@ DEFAULT_VARIABLE = "total_precipitation"
 # D2: CDS `area` is north/west/south/east. Study box: 26-31 N, 80-89 E.
 StudyArea = tuple[int, int, int, int]
 STUDY_AREA: StudyArea = (31, 80, 26, 89)
+
+# D9: the final (and, tightened per review, the raw) grid is exactly 0.1 deg
+# spacing over the requested box — not merely "within" it. Shared by
+# era5_acquire.py's raw validation and era5_deaccumulate.py's D9 final-schema
+# validation so both check the SAME exact shape from the SAME formula.
+GRID_SPACING_DEG = 0.1
+
+
+def expected_grid_shape(area: tuple[float, float, float, float]) -> tuple[int, int]:
+    """(lat_count, lon_count) implied by `area` (north/west/south/east) at
+    `GRID_SPACING_DEG` spacing, inclusive of both endpoints."""
+    north, west, south, east = area
+    lat_count = round((north - south) / GRID_SPACING_DEG) + 1
+    lon_count = round((east - west) / GRID_SPACING_DEG) + 1
+    return lat_count, lon_count
+
 
 # D4: the six product years plus the two edge-context windows.
 STUDY_YEARS: tuple[int, ...] = (2020, 2021, 2022, 2023, 2024, 2025)
@@ -224,33 +241,38 @@ def _as_list(value: object) -> list[str]:
     return [str(value)]
 
 
+# CLI `--window` grammar (D2): exactly `YYYY`, `YYYY-MM`, `YYYY-MM-DD`, or
+# `YYYY-MM-DDTHH` — a FULL match, not a prefix match. An hour suffix is only
+# valid after a complete year-month-day; any other trailing text (an hour
+# after a bare year/month, or junk after a valid shape) is rejected rather
+# than silently ignored — a review finding showed "2021-10T05" silently
+# widening to the whole month and "2021T00Tjunk" silently widening to the
+# whole year under the previous split()-based parser.
+_WINDOW_RE = re.compile(
+    r"^(?P<year>\d{1,4})(?:-(?P<month>\d{2})(?:-(?P<day>\d{2})"
+    r"(?:T(?P<hour>\d{2}))?)?)?$"
+)
+
+
 def parse_window_arg(text: str) -> AcquisitionWindow:
     """CLI `--window` grammar (D2): `YYYY`, `YYYY-MM`, `YYYY-MM-DD`, or
     `YYYY-MM-DDTHH` — the same four canonical shapes `AcquisitionWindow`
     represents, so 2b's October sample and a full year share one code path.
+    Rejects anything that is not an exact match for one of those four shapes.
     """
-    parts = text.split("T")
-    if len(parts) == 2:
-        date_part, hour_part = parts
-    else:
-        date_part, hour_part = parts[0], None
-    date_fields = date_part.split("-")
+    match = _WINDOW_RE.fullmatch(text)
+    if match is None:
+        raise NonExpressibleWindowError(f"unparsable --window value {text!r}")
+    year = int(match.group("year"))
+    month = int(match.group("month")) if match.group("month") else None
+    day = int(match.group("day")) if match.group("day") else None
+    hour = int(match.group("hour")) if match.group("hour") else None
     try:
-        if len(date_fields) == 1:
-            return AcquisitionWindow(year=int(date_fields[0]))
-        if len(date_fields) == 2:
-            return AcquisitionWindow(
-                year=int(date_fields[0]), month=int(date_fields[1])
-            )
-        if len(date_fields) == 3:
-            year, month, day = (int(f) for f in date_fields)
-            hour = int(hour_part) if hour_part is not None else None
-            return AcquisitionWindow(year=year, month=month, day=day, hour=hour)
+        return AcquisitionWindow(year=year, month=month, day=day, hour=hour)
     except ValueError as exc:
         raise NonExpressibleWindowError(
             f"unparsable --window value {text!r}: {exc}"
         ) from exc
-    raise NonExpressibleWindowError(f"unparsable --window value {text!r}")
 
 
 ALL_ACQUISITION_WINDOWS: tuple[AcquisitionWindow, ...] = (

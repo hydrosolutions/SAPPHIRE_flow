@@ -14,6 +14,11 @@ Usage:
         --provenance data/dhm_precip/era5_land_provenance.json \
         --stage acquire --window 2021-10
 
+    # 3a's convention diagnostic, against the 2b sample already on disk:
+    uv run python scripts/dhm_precip/acquire_era5.py \
+        --provenance data/dhm_precip/era5_land_provenance.json \
+        --stage diagnose --window 2021-10
+
 Environment:
     Credentials for `cdsapi.Client()` come from `~/.cdsapirc` or the
     `CDSAPI_URL`/`CDSAPI_KEY` environment variables — never a CLI flag,
@@ -28,6 +33,11 @@ Exit codes:
        incomplete `--provenance` file
 """
 
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false
+# pyright: reportUnknownArgumentType=false
+# Precedent: src/sapphire_flow/adapters/meteoswiss_nwp.py:1 — xarray ships
+# partial type stubs; the same three rules are relaxed repo-wide for every
+# adapter that touches it.
 from __future__ import annotations
 
 import argparse
@@ -48,6 +58,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 import structlog  # noqa: E402
+import xarray as xr  # noqa: E402
 
 from sapphire_flow.logging import configure_cli_logging  # noqa: E402
 from scripts.dhm_precip.era5_acquire import (  # noqa: E402
@@ -55,16 +66,22 @@ from scripts.dhm_precip.era5_acquire import (  # noqa: E402
     acquire_window,
     redact_secrets,
 )
+from scripts.dhm_precip.era5_deaccumulate import (  # noqa: E402
+    DAY_START_HOUR,
+    diagnose_accumulation_convention,
+)
 from scripts.dhm_precip.era5_errors import (  # noqa: E402
     Era5AcquisitionError,
     Era5CredentialsError,
     Era5RequestFailedError,
     Era5StorageError,
     Era5TransformFailedError,
+    NonExpressibleWindowError,
 )
 from scripts.dhm_precip.era5_manifest import (  # noqa: E402
     DEFAULT_DATA_ROOT,
     load_operator_provenance,
+    raw_artifact_path,
 )
 from scripts.dhm_precip.era5_request import (  # noqa: E402
     ALL_ACQUISITION_WINDOWS,
@@ -110,7 +127,14 @@ def _cdsapi_version() -> str:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="acquire_era5", description=__doc__)
     parser.add_argument(
-        "--stage", choices=("acquire", "transform", "all"), default="all"
+        "--stage",
+        choices=("acquire", "transform", "diagnose", "all"),
+        default="all",
+        help="'diagnose' (3a) runs the accumulation-convention diagnostic "
+        "against an already-acquired raw window and reports/records the "
+        "observed convention against D6 — it is never bundled into 'all', "
+        "since it is a one-off operator confirmation step (2b), not part of "
+        "the regular acquire/transform pipeline.",
     )
     parser.add_argument(
         "--window",
@@ -118,7 +142,9 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="AcquisitionWindow spec (YYYY, YYYY-MM, YYYY-MM-DD, or "
         "YYYY-MM-DDTHH); repeatable. Defaults to the full D4 set of 8 "
-        "windows / 6 study years.",
+        "windows / 6 study years. For '--stage transform', every resolved "
+        "window's YEAR is transformed (D4: transform is year-granular) — "
+        "an out-of-range year is rejected, not silently skipped.",
     )
     parser.add_argument(
         "--provenance",
@@ -168,32 +194,111 @@ def run(
             log.info("era5.cli.acquired", window_id=record.window_id)
 
     if args.stage in ("transform", "all"):
-        requested_years = {w.year for w in windows if w.month is None}
-        years = sorted(requested_years) if requested_years else list(STUDY_YEARS)
+        if args.window:
+            # ANY window granularity contributes its year (not just a whole
+            # year, D4's month=None shape) — a review finding showed a
+            # sub-year window (e.g. "2021-10") previously fell through to
+            # the "nothing requested" fallback and silently transformed ALL
+            # SIX study years instead of just 2021.
+            requested_years = sorted({w.year for w in windows})
+            out_of_range = [y for y in requested_years if y not in STUDY_YEARS]
+            if out_of_range:
+                # Previously a silent no-op ("success", nothing transformed)
+                # — an out-of-range year is a real usage error and must be
+                # reported, not swallowed.
+                raise NonExpressibleWindowError(
+                    f"--window resolved to year(s) {out_of_range} outside "
+                    f"the study range {STUDY_YEARS}; transform is "
+                    "year-granular (D4) and only ever produces one of the "
+                    "study years — use --stage acquire for "
+                    "boundary-context-only windows"
+                )
+            years = requested_years
+        else:
+            years = list(STUDY_YEARS)
         for year in years:
-            if year not in STUDY_YEARS:
-                continue
             record = transform_fn(
                 year, data_root=data_root, provenance=provenance, clock=resolved_clock
             )
             log.info("era5.cli.transformed", year=record.product_year)
 
+    if args.stage == "diagnose":
+        for window in windows:
+            path = raw_artifact_path(window.window_id, data_root)
+            if not path.exists():
+                raise Era5StorageError(
+                    f"no raw artifact for window {window.window_id!r} at "
+                    f"{path}; run --stage acquire first"
+                )
+            with xr.open_dataset(path) as raw_ds:
+                diagnostic = diagnose_accumulation_convention(raw_ds.load())
+            if diagnostic.reset_hour != DAY_START_HOUR or not (
+                diagnostic.monotone_within_day
+            ):
+                raise Era5TransformFailedError(
+                    f"observed accumulation convention for window "
+                    f"{window.window_id!r} disagrees with D6's assumed "
+                    f"reset hour {DAY_START_HOUR}: observed "
+                    f"reset_hour={diagnostic.reset_hour} "
+                    f"monotone_within_day={diagnostic.monotone_within_day} — "
+                    "the deaccumulation rule needs correcting (and the "
+                    "correction recording in the plan) before any transform "
+                    "is trusted"
+                )
+            log.info(
+                "era5.diagnose.confirmed",
+                window_id=window.window_id,
+                reset_hour=diagnostic.reset_hour,
+                terminal_hour=diagnostic.terminal_hour,
+                monotone_within_day=diagnostic.monotone_within_day,
+                sample_size_days=diagnostic.sample_size_days,
+            )
+
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    *,
+    client: CdsClient | None = None,
+    clock: Callable[[], datetime] | None = None,
+    sleep: Callable[[float], None] | None = None,
+) -> int:
+    """`client`/`clock`/`sleep` are test-only injection points (mirroring
+    `run()`'s own) — production always leaves them `None`, which resolves to
+    the same `RealCdsClient()`/real-clock/`time.sleep` `run()` always used.
+    They exist so the credential-redaction contract can be exercised through
+    the REAL CLI entry point end-to-end (a hostile client raising through
+    `main()`), not just through `run()` with the exit-code mapping
+    replicated by hand."""
     parser = build_parser()
     args = parser.parse_args(argv)
     configure_cli_logging()
     try:
-        return run(args)
+        return run(args, client=client, clock=clock, sleep=sleep)
     except Era5AcquisitionError as exc:
+        # `_download_with_retry`/`RealCdsClient` already sanitize every
+        # exception crossing the CdsClient seam (D12) before it reaches
+        # here; this second `redact_secrets` pass is defense-in-depth, not
+        # the only line of defense.
         log.error(
             "era5.cli.failed",
             error=redact_secrets(str(exc)),
             error_type=type(exc).__name__,
         )
         return _exit_code_for(exc)
+    except OSError as exc:
+        # A storage boundary neither `era5_manifest.py` nor the drivers
+        # already wrap into `Era5StorageError` (e.g. an unexpected
+        # permission failure elsewhere in the filesystem path) still exits 5
+        # rather than crashing with a bare traceback (exit 1) — every
+        # documented exit code in this module's docstring is reachable.
+        log.error(
+            "era5.cli.failed",
+            error=redact_secrets(str(exc)),
+            error_type=type(exc).__name__,
+        )
+        return _exit_code_for(Era5StorageError(str(exc)))
 
 
 if __name__ == "__main__":

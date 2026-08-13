@@ -13,6 +13,8 @@ import xarray as xr
 
 from scripts.dhm_precip.era5_errors import (
     Era5MissingBoundaryContextError,
+    Era5PackingPostConditionError,
+    Era5SchemaValidationError,
     Era5StorageError,
 )
 from scripts.dhm_precip.era5_manifest import (
@@ -27,12 +29,22 @@ from scripts.dhm_precip.era5_manifest import (
     with_raw_window,
     write_manifest_atomic,
 )
-from scripts.dhm_precip.era5_transform import transform_year
+from scripts.dhm_precip.era5_request import DEFAULT_REQUEST_SPEC, expected_grid_shape
+from scripts.dhm_precip.era5_transform import transform_year, validate_output_encoding
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 _HOUR = np.timedelta64(1, "h")
+
+# The transform driver validates against the REAL study-box grid
+# (`DEFAULT_REQUEST_SPEC.area`, D9's exact-shape check) — a toy 2x2 grid
+# would fail schema validation before any of these fixtures' scenarios are
+# even reached, so every raw fixture in this file uses the real shape.
+_LAT_COUNT, _LON_COUNT = expected_grid_shape(DEFAULT_REQUEST_SPEC.area)
+_NORTH, _WEST, _SOUTH, _EAST = DEFAULT_REQUEST_SPEC.area
+_LAT = np.linspace(_SOUTH, _NORTH, _LAT_COUNT)
+_LON = np.linspace(_WEST, _EAST, _LON_COUNT)
 
 _PROVENANCE = OperatorProvenance(
     cds_portal_url="https://cds.climate.copernicus.eu",
@@ -60,8 +72,8 @@ def _write_raw(path: Path, valid_time: np.ndarray, acc_m: np.ndarray) -> None:
         {"tp": (["valid_time", "latitude", "longitude"], acc_m.astype(np.float32))},
         coords={
             "valid_time": valid_time,
-            "latitude": np.array([26.0, 26.1]),
-            "longitude": np.array([80.0, 80.1]),
+            "latitude": _LAT,
+            "longitude": _LON,
         },
     )
     ds["tp"].attrs["units"] = "m"
@@ -104,7 +116,7 @@ def _seed_study_year(data_root: Path, year: int, *, rng_seed: int = 0) -> None:
     rng = np.random.default_rng(rng_seed)
     true_mm_1d = rng.uniform(0.1, 2.0, size=hours)
     true_mm = (
-        np.broadcast_to(true_mm_1d[:, None, None], (hours, 2, 2))
+        np.broadcast_to(true_mm_1d[:, None, None], (hours, _LAT_COUNT, _LON_COUNT))
         .astype(np.float64)
         .copy()
     )
@@ -312,7 +324,7 @@ class TestPostConditionFailureLeavesNoFinalFile:
             ],
         )
 
-        with pytest.raises(Exception):  # noqa: B017, PT011 - any typed transform failure
+        with pytest.raises(Era5PackingPostConditionError, match="material negative"):
             transform_year(
                 2021,
                 data_root=tmp_path,
@@ -355,7 +367,7 @@ class TestPostConditionFailureLeavesNoFinalFile:
             with_raw_window(manifest, record_2021), manifest_path_for(tmp_path)
         )
 
-        with pytest.raises(Exception):  # noqa: B017, PT011 - any typed transform failure
+        with pytest.raises(Era5PackingPostConditionError, match="material negative"):
             transform_year(
                 2021,
                 data_root=tmp_path,
@@ -379,3 +391,191 @@ class TestOutsideStudyRange:
                 provenance=_PROVENANCE,
                 clock=lambda: datetime(2026, 8, 13, tzinfo=UTC),
             )
+
+
+class TestProvenanceMismatchIsRejected:
+    """A review finding: `transform_year`'s `provenance` parameter was
+    accepted but never checked against the manifest — a stale/wrong
+    `--provenance` file was silently ignored."""
+
+    def test_wrong_provenance_is_rejected(self, tmp_path: Path) -> None:
+        _seed_study_year(tmp_path, 2021)
+        wrong_provenance = replace(_PROVENANCE, licence_version="2.0")
+        with pytest.raises(Era5StorageError, match="provenance"):
+            transform_year(
+                2021,
+                data_root=tmp_path,
+                provenance=wrong_provenance,
+                clock=lambda: datetime(2026, 8, 13, tzinfo=UTC),
+            )
+
+
+class TestDatasetImmutability:
+    """A review finding: transform only checked per-file checksums, never
+    that all consumed raw records share the manifest's dataset — a stale
+    top-level `dataset` field could mislabel the final product's
+    `source_dataset` attr for data actually acquired under a different one."""
+
+    def test_raw_record_dataset_mismatch_is_rejected(self, tmp_path: Path) -> None:
+        _seed_study_year(tmp_path, 2021)
+        manifest = read_manifest(manifest_path_for(tmp_path))
+        assert manifest is not None
+        mismatched = replace(
+            manifest.raw_windows["2021"], dataset="reanalysis-era5-single-levels"
+        )
+        updated = with_raw_window(manifest, mismatched)
+        write_manifest_atomic(updated, manifest_path_for(tmp_path))
+
+        with pytest.raises(Era5StorageError, match="dataset"):
+            transform_year(
+                2021,
+                data_root=tmp_path,
+                provenance=_PROVENANCE,
+                clock=lambda: datetime(2026, 8, 13, tzinfo=UTC),
+            )
+
+
+class TestManifestWriteFailureDuringRevisionPreservesOldGood:
+    """D5: a manifest-write failure must never destroy a previously-good
+    checkpoint. A review finding showed the product file was replaced
+    BEFORE the manifest was updated — if that later write failed, the old
+    good product was already gone while the (stale, now-orphaned) old
+    manifest entry remained."""
+
+    def test_failure_after_replace_restores_old_product_and_manifest_stays_consistent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _seed_study_year(tmp_path, 2021)
+        good_record = transform_year(
+            2021,
+            data_root=tmp_path,
+            provenance=_PROVENANCE,
+            clock=lambda: datetime(2026, 8, 13, tzinfo=UTC),
+        )
+        product_path = product_artifact_path(2021, tmp_path)
+        good_bytes = product_path.read_bytes()
+
+        import scripts.dhm_precip.era5_transform as era5_transform_module
+
+        def _boom(*_a: object, **_k: object) -> None:
+            raise OSError("simulated disk failure writing manifest")
+
+        monkeypatch.setattr(era5_transform_module, "write_manifest_atomic", _boom)
+
+        with pytest.raises(OSError, match="simulated disk failure"):
+            transform_year(
+                2021,
+                data_root=tmp_path,
+                provenance=_PROVENANCE,
+                clock=lambda: datetime(2026, 8, 14, tzinfo=UTC),
+                transform_version="2",  # forces a real re-transform past resume-skip
+            )
+
+        # The product file must survive: still the OLD good bytes — not
+        # missing, and not silently replaced by the unrecorded new bytes.
+        assert product_path.exists()
+        assert product_path.read_bytes() == good_bytes
+        manifest_after = read_manifest(manifest_path_for(tmp_path))
+        assert manifest_after is not None
+        assert manifest_after.transformed_years["2021"] == good_record
+        # No orphaned backup left behind.
+        assert not product_path.with_name(product_path.name + ".prev").exists()
+
+
+class TestValidateOutputEncoding:
+    """D9's on-disk HDF5 write parameters — a review finding noted the
+    schema validator checked logical schema only (dims, dtype, coords,
+    attrs), never the actual compression/chunking/fill-value/time-encoding
+    D5's identity also covers. `.encoding` is only populated by a REAL
+    file round-trip, so every case here writes to disk and reopens."""
+
+    def _write_and_reopen(
+        self, tmp_path: Path, *, encoding_overrides: dict[str, dict[str, object]]
+    ) -> xr.Dataset:
+        # `validate_output_encoding` checks chunksizes against the REAL
+        # study-box grid (`_EXPECTED_CHUNKSIZES`) — the grid here must
+        # match it exactly for the "correct encoding" case to actually be
+        # correct. Time span stays short (48h); memory scales with time,
+        # not the fixed grid.
+        valid_time = np.datetime64("2021-01-01T00:00") + np.arange(48) * _HOUR
+        precip = np.zeros((48, _LAT_COUNT, _LON_COUNT), dtype=np.float32)
+        ds = xr.Dataset(
+            {"precipitation": (["valid_time", "latitude", "longitude"], precip)},
+            coords={"valid_time": valid_time, "latitude": _LAT, "longitude": _LON},
+        )
+        ds["precipitation"].attrs["units"] = "mm"
+        encoding: dict[str, dict[str, object]] = {
+            "precipitation": {
+                "dtype": "float32",
+                "zlib": True,
+                "complevel": 4,
+                "chunksizes": (24, _LAT_COUNT, _LON_COUNT),
+                "_FillValue": np.nan,
+            },
+            "valid_time": {
+                "units": "hours since 1970-01-01 00:00:00",
+                "dtype": "int64",
+            },
+        }
+        for var, overrides in encoding_overrides.items():
+            encoding[var].update(overrides)
+            # h5py rejects `compression_opts` (complevel) without a
+            # `compression` method — drop complevel when the test disables
+            # compression, so the "no compression" case is itself valid to
+            # write (the assertion under test is entirely about what
+            # `validate_output_encoding` does with the RESULT).
+            if overrides.get("zlib") is False:
+                encoding[var].pop("complevel", None)
+        path = tmp_path / "probe.nc"
+        ds.to_netcdf(path, engine="h5netcdf", encoding=encoding)
+        with xr.open_dataset(path, engine="h5netcdf") as reopened:
+            return reopened.load()
+
+    def test_correct_encoding_passes(self, tmp_path: Path) -> None:
+        ds = self._write_and_reopen(tmp_path, encoding_overrides={})
+        validate_output_encoding(ds)  # no exception
+
+    def test_wrong_complevel_rejected(self, tmp_path: Path) -> None:
+        ds = self._write_and_reopen(
+            tmp_path, encoding_overrides={"precipitation": {"complevel": 1}}
+        )
+        with pytest.raises(Era5SchemaValidationError, match="complevel"):
+            validate_output_encoding(ds)
+
+    def test_wrong_chunksizes_rejected(self, tmp_path: Path) -> None:
+        ds = self._write_and_reopen(
+            tmp_path, encoding_overrides={"precipitation": {"chunksizes": (1, 2, 2)}}
+        )
+        with pytest.raises(Era5SchemaValidationError, match="chunksizes"):
+            validate_output_encoding(ds)
+
+    def test_no_compression_rejected(self, tmp_path: Path) -> None:
+        ds = self._write_and_reopen(
+            tmp_path, encoding_overrides={"precipitation": {"zlib": False}}
+        )
+        with pytest.raises(Era5SchemaValidationError, match="zlib"):
+            validate_output_encoding(ds)
+
+    def test_wrong_fill_value_rejected(self, tmp_path: Path) -> None:
+        ds = self._write_and_reopen(
+            tmp_path, encoding_overrides={"precipitation": {"_FillValue": -9999.0}}
+        )
+        with pytest.raises(Era5SchemaValidationError, match="_FillValue"):
+            validate_output_encoding(ds)
+
+    def test_wrong_time_units_rejected(self, tmp_path: Path) -> None:
+        ds = self._write_and_reopen(
+            tmp_path,
+            encoding_overrides={
+                "valid_time": {"units": "hours since 2000-01-01 00:00:00"}
+            },
+        )
+        with pytest.raises(Era5SchemaValidationError, match="units"):
+            validate_output_encoding(ds)
+
+    def test_wrong_time_dtype_rejected(self, tmp_path: Path) -> None:
+        ds = self._write_and_reopen(
+            tmp_path, encoding_overrides={"valid_time": {"dtype": "int32"}}
+        )
+        with pytest.raises(Era5SchemaValidationError, match="dtype"):
+            validate_output_encoding(ds)

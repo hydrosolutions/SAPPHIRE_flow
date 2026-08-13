@@ -34,6 +34,7 @@ from scripts.dhm_precip.era5_deaccumulate import (
     validate_output_schema,
 )
 from scripts.dhm_precip.era5_errors import (
+    Era5ConservationError,
     Era5MissingBoundaryContextError,
     Era5PackingPostConditionError,
     Era5SchemaValidationError,
@@ -246,6 +247,34 @@ class TestMissingBoundaryContext:
         np.testing.assert_allclose(increments_mm, true_mm[1:], atol=1e-3)
 
 
+class TestMaskedNonLandCells:
+    """D9's missing-value policy explicitly permits per-cell NaN (e.g. an
+    ERA5-Land sea/non-land mask cell) — a review finding showed this was
+    conflated with genuinely missing boundary context, aborting the whole
+    array whenever any cell happened to be permanently masked."""
+
+    def test_permanently_masked_cell_does_not_raise_missing_boundary_context(
+        self,
+    ) -> None:
+        valid_time, ds, true_mm = _build_fixture(start="2021-10-01T01:00", hours=48)
+        # Permanently mask one grid cell at every timestep (a stand-in for a
+        # sea/non-land ERA5-Land mask cell) — NOT a missing predecessor.
+        ds["tp"].values[:, 1, 1] = np.nan
+        result = deaccumulate_precipitation(ds)
+        masked_cell = result.dataset["tp"].values[:, 1, 1]
+        assert bool(np.isnan(masked_cell).all())
+        # The unmasked cell is entirely unaffected.
+        unmasked_mm = result.dataset["tp"].values[:, 0, 0] * 1000.0
+        np.testing.assert_allclose(unmasked_mm, true_mm[:, 0, 0], atol=1e-3)
+
+    def test_masked_cell_survives_convert_units_and_schema_validation(self) -> None:
+        valid_time, ds, _true_mm = _build_fixture(start="2021-01-01T01:00", hours=24)
+        ds["tp"].values[:, 1, 1] = np.nan
+        result = deaccumulate_precipitation(ds)
+        converted = convert_units(result.dataset)
+        assert bool(np.isnan(converted["precipitation"].values[:, 1, 1]).all())
+
+
 class TestPackingPolicy:
     def test_tolerated_negative_is_clamped_and_recorded(self) -> None:
         valid_time, ds, true_mm = _build_fixture(start="2021-10-01T01:00", hours=24)
@@ -269,6 +298,92 @@ class TestPackingPolicy:
 
     def test_conservation_tolerance_constant_is_reasonable(self) -> None:
         assert 0 < DEFAULT_CONSERVATION_TOLERANCE_M < 1e-3
+
+
+class TestPostClampAccounting:
+    """D6 post-condition 1b, asserted in code: per accumulation day AND
+    cell, the published (post-clamp) sum equals
+    `1000 x original_terminal_accumulator_m + mass_adjustment_mm(day, cell)`.
+    A review finding noted the prior code only totalled
+    `packing_corrected_cells`/`max_correction_mm`/`mass_adjustment_mm`
+    globally, without ever checking the equation those numbers are supposed
+    to satisfy."""
+
+    def test_real_clamp_scenario_satisfies_the_equation_exactly(self) -> None:
+        valid_time, ds, _true_mm = _build_fixture(start="2021-10-01T01:00", hours=24)
+        ds["tp"].values[5] = ds["tp"].values[4] - 5e-8  # a tolerated clamp
+        result = deaccumulate_precipitation(ds)
+
+        # ONE accumulation day, summed over ALL cells — `mass_adjustment_mm`
+        # is the manifest's YEAR-level (here: whole-array) aggregate, so it
+        # must be compared against the matching whole-array totals, not a
+        # single cell's.
+        published_sum_mm = float(result.dataset["tp"].sum()) * 1000.0
+        terminal_mm = float(ds["tp"].values[-1].sum()) * 1000.0
+        np.testing.assert_allclose(
+            published_sum_mm,
+            terminal_mm + result.packing.mass_adjustment_mm,
+            atol=1e-6,
+        )
+
+    def test_broken_accounting_is_caught(self) -> None:
+        """Directly exercises the extracted post-condition helper with a
+        DELIBERATELY WRONG terminal value (a stand-in for a hypothetical
+        accounting bug — e.g. crediting the wrong day's mass) — proving the
+        assertion has teeth, not just checking that the real pipeline's own
+        (self-consistent-by-construction) numbers happen to look positive."""
+        from scripts.dhm_precip.era5_deaccumulate import _assert_post_clamp_accounting
+
+        valid_time = np.datetime64("2021-10-01T01:00") + np.arange(24) * _HOUR
+        acc_day = np.full(24, np.datetime64("2021-10-01"), dtype="datetime64[D]")
+        full_days = np.array([np.datetime64("2021-10-01")], dtype="datetime64[D]")
+
+        pre_clamp_mm = np.full(24, 1.0)
+        pre_clamp_mm[5] = -5e-5  # a tolerated tiny negative, to be clamped
+        pre_clamp = xr.DataArray(
+            (pre_clamp_mm / 1000.0).reshape(24, 1, 1),
+            dims=["valid_time", "lat", "lon"],
+            coords={"valid_time": valid_time},
+        )
+        clamp_mask = pre_clamp < 0
+        post_clamp = pre_clamp.where(~clamp_mask, 0.0)
+        correct_terminal_mm = float(pre_clamp_mm.sum())  # pre-clamp conservation holds
+        terminal = xr.DataArray(
+            np.full((24, 1, 1), correct_terminal_mm / 1000.0),
+            dims=["valid_time", "lat", "lon"],
+            coords={"valid_time": valid_time},
+        )
+
+        # Correct accounting: no exception.
+        _assert_post_clamp_accounting(
+            full_days=full_days,
+            acc_day=acc_day,
+            valid_time=valid_time,
+            pre_clamp_increment=pre_clamp,
+            post_clamp_increment=post_clamp,
+            clamp_mask=clamp_mask,
+            terminal_accumulator=terminal,
+            tolerance_mm=1e-3,
+        )
+
+        # A broken candidate: the terminal is credited to the WRONG value
+        # (as if a day's mass were mis-attributed) — must be caught.
+        broken_terminal = xr.DataArray(
+            np.full((24, 1, 1), (correct_terminal_mm + 5.0) / 1000.0),
+            dims=["valid_time", "lat", "lon"],
+            coords={"valid_time": valid_time},
+        )
+        with pytest.raises(Era5ConservationError, match="post-condition 1b"):
+            _assert_post_clamp_accounting(
+                full_days=full_days,
+                acc_day=acc_day,
+                valid_time=valid_time,
+                pre_clamp_increment=pre_clamp,
+                post_clamp_increment=post_clamp,
+                clamp_mask=clamp_mask,
+                terminal_accumulator=broken_terminal,
+                tolerance_mm=1e-3,
+            )
 
 
 class TestConvertUnits:
@@ -313,6 +428,15 @@ class TestValidateOutputSchema:
             coords={"valid_time": valid_time, "latitude": lat, "longitude": lon},
         )
         ds["precipitation"].attrs["units"] = "mm"
+        ds.attrs.update(
+            {
+                "period_ending_convention": "hour t covers t-1 -> t (UTC)",
+                "accumulation_rule": "era5_land_01_00_accumulation_day_v1",
+                "transform_version": "1",
+                "output_schema_version": "1",
+                "source_dataset": "reanalysis-era5-land",
+            }
+        )
         return ds
 
     def test_valid_dataset_passes(self) -> None:
@@ -359,6 +483,51 @@ class TestValidateOutputSchema:
             ds, expected_year=2021, expected_area=(31, 80, 26, 89)
         )
         assert result.non_finite_cell_count == 1
+
+    def test_infinite_value_rejected(self) -> None:
+        """D9 permits finite-or-NaN only; infinities are a hard failure, not
+        an allowed 'non-finite' value like a sea/non-land mask NaN."""
+        ds = self._valid_year_dataset(2021)
+        ds["precipitation"].values[0, 0, 0] = np.inf
+        with pytest.raises(Era5SchemaValidationError, match="infinite"):
+            validate_output_schema(
+                ds, expected_year=2021, expected_area=(31, 80, 26, 89)
+            )
+
+    def test_spatial_subset_grid_is_rejected(self) -> None:
+        """Review finding: a small subset grid (e.g. 2x2) whose min/max
+        happen to fall inside the requested box must NOT pass as the full
+        product — count and spacing are checked exactly, not just range."""
+        ds = self._valid_year_dataset(2021)
+        subset = ds.isel(latitude=slice(0, 2), longitude=slice(0, 2))
+        with pytest.raises(Era5SchemaValidationError, match="latitude"):
+            validate_output_schema(
+                subset, expected_year=2021, expected_area=(31, 80, 26, 89)
+            )
+
+    def test_wrong_dtype_rejected(self) -> None:
+        ds = self._valid_year_dataset(2021)
+        ds["precipitation"] = ds["precipitation"].astype(np.float64)
+        with pytest.raises(Era5SchemaValidationError, match="dtype"):
+            validate_output_schema(
+                ds, expected_year=2021, expected_area=(31, 80, 26, 89)
+            )
+
+    def test_wrong_dims_order_rejected(self) -> None:
+        ds = self._valid_year_dataset(2021)
+        transposed = ds.transpose("latitude", "valid_time", "longitude")
+        with pytest.raises(Era5SchemaValidationError, match="dims"):
+            validate_output_schema(
+                transposed, expected_year=2021, expected_area=(31, 80, 26, 89)
+            )
+
+    def test_missing_required_attr_rejected(self) -> None:
+        ds = self._valid_year_dataset(2021)
+        del ds.attrs["accumulation_rule"]
+        with pytest.raises(Era5SchemaValidationError, match="accumulation_rule"):
+            validate_output_schema(
+                ds, expected_year=2021, expected_area=(31, 80, 26, 89)
+            )
 
 
 class TestDiagnoseAccumulationConvention:

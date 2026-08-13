@@ -160,6 +160,23 @@ class TestParseWindowArg:
         with pytest.raises(NonExpressibleWindowError):
             parse_window_arg("30-Sep-through-1-Nov")
 
+    def test_hour_suffix_on_a_year_month_window_is_rejected_not_widened(self) -> None:
+        """Review finding: the previous split()-based parser silently
+        dropped an hour suffix that doesn't belong to a day, turning
+        "2021-10T05" into the WHOLE month rather than rejecting it."""
+        with pytest.raises(NonExpressibleWindowError):
+            parse_window_arg("2021-10T05")
+
+    def test_trailing_junk_after_a_bare_year_is_rejected_not_widened(self) -> None:
+        """Review finding: "2021T00Tjunk" previously widened silently to the
+        whole year because the parser only looked at `parts[0]`."""
+        with pytest.raises(NonExpressibleWindowError):
+            parse_window_arg("2021T00Tjunk")
+
+    def test_trailing_junk_after_a_valid_day_window_is_rejected(self) -> None:
+        with pytest.raises(NonExpressibleWindowError):
+            parse_window_arg("2019-12-31extra")
+
 
 class TestNoCredentialsAnywhere:
     def test_payload_has_no_credential_shaped_keys(self) -> None:

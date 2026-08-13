@@ -58,9 +58,12 @@ def tmp_path_for(final_path: Path) -> Path:
 
 def checksum_file(path: Path) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
-            digest.update(chunk)
+    try:
+        with path.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                digest.update(chunk)
+    except OSError as exc:
+        raise Era5StorageError(f"failed to checksum {path}: {exc}") from exc
     return digest.hexdigest()
 
 
@@ -68,8 +71,13 @@ def publish_atomic(tmp_path: Path, final_path: Path) -> None:
     """The D5 ordering's final step: `os.replace` onto the final path. The
     caller is responsible for having already reopened-and-validated
     `tmp_path` and computed its checksum before calling this."""
-    final_path.parent.mkdir(parents=True, exist_ok=True)
-    os.replace(tmp_path, final_path)
+    try:
+        final_path.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(tmp_path, final_path)
+    except OSError as exc:
+        raise Era5StorageError(
+            f"failed to publish {tmp_path} -> {final_path}: {exc}"
+        ) from exc
 
 
 def _canonical_json(obj: object) -> str:
@@ -89,6 +97,7 @@ def transform_identity(
     raw_sha256s: Sequence[str],
     accumulation_rule_id: str,
     packing_tolerance_mm: float,
+    conservation_tolerance_m: float,
     units_factor: float,
     output_schema_version: str,
     transform_version: str,
@@ -100,12 +109,16 @@ def transform_identity(
     transform parameter snapshot, output_schema_version, final
     format/dtype/encoding})`. `transform_version` is included so a version
     bump alone forces a re-transform even with an unchanged parameter
-    snapshot (1b verification)."""
+    snapshot (1b verification). `output_encoding` must be the FULL, actual
+    on-disk encoding spec (compression, chunks, fill value, time units/dtype
+    — everything D9 declares identity-relevant) — a partial spec here would
+    let a changed encoding silently resume a stale product."""
     canonical = _canonical_json(
         {
             "raw_sha256s": list(raw_sha256s),
             "accumulation_rule_id": accumulation_rule_id,
             "packing_tolerance_mm": packing_tolerance_mm,
+            "conservation_tolerance_m": conservation_tolerance_m,
             "units_factor": units_factor,
             "output_schema_version": output_schema_version,
             "transform_version": transform_version,
@@ -129,6 +142,28 @@ class OperatorProvenance:
     licence_name: str
     licence_version: str
     licence_accepted_at: datetime
+
+    def __post_init__(self) -> None:
+        # A "complete" provenance record whose fields are blank/whitespace
+        # is not actually complete — pydantic's boundary validation only
+        # checks the KEYS are present, not that the values carry real
+        # content, so a `{"cds_portal_url": "  ", ...}` file would otherwise
+        # pass silently.
+        for field_name in (
+            "cds_portal_url",
+            "dataset_landing_page_url",
+            "licence_name",
+            "licence_version",
+        ):
+            value = getattr(self, field_name)
+            if not value.strip():
+                raise ValueError(f"{field_name} must not be blank")
+        for url_field in ("cds_portal_url", "dataset_landing_page_url"):
+            value = getattr(self, url_field)
+            if not (value.startswith("https://") or value.startswith("http://")):
+                raise ValueError(f"{url_field} is not a URL: {value!r}")
+        if self.licence_accepted_at.tzinfo is None:
+            raise ValueError("licence_accepted_at must be timezone-aware")
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -331,31 +366,64 @@ def write_manifest_atomic(manifest: Era5ProvenanceManifest, path: Path) -> None:
     stays intact and readable."""
     payload = _to_model(manifest).model_dump_json(indent=2)
     tmp = tmp_path_for(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp.write_text(payload)
-    os.replace(tmp, path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(payload)
+        os.replace(tmp, path)
+    except OSError as exc:
+        raise Era5StorageError(f"failed to write manifest at {path}: {exc}") from exc
 
 
 def read_manifest(path: Path) -> Era5ProvenanceManifest | None:
-    if not path.exists():
+    try:
+        exists = path.exists()
+    except OSError as exc:
+        raise Era5StorageError(f"failed to stat manifest at {path}: {exc}") from exc
+    if not exists:
         return None
     try:
-        model = _Era5ProvenanceManifestModel.model_validate_json(path.read_text())
+        text = path.read_text()
+    except OSError as exc:
+        raise Era5StorageError(f"failed to read manifest at {path}: {exc}") from exc
+    try:
+        model = _Era5ProvenanceManifestModel.model_validate_json(text)
+        return _to_domain(model)
     except ValueError as exc:
+        # `_to_domain` reconstructs frozen domain dataclasses (including
+        # `OperatorProvenance`, whose `__post_init__` enforces non-blank
+        # fields/URL shape/tz-aware timestamp) — a `ValueError` from THAT
+        # step is exactly as much "the manifest is unreadable" as a pydantic
+        # parse failure, and must be wrapped the same way rather than
+        # escaping unwrapped.
         raise Era5StorageError(f"manifest at {path} is unreadable: {exc}") from exc
-    return _to_domain(model)
 
 
 def load_operator_provenance(path: Path) -> OperatorProvenance:
     """D15 — the gitignored operator-provenance input (`--provenance`). A
     missing or incomplete file blocks manifest completion with a typed
     error; it never silently produces empty licence fields."""
-    if not path.exists():
+    try:
+        exists = path.exists()
+    except OSError as exc:
+        raise Era5StorageError(
+            f"failed to stat operator provenance file at {path}: {exc}"
+        ) from exc
+    if not exists:
         raise Era5StorageError(f"operator provenance file not found: {path}")
     try:
-        model = _OperatorProvenanceModel.model_validate_json(path.read_text())
+        text = path.read_text()
+    except OSError as exc:
+        raise Era5StorageError(
+            f"failed to read operator provenance file at {path}: {exc}"
+        ) from exc
+    try:
+        model = _OperatorProvenanceModel.model_validate_json(text)
+        return OperatorProvenance(**model.model_dump())
     except ValueError as exc:
+        # Covers BOTH a pydantic parse failure (missing/mistyped keys) and a
+        # `ValueError` from `OperatorProvenance.__post_init__` (blank
+        # fields, a non-URL, a naive timestamp) — both mean the file is not
+        # actually a complete, usable provenance record.
         raise Era5StorageError(
             f"operator provenance file at {path} is missing or incomplete: {exc}"
         ) from exc
-    return OperatorProvenance(**model.model_dump())

@@ -16,12 +16,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+import numpy as np
 import structlog
 import xarray as xr
 
 from scripts.dhm_precip.era5_errors import (
+    Era5AcquisitionError,
     Era5CredentialsError,
     Era5RequestFailedError,
+    Era5StorageError,
     Era5TransientError,
     Era5ValidationError,
 )
@@ -42,16 +45,17 @@ from scripts.dhm_precip.era5_manifest import (
     write_manifest_atomic,
 )
 from scripts.dhm_precip.era5_request import (
+    GRID_SPACING_DEG,
     AcquisitionWindow,
     Era5RequestSpec,
     build_request_payload,
+    expected_grid_shape,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
     from datetime import datetime
 
-    import numpy as np
     import requests
 
 log = structlog.get_logger(__name__)
@@ -97,6 +101,19 @@ _TRANSIENT_TOKENS = (
 _SECRET_ENV_TOKENS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "PEPPER")
 
 
+def _with_colon_split_parts(values: list[str]) -> list[str]:
+    """A modern CDS key is `uid:secret` — the CLASSIC (colon-free) client
+    format is just `secret`. Some error paths interpolate only the trailing
+    part (or only the leading part) rather than the whole `uid:secret`
+    string, so both halves must be independently redactable, not just the
+    combined value."""
+    expanded = list(values)
+    for value in values:
+        if ":" in value:
+            expanded.extend(part for part in value.split(":", 1) if part)
+    return expanded
+
+
 def _known_secret_values() -> list[str]:
     """Every credential-shaped value currently reachable from the
     environment/`~/.cdsapirc` (constraint 2: credentials are never logged —
@@ -115,7 +132,11 @@ def _known_secret_values() -> list[str]:
                 value = value.strip()
                 if value:
                     values.append(value)
-    return values
+    # Longest first: a shorter secret that happens to be a substring of a
+    # longer one (e.g. the split-out "secret" half of "uid:secret") must not
+    # get redacted in a way that leaves the longer original partially intact
+    # for a later, shorter-first pass to miss.
+    return sorted(set(_with_colon_split_parts(values)), key=len, reverse=True)
 
 
 def redact_secrets(text: str) -> str:
@@ -125,6 +146,17 @@ def redact_secrets(text: str) -> str:
         if secret:
             redacted = redacted.replace(secret, "***REDACTED***")
     return redacted
+
+
+def _sanitize_era5_error(exc: Era5AcquisitionError) -> Era5AcquisitionError:
+    """Reconstruct `exc` with a redacted message. The `CdsClient` Protocol
+    (D12) can be satisfied by ANY implementation — not just `RealCdsClient`,
+    which redacts its own messages via `classify_cds_exception` — so every
+    exception crossing the seam must be sanitized HERE, at the boundary,
+    rather than trusting the client to have done it. This is what makes the
+    'never log or raise credentials' contract hold even against a hostile or
+    merely careless client."""
+    return type(exc)(redact_secrets(str(exc)))
 
 
 def classify_cds_exception(
@@ -168,14 +200,33 @@ class RealCdsClient:
     ) -> None:
         import cdsapi  # dev-only (D13); imported lazily so this module loads
 
+        # `retry_max=1`: cdsapi's own `robust()` wrapper and download-resume
+        # loop otherwise retry up to the library default of 500 times with
+        # real (uninjectable) `time.sleep(sleep_max)` — up to 120s each —
+        # BEFORE this method ever raises. That silently defeats
+        # `_download_with_retry`'s bounded, injected-sleep retry contract:
+        # a single "attempt" from the outer driver's perspective could block
+        # for hours. `retry_max=1` makes the library try exactly once and
+        # raise immediately on failure, leaving OUR outer loop as the sole
+        # retry owner (`sleep_max` is left at its default: it only bounds the
+        # unrelated queued/running status-poll interval for a job that is
+        # genuinely still in progress, not error retries).
         try:
             client = (
-                cdsapi.Client(session=self.session)
+                cdsapi.Client(session=self.session, retry_max=1)
                 if self.session is not None
-                else cdsapi.Client()
+                else cdsapi.Client(retry_max=1)
             )
-        except Exception as exc:  # noqa: BLE001 - reclassified into our typed hierarchy
-            raise classify_cds_exception(exc) from exc
+        except Exception as exc:  # noqa: BLE001 - construction only fails on missing/invalid config
+            # Anything raised by `cdsapi.Client()` itself (before any network
+            # call) is a configuration/credentials problem by construction —
+            # classify it as such directly rather than through the generic
+            # keyword-token classifier, whose fallback bucket (unclassified
+            # -> Era5RequestFailedError, exit 3) would otherwise misclassify
+            # a plain missing `~/.cdsapirc` as a "request failure".
+            raise Era5CredentialsError(
+                f"CDS client configuration failed: {redact_secrets(str(exc))}"
+            ) from exc
         try:
             client.retrieve(dataset, dict(payload)).download(str(target))
         except Exception as exc:  # noqa: BLE001 - reclassified into our typed hierarchy
@@ -192,25 +243,46 @@ def _download_with_retry(
     backoff_base_seconds: float,
     sleep: Callable[[float], None],
 ) -> None:
+    # Every exception the `CdsClient` seam (D12) can produce is sanitized
+    # HERE before it is logged or re-raised — not just the ones `RealCdsClient`
+    # happens to have already redacted — so the seam's contract holds
+    # regardless of which conforming (or hostile) implementation is behind
+    # it. A raw `Exception` of a type outside our own hierarchy is mapped to
+    # the non-retryable `Era5RequestFailedError` bucket, per the plan's
+    # "third-party failures are mapped to generic typed messages rather than
+    # propagated verbatim" — an unrecognised failure mode must never be
+    # retried indefinitely.
     last_exc: Era5TransientError | None = None
     for attempt in range(1, max_attempts + 1):
         try:
             client.retrieve_to_path(dataset=dataset, payload=payload, target=target)
             return
         except Era5TransientError as exc:
-            last_exc = exc
+            sanitized = _sanitize_era5_error(exc)
+            assert isinstance(sanitized, Era5TransientError)  # noqa: S101 - type preserved by _sanitize_era5_error
+            last_exc = sanitized
             target.unlink(missing_ok=True)
             log.warning(
                 "era5.acquire.transient_retry",
                 attempt=attempt,
                 max_attempts=max_attempts,
-                error=str(exc),
+                error=str(sanitized),
             )
             if attempt < max_attempts:
                 sleep(backoff_base_seconds * (2 ** (attempt - 1)))
-        except (Era5CredentialsError, Era5RequestFailedError):
+        except (Era5CredentialsError, Era5RequestFailedError) as exc:
             target.unlink(missing_ok=True)
-            raise
+            raise _sanitize_era5_error(exc) from exc
+        except Era5AcquisitionError as exc:
+            # Any other typed ERA5 error the client might raise: sanitize
+            # and propagate as-is rather than assuming it is retryable.
+            target.unlink(missing_ok=True)
+            raise _sanitize_era5_error(exc) from exc
+        except Exception as exc:  # noqa: BLE001 - unclassified client failure, mapped + sanitized, non-retryable
+            target.unlink(missing_ok=True)
+            raise Era5RequestFailedError(
+                f"unclassified client failure: {redact_secrets(str(exc))}"
+            ) from exc
     target.unlink(missing_ok=True)
     raise Era5RequestFailedError(
         f"exhausted {max_attempts} attempts for dataset={dataset}"
@@ -248,30 +320,52 @@ def _validate_variable(
         if coord not in ds.coords and coord not in ds.dims:
             raise Era5ValidationError(f"missing coordinate {coord!r}")
     north, west, south, east = spec.area
-    tol = 0.2
+    grid_tol = 1e-6
     lat = ds["latitude"].values
     lon = ds["longitude"].values
     if lat.size == 0 or lon.size == 0:
         raise Era5ValidationError("empty spatial coordinates")
-    if lat.max() > north + tol or lat.min() < south - tol:
+    expected_lat_count, expected_lon_count = expected_grid_shape(spec.area)
+    if lat.size != expected_lat_count or lon.size != expected_lon_count:
+        raise Era5ValidationError(
+            f"spatial grid is {lat.size}x{lon.size}, expected exactly "
+            f"{expected_lat_count}x{expected_lon_count} at {GRID_SPACING_DEG} "
+            f"deg spacing for box {spec.area} — a subset grid is not the "
+            "full requested product"
+        )
+    if lat.size > 1 and not np.allclose(
+        np.abs(np.diff(np.sort(lat))), GRID_SPACING_DEG, atol=grid_tol
+    ):
+        raise Era5ValidationError("latitude spacing is not uniformly 0.1 deg")
+    if lon.size > 1 and not np.allclose(
+        np.abs(np.diff(np.sort(lon))), GRID_SPACING_DEG, atol=grid_tol
+    ):
+        raise Era5ValidationError("longitude spacing is not uniformly 0.1 deg")
+    if lat.max() > north + grid_tol or lat.min() < south - grid_tol:
         raise Era5ValidationError(
             f"latitude range {lat.min()}..{lat.max()} outside requested box"
         )
-    if lon.max() > east + tol or lon.min() < west - tol:
+    if lon.max() > east + grid_tol or lon.min() < west - grid_tol:
         raise Era5ValidationError(
             f"longitude range {lon.min()}..{lon.max()} outside requested box"
         )
 
     expected = window.valid_time_stamps()
     valid_time = ds["valid_time"].values
+    if valid_time.size != len({np.datetime64(ts).item() for ts in valid_time}):
+        raise Era5ValidationError(
+            f"valid_time contains duplicate stamps: {valid_time.size} entries "
+            "but fewer distinct timestamps"
+        )
     observed = {
         (int(ts.astype("datetime64[Y]").astype(int)) + 1970, *_month_day_hour(ts))
         for ts in valid_time
     }
-    if frozenset(observed) != expected:
+    if valid_time.size != len(expected) or frozenset(observed) != expected:
         raise Era5ValidationError(
-            f"temporal coverage mismatch: {len(observed)} observed stamps vs "
-            f"{len(expected)} expected for window {window.window_id}"
+            f"temporal coverage mismatch: {valid_time.size} observed stamps "
+            f"({len(observed)} distinct) vs {len(expected)} expected for "
+            f"window {window.window_id}"
         )
 
 
@@ -302,6 +396,18 @@ def acquire_window(
             dataset=spec.dataset,
             client_package_version=client_package_version,
             operator_provenance=provenance,
+        )
+    elif manifest.dataset != spec.dataset:
+        # Acquisition-wide fields are IMMUTABLE. Reusing a manifest under a
+        # different dataset would mix raw windows from two CDS products under
+        # one provenance record, and the transform stage would then label the
+        # final file with whichever `dataset` happened to sit at the top level
+        # — a mislabelled product that no per-file checksum would catch.
+        raise Era5StorageError(
+            f"manifest at {manifest_path} records dataset "
+            f"{manifest.dataset!r}, but this request is for "
+            f"{spec.dataset!r}; acquisition-wide fields are immutable — "
+            f"start a new data root rather than mixing products"
         )
 
     if raw_window_is_current(

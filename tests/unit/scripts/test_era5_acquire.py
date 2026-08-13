@@ -11,15 +11,24 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from scripts.dhm_precip.era5_acquire import CdsClient, acquire_window
-from scripts.dhm_precip.era5_errors import Era5RequestFailedError, Era5TransientError
+from scripts.dhm_precip.era5_acquire import CdsClient, RealCdsClient, acquire_window
+from scripts.dhm_precip.era5_errors import (
+    Era5CredentialsError,
+    Era5RequestFailedError,
+    Era5StorageError,
+    Era5TransientError,
+)
 from scripts.dhm_precip.era5_manifest import (
     OperatorProvenance,
     manifest_path_for,
     raw_artifact_path,
     read_manifest,
 )
-from scripts.dhm_precip.era5_request import AcquisitionWindow, Era5RequestSpec
+from scripts.dhm_precip.era5_request import (
+    AcquisitionWindow,
+    Era5RequestSpec,
+    expected_grid_shape,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -45,8 +54,15 @@ def _write_valid_raw_netcdf(
         ]
     )
     north, west, south, east = spec.area
-    lat = np.arange(south, north + 0.1, 0.1)
-    lon = np.arange(west, east + 0.1, 0.1)
+    # `np.linspace(..., count)` (an EXACT point count from
+    # `expected_grid_shape`) rather than `np.arange` with a float step —
+    # `np.arange`'s float accumulation is not guaranteed to land on exactly
+    # the expected count (it produced 52, not 51, points for this box),
+    # which would make a genuinely valid fixture fail the exact-grid-shape
+    # check the raw validator now enforces.
+    lat_count, lon_count = expected_grid_shape(spec.area)
+    lat = np.linspace(south, north, lat_count)
+    lon = np.linspace(west, east, lon_count)
     tp = np.zeros((times.size, lat.size, lon.size), dtype=np.float32)
     ds = xr.Dataset(
         {"tp": (["valid_time", "latitude", "longitude"], tp)},
@@ -334,3 +350,144 @@ class TestValidationRejectsBadArtifact:
                 client_package_version="0.7.7",
             )
         assert not raw_artifact_path(window.window_id, tmp_path).exists()
+
+
+class TestDatasetImmutability:
+    """A review finding: reusing an existing manifest under a DIFFERENT
+    dataset would mix raw windows from two CDS products under one
+    provenance record, and the transform stage would label the final file
+    with whichever `dataset` happened to be stored at the top level."""
+
+    def test_reusing_manifest_under_a_different_dataset_is_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        window = AcquisitionWindow(year=2021, month=10)
+        spec_a = Era5RequestSpec()
+        client_a = FakeCdsClient(window=window, spec=spec_a)
+        acquire_window(
+            window,
+            spec=spec_a,
+            provenance=_PROVENANCE,
+            client=client_a,
+            clock=lambda: datetime(2026, 8, 13, tzinfo=UTC),
+            sleep=_no_sleep,
+            data_root=tmp_path,
+            client_package_version="0.7.7",
+        )
+
+        spec_b = Era5RequestSpec(dataset="reanalysis-era5-single-levels")
+        client_b = FakeCdsClient(window=window, spec=spec_b)
+        with pytest.raises(Era5StorageError, match="dataset"):
+            acquire_window(
+                window,
+                spec=spec_b,
+                provenance=_PROVENANCE,
+                client=client_b,
+                clock=lambda: datetime(2026, 8, 13, tzinfo=UTC),
+                sleep=_no_sleep,
+                data_root=tmp_path,
+                client_package_version="0.7.7",
+            )
+        assert client_b.call_count == 0  # rejected before ever calling the client
+
+
+class TestUnclassifiedClientFailureIsMappedAndSanitized:
+    """The `CdsClient` seam (D12) accepts ANY conforming implementation —
+    every exception it raises must be sanitized at the seam, not just the
+    ones `RealCdsClient` already redacts via `classify_cds_exception`."""
+
+    def test_generic_exception_from_client_is_wrapped_and_redacted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sentinel = "SENTINEL-generic-9000"
+        monkeypatch.setenv("CDSAPI_KEY", sentinel)
+        window = AcquisitionWindow(year=2021, month=10)
+        spec = Era5RequestSpec(max_retry_attempts=1)
+
+        class _GenericFailureClient:
+            def retrieve_to_path(
+                self, *, dataset: str, payload: Mapping[str, object], target: Path
+            ) -> None:
+                raise RuntimeError(f"boom: {sentinel}")
+
+        with pytest.raises(Era5RequestFailedError) as excinfo:
+            acquire_window(
+                window,
+                spec=spec,
+                provenance=_PROVENANCE,
+                client=_GenericFailureClient(),
+                clock=lambda: datetime(2026, 8, 13, tzinfo=UTC),
+                sleep=_no_sleep,
+                data_root=tmp_path,
+                client_package_version="0.7.7",
+            )
+        assert sentinel not in str(excinfo.value)
+
+
+class TestRealClientConfigurationFailureIsCredentialsError:
+    """A review finding: missing/invalid CDS configuration (e.g. no
+    `~/.cdsapirc` and no `CDSAPI_URL`/`CDSAPI_KEY`) was classified through
+    the generic keyword-token classifier, whose fallback bucket
+    (unclassified -> `Era5RequestFailedError`, exit 3) misclassified it as
+    a "request failure" rather than the credentials failure (exit 2) it
+    actually is."""
+
+    def test_construction_failure_is_credentials_error(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import cdsapi
+
+        sentinel = "SENTINEL-config-leak"
+        # `redact_secrets` only scrubs values it KNOWS are credential-shaped
+        # (env vars / `.cdsapirc`) — set the sentinel there so this test
+        # exercises redaction, not generic string matching.
+        monkeypatch.setenv("CDSAPI_KEY", sentinel)
+
+        class _ExplodingConstructor:
+            def __init__(self, *_args: object, **_kwargs: object) -> None:
+                raise Exception(  # noqa: TRY002 - mirrors cdsapi's own bare Exception
+                    f"Missing/incomplete configuration ({sentinel})"
+                )
+
+        monkeypatch.setattr(cdsapi, "Client", _ExplodingConstructor)
+
+        client = RealCdsClient()
+        with pytest.raises(Era5CredentialsError) as excinfo:
+            client.retrieve_to_path(
+                dataset="reanalysis-era5-land",
+                payload={},
+                target=tmp_path / "unused.nc",
+            )
+        assert sentinel not in str(excinfo.value)
+
+
+class TestRealClientDisablesOwnRetryLoop:
+    """A review finding: `cdsapi.Client()` defaults to `retry_max=500`,
+    `sleep_max=120` — its own `robust()` wrapper would otherwise retry (with
+    real, uninjectable `time.sleep`) for hours before ever raising, silently
+    defeating `_download_with_retry`'s bounded, injected-sleep contract."""
+
+    def test_constructs_with_retry_max_one(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import cdsapi
+
+        captured_kwargs: dict[str, object] = {}
+
+        class _StubClient:
+            def __init__(self, *_args: object, **kwargs: object) -> None:
+                captured_kwargs.update(kwargs)
+
+            def retrieve(self, *_a: object, **_k: object) -> object:
+                raise RuntimeError("stub: no real network reached")
+
+        monkeypatch.setattr(cdsapi, "Client", _StubClient)
+
+        client = RealCdsClient()
+        with pytest.raises(Era5RequestFailedError):
+            client.retrieve_to_path(
+                dataset="reanalysis-era5-land",
+                payload={},
+                target=tmp_path / "unused.nc",
+            )
+        assert captured_kwargs.get("retry_max") == 1
