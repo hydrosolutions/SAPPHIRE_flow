@@ -395,6 +395,90 @@ the extracted `resolve_available_static_keys_for_stations`, fixed via `typing.ca
 run); full unit suite (2753 passed) and full integration suite (591 passed, 7 pre-existing skips)
 green.
 
+### Fixer round 4 (2026-08-14) — an independent Codex diff review's BLOCKER + 3 majors addressed
+
+An independent Codex pass over round 3's committed diff found the round-2 "make the operational
+entrypoint require `expected_codes` + `required_static_names`" fix item was never actually
+implemented (round 3 only closed the manifest-scoping half), plus 3 majors and 2 minors. Verified by
+execution, not accepted on report.
+
+- **BLOCKER fixed — the operational exit gate is no longer optional or bypassable.**
+  `import_caravan_attributes` still defaults both gate parameters to `None` and accepts empty
+  frozensets, so calling it with both omitted (or both empty) wrote data and returned success with no
+  validation at all — a test explicitly locked that silent-success shape. Rather than tighten the
+  flexible internal function (several of ITS OWN tests deliberately omit/narrow these parameters to
+  exercise the reporting-only paths in isolation — `unmatched_codes`/`stations_without_basin`/
+  `missing_from_manifest` without raising), a new `run_operational_caravan_import` is now THE
+  production entrypoint: `expected_codes`/`required_static_names` are ordinary no-default
+  keyword-only parameters (omitting either is a `TypeError` at the call site — Python itself refuses
+  the "both omitted" bypass) and additionally checked non-empty at runtime before any read or write
+  (closing the "empty sets validate nothing" variant of the same bypass). `import_caravan_attributes`
+  stays as the documented, explicitly-internal building block; do not call it directly from a
+  production flow. Locked in `tests/integration/store/test_caravan_import.py::
+  TestRunOperationalCaravanImport` (5 tests: both TypeError-on-omission cases, both
+  ConfigurationError-on-empty cases, and a full round-trip proving the gate still passes/fails
+  correctly through the wrapper) — proved RED against the pre-fix code (stashed, ran, confirmed the
+  silent-success test as the failure signature, restored).
+- **MAJOR fixed — the collision guard now enforces "both present ⇒ both finite numeric ⇒ equal", not
+  "filter nulls first, then maybe compare".** `_resolve_declared_value` used to filter out a
+  missing/null candidate BEFORE checking whether both the primary and secondary key existed, so a
+  delivered-but-null primary value alongside a valid secondary value silently resolved to the non-null
+  one instead of raising — exactly the silent pick T2's guard exists to forbid. Presence is now
+  `key in attributes` (a delivered-but-null column still counts as present and participates in the
+  agreement check); usability is checked only after any collision is resolved or ruled out.
+  `_values_agree` additionally requires BOTH operands to pass `_is_finite_numeric` (numeric,
+  non-boolean, finite) before comparing equality, so two equal strings or a `True == 1` bool/int pair
+  no longer silently "agree" (only finiteness of a float was checked before). Locked directly in
+  `tests/unit/services/test_caravan_statics.py::TestCollisionSemantics` (null/valid, NaN/valid,
+  string/string, bool/int) — proved RED.
+- **MAJOR fixed — the changed-value replay guard's check/update race.** `merge_namespaced_attributes`
+  read current attributes with a plain `SELECT`, then wrote unconditionally: two concurrent imports
+  could both observe "no existing key" and the second's write would silently win. The `SELECT` is now
+  `SELECT ... FOR UPDATE`, locking the basin row for the remainder of the caller's transaction, so a
+  concurrent second caller blocks until the first commits, then re-reads the NOW-current row before
+  comparing. Locked with a REAL two-connection concurrency test
+  (`tests/integration/store/test_caravan_import.py::TestMergeNamespacedAttributesConcurrency`,
+  mirroring `test_station_group_store.py`'s own pattern): two threads, each on its own connection,
+  attempt DIFFERING values for the same new key synchronized via a barrier — exactly one wins, the
+  other raises `ConfigurationError`, and the persisted value matches only the winner. Proved RED
+  (without the fix, both threads observed no conflict and either could silently win with no trace,
+  failing the "exactly one raises" assertion).
+- **MAJOR fixed — the "all fifty" test now genuinely covers 50 names, not 25.** The prior test
+  exercised 21 aliases + 4 direct-name samples. A committed golden list
+  (`tests/unit/services/test_caravan_statics.py::PT_FIFTY_STATICS`) combines `CARAVAN_ALIAS`'s 21
+  confirmed aliased names with the 7 real "colliding" direct names this plan already names (`area`,
+  `p_mean`, `frac_snow`, `high_prec_freq`, `high_prec_dur`, `low_prec_freq`, `low_prec_dur`) and 22
+  clearly-labelled placeholder direct names (the real remaining ~22 names live in the external,
+  un-vendored `cmal_pool_PT` artifact, not this repo) — asserted `== 50` unique names, each given a
+  distinct value, with a new converse test proving a single missing name among the previously-untested
+  25 is caught. Proved RED (a synthetic gap in a placeholder name was invisible to the old 25-name
+  test).
+- **minor fixed — `network` is no longer a caller-suppliable parameter.** `import_caravan_attributes`
+  hardcodes `"bafu"` — Caravan's CAMELS-CH parser only ever understands a `caravan_camels_ch_*` gauge
+  id, so a non-"bafu" `network` argument could previously attach Swiss attributes to an unrelated
+  station sharing the same code.
+- **minor fixed — compatibility-time collision errors now name the real station.**
+  `available_declared_static_keys` takes an optional `station_code`, forwarded from
+  `resolve_available_static_keys_for_stations`'s per-station loop (`station.code`), so a conflicting
+  alias at onboarding no longer reports `<unknown>`. Locked directly
+  (`test_a_compatibility_time_collision_names_the_station`).
+- **minor NOT fixed — real production-wiring end-to-end coverage (deliberate scope call, unchanged
+  from round 3).** The review flagged that `services/model_onboarding.py:1269` and
+  `flows/run_forecast_cycle.py:2146` are not exercised by a full plain-Python `onboard_model()` /
+  fallback-chain forecast-cycle test, so deleting either one-line wiring call could leave the existing
+  suite green. Both call sites forward into the SAME already-directly-tested shared function
+  (`resolve_available_static_keys_for_stations` / `resolve_shared_static_frame`), which narrows the
+  actual blast radius of an accidental deletion to "the wiring call itself", not the resolution logic.
+  Building a full `onboard_model()` or `run_forecast_cycle.py` end-to-end test carries the heavy
+  fixture cost round 3 already declined to pay for the identical reason. Left as documented residual
+  risk rather than attempted here — flag if a future change touches either call site.
+
+Test soundness: every locking test above for a correctness/bug fix was proved to fail against the
+pre-fix code for the right reason (fix stashed, test kept, run RED, fix restored).
+
+Exit gates re-run and green: `ruff check` + `ruff format --check` clean; pyright ratchet 428 ≤
+baseline 459 (unchanged); full `caravan`-scoped unit + DB-backed integration suite (97 passed).
+
 ## Implementation notes (read before writing code)
 
 **Source data:** `/Users/bea/Downloads/data.parquet` — 296 rows x 216 cols, `gauge_id` =

@@ -9,6 +9,8 @@ join correctly on station identity end-to-end.
 
 from __future__ import annotations
 
+import threading
+import time
 import uuid
 from datetime import UTC, datetime
 
@@ -20,7 +22,10 @@ from shapely.geometry import MultiPolygon, Polygon
 from sapphire_flow.db.metadata import basin_versions
 from sapphire_flow.exceptions import ConfigurationError
 from sapphire_flow.store.basin_store import PgBasinStore
-from sapphire_flow.store.caravan_import import import_caravan_attributes
+from sapphire_flow.store.caravan_import import (
+    import_caravan_attributes,
+    run_operational_caravan_import,
+)
 from sapphire_flow.store.station_store import PgStationStore
 from sapphire_flow.types.basin import Basin
 from sapphire_flow.types.ids import BasinId, StationId
@@ -32,9 +37,14 @@ _GEOM = MultiPolygon(
 _CREATED_AT = datetime(2024, 1, 1, tzinfo=UTC)
 
 
-def _make_basin(*, code: str = "2009", attributes: dict | None = None) -> Basin:
+def _make_basin(
+    *,
+    code: str = "2009",
+    basin_id: BasinId | None = None,
+    attributes: dict | None = None,
+) -> Basin:
     return Basin(
-        id=BasinId(uuid.uuid4()),
+        id=basin_id or BasinId(uuid.uuid4()),
         code=code,
         name="Test Basin",
         geometry=_GEOM,
@@ -693,6 +703,243 @@ class TestImportCaravanAttributesRequiredStaticNames:
         assert fetched_2010 is not None
         assert "caravan:area" not in fetched_2009.attributes
         assert "caravan:area" not in fetched_2010.attributes
+
+
+class TestRunOperationalCaravanImport:
+    """Plan 155 fixer round (BLOCKER finding): "the operational exit gate
+    remains optional and trivially bypassable" -- `import_caravan_attributes`
+    defaults both `expected_codes` and `required_static_names` to `None`
+    and only rejects the one-supplied-without-the-other case, so calling it
+    with BOTH omitted writes data and returns success with no validation
+    at all; an explicit empty set validates nothing either.
+    `run_operational_caravan_import` is the fix: both are mandatory
+    (no-default keyword-only parameters -- omitting either is a `TypeError`
+    at the call site, not a runtime bypass) and additionally checked
+    non-empty."""
+
+    def test_omitting_expected_codes_is_a_typeerror_not_a_silent_success(
+        self,
+    ) -> None:
+        """Structural proof the "both omitted" bypass the review found is
+        gone: Python itself refuses the call before any of this module's
+        own code runs."""
+        with pytest.raises(TypeError):
+            run_operational_caravan_import(  # type: ignore[call-arg]
+                "unused.parquet",
+                station_store=None,  # type: ignore[arg-type]
+                basin_store=None,  # type: ignore[arg-type]
+                required_static_names=frozenset({"area"}),
+            )
+
+    def test_omitting_required_static_names_is_a_typeerror_not_a_silent_success(
+        self,
+    ) -> None:
+        with pytest.raises(TypeError):
+            run_operational_caravan_import(  # type: ignore[call-arg]
+                "unused.parquet",
+                station_store=None,  # type: ignore[arg-type]
+                basin_store=None,  # type: ignore[arg-type]
+                expected_codes=frozenset({"2009"}),
+            )
+
+    def test_an_empty_expected_codes_raises_before_any_read_or_write(
+        self, db_connection: sa.Connection, tmp_path
+    ) -> None:
+        station_store = PgStationStore(db_connection)
+        basin_store = PgBasinStore(db_connection)
+        basin = _make_basin(code="2009")
+        basin_store.store_basin(basin)
+        station_store.store_station(
+            make_station_config(code="2009", network="bafu", basin_id=basin.id)
+        )
+        path = _write_parquet(
+            tmp_path, [{"gauge_id": "caravan_camels_ch_2009", "area": 250.0}]
+        )
+
+        with pytest.raises(ConfigurationError, match="expected_codes"):
+            run_operational_caravan_import(
+                path,
+                station_store=station_store,
+                basin_store=basin_store,
+                expected_codes=frozenset(),
+                required_static_names=frozenset({"area"}),
+            )
+
+        fetched = basin_store.fetch_basin(basin.id)
+        assert fetched is not None
+        assert "caravan:area" not in fetched.attributes
+
+    def test_an_empty_required_static_names_raises_before_any_read_or_write(
+        self, db_connection: sa.Connection, tmp_path
+    ) -> None:
+        station_store = PgStationStore(db_connection)
+        basin_store = PgBasinStore(db_connection)
+        basin = _make_basin(code="2009")
+        basin_store.store_basin(basin)
+        station_store.store_station(
+            make_station_config(code="2009", network="bafu", basin_id=basin.id)
+        )
+        path = _write_parquet(
+            tmp_path, [{"gauge_id": "caravan_camels_ch_2009", "area": 250.0}]
+        )
+
+        with pytest.raises(ConfigurationError, match="required_static_names"):
+            run_operational_caravan_import(
+                path,
+                station_store=station_store,
+                basin_store=basin_store,
+                expected_codes=frozenset({"2009"}),
+                required_static_names=frozenset(),
+            )
+
+        fetched = basin_store.fetch_basin(basin.id)
+        assert fetched is not None
+        assert "caravan:area" not in fetched.attributes
+
+    def test_a_genuinely_gated_import_still_succeeds_on_full_coverage(
+        self, db_connection: sa.Connection, tmp_path
+    ) -> None:
+        station_store = PgStationStore(db_connection)
+        basin_store = PgBasinStore(db_connection)
+        basin = _make_basin(code="2009")
+        basin_store.store_basin(basin)
+        station_store.store_station(
+            make_station_config(code="2009", network="bafu", basin_id=basin.id)
+        )
+        path = _write_parquet(
+            tmp_path,
+            [{"gauge_id": "caravan_camels_ch_2009", "area": 250.0, "slp_dg_sav": 12.5}],
+        )
+
+        result = run_operational_caravan_import(
+            path,
+            station_store=station_store,
+            basin_store=basin_store,
+            expected_codes=frozenset({"2009"}),
+            required_static_names=frozenset({"area", "slope"}),
+        )
+
+        assert result.matched_codes == frozenset({"2009"})
+
+    def test_a_genuinely_gated_import_still_raises_on_a_real_gap(
+        self, db_connection: sa.Connection, tmp_path
+    ) -> None:
+        station_store = PgStationStore(db_connection)
+        basin_store = PgBasinStore(db_connection)
+        basin = _make_basin(code="2009")
+        basin_store.store_basin(basin)
+        station_store.store_station(
+            make_station_config(code="2009", network="bafu", basin_id=basin.id)
+        )
+        # No "slp_dg_sav" column -- "slope" cannot resolve.
+        path = _write_parquet(
+            tmp_path, [{"gauge_id": "caravan_camels_ch_2009", "area": 250.0}]
+        )
+
+        with pytest.raises(ConfigurationError, match="exit gate failed"):
+            run_operational_caravan_import(
+                path,
+                station_store=station_store,
+                basin_store=basin_store,
+                expected_codes=frozenset({"2009"}),
+                required_static_names=frozenset({"area", "slope"}),
+            )
+
+
+class TestMergeNamespacedAttributesConcurrency:
+    """Plan 155 fixer round (major finding): "the changed-value replay
+    guard has a check/update race" -- `merge_namespaced_attributes` read
+    the basin's current attributes without locking, so two concurrent
+    imports could both observe no existing key and the second silently
+    overwrote the first's committed value. Real two-connection
+    concurrency test, mirroring
+    `test_station_group_store.py::TestStoreGroupConcurrentTenantRace`:
+    two threads, each on its OWN connection/transaction, attempt to merge
+    DIFFERING values for the SAME new key at (as close to) the same
+    instant, synchronized via a barrier. `SELECT ... FOR UPDATE` (the fix)
+    serializes them: whichever commits first wins; the second blocks until
+    the first commits, re-reads the NOW-current (committed) attributes,
+    and raises on the conflict this method promises to catch -- rather
+    than both silently winning/losing with no trace.
+    """
+
+    def test_concurrent_differing_merges_exactly_one_wins_the_other_raises(
+        self, db_engine: sa.Engine
+    ) -> None:
+        basin_id = BasinId(uuid.uuid4())
+        with db_engine.connect() as seed_conn:
+            PgBasinStore(seed_conn).store_basin(
+                _make_basin(code="2009", basin_id=basin_id)
+            )
+            seed_conn.commit()
+
+        barrier = threading.Barrier(2)
+        outcomes: dict[str, object] = {}
+
+        def _attempt(value: float, key: str) -> None:
+            with db_engine.connect() as conn:
+                conn.begin()
+                # Widen the read-then-write window deterministically: a
+                # local Postgres round trip is sub-millisecond, so relying
+                # on the barrier alone to interleave the two threads'
+                # SELECT-then-UPDATE sequences is timing-luck, not a
+                # reliable proof (verified: without this delay, GIL
+                # scheduling happened to fully serialize each thread's
+                # read+write before the other's read ran, on every
+                # attempt). A short sleep injected right after the FIRST
+                # `execute()` call (the attribute SELECT) returns forces a
+                # genuine interleaving: with the fix (`SELECT ... FOR
+                # UPDATE`), the SECOND thread's own first `execute()`
+                # instead BLOCKS inside Postgres until the first thread
+                # commits, so its delay only fires after it already sees
+                # the post-commit row -- no deadlock either way.
+                orig_execute = conn.execute
+                state = {"first_call_done": False}
+
+                def _delayed_execute(*args: object, **kwargs: object) -> object:
+                    result = orig_execute(*args, **kwargs)  # type: ignore[arg-type]
+                    if not state["first_call_done"]:
+                        state["first_call_done"] = True
+                        time.sleep(0.05)
+                    return result
+
+                conn.execute = _delayed_execute  # type: ignore[method-assign]
+                store = PgBasinStore(conn)
+                barrier.wait(timeout=10)
+                try:
+                    store.merge_namespaced_attributes(
+                        basin_id, attributes={"caravan:area": value}
+                    )
+                    conn.commit()
+                    outcomes[key] = "ok"
+                except ConfigurationError as exc:
+                    conn.rollback()
+                    outcomes[key] = exc
+
+        t_a = threading.Thread(target=_attempt, args=(100.0, "a"))
+        t_b = threading.Thread(target=_attempt, args=(200.0, "b"))
+        t_a.start()
+        t_b.start()
+        t_a.join(timeout=15)
+        t_b.join(timeout=15)
+
+        assert not t_a.is_alive() and not t_b.is_alive(), "race threads hung"
+        assert set(outcomes) == {"a", "b"}
+
+        oks = [k for k, v in outcomes.items() if v == "ok"]
+        errs = [
+            (k, v) for k, v in outcomes.items() if isinstance(v, ConfigurationError)
+        ]
+        assert len(oks) == 1, f"expected exactly one winner, got {outcomes}"
+        assert len(errs) == 1, f"expected exactly one conflict, got {outcomes}"
+        assert "caravan:area" in str(errs[0][1])
+
+        winner_value = 100.0 if oks[0] == "a" else 200.0
+        with db_engine.connect() as check_conn:
+            fetched = PgBasinStore(check_conn).fetch_basin(basin_id)
+        assert fetched is not None
+        # The loser's write never landed -- persisted value matches the winner only.
+        assert fetched.attributes["caravan:area"] == winner_value
 
 
 class TestTransactionGuard:

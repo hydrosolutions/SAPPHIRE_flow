@@ -55,18 +55,36 @@ def import_caravan_attributes(
     *,
     station_store: PgStationStore,
     basin_store: PgBasinStore,
-    network: str = "bafu",
     extractor_version: str | None = None,
     source_dataset_version: str | None = None,
     expected_codes: frozenset[str] | None = None,
     required_static_names: frozenset[str] | None = None,
 ) -> CaravanImportResult:
-    """T0a's frozen manifest is a station-level concept; this joins on
+    """The flexible, INTERNAL building block this module's own
+    `run_operational_caravan_import` (below) wraps. Every real production
+    caller MUST go through `run_operational_caravan_import`, which makes
+    `expected_codes`/`required_static_names` mandatory and non-empty --
+    Plan 155 fixer round, BLOCKER finding: "the operational exit gate
+    remains optional and trivially bypassable". This function stays
+    lenient on purpose: several of its own tests deliberately omit or
+    narrow these parameters to exercise the reporting-only paths
+    (`unmatched_codes`, `stations_without_basin`, `missing_from_manifest`)
+    in isolation, and a future non-gating caller (a dry-run inspection
+    script, say) may legitimately want the report without the raise. Do
+    NOT call this function directly from a production flow -- call
+    `run_operational_caravan_import` instead.
+
+    T0a's frozen manifest is a station-level concept; this joins on
     station identity (T1b step 1: `caravan_camels_ch_<code>` ->
-    `(network, code)`) and merges into whatever basin that station is
-    ALREADY bound to. A station with no `basin_id` yet (should not occur
-    for the T0a manifest -- onboarding assigns a basin before a station is
-    a discharge candidate) is reported, not silently skipped-and-forgotten.
+    `("bafu", code)` -- Caravan's CAMELS-CH parser only ever understands a
+    `caravan_camels_ch_*` gauge id, so the network is hardcoded rather than
+    caller-supplied: Plan 155 fixer round minor finding, a non-"bafu"
+    `network` argument could silently attach Swiss CAMELS-CH attributes to
+    an unrelated station sharing the same code) and merges into whatever
+    basin that station is ALREADY bound to. A station with no `basin_id`
+    yet (should not occur for the T0a manifest -- onboarding assigns a
+    basin before a station is a discharge candidate) is reported, not
+    silently skipped-and-forgotten.
 
     `expected_codes` -- the T0a manifest, when the caller has it -- lets
     this function report a manifest station that never showed up as a row
@@ -136,7 +154,7 @@ def import_caravan_attributes(
     matched_basin_ids: dict[str, BasinId] = {}
 
     for code, raw_attrs in rows.items():
-        station = station_store.fetch_station_by_code(code, network)
+        station = station_store.fetch_station_by_code(code, "bafu")
         if station is None:
             unmatched.add(code)
             continue
@@ -213,4 +231,73 @@ def import_caravan_attributes(
             content_fingerprint=_fingerprint_rows(rows),
             **provenance_kwargs,
         ),
+    )
+
+
+def run_operational_caravan_import(
+    path: str | Path,
+    *,
+    station_store: PgStationStore,
+    basin_store: PgBasinStore,
+    expected_codes: frozenset[str],
+    required_static_names: frozenset[str],
+    extractor_version: str | None = None,
+    source_dataset_version: str | None = None,
+) -> CaravanImportResult:
+    """THE operational entrypoint for Plan 155's T1 import -- the only
+    caller a production flow may use. Fixer round, BLOCKER finding: the
+    review reported that `import_caravan_attributes` "defaults both the
+    148-station manifest and required statics to None ... calling the
+    function with both omitted writes data and returns success without
+    validating any station/static" and that "empty sets also validate
+    nothing". Both are closed HERE, structurally:
+
+    - `expected_codes` and `required_static_names` are ordinary (no
+      default) keyword-only parameters -- a caller cannot omit either one
+      and still get past Python's own call-time `TypeError`, so the
+      "both omitted" bypass the review found is no longer reachable
+      through this entrypoint at all.
+    - Both are additionally checked for NON-EMPTINESS at runtime, before
+      any read or write: an explicit `frozenset()` is a caller error, not
+      a silently-accepted "nothing to validate" gate, since the round-2
+      review's own "gate on the manifest" fix makes an empty manifest
+      validate vacuously (`missing_from_manifest`/`coverage_gaps` are
+      empty by construction over an empty set).
+
+    This function is deliberately a thin, no-defaults wrapper around
+    `import_caravan_attributes` (the flexible internal building block,
+    still directly unit/integration-tested for its own reporting-only
+    behaviour) rather than a rewrite: the manifest-scoped gate logic lives
+    in exactly one place. The concrete 148-station T0a manifest and PT's
+    real 50 declared static names are NOT hardcoded here -- per the
+    original fixer round's own note, the concrete PT static-name set is
+    aquacast's contract, not this module's, and the live manifest is a
+    database query the modeller's confirmed Caravan release must run
+    against (still-pending operational follow-on, unchanged by this fix).
+    A future onboarding/operational script supplies both explicitly.
+    """
+    if not expected_codes:
+        raise ConfigurationError(
+            "run_operational_caravan_import: expected_codes must be a "
+            "non-empty T0a manifest -- an empty manifest makes every "
+            "manifest-scoped check (unmatched/no_basin/missing_from_"
+            "manifest/coverage_gaps) vacuously pass, silently disabling "
+            "the exit gate (Plan 155 fixer round BLOCKER)"
+        )
+    if not required_static_names:
+        raise ConfigurationError(
+            "run_operational_caravan_import: required_static_names must be "
+            "a non-empty set of the model's declared statics -- an empty "
+            "set makes verify_static_coverage report zero gaps for every "
+            "station, silently disabling the exit gate (Plan 155 fixer "
+            "round BLOCKER)"
+        )
+    return import_caravan_attributes(
+        path,
+        station_store=station_store,
+        basin_store=basin_store,
+        extractor_version=extractor_version,
+        source_dataset_version=source_dataset_version,
+        expected_codes=expected_codes,
+        required_static_names=required_static_names,
     )

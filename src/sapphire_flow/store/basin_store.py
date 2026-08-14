@@ -181,6 +181,26 @@ class PgBasinStore:
         the plan's T1 deviation note); it closes the SILENT half of the
         finding: any content change is now a loud failure, never an
         untraced overwrite.
+
+        Plan 155 fixer round (major finding, check/update race): the
+        read-then-compare-then-write shape above is a classic TOCTOU --
+        without a row lock, two concurrent imports can both read the SAME
+        "no existing key" snapshot before either has written, so both
+        conclude there is no conflict and the second's JSONB ``||`` write
+        silently wins over the first's, even though the two committed
+        DIFFERENT values for the same key. ``SELECT ... FOR UPDATE`` locks
+        this basin's row for the remainder of the caller's transaction, so
+        a second concurrent caller's own ``SELECT ... FOR UPDATE`` blocks
+        until the first commits (or rolls back) -- it then re-reads the
+        NOW-current attributes (reflecting the first caller's write, if
+        any) before comparing, so the conflict this function promises to
+        catch is actually observed rather than raced past. This relies on
+        the caller running inside a real, already-open transaction (see
+        `store/_helpers.py::require_real_transaction`, which every
+        production caller of this method is gated behind via
+        `store/caravan_import.py::import_caravan_attributes`) -- on an
+        AUTOCOMMIT connection the lock is released the instant the SELECT
+        statement completes, before the UPDATE, and offers no protection.
         """
         bad_keys = sorted(k for k in attributes if not k.startswith(_CARAVAN_PREFIX))
         if bad_keys:
@@ -192,7 +212,9 @@ class PgBasinStore:
             )
         current = (
             self._conn.execute(
-                sa.select(basins.c.attributes).where(basins.c.id == basin_id)
+                sa.select(basins.c.attributes)
+                .where(basins.c.id == basin_id)
+                .with_for_update()
             )
             .mappings()
             .one_or_none()

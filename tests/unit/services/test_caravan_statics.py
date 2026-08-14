@@ -187,12 +187,50 @@ class TestFrameResolvesAllDeclaredStatics:
         assert missing == frozenset()
 
 
+# Plan 155 fixer round (major finding): the previous "all fifty" test
+# actually exercised only 25 names (21 aliases + 4 direct samples), so a
+# broken/omitted implementation covering any of the OTHER 25 direct PT
+# statics would still have passed it. This is a committed, minimal golden
+# list standing in for PT's real 50-static declared contract (Plan 152
+# T0.0's verified `config.yaml`: "statics: 50 -- the pooled-big set of 51
+# minus degree_of_regulation"). The real declared name list lives in the
+# external `cmal_pool_PT` artifact, not this repo, so this fixture
+# combines what IS independently confirmed here --
+# `CARAVAN_ALIAS`'s 21 real aliased names (T1b, verified against the
+# modeller's own `static_attributes.md`) and the 7 real "colliding" direct
+# names Plan 155 names explicitly (`area`, `p_mean`, `frac_snow`,
+# `high_prec_freq`, `high_prec_dur`, `low_prec_freq`, `low_prec_dur`,
+# docs/plans/155:404) -- with clearly-labelled placeholder direct names
+# for the remainder, so the test still proves "exactly 50, each
+# independently resolved" without misrepresenting an un-vendored external
+# contract as verified.
+_CONFIRMED_DIRECT_STATICS: frozenset[str] = frozenset(
+    {
+        "area",
+        "p_mean",
+        "frac_snow",
+        "high_prec_freq",
+        "high_prec_dur",
+        "low_prec_freq",
+        "low_prec_dur",
+    }
+)
+_PLACEHOLDER_DIRECT_STATICS: frozenset[str] = frozenset(
+    f"direct_static_{i:02d}" for i in range(22)
+)
+PT_FIFTY_STATICS: frozenset[str] = (
+    frozenset(CARAVAN_ALIAS) | _CONFIRMED_DIRECT_STATICS | _PLACEHOLDER_DIRECT_STATICS
+)
+
+
 class TestExitGateAllFiftyResolve:
-    def test_every_aliased_and_a_sample_of_direct_statics_resolve_non_null(
-        self,
-    ) -> None:
-        """T1's exit gate (plan 155): every declared static resolves to a
-        non-null, finite value; `area` specifically must be present.
+    def test_the_golden_list_is_exactly_fifty_unique_names(self) -> None:
+        assert len(PT_FIFTY_STATICS) == 50
+
+    def test_every_declared_static_resolves_non_null(self) -> None:
+        """T1's exit gate (plan 155): every ONE of the model's 50 declared
+        statics resolves to a non-null, finite value; `area` specifically
+        must be present.
 
         Plan 155 fixer round finding: the previous version of this test
         gave every value the same synthetic `1.0`, so it could not have
@@ -201,10 +239,10 @@ class TestExitGateAllFiftyResolve:
         would still pass). Distinct, non-uniform values per name close
         that gap; `verify_static_coverage` is exercised too, not just the
         frame-boundary function, so both T1 exit-gate paths are covered by
-        one realistic manifest.
+        one realistic manifest -- against the FULL 50-name golden list,
+        not a 25-name subset.
         """
-        direct_sample = ("area", "p_mean", "frac_snow", "ele_mt_sav")
-        declared = frozenset(CARAVAN_ALIAS) | frozenset(direct_sample)
+        declared = PT_FIFTY_STATICS
 
         attributes: dict[str, float] = {}
         for index, name in enumerate(sorted(declared)):
@@ -221,8 +259,27 @@ class TestExitGateAllFiftyResolve:
             assert math.isfinite(value)
             assert value not in seen_values  # every name got ITS OWN value
             seen_values.add(value)
+        assert len(seen_values) == 50  # every one of the 50 resolved distinctly
 
         assert verify_static_coverage({"2009": attributes}, declared) == ()
+
+    def test_a_single_missing_direct_static_among_the_fifty_is_caught(self) -> None:
+        """The converse of the above, closing the exact gap the review
+        flagged: a coverage bug affecting one of the 25 PREVIOUSLY
+        untested direct names must be reported, not silently pass."""
+        declared = PT_FIFTY_STATICS
+        attributes: dict[str, float] = {}
+        for index, name in enumerate(sorted(declared)):
+            if name == "direct_static_07":
+                # deliberately omitted -- one of the 25 the old test never reached
+                continue
+            raw = CARAVAN_ALIAS.get(name, name)
+            attributes[f"{CARAVAN_PREFIX}{raw}"] = float(index) + 0.1
+
+        gaps = verify_static_coverage({"2009": attributes}, declared)
+
+        assert len(gaps) == 1
+        assert gaps[0].missing_statics == frozenset({"direct_static_07"})
 
 
 class TestMissingCaravanSourceIsNotABareFallback:
@@ -291,6 +348,52 @@ class TestCollisionSemantics:
         attributes = {f"{CARAVAN_PREFIX}area": 250.0}
         projected = project_declared_static_attributes(attributes, {"area"})
         assert projected["area"] == 250.0
+
+    def test_a_null_primary_alongside_a_valid_secondary_raises(self) -> None:
+        """Plan 155 fixer round (major finding): candidates were filtered
+        for missing/null BEFORE checking whether both keys existed, so a
+        delivered-but-null primary value alongside a valid secondary value
+        silently resolved to the non-null one instead of being treated as
+        a disagreement. Both keys being PRESENT (even one null) must
+        require agreement, not a silent pick."""
+        attributes = {
+            f"{CARAVAN_PREFIX}slp_dg_sav": None,  # delivered, sanitised to null
+            f"{CARAVAN_PREFIX}slope": 12.5,  # a genuinely valid value
+        }
+        with pytest.raises(ConfigurationError, match="slope"):
+            project_declared_static_attributes(attributes, {"slope"})
+
+    def test_a_nan_primary_alongside_a_valid_secondary_raises(self) -> None:
+        attributes = {
+            f"{CARAVAN_PREFIX}slp_dg_sav": math.nan,
+            f"{CARAVAN_PREFIX}slope": 12.5,
+        }
+        with pytest.raises(ConfigurationError, match="slope"):
+            project_declared_static_attributes(attributes, {"slope"})
+
+    def test_equal_strings_do_not_pass_the_collision_guard(self) -> None:
+        """`_values_agree` must require both operands to be NUMERIC, not
+        merely equal -- two equal strings are not a legitimate agreement
+        (Plan 155 fixer round finding: the old check only inspected
+        finiteness when at least one operand was already a float, so two
+        equal non-numeric values silently 'agreed')."""
+        attributes = {
+            f"{CARAVAN_PREFIX}slp_dg_sav": "12.5",
+            f"{CARAVAN_PREFIX}slope": "12.5",
+        }
+        with pytest.raises(ConfigurationError, match="slope"):
+            project_declared_static_attributes(attributes, {"slope"})
+
+    def test_equal_bool_and_int_do_not_pass_the_collision_guard(self) -> None:
+        """`True == 1` in Python -- a bool/int pair that compares equal
+        must still be rejected as non-numeric-agreement, matching the exit
+        gate's own bool exclusion (`_is_finite_numeric`)."""
+        attributes = {
+            f"{CARAVAN_PREFIX}slp_dg_sav": True,
+            f"{CARAVAN_PREFIX}slope": 1,
+        }
+        with pytest.raises(ConfigurationError, match="slope"):
+            project_declared_static_attributes(attributes, {"slope"})
 
 
 class TestDeclaredStaticNaming:
@@ -577,6 +680,51 @@ class TestResolveAvailableStaticKeysForStations:
             {"area", f"{CARAVAN_PREFIX}area", f"{CARAVAN_PREFIX}slp_dg_sav"}
         )
         assert "slope" not in available[station_id]
+
+    def test_a_compatibility_time_collision_names_the_station(self) -> None:
+        """Plan 155 fixer round (minor finding): compatibility-time
+        collision errors used to lose the station identity because
+        `resolve_available_static_keys_for_stations` called
+        `available_declared_static_keys` without a `station_code`, so a
+        conflicting alias at onboarding reported station '<unknown>'.
+        This must name the REAL station code."""
+        station_id = StationId(uuid.uuid4())
+        basin_id = BasinId(uuid.uuid4())
+        station_store = FakeStationStore()
+        station_store.store_station(
+            make_station_config(
+                station_id=station_id, code="2009-collision", basin_id=basin_id
+            )
+        )
+        basin_store = FakeBasinStore()
+        basin = _basin_for_resolution_test(basin_id)
+        basin_store.store_basin(
+            Basin(
+                id=basin.id,
+                code=basin.code,
+                name=basin.name,
+                geometry=basin.geometry,
+                area_km2=basin.area_km2,
+                attributes={
+                    **basin.attributes,
+                    f"{CARAVAN_PREFIX}slope": 99.0,  # disagrees with slp_dg_sav's 12.5
+                },
+                band_geometries=basin.band_geometries,
+                created_at=basin.created_at,
+                network=basin.network,
+            )
+        )
+        model = _model(
+            static_features=frozenset({"slope"}), static_naming=StaticNaming.CARAVAN
+        )
+
+        with pytest.raises(ConfigurationError, match="2009-collision"):
+            resolve_available_static_keys_for_stations(
+                model,
+                [station_id],
+                station_store=station_store,
+                basin_store=basin_store,
+            )
 
     def test_station_with_no_basin_resolves_to_an_empty_set(self) -> None:
         station_id = StationId(uuid.uuid4())

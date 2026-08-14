@@ -117,15 +117,32 @@ def _collision_keys(name: str) -> tuple[str, str | None]:
     return primary, f"{CARAVAN_PREFIX}{name}"
 
 
+def _is_finite_numeric(value: Any) -> bool:
+    """T1's exit gate (and T2's collision guard) require a genuine numeric,
+    finite value. ``isinstance(True, int)`` is ``True`` in Python, so a
+    ``bool`` must be excluded explicitly or it would silently pass as
+    "finite"; a ``str`` (e.g. an un-parsed parquet cell) is rejected the
+    same way (Plan 155 fixer round: ``is_missing_static_value`` alone
+    accepts both)."""
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return True
+    if isinstance(value, float):
+        return math.isfinite(value)
+    return False
+
+
 def _values_agree(a: Any, b: Any) -> bool:
-    """T2 collision semantics: equal FINITE values are accepted; equal
-    infinities must NOT pass (the review's explicit finding)."""
-    if isinstance(a, float) or isinstance(b, float):
-        try:
-            if not (math.isfinite(a) and math.isfinite(b)):
-                return False
-        except TypeError:
-            return False
+    """T2 collision semantics: BOTH operands must be numeric, non-boolean
+    AND finite, and equal, to be accepted as agreeing (Plan 155 fixer
+    round, major finding: the previous check only inspected finiteness
+    when at least one operand was already a ``float``, so two equal
+    strings, two equal booleans, or a bool/int pair equal under Python's
+    own ``True == 1`` coercion silently 'agreed'; equal infinities must
+    also NOT pass)."""
+    if not (_is_finite_numeric(a) and _is_finite_numeric(b)):
+        return False
     return a == b
 
 
@@ -185,21 +202,34 @@ def _resolve_declared_value(
     again disagree.
 
     Returns :data:`_NO_CANDIDATE` when neither the primary nor (for an
-    aliased name) the secondary key is present; raises
-    :class:`ConfigurationError` when BOTH are present with differing (or
-    equal-infinite) values, per T2's collision semantics.
+    aliased name) the secondary key is present at all; raises
+    :class:`ConfigurationError` when BOTH keys are present with differing
+    (or equal-but-non-finite, or equal-but-non-numeric) values, per T2's
+    collision semantics.
+
+    Plan 155 fixer round (major finding): key PRESENCE and value
+    USABILITY are deliberately distinct checks, evaluated in that order.
+    The old implementation filtered out a null/NaN candidate BEFORE
+    checking whether both keys existed, so a null direct value alongside a
+    valid aliased value (or vice versa) silently resolved to the non-null
+    one instead of being treated as a disagreement -- exactly the silent
+    pick T2's collision guard exists to forbid. Presence is now `key in
+    attributes` (a delivered-but-null column still counts as "present" and
+    therefore participates in the agreement check); usability (finite,
+    non-boolean, non-null) is checked only AFTER any multi-key collision
+    has already been resolved or ruled out.
     """
     primary_key, secondary_key = _collision_keys(name)
-    candidate_keys = [
+    present_keys = [
         key
         for key in (primary_key, secondary_key)
-        if key is not None and not is_missing_static_value(attributes.get(key))
+        if key is not None and key in attributes
     ]
-    if not candidate_keys:
+    if not present_keys:
         return _NO_CANDIDATE
-    first_key = candidate_keys[0]
+    first_key = present_keys[0]
     value = attributes[first_key]
-    for other_key in candidate_keys[1:]:
+    for other_key in present_keys[1:]:
         other_value = attributes[other_key]
         if not _values_agree(value, other_value):
             station = station_code or "<unknown>"
@@ -209,12 +239,14 @@ def _resolve_declared_value(
                 f"{other_key!r} ({other_value!r}) -- refusing to "
                 "silently pick one (Plan 155 T2 collision semantics)"
             )
-    return value
+    return _NO_CANDIDATE if is_missing_static_value(value) else value
 
 
 def available_declared_static_keys(
     attributes: Mapping[str, Any] | None,
     declared_names: Iterable[str],
+    *,
+    station_code: str | None = None,
 ) -> frozenset[str]:
     """The subset of ``declared_names`` that resolve to a present, non-null
     value in ``attributes`` via :func:`_resolve_declared_value` -- the SAME
@@ -229,13 +261,19 @@ def available_declared_static_keys(
     D16: callers must invoke this ONLY for a ``StaticNaming.CARAVAN``
     model, and must NOT union its result with the model's raw (bare) key
     set -- doing so re-admits the exact bare-fallback D15 forbids.
+
+    ``station_code`` (Plan 155 fixer round minor finding) is forwarded
+    into a collision error's message so a compatibility-time collision
+    names the station it occurred at, matching the frame boundary's own
+    diagnostic -- previously always ``<unknown>`` here.
     """
     if not attributes:
         return frozenset()
     return frozenset(
         name
         for name in declared_names
-        if _resolve_declared_value(attributes, name) is not _NO_CANDIDATE
+        if _resolve_declared_value(attributes, name, station_code=station_code)
+        is not _NO_CANDIDATE
     )
 
 
@@ -280,7 +318,9 @@ def resolve_available_static_keys_for_stations(
         basin = basin_store.fetch_basin(station.basin_id)
         attrs = basin.attributes if basin is not None else None
         available[sid] = (
-            available_declared_static_keys(attrs, declared_names)
+            available_declared_static_keys(
+                attrs, declared_names, station_code=station.code
+            )
             if static_naming is StaticNaming.CARAVAN
             else non_null_static_keys(attrs)
         )
@@ -394,21 +434,6 @@ def resolve_shared_static_frame(
     return project_declared_static_attributes(
         attributes, caravan_names, station_code=station_code
     )
-
-
-def _is_finite_numeric(value: Any) -> bool:
-    """T1's exit gate requires a genuine numeric, finite value.
-    ``isinstance(True, int)`` is ``True`` in Python, so ``bool`` must be
-    excluded explicitly or a boolean would pass as "finite"; a ``str``
-    (e.g. an un-parsed parquet cell) is rejected the same way (Plan 155
-    fixer round: `is_missing_static_value` alone accepts both)."""
-    if isinstance(value, bool):
-        return False
-    if isinstance(value, int):
-        return True
-    if isinstance(value, float):
-        return math.isfinite(value)
-    return False
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
