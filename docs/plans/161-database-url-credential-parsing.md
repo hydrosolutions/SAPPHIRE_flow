@@ -384,22 +384,47 @@ RuntimeError: pg_dump failed (exit 1): pg_dump: error: query failed:
 ERROR:  permission denied for table access_tokens
 ```
 
-The backup flow runs inside `prefect-worker` and therefore connects as **`sapphire_worker`**
+The backup flow runs inside `prefect-worker` and connects as **`sapphire_worker`**
 (`DATABASE_URL_TEMPLATE=postgresql+psycopg://sapphire_worker@postgres:5432/sapphire`). Verified on the host:
 `sapphire_worker` holds **no grants at all** on `access_tokens` — only `sapphire` (owner) and `sapphire_api` do.
 **That is correct least-privilege design and must not be reverted** — Slice D exists precisely so no app
 container can read credentials. The defect is that a *whole-database* backup was left running on a
-*deliberately partial* role. So Plan 147 Slice D produced **two** independent backup failures, and the first
-(the `/` password) masked the second.
+*deliberately partial* role. Plan 147 Slice D therefore produced **two** independent backup failures, and the
+first (the `/` password) masked the second.
 
-**Do NOT fix by granting `sapphire_worker` more privilege** — that re-opens exactly what Slice D closed.
-**Fix:** a dedicated read-only role, e.g. `sapphire_backup` with the built-in `pg_read_all_data` (confirmed
-available: PostgreSQL **16.4**, role present), its own secret, mounted only where the backup runs. Consider
-moving the backup out of the worker into its own job so the worker never holds a read-all credential.
-Composes cleanly with T2: that credential reaches `pg_dump` as `PG*` vars, so it is never parsed.
+**⛔ Two fixes that must NOT be taken:**
+- **Granting `sapphire_worker` more privilege** re-opens exactly what Slice D closed.
+- **`pg_dump --exclude-table` for the denied tables** would make the backup **silently incomplete** — a restore
+  would come back missing auth state, and nothing would say so. A partial backup that calls itself a backup is
+  worse than a failed one.
 
-**Red-first:** a test asserting the backup path connects as the backup role, not the worker role. Host
-acceptance: `backup-database` reaches `COMPLETED` **and** the dump passes `pg_restore --list`.
+**Fix:** a dedicated **read-only** role `sapphire_backup`, granted the built-in **`pg_read_all_data`** (confirmed
+available — PostgreSQL **16.4**, role present). `pg_read_all_data` confers SELECT on every table, which is
+exactly what `pg_dump`'s `LOCK TABLE … IN ACCESS SHARE MODE` requires, and nothing more.
+
+*In:* `docker/bootstrap-roles.sql` (add the role beside `sapphire_api`/`sapphire_worker`, same
+`format(...%L)` + `\gexec` idempotent CREATE-or-ALTER-PASSWORD shape — **do not invent a second convention**),
+`docker/bootstrap-roles.sh` (`SAPPHIRE_BACKUP_DB_PASSWORD_FILE` + a `-v backup_password=` binding),
+`docker-compose.yml` (new `sapphire_backup_db_password` secret; mount to the `init` service and to whichever
+service runs the backup). *Out:* the existing api/worker grant layout — it is correct.
+
+**⚠️ D4 (OWNER DECISION) — where does the backup run?** The role is read-only, but it can still read
+`access_tokens`. Mounting its secret into the general `prefect-worker` means that container holds a
+read-everything credential, which weakens (does not void) Slice D's containment.
+- **(a) Mount into the existing `prefect-worker`.** Cheapest, no topology change. The worker can then read auth
+  tokens — read-only, but a real widening of blast radius if that container is compromised.
+- **(b) A dedicated backup worker/work-pool.** *(Recommended.)* The read-all credential never sits in the
+  general worker. There is precedent in the existing topology — `prefect-worker-ingest` already exists as a
+  second pool — so this is a known shape, not a new pattern. Cost: one more container for a nightly job.
+- **(c) A one-shot container invoked by a scheduled host job** rather than a Prefect deployment. Smallest
+  running footprint, but loses Prefect's run history and the state we currently use to *detect* failure — which
+  is precisely the visibility this plan exists to add. Not recommended.
+
+**Red-first:** a test asserting the backup path resolves the **backup** credential, not the worker's.
+**Host acceptance:** `backup-database` reaches `COMPLETED` **and** the produced dump passes
+`pg_restore --list` (the check that validated both of today's safety dumps).
+
+Composes with T2: this credential reaches `pg_dump` as `PG*` env vars and is therefore never parsed.
 
 ### T5 — a FAILED backup leaves a 0-byte dump that SILENCES the staleness alert (Repo) — **NEW, severity-raising**
 
@@ -410,18 +435,31 @@ So a failed backup produces a **fresh-looking artifact that clears the stale ale
 **This means T1, alone, converted a loud failure into a silent one.** Before T1 the `ValueError` was raised
 *before* `pg_dump` ran, so no file was created and staleness was correctly detected (confirmed: no other 0-byte
 dumps exist on the host). After T1, `pg_dump` runs, creates the file, fails — and the monitor goes quiet. The
-0-byte file was removed manually; the behaviour is still latent for **any** future `pg_dump` failure (disk full,
+0-byte file was removed manually; the behaviour remains latent for **any** future `pg_dump` failure (disk full,
 network, permissions).
 
-**Fix, both halves:**
-1. **Producer:** delete the partial dump on failure — `dump_database_task` must remove `dump_file` before
-   raising, so a failed run leaves no artifact.
-2. **Monitor:** `newest_backup_mtime` must ignore non-viable dumps — at minimum size > 0; better, the newest
-   dump validates (`pg_restore --list` succeeding is the real test, and is what proved both safety dumps).
-   A monitor that accepts any file named `*.dump` cannot distinguish a backup from a touch.
+**The root problem is inferring success from the filesystem.** A monitor that accepts any file named `*.dump`
+cannot distinguish a backup from a `touch`. Fix in three parts, cheapest first:
 
-**Red-first:** (a) a `pg_dump` failure leaves **no** file behind; (b) a 0-byte (and a truncated) `*.dump` does
-**not** satisfy the freshness check. Both must fail against current code.
+1. **Producer cleans up.** `dump_database_task` must delete `dump_file` before re-raising, so a failed run
+   leaves **no** artifact. (`flows/backup.py`, the `returncode != 0` branch.)
+2. **Producer asserts success.** Emit a `pipeline_health` record on completion — **the pattern already in this
+   repo**: `bafu_forecast_freshness` / `bafu_observation_freshness` are emitted by their flows and probed via
+   `/health/detail?check_type=…`. A backup record follows the same shape, so the watchdog stops guessing from
+   file metadata and reads an assertion from the thing that actually did the work. This also covers "the flow
+   never ran at all" — no record → stale — which the file check gets right only by accident.
+3. **Monitor rejects non-viable dumps** (defence in depth, since the file is the artifact people restore from):
+   at minimum size > 0; ideally the newest dump passes `pg_restore --list`. The watchdog runs on the **host**,
+   which has no `pg_restore` — it would need `docker run --rm postgres:16 pg_restore --list`, which is what I
+   used to validate today's dumps. If that coupling is judged too heavy, size > 0 plus part 2 is acceptable;
+   **say which was chosen and why, rather than letting part 3 quietly become "size > 0".**
+
+**Red-first:** (a) a `pg_dump` failure leaves **no** file behind; (b) a 0-byte — and a truncated — `*.dump` does
+**not** satisfy the freshness check; (c) a successful run emits exactly one backup health record. All three must
+be proven to fail against current code.
+
+**Follow-on, not in scope:** only the `sapphire` database is dumped. The separate `prefect` database (flow run
+history, deployment state) has **no backup at all** — worth a decision of its own.
 
 ## Exit gates
 
