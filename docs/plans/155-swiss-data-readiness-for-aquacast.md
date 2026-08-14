@@ -283,10 +283,14 @@ exact commands; not re-narrated here to avoid the doc drifting from what was act
 Exit gates re-run and green: ruff check + format, pyright ratchet (no new errors vs baseline), and the
 full `caravan`-scoped unit + DB-backed integration test suite (including the new tests above).
 
-**Status: fixer round 2 complete. Every BLOCKER and MAJOR from both review rounds is addressed; the
-remaining minor (docs/plan-status reconciliation) is this edit. Ready to move to PR** (still subject to
-the standing "real import not yet run" operational follow-on, which was never a gate on this code
-landing).
+**Status: fixer round 2 complete, but NOT ready for PR — this section previously claimed otherwise
+and was wrong.** An independent round-2 review (see "Round-2 review" above) found the loop **stalled**
+with **1 blocker + 4 majors** outstanding. What round 2 genuinely closed is the D15/D16 no-bare-fallback
+blocker — verified by execution, including the co-assigned-differing-regimes case. What remains open is
+the **T1 exit gate**, which is unusable in both directions (it raises on the 148 permanently
+out-of-scope source rows, or validates nothing at all), plus atomicity under AUTOCOMMIT, the
+compatibility-vs-frame resolver divergence, and the thin test surface. **Read the round-2 section for
+the specified fix before making any change.**
 
 ## Round-2 review — D16 BLOCKER fixed; a NEW blocker, loop STALLED (2026-08-13)
 
