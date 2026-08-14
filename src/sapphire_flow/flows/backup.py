@@ -6,11 +6,11 @@ import subprocess
 import time
 from datetime import UTC, datetime
 from pathlib import Path
-from urllib.parse import unquote, urlparse
 
 import structlog
 from prefect import flow, runtime, task
 from prefect.cache_policies import NO_CACHE
+from sqlalchemy.engine import make_url
 
 log = structlog.get_logger(__name__)
 
@@ -55,17 +55,17 @@ def dump_database_task(backup_dir: str) -> str:
     dump_file = backup_path / filename
 
     database_url = _to_libpq_url(os.environ["DATABASE_URL"])
-    parsed = urlparse(database_url)
+    parsed = make_url(database_url)
     cmd = [
         "pg_dump",
         "--format=custom",
         f"--file={dump_file}",
-        f"--host={parsed.hostname}",
+        f"--host={parsed.host}",
         f"--port={parsed.port or 5432}",
-        f"--username={unquote(parsed.username or '')}",
-        f"--dbname={parsed.path.lstrip('/')}",
+        f"--username={parsed.username or ''}",
+        f"--dbname={parsed.database or ''}",
     ]
-    env = {**os.environ, "PGPASSWORD": unquote(parsed.password or "")}
+    env = {**os.environ, "PGPASSWORD": parsed.password or ""}
 
     start = time.perf_counter()
     result = subprocess.run(cmd, capture_output=True, text=True, check=False, env=env)

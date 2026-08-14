@@ -5,8 +5,10 @@ import stat
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+from urllib.parse import quote
 
 import pytest
+from sqlalchemy.engine import make_url
 
 from sapphire_flow.flows.backup import (
     _to_libpq_url,
@@ -109,10 +111,21 @@ class TestCleanupOldBackups:
 
 
 class TestPgDumpArgConstruction:
-    """Validate that _to_libpq_url + urlparse produces correct pg_dump args.
+    """Validate that _to_libpq_url + make_url produces correct pg_dump args.
 
     This catches the class of bugs that subprocess mocking hides: special
-    characters in passwords, unusual port configs, etc.
+    characters in passwords, unusual port configs, etc. Uses `make_url` — the
+    same parser `dump_database_task` uses post-Plan-161-T1 — not `urlparse`
+    directly, so this exercises the actual production parsing choice.
+
+    `+` and *encoded* `%` cases are labeled REGRESSION: they already passed
+    under the pre-T1 `urlparse` + `unquote` path, so a green result here
+    proves no regression, not a fix. These cases exercise `make_url`
+    directly and cannot, by themselves, detect a reintroduced double-decode
+    (see `TestDumpDatabaseTaskEncodingRegression` for the end-to-end
+    `dump_database_task` version that can). The `/` fix is locked separately
+    in `TestDumpDatabaseTaskSlashInPassword`, which exercises the actual
+    production task end-to-end.
     """
 
     @pytest.mark.parametrize(
@@ -150,8 +163,36 @@ class TestPgDumpArgConstruction:
                 "d",
                 "pass=with=equals",
             ),
+            (
+                # REGRESSION: '+' is an unreserved sub-delim in userinfo and
+                # was already passed through unchanged by urlparse+unquote.
+                "postgresql+psycopg://u:p+ss@h:5432/d",
+                "h",
+                "5432",
+                "u",
+                "d",
+                "p+ss",
+            ),
+            (
+                # REGRESSION: a producer-encoded literal '%' (quote(pw,
+                # safe="") turns 'p%ss' into 'p%25ss') already round-tripped
+                # under urlparse+unquote and continues to under make_url.
+                "postgresql+psycopg://u:p%25ss@h:5432/d",
+                "h",
+                "5432",
+                "u",
+                "d",
+                "p%ss",
+            ),
         ],
-        ids=["basic", "special-chars-in-password", "no-password", "equals-in-password"],
+        ids=[
+            "basic",
+            "special-chars-in-password",
+            "no-password",
+            "equals-in-password",
+            "plus-in-password-regression",
+            "producer-encoded-percent-regression",
+        ],
     )
     def test_url_to_pgdump_args(
         self,
@@ -162,14 +203,12 @@ class TestPgDumpArgConstruction:
         expected_db: str,
         expected_pw: str,
     ) -> None:
-        from urllib.parse import unquote, urlparse
-
-        parsed = urlparse(_to_libpq_url(url))
-        assert parsed.hostname == expected_host
+        parsed = make_url(_to_libpq_url(url))
+        assert parsed.host == expected_host
         assert str(parsed.port or 5432) == expected_port
-        assert unquote(parsed.username or "") == expected_user
-        assert parsed.path.lstrip("/") == expected_db
-        assert unquote(parsed.password or "") == expected_pw
+        assert (parsed.username or "") == expected_user
+        assert (parsed.database or "") == expected_db
+        assert (parsed.password or "") == expected_pw
 
 
 class TestDumpDatabaseTask:
@@ -320,6 +359,121 @@ class TestDumpDatabaseTask:
 # ---------------------------------------------------------------------------
 # backup_database_flow — integration of tasks
 # ---------------------------------------------------------------------------
+
+
+class TestDumpDatabaseTaskSlashInPassword:
+    """Plan 161 T1 — a `/` in the password must not break parsing.
+
+    RED case: `urlparse` (the pre-T1 parser) terminates the netloc at the
+    first `/` after the scheme, so a password containing `/` is misread and
+    `urlparse().port` raises `ValueError: Port could not be cast to integer
+    value as '...'`. This is the exact live incident (worker DB password has
+    a `/` at index 2). `make_url` (the SQLAlchemy parser already used by
+    `db/engine.py`) does not split on `/` in the userinfo and preserves the
+    password exactly.
+    """
+
+    PASSWORD = "sec/ret"
+    DB_URL = f"postgresql+psycopg://sapphire_worker:{PASSWORD}@postgres:5432/sapphire"
+
+    @patch("sapphire_flow.flows.backup.subprocess.run")
+    def test_slash_in_password_does_not_break_pg_dump_invocation(
+        self, mock_run: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("DATABASE_URL", self.DB_URL)
+
+        def fake_run(
+            cmd: list[str], **kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            for arg in cmd:
+                if arg.startswith("--file="):
+                    Path(arg.split("=", 1)[1]).write_bytes(b"dump")
+            return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = fake_run
+
+        dump_database_task.fn(str(tmp_path))
+
+        cmd = mock_run.call_args[0][0]
+        assert "--host=postgres" in cmd
+        assert "--port=5432" in cmd
+        assert "--username=sapphire_worker" in cmd
+        assert "--dbname=sapphire" in cmd
+
+        env = mock_run.call_args[1]["env"]
+        assert env["PGPASSWORD"] == self.PASSWORD
+
+
+class TestDumpDatabaseTaskEncodingRegression:
+    """End-to-end (via `dump_database_task`, not `make_url` directly) proof
+    that the `/` fix did not reintroduce a decode step.
+
+    `make_url` already percent-decodes the userinfo once. If a future edit
+    re-adds `unquote()` on `parsed.password` (as the pre-T1 code had), a
+    producer-encoded literal `%` gets decoded a *second* time. The old
+    regression case (`p%25ss` -> `p%ss`) could not catch this: `%ss` is not
+    valid percent-encoding, so a second `unquote()` leaves it unchanged and
+    the broken implementation would still pass. `%41` *is* valid hex, so a
+    second decode corrupts it (`p%2541ss` -[make_url]-> `p%41ss`
+    -[extra unquote]-> `pAss`), which this test would catch.
+    """
+
+    @patch("sapphire_flow.flows.backup.subprocess.run")
+    def test_percent_encoded_password_not_double_decoded(
+        self, mock_run: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        original_password = "p%41ss"
+        # A producer that percent-encodes its password (quote(pw, safe=""))
+        # turns 'p%41ss' into 'p%2541ss' in the URL string.
+        encoded_password = quote(original_password, safe="")
+        assert encoded_password == "p%2541ss"
+        db_url = (
+            f"postgresql+psycopg://sapphire_worker:{encoded_password}"
+            "@postgres:5432/sapphire"
+        )
+        monkeypatch.setenv("DATABASE_URL", db_url)
+
+        def fake_run(
+            cmd: list[str], **kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            for arg in cmd:
+                if arg.startswith("--file="):
+                    Path(arg.split("=", 1)[1]).write_bytes(b"dump")
+            return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = fake_run
+
+        dump_database_task.fn(str(tmp_path))
+
+        env = mock_run.call_args[1]["env"]
+        assert env["PGPASSWORD"] == original_password
+
+    @patch("sapphire_flow.flows.backup.subprocess.run")
+    def test_plus_in_password_passed_through(
+        self, mock_run: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # REGRESSION: '+' is an unreserved sub-delim in userinfo and already
+        # passed through unchanged under the pre-T1 urlparse+unquote path.
+        password = "p+ss"
+        db_url = (
+            f"postgresql+psycopg://sapphire_worker:{password}@postgres:5432/sapphire"
+        )
+        monkeypatch.setenv("DATABASE_URL", db_url)
+
+        def fake_run(
+            cmd: list[str], **kwargs: object
+        ) -> subprocess.CompletedProcess[str]:
+            for arg in cmd:
+                if arg.startswith("--file="):
+                    Path(arg.split("=", 1)[1]).write_bytes(b"dump")
+            return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = fake_run
+
+        dump_database_task.fn(str(tmp_path))
+
+        env = mock_run.call_args[1]["env"]
+        assert env["PGPASSWORD"] == password
 
 
 class TestBackupDatabaseFlow:
