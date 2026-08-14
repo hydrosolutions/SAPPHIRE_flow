@@ -161,6 +161,55 @@ design**. Fix:
 - **MINOR** — `docs/touchpoint-maps.md:482` still documents a caller-supplied `prefix` parameter that
   round 2 removed; it contradicts line 659 and the shipped signature.
 
+## Round-3 review — loop reported CONVERGED (0/0), independent Codex disagrees (2026-08-14)
+
+The workflow converged after 3 rounds (5 fixer commits, HEAD `9fe14b7`, full suite **3410 passed**).
+An independent Codex pass over the FINAL state returned **not mergeable**. Note `codexFailedRounds: 1`
+— one of the loop's own rounds ran without its Codex pass, and rounds 4-5 landed *after* the
+implementer wrote its report, so its evidence covers `bc8f5d1`, not HEAD. **Every item below was
+checked against the code; two of Codex's severities are corrected.**
+
+### ✅ Verified genuinely fixed (by execution)
+- **D15/D16 resolution** — CARAVAN + missing `caravan:area` → `None`, never the leaked `123.0`;
+  NATIVE unchanged; CARAVAN + present → Caravan's value; differing co-assigned regimes raise.
+- **The T1 exit gate** — now manifest-scoped, and **its locking test discriminates**: reverting
+  `manifest_unmatched` → `unmatched` makes `test_an_out_of_manifest_unmatched_code_does_not_raise`
+  **fail** while `test_a_manifest_unmatched_code_raises` still passes. `run_operational_caravan_import`
+  requires both gate parameters, so the always-skip path is closed by the signature.
+- **Atomicity** — `require_real_transaction` refuses AUTOCOMMIT before any read or write.
+
+### ⬇️ Codex's BLOCKER — real, but NOT live; downgrade to MAJOR (hardening)
+An empty/omitting `static_naming_models` makes `resolve_shared_static_frame` see no Caravan
+declarations and return raw attributes — executed: `[]` yields `area=123.0` where `[caravan_model]`
+yields `500.0` (`services/operational_inputs.py:574`). **But the invariant holds by construction at
+the only caller**: `first_model = models.get(assembly_assignment.model_id)` (`:2076`, guarded at
+`:2077`) and `assigned_models` is every resolving model of the same `sorted_assignments` (`:2093`),
+so the invoked model is always in the list. It is a **service-contract gap reachable only by a future
+caller**, not a live data-corruption path. Fix cheaply: have the service reject a
+`static_naming_models` that omits the invoked model.
+
+### ✅ Codex's MAJORs — both real, and both now CLOSABLE
+They share one root: **no caller supplies the AUTHENTIC manifest and the AUTHENTIC 50 statics.**
+`expected_codes`/`required_static_names` need only be non-empty, and the "all fifty" test uses
+**22 invented placeholder names** — the test's own comment concedes it is "a committed, minimal
+golden list standing in for PT's real 50-static declared contract" because "the real declared name
+list lives in the external `cmal_pool_PT` artifact, not this repo".
+
+**That premise no longer holds — the real list was extracted this session:**
+`cmal_pool_PT/config.yaml` → `static_features`, **exactly 50 names**, splitting **21 aliased / 29
+direct** against `CARAVAN_ALIAS` — an independent confirmation that the 21-entry alias map is right.
+**Commit those 50 as a fixture** and the vacuous-test major closes and the exit gate becomes real
+rather than nominal.
+
+### MINORs
+- **Value admissibility is not shared.** `_resolve_declared_value` rejects only missing values, so an
+  infinity/string/bool under a `caravan:` key is "available" and gets projected, while
+  `verify_static_coverage` would reject it as non-finite. Compatibility, frame and coverage agree on
+  *key selection* but not on *validity* (`services/caravan_statics.py:241,283,507`). Matters because
+  `area` is among the statics.
+- **`services/training_data.py:253`** omits `station_code`, so a T2 collision reports
+  `station '<unknown>'` — contrary to T2's "naming station, alias, canonical name and both values".
+
 ## Implementation notes (read before writing code)
 
 **Source data:** `/Users/bea/Downloads/data.parquet` — 296 rows x 216 cols, `gauge_id` =
