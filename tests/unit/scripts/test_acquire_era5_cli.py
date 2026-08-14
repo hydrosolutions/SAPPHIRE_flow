@@ -598,9 +598,17 @@ class TestTransformWindowScoping:
         assert code == 0
         assert called_years == [2021]
 
-    def test_stage_all_with_partial_window_transforms_only_that_year(
+    def test_stage_all_with_a_sub_year_window_is_a_usage_error(
         self, tmp_path: Path
     ) -> None:
+        """`--stage all --window 2021-10` acquires ONE month and then asks for
+        a whole-2021 transform, which needs the full year plus both
+        neighbouring windows. An earlier version of this test asserted it
+        "worked" — but only because `transform_fn` was faked. Against the real
+        transform it fails deep inside on missing artifacts, reported as a data
+        defect rather than the usage error it is. Acquisition and transform
+        have different granularities (D4), so `--stage all` is only coherent
+        for a year-granular window; the 2b sample is `--stage acquire`."""
         provenance = _write_provenance(tmp_path)
         window = AcquisitionWindow(year=2021, month=10)
         args = build_parser().parse_args(
@@ -622,11 +630,9 @@ class TestTransformWindowScoping:
             return self._fake_transform_year(year, **kwargs)
 
         client = _ScriptedClient(window=window)
-        code = run(
-            args, client=client, transform_fn=fake_transform, sleep=lambda _s: None
-        )
-        assert code == 0
-        assert called_years == [2021]
+        with pytest.raises(NonExpressibleWindowError, match="year-granular"):
+            run(args, client=client, transform_fn=fake_transform, sleep=lambda _s: None)
+        assert called_years == [], "no transform may be attempted for a sub-year window"
 
     def test_out_of_range_window_year_is_rejected_not_silently_skipped(
         self, tmp_path: Path

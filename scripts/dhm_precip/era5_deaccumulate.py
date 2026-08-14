@@ -265,9 +265,19 @@ def deaccumulate_precipitation(
     missing_predecessor[0] = not bool(is_day_start[0])
     missing_and_required = missing_predecessor & in_range
     if bool(missing_and_required.any()):
+        # State the OBSERVED FACT, not a presumed cause. A review finding: the
+        # previous message asserted "the adjacent acquisition window" was
+        # missing, which is only one of several ways to reach here — and a
+        # wrong cause in an error message sends the reader to the wrong place.
         raise Era5MissingBoundaryContextError(
-            "cannot compute hourly increments for the requested range without "
-            "boundary context from the adjacent acquisition window"
+            f"the first stamp of the supplied series ({valid_time[0]}) is "
+            "inside the required range but has no predecessor and is not "
+            "itself an accumulation-day start (01 UTC), so its hourly "
+            "increment is undefined. Candidate causes: the neighbouring "
+            "acquisition window was never acquired; the series was truncated "
+            "before being passed in; or the raw artifact itself is short. "
+            "Check which raw windows exist before treating this as a data "
+            "defect."
         )
 
     # --- D6 post-condition 1: conservation, on the UNCLAMPED increments ---

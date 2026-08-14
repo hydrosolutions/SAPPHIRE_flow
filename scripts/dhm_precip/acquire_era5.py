@@ -194,6 +194,21 @@ def run(
             log.info("era5.cli.acquired", window_id=record.window_id)
 
     if args.stage in ("transform", "all"):
+        if args.stage == "all" and args.window and any(w.month for w in windows):
+            # A review finding: `--stage all --window 2021-10` acquired ONE
+            # month and then asked for a whole-2021 transform, which needs the
+            # full year plus its neighbours. It would fail deep inside the
+            # transform on missing artifacts, reported as a data problem rather
+            # than as the usage error it is. `--stage all` is only coherent for
+            # a year-granular window; the 2b sample is `--stage acquire`.
+            raise NonExpressibleWindowError(
+                f"--stage all requires a year-granular --window, but "
+                f"{args.window!r} is sub-year. Acquisition and transform have "
+                "different granularities (D4): acquire works on any window, "
+                "transform is year-granular and additionally needs the "
+                "neighbouring windows. Use --stage acquire for a sample "
+                "window, then --stage transform on a whole year."
+            )
         if args.window:
             # ANY window granularity contributes its year (not just a whole
             # year, D4's month=None shape) — a review finding showed a

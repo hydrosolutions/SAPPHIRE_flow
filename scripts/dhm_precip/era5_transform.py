@@ -211,6 +211,8 @@ def transform_year(
         )
 
     raw_sha256s: list[str] = []
+    request_family: dict[str, object] | None = None
+    request_family_label = ""
     for window_id, path, label in (
         (prev_window_id, prev_path, "previous-year boundary context"),
         (year_window_id, year_path, "product year"),
@@ -234,6 +236,28 @@ def transform_year(
                 f"under dataset {record.dataset!r}, but the manifest's "
                 f"dataset is {manifest.dataset!r} — refusing to mix datasets "
                 "within one transformed product"
+            )
+        # Beyond the dataset, the three consumed windows must belong to the
+        # same REQUEST FAMILY. A review finding: checking `dataset` alone still
+        # permits stitching a product out of windows acquired over different
+        # areas, variables or formats — e.g. a boundary-context window fetched
+        # for a smaller box, which would silently produce a product whose edges
+        # came from a different extraction than its interior. The payload
+        # carries these, so reconcile them rather than trusting the caller.
+        family = {
+            key: record.request_payload.get(key)
+            for key in ("area", "variable", "data_format", "download_format")
+        }
+        if request_family is None:
+            request_family = family
+            request_family_label = label
+        elif family != request_family:
+            differing = sorted(k for k in family if family[k] != request_family.get(k))
+            raise Era5StorageError(
+                f"raw artifact for {label} window {window_id!r} was acquired "
+                f"with a different request family than the {request_family_label} "
+                f"window — {differing} differ. Refusing to build one product "
+                "from inconsistent extractions"
             )
         raw_sha256s.append(record.sha256)
 
