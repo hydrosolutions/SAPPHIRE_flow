@@ -64,6 +64,33 @@ virtualenv (`:82`).
 unrepresentable model is skipped per entry point. A missing or unsupported shim therefore surfaces
 downstream as `MODEL_NOT_FOUND`, not as a clear packaging error.
 
+## T0 — PREREQUISITE: bump ForecastInterface to v0.1.19 (drift check, 2026-08-14)
+
+**aquacast merged `feat/subdaily-operational` (PR #127) on 2026-08-14 and now pins FI `v0.1.19`;
+this repo pins `v0.1.17`.** The shim imports both, so installing aquacast into a `v0.1.17`
+environment is an **unsatisfiable resolve** — the bump is a prerequisite for T1, not a follow-on.
+
+**Drift check performed against our merged code — nothing we shipped is affected.** The four changes
+between v0.1.17 and v0.1.19:
+
+| change | impact |
+|---|---|
+| `AggregationMethod.MAX` added | **None for PT.** Returned only for `*_peak` channels; `cmal_pool_PT`'s config has no peak channel (verified). |
+| `RunConfig` base + opaque config mapping (new `interface/run_config.py`) | **None** — additive, unconsumed. |
+| `train`/`retrain`: `config: Any` → `config: Mapping[str, Any]` | **None** — we pass `ModelParams`, which *is* `dict[str, Any]` (`types/model.py:30`), so the narrowed type is already satisfied. |
+| `predict` | **Unchanged** — the forecast path and everything Plan 155 touched are untouched. |
+
+So the bump is low-risk: three additive changes plus one narrowing we already satisfy.
+
+### Two semantic findings the shim must own
+- **`MM_PER_HOUR` is cadence-dependent in aquacast.** Its own comment: at a sub-daily cadence
+  `MM_PER_HOUR` means mm per *fine step*, **not** mm per wall-clock hour — *except* for peak
+  channels, where it genuinely is per wall-clock hour. T1 owns the unit boundary, so this ambiguity
+  lands on the shim. Inert for `cmal_pool_PT` (DAILY), live the moment sub-daily is in scope.
+- **Models now declare `AggregationMethod` per variable**, deliberately using "the same predicate the
+  trained binning used ... so what we declare and what the weights were fit on cannot drift apart."
+  **We currently ignore it** — acceptable for a daily model, and a real question for Plan 153.
+
 ## Tasks
 
 ### T1 — the `sapphire-aquacast` distribution (EXTERNAL REPO)
