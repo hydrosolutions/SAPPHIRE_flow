@@ -1,6 +1,7 @@
 ---
-status: DRAFT
+status: READY
 created: 2026-08-14
+revised: 2026-08-14
 plan: 172
 title: M-A2 + M-I1 — canonical hourly axis, and the precipitation QC rule logic
 scope: Two small milestones that jointly unblock M-A3. M-A2 materialises the 568 hours missing entirely from the workbook as explicit null rows, so run detection cannot bridge them, with per-row provenance and a row-identity conservation proof. M-I1 gives `frozen_sensor` the value exclusion that makes it usable for precipitation, plus the rule-version emission that lets a flag record which variant produced it. Explicitly NOT the QC mask itself (M-A3), NOT any ERA5 work (M-A5/A6), NOT operational config binding (M-I4, gated).
@@ -12,7 +13,11 @@ source: docs/design/dhm-precipitation-milestones.md
 # Plan 172 — M-A2 canonical hourly axis + M-I1 precipitation QC rules
 
 ## Status
-**DRAFT.** Implements **M-A2** and **M-I1**. Folded into one plan because **M-A3 depends on both**
+**READY — owner-confirmed 2026-08-14.** Gated with **two manual Codex rounds** (1 blocker + 6 majors
++ 1 minor → clean) rather than `/plan`, after Plans 170 and 171 both escalated through over-expansion.
+The rounds corrected this plan's original premise and its conservation check — see D1 and D5.
+
+Implements **M-A2** and **M-I1**. Folded into one plan because **M-A3 depends on both**
 and neither is large alone; they touch disjoint code (`scripts/dhm_precip/` and
 `src/sapphire_flow/services/qc.py`) and share no state.
 
