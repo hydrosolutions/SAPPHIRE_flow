@@ -12,7 +12,9 @@ supersedes: []
 # Plan 161 — DATABASE_URL credential handling
 
 ## Status
-**READY** (2026-08-14) — **build scope is T1 ONLY.** Operational reliability (category **A**). Fixes a **live, ongoing** backup outage:
+**READY** (2026-08-14) — T1 **BUILT, MERGED (#152) and DEPLOYED** (mini at 0.1.721, alembic 0048).
+**T1 is confirmed working — and deploying it uncovered two further defects, T4 and T5, both live.**
+Backups are still failing: T4 blocks them, and T5 means the failure is now *silent*. Next build scope: **T4+T5**. Operational reliability (category **A**). Fixes a **live, ongoing** backup outage:
 **the mac-mini has had no successful database backup since 2026-08-13 02:01 UTC.**
 
 ## Problem
@@ -371,6 +373,55 @@ never alerts on recovery. Also assert that a `WatchdogState` loaded from a pre-e
 file (no `consecutive_backup_failures` key) defaults to 0 rather than raising.
 
 **Verify:** `uv run pytest tests/unit/ops/test_watchdog.py -q`.
+
+### T4 — the backup role cannot read the database it backs up (Repo + Host) — **NEW, live blocker**
+
+**Found by deploying T1 (2026-08-14 14:24 UTC).** T1 worked: the URL now parses and `pg_dump` is actually
+invoked. It then failed on the *next* bug, from the same Plan 147 Slice D change:
+
+```
+RuntimeError: pg_dump failed (exit 1): pg_dump: error: query failed:
+ERROR:  permission denied for table access_tokens
+```
+
+The backup flow runs inside `prefect-worker` and therefore connects as **`sapphire_worker`**
+(`DATABASE_URL_TEMPLATE=postgresql+psycopg://sapphire_worker@postgres:5432/sapphire`). Verified on the host:
+`sapphire_worker` holds **no grants at all** on `access_tokens` — only `sapphire` (owner) and `sapphire_api` do.
+**That is correct least-privilege design and must not be reverted** — Slice D exists precisely so no app
+container can read credentials. The defect is that a *whole-database* backup was left running on a
+*deliberately partial* role. So Plan 147 Slice D produced **two** independent backup failures, and the first
+(the `/` password) masked the second.
+
+**Do NOT fix by granting `sapphire_worker` more privilege** — that re-opens exactly what Slice D closed.
+**Fix:** a dedicated read-only role, e.g. `sapphire_backup` with the built-in `pg_read_all_data` (confirmed
+available: PostgreSQL **16.4**, role present), its own secret, mounted only where the backup runs. Consider
+moving the backup out of the worker into its own job so the worker never holds a read-all credential.
+Composes cleanly with T2: that credential reaches `pg_dump` as `PG*` vars, so it is never parsed.
+
+**Red-first:** a test asserting the backup path connects as the backup role, not the worker role. Host
+acceptance: `backup-database` reaches `COMPLETED` **and** the dump passes `pg_restore --list`.
+
+### T5 — a FAILED backup leaves a 0-byte dump that SILENCES the staleness alert (Repo) — **NEW, severity-raising**
+
+The failed run above left `sapphire_20260814_142409.dump` at **0 bytes**. `newest_backup_mtime`
+(`ops/watchdog.py:258-263`) globs `*.dump` and takes the newest **mtime** — it never checks size or validity.
+So a failed backup produces a **fresh-looking artifact that clears the stale alert**.
+
+**This means T1, alone, converted a loud failure into a silent one.** Before T1 the `ValueError` was raised
+*before* `pg_dump` ran, so no file was created and staleness was correctly detected (confirmed: no other 0-byte
+dumps exist on the host). After T1, `pg_dump` runs, creates the file, fails — and the monitor goes quiet. The
+0-byte file was removed manually; the behaviour is still latent for **any** future `pg_dump` failure (disk full,
+network, permissions).
+
+**Fix, both halves:**
+1. **Producer:** delete the partial dump on failure — `dump_database_task` must remove `dump_file` before
+   raising, so a failed run leaves no artifact.
+2. **Monitor:** `newest_backup_mtime` must ignore non-viable dumps — at minimum size > 0; better, the newest
+   dump validates (`pg_restore --list` succeeding is the real test, and is what proved both safety dumps).
+   A monitor that accepts any file named `*.dump` cannot distinguish a backup from a touch.
+
+**Red-first:** (a) a `pg_dump` failure leaves **no** file behind; (b) a 0-byte (and a truncated) `*.dump` does
+**not** satisfy the freshness check. Both must fail against current code.
 
 ## Exit gates
 
