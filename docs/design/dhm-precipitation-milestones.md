@@ -332,6 +332,36 @@ evidence supports it, including "no operational use".
 
 ---
 
+## Working on this track — the research data is gitignored, so a worktree starts empty
+
+**A git worktree carries no gitignored files.** `data/` is gitignored (`.gitignore:21`), so a fresh
+worktree has none of this track's inputs and the failures look like regressions when they are not.
+
+**First thing after creating a worktree for this track:**
+
+```bash
+mkdir -p <worktree>/data/dhm_precip
+cp /path/to/SAPPHIRE_flow/data/dhm_precip/* <worktree>/data/dhm_precip/
+```
+
+That is the workbook, `station_coordinates.csv`, and `era5_land_provenance.json` (Plan 171's D15
+operator provenance — **JSON**, the authoritative schema).
+
+**What it looks like when you forget.** The M-A1 reproduction gate fails with
+`coordinate table not found or not a file: data/dhm_precip/station_coordinates.csv` and exit code 2.
+That is **D12 behaving correctly** — a missing coordinate table is a typed loader error, never a
+silent skip — but it reads as a code regression until you notice the message.
+
+**Related trap when reporting coverage.** A full `uv run pytest` reports **7 skipped**; those are all
+Plan 170's M-A1 reproduction gate, which skips when `DHM_PRECIP_XLSX` is unset (its *only* permitted
+skip condition, so CI stays green without the workbook). A full-suite pass therefore **does not**
+exercise the reproduction gate. Run it explicitly with the workbook before claiming it green:
+
+```bash
+DHM_PRECIP_XLSX=data/dhm_precip/combined_precipitation_37_stations.xlsx \
+  uv run pytest tests/integration/test_dhm_precip_reproduction.py
+```
+
 ## Track I — implementation
 
 ### M-I1 · Precipitation QC rules and fixtures
