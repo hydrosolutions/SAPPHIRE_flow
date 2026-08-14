@@ -60,6 +60,27 @@ def _rule(rule_id: str, thresholds: dict[str, float]) -> QcRuleParams:
     )
 
 
+_PRECIP = "precipitation"
+
+
+def _precip_obs(value: float, hours: int = 0) -> Observation:
+    """M-I1 tests must use the REAL parameter. A review finding: they used the
+    module default `discharge`, so a precipitation-specific regression could
+    pass every M-I1 test — the checker matches rules to observations BY
+    parameter, so the wrong one exercises the wrong path."""
+    return _make_obs(value, hours, parameter=_PRECIP)
+
+
+def _precip_rule(rule_id: str, thresholds: dict[str, float]) -> QcRuleParams:
+    return QcRuleParams(
+        rule_id=rule_id,
+        rule_version="1.0",
+        parameter=_PRECIP,
+        time_step=_STEP,
+        thresholds=thresholds,
+    )
+
+
 def _rule_set(*rules: QcRuleParams) -> QcRuleSet:
     return QcRuleSet(version="1.0", rules=tuple(rules))
 
@@ -187,9 +208,9 @@ class TestFrozenSensorExclusion:
     ) -> None:
         checker = Stage1QualityChecker()
         # Sindhuli Madhi's stuck-high signature: ~72 mm pinned for 120 hours.
-        obs = [_make_obs(72.0, i) for i in range(120)]
+        obs = [_precip_obs(72.0, i) for i in range(120)]
         rs = _rule_set(
-            _rule(
+            _precip_rule(
                 "frozen_sensor",
                 {
                     "tolerance": 0.5,
@@ -199,16 +220,18 @@ class TestFrozenSensorExclusion:
             )
         )
         result = checker.check(obs, rs, [], [])
-        # By the 12th observation the run has reached min_consecutive and
-        # every observation in it (and every subsequent one) is flagged.
-        assert all(result[o.id] for o in obs[11:])
+        # Assert on ALL 120, not just from index 11: the rule backfills the
+        # whole run once min_consecutive is reached, so skipping the first 11
+        # would let broken backfilling pass unnoticed (review finding).
+        assert all(result[o.id] for o in obs), "every observation in the run is flagged"
+        assert all(result[o.id][0].rule_id == "frozen_sensor" for o in obs)
 
     def test_50_day_zero_run_is_not_flagged_when_excluded(self) -> None:
         checker = Stage1QualityChecker()
         n_hours = 50 * 24
-        obs = [_make_obs(0.0, i) for i in range(n_hours)]
+        obs = [_precip_obs(0.0, i) for i in range(n_hours)]
         rs = _rule_set(
-            _rule(
+            _precip_rule(
                 "frozen_sensor",
                 {
                     "tolerance": 1e-9,

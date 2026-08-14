@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 import polars as pl
 import pytest
 
-from scripts.dhm_precip.domain_types import Station
+from scripts.dhm_precip.domain_types import AccumulationConvention, Station
 from scripts.dhm_precip.normalise import (
     ConservationError,
     DuplicateDeliveredRowError,
@@ -415,7 +415,7 @@ class TestBuildProvenance:
         assert provenance.off_grid_source_timestamp_rows == 1
         assert provenance.off_grid_non_null_observations == 2
 
-    def test_records_period_ending_with_a_source(self) -> None:
+    def test_records_the_accumulation_convention_with_a_source(self) -> None:
         rows = [
             {
                 "source_row_index": 0,
@@ -425,5 +425,7 @@ class TestBuildProvenance:
             },
         ]
         provenance = build_provenance(_raw_frame(rows), DEFAULT_PARAMS)
-        assert provenance.period_ending is True
+        assert (
+            provenance.accumulation_convention is AccumulationConvention.PERIOD_ENDING
+        )
         assert "M-D3" in provenance.period_ending_source

@@ -20,7 +20,11 @@ from typing import TYPE_CHECKING
 import polars as pl
 
 from scripts.dhm_precip import stats_axis
-from scripts.dhm_precip.domain_types import NormalisationProvenance, Station
+from scripts.dhm_precip.domain_types import (
+    AccumulationConvention,
+    NormalisationProvenance,
+    Station,
+)
 from scripts.dhm_precip.numeric import as_datetime, as_int
 
 if TYPE_CHECKING:
@@ -220,6 +224,6 @@ def build_provenance(
         off_grid_non_null_observations=as_int(
             off_grid_obs["off_grid_observation_count"][0]
         ),
-        period_ending=True,
+        accumulation_convention=AccumulationConvention.PERIOD_ENDING,
         period_ending_source=PERIOD_ENDING_SOURCE,
     )

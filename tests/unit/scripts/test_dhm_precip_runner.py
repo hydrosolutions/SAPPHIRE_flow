@@ -158,13 +158,13 @@ class TestNormalisedAxisArtefacts:
         }
         assert set(frame["station"].unique().to_list()) == expected_stations
 
-    def test_normalisation_provenance_records_period_ending(
+    def test_normalisation_provenance_records_the_accumulation_convention(
         self, synthetic_run_inputs, tmp_path
     ) -> None:
         out = tmp_path / "out"
         run_module.run(out)
         frame = pl.read_parquet(out / "tables" / "normalisation_provenance.parquet")
-        assert frame["period_ending"][0] is True
+        assert frame["accumulation_convention"][0] == "period_ending"
         assert "M-D3" in frame["period_ending_source"][0]
 
 

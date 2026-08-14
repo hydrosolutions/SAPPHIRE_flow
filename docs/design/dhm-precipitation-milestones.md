@@ -433,8 +433,11 @@ drift risk that motivated the original split is closed without adding a single i
 **COMPLETE 2026-08-14 (Plan 172).** `_apply_frozen_sensor` (`services/qc.py:92`) gained the scalar
 `exclude_at_or_below` threshold (D8): a value at or below it never starts or extends a frozen run, so
 setting it to `0.0` lets precipitation's normal dry spells pass while still catching a stuck sensor
-(Sindhuli Madhi's ~72 mm pinned block). Absent from `thresholds`, behaviour is unchanged bit-for-bit —
-proved by an unmodified existing discharge case plus a new one. The function also now stamps
+(Sindhuli Madhi's ~72 mm pinned block). Absent from `thresholds`, **which observations get flagged,
+with what status and detail, is unchanged** — proved by an unmodified existing discharge case plus a
+new one. *Not* bit-for-bit, and the difference is deliberate: D8b also corrects the emitted
+`rule_version`, so existing configured rules now stamp their own `"1.0.0"` where the hard-coded
+constant previously wrote `"1.0"`. Flag *metadata* changes; flag *selection* does not. The function also now stamps
 `rule.rule_version` on every emitted flag instead of the hard-coded module constant `_RULE_VERSION`
 (D8b) — a flag can finally record which rule variant produced it, and existing configurations (whose
 `rule_version` already matches what they intended) keep their meaning; only `frozen_sensor` was

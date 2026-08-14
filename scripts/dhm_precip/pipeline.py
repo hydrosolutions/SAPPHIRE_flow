@@ -105,7 +105,7 @@ def _normalised_axis_and_provenance(
             "off_grid_non_null_observations": [
                 provenance.off_grid_non_null_observations
             ],
-            "period_ending": [provenance.period_ending],
+            "accumulation_convention": [provenance.accumulation_convention.value],
             "period_ending_source": [provenance.period_ending_source],
         }
     ).with_columns(

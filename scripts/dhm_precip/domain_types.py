@@ -36,6 +36,19 @@ class AxisStatus(StrEnum):
     provisional statistic — it IS the axis)."""
 
 
+class AccumulationConvention(StrEnum):
+    """How a timestamp relates to the interval it summarises. A `bool` cannot
+    express this: `False` would conflate period-starting, instantaneous and
+    unknown, and CLAUDE.md forbids a bool for a domain state with named
+    possibilities. DHM answered PERIOD_ENDING for this dataset (M-D3), and
+    ERA5-Land shares it — which is why M-A6 needs no offset."""
+
+    PERIOD_ENDING = "period_ending"
+    PERIOD_BEGINNING = "period_beginning"
+    INSTANTANEOUS = "instantaneous"
+    UNKNOWN = "unknown"
+
+
 class Grain(StrEnum):
     """D6b — the three named grains. Every expectation declares its grain."""
 
@@ -107,14 +120,14 @@ class ViewCounts:
 class NormalisationProvenance:
     """D3/D6 (Plan 172, Phase 2a) — accompanies the normalised hourly axis
     (M-A2). The two off-grid count grains are the RAW view's own D3 numbers
-    (never re-derived here); `period_ending` records M-D3's answer as a
+    (never re-derived here); `accumulation_convention` records M-D3's answer as a
     stated fact, with its source, never as an assumption."""
 
     off_grid_source_timestamp_rows: int
     """D3 grain: workbook rows whose minute != on_grid_minute."""
     off_grid_non_null_observations: int
     """D3 grain: non-null cells within those off-grid rows."""
-    period_ending: bool
+    accumulation_convention: AccumulationConvention
     period_ending_source: str
 
 
