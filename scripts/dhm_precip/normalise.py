@@ -14,6 +14,7 @@ from the workbook's 37 raw columns.
 
 from __future__ import annotations
 
+import struct
 from typing import TYPE_CHECKING
 
 import polars as pl
@@ -38,6 +39,32 @@ class ConservationError(Exception):
     """D5 — the row-identity conservation assertion failed."""
 
 
+class DuplicateDeliveredRowError(Exception):
+    """D5/D6b — a delivered `(station, timestamp)` key is not unique.
+
+    The reindex join onto the canonical axis must be one-to-one: each grid
+    cell may match at most one delivered row. A one-to-many match would
+    silently duplicate output rows for a single station-hour, breaking both
+    D1's "exactly one row per (station, hour)" guarantee and the conservation
+    proof (two output rows could each individually "match some delivered
+    key" while a different delivered row goes missing entirely — see
+    `assert_row_identity_conservation`, which checks both directions
+    precisely because a one-to-many join can defeat a forward-only check).
+    """
+
+
+def _reject_duplicate_delivered_keys(restricted: pl.DataFrame) -> None:
+    dupes = (
+        restricted.group_by(["station", "timestamp"]).len().filter(pl.col("len") > 1)
+    )
+    if dupes.height:
+        raise DuplicateDeliveredRowError(
+            f"{dupes.height} delivered (station, timestamp) key(s) are not "
+            "unique — the workbook must deliver at most one row per station "
+            "per hour for the reindex join to be one-to-one"
+        )
+
+
 def normalise_hourly_axis(
     on_grid: pl.DataFrame, stations: frozenset[Station]
 ) -> pl.DataFrame:
@@ -48,9 +75,13 @@ def normalise_hourly_axis(
 
     `stations` restricts the input BEFORE reindexing (D6b) — the output's
     station set is exactly `stations` by construction, never the workbook's
-    raw 37-column population.
+    raw 37-column population. Delivered `(station, timestamp)` keys must be
+    unique (`DuplicateDeliveredRowError` otherwise) — the join is validated
+    one-to-one (`validate="1:1"`) so a duplicate can never silently fan out
+    into extra output rows.
     """
     restricted = on_grid.filter(pl.col("station").is_in(list(stations)))
+    _reject_duplicate_delivered_keys(restricted)
     lo = as_datetime(restricted["timestamp"].min())
     hi = as_datetime(restricted["timestamp"].max())
     axis_dtype = restricted["timestamp"].dtype
@@ -68,10 +99,33 @@ def normalise_hourly_axis(
         restricted.select("source_row_index", "station", "timestamp", "value_mm"),
         on=["station", "timestamp"],
         how="left",
+        validate="1:1",
     )
     return normalised.select(
         ["source_row_index", "station", "timestamp", "value_mm"]
     ).sort(["station", "timestamp"])
+
+
+_IDENTITY_KEY = ("source_row_index", "station", "timestamp")
+
+
+def _float_bits(value: float | None) -> int | None:
+    """The exact IEEE-754 bit pattern of a float64, or `None`. Two floats
+    that compare numerically equal (`0.0 == -0.0`) can still have different
+    bits — `eq_missing`/`==` would wrongly call them the same value, which
+    is exactly what D5's "bit-identical" requirement rules out."""
+    if value is None:
+        return None
+    return struct.unpack("<Q", struct.pack("<d", value))[0]
+
+
+def _bit_identical(a: pl.Series, b: pl.Series) -> pl.Series:
+    a_vals = a.cast(pl.Float64).to_list()
+    b_vals = b.cast(pl.Float64).to_list()
+    bits_equal = [
+        _float_bits(x) == _float_bits(y) for x, y in zip(a_vals, b_vals, strict=True)
+    ]
+    return pl.Series(bits_equal, dtype=pl.Boolean)
 
 
 def assert_row_identity_conservation(
@@ -82,40 +136,67 @@ def assert_row_identity_conservation(
     """D5 — conservation is proved by row identity, not by summing.
 
     Every delivered row, keyed by `(source_row_index, station, timestamp)`,
-    must appear in `normalised` with a bit-identical `value_mm`. Every row
-    `normalised` added must carry BOTH a null `source_row_index` and a null
-    `value_mm`. Raises `ConservationError` (never a silent pass) on any
-    violation — this is an assertion, not a test-only check.
+    must appear in `normalised` with a bit-identical `value_mm`, and every
+    such key in `normalised` must correspond to a real delivered row —
+    checked in BOTH directions via anti-joins, not by row-count equality
+    plus a forward-only join. A forward-only check ("every kept key matches
+    some delivered key") cannot tell a correct normalisation apart from one
+    that drops one delivered row and duplicates another: the duplicate's two
+    copies both "match" the single surviving delivered key, so the counts
+    balance and the join still fully matches, while the dropped row's
+    identity silently vanishes. Every row `normalised` added must carry BOTH
+    a null `source_row_index` and a null `value_mm`. Raises
+    `ConservationError` (never a silent pass) on any violation — this is an
+    assertion, not a test-only check.
     """
     delivered = on_grid.filter(pl.col("station").is_in(list(stations))).select(
         "source_row_index", "station", "timestamp", "value_mm"
     )
+    _reject_duplicate_delivered_keys(delivered)
+
     kept = normalised.filter(pl.col("source_row_index").is_not_null())
     inserted = normalised.filter(pl.col("source_row_index").is_null())
 
-    if kept.height != delivered.height:
+    kept_key_dupes = kept.group_by(list(_IDENTITY_KEY)).len().filter(pl.col("len") > 1)
+    if kept_key_dupes.height:
         raise ConservationError(
-            f"expected {delivered.height} delivered rows preserved in the "
-            f"normalised output, found {kept.height}"
+            f"{kept_key_dupes.height} preserved row identity key(s) "
+            "(source_row_index, station, timestamp) are duplicated in the "
+            "normalised output — a one-to-many reindex would let a "
+            "duplicate mask a different delivered row's disappearance"
+        )
+
+    delivered_keys = delivered.select(*_IDENTITY_KEY)
+    kept_keys = kept.select(*_IDENTITY_KEY)
+
+    missing = delivered_keys.join(kept_keys, on=list(_IDENTITY_KEY), how="anti")
+    if missing.height:
+        raise ConservationError(
+            f"{missing.height} delivered row(s) are missing from the "
+            "normalised output (identity present in on_grid, absent from "
+            "the preserved rows)"
+        )
+    extra = kept_keys.join(delivered_keys, on=list(_IDENTITY_KEY), how="anti")
+    if extra.height:
+        raise ConservationError(
+            f"{extra.height} preserved row(s) in the normalised output do "
+            "not correspond to any delivered (source_row_index, station, "
+            "timestamp) key"
         )
 
     matched = kept.join(
         delivered,
-        on=["source_row_index", "station", "timestamp"],
+        on=list(_IDENTITY_KEY),
         how="inner",
         suffix="_delivered",
+        validate="1:1",
     )
-    if matched.height != kept.height:
-        raise ConservationError(
-            f"{kept.height - matched.height} preserved rows do not match a "
-            "delivered (source_row_index, station, timestamp) key"
-        )
-    mismatched_value = matched.filter(
-        ~pl.col("value_mm").eq_missing(pl.col("value_mm_delivered"))
-    )
+    bits_equal = _bit_identical(matched["value_mm"], matched["value_mm_delivered"])
+    mismatched_value = matched.filter(~bits_equal)
     if mismatched_value.height:
         raise ConservationError(
-            f"{mismatched_value.height} preserved rows have a mutated value_mm"
+            f"{mismatched_value.height} preserved rows have a mutated "
+            "value_mm (not bit-identical to the delivered value)"
         )
 
     bad_inserted = inserted.filter(pl.col("value_mm").is_not_null())

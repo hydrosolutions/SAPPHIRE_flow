@@ -238,10 +238,15 @@ class TestFrozenSensorExclusion:
             assert result[o.id][0].rule_id == "frozen_sensor"
 
     def test_zero_does_not_extend_a_preceding_nonzero_run(self) -> None:
-        # A single 0.0 between two non-zero blocks must break the run (D8:
-        # "never start or extend") rather than being silently bridged.
+        # A single 0.0 between two 4-length non-zero blocks, with
+        # min_consecutive=5: NEITHER block alone reaches the threshold, so a
+        # correct implementation (D8: excluded values "never start or
+        # extend" a run) flags nothing at all. An implementation that
+        # bridges the excluded 0.0 instead of breaking the run on it would
+        # see one continuous 4+1+4=9-long run and flag most of it — this
+        # test only passes if every single observation stays unflagged.
         checker = Stage1QualityChecker()
-        values = [10.0] * 5 + [0.0] + [10.0] * 5
+        values = [10.0] * 4 + [0.0] + [10.0] * 4
         obs = [_make_obs(v, i) for i, v in enumerate(values)]
         rs = _rule_set(
             _rule(
@@ -254,11 +259,7 @@ class TestFrozenSensorExclusion:
             )
         )
         result = checker.check(obs, rs, [], [])
-        # Neither 5-length block alone reaches min_consecutive=5... it does
-        # reach exactly 5, so both blocks flag on their own, but the 0.0
-        # itself must never be flagged and must not fuse the two blocks
-        # into one continuous 11-long run.
-        assert result[obs[5].id] == []
+        assert all(result[o.id] == [] for o in obs)
 
 
 class TestFrozenSensorRuleVersion:

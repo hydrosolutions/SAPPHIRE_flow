@@ -160,10 +160,17 @@ counted rather than converted), so this milestone shrank to exactly D1's materia
 hours are missing from the workbook for every station** (not a per-station reporting gap — the loader
 already carries those as NULL rows) — `scripts/dhm_precip/normalise.py`'s `normalise_hourly_axis`
 reindexes the ON_GRID view onto one common hourly axis per station (the runner's validated 26-station
-set, D6b), filling every missing `(station, hour)` cell with NULL, never `0.0` (D2). Conservation is
+set, D6b), filling every missing `(station, hour)` cell with NULL, never `0.0` (D2). A delivered
+`(station, timestamp)` key must be unique — `DuplicateDeliveredRowError` otherwise, and the join itself
+is `validate="1:1"` — so a duplicate can never silently fan out into extra output rows. Conservation is
 proved by row identity — not summation, which review found is itself arithmetic and not
 order-independent (D5) — asserted in code via `assert_row_identity_conservation`, which the runner calls
-unconditionally: a violation halts the run. The aggregation guard (D2b) closes the same null-vs-zero
+unconditionally: a violation halts the run. That assertion checks BOTH directions (every delivered
+identity survives into the output, and every preserved identity in the output traces back to a real
+delivered row via anti-joins, not a row-count-plus-forward-join check that a drop-one/duplicate-another
+corruption can defeat) and compares `value_mm` by IEEE bit pattern, not `==`/`eq_missing` (which treat
+`0.0` and `-0.0` as the same value; a bit-identical check does not). A post-implementation review round
+found and fixed both gaps. The aggregation guard (D2b) closes the same null-vs-zero
 trap in `stats_climatology.per_year_totals_with_completeness` and `stats_defects.annual_totals`, both
 of which previously reported a fabricated `0.0 mm` total for a wholly-unreported station-year (Polars'
 `.sum()` over an all-null group returns `0.0`, not null). A new `AxisStatus.NORMALIZED` tags the two new
@@ -173,7 +180,11 @@ runner artefacts, `normalised_axis` and `normalisation_provenance`.
 have no row from any of the 26 live stations (52,029 delivered ON_GRID rows), materialising as
 568 × 26 = 14,768 inserted NULL rows. The off-grid provenance grains match D3's two named populations
 exactly: **3,350** `off_grid_source_timestamp_rows` and **6,633** `off_grid_non_null_observations`. The
-row-identity conservation assertion passed without exception.
+row-identity conservation assertion passed without exception. These totals — plus 52,597 unique hourly
+slots, 1,367,522 (= 52,597 × 26) normalised rows, 14,768 inserted NULL rows and unique
+`(station, timestamp)` keys — are regression-locked in
+`tests/integration/test_dhm_precip_reproduction.py::TestNormalisedAxisMatchesTheRecordedRealWorkbookTotals`
+(gated on `DHM_PRECIP_XLSX`, per constraint 1).
 
 ### M-A3 · Fit-for-purpose QC mask
 **Depends: M-A2, M-I1.** *(OD-3: this milestone is M-I1's first consumer.)* Blocks M-A6, M-A7, M-I2. *(Depends on M-A2, not M-A1: run detection needs a canonical

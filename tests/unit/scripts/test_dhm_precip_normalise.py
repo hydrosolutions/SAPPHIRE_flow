@@ -16,6 +16,7 @@ import pytest
 from scripts.dhm_precip.domain_types import Station
 from scripts.dhm_precip.normalise import (
     ConservationError,
+    DuplicateDeliveredRowError,
     assert_row_identity_conservation,
     build_provenance,
     normalise_hourly_axis,
@@ -145,6 +146,27 @@ class TestNormaliseHourlyAxis:
         assert b_gap["value_mm"][0] is None
         assert b_gap["source_row_index"][0] is None
 
+    def test_duplicate_delivered_key_is_rejected(self) -> None:
+        # Two delivered rows for the SAME (station, timestamp) — a
+        # one-to-many join would silently duplicate that grid cell in the
+        # output (breaking D1's "exactly one row per station-hour").
+        rows = [
+            {
+                "source_row_index": 0,
+                "station": "A",
+                "timestamp": datetime(2024, 1, 1, 0),
+                "value_mm": 1.0,
+            },
+            {
+                "source_row_index": 1,
+                "station": "A",
+                "timestamp": datetime(2024, 1, 1, 0),
+                "value_mm": 2.0,
+            },
+        ]
+        with pytest.raises(DuplicateDeliveredRowError):
+            normalise_hourly_axis(_on_grid_frame(rows), frozenset({Station("A")}))
+
 
 class TestAssertRowIdentityConservation:
     def _delivered(self) -> pl.DataFrame:
@@ -246,6 +268,104 @@ class TestAssertRowIdentityConservation:
         with pytest.raises(ConservationError):
             assert_row_identity_conservation(
                 delivered, tampered, frozenset({Station("A")})
+            )
+
+    def test_duplicate_delivered_key_is_rejected(self) -> None:
+        # `on_grid` itself carries two rows for the same (station,
+        # timestamp) — the assertion must reject this input rather than
+        # silently reasoning about which one is "the" delivered row.
+        delivered = _on_grid_frame(
+            [
+                {
+                    "source_row_index": 0,
+                    "station": "A",
+                    "timestamp": datetime(2024, 1, 1, 0),
+                    "value_mm": 1.0,
+                },
+                {
+                    "source_row_index": 1,
+                    "station": "A",
+                    "timestamp": datetime(2024, 1, 1, 0),
+                    "value_mm": 2.0,
+                },
+            ]
+        )
+        normalised = _on_grid_frame(
+            [
+                {
+                    "source_row_index": 0,
+                    "station": "A",
+                    "timestamp": datetime(2024, 1, 1, 0),
+                    "value_mm": 1.0,
+                },
+            ]
+        )
+        with pytest.raises(DuplicateDeliveredRowError):
+            assert_row_identity_conservation(
+                delivered, normalised, frozenset({Station("A")})
+            )
+
+    def test_a_dropped_and_duplicated_row_fails_the_assertion(self) -> None:
+        # A one-to-many-join style corruption: the normalised output DROPS
+        # delivered row 1 (source_row_index=1) entirely and instead carries
+        # TWO copies of delivered row 0's identity. Row counts still balance
+        # (2 delivered, 2 kept) and every kept row still "matches some
+        # delivered key" (both copies match row 0) — a forward-only,
+        # count-based check would wrongly pass this. The bidirectional
+        # anti-join must catch it because row 1's identity never appears in
+        # the output at all.
+        delivered = self._delivered()
+        corrupted = _on_grid_frame(
+            [
+                {
+                    "source_row_index": 0,
+                    "station": "A",
+                    "timestamp": datetime(2024, 1, 1, 0),
+                    "value_mm": 1.0,
+                },
+                {
+                    "source_row_index": 0,
+                    "station": "A",
+                    "timestamp": datetime(2024, 1, 1, 0),
+                    "value_mm": 1.0,
+                },
+            ]
+        )
+        with pytest.raises(ConservationError):
+            assert_row_identity_conservation(
+                delivered, corrupted, frozenset({Station("A")})
+            )
+
+    def test_a_negative_zero_replacing_a_positive_zero_fails_bit_identity(
+        self,
+    ) -> None:
+        # 0.0 and -0.0 compare numerically equal but are NOT the same IEEE
+        # bit pattern — D5 requires bit-identical values, so this must be
+        # caught even though a plain `==`/`eq_missing` check would pass it.
+        delivered = _on_grid_frame(
+            [
+                {
+                    "source_row_index": 0,
+                    "station": "A",
+                    "timestamp": datetime(2024, 1, 1, 0),
+                    "value_mm": 0.0,
+                },
+            ]
+        )
+        signed_zero_flipped = _on_grid_frame(
+            [
+                {
+                    "source_row_index": 0,
+                    "station": "A",
+                    "timestamp": datetime(2024, 1, 1, 0),
+                    "value_mm": -0.0,
+                },
+            ]
+        )
+        assert 0.0 == -0.0  # sanity: numerically equal, this is the trap
+        with pytest.raises(ConservationError):
+            assert_row_identity_conservation(
+                delivered, signed_zero_flipped, frozenset({Station("A")})
             )
 
 
